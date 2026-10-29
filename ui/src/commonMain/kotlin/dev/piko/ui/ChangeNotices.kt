@@ -1,11 +1,22 @@
 package dev.piko.ui
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import dev.piko.shared.data.DriveChangeJournal
 import kotlinx.coroutines.flow.Flow
+
+@Composable
+fun ObserveMessages(messages: Flow<String>, snackbarHostState: SnackbarHostState) {
+    LaunchedEffect(messages, snackbarHostState) {
+        messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
+    }
+}
 
 /**
  * 根页面（网盘、传输、「我的」）共用的 Snackbar 队列，由主界面提供。各页照旧在自己的 Scaffold 里摆 SnackbarHost，
@@ -35,7 +46,7 @@ suspend fun showChangeNotices(
         val change = event.change
         val result = host.showSnackbar(
             message = event.message,
-            actionLabel = if (change != null) "撤销" else null,
+            actionLabel = if (change != null) tr("撤销", "Undo", "元に戻す", "실행 취소") else null,
             withDismissAction = true,
             duration = if (change != null) SnackbarDuration.Indefinite else SnackbarDuration.Short,
         )

@@ -36,7 +36,23 @@ object PlayerGestureDefaults {
     val MaxHeightChoices = listOf(0, 1080, 720, 480)
 }
 
+enum class AppLanguage(val tag: String, val nativeLabel: String) {
+    SYSTEM("system", ""),
+    ZH_CN("zh-CN", "简体中文"),
+    EN("en", "English"),
+    JA("ja", "日本語"),
+    KO("ko", "한국어");
+
+    companion object {
+        fun fromStorage(raw: String?): AppLanguage =
+            entries.firstOrNull { it.name.equals(raw, ignoreCase = true) || it.tag.equals(raw, ignoreCase = true) } ?: SYSTEM
+    }
+}
+
 interface PikoUserPreferences {
+    val appLanguageFlow: Flow<AppLanguage> get() = flowOf(AppLanguage.SYSTEM)
+    suspend fun setAppLanguage(language: AppLanguage) {}
+
     suspend fun savePlaybackPosition(fileId: String, positionMs: Long)
     suspend fun getPlaybackPosition(fileId: String): Long
     suspend fun saveLastFolder(folderId: String, folderName: String, stackSerialized: String)

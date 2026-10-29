@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.player
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -320,7 +325,7 @@ fun MobilePlayerControls(
         // 按住加速是要看画面，控件一并收起，只留倍速读数
         controlsVisible = false
         onSpeedChange(speed)
-        boostReadout = CenterIndicator(Icons.Filled.FastForward, formatSpeedMultiplier(speed), "倍速 ${formatSpeedPreset(speed)}")
+        boostReadout = CenterIndicator(Icons.Filled.FastForward, formatSpeedMultiplier(speed), tr("倍速 ${formatSpeedPreset(speed)}", "Speed ${formatSpeedPreset(speed)}", "再生速度 ${formatSpeedPreset(speed)}", "재생 속도 ${formatSpeedPreset(speed)}"))
     }
 
     fun endBoost() {
@@ -571,7 +576,7 @@ fun MobilePlayerControls(
             skipSpeedFlash = false
             return@LaunchedEffect
         }
-        flash(CenterIndicator(Icons.Outlined.Speed, formatSpeedMultiplier(speed), "倍速 ${formatSpeedPreset(speed)}"))
+        flash(CenterIndicator(Icons.Outlined.Speed, formatSpeedMultiplier(speed), tr("倍速 ${formatSpeedPreset(speed)}", "Speed ${formatSpeedPreset(speed)}", "再生速度 ${formatSpeedPreset(speed)}", "재생 속도 ${formatSpeedPreset(speed)}")))
     }
     var lastRotation by remember { mutableStateOf(rotationDegrees) }
     LaunchedEffect(rotationDegrees) {
@@ -579,7 +584,7 @@ fun MobilePlayerControls(
         lastRotation = rotationDegrees
         val degrees = rotationDegrees ?: return@LaunchedEffect
         if (previous == null || previous == degrees) return@LaunchedEffect
-        flash(CenterIndicator(Icons.Outlined.Rotate90DegreesCw, "$degrees°", "画面旋转 $degrees 度"))
+        flash(CenterIndicator(Icons.Outlined.Rotate90DegreesCw, "$degrees°", tr("画面旋转 $degrees 度", "Rotation: $degrees°", "画面回転 $degrees 度", "화면 회전 ${degrees}도")))
     }
     // 读数分两处：连续变化的音量、亮度、横滑走了多少、累计的进退与长按加速放在画面上方半透明的一枚（PlayerHud），
     // 看得清又不挡画面中央，横滑时另露出底栏，落到哪里看进度条；倍速、旋转、暂停这类一下子的状态由播放键变形托住。
@@ -597,12 +602,12 @@ fun MobilePlayerControls(
                 },
                 text = "$percent",
                 textTemplate = "100",
-                description = if (brightnessGesture) "亮度 $percent" else "音量 $percent",
+                description = if (brightnessGesture) tr("亮度 $percent", "Brightness $percent", "明るさ $percent", "밝기 $percent") else tr("音量 $percent", "Volume $percent", "音量 $percent", "볼륨 $percent"),
                 progress = gesture.fraction,
             )
         }
         gesture is PlayerGesture.Seek && gesture.cancelled ->
-            CenterIndicator(Icons.Filled.Close, "松开取消", "松开取消跳转")
+            CenterIndicator(Icons.Filled.Close, tr("松开取消", "Release to cancel", "離すとキャンセル", "놓으면 취소"), tr("松开取消跳转", "Release to cancel seeking", "離すとシークをキャンセル", "놓으면 탐색 취소"))
         // 照 Animeko：方向看图标，文字是这一滑走了多少；落到哪里看底栏的进度条
         gesture is PlayerGesture.Seek -> {
             val target = gesture.targetMillis(durationMillis)
@@ -610,7 +615,7 @@ fun MobilePlayerControls(
             CenterIndicator(
                 icon = if (forward) Icons.Filled.FastForward else Icons.Filled.FastRewind,
                 text = formatTime(abs(target - gesture.startPositionMillis)),
-                description = "跳到 ${formatTime(target)}",
+                description = tr("跳到 ${formatTime(target)}", "Seek to ${formatTime(target)}", "${formatTime(target)} に移動", "${formatTime(target)}(으)로 이동"),
                 // 一次横滑至多一屏的几分钟，到不了小时位
                 textTemplate = "00:00",
             )
@@ -619,8 +624,8 @@ fun MobilePlayerControls(
             val sign = if (doubleTapForward) "+" else "−"
             CenterIndicator(
                 icon = if (doubleTapForward) Icons.Filled.FastForward else Icons.Filled.FastRewind,
-                text = "$sign$doubleTapSeconds 秒",
-                description = if (doubleTapForward) "快进 $doubleTapSeconds 秒" else "快退 $doubleTapSeconds 秒",
+                text = tr("$sign$doubleTapSeconds 秒", "$sign$doubleTapSeconds sec", "$sign$doubleTapSeconds 秒", "$sign${doubleTapSeconds}초"),
+                description = if (doubleTapForward) tr("快进 $doubleTapSeconds 秒", "Forward $doubleTapSeconds sec", "$doubleTapSeconds 秒早送り", "${doubleTapSeconds}초 앞으로") else tr("快退 $doubleTapSeconds 秒", "Back $doubleTapSeconds sec", "$doubleTapSeconds 秒巻き戻し", "${doubleTapSeconds}초 뒤로"),
                 // 累计的秒数到不了片长以上，按片长秒数的位数留宽
                 textTemplate = "+${widestDigits((durationMillis / 1000).coerceAtLeast(doubleTapSeconds.toLong()).toString())} 秒",
             )
@@ -659,7 +664,7 @@ fun MobilePlayerControls(
         ?.takeIf { hasPlaylist && it.label.length <= SUBTITLE_LABEL_MAX_LENGTH }
         ?.label
         // 纯数字集号写成「第 24 集」；「25(SP)」「23 Beta」这类照原样，套上「第…集」反而别扭
-        ?.let { if (it.matches(PLAIN_EPISODE)) "第 $it 集" else it }
+        ?.let { if (it.matches(PLAIN_EPISODE)) tr("第 $it 集", "Episode $it", "第 $it 話", "에피소드 $it") else it }
 
     // 音量入口取决于宿主提供的能力，窄窗口同样可用。
     val volumeLevel = volume?.current()
@@ -737,7 +742,7 @@ fun MobilePlayerControls(
                         !pointerSource.isTouchLike -> onToggleFullscreen()
                         zone == DoubleTapZone.PlayPause -> {
                             flash(CenterIndicator(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                if (isPlaying) "暂停" else "播放", if (isPlaying) "已暂停" else "继续播放"))
+                                if (isPlaying) tr("暂停", "Pause", "一時停止", "일시 중지") else tr("播放", "Play", "再生", "재생"), if (isPlaying) tr("已暂停", "Paused", "一時停止中", "일시 중지됨") else tr("继续播放", "Continue playback", "再生を続ける", "계속 재생")))
                             onPlayPause()
                             interacted()
                         }
@@ -1268,7 +1273,7 @@ private fun CropRegionEditorOverlay(
                     .padding(horizontal = 16.dp, vertical = 20.dp),
             ) {
                 Text(
-                    text = "拖动选框四角或内部选择要铺满画面的区域",
+                    text = stringResource(Res.string.text_drag_the_corners_or_the_box_to_select_the_area_that_fills_the_screen),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -1289,14 +1294,14 @@ private fun CropRegionEditorOverlay(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    FilledTonalButton(onClick = onReset) { Text("还原适应") }
-                    FilledTonalButton(onClick = onCancel) { Text("取消") }
+                    FilledTonalButton(onClick = onReset) { Text(stringResource(Res.string.text_reset_fit)) }
+                    FilledTonalButton(onClick = onCancel) { Text(stringResource(Res.string.common_cancel)) }
                     Button(onClick = {
                         val containerAspect = if (containerSize.width > 0 && containerSize.height > 0) {
                             containerSize.width.toFloat() / containerSize.height.toFloat()
                         } else 0f
                         onConfirm(region.copy(containerAspect = containerAspect))
-                    }) { Text("铺满画面") }
+                    }) { Text(stringResource(Res.string.text_fill_screen)) }
                 }
             }
         }

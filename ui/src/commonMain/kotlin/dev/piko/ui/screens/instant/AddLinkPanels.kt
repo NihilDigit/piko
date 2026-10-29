@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.instant
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
@@ -45,8 +50,8 @@ fun DockedAddLink(
     }
 }
 
-internal const val CollapseAddLinkLabel = "收起添加链接"
-internal const val DiscardAddLinkLabel = "放弃添加"
+internal val CollapseAddLinkLabel: String get() = tr("收起添加链接", "Collapse add link", "リンク追加を折りたたむ", "링크 추가 접기")
+internal val DiscardAddLinkLabel: String get() = tr("放弃添加", "Discard links", "追加を破棄", "추가 취소")
 
 /** 栏头与侧边面板顶上的 ×。正在保存时置灰：保存已经交出去，放弃不掉。 */
 @Composable
@@ -71,17 +76,17 @@ fun rememberDiscardAddLink(session: AddLinkViewModel): () -> Unit {
     if (asking) {
         PikoDialog(
             onDismissRequest = { asking = false },
-            title = { Text("关闭添加链接？") },
+            title = { Text(stringResource(Res.string.text_close_add_link)) },
             text = { Text(if (session.state?.saveIssue != null || session.state?.shareSave?.hasPendingResult == true || session.state?.batch?.rows?.any { it.state.saveIssue != null } == true)
-                "本次保存已有部分结果。已提交的请求不会取消，已保存文件保留；待确认的结果仍可在任务页查看。"
-                else "当前输入的链接和勾选的文件不会保存。") },
+                tr("本次保存已有部分结果。已提交的请求不会取消，已保存文件保留；待确认的结果仍可在任务页查看。", "Some save results exist. Submitted requests continue and saved files are kept. Check unconfirmed results in Tasks.", "一部の保存結果があります。送信済みのリクエストは取り消されず、保存したファイルは保持します。未確認の結果はタスク画面で確認できます。", "일부 저장 결과가 있습니다. 제출된 요청은 취소되지 않으며 저장된 파일은 유지됩니다. 미확인 결과는 작업 페이지에서 확인할 수 있습니다.")
+                else tr("当前输入的链接和勾选的文件不会保存。", "Entered links and selected files will not be saved.", "入力したリンクと選択したファイルは保存されません。", "입력한 링크와 선택한 파일은 저장되지 않습니다.")) },
             confirmButton = {
-                PikoDialogConfirm("关闭", destructive = true, onClick = {
+                PikoDialogConfirm(tr("关闭", "Close", "閉じる", "닫기"), destructive = true, onClick = {
                     asking = false
                     session.discard()
                 })
             },
-            dismissButton = { TextButton(onClick = { asking = false }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { asking = false }) { Text(stringResource(Res.string.common_cancel)) } },
         )
     }
     return remember(session) { { if (session.discardNeedsConfirm) asking = true else session.discard() } }
@@ -92,8 +97,8 @@ fun AddLinkBlockedAction(viewModel: AddLinkViewModel) {
     val blocked = viewModel.blockedAction ?: return
     PikoDialog(
         onDismissRequest = viewModel::dismissBlockedAction,
-        title = { Text("暂时无法替换添加链接") },
+        title = { Text(stringResource(Res.string.text_cannot_replace_links_right_now)) },
         text = { Text(blocked.reason) },
-        confirmButton = { TextButton(onClick = viewModel::dismissBlockedAction) { Text("知道了") } },
+        confirmButton = { TextButton(onClick = viewModel::dismissBlockedAction) { Text(stringResource(Res.string.common_got_it)) } },
     )
 }

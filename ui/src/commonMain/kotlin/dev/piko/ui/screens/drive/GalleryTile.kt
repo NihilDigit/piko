@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.i18n.tr
+
 import dev.piko.ui.theme.LocalFixedColors
 import androidx.compose.foundation.shape.CircleShape
 import dev.piko.shared.data.isVaulted
@@ -88,7 +90,7 @@ internal fun GalleryTile(
             } else if (file.isPlayableVideo()) {
                 Icon(
                     imageVector = Icons.Filled.PlayCircle,
-                    contentDescription = "视频",
+                    contentDescription = tr("视频", "Video", "動画", "동영상"),
                     tint = Color.White.copy(alpha = 0.9f),
                     modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp).size(20.dp),
                 )
@@ -120,7 +122,7 @@ internal fun GalleryTile(
             ) {
                 Icon(
                     imageVector = Icons.Filled.Inventory2,
-                    contentDescription = if (file.isFolder) "含归档条目" else "已归档",
+                    contentDescription = if (file.isFolder) tr("含归档条目", "Includes archived items", "アーカイブ項目を含む", "보관 항목 포함") else tr("已归档", "Archived", "アーカイブ済み", "보관됨"),
                     tint = fixed.OnMedia,
                     modifier = Modifier.size(14.dp),
                 )

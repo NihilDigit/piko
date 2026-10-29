@@ -1,5 +1,7 @@
 package dev.piko.data.auth
 
+import dev.piko.shared.i18n.tr
+
 import android.content.Context
 import androidx.datastore.core.DataMigration
 import androidx.datastore.core.DataStore
@@ -87,6 +89,11 @@ private class LegacyPlaybackPositionMigration(
 }
 
 class SessionManager(private val context: Context) : PikoUserPreferences {
+    private val appLanguageKey = stringPreferencesKey("app_language")
+    override val appLanguageFlow: Flow<AppLanguage> = preference { AppLanguage.fromStorage(it[appLanguageKey]) }
+    override suspend fun setAppLanguage(language: AppLanguage) {
+        context.dataStore.edit { it[appLanguageKey] = language.tag }
+    }
 
     private object PreferencesKeys {
         val CONCURRENT_ACCELERATION = booleanPreferencesKey("concurrent_acceleration")
@@ -169,7 +176,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val prefs = context.dataStore.data.first()
         return Triple(
             prefs[PreferencesKeys.LAST_FOLDER_ID] ?: "",
-            prefs[PreferencesKeys.LAST_FOLDER_NAME] ?: "我的网盘",
+            prefs[PreferencesKeys.LAST_FOLDER_NAME] ?: tr("我的网盘", "My drive", "マイドライブ", "내 드라이브"),
             prefs[PreferencesKeys.LAST_FOLDER_STACK_SERIALIZED] ?: "",
         )
     }

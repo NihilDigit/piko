@@ -1,5 +1,8 @@
 package dev.piko.desktop
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -100,7 +103,7 @@ fun MagnetDropTarget(
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            "松开以上传文件，或打开链接与种子",
+                            stringResource(Res.string.text_drop_to_upload_files_or_open_links_and_torrents),
                             style = MaterialTheme.typography.titleLarge,
                             color = MaterialTheme.colorScheme.primary,
                         )

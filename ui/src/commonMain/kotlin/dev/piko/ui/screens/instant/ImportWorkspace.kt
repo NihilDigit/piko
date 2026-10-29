@@ -1,5 +1,13 @@
 package dev.piko.ui.screens.instant
 
+import dev.piko.shared.i18n.enCount
+import dev.piko.shared.presentation.localizedName
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -55,7 +63,7 @@ internal class ImportBrowserState {
     val mode = mutableStateOf(DriveViewMode.LIST.name)
     val selected = mutableStateOf(emptyList<String>())
     val grid = LazyGridState()
-    val detail = DetailPanelState<ImportResultEntry>(DetailPanelSpec("属性", "关闭属性"))
+    val detail = DetailPanelState<ImportResultEntry>(DetailPanelSpec({ tr("属性", "Properties", "プロパティ", "속성") }, { tr("关闭属性", "Close properties", "プロパティを閉じる", "속성 닫기") }))
 }
 
 /** Owned by the workspace context, so moving between a tab and a routed page retains the same UI state. */
@@ -98,14 +106,14 @@ internal fun ResolvedImportWorkspace(
         @Composable fun Header() {
             Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("管理链接", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                    TooltipIconButton(Icons.Outlined.Search, "搜索来源文件", {
+                    Text(stringResource(Res.string.text_manage_links), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    TooltipIconButton(Icons.Outlined.Search, tr("搜索来源文件", "Search source files", "ソースファイルを検索", "원본 파일 검색"), {
                         management.searchShown = !management.searchShown
                         if (!management.searchShown) management.query = ""
                         else if (!split) onManagementChange(true)
                         scope.launch { management.list.scrollToItem(0) }
                     })
-                    TooltipIconButton(Icons.Outlined.Tune, "保存设置", {
+                    TooltipIconButton(Icons.Outlined.Tune, tr("保存设置", "Save options", "保存設定", "저장 설정"), {
                         management.settingsShown = !management.settingsShown
                         if (management.settingsShown && !split) onManagementChange(true)
                         scope.launch { management.list.scrollToItem(0) }
@@ -141,17 +149,17 @@ internal fun ImportResolutionStatus(state: InstantSheetState, notice: PanelNotic
     val plan = state.savePlan
     val missing = state.sourceSelectedIndices.count { !state.items[it].isInstantReady }
     val error = state.saveBlockReason ?: state.errorMessage ?: when {
-        state.willCreateFolder && state.folderNameToSave.isBlank() -> "保存文件夹名称不能为空"
-        state.saveAsReference && state.missingReferenceCount > 0 && state.referenceItemsToSave.isEmpty() -> "所选内容均缺少引用，无法以引用保存"
-        plan?.lacksSpace == true -> "网盘空间不足，请减少选择或更换保存位置"
-        plan?.lacksOfflineCount == true -> "今日离线次数已用完"
+        state.willCreateFolder && state.folderNameToSave.isBlank() -> tr("保存文件夹名称不能为空", "Save folder name cannot be empty", "保存先フォルダー名を入力してください", "저장 폴더 이름을 입력해 주세요")
+        state.saveAsReference && state.missingReferenceCount > 0 && state.referenceItemsToSave.isEmpty() -> tr("所选内容均缺少引用，无法以引用保存", "Selected items have no references and cannot be saved as references", "選択した項目に参照がないため、参照として保存できません", "선택한 항목에 참조가 없어 참조로 저장할 수 없습니다")
+        plan?.lacksSpace == true -> tr("网盘空间不足，请减少选择或更换保存位置", "Not enough cloud space. Select fewer files or change destination", "空き容量が不足しています。選択を減らすか保存先を変更してください", "클라우드 공간이 부족합니다. 선택을 줄이거나 저장 위치를 변경하세요")
+        plan?.lacksOfflineCount == true -> tr("今日离线次数已用完", "Daily cloud download limit reached", "本日のクラウドダウンロード回数を使い切りました", "오늘의 클라우드 다운로드 횟수를 모두 사용했습니다")
         else -> null
     }
     val message = error ?: notice?.text ?: when {
-        state.isResolving -> "正在解析链接"
-        state.resolution?.resource?.truncated == true -> "清单不完整，自动裁剪已停用"
-        state.saveAsReference && state.missingReferenceCount > 0 -> "已选文件中有 ${state.missingReferenceCount} 项缺少引用，保存时将跳过"
-        missing > 0 -> "已选文件中有 ${missing} 项未收录"
+        state.isResolving -> tr("正在解析链接", "Resolving link", "リンクを解析中", "링크 분석 중")
+        state.resolution?.resource?.truncated == true -> tr("清单不完整，自动裁剪已停用", "Incomplete file list; automatic trimming disabled", "ファイル一覧が不完全なため、自動整理を無効にしました", "파일 목록이 불완전하여 자동 정리를 껐습니다")
+        state.saveAsReference && state.missingReferenceCount > 0 -> tr("已选文件中有 ${state.missingReferenceCount} 项缺少引用，保存时将跳过", "${state.missingReferenceCount} selected items lack references and will be skipped", "選択した ${state.missingReferenceCount} 項目に参照がなく、保存時にスキップします", "선택한 ${state.missingReferenceCount}개 항목에 참조가 없어 저장 시 건너뜁니다")
+        missing > 0 -> tr("已选文件中有 ${missing} 项未收录", "${missing} selected items are not indexed", "選択した ${missing} 項目は未収録です", "선택한 ${missing}개 항목이 미등록입니다")
         else -> null
     }
     if (message != null) Row(
@@ -162,10 +170,10 @@ internal fun ImportResolutionStatus(state: InstantSheetState, notice: PanelNotic
         Icon(Icons.Outlined.Info, null, Modifier.size(18.dp), tint = color)
         Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = color)
         if (state.saveAsReference && state.missingReferenceCount > 0 && state.referenceItemsToSave.isNotEmpty()) {
-            TextButton(onClick = state::deselectUnindexed, enabled = state.canEdit) { Text("取消勾选") }
+            TextButton(onClick = state::deselectUnindexed, enabled = state.canEdit) { Text(stringResource(Res.string.text_uncheck)) }
         }
         if (state.resolution?.resource?.truncated == true) TooltipIconButton(
-            Icons.Outlined.Refresh, "重新解析链接", state::retryResolve, enabled = state.canEdit,
+            Icons.Outlined.Refresh, tr("重新解析链接", "Resolve link again", "リンクを再解析", "링크 다시 분석"), state::retryResolve, enabled = state.canEdit,
         )
     }
 }
@@ -176,8 +184,8 @@ internal fun SharePassCodeInput(state: InstantSheetState) {
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(value = state.sharePassCode, onValueChange = state::updateSharePassCode,
-            modifier = Modifier.weight(1f), label = { Text("提取码") }, singleLine = true, enabled = state.canEdit)
-        TextButton(onClick = state::submitSharePassCode, enabled = state.canEdit && state.sharePassCode.isNotBlank()) { Text("解析") }
+            modifier = Modifier.weight(1f), label = { Text(stringResource(Res.string.text_access_code)) }, singleLine = true, enabled = state.canEdit)
+        TextButton(onClick = state::submitSharePassCode, enabled = state.canEdit && state.sharePassCode.isNotBlank()) { Text(stringResource(Res.string.text_resolve)) }
     }
 }
 
@@ -199,20 +207,20 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
     var details by remember { mutableStateOf<ImportSource?>(null) }
     val platform = LocalPikoPlatform.current
     fun sourceActions(source: ImportSource): List<SheetAction> = buildList {
-        add(SheetAction(Icons.Outlined.ContentCopy, "复制来源链接", { platform.copyToClipboard("来源链接", source.state.input) }))
-        if (source.enabled && source.state.canEdit && source.state.input.isNotBlank()) add(SheetAction(Icons.Outlined.Refresh, "重新解析链接", source.state::retryResolve))
-        if (source.enabled) source.onRemove?.let { remove -> add(SheetAction(Icons.Outlined.Close, "移除此链接", remove, destructive = true)) }
+        add(SheetAction(Icons.Outlined.ContentCopy, tr("复制来源链接", "Copy source link", "ソースリンクをコピー", "출처 링크 복사"), { platform.copyToClipboard(tr("来源链接", "Source link", "ソースリンク", "출처 링크"), source.state.input) }))
+        if (source.enabled && source.state.canEdit && source.state.input.isNotBlank()) add(SheetAction(Icons.Outlined.Refresh, tr("重新解析链接", "Resolve link again", "リンクを再解析", "링크 다시 분석"), source.state::retryResolve))
+        if (source.enabled) source.onRemove?.let { remove -> add(SheetAction(Icons.Outlined.Close, tr("移除此链接", "Remove this link", "このリンクを削除", "이 링크 삭제"), remove, destructive = true)) }
     }
     LazyColumn(modifier, state = management.list, contentPadding = PaddingValues(bottom = 8.dp)) {
         if (management.searchShown) item(key = "search") {
             val focus = remember { FocusRequester() }
             LaunchedEffect(Unit) { focus.requestFocus() }
             TextField(query, { management.query = it }, Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).focusRequester(focus),
-                    placeholder = { Text("搜索原始文件") },
+                    placeholder = { Text(stringResource(Res.string.text_search_original_files)) },
                     leadingIcon = { Icon(Icons.Outlined.Search, null) }, singleLine = true, shape = MaterialTheme.shapes.large,
                     colors = TextFieldDefaults.colors(focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
                         unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent),
-                    trailingIcon = { if(query.isNotEmpty()) IconButton({ management.query = "" }) { Icon(Icons.Outlined.Close, "清空来源搜索") } })
+                    trailingIcon = { if(query.isNotEmpty()) IconButton({ management.query = "" }) { Icon(Icons.Outlined.Close, tr("清空来源搜索", "Clear source search", "ソースの検索を消去", "원본 검색 지우기")) } })
         }
         if (management.settingsShown) item(key = "settings") {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = config)
@@ -228,7 +236,7 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
             val toggle = { management.collapsed = if(entry.key in collapsed) collapsed - entry.key else collapsed + entry.key }
             val item = if (index == null) FilePresentation(
                 node.key, FileItemName(node.name), FileVisual(node.name, isFolder = true),
-                metadata = listOf("${node.indices.size} 个文件"),
+                metadata = listOf(tr("${node.indices.size} 个文件", "${enCount(node.indices.size, "file", "files")}", "${node.indices.size} ファイル", "파일 ${node.indices.size}개")),
             ) else state.items[index].file.filePresentation(node.key)
             val open = { if (node.isFolder) toggle() else if (editable) state.setSourceSelected(node.indices, selected == 0) }
             ContextMenuArea(actions = { sourceActions(source) }) {
@@ -237,7 +245,7 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
                     onOpen = open, onLongClick = { details = source }, item = item, reserveExpandSpace = hasBranches,
                     leading = { FileItemSelectionControl(FileItemSelection(checked,
                         { if (editable) state.setSourceSelected(node.indices, checked != ToggleableState.On) },
-                        enabled = editable, label = "选择来源 ${node.name}")) })
+                        enabled = editable, label = tr("选择来源 ${node.name}", "Select source ${node.name}", "ソース ${node.name} を選択", "원본 ${node.name} 선택"))) })
             }
         }
         @OptIn(ExperimentalFoundationApi::class)
@@ -248,9 +256,9 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
                 ListItem(headlineContent = { Text(state.resolution?.resource?.name ?: state.input, maxLines = 1,
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
                     supportingContent = { Text(state.errorMessage ?: when {
-                        state.isResolving -> "正在解析链接"
-                        state.needsSharePassCode -> "需要提取码"
-                        else -> "整条提交离线"
+                        state.isResolving -> tr("正在解析链接", "Resolving link", "リンクを解析中", "링크 분석 중")
+                        state.needsSharePassCode -> tr("需要提取码", "Access code required", "アクセスコードが必要です", "접근 코드 필요")
+                        else -> tr("整条提交离线", "Download entire link to cloud", "リンク全体をクラウドダウンロード", "전체 링크 클라우드 다운로드")
                     }) },
                     leadingContent = { Icon(Icons.Outlined.Link, null) },
                     modifier = Modifier.combinedClickable(onClick = {}, onLongClick = longClick),
@@ -260,7 +268,7 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
         }
     }
     details?.let { source ->
-        ItemDetailsSheet(title = source.state.resolution?.resource?.name ?: "来源链接",
+        ItemDetailsSheet(title = source.state.resolution?.resource?.name ?: tr("来源链接", "Source link", "ソースリンク", "출처 링크"),
             headerIcon = { Icon(Icons.Outlined.Link, null) }, onDismiss = { details = null },
             extraLines = { Text(source.state.input, style = MaterialTheme.typography.bodySmall) },
             actions = sourceActions(source))
@@ -292,7 +300,7 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
             ancestors += PikoPathBreadcrumb(current.id, current.name)
             current = byId[current.parentId]
         }
-        return listOf(PikoPathBreadcrumb("", "保存结果")) + ancestors.asReversed()
+        return listOf(PikoPathBreadcrumb("", tr("保存结果", "Save results", "保存結果", "저장 결과"))) + ancestors.asReversed()
     }
     val stack = stackFor(path)
     val address = AddressBarModel(
@@ -300,12 +308,12 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
         onNavigate = { index -> path = stack[index].id; query = "" },
         onOpenStack = { target -> path = target.last().id; query = "" },
         onSubmitPath = { text ->
-            val directory = text.trim().replace('\\', '/').trim('/').removePrefix("保存结果").trim('/')
+            val directory = text.trim().replace('\\', '/').trim('/').removePrefix(tr("保存结果", "Save results", "保存結果", "저장 결과")).trim('/')
             val match = all.filter { it.isFolder && stackFor(it.id).drop(1).joinToString("/") { it.name } == directory }.singleOrNull()
             if (directory.isEmpty() || match != null) { path = match?.id.orEmpty(); query = ""; true } else false
         },
         completions = { text -> AddressCompletion(text.substringAfterLast('/'), true,
-            all.filter { it.isFolder && stackFor(it.id).drop(1).joinToString("/") { it.name }.startsWith(text.removePrefix("保存结果/"), true) }.map { stackFor(it.id) }) },
+            all.filter { it.isFolder && stackFor(it.id).drop(1).joinToString("/") { it.name }.startsWith(text.removePrefix(tr("保存结果/", "Save results/", "保存結果/", "저장 결과/")), true) }.map { stackFor(it.id) }) },
         subfoldersOf = { id -> Result.success(all.filter { it.isFolder && it.parentId == id }.map { PikoPathBreadcrumb(it.id, it.name) }) },
         recent = emptyList(), pinned = emptyList(), onOpenPinned = {}, onRemoveRecent = {},
         onOpenLink = onOpenLink, onSearchHere = { query = it }, onSearchAll = { query = it }, destinations = emptyList(),
@@ -329,14 +337,14 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
         val entry = entryById.getValue(file.id)
         val state = sourceByKey.getValue(entry.sourceKey).state
         val index = entry.sourceIndex
-        if (file.isFolder) add(SheetAction(Icons.Outlined.FolderOpen, "打开", { open(file) }))
-        if (index != null && state.canPreview(index)) add(SheetAction(Icons.Outlined.PlayCircle, "预览", { state.preview(index) }))
-        if (index != null && state.items[index].isInstantReady) add(SheetAction(Icons.Outlined.CloudDownload, "下载", {
+        if (file.isFolder) add(SheetAction(Icons.Outlined.FolderOpen, tr("打开", "Open", "開く", "열기"), { open(file) }))
+        if (index != null && state.canPreview(index)) add(SheetAction(Icons.Outlined.PlayCircle, tr("预览", "Preview", "プレビュー", "미리 보기"), { state.preview(index) }))
+        if (index != null && state.items[index].isInstantReady) add(SheetAction(Icons.Outlined.CloudDownload, tr("下载", "Downloads", "ダウンロード", "다운로드"), {
             downloads.enqueueResolved(listOf(state.items[index].file.copy(path = file.name)), state.target?.id.orEmpty())
             onDownloaded()
         }))
-        add(SheetAction(Icons.Outlined.Info, "属性", { properties(file) }, group = ActionGroup.Properties))
-        add(SheetAction(Icons.Outlined.ContentCopy, "复制来源链接", { platform.copyToClipboard("来源链接", state.input) }))
+        add(SheetAction(Icons.Outlined.Info, tr("属性", "Properties", "プロパティ", "속성"), { properties(file) }, group = ActionGroup.Properties))
+        add(SheetAction(Icons.Outlined.ContentCopy, tr("复制来源链接", "Copy source link", "ソースリンクをコピー", "출처 링크 복사"), { platform.copyToClipboard(tr("来源链接", "Source link", "ソースリンク", "출처 링크"), state.input) }))
     }
     val callbacks = DriveItemCallbacks(
         onOpen = ::open, onRename = null, onMore = { moreId = it.id }, onProperties = ::properties,
@@ -354,13 +362,13 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
         Box(Modifier.fillMaxSize().itemPanelAnchorArea(detail.anchors)) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton({ path = byId[path]?.parentId.orEmpty() }, enabled = path.isNotEmpty()) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "上一级保存结果") }
+                    IconButton({ path = byId[path]?.parentId.orEmpty() }, enabled = path.isNotEmpty()) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, tr("上一级保存结果", "Parent saved folder", "保存結果の上の階層", "저장 결과 상위 폴더")) }
                     Box(Modifier.weight(1f)) { DrivePathTitle(address, editRequests = 0) }
-                    TooltipIconButton(Icons.Outlined.ViewModule, "切换保存结果视图", { mode = if(mode == DriveViewMode.LIST.name) DriveViewMode.POSTER.name else DriveViewMode.LIST.name })
+                    TooltipIconButton(Icons.Outlined.ViewModule, tr("切换保存结果视图", "Switch result view", "保存結果の表示を切り替え", "저장 결과 보기 전환"), { mode = if(mode == DriveViewMode.LIST.name) DriveViewMode.POSTER.name else DriveViewMode.LIST.name })
                 }
-                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(horizontal = 12.dp), label = { Text("搜索保存结果") }, singleLine = true,
-                    trailingIcon = { if(query.isNotEmpty()) IconButton({ query = "" }) { Icon(Icons.Outlined.Close, "清空结果搜索") } })
-                if(shown.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text(if(entries.isEmpty()) "从来源文件中选择要保存的内容" else "没有匹配的文件") }
+                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(horizontal = 12.dp), label = { Text(stringResource(Res.string.text_search_saved_results)) }, singleLine = true,
+                    trailingIcon = { if(query.isNotEmpty()) IconButton({ query = "" }) { Icon(Icons.Outlined.Close, tr("清空结果搜索", "Clear result search", "結果の検索を消去", "결과 검색 지우기")) } })
+                if(shown.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text(if(entries.isEmpty()) tr("从来源文件中选择要保存的内容", "Select source files to save", "保存するソースファイルを選択", "저장할 원본 파일 선택") else tr("没有匹配的文件", "No matching files", "一致するファイルはありません", "일치하는 파일이 없습니다")) }
                 else DriveFileGrid(items = shown.map { DriveListItem.File(it, null) }, viewMode = DriveViewMode.of(mode), tileSize = TileSize.MEDIUM,
                     onZoom = {}, gridState = browser.grid, isSelectionMode = selected.isNotEmpty(), selectedIds = selected.toSet(), highlightedIds = emptySet(),
                     highlightRevision = 0, structureReady = true, locatedItemId = null, isBlurred = { false }, hitLocations = emptyMap(), folderView = { null },
@@ -369,7 +377,7 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
                     modifier = Modifier.weight(1f))
             }
         DetailHost(detail) { entry, modifier ->
-            val location = stackFor(entry.file.parentId).joinToString(" / ") { it.name }
+            val location = stackFor(entry.file.parentId).joinToString(" / ") { it.localizedName }
             PropertiesPane(
                 target = PropertiesTarget.Single(dev.piko.shared.state.DriveItemName(entry.file, null, null), emptyList(), location, false),
                 modifier = modifier,

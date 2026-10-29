@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.auth
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -128,7 +133,7 @@ fun LoginScreen(
                 if (onCancel != null) {
                     TooltipIconButton(
                         Icons.Outlined.Close,
-                        "取消",
+                        tr("取消", "Cancel", "キャンセル", "취소"),
                         onClick = onCancel,
                         enabled = !state.isLoggingIn,
                         modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
@@ -190,13 +195,13 @@ private fun LoginForm(
             )
             Spacer(Modifier.height(24.dp))
             Text(
-                text = if (adding) "添加账号" else "登录",
+                text = if (adding) tr("添加账号", "Add account", "アカウントを追加", "계정 추가") else tr("登录", "Sign in", "ログイン", "로그인"),
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = if (adding) "当前账号保持登录，可随时切换" else "使用 PikPak 账号",
+                text = if (adding) tr("当前账号保持登录，可随时切换", "Your current account stays signed in and can be switched anytime", "現在のアカウントはログイン状態のまま、いつでも切り替えられます", "현재 계정의 로그인은 유지되며 언제든 전환할 수 있습니다") else tr("使用 PikPak 账号", "Use your PikPak account", "PikPakアカウントでログイン", "PikPak 계정으로 로그인"),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -207,7 +212,7 @@ private fun LoginForm(
             OutlinedTextField(
                 value = state.account,
                 onValueChange = state::updateAccount,
-                label = { Text("邮箱或用户名") },
+                label = { Text(stringResource(Res.string.text_email_or_username)) },
                 leadingIcon = { Icon(Icons.Outlined.Person, contentDescription = null) },
                 singleLine = true,
                 enabled = !isLoading,
@@ -222,13 +227,13 @@ private fun LoginForm(
             // 错误放在密码框的辅助文字里，不单独一行飘在框与按钮之间
             OutlinedSecureTextField(
                 state = passwordField,
-                label = { Text("密码") },
+                label = { Text(stringResource(Res.string.text_password)) },
                 leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
                 trailingIcon = {
                     IconButton(onClick = { passwordVisible = !passwordVisible }) {
                         Icon(
                             imageVector = if (passwordVisible) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                            contentDescription = if (passwordVisible) "隐藏密码" else "显示密码",
+                            contentDescription = if (passwordVisible) tr("隐藏密码", "Hide password", "パスワードを隠す", "비밀번호 숨기기") else tr("显示密码", "Show password", "パスワードを表示", "비밀번호 표시"),
                         )
                     }
                 },
@@ -261,9 +266,9 @@ private fun LoginForm(
                 if (isLoading) {
                     InlineLoadingIndicator(color = LocalContentColor.current)
                     Spacer(Modifier.width(8.dp))
-                    Text("正在登录")
+                    Text(stringResource(Res.string.text_signing_in))
                 } else {
-                    Text("登录")
+                    Text(stringResource(Res.string.text_sign_in))
                 }
             }
 
@@ -272,7 +277,7 @@ private fun LoginForm(
             TextButton(onClick = onOpenProxy, enabled = !isLoading) {
                 Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("网络代理：$proxySummary", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(tr("网络代理：$proxySummary", "Proxy: $proxySummary", "プロキシ：$proxySummary", "프록시: $proxySummary"), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }

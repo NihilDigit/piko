@@ -1,5 +1,7 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -138,9 +140,9 @@ class ArchiveExtractSession(
         if (volumes > 0 || archives.isEmpty()) {
             PikoLog.i(TAG, "解压：选了 ${files.size} 个，入队 ${archives.size} 个，分卷跳过 $volumes 个，已在队列 ${files.count { it.id in queued }} 个")
         }
-        if (volumes > 0) _messages.tryEmit(if (volumes == files.size) VOLUME_UNSUPPORTED else "已跳过 $volumes 个分卷：$VOLUME_UNSUPPORTED")
+        if (volumes > 0) _messages.tryEmit(if (volumes == files.size) VOLUME_UNSUPPORTED else tr("已跳过 $volumes 个分卷：$VOLUME_UNSUPPORTED", "Skipped $volumes split archives: $VOLUME_UNSUPPORTED", "$volumes 個の分割アーカイブをスキップしました：$VOLUME_UNSUPPORTED", "분할 압축 파일 ${volumes}개 건너뜀: $VOLUME_UNSUPPORTED"))
         if (archives.isEmpty()) {
-            if (volumes == 0 && files.none { it.isExtractableArchive }) _messages.tryEmit("所选文件中没有可解压的压缩包")
+            if (volumes == 0 && files.none { it.isExtractableArchive }) _messages.tryEmit(tr("所选文件中没有可解压的压缩包", "No extractable archives selected", "解凍できるアーカイブが選択されていません", "선택한 파일 중 압축 해제할 수 있는 파일이 없습니다"))
             return
         }
         jobs = jobs + archives.map { newJob(it) }
@@ -153,7 +155,7 @@ class ArchiveExtractSession(
      */
     fun extractEntries(archive: FileStat, paths: List<String>, password: String) {
         if (jobs.any { it.file.id == archive.id }) {
-            _messages.tryEmit("这个压缩包已在解压中")
+            _messages.tryEmit(tr("这个压缩包已在解压中", "This archive is already being extracted", "このアーカイブは解凍中です", "이미 압축 해제 중인 파일입니다"))
             return
         }
         jobs = jobs + newJob(archive, password = password, paths = paths)
@@ -226,9 +228,9 @@ class ArchiveExtractSession(
                 // 没带密码时服务端报的是「缺少」；带了还被拒才算输错
                 update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
             } else if (err is ArchiveSubmissionUnconfirmed) {
-                finish(job, "无法确认 ${job.file.name} 是否已提交解压，请先检查所在目录", outcome = ArchiveCompletion.UNCONFIRMED)
+                finish(job, tr("无法确认 ${job.file.name} 是否已提交解压，请先检查所在目录", "Cannot confirm extraction submission for ${job.file.name}. Check its folder first", "${job.file.name} の解凍送信を確認できません。先に保存先フォルダーを確認してください", "${job.file.name}의 압축 해제 제출 여부를 확인할 수 없습니다. 먼저 해당 폴더를 확인해 주세요"), outcome = ArchiveCompletion.UNCONFIRMED)
             } else {
-                finish(job, "${job.file.name} 解压失败：${failureReason(err)}")
+                finish(job, tr("${job.file.name} 解压失败：${failureReason(err)}", "Failed to extract ${job.file.name}: ${failureReason(err)}", "${job.file.name} の解凍に失敗しました：${failureReason(err)}", "${job.file.name} 압축 해제 실패: ${failureReason(err)}"))
             }
             return
         }
@@ -247,7 +249,7 @@ class ArchiveExtractSession(
                 PikoLog.w(TAG, "查询解压进度失败：${logFile(job.file.id, job.file.name)}，第 ${failures + 1} 次", err)
                 failures++
                 if (failures >= MAX_POLL_FAILURES) {
-                    finish(job, "暂时无法确认 ${job.file.name} 的解压结果：${failureReason(err)}", outcome = ArchiveCompletion.UNCONFIRMED)
+                    finish(job, tr("暂时无法确认 ${job.file.name} 的解压结果：${failureReason(err)}", "Extraction result for ${job.file.name} is unconfirmed: ${failureReason(err)}", "${job.file.name} の解凍結果を確認できません：${failureReason(err)}", "${job.file.name}의 압축 해제 결과를 확인할 수 없습니다: ${failureReason(err)}"), outcome = ArchiveCompletion.UNCONFIRMED)
                     return
                 }
                 delay(queryRetryDelay)
@@ -256,7 +258,7 @@ class ArchiveExtractSession(
             failures = 0
             when (progress.phase) {
                 TaskPhase.COMPLETE -> {
-                    finish(job, "已解压 ${job.file.name}", succeeded = true)
+                    finish(job, tr("已解压 ${job.file.name}", "Extracted ${job.file.name}", "${job.file.name} を解凍しました", "${job.file.name} 압축 해제 완료"), succeeded = true)
                     // 解压出的文件夹落在压缩包旁边
                     driveRepository.applyChange(DriveChange.ContentsChanged(setOf(job.file.parentId)))
                     return
@@ -268,9 +270,10 @@ class ArchiveExtractSession(
                         PikoLog.i(TAG, "解压任务 $taskId 因密码失败，等用户输入：${logFile(job.file.id, job.file.name)}")
                         update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
                     } else if (cause == ArchiveRepository.INVALID_FORMAT) {
-                        finish(job, "${job.file.name} 解压失败：$INVALID_FORMAT_REASON")
+                        finish(job, tr("${job.file.name} 解压失败：$INVALID_FORMAT_REASON", "Failed to extract ${job.file.name}: $INVALID_FORMAT_REASON", "${job.file.name} の解凍に失敗しました：$INVALID_FORMAT_REASON", "${job.file.name} 압축 해제 실패: $INVALID_FORMAT_REASON"))
                     } else {
-                        finish(job, "${job.file.name} 解压失败：${progress.errorDescription.ifEmpty { cause ?: "服务端未说明原因" }}")
+                        val reason = dev.piko.shared.notice.PikoErrorMapper.archiveReason(cause, progress.errorDescription)
+                        finish(job, tr("${job.file.name} 解压失败：$reason", "Failed to extract ${job.file.name}: $reason", "${job.file.name} の解凍に失敗しました：$reason", "${job.file.name} 압축 해제 실패: $reason"))
                     }
                     return
                 }
@@ -308,7 +311,7 @@ class ArchiveExtractSession(
     private companion object {
         const val TAG = "Archive"
         const val MAX_POLL_FAILURES = 5
-        const val VOLUME_UNSUPPORTED = "PikPak 不支持解压分卷压缩包"
+        val VOLUME_UNSUPPORTED: String get() = tr("PikPak 不支持解压分卷压缩包", "PikPak does not support multi-volume archives", "PikPakは分割アーカイブの解凍に対応していません", "PikPak은 분할 압축 해제를 지원하지 않습니다")
     }
 }
 
@@ -316,13 +319,6 @@ class ArchiveExtractSession(
 private fun pollDelay(expiresIn: Int): Duration = expiresIn.coerceIn(1, 5).seconds
 
 // 服务端对损坏的包与分卷给的是同一个结果，分不出来，两种都说
-private const val INVALID_FORMAT_REASON = "格式无法识别，压缩包可能已损坏或是分卷"
+private val INVALID_FORMAT_REASON: String get() = dev.piko.shared.notice.PikoErrorMapper.invalidArchive
 
-private fun failureReason(err: Throwable): String = when {
-    err is PikPakException && err.errorMessage == "NEED_MORE_QUOTA" -> "解压额度不足"
-    // 同步拒绝时 status_text 是英文的「Current zip format is not supported or it's corrupted」
-    err is PikPakException && err.errorMessage == "INVALID_FILE_FORMAT" -> INVALID_FORMAT_REASON
-    err is PikPakException -> err.errorDescription?.takeIf { it.isNotBlank() } ?: err.errorMessage
-    err is IllegalStateException -> err.message ?: "未知错误"
-    else -> "网络异常"
-}
+private fun failureReason(err: Throwable): String = dev.piko.shared.notice.PikoErrorMapper.archive(err)

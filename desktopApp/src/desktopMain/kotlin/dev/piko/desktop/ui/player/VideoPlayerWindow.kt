@@ -1,5 +1,9 @@
 package dev.piko.desktop.ui.player
 
+import dev.piko.shared.i18n.tr
+
+import dev.piko.ui.ObserveMessages
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -120,7 +124,7 @@ fun VideoPlayerWindow(
 
     PikoWindow(
         onCloseRequest = onClose,
-        title = "$title - Piko 播放器",
+        title = tr("$title - Piko 播放器", "$title - Piko Player", "$title - Pikoプレーヤー", "$title - Piko 플레이어"),
         icon = icon,
         state = windowState,
     ) {
@@ -140,7 +144,7 @@ fun VideoPlayerWindow(
             val inFullscreen = if (usesSystemFullscreen) windowState.placement == WindowPlacement.Fullscreen else isFullscreen
             PikoTheme(appearance = appearance) {
                 WindowFrame(
-                    title = "$title - Piko 播放器",
+                    title = tr("$title - Piko 播放器", "$title - Piko Player", "$title - Pikoプレーヤー", "$title - Piko 플레이어"),
                     icon = icon,
                     colors = PlayerTitleBarColors,
                     showTitleBar = !inFullscreen,
@@ -292,9 +296,7 @@ private fun VideoPlayerContent(
 
     LaunchedEffect(state.title) { onTitleChange(state.title) }
 
-    LaunchedEffect(state) {
-        state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
-    }
+    ObserveMessages(state.messages, snackbarHostState)
 
     // Linux 上 MediaMP 的画面经 GLX 与 Skiko 共享纹理，Skiko 退到软件渲染时（没有硬件 OpenGL，llvmpipe 也被它拒绝）
     // 画面一直是黑的，打开也不返回。说一句原因，免得用户对着黑屏等。渲染方式在窗口头几帧里才定下来
@@ -303,7 +305,7 @@ private fun VideoPlayerContent(
             delay(1_000)
             if (window.renderApi.name.startsWith("SOFTWARE")) {
                 PikoLog.w("Player", "Skiko 以 ${window.renderApi} 渲染，Linux 上播放器画面出不来")
-                snackbarHostState.showSnackbar("没有可用的硬件 OpenGL，无法显示视频画面。请检查显卡驱动", withDismissAction = true)
+                snackbarHostState.showSnackbar(tr("没有可用的硬件 OpenGL，无法显示视频画面。请检查显卡驱动", "Hardware OpenGL is unavailable. Check your graphics driver to display video.", "ハードウェアOpenGLが使えないため映像を表示できません。グラフィックスドライバーを確認してください", "하드웨어 OpenGL을 사용할 수 없어 동영상을 표시할 수 없습니다. 그래픽 드라이버를 확인해 주세요"), withDismissAction = true)
             }
         }
     }
@@ -416,7 +418,7 @@ private fun VideoPlayerContent(
                         if (isPlayerSubtitleName(file.name)) {
                             state.addLocalSubtitle(videoFileId, file.absolutePath, file.name)
                         } else {
-                            snackbarHostState.showSnackbar("不支持这种字幕格式", withDismissAction = true)
+                            snackbarHostState.showSnackbar(tr("不支持这种字幕格式", "Unsupported subtitle format", "対応していない字幕形式です", "지원하지 않는 자막 형식입니다"), withDismissAction = true)
                         }
                     }
                 }.takeIf { state.canAddSubtitle },
@@ -430,7 +432,7 @@ private fun VideoPlayerContent(
 /** 系统的文件框，只挑一个字幕文件，经 [AwtDialogs] 弹。取消时为 null。 */
 private suspend fun chooseSubtitleFile(owner: Window?): File? = AwtDialogs.chooseFiles(
     owner = owner,
-    title = "选择字幕文件",
+    title = tr("选择字幕文件", "Choose subtitle file", "字幕ファイルを選択", "자막 파일 선택"),
     multiple = false,
     pattern = PLAYER_SUBTITLE_EXTENSIONS.joinToString(";") { "*.$it" },
     filter = ::isPlayerSubtitleName,

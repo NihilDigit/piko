@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.i18n.tr
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -83,12 +88,12 @@ internal fun GalleryPane(
             ) {
                 if (failureCount > 0 && !loading) {
                     Text(
-                        "有目录读取失败",
+                        stringResource(Res.string.text_some_folders_could_not_be_read),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = onRetry) { Text("重试") }
+                    TextButton(onClick = onRetry) { Text(stringResource(Res.string.common_retry)) }
                 } else {
                     Spacer(Modifier.weight(1f))
                 }
@@ -123,14 +128,14 @@ internal fun GalleryPane(
                     ) {
                         PikoLoadingIndicator(size = 56.dp)
                         Text(
-                            "正在准备",
+                            stringResource(Res.string.text_preparing),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
                 } else if (files.isEmpty() && complete && failureCount == 0) {
                     PikoEmptyState(
-                        title = "此范围内没有可浏览的视频",
+                        title = tr("此范围内没有可浏览的视频", "No videos to browse in this scope", "この範囲に閲覧できる動画はありません", "이 범위에 볼 수 있는 동영상이 없습니다"),
                         icon = Icons.Outlined.PhotoLibrary,
                         modifier = Modifier.align(Alignment.Center),
                     )

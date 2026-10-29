@@ -1,5 +1,12 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -42,6 +49,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.toReadableSize
@@ -101,15 +109,15 @@ internal fun VaultDialog(
         title = {
             Text(
                 when {
-                    target.filesOnly -> "归档文件"
-                    target.files.isEmpty() -> "归档文件夹"
-                    else -> "归档"
+                    target.filesOnly -> tr("归档文件", "Archive files", "ファイルをアーカイブ", "파일 보관")
+                    target.files.isEmpty() -> tr("归档文件夹", "Archive folders", "フォルダーをアーカイブ", "폴더 보관")
+                    else -> tr("归档", "Archive", "アーカイブ", "보관")
                 },
             )
         },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                VaultDialogHeading(target.name, survey, counted?.files, files, bytes, emptyText = "无可归档的文件")
+                VaultDialogHeading(target.name, survey, counted?.files, files, bytes, emptyText = tr("无可归档的文件", "No files to archive", "アーカイブできるファイルがありません", "보관할 파일이 없습니다"))
                 blocked?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (current != null) {
                     // 是偏好而不是这一次的参数：一改就存，取消归档也记住，与设置页的开关相同
@@ -122,16 +130,16 @@ internal fun VaultDialog(
                         VaultCheckboxOption(
                             checked = current.sourcedOnly,
                             onCheckedChange = { update(current.copy(sourcedOnly = it)) },
-                            label = "仅归档有来源记录的文件",
+                            label = tr("仅归档有来源记录的文件", "Only archive files with recorded sources", "ソースの記録があるファイルのみアーカイブ", "출처 기록이 있는 파일만 보관"),
                             supporting = when {
-                                !current.sourcedOnly -> "自己上传或秒传的文件失效后无法重新添加"
-                                unsourced > 0 -> "$unsourced 个无来源记录的文件留在网盘"
-                                else -> "无来源记录的文件留在网盘"
+                                !current.sourcedOnly -> tr("自己上传或秒传的文件失效后无法重新添加", "Your uploads or instant saves cannot be added again if unavailable", "自分でアップロードまたはインスタント保存したファイルは、利用不可になると再追加できません", "직접 업로드하거나 즉시 저장한 파일은 사용 불가 상태가 되면 다시 추가할 수 없습니다")
+                                unsourced > 0 -> tr("$unsourced 个无来源记录的文件留在网盘", "${enCount(unsourced, "file", "files")} without sources stay in drive", "ソースの記録がない $unsourced ファイルをドライブに保持", "출처 기록 없는 파일 ${unsourced}개를 드라이브에 유지")
+                                else -> tr("无来源记录的文件留在网盘", "Keep files without source records in drive", "ソースの記録がないファイルはドライブに保持", "출처 기록 없는 파일은 드라이브에 유지")
                             },
                         )
                     } else if (counted != null && counted.files > 0 && counted.unsourcedFiles == counted.files) {
                         Text(
-                            if (counted.files == 1) "此文件无来源记录，失效后无法重新添加" else "这些文件均无来源记录，失效后无法重新添加",
+                            if (counted.files == 1) tr("此文件无来源记录，失效后无法重新添加", "This file has no source record and cannot be re-added if unavailable", "このファイルはソースの記録がなく、利用不可になると再追加できません", "이 파일은 출처 기록이 없어 사용 불가 상태가 되면 다시 추가할 수 없습니다") else tr("这些文件均无来源记录，失效后无法重新添加", "These files have no source records and cannot be re-added if unavailable", "これらのファイルはソースの記録がなく、利用不可になると再追加できません", "이 파일들은 출처 기록이 없어 사용 불가 상태가 되면 다시 추가할 수 없습니다"),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
@@ -139,15 +147,15 @@ internal fun VaultDialog(
                     VaultCheckboxOption(
                         checked = current.toTrash,
                         onCheckedChange = { update(current.copy(toTrash = it)) },
-                        label = "原文件放入回收站",
-                        supporting = if (current.toTrash) "清空回收站前仍可找回原文件" else "原文件将永久删除",
+                        label = tr("原文件放入回收站", "Move originals to trash", "元ファイルをゴミ箱に移動", "원본 파일을 휴지통으로 이동"),
+                        supporting = if (current.toTrash) tr("清空回收站前仍可找回原文件", "Originals can be recovered before emptying trash", "ゴミ箱を空にするまでは元ファイルを復元できます", "휴지통을 비우기 전에는 원본을 복구할 수 있습니다") else tr("原文件将永久删除", "Original files will be permanently deleted", "元ファイルは完全に削除されます", "원본 파일이 영구 삭제됩니다"),
                     )
                     if (offersSizeChoice) {
                         VaultCheckboxOption(
                             checked = current.skipSmallFiles,
                             onCheckedChange = { update(current.copy(skipSmallFiles = it)) },
-                            label = "不归档小文件",
-                            supporting = "50 MiB 以下的文件留在网盘",
+                            label = tr("不归档小文件", "Skip small files", "小さいファイルはアーカイブしない", "작은 파일 보관 안 함"),
+                            supporting = tr("50 MiB 以下的文件留在网盘", "Keep files under 50 MiB in drive", "50 MiB未満のファイルはドライブに保持", "50 MiB 미만의 파일은 드라이브에 유지"),
                         )
                     }
                 }
@@ -157,7 +165,7 @@ internal fun VaultDialog(
             // 永久删除原文件时按钮换成错误色。复选框下的说明不染红：M3 的错误色只给校验出错，取消勾选不是错；
             // 在警告框里另加一行红字也试过，像补丁
             PikoDialogConfirm(
-                label = "归档",
+                label = tr("归档", "Archive", "アーカイブ", "보관"),
                 destructive = !chosen.toTrash,
                 enabled = files > 0 && options != null && blocked == null,
                 onClick = {
@@ -167,7 +175,7 @@ internal fun VaultDialog(
                 },
             )
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) } },
     )
 }
 
@@ -180,11 +188,11 @@ private fun VaultDialogHeading(name: String, survey: Result<*>?, total: Int?, fi
             survey == null -> Row(verticalAlignment = Alignment.CenterVertically) {
                 InlineLoadingIndicator()
                 Spacer(Modifier.width(12.dp))
-                Text("正在统计", style = MaterialTheme.typography.titleMedium)
+                Text(stringResource(Res.string.text_calculating_alt), style = MaterialTheme.typography.titleMedium)
             }
-            survey.isFailure -> Text("统计失败，请重试", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
+            survey.isFailure -> Text(stringResource(Res.string.text_calculation_failed_retry), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
             total == 0 -> Text(emptyText, style = MaterialTheme.typography.titleMedium)
-            else -> Text("$files 个文件，${bytes.toReadableSize()}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+            else -> Text(tr("$files 个文件，${bytes.toReadableSize()}", "${enCount(files, "file", "files")}, ${bytes.toReadableSize()}", "$files ファイル、${bytes.toReadableSize()}", "파일 ${files}개, ${bytes.toReadableSize()}"), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
         }
     }
 }
@@ -204,16 +212,16 @@ internal fun RestoreVaultFolderDialog(
     val blocked = session.unavailableReason(dev.piko.shared.state.VaultWorkTargets(roots = setOf(folder.id)))
     PikoDialog(
         onDismissRequest = onDismiss,
-        title = { Text("取消归档") },
+        title = { Text(stringResource(Res.string.text_undo_archive)) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                VaultDialogHeading(folder.name, survey, counted?.entries, counted?.entries ?: 0, counted?.bytes ?: 0L, emptyText = "没有归档的文件")
+                VaultDialogHeading(folder.localizedName, survey, counted?.entries, counted?.entries ?: 0, counted?.bytes ?: 0L, emptyText = tr("没有归档的文件", "No archived files", "アーカイブ済みファイルはありません", "보관된 파일이 없습니다"))
                 blocked?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (counted != null && counted.entries > 0) {
                     val parts = buildList {
-                        if (counted.fromTrash > 0) add("${counted.fromTrash} 个从回收站取回")
+                        if (counted.fromTrash > 0) add(tr("${counted.fromTrash} 个从回收站取回", "${counted.fromTrash} recovered from trash", "${counted.fromTrash} 件をゴミ箱から復元", "${counted.fromTrash}개 휴지통에서 복구"))
                         if (counted.neededBytes > 0) {
-                            add("需占用 ${counted.neededBytes.toReadableSize()}" + counted.remainingBytes?.let { "，剩余 ${it.toReadableSize()}" }.orEmpty())
+                            add(tr("需占用 ${counted.neededBytes.toReadableSize()}", "Requires ${counted.neededBytes.toReadableSize()}", "必要な容量 ${counted.neededBytes.toReadableSize()}", "필요 공간 ${counted.neededBytes.toReadableSize()}") + counted.remainingBytes?.let { tr("，剩余 ${it.toReadableSize()}", ", ${it.toReadableSize()} available", "、空き容量 ${it.toReadableSize()}", ", 남은 공간 ${it.toReadableSize()}") }.orEmpty())
                         }
                     }
                     if (parts.isNotEmpty()) {
@@ -223,13 +231,13 @@ internal fun RestoreVaultFolderDialog(
                             color = if (counted.fits) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
                         )
                     }
-                    if (!counted.fits) Text("空间不足", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    if (!counted.fits) Text(stringResource(Res.string.text_not_enough_space), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
             }
         },
         confirmButton = {
             PikoDialogConfirm(
-                label = "恢复到网盘",
+                label = tr("恢复到网盘", "Restore to drive", "ドライブに復元", "드라이브로 복원"),
                 enabled = counted != null && counted.entries > 0 && counted.fits && blocked == null,
                 onClick = {
                     session.restoreFolder(folder)
@@ -237,7 +245,7 @@ internal fun RestoreVaultFolderDialog(
                 },
             )
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) } },
     )
 }
 
@@ -278,23 +286,23 @@ internal fun VaultRiskWarningDialog(
         title = {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Icon(Icons.Outlined.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                Text("归档与引用保存风险提示")
+                Text(stringResource(Res.string.text_archive_and_reference_storage_risks))
             }
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    "归档（及「以引用保存」）不会在你的网盘中实际存储文件内容，仅保留几 KB 的内容哈希（GCID）与来源记录以释放空间。",
+                    stringResource(Res.string.text_archiving_and_saving_as_references_keep_only_a_few_kb_of_content_hashes_gcid),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    "后续播放、下载或恢复文件时，完全依赖 PikPak 云端仍存有相同哈希的副本以完成秒传。一旦云端清理了冷门资源或秒传失效，仅靠引用将无法找回原文件。",
+                    stringResource(Res.string.text_future_playback_downloads_and_restoration_depend_entirely_on_pikpak_retainin),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.error,
                 )
                 Text(
-                    "请勿将个人独有文件、自行上传的孤本或无外部备份的重要资料转为归档引用。",
+                    stringResource(Res.string.text_do_not_archive_unique_personal_files_sole_copies_of_uploads_or_important_fil),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -302,13 +310,13 @@ internal fun VaultRiskWarningDialog(
         },
         confirmButton = {
             PikoDialogConfirm(
-                label = "我已知晓风险，继续",
+                label = tr("我已知晓风险，继续", "I understand the risks. Continue", "リスクを理解して続行", "위험을 이해했으며 계속"),
                 destructive = true,
                 onClick = onAcknowledge,
             )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) }
         },
     )
 }

@@ -1,5 +1,11 @@
 package dev.piko.shared.rename
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+import dev.piko.shared.i18n.PikoLocale
+import dev.piko.data.auth.AppLanguage
+
 /**
  * 查找的积木：给不会写正则的人拼查找条件。积木只是正则的另一种写法，最后都生成正则交给 [FindReplaceRule]，
  * 预览、冲突检查与执行不知道查找串来自积木还是手写。
@@ -112,18 +118,18 @@ fun captureNumbers(blocks: List<FindBlock>): List<Int?> {
 fun FindBlock.describe(): String = when (this) {
     is FindBlock.Text -> "「$text」"
     is FindBlock.Digits -> when {
-        max == null && min <= 1 -> "数字"
-        max == null -> "至少 $min 位数字"
-        min == max -> "$min 位数字"
-        else -> "$min 至 $max 位数字"
+        max == null && min <= 1 -> tr("数字", "Digits", "数字", "숫자")
+        max == null -> tr("至少 $min 位数字", "At least ${enCount(min, "digit", "digits")}", "$min 桁以上の数字", "최소 ${min}자리 숫자")
+        min == max -> tr("$min 位数字", "${enCount(min, "digit", "digits")}", "$min 桁の数字", "${min}자리 숫자")
+        else -> tr("$min 至 $max 位数字", "$min to ${enCount(max, "digit", "digits")}", "$min ～ $max 桁の数字", "$min~${max}자리 숫자")
     }
-    is FindBlock.Letters -> "英文字母"
-    is FindBlock.AnyText -> if (until == null) "任意文字" else "「$until」前的任意文字"
+    is FindBlock.Letters -> tr("英文字母", "Letters", "英字", "영문자")
+    is FindBlock.AnyText -> if (until == null) tr("任意文字", "Any text", "任意の文字", "모든 문자") else tr("「$until」前的任意文字", "Any text before “$until”", "「$until」の前の任意の文字", "“$until” 앞의 모든 문자")
     // 写成括号本身（[…]）比「方括号内容」一眼看得懂，块上也短
-    is FindBlock.Bracketed -> (kind?.let { "${it.open}…${it.close}" } ?: "括号及内容") + (if (optional) "（可选）" else "")
-    is FindBlock.OneOf -> options.joinToString("或") { "「$it」" }
-    FindBlock.Start -> "开头"
-    FindBlock.End -> "结尾"
+    is FindBlock.Bracketed -> (kind?.let { "${it.open}…${it.close}" } ?: tr("括号及内容", "Brackets and contents", "括弧とその内容", "괄호 및 내용")) + (if (optional) tr("（可选）", "(optional)", "（省略可）", "(선택 사항)") else "")
+    is FindBlock.OneOf -> options.joinToString(tr("或", " or ", "または", " 또는 ")) { "「$it」" }
+    FindBlock.Start -> tr("开头", "Start", "先頭", "시작")
+    FindBlock.End -> tr("结尾", "End", "末尾", "끝")
 }
 
 /**
@@ -135,19 +141,20 @@ fun describeFind(blocks: List<FindBlock>): String {
     val parts = mutableListOf<String>()
     var atStart = false
     // 「2 位数字」前面接「的」时补一个空格，与界面上数字两侧留空的写法一致
-    fun prefixed(prefix: String, label: String) = if (label.first().isDigit()) "$prefix $label" else prefix + label
+    fun prefixed(prefix: String, label: String) =
+        if (label.first().isDigit() || PikoLocale.effectiveLanguage in setOf(AppLanguage.EN, AppLanguage.KO)) "$prefix $label" else prefix + label
     blocks.forEachIndexed { index, block ->
         when (block) {
             FindBlock.Start -> atStart = true
-            FindBlock.End -> if (parts.isEmpty()) parts += "结尾" else parts[parts.lastIndex] = prefixed("结尾的", parts.last())
+            FindBlock.End -> if (parts.isEmpty()) parts += tr("结尾", "End", "末尾", "끝") else parts[parts.lastIndex] = prefixed(tr("结尾的", "At the end", "末尾の", "끝의"), parts.last())
             else -> {
                 val label = block.describe() + (numbers[index]?.let(::circled) ?: "")
-                parts += if (atStart) prefixed("开头的", label) else label
+                parts += if (atStart) prefixed(tr("开头的", "At the start", "先頭の", "시작의"), label) else label
                 atStart = false
             }
         }
     }
-    if (atStart) parts += "开头"
+    if (atStart) parts += tr("开头", "Start", "先頭", "시작")
     return parts.joinToString("、")
 }
 

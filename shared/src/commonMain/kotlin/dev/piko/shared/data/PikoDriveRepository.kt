@@ -157,7 +157,22 @@ open class PikoDriveRepository(
     /** 文件夹的名字与上级，见 [FolderIndex]。下面的路径栈、标签、历史与最近去过都随它改正。 */
     internal val folderIndex = FolderIndex()
     internal val driveTreeIndex = DriveTreeIndex()
+    private val treeStateLock = Any()
     private val treeSyncJob = MutableStateFlow<Pair<PikPakClient, Deferred<Unit>>?>(null)
+    private var pendingTreeSave: kotlinx.coroutines.Job? = null
+    private var lastCanaryProbeAt: TimeSource.Monotonic.ValueTimeMark? = null
+
+    data class TreeBuildProgress(
+        val isBuilding: Boolean = false,
+        val isInitialBlocking: Boolean = false,
+        val foldersRead: Int = 0,
+        val filesRead: Int = 0,
+    )
+
+    private val _treeBuildProgressFlow = MutableStateFlow(TreeBuildProgress())
+    val treeBuildProgressFlow: StateFlow<TreeBuildProgress> = _treeBuildProgressFlow.asStateFlow()
+
+    enum class CanaryProbeResult { UNCHANGED, INCREMENTAL_PATCH, FULL_REBUILD }
 
     val currentAccount: String? get() = clientManager.currentClient.value?.account
     val accountChanges: Flow<String?> = clientManager.currentClient.map { it?.account }.distinctUntilChanged()
@@ -184,6 +199,7 @@ open class PikoDriveRepository(
     private val pendingServerDeletes = MutableStateFlow<Set<String>>(emptySet())
 
     fun enterAccount(account: String?) {
+        vaultBinding.value?.takeIf { it.client.account != account }?.store?.flushPendingSave()
         vaultBinding.update { it?.takeIf { binding -> binding.client.account == account } }
         while (true) {
             val previous = dataAccount.value
@@ -191,20 +207,25 @@ open class PikoDriveRepository(
             if (!dataAccount.compareAndSet(previous, account)) continue
             pendingServerDeletes.value = emptySet()
             if (previous == null) return
+            flushPendingTreeSnapshotSave(previous)
             break
         }
         // 还在路上的列目录属于上一个账号，回来的结果不能记到新账号名下
-        markChanged(null)
-        treeSyncJob.update { current ->
-            current?.second?.cancel()
-            null
+        synchronized(treeStateLock) {
+            resetChangeMarksForAccountSwitch()
+            lastCanaryProbeAt = null
+            _treeBuildProgressFlow.value = TreeBuildProgress()
+            treeSyncJob.update { current ->
+                current?.second?.cancel()
+                null
+            }
+            listingRequests.value = emptyMap()
+            listings.value = emptyMap()
+            folderIndex.clear()
+            driveTreeIndex.clear()
+            folderMeaninglessCacheFlow.value = emptyMap()
+            _folderEmptiness.value = emptyMap()
         }
-        listingRequests.value = emptyMap()
-        listings.value = emptyMap()
-        folderIndex.clear()
-        driveTreeIndex.clear()
-        folderMeaninglessCacheFlow.value = emptyMap()
-        _folderEmptiness.value = emptyMap()
         changes.clear()
     }
 
@@ -237,32 +258,55 @@ open class PikoDriveRepository(
 
     private fun applyChange(change: DriveChange, notifyChange: Boolean) {
         if (change is DriveChange.Deleted) pendingServerDeletes.update { it + change.ids }
-        val indexChanged = when (change) {
-            is DriveChange.Created -> folderIndex.learned(change.id, change.name, change.parentId, change.isFolder, trashed = false)
-            is DriveChange.Renamed -> folderIndex.renamed(change.id, change.name, always = change.id in referencedNodeIds())
-            is DriveChange.Moved -> folderIndex.moved(change.ids, change.to)
-            is DriveChange.Trashed -> folderIndex.removed(change.ids, referencedNodeIds())
-            is DriveChange.Deleted -> folderIndex.removed(change.ids, referencedNodeIds())
-            is DriveChange.Restored -> folderIndex.restored(change.ids)
-            is DriveChange.Copied, is DriveChange.ContentsChanged -> false
-        }
-        val folders = change.folders
-        childContents.invalidate(folders)
-        driveTreeIndex.applyChange(change)
-        markChanged(folders)
-        listingRequests.update { requests -> if (folders == null) emptyMap() else requests - folders }
-        listings.update { cache -> cache.mapValues { (id, listing) ->
-            when {
-                change is DriveChange.Renamed && notifyChange -> Listing(
-                    listing.files.map { file -> if (file.id == change.id) file.copy(name = change.name) else file },
-                    listing.listedAt, listing.stale,
-                )
-                folders == null || id in folders -> listing.expired()
-                else -> listing
+        val indexChanged = synchronized(treeStateLock) {
+            val knownParentsBeforeChange: Set<String> = when (change) {
+                is DriveChange.Renamed -> setOfNotNull(change.parentId ?: knownParentOf(change.id) ?: driveTreeIndex.file(change.id)?.parentId)
+                is DriveChange.Moved -> change.folders.orEmpty() + change.ids.mapNotNullTo(HashSet()) { knownParentOf(it) ?: driveTreeIndex.file(it)?.parentId } + change.to
+                is DriveChange.Trashed -> change.folders.orEmpty() + change.ids.mapNotNullTo(HashSet()) { knownParentOf(it) ?: driveTreeIndex.file(it)?.parentId }
+                is DriveChange.Deleted -> change.folders.orEmpty() + change.ids.mapNotNullTo(HashSet()) { knownParentOf(it) ?: driveTreeIndex.file(it)?.parentId }
+                else -> change.folders.orEmpty()
             }
-        } }
-        _folderEmptiness.update { known -> if (folders == null) emptyMap() else known - folders }
+            val changed = when (change) {
+                is DriveChange.Created -> folderIndex.learned(change.id, change.name, change.parentId, change.isFolder, trashed = false)
+                is DriveChange.Renamed -> folderIndex.renamed(change.id, change.name, always = change.id in referencedNodeIds())
+                is DriveChange.Moved -> folderIndex.moved(change.ids, change.to)
+                is DriveChange.Trashed -> folderIndex.removed(change.ids, referencedNodeIds())
+                is DriveChange.Deleted -> folderIndex.removed(change.ids, referencedNodeIds())
+                is DriveChange.Restored -> folderIndex.restored(change.ids)
+                is DriveChange.Copied, is DriveChange.ContentsChanged -> false
+            }
+            val folders = change.folders
+            childContents.invalidate(folders)
+            driveTreeIndex.applyChange(change)
+            markChanged(
+                folders = if (folders == null) null else folders + knownParentsBeforeChange,
+                knownTouchedFolders = knownParentsBeforeChange,
+                removedIds = when (change) {
+                    is DriveChange.Trashed -> change.ids
+                    is DriveChange.Deleted -> change.ids
+                    else -> emptyList()
+                },
+                renamed = (change as? DriveChange.Renamed)?.let { it.id to it.name },
+                moved = (change as? DriveChange.Moved)?.let { it.ids to it.to },
+                invalidatesWholeTree = change is DriveChange.Restored || (change is DriveChange.ContentsChanged && change.folders == null),
+            )
+            val fencedFolders = if (folders == null) null else folders + knownParentsBeforeChange
+            listingRequests.update { requests -> if (fencedFolders == null) emptyMap() else requests - fencedFolders }
+            listings.update { cache -> cache.mapValues { (id, listing) ->
+                when {
+                    change is DriveChange.Renamed && notifyChange -> Listing(
+                        listing.files.map { file -> if (file.id == change.id) file.copy(name = change.name) else file },
+                        listing.listedAt, listing.stale,
+                    )
+                    folders == null || id in folders -> listing.expired()
+                    else -> listing
+                }
+            } }
+            _folderEmptiness.update { known -> if (folders == null) emptyMap() else known - folders }
+            changed
+        }
         if (indexChanged) normalizeLocations()
+        if (driveTreeIndex.isComplete) scheduleTreeSnapshotSave()
         if (notifyChange) _folderChanges.tryEmit(change)
     }
 
@@ -287,7 +331,7 @@ open class PikoDriveRepository(
                     for (candidateId in candidates) {
                         runSuspendCatching {
                             val listing = cachedListing(candidateId) ?: fetchListing(candidateId, asked)
-                            store.read(candidateId, listing).getOrNull()?.let { vaultEntriesKnown(candidateId, it) }
+                            readAndRecordVaultEntries(candidateId, listing, store, asked)
                         }
                         parentId = store.folderOfEntry(vaultEntryId)
                         if (parentId != null) break
@@ -298,10 +342,8 @@ open class PikoDriveRepository(
                             .map { it.parentId }.distinct().filterNot { it in candidates }
                         for (candidateId in discovered) {
                             runSuspendCatching {
-                                store.read(candidateId, fetchListing(candidateId, asked)).getOrNull()?.let {
-                                    if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
-                                    vaultEntriesKnown(candidateId, it)
-                                }
+                                val listing = fetchListing(candidateId, asked)
+                                readAndRecordVaultEntries(candidateId, listing, store, asked)
                             }
                             parentId = store.folderOfEntry(vaultEntryId)
                             if (parentId != null) break
@@ -349,12 +391,18 @@ open class PikoDriveRepository(
      */
     internal fun knownParentOf(fileId: String): String? {
         folderIndex.node(fileId)?.takeUnless { it.provisional }?.parentId?.let { return it }
-        driveTreeIndex.file(fileId)?.parentId?.let { return it }
+        driveTreeIndex.file(fileId)?.takeIf { isParentFreshInTree(it.parentId) }?.parentId?.let { return it }
         return listings.value.entries.firstOrNull { (_, listing) -> !listing.stale && listing.files.any { it.id == fileId } }?.key
     }
     internal fun knownFile(fileId: String): FileStat? = listings.value.values.asSequence().filter { !it.stale }
         .mapNotNull { it.files.firstOrNull { file -> file.id == fileId } }.firstOrNull()
-        ?: driveTreeIndex.file(fileId)
+        ?: driveTreeIndex.file(fileId)?.takeIf { isParentFreshInTree(it.parentId) }
+
+    private fun isParentFreshInTree(parentId: String): Boolean {
+        val state = driveTreeIndex.flow.value
+        if (parentId in state.dirtyFolders) return false
+        return parentId in state.listedFolders || state.complete
+    }
 
     /** 这几项各自所在的文件夹；有一项不知道就是 null，订阅者按说不清处理。 */
     private fun knownParentsOf(ids: Collection<String>): Set<String>? = ids.mapTo(HashSet()) { knownParentOf(it) ?: return null }
@@ -454,27 +502,114 @@ open class PikoDriveRepository(
      * 目录图再展开、换位置后重新展开到眼前的文件夹时，各层因此是当场出来的，不再每层一个请求。
      */
     private fun freshListing(folderId: String): List<FileStat>? {
-        val listing = listings.value[folderId]?.takeUnless { it.stale } ?: return null
-        return listing.files.takeIf { listing.listedAt.elapsedNow() < RECENT_LISTING_FRESH || folderId in locationFolderIds() }
+        val listing = listings.value[folderId]?.takeUnless { it.stale }
+        if (listing != null && (listing.listedAt.elapsedNow() < RECENT_LISTING_FRESH || folderId in locationFolderIds())) {
+            return listing.files
+        }
+        val state = driveTreeIndex.flow.value
+        if (state.complete && folderId !in state.dirtyFolders && (folderId.isEmpty() || folderId in state.entries)) {
+            return driveTreeIndex.realChildren(folderId).files
+        }
+        return null
     }
 
     /*
      * 改动的序号，判断一次列目录的结果还能不能合并进缓存与索引：请求发出之后、回来之前它所在的文件夹有过改动，
      * 回来的多半是改动之前的样子，记下的话刚改的名字又被旧列表改回去。结果照样交给调用方，只是不记。
+     * 同时记录后台双缓冲整树重建期间发生的目录变更、重列、删除、改名与移动，避免整树切换把重建期间的本地变更冲掉。
      */
-    private class ChangeMarks(val serial: Long = 0, val unknownAt: Long = 0, val folderAt: Map<String, Long> = emptyMap())
+    private class ChangeMarks(
+        val serial: Long = 0,
+        val accountResetAt: Long = 0,
+        val treeInvalidatedAt: Long = 0,
+        val unknownAt: Long = 0,
+        val folderAt: Map<String, Long> = emptyMap(),
+        val patchedAt: Map<String, Long> = emptyMap(),
+        val listedAt: Map<String, Long> = emptyMap(),
+        val removedAt: Map<String, Long> = emptyMap(),
+        val renamedAt: Map<String, Pair<Long, String>> = emptyMap(),
+        val movedAt: Map<String, Pair<Long, String>> = emptyMap(),
+    )
 
     private val changeMarks = MutableStateFlow(ChangeMarks())
 
-    private fun markChanged(folders: Set<String>?) = changeMarks.update { marks ->
+    private fun resetChangeMarksForAccountSwitch() = changeMarks.update { marks ->
         val serial = marks.serial + 1
-        // 说不清哪些变了的那一次盖过此前按文件夹记的，那张表就不必留着
-        if (folders == null) ChangeMarks(serial, serial) else ChangeMarks(serial, marks.unknownAt, marks.folderAt + folders.associateWith { serial })
+        ChangeMarks(serial = serial, accountResetAt = serial, treeInvalidatedAt = serial, unknownAt = serial)
+    }
+
+    private fun markChanged(
+        folders: Set<String>?,
+        knownTouchedFolders: Set<String> = folders.orEmpty(),
+        removedIds: Collection<String> = emptyList(),
+        renamed: Pair<String, String>? = null,
+        moved: Pair<Collection<String>, String>? = null,
+        invalidatesWholeTree: Boolean = false,
+    ) = changeMarks.update { marks ->
+        val serial = marks.serial + 1
+        val nextFolderAt = marks.folderAt + (folders.orEmpty() + knownTouchedFolders).associateWith { serial }
+        val nextRemovedAt = if (removedIds.isEmpty()) marks.removedAt else marks.removedAt + removedIds.associateWith { serial }
+        val nextRenamedAt = if (renamed == null) {
+            marks.renamedAt - removedIds.toSet()
+        } else {
+            (marks.renamedAt - removedIds.toSet()) + (renamed.first to (serial to renamed.second))
+        }
+        val nextMovedAt = if (moved == null) {
+            marks.movedAt - removedIds.toSet()
+        } else {
+            (marks.movedAt - removedIds.toSet()) + moved.first.associateWith { serial to moved.second }
+        }
+        ChangeMarks(
+            serial = serial,
+            accountResetAt = marks.accountResetAt,
+            treeInvalidatedAt = if (invalidatesWholeTree) serial else marks.treeInvalidatedAt,
+            unknownAt = if (folders == null) serial else marks.unknownAt,
+            folderAt = nextFolderAt,
+            patchedAt = marks.patchedAt,
+            listedAt = marks.listedAt,
+            removedAt = nextRemovedAt,
+            renamedAt = nextRenamedAt,
+            movedAt = nextMovedAt,
+        )
+    }
+
+    private fun markCanaryPatched(folders: Set<String>) = changeMarks.update { marks ->
+        val serial = marks.serial + 1
+        ChangeMarks(
+            serial = serial,
+            accountResetAt = marks.accountResetAt,
+            treeInvalidatedAt = marks.treeInvalidatedAt,
+            unknownAt = marks.unknownAt,
+            folderAt = marks.folderAt,
+            patchedAt = if (folders.isEmpty()) marks.patchedAt else marks.patchedAt + folders.associateWith { serial },
+            listedAt = marks.listedAt,
+            removedAt = marks.removedAt,
+            renamedAt = marks.renamedAt,
+            movedAt = marks.movedAt,
+        )
+    }
+
+    private fun markFolderListed(folderId: String, reparentedFrom: Set<String>) = changeMarks.update { marks ->
+        val serial = marks.serial + 1
+        ChangeMarks(
+            serial = serial,
+            accountResetAt = marks.accountResetAt,
+            treeInvalidatedAt = marks.treeInvalidatedAt,
+            unknownAt = marks.unknownAt,
+            folderAt = if (reparentedFrom.isEmpty()) marks.folderAt else marks.folderAt + reparentedFrom.associateWith { serial },
+            patchedAt = marks.patchedAt,
+            listedAt = marks.listedAt + (folderId to serial) + reparentedFrom.associateWith { serial },
+            removedAt = marks.removedAt,
+            renamedAt = marks.renamedAt,
+            movedAt = marks.movedAt,
+        )
     }
 
     private fun unchangedSince(folderId: String, serial: Long): Boolean {
         val marks = changeMarks.value
-        return marks.unknownAt <= serial && (marks.folderAt[folderId] ?: 0) <= serial
+        return marks.unknownAt <= serial &&
+            (marks.folderAt[folderId] ?: 0) <= serial &&
+            (marks.patchedAt[folderId] ?: 0) <= serial
     }
 
     // 同一个目录同时有几处要列（网盘页重列、目录图刷新这一层）时合成一个请求
@@ -486,12 +621,37 @@ open class PikoDriveRepository(
      */
     private suspend fun fetchListing(parentId: String, asked: PikPakClient = client): List<FileStat> {
         val request = backgroundScope.async(start = CoroutineStart.LAZY) {
-            val serial = changeMarks.value.serial
+            val serial = synchronized(treeStateLock) { changeMarks.value.serial }
             // 补来源放在这里：列表缓存、目录图、地址栏与网盘页读的都是这一份
             val listed = asked.listFiles(parentId)
             if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
             val files = sourceLedger.enrich(listed)
-            if (unchangedSince(parentId, serial)) listingFetched(parentId, files)
+            var indexUpdated = false
+            var reparentedFrom = emptySet<String>()
+            var shouldSaveSnapshot = false
+            synchronized(treeStateLock) {
+                if (clientManager.currentClient.value === asked && unchangedSince(parentId, serial)) {
+                    rememberListing(parentId, files)
+                    rememberChildContents(parentId, files)
+                    reparentedFrom = driveTreeIndex.putFolderListing(parentId, files)
+                    markFolderListed(parentId, reparentedFrom)
+                    if (reparentedFrom.isNotEmpty()) {
+                        childContents.invalidate(reparentedFrom)
+                        listingRequests.update { it - reparentedFrom }
+                        listings.update { cache ->
+                            cache.mapValues { (id, listing) -> if (id in reparentedFrom) listing.expired() else listing }
+                        }
+                        _folderEmptiness.update { it - reparentedFrom }
+                    }
+                    indexUpdated = folderIndex.listed(parentId, files)
+                    shouldSaveSnapshot = driveTreeIndex.isComplete
+                }
+            }
+            if (reparentedFrom.isNotEmpty()) {
+                _folderChanges.tryEmit(DriveChange.ContentsChanged(reparentedFrom))
+            }
+            if (indexUpdated) normalizeLocations()
+            if (shouldSaveSnapshot) scheduleTreeSnapshotSave()
             files
         }
         var pending: Deferred<List<FileStat>>? = null
@@ -506,13 +666,6 @@ open class PikoDriveRepository(
         request.invokeOnCompletion { listingRequests.update { requests -> if (requests[parentId] === request) requests - parentId else requests } }
         request.start()
         return request.await()
-    }
-
-    private fun listingFetched(parentId: String, files: List<FileStat>) {
-        rememberListing(parentId, files)
-        rememberChildContents(parentId, files)
-        driveTreeIndex.putFolderListing(parentId, files)
-        if (folderIndex.listed(parentId, files)) normalizeLocations()
     }
 
     /** 某个目录的缓存列表，按 [sortOrder] 排好：路径栈上的，或最近列过的。没有时为 null。 */
@@ -534,16 +687,23 @@ open class PikoDriveRepository(
             val asked = clientManager.currentClient.value ?: return loggedOutVault
             val current = vaultBinding.value
             if (current?.client === asked) return current.store
-            val store = VaultStore(object : VaultFolderIo {
-                override suspend fun list(folderId: String) = withContext(Dispatchers.Default) { asked.listFiles(folderId) }
-                override suspend fun read(fileId: String) = withContext(Dispatchers.Default) { readBytes(asked, fileId) }
-                override suspend fun upload(folderId: String, name: String, bytes: ByteArray) = withContext(Dispatchers.Default) { uploadBytes(asked, folderId, name, bytes) }
-                override suspend fun delete(ids: List<String>) = withContext(Dispatchers.Default) { asked.batchDelete(ids) }
-            }, onChanged = { folder ->
-                if (currentAccount == asked.account) applyChange(DriveChange.ContentsChanged(setOf(folder)))
-            }, onWritten = { folder, entries ->
-                if (clientManager.currentClient.value === asked) vaultEntriesKnown(folder, entries)
-            })
+            val store = VaultStore(
+                io = object : VaultFolderIo {
+                    override suspend fun list(folderId: String) = withContext(Dispatchers.Default) { asked.listFiles(folderId) }
+                    override suspend fun read(fileId: String) = withContext(Dispatchers.Default) { readBytes(asked, fileId) }
+                    override suspend fun upload(folderId: String, name: String, bytes: ByteArray) = withContext(Dispatchers.Default) { uploadBytes(asked, folderId, name, bytes) }
+                    override suspend fun delete(ids: List<String>) = withContext(Dispatchers.Default) { asked.batchDelete(ids) }
+                },
+                onChanged = { folder ->
+                    if (currentAccount == asked.account) applyChange(DriveChange.ContentsChanged(setOf(folder)))
+                },
+                onWritten = { folder, entries ->
+                    if (clientManager.currentClient.value === asked) vaultEntriesKnown(folder, entries)
+                },
+                cacheStore = cacheStore,
+                account = asked.account,
+                scope = backgroundScope,
+            )
             if (vaultBinding.compareAndSet(current, VaultBinding(asked, store)) && clientManager.currentClient.value === asked) return store
         }
     }
@@ -569,7 +729,29 @@ open class PikoDriveRepository(
         val asked = clientManager.currentClient.value?.takeIf { it.account == expectedAccount } ?: return null
         val store = vault
         if (clientManager.currentClient.value !== asked) return null
-        return { folderId -> listBrowsable(folderId, PikoFileSortOrder.TIME_DESC, asked, store) }
+        return reader@{ folderId ->
+            if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+            val state = driveTreeIndex.flow.value
+            if (state.complete && folderId !in state.dirtyFolders && (folderId.isEmpty() || folderId in state.entries)) {
+                val real = driveTreeIndex.realChildren(folderId).files
+                val hasUnresolvedManifest = folderId in state.manifestsByFolder &&
+                    folderId !in state.vaultEntriesByFolder &&
+                    store.cached(folderId, real) == null
+                if (!hasUnresolvedManifest) {
+                    val entries = state.vaultEntriesByFolder[folderId] ?: store.cached(folderId, real).orEmpty()
+                    return@reader Result.success(withVaulted(folderId, real, entries, PikoFileSortOrder.TIME_DESC))
+                }
+            }
+            listBrowsable(folderId, PikoFileSortOrder.TIME_DESC, asked, store)
+        }
+    }
+
+    /** 供查重等纯真实文件扫描器在本地树就绪且目录未脏时直接切片，避免发起网络请求。 */
+    internal fun localRealChildrenIfClean(folderId: String): List<FileStat>? {
+        val state = driveTreeIndex.flow.value
+        if (!state.complete || folderId in state.dirtyFolders) return null
+        if (folderId.isNotEmpty() && folderId !in state.entries) return null
+        return driveTreeIndex.realChildren(folderId).files
     }
 
     private suspend fun listBrowsable(
@@ -582,19 +764,27 @@ open class PikoDriveRepository(
             if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
             val listing = fetchListing(parentId, asked)
             if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
-            val manifest = store.read(parentId, listing).logFailure(TAG, "读取归档清单失败")
+            val entries = readAndRecordVaultEntries(parentId, listing, store, asked, logFailure = true)
             if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
-            manifest.onSuccess { vaultEntriesKnown(parentId, it) }
-            val entries = manifest.getOrDefault(emptyList())
             withVaulted(parentId, listing, entries, sortOrder)
         }
     }
 
-    /** [cachedFiles] 的 [listBrowsable] 版本。清单还没读过时先不列归档条目，等随后的刷新补上。 */
-    fun cachedBrowsable(folderId: String, sortOrder: PikoFileSortOrder): List<FileStat>? =
+    /** [cachedFiles] 的 [listBrowsable] 版本。优先读会话目录缓存，未命中时从已就绪的本地文件树直出。 */
+    fun cachedBrowsable(folderId: String, sortOrder: PikoFileSortOrder): List<FileStat>? {
         cachedListing(folderId)?.let { listing ->
-            withVaulted(folderId, listing, vault.cached(folderId, listing).orEmpty(), sortOrder)
+            return withVaulted(folderId, listing, vault.cached(folderId, listing).orEmpty(), sortOrder)
         }
+        val state = driveTreeIndex.flow.value
+        val children = driveTreeIndex.realChildren(folderId)
+        if (children.coverage == DriveTreeIndex.FolderCoverage.COMPLETE ||
+            (state.complete && children.coverage != DriveTreeIndex.FolderCoverage.DIRTY && (folderId.isEmpty() || folderId in state.entries))
+        ) {
+            val entries = state.vaultEntriesByFolder[folderId] ?: vault.cached(folderId, children.files).orEmpty()
+            return withVaulted(folderId, children.files, entries, sortOrder)
+        }
+        return null
+    }
 
     private fun withVaulted(
         folderId: String,
@@ -684,8 +874,9 @@ open class PikoDriveRepository(
         for (candidate in listOfNotNull(direct) + members.take(COVER_PROBE_MEMBERS)) {
             childNameFetches.withPermit {
                 if (candidate in childContents.vaultCovers.value) return@withPermit
+                val asked = client
                 val listing = listAllFiles(candidate).getOrNull() ?: return@withPermit
-                vault.read(candidate, listing).logFailure(TAG, "读取归档清单失败（补封面）").onSuccess { vaultEntriesKnown(candidate, it) }
+                readAndRecordVaultEntries(candidate, listing, vault, asked, logFailure = true, logTagSuffix = "（补封面）")
             }
             if (vaultCoverOf(folderId) != null) return@withContext
         }
@@ -760,8 +951,13 @@ open class PikoDriveRepository(
                 }
                 if (client != null && cacheStore != null && !driveTreeIndex.isComplete) {
                     launch {
+                        val restored = restoreTreeFromCache(client)
+                        if (clientManager.currentClient.value !== client) return@launch
                         delay(TREE_WARMUP_DELAY)
-                        if (clientManager.currentClient.value === client && !driveTreeIndex.isComplete) {
+                        if (clientManager.currentClient.value !== client) return@launch
+                        if (restored) {
+                            probeRemoteChanges(client).logFailure(TAG, "后台哨兵探针对账失败")
+                        } else if (!driveTreeIndex.isComplete) {
                             runSuspendCatching { ensureTreeSync(client).await() }
                                 .logFailure(TAG, "后台建立本地文件树索引失败")
                         }
@@ -815,10 +1011,41 @@ open class PikoDriveRepository(
     }
 
     /** 清单读到或写成之后，按其中还有没有条目更新文件夹的标记。 */
-    internal fun vaultEntriesKnown(folderId: String, entries: List<VaultEntry>) {
+    internal fun vaultEntriesKnown(
+        folderId: String,
+        entries: List<VaultEntry>,
+        expectedManifestId: String? = null,
+        requireMatch: Boolean = false,
+    ) {
+        if (!driveTreeIndex.putVaultEntries(folderId, entries, expectedManifestId, requireMatch)) return
         childContents.markVaulted(folderId, entries.any { it.isArchived })
         childContents.rememberCover(folderId, entries.coverGcid().orEmpty())
-        driveTreeIndex.putVaultEntries(folderId, entries)
+    }
+
+    private suspend fun readAndRecordVaultEntries(
+        folderId: String,
+        listing: List<FileStat>,
+        store: VaultStore,
+        asked: PikPakClient,
+        logFailure: Boolean = false,
+        logTagSuffix: String = "",
+    ): List<VaultEntry> {
+        val startedFromPending = store.hasPending(folderId)
+        val expectedManifestId = VaultStore.winnerOf(listing)?.id
+        val result = store.read(folderId, listing).let {
+            if (logFailure) it.logFailure(TAG, "读取归档清单失败$logTagSuffix") else it
+        }
+        val entries = result.getOrNull() ?: return emptyList()
+        if (clientManager.currentClient.value !== asked) return entries
+        val currentlyPending = store.hasPending(folderId)
+        if (startedFromPending) {
+            if (currentlyPending) {
+                vaultEntriesKnown(folderId, entries)
+            }
+        } else if (!currentlyPending) {
+            vaultEntriesKnown(folderId, entries, expectedManifestId = expectedManifestId, requireMatch = true)
+        }
+        return entries
     }
 
     /*
@@ -835,6 +1062,14 @@ open class PikoDriveRepository(
      */
     suspend fun probeFolderEmptiness(folderId: String) = withContext(Dispatchers.Default) {
         if (folderId in _folderEmptiness.value) return@withContext
+        val treeChildren = driveTreeIndex.realChildren(folderId)
+        val state = driveTreeIndex.flow.value
+        if (treeChildren.coverage == DriveTreeIndex.FolderCoverage.COMPLETE ||
+            (state.complete && treeChildren.coverage != DriveTreeIndex.FolderCoverage.DIRTY && (folderId.isEmpty() || folderId in state.entries))
+        ) {
+            _folderEmptiness.update { it + (folderId to treeChildren.files.isEmpty()) }
+            return@withContext
+        }
         childNameFetches.withPermit {
             if (folderId in _folderEmptiness.value) return@withPermit
             val files = runSuspendCatching { client.listFilesPaged(parentId = folderId, pageSize = 1).files }.getOrNull() ?: return@withPermit
@@ -848,17 +1083,30 @@ open class PikoDriveRepository(
      */
     suspend fun fetchChildContents(folderId: String): List<ChildFile>? = withContext(Dispatchers.Default) {
         childContents.get(folderId)?.let { return@withContext it }
+        val treeChildren = driveTreeIndex.realChildren(folderId)
+        val state = driveTreeIndex.flow.value
+        if (treeChildren.coverage == DriveTreeIndex.FolderCoverage.COMPLETE ||
+            (state.complete && treeChildren.coverage != DriveTreeIndex.FolderCoverage.DIRTY && (folderId.isEmpty() || folderId in state.entries))
+        ) {
+            rememberChildContents(folderId, treeChildren.files, complete = true)
+            return@withContext childContents.get(folderId)
+        }
         childNameFetches.withPermit {
             // 排队期间可能已有同一目录的请求完成
             childContents.get(folderId)?.let { return@withPermit it }
             val asked = client
-            val serial = changeMarks.value.serial
+            val serial = synchronized(treeStateLock) { changeMarks.value.serial }
             val files = runSuspendCatching { asked.listFilesPaged(parentId = folderId, pageSize = CHILD_NAME_PAGE).files }
                 .getOrNull() ?: return@withPermit null
-            if (clientManager.currentClient.value !== asked || !unchangedSince(folderId, serial)) return@withPermit null
             val complete = files.size < CHILD_NAME_PAGE
-            rememberChildContents(folderId, files, complete)
-            if (folderIndex.listed(folderId, files, complete)) normalizeLocations()
+            val indexUpdated = synchronized(treeStateLock) {
+                if (clientManager.currentClient.value !== asked || !unchangedSince(folderId, serial)) {
+                    return@withPermit null
+                }
+                rememberChildContents(folderId, files, complete)
+                folderIndex.listed(folderId, files, complete)
+            }
+            if (indexUpdated) normalizeLocations()
             childContents.get(folderId)
         }
     }
@@ -900,6 +1148,10 @@ open class PikoDriveRepository(
         maxFolders: Int = 2_000,
         timeout: Duration = 30.seconds,
     ): Flow<FolderUsage> = flow {
+        driveTreeIndex.folderUsage(folderId)?.let { usage ->
+            emit(usage)
+            return@flow
+        }
         val deadline = TimeSource.Monotonic.markNow() + timeout
         var files = 0
         var bytes = 0L
@@ -948,7 +1200,12 @@ open class PikoDriveRepository(
      * 只认服务端明确的拒绝，网络失败说不准，按还在处理，免得断一下网就把人退出目录。
      */
     suspend fun isFolderGone(folderId: String): Boolean =
-        getFileDetail(folderId).fold(onSuccess = { it.trashed }, onFailure = { it is PikPakException })
+        getFileDetail(folderId).fold(onSuccess = { it.trashed }, onFailure = { it is PikPakException }).also { gone ->
+            if (gone) {
+                driveTreeIndex.applyChange(DriveChange.Trashed(listOf(folderId), null))
+                if (driveTreeIndex.isComplete) requestTreeRebuild()
+            }
+        }
 
     suspend fun getQuota(): Result<QuotaResponse> = withContext(Dispatchers.Default) {
         runSuspendCatching {
@@ -956,6 +1213,10 @@ open class PikoDriveRepository(
             asked.getQuota().also {
                 _quotaFlow.value = it
                 _quotaUpdates.tryEmit(asked.account to it)
+                if (driveTreeIndex.isComplete && driveTreeIndex.lastUsageBytes == null) {
+                    driveTreeIndex.setLastUsageBytes(it.quota.usageBytes)
+                    scheduleTreeSnapshotSave()
+                }
             }
         }
     }
@@ -1149,64 +1410,398 @@ open class PikoDriveRepository(
         runSuspendCatching { ensureTreeSync(client).await() }
     }
 
-    private fun ensureTreeSync(asked: PikPakClient): Deferred<Unit> {
-        while (true) {
-            val existing = treeSyncJob.value
-            if (existing != null && existing.first === asked && existing.second.isActive) {
-                return existing.second
+    /**
+     * 触发后台双缓冲整树重建（如用户在根目录手动刷新 F5、遇到 404/回收站残留或哨兵探针击穿时调用）。
+     */
+    fun requestTreeRebuild() {
+        val asked = clientManager.currentClient.value ?: return
+        ensureTreeSync(asked, forceRebuild = true)
+    }
+
+    /**
+     * 跨目录哨兵探针（Canary Probe，增量 Patch 与自动升级整树重建）：
+     * 1. 比对 `getQuota()` 的 `usageBytes` 与本地树保存的 `lastUsageBytes`；
+     * 2. 拉取最新 100 条修改记录 `listFilesPaged(parentId = "*", pageSize = 100)`；
+     * 3. 完全未变则直接结束；小幅新增/修改且容量差额吻合则原地增量 Patch；若窗口击穿或发生外部删除则升级为后台双缓冲整树重建。
+     */
+    suspend fun probeRemoteChanges(
+        asked: PikPakClient = client,
+        force: Boolean = false,
+    ): Result<CanaryProbeResult> = withContext(Dispatchers.Default) {
+        runSuspendCatching {
+            if (!force) {
+                val last = lastCanaryProbeAt
+                if (last != null && last.elapsedNow() < CANARY_PROBE_COOLDOWN) {
+                    return@runSuspendCatching CanaryProbeResult.UNCHANGED
+                }
             }
-            val store = vault
-            val job = backgroundScope.async(start = CoroutineStart.LAZY) {
-                val started = TimeSource.Monotonic.markNow()
-                val serial = changeMarks.value.serial
-                val folders = asked.listAllDriveFolders(pageSize = 500)
+            lastCanaryProbeAt = TimeSource.Monotonic.markNow()
+            for (attempt in 0 until 2) {
+                if (!driveTreeIndex.isComplete) {
+                    ensureTreeSync(asked).await()
+                    return@runSuspendCatching CanaryProbeResult.FULL_REBUILD
+                }
+                val (probeStartSerial, probeStartSeq, state) = synchronized(treeStateLock) {
+                    Triple(changeMarks.value.serial, driveTreeIndex.currentMutationSeq, driveTreeIndex.flow.value)
+                }
+                val quota = getQuota().getOrNull()?.quota
+                val usageBytes = quota?.usageBytes
+                val page = asked.listFilesPaged(parentId = "*", pageSize = CANARY_WINDOW_SIZE)
                 if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
-                driveTreeIndex.putFolders(folders)
-                var indexUpdated = false
-                for (folder in folders) {
-                    if (folderIndex.learned(folder.id, folder.name, folder.parentId, isFolder = true, trashed = folder.trashed)) {
-                        indexUpdated = true
+                val recent = page.files.filterNot { it.trashed }
+                val prevUsage = state.lastUsageBytes
+                val fullSnapshotVisible = page.nextPageToken.isEmpty()
+
+                fun matchesLocal(remote: FileStat): Boolean {
+                    val local = state.entries[remote.id] ?: return false
+                    return local.parentId == remote.parentId &&
+                        local.name == remote.name &&
+                        local.modifiedTime == remote.modifiedTime &&
+                        local.size == remote.size
+                }
+
+                val hasMissingLocalEntries = if (fullSnapshotVisible) {
+                    val remoteIds = recent.mapTo(HashSet()) { it.id }
+                    state.entries.keys.any { id -> !VaultEntry.isVaulted(id) && id !in remoteIds }
+                } else {
+                    val nowMillis = kotlin.time.Clock.System.now().toEpochMilliseconds()
+                    val lastSync = driveTreeIndex.lastFullSyncAtMillis
+                    val expiredForPaginated = lastSync <= 0L || (nowMillis - lastSync) >= MAX_PAGINATED_CANARY_AGE_MILLIS
+                    if (expiredForPaginated) {
+                        true
+                    } else {
+                        val remoteFolders = asked.listAllDriveFolders(pageSize = 500).filterNot { it.trashed }
+                        if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+                        val remoteFolderIds = remoteFolders.mapTo(HashSet()) { it.id }
+                        val localFoldersMissingOrChanged = state.entries.values.any { entry ->
+                            entry.isFolder && !VaultEntry.isVaulted(entry.id) && entry.id !in remoteFolderIds
+                        } || remoteFolders.any { folder -> !matchesLocal(folder) }
+                        localFoldersMissingOrChanged
                     }
                 }
-                if (indexUpdated) normalizeLocations()
 
-                var fileCount = 0
-                val manifestByFolder = LinkedHashMap<String, MutableList<FileStat>>()
-                asked.listAllDriveEntriesFlow(pageSize = 500, extraFilters = mapOf(FileFilter.kind(FileKind.FILE))).collect { page ->
-                    if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
-                    fileCount += page.size
-                    val enriched = sourceLedger.enrich(page)
-                    driveTreeIndex.putFiles(enriched)
-                    for (entry in enriched) {
-                        if (VaultStore.looksLikeManifest(entry)) {
-                            manifestByFolder.getOrPut(entry.parentId) { mutableListOf() }.add(entry)
+                val changedItems = recent.filterNot(::matchesLocal)
+                if (!hasMissingLocalEntries && changedItems.isEmpty() && (prevUsage == null || usageBytes == null || usageBytes == prevUsage)) {
+                    val publishedUnchanged = synchronized(treeStateLock) {
+                        if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+                        if (changeMarks.value.serial != probeStartSerial || driveTreeIndex.currentMutationSeq != probeStartSeq) {
+                            false
+                        } else {
+                            if (prevUsage == null && usageBytes != null) {
+                                driveTreeIndex.setLastUsageBytes(usageBytes)
+                            }
+                            true
                         }
                     }
+                    if (!publishedUnchanged) continue
+                    if (prevUsage == null && usageBytes != null) {
+                        scheduleTreeSnapshotSave()
+                    }
+                    return@runSuspendCatching CanaryProbeResult.UNCHANGED
                 }
 
-                for ((folderId, manifests) in manifestByFolder) {
-                    if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
-                    val cachedManifest = store.cached(folderId, manifests)
-                    if (cachedManifest != null) {
-                        vaultEntriesKnown(folderId, cachedManifest)
-                        continue
+                val windowExceeded = recent.size >= CANARY_WINDOW_SIZE && changedItems.size == recent.size
+                if (!hasMissingLocalEntries && !windowExceeded && prevUsage != null && usageBytes != null && usageBytes >= prevUsage) {
+                    val addedBytes = changedItems.sumOf { item ->
+                        if (item.isFolder) 0L else item.sizeBytes - (state.entries[item.id]?.sizeBytes ?: 0L)
                     }
-                    runSuspendCatching {
-                        store.read(folderId, manifests).getOrNull()?.let { entries ->
-                            if (clientManager.currentClient.value === asked) {
-                                vaultEntriesKnown(folderId, entries)
+                    if (usageBytes - prevUsage == addedBytes && changedItems.isNotEmpty()) {
+                        val enriched = sourceLedger.enrich(changedItems)
+                        val affectedParents = HashSet<String>()
+                        val manifestFolders = HashSet<String>()
+                        var indexUpdated = false
+                        val publishedPatch = synchronized(treeStateLock) {
+                            if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+                            if (changeMarks.value.serial != probeStartSerial || driveTreeIndex.currentMutationSeq != probeStartSeq) {
+                                return@synchronized false
+                            }
+                            val currentState = driveTreeIndex.flow.value
+                            var learned = false
+                            for (item in enriched) {
+                                affectedParents += item.parentId
+                                currentState.entries[item.id]?.parentId?.let(affectedParents::add)
+                                if (VaultStore.looksLikeManifest(item)) {
+                                    manifestFolders += item.parentId
+                                    currentState.entries[item.id]?.parentId?.let(manifestFolders::add)
+                                }
+                                if (folderIndex.learned(item.id, item.name, item.parentId, item.isFolder, item.trashed)) {
+                                    learned = true
+                                }
+                            }
+                            markCanaryPatched(affectedParents)
+                            listingRequests.update { it - affectedParents }
+                            driveTreeIndex.applyCanaryPatch(enriched, usageBytes)
+                            for (folderId in affectedParents) {
+                                val children = driveTreeIndex.realChildren(folderId).files
+                                rememberChildContents(folderId, children, complete = true)
+                            }
+                            listings.update { cache ->
+                                cache.mapValues { (id, listing) -> if (id in affectedParents) listing.expired() else listing }
+                            }
+                            indexUpdated = learned
+                            true
+                        }
+                        if (!publishedPatch) continue
+                        if (indexUpdated) normalizeLocations()
+                        val store = vault
+                        for (folderId in manifestFolders) {
+                            val children = driveTreeIndex.realChildren(folderId).files
+                            runSuspendCatching {
+                                readAndRecordVaultEntries(folderId, children, store, asked)
+                            }
+                        }
+                        scheduleTreeSnapshotSave()
+                        _folderChanges.tryEmit(DriveChange.ContentsChanged(affectedParents))
+                        return@runSuspendCatching CanaryProbeResult.INCREMENTAL_PATCH
+                    }
+                }
+                break
+            }
+
+            ensureTreeSync(asked, forceRebuild = true).await()
+            CanaryProbeResult.FULL_REBUILD
+        }
+    }
+
+    private suspend fun restoreTreeFromCache(asked: PikPakClient): Boolean = withContext(Dispatchers.Default) {
+        val store = cacheStore ?: return@withContext false
+        val account = asked.account.takeIf { it.isNotEmpty() } ?: return@withContext false
+        val snapshotText = store.read(DriveTreeIndex.snapshotKeyOf(account)) ?: return@withContext false
+        val snapshot = DriveTreeIndex.decodeSnapshot(snapshotText) ?: return@withContext false
+        val manifestText = store.read(VaultStore.cacheKeyOf(account))
+        val cachedManifests = manifestText?.let(VaultStore::decodeParsed).orEmpty()
+        var indexUpdated = false
+        val restored = synchronized(treeStateLock) {
+            if (clientManager.currentClient.value !== asked) return@synchronized false
+            vault.restoreParsed(cachedManifests)
+            if (!driveTreeIndex.restoreSnapshot(snapshot, cachedManifests)) return@synchronized false
+            indexUpdated = populateDerivedFromTreeLocked()
+            true
+        }
+        if (!restored) return@withContext false
+        if (indexUpdated) normalizeLocations()
+        PikoLog.d(TAG, "已从本地快照恢复文件树：${snapshot.entries.size} 个节点，归档缓存 ${cachedManifests.size} 份")
+        true
+    }
+
+    private fun populateDerivedFromTreeLocked(): Boolean {
+        val state = driveTreeIndex.flow.value
+        var indexUpdated = false
+        for (entry in state.entries.values) {
+            if (VaultEntry.isVaulted(entry.id)) continue
+            if (folderIndex.learned(entry.id, entry.name, entry.parentId, entry.isFolder, entry.trashed)) {
+                indexUpdated = true
+            }
+        }
+        for ((folderId, vEntries) in state.vaultEntriesByFolder) {
+            childContents.markVaulted(folderId, vEntries.any { it.isArchived })
+            childContents.rememberCover(folderId, vEntries.coverGcid().orEmpty())
+        }
+        val allFolders = buildSet {
+            add("")
+            for (entry in state.entries.values) {
+                if (entry.isFolder) add(entry.id)
+            }
+        }
+        for (folderId in allFolders) {
+            if (folderId in state.dirtyFolders) continue
+            val children = state.childrenByParent[folderId].orEmpty().mapNotNull { id ->
+                state.entries[id]?.takeUnless { VaultEntry.isVaulted(id) }
+            }
+            rememberChildContents(folderId, children, complete = true)
+        }
+        return indexUpdated
+    }
+
+    private fun scheduleTreeSnapshotSave() {
+        val store = cacheStore ?: return
+        val owner = currentAccount?.takeIf { it.isNotEmpty() } ?: return
+        if (!driveTreeIndex.isComplete) return
+        if (pendingTreeSave?.isActive == true) return
+        pendingTreeSave = backgroundScope.launch {
+            delay(TREE_SNAPSHOT_SAVE_DELAY)
+            val snapshotState = driveTreeIndex.flow.value
+            if (currentAccount == owner && snapshotState.complete) {
+                val encoded = DriveTreeIndex.encodeSnapshot(
+                    state = snapshotState,
+                    savedAtMillis = kotlin.time.Clock.System.now().toEpochMilliseconds(),
+                    lastFullSyncAtMillis = driveTreeIndex.lastFullSyncAtMillis,
+                )
+                store.write(DriveTreeIndex.snapshotKeyOf(owner), encoded)
+            }
+        }
+    }
+
+    private fun flushPendingTreeSnapshotSave(previousAccount: String) {
+        val pending = pendingTreeSave ?: return
+        pendingTreeSave = null
+        if (!pending.isActive) return
+        pending.cancel()
+        val store = cacheStore ?: return
+        val snapshotState = driveTreeIndex.flow.value
+        val fullSyncAt = driveTreeIndex.lastFullSyncAtMillis
+        if (!snapshotState.complete) return
+        backgroundScope.launch {
+            val encoded = DriveTreeIndex.encodeSnapshot(
+                state = snapshotState,
+                savedAtMillis = kotlin.time.Clock.System.now().toEpochMilliseconds(),
+                lastFullSyncAtMillis = fullSyncAt,
+            )
+            store.write(DriveTreeIndex.snapshotKeyOf(previousAccount), encoded)
+        }
+    }
+
+    private fun ensureTreeSync(asked: PikPakClient, forceRebuild: Boolean = false): Deferred<Unit> {
+        while (true) {
+            val existing = treeSyncJob.value
+            if (!forceRebuild && existing != null && existing.first === asked && existing.second.isActive) {
+                return existing.second
+            }
+            if (forceRebuild) {
+                existing?.second?.cancel()
+            }
+            val store = vault
+            val isShadowRebuild = driveTreeIndex.isComplete
+            val job = backgroundScope.async(start = CoroutineStart.LAZY) {
+                val started = TimeSource.Monotonic.markNow()
+                val (serial, rebuildStartSeq) = synchronized(treeStateLock) {
+                    changeMarks.value.serial to driveTreeIndex.currentMutationSeq
+                }
+                _treeBuildProgressFlow.value = TreeBuildProgress(
+                    isBuilding = true,
+                    isInitialBlocking = !isShadowRebuild,
+                    foldersRead = 0,
+                    filesRead = 0,
+                )
+                try {
+                    val folders = asked.listAllDriveFolders(pageSize = 500)
+                    if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+                    _treeBuildProgressFlow.update { it.copy(foldersRead = folders.size) }
+                    if (!isShadowRebuild) {
+                        var indexUpdated = false
+                        synchronized(treeStateLock) {
+                            if (clientManager.currentClient.value === asked && changeMarks.value.accountResetAt <= serial) {
+                                driveTreeIndex.putFolders(folders)
+                                for (folder in folders) {
+                                    if (folderIndex.learned(folder.id, folder.name, folder.parentId, isFolder = true, trashed = folder.trashed)) {
+                                        indexUpdated = true
+                                    }
+                                }
+                            }
+                        }
+                        if (indexUpdated) normalizeLocations()
+                    }
+
+                    var fileCount = 0
+                    val allFiles = ArrayList<FileStat>()
+                    val manifestByFolder = LinkedHashMap<String, MutableList<FileStat>>()
+                    asked.listAllDriveEntriesFlow(pageSize = 500, extraFilters = mapOf(FileFilter.kind(FileKind.FILE))).collect { page ->
+                        if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+                        fileCount += page.size
+                        _treeBuildProgressFlow.update { it.copy(filesRead = fileCount) }
+                        val enriched = sourceLedger.enrich(page)
+                        allFiles.addAll(enriched)
+                        if (!isShadowRebuild) {
+                            synchronized(treeStateLock) {
+                                if (clientManager.currentClient.value === asked && changeMarks.value.accountResetAt <= serial) {
+                                    driveTreeIndex.putFiles(enriched)
+                                }
+                            }
+                        }
+                        for (entry in enriched) {
+                            if (VaultStore.looksLikeManifest(entry)) {
+                                manifestByFolder.getOrPut(entry.parentId) { mutableListOf() }.add(entry)
                             }
                         }
                     }
-                }
 
-                if (clientManager.currentClient.value === asked && unchangedSince("", serial)) {
-                    driveTreeIndex.markComplete()
-                    PikoLog.d(
-                        TAG,
-                        "本地文件树索引就绪：${folders.size} 个文件夹，$fileCount 个文件，" +
-                            "归档目录 ${manifestByFolder.size} 个，历时 ${started.elapsedNow().inWholeMilliseconds} ms",
-                    )
+                    val vaultByFolder = LinkedHashMap<String, List<VaultEntry>>()
+                    for ((folderId, manifests) in manifestByFolder) {
+                        if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+                        val winnerId = VaultStore.winnerOf(manifests)?.id
+                        val cachedManifest = store.cachedCommitted(manifests)
+                        if (cachedManifest != null) {
+                            vaultByFolder[folderId] = cachedManifest
+                            if (!isShadowRebuild) {
+                                vaultEntriesKnown(folderId, cachedManifest, expectedManifestId = winnerId, requireMatch = !store.hasPending(folderId))
+                            }
+                            continue
+                        }
+                        runSuspendCatching {
+                            val entries = readAndRecordVaultEntries(folderId, manifests, store, asked)
+                            if (clientManager.currentClient.value === asked && entries.isNotEmpty()) {
+                                vaultByFolder[folderId] = entries
+                            }
+                        }
+                    }
+
+                    var shouldRestartRebuild = false
+                    var indexUpdated = false
+                    var changedFolders = emptySet<String>()
+                    var committed = false
+                    synchronized(treeStateLock) {
+                        val marks = changeMarks.value
+                        if (clientManager.currentClient.value === asked && marks.accountResetAt <= serial) {
+                            if (marks.treeInvalidatedAt > serial) {
+                                shouldRestartRebuild = true
+                            } else {
+                                val interveningDirty = marks.folderAt.filter { (folderId, dirtySeq) ->
+                                    dirtySeq > serial && dirtySeq >= (marks.listedAt[folderId] ?: 0L)
+                                }.keys
+                                val interveningListed = marks.listedAt.filter { (folderId, listSeq) ->
+                                    listSeq > serial && listSeq > (marks.folderAt[folderId] ?: 0L)
+                                }.keys
+                                val interveningRemoved = marks.removedAt.filterValues { it > serial }.keys
+                                val interveningRenamed = marks.renamedAt.mapNotNull { (id, pair) ->
+                                    if (pair.first > serial) id to pair.second else null
+                                }.toMap()
+                                val interveningMoved = marks.movedAt.mapNotNull { (id, pair) ->
+                                    if (pair.first > serial) id to pair.second else null
+                                }.toMap()
+                                val usageBytes = _quotaFlow.value?.quota?.usageBytes ?: driveTreeIndex.lastUsageBytes
+                                changedFolders = driveTreeIndex.replaceTree(
+                                    folders = folders,
+                                    files = allFiles,
+                                    vaultByFolder = vaultByFolder,
+                                    usageBytes = usageBytes,
+                                    sinceMutationSeq = rebuildStartSeq,
+                                    keepDirtyFolders = interveningDirty,
+                                    freshlyListedFolders = interveningListed,
+                                    removedIds = interveningRemoved,
+                                    renamedNames = interveningRenamed,
+                                    movedParents = interveningMoved,
+                                    syncedAtMillis = kotlin.time.Clock.System.now().toEpochMilliseconds(),
+                                )
+                                indexUpdated = populateDerivedFromTreeLocked()
+                                if (changedFolders.isNotEmpty()) {
+                                    markChanged(changedFolders)
+                                    listingRequests.update { it - changedFolders }
+                                }
+                                if (isShadowRebuild && changedFolders.isNotEmpty()) {
+                                    listings.update { cache ->
+                                        cache.mapValues { (id, listing) -> if (id in changedFolders) listing.expired() else listing }
+                                    }
+                                }
+                                committed = true
+                            }
+                        }
+                    }
+                    if (shouldRestartRebuild) {
+                        requestTreeRebuild()
+                    } else if (committed) {
+                        if (indexUpdated) normalizeLocations()
+                        scheduleTreeSnapshotSave()
+                        if (isShadowRebuild && changedFolders.isNotEmpty()) {
+                            _folderChanges.tryEmit(DriveChange.ContentsChanged(changedFolders))
+                        }
+                        PikoLog.d(
+                            TAG,
+                            "本地文件树索引就绪：${folders.size} 个文件夹，$fileCount 个文件，" +
+                                "归档目录 ${manifestByFolder.size} 个，历时 ${started.elapsedNow().inWholeMilliseconds} ms",
+                        )
+                    }
+                } finally {
+                    _treeBuildProgressFlow.update { it.copy(isBuilding = false, isInitialBlocking = false) }
                 }
             }
             if (treeSyncJob.compareAndSet(existing, asked to job)) {
@@ -1263,9 +1858,7 @@ open class PikoDriveRepository(
                 if (clientManager.currentClient.value !== asked) return@flow
                 val listing = runSuspendCatching { fetchListing(folderId, asked) }.getOrNull() ?: continue
                 runSuspendCatching {
-                    store.read(folderId, listing).getOrNull()?.let {
-                        if (clientManager.currentClient.value === asked) vaultEntriesKnown(folderId, it)
-                    }
+                    readAndRecordVaultEntries(folderId, listing, store, asked)
                 }
                 emitNewMatches()
             }
@@ -1273,10 +1866,10 @@ open class PikoDriveRepository(
         }
 
         val sync = ensureTreeSync(asked)
-        var lastSeenRev = driveTreeIndex.revision.value
+        var lastSeenRev = driveTreeIndex.flow.value.revision
         while (sync.isActive) {
             delay(50)
-            val currentRev = driveTreeIndex.revision.value
+            val currentRev = driveTreeIndex.flow.value.revision
             if (currentRev != lastSeenRev) {
                 lastSeenRev = currentRev
                 emitNewMatches()
@@ -1513,6 +2106,10 @@ open class PikoDriveRepository(
 
         // 登录后让首屏列根目录与会话恢复先行，再在后台拉齐整棵本地文件树
         private val TREE_WARMUP_DELAY = 1500.milliseconds
+        private val CANARY_PROBE_COOLDOWN = 60.seconds
+        private const val CANARY_WINDOW_SIZE = 100
+        private const val MAX_PAGINATED_CANARY_AGE_MILLIS = 15 * 60 * 1_000L
+        private const val TREE_SNAPSHOT_SAVE_DELAY = 2_000L
 
         private const val MY_PACKS_FOLDER_NAME = "My Packs"
 

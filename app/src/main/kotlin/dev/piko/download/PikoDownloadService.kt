@@ -1,5 +1,7 @@
 package dev.piko.download
 
+import dev.piko.shared.i18n.tr
+
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -178,10 +180,10 @@ class PikoDownloadService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "文件传输",
+                tr("文件传输", "File transfers", "ファイル転送", "파일 전송"),
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "应用在后台时下载、上传、解压、归档与查找重复的进度"
+                description = tr("应用在后台时下载、上传、解压、归档与查找重复的进度", "Background progress for downloads, uploads, extraction, archiving and duplicate searches", "ダウンロード・アップロード・解凍・アーカイブ・重複検索のバックグラウンド進捗", "다운로드, 업로드, 압축 해제, 보관 및 중복 검색의 백그라운드 진행 상황")
                 setShowBadge(false)
             }
             notificationManager.createNotificationChannel(channel)

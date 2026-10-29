@@ -1,5 +1,7 @@
 package dev.piko.ui.components
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -40,7 +42,7 @@ internal fun WorkspaceTreeRow(
     }.combinedClickable(onClick = actions?.primary ?: onOpen, onLongClick = longClick).heightIn(min = 48.dp)
         .padding(start = 4.dp + 16.dp * depth, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (expanded != null) IconButton(onClick = onExpand, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, if (expanded) "收起 $name" else "展开 $name",
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, if (expanded) tr("收起 $name", "Collapse $name", "$name を折りたたむ", "$name 접기") else tr("展开 $name", "Expand $name", "$name を展開", "$name 펼치기"),
                 Modifier.size(18.dp).rotate(if (expanded) 90f else 0f))
         } else if (reserveExpandSpace) Spacer(Modifier.width(36.dp))
         leading()

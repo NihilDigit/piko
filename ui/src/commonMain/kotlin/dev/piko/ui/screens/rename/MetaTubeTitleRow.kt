@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.rename
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -40,7 +45,7 @@ internal fun MetaTubeTitleRow(fileName: String, service: MetaTubeService, onName
             onClick = {
                 val info = parseMediaName(fileName).av ?: return@TextButton
                 querying = true
-                status = "正在查询"
+                status = tr("正在查询", "Checking", "照会中", "조회 중")
                 failed = false
                 scope.launch {
                     val result = service.titles(listOf(info))
@@ -50,14 +55,14 @@ internal fun MetaTubeTitleRow(fileName: String, service: MetaTubeService, onName
                     status = when {
                         title != null -> {
                             canonicalAvNameOf(fileName, title)?.let(onNameFound)
-                            "已填入查到的片名"
+                            tr("已填入查到的片名", "Retrieved title inserted", "取得した作品名を入力しました", "조회한 제목을 입력했습니다")
                         }
-                        failed -> "查询失败"
-                        else -> "未查到片名"
+                        failed -> tr("查询失败", "Query failed", "照会に失敗しました", "조회 실패")
+                        else -> tr("未查到片名", "Title not found", "作品名が見つかりません", "제목을 찾지 못했습니다")
                     }
                 }
             },
-        ) { Text("从 MetaTube 取片名") }
+        ) { Text(stringResource(Res.string.text_get_title_from_metatube)) }
         Spacer(Modifier.width(8.dp))
         if (querying) InlineLoadingIndicator()
         Text(

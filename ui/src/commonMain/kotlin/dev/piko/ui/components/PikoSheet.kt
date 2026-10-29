@@ -1,5 +1,7 @@
 package dev.piko.ui.components
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.fadeIn
@@ -180,7 +182,7 @@ private fun ModalSideSheet(
                             } else {
                                 Spacer(Modifier.weight(1f))
                             }
-                            if (buttons != null) buttons(dismiss) else TooltipIconButton(Icons.Outlined.Close, "关闭", dismiss, shortcut = "Esc")
+                            if (buttons != null) buttons(dismiss) else TooltipIconButton(Icons.Outlined.Close, tr("关闭", "Close", "閉じる", "닫기"), dismiss, shortcut = "Esc")
                         }
                         val sheetScope = remember(this) {
                             SheetScopeImpl(this, isSideSheet = true) { action ->

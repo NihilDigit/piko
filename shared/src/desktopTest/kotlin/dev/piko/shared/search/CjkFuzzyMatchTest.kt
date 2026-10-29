@@ -19,6 +19,26 @@ import kotlin.test.assertTrue
 class CjkFuzzyMatchTest {
 
     @Test
+    fun `hangul syllables and jamo support bounded subsequences`() {
+        assertTrue(cjkMatches("한국의영화.mkv", "한국영화"))
+        assertTrue(cjkMatches("ᄀ_ᄂ_ᄃ.mkv", "ᄀᄂᄃ"))
+        assertTrue(cjkMatches("ㄱ_ㄴ_ㄷ.mkv", "ㄱㄴㄷ"))
+        assertTrue(cjkMatches("ꥠ_ꥡ.mkv", "ꥠꥡ"))
+        assertTrue(cjkMatches("ힰ_ힱ.mkv", "ힰힱ"))
+        assertFalse(cjkMatches("한국영화.mkv", "영화한국"))
+        assertFalse(cjkMatches("한abcdefghijk국.mkv", "한국"))
+    }
+
+    @Test
+    fun `nfkc composes hangul and normalizes compatibility and halfwidth jamo`() {
+        assertEquals("한국", nfkcNormalize("한국"))
+        assertEquals(nfkcNormalize("ᄀᄂ"), nfkcNormalize("ㄱㄴ"))
+        assertEquals(nfkcNormalize("ㄱㄴ"), nfkcNormalize("ﾡﾤ"))
+        assertTrue(cjkMatches("한국 영화.mkv", "한국"))
+        assertTrue(cjkMatches("ㄱ_ㄴ_ㄷ.mkv", "ﾡﾤﾧ"))
+    }
+
+    @Test
     fun `simplified traditional and japanese shinjitai match interchangeably`() {
         // 简 / 繁 / 日新字体三向互通
         assertTrue(cjkMatches("桜空もも.mp4", "樱空"))

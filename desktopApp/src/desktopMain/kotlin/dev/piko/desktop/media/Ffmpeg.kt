@@ -1,5 +1,7 @@
 package dev.piko.desktop.media
 
+import dev.piko.shared.i18n.tr
+
 import java.io.File
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -89,11 +91,11 @@ internal class Ffmpeg private constructor(avutil: SymbolLookup, avcodec: SymbolL
     fun describe(code: Int): String = Arena.ofConfined().use { arena ->
         val buffer = arena.allocate(256)
         val found = strerror.invokeWithArguments(code, buffer, 256L) as Int
-        if (found < 0) "错误码 $code" else buffer.getString(0)
+        if (found < 0) tr("错误码 $code", "Error code $code", "エラーコード $code", "오류 코드 $code") else buffer.getString(0)
     }
 
     fun check(code: Int, what: String): Int {
-        if (code < 0) throw FfmpegException("$what 失败：${describe(code)}")
+        if (code < 0) throw FfmpegException(tr("$what 失败：${describe(code)}", "$what failed: ${describe(code)}", "$what に失敗：${describe(code)}", "$what 실패: ${describe(code)}"))
         return code
     }
 

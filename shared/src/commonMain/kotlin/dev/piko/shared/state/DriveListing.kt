@@ -2,6 +2,8 @@ package dev.piko.shared.state
 
 import dev.piko.data.repository.fileCategory
 import dev.piko.shared.data.ChildFile
+import dev.piko.shared.i18n.enCount
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.naming.AttachmentKind
 import dev.piko.shared.naming.EntryFile
 import dev.piko.shared.naming.FileKind as NamingFileKind
@@ -192,8 +194,8 @@ private fun attachmentBlocks(batch: MediaBatch, files: List<FileStat>): List<Dri
         .flatMap { it.sections }.flatMap { it.entries }.flatMap { it.files }.flatMap { it.attachments }
         .groupBy({ it.kind }, { it.index })
     return listOfNotNull(
-        byKind[AttachmentKind.SUBTITLE]?.let { attachmentBlock("${ATTACHMENT_BLOCK_PREFIX}subtitle", "外挂字幕", it, files) },
-        byKind[AttachmentKind.AUDIO_TRACK]?.let { attachmentBlock("${ATTACHMENT_BLOCK_PREFIX}audio", "外挂音轨", it, files) },
+        byKind[AttachmentKind.SUBTITLE]?.let { attachmentBlock("${ATTACHMENT_BLOCK_PREFIX}subtitle", tr("外挂字幕", "External subtitles", "外部字幕", "외부 자막"), it, files) },
+        byKind[AttachmentKind.AUDIO_TRACK]?.let { attachmentBlock("${ATTACHMENT_BLOCK_PREFIX}audio", tr("外挂音轨", "External audio tracks", "外部音声トラック", "외부 오디오 트랙"), it, files) },
     )
 }
 
@@ -232,8 +234,9 @@ private fun buildBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlo
     // 番号一部一作品，逐部起作品头会让一屏全是标题；合成一块，行标题本身就是番号
     val av = batch.works.filter { it.kind == WorkKind.AV }
     if (av.isNotEmpty()) {
+        val avLabel = tr("番号", "Codes", "作品番号", "품번")
         blocks += DriveBlock(
-            id = "av", label = "番号", menuLabel = "番号", defaultExpanded = true,
+            id = "av", label = avLabel, menuLabel = avLabel, defaultExpanded = true,
             workKey = null, workTitle = null, workTags = emptyList(),
             fileIds = av.flatMap { work -> work.sections.flatMap { it.entries } }.flatMap { entry -> entry.distinctFiles().map { files[it.index].id } },
         )
@@ -247,8 +250,9 @@ private fun buildBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlo
         // 只剩文档、压缩包一类时默认收起：动画发布里认不出的零散文件多是说明与字体。
         // 有图片、视频或音频就展开，个人目录里的照片本身就是内容
         val hasMedia = others.any { batch.parsed[it].fileKind in CONTENT_KINDS }
+        val otherFilesLabel = tr("其他文件", "Other files", "その他のファイル", "기타 파일")
         blocks += DriveBlock(
-            id = OTHERS_BLOCK_ID, label = "其他文件", menuLabel = "其他文件", defaultExpanded = standalone.isNotEmpty() || hasMedia,
+            id = OTHERS_BLOCK_ID, label = otherFilesLabel, menuLabel = otherFilesLabel, defaultExpanded = standalone.isNotEmpty() || hasMedia,
             workKey = null, workTitle = null, workTags = emptyList(),
             fileIds = others.map { files[it].id },
         )
@@ -330,7 +334,7 @@ private fun fileView(work: MediaWork, section: Section, entry: MediaEntry, file:
     val ownTags = rowTags(work, file)
     val languages = attachmentTags(file)
     val versionCount = if (file == entry.primary) entry.versionsOfPrimary().size + 1 else 1
-    val versions = listOfNotNull("$versionCount 版本".takeIf { versionCount > 1 })
+    val versions = listOfNotNull(tr("$versionCount 版本", "${enCount(versionCount, "version", "versions")}", "$versionCount バージョン", "${versionCount}개 버전").takeIf { versionCount > 1 })
     val tags = (ownTags.map(MediaTag::text) + languages + versions).distinct()
     val heading = if (work.kind == WorkKind.SERIES && work.title != null && entry.label != null && entry.label != work.title) {
         "${work.title} $title"
@@ -347,8 +351,8 @@ private fun fileView(work: MediaWork, section: Section, entry: MediaEntry, file:
 /** 外挂字幕与音轨化作宿主行上的标签：「简日」「繁日」，没有语言后缀的记作「字幕」。 */
 private fun attachmentTags(file: EntryFile): List<String> = file.attachments.mapNotNull { attachment ->
     when (attachment.kind) {
-        AttachmentKind.SUBTITLE -> attachment.language ?: "字幕"
-        AttachmentKind.AUDIO_TRACK -> attachment.language?.let { "${it}音轨" } ?: "音轨"
+        AttachmentKind.SUBTITLE -> attachment.language ?: tr("字幕", "Subtitles", "字幕", "자막")
+        AttachmentKind.AUDIO_TRACK -> attachment.language?.let { tr("${it}音轨", "$it audio", "${it}音声", "$it 오디오") } ?: tr("音轨", "Audio track", "音声トラック", "오디오 트랙")
         AttachmentKind.COVER, AttachmentKind.DISC_FILE -> null
     }
 }.distinct()
@@ -364,15 +368,15 @@ private fun parsedFields(work: MediaWork, section: Section, entry: MediaEntry, f
     val all = (name.tags + work.commonTags).distinct().sortedBy { it.kind.ordinal }
     val subtitles = (all.filter { it.kind == TagKind.SUBTITLES }.map(MediaTag::text) + attachedLanguages).distinct()
     return listOfNotNull(
-        work.title?.let { DriveParsedField(if (work.kind == WorkKind.AV) "番号" else "作品", it) },
+        work.title?.let { DriveParsedField(if (work.kind == WorkKind.AV) tr("番号", "Code", "作品番号", "품번") else tr("作品", "Work", "作品", "작품"), it) },
         // 行里的片名会被截断，详情里给全文
-        name.av?.title?.let { DriveParsedField("片名", it) },
-        DriveParsedField("分区", section.label).takeIf { work.kind == WorkKind.SERIES },
-        episode?.let { DriveParsedField("集号", it.shortText) },
-        entry.av?.part?.let { DriveParsedField("分段", it) },
-        episode?.version?.let { DriveParsedField("版本", it) },
-        subtitles.takeIf { it.isNotEmpty() }?.let { DriveParsedField("字幕语言", it.joinToString(" ")) },
-        all.filter { it.kind in TECH_KINDS }.takeIf { it.isNotEmpty() }?.let { tags -> DriveParsedField("技术标签", tags.joinToString(" ") { it.text }) },
+        name.av?.title?.let { DriveParsedField(tr("片名", "Title", "タイトル", "제목"), it) },
+        DriveParsedField(tr("分区", "Section", "セクション", "섹션"), section.label).takeIf { work.kind == WorkKind.SERIES },
+        episode?.let { DriveParsedField(tr("集号", "Episode", "話数", "화수"), it.shortText) },
+        entry.av?.part?.let { DriveParsedField(tr("分段", "Part", "パート", "파트"), it) },
+        episode?.version?.let { DriveParsedField(tr("版本", "Version", "バージョン", "버전"), it) },
+        subtitles.takeIf { it.isNotEmpty() }?.let { DriveParsedField(tr("字幕语言", "Subtitle languages", "字幕言語", "자막 언어"), it.joinToString(" ")) },
+        all.filter { it.kind in TECH_KINDS }.takeIf { it.isNotEmpty() }?.let { tags -> DriveParsedField(tr("技术标签", "Technical tags", "技術タグ", "기술 태그"), tags.joinToString(" ") { it.text }) },
     )
 }
 
@@ -400,7 +404,8 @@ fun buildDriveItems(
     val byId = files.associateBy { it.id }
     val folders = files.filter { it.isFolder && !(hideFolded && it.id in structure.foldedIds) }
     val secondaryBlock = if (!hideFolded && structure.secondaryIds.isNotEmpty()) {
-        DriveBlock(SECONDARY_BLOCK_ID, "次要文件", "次要文件", true, null, null, emptyList(), structure.secondaryIds)
+        val secondaryLabel = tr("次要文件", "Secondary files", "補助ファイル", "보조 파일")
+        DriveBlock(SECONDARY_BLOCK_ID, secondaryLabel, secondaryLabel, true, null, null, emptyList(), structure.secondaryIds)
     } else {
         null
     }

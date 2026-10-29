@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.archive
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -66,8 +71,8 @@ internal fun ArchivePasswordDialog(
     incorrect = (job.status as? ArchiveJobStatus.NeedsPassword)?.incorrect == true,
     initialPassword = job.password,
     savedPasswords = savedPasswords,
-    confirmLabel = "解压",
-    dismissLabel = "跳过",
+    confirmLabel = tr("解压", "Extract", "解凍", "압축 해제"),
+    dismissLabel = tr("跳过", "Skip", "スキップ", "건너뛰기"),
     onSubmit = onSubmit,
     onDismiss = onSkip,
 )
@@ -88,8 +93,8 @@ internal fun ArchiveBrowsePasswordDialog(
     incorrect = incorrect,
     initialPassword = "",
     savedPasswords = emptyList(),
-    confirmLabel = "打开",
-    dismissLabel = "取消",
+    confirmLabel = tr("打开", "Open", "開く", "열기"),
+    dismissLabel = tr("取消", "Cancel", "キャンセル", "취소"),
     onSubmit = onSubmit,
     onDismiss = onDismiss,
 )
@@ -119,7 +124,7 @@ private fun ArchivePasswordDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(dismissOnClickOutside = false),
         icon = { Icon(Icons.Outlined.Key, contentDescription = null) },
-        title = { Text(if (incorrect) "密码错误" else "需要密码") },
+        title = { Text(if (incorrect) tr("密码错误", "Incorrect password", "パスワードが違います", "비밀번호가 틀렸습니다") else tr("需要密码", "Password required", "パスワードが必要です", "비밀번호가 필요합니다")) },
         text = {
             // 整段可滚：横屏时键盘上方只剩四百来 dp，放不下密码表，不滚的话底部按钮会被截掉。
             // AlertDialog 的正文区可以收缩，正文能滚时按钮始终留在可见范围内
@@ -137,11 +142,11 @@ private fun ArchivePasswordDialog(
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
-                    label = { Text("密码") },
+                    label = { Text(stringResource(Res.string.text_password)) },
                     singleLine = true,
                     isError = incorrect,
                     supportingText = if (incorrect) {
-                        { Text("服务端拒绝了这个密码") }
+                        { Text(stringResource(Res.string.text_the_server_rejected_this_password)) }
                     } else {
                         null
                     },
@@ -149,7 +154,7 @@ private fun ArchivePasswordDialog(
                     trailingIcon = {
                         TooltipIconButton(
                             icon = if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                            label = if (visible) "隐藏密码" else "显示密码",
+                            label = if (visible) tr("隐藏密码", "Hide password", "パスワードを隠す", "비밀번호 숨기기") else tr("显示密码", "Show password", "パスワードを表示", "비밀번호 표시"),
                             onClick = { visible = !visible },
                         )
                     },
@@ -159,7 +164,7 @@ private fun ArchivePasswordDialog(
                 )
                 if (savedPasswords.isNotEmpty()) {
                     Text(
-                        text = "已保存的密码",
+                        text = stringResource(Res.string.text_saved_passwords),
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -201,10 +206,10 @@ private fun SavedPasswordRow(
         },
         trailingContent = when {
             onDelete != null -> {
-                { TooltipIconButton(icon = Icons.Outlined.Delete, label = "删除", onClick = onDelete) }
+                { TooltipIconButton(icon = Icons.Outlined.Delete, label = tr("删除", "Delete", "削除", "삭제"), onClick = onDelete) }
             }
             selected -> {
-                { Icon(Icons.Outlined.Check, contentDescription = "已选", tint = MaterialTheme.colorScheme.primary) }
+                { Icon(Icons.Outlined.Check, contentDescription = tr("已选", "Selected", "選択済み", "선택됨"), tint = MaterialTheme.colorScheme.primary) }
             }
             else -> null
         },
@@ -221,14 +226,14 @@ fun SavedArchivePasswordsDialog(
     PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.Key, contentDescription = null) },
-        title = { Text("解压密码") },
+        title = { Text(stringResource(Res.string.text_archive_password)) },
         text = {
             if (passwords.isEmpty()) {
-                Text("尚无保存的密码。解压加密压缩包时，验证通过的密码记在此处，供下次选用。")
+                Text(stringResource(Res.string.text_no_saved_passwords_verified_archive_passwords_are_saved_here_for_reuse))
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "验证通过的密码，最近用过的在前，仅存于本机。",
+                        text = stringResource(Res.string.text_verified_passwords_most_recent_first_stored_on_this_device_only),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -242,7 +247,7 @@ fun SavedArchivePasswordsDialog(
         },
         // 删除当场生效，与设置里点选即生效的对话框一样只留「关闭」
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("关闭") }
+            TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_close)) }
         },
     )
 }

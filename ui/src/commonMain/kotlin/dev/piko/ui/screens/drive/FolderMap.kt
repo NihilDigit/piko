@@ -1,5 +1,11 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.i18n.tr
+import dev.piko.shared.presentation.localizedName
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
 import dev.piko.ui.components.PanelHeaderButton
 import dev.piko.ui.components.PanelHeaderToggle
 import dev.piko.ui.components.PanelTopMargin
@@ -246,10 +252,10 @@ internal class FolderMapState(
 
     val toggleLabel: String
         get() = when {
-            presence == FolderMapPresence.Closed -> "打开目录图"
-            presence == FolderMapPresence.Collapsed -> "展开目录图"
-            presence == FolderMapPresence.Held -> "关闭目录图"
-            else -> "收起目录图"
+            presence == FolderMapPresence.Closed -> tr("打开目录图", "Open folder map", "フォルダーマップを開く", "폴더 맵 열기")
+            presence == FolderMapPresence.Collapsed -> tr("展开目录图", "Expand folder map", "フォルダーマップを展開", "폴더 맵 펼치기")
+            presence == FolderMapPresence.Held -> tr("关闭目录图", "Close folder map", "フォルダーマップを閉じる", "폴더 맵 닫기")
+            else -> tr("收起目录图", "Collapse folder map", "フォルダーマップを折りたたむ", "폴더 맵 접기")
         }
 
     fun toggleFilter() {
@@ -361,12 +367,12 @@ private fun flatten(
         null -> out += MapRow("loading:$parentId", parent, depth, loading = true, guides = guides)
         is FolderMapLevel.Failed -> out += MapRow("failed:$parentId", parent, depth, note = level.message, guides = guides)
         FolderMapLevel.NeedsPassword -> out += MapRow(
-            "password:$parentId", parent, depth, note = "需要密码，点此进入后输入", onNoteClick = { onOpen(parent) },
+            "password:$parentId", parent, depth, note = tr("需要密码，点此进入后输入", "Password required; open to enter it", "パスワードが必要です。開いて入力してください", "비밀번호가 필요합니다. 열어서 입력하세요"), onNoteClick = { onOpen(parent) },
             noteIcon = Icons.Outlined.Key, guides = guides,
         )
         is FolderMapLevel.Loaded -> {
             if (level.nodes.isEmpty()) {
-                out += MapRow("empty:$parentId", parent, depth, note = "空文件夹", onNoteClick = { state.collapse(parentId) }, guides = guides)
+                out += MapRow("empty:$parentId", parent, depth, note = tr("空文件夹", "Empty folder", "空のフォルダー", "빈 폴더"), onNoteClick = { state.collapse(parentId) }, guides = guides)
                 return
             }
             val (expandable, files) = level.nodes.partition { it.expandable }
@@ -382,12 +388,12 @@ private fun flatten(
             }
             if (hidden > 0) {
                 out += MapRow(
-                    "more:$parentId", parent, depth, note = "还有 $hidden 个文件", onNoteClick = { state.showAllFiles(parentId) },
+                    "more:$parentId", parent, depth, note = tr("还有 $hidden 个文件", "$hidden more files", "ほか $hidden ファイル", "추가 파일 ${hidden}개"), onNoteClick = { state.showAllFiles(parentId) },
                     noteIcon = Icons.Outlined.UnfoldMore, guides = guides,
                 )
             } else if (foldable) {
                 out += MapRow(
-                    "less:$parentId", parent, depth, note = "收起", onNoteClick = { state.foldFiles(parentId) },
+                    "less:$parentId", parent, depth, note = tr("收起", "Collapse", "折りたたむ", "접기"), onNoteClick = { state.foldFiles(parentId) },
                     noteIcon = Icons.Outlined.UnfoldLess, guides = guides,
                 )
             }
@@ -535,7 +541,7 @@ private fun FolderMapTree(
         ) {
             Icon(Icons.Outlined.Search, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
             Box(Modifier.weight(1f)) {
-                if (query.isEmpty()) Text("过滤已展开的内容", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                if (query.isEmpty()) Text(stringResource(Res.string.text_filter_expanded_contents), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                 BasicTextField(
                     value = query,
                     onValueChange = { state.query = it },
@@ -547,7 +553,7 @@ private fun FolderMapTree(
             }
         }
         Column(Modifier.weight(1f, fill = false).verticalScroll(state.scroll).padding(bottom = 8.dp)) {
-            if (rows.isEmpty() && query.isNotBlank()) MapNote("已展开的内容里没有「${query.trim()}」", row = null)
+            if (rows.isEmpty() && query.isNotBlank()) MapNote(tr("已展开的内容里没有「${query.trim()}」", "No “${query.trim()}” in expanded contents", "展開した内容に「${query.trim()}」はありません", "펼친 내용에 “${query.trim()}”이(가) 없습니다"), row = null)
             rows.forEach { row ->
                 when {
                     row.loading -> Box(
@@ -595,12 +601,12 @@ private fun MapNodeRow(
     val bring = remember { BringIntoViewRequester() }
     LaunchedEffect(highlighted) { if (highlighted) bring.bringIntoView() }
     dev.piko.ui.components.WorkspaceTreeRow(
-        name = node.crumb.name, depth = row.depth,
+        name = node.crumb.localizedName, depth = row.depth,
         icon = node.file?.typeIcon() ?: if (node.isArchive) Icons.Outlined.FolderZip else Icons.Outlined.Folder,
         expanded = if (leaf) null else state.isExpanded(id),
         onExpand = { if (state.isExpanded(id)) state.collapse(id) else state.expand(id) },
         onOpen = onClick, emphasized = here || onPath,
-        supporting = if (showPath && row.stack.size > 2) row.stack.drop(1).dropLast(1).joinToString(" › ") { it.name } else null,
+        supporting = if (showPath && row.stack.size > 2) row.stack.drop(1).dropLast(1).joinToString(" › ") { it.localizedName } else null,
         modifier = Modifier.bringIntoViewRequester(bring).padding(horizontal = 4.dp)
             .then(if (node.expandable) Modifier.fileDropTarget("map:$id", node.crumb) else Modifier)
             .clip(MaterialTheme.shapes.medium)
@@ -677,12 +683,12 @@ internal fun FolderMapSheet(
     val root = remember { listOf(PikoDriveRepository.ROOT_BREADCRUMB) }
     val dismiss = { state.dispatch(FolderMapEvent.Close) }
     LaunchedEffect(current.lastOrNull()?.id) { state.reveal(root, current) }
-    PikoSheet(onDismissRequest = dismiss, sideSheetTitle = "目录图") {
+    PikoSheet(onDismissRequest = dismiss, sideSheetTitle = tr("目录图", "Folder map", "フォルダーマップ", "폴더 맵")) {
         Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).padding(12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("目录图", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                TextButton(onClick = state::toggleFilter) { Text("过滤") }
-                TextButton(onClick = dismiss) { Text("关闭") }
+                Text(stringResource(Res.string.text_folder_map), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                TextButton(onClick = state::toggleFilter) { Text(stringResource(Res.string.text_filter)) }
+                TextButton(onClick = dismiss) { Text(stringResource(Res.string.common_close)) }
             }
             FolderMapTree(
                 state, root, current,
@@ -745,8 +751,8 @@ internal fun FolderMapPanel(
     Box(modifier.fillMaxSize()) {
         FloatingPanel(
             state = state.panel,
-            title = "目录图",
-            closeLabel = "关闭目录图",
+            title = tr("目录图", "Folder map", "フォルダーマップ", "폴더 맵"),
+            closeLabel = tr("关闭目录图", "Close folder map", "フォルダーマップを閉じる", "폴더 맵 닫기"),
             onClose = { state.dispatch(FolderMapEvent.Close) },
             minWidth = PanelMinWidth,
             maxWidth = PanelMaxWidth,
@@ -779,11 +785,11 @@ internal fun FolderMapPanel(
             enter = motion.peekEnter(fromEnd = state.dock != DockSide.Left, offsetPx = with(density) { PeekOffset.roundToPx() }),
             exit = motion.peekExit(),
             headerActions = {
-                if (onHome != null) PanelHeaderButton(Icons.Outlined.Home, "我的网盘", onHome)
-                PanelHeaderToggle(Icons.Outlined.Search, Icons.Filled.Search, "过滤", checked = state.filterShown, onClick = state::toggleFilter)
+                if (onHome != null) PanelHeaderButton(Icons.Outlined.Home, tr("我的网盘", "My drive", "マイドライブ", "내 드라이브"), onHome)
+                PanelHeaderToggle(Icons.Outlined.Search, Icons.Filled.Search, tr("过滤", "Filter", "絞り込み", "필터"), checked = state.filterShown, onClick = state::toggleFilter)
                 // 停在中间时也给：钉住是记下来的偏好，拖回边沿或关掉再开时生效
                 val pinned = state.autoHide.pinned
-                PanelHeaderToggle(Icons.Outlined.PushPin, Icons.Filled.PushPin, if (pinned) "取消钉住" else "钉住", checked = pinned) {
+                PanelHeaderToggle(Icons.Outlined.PushPin, Icons.Filled.PushPin, if (pinned) tr("取消钉住", "Unpin", "固定を解除", "고정 해제") else tr("钉住", "Pin", "固定", "고정"), checked = pinned) {
                     state.dispatch(FolderMapEvent.PinToggled)
                 }
             },
@@ -840,7 +846,7 @@ private fun BoxScope.FolderMapStrip(state: FolderMapState, side: DockSide) {
             .hoverable(interactions)
             .pointerHoverIcon(PointerIcon.Hand)
             .semantics {
-                contentDescription = "展开目录图"
+                contentDescription = tr("展开目录图", "Expand folder map", "フォルダーマップを展開", "폴더 맵 펼치기")
                 role = Role.Button
                 onClick {
                     state.activateStrip(keyboard = true)

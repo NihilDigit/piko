@@ -1,5 +1,13 @@
 package dev.piko.ui.screens.settings
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+import org.jetbrains.compose.resources.getString
+
+import dev.piko.ui.ObserveMessages
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -69,9 +77,7 @@ internal fun AboutSection(snackbarHostState: SnackbarHostState, modifier: Modifi
     val updater = platform.updater
     val scope = rememberCoroutineScope()
     var updateInSheet by remember { mutableStateOf<AvailableUpdate?>(null) }
-    LaunchedEffect(updater, snackbarHostState) {
-        updater?.messages?.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
-    }
+    updater?.let { ObserveMessages(it.messages, snackbarHostState) }
 
     SettingsGroup(title = null, modifier = modifier) {
         AboutCard(
@@ -100,28 +106,28 @@ internal fun AboutSection(snackbarHostState: SnackbarHostState, modifier: Modifi
             val autoCheckUpdates by sessionManager.autoCheckUpdatesFlow.collectAsState(initial = true)
             SettingsSwitchRow(
                 icon = Icons.Outlined.SystemUpdate,
-                title = "自动检查更新",
-                supporting = "启动时检查，有新版本时提示",
+                title = tr("自动检查更新", "Check for updates automatically", "更新を自動確認", "업데이트 자동 확인"),
+                supporting = tr("启动时检查，有新版本时提示", "Check at startup and notify when an update is available", "起動時に確認し、新しいバージョンがあれば通知", "시작 시 확인하고 새 버전이 있으면 알림"),
                 checked = autoCheckUpdates,
                 onCheckedChange = { scope.launch { sessionManager.setAutoCheckUpdates(it) } },
             )
         }
         SettingsNavigationRow(
             icon = Icons.Outlined.BugReport,
-            title = "导出日志",
-            supporting = "反馈问题时附上，不含文件名与账号机密",
+            title = tr("导出日志", "Export logs", "ログをエクスポート", "로그 내보내기"),
+            supporting = tr("反馈问题时附上，不含文件名与账号机密", "Attach when reporting issues; file names and account secrets are excluded", "問題報告時に添付してください。ファイル名やアカウントの機密情報は含みません", "문제 보고 시 첨부하세요. 파일 이름 및 계정 비밀 정보는 포함되지 않습니다"),
             onClick = { scope.launch { exportLogs(platform) } },
             trailingIcon = null,
         )
         // 日志只留七天，这里给的是复现之前手动清一次：导出的就只有这一次的经过
         SettingsNavigationRow(
             icon = Icons.Outlined.History,
-            title = "清除日志",
-            supporting = "日志保留七天，复现问题前可先清空",
+            title = tr("清除日志", "Clear logs", "ログを消去", "로그 지우기"),
+            supporting = tr("日志保留七天，复现问题前可先清空", "Logs are kept for seven days. Clear them before reproducing an issue", "ログは7日間保持されます。問題を再現する前に消去できます", "로그는 7일간 보관됩니다. 문제 재현 전에 지울 수 있습니다"),
             onClick = {
                 scope.launch {
                     PikoLog.clear()
-                    snackbarHostState.showSnackbar("已清除日志", withDismissAction = true)
+                    snackbarHostState.showSnackbar(getString(Res.string.text_logs_cleared), withDismissAction = true)
                 }
             },
             trailingIcon = null,
@@ -146,7 +152,7 @@ private suspend fun exportLogs(platform: PikoPlatform) {
     val now = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
     fun Int.pad() = toString().padStart(2, '0')
     val stamp = "${now.year}${now.month.number.pad()}${now.day.pad()}-${now.hour.pad()}${now.minute.pad()}${now.second.pad()}"
-    val header = "Piko ${platform.appVersion}\n${platform.deviceSummary}\n导出于 $now\n\n"
+    val header = tr("Piko ${platform.appVersion}\n${platform.deviceSummary}\n导出于 $now\n\n", "Piko ${platform.appVersion}\n${platform.deviceSummary}\nExported at $now\n\n", "Piko ${platform.appVersion}\n${platform.deviceSummary}\nエクスポート日時 $now\n\n", "Piko ${platform.appVersion}\n${platform.deviceSummary}\n내보낸 시각 $now\n\n")
     platform.exportLog("piko-log-$stamp.txt", header + PikoLog.export())
 }
 
@@ -176,7 +182,7 @@ private fun AboutCard(
                 Spacer(modifier = Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Piko", style = MaterialTheme.typography.titleMedium)
-                    Text("版本 $version", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                    Text(tr("版本 $version", "Version $version", "バージョン $version", "버전 $version"), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                     updateStatus?.let(::updateStatusText)?.let { (text, emphasis) ->
                         Text(
                             text = text,
@@ -201,9 +207,9 @@ private fun AboutCard(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             when (updateStatus) {
-                                is UpdateStatus.Available, is UpdateStatus.ReadyToRestart -> "查看更新"
-                                is UpdateStatus.Downloading, is UpdateStatus.Installing -> "查看进度"
-                                else -> "检查更新"
+                                is UpdateStatus.Available, is UpdateStatus.ReadyToRestart -> tr("查看更新", "View update", "更新を表示", "업데이트 보기")
+                                is UpdateStatus.Downloading, is UpdateStatus.Installing -> tr("查看进度", "View progress", "進捗を表示", "진행 상황 보기")
+                                else -> tr("检查更新", "Check for updates", "更新を確認", "업데이트 확인")
                             },
                             maxLines = 1,
                         )
@@ -229,7 +235,7 @@ private fun AboutCard(
                 ) {
                     Icon(Icons.Outlined.Code, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("开源仓库", maxLines = 1)
+                    Text(stringResource(Res.string.text_source_code), maxLines = 1)
                     Spacer(modifier = Modifier.width(4.dp))
                     Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
                 }
@@ -243,7 +249,7 @@ private fun AboutCard(
                 ) {
                     Icon(Icons.Outlined.Campaign, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Telegram 频道", maxLines = 1)
+                    Text(stringResource(Res.string.text_telegram_channel), maxLines = 1)
                     Spacer(modifier = Modifier.width(4.dp))
                     Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
                 }
@@ -257,11 +263,11 @@ private enum class UpdateEmphasis { Normal, Positive, Error }
 /** 更新状态写在版本号下面一行；还没检查过时不写。 */
 private fun updateStatusText(status: UpdateStatus): Pair<String, UpdateEmphasis>? = when (status) {
     UpdateStatus.Idle -> null
-    UpdateStatus.Checking -> "正在检查更新" to UpdateEmphasis.Normal
-    UpdateStatus.UpToDate -> "已是最新版本" to UpdateEmphasis.Normal
-    is UpdateStatus.Available -> "发现新版本 ${status.update.version}" to UpdateEmphasis.Positive
-    is UpdateStatus.Downloading -> "正在下载 ${(status.progress * 100).toInt()}%" to UpdateEmphasis.Normal
-    is UpdateStatus.Installing -> "等待安装确认" to UpdateEmphasis.Normal
-    is UpdateStatus.ReadyToRestart -> "已下载，重启后完成更新" to UpdateEmphasis.Positive
+    UpdateStatus.Checking -> tr("正在检查更新", "Checking for updates", "更新を確認中", "업데이트 확인 중") to UpdateEmphasis.Normal
+    UpdateStatus.UpToDate -> tr("已是最新版本", "Up to date", "最新バージョンです", "최신 버전입니다") to UpdateEmphasis.Normal
+    is UpdateStatus.Available -> tr("发现新版本 ${status.update.version}", "Update available: ${status.update.version}", "新バージョン ${status.update.version} があります", "새 버전 ${status.update.version} 사용 가능") to UpdateEmphasis.Positive
+    is UpdateStatus.Downloading -> tr("正在下载 ${(status.progress * 100).toInt()}%", "Downloading ${(status.progress * 100).toInt()}%", "ダウンロード中 ${(status.progress * 100).toInt()}%", "다운로드 중 ${(status.progress * 100).toInt()}%") to UpdateEmphasis.Normal
+    is UpdateStatus.Installing -> tr("等待安装确认", "Waiting for installation confirmation", "インストールの確認待ち", "설치 확인 대기 중") to UpdateEmphasis.Normal
+    is UpdateStatus.ReadyToRestart -> tr("已下载，重启后完成更新", "Downloaded; restart to finish updating", "ダウンロード済み。再起動すると更新が完了します", "다운로드 완료. 다시 시작하면 업데이트됩니다") to UpdateEmphasis.Positive
     is UpdateStatus.Failed -> status.message to UpdateEmphasis.Error
 }

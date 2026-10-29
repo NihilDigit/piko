@@ -1,5 +1,9 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -87,13 +91,13 @@ internal fun FileActionsSheet(
     val folders = target.files.count { it.isFolder }
     val files = target.files.size - folders
     ItemDetailsSheet(
-        title = "已选择 ${target.files.size} 项",
+        title = tr("已选择 ${target.files.size} 项", "${enCount(target.files.size, "item", "items")} selected", "${target.files.size} 項目を選択中", "${target.files.size}개 선택됨"),
         headerIcon = { Icon(Icons.Outlined.Checklist, contentDescription = null, modifier = Modifier.fillMaxSize()) },
         actions = actions,
         onDismiss = onDismiss,
         metaParts = listOfNotNull(
-            folders.takeIf { it > 0 }?.let { "$it 个文件夹" },
-            files.takeIf { it > 0 }?.let { "$it 个文件" },
+            folders.takeIf { it > 0 }?.let { tr("$it 个文件夹", "${enCount(it, "folder", "folders")}", "$it フォルダー", "폴더 ${it}개") },
+            files.takeIf { it > 0 }?.let { tr("$it 个文件", "${enCount(it, "file", "files")}", "$it ファイル", "파일 ${it}개") },
             target.files.filterNot { it.isFolder }.takeIf { it.isNotEmpty() }?.sumOf { it.sizeBytes }?.toReadableSize(),
         ),
         extraLines = {
@@ -210,9 +214,17 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
  * mypikpak.com/s/ 分享链接；自己上传或新建的没有。离线任务生成的顶层文件夹与其中的文件都带着。
  * Piko 从磁力秒传的文件由仓库按来源账本补上同一个字段（SourceLedger），所以磁力一类叫「磁力链接」，不叫「离线下载」。
  */
-internal enum class FileSource(val label: String, val copyLabel: String) {
-    Magnet("来源：磁力链接", "复制磁力链接"),
-    Share("来源：从分享转存", "复制分享链接"),
+internal enum class FileSource {
+    Magnet, Share;
+
+    val label: String get() = when (this) {
+        Magnet -> tr("来源：磁力链接", "Source: magnet link", "ソース：マグネットリンク", "출처: 마그넷 링크")
+        Share -> tr("来源：从分享转存", "Source: saved share", "ソース：共有から保存", "출처: 공유에서 저장")
+    }
+    val copyLabel: String get() = when (this) {
+        Magnet -> tr("复制磁力链接", "Copy magnet link", "マグネットリンクをコピー", "마그넷 링크 복사")
+        Share -> tr("复制分享链接", "Copy share link", "共有リンクをコピー", "공유 링크 복사")
+    }
 }
 
 internal val FileStat.source: FileSource?
@@ -239,12 +251,12 @@ private fun sheetMetaParts(file: FileStat, usage: FolderUsageResult?): List<Stri
     val modified = file.modifiedTime.takeIf { it.isNotEmpty() }?.take(16)?.replace('T', ' ')
     if (!file.isFolder) return file.metaParts(includeDate = false) + listOfNotNull(modified)
     val counted = (usage as? FolderUsageResult.Counted)?.usage
-        ?: return listOfNotNull(if (usage == null) "统计中" else null, modified)
-    val count = "${counted.fileCount} 个文件"
+        ?: return listOfNotNull(if (usage == null) tr("统计中", "Calculating", "集計中", "계산 중") else null, modified)
+    val count = tr("${counted.fileCount} 个文件", "${enCount(counted.fileCount, "file", "files")}", "${counted.fileCount} ファイル", "파일 ${counted.fileCount}개")
     val size = counted.bytes.toReadableSize()
     return when (counted.progress) {
-        FolderUsage.Progress.COUNTING -> listOf(count, size, "统计中")
+        FolderUsage.Progress.COUNTING -> listOf(count, size, tr("统计中", "Calculating", "集計中", "계산 중"))
         FolderUsage.Progress.COMPLETE -> listOfNotNull(count, size, modified)
-        FolderUsage.Progress.TRUNCATED -> listOfNotNull("至少 $count", "至少 $size", modified)
+        FolderUsage.Progress.TRUNCATED -> listOfNotNull(tr("至少 $count", "At least $count", "少なくとも $count", "최소 $count"), tr("至少 $size", "At least $size", "少なくとも $size", "최소 $size"), modified)
     }
 }

@@ -1,5 +1,10 @@
 package dev.piko.update
 
+import dev.piko.shared.i18n.tr
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -83,7 +88,7 @@ fun UpdateDialog(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Piko ${update.version}")
                 Text(
-                    text = "当前版本 ${platform.appVersion}，需下载 ${update.downloadSize.toReadableSize()}",
+                    text = tr("当前版本 ${platform.appVersion}，需下载 ${update.downloadSize.toReadableSize()}", "Current version ${platform.appVersion}; download ${update.downloadSize.toReadableSize()}", "現在のバージョン ${platform.appVersion}、ダウンロード ${update.downloadSize.toReadableSize()}", "현재 버전 ${platform.appVersion}, 다운로드 ${update.downloadSize.toReadableSize()}"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -98,7 +103,7 @@ fun UpdateDialog(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     ReleaseNotes(
-                        markdown = update.notes.ifBlank { "此版本没有更新说明" },
+                        markdown = update.notes.ifBlank { tr("此版本没有更新说明", "No release notes for this version", "このバージョンの更新情報はありません", "이 버전의 업데이트 정보가 없습니다") },
                         modifier = Modifier
                             .heightIn(max = 320.dp)
                             .verticalScroll(rememberScrollState())
@@ -120,27 +125,27 @@ fun UpdateDialog(
         },
         confirmButton = {
             when {
-                !update.canInstallInApp -> Button(onClick = { platform.openUrl(update.pageUrl) }) { Text("前往下载页") }
+                !update.canInstallInApp -> Button(onClick = { platform.openUrl(update.pageUrl) }) { Text(stringResource(Res.string.text_go_to_download_page)) }
                 status is UpdateStatus.Downloading -> Button(onClick = {}, enabled = false) {
-                    Text("正在下载 ${(status.progress * 100).toInt()}%")
+                    Text(tr("正在下载 ${(status.progress * 100).toInt()}%", "Downloading ${(status.progress * 100).toInt()}%", "ダウンロード中 ${(status.progress * 100).toInt()}%", "다운로드 중 ${(status.progress * 100).toInt()}%"))
                 }
-                status is UpdateStatus.ReadyToRestart -> Button(onClick = restart) { Text("重启并更新") }
-                status is UpdateStatus.Installing -> Button(onClick = {}, enabled = false) { Text("等待安装") }
+                status is UpdateStatus.ReadyToRestart -> Button(onClick = restart) { Text(stringResource(Res.string.text_restart_and_update)) }
+                status is UpdateStatus.Installing -> Button(onClick = {}, enabled = false) { Text(stringResource(Res.string.text_waiting_to_install)) }
                 // 失败后主动作就是再来一次，与第一次下载没有区别
-                status is UpdateStatus.Failed -> Button(onClick = startDownload) { Text("重试") }
-                else -> Button(onClick = startDownload) { Text("下载并安装") }
+                status is UpdateStatus.Failed -> Button(onClick = startDownload) { Text(stringResource(Res.string.common_retry)) }
+                else -> Button(onClick = startDownload) { Text(stringResource(Res.string.text_download_and_install)) }
             }
         },
         dismissButton = {
             // 下载中不能点外面关掉，但要给一条出路：网络卡住时对话框一直挡在那里（M3 dialogs：不可轻触关闭的对话框
             // 必须有可执行的动作）
             if (downloading) {
-                download?.let { job -> TextButton(onClick = { job.cancel() }) { Text("取消下载") } }
+                download?.let { job -> TextButton(onClick = { job.cancel() }) { Text(stringResource(Res.string.text_cancel_download)) } }
             } else {
                 if (onIgnore != null) {
-                    TextButton(onClick = onIgnore) { Text("忽略此版本") }
+                    TextButton(onClick = onIgnore) { Text(stringResource(Res.string.text_ignore_this_version)) }
                 } else if (update.canInstallInApp) {
-                    TextButton(onClick = { platform.openUrl(update.pageUrl) }) { Text("在浏览器中查看") }
+                    TextButton(onClick = { platform.openUrl(update.pageUrl) }) { Text(stringResource(Res.string.text_view_in_browser)) }
                 }
             }
         },
@@ -149,11 +154,11 @@ fun UpdateDialog(
     if (confirmInterrupt) {
         PikoDialog(
             onDismissRequest = { confirmInterrupt = false },
-            title = { Text("中断下载并更新？") },
-            text = { Text("重启更新会中断正在进行的下载。") },
+            title = { Text(stringResource(Res.string.text_interrupt_downloads_and_update)) },
+            text = { Text(stringResource(Res.string.text_restarting_to_update_interrupts_active_downloads)) },
             confirmButton = {
                 PikoDialogConfirm(
-                    label = "重启并更新",
+                    label = tr("重启并更新", "Restart and update", "再起動して更新", "다시 시작 및 업데이트"),
                     onClick = {
                         confirmInterrupt = false
                         scope.launch { updater.restartToInstall(update) }
@@ -161,7 +166,7 @@ fun UpdateDialog(
                 )
             },
             dismissButton = {
-                TextButton(onClick = { confirmInterrupt = false }) { Text("取消") }
+                TextButton(onClick = { confirmInterrupt = false }) { Text(stringResource(Res.string.common_cancel)) }
             },
         )
     }
@@ -176,7 +181,7 @@ private fun UpdateStatusContent(status: UpdateStatus?, update: AvailableUpdate) 
                 update.downloadSize.toReadableSize(),
         )
         is UpdateStatus.ReadyToRestart -> Text(
-            text = "已下载，Piko 将退出并在更新后重新打开",
+            text = stringResource(Res.string.text_downloaded_piko_will_quit_and_reopen_after_updating),
             style = MaterialTheme.typography.bodyMedium,
         )
         is UpdateStatus.Failed -> Text(
@@ -186,7 +191,7 @@ private fun UpdateStatusContent(status: UpdateStatus?, update: AvailableUpdate) 
         )
         else -> if (!update.canInstallInApp) {
             Text(
-                text = "此版本无法在应用内安装，请从下载页获取",
+                text = stringResource(Res.string.text_this_version_cannot_be_installed_in_app_use_the_download_page),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

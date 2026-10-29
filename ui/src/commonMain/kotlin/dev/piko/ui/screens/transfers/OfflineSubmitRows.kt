@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.transfers
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.ui.Modifier
 
 import androidx.compose.material.icons.Icons
@@ -8,6 +13,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.state.OfflineSubmitWork
 import dev.piko.shared.state.OfflineSubmitStatus
 import dev.piko.ui.components.ItemDetailsContent
@@ -16,18 +22,18 @@ import dev.piko.ui.components.SheetAction
 import dev.piko.ui.workProgress
 
 internal fun offlineSubmitActions(work: OfflineSubmitWork, onShow: (() -> Unit)?, onForget: () -> Unit): List<SheetAction> = buildList {
-    if (onShow != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onShow))
-    if (!work.isRunning) add(SheetAction(Icons.Outlined.Close, "移除记录", onForget))
+    if (onShow != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onShow))
+    if (!work.isRunning) add(SheetAction(Icons.Outlined.Close, tr("移除记录", "Remove record", "記録を削除", "기록 삭제"), onForget))
 }
 
 @Composable
 internal fun OfflineSubmitDetails(work: OfflineSubmitWork, actions: List<SheetAction>, modifier: Modifier = Modifier) {
     val progress = work.workProgress()
     ItemDetailsContent(modifier = modifier, showIcon = false, title = work.title, headerIcon = { ListLeadingIcon(Icons.Outlined.Bolt) },
-        metaParts = listOf("离线提交", progress.status), actions = actions, extraLines = {
-            Text("保存目标：${work.target.name}")
+        metaParts = listOf(tr("离线提交", "Cloud download submission", "クラウドダウンロード送信", "클라우드 다운로드 제출"), progress.status), actions = actions, extraLines = {
+            Text(tr("保存目标：${work.target.localizedName}", "Destination: ${work.target.localizedName}", "保存先：${work.target.localizedName}", "저장 대상: ${work.target.localizedName}"))
             Text(work.message)
-            if (work.status == OfflineSubmitStatus.UNCONFIRMED) Text("没有收到远端任务引用，无法自动核对。请检查云端任务和实际目录；这里不会再次提交请求，也不会对疑似产出执行整包清理。")
-            Text("移除记录不取消请求、不删除产出，也不证明可以重新提交。")
+            if (work.status == OfflineSubmitStatus.UNCONFIRMED) Text(stringResource(Res.string.text_no_remote_task_reference_was_received_inspect_cloud_tasks_and_the_destinatio))
+            Text(stringResource(Res.string.text_removing_the_record_does_not_cancel_requests_delete_outputs_or_establish_tha))
         })
 }

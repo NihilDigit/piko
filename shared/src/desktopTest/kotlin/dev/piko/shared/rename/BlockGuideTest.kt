@@ -5,6 +5,19 @@ import kotlin.test.assertEquals
 
 class BlockGuideTest {
     @Test
+    fun `localized guides and presets produce the displayed results`() {
+        try {
+            for (language in dev.piko.data.auth.AppLanguage.entries.filter { it != dev.piko.data.auth.AppLanguage.SYSTEM }) {
+                dev.piko.shared.i18n.PikoLocale.apply(language)
+                for (entry in BlockGuide) entry.example?.let { assertExample(it, entry.title) }
+                for (preset in RenamePresets) assertExample(preset.example, preset.label)
+            }
+        } finally {
+            dev.piko.shared.i18n.PikoLocale.apply(dev.piko.data.auth.AppLanguage.ZH_CN)
+        }
+    }
+
+    @Test
     fun `every example in the block guide does what it says`() {
         for (entry in BlockGuide) {
             val example = entry.example ?: continue

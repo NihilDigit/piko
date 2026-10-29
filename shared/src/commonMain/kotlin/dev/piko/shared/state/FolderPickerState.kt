@@ -1,5 +1,7 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -105,8 +107,8 @@ class FolderPickerState(
                         reload()
                     }
                 }
-                .logFailure("FolderPicker", "新建文件夹失败")
-                .onFailure { _messages.tryEmit("新建文件夹失败") }
+                .logFailure("FolderPicker", tr("新建文件夹失败", "Failed to create folder", "フォルダーを作成できませんでした", "폴더를 만들지 못했습니다"))
+                .onFailure { _messages.tryEmit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("新建文件夹", "Create folder", "フォルダーを作成", "폴더 만들기"), it)) }
             isCreatingFolder = false
         }
     }
@@ -123,8 +125,8 @@ class FolderPickerState(
             while (true) {
                 val (list, next) = driveRepo.listFiles(parentId = parentId, pageToken = token)
                     .getOrElse { error ->
-                        PikoLog.w("FolderPicker", "读取目录失败", error)
-                        loadError = error.message ?: "未知错误"
+                        PikoLog.w("FolderPicker", tr("读取目录失败", "Failed to load folder", "フォルダーを読み込めませんでした", "폴더를 불러오지 못했습니다"), error)
+                        loadError = dev.piko.shared.notice.PikoErrorMapper.message(error)
                         return
                     }
                 val childFolders = list.filter { it.isFolder && !isPikoInternalFolder(it, parentId) }

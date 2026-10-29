@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.transfers
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.CloudUpload
@@ -23,12 +25,12 @@ import dev.piko.ui.theme.LocalStatusColors
 
 /** 上传中没有状态词：进度条与速度已经说明它在传。 */
 internal fun UploadTask.statusLabel(): String? = when (status) {
-    UploadStatus.QUEUED -> "等待中"
-    UploadStatus.HASHING -> "校验中"
+    UploadStatus.QUEUED -> tr("等待中", "Waiting", "待機中", "대기 중")
+    UploadStatus.HASHING -> tr("校验中", "Verifying", "検証中", "확인 중")
     UploadStatus.UPLOADING -> null
-    UploadStatus.PAUSED -> "已暂停"
-    UploadStatus.COMPLETED -> if (isInstant) "秒传完成" else "已上传"
-    UploadStatus.FAILED -> "上传失败"
+    UploadStatus.PAUSED -> tr("已暂停", "Paused", "一時停止中", "일시 중지됨")
+    UploadStatus.COMPLETED -> if (isInstant) tr("秒传完成", "Instant upload complete", "インスタントアップロード完了", "즉시 업로드 완료") else tr("已上传", "Uploaded", "アップロード済み", "업로드됨")
+    UploadStatus.FAILED -> tr("上传失败", "Upload failed", "アップロード失敗", "업로드 실패")
 }
 
 internal fun UploadTask.statusDetails(): List<String> {
@@ -38,7 +40,7 @@ internal fun UploadTask.statusDetails(): List<String> {
         UploadStatus.HASHING, UploadStatus.UPLOADING -> buildList {
             add(progress)
             if (speedBytesPerSec > 0) add("${speedBytesPerSec.toReadableSize()}/s")
-            remainingTime(size - processedBytes, speedBytesPerSec)?.let { add("剩余 $it") }
+            remainingTime(size - processedBytes, speedBytesPerSec)?.let { add(tr("剩余 $it", "$it remaining", "残り $it", "$it 남음")) }
         }
         // 重启后读回的任务不带进度（见调度器的 restore），只显示大小
         UploadStatus.PAUSED -> if (processedBytes > 0) listOf(progress) else listOf(size.toReadableSize())
@@ -52,7 +54,7 @@ internal val UploadTask.canOpen: Boolean
 internal val UploadTask.canPlayVideo: Boolean
     get() = canOpen && fileName.isPlayableVideo()
 
-internal fun UploadTask.failureReason(): String = errorMessage?.takeIf { it.isNotBlank() } ?: "网络中断"
+internal fun UploadTask.failureReason(): String = errorMessage?.takeIf { it.isNotBlank() } ?: tr("网络中断", "Network interrupted", "ネットワークが切断されました", "네트워크 연결이 끊어졌습니다")
 
 
 @Composable
@@ -71,9 +73,9 @@ internal fun UploadTransferDetails(task: UploadTask, actions: List<SheetAction>,
         title = task.fileName,
         headerIcon = { TaskFileTypeIcon(task.fileName, Icons.Outlined.CloudUpload) },
         actions = actions,
-        metaParts = listOfNotNull("上传", task.statusLabel()) + task.statusDetails(),
+        metaParts = listOfNotNull(tr("上传", "Uploads", "アップロード", "업로드"), task.statusLabel()) + task.statusDetails(),
         extraLines = {
-            Text(text = "保存到 ${task.parentName}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(text = tr("保存到 ${task.parentName}", "Saved to ${task.parentName}", "保存先 ${task.parentName}", "저장 위치 ${task.parentName}"), color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (task.status == UploadStatus.FAILED) Text(text = task.failureReason(), color = statusColor)
         },
     )
@@ -107,27 +109,27 @@ internal fun uploadTransferActions(
 ): List<SheetAction> = buildList {
     when (task.status) {
         UploadStatus.COMPLETED -> {
-            if (task.canPlayVideo && onPlay != null) add(SheetAction(Icons.Outlined.PlayArrow, "播放", onPlay))
-            if (task.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpen))
-            else if (onOpenParent != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpenParent))
+            if (task.canPlayVideo && onPlay != null) add(SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생"), onPlay))
+            if (task.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onOpen))
+            else if (onOpenParent != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onOpenParent))
         }
         UploadStatus.HASHING, UploadStatus.UPLOADING, UploadStatus.QUEUED -> {
-            add(SheetAction(Icons.Outlined.Pause, "暂停", onPause))
-            if (onOpenParent != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpenParent))
+            add(SheetAction(Icons.Outlined.Pause, tr("暂停", "Pause", "一時停止", "일시 중지"), onPause))
+            if (onOpenParent != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onOpenParent))
         }
         UploadStatus.PAUSED -> {
-            add(SheetAction(Icons.Outlined.PlayArrow, "继续上传", onResume))
-            if (onOpenParent != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpenParent))
+            add(SheetAction(Icons.Outlined.PlayArrow, tr("继续上传", "Resume upload", "アップロードを再開", "업로드 계속"), onResume))
+            if (onOpenParent != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onOpenParent))
         }
         UploadStatus.FAILED -> {
-            add(SheetAction(Icons.Outlined.Refresh, "重试", onResume))
-            if (onOpenParent != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpenParent))
+            add(SheetAction(Icons.Outlined.Refresh, tr("重试", "Retry", "再試行", "다시 시도"), onResume))
+            if (onOpenParent != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onOpenParent))
         }
     }
     if (onRevealLocal != null) {
-        add(SheetAction(Icons.Outlined.FolderOpen, "打开所在文件夹", onRevealLocal))
+        add(SheetAction(Icons.Outlined.FolderOpen, tr("打开所在文件夹", "Open containing folder", "保存先フォルダーを開く", "파일 위치 열기"), onRevealLocal))
     }
     // 未完成的一并删掉网盘里那个上传中的文件；已完成的只删记录
-    val removeLabel = if (task.status == UploadStatus.COMPLETED) "移除记录" else "取消上传"
+    val removeLabel = if (task.status == UploadStatus.COMPLETED) tr("移除记录", "Remove record", "記録を削除", "기록 삭제") else tr("取消上传", "Cancel upload", "アップロードをキャンセル", "업로드 취소")
     add(SheetAction(Icons.Outlined.Delete, removeLabel, onRemove, destructive = true))
 }

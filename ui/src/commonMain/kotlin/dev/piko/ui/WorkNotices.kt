@@ -1,10 +1,15 @@
 package dev.piko.ui
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.snapshotFlow
 import dev.piko.download.DownloadBatch
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.download.PikoDownloadCoordinator
+import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.state.ArchiveExtractSession
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateSession
@@ -37,7 +42,7 @@ class WorkNotice(val title: String, val message: String)
 fun PikoServices.workNotices(): Flow<WorkNotice> = merge(
     downloadNotices(downloadManager),
     uploadNotices(uploadManager, clientManager),
-    uploadManager.preparationOutcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice("上传准备未完成", it.result?.message.orEmpty()) },
+    uploadManager.preparationOutcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice(tr("上传准备未完成", "Upload preparation incomplete", "アップロードの準備が未完了です", "업로드 준비 미완료"), it.result?.message.orEmpty()) },
     serverWorkNotices(),
     sessionNotices({ duplicateSessions.toList() }) { session, preexisting ->
         duplicateNotices(session, if (preexisting) session.state?.takeIf { it.phase.isFinished() } else null)
@@ -65,9 +70,9 @@ fun PikoServices.workNotices(): Flow<WorkNotice> = merge(
 fun PikoServices.serverWorkNotices(withUndoable: Boolean = true): Flow<WorkNotice> = merge(
     archiveExtractSession.outcomes.map {
         WorkNotice(when (it.outcome) {
-            dev.piko.shared.state.ArchiveCompletion.SUCCEEDED -> "解压完成"
-            dev.piko.shared.state.ArchiveCompletion.FAILED -> "解压失败"
-            dev.piko.shared.state.ArchiveCompletion.UNCONFIRMED -> "解压结果待确认"
+            dev.piko.shared.state.ArchiveCompletion.SUCCEEDED -> tr("解压完成", "Extraction complete", "解凍完了", "압축 해제 완료")
+            dev.piko.shared.state.ArchiveCompletion.FAILED -> tr("解压失败", "Extraction failed", "解凍失敗", "압축 해제 실패")
+            dev.piko.shared.state.ArchiveCompletion.UNCONFIRMED -> tr("解压结果待确认", "Extraction result unconfirmed", "解凍結果は未確認です", "압축 해제 결과 미확인")
         }, it.message)
     },
     folderVaultSession.outcomes.filter { withUndoable || !it.undoable }.map { WorkNotice(it.title, it.message) },
@@ -89,8 +94,8 @@ private fun downloadNotices(downloads: PikoDownloadCoordinator): Flow<WorkNotice
                 return@forEach
             }
             when (task.status) {
-                DownloadStatus.COMPLETED -> emit(WorkNotice("下载完成", "${task.fileName} 已下载到本机"))
-                DownloadStatus.FAILED -> emit(WorkNotice("下载失败", "${task.fileName}：${task.errorMessage ?: "未知错误"}"))
+                DownloadStatus.COMPLETED -> emit(WorkNotice(tr("下载完成", "Download complete", "ダウンロード完了", "다운로드 완료"), tr("${task.fileName} 已下载到本机", "${task.fileName} downloaded to this device", "${task.fileName} をこの端末にダウンロードしました", "${task.fileName}을(를) 기기에 다운로드했습니다")))
+                DownloadStatus.FAILED -> emit(WorkNotice(tr("下载失败", "Download failed", "ダウンロード失敗", "다운로드 실패"), "${task.fileName}：${task.errorMessage ?: tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류")}"))
                 else -> Unit
             }
         }
@@ -101,9 +106,9 @@ private fun downloadNotices(downloads: PikoDownloadCoordinator): Flow<WorkNotice
             val failed = members.count { it.status == DownloadStatus.FAILED }
             emit(
                 if (failed == 0) {
-                    WorkNotice("下载完成", "${batch.folderName} 已下载到本机，共 ${members.size} 个文件")
+                    WorkNotice(tr("下载完成", "Download complete", "ダウンロード完了", "다운로드 완료"), tr("${batch.folderName} 已下载到本机，共 ${members.size} 个文件", "${batch.folderName} downloaded: ${enCount(members.size, "file", "files")}", "${batch.folderName} をダウンロードしました（${members.size} ファイル）", "${batch.folderName} 다운로드 완료: 파일 ${members.size}개"))
                 } else {
-                    WorkNotice("下载失败", "${batch.folderName}：$failed 个文件下载失败")
+                    WorkNotice(tr("下载失败", "Download failed", "ダウンロード失敗", "다운로드 실패"), tr("${batch.folderName}：$failed 个文件下载失败", "${batch.folderName}: ${enCount(failed, "download", "downloads")} failed", "${batch.folderName}：$failed ファイルのダウンロードに失敗しました", "${batch.folderName}: 파일 ${failed}개 다운로드 실패"))
                 },
             )
         }
@@ -164,25 +169,25 @@ private fun uploadSummary(tasks: List<UploadTask>): WorkNotice {
     val failed = tasks.filter { it.status == UploadStatus.FAILED }
     tasks.singleOrNull()?.let { task ->
         return when {
-            failed.isNotEmpty() -> WorkNotice("上传失败", "${task.fileName}：${task.errorMessage ?: "未知错误"}")
-            task.isInstant -> WorkNotice("秒传完成", "${task.fileName} 已秒传到「${task.parentName}」")
-            else -> WorkNotice("上传完成", "${task.fileName} 已上传到「${task.parentName}」")
+            failed.isNotEmpty() -> WorkNotice(tr("上传失败", "Upload failed", "アップロード失敗", "업로드 실패"), "${task.fileName}：${task.errorMessage ?: tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류")}")
+            task.isInstant -> WorkNotice(tr("秒传完成", "Instant upload complete", "インスタントアップロード完了", "즉시 업로드 완료"), tr("${task.fileName} 已秒传到「${task.parentName}」", "${task.fileName} uploaded instantly to “${task.parentName}”", "${task.fileName} を「${task.parentName}」にインスタントアップロードしました", "${task.fileName}을(를) “${task.parentName}”에 즉시 업로드했습니다"))
+            else -> WorkNotice(tr("上传完成", "Upload complete", "アップロード完了", "업로드 완료"), tr("${task.fileName} 已上传到「${task.parentName}」", "${task.fileName} uploaded to “${task.parentName}”", "${task.fileName} を「${task.parentName}」にアップロードしました", "${task.fileName}을(를) “${task.parentName}”에 업로드했습니다"))
         }
     }
     val title = when {
-        failed.isEmpty() -> "上传完成"
-        completed.isEmpty() -> "上传失败"
-        else -> "上传结束"
+        failed.isEmpty() -> tr("上传完成", "Upload complete", "アップロード完了", "업로드 완료")
+        completed.isEmpty() -> tr("上传失败", "Upload failed", "アップロード失敗", "업로드 실패")
+        else -> tr("上传结束", "Uploads finished", "アップロード終了", "업로드 종료")
     }
     val instantCount = completed.count { it.isInstant }
     val completedPart = when {
         completed.isEmpty() -> null
-        instantCount == completed.size -> "${completed.size} 个文件已秒传"
-        instantCount > 0 -> "${completed.size} 个文件已上传，其中 $instantCount 个秒传"
-        else -> "${completed.size} 个文件已上传"
+        instantCount == completed.size -> tr("${completed.size} 个文件已秒传", "${enCount(completed.size, "file", "files")} uploaded instantly", "${completed.size} ファイルをインスタントアップロードしました", "파일 ${completed.size}개 즉시 업로드 완료")
+        instantCount > 0 -> tr("${completed.size} 个文件已上传，其中 $instantCount 个秒传", "${enCount(completed.size, "file", "files")} uploaded, including $instantCount instant uploads", "${completed.size} ファイルをアップロードしました（うち $instantCount 件はインスタント）", "파일 ${completed.size}개 업로드 완료, ${instantCount}개 즉시 업로드")
+        else -> tr("${completed.size} 个文件已上传", "${enCount(completed.size, "file", "files")} uploaded", "${completed.size} ファイルをアップロードしました", "파일 ${completed.size}개 업로드 완료")
     }
-    val failedPart = failed.takeIf { it.isNotEmpty() }?.let { "${it.size} 个失败" }
-    return WorkNotice(title, listOfNotNull(completedPart, failedPart).joinToString("；"))
+    val failedPart = failed.takeIf { it.isNotEmpty() }?.let { tr("${it.size} 个失败", "${it.size} failed", "${it.size} 件失敗", "${it.size}개 실패") }
+    return WorkNotice(title, listOfNotNull(completedPart, failedPart).joinToString(tr("；", "; ", "、", ", ")))
 }
 
 /** Keep each session's observer across unrelated additions; removal ends only that observer. */
@@ -213,16 +218,17 @@ private fun duplicateNotices(session: DuplicateSession, skipExisting: DuplicateF
     }
 
 private fun duplicateSummary(finder: DuplicateFinderState): WorkNotice {
+    val rootName = finder.root.localizedName
     if (finder.phase == DuplicateFinderState.Phase.FAILED) {
-        return WorkNotice("查找重复失败", "「${finder.root.name}」：${finder.errorMessage ?: "未知错误"}")
+        return WorkNotice(tr("查找重复失败", "Duplicate search failed", "重複検索に失敗しました", "중복 검색 실패"), "「$rootName」：${finder.errorMessage ?: tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류")}")
     }
     val report = finder.report
     val groups = report.identical.size + report.versions.size
     val message = if (groups == 0) {
-        "「${finder.root.name}」中未发现重复文件"
+        tr("「$rootName」中未发现重复文件", "No duplicates in “$rootName”", "「$rootName」に重複ファイルはありません", "“$rootName”에 중복 파일이 없습니다")
     } else {
         val reclaimable = report.identical.sumOf { it.reclaimableBytes }
-        "「${finder.root.name}」中有 $groups 组重复文件" +if (reclaimable > 0) "，可释放 ${reclaimable.toReadableSize()}" else ""
+        tr("「$rootName」中有 $groups 组重复文件", "$groups duplicate groups in “$rootName”", "「$rootName」に $groups 組の重複ファイルがあります", "“$rootName”에 중복 파일 ${groups}개 그룹이 있습니다") +if (reclaimable > 0) tr("，可释放 ${reclaimable.toReadableSize()}", "; ${reclaimable.toReadableSize()} can be freed", "、${reclaimable.toReadableSize()} を解放できます", ", ${reclaimable.toReadableSize()} 확보 가능") else ""
     }
-    return WorkNotice("查找重复完成", message)
+    return WorkNotice(tr("查找重复完成", "Duplicate search complete", "重複検索完了", "중복 검색 완료"), message)
 }

@@ -1,5 +1,13 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.i18n.enCount
+import dev.piko.shared.presentation.localizedName
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.FlowRow
@@ -60,7 +68,7 @@ internal fun duplicateLocations(finder: DuplicateFinderState?): Map<String, Stri
     val report = finder?.report ?: return emptyMap()
     return (report.identical + report.versions).flatMap { it.rows }.associate { row ->
         val folder = row.file.folderPath
-        val location = if (folder.isEmpty()) finder.root.name else "${finder.root.name}/$folder"
+        val location = if (folder.isEmpty()) finder.root.localizedName else "${finder.root.localizedName}/$folder"
         row.file.id to location
     }
 }
@@ -69,11 +77,11 @@ internal fun duplicateLocations(finder: DuplicateFinderState?): Map<String, Stri
 internal fun duplicatesTab(finder: DuplicateFinderState): SessionTab {
     val groups = finder.report.identical.size + finder.report.versions.size
     val tooltip = when {
-        finder.isScanning -> "已扫描 ${finder.scannedFolders} 个文件夹"
-        groups == 0 -> "未发现重复文件"
-        else -> "$groups 组重复文件"
+        finder.isScanning -> tr("已扫描 ${finder.scannedFolders} 个文件夹", "Scanned ${enCount(finder.scannedFolders, "folder", "folders")}", "${finder.scannedFolders} フォルダーを検索済み", "폴더 ${finder.scannedFolders}개 검색 완료")
+        groups == 0 -> tr("未发现重复文件", "No duplicate files found", "重複ファイルはありません", "중복 파일이 없습니다")
+        else -> tr("$groups 组重复文件", "$groups duplicate groups", "$groups 組の重複ファイル", "중복 파일 ${groups}개 그룹")
     }
-    return SessionTab("查重：${finder.root.name}", tooltip, busy = finder.isScanning, icon = Icons.Outlined.FileCopy)
+    return SessionTab(tr("查重：${finder.root.localizedName}", "Duplicates: ${finder.root.localizedName}", "重複検索：${finder.root.localizedName}", "중복 검색: ${finder.root.localizedName}"), tooltip, busy = finder.isScanning, icon = Icons.Outlined.FileCopy)
 }
 
 internal fun duplicateCommandBarLeading(
@@ -87,9 +95,9 @@ internal fun duplicateCommandBarLeading(
     val identical = selectedKind == DuplicateKind.IDENTICAL
     val groups = if (identical) finder.report.identical else finder.report.versions
     val summary = if (identical) {
-        "${groups.size} 组，可腾出 ${groups.sumOf { it.reclaimableBytes }.toReadableSize()}"
+        tr("${groups.size} 组，可腾出 ${groups.sumOf { it.reclaimableBytes }.toReadableSize()}", "${enCount(groups.size, "group", "groups")}; ${groups.sumOf { it.reclaimableBytes }.toReadableSize()} reclaimable", "${groups.size} 組、${groups.sumOf { it.reclaimableBytes }.toReadableSize()} 解放可能", "${groups.size}개 그룹, ${groups.sumOf { it.reclaimableBytes }.toReadableSize()} 확보 가능")
     } else {
-        "${groups.size} 组，${groups.sumOf { it.rows.size }} 个版本"
+        tr("${groups.size} 组，${groups.sumOf { it.rows.size }} 个版本", "${enCount(groups.size, "group", "groups")}, ${groups.sumOf { it.rows.size }} versions", "${groups.size} 組、${groups.sumOf { it.rows.size }} バージョン", "${groups.size}개 그룹, ${groups.sumOf { it.rows.size }}개 버전")
     }
     return buildList {
         add(BarItem("dupKind", PinnedPriority) {
@@ -104,7 +112,7 @@ internal fun duplicateCommandBarLeading(
                         shapes = connectedToggleShapes(index, DuplicateKind.entries.size),
                         contentPadding = PaddingValues(horizontal = 12.dp),
                     ) {
-                        Text(if (kind == DuplicateKind.IDENTICAL) "相同文件" else "不同版本", maxLines = 1)
+                        Text(if (kind == DuplicateKind.IDENTICAL) tr("相同文件", "Identical files", "同一ファイル", "동일한 파일") else tr("不同版本", "Different versions", "異なるバージョン", "다른 버전"), maxLines = 1)
                     }
                 }
             }
@@ -116,7 +124,7 @@ internal fun duplicateCommandBarLeading(
                 overflow = DuplicateKeepRule.entries.map { rule ->
                     SheetAction(
                         Icons.Outlined.TaskAlt,
-                        "规则：${rule.label}",
+                        tr("规则：${rule.label}", "Rule: ${rule.label}", "ルール：${rule.label}", "규칙: ${rule.label}"),
                         { reportView.selectKeepRule(rule) },
                         group = ActionGroup.Sort,
                         checked = reportView.keepRule == rule,
@@ -126,7 +134,7 @@ internal fun duplicateCommandBarLeading(
                 var ruleMenu by remember { mutableStateOf(false) }
                 Box {
                     TextButton(onClick = { ruleMenu = true }) {
-                        Text("规则：${reportView.keepRule.label} ▾", maxLines = 1)
+                        Text(tr("规则：${reportView.keepRule.label} ▾", "Rule: ${reportView.keepRule.label} ▾", "ルール：${reportView.keepRule.label} ▾", "규칙: ${reportView.keepRule.label} ▾"), maxLines = 1)
                     }
                     DropdownMenu(expanded = ruleMenu, onDismissRequest = { ruleMenu = false }) {
                         DuplicateKeepRule.entries.forEach { rule ->
@@ -141,10 +149,10 @@ internal fun duplicateCommandBarLeading(
             add(BarItem(
                 key = "dupInvert",
                 priority = 65,
-                overflow = listOf(SheetAction(Icons.Outlined.FileCopy, "反选", { onSelectIds(reportView.invertSelectionIds(finder, selectedIds)) }, group = ActionGroup.Select)),
+                overflow = listOf(SheetAction(Icons.Outlined.FileCopy, tr("反选", "Invert selection", "選択を反転", "선택 반전"), { onSelectIds(reportView.invertSelectionIds(finder, selectedIds)) }, group = ActionGroup.Select)),
             ) {
                 TextButton(onClick = { onSelectIds(reportView.invertSelectionIds(finder, selectedIds)) }) {
-                    Text("反选", maxLines = 1)
+                    Text(stringResource(Res.string.text_invert_selection), maxLines = 1)
                 }
             })
         }
@@ -178,9 +186,9 @@ internal fun DuplicatesBanner(
     var menuOpen by remember { mutableStateOf(false) }
     var ruleMenu by remember { mutableStateOf(false) }
     val warning = when (finder.scanStop) {
-        ScanStop.CANCELLED -> "扫描已停止，结果不完整"
-        ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> "已达扫描上限，结果不完整"
-        ScanStop.TIMEOUT -> "扫描超时，结果不完整"
+        ScanStop.CANCELLED -> tr("扫描已停止，结果不完整", "Scan stopped; results incomplete", "検索停止。結果は不完全です", "검색 중지됨. 불완전한 결과")
+        ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> tr("已达扫描上限，结果不完整", "Scan limit reached; results incomplete", "検索上限に到達。結果は不完全です", "검색 한도 도달. 불완전한 결과")
+        ScanStop.TIMEOUT -> tr("扫描超时，结果不完整", "Scan timed out; results incomplete", "検索がタイムアウト。結果は不完全です", "검색 시간 초과. 불완전한 결과")
         null -> null
     }
     val hasWarning = warning != null || finder.failedFolders > 0
@@ -203,7 +211,7 @@ internal fun DuplicatesBanner(
                             shapes = connectedToggleShapes(index, DuplicateKind.entries.size),
                             contentPadding = PaddingValues(horizontal = 12.dp),
                         ) {
-                            Text(if (kind == DuplicateKind.IDENTICAL) "相同文件" else "不同版本", maxLines = 1)
+                            Text(if (kind == DuplicateKind.IDENTICAL) tr("相同文件", "Identical files", "同一ファイル", "동일한 파일") else tr("不同版本", "Different versions", "異なるバージョン", "다른 버전"), maxLines = 1)
                         }
                     }
                 }
@@ -213,7 +221,7 @@ internal fun DuplicatesBanner(
                             onClick = { ruleMenu = true },
                             contentPadding = PaddingValues(horizontal = 8.dp),
                         ) {
-                            Text("规则：${reportView.keepRule.label} ▾", maxLines = 1)
+                            Text(tr("规则：${reportView.keepRule.label} ▾", "Rule: ${reportView.keepRule.label} ▾", "ルール：${reportView.keepRule.label} ▾", "규칙: ${reportView.keepRule.label} ▾"), maxLines = 1)
                         }
                         DropdownMenu(expanded = ruleMenu, onDismissRequest = { ruleMenu = false }) {
                             DuplicateKeepRule.entries.forEach { rule ->
@@ -229,32 +237,32 @@ internal fun DuplicatesBanner(
                             onClick = { onSelectIds(reportView.invertSelectionIds(finder, selectedIds)) },
                             contentPadding = PaddingValues(horizontal = 8.dp),
                         ) {
-                            Text("反选", maxLines = 1)
+                            Text(stringResource(Res.string.text_invert_selection), maxLines = 1)
                         }
                     }
                 }
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.End) {
-                    Text("${groups.size} 组", style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                    Text(tr("${groups.size} 组", "${enCount(groups.size, "group", "groups")}", "${groups.size} 組", "${groups.size}개 그룹"), style = MaterialTheme.typography.titleSmall, maxLines = 1)
                     Text(
-                        if (identical) "可腾出 ${groups.sumOf { it.reclaimableBytes }.toReadableSize()}"
-                        else "${groups.sumOf { it.rows.size }} 个版本",
+                        if (identical) tr("可腾出 ${groups.sumOf { it.reclaimableBytes }.toReadableSize()}", "${groups.sumOf { it.reclaimableBytes }.toReadableSize()} reclaimable", "${groups.sumOf { it.reclaimableBytes }.toReadableSize()} 解放可能", "${groups.sumOf { it.reclaimableBytes }.toReadableSize()} 확보 가능")
+                        else tr("${groups.sumOf { it.rows.size }} 个版本", "${groups.sumOf { it.rows.size }} versions", "${groups.sumOf { it.rows.size }} バージョン", "${groups.sumOf { it.rows.size }}개 버전"),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                     )
                 }
                 Box {
-                    TooltipIconButton(Icons.Outlined.MoreVert, "查重选项", { menuOpen = true })
+                    TooltipIconButton(Icons.Outlined.MoreVert, tr("查重选项", "Duplicate search options", "重複検索のオプション", "중복 검색 옵션"), { menuOpen = true })
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(text = { Text("重新扫描") }, onClick = { menuOpen = false; finder.rescan() })
-                        DropdownMenuItem(text = { Text("结束查重") }, onClick = { menuOpen = false; onEnd() })
+                        DropdownMenuItem(text = { Text(stringResource(Res.string.text_scan_again)) }, onClick = { menuOpen = false; finder.rescan() })
+                        DropdownMenuItem(text = { Text(stringResource(Res.string.text_end_duplicate_search)) }, onClick = { menuOpen = false; onEnd() })
                     }
                 }
             }
         }
         if (hasWarning) {
             Text(
-                listOfNotNull(warning, "${finder.failedFolders} 个文件夹读取失败".takeIf { finder.failedFolders > 0 }).joinToString("，"),
+                listOfNotNull(warning, tr("${finder.failedFolders} 个文件夹读取失败", "${enCount(finder.failedFolders, "folder", "folders")} failed to load", "${finder.failedFolders} フォルダーの読み込みに失敗", "폴더 ${finder.failedFolders}개 불러오기 실패").takeIf { finder.failedFolders > 0 }).joinToString("，"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = if (controlsInCommandBar) 0.dp else 4.dp),
@@ -277,40 +285,40 @@ internal fun DuplicatesEmptyState(finder: DuplicateFinderState?, onLeave: () -> 
         when (finder?.phase) {
             null -> {
                 PikoEmptyState(
-                    title = "查找已结束",
-                    description = "扫描结果未保存",
+                    title = tr("查找已结束", "Search finished", "検索は終了しました", "검색 종료됨"),
+                    description = tr("扫描结果未保存", "Scan results not saved", "検索結果は未保存です", "검색 결과가 저장되지 않았습니다"),
                     icon = if (cleaning) Icons.Outlined.FileCopy else Icons.Outlined.TaskAlt,
                 )
-                TextButton(onClick = onLeave) { Text("返回网盘") }
+                TextButton(onClick = onLeave) { Text(stringResource(Res.string.text_back_to_drive)) }
             }
             Phase.SCANNING, Phase.ANALYZING -> {
                 // 要等几分钟、总量事先不知道：不确定的线性进度条，与窄窗口 sheet 里的同一种（progress-indicators.md）
                 LinearProgressIndicator(Modifier.widthIn(max = 240.dp).fillMaxWidth())
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    text = if (finder.phase == Phase.ANALYZING) "正在比对" else "正在扫描「${finder.root.name}」",
+                    text = if (finder.phase == Phase.ANALYZING) tr("正在比对", "Comparing", "照合中", "비교 중") else tr("正在扫描「${finder.root.localizedName}」", "Scanning “${finder.root.localizedName}”", "「${finder.root.localizedName}」を検索中", "“${finder.root.localizedName}” 검색 중"),
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
                     // 窄窗口里离开即结束查找，见 TaskSlot
-                    text = "已扫描 ${finder.scannedFolders} 个文件夹、${finder.scannedFiles} 个文件" + if (canLeave) "，离开此页后继续" else "",
+                    text = tr("已扫描 ${finder.scannedFolders} 个文件夹、${finder.scannedFiles} 个文件", "Scanned ${enCount(finder.scannedFolders, "folder", "folders")} and ${enCount(finder.scannedFiles, "file", "files")}", "${finder.scannedFolders} フォルダー、${finder.scannedFiles} ファイルを検索済み", "폴더 ${finder.scannedFolders}개, 파일 ${finder.scannedFiles}개 검색 완료") + if (canLeave) tr("，离开此页后继续", "; continues after leaving this page", "。この画面を離れても続行します", ". 이 페이지를 나가도 계속합니다") else "",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (finder.phase == Phase.SCANNING) {
                     Spacer(Modifier.height(24.dp))
                     // 停止不丢弃已扫描的部分，按钮文案据此写明
-                    OutlinedButton(onClick = finder::stopScan) { Text("停止并查看结果") }
+                    OutlinedButton(onClick = finder::stopScan) { Text(stringResource(Res.string.text_stop_and_view_results)) }
                 }
             }
-            Phase.FAILED -> PikoErrorState(title = "扫描失败", message = finder.errorMessage.orEmpty(), onRetry = finder::rescan)
+            Phase.FAILED -> PikoErrorState(title = tr("扫描失败", "Scan failed", "検索に失敗しました", "검색 실패"), message = finder.errorMessage.orEmpty(), onRetry = finder::rescan)
             Phase.DONE -> {
                 PikoEmptyState(
-                    title = if (cleaning) "正在清理所选文件" else if (selectedKind == DuplicateKind.IDENTICAL) "没有相同文件" else "没有不同版本",
+                    title = if (cleaning) tr("正在清理所选文件", "Cleaning selected files", "選択したファイルを整理中", "선택한 파일 정리 중") else if (selectedKind == DuplicateKind.IDENTICAL) tr("没有相同文件", "No identical files", "同一ファイルはありません", "동일한 파일이 없습니다") else tr("没有不同版本", "No different versions", "異なるバージョンはありません", "다른 버전이 없습니다"),
                     icon = Icons.Outlined.TaskAlt,
                 )
-                if (!cleaning) TextButton(onClick = finder::rescan) { Text("重新扫描") }
+                if (!cleaning) TextButton(onClick = finder::rescan) { Text(stringResource(Res.string.text_scan_again)) }
             }
         }
     }

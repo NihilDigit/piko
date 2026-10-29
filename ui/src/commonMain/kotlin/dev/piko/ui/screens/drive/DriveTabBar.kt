@@ -1,5 +1,11 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+import dev.piko.shared.presentation.localizedName
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -219,7 +225,7 @@ internal fun DriveTabBar(
             }
             TooltipIconButton(
                 Icons.Outlined.Add,
-                "新建标签页",
+                tr("新建标签页", "New tab", "新しいタブ", "새 탭"),
                 onNewTab,
                 shortcut = newTabShortcut,
                 modifier = Modifier.onGloballyPositioned { dragArea.plusRight = it.boundsInWindow().right },
@@ -227,10 +233,10 @@ internal fun DriveTabBar(
             if (onCloseOthers != null && tabs.size > 1) {
                 var menuOpen by remember { mutableStateOf(false) }
                 Box(Modifier.onGloballyPositioned { dragArea.plusRight = it.boundsInWindow().right }) {
-                    TooltipIconButton(Icons.Outlined.MoreVert, "标签页操作", { menuOpen = true })
+                    TooltipIconButton(Icons.Outlined.MoreVert, tr("标签页操作", "Tab actions", "タブの操作", "탭 작업"), { menuOpen = true })
                     androidx.compose.material3.DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("关闭其他标签") },
+                            text = { Text(stringResource(Res.string.text_close_other_tabs)) },
                             enabled = tabs.any { it.id != activeId && canClose(it.id) },
                             onClick = { menuOpen = false; onCloseOthers(activeId) },
                         )
@@ -319,9 +325,9 @@ private fun TabChip(
     val icon = session?.icon ?: library?.icon ?: if (fromFeed) Icons.Outlined.SwipeVertical else Icons.Outlined.Folder
     val title = session?.title ?: tab.title
     val tooltip = when {
-        fromFeed -> "从信息流打开：" + tab.stack.joinToString(" › ") { it.name }
+        fromFeed -> tr("从信息流打开：", "Opened from feed:", "フィードから開く：", "피드에서 열기:") + tab.stack.joinToString(" › ") { it.localizedName }
         session != null -> session.tooltip
-        else -> tab.stack.joinToString(" › ") { it.name }
+        else -> tab.stack.joinToString(" › ") { it.localizedName }
     }
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
@@ -376,7 +382,7 @@ private fun TabChip(
                 if (onClose != null && (active || hovered)) {
                     Icon(
                         Icons.Outlined.Close,
-                        contentDescription = "关闭标签页",
+                        contentDescription = tr("关闭标签页", "Close tab", "タブを閉じる", "탭 닫기"),
                         tint = contentColor,
                         modifier = Modifier.size(24.dp).clip(CircleShape).clickable(onClick = onClose).padding(4.dp),
                     )

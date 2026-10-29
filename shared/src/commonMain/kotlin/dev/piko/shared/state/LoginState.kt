@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoClientManager
+import dev.piko.shared.i18n.tr
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -26,7 +27,7 @@ class LoginState(
     var isLoggingIn by mutableStateOf(false)
         private set
     /** 带着失效的账号进来（[initialAccount] 非空）时一开始就说明为什么要登录。 */
-    var errorMessage by mutableStateOf(if (initialAccount.isNotBlank()) EXPIRED_MESSAGE else null)
+    var errorMessage by mutableStateOf(if (initialAccount.isNotBlank()) expiredMessage() else null)
         private set
 
     /** 预先填好了账号，光标该落在密码框。 */
@@ -56,7 +57,7 @@ class LoginState(
         scope.launch {
             try {
                 clientManager.login(account.trim()) { submittedPassword }
-                    .onFailure { errorMessage = it.message ?: "登录失败，请检查账号密码" }
+                    .onFailure { errorMessage = it.message ?: tr("登录失败，请检查账号密码", "Sign-in failed. Check your account and password", "ログインに失敗しました。アカウントとパスワードを確認してください", "로그인 실패. 계정과 비밀번호를 확인해 주세요") }
             } finally {
                 isLoggingIn = false
             }
@@ -64,6 +65,6 @@ class LoginState(
     }
 
     private companion object {
-        const val EXPIRED_MESSAGE = "登录已失效，请重新输入密码"
+        fun expiredMessage() = tr("登录已失效，请重新输入密码", "Session expired. Please enter your password again", "セッションの有効期限が切れました。パスワードを再入力してください", "세션이 만료되었습니다. 비밀번호를 다시 입력해 주세요")
     }
 }

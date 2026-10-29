@@ -1,5 +1,7 @@
 package dev.piko.ui.navigation
 
+import dev.piko.shared.i18n.tr
+
 import androidx.navigation3.runtime.NavKey
 import kotlinx.serialization.Serializable
 
@@ -42,8 +44,11 @@ sealed interface Screen : NavKey {
     ) : Screen
 }
 
-enum class MainTab(val title: String) {
-    FILES("文件"),
-    TRANSFERS("任务"),
-    SETTINGS("我的"),
+enum class MainTab(private val titleText: () -> String) {
+    FILES({ tr("文件", "Files", "ファイル", "파일") }),
+    TRANSFERS({ tr("任务", "Tasks", "タスク", "작업") }),
+    SETTINGS({ tr("我的", "Me", "マイページ", "내 정보") }),
+;
+
+    val title: String get() = titleText()
 }

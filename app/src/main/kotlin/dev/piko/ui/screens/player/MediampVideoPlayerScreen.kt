@@ -1,5 +1,9 @@
 package dev.piko.ui.screens.player
 
+import dev.piko.shared.i18n.tr
+
+import dev.piko.ui.ObserveMessages
+
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -160,9 +164,7 @@ fun MediampVideoPlayerScreen(
         app.downloadManager.findCompletedLocalPath(stat)?.let(state::useLocalCopy)
     }
 
-    LaunchedEffect(state) {
-        state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
-    }
+    ObserveMessages(state.messages, snackbarHostState)
 
     // 弹出选择框时正在放的视频。回调只带 URI，选文件与复制期间可能已连播到下一集；
     // 选择框开着时 Activity 可能被重建，所以存进 rememberSaveable
@@ -173,8 +175,8 @@ fun MediampVideoPlayerScreen(
         scope.launch {
             when (val copied = withContext(Dispatchers.IO) { copySubtitleToCache(context, uri) }) {
                 is LocalSubtitle.Copied -> state.addLocalSubtitle(videoFileId, copied.file.absolutePath, copied.file.name)
-                LocalSubtitle.Unsupported -> snackbarHostState.showSnackbar("不支持这种字幕格式", withDismissAction = true)
-                LocalSubtitle.Unreadable -> snackbarHostState.showSnackbar("无法读取字幕文件", withDismissAction = true)
+                LocalSubtitle.Unsupported -> snackbarHostState.showSnackbar(tr("不支持这种字幕格式", "Unsupported subtitle format", "対応していない字幕形式です", "지원하지 않는 자막 형식입니다"), withDismissAction = true)
+                LocalSubtitle.Unreadable -> snackbarHostState.showSnackbar(tr("无法读取字幕文件", "Unable to read subtitle file", "字幕ファイルを読み込めません", "자막 파일을 읽을 수 없습니다"), withDismissAction = true)
             }
         }
     }
@@ -240,10 +242,10 @@ fun MediampVideoPlayerScreen(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 MEDIA_CHANNEL_ID,
-                "媒体播放",
+                tr("媒体播放", "Media playback", "メディア再生", "미디어 재생"),
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "视频播放时的系统媒体控制"
+                description = tr("视频播放时的系统媒体控制", "System media controls during video playback", "動画再生中のシステムメディア操作", "동영상 재생 중 시스템 미디어 제어")
                 setShowBadge(false)
             }
             notificationManager.createNotificationChannel(channel)
@@ -526,7 +528,7 @@ private fun copySubtitleToCache(context: Context, uri: Uri): LocalSubtitle {
     if (!isPlayerSubtitleName(name)) return LocalSubtitle.Unsupported
     val target = File(File(context.cacheDir, "subtitles").apply { mkdirs() }, name.replace('/', '_'))
     return runCatching {
-        resolver.openInputStream(uri)?.use { input -> target.outputStream().use { input.copyTo(it) } } ?: error("打不开")
+        resolver.openInputStream(uri)?.use { input -> target.outputStream().use { input.copyTo(it) } } ?: error(tr("打不开", "Unable to open", "開けません", "열 수 없습니다"))
         LocalSubtitle.Copied(target)
     }.getOrElse { LocalSubtitle.Unreadable }
 }

@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.transfers
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
@@ -129,10 +131,10 @@ internal fun remainingTime(remainingBytes: Long?, speed: Long): String? {
     if (remainingBytes == null || remainingBytes <= 0 || speed <= 0) return null
     val seconds = remainingBytes / speed
     return when {
-        seconds < 60 -> "${seconds.coerceAtLeast(1)} 秒"
-        seconds < 3600 -> "${seconds / 60} 分 ${seconds % 60} 秒"
-        seconds < 86_400 -> "${seconds / 3600} 小时 ${seconds % 3600 / 60} 分"
-        else -> "超过一天"
+        seconds < 60 -> tr("${seconds.coerceAtLeast(1)} 秒", "${seconds.coerceAtLeast(1)} sec", "${seconds.coerceAtLeast(1)} 秒", "${seconds.coerceAtLeast(1)}초")
+        seconds < 3600 -> tr("${seconds / 60} 分 ${seconds % 60} 秒", "${seconds / 60} min ${seconds % 60} sec", "${seconds / 60} 分 ${seconds % 60} 秒", "${seconds / 60}분 ${seconds % 60}초")
+        seconds < 86_400 -> tr("${seconds / 3600} 小时 ${seconds % 3600 / 60} 分", "${seconds / 3600} hr ${seconds % 3600 / 60} min", "${seconds / 3600} 時間 ${seconds % 3600 / 60} 分", "${seconds / 3600}시간 ${seconds % 3600 / 60}분")
+        else -> tr("超过一天", "Over a day", "1日以上", "하루 이상")
     }
 }
 

@@ -1,5 +1,10 @@
 package dev.piko.ui.components
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -72,7 +77,14 @@ fun formatTimeMs(ms: Long): String {
     }
 }
 
-internal enum class Handle(val label: String) { START("起点"), END("终点") }
+internal enum class Handle {
+    START, END;
+
+    val label: String get() = when (this) {
+        START -> tr("起点", "Start point", "開始点", "시작점")
+        END -> tr("终点", "End point", "終了点", "끝점")
+    }
+}
 
 // 片段至少这么长：再短抽出来只剩关键帧前后的零头
 private const val MIN_CLIP_MS = 500L
@@ -209,10 +221,10 @@ fun SegmentDownloadSheet(
     if (confirmDiscard) {
         PikoDialog(
             onDismissRequest = { confirmDiscard = false },
-            title = { Text("放弃下载片段？") },
-            text = { Text("选好的起点与终点不会保留。") },
-            confirmButton = { PikoDialogConfirm("放弃", onClick = { confirmDiscard = false; session.end() }) },
-            dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text("继续编辑") } },
+            title = { Text(stringResource(Res.string.text_discard_clip_download)) },
+            text = { Text(stringResource(Res.string.text_the_selected_start_and_end_points_will_be_lost)) },
+            confirmButton = { PikoDialogConfirm(tr("放弃", "Discard", "破棄", "버리기"), onClick = { confirmDiscard = false; session.end() }) },
+            dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text(stringResource(Res.string.text_keep_editing)) } },
         )
     }
     PikoSheet(onDismissRequest = { if (session.isEdited) confirmDiscard = true else session.end() }) {
@@ -225,7 +237,7 @@ fun SegmentDownloadSheet(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Column {
-                Text("下载片段", style = MaterialTheme.typography.titleLarge)
+                Text(stringResource(Res.string.text_download_clip), style = MaterialTheme.typography.titleLarge)
                 Text(
                     text = itemName ?: file.name,
                     style = MaterialTheme.typography.bodyMedium,
@@ -303,12 +315,12 @@ fun SegmentDownloadSheet(
                     )
                     Row(modifier = Modifier.fillMaxWidth()) {
                         Text(
-                            text = "${formatTimeMs(startPosMs)} 至 ${formatTimeMs(endPosMs)}",
+                            text = tr("${formatTimeMs(startPosMs)} 至 ${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)} to ${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)} ～ ${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)}~${formatTimeMs(endPosMs)}"),
                             style = MaterialTheme.typography.labelMedium,
                             modifier = Modifier.weight(1f),
                         )
                         Text(
-                            text = "全长 ${formatTimeMs(totalDurationMs)}",
+                            text = tr("全长 ${formatTimeMs(totalDurationMs)}", "Total ${formatTimeMs(totalDurationMs)}", "全長 ${formatTimeMs(totalDurationMs)}", "전체 길이 ${formatTimeMs(totalDurationMs)}"),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -319,19 +331,19 @@ fun SegmentDownloadSheet(
             // 只有原画时不给选；转码档截出来同样存为 MP4
             if (qualities != null && qualities.size > 1) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("画质", style = MaterialTheme.typography.bodyMedium)
+                    Text(stringResource(Res.string.text_quality), style = MaterialTheme.typography.bodyMedium)
                     // 读不出的档留在原位、停用，理由同画质对话框的 QualityRow
                     ConnectedToggle(
                         options = qualities,
                         selected = selectedQuality?.let { chosen -> qualities.first { it.name == chosen.name } },
-                        label = { it.name ?: "原画" },
+                        label = { it.name ?: tr("原画", "Original", "オリジナル", "원본") },
                         enabled = { !it.unreadable },
                         onSelect = { session.pickedQuality = it.name ?: ORIGINAL_QUALITY },
                     )
                 }
                 if (pickedUnreadable) {
                     Text(
-                        "PikPak 的 ${pickedOption?.name} 转码文件暂不可读，请改选其他画质。",
+                        tr("PikPak 的 ${pickedOption?.name} 转码文件暂不可读，请改选其他画质。", "PikPak’s ${pickedOption?.name} transcode is unavailable. Choose another quality.", "PikPakの ${pickedOption?.name} 変換済み動画を読み込めません。別の画質を選択してください。", "PikPak의 ${pickedOption?.name} 변환 파일을 읽을 수 없습니다. 다른 화질을 선택하세요."),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error,
                     )
@@ -345,11 +357,11 @@ fun SegmentDownloadSheet(
             val estimatedBytes = sourceBytes?.let { (it * ratio).toLong().coerceIn(0L, it) }
             Column {
                 MetaRow(
-                    parts = listOfNotNull("时长 ${formatTimeMs(clipDurationMs)}", estimatedBytes?.let { "约 ${it.toReadableSize()}" }),
+                    parts = listOfNotNull(tr("时长 ${formatTimeMs(clipDurationMs)}", "Duration ${formatTimeMs(clipDurationMs)}", "長さ ${formatTimeMs(clipDurationMs)}", "길이 ${formatTimeMs(clipDurationMs)}"), estimatedBytes?.let { tr("约 ${it.toReadableSize()}", "About ${it.toReadableSize()}", "約 ${it.toReadableSize()}", "약 ${it.toReadableSize()}") }),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    text = "起点对齐到前一个关键帧",
+                    text = stringResource(Res.string.text_align_start_to_previous_keyframe),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -372,7 +384,7 @@ fun SegmentDownloadSheet(
                     .height(56.dp),
             ) {
                 Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(20.dp))
-                Text("下载片段", modifier = Modifier.padding(start = 8.dp))
+                Text(stringResource(Res.string.text_download_clip), modifier = Modifier.padding(start = 8.dp))
             }
         }
     }

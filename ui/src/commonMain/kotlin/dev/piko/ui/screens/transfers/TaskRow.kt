@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.transfers
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -119,7 +121,7 @@ internal fun TaskRow(
                     .size(ListLeadingSize)
                     .then(
                         if (!selection.active && onLeadingClick != null) {
-                            Modifier.clip(MaterialTheme.shapes.small).clickable(onClickLabel = "播放", onClick = onLeadingClick)
+                            Modifier.clip(MaterialTheme.shapes.small).clickable(onClickLabel = tr("播放", "Play", "再生", "재생"), onClick = onLeadingClick)
                         } else {
                             Modifier
                         },
@@ -127,7 +129,7 @@ internal fun TaskRow(
                 contentAlignment = Alignment.Center,
             ) {
                 if (selection.active) {
-                    Checkbox(selection.selected, null, Modifier.semantics { contentDescription = "选择任务：${model.title}" })
+                    Checkbox(selection.selected, null, Modifier.semantics { contentDescription = tr("选择任务：${model.title}", "Select task: ${model.title}", "タスクを選択：${model.title}", "작업 선택: ${model.title}") })
                 } else if (leadingVisual != null) {
                     leadingVisual()
                 } else {
@@ -144,8 +146,8 @@ internal fun TaskRow(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    val detailPart = model.detail?.takeIf { it.isNotBlank() && it != "已完成" }
-                        ?: model.status.takeIf { it.isNotBlank() && it != "已完成" }
+                    val detailPart = model.detail?.takeIf { it.isNotBlank() && it != tr("已完成", "Completed", "完了", "완료") }
+                        ?: model.status.takeIf { it.isNotBlank() && it != tr("已完成", "Completed", "完了", "완료") }
                     val metaParts = listOfNotNull(
                         model.kind,
                         detailPart,
@@ -192,7 +194,7 @@ private fun TaskProgressCell(model: TaskRowModel, attention: Boolean, modifier: 
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(model.status, style = MaterialTheme.typography.bodySmall, color = if (attention) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = if (attention) 2 else 1, overflow = TextOverflow.Ellipsis)
-        if (model.meter != WorkMeter.None) WorkMeterBar(model.meter, "任务进度：${model.title}", Modifier.fillMaxWidth())
+        if (model.meter != WorkMeter.None) WorkMeterBar(model.meter, tr("任务进度：${model.title}", "Task progress: ${model.title}", "タスクの進捗：${model.title}", "작업 진행 상황: ${model.title}"), Modifier.fillMaxWidth())
         if (showDetail) model.detail?.takeIf { it.isNotBlank() && it != model.status }?.let {
             Text(it, style = MaterialTheme.typography.bodySmall,
                 color = if (attention) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,

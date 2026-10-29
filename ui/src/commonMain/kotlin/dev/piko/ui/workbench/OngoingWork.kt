@@ -1,5 +1,10 @@
 package dev.piko.ui.workbench
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -27,6 +32,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.presentation.WorkspaceContext
+import dev.piko.shared.presentation.localizedName
 import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.platform.rememberCaptionSlot
@@ -54,7 +60,7 @@ internal fun WorkspaceControls(compact: Boolean = false) {
     val colors = MaterialTheme.colorScheme
     IconButton(
         onClick = show,
-        modifier = Modifier.semantics { contentDescription = "标签总览" },
+        modifier = Modifier.semantics { contentDescription = tr("标签总览", "Tab overview", "タブ一覧", "탭 개요") },
     ) {
         Box(
             modifier = Modifier
@@ -99,9 +105,9 @@ internal fun WorkspaceControls(compact: Boolean = false) {
 }
 
 internal fun workspaceTitle(model: WorkspaceViewModel, context: WorkspaceContext): String = when (context) {
-    is WorkspaceContext.File -> "文件"
-    is WorkspaceContext.Duplicate -> "查重：${context.root.name}"
-    is WorkspaceContext.ImportDraft -> model.importModels[context.id]?.state?.summary()?.title ?: "添加链接"
+    is WorkspaceContext.File -> tr("文件", "Files", "ファイル", "파일")
+    is WorkspaceContext.Duplicate -> tr("查重：${context.root.localizedName}", "Duplicates: ${context.root.localizedName}", "重複検索：${context.root.localizedName}", "중복 검색: ${context.root.localizedName}")
+    is WorkspaceContext.ImportDraft -> model.importModels[context.id]?.state?.summary()?.title ?: tr("添加链接", "Add link", "リンクを追加", "링크 추가")
 }
 
 @Composable
@@ -121,19 +127,19 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                 Modifier.fillMaxWidth().then(caption.modifier).padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("${contexts.size} 个标签页", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1)
-                TooltipIconButton(Icons.Outlined.Close, "关闭标签总览", onDismiss)
+                Text(tr("${contexts.size} 个标签页", "${contexts.size} tabs", "${contexts.size} タブ", "탭 ${contexts.size}개"), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                TooltipIconButton(Icons.Outlined.Close, tr("关闭标签总览", "Close tab overview", "タブ一覧を閉じる", "탭 개요 닫기"), onDismiss)
                 caption.buttons?.invoke()
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = { model.newFileContext(); onDismiss() }) {
-                    Icon(Icons.Outlined.Add, null); Spacer(Modifier.width(8.dp)); Text("新建标签")
+                    Icon(Icons.Outlined.Add, null); Spacer(Modifier.width(8.dp)); Text(stringResource(Res.string.text_new_tab_alt))
                 }
                 Spacer(Modifier.weight(1f))
                 TextButton(
                     onClick = { model.requestCloseOtherContexts(active) },
                     enabled = contexts.any { it.id != active && model.canCloseContext(it.id) },
-                ) { Text("关闭其他标签") }
+                ) { Text(stringResource(Res.string.text_close_other_tabs)) }
             }
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
@@ -145,7 +151,7 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                 items(contexts, key = { it.id }) { context ->
                     val isActive = context.id == active
                     val file = files.firstOrNull { it.id == context.id }
-                    val title = file?.stack?.lastOrNull()?.name ?: workspaceTitle(model, context)
+                    val title = file?.stack?.lastOrNull()?.localizedName ?: workspaceTitle(model, context)
                     val icon = when (context) {
                         is WorkspaceContext.File -> Icons.Outlined.Folder
                         is WorkspaceContext.Duplicate -> Icons.Outlined.FileCopy
@@ -180,7 +186,7 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                     if (canClose) {
-                                        TooltipIconButton(Icons.Outlined.Close, "关闭 $title", { model.requestCloseContext(context.id) })
+                                        TooltipIconButton(Icons.Outlined.Close, tr("关闭 $title", "Close $title", "$title を閉じる", "$title 닫기"), { model.requestCloseContext(context.id) })
                                     } else {
                                         Spacer(Modifier.width(40.dp))
                                     }
@@ -195,7 +201,7 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                                         if (snapshot != null) {
                                             Image(
                                                 bitmap = snapshot,
-                                                contentDescription = "页面快照：$title",
+                                                contentDescription = tr("页面快照：$title", "Page snapshot: $title", "ページスナップショット：$title", "페이지 스냅샷: $title"),
                                                 contentScale = ContentScale.FillWidth,
                                                 alignment = Alignment.TopCenter,
                                                 modifier = Modifier.fillMaxSize(),

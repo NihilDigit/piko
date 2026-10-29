@@ -1,5 +1,7 @@
 package dev.piko.desktop
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -79,7 +81,7 @@ private class PikoWindowExceptionHandlerFactory(
         SwingUtilities.invokeLater {
             JOptionPane.showMessageDialog(
                 window.takeIf { it.isDisplayable },
-                "Piko 出现错误，这个窗口需要关闭。\n反馈问题时，请在「设置」→「关于」→「导出日志」中导出日志一并附上。",
+                tr("Piko 出现错误，这个窗口需要关闭。\n反馈问题时，请在「设置」→「关于」→「导出日志」中导出日志一并附上。", "Piko encountered an error and this window must close.\nWhen reporting the issue, attach logs from Settings → About → Export logs.", "エラーが発生したため、このウィンドウを閉じる必要があります。\n問題を報告する際は、設定 → このアプリについて → ログをエクスポートからログを添付してください。", "Piko에 오류가 발생하여 이 창을 닫아야 합니다.\n문제를 보고할 때 설정 → 정보 → 로그 내보내기에서 로그를 첨부하세요."),
                 "Piko",
                 JOptionPane.ERROR_MESSAGE,
             )

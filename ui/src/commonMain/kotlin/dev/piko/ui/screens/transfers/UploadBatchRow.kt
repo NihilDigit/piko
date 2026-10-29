@@ -1,5 +1,9 @@
 package dev.piko.ui.screens.transfers
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Delete
@@ -18,23 +22,23 @@ import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.SheetAction
 
 internal fun TransferItem.UploadBatch.statusLabel(): String = when (status) {
-    UploadStatus.QUEUED -> "等待中"
-    UploadStatus.HASHING -> "校验中"
-    UploadStatus.UPLOADING -> "正在上传"
-    UploadStatus.PAUSED -> "已暂停"
-    UploadStatus.COMPLETED -> "已上传"
-    UploadStatus.FAILED -> "部分文件上传失败"
+    UploadStatus.QUEUED -> tr("等待中", "Waiting", "待機中", "대기 중")
+    UploadStatus.HASHING -> tr("校验中", "Verifying", "検証中", "확인 중")
+    UploadStatus.UPLOADING -> tr("正在上传", "Uploading", "アップロード中", "업로드 중")
+    UploadStatus.PAUSED -> tr("已暂停", "Paused", "一時停止中", "일시 중지됨")
+    UploadStatus.COMPLETED -> tr("已上传", "Uploaded", "アップロード済み", "업로드됨")
+    UploadStatus.FAILED -> tr("部分文件上传失败", "Some uploads failed", "一部のアップロードに失敗しました", "일부 파일 업로드 실패")
 }
 
 internal fun uploadBatchActions(item: TransferItem.UploadBatch, expanded: Boolean, onToggle: () -> Unit,
     onPause: () -> Unit, onResume: () -> Unit, onRemove: () -> Unit, onShowInDrive: (() -> Unit)? = null): List<SheetAction> = buildList {
-    add(SheetAction(if (expanded) Icons.Outlined.UnfoldLess else Icons.Outlined.UnfoldMore, if (expanded) "收起" else "展开", onToggle))
-    if (onShowInDrive != null) add(SheetAction(androidx.compose.material.icons.Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onShowInDrive))
-    if (item.tasks.any { it.status.isActive }) add(SheetAction(Icons.Outlined.Pause, "全部暂停", onPause))
+    add(SheetAction(if (expanded) Icons.Outlined.UnfoldLess else Icons.Outlined.UnfoldMore, if (expanded) tr("收起", "Collapse", "折りたたむ", "접기") else tr("展开", "Expand", "展開", "펼치기"), onToggle))
+    if (onShowInDrive != null) add(SheetAction(androidx.compose.material.icons.Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onShowInDrive))
+    if (item.tasks.any { it.status.isActive }) add(SheetAction(Icons.Outlined.Pause, tr("全部暂停", "Pause all", "すべて一時停止", "모두 일시 중지"), onPause))
     if (item.tasks.any { it.status == UploadStatus.PAUSED || it.status == UploadStatus.FAILED }) {
-        add(SheetAction(Icons.Outlined.PlayArrow, "继续未完成的文件", onResume))
+        add(SheetAction(Icons.Outlined.PlayArrow, tr("继续未完成的文件", "Resume unfinished files", "未完了のファイルを再開", "미완료 파일 계속"), onResume))
     }
-    add(SheetAction(Icons.Outlined.Delete, if (item.status == UploadStatus.COMPLETED) "移除记录" else "取消并移除", onRemove, destructive = true))
+    add(SheetAction(Icons.Outlined.Delete, if (item.status == UploadStatus.COMPLETED) tr("移除记录", "Remove record", "記録を削除", "기록 삭제") else tr("取消并移除", "Cancel and remove", "キャンセルして削除", "취소 및 삭제"), onRemove, destructive = true))
 }
 
 @Composable
@@ -43,6 +47,6 @@ internal fun UploadBatchDetails(item: TransferItem.UploadBatch, actions: List<Sh
         title = item.title, modifier = modifier, showIcon = false,
         headerIcon = { if (item.isFolder) TaskFolderVisual(item.title) else ListLeadingIcon(Icons.Outlined.Upload) },
         actions = actions,
-        metaParts = listOf(item.statusLabel(), "已完成 ${item.completedCount} / ${item.tasks.size} 项", "保存到 ${item.parentName}"),
+        metaParts = listOf(item.statusLabel(), tr("已完成 ${item.completedCount} / ${item.tasks.size} 项", "Completed ${item.completedCount} / ${enCount(item.tasks.size, "item", "items")}", "完了 ${item.completedCount} / ${item.tasks.size} 項目", "${item.completedCount} / ${item.tasks.size}개 항목 완료"), tr("保存到 ${item.parentName}", "Saved to ${item.parentName}", "保存先 ${item.parentName}", "저장 위치 ${item.parentName}")),
     )
 }

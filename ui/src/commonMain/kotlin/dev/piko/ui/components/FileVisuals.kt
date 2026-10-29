@@ -1,5 +1,7 @@
 package dev.piko.ui.components
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -91,12 +93,12 @@ fun FileStat.displayTitle(): String =
 
 /** 副标题的各段：文件为类型、大小、日期，文件夹为「文件夹」、日期。由 [MetaRow] 排成一行。 */
 fun FileStat.metaParts(includeDate: Boolean = true): List<String> = buildList {
-    if (isUploading) add("上传中")
-    if (isImportPreview) add("待保存")
+    if (isUploading) add(tr("上传中", "Uploading", "アップロード中", "업로드 중"))
+    if (isImportPreview) add(tr("待保存", "Unsaved", "未保存", "저장 대기"))
     // 网盘里没有它的文件，打开时才临时造出来；与「上传中」同处，一眼能分出哪些不占空间
-    if (isVaulted) add("已归档")
+    if (isVaulted) add(tr("已归档", "Archived", "アーカイブ済み", "보관됨"))
     if (isFolder) {
-        add("文件夹")
+        add(tr("文件夹", "Folder", "フォルダー", "폴더"))
     } else {
         extensionLabel()?.let { add(it) }
         add(sizeBytes.toReadableSize())
@@ -344,7 +346,7 @@ fun SpoilerThumbnail(
         if (showBlurIcon) {
             Icon(
                 imageVector = Icons.Outlined.VisibilityOff,
-                contentDescription = "预览已遮蔽",
+                contentDescription = tr("预览已遮蔽", "Preview hidden", "プレビューを非表示にしています", "미리 보기가 가려졌습니다"),
                 tint = if (supportsRenderEffect) fixedColors.OnMedia else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(20.dp),
             )

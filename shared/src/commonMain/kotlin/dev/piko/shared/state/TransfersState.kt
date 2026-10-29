@@ -1,5 +1,7 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -180,13 +182,15 @@ class TransferSections(
  * 传输页的类型筛选。秒传记录归「云端」：它与离线任务出自同一个「添加链接」，东西落在网盘里；
  * 从本机传上去却命中秒传的仍是一项上传，归「上传」。解压、归档、查重与清理归「文件处理」。
  */
-enum class TransferKind(val label: String) {
-    ALL("全部"),
-    DOWNLOAD("下载"),
-    UPLOAD("上传"),
-    CLOUD("云端"),
-    FILES("文件处理"),
+enum class TransferKind(private val labelText: () -> String) {
+    ALL({ tr("全部", "All", "すべて", "전체") }),
+    DOWNLOAD({ tr("下载", "Downloads", "ダウンロード", "다운로드") }),
+    UPLOAD({ tr("上传", "Uploads", "アップロード", "업로드") }),
+    CLOUD({ tr("云端", "Cloud", "クラウド", "클라우드") }),
+    FILES({ tr("文件处理", "File operations", "ファイル操作", "파일 작업") }),
     ;
+
+    val label: String get() = labelText()
 
     fun matches(item: TransferItem): Boolean = when (this) {
         ALL -> true
@@ -275,9 +279,9 @@ class TransfersState(
     private fun undoStatus(ids: List<Long>, currentJournal: DriveChangeJournal.JournalState): DriveChangeJournal.UndoResult? {
         val statuses = ids.mapNotNull { currentJournal.undo[it] }
         return when {
-            statuses.any { it.status == DriveChangeJournal.UndoStatus.RUNNING } -> DriveChangeJournal.UndoResult(DriveChangeJournal.UndoStatus.RUNNING, "正在撤销已确认部分")
-            statuses.any { it.status == DriveChangeJournal.UndoStatus.FAILED } -> DriveChangeJournal.UndoResult(DriveChangeJournal.UndoStatus.FAILED, "部分撤销未完成，可重新尝试撤销")
-            ids.isNotEmpty() && statuses.size == ids.size && statuses.all { it.status == DriveChangeJournal.UndoStatus.UNDONE } -> DriveChangeJournal.UndoResult(DriveChangeJournal.UndoStatus.UNDONE, "已撤销已确认部分")
+            statuses.any { it.status == DriveChangeJournal.UndoStatus.RUNNING } -> DriveChangeJournal.UndoResult(DriveChangeJournal.UndoStatus.RUNNING, tr("正在撤销已确认部分", "Undoing confirmed changes", "確認済みの変更を元に戻しています", "확인된 변경 실행 취소 중"))
+            statuses.any { it.status == DriveChangeJournal.UndoStatus.FAILED } -> DriveChangeJournal.UndoResult(DriveChangeJournal.UndoStatus.FAILED, tr("部分撤销未完成，可重新尝试撤销", "Some changes could not be undone. You can retry", "一部を元に戻せませんでした。再試行できます", "일부 실행 취소가 완료되지 않았습니다. 다시 시도할 수 있습니다"))
+            ids.isNotEmpty() && statuses.size == ids.size && statuses.all { it.status == DriveChangeJournal.UndoStatus.UNDONE } -> DriveChangeJournal.UndoResult(DriveChangeJournal.UndoStatus.UNDONE, tr("已撤销已确认部分", "Confirmed changes undone", "確認済みの変更を元に戻しました", "확인된 변경 실행 취소 완료"))
             else -> null
         }
     }
@@ -294,7 +298,7 @@ class TransfersState(
     } }
     fun undoShare(work: ShareSaveWork) {
         if (work.account != driveRepo.currentAccount || work.isRunning || shareUndoStatus(work)?.status == DriveChangeJournal.UndoStatus.RUNNING) return
-        if (work.pendingRenames.isNotEmpty()) { _messages.tryEmit("这次命名仍有待确认的步骤，请先重新查询结果"); return }
+        if (work.pendingRenames.isNotEmpty()) { _messages.tryEmit(tr("这次命名仍有待确认的步骤，请先重新查询结果", "Some rename steps are unconfirmed. Check results again first", "今回の改名には未確認の手順があります。先に結果を再確認してください", "이번 이름 변경에 미확인 단계가 있습니다. 먼저 결과를 다시 확인해 주세요")); return }
         work.undoChangeIds.asReversed().filter { id -> driveRepo.changes.state.value.available.any { it.id == id } }.forEach(::requestUndo)
     }
     fun canUndoVaultEdit(work: VaultEntryEditWork): Boolean = !work.isRunning && work.result?.undoChangeIds.orEmpty().any { id -> journal.available.any { it.id == id } }
@@ -305,7 +309,7 @@ class TransfersState(
     fun canUndoVault(record: FolderVaultSession.Record): Boolean = record.undoChangeId?.let { id -> journal.available.any { it.id == id } } == true
     fun undoVault(record: FolderVaultSession.Record) {
         val accepted = record.undoChangeId?.let(::requestUndo) == true
-        if (!accepted) _messages.tryEmit("这次处理已在撤销，或撤销记录已不可用")
+        if (!accepted) _messages.tryEmit(tr("这次处理已在撤销，或撤销记录已不可用", "This operation is being undone or its undo record is unavailable", "この操作は元に戻している途中か、元に戻す記録が無効です", "이 작업은 실행 취소 중이거나 실행 취소 기록이 없습니다"))
     }
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
@@ -570,16 +574,16 @@ class TransfersState(
             is TransferItem.Cloud -> deleteCloud(item.task.id)
             is TransferItem.Pack -> discardPack(item.job.taskId)
             is TransferItem.Instant -> removeInstant(item.record.id)
-            is TransferItem.InstantAttempt -> if (!instantSaves.forgetAttempt(item.work.id)) _messages.tryEmit("保存仍在进行，完成后才能移除记录") else Unit
-            is TransferItem.Share -> if (shareSaves?.forget(item.work.id) == false) _messages.tryEmit("转存或撤销仍在进行，完成后才能移除记录") else Unit
-            is TransferItem.OfflineSubmit -> if (offlineSubmits?.forget(item.work.id) == false) _messages.tryEmit("离线仍在提交，完成后才能移除记录") else Unit
-            is TransferItem.UploadPreparing -> if (!uploads.forgetPreparation(item.work.id)) _messages.tryEmit("正在准备上传，完成后再移除记录") else Unit
+            is TransferItem.InstantAttempt -> if (!instantSaves.forgetAttempt(item.work.id)) _messages.tryEmit(tr("保存仍在进行，完成后才能移除记录", "Saving is in progress. Remove the record after it finishes", "保存中です。完了後に記録を削除できます", "저장 중입니다. 완료 후 기록을 삭제할 수 있습니다")) else Unit
+            is TransferItem.Share -> if (shareSaves?.forget(item.work.id) == false) _messages.tryEmit(tr("转存或撤销仍在进行，完成后才能移除记录", "Share saving or undo is in progress. Remove the record after it finishes", "共有保存または元に戻す操作を実行中です。完了後に記録を削除できます", "공유 저장 또는 실행 취소 중입니다. 완료 후 기록을 삭제할 수 있습니다")) else Unit
+            is TransferItem.OfflineSubmit -> if (offlineSubmits?.forget(item.work.id) == false) _messages.tryEmit(tr("离线仍在提交，完成后才能移除记录", "Cloud download is being submitted. Remove the record after it finishes", "クラウドダウンロードを送信中です。完了後に記録を削除できます", "클라우드 다운로드 제출 중입니다. 완료 후 기록을 삭제할 수 있습니다")) else Unit
+            is TransferItem.UploadPreparing -> if (!uploads.forgetPreparation(item.work.id)) _messages.tryEmit(tr("正在准备上传，完成后再移除记录", "Upload preparation is in progress. Remove the record after it finishes", "アップロードを準備中です。完了後に記録を削除してください", "업로드 준비 중입니다. 완료 후 기록을 삭제해 주세요")) else Unit
             // 提交后的解压在服务端取消不了，只能放弃还在等密码的；归档只能停止，没有删除可言
             is TransferItem.Extract -> skipExtract(item.job.id)
             is TransferItem.Vault -> if (item.record != null) dismissVault(item.work.id) else Unit
-            is TransferItem.Write -> if (fileWrites?.forget(item.work.id) == false) _messages.tryEmit("操作或撤销仍在进行，完成后才能移除记录") else Unit
-            is TransferItem.History -> if (historyEdits?.forget(item.work.id) == false) _messages.tryEmit("记录仍在处理，完成后才能移除") else Unit
-            is TransferItem.VaultEdit -> if (vaultEdits?.forget(item.work.id) == false) _messages.tryEmit("操作或撤销仍在进行，完成后才能移除记录") else Unit
+            is TransferItem.Write -> if (fileWrites?.forget(item.work.id) == false) _messages.tryEmit(tr("操作或撤销仍在进行，完成后才能移除记录", "Operation or undo is in progress. Remove the record after it finishes", "操作または元に戻す処理を実行中です。完了後に記録を削除できます", "작업 또는 실행 취소 중입니다. 완료 후 기록을 삭제할 수 있습니다")) else Unit
+            is TransferItem.History -> if (historyEdits?.forget(item.work.id) == false) _messages.tryEmit(tr("记录仍在处理，完成后才能移除", "Record is being processed. Remove it after processing finishes", "記録を処理中です。完了後に削除できます", "기록 처리 중입니다. 완료 후 삭제할 수 있습니다")) else Unit
+            is TransferItem.VaultEdit -> if (vaultEdits?.forget(item.work.id) == false) _messages.tryEmit(tr("操作或撤销仍在进行，完成后才能移除记录", "Operation or undo is in progress. Remove the record after it finishes", "操作または元に戻す処理を実行中です。完了後に記録を削除できます", "작업 또는 실행 취소 중입니다. 완료 후 기록을 삭제할 수 있습니다")) else Unit
         }
     }
 
@@ -709,7 +713,7 @@ class TransfersState(
     /** 打开一组对应的文件夹：交给平台前要先查出它在本机的位置，SAF 目录下是查一遍目录树。 */
     suspend fun batchFolderPath(batch: DownloadBatch): String? {
         val path = coordinator.batchFolderPath(batch)
-        if (path == null) _messages.tryEmit("文件夹已不存在")
+        if (path == null) _messages.tryEmit(tr("文件夹已不存在", "Folder no longer exists", "フォルダーは存在しません", "폴더가 더 이상 존재하지 않습니다"))
         return path
     }
 
@@ -743,7 +747,7 @@ class TransfersState(
     /** 取消进行中的整包离线，或移除已结束的记录。已完成的文件保留在网盘里。 */
     fun discardPack(taskId: String) {
         scope.launch {
-            packTracker.discard(taskId).onFailure { _messages.tryEmit("操作失败：${it.message}") }
+            packTracker.discard(taskId).onFailure { _messages.tryEmit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("操作", "Operation", "操作", "작업"), it)) }
         }
     }
 
@@ -758,7 +762,7 @@ class TransfersState(
     fun dismissVault(id: Long) {
         val record = vault.records.firstOrNull { it.work.id == id } ?: return
         if (record.undoChangeId?.let { driveRepo.changes.state.value.undo[it]?.status } == DriveChangeJournal.UndoStatus.RUNNING) {
-            _messages.tryEmit("正在撤销，完成后才能移除这条记录")
+            _messages.tryEmit(tr("正在撤销，完成后才能移除这条记录", "Undo in progress. Remove this record after it finishes", "元に戻しています。完了後にこの記録を削除できます", "실행 취소 중입니다. 완료 후 이 기록을 삭제할 수 있습니다"))
         } else vault.dismissRecord(id)
     }
 
@@ -767,7 +771,7 @@ class TransfersState(
     /** 清理失败的重做清理，下载失败的以原链接重新离线。 */
     fun retryPack(taskId: String) {
         scope.launch {
-            packTracker.retry(taskId).logFailure("OfflinePack", "重试整包离线任务 $taskId 失败").onFailure { _messages.tryEmit("重试失败：${it.message}") }
+            packTracker.retry(taskId).logFailure("OfflinePack", "重试整包离线任务 $taskId 失败").onFailure { _messages.tryEmit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("重试", "Retry", "再試行", "다시 시도"), it)) }
         }
     }
 

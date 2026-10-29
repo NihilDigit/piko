@@ -1,9 +1,19 @@
 package dev.piko.shared.presentation
 
 import dev.piko.shared.data.DriveLibrary
+import dev.piko.shared.i18n.tr
+
 import dev.piko.shared.data.FolderIndex
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.library
+
+private val ROOT_BREADCRUMB_NAMES = setOf("", "我的网盘", "My drive", "マイドライブ", "내 드라이브")
+
+/** Localize synthetic locations while preserving actual folder names and navigation identity. */
+val PikoPathBreadcrumb.localizedName: String
+    get() = DriveLibrary.of(id)?.title ?: if (id.isEmpty() && name in ROOT_BREADCRUMB_NAMES) {
+        tr("我的网盘", "My drive", "マイドライブ", "내 드라이브")
+    } else name
 
 data class NavigationEntryToken(
     val id: Long,
@@ -12,7 +22,7 @@ data class NavigationEntryToken(
 )
 
 data class DriveTab(val id: Long, val stack: List<PikoPathBreadcrumb>, val history: FolderHistory = FolderHistory()) {
-    val title: String get() = stack.lastOrNull()?.name.orEmpty()
+    val title: String get() = stack.lastOrNull()?.localizedName.orEmpty()
     val session: DriveLibrary? get() = stack.library?.takeIf { it.isSession }
 }
 

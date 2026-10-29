@@ -1,5 +1,10 @@
 package dev.piko.ui.workbench
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -17,12 +22,12 @@ import dev.piko.shared.presentation.ActionAvailability
 class TaskSlot {
     fun requestUndoLast(changes: dev.piko.shared.data.DriveChangeJournal, commands: dev.piko.shared.presentation.FileCommands? = null): Boolean {
         if (changes.state.value.undo.values.any { it.status == dev.piko.shared.data.DriveChangeJournal.UndoStatus.RUNNING }) {
-            showBlocked("撤销", "上一项撤销仍在进行，完成后再试。")
+            showBlocked(tr("撤销", "Undo", "元に戻す", "실행 취소"), tr("上一项撤销仍在进行，完成后再试。", "The previous undo is still running. Retry after it finishes.", "前の操作を元に戻している途中です。完了後に再試行してください。", "이전 실행 취소가 진행 중입니다. 완료 후 다시 시도하세요."))
             return true
         }
         val change = changes.state.value.available.lastOrNull() ?: return false
         val state = commands?.undoAvailability(change)
-        if (state is ActionAvailability.Blocked) { showBlocked("撤销", state.reason); return true }
+        if (state is ActionAvailability.Blocked) { showBlocked(tr("撤销", "Undo", "元に戻す", "실행 취소"), state.reason); return true }
         return changes.undoLast()
     }
 
@@ -58,7 +63,7 @@ class TaskSlot {
 
     fun showBlocked(action: String, reason: String, resolve: (() -> Unit)? = null) {
         pending = null
-        blocked = BlockedClaim("暂时无法$action", reason, resolve)
+        blocked = BlockedClaim(tr("暂时无法$action", "Unable to $action right now", "今は${action}できません", "지금은 ${action}할 수 없습니다"), reason, resolve)
     }
 
     /**
@@ -88,7 +93,7 @@ class TaskSlot {
             return
         }
         pending = Claim(
-            title = "结束${blocking.first().name}并$action？",
+            title = tr("结束${blocking.first().name}并$action？", "End ${blocking.first().name} and $action?", "${blocking.first().name}を終了して${action}しますか？", "${blocking.first().name}을(를) 종료하고 ${action}할까요?"),
             body = blocking.joinToString("") { it.loss },
             confirmLabel = confirmLabel,
         ) {
@@ -103,7 +108,7 @@ class TaskSlot {
             .map { it.replacementAvailability() }
             .filterIsInstance<ActionAvailability.Blocked>()
             .firstOrNull() ?: return true
-        blocked = BlockedClaim("暂时无法$action", unavailable.reason)
+        blocked = BlockedClaim(tr("暂时无法$action", "Unable to $action right now", "今は${action}できません", "지금은 ${action}할 수 없습니다"), unavailable.reason)
         return false
     }
 
@@ -131,8 +136,8 @@ fun ClaimDialog(slot: TaskSlot) {
             onDismissRequest = slot::dismiss,
             title = { Text(blocked.title) },
             text = { Text(blocked.reason) },
-            confirmButton = { TextButton(onClick = { slot.dismiss(); blocked.resolve?.invoke() }) { Text(if (blocked.resolve == null) "知道了" else "查看任务") } },
-            dismissButton = blocked.resolve?.let { { TextButton(onClick = slot::dismiss) { Text("取消") } } },
+            confirmButton = { TextButton(onClick = { slot.dismiss(); blocked.resolve?.invoke() }) { Text(if (blocked.resolve == null) tr("知道了", "Got it", "了解", "확인") else tr("查看任务", "View tasks", "タスクを表示", "작업 보기")) } },
+            dismissButton = blocked.resolve?.let { { TextButton(onClick = slot::dismiss) { Text(stringResource(Res.string.common_cancel)) } } },
         )
         return
     }
@@ -142,6 +147,6 @@ fun ClaimDialog(slot: TaskSlot) {
         title = { Text(claim.title) },
         text = { Text(claim.body) },
         confirmButton = { PikoDialogConfirm(claim.confirmLabel, slot::confirm) },
-        dismissButton = { TextButton(onClick = slot::dismiss) { Text("取消") } },
+        dismissButton = { TextButton(onClick = slot::dismiss) { Text(stringResource(Res.string.common_cancel)) } },
     )
 }

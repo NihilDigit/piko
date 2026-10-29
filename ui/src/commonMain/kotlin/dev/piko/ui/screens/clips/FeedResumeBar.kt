@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.clips
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -74,13 +76,13 @@ internal fun FeedResumeBar(
                 ) {
                     Icon(Icons.Outlined.SwipeVertical, contentDescription = null, modifier = Modifier.size(18.dp))
                     Text(
-                        text = folderName?.let { "继续刷「$it」" } ?: "继续刷",
+                        text = folderName?.let { tr("继续刷「$it」", "Continue watching “$it”", "「$it」の続きを見る", "“$it” 계속 보기") } ?: tr("继续刷", "Keep watching", "続きを見る", "계속 보기"),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(start = 8.dp).widthIn(max = 280.dp),
                     )
                 }
-                TooltipIconButton(Icons.Outlined.Close, "关闭信息流", onClose)
+                TooltipIconButton(Icons.Outlined.Close, tr("关闭信息流", "Close feed", "フィードを閉じる", "피드 닫기"), onClose)
             }
         }
     }

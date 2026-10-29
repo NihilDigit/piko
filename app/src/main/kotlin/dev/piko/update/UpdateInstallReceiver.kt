@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.os.Build
 import dev.piko.PikoApplication
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 
 /**
@@ -30,8 +31,8 @@ class UpdateInstallReceiver : BroadcastReceiver() {
                 confirm?.let { context.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
             }
             PackageInstaller.STATUS_SUCCESS -> Unit
-            PackageInstaller.STATUS_FAILURE_ABORTED -> PikoApplication.instance.appUpdater.onInstallFailed("已取消安装")
-            else -> PikoApplication.instance.appUpdater.onInstallFailed("安装失败")
+            PackageInstaller.STATUS_FAILURE_ABORTED -> PikoApplication.instance.appUpdater.onInstallFailed(tr("已取消安装", "Installation cancelled", "インストールをキャンセルしました", "설치 취소됨"))
+            else -> PikoApplication.instance.appUpdater.onInstallFailed(tr("安装失败", "Installation failed", "インストールに失敗しました", "설치 실패"))
         }
     }
 }

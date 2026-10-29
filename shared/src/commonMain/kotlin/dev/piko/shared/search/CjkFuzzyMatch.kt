@@ -118,7 +118,9 @@ private fun isSeparatorChar(c: Char): Boolean =
         c == '『' || c == '』' || c == ':' || c == '：' || c == '~' || c == '～'
 
 private fun isCjkChar(c: Char): Boolean =
-    c.code in 0x3040..0x30FF || c.code in 0x3400..0x9FFF || c.code in 0xF900..0xFAFF
+    c.code in 0x3040..0x30FF || c.code in 0x3400..0x9FFF || c.code in 0xF900..0xFAFF ||
+        c.code in 0xAC00..0xD7A3 || c.code in 0x1100..0x11FF || c.code in 0x3130..0x318F ||
+        c.code in 0xA960..0xA97F || c.code in 0xD7B0..0xD7FF
 
 /**
  * 纯 CJK 词的有界子序列匹配：相邻命中字符在目标串中的间距不超过 [MAX_CJK_SUBSEQ_GAP]，

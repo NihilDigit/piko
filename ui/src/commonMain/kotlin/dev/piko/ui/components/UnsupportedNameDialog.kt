@@ -1,5 +1,10 @@
 package dev.piko.ui.components
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -73,11 +78,11 @@ fun UnsupportedNameDialog(
     PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.AutoFixHigh, contentDescription = null) },
-        title = { Text("修正名称") },
+        title = { Text(stringResource(Res.string.text_clean_name)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 Text(
-                    text = "PikPak 不支持名称中的${DriveNames.unsupportedParts(name).joinToString("、")}。",
+                    text = tr("PikPak 不支持名称中的${DriveNames.unsupportedParts(name).joinToString("、")}。", "PikPak does not support ${DriveNames.unsupportedParts(name).joinToString(", ")} in names.", "名前に ${DriveNames.unsupportedParts(name).joinToString("、")} は使用できません。", "PikPak 이름에는 ${DriveNames.unsupportedParts(name).joinToString(", ")}을(를) 사용할 수 없습니다."),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -91,8 +96,8 @@ fun UnsupportedNameDialog(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.padding(16.dp),
                     ) {
-                        LabeledName("原名称") { Text(original, style = MaterialTheme.typography.bodyLarge) }
-                        LabeledName("改为") {
+                        LabeledName(tr("原名称", "Original name", "元の名前", "원래 이름")) { Text(original, style = MaterialTheme.typography.bodyLarge) }
+                        LabeledName(tr("改为", "Change to", "変更先", "변경")) {
                             SelectionContainer { Text(cleaned, style = MaterialTheme.typography.bodyLarge) }
                         }
                     }
@@ -107,13 +112,13 @@ fun UnsupportedNameDialog(
                         .padding(vertical = 4.dp),
                 ) {
                     Checkbox(checked = dontAskAgain, onCheckedChange = null)
-                    Text("以后自动修正，不再询问", style = MaterialTheme.typography.bodyMedium)
+                    Text(stringResource(Res.string.text_clean_automatically_without_asking), style = MaterialTheme.typography.bodyMedium)
                 }
             }
         },
         confirmButton = {
             PikoDialogConfirm(
-                label = "使用此名称",
+                label = tr("使用此名称", "Use this name", "この名前を使用", "이 이름 사용"),
                 // 先写偏好再交出名称：交出后对话框随即关闭，它的作用域一取消，还没写完的偏好就丢了
                 onClick = {
                     scope.launch {
@@ -124,7 +129,7 @@ fun UnsupportedNameDialog(
             )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("返回修改") }
+            TextButton(onClick = onDismiss) { Text(stringResource(Res.string.text_go_back_to_edit)) }
         },
     )
 }
@@ -158,9 +163,9 @@ fun submitDriveName(name: String, autoClean: Boolean, onValid: (String) -> Unit)
 fun driveNameHint(name: String, autoClean: Boolean): String {
     val parts = DriveNames.unsupportedParts(name)
     return when {
-        isUnfixableDriveName(name) -> "名称只含 PikPak 不支持的字符"
-        autoClean && parts.isNotEmpty() -> "将去掉${parts.joinToString("、")}"
-        else -> "不能含 \\ / : * ? \" < > |"
+        isUnfixableDriveName(name) -> tr("名称只含 PikPak 不支持的字符", "Name only contains unsupported PikPak characters", "名前がPikPakで使えない文字のみで構成されています", "이름이 PikPak에서 지원하지 않는 문자로만 되어 있습니다")
+        autoClean && parts.isNotEmpty() -> tr("将去掉${parts.joinToString("、")}", "Will remove ${parts.joinToString(", ")}", "${parts.joinToString("、")} を除去します", "${parts.joinToString(", ")} 제거 예정")
+        else -> tr("不能含 \\ / : * ? \" < > |", "Cannot contain \\ / : * ? \" < > |", "\\ / : * ? \" < > | は使用できません", "\\ / : * ? \" < > | 포함 불가")
     }
 }
 

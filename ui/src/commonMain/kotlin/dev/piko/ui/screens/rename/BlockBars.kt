@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.rename
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -136,14 +141,14 @@ internal fun FindBlockBar(state: BatchRenameState, enabled: Boolean, focusReques
     val numbers = captureNumbers(state.effectiveFindBlocks)
     val sentence = state.effectiveFindBlocks.takeIf { it.isNotEmpty() }?.let(::describeFind)
     BlockBar(
-        label = "查找",
-        supporting = sentence ?: "未填写，仅调整大小写",
+        label = tr("查找", "Find", "検索", "찾기"),
+        supporting = sentence ?: tr("未填写，仅调整大小写", "Empty; change case only", "未入力。大文字・小文字のみ変更", "미입력. 대소문자만 변경"),
         blocks = blocks,
         onBlocksChange = state::updateFindBlocks,
         inputModifier = Modifier.focusRequester(focusRequester),
         enabled = enabled,
-        placeholder = "输入要查找的文字",
-        addLabel = "添加查找块",
+        placeholder = tr("输入要查找的文字", "Enter text to find", "検索する文字を入力", "찾을 텍스트 입력"),
+        addLabel = tr("添加查找块", "Add find block", "検索ブロックを追加", "찾기 블록 추가"),
         pendingText = state.pendingFindText,
         onPendingTextChange = { state.pendingFindText = it },
         insertAt = state.findInsertIndex,
@@ -181,7 +186,7 @@ internal fun FindBlockBar(state: BatchRenameState, enabled: Boolean, focusReques
 private fun RecentBlocksMenu(entries: List<Pair<String, String>>, enabled: Boolean, onPick: (String) -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
-        TooltipIconButton(Icons.Outlined.History, "最近使用", { open = true }, enabled = enabled && entries.isNotEmpty(), modifier = Modifier.size(40.dp))
+        TooltipIconButton(Icons.Outlined.History, tr("最近使用", "Recently used", "最近使用した項目", "최근 사용"), { open = true }, enabled = enabled && entries.isNotEmpty(), modifier = Modifier.size(40.dp))
         PikoDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             for ((raw, description) in entries) {
                 DropdownMenuItem(
@@ -202,14 +207,14 @@ internal fun ReplaceBlockBar(state: BatchRenameState, enabled: Boolean, focusReq
     val blocks = state.replaceBlocks
     val captureCount = captureNumbers(state.effectiveFindBlocks).count { it != null }
     BlockBar(
-        label = "替换为",
+        label = tr("替换为", "Replace with", "置換後", "바꿀 내용"),
         supporting = describeReplace(state.effectiveReplaceBlocks),
         blocks = blocks,
         onBlocksChange = state::updateReplaceBlocks,
         inputModifier = Modifier.focusRequester(focusRequester),
         enabled = enabled,
-        placeholder = "输入替换成的文字",
-        addLabel = "添加替换块",
+        placeholder = tr("输入替换成的文字", "Enter replacement text", "置換後の文字を入力", "바꿀 텍스트 입력"),
+        addLabel = tr("添加替换块", "Add replace block", "置換ブロックを追加", "바꾸기 블록 추가"),
         pendingText = state.pendingReplaceText,
         // 含「${」的文字写不进替换串（见 isExpressibleText），输入框直接不收
         onPendingTextChange = { if (isExpressibleText(it)) state.pendingReplaceText = it },
@@ -240,7 +245,7 @@ internal fun ReplaceBlockBar(state: BatchRenameState, enabled: Boolean, focusReq
         },
         addMenu = { add ->
             for (number in 1..captureCount.coerceAtMost(9)) {
-                DropdownMenuItem(text = { Text("片段" + circled(number)) }, onClick = { add { state.insertReplace(ReplaceBlock.Piece(number)) } })
+                DropdownMenuItem(text = { Text(stringResource(Res.string.text_capture) + circled(number)) }, onClick = { add { state.insertReplace(ReplaceBlock.Piece(number)) } })
             }
             REPLACE_BLOCK_CHOICES.forEach { (label, block) -> DropdownMenuItem(text = { Text(label) }, onClick = { add { state.insertReplace(block) } }) }
         },
@@ -269,22 +274,22 @@ private fun BatchRenameState.insertReplace(block: ReplaceBlock): Int {
 }
 
 // 文字不在这里加：积木条里的输入框直接打字就是文字积木
-private val FIND_BLOCK_CHOICES = listOf(
-    "数字" to FindBlock.Digits(),
-    "英文字母" to FindBlock.Letters(),
-    "任意文字" to FindBlock.AnyText(),
-    "括号及内容" to FindBlock.Bracketed(),
-    "候选文字" to FindBlock.OneOf(listOf("甲", "乙")),
-    "开头" to FindBlock.Start,
-    "结尾" to FindBlock.End,
+private val FIND_BLOCK_CHOICES get() = listOf(
+    tr("数字", "Digits", "数字", "숫자") to FindBlock.Digits(),
+    tr("英文字母", "Letters", "英字", "영문자") to FindBlock.Letters(),
+    tr("任意文字", "Any text", "任意の文字", "모든 문자") to FindBlock.AnyText(),
+    tr("括号及内容", "Brackets and contents", "括弧とその内容", "괄호 및 내용") to FindBlock.Bracketed(),
+    tr("候选文字", "Alternatives", "候補の文字", "후보 텍스트") to FindBlock.OneOf(listOf(tr("甲", "A", "A", "A"), tr("乙", "B", "B", "B"))),
+    tr("开头", "Start", "先頭", "시작") to FindBlock.Start,
+    tr("结尾", "End", "末尾", "끝") to FindBlock.End,
 )
 
-private val REPLACE_BLOCK_CHOICES = listOf(
-    "匹配内容" to ReplaceBlock.Piece(0),
-    "序号" to ReplaceBlock.Counter(start = 1, padding = 2),
-    "日期" to ReplaceBlock.Date("YYYY"),
-    "随机字符" to ReplaceBlock.RandomText(RandomKind.ALNUM, 8),
-    "随机 UUID" to ReplaceBlock.Uuid,
+private val REPLACE_BLOCK_CHOICES get() = listOf(
+    tr("匹配内容", "Matched text", "一致した文字列", "일치한 텍스트") to ReplaceBlock.Piece(0),
+    tr("序号", "Counter", "連番", "번호") to ReplaceBlock.Counter(start = 1, padding = 2),
+    tr("日期", "Day", "日", "일") to ReplaceBlock.Date("YYYY"),
+    tr("随机字符", "Random characters", "ランダム文字", "무작위 문자") to ReplaceBlock.RandomText(RandomKind.ALNUM, 8),
+    tr("随机 UUID", "Random UUID", "ランダムUUID", "무작위 UUID") to ReplaceBlock.Uuid,
 )
 
 /** 积木上写的字：文字积木写文字本身，首尾空格换成可见的符号；其余写说明。 */
@@ -536,8 +541,8 @@ private fun <T> BlockBar(
                             ) {
                                 editor(index) { editing = null }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "左移", { move(index, index - 1); editing = index - 1 }, enabled = index > 0)
-                                    TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowForward, "右移", { move(index, index + 1); editing = index + 1 }, enabled = index < count - 1)
+                                    TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, tr("左移", "Move left", "左へ移動", "왼쪽으로 이동"), { move(index, index - 1); editing = index - 1 }, enabled = index > 0)
+                                    TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowForward, tr("右移", "Move right", "右へ移動", "오른쪽으로 이동"), { move(index, index + 1); editing = index + 1 }, enabled = index < count - 1)
                                 }
                             }
                         }
@@ -569,9 +574,9 @@ private fun <T> BlockBar(
         } else {
             // 选中时说明行换成对选中块的操作：说明写的是整条，这时要看的是选了几块、能做什么
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 16.dp)) {
-                Text("已选 ${selected.size} 块", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
-                TextButton(onClick = { selected = emptySet() }) { Text("取消选择") }
-                TextButton(onClick = { onBlocksChange(latestBlocks.filterIndexed { index, _ -> index !in selected }) }) { Text("删除") }
+                Text(tr("已选 ${selected.size} 块", "${selected.size} blocks selected", "${selected.size} ブロックを選択中", "블록 ${selected.size}개 선택됨"), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
+                TextButton(onClick = { selected = emptySet() }) { Text(stringResource(Res.string.text_deselect)) }
+                TextButton(onClick = { onBlocksChange(latestBlocks.filterIndexed { index, _ -> index !in selected }) }) { Text(stringResource(Res.string.common_delete)) }
             }
         }
     }
@@ -586,31 +591,31 @@ private class InputSpot(val at: Int, val count: Int, val text: String)
 private fun FindBlockEditor(block: FindBlock, onChange: (FindBlock) -> Unit, onDelete: () -> Unit) {
     Text(block.describe(), style = MaterialTheme.typography.titleSmall)
     when (block) {
-        is FindBlock.Text -> EditorField("文字", block.text) { if (it.isNotEmpty()) onChange(block.copy(text = it)) }
+        is FindBlock.Text -> EditorField(tr("文字", "Text", "文字", "텍스트"), block.text) { if (it.isNotEmpty()) onChange(block.copy(text = it)) }
         is FindBlock.Digits -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            NumberField("最少位数", block.min.toString(), Modifier.weight(1f)) { it.toIntOrNull()?.takeIf { n -> n >= 1 }?.let { n -> onChange(block.copy(min = n)) } }
-            NumberField("最多位数", block.max?.toString().orEmpty(), Modifier.weight(1f), placeholder = "不限") {
+            NumberField(tr("最少位数", "Minimum digits", "最小桁数", "최소 자릿수"), block.min.toString(), Modifier.weight(1f)) { it.toIntOrNull()?.takeIf { n -> n >= 1 }?.let { n -> onChange(block.copy(min = n)) } }
+            NumberField(tr("最多位数", "Maximum digits", "最大桁数", "최대 자릿수"), block.max?.toString().orEmpty(), Modifier.weight(1f), placeholder = tr("不限", "Unlimited", "無制限", "제한 없음")) {
                 onChange(block.copy(max = it.toIntOrNull()?.coerceAtLeast(block.min)))
             }
         }
-        is FindBlock.AnyText -> EditorField("直到字符",block.until?.toString().orEmpty(), placeholder = "不限") {
+        is FindBlock.AnyText -> EditorField(tr("直到字符", "Until character", "区切り文字まで", "문자 앞까지"),block.until?.toString().orEmpty(), placeholder = tr("不限", "Unlimited", "無制限", "제한 없음")) {
             onChange(block.copy(until = it.lastOrNull()))
         }
         is FindBlock.Bracketed -> {
             FlowChoices(
-                choices = listOf<Pair<BracketKind?, String>>(null to "任意括号") + BracketKind.entries.map { it to it.label },
+                choices = listOf<Pair<BracketKind?, String>>(null to tr("任意括号", "Any brackets", "任意の括弧", "모든 괄호")) + BracketKind.entries.map { it to it.label },
                 selected = block.kind,
             ) { onChange(block.copy(kind = it)) }
-            EditorSwitch("可选", block.optional) { onChange(block.copy(optional = it)) }
+            EditorSwitch(tr("可选", "Optional", "省略可", "선택 사항"), block.optional) { onChange(block.copy(optional = it)) }
         }
-        is FindBlock.OneOf -> EditorField("候选文字，每行一个", block.options.joinToString("\n"), singleLine = false) { text ->
+        is FindBlock.OneOf -> EditorField(tr("候选文字，每行一个", "One alternative per line", "候補を1行に1つ入力", "후보 텍스트, 한 줄에 하나"), block.options.joinToString("\n"), singleLine = false) { text ->
             val options = text.lines().filter { it.isNotEmpty() }
             if (options.size >= 2) onChange(block.copy(options = options))
         }
         FindBlock.Start, FindBlock.End, is FindBlock.Letters -> Unit
     }
     if (block != FindBlock.Start && block != FindBlock.End) {
-        EditorSwitch("记为片段", block.capture) { capture ->
+        EditorSwitch(tr("记为片段", "Capture", "キャプチャ", "캡처"), block.capture) { capture ->
             onChange(
                 when (block) {
                     is FindBlock.Text -> block.copy(capture = capture)
@@ -631,20 +636,20 @@ private fun FindBlockEditor(block: FindBlock, onChange: (FindBlock) -> Unit, onD
 private fun ReplaceBlockEditor(block: ReplaceBlock, captureCount: Int, onChange: (ReplaceBlock) -> Unit, onDelete: () -> Unit) {
     Text(block.describe(), style = MaterialTheme.typography.titleSmall)
     when (block) {
-        is ReplaceBlock.Text -> EditorField("文字", block.text) { if (it.isNotEmpty() && isExpressibleText(it)) onChange(block.copy(text = it)) }
+        is ReplaceBlock.Text -> EditorField(tr("文字", "Text", "文字", "텍스트"), block.text) { if (it.isNotEmpty() && isExpressibleText(it)) onChange(block.copy(text = it)) }
         is ReplaceBlock.Piece -> FlowChoices(
-            choices = listOf(0 to "匹配内容") + (1..captureCount.coerceAtMost(9)).map { it to "片段" + circled(it) },
+            choices = listOf(0 to tr("匹配内容", "Matched text", "一致した文字列", "일치한 텍스트")) + (1..captureCount.coerceAtMost(9)).map { it to tr("片段", "Capture", "キャプチャ", "캡처") + circled(it) },
             selected = block.number,
         ) { onChange(ReplaceBlock.Piece(it)) }
         is ReplaceBlock.Counter -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            NumberField("起始", block.start.toString(), Modifier.weight(1f), allowNegative = true) { it.toIntOrNull()?.let { n -> onChange(block.copy(start = n)) } }
-            NumberField("步长", block.increment.toString(), Modifier.weight(1f), allowNegative = true) { it.toIntOrNull()?.let { n -> onChange(block.copy(increment = n)) } }
-            NumberField("位数", block.padding.toString(), Modifier.weight(1f)) { onChange(block.copy(padding = it.toIntOrNull() ?: 0)) }
+            NumberField(tr("起始", "Start", "開始", "시작"), block.start.toString(), Modifier.weight(1f), allowNegative = true) { it.toIntOrNull()?.let { n -> onChange(block.copy(start = n)) } }
+            NumberField(tr("步长", "Step", "増分", "증가값"), block.increment.toString(), Modifier.weight(1f), allowNegative = true) { it.toIntOrNull()?.let { n -> onChange(block.copy(increment = n)) } }
+            NumberField(tr("位数", "Digits", "桁数", "자릿수"), block.padding.toString(), Modifier.weight(1f)) { onChange(block.copy(padding = it.toIntOrNull() ?: 0)) }
         }
         is ReplaceBlock.Date -> FlowChoices(choices = DATE_TOKEN_CHOICES, selected = block.token) { onChange(ReplaceBlock.Date(it)) }
         is ReplaceBlock.RandomText -> {
             FlowChoices(choices = RandomKind.entries.map { it to it.label }, selected = block.kind) { onChange(block.copy(kind = it)) }
-            NumberField("位数", block.length.toString()) { it.toIntOrNull()?.let { n -> onChange(block.copy(length = n.coerceIn(1, 64))) } }
+            NumberField(tr("位数", "Digits", "桁数", "자릿수"), block.length.toString()) { it.toIntOrNull()?.let { n -> onChange(block.copy(length = n.coerceIn(1, 64))) } }
         }
         ReplaceBlock.Uuid -> Unit
     }
@@ -721,7 +726,7 @@ private fun EditorSwitch(label: String, checked: Boolean, onChange: (Boolean) ->
 @Composable
 private fun DeleteRow(onDelete: () -> Unit) {
     DropdownMenuItem(
-        text = { Text("删除此块", color = MaterialTheme.colorScheme.error) },
+        text = { Text(stringResource(Res.string.text_delete_block), color = MaterialTheme.colorScheme.error) },
         leadingIcon = { androidx.compose.material3.Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
         onClick = onDelete,
     )

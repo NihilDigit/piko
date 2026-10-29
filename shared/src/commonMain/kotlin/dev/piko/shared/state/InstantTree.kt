@@ -1,5 +1,9 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+
 import dev.piko.shared.data.DriveNames
 import dev.piko.data.repository.NaturalOrder
 import dev.piko.shared.naming.AttachmentKind
@@ -74,7 +78,7 @@ data class InstantTreeRow(val key: String, val depth: Int, val node: InstantNode
  * 秒传与整包离线在网盘里新建的文件夹名。按网盘的规则只删服务端不收的字符，不用 FileNameSanitizer：
  * 那是给本机文件系统的，会把「CON」这类 Windows 保留名改成「_CON」，网盘本来收这些名字。
  */
-internal fun driveFolderName(raw: String): String = DriveNames.clean(raw).ifEmpty { "新建文件夹" }
+internal fun driveFolderName(raw: String): String = DriveNames.clean(raw).ifEmpty { tr("新建文件夹", "New folder", "新規フォルダー", "새 폴더") }
 
 class InstantTree(
     val roots: List<InstantNode>,
@@ -245,7 +249,7 @@ private class InstantTreeBuilder(private val files: List<MediaFileInput>, privat
                 versionIndices += listOf(version.index) + version.attachments.map { it.index }
                 contentRow(work, version, names[i + 1], extraTags = emptyList())
             }
-            contentRow(work, file, label, extraTags + "${versions.size + 1} 版本").copy(versions = versionRows)
+            contentRow(work, file, label, extraTags + tr("${versions.size + 1} 版本", "${enCount(versions.size + 1, "version", "versions")}", "${versions.size + 1} バージョン", "${versions.size + 1}개 버전")).copy(versions = versionRows)
         }
     }
 
@@ -255,7 +259,7 @@ private class InstantTreeBuilder(private val files: List<MediaFileInput>, privat
         val common = tagSets.reduce { acc, tags -> acc intersect tags }
         val byTags = tagSets.map { (it - common).joinToString(" ") }
         if (byTags.all { it.isNotEmpty() } && byTags.distinct().size == group.size) return byTags
-        return group.indices.map { "版本 ${it + 1}" }
+        return group.indices.map { tr("版本 ${it + 1}", "Version ${it + 1}", "バージョン ${it + 1}", "버전 ${it + 1}") }
     }
 
     private fun contentRow(work: MediaWork?, file: EntryFile, label: String?, extraTags: List<String>): InstantRow {
@@ -332,7 +336,7 @@ private class InstantTreeBuilder(private val files: List<MediaFileInput>, privat
         const val MAX_EXPANDED_WORKS = 3
         const val OTHER_KEY = "other"
         const val SECONDARY_KEY = "secondary"
-        const val SECONDARY_TITLE = "其他文件"
+        val SECONDARY_TITLE: String get() = tr("其他文件", "Other files", "その他のファイル", "기타 파일")
 
         /** 默认展开的分区，其余（PV、NCOP/NCED、特典、菜单、其他）收起。 */
         val EXPANDED_SECTIONS = setOf(Section.MAIN, Section.SPECIAL, Section.OVA, Section.MOVIE)
@@ -349,11 +353,11 @@ private class InstantTreeBuilder(private val files: List<MediaFileInput>, privat
 
 private val SecondaryReason.label: String
     get() = when (this) {
-        SecondaryReason.AD -> "广告"
-        SecondaryReason.SAMPLE -> "样片"
-        SecondaryReason.SCANS -> "扫图"
-        SecondaryReason.SCREENSHOTS -> "截图"
-        SecondaryReason.FONTS -> "字体"
-        SecondaryReason.INFO -> "说明"
-        SecondaryReason.EXTRA -> "附带文件"
+        SecondaryReason.AD -> tr("广告", "Ads", "広告", "광고")
+        SecondaryReason.SAMPLE -> tr("样片", "Samples", "サンプル", "샘플")
+        SecondaryReason.SCANS -> tr("扫图", "Scans", "スキャン画像", "스캔 이미지")
+        SecondaryReason.SCREENSHOTS -> tr("截图", "Screenshots", "スクリーンショット", "스크린샷")
+        SecondaryReason.FONTS -> tr("字体", "Fonts", "フォント", "글꼴")
+        SecondaryReason.INFO -> tr("说明", "Readme", "説明", "설명")
+        SecondaryReason.EXTRA -> tr("附带文件", "Attachments", "付属ファイル", "첨부 파일")
     }

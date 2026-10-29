@@ -1,5 +1,9 @@
 package dev.piko.ui.screens.settings
 
+import dev.piko.data.auth.AppLanguage
+import androidx.compose.material.icons.outlined.Language
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -165,6 +169,22 @@ fun SettingsScreen(
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
     val isFreeAccount by services.driveRepository.isFreeAccountFlow.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    val appLanguage by sessionManager.appLanguageFlow.collectAsStateWithLifecycle(initialValue = AppLanguage.SYSTEM)
+    var showLanguage by remember { mutableStateOf(false) }
+    val systemLanguageLabel = tr("跟随系统", "System", "システムに従う", "시스템 설정 따르기")
+    if (showLanguage) SettingsChoiceDialog(
+        icon = Icons.Outlined.Language,
+        title = tr("语言", "Language", "言語", "언어"),
+        onDismiss = { showLanguage = false },
+    ) {
+        AppLanguage.entries.forEach { language ->
+            SettingsChoiceOption(
+                title = if (language == AppLanguage.SYSTEM) systemLanguageLabel else language.nativeLabel,
+                selected = appLanguage == language,
+                onClick = { scope.launch { sessionManager.setAppLanguage(language) }; showLanguage = false },
+            )
+        }
+    }
 
     val archivePasswordVault = services.archivePasswords
     val archivePasswords by archivePasswordVault.passwords.collectAsStateWithLifecycle(initialValue = emptyList())
@@ -241,16 +261,16 @@ fun SettingsScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         // 有外框时：不分标签（各类连着排、左栏是目录），页名写在岛的页眉里
         island = IslandPage(header = {
-            IslandTitle("设置")
+            IslandTitle(tr("设置", "Settings", "設定", "설정"))
             IslandHeaderSpace()
         }),
         topBar = {
             PikoTopBar(
-                title = "设置",
+                title = tr("设置", "Settings", "設定", "설정"),
                 navigationIcon = {
                     if (onBackClick != null) {
                         IconButton(onClick = onBackClick) {
-                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = tr("返回", "Back", "戻る", "뒤로"))
                         }
                     }
                 },
@@ -307,6 +327,12 @@ fun SettingsScreen(
 
                     section(SettingsSection.Appearance) {
                         SettingsGroup(null) {
+                            SettingsNavigationRow(
+                                icon = Icons.Outlined.Language,
+                                title = tr("语言", "Language", "言語", "언어"),
+                                supporting = if (appLanguage == AppLanguage.SYSTEM) systemLanguageLabel else appLanguage.nativeLabel,
+                                onClick = { showLanguage = true },
+                            )
                             val appearance = LocalAppearance.current
                             ThemeModeRow(
                                 mode = appearance.mode,
@@ -328,13 +354,13 @@ fun SettingsScreen(
                                 }
                                 SettingsSwitchRow(
                                     icon = Icons.Outlined.PowerSettingsNew,
-                                    title = "开机自动启动",
-                                    supporting = "登录 Windows 后打开 Piko",
+                                    title = tr("开机自动启动", "Launch at startup", "ログイン時に起動", "시작 시 실행"),
+                                    supporting = tr("登录 Windows 后打开 Piko", "Open Piko after signing in to Windows", "Windowsへのログイン時にPikoを開く", "Windows 로그인 후 Piko 실행"),
                                     checked = enabled,
                                     onCheckedChange = { value ->
                                         if (!busy) scope.launch {
                                             busy = true
-                                            if (!startup.setEnabled(value)) snackbarHostState.showSnackbar("无法更改开机启动设置")
+                                            if (!startup.setEnabled(value)) snackbarHostState.showSnackbar(tr("无法更改开机启动设置", "Unable to change startup setting", "起動設定を変更できません", "시작 설정을 변경할 수 없습니다"))
                                             enabled = startup.isEnabled()
                                             busy = false
                                         }
@@ -345,8 +371,8 @@ fun SettingsScreen(
                                 val enabled by toggle.enabled.collectAsState()
                                 SettingsSwitchRow(
                                     icon = Icons.Outlined.Minimize,
-                                    title = "关闭时最小化到托盘",
-                                    supporting = "点击关闭按钮时收进托盘而不退出",
+                                    title = tr("关闭时最小化到托盘", "Minimize to tray on close", "閉じるときにトレイへ最小化", "닫을 때 트레이로 최소화"),
+                                    supporting = tr("点击关闭按钮时收进托盘而不退出", "Keep Piko in the tray when the close button is clicked", "閉じるボタンを押すとトレイに格納します", "닫기 버튼을 누르면 트레이에 유지합니다"),
                                     checked = enabled,
                                     onCheckedChange = toggle::set,
                                 )
@@ -355,8 +381,8 @@ fun SettingsScreen(
                                 val compact by compactTitleBar.enabled.collectAsState()
                                 SettingsSwitchRow(
                                     icon = Icons.Outlined.WebAsset,
-                                    title = "紧凑标题栏",
-                                    supporting = "窗口按钮并入界面右上角",
+                                    title = tr("紧凑标题栏", "Compact title bar", "コンパクトなタイトルバー", "간결한 제목 표시줄"),
+                                    supporting = tr("窗口按钮并入界面右上角", "Integrate window controls into the top right corner", "ウィンドウボタンを画面右上に統合", "창 버튼을 화면 오른쪽 위에 통합"),
                                     checked = compact,
                                     onCheckedChange = compactTitleBar::set,
                                 )
@@ -365,8 +391,8 @@ fun SettingsScreen(
                             val motionScale = platform.motionScale
                             SettingsSwitchRow(
                                 icon = Icons.Outlined.Animation,
-                                title = "减少动画",
-                                supporting = if (motionScale.systemScale == 0f) "系统已关闭动画" else "界面切换不播放过渡",
+                                title = tr("减少动画", "Reduce motion", "アニメーションを減らす", "애니메이션 줄이기"),
+                                supporting = if (motionScale.systemScale == 0f) tr("系统已关闭动画", "Animations disabled by system", "システムでアニメーションが無効です", "시스템에서 애니메이션을 껐습니다") else tr("界面切换不播放过渡", "Disable transition animations", "画面切り替えのアニメーションを無効にする", "화면 전환 애니메이션 끄기"),
                                 checked = motionScale.appReduced,
                                 onCheckedChange = { scope.launch { sessionManager.setReduceMotion(it) } },
                             )
@@ -374,11 +400,11 @@ fun SettingsScreen(
                     }
 
                     section(SettingsSection.Browse) {
-                        SettingsGroup("文件") {
+                        SettingsGroup(tr("文件", "Files", "ファイル", "파일")) {
                             SettingsSwitchRow(
                                 icon = Icons.Outlined.TextFields,
-                                title = "文件名解析",
-                                supporting = "按作品、分区与集数整理，标出发布组与清晰度",
+                                title = tr("文件名解析", "Parse file names", "ファイル名を解析", "파일 이름 분석"),
+                                supporting = tr("按作品、分区与集数整理，标出发布组与清晰度", "Organize by title, section and episode; show release groups and quality", "作品・区分・話数で整理し、リリースグループと画質を表示", "작품, 분류, 회차별로 정리하고 배포 그룹 및 화질 표시"),
                                 checked = isNameParsingEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setNameParsingEnabled(it) } },
                             )
@@ -386,39 +412,39 @@ fun SettingsScreen(
                             DependentRow(visible = isNameParsingEnabled) {
                                 SettingsSwitchRow(
                                     icon = Icons.Outlined.AutoFixHigh,
-                                    title = "启发式折叠",
-                                    supporting = "收起广告、样片、说明文件等次要项",
+                                    title = tr("启发式折叠", "Smart grouping", "不要な項目を折りたたむ", "스마트 접기"),
+                                    supporting = tr("收起广告、样片、说明文件等次要项", "Collapse ads, samples, readme files and other extras", "広告・サンプル・説明ファイルなどを折りたたむ", "광고, 샘플, 설명 파일 등 부가 항목 접기"),
                                     checked = isHeuristicFilterEnabled,
                                     onCheckedChange = { scope.launch { sessionManager.setHeuristicFilterEnabled(it) } },
                                 )
                             }
                             SettingsSwitchRow(
                                 icon = Icons.Outlined.VisibilityOff,
-                                title = "缩略图防窥",
-                                supporting = "模糊显示缩略图与封面",
+                                title = tr("缩略图防窥", "Blur thumbnails", "サムネイルをぼかす", "미리 보기 흐리게"),
+                                supporting = tr("模糊显示缩略图与封面", "Blur thumbnails and covers", "サムネイルとカバーをぼかして表示", "미리 보기 및 표지 흐리게 표시"),
                                 checked = isSpoilerBlurEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setSpoilerBlurEnabled(it) } },
                             )
                             SettingsSwitchRow(
                                 icon = Icons.AutoMirrored.Outlined.Sort,
-                                title = "各文件夹独立排序",
-                                supporting = "每个文件夹单独记住自己的排序方式",
+                                title = tr("各文件夹独立排序", "Sort each folder separately", "フォルダーごとに並べ替え", "폴더별 정렬"),
+                                supporting = tr("每个文件夹单独记住自己的排序方式", "Remember sorting for each folder", "フォルダーごとに並び順を記憶", "폴더별 정렬 방식 기억"),
                                 checked = isPerFolderSortEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setPerFolderSort(it) } },
                             )
                         }
-                        SettingsGroup("播放") {
+                        SettingsGroup(tr("播放", "Play", "再生", "재생")) {
                             SettingsNavigationRow(
                                 icon = Icons.Outlined.HighQuality,
-                                title = "播放画质",
+                                title = tr("播放画质", "Playback quality", "再生画質", "재생 화질"),
                                 supporting = playbackQualitySummary(playbackMaxHeight),
                                 onClick = { showPlaybackQuality = true },
                                 trailingIcon = null,
                             )
                             SettingsSwitchRow(
                                 icon = Icons.Outlined.Memory,
-                                title = "硬件解码",
-                                supporting = "花屏或卡死时关闭，改用处理器解码",
+                                title = tr("硬件解码", "Hardware decoding", "ハードウェアデコード", "하드웨어 디코딩"),
+                                supporting = tr("花屏或卡死时关闭，改用处理器解码", "Disable if video is corrupted or freezes to use CPU decoding", "映像の乱れやフリーズが起きる場合は無効にしてCPUでデコード", "화면 깨짐이나 멈춤 발생 시 끄면 CPU로 디코딩"),
                                 checked = isHardwareDecodingEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setHardwareDecoding(it) } },
                             )
@@ -432,8 +458,8 @@ fun SettingsScreen(
                             val detectClipboard by sessionManager.autoDetectClipboardLinksFlow.collectAsStateWithLifecycle(initialValue = false)
                             SettingsSwitchRow(
                                 icon = Icons.Outlined.ContentPaste,
-                                title = "自动检测剪贴板链接",
-                                supporting = "回到前台时提示磁力或 PikPak 分享链接，确认后解析",
+                                title = tr("自动检测剪贴板链接", "Detect clipboard links", "クリップボードのリンクを検出", "클립보드 링크 자동 감지"),
+                                supporting = tr("回到前台时提示磁力或 PikPak 分享链接，确认后解析", "Offer to open magnet or PikPak share links when returning to Piko", "復帰時にマグネットやPikPak共有リンクを検出し、確認後に解析", "앱으로 돌아오면 마그넷 또는 PikPak 공유 링크를 감지하고 확인 후 분석"),
                                 checked = detectClipboard,
                                 onCheckedChange = { scope.launch { sessionManager.setAutoDetectClipboardLinks(it) } },
                             )
@@ -448,24 +474,24 @@ fun SettingsScreen(
                             if (platform.openAppLinkSettings != null) {
                                 SettingsNavigationRow(
                                     icon = Icons.Outlined.Link,
-                                    title = "默认打开分享与深链",
-                                    supporting = "在系统设置中添加支持的链接域名，点击 PikPak 分享或跳转链接时直接用 Piko 打开",
+                                    title = tr("默认打开分享与深链", "Open shares and deep links by default", "共有とディープリンクを既定で開く", "공유 및 딥 링크 기본 열기"),
+                                    supporting = tr("在系统设置中添加支持的链接域名，点击 PikPak 分享或跳转链接时直接用 Piko 打开", "Enable supported link domains in system settings to open PikPak shares and deep links in Piko", "システム設定で対応ドメインを有効にすると、PikPakの共有やディープリンクをPikoで開けます", "시스템 설정에서 지원 도메인을 추가하면 PikPak 공유 및 딥 링크를 Piko에서 바로 엽니다"),
                                     onClick = platform.openAppLinkSettings!!,
                                 )
                             }
                             // 这一项靠文件名解析认出字幕。解析在另一类，关掉时留着并写明原因，收起的话人找不到它去了哪
                             SettingsSwitchRow(
                                 icon = Icons.Outlined.Subtitles,
-                                title = "保存配套字幕",
-                                supporting = if (isNameParsingEnabled) "保存视频时一并保存外挂字幕" else "需先开启文件名解析",
+                                title = tr("保存配套字幕", "Save matching subtitles", "対応する字幕も保存", "관련 자막 함께 저장"),
+                                supporting = if (isNameParsingEnabled) tr("保存视频时一并保存外挂字幕", "Save external subtitles with videos", "動画の保存時に外部字幕も保存", "동영상 저장 시 외부 자막 함께 저장") else tr("需先开启文件名解析", "Enable file name parsing first", "先にファイル名の解析を有効にしてください", "먼저 파일 이름 분석을 켜 주세요"),
                                 checked = isBundleSubtitlesEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setBundleSubtitlesEnabled(it) } },
                                 enabled = isNameParsingEnabled,
                             )
                             SettingsSwitchRow(
                                 icon = Icons.Outlined.CleaningServices,
-                                title = "自动修正名称",
-                                supporting = "新建与重命名时去掉 PikPak 不支持的字符",
+                                title = tr("自动修正名称", "Clean names automatically", "名前を自動修正", "이름 자동 수정"),
+                                supporting = tr("新建与重命名时去掉 PikPak 不支持的字符", "Remove unsupported PikPak characters when creating or renaming", "作成・改名時にPikPakで使えない文字を除去", "파일 생성 및 이름 변경 시 PikPak에서 지원하지 않는 문자 제거"),
                                 checked = isAutoCleanNamesEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setAutoCleanNamesEnabled(it) } },
                             )
@@ -473,7 +499,7 @@ fun SettingsScreen(
                                 SettingsNavigationRow(
                                     icon = Icons.Outlined.TravelExplore,
                                     title = "MetaTube",
-                                    supporting = metaTubeUrl.ifBlank { "未设置，按番号命名时不取片名" },
+                                    supporting = metaTubeUrl.ifBlank { tr("未设置，按番号命名时不取片名", "Not configured; omit titles when naming by catalog code", "未設定。作品番号による命名時に作品名を取得しません", "미설정. 품번 이름 지정 시 제목을 가져오지 않음") },
                                     onClick = { showMetaTubeDialog = true },
                                     trailingIcon = null,
                                 )
@@ -482,41 +508,41 @@ fun SettingsScreen(
                     }
 
                     section(SettingsSection.Transfer) {
-                        SettingsGroup("下载") {
+                        SettingsGroup(tr("下载", "Downloads", "ダウンロード", "다운로드")) {
                             SettingsNavigationRow(
                                 icon = Icons.Outlined.FolderOpen,
-                                title = "下载位置",
+                                title = tr("下载位置", "Download location", "ダウンロード先", "다운로드 위치"),
                                 supporting = resolvedDownloadPath,
                                 onClick = { showDownloadDirDialog = true },
                                 trailingIcon = null,
                             )
                             SettingsNavigationRow(
                                 icon = Icons.Outlined.HighQuality,
-                                title = "默认下载画质",
+                                title = tr("默认下载画质", "Default download quality", "既定のダウンロード画質", "기본 다운로드 화질"),
                                 supporting = downloadQualitySummary(downloadMaxHeight),
                                 onClick = { showDownloadQuality = true },
                                 trailingIcon = null,
                             )
                             SettingsSwitchRow(
                                 icon = Icons.Outlined.Speed,
-                                title = "并发加速",
-                                supporting = "多连接下载，提升速度",
+                                title = tr("并发加速", "Parallel downloads", "並列ダウンロード", "병렬 다운로드"),
+                                supporting = tr("多连接下载，提升速度", "Use multiple connections for faster downloads", "複数接続でダウンロードを高速化", "여러 연결로 다운로드 속도 향상"),
                                 checked = isConcurrentAccelerationEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setConcurrentAccelerationEnabled(it) } },
                             )
                         }
-                        SettingsGroup("限速") {
+                        SettingsGroup(tr("限速", "Speed limits", "速度制限", "속도 제한")) {
                             SettingsSwitchRow(
                                 icon = Icons.Outlined.SlowMotionVideo,
-                                title = "蜗牛模式",
-                                supporting = "限制下载与上传速度，不影响在线播放",
+                                title = tr("蜗牛模式", "Snail mode", "低速モード", "저속 모드"),
+                                supporting = tr("限制下载与上传速度，不影响在线播放", "Limit transfer speeds without affecting streaming", "ダウンロードとアップロードの速度を制限。ストリーミングには影響しません", "다운로드 및 업로드 속도를 제한하며 스트리밍에는 영향 없음"),
                                 checked = snailMode.enabled,
                                 onCheckedChange = { scope.launch { sessionManager.setSnailMode(snailMode.copy(enabled = it)) } },
                             )
                             DependentRow(visible = snailMode.enabled) {
                                 SettingsNavigationRow(
                                     icon = Icons.Outlined.Tune,
-                                    title = "速度上限",
+                                    title = tr("速度上限", "Speed limit", "速度上限", "속도 한도"),
                                     supporting = snailMode.limitSummary(),
                                     onClick = { showSnailDialog = true },
                                     trailingIcon = null,
@@ -529,14 +555,14 @@ fun SettingsScreen(
                         SettingsGroup(null) {
                             SettingsNavigationRow(
                                 icon = Icons.Outlined.Public,
-                                title = "网络代理",
+                                title = tr("网络代理", "Network proxy", "ネットワークプロキシ", "네트워크 프록시"),
                                 supporting = proxySetting.summary(),
                                 onClick = { showProxyDialog = true },
                                 trailingIcon = null,
                             )
                             SettingsNavigationRow(
                                 icon = Icons.Outlined.Dns,
-                                title = "服务器域名",
+                                title = tr("服务器域名", "Server domain", "サーバードメイン", "서버 도메인"),
                                 supporting = domainSummary(domainChoice, activeDomain, domainProbes),
                                 onClick = { showDomainDialog = true },
                                 trailingIcon = null,
@@ -546,7 +572,7 @@ fun SettingsScreen(
 
                     // 这一类都挂在账号上、随账号切换，不放进「网络」：那里是这台设备自己的连接设置
                     section(SettingsSection.Data) {
-                        SettingsGroup("同步") {
+                        SettingsGroup(tr("同步", "Sync", "同期", "동기화")) {
                             SettingsSyncRow(
                                 enabled = isSettingsSyncEnabled,
                                 status = syncStatusText(syncStatus, lastSynced),
@@ -555,17 +581,17 @@ fun SettingsScreen(
                             )
                             SettingsSwitchRow(
                                 icon = Icons.Outlined.History,
-                                title = "同步播放记录",
-                                supporting = "与 PikPak 官方客户端共用播放历史与续播进度",
+                                title = tr("同步播放记录", "Sync playback history", "再生履歴を同期", "재생 기록 동기화"),
+                                supporting = tr("与 PikPak 官方客户端共用播放历史与续播进度", "Share playback history and resume positions with official PikPak apps", "PikPak公式アプリと再生履歴・再開位置を共有", "PikPak 공식 앱과 재생 기록 및 이어보기 위치 공유"),
                                 checked = isSyncPlayHistoryEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setSyncPlayHistoryEnabled(it) } },
                             )
                         }
-                        SettingsGroup("密码与凭据") {
+                        SettingsGroup(tr("密码与凭据", "Passwords and credentials", "パスワードと認証情報", "비밀번호 및 인증 정보")) {
                             SettingsNavigationRow(
                                 icon = Icons.Outlined.Key,
-                                title = "解压密码",
-                                supporting = if (archivePasswords.isEmpty()) "尚无保存的密码" else "已保存 ${archivePasswords.size} 个",
+                                title = tr("解压密码", "Archive password", "解凍パスワード", "압축 해제 비밀번호"),
+                                supporting = if (archivePasswords.isEmpty()) tr("尚无保存的密码", "No saved passwords", "保存済みパスワードはありません", "저장된 비밀번호가 없습니다") else tr("已保存 ${archivePasswords.size} 个", "${archivePasswords.size} saved", "${archivePasswords.size} 件保存済み", "${archivePasswords.size}개 저장됨"),
                                 onClick = { showArchivePasswords = true },
                                 trailingIcon = null,
                             )
@@ -574,7 +600,7 @@ fun SettingsScreen(
                                 SettingsNavigationRow(
                                     icon = Icons.Outlined.Lan,
                                     title = "WebDAV",
-                                    supporting = "供播放器、文件管理器等应用读取网盘",
+                                    supporting = tr("供播放器、文件管理器等应用读取网盘", "Access the drive from media players and file managers", "プレーヤーやファイルマネージャーからドライブにアクセス", "플레이어 및 파일 관리자에서 드라이브 접근"),
                                     onClick = onOpenWebDav,
                                 )
                             }
@@ -658,8 +684,8 @@ fun SettingsScreen(
             maxHeight = downloadMaxHeight ?: 0,
             onSelect = { scope.launch { sessionManager.setDownloadMaxHeight(it) } },
             onDismiss = { showDownloadQuality = false },
-            title = "默认下载画质",
-            description = "普通下载直接使用此画质；也可通过「下载指定画质」临时选择。每个视频取不高于所选的最高一档，都高于所选时取最低一档；转码档存为 MP4。",
+            title = tr("默认下载画质", "Default download quality", "既定のダウンロード画質", "기본 다운로드 화질"),
+            description = tr("普通下载直接使用此画质；也可通过「下载指定画质」临时选择。每个视频取不高于所选的最高一档，都高于所选时取最低一档；转码档存为 MP4。", "Normal downloads use this quality. Choose Download at chosen quality to override it. Use the highest quality within the limit, or the lowest if none fits. Transcodes are saved as MP4.", "通常はこの画質でダウンロードします。「画質を指定してダウンロード」で一時的に変更できます。上限以下の最高画質を使用し、該当しなければ最低画質を使用します。変換済み動画はMP4で保存します。", "일반 다운로드에 이 화질을 사용합니다. '화질을 선택하여 다운로드'로 임시 변경할 수 있습니다. 선택한 화질 이하에서 가장 높은 화질을 사용하며 없으면 최저 화질을 사용합니다. 변환 영상은 MP4로 저장합니다."),
         )
     }
 
@@ -698,19 +724,19 @@ private fun DownloadLocationDialog(
 ) {
     SettingsChoiceDialog(
         icon = Icons.Outlined.FolderOpen,
-        title = "下载位置",
+        title = tr("下载位置", "Download location", "ダウンロード先", "다운로드 위치"),
         description = description,
         onDismiss = onDismiss,
     ) {
         SettingsChoiceOption(
-            title = "默认位置",
+            title = tr("默认位置", "Default location", "既定の保存先", "기본 위치"),
             supporting = defaultPath,
             selected = customPath == null,
             onClick = onUseDefault,
         )
         SettingsChoiceOption(
-            title = "自定义位置",
-            supporting = customPath ?: "选择一个文件夹",
+            title = tr("自定义位置", "Custom location", "指定した保存先", "사용자 지정 위치"),
+            supporting = customPath ?: tr("选择一个文件夹", "Choose a folder", "フォルダーを選択", "폴더 선택"),
             selected = customPath != null,
             onClick = onPickFolder,
             // 已选中时这一行点下去是换文件夹，不是切换，给一个编辑的提示
@@ -723,16 +749,19 @@ private fun DownloadLocationDialog(
  * 设置的分类，也是桌面目录的条目。按用户要做的事分，不按功能模块分：
  * 原来「网盘」一类混着浏览、命名与刮削，「传输与网络」一类混着下载、默认打开方式与连接。
  */
-internal enum class SettingsSection(val title: String, val icon: ImageVector, val selectedIcon: ImageVector) {
-    Account("账号", Icons.Outlined.AccountCircle, Icons.Filled.AccountCircle),
-    Appearance("外观", Icons.Outlined.Palette, Icons.Filled.Palette),
-    Browse("浏览与播放", Icons.Outlined.PlayCircle, Icons.Filled.PlayCircle),
-    Saving("保存与命名", Icons.Outlined.DriveFileRenameOutline, Icons.Filled.DriveFileRenameOutline),
+internal enum class SettingsSection(private val titleText: () -> String, val icon: ImageVector, val selectedIcon: ImageVector) {
+    Account({ tr("账号", "Account", "アカウント", "계정") }, Icons.Outlined.AccountCircle, Icons.Filled.AccountCircle),
+    Appearance({ tr("外观", "Appearance", "外観", "모양") }, Icons.Outlined.Palette, Icons.Filled.Palette),
+    Browse({ tr("浏览与播放", "Browsing & playback", "閲覧と再生", "탐색 및 재생") }, Icons.Outlined.PlayCircle, Icons.Filled.PlayCircle),
+    Saving({ tr("保存与命名", "Saving & naming", "保存と命名", "저장 및 이름 지정") }, Icons.Outlined.DriveFileRenameOutline, Icons.Filled.DriveFileRenameOutline),
     // 与导航的「传输」同一款图标
-    Transfer("下载与传输", Icons.Outlined.SwapVerticalCircle, Icons.Filled.SwapVerticalCircle),
-    Network("网络", Icons.Outlined.Router, Icons.Filled.Router),
-    Data("同步与数据", Icons.Outlined.CloudSync, Icons.Filled.CloudSync),
-    About("关于", Icons.Outlined.Info, Icons.Filled.Info),
+    Transfer({ tr("下载与传输", "Downloads & transfers", "ダウンロードと転送", "다운로드 및 전송") }, Icons.Outlined.SwapVerticalCircle, Icons.Filled.SwapVerticalCircle),
+    Network({ tr("网络", "Network", "ネットワーク", "네트워크") }, Icons.Outlined.Router, Icons.Filled.Router),
+    Data({ tr("同步与数据", "Sync & data", "同期とデータ", "동기화 및 데이터") }, Icons.Outlined.CloudSync, Icons.Filled.CloudSync),
+    About({ tr("关于", "About", "このアプリについて", "정보") }, Icons.Outlined.Info, Icons.Filled.Info),
+;
+
+    val title: String get() = titleText()
 }
 
 /**
@@ -766,19 +795,19 @@ internal fun <T> activeSettingsSection(
 }
 
 private fun syncStatusText(status: PikoSettingsSync.Status, lastSynced: Long?): String = when (status) {
-    PikoSettingsSync.Status.SYNCING -> "同步中…"
-    PikoSettingsSync.Status.FAILED -> "同步失败，改动设置或重新打开时重试"
+    PikoSettingsSync.Status.SYNCING -> tr("同步中…", "Syncing…", "同期中…", "동기화 중…")
+    PikoSettingsSync.Status.FAILED -> tr("同步失败，改动设置或重新打开时重试", "Sync failed; retry when settings change or Piko reopens", "同期に失敗しました。設定変更時または再起動時に再試行します", "동기화 실패. 설정 변경 또는 앱 재실행 시 다시 시도")
     else -> lastSynced?.let {
         val time = Instant.fromEpochMilliseconds(it).toLocalDateTime(TimeZone.currentSystemDefault())
-        "上次同步于 ${time.hour.toString().padStart(2, '0')}:${time.minute.toString().padStart(2, '0')}"
-    } ?: "登录后自动同步"
+        tr("上次同步于 ${time.hour.toString().padStart(2, '0')}:${time.minute.toString().padStart(2, '0')}", "Last synced at ${time.hour.toString().padStart(2, '0')}:${time.minute.toString().padStart(2, '0')}", "最終同期 ${time.hour.toString().padStart(2, '0')}:${time.minute.toString().padStart(2, '0')}", "마지막 동기화 ${time.hour.toString().padStart(2, '0')}:${time.minute.toString().padStart(2, '0')}")
+    } ?: tr("登录后自动同步", "Sync automatically after sign-in", "ログイン後に自動同期", "로그인 후 자동 동기화")
 }
 
 // 设置页自身宽到这个程度才放目录：目录 240dp，右边至少还要放得下一列 600dp 左右的卡片
 private val SettingsIndexMinWidth = 900.dp
 
-/** 目录的宽度，与应用侧边栏一样。八个短分类名用不着 M3 list-detail 默认的 360dp。 */
-private val SettingsIndexWidth = 240.dp
+/** 目录的宽度，比应用侧边栏略宽以容纳多语言分类名。 */
+private val SettingsIndexWidth = 264.dp
 
 // 滚动位置离一类的标题还差这么多时就算进了这一类：标题行本身不必完全滚出顶端
 private val SectionHeadingSlack = 48.dp
@@ -833,12 +862,12 @@ private fun LinkAssociationRow(
     var busy by remember { mutableStateOf(false) }
     val isDefault = state == LinkAssociationState.Default
     val isRegistered = isDefault || state == LinkAssociationState.Registered
-    val confirmHint = if (association.needsSystemConfirmation) "，设为默认需到系统设置确认" else ""
+    val confirmHint = if (association.needsSystemConfirmation) tr("，设为默认需到系统设置确认", "; confirm the default app in system settings", "。既定にするにはシステム設定で確認が必要です", ". 기본 앱 설정은 시스템 설정에서 확인 필요") else ""
     val act: (Boolean) -> Unit = { register ->
         busy = true
         scope.launch {
             val done = if (register) association.register() else association.unregister()
-            if (!done) onFailure(if (register) "无法设为默认打开方式" else "无法取消关联")
+            if (!done) onFailure(if (register) tr("无法设为默认打开方式", "Unable to set as default app", "既定のアプリに設定できません", "기본 앱으로 설정할 수 없습니다") else tr("无法取消关联", "Unable to remove association", "関連付けを解除できません", "연결을 해제할 수 없습니다"))
             // 不经系统设置的平台当场就改好了，窗口不会失焦再回来，这里重读一次
             onStateChange(association.state())
             busy = false
@@ -846,20 +875,20 @@ private fun LinkAssociationRow(
     }
     val enabled = state != LinkAssociationState.Unavailable && !busy
     SettingsRow(
-        title = "磁力链接与种子文件",
+        title = tr("磁力链接与种子文件", "Magnet links and torrent files", "マグネットリンクとトレントファイル", "마그넷 링크 및 토렌트 파일"),
         icon = Icons.Outlined.Link,
         supporting = when {
-            state == LinkAssociationState.Unavailable -> "仅安装版与便携版可设为默认打开方式"
-            isDefault && !association.canUnregister -> "由 Piko 打开。换回需在其他应用中设为默认"
-            isDefault -> "由 Piko 打开"
-            isRegistered -> "已登记，未设为默认$confirmHint"
-            else -> "由其他应用打开$confirmHint"
+            state == LinkAssociationState.Unavailable -> tr("仅安装版与便携版可设为默认打开方式", "Only installed and portable builds can be the default app", "インストール版とポータブル版のみ既定のアプリに設定できます", "설치 버전과 포터블 버전만 기본 앱으로 설정 가능")
+            isDefault && !association.canUnregister -> tr("由 Piko 打开。换回需在其他应用中设为默认", "Opened by Piko. Set another app as default to change this", "Pikoで開きます。変更するにはほかのアプリを既定に設定してください", "Piko에서 엽니다. 변경하려면 다른 앱을 기본으로 설정하세요")
+            isDefault -> tr("由 Piko 打开", "Opened by Piko", "Pikoで開く", "Piko에서 열기")
+            isRegistered -> tr("已登记，未设为默认$confirmHint", "Registered; not the default$confirmHint", "登録済み、既定は未設定$confirmHint", "등록됨, 기본 앱 아님$confirmHint")
+            else -> tr("由其他应用打开$confirmHint", "Opened by another app$confirmHint", "ほかのアプリで開く$confirmHint", "다른 앱에서 열기$confirmHint")
         },
         trailing = {
             if (isRegistered && association.canUnregister) {
-                SettingsRowButton("取消关联", onClick = { act(false) }, enabled = enabled, primary = false)
+                SettingsRowButton(tr("取消关联", "Remove association", "関連付けを解除", "연결 해제"), onClick = { act(false) }, enabled = enabled, primary = false)
             }
-            if (!isDefault) SettingsRowButton("设为默认", onClick = { act(true) }, enabled = enabled)
+            if (!isDefault) SettingsRowButton(tr("设为默认", "Set as default", "既定に設定", "기본으로 설정"), onClick = { act(true) }, enabled = enabled)
         },
     )
 }
@@ -878,7 +907,7 @@ private fun ThemeModeRow(mode: ThemeMode, onModeChange: (ThemeMode) -> Unit) {
         )
     }
     SettingsRow(
-        title = "深色模式",
+        title = tr("深色模式", "Theme mode", "テーマモード", "테마 모드"),
         icon = Icons.Outlined.DarkMode,
         trailing = if (style.trailingChoices) ({ choice(false) }) else null,
         below = if (style.trailingChoices) null else ({ choice(true) }),
@@ -900,9 +929,9 @@ private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> 
     // 色块画在触控区正中，触控区比色块宽出的一半是看不见的边。整排往前挪这一截，第一个色块的左缘才与标题文字齐
     val swatchInset = (style.swatchTarget - style.swatchSize) / 2
     SettingsRow(
-        title = "主题色",
+        title = tr("主题色", "Theme color", "テーマカラー", "테마 색상"),
         icon = Icons.Outlined.Palette,
-        supporting = appearance.effectiveSeed?.label ?: "系统取色",
+        supporting = appearance.effectiveSeed?.label ?: tr("系统取色", "System color", "システムの色", "시스템 색상"),
         below = {
             val swatchScroll = rememberScrollState()
             Row(
@@ -917,7 +946,7 @@ private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> 
                     ColorSwatch(
                         color = scheme.primary,
                         onColor = scheme.onPrimary,
-                        label = "系统取色",
+                        label = tr("系统取色", "System color", "システムの色", "시스템 색상"),
                         selected = appearance.seed == null,
                         idleIcon = Icons.Outlined.Wallpaper,
                         onClick = { onSeedChange(null) },
@@ -982,10 +1011,10 @@ private fun SettingsSyncRow(
 ) {
     SettingsSwitchRow(
         icon = Icons.Outlined.CloudSync,
-        title = "同步设置",
-        supporting = if (enabled) status else "设置存于网盘的 .piko 文件夹，换设备登录后自动恢复",
+        title = tr("同步设置", "Sync settings", "設定を同期", "설정 동기화"),
+        supporting = if (enabled) status else tr("设置存于网盘的 .piko 文件夹，换设备登录后自动恢复", "Store settings in the drive’s .piko folder and restore them on other devices", "設定をドライブの .piko フォルダーに保存し、ほかの端末でログインすると自動復元", "드라이브의 .piko 폴더에 설정을 저장하고 다른 기기에서 로그인하면 자동 복원"),
         checked = enabled,
         onCheckedChange = onEnabledChange,
-        extraTrailing = if (enabled) ({ TooltipIconButton(Icons.Outlined.Sync, "立即同步", onSyncNow) }) else null,
+        extraTrailing = if (enabled) ({ TooltipIconButton(Icons.Outlined.Sync, tr("立即同步", "Sync now", "今すぐ同期", "지금 동기화"), onSyncNow) }) else null,
     )
 }

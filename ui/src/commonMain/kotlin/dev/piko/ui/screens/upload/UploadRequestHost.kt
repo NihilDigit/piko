@@ -1,5 +1,12 @@
 package dev.piko.ui.screens.upload
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -57,8 +64,8 @@ fun UploadRequestHost(uploads: PikoUploadCoordinator, saveTarget: SaveTargetCont
 
     if (isPickingTarget) {
         FolderPickerDialog(
-            title = "上传到",
-            confirmLabel = "选择此目录",
+            title = tr("上传到", "Upload to", "アップロード先", "업로드 위치"),
+            confirmLabel = tr("选择此目录", "Choose this folder", "このフォルダーを選択", "이 폴더 선택"),
             onDismiss = { isPickingTarget = false },
             onConfirm = { id, name ->
                 target = id to name
@@ -72,10 +79,10 @@ fun UploadRequestHost(uploads: PikoUploadCoordinator, saveTarget: SaveTargetCont
 
     PikoDialog(
         onDismissRequest = uploads::clearRequest,
-        title = { Text("上传 ${request.describe()}") },
+        title = { Text(tr("上传 ${request.describe()}", "Upload ${request.describe()}", "${request.describe()} をアップロード", "${request.describe()} 업로드")) },
         text = {
             Column {
-                Text("保存到", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(Res.string.text_save_to), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Outlined.Folder, contentDescription = null)
                     Spacer(Modifier.width(12.dp))
@@ -85,18 +92,18 @@ fun UploadRequestHost(uploads: PikoUploadCoordinator, saveTarget: SaveTargetCont
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = { isPickingTarget = true }) { Text("更改") }
+                    TextButton(onClick = { isPickingTarget = true }) { Text(stringResource(Res.string.text_change)) }
                 }
                 (blocked ?: rejection)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = {
             PikoDialogConfirm(
-                label = "上传",
+                label = tr("上传", "Uploads", "アップロード", "업로드"),
                 enabled = blocked == null,
                 onClick = {
                     val currentBlock = saveTarget.availability(target.first) as? ActionAvailability.Blocked
-                    if (services.driveRepository.currentAccount != shownAccount) rejection = "账号已改变，请重新选择上传目标"
+                    if (services.driveRepository.currentAccount != shownAccount) rejection = tr("账号已改变，请重新选择上传目标", "Account changed. Choose an upload destination again", "アカウントが変わりました。アップロード先を選択し直してください", "계정이 변경되었습니다. 업로드 대상을 다시 선택하세요")
                     else if (currentBlock != null) rejection = currentBlock.reason else {
                         when (val accepted = uploads.enqueue(request, target.first, target.second)) {
                             is UploadEnqueueResult.Accepted -> uploads.clearRequest()
@@ -106,12 +113,12 @@ fun UploadRequestHost(uploads: PikoUploadCoordinator, saveTarget: SaveTargetCont
                 },
             )
         },
-        dismissButton = { TextButton(onClick = uploads::clearRequest) { Text("取消") } },
+        dismissButton = { TextButton(onClick = uploads::clearRequest) { Text(stringResource(Res.string.common_cancel)) } },
     )
 }
 
 private fun UploadSelection.describe(): String = when {
-    folders.isEmpty() -> "${files.size} 个文件"
-    files.isEmpty() -> "${folders.size} 个文件夹"
-    else -> "$count 项"
+    folders.isEmpty() -> tr("${files.size} 个文件", "${enCount(files.size, "file", "files")}", "${files.size} ファイル", "파일 ${files.size}개")
+    files.isEmpty() -> tr("${folders.size} 个文件夹", "${enCount(folders.size, "folder", "folders")}", "${folders.size} フォルダー", "폴더 ${folders.size}개")
+    else -> tr("$count 项", "${enCount(count, "item", "items")}", "$count 項目", "${count}개 항목")
 }

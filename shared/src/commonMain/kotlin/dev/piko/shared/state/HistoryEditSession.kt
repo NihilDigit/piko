@@ -1,5 +1,9 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+
 import dev.piko.shared.data.HistoryKind
 import dev.piko.shared.data.HistoryWriteAccess
 import dev.piko.shared.data.PikoDriveRepository
@@ -24,11 +28,11 @@ sealed interface HistoryEditCommand {
     val kind: HistoryKind
     val title: String
     data class Remove(override val kind: HistoryKind, val eventIds: List<String>) : HistoryEditCommand {
-        override val title get() = "从${kind.title}移除 ${eventIds.size} 项记录"
+        override val title get() = tr("从${kind.title}移除 ${eventIds.size} 项记录", "Remove ${enCount(eventIds.size, "record", "records")} from ${kind.title}", "${kind.title}から ${eventIds.size} 件の記録を削除", "${kind.title}에서 기록 ${eventIds.size}건 삭제")
     }
     data object ClearPlay : HistoryEditCommand {
         override val kind = HistoryKind.PLAY
-        override val title = "清空播放历史"
+        override val title get() = tr("清空播放历史", "Clear playback history", "再生履歴を消去", "재생 기록 지우기")
     }
 }
 
@@ -110,7 +114,7 @@ class HistoryEditSession(private val repository: PikoDriveRepository, private va
                 currentCoroutineContext().ensureActive()
                 if (!active(work)) return@launch
                 val result = if (response?.isSuccess == true) {
-                    HistoryEditResult(HistoryEditCompletion.SUCCEEDED, "已完成", (work.command as? HistoryEditCommand.Remove)?.eventIds.orEmpty().toSet(), now())
+                    HistoryEditResult(HistoryEditCompletion.SUCCEEDED, tr("已完成", "Completed", "完了", "완료"), (work.command as? HistoryEditCommand.Remove)?.eventIds.orEmpty().toSet(), now())
                 } else verify(access, work.command, initial.result?.confirmedEvents.orEmpty(), response?.exceptionOrNull())
                 currentCoroutineContext().ensureActive()
                 if (!active(work)) return@launch
@@ -142,9 +146,9 @@ class HistoryEditSession(private val repository: PikoDriveRepository, private va
             if (command == HistoryEditCommand.ClearPlay) {
                 val completion = if (page.events.isEmpty() && page.nextPageToken.isEmpty()) HistoryEditCompletion.SUCCEEDED else failureKind(error)
                 val message = when (completion) {
-                    HistoryEditCompletion.SUCCEEDED -> "播放历史已清空"
-                    HistoryEditCompletion.FAILED -> "未能清空播放历史"
-                    else -> "清空结果尚未确认，请检查播放历史后再决定下一步"
+                    HistoryEditCompletion.SUCCEEDED -> tr("播放历史已清空", "Playback history cleared", "再生履歴を消去しました", "재생 기록을 지웠습니다")
+                    HistoryEditCompletion.FAILED -> tr("未能清空播放历史", "Failed to clear playback history", "再生履歴を消去できませんでした", "재생 기록을 지우지 못했습니다")
+                    else -> tr("清空结果尚未确认，请检查播放历史后再决定下一步", "Clear result unconfirmed. Check playback history before continuing", "消去の結果は未確認です。次の操作の前に再生履歴を確認してください", "지우기 결과가 미확인입니다. 다음 작업 전에 재생 기록을 확인해 주세요")
                 }
                 return HistoryEditResult(completion, message, finishedAtMs = now())
             }
@@ -164,10 +168,10 @@ class HistoryEditSession(private val repository: PikoDriveRepository, private va
             else -> failureKind(error)
         }
         val message = when (completion) {
-            HistoryEditCompletion.SUCCEEDED -> "已移除记录"
-            HistoryEditCompletion.PARTIAL -> "已确认移除 ${confirmed.size} 项，其余结果尚未确认"
-            HistoryEditCompletion.FAILED -> "未能移除记录"
-            HistoryEditCompletion.UNCONFIRMED -> "结果尚未确认，重新查询不会再次提交删除"
+            HistoryEditCompletion.SUCCEEDED -> tr("已移除记录", "Record removed", "記録を削除しました", "기록을 삭제했습니다")
+            HistoryEditCompletion.PARTIAL -> tr("已确认移除 ${confirmed.size} 项，其余结果尚未确认", "${confirmed.size} removals confirmed; remaining results unconfirmed", "${confirmed.size} 件の削除を確認しました。残りは未確認です", "${confirmed.size}개 삭제 확인 완료, 나머지 결과 미확인")
+            HistoryEditCompletion.FAILED -> tr("未能移除记录", "Failed to remove record", "記録を削除できませんでした", "기록을 삭제하지 못했습니다")
+            HistoryEditCompletion.UNCONFIRMED -> tr("结果尚未确认，重新查询不会再次提交删除", "Result unconfirmed; checking again will not delete again", "結果は未確認です。再確認で削除を再送信しません", "결과가 미확인입니다. 다시 확인해도 삭제를 재요청하지 않습니다")
         }
         return HistoryEditResult(completion, message, confirmed, now())
     }

@@ -1,5 +1,7 @@
 package dev.piko.ui.components
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -239,7 +241,7 @@ fun AdaptiveBar(
 private fun MoreButton(icon: ImageVector, actions: () -> List<SheetAction>) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        TooltipIconButton(icon, "更多", { expanded = true })
+        TooltipIconButton(icon, tr("更多", "More", "その他", "더 보기"), { expanded = true })
         OverflowMenu(expanded, { expanded = false }, if (expanded) actions() else emptyList())
     }
 }
@@ -263,7 +265,7 @@ fun OverflowMenu(expanded: Boolean, onDismiss: () -> Unit, actions: List<SheetAc
                 text = { Text(action.label, color = tint) },
                 leadingIcon = { Icon(action.icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp)) },
                 trailingIcon = if (action.checked == true) {
-                    { Icon(Icons.Outlined.Check, contentDescription = "当前", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) }
+                    { Icon(Icons.Outlined.Check, contentDescription = tr("当前", "Current", "現在", "현재"), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) }
                 } else {
                     null
                 },

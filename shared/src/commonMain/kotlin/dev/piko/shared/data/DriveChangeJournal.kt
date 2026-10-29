@@ -1,5 +1,9 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -184,7 +188,7 @@ class DriveChangeJournal internal constructor(
             if (current.undo[id]?.status == UndoStatus.RUNNING) return false
             val next = current.copy(
                 available = current.available.filterNot { it.id == id },
-                undo = current.undo + (id to UndoResult(UndoStatus.RUNNING, "正在撤销", candidate.affectedFileIds(), candidate.affectedManifestFolders(), candidate.affectedTreeIds(),
+                undo = current.undo + (id to UndoResult(UndoStatus.RUNNING, tr("正在撤销", "Undoing", "元に戻しています", "실행 취소 중"), candidate.affectedFileIds(), candidate.affectedManifestFolders(), candidate.affectedTreeIds(),
                     current.undo[id]?.completedRenameSteps ?: 0, current.undo[id]?.completedTrashItems ?: 0)),
             )
             if (_state.compareAndSet(current, next)) { generation = current.generation; change = candidate; break }
@@ -197,7 +201,7 @@ class DriveChangeJournal internal constructor(
             }
             try {
                 val result = revert(change, access, generation)
-                val message = if (result.isSuccess) "已撤销" else "撤销未完成，请检查文件现状后再处理"
+                val message = if (result.isSuccess) tr("已撤销", "Undone", "元に戻しました", "실행 취소됨") else tr("撤销未完成，请检查文件现状后再处理", "Undo incomplete. Check the current files before continuing", "元に戻す操作が未完了です。ファイルの現状を確認してください", "실행 취소가 완료되지 않았습니다. 현재 파일 상태를 확인해 주세요")
                 _state.update { current ->
                     if (current.generation != generation) current else {
                         val undo = current.undo + (id to UndoResult(if (result.isSuccess) UndoStatus.UNDONE else UndoStatus.FAILED, message,
@@ -231,7 +235,7 @@ class DriveChangeJournal internal constructor(
             is Change.Trash -> runSuspendCatching {
                 var completed = state.value.undo[change.id]?.completedTrashItems ?: 0
                 for (batch in change.ids.drop(completed).chunked(100)) {
-                    check(change.id !in stoppedUndos.value) { "撤销已停止，可继续撤销剩余项目" }
+                    check(change.id !in stoppedUndos.value) { tr("撤销已停止，可继续撤销剩余项目", "Undo stopped; you can continue with remaining items", "元に戻す操作を停止しました。残りの項目は続行できます", "실행 취소를 중지했습니다. 나머지 항목을 계속 취소할 수 있습니다") }
                     access.restore(batch).getOrThrow()
                     access.publish(DriveChange.Restored(batch))
                     completed += batch.size
@@ -249,7 +253,7 @@ class DriveChangeJournal internal constructor(
                 try {
                     change.renames.asReversed().drop(completed).forEachIndexed { offset, step ->
                         val current = access.detail(step.id).getOrThrow()
-                        check(!current.trashed && (current.name == step.newName || current.name == step.oldName)) { "文件名称已发生其他变化" }
+                        check(!current.trashed && (current.name == step.newName || current.name == step.oldName)) { tr("文件名称已发生其他变化", "File name has changed again", "ファイル名がさらに変更されています", "파일 이름이 다른 작업으로 변경되었습니다") }
                         if (current.name != step.oldName) {
                             val written = access.rename(step.id, step.oldName)
                             if (written.isFailure && access.detail(step.id).getOrNull()?.name != step.oldName) written.getOrThrow()
@@ -286,7 +290,7 @@ class DriveChangeJournal internal constructor(
                     }
                     if (restored.isNotEmpty()) driveRepo.vault.update(folderId, VaultEdits.restore(restored)).getOrThrow()
                 }
-                check(missing == 0) { "$missing 个文件云端已无内容，仍留在归档里" }
+                check(missing == 0) { tr("$missing 个文件云端已无内容，仍留在归档里", "${enCount(missing, "file", "files")} are unavailable in cloud and remain archived", "$missing ファイルはクラウドに存在しないため、アーカイブに残しています", "파일 ${missing}개는 클라우드에 없어 보관 상태로 유지합니다") }
                 change.reverts.forEach { (folderId, revert) -> driveRepo.vault.update(folderId, revert).getOrThrow() }
                 if (change.trashOnRevert.isNotEmpty()) driveRepo.trash(change.trashOnRevert).getOrThrow()
             }

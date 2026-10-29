@@ -1,5 +1,12 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.pluralStringResource
+
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -137,12 +144,12 @@ internal fun ExplorerNavBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 后退与前进走不了时不摆出来，与命令栏同一个规矩；地址栏随之左移
-        if (canGoBack) TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "后退", onBack, shortcut = if (mac) "⌘[" else "Alt+←")
-        if (canGoForward) TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowForward, "前进", onForward, shortcut = if (mac) "⌘]" else "Alt+→")
-        TooltipIconButton(Icons.Outlined.ArrowUpward, "上一级", onUp, shortcut = if (mac) "⌘↑" else "Alt+↑", enabled = canGoUp)
+        if (canGoBack) TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, tr("后退", "Back", "戻る", "뒤로"), onBack, shortcut = if (mac) "⌘[" else "Alt+←")
+        if (canGoForward) TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowForward, tr("前进", "Forward", "進む", "앞으로"), onForward, shortcut = if (mac) "⌘]" else "Alt+→")
+        TooltipIconButton(Icons.Outlined.ArrowUpward, tr("上一级", "Parent folder", "上の階層", "상위 폴더"), onUp, shortcut = if (mac) "⌘↑" else "Alt+↑", enabled = canGoUp)
         Box(Modifier.weight(1f).padding(horizontal = 8.dp)) { address() }
         if (showFolderMap != null) {
-            TooltipIconButton(Icons.Outlined.AccountTree, "目录图", showFolderMap, shortcut = if (mac) "⌘⇧E" else "Ctrl+Shift+E")
+            TooltipIconButton(Icons.Outlined.AccountTree, tr("目录图", "Folder map", "フォルダーマップ", "폴더 맵"), showFolderMap, shortcut = if (mac) "⌘⇧E" else "Ctrl+Shift+E")
         }
         // 搜索收起时只是一个图标，地址栏占走让出的宽度
         Box(Modifier.widthIn(max = SearchFieldWidth).animateContentSize()) { search() }
@@ -175,7 +182,7 @@ internal fun ExplorerSearchField(
     val initialRequests = remember { focusRequests }
     LaunchedEffect(focusRequests) { if (focusRequests != initialRequests) pendingFocus = true }
     if (query.isEmpty() && !focused && !pendingFocus) {
-        TooltipIconButton(Icons.Outlined.Search, "搜索", { pendingFocus = true }, shortcut = shortcut)
+        TooltipIconButton(Icons.Outlined.Search, tr("搜索", "Search", "検索", "검색"), { pendingFocus = true }, shortcut = shortcut)
         return
     }
 
@@ -234,16 +241,16 @@ internal fun ExplorerSearchField(
         when {
             isGlobalSearching -> {
                 InlineLoadingIndicator()
-                TextButton(onClick = onCancelGlobalSearch, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("停止") }
+                TextButton(onClick = onCancelGlobalSearch, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(stringResource(Res.string.text_stop)) }
             }
             query.isNotBlank() && !isGlobalSearchActive ->
-                TextButton(onClick = onStartGlobalSearch, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("全盘") }
+                TextButton(onClick = onStartGlobalSearch, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(stringResource(Res.string.text_entire_drive)) }
         }
         // 取消一直在，与 Esc 相同：有字时清空，没字时收起（让出焦点即收回成搜索图标）
         if (query.isNotEmpty()) {
-            TooltipIconButton(Icons.Outlined.Close, "清除", { onQueryChange("") }, shortcut = "Esc")
+            TooltipIconButton(Icons.Outlined.Close, tr("清除", "Clear", "消去", "지우기"), { onQueryChange("") }, shortcut = "Esc")
         } else {
-            TooltipIconButton(Icons.Outlined.Close, "关闭搜索", { focusManager.clearFocus() }, shortcut = "Esc")
+            TooltipIconButton(Icons.Outlined.Close, tr("关闭搜索", "Close search", "検索を閉じる", "검색 닫기"), { focusManager.clearFocus() }, shortcut = "Esc")
         }
     }
 }
@@ -287,13 +294,13 @@ internal fun ExplorerCommandBar(
     // 收起的先后见 BarItem.priority。收进「更多」的各带一个组号，菜单里组与组之间一道细线
     val leading = buildList {
         if (selectedCount > 0) {
-            add(BarItem("exit", PinnedPriority) { TooltipIconButton(Icons.Outlined.Close, "退出多选", onExitSelection, shortcut = "Esc") })
-            add(BarItem("selected", PinnedPriority) { Text("已选 $selectedCount 项", style = MaterialTheme.typography.labelLarge, maxLines = 1) })
+            add(BarItem("exit", PinnedPriority) { TooltipIconButton(Icons.Outlined.Close, tr("退出多选", "Exit selection", "選択モードを終了", "선택 모드 종료"), onExitSelection, shortcut = "Esc") })
+            add(BarItem("selected", PinnedPriority) { Text(pluralStringResource(Res.plurals.selected_count, selectedCount, selectedCount), style = MaterialTheme.typography.labelLarge, maxLines = 1) })
             // 合计大小只是说明，放不下就不写，不进「更多」
             if (selectedBytes > 0) {
                 add(BarItem("selectedBytes", 10) {
                     Text(
-                        "，共 ${selectedBytes.toReadableSize()}",
+                        tr("，共 ${selectedBytes.toReadableSize()}", ", ${selectedBytes.toReadableSize()} total", "、合計 ${selectedBytes.toReadableSize()}", ", 총 ${selectedBytes.toReadableSize()}"),
                         style = MaterialTheme.typography.labelLarge,
                         maxLines = 1,
                         modifier = Modifier.padding(end = 8.dp),
@@ -304,14 +311,14 @@ internal fun ExplorerCommandBar(
         if (customLeading.isNotEmpty()) {
             addAll(customLeading)
         } else if (selectedCount == 0 && commands.create) {
-            add(BarItem("new", PinnedPriority) { MenuTextButton(Icons.Outlined.Add, "新建", newActions) })
+            add(BarItem("new", PinnedPriority) { MenuTextButton(Icons.Outlined.Add, tr("新建", "New", "新規", "새로 만들기"), newActions) })
         }
         // 左段一律是图标加文字的文字按钮：原先图标按钮与文字按钮混排，两种按钮的内边距不同，字形之间的空隙忽大忽小。
         // 同组之间只隔 BarItemGap，组与组之间多一段 GroupGap
         add(barDivider("pasteDivider"))
         if (commands.paste) {
-            add(BarItem("paste", 80, listOf(SheetAction(Icons.Outlined.ContentPaste, "粘贴", onPaste, group = ActionGroup.Edit))) {
-                BarTextButton(Icons.Outlined.ContentPaste, "粘贴", onPaste, shortcut = label("V"))
+            add(BarItem("paste", 80, listOf(SheetAction(Icons.Outlined.ContentPaste, tr("粘贴", "Paste", "貼り付け", "붙여넣기"), onPaste, group = ActionGroup.Edit))) {
+                BarTextButton(Icons.Outlined.ContentPaste, tr("粘贴", "Paste", "貼り付け", "붙여넣기"), onPaste, shortcut = label("V"))
             })
         }
         add(barDivider("viewDivider"))
@@ -329,8 +336,8 @@ internal fun ExplorerCommandBar(
         if (commands.findDuplicates) {
             // FileCopy 与「复制」的 ContentCopy 都是叠放的两张纸，带上文字才不会被认成复制。图标不换，
             // 查重报告与库使用同一会话摘要。
-            add(BarItem("findDuplicates", 60, listOf(SheetAction(Icons.Outlined.FileCopy, "查重", onFindDuplicates, group = ActionGroup.Select))) {
-                BarTextButton(Icons.Outlined.FileCopy, "查重", onFindDuplicates)
+            add(BarItem("findDuplicates", 60, listOf(SheetAction(Icons.Outlined.FileCopy, tr("查重", "Duplicates", "重複検索", "중복 검색"), onFindDuplicates, group = ActionGroup.Select))) {
+                BarTextButton(Icons.Outlined.FileCopy, tr("查重", "Duplicates", "重複検索", "중복 검색"), onFindDuplicates)
             })
         }
         // 与查找重复同为作用于整个文件夹的整理，摆在一起；条件与窄窗口浏览顶栏「更多」里的同一项相同（DriveCommands）
@@ -342,15 +349,15 @@ internal fun ExplorerCommandBar(
         }
         // 只在多选里出现（见 DriveCommands），排在查找重复之后：它是对眼前选择的补充，不是平时要摆着的命令
         if (commands.selectAll) {
-            add(BarItem("selectAll", 30, listOf(SheetAction(Icons.Outlined.SelectAll, "全选", onSelectAll, group = ActionGroup.Select))) {
-                BarTextButton(Icons.Outlined.SelectAll, "全选", onSelectAll, shortcut = label("A"))
+            add(BarItem("selectAll", 30, listOf(SheetAction(Icons.Outlined.SelectAll, tr("全选", "Select all", "すべて選択", "모두 선택"), onSelectAll, group = ActionGroup.Select))) {
+                BarTextButton(Icons.Outlined.SelectAll, tr("全选", "Select all", "すべて選択", "모두 선택"), onSelectAll, shortcut = label("A"))
             })
         }
     }
     val trailing = buildList {
         // 刷新作用于眼前这份列表，与视图、信息流同属「怎么看这个文件夹」，不放在管位置的导航栏
-        add(BarItem("refresh", 50, listOf(SheetAction(Icons.Outlined.Refresh, "刷新", onRefresh, group = ActionGroup.Refresh))) {
-            TooltipIconButton(Icons.Outlined.Refresh, "刷新", onRefresh, shortcut = if (mac) "⌘R" else "F5")
+        add(BarItem("refresh", 50, listOf(SheetAction(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침"), onRefresh, group = ActionGroup.Refresh))) {
+            TooltipIconButton(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침"), onRefresh, shortcut = if (mac) "⌘R" else "F5")
         })
         // 属性不放在这里：它看的是某一项，入口在右键菜单与操作面板末尾，以及主修饰键+I、Alt+Enter
         add(BarItem("view", PinnedPriority) { viewSwitcher() })
@@ -433,7 +440,7 @@ internal fun ViewSwitcher(
         Box {
             TooltipBox(
                 positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
-                tooltip = { PlainTooltip { Text(if (galleryShown) "瀑布流尺寸：${tileSize.label}" else "视图：${viewMode.label}") } },
+                tooltip = { PlainTooltip { Text(if (galleryShown) tr("瀑布流尺寸：${tileSize.label}", "Gallery size: ${tileSize.label}", "ギャラリーのサイズ：${tileSize.label}", "갤러리 크기: ${tileSize.label}") else tr("视图：${viewMode.label}", "View: ${viewMode.label}", "表示：${viewMode.label}", "보기: ${viewMode.label}")) } },
                 state = rememberTooltipState(),
             ) {
                 TonalToggleButton(
@@ -445,7 +452,7 @@ internal fun ViewSwitcher(
                 ) {
                     Icon(
                         if (galleryShown) Icons.Filled.PhotoLibrary else viewMode.icon(selected = true),
-                        contentDescription = if (galleryShown) "瀑布流尺寸：${tileSize.label}" else "视图：${viewMode.label}",
+                        contentDescription = if (galleryShown) tr("瀑布流尺寸：${tileSize.label}", "Gallery size: ${tileSize.label}", "ギャラリーのサイズ：${tileSize.label}", "갤러리 크기: ${tileSize.label}") else tr("视图：${viewMode.label}", "View: ${viewMode.label}", "表示：${viewMode.label}", "보기: ${viewMode.label}"),
                         modifier = Modifier.size(18.dp),
                     )
                     Icon(Icons.Outlined.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -482,7 +489,7 @@ internal fun ViewSwitcher(
                 sizes.forEachIndexed { index, size ->
                     val current = tileSize == size
                     DropdownMenuItem(
-                        text = { Text("${size.label}尺寸", color = if (current) MaterialTheme.colorScheme.primary else Color.Unspecified) },
+                        text = { Text(tr("${size.label}尺寸", "${size.label} size", "${size.label}サイズ", "${size.label} 크기"), color = if (current) MaterialTheme.colorScheme.primary else Color.Unspecified) },
                         trailingIcon = if (current) ({
                             Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                         }) else null,
@@ -510,7 +517,7 @@ internal fun ViewSwitcher(
                     modifier = Modifier.size(18.dp),
                 )
                 Spacer(Modifier.width(6.dp))
-                Text("瀑布流")
+                Text(stringResource(Res.string.text_masonry))
             }
         }
         if (onFeedShownChange != null) {
@@ -529,12 +536,12 @@ internal fun ViewSwitcher(
                     PendingBadge(shown = feedSuspended) {
                         Icon(
                             imageVector = if (feedShown) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
-                            contentDescription = if (feedSuspended) "信息流已暂停" else null,
+                            contentDescription = if (feedSuspended) tr("信息流已暂停", "Feed paused", "フィードを一時停止しました", "피드 일시 중지됨") else null,
                             modifier = Modifier.size(18.dp),
                         )
                     }
                     Spacer(Modifier.width(6.dp))
-                    Text("信息流")
+                    Text(stringResource(Res.string.text_feed))
                 }
             }
             // 置灰而不藏起来：藏起来时人找不到它，也不知道为什么没了

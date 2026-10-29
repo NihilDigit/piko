@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.rename
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -121,7 +123,7 @@ private fun PreviewRowContent(
         Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
             if (shown) {
                 Text(
-                    text = if (row.newName.isEmpty()) AnnotatedString("（空）") else markAdded(row.source.name, row.newName, highlight),
+                    text = if (row.newName.isEmpty()) AnnotatedString(tr("（空）", "(empty)", "（空）", "(비어 있음)")) else markAdded(row.source.name, row.newName, highlight),
                     style = MaterialTheme.typography.bodyMedium,
                     // 不勾的项写出的是勾上时的新名称（一棵树里冲突的默认不勾），调暗以示不改
                     color = when {
@@ -138,7 +140,7 @@ private fun PreviewRowContent(
     }
     val arrow: @Composable () -> Unit = {
         if (shown) {
-            Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = "改为", tint = highlight, modifier = Modifier.size(ArrowSize))
+            Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = tr("改为", "Change to", "変更先", "변경"), tint = highlight, modifier = Modifier.size(ArrowSize))
         } else {
             Spacer(Modifier.width(ArrowSize))
         }
@@ -161,12 +163,12 @@ private fun PreviewRowContent(
             Column(modifier = Modifier.weight(1f).padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 originalName(Modifier)
                 if (shown) {
-                    Icon(Icons.Outlined.ArrowDownward, contentDescription = "改为", tint = highlight, modifier = Modifier.size(ArrowSize))
+                    Icon(Icons.Outlined.ArrowDownward, contentDescription = tr("改为", "Change to", "変更先", "변경"), tint = highlight, modifier = Modifier.size(ArrowSize))
                     newName(Modifier)
                 }
             }
         }
-        if (onEdit != null) TooltipIconButton(Icons.Outlined.Edit, "修改新名称", onEdit)
+        if (onEdit != null) TooltipIconButton(Icons.Outlined.Edit, tr("修改新名称", "Edit new name", "新しい名前を編集", "새 이름 수정"), onEdit)
     }
 }
 
@@ -186,10 +188,10 @@ private fun markAdded(old: String, new: String, color: Color): AnnotatedString {
 }
 
 private fun problemLabel(row: RenameRow, problem: RenameProblem): String = when (problem) {
-    RenameProblem.EMPTY -> "新名称为空"
-    RenameProblem.INVALID_CHARS -> "含 PikPak 不支持的" + DriveNames.unsupportedParts(row.newName).joinToString("、")
-    RenameProblem.TOO_LONG -> "超出 PikPak 的 1024 字节上限"
-    RenameProblem.TAKEN -> "与同目录现有名称重复"
-    RenameProblem.BLOCKED -> "新名称与另一项的原名称相同，该项无法重命名"
-    RenameProblem.DUPLICATE -> "与其他项的新名称重复"
+    RenameProblem.EMPTY -> tr("新名称为空", "New name is empty", "新しい名前が空です", "새 이름이 비어 있습니다")
+    RenameProblem.INVALID_CHARS -> tr("含 PikPak 不支持的", "Contains unsupported PikPak characters", "PikPakで使えない文字を含みます", "PikPak에서 지원하지 않는 문자 포함") + DriveNames.unsupportedParts(row.newName).joinToString("、")
+    RenameProblem.TOO_LONG -> tr("超出 PikPak 的 1024 字节上限", "Exceeds PikPak’s 1024-byte limit", "PikPakの1024バイト制限を超えています", "PikPak의 1024바이트 제한 초과")
+    RenameProblem.TAKEN -> tr("与同目录现有名称重复", "Conflicts with an existing name in this folder", "同じフォルダーの既存の名前と重複しています", "같은 폴더의 기존 이름과 중복")
+    RenameProblem.BLOCKED -> tr("新名称与另一项的原名称相同，该项无法重命名", "New name matches an item that cannot be renamed", "新しい名前が改名できない項目の元の名前と同じです", "새 이름이 변경할 수 없는 다른 항목의 원래 이름과 같습니다")
+    RenameProblem.DUPLICATE -> tr("与其他项的新名称重复", "Conflicts with another new name", "ほかの項目の新しい名前と重複しています", "다른 항목의 새 이름과 중복")
 }

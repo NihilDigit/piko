@@ -6,6 +6,8 @@ import androidx.compose.runtime.setValue
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.i18n.enCount
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -105,7 +107,7 @@ class TrashSession(private val repository: PikoDriveRepository, private val scop
                         undoChange = repository.changes.recordTrash(
                             previousChange = undoChange,
                             ids = completed.toList(),
-                            summary = "已将 ${completed.size} 项移入回收站",
+                            summary = tr("已将 ${completed.size} 项移入回收站", "Moved ${enCount(completed.size, "item", "items")} to trash", "${completed.size} 項目をゴミ箱に移動しました", "${completed.size}개 항목을 휴지통으로 이동했습니다"),
                         )
                     }
                     progress = null

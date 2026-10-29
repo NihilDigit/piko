@@ -1,6 +1,11 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.presentation.localizedName
 
 /** 普通文件写操作的不可变参数；不包含页面、导航或 UI 回调。 */
 sealed interface FileWriteCommand {
@@ -10,22 +15,26 @@ sealed interface FileWriteCommand {
 
     data class CreateFolder(override val target: PikoPathBreadcrumb, val name: String) : FileWriteCommand {
         override val ids = emptyList<String>()
-        override val title get() = "新建文件夹「$name」"
+        override val title get() = tr("新建文件夹「$name」", "Create folder “$name”", "フォルダー「$name」を作成", "폴더 “$name” 만들기")
     }
     data class Rename(val id: String, val name: String, val knownBefore: FileBefore? = null) : FileWriteCommand {
         override val ids = listOf(id)
-        override val title get() = "重命名为「$name」"
+        override val title get() = tr("重命名为「$name」", "Rename to “$name”", "「$name」に名前を変更", "“$name”(으)로 이름 변경")
     }
     data class Move(override val ids: List<String>, override val target: PikoPathBreadcrumb, val knownBefore: Map<String, FileBefore> = emptyMap()) : FileWriteCommand {
-        override val title get() = "移动 ${ids.size} 项到「${target.name}」"
+        override val title get() = tr("移动 ${ids.size} 项到「${target.localizedName}」", "Move ${enCount(ids.size, "item", "items")} to “${target.localizedName}”", "${ids.size} 項目を「${target.localizedName}」に移動", "${ids.size}개 항목을 “${target.localizedName}”(으)로 이동")
     }
     data class Copy(override val ids: List<String>, override val target: PikoPathBreadcrumb) : FileWriteCommand {
-        override val title get() = "复制 ${ids.size} 项到「${target.name}」"
+        override val title get() = tr("复制 ${ids.size} 项到「${target.localizedName}」", "Copy ${enCount(ids.size, "item", "items")} to “${target.localizedName}”", "${ids.size} 項目を「${target.localizedName}」にコピー", "${ids.size}개 항목을 “${target.localizedName}”에 복사")
     }
-    data class Restore(override val ids: List<String>) : FileWriteCommand { override val title get() = "恢复 ${ids.size} 项" }
-    data class Delete(override val ids: List<String>) : FileWriteCommand { override val title get() = "彻底删除 ${ids.size} 项" }
+    data class Restore(override val ids: List<String>) : FileWriteCommand { override val title get() = tr("恢复 ${ids.size} 项", "Restore ${enCount(ids.size, "item", "items")}", "${ids.size} 項目を復元", "${ids.size}개 항목 복원") }
+    data class Delete(override val ids: List<String>) : FileWriteCommand { override val title get() = tr("彻底删除 ${ids.size} 项", "Permanently delete ${enCount(ids.size, "item", "items")}", "${ids.size} 項目を完全に削除", "${ids.size}개 항목 영구 삭제") }
     data class Star(override val ids: List<String>, val starred: Boolean) : FileWriteCommand {
-        override val title get() = "${if (starred) "添加" else "取消"} ${ids.size} 项星标"
+        override val title get() = if (starred) {
+            tr("添加 ${ids.size} 项星标", "Star ${enCount(ids.size, "item", "items")}", "${ids.size} 項目にスターを付ける", "${ids.size}개 항목에 별표 추가")
+        } else {
+            tr("取消 ${ids.size} 项星标", "Unstar ${enCount(ids.size, "item", "items")}", "${ids.size} 項目のスターを外す", "${ids.size}개 항목의 별표 해제")
+        }
     }
 }
 

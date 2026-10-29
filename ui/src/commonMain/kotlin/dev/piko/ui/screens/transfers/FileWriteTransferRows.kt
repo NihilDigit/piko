@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.transfers
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
@@ -21,11 +26,11 @@ import dev.piko.ui.workProgress
 
 internal fun fileWriteActions(work: FileWriteWork, undo: DriveChangeJournal.UndoResult?, canUndo: Boolean, canRecheck: Boolean,
     onUndo: () -> Unit, onRecheck: () -> Unit, onForget: () -> Unit, onShow: (() -> Unit)? = null): List<SheetAction> = buildList {
-    if (onShow != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onShow))
+    if (onShow != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onShow))
     if (!work.isRunning && undo?.status != DriveChangeJournal.UndoStatus.RUNNING) {
-        if (canUndo) add(SheetAction(Icons.Outlined.Refresh, "撤销已确认部分", onUndo))
-        if (canRecheck) add(SheetAction(Icons.Outlined.Refresh, "重新查询结果", onRecheck))
-        add(SheetAction(Icons.Outlined.Close, "移除记录", onForget))
+        if (canUndo) add(SheetAction(Icons.Outlined.Refresh, tr("撤销已确认部分", "Undo confirmed changes", "確認済みの変更を元に戻す", "확인된 변경 실행 취소"), onUndo))
+        if (canRecheck) add(SheetAction(Icons.Outlined.Refresh, tr("重新查询结果", "Check results again", "結果を再確認", "결과 다시 확인"), onRecheck))
+        add(SheetAction(Icons.Outlined.Close, tr("移除记录", "Remove record", "記録を削除", "기록 삭제"), onForget))
     }
 }
 
@@ -33,12 +38,12 @@ internal fun fileWriteActions(work: FileWriteWork, undo: DriveChangeJournal.Undo
 internal fun FileWriteTransferDetails(work: FileWriteWork, undo: DriveChangeJournal.UndoResult?, actions: List<SheetAction>, modifier: Modifier = Modifier) {
     val progress = work.workProgress(undo)
     ItemDetailsContent(modifier = modifier, showIcon = false,
-        title = progress.title, headerIcon = { ListLeadingIcon(Icons.Outlined.Description) }, actions = actions, metaParts = listOf("文件处理", progress.status),
+        title = progress.title, headerIcon = { ListLeadingIcon(Icons.Outlined.Description) }, actions = actions, metaParts = listOf(tr("文件处理", "File operations", "ファイル操作", "파일 작업"), progress.status),
         extraLines = {
             progress.detail?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             if (progress.meter != WorkMeter.None) WorkMeterBar(progress.meter, progress.title, Modifier.fillMaxWidth())
-            if (work.result?.unconfirmed?.isNotEmpty() == true) Text("重新查询只核对原操作的结果，不再次提交。没有远端任务或文件标识时，请先检查实际文件。")
-            Text("移除记录不会改变文件，也不会取消服务端已经接受的操作。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (work.result?.unconfirmed?.isNotEmpty() == true) Text(stringResource(Res.string.text_checking_again_verifies_the_original_operation_without_resubmitting_it_if_no))
+            Text(stringResource(Res.string.text_removing_this_record_does_not_change_files_or_cancel_operations_accepted_by_), color = MaterialTheme.colorScheme.onSurfaceVariant)
         },
     )
 }

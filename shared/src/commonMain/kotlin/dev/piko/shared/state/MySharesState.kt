@@ -1,5 +1,9 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import io.github.nihildigit.pikpak.FileStat
@@ -66,15 +70,15 @@ class MySharesState(
         loadMoreFailed = false
         pageJob = scope.launch {
             driveRepo.myShares()
-                .logFailure(TAG, "读取我的分享失败")
+                .logFailure(TAG, tr("读取我的分享失败", "Failed to load my shares", "自分の共有を読み込めませんでした", "내 공유를 불러오지 못했습니다"))
                 .onSuccess { page ->
                     shares = withoutCancelling(page.shares)
                     nextPageToken = page.nextPageToken
                     loadError = null
                 }
                 .onFailure {
-                    loadError = "读取分享失败"
-                    _messages.tryEmit("加载失败")
+                    loadError = tr("读取分享失败", "Failed to load share", "共有を読み込めませんでした", "공유를 불러오지 못했습니다")
+                    _messages.tryEmit(tr("加载失败", "Failed to load", "読み込みに失敗しました", "불러오지 못했습니다"))
                 }
             isLoading = false
             isRefreshing = false
@@ -141,11 +145,11 @@ class MySharesState(
         val ids = selectedIds
         if (ids.isEmpty()) return
         selectedIds = emptySet()
-        cancelShares(ids, done = "已取消 ${ids.size} 个分享", logMessage = "批量取消分享失败")
+        cancelShares(ids, done = tr("已取消 ${ids.size} 个分享", "Revoked ${enCount(ids.size, "share", "shares")}", "${ids.size} 件の共有を解除しました", "공유 ${ids.size}개 취소 완료"), logMessage = "批量取消分享失败")
     }
 
     fun cancel(share: ShareSummary) {
-        cancelShares(setOf(share.shareId), done = "已取消分享", logMessage = "取消分享失败")
+        cancelShares(setOf(share.shareId), done = tr("已取消分享", "Share revoked", "共有を解除しました", "공유를 취소했습니다"), logMessage = tr("取消分享失败", "Failed to revoke share", "共有を解除できませんでした", "공유를 취소하지 못했습니다"))
     }
 
     /**
@@ -172,13 +176,13 @@ class MySharesState(
             cancellingIds -= ids
             result
                 .onSuccess {
-                    PikoLog.i(TAG, "已取消 ${ids.size} 个分享")
+                    PikoLog.i(TAG, tr("已取消 ${ids.size} 个分享", "Revoked ${enCount(ids.size, "share", "shares")}", "${ids.size} 件の共有を解除しました", "공유 ${ids.size}개 취소 완료"))
                     cancelledIds += ids
                     _messages.tryEmit(done)
                 }
                 .onFailure {
                     shares = reinsertRemoved(shares, before, ids) { it.shareId }
-                    _messages.tryEmit("取消分享失败")
+                    _messages.tryEmit(tr("取消分享失败", "Failed to revoke share", "共有を解除できませんでした", "공유를 취소하지 못했습니다"))
                 }
         }
     }

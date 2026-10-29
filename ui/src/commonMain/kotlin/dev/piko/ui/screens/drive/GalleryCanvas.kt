@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
@@ -401,7 +403,7 @@ private fun GalleryCanvasCover(
                         FileItemSelection(
                             if (isSelected) ToggleableState.On else ToggleableState.Off,
                             { if (isSelectionMode) callbacks.onSelect(file, !isSelected) else callbacks.onStartSelection?.invoke(file) },
-                            label = "选择 ${file.name}",
+                            label = tr("选择 ${file.name}", "Select ${file.name}", "${file.name} を選択", "${file.name} 선택"),
                         ),
                         modifier = Modifier.align(Alignment.TopStart).padding(6.dp).then(if (!isSelectionMode) Modifier.ownsClicks() else Modifier),
                         interactive = !isSelectionMode,

@@ -1,5 +1,15 @@
 package dev.piko.desktop
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
+import java.util.Locale
+import dev.piko.shared.i18n.PikoLocale
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -110,6 +120,7 @@ private const val AOT_TRAINING_MILLIS = 12_000L
 private const val CLOSE_BEHAVIOR_ASKED_KEY = "window.closeToTrayAsked"
 
 fun main(args: Array<String>) {
+    PikoLocale.bindSystemLocale(Locale.getDefault().toLanguageTag())
     // 最先做：之后任何一处碰到 JNA 都会让它按当时的属性初始化
     useBundledJnaDispatch()
     // 走系统代理：JVM 默认只认 http.proxyHost 一类属性，不看 Windows 与 macOS 设置里的代理，
@@ -153,6 +164,8 @@ fun main(args: Array<String>) {
 
     val settings = DesktopSettingsStore()
     val preferences = DesktopPikoPreferences(settings, ::desktopPreferenceSecrets)
+    PikoLocale.apply(runBlocking { preferences.appLanguageFlow.first() })
+    Locale.setDefault(Locale.forLanguageTag(PikoLocale.effectiveLanguage.tag))
     // 赶在任何 OkHttpClient 建出来之前，理由见 PikoProxySelector
     PikoProxySelector.install(runBlocking { preferences.proxySettingFlow.first() })
     CoroutineScope(Dispatchers.Default).launch { preferences.proxySettingFlow.collect(PikoProxySelector::apply) }
@@ -275,8 +288,8 @@ fun main(args: Array<String>) {
                 tooltip = if (hasActiveTransfers) backgroundTooltip(downloads.values, uploads.values.filter { it.account == account }) else "Piko",
                 onAction = { isInBackground = false },
                 menu = {
-                    Item("显示 Piko", onClick = { isInBackground = false })
-                    Item("立即退出", onClick = ::exitApplication)
+                    Item(tr("显示 Piko", "Show Piko", "Pikoを表示", "Piko 표시"), onClick = { isInBackground = false })
+                    Item(tr("立即退出", "Quit now", "今すぐ終了", "지금 종료"), onClick = ::exitApplication)
                 },
             )
         }
@@ -287,13 +300,13 @@ fun main(args: Array<String>) {
             // Toast 同步等系统结果，不能压在界面线程上
             Thread {
                 val reopenHint = when {
-                    isMacOs -> "可从菜单栏图标重新打开"
+                    isMacOs -> tr("可从菜单栏图标重新打开", "Reopen from the menu bar icon", "メニューバーのアイコンから開けます", "메뉴 막대 아이콘에서 다시 열 수 있습니다")
                     isLinux -> LinuxDesktop.backgroundHint()
-                    else -> "可从通知区域图标重新打开"
+                    else -> tr("可从通知区域图标重新打开", "Reopen from the notification area icon", "通知領域のアイコンから開けます", "알림 영역 아이콘에서 다시 열 수 있습니다")
                 }
-                if (closeToTray || manual) showSystemNotification("Piko 已最小化到系统托盘", "$reopenHint；可从托盘菜单退出程序。")
-                else if (services.hasBackgroundWork()) showSystemNotification("Piko 在后台继续处理", "工作完成后自动退出；需你处理的结果会保留，$reopenHint。")
-                else showSystemNotification("Piko 已保留待处理工作", "重新打开窗口可继续处理，$reopenHint。")
+                if (closeToTray || manual) showSystemNotification(tr("Piko 已最小化到系统托盘", "Piko minimized to tray", "Pikoをシステムトレイに最小化しました", "Piko를 시스템 트레이로 최소화했습니다"), tr("$reopenHint；可从托盘菜单退出程序。", "$reopenHint. Quit from the tray menu.", "$reopenHint。トレイメニューから終了できます。", "$reopenHint. 트레이 메뉴에서 종료할 수 있습니다."))
+                else if (services.hasBackgroundWork()) showSystemNotification(tr("Piko 在后台继续处理", "Piko is working in the background", "Pikoはバックグラウンドで処理中です", "Piko가 백그라운드에서 작업 중입니다"), tr("工作完成后自动退出；需你处理的结果会保留，$reopenHint。", "Quits automatically when work finishes. Results requiring attention are kept. $reopenHint.", "処理完了後に自動終了します。確認が必要な結果は保持します。$reopenHint。", "작업 완료 후 자동 종료합니다. 확인이 필요한 결과는 유지됩니다. $reopenHint."))
+                else showSystemNotification(tr("Piko 已保留待处理工作", "Piko kept your pending work", "Pikoは未処理の作業を保持しています", "Piko가 대기 중인 작업을 유지했습니다"), tr("重新打开窗口可继续处理，$reopenHint。", "Reopen the window to continue. $reopenHint.", "ウィンドウを開き直すと続行できます。$reopenHint。", "창을 다시 열어 계속할 수 있습니다. $reopenHint."))
             }.start()
         }
 
@@ -364,6 +377,7 @@ fun main(args: Array<String>) {
                             onUpload = services.uploadManager::request,
                         ) {
                             PikoApp(
+                                onLanguageChanged = { Locale.setDefault(Locale.forLanguageTag(it.tag)) },
                                 services = services,
                                 platform = platform,
                                 appearance = appearance,
@@ -375,10 +389,10 @@ fun main(args: Array<String>) {
                         var rememberCloseChoice by remember { mutableStateOf(true) }
                         PikoDialog(
                             onDismissRequest = { askCloseBehavior = false },
-                            title = { Text("关闭主窗口") },
+                            title = { Text(stringResource(Res.string.text_close_main_window)) },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    Text("选择点击关闭按钮时的操作，之后可在设置「外观」中随时更改。")
+                                    Text(stringResource(Res.string.text_choose_what_the_close_button_does_change_this_anytime_in_appearance_settings))
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -392,13 +406,13 @@ fun main(args: Array<String>) {
                                     ) {
                                         Checkbox(checked = rememberCloseChoice, onCheckedChange = null)
                                         Spacer(Modifier.width(8.dp))
-                                        Text("记住我的选择，不再询问", style = MaterialTheme.typography.bodyMedium)
+                                        Text(stringResource(Res.string.text_remember_my_choice), style = MaterialTheme.typography.bodyMedium)
                                     }
                                 }
                             },
                             confirmButton = {
                                 PikoDialogConfirm(
-                                    label = "最小化到托盘",
+                                    label = tr("最小化到托盘", "Minimize to tray", "トレイに最小化", "트레이로 최소화"),
                                     onClick = {
                                         askCloseBehavior = false
                                         if (rememberCloseChoice) {
@@ -420,7 +434,7 @@ fun main(args: Array<String>) {
                                         exitApplication()
                                     },
                                 ) {
-                                    Text("直接退出")
+                                    Text(stringResource(Res.string.text_quit))
                                 }
                             },
                         )
@@ -521,16 +535,16 @@ private fun backgroundTooltip(downloads: Collection<DownloadTask>, uploads: Coll
     val activeDownloads = downloads.filter { it.status.isActive }
     val activeUploads = uploads.filter { it.status.isActive }
     val parts = listOfNotNull(
-        transferSummary("下载", activeDownloads.size, activeDownloads.sumOf { it.downloadedBytes }, activeDownloads.sumOf { it.totalBytes }),
-        transferSummary("上传", activeUploads.size, activeUploads.sumOf { it.processedBytes }, activeUploads.sumOf { it.size }),
+        transferSummary(tr("下载", "Downloads", "ダウンロード", "다운로드"), activeDownloads.size, activeDownloads.sumOf { it.downloadedBytes }, activeDownloads.sumOf { it.totalBytes }),
+        transferSummary(tr("上传", "Uploads", "アップロード", "업로드"), activeUploads.size, activeUploads.sumOf { it.processedBytes }, activeUploads.sumOf { it.size }),
     )
-    return "Piko：" + parts.joinToString("；").ifEmpty { "正在后台处理" }
+    return "Piko：" + parts.joinToString("；").ifEmpty { tr("正在后台处理", "Working in background", "バックグラウンドで処理中", "백그라운드 작업 중") }
 }
 
 private fun transferSummary(verb: String, count: Int, doneBytes: Long, totalBytes: Long): String? = when {
     count == 0 -> null
-    totalBytes <= 0 -> "正在${verb} $count 个文件"
-    else -> "正在${verb} $count 个文件，${doneBytes * 100 / totalBytes}%"
+    totalBytes <= 0 -> tr("正在${verb} $count 个文件", "$verb ${enCount(count, "file", "files")}", "$count ファイルを${verb}中", "파일 ${count}개 $verb 중")
+    else -> tr("正在${verb} $count 个文件，${doneBytes * 100 / totalBytes}%", "$verb ${enCount(count, "file", "files")}, ${doneBytes * 100 / totalBytes}%", "$count ファイルを${verb}中、${doneBytes * 100 / totalBytes}%", "파일 ${count}개 $verb 중, ${doneBytes * 100 / totalBytes}%")
 }
 
 /**

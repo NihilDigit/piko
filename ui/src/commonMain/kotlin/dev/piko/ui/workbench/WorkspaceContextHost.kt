@@ -1,5 +1,12 @@
 package dev.piko.ui.workbench
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -26,6 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.presentation.DriveTab
 import dev.piko.shared.presentation.WorkspaceContext
+import dev.piko.shared.presentation.localizedName
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
 import dev.piko.ui.platform.LocalPikoPlatform
@@ -115,14 +123,14 @@ internal fun WorkspaceContextHost(
                                 CompositionLocalProvider(LocalWorkspaceSurface provides WorkspaceSurface(context.id, onMinimize)) {
                                     BackHandler(onBack = onMinimize)
                                     val topTitle = draft.resolution?.resource?.name
-                                        ?: draft.batch?.let { "${it.rows.size} 条链接" }
-                                        ?: "添加链接"
+                                        ?: draft.batch?.let { tr("${it.rows.size} 条链接", "${enCount(it.rows.size, "link", "links")}", "${it.rows.size} 件のリンク", "링크 ${it.rows.size}개") }
+                                        ?: tr("添加链接", "Add link", "リンクを追加", "링크 추가")
                                     dev.piko.ui.components.PikoScaffold(
                                         modifier = Modifier.fillMaxSize().imePadding(),
                                         topBar = {
                                             dev.piko.ui.components.PikoTopBar(
                                                 title = topTitle,
-                                                navigationIcon = { dev.piko.ui.components.TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "返回来源", onMinimize) },
+                                                navigationIcon = { dev.piko.ui.components.TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, tr("返回来源", "Back to source", "ソースに戻る", "원본으로 돌아가기"), onMinimize) },
                                                 persistentActions = { WorkspaceControls() },
                                             )
                                         },
@@ -144,13 +152,13 @@ internal fun WorkspaceContextHost(
         if (wide) {
             val workspace = requireNotNull(model.driveWorkspace)
             val files by workspace.tabsFlow.collectAsStateWithLifecycle()
-            val tabs = remember(contexts, files) {
+            val tabs = remember(contexts, files, dev.piko.shared.i18n.PikoLocale.effectiveLanguage) {
                 val fileById = files.associateBy { it.id }
                 contexts.map { context ->
                     when (context) {
                         is WorkspaceContext.File -> fileById[context.id] ?: DriveTab(context.id, emptyList())
-                        is WorkspaceContext.Duplicate -> DriveTab(context.id, listOf(PikoPathBreadcrumb("context:${context.id}", "查重：${context.root.name}")))
-                        is WorkspaceContext.ImportDraft -> DriveTab(context.id, listOf(PikoPathBreadcrumb("context:${context.id}", "添加链接")))
+                        is WorkspaceContext.Duplicate -> DriveTab(context.id, listOf(PikoPathBreadcrumb("context:${context.id}", tr("查重：${context.root.localizedName}", "Duplicates: ${context.root.localizedName}", "重複検索：${context.root.localizedName}", "중복 검색: ${context.root.localizedName}"))))
+                        is WorkspaceContext.ImportDraft -> DriveTab(context.id, listOf(PikoPathBreadcrumb("context:${context.id}", tr("添加链接", "Add link", "リンクを追加", "링크 추가"))))
                     }
                 }
             }
@@ -169,7 +177,7 @@ internal fun WorkspaceContextHost(
                         is WorkspaceContext.Duplicate -> model.duplicateSessions[tab.id]?.state?.let(::duplicatesTab)
                         is WorkspaceContext.ImportDraft -> {
                             val summary = model.importModels[tab.id]?.state?.summary()
-                            SessionTab(summary?.title ?: "添加链接", summary?.status ?: "导入草稿", summary?.busy == true, Icons.Outlined.Bolt)
+                            SessionTab(summary?.title ?: tr("添加链接", "Add link", "リンクを追加", "링크 추가"), summary?.status ?: tr("导入草稿", "Import draft", "インポートの下書き", "가져오기 초안"), summary?.busy == true, Icons.Outlined.Bolt)
                         }
                         else -> null
                     }
@@ -187,20 +195,20 @@ internal fun WorkspaceContextDialogs(model: WorkspaceViewModel) {
     model.blockedCloseMessage?.let { message ->
         PikoDialog(
             onDismissRequest = model::dismissBlockedClose,
-            title = { Text("无法关闭标签页") },
+            title = { Text(stringResource(Res.string.text_unable_to_close_tab)) },
             text = { Text(message) },
-            confirmButton = { TextButton(model::dismissBlockedClose) { Text("知道了") } },
+            confirmButton = { TextButton(model::dismissBlockedClose) { Text(stringResource(Res.string.common_got_it)) } },
         )
         return
     }
     if (model.pendingCloseOtherIds.isNotEmpty()) {
         PikoDialog(
             onDismissRequest = model::cancelCloseOtherContexts,
-            title = { Text("关闭其他 ${model.pendingCloseOtherIds.size} 个标签页？") },
-            text = { Text("将保留当前标签，关闭其余 ${model.pendingCloseOtherIds.size} 个标签页。" +
-                if (model.pendingCloseOtherNeedsAttention) "未提交草稿和查重结果将不再保留，扫描将停止。已提交的任务继续执行。" else "") },
-            confirmButton = { PikoDialogConfirm("关闭其他标签", model::confirmCloseOtherContexts, destructive = true) },
-            dismissButton = { TextButton(model::cancelCloseOtherContexts) { Text("取消") } },
+            title = { Text(tr("关闭其他 ${model.pendingCloseOtherIds.size} 个标签页？", "Close ${model.pendingCloseOtherIds.size} other tabs?", "ほかの ${model.pendingCloseOtherIds.size} タブを閉じますか？", "다른 탭 ${model.pendingCloseOtherIds.size}개를 닫을까요?")) },
+            text = { Text(tr("将保留当前标签，关闭其余 ${model.pendingCloseOtherIds.size} 个标签页。", "Keep this tab and close the other ${model.pendingCloseOtherIds.size} tabs.", "現在のタブを残し、ほかの ${model.pendingCloseOtherIds.size} タブを閉じます。", "현재 탭을 유지하고 다른 탭 ${model.pendingCloseOtherIds.size}개를 닫습니다.") +
+                if (model.pendingCloseOtherNeedsAttention) tr("未提交草稿和查重结果将不再保留，扫描将停止。已提交的任务继续执行。", "Unsaved drafts and duplicate results will be discarded, and scans stopped. Submitted tasks continue.", "未送信の下書きと重複検索結果を破棄し、検索を停止します。送信済みタスクは続行します。", "미제출 초안과 중복 검색 결과를 버리고 검색을 중지합니다. 제출된 작업은 계속됩니다.") else "") },
+            confirmButton = { PikoDialogConfirm(tr("关闭其他标签", "Close other tabs", "ほかのタブを閉じる", "다른 탭 닫기"), model::confirmCloseOtherContexts, destructive = true) },
+            dismissButton = { TextButton(model::cancelCloseOtherContexts) { Text(stringResource(Res.string.common_cancel)) } },
         )
         return
     }
@@ -211,17 +219,17 @@ internal fun WorkspaceContextDialogs(model: WorkspaceViewModel) {
     val hasAddLinkOnTab = context is WorkspaceContext.File && model.hasUncommittedAddLinkOnTab(context.id)
     val hasGalleryOnTab = context is WorkspaceContext.File && model.hasGalleryOnTab(context.id)
     val fileCloseText = when {
-        hasAddLinkOnTab && hasGalleryOnTab -> "关闭此标签页将退出瀑布流浏览，并一并放弃当前输入的链接和勾选的文件。"
-        hasGalleryOnTab -> "将退出瀑布流浏览并关闭此标签页，回到文件列表。"
-        else -> "关闭此标签页将一并放弃当前输入的链接和勾选的文件。"
+        hasAddLinkOnTab && hasGalleryOnTab -> tr("关闭此标签页将退出瀑布流浏览，并一并放弃当前输入的链接和勾选的文件。", "Closing exits the gallery and discards entered links and selected files.", "このタブを閉じるとギャラリーを終了し、入力したリンクと選択したファイルを破棄します。", "탭을 닫으면 갤러리를 종료하고 입력한 링크와 선택한 파일을 버립니다.")
+        hasGalleryOnTab -> tr("将退出瀑布流浏览并关闭此标签页，回到文件列表。", "Exit the gallery, close this tab and return to files.", "ギャラリーを終了してこのタブを閉じ、ファイル一覧に戻ります。", "갤러리를 종료하고 이 탭을 닫아 파일 목록으로 돌아갑니다.")
+        else -> tr("关闭此标签页将一并放弃当前输入的链接和勾选的文件。", "Closing discards entered links and selected files.", "このタブを閉じると入力したリンクと選択したファイルを破棄します。", "탭을 닫으면 입력한 링크와 선택한 파일을 버립니다.")
     }
     PikoDialog(
         onDismissRequest = model::cancelCloseContext,
-        title = { Text(if (context is WorkspaceContext.File) "关闭标签页？" else if (duplicate) "关闭查重？" else "关闭草稿？") },
-        text = { Text(if (context is WorkspaceContext.File) fileCloseText else "「$name」" + if (duplicate) (if (scanning) "的扫描将停止，已有结果不再保留。已执行的文件操作不会撤销。" else "的本次查重结果将不再保留。已执行的文件操作不会撤销。")
-            else "中未提交的内容将不再保留。已提交的保存继续执行，结果可在任务页查看。") },
-        confirmButton = { PikoDialogConfirm("关闭", model::confirmCloseContext, destructive = true,
-            modifier = Modifier.semantics { contentDescription = "确认关闭工作" }) },
-        dismissButton = { TextButton(model::cancelCloseContext) { Text("取消") } },
+        title = { Text(if (context is WorkspaceContext.File) tr("关闭标签页？", "Close tab?", "タブを閉じますか？", "탭을 닫을까요?") else if (duplicate) tr("关闭查重？", "Close duplicate search?", "重複検索を閉じますか？", "중복 검색을 닫을까요?") else tr("关闭草稿？", "Close draft?", "下書きを閉じますか？", "초안을 닫을까요?")) },
+        text = { Text(if (context is WorkspaceContext.File) fileCloseText else "「$name」" + if (duplicate) (if (scanning) tr("的扫描将停止，已有结果不再保留。已执行的文件操作不会撤销。", " will stop scanning and discard results. Completed file operations are kept.", "の検索を停止して結果を破棄します。実行済みのファイル操作は元に戻しません。", " 검색을 중지하고 결과를 버립니다. 실행된 파일 작업은 취소되지 않습니다.") else tr("的本次查重结果将不再保留。已执行的文件操作不会撤销。", " will discard duplicate results. Completed file operations are kept.", "の今回の重複検索結果を破棄します。実行済みのファイル操作は元に戻しません。", " 중복 검색 결과를 버립니다. 실행된 파일 작업은 취소되지 않습니다."))
+            else tr("中未提交的内容将不再保留。已提交的保存继续执行，结果可在任务页查看。", " will discard unsubmitted contents. Submitted saves continue; check results in Tasks.", "の未送信の内容を破棄します。送信済みの保存は続行し、タスク画面で結果を確認できます。", " 미제출 내용을 버립니다. 제출된 저장은 계속되며 작업 페이지에서 결과를 확인할 수 있습니다.")) },
+        confirmButton = { PikoDialogConfirm(tr("关闭", "Close", "閉じる", "닫기"), model::confirmCloseContext, destructive = true,
+            modifier = Modifier.semantics { contentDescription = tr("确认关闭工作", "Confirm closing work", "作業を閉じる確認", "작업 닫기 확인") }) },
+        dismissButton = { TextButton(model::cancelCloseContext) { Text(stringResource(Res.string.common_cancel)) } },
     )
 }

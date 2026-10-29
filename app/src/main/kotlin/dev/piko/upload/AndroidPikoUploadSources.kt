@@ -1,5 +1,7 @@
 package dev.piko.upload
 
+import dev.piko.shared.i18n.tr
+
 import android.content.Context
 import android.content.Intent
 import android.database.Cursor
@@ -27,7 +29,7 @@ class AndroidPikoUploadSources(context: Context) : PikoUploadSources {
         // 投影传 null：分享来的 URI 可能出自 MediaStore 或 FileProvider，点名它们没有的列会直接抛异常
         resolver.query(parsed, null, null, null, null)?.use { cursor ->
             if (!cursor.moveToFirst()) return@use null
-            val name = cursor.string(OpenableColumns.DISPLAY_NAME) ?: parsed.lastPathSegment ?: "未命名"
+            val name = cursor.string(OpenableColumns.DISPLAY_NAME) ?: parsed.lastPathSegment ?: tr("未命名", "Untitled", "無題", "제목 없음")
             val size = cursor.long(OpenableColumns.SIZE) ?: statSize(parsed) ?: return@use null
             UploadSourceInfo(name, size, lastModifiedMs(cursor))
         }
@@ -41,7 +43,7 @@ class AndroidPikoUploadSources(context: Context) : PikoUploadSources {
             val buffer = ByteBuffer.allocate(length)
             while (buffer.hasRemaining()) {
                 val read = channel.read(buffer, offset + buffer.position())
-                if (read < 0) throw EOFException("文件在 ${offset + buffer.position()} 处提前结束")
+                if (read < 0) throw EOFException(tr("文件在 ${offset + buffer.position()} 处提前结束", "File ended early at ${offset + buffer.position()}", "ファイルが ${offset + buffer.position()} で予期せず終了", "파일이 ${offset + buffer.position()}에서 일찍 끝났습니다"))
             }
             return buffer.array()
         }
@@ -107,7 +109,7 @@ class AndroidPikoUploadSources(context: Context) : PikoUploadSources {
             buildList<ChildDocument> {
                 while (cursor.moveToNext()) add(ChildDocument(cursor.getString(0), cursor.getString(1), cursor.getString(2)))
             }
-        } ?: throw IllegalStateException("无法列出 $childrenUri")
+        } ?: throw IllegalStateException(tr("无法列出 $childrenUri", "Cannot list $childrenUri", "$childrenUri の一覧を取得できません", "$childrenUri 목록을 불러올 수 없습니다"))
         for (child in children) {
             if (child.mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
                 val childDir = if (relativeDir.isEmpty()) child.name else "$relativeDir/${child.name}"
@@ -123,7 +125,7 @@ class AndroidPikoUploadSources(context: Context) : PikoUploadSources {
     /** AutoCloseInputStream 关闭时连同 ParcelFileDescriptor 一起关，不会留下句柄。 */
     private fun openStream(uri: String): FileInputStream {
         val descriptor = resolver.openFileDescriptor(Uri.parse(uri), "r")
-            ?: throw IllegalStateException("无法打开 $uri")
+            ?: throw IllegalStateException(tr("无法打开 $uri", "Cannot open $uri", "$uri を開けません", "${uri}을(를) 열 수 없습니다"))
         return ParcelFileDescriptor.AutoCloseInputStream(descriptor)
     }
 

@@ -88,7 +88,7 @@ class SubtitleBrowserState(
             }
             .onFailure { error ->
                 PikoLog.w(TAG, "列字幕目录失败", error)
-                loadError = error.message ?: "未知错误"
+                loadError = error.message ?: dev.piko.shared.i18n.tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류")
             }
         isLoading = false
     }

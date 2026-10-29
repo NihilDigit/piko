@@ -1,5 +1,10 @@
 package dev.piko.ui.components
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
@@ -70,7 +75,7 @@ fun SnailModeToggle(modifier: Modifier = Modifier) {
         horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.Tune, "设置上限", { editing = true })) }) {
+        ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.Tune, tr("设置上限", "Set limit", "上限を設定", "한도 설정"), { editing = true })) }) {
             TonalToggleButton(
                 checked = mode.enabled,
                 onCheckedChange = { enabled -> scope.launch { preferences.setSnailMode(mode.copy(enabled = enabled)) } },
@@ -82,17 +87,17 @@ fun SnailModeToggle(modifier: Modifier = Modifier) {
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 modifier = Modifier.height(height),
             ) {
-                Icon(Icons.Outlined.SlowMotionVideo, contentDescription = "蜗牛模式", modifier = Modifier.size(18.dp))
+                Icon(Icons.Outlined.SlowMotionVideo, contentDescription = tr("蜗牛模式", "Snail mode", "低速モード", "저속 모드"), modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    if (mode.enabled) "限速 ${mode.limitLabel()}" else "蜗牛模式",
+                    if (mode.enabled) tr("限速 ${mode.limitLabel()}", "Limit ${mode.limitLabel()}", "速度制限 ${mode.limitLabel()}", "속도 제한 ${mode.limitLabel()}") else tr("蜗牛模式", "Snail mode", "低速モード", "저속 모드"),
                     maxLines = 1,
                 )
             }
         }
         TooltipBox(
             positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-            tooltip = { PlainTooltip { Text("设置上限") } },
+            tooltip = { PlainTooltip { Text(stringResource(Res.string.text_set_limit)) } },
             state = rememberTooltipState(),
         ) {
             FilledTonalIconButton(
@@ -108,7 +113,7 @@ fun SnailModeToggle(modifier: Modifier = Modifier) {
                 },
                 modifier = Modifier.size(width = 36.dp, height = height),
             ) {
-                Icon(Icons.Outlined.Tune, contentDescription = "设置上限", modifier = Modifier.size(18.dp))
+                Icon(Icons.Outlined.Tune, contentDescription = tr("设置上限", "Set limit", "上限を設定", "한도 설정"), modifier = Modifier.size(18.dp))
             }
         }
     }

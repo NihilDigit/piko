@@ -1,5 +1,10 @@
 package dev.piko
 
+import java.util.Locale
+import dev.piko.shared.i18n.PikoLocale
+import dev.piko.shared.i18n.tr
+import dev.piko.data.auth.AppLanguage
+
 import android.Manifest
 import android.content.ContentResolver
 import android.content.Intent
@@ -8,7 +13,6 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -67,7 +71,12 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val systemLocale = android.content.res.Resources.getSystem().configuration.locales.get(0) ?: Locale.getDefault()
+        PikoLocale.bindSystemLocale(systemLocale.toLanguageTag())
         super.onCreate(savedInstanceState)
+        val initialLanguage = runBlocking { PikoApplication.instance.sessionManager.appLanguageFlow.first() }
+        applyLanguage(PikoLocale.resolve(initialLanguage))
+        PikoLocale.apply(initialLanguage)
         enableEdgeToEdge()
         // 重建时（进程被杀后从最近任务回来）系统会把最初的启动 Intent 再交一次，
         // 不判断的话同一条分享进来的磁力链会再弹一次秒传面板
@@ -103,6 +112,7 @@ class MainActivity : ComponentActivity() {
                 onDispose {}
             }
             PikoApp(
+                onLanguageChanged = ::applyLanguage,
                 services = app.services,
                 platform = app.platform,
                 appearance = appearance,
@@ -111,6 +121,17 @@ class MainActivity : ComponentActivity() {
             AskForNotificationsOnFirstWork(app.services)
             if (isHeightCompact()) HideStatusBarWhileShort()
         }
+    }
+
+    private fun applyLanguage(language: AppLanguage) {
+        val locale = Locale.forLanguageTag(language.tag)
+        Locale.setDefault(locale)
+        val configuration = android.content.res.Configuration(resources.configuration)
+        configuration.setLocale(locale)
+        @Suppress("DEPRECATION")
+        resources.updateConfiguration(configuration, resources.displayMetrics)
+        @Suppress("DEPRECATION")
+        applicationContext.resources.updateConfiguration(configuration, applicationContext.resources.displayMetrics)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -169,7 +190,7 @@ class MainActivity : ComponentActivity() {
             if (magnet != null) {
                 app.instantMagnetRepository.onIncomingMagnet(magnet)
             } else {
-                withContext(Dispatchers.Main) { Toast.makeText(app, "无法读取种子文件", Toast.LENGTH_SHORT).show() }
+                withContext(Dispatchers.Main) { app.services.postAppNotice(tr("无法读取种子文件", "Unable to read torrent file", "トレントファイルを読み込めません", "토렌트 파일을 읽을 수 없습니다")) }
             }
         }
     }

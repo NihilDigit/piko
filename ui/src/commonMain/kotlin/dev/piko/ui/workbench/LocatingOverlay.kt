@@ -1,5 +1,8 @@
 package dev.piko.ui.workbench
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -68,8 +71,8 @@ fun LocatingOverlay(onCancel: () -> Unit) {
                     modifier = Modifier.padding(start = 24.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
                 ) {
                     InlineLoadingIndicator()
-                    Text("正在定位", style = MaterialTheme.typography.bodyLarge)
-                    TextButton(onClick = onCancel) { Text("取消") }
+                    Text(stringResource(Res.string.text_locating), style = MaterialTheme.typography.bodyLarge)
+                    TextButton(onClick = onCancel) { Text(stringResource(Res.string.common_cancel)) }
                 }
             }
         }

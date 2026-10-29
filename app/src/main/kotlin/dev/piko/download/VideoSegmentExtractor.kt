@@ -1,5 +1,7 @@
 package dev.piko.download
 
+import dev.piko.shared.i18n.tr
+
 import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaDataSource
@@ -124,11 +126,11 @@ object VideoSegmentExtractor {
                     }
 
                     if (trackIndexMap.isEmpty()) {
-                        error("源媒体中未找到受支持的视频或音频轨道")
+                        error(tr("源媒体中未找到受支持的视频或音频轨道", "No supported video or audio tracks in source", "元メディアに対応する動画・音声トラックがありません", "원본 미디어에 지원하는 비디오 또는 오디오 트랙이 없습니다"))
                     }
                     // 系统解析器认不出视频编码时只交出音频（TS 里的 HEVC 即如此，见 TsDemuxer），
                     // 照样写下去就是一个只有声音的「视频」，明确失败
-                    if (videoTrackIdx < 0) error("无法读取这个视频的画面，不支持它的封装或编码")
+                    if (videoTrackIdx < 0) error(tr("无法读取这个视频的画面，不支持它的封装或编码", "Cannot read video; container or codec is unsupported", "コンテナまたはコーデックが未対応のため映像を読み込めません", "지원하지 않는 컨테이너 또는 코덱이라 동영상을 읽을 수 없습니다"))
 
                     muxer.start()
                     muxerStarted = true
@@ -218,7 +220,7 @@ object VideoSegmentExtractor {
                     }
                 } else {
                     tempFile.delete()
-                    error("视频片段提取未生成有效数据")
+                    error(tr("视频片段提取未生成有效数据", "No valid data produced by video extraction", "動画の切り出しで有効なデータが生成されませんでした", "동영상 구간 추출에서 유효한 데이터가 생성되지 않았습니다"))
                 }
             } catch (e: Throwable) {
                 val tempFile = File(destinationFile.parentFile ?: context.cacheDir, "${destinationFile.name}.part")

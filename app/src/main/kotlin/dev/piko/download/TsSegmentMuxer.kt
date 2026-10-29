@@ -1,5 +1,7 @@
 package dev.piko.download
 
+import dev.piko.shared.i18n.tr
+
 import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaDataSource
@@ -89,7 +91,7 @@ internal object TsSegmentMuxer {
                 if (started) runCatching { muxer.stop() }
                 runCatching { muxer.release() }
             }
-            check(tempFile.length() > 1024L) { "视频片段提取未生成有效数据" }
+            check(tempFile.length() > 1024L) { tr("视频片段提取未生成有效数据", "No valid data produced by video extraction", "動画の切り出しで有効なデータが生成されませんでした", "동영상 구간 추출에서 유효한 데이터가 생성되지 않았습니다") }
             destinationFile.delete()
             if (!tempFile.renameTo(destinationFile)) {
                 tempFile.copyTo(destinationFile, overwrite = true)

@@ -1,5 +1,7 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -259,10 +261,10 @@ class InstantSheetState private constructor(
         val account = saveAccount
         if (target != null) (saveTargetContext.availability(target.id) as? dev.piko.shared.presentation.ActionAvailability.Blocked)?.let { return@derivedStateOf it.reason }
         if (target != null && account != null && instantRepo.offlineSubmissions.conflict(account, submittedUrl(), target.id, offlineWorks) != null)
-            return@derivedStateOf "此目录的离线提交结果待确认，请先在任务页检查"
+            return@derivedStateOf tr("此目录的离线提交结果待确认，请先在任务页检查", "Cloud download submission in this folder is unconfirmed. Check Tasks first", "このフォルダーのクラウドダウンロード送信結果は未確認です。先にタスク画面で確認してください", "이 폴더의 클라우드 다운로드 제출 결과가 미확인입니다. 먼저 작업 페이지에서 확인해 주세요")
         if (target != null && account != null && saveRecords.pendingConflict(account, target.id, itemsToSave.map { it.file },
                 excluding = instantAttemptId, snapshot = saveAttempts, containerName = if (willCreateFolder) driveFolderName(folderNameToSave) else null,
-                names = SaveNaming(itemsToSave).fileNames, keepStructure = willCreateFolder)) "相同目标中有进行中或待确认的保存，请先在任务页处理" else null
+                names = SaveNaming(itemsToSave).fileNames, keepStructure = willCreateFolder)) tr("相同目标中有进行中或待确认的保存，请先在任务页处理", "A save to this destination is running or unconfirmed. Check Tasks first", "同じ保存先への保存が進行中か未確認です。先にタスク画面で確認してください", "같은 대상에 저장이 진행 중이거나 미확인입니다. 먼저 작업 페이지에서 확인해 주세요") else null
     }
     var resolution by mutableStateOf<MagnetResolutionResult?>(null)
         private set
@@ -812,9 +814,9 @@ class InstantSheetState private constructor(
      * 同一会话里按 gcid 复用，不重复消耗额度。
      */
     suspend fun leaseForArchiveBrowse(file: io.github.nihildigit.pikpak.ResolvedFile): Result<String> {
-        val gcid = file.gcid ?: return Result.failure(IllegalStateException("压缩包尚未收录，需离线保存后打开"))
+        val gcid = file.gcid ?: return Result.failure(IllegalStateException(tr("压缩包尚未收录，需离线保存后打开", "Download the archive to the cloud before opening", "アーカイブは未収録です。クラウドダウンロードで保存してから開いてください", "등록되지 않은 압축 파일입니다. 클라우드에 다운로드한 후 열어 주세요")))
         previewedIds[gcid]?.let { return Result.success(it) }
-        val lease = shared.previewLease ?: return Result.failure(IllegalStateException("预览会话未就绪"))
+        val lease = shared.previewLease ?: return Result.failure(IllegalStateException(tr("预览会话未就绪", "Preview session is not ready", "プレビューの準備ができていません", "미리 보기 세션이 준비되지 않았습니다")))
         return lease.put(file).onSuccess { fileId -> previewedIds[gcid] = fileId }
     }
 
@@ -844,8 +846,8 @@ class InstantSheetState private constructor(
                         previewedIds[gcid] = fileId
                         _previewRequests.emit(InstantPreviewRequest(fileId, file.name))
                     }
-                    .logFailure(TAG, "预览失败")
-                    .onFailure { _messages.emit("预览失败：${it.message}") }
+                    .logFailure(TAG, tr("预览失败", "Preview failed", "プレビューに失敗しました", "미리 보기 실패"))
+                    .onFailure { _messages.emit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("预览", "Preview", "プレビュー", "미리 보기"), it)) }
             } finally {
                 previewingIndex = null
                 previewingSharedId = null
@@ -855,12 +857,12 @@ class InstantSheetState private constructor(
 
     /** 按 [savePlan] 的路线保存当前勾选。 */
     fun saveSelection() {
-        if (saveAsReference && itemsToSave.isNotEmpty() && referenceItemsToSave.isEmpty()) { errorMessage = "所选内容均缺少引用，无法以引用保存"; return }
+        if (saveAsReference && itemsToSave.isNotEmpty() && referenceItemsToSave.isEmpty()) { errorMessage = tr("所选内容均缺少引用，无法以引用保存", "Selected items have no references and cannot be saved as references", "選択した項目に参照がないため、参照として保存できません", "선택한 항목에 참조가 없어 참조로 저장할 수 없습니다"); return }
         if (!saveAsReference && normalizedMagnet == null && findShareLink(input) == null) { submitOfflineTask(); return }
         if (!scope.isActive || isSaving) return
         saveBlockReason?.let { errorMessage = it; return }
         if (instantRetry != null) {
-            if (retryFileCount == 0) { errorMessage = "本次保存结果需要先在任务页核对，不能再次提交"; return }
+            if (retryFileCount == 0) { errorMessage = tr("本次保存结果需要先在任务页核对，不能再次提交", "Check this save result in Tasks before submitting again", "再送信する前にタスク画面で今回の保存結果を確認してください", "다시 제출하기 전에 작업 페이지에서 이번 저장 결과를 확인해 주세요"); return }
             isSaving = true
             saveScope.launch {
                 try {
@@ -897,7 +899,7 @@ class InstantSheetState private constructor(
                             return@launch
                         }
                         if (shared.account.value.offlineLeft == 0) {
-                            PikoLog.i(TAG, "今日离线次数已用完，不提交整包离线")
+                            PikoLog.i(TAG, tr("今日离线次数已用完，不提交整包离线", "Daily cloud download limit reached; batch not submitted", "本日のクラウドダウンロード回数を使い切ったため、一括ダウンロードは未送信です", "오늘의 클라우드 다운로드 횟수를 모두 사용하여 전체 다운로드를 제출하지 않았습니다"))
                             return@launch
                         }
                         packSave(targetBread, toSave)
@@ -928,7 +930,7 @@ class InstantSheetState private constructor(
                 val remaining = refreshRemainingBytes()
                 if (remaining != null && toSave.sumOf { it.file.size } > remaining) {
                     PikoLog.i(TAG, "空间不足，不秒传：需要 ${toSave.sumOf { it.file.size }} 字节，剩余 $remaining 字节")
-                    errorMessage = "网盘空间不足，无法保存所选文件"
+                    errorMessage = tr("网盘空间不足，无法保存所选文件", "Not enough cloud storage to save selected files", "選択したファイルを保存する空き容量がありません", "선택한 파일을 저장할 클라우드 공간이 부족합니다")
                     return@launch
                 }
                 val saved = saveIntoNewFolder(targetBread, toSave)
@@ -950,7 +952,7 @@ class InstantSheetState private constructor(
         saveParent = target
         val folderId = driveRepo.createFolder(target.id, name).getOrElse { err ->
             PikoLog.w(TAG, "新建保存目录失败", err)
-            errorMessage = "新建文件夹失败：${err.message}"
+            errorMessage = dev.piko.shared.notice.PikoErrorMapper.failure(tr("新建文件夹", "Create folder", "フォルダーを作成", "폴더 만들기"), err)
             val definitelyRefused = err is PikPakException && err.httpStatus in setOf(400, 401, 403, 404, 409, 422)
             val receipt = InstantSaveReceipt(requireNotNull(saveAccount), target.id, notAttempted = toSave.mapTo(HashSet()) { it.file.path },
                 unconfirmedFolder = name.takeUnless { definitelyRefused })
@@ -1006,10 +1008,10 @@ class InstantSheetState private constructor(
             return when {
                 instantRetry != null -> resumeInstant().map { it }
                 saveBlockReason != null -> Result.failure(IllegalStateException(saveBlockReason))
-                saveIssue?.requiresInspection == true -> Result.failure(IllegalStateException("本次保存结果待确认，请先在任务页核对"))
-                saveAsReference && toSave.isEmpty() -> Result.failure(IllegalStateException("所选内容均缺少引用，无法以引用保存"))
+                saveIssue?.requiresInspection == true -> Result.failure(IllegalStateException(tr("本次保存结果待确认，请先在任务页核对", "This save result is unconfirmed. Check Tasks first", "今回の保存結果は未確認です。先にタスク画面で確認してください", "이번 저장 결과가 미확인입니다. 먼저 작업 페이지에서 확인해 주세요")))
+                saveAsReference && toSave.isEmpty() -> Result.failure(IllegalStateException(tr("所选内容均缺少引用，无法以引用保存", "Selected items have no references and cannot be saved as references", "選択した項目に参照がないため、参照として保存できません", "선택한 항목에 참조가 없어 참조로 저장할 수 없습니다")))
                 resolution == null || (!saveAsReference && normalizedMagnet == null && findShareLink(input) == null) -> submitWhole(target).map { null }
-                plan == null -> Result.failure(IllegalStateException("未勾选文件"))
+                plan == null -> Result.failure(IllegalStateException(tr("未勾选文件", "No files selected", "ファイルが選択されていません", "선택한 파일이 없습니다")))
                 plan.route == SaveRoute.INSTANT && willCreateFolder -> saveIntoNewFolder(target, toSave).map { it.createdIds }
                 plan.route == SaveRoute.INSTANT -> saveInstantOrOffline(target, toSave)
                 else -> packSave(target, toSave).map { null }
@@ -1023,7 +1025,7 @@ class InstantSheetState private constructor(
         if (!canReceiveAt(target)) return Result.failure(IllegalStateException(errorMessage))
         submittingOfflineAt = target
         return try {
-            instantRepo.enqueueOfflineTask(submittedUrl(), target.id, target.name, folderNameToSave.ifBlank { "提交云端离线" }, saveAccount)
+            instantRepo.enqueueOfflineTask(submittedUrl(), target.id, target.name, folderNameToSave.ifBlank { tr("提交云端离线", "Submit cloud download", "クラウドダウンロードを追加", "클라우드 다운로드 추가") }, saveAccount)
                 .map { }
                 .onSuccess { instantAttemptId?.let(saveRecords::forgetAttempt); instantAttemptId = null; saveIssue = null }
                 .reportSaveFailure()
@@ -1065,8 +1067,8 @@ class InstantSheetState private constructor(
                     .onFailure { err ->
                         needsSharePassCode = (err as? io.github.nihildigit.pikpak.ShareUnavailableException)?.needsPassCode == true
                         if (!needsSharePassCode) {
-                            PikoLog.w(TAG, "解析链接失败", err)
-                            errorMessage = "解析失败：${err.message}"
+                            PikoLog.w(TAG, tr("解析链接失败", "Failed to resolve link", "リンクを解析できませんでした", "링크를 분석하지 못했습니다"), err)
+                            errorMessage = dev.piko.shared.notice.PikoErrorMapper.failure(tr("解析", "Resolve", "解析", "분석"), err)
                         }
                     }
             } finally {
@@ -1080,7 +1082,7 @@ class InstantSheetState private constructor(
     private suspend fun applyResolution(data: MagnetResolutionResult?) {
         if (data == null) {
             isUnindexed = true
-            errorMessage = "云端未收录，可离线下载"
+            errorMessage = tr("云端未收录，可离线下载", "Not available in cloud; add a cloud download", "クラウドに未収録です。クラウドダウンロードできます", "클라우드에 등록되지 않았습니다. 클라우드 다운로드를 추가할 수 있습니다")
             return
         }
         isAnalyzing = true
@@ -1154,7 +1156,7 @@ class InstantSheetState private constructor(
             return folder
         }
         PikoLog.i(TAG, "保存目标 ${folder.id} 已不存在，改存 My Packs")
-        targetNotice = "当前目录已不存在，改存 My Packs"
+        targetNotice = tr("当前目录已不存在，改存 My Packs", "Current folder no longer exists; saving to My Packs", "現在のフォルダーが存在しないため、My Packsに保存します", "현재 폴더가 없어 My Packs에 저장합니다")
         return driveRepo.getOrCreateMyPacksFolder().logFailure(TAG, "取 My Packs 失败，改存根目录")
             .getOrDefault(PikoPathBreadcrumb("", "My Packs"))
     }
@@ -1183,7 +1185,7 @@ class InstantSheetState private constructor(
         val account = saveAccount?.takeIf { it == driveRepo.currentAccount } ?: return false
         if (saveRecords.pendingConflict(account, saveParent?.id ?: target.id, files.map { it.file }, excluding = instantAttemptId,
                 containerName = containerName, names = names, keepStructure = keepStructure)) {
-            errorMessage = "相同目标中有进行中或待确认的保存，请先在任务页处理"
+            errorMessage = tr("相同目标中有进行中或待确认的保存，请先在任务页处理", "A save to this destination is running or unconfirmed. Check Tasks first", "同じ保存先への保存が進行中か未確認です。先にタスク画面で確認してください", "같은 대상에 저장이 진행 중이거나 미확인입니다. 먼저 작업 페이지에서 확인해 주세요")
             return false
         }
         instantAttemptId = saveRecords.beginAttempt(account, title, target, files.map { it.file }, instantAttemptId,
@@ -1194,13 +1196,13 @@ class InstantSheetState private constructor(
 
     private suspend fun executeInstant(plan: InstantRetryPlan, submitted: List<InstantFileItem>): Result<List<String>> {
         val result = if (saveAsReference) {
-            val vault = driveRepo.vaultAccess(requireNotNull(saveAccount)) ?: throw kotlinx.coroutines.CancellationException("保存账号已结束")
+            val vault = driveRepo.vaultAccess(requireNotNull(saveAccount)) ?: throw kotlinx.coroutines.CancellationException(tr("保存账号已结束", "The saving account session ended", "保存先アカウントのセッションは終了しました", "저장 계정 세션이 종료되었습니다"))
             instantRepo.saveReferences(submitted.filter { it.file.gcid != null }, plan.target.id, plan.keepStructure, plan.names, plan.receipt.folders, vault, referenceSource()) { members ->
                 if (driveRepo.currentAccount == saveAccount) driveRepo.vaultTrees.merge(members)
             }
         } else instantRepo.instantSave(submitted, plan.target.id, reuse = previewedIds.toMap(), keepStructure = plan.keepStructure,
             names = plan.names, existingFolders = plan.receipt.folders)
-        if (driveRepo.currentAccount != saveAccount) throw kotlinx.coroutines.CancellationException("保存账号已结束")
+        if (driveRepo.currentAccount != saveAccount) throw kotlinx.coroutines.CancellationException(tr("保存账号已结束", "The saving account session ended", "保存先アカウントのセッションは終了しました", "저장 계정 세션이 종료되었습니다"))
         val current = (result.exceptionOrNull() as? InstantSaveIncomplete)?.receipt ?: if (result.isSuccess) {
             InstantSaveReceipt(requireNotNull(saveAccount), plan.target.id,
                 confirmed = submitted.filter { it.file.gcid != null }.map { it.file.path }.zip(result.getOrThrow()).toMap(),
@@ -1236,16 +1238,16 @@ class InstantSheetState private constructor(
             // 单文件内容不存在的确定失败保留原异常，沿用免费确认/会员离线回退。
             val missing = result.exceptionOrNull() is InstantContentUnavailableException && plan.files.size == 1
             instantRetry = if (missing) null else plan.copy(receipt = receipt)
-            if (missing) result else Result.failure(InstantSaveIncomplete(receipt, result.exceptionOrNull() ?: IllegalStateException("仍有待确认的保存结果")))
+            if (missing) result else Result.failure(InstantSaveIncomplete(receipt, result.exceptionOrNull() ?: IllegalStateException(tr("仍有待确认的保存结果", "Some save results are unconfirmed", "未確認の保存結果があります", "아직 미확인 저장 결과가 있습니다"))))
         }
     }
 
     private suspend fun resumeInstant(): Result<List<String>> {
-        val plan = instantRetry ?: return Result.failure(IllegalStateException("没有可重试的保存"))
+        val plan = instantRetry ?: return Result.failure(IllegalStateException(tr("没有可重试的保存", "No saves to retry", "再試行できる保存がありません", "다시 시도할 저장 작업이 없습니다")))
         if (!canReceiveAt(plan.target)) return Result.failure(IllegalStateException(errorMessage))
-        if (plan.receipt.unconfirmedFolder != null) return Result.failure(IllegalStateException("目录创建结果待确认，不能再次创建"))
+        if (plan.receipt.unconfirmedFolder != null) return Result.failure(IllegalStateException(tr("目录创建结果待确认，不能再次创建", "Folder creation is unconfirmed; cannot create again yet", "フォルダー作成の結果が未確認のため、再作成できません", "폴더 생성 결과가 미확인이라 다시 만들 수 없습니다")))
         val remaining = plan.files.filter { it.file.path in (plan.receipt.failed + plan.receipt.notAttempted) }
-        if (remaining.isEmpty()) return Result.failure(IllegalStateException("没有确定未保存的文件，请先在任务页检查结果"))
+        if (remaining.isEmpty()) return Result.failure(IllegalStateException(tr("没有确定未保存的文件，请先在任务页检查结果", "No files are confirmed unsaved. Check results in Tasks first", "未保存と確認できたファイルがありません。先にタスク画面で結果を確認してください", "저장되지 않은 것으로 확인된 파일이 없습니다. 먼저 작업 페이지에서 결과를 확인해 주세요")))
         instantAttemptId?.let { id -> saveRecords.beginAttempt(requireNotNull(saveAccount), plan.target.name, plan.target, plan.files.map { it.file }, id) }
         return executeInstant(plan, remaining).onSuccess { ids ->
             val container = savedContainer
@@ -1277,7 +1279,7 @@ class InstantSheetState private constructor(
             if (shared.account.value.free) {
                 PikoLog.i(TAG, "云端没有这个文件的内容，等用户确认离线")
                 contentMissing = true
-                errorMessage = "云端暂无该文件内容，需离线下载"
+                errorMessage = tr("云端暂无该文件内容，需离线下载", "This file is unavailable in the cloud; add a cloud download", "クラウドにファイルがありません。クラウドダウンロードが必要です", "클라우드에 파일이 없습니다. 클라우드 다운로드가 필요합니다")
                 return Result.failure(missing)
             }
             PikoLog.i(TAG, "云端没有这个文件的内容，改交离线任务")
@@ -1306,15 +1308,15 @@ class InstantSheetState private constructor(
             return this
         }
         val incomplete = exceptionOrNull() as? InstantSaveIncomplete
-        return if (incomplete == null) reportFailure(TAG, "保存") { errorMessage = it } else {
+        return if (incomplete == null) reportFailure(TAG, tr("保存", "Save", "保存", "저장")) { errorMessage = it } else {
             errorMessage = incomplete.receipt.message
-            logFailure(TAG, "保存未全部确认，保留逐文件回执")
+            logFailure(TAG, tr("保存未全部确认，保留逐文件回执", "Some save results are unconfirmed; file receipts retained", "一部の保存結果が未確認です。ファイルごとの結果を保持しています", "일부 저장 결과가 확인되지 않아 파일별 결과를 유지합니다"))
         }
     }
 
     private suspend fun packSave(target: PikoPathBreadcrumb, toSave: List<InstantFileItem>): Result<Unit> {
         if (resolution?.resource?.truncated != false) {
-            errorMessage = "文件清单不完整，不能提交自动裁剪的整包离线"
+            errorMessage = tr("文件清单不完整，不能提交自动裁剪的整包离线", "File list is incomplete; cannot submit a cloud download with automatic trimming", "ファイル一覧が不完全なため、自動整理付き一括ダウンロードを送信できません", "파일 목록이 불완전하여 자동 정리 전체 다운로드를 제출할 수 없습니다")
             return Result.failure(IllegalStateException(errorMessage))
         }
         if (!canReceiveAt(target)) return Result.failure(IllegalStateException(errorMessage))
@@ -1340,7 +1342,7 @@ class InstantSheetState private constructor(
 
     private fun canReceiveAt(target: PikoPathBreadcrumb): Boolean {
         if (saveAccount == null || driveRepo.currentAccount != saveAccount || !saveScope.isActive) {
-            errorMessage = "当前保存上下文已结束"
+            errorMessage = tr("当前保存上下文已结束", "This save session has ended", "保存セッションは終了しました", "현재 저장 세션이 종료되었습니다")
             return false
         }
         val blocked = saveTargetContext.availability(target.id) as? dev.piko.shared.presentation.ActionAvailability.Blocked

@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.player
 
+import dev.piko.shared.i18n.tr
+
 import android.content.Context
 import android.net.Uri
 import android.view.Surface
@@ -56,7 +58,7 @@ internal class MpvPlaybackBackend(
     private val hardwareDecoding: Boolean = true,
 ) : PlaybackBackend, MPVLib.EventObserver, MPVLib.LogObserver {
 
-    private val mpv: MPVLib = MPVLib.create(context) ?: error("libmpv 初始化失败")
+    private val mpv: MPVLib = MPVLib.create(context) ?: error(tr("libmpv 初始化失败", "libmpv initialization failed", "libmpvの初期化に失敗しました", "libmpv 초기화 실패"))
 
     override var positionMillis by mutableLongStateOf(0L)
         private set

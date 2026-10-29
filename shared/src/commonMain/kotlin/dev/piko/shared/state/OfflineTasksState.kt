@@ -1,5 +1,9 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -85,7 +89,7 @@ class OfflineTasksState(
                     }
                     .onFailure { err ->
                         PikoLog.w(TAG, "重新提交离线任务 ${task.id} 失败", err)
-                        _messages.tryEmit((err as? OfflineSubmitException)?.message ?: "重新提交失败")
+                        _messages.tryEmit((err as? OfflineSubmitException)?.message ?: tr("重新提交失败", "Failed to resubmit", "再追加できませんでした", "다시 추가하지 못했습니다"))
                     }
             } finally { resubmitting.remove(task.id) }
         }
@@ -106,7 +110,7 @@ class OfflineTasksState(
                 .onFailure { err ->
                     if ((err as? PikPakException)?.httpStatus != 404) {
                         PikoLog.w(TAG, "删除 ${ids.size} 个离线任务失败", err)
-                        _messages.tryEmit("删除任务失败")
+                        _messages.tryEmit(tr("删除任务失败", "Failed to delete task", "タスクを削除できませんでした", "작업을 삭제하지 못했습니다"))
                     }
                 }
             deletingIds -= removedIds
@@ -125,11 +129,11 @@ class OfflineTasksState(
             taskRepo.clearTasks(phases)
                 .onSuccess {
                     tasks = tasks.filterNot { it.phase in phases }
-                    _messages.tryEmit("已清除 $cleared 条记录")
+                    _messages.tryEmit(tr("已清除 $cleared 条记录", "Cleared ${enCount(cleared, "record", "records")}", "$cleared 件の記録を消去しました", "기록 ${cleared}건 삭제 완료"))
                     launchFetch(notifyFailure = false)
                 }
                 .logFailure(TAG, "清除离线记录失败：阶段 $phases，$cleared 条")
-                .onFailure { _messages.tryEmit("清除记录失败") }
+                .onFailure { _messages.tryEmit(tr("清除记录失败", "Failed to clear records", "記録を消去できませんでした", "기록을 지우지 못했습니다")) }
         }
     }
 
@@ -153,10 +157,10 @@ class OfflineTasksState(
                 }
                 .onFailure { err ->
                     // 轮询每几秒一次，断网时只记第一次的堆栈，之后的并进恢复时的那一行
-                    if (failedPolls++ == 0) PikoLog.w(TAG, "加载离线任务失败", err)
-                    val reason = err.message ?: "网络错误"
+                    if (failedPolls++ == 0) PikoLog.w(TAG, tr("加载离线任务失败", "Failed to load cloud downloads", "クラウドダウンロードを読み込めませんでした", "클라우드 다운로드를 불러오지 못했습니다"), err)
+                    val reason = dev.piko.shared.notice.PikoErrorMapper.message(err)
                     loadError = reason
-                    if (notifyFailure) _messages.tryEmit("加载离线任务失败")
+                    if (notifyFailure) _messages.tryEmit(tr("加载离线任务失败", "Failed to load cloud downloads", "クラウドダウンロードを読み込めませんでした", "클라우드 다운로드를 불러오지 못했습니다"))
                 }
         } finally {
             isLoading = false

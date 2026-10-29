@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.player
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.fadeIn
@@ -91,7 +96,7 @@ internal fun FullscreenPromptButton(
                 modifier = Modifier.size(ButtonDefaults.IconSize),
             )
             Spacer(Modifier.width(ButtonDefaults.IconSpacing))
-            Text("全屏播放")
+            Text(stringResource(Res.string.text_play_fullscreen))
         }
     }
 }
@@ -119,7 +124,7 @@ internal fun RestoreCropPromptButton(
                 contentColor = MaterialTheme.colorScheme.onSurface,
             ),
         ) {
-            Text("还原")
+            Text(stringResource(Res.string.text_reset))
         }
     }
 }
@@ -151,16 +156,16 @@ internal fun ResumeTipCapsule(
                 TextButton(
                     onClick = onRestart,
                     colors = ButtonDefaults.textButtonColors(contentColor = SnackbarDefaults.actionColor),
-                ) { Text("从头播放") }
+                ) { Text(stringResource(Res.string.text_play_from_start)) }
             },
             dismissAction = {
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Filled.Close, contentDescription = "关闭")
+                    Icon(Icons.Filled.Close, contentDescription = tr("关闭", "Close", "閉じる", "닫기"))
                 }
             },
             modifier = Modifier.widthIn(max = 480.dp),
         ) {
-            Text("从 ${formatTime(resumedPositionMillis)} 继续播放")
+            Text(tr("从 ${formatTime(resumedPositionMillis)} 继续播放", "Resume at ${formatTime(resumedPositionMillis)}", "${formatTime(resumedPositionMillis)} から再生", "${formatTime(resumedPositionMillis)}부터 이어 재생"))
         }
     }
 }
@@ -218,7 +223,7 @@ internal fun LockToggle(
     ) {
         Icon(
             imageVector = if (isLocked) Icons.Filled.Lock else Icons.Filled.LockOpen,
-            contentDescription = if (isLocked) "解锁屏幕" else "锁定屏幕",
+            contentDescription = if (isLocked) tr("解锁屏幕", "Unlock screen", "画面ロックを解除", "화면 잠금 해제") else tr("锁定屏幕", "Lock screen", "画面をロック", "화면 잠금"),
         )
     }
 }
@@ -255,7 +260,7 @@ internal fun PlaybackErrorCard(
                 modifier = Modifier.size(32.dp),
             )
             Spacer(Modifier.height(16.dp))
-            Text("无法播放", style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(Res.string.text_unable_to_play), style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(8.dp))
             Text(
                 text = message,
@@ -268,9 +273,9 @@ internal fun PlaybackErrorCard(
             // 与底下的画面无关。重试用 tonal：一次播放失败不该渲染成需要下决心的主按钮
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (onBack != null) {
-                    TextButton(onClick = onBack) { Text("返回") }
+                    TextButton(onClick = onBack) { Text(stringResource(Res.string.common_back)) }
                 }
-                FilledTonalButton(onClick = onRetry) { Text("重试") }
+                FilledTonalButton(onClick = onRetry) { Text(stringResource(Res.string.common_retry)) }
             }
         }
     }

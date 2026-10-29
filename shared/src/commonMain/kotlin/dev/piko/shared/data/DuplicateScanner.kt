@@ -64,6 +64,15 @@ class DuplicateScanner(
         },
     )
 
+    constructor(clients: PikoClientProvider, driveRepo: PikoDriveRepository) : this(
+        listFolder = { folderId ->
+            driveRepo.localRealChildrenIfClean(folderId) ?: run {
+                val client = clients.currentClient.value ?: error("Not logged in")
+                client.listFiles(folderId)
+            }
+        },
+    )
+
     // 停止不取消协程：取消会连同已经列出的结果一起丢掉，而用户按停止多半是想看已有的部分
     @Volatile
     private var stopRequested = false

@@ -23,12 +23,12 @@ SPEC = "2025"
 # (/php/io.php?color=<romaji>, read 2026-09-23). The kanji names double as the
 # Chinese labels.
 SEEDS = [
-    ("RURI", "瑠璃", 0xFF005CAF),
-    ("TOKIWA", "常磐", 0xFF1B813E),
-    ("KIKYO", "桔梗", 0xFF6A4C9C),
-    ("YAMABUKI", "山吹", 0xFFFFB11B),
-    ("NADESHIKO", "撫子", 0xFFDC9FB4),
-    ("BENIHI", "紅緋", 0xFFF75C2F),
+    ("RURI", "瑠璃", "Lapis blue", "청금석", 0xFF005CAF),
+    ("TOKIWA", "常磐", "Evergreen", "상록", 0xFF1B813E),
+    ("KIKYO", "桔梗", "Bellflower", "도라지", 0xFF6A4C9C),
+    ("YAMABUKI", "山吹", "Kerria gold", "황매화", 0xFFFFB11B),
+    ("NADESHIKO", "撫子", "Dianthus pink", "패랭이", 0xFFDC9FB4),
+    ("BENIHI", "紅緋", "Crimson", "홍비", 0xFFF75C2F),
 ]
 
 ROLES = [
@@ -60,10 +60,10 @@ def scheme_kotlin(seed: int, dark: bool) -> str:
     return "\n".join(lines)
 
 
-def entry_kotlin(key: str, label: str, seed: int) -> str:
+def entry_kotlin(key: str, label: str, en_label: str, ko_label: str, seed: int) -> str:
     return "\n".join([
         f"{INDENT}{key}(",
-        f'{INDENT * 2}label = "{label}",',
+        f'{INDENT * 2}labelText = {{ tr("{label}", "{en_label}", "{label}", "{ko_label}") }},',
         f"{INDENT * 2}seed = Color(0x{seed:08X}),",
         f"{INDENT * 2}light = {scheme_kotlin(seed, False)},",
         f"{INDENT * 2}dark = {scheme_kotlin(seed, True)},",
@@ -80,10 +80,14 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
+import dev.piko.shared.i18n.tr
 
 /** 系统取色之外的内置主题。TonalSpot 方案，Material 色彩规范 {SPEC} 版。 */
-enum class SeedTheme(val label: String, val seed: Color, val light: ColorScheme, val dark: ColorScheme) {{
+enum class SeedTheme(private val labelText: () -> String, val seed: Color, val light: ColorScheme, val dark: ColorScheme) {{
 {body}
+    ;
+
+    val label: String get() = labelText()
 }}
 """
     target = Path("ui/src/commonMain/kotlin/dev/piko/ui/theme/SeedColorSchemes.kt")

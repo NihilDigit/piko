@@ -1,5 +1,7 @@
 package dev.piko.shared.presentation
 
+import dev.piko.shared.i18n.tr
+
 import dev.piko.shared.data.ArchiveEntryId
 import dev.piko.shared.data.ArchiveLocation
 import dev.piko.shared.data.ImportPreviewEntryId
@@ -39,98 +41,98 @@ class FileCommands(
 
     /** 新文件写入可与星标、目录改名及无关文件处理并行；目标整树的处置需要先结束。 */
     fun receivingAvailability(folder: String): ActionAvailability {
-        if (!acceptsActions() || account == null || repository.currentAccount != account) return ActionAvailability.Blocked("当前工作区已结束")
-        if (!isDriveFolderId(folder)) return ActionAvailability.Blocked("请选择网盘中的目标文件夹")
+        if (!acceptsActions() || account == null || repository.currentAccount != account) return ActionAvailability.Blocked(tr("当前工作区已结束", "This workspace has ended", "このワークスペースは終了しました", "현재 작업 공간이 종료되었습니다"))
+        if (!isDriveFolderId(folder)) return ActionAvailability.Blocked(tr("请选择网盘中的目标文件夹", "Choose a destination folder in the drive", "ドライブ内の保存先フォルダーを選択してください", "드라이브에서 대상 폴더를 선택해 주세요"))
         if (receiving?.exclusiveRoots(account)?.any { contains(it, folder) } == true)
-            return ActionAvailability.Blocked("目标目录正在裁剪整包内容，请完成后再保存")
+            return ActionAvailability.Blocked(tr("目标目录正在裁剪整包内容，请完成后再保存", "Destination contents are being trimmed. Save after it finishes", "保存先の一括ダウンロードを整理中です。完了後に保存してください", "대상 폴더의 전체 다운로드를 정리 중입니다. 완료 후 저장해 주세요"))
         if (repository.changes.state.value.undo.values.any { undo ->
                 undo.activeTreeIds.any { contains(it, folder) }
-            }) return ActionAvailability.Blocked("目标目录正在撤销相关改动，请完成后再保存")
+            }) return ActionAvailability.Blocked(tr("目标目录正在撤销相关改动，请完成后再保存", "Destination changes are being reverted. Save after it finishes", "保存先の変更を元に戻しています。完了後に保存してください", "대상 폴더의 변경 사항을 되돌리는 중입니다. 완료 후 저장해 주세요"))
         vault?.activeTargets?.let { targets ->
             if ((targets.roots + targets.files).any { contains(it, folder) })
-                return ActionAvailability.Blocked("目标目录正在归档或恢复，请完成后再保存")
+                return ActionAvailability.Blocked(tr("目标目录正在归档或恢复，请完成后再保存", "Destination is being archived or restored. Save after it finishes", "保存先をアーカイブまたは復元中です。完了後に保存してください", "대상 폴더를 보관 또는 복원 중입니다. 완료 후 저장해 주세요"))
         }
         if ((cleanup?.progress != null || cleanup?.isUndoing == true) && cleanup.projectedIds.any { contains(it, folder) })
-            return ActionAvailability.Blocked("目标目录正在移入回收站或恢复，请完成后再保存")
-        if (shareBlocked(emptyList(), folder, false)) return ActionAvailability.Blocked("目标目录中的分享文件正在规范命名，请先在任务页处理")
+            return ActionAvailability.Blocked(tr("目标目录正在移入回收站或恢复，请完成后再保存", "Destination is being trashed or restored. Save after it finishes", "保存先をゴミ箱に移動または復元中です。完了後に保存してください", "대상 폴더를 휴지통으로 이동하거나 복원 중입니다. 완료 후 저장해 주세요"))
+        if (shareBlocked(emptyList(), folder, false)) return ActionAvailability.Blocked(tr("目标目录中的分享文件正在规范命名，请先在任务页处理", "Shared files at the destination are being renamed. Check Tasks first", "保存先の共有ファイル名を整理中です。先にタスク画面で確認してください", "대상 폴더의 공유 파일 이름을 정리 중입니다. 먼저 작업 페이지에서 확인해 주세요"))
         val conflict = session.works.value.firstOrNull { work ->
             work.account == account && (work.isRunning || work.result?.unconfirmed?.isNotEmpty() == true) &&
                 changesTree(work.command) && pendingCommand(work).ids.any { contains(it, folder) }
         }
         return if (conflict == null) ActionAvailability.Available else ActionAvailability.Blocked(
-            if (conflict.isRunning) "目标目录正在移动、删除或恢复，请完成后再保存" else "目标目录的上次修改尚未确认，请先在任务页核对",
+            if (conflict.isRunning) tr("目标目录正在移动、删除或恢复，请完成后再保存", "Destination is being moved, deleted or restored. Save after it finishes", "保存先を移動、削除または復元中です。完了後に保存してください", "대상 폴더를 이동, 삭제 또는 복원 중입니다. 완료 후 저장해 주세요") else tr("目标目录的上次修改尚未确认，请先在任务页核对", "Previous destination changes are unconfirmed. Check Tasks first", "保存先の前回の変更が未確認です。先にタスク画面で確認してください", "대상 폴더의 이전 변경 결과가 미확인입니다. 먼저 작업 페이지에서 확인해 주세요"),
         )
     }
 
     fun availability(command: FileWriteCommand): ActionAvailability {
         fun blocked(reason: String) = ActionAvailability.Blocked(reason)
-        if (!acceptsActions() || account == null || repository.currentAccount != account) return blocked("当前浏览上下文已结束，请重新打开")
+        if (!acceptsActions() || account == null || repository.currentAccount != account) return blocked(tr("当前浏览上下文已结束，请重新打开", "This browsing session ended. Open it again", "閲覧セッションが終了しました。開き直してください", "탐색 세션이 종료되었습니다. 다시 열어 주세요"))
         if (command.ids.any {
                 it.isBlank() || VaultEntry.isVaulted(it) || ArchiveEntryId.isEntry(it) ||
                     ArchiveLocation.of(it) != null || ImportPreviewEntryId.isEntry(it) || ImportPreviewLocation.of(it) != null
             }) {
-            return blocked("此操作只适用于网盘中的真实文件")
+            return blocked(tr("此操作只适用于网盘中的真实文件", "This action requires files stored in the drive", "この操作はドライブ内の実ファイルにのみ適用できます", "이 작업은 드라이브에 저장된 실제 파일에만 사용할 수 있습니다"))
         }
-        if (command !is FileWriteCommand.CreateFolder && command.ids.isEmpty()) return blocked("请先选择文件")
-        if (command.target?.let { !isDriveFolderId(it.id) } == true) return blocked("请选择网盘中的目标文件夹")
+        if (command !is FileWriteCommand.CreateFolder && command.ids.isEmpty()) return blocked(tr("请先选择文件", "Select files first", "先にファイルを選択してください", "먼저 파일을 선택해 주세요"))
+        if (command.target?.let { !isDriveFolderId(it.id) } == true) return blocked(tr("请选择网盘中的目标文件夹", "Choose a destination folder in the drive", "ドライブ内の保存先フォルダーを選択してください", "드라이브에서 대상 폴더를 선택해 주세요"))
         if ((command is FileWriteCommand.CreateFolder && command.name.isBlank()) ||
-            (command is FileWriteCommand.Rename && command.name.isBlank())) return blocked("名称不能为空")
+            (command is FileWriteCommand.Rename && command.name.isBlank())) return blocked(tr("名称不能为空", "Name cannot be empty", "名前を入力してください", "이름을 입력해 주세요"))
         if (command is FileWriteCommand.Move || command is FileWriteCommand.Copy) {
             val target = requireNotNull(command.target).id
-            if (command.ids.any { contains(it, target) }) return blocked("不能将文件夹放入自身或其子目录")
+            if (command.ids.any { contains(it, target) }) return blocked(tr("不能将文件夹放入自身或其子目录", "Cannot move a folder into itself or its subfolders", "フォルダーを自身やそのサブフォルダーに移動できません", "폴더를 자기 자신이나 하위 폴더로 이동할 수 없습니다"))
         }
         if (command !is FileWriteCommand.Star && shareBlocked(command.ids, command.target?.id, command is FileWriteCommand.Rename))
-            return blocked("相关文件正在转存或规范命名，或名称修改待确认，请先在任务页处理")
+            return blocked(tr("相关文件正在转存或规范命名，或名称修改待确认，请先在任务页处理", "Related files are being saved or renamed, or renames are unconfirmed. Check Tasks first", "関連ファイルを保存または改名中か、改名結果が未確認です。先にタスク画面で確認してください", "관련 파일을 저장하거나 이름을 변경 중이거나 결과가 미확인입니다. 먼저 작업 페이지에서 확인해 주세요"))
         if (command !is FileWriteCommand.Star &&
             (receivingBlocked(if (command is FileWriteCommand.Copy) emptyList() else command.ids, changesTree(command)) ||
                 command.target?.let { target -> receiving?.exclusiveRoots(account)?.any { contains(it, target.id) } } == true))
-            return blocked("相关文件或目录有保存、上传或解压任务，请先在任务页完成、核对或移除相关任务")
+            return blocked(tr("相关文件或目录有保存、上传或解压任务，请先在任务页完成、核对或移除相关任务", "Related files or folders have save, upload or extraction tasks. Complete, check or remove them in Tasks first", "関連ファイルやフォルダーに保存・アップロード・解凍タスクがあります。先にタスク画面で完了、確認または削除してください", "관련 파일이나 폴더에 저장, 업로드 또는 압축 해제 작업이 있습니다. 먼저 작업 페이지에서 완료, 확인 또는 삭제해 주세요"))
         if (repository.changes.state.value.undo.values.any { undo -> overlaps(command.ids, undo.activeFileIds) ||
-                command.target?.let { target -> undo.activeTreeIds.any { contains(it, target.id) } } == true }) return blocked("相关文件正在撤销，完成后再试")
-        if (changesTree(command) && repository.changes.state.value.undo.values.any { touchesFolders(command.ids, it.activeManifestFolders) }) return blocked("相关文件夹的归档清单正在撤销，完成后再试")
+                command.target?.let { target -> undo.activeTreeIds.any { contains(it, target.id) } } == true }) return blocked(tr("相关文件正在撤销，完成后再试", "Related files are being reverted. Try again when finished", "関連ファイルの操作を元に戻しています。完了後にお試しください", "관련 파일의 작업을 취소 중입니다. 완료 후 다시 시도해 주세요"))
+        if (changesTree(command) && repository.changes.state.value.undo.values.any { touchesFolders(command.ids, it.activeManifestFolders) }) return blocked(tr("相关文件夹的归档清单正在撤销，完成后再试", "The folder manifest is being reverted. Try again when finished", "フォルダーのアーカイブ一覧を元に戻しています。完了後にお試しください", "폴더의 보관 목록을 되돌리는 중입니다. 완료 후 다시 시도해 주세요"))
         val targets = vault?.activeTargets
         if (targets != null && (affects(command, targets.files) || command.ids.any { id -> targets.roots.any { contains(it, id) || contains(id, it) } } ||
             command.target?.let { folder -> targets.roots.any { contains(it, folder.id) } } == true ||
-            (changesTree(command) && touchesFolders(command.ids, targets.manifests)))) return blocked("相关文件正在归档或恢复，完成后再试")
-        if (changesTree(command) && vaultEdits?.works?.value.orEmpty().any { it.account == account && touchesFolders(command.ids, it.pendingFolders) }) return blocked("相关文件夹的归档清单正在编辑或待确认，完成后再试")
-        if ((cleanup?.progress != null || cleanup?.isUndoing == true) && affects(command, cleanup.projectedIds)) return blocked("相关文件正在移入回收站或恢复，完成后再试")
+            (changesTree(command) && touchesFolders(command.ids, targets.manifests)))) return blocked(tr("相关文件正在归档或恢复，完成后再试", "Related files are being archived or restored. Try again when finished", "関連ファイルをアーカイブまたは復元中です。完了後にお試しください", "관련 파일을 보관 또는 복원 중입니다. 완료 후 다시 시도해 주세요"))
+        if (changesTree(command) && vaultEdits?.works?.value.orEmpty().any { it.account == account && touchesFolders(command.ids, it.pendingFolders) }) return blocked(tr("相关文件夹的归档清单正在编辑或待确认，完成后再试", "Folder archive manifests are being edited or awaiting confirmation. Try again when finished", "関連フォルダーのアーカイブ一覧を編集中か確認待ちです。完了後にお試しください", "관련 폴더의 보관 목록이 편집 중이거나 확인 대기 중입니다. 완료 후 다시 시도해 주세요"))
+        if ((cleanup?.progress != null || cleanup?.isUndoing == true) && affects(command, cleanup.projectedIds)) return blocked(tr("相关文件正在移入回收站或恢复，完成后再试", "Related files are being trashed or restored. Try again when finished", "関連ファイルをゴミ箱に移動または復元中です。完了後にお試しください", "관련 파일을 휴지통으로 이동하거나 복원 중입니다. 완료 후 다시 시도해 주세요"))
         val conflict = session.works.value.firstOrNull { work ->
             work.account == account && (work.isRunning || work.result?.unconfirmed?.isNotEmpty() == true) && conflicts(command, pendingCommand(work))
         }
         return if (conflict == null) ActionAvailability.Available else blocked(
-            if (conflict.isRunning) "「${conflict.command.title}」正在处理相关文件，请完成后再试"
-            else "相关文件的上次操作尚未确认，请先在任务页查询或检查结果",
+            if (conflict.isRunning) tr("「${conflict.command.title}」正在处理相关文件，请完成后再试", "“${conflict.command.title}” is processing related files. Try again when finished", "「${conflict.command.title}」で関連ファイルを処理中です。完了後にお試しください", "“${conflict.command.title}”에서 관련 파일을 처리 중입니다. 완료 후 다시 시도해 주세요")
+            else tr("相关文件的上次操作尚未确认，请先在任务页查询或检查结果", "Previous file operations are unconfirmed. Check results in Tasks first", "関連ファイルの前回の操作が未確認です。先にタスク画面で結果を確認してください", "관련 파일의 이전 작업 결과가 미확인입니다. 먼저 작업 페이지에서 결과를 확인해 주세요"),
         )
     }
 
     fun filesAvailability(ids: Collection<String>): ActionAvailability = filesAvailability(ids, tree = true)
 
     private fun filesAvailability(ids: Collection<String>, tree: Boolean): ActionAvailability {
-        if (!acceptsActions() || account == null || repository.currentAccount != account) return ActionAvailability.Blocked("当前工作区已结束")
-        if (shareBlocked(ids, null, !tree)) return ActionAvailability.Blocked("相关文件有进行中或待确认的分享转存，请先在任务页处理")
-        if (receivingBlocked(ids, tree)) return ActionAvailability.Blocked("相关目录有保存、上传或解压任务，请先在任务页处理")
-        if (repository.changes.state.value.undo.values.any { overlaps(ids, it.activeFileIds) }) return ActionAvailability.Blocked("相关文件正在撤销，完成后再试")
-        if (repository.changes.state.value.undo.values.any { touchesFolders(ids, it.activeManifestFolders) }) return ActionAvailability.Blocked("相关归档清单正在撤销，完成后再试")
+        if (!acceptsActions() || account == null || repository.currentAccount != account) return ActionAvailability.Blocked(tr("当前工作区已结束", "This workspace has ended", "このワークスペースは終了しました", "현재 작업 공간이 종료되었습니다"))
+        if (shareBlocked(ids, null, !tree)) return ActionAvailability.Blocked(tr("相关文件有进行中或待确认的分享转存，请先在任务页处理", "Related share saves are running or unconfirmed. Check Tasks first", "関連ファイルの共有保存が進行中か未確認です。先にタスク画面で確認してください", "관련 파일의 공유 저장이 진행 중이거나 미확인입니다. 먼저 작업 페이지에서 확인해 주세요"))
+        if (receivingBlocked(ids, tree)) return ActionAvailability.Blocked(tr("相关目录有保存、上传或解压任务，请先在任务页处理", "Related folders have save, upload or extraction tasks. Check Tasks first", "関連フォルダーに保存・アップロード・解凍タスクがあります。先にタスク画面で確認してください", "관련 폴더에 저장, 업로드 또는 압축 해제 작업이 있습니다. 먼저 작업 페이지에서 확인해 주세요"))
+        if (repository.changes.state.value.undo.values.any { overlaps(ids, it.activeFileIds) }) return ActionAvailability.Blocked(tr("相关文件正在撤销，完成后再试", "Related files are being reverted. Try again when finished", "関連ファイルの操作を元に戻しています。完了後にお試しください", "관련 파일의 작업을 취소 중입니다. 완료 후 다시 시도해 주세요"))
+        if (repository.changes.state.value.undo.values.any { touchesFolders(ids, it.activeManifestFolders) }) return ActionAvailability.Blocked(tr("相关归档清单正在撤销，完成后再试", "The archive manifest is being reverted. Try again when finished", "アーカイブ一覧を元に戻しています。完了後にお試しください", "보관 목록을 되돌리는 중입니다. 완료 후 다시 시도해 주세요"))
         vault?.activeTargets?.let { targets ->
-            if (overlaps(ids, targets.files) || overlaps(ids, targets.roots) || touchesFolders(ids, targets.manifests)) return ActionAvailability.Blocked("相关文件正在归档或恢复，完成后再试")
+            if (overlaps(ids, targets.files) || overlaps(ids, targets.roots) || touchesFolders(ids, targets.manifests)) return ActionAvailability.Blocked(tr("相关文件正在归档或恢复，完成后再试", "Related files are being archived or restored. Try again when finished", "関連ファイルをアーカイブまたは復元中です。完了後にお試しください", "관련 파일을 보관 또는 복원 중입니다. 완료 후 다시 시도해 주세요"))
         }
-        if (vaultEdits?.works?.value.orEmpty().any { it.account == account && touchesFolders(ids, it.pendingFolders) }) return ActionAvailability.Blocked("相关归档清单正在编辑或待确认，完成后再试")
-        if ((cleanup?.progress != null || cleanup?.isUndoing == true) && overlaps(ids, cleanup.projectedIds)) return ActionAvailability.Blocked("相关文件正在移入回收站或恢复，完成后再试")
+        if (vaultEdits?.works?.value.orEmpty().any { it.account == account && touchesFolders(ids, it.pendingFolders) }) return ActionAvailability.Blocked(tr("相关归档清单正在编辑或待确认，完成后再试", "Related archive manifests are being edited or unconfirmed. Try again when finished", "関連アーカイブ一覧を編集中か未確認です。完了後にお試しください", "관련 보관 목록이 편집 중이거나 미확인입니다. 완료 후 다시 시도해 주세요"))
+        if ((cleanup?.progress != null || cleanup?.isUndoing == true) && overlaps(ids, cleanup.projectedIds)) return ActionAvailability.Blocked(tr("相关文件正在移入回收站或恢复，完成后再试", "Related files are being trashed or restored. Try again when finished", "関連ファイルをゴミ箱に移動または復元中です。完了後にお試しください", "관련 파일을 휴지통으로 이동하거나 복원 중입니다. 완료 후 다시 시도해 주세요"))
         val work = session.works.value.firstOrNull {
             it.account == account && (it.isRunning || it.result?.unconfirmed?.isNotEmpty() == true) &&
                 pendingCommand(it).let { command -> overlaps(ids, command.ids) || command.target?.let { target -> ids.any { contains(it, target.id) } } == true }
         }
-        return if (work == null) ActionAvailability.Available else ActionAvailability.Blocked("相关文件有进行中或待确认的操作，请先在任务页处理")
+        return if (work == null) ActionAvailability.Available else ActionAvailability.Blocked(tr("相关文件有进行中或待确认的操作，请先在任务页处理", "Related file operations are running or unconfirmed. Check Tasks first", "関連ファイルの操作が進行中か未確認です。先にタスク画面で確認してください", "관련 파일 작업이 진행 중이거나 미확인입니다. 먼저 작업 페이지에서 확인해 주세요"))
     }
 
     fun manifestAvailability(folders: Set<String>): ActionAvailability {
-        if (!acceptsActions() || account == null || repository.currentAccount != account) return ActionAvailability.Blocked("当前工作区已结束")
-        if (repository.changes.state.value.undo.values.any { undo -> folders.any { it in undo.activeManifestFolders } || undo.activeFileIds.any { id -> folders.any { contains(id, it) } } }) return ActionAvailability.Blocked("相关归档清单正在撤销，完成后再试")
+        if (!acceptsActions() || account == null || repository.currentAccount != account) return ActionAvailability.Blocked(tr("当前工作区已结束", "This workspace has ended", "このワークスペースは終了しました", "현재 작업 공간이 종료되었습니다"))
+        if (repository.changes.state.value.undo.values.any { undo -> folders.any { it in undo.activeManifestFolders } || undo.activeFileIds.any { id -> folders.any { contains(id, it) } } }) return ActionAvailability.Blocked(tr("相关归档清单正在撤销，完成后再试", "The archive manifest is being reverted. Try again when finished", "アーカイブ一覧を元に戻しています。完了後にお試しください", "보관 목록을 되돌리는 중입니다. 완료 후 다시 시도해 주세요"))
         vault?.activeTargets?.let { targets ->
-            if (folders.any { it in targets.manifests || targets.roots.any { root -> contains(root, it) } }) return ActionAvailability.Blocked("相关文件夹正在归档或恢复，完成后再试")
+            if (folders.any { it in targets.manifests || targets.roots.any { root -> contains(root, it) } }) return ActionAvailability.Blocked(tr("相关文件夹正在归档或恢复，完成后再试", "Related folders are being archived or restored. Try again when finished", "関連フォルダーをアーカイブまたは復元中です。完了後にお試しください", "관련 폴더를 보관 또는 복원 중입니다. 완료 후 다시 시도해 주세요"))
         }
-        if (session.works.value.any { it.account == account && (it.isRunning || it.result?.unconfirmed?.isNotEmpty() == true) && changesTree(it.command) && touchesFolders(pendingCommand(it).ids, folders) }) return ActionAvailability.Blocked("相关文件夹有进行中或待确认的修改，请先在任务页处理")
-        if (vaultEdits?.works?.value.orEmpty().any { it.account == account && it.pendingFolders.any { folder -> folder in folders } }) return ActionAvailability.Blocked("同一归档清单正在编辑或待确认，请先在任务页处理")
+        if (session.works.value.any { it.account == account && (it.isRunning || it.result?.unconfirmed?.isNotEmpty() == true) && changesTree(it.command) && touchesFolders(pendingCommand(it).ids, folders) }) return ActionAvailability.Blocked(tr("相关文件夹有进行中或待确认的修改，请先在任务页处理", "Related folder changes are running or unconfirmed. Check Tasks first", "関連フォルダーの変更が進行中か未確認です。先にタスク画面で確認してください", "관련 폴더 변경이 진행 중이거나 미확인입니다. 먼저 작업 페이지에서 확인해 주세요"))
+        if (vaultEdits?.works?.value.orEmpty().any { it.account == account && it.pendingFolders.any { folder -> folder in folders } }) return ActionAvailability.Blocked(tr("同一归档清单正在编辑或待确认，请先在任务页处理", "This archive manifest is being edited or unconfirmed. Check Tasks first", "同じアーカイブ一覧を編集中か未確認です。先にタスク画面で確認してください", "같은 보관 목록이 편집 중이거나 미확인입니다. 먼저 작업 페이지에서 확인해 주세요"))
         return ActionAvailability.Available
     }
 
@@ -140,16 +142,16 @@ class FileCommands(
         val manifests = manifestAvailability(targets.manifests)
         if (manifests is ActionAvailability.Blocked) return manifests
         if (vaultEdits?.works?.value.orEmpty().any { it.account == account && touchesFolders(targets.roots, it.pendingFolders) }) {
-            return ActionAvailability.Blocked("选中文件夹中的归档清单正在编辑或待确认，请先在任务页处理")
+            return ActionAvailability.Blocked(tr("选中文件夹中的归档清单正在编辑或待确认，请先在任务页处理", "Selected folder manifests are being edited or unconfirmed. Check Tasks first", "選択したフォルダーのアーカイブ一覧を編集中か未確認です。先にタスク画面で確認してください", "선택한 폴더의 보관 목록이 편집 중이거나 미확인입니다. 먼저 작업 페이지에서 확인해 주세요"))
         }
         return ActionAvailability.Available
     }
 
     fun undoAvailability(change: DriveChangeJournal.Change): ActionAvailability {
         if (shareSaves?.works?.value.orEmpty().any { it.account == account && change.id in it.undoChangeIds && it.pendingRenames.isNotEmpty() })
-            return ActionAvailability.Blocked("这次命名仍有待确认的步骤，请先在任务页查询结果")
+            return ActionAvailability.Blocked(tr("这次命名仍有待确认的步骤，请先在任务页查询结果", "Some rename steps are unconfirmed. Check results in Tasks first", "今回の改名には未確認の手順があります。先にタスク画面で結果を確認してください", "이번 이름 변경에 미확인 단계가 있습니다. 먼저 작업 페이지에서 결과를 확인해 주세요"))
         if (receivingBlocked(change.affectedFileIds(), change !is DriveChangeJournal.Change.Rename))
-            return ActionAvailability.Blocked("相关目录有保存、上传或解压任务，请先在任务页处理")
+            return ActionAvailability.Blocked(tr("相关目录有保存、上传或解压任务，请先在任务页处理", "Related folders have save, upload or extraction tasks. Check Tasks first", "関連フォルダーに保存・アップロード・解凍タスクがあります。先にタスク画面で確認してください", "관련 폴더에 저장, 업로드 또는 압축 해제 작업이 있습니다. 먼저 작업 페이지에서 확인해 주세요"))
         val files = filesAvailability(change.affectedFileIds(), tree = change !is DriveChangeJournal.Change.Rename)
         if (files is ActionAvailability.Blocked) return files
         return manifestAvailability(change.affectedManifestFolders())
@@ -157,11 +159,11 @@ class FileCommands(
 
     fun undo(changeId: Long): FileCommandResult {
         val change = repository.changes.state.value.available.firstOrNull { it.id == changeId }
-            ?: return FileCommandResult.Rejected("撤销记录已不可用，或正在撤销")
+            ?: return FileCommandResult.Rejected(tr("撤销记录已不可用，或正在撤销", "Undo record is unavailable or already being reverted", "元に戻す記録が無効か、元に戻している途中です", "실행 취소 기록이 없거나 이미 취소 중입니다"))
         return when (val state = undoAvailability(change)) {
             is ActionAvailability.Blocked -> FileCommandResult.Rejected(state.reason)
             ActionAvailability.Available -> if (repository.changes.undo(change)) FileCommandResult.Accepted(change.id)
-                else FileCommandResult.Rejected("撤销记录已不可用，或正在撤销")
+                else FileCommandResult.Rejected(tr("撤销记录已不可用，或正在撤销", "Undo record is unavailable or already being reverted", "元に戻す記録が無効か、元に戻している途中です", "실행 취소 기록이 없거나 이미 취소 중입니다"))
         }
     }
 
@@ -225,7 +227,7 @@ class FileCommands(
     fun submit(command: FileWriteCommand): FileCommandResult = when (val state = availability(command)) {
         is ActionAvailability.Blocked -> FileCommandResult.Rejected(state.reason)
         ActionAvailability.Available -> session.submit(command)?.let(FileCommandResult::Accepted)
-            ?: FileCommandResult.Rejected("账号已改变，尚未提交操作")
+            ?: FileCommandResult.Rejected(tr("账号已改变，尚未提交操作", "Account changed; operation not submitted", "アカウントが変わったため、操作は送信されていません", "계정이 변경되어 작업을 제출하지 않았습니다"))
     }
 
     private fun contains(ancestor: String, child: String): Boolean = ancestor == child ||

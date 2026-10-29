@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.naming.av.canonicalAvName
 import dev.piko.shared.naming.av.canonicalAvNameOf
 import dev.piko.shared.naming.av.matchAvFolder
@@ -140,7 +141,7 @@ class ShareSaveState(
                     entries = it
                 }
                 .logFailure(TAG, "列出分享里的文件夹失败：${folder.id}")
-                .onFailure { errorMessage = "无法打开文件夹" }
+                .onFailure { errorMessage = tr("无法打开文件夹", "Unable to open folder", "フォルダーを開けません", "폴더를 열 수 없습니다") }
         }
     }
 
@@ -164,7 +165,7 @@ class ShareSaveState(
                     entries = it
                 }
                 .logFailure(TAG, "列出分享里的文件夹失败：${folder.id}")
-                .onFailure { errorMessage = "无法打开文件夹" }
+                .onFailure { errorMessage = tr("无法打开文件夹", "Unable to open folder", "フォルダーを開けません", "폴더를 열 수 없습니다") }
         }
     }
 

@@ -1,6 +1,9 @@
 package dev.piko.desktop
 
+import dev.piko.shared.i18n.tr
+
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.data.auth.AppLanguage
 import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.data.auth.SnailMode
@@ -28,6 +31,13 @@ class DesktopPikoPreferences(
 ) : PikoUserPreferences {
     private val secrets by lazy(openSecrets)
     private val secretsLock = Mutex()
+
+    private val appLanguage = MutableStateFlow(AppLanguage.fromStorage(settings.get("ui.language")))
+    override val appLanguageFlow: Flow<AppLanguage> = appLanguage.asStateFlow()
+    override suspend fun setAppLanguage(language: AppLanguage) {
+        settings.set("ui.language", language.tag)
+        appLanguage.value = language
+    }
 
     private val spoiler = MutableStateFlow(settings.get(KEY_SPOILER, "true").toBoolean())
     private val autoCheckUpdates = MutableStateFlow(settings.get(KEY_AUTO_CHECK_UPDATES, "true").toBoolean())
@@ -109,7 +119,7 @@ class DesktopPikoPreferences(
     override suspend fun getLastFolder(): Triple<String, String, String> =
         Triple(
             settings.get(KEY_LAST_FOLDER_ID),
-            settings.get(KEY_LAST_FOLDER_NAME, "我的网盘"),
+            settings.get(KEY_LAST_FOLDER_NAME, tr("我的网盘", "My drive", "マイドライブ", "내 드라이브")),
             settings.get(KEY_LAST_FOLDER_STACK),
         )
 

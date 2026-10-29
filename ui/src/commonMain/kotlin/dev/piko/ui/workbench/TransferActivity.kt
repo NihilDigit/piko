@@ -1,5 +1,9 @@
 package dev.piko.ui.workbench
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -119,7 +123,7 @@ internal fun SidebarTransferReadout(activity: TransferActivity, checked: Boolean
     val speed = maxOf(activity.downloadSpeed, activity.uploadSpeed)
     val text = when {
         speed > 0 -> "${if (activity.downloadSpeed >= activity.uploadSpeed) "↓" else "↑"} ${compactRate(speed)}"
-        else -> "${activity.count} 项"
+        else -> tr("${activity.count} 项", "${enCount(activity.count, "item", "items")}", "${activity.count} 項目", "${activity.count}개 항목")
     }
     Text(text, color = color, maxLines = 1, style = (if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelLarge).copy(fontFeatureSettings = "tnum"))
 }

@@ -10,12 +10,20 @@ import io.github.nihildigit.pikpak.videoThumbnailUrlOf
 import io.github.nihildigit.pikpak.imageThumbnailUrlOf
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlin.random.Random
 import kotlin.time.Duration
@@ -210,6 +218,11 @@ class VaultStore(
     private val onChanged: (folderId: String) -> Unit = {},
     /** 写成之后这个文件夹里的条目。归档一整棵树时子文件夹没人列过，靠它给文件夹挂上标记。 */
     private val onWritten: (folderId: String, entries: List<VaultEntry>) -> Unit = { _, _ -> },
+    private val cacheStore: PikoCacheStore? = null,
+    private val account: String? = null,
+    private val scope: CoroutineScope? = null,
+    private val saveDelayMillis: Long = 2_000L,
+    initialParsed: Map<String, List<VaultEntry>> = emptyMap(),
 ) {
     // 各文件夹最近一次读到或写成的条目
     private val known = MutableStateFlow<Map<String, List<VaultEntry>>>(emptyMap())
@@ -222,8 +235,57 @@ class VaultStore(
     private val locks = HashMap<String, Mutex>()
     private val locksGuard = Mutex()
 
-    // 清单文件 ID 到其中的条目。一份清单写成后不再改动，改动总是另写一份，所以按 ID 缓存不会过时
-    private val parsed = MutableStateFlow<Map<String, List<VaultEntry>>>(emptyMap())
+    // 清单文件 ID（及正式随机串文件名）到其中的条目。一份清单写成后不再改动，改动总是另写一份，所以按 ID/文件名缓存不会过时
+    private val parsed = MutableStateFlow(initialParsed)
+    val parsedFlow: StateFlow<Map<String, List<VaultEntry>>> = parsed.asStateFlow()
+    private var pendingSave: Job? = null
+
+    init {
+        if (cacheStore != null && !account.isNullOrEmpty() && scope != null) {
+            scope.launch {
+                val stored = cacheStore.read(cacheKeyOf(account))?.let(::decodeParsed) ?: return@launch
+                parsed.update { stored + it }
+            }
+        }
+    }
+
+    internal fun hasPending(folderId: String): Boolean = folderId in pending.value
+
+    internal fun restoreParsed(cached: Map<String, List<VaultEntry>>) {
+        if (cached.isEmpty()) return
+        parsed.update { cached + it }
+    }
+
+    internal fun flushPendingSave() {
+        val job = pendingSave ?: return
+        pendingSave = null
+        if (!job.isActive) return
+        job.cancel()
+        val store = cacheStore ?: return
+        val owner = account?.takeIf { it.isNotEmpty() } ?: return
+        val targetScope = scope ?: return
+        val snapshot = parsed.value
+        targetScope.launch { store.write(cacheKeyOf(owner), encodeParsed(snapshot)) }
+    }
+
+    private fun scheduleSave() {
+        val store = cacheStore ?: return
+        val owner = account?.takeIf { it.isNotEmpty() } ?: return
+        val targetScope = scope ?: return
+        if (pendingSave?.isActive == true) return
+        pendingSave = targetScope.launch {
+            delay(saveDelayMillis)
+            val snapshot = parsed.value
+            store.write(cacheKeyOf(owner), encodeParsed(snapshot))
+        }
+    }
+
+    private fun rememberParsed(id: String, name: String, entries: List<VaultEntry>) {
+        parsed.update { current -> current + (id to entries) }
+        scheduleSave()
+    }
+
+    private fun lookupParsed(file: FileStat): List<VaultEntry>? = parsed.value[file.id]
 
     /**
      * [folderId] 的条目，[listing] 是它的目录列表。有正在写的改动时是改动之后的样子。
@@ -244,14 +306,23 @@ class VaultStore(
     /** 只用缓存的 [read]：算数的那份没读过时返回 null。 */
     fun cached(folderId: String, listing: List<FileStat>): List<VaultEntry>? {
         pending.value[folderId]?.let { return it }
+        return cachedCommitted(listing)
+    }
+
+    /** 只查已提交清单的缓存（不读 [pending]）：目录中无清单时返回空列表，清单未缓存时返回 null。 */
+    fun cachedCommitted(listing: Collection<FileStat>): List<VaultEntry>? {
         val file = winner(listing)?.file ?: return emptyList()
-        return parsed.value[file.id]
+        return lookupParsed(file)
     }
 
     /** 查找已知清单中含 [entryId] 的文件夹 ID。 */
-    fun folderOfEntry(entryId: String): String? =
-        known.value.entries.firstOrNull { (_, entries) -> entries.any { it.id == entryId } }?.key
-            ?: pending.value.entries.firstOrNull { (_, entries) -> entries.any { it.id == entryId } }?.key
+    fun folderOfEntry(entryId: String): String? {
+        val p = pending.value
+        val k = known.value
+        return (p.keys + k.keys).firstOrNull { folderId ->
+            (p[folderId] ?: k[folderId].orEmpty()).any { it.id == entryId }
+        }
+    }
 
     /**
      * 把 [edit] 写进 [folderId] 的清单。现列目录再读，不用调用方手上的列表：它可能已经过时。
@@ -296,8 +367,9 @@ class VaultStore(
                     // 自己写的这份直接记进缓存，确认输赢时不必下载
                     writeRecoveryFiles(folderId, after)
                     onAttempt(VaultWrite(before, after))
-                    val id = io.upload(folderId, nameOf(version, token), text.encodeToByteArray())
-                    parsed.update { it + (id to after) }
+                    val manifestName = nameOf(version, token)
+                    val id = io.upload(folderId, manifestName, text.encodeToByteArray())
+                    rememberParsed(id, manifestName, after)
 
                     if (won(folderId, version, token) && won(folderId, version, token, afterDelay = true)) {
                         // 旧版本连同同版本里输掉又没来得及删的一并清掉；同版本别人的那份留给它自己
@@ -348,9 +420,9 @@ class VaultStore(
     }
 
     private suspend fun entriesOf(file: FileStat): List<VaultEntry> {
-        parsed.value[file.id]?.let { return it }
+        lookupParsed(file)?.let { return it }
         val entries = JSON.decodeFromString(Manifest.serializer(), io.read(file.id).decodeToString()).entries
-        parsed.update { it + (file.id to entries) }
+        rememberParsed(file.id, file.name, entries)
         return entries
     }
 
@@ -368,6 +440,8 @@ class VaultStore(
         private const val MAX_ATTEMPTS = 5
         private val JSON = Json { ignoreUnknownKeys = true }
         private val NAME = Regex("""\.piko-vault-v([0-9]+)-([0-9a-f]+)\.json""")
+        private val UNSAFE_KEY_CHARS = Regex("""[^A-Za-z0-9._@-]""")
+        private val PARSED_SERIALIZER = MapSerializer(String.serializer(), ListSerializer(VaultEntry.serializer()))
 
         // 版本大的在前，同版本随机串小的在前：排第一的算数
         private val ORDER = compareByDescending<Candidate> { it.version }.thenBy { it.token }
@@ -375,7 +449,22 @@ class VaultStore(
         private fun nameOf(version: Int, token: String) = "${PREFIX}v$version-$token$SUFFIX"
 
         private fun versionOf(file: FileStat): Pair<Int, String>? =
-            NAME.matchEntire(file.name)?.let { it.groupValues[1].toInt() to it.groupValues[2] }
+            NAME.matchEntire(file.name)?.let { match ->
+                val v = match.groupValues[1].toIntOrNull() ?: return@let null
+                v to match.groupValues[2]
+            }
+
+        private fun hasFullRandomToken(name: String): Boolean =
+            NAME.matchEntire(name)?.groupValues?.get(2)?.length == 16
+
+        fun cacheKeyOf(account: String): String =
+            "vault-manifests-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
+
+        fun encodeParsed(parsed: Map<String, List<VaultEntry>>): String =
+            JSON.encodeToString(PARSED_SERIALIZER, parsed)
+
+        fun decodeParsed(text: String): Map<String, List<VaultEntry>>? =
+            runCatching { JSON.decodeFromString(PARSED_SERIALIZER, text) }.getOrNull()
 
         private val SOURCE_NAME = Regex("""归档来源-[0-9a-f]{16}\.(magnet|txt)""")
         fun isRecoveryFile(file: FileStat): Boolean = !file.isFolder && SOURCE_NAME.matches(file.name)
@@ -391,12 +480,15 @@ class VaultStore(
          * 否则它的版本最新，次次读它失败，这个目录再也改不动。
          */
         private fun candidateOf(file: FileStat): Candidate? {
-            if (file.isFolder || file.phase != TaskPhase.COMPLETE) return null
+            if (file.isFolder || file.trashed || file.phase != TaskPhase.COMPLETE) return null
             val (version, token) = versionOf(file) ?: return null
             return Candidate(file, version, token)
         }
 
-        private fun winner(listing: List<FileStat>): Candidate? = listing.mapNotNull(::candidateOf).minWithOrNull(ORDER)
+        private fun winner(listing: Collection<FileStat>): Candidate? = listing.mapNotNull(::candidateOf).minWithOrNull(ORDER)
+
+        /** 挑出目录列表中当前胜出的归档清单文件。 */
+        fun winnerOf(listing: Collection<FileStat>): FileStat? = winner(listing)?.file
 
         /** 清单文件，含没写完的空壳与输掉的那几份。列表里一概不显示。 */
         fun looksLikeManifest(file: FileStat): Boolean =

@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.clips
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -155,18 +157,18 @@ internal fun ClipFeedTopBar(
             if (landscapeLocked == false) {
                 ChromeIconButton(
                     icon = Icons.Filled.StayCurrentLandscape,
-                    label = "横屏",
+                    label = tr("横屏", "Landscape", "横向き", "가로 화면"),
                     onClick = onToggleLandscape,
                     size = buttonSize,
                     tooltip = true,
                 )
             }
             if (onHideChrome != null) {
-                ChromeIconButton(Icons.Filled.VisibilityOff, "隐藏控件", onHideChrome, buttonSize, tooltip = true)
+                ChromeIconButton(Icons.Filled.VisibilityOff, tr("隐藏控件", "Hide controls", "操作ボタンを隠す", "컨트롤 숨기기"), onHideChrome, buttonSize, tooltip = true)
             }
             ChromeIconButton(
                 icon = if (muted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                label = if (muted) "取消静音" else "静音",
+                label = if (muted) tr("取消静音", "Unmute", "ミュートを解除", "음소거 해제") else tr("静音", "Mute", "ミュート", "음소거"),
                 onClick = onToggleMute,
                 size = buttonSize,
                 tooltip = true,
@@ -179,7 +181,7 @@ internal fun ClipFeedTopBar(
                     val onTop = window.isAlwaysOnTop
                     ChromeIconButton(
                         icon = if (onTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
-                        label = if (onTop) "取消置顶" else "置顶",
+                        label = if (onTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시"),
                         onClick = { window.setAlwaysOnTop(!onTop) },
                         size = buttonSize,
                         tooltip = true,
@@ -187,13 +189,13 @@ internal fun ClipFeedTopBar(
                 }
                 // 独立窗口与普通播放窗口一样，右上角只有一个 ×：关窗即是收回主窗口，信息流回到侧栏接着刷。
                 // 关掉信息流在主窗口里做，这里不再并排一个关闭与一个收回
-                ChromeIconButton(Icons.Filled.Close, "收回到主窗口", onDock, buttonSize, tooltip = true, minTouchTarget = true)
+                ChromeIconButton(Icons.Filled.Close, tr("收回到主窗口", "Return to main window", "メインウィンドウに戻す", "메인 창으로 돌아가기"), onDock, buttonSize, tooltip = true, minTouchTarget = true)
             } else {
-                if (onToggleFullscreen != null) ChromeIconButton(Icons.Filled.Fullscreen, if (compact) "全屏信息流" else "返回文件与信息流", onToggleFullscreen, buttonSize, tooltip = true)
-                if (onPopOut != null) ChromeIconButton(Icons.AutoMirrored.Outlined.OpenInNew, "在独立窗口播放", onPopOut, buttonSize, tooltip = true)
+                if (onToggleFullscreen != null) ChromeIconButton(Icons.Filled.Fullscreen, if (compact) tr("全屏信息流", "Fullscreen feed", "フィードを全画面表示", "전체 화면 피드") else tr("返回文件与信息流", "Back to files and feed", "ファイルとフィードに戻る", "파일 및 피드로 돌아가기"), onToggleFullscreen, buttonSize, tooltip = true)
+                if (onPopOut != null) ChromeIconButton(Icons.AutoMirrored.Outlined.OpenInNew, tr("在独立窗口播放", "Play in separate window", "別ウィンドウで再生", "별도 창에서 재생"), onPopOut, buttonSize, tooltip = true)
                 // 侧栏里按钮画小一号，关闭仍占足最小触控尺寸
                 if (onClose != null) {
-                    val label = if (landscapeLocked == true) "返回竖屏" else "关闭信息流"
+                    val label = if (landscapeLocked == true) tr("返回竖屏", "Return to portrait", "縦向きに戻る", "세로 화면으로 돌아가기") else tr("关闭信息流", "Close feed", "フィードを閉じる", "피드 닫기")
                     ChromeIconButton(Icons.Filled.Close, label, onClose, buttonSize, tooltip = true, minTouchTarget = true)
                 }
             }
@@ -297,13 +299,13 @@ private fun ClipActionRail(
     val actions: @Composable () -> Unit = {
         RailAction(
             icon = if (starred) Icons.Filled.Star else Icons.Outlined.StarOutline,
-            label = if (starred) "已收藏" else "收藏",
+            label = if (starred) tr("已收藏", "Favorited", "お気に入り登録済み", "즐겨찾기 추가됨") else tr("收藏", "Favorite", "お気に入り", "즐겨찾기"),
             onClick = onToggleStar,
             compact = compact,
             tint = if (starred) MaterialTheme.colorScheme.tertiary else Color.Unspecified,
         )
-        RailAction(Icons.Outlined.OpenInFull, "看完整", onPlayFull, compact)
-        RailAction(Icons.Outlined.FolderOpen, "在网盘中显示", onLocate, compact)
+        RailAction(Icons.Outlined.OpenInFull, tr("看完整", "Watch full video", "全編を見る", "전체 동영상 보기"), onPlayFull, compact)
+        RailAction(Icons.Outlined.FolderOpen, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onLocate, compact)
     }
     if (horizontal) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Bottom) { actions() }
@@ -414,7 +416,7 @@ internal fun ClipCaption(clip: Clip, startMs: Long, folderName: String?, compact
             )
         }
         Text(
-            text = "片中 ${formatTimeMs(startMs)} 起",
+            text = tr("片中 ${formatTimeMs(startMs)} 起", "From ${formatTimeMs(startMs)}", "${formatTimeMs(startMs)} から", "${formatTimeMs(startMs)}부터"),
             style = typography.labelMedium.copy(fontFeatureSettings = "tnum").withShadow(),
             color = Color.White.copy(alpha = 0.72f),
             maxLines = 1,
@@ -431,7 +433,7 @@ private fun captionOf(name: String): Caption {
     val title = parsed.title?.takeIf { it.isNotBlank() }
     val label = parsed.label?.takeIf { it.isNotBlank() && it != title }
     // 只有纯集号的标签补成「第 N 集」；「SP 01」「OVA」这类原样显示
-    val episode = label?.let { if (it == parsed.episode?.shortText) "第 $it 集" else it }
+    val episode = label?.let { if (it == parsed.episode?.shortText) tr("第 $it 集", "Episode $it", "第 $it 話", "에피소드 $it") else it }
     return when {
         !parsed.recognized || title == null && episode == null -> Caption(name.substringBeforeLast('.').ifBlank { name }, null)
         title == null -> Caption(episode!!, null)
@@ -517,7 +519,7 @@ internal fun ClipBackdrop(thumbnail: String?, modifier: Modifier = Modifier) {
 internal fun PausedMark(compact: Boolean, modifier: Modifier = Modifier) {
     Icon(
         imageVector = Icons.Filled.PlayArrow,
-        contentDescription = "已暂停",
+        contentDescription = tr("已暂停", "Paused", "一時停止中", "일시 중지됨"),
         tint = Color.White.copy(alpha = 0.85f),
         modifier = modifier.size(if (compact) 64.dp else 88.dp),
     )
@@ -533,7 +535,7 @@ internal fun BoostPill(speed: Float, modifier: Modifier = Modifier) {
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Icon(Icons.Filled.FastForward, contentDescription = null, modifier = Modifier.size(18.dp))
-            Text("${formatSpeedPreset(speed)} 倍速", style = MaterialTheme.typography.labelLarge)
+            Text(tr("${formatSpeedPreset(speed)} 倍速", "${formatSpeedPreset(speed)} speed", "${formatSpeedPreset(speed)} 倍速", "${formatSpeedPreset(speed)}배속"), style = MaterialTheme.typography.labelLarge)
         }
     }
 }

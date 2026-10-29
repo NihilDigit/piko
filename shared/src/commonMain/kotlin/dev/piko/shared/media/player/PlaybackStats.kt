@@ -1,5 +1,6 @@
 package dev.piko.shared.media.player
 
+import dev.piko.shared.i18n.tr
 import kotlin.math.roundToInt
 
 /** 播放详细信息面板的一节：标题与若干「名称：值」行。读不到的项不列。 */
@@ -15,38 +16,38 @@ fun readPlaybackStats(property: (String) -> String?): List<PlaybackStatsSection>
     val width = read("video-params/w")
     val height = read("video-params/h")
     val video = listOfNotNull(
-        read("video-format")?.let { "编码" to it.uppercase() },
-        if (width != null && height != null) "分辨率" to "$width × $height" else null,
-        read("container-fps")?.toDoubleOrNull()?.let { "帧率" to formatFps(it) },
-        read("video-params/pixelformat")?.let { "像素格式" to it },
+        read("video-format")?.let { tr("编码", "Codec", "コーデック", "코덱") to it.uppercase() },
+        if (width != null && height != null) tr("分辨率", "Resolution", "解像度", "해상도") to "$width × $height" else null,
+        read("container-fps")?.toDoubleOrNull()?.let { tr("帧率", "Frame rate", "フレームレート", "프레임 레이트") to formatFps(it) },
+        read("video-params/pixelformat")?.let { tr("像素格式", "Pixel format", "ピクセル形式", "픽셀 형식") to it },
         read("video-params/gamma")?.takeIf { it in HDR_TRANSFERS }?.let { "HDR" to it.uppercase() },
-        "解码" to (read("hwdec-current")?.takeUnless { it == "no" }?.let { "硬件（$it）" } ?: "软件"),
-        read("video-bitrate")?.toDoubleOrNull()?.let { "码率" to formatBitrate(it) },
-        frames(read("estimated-frame-number"), read("estimated-frame-count"))?.let { "帧" to it },
+        tr("解码", "Decoder", "デコード", "디코딩") to (read("hwdec-current")?.takeUnless { it == "no" }?.let { tr("硬件（$it）", "Hardware ($it)", "ハードウェア（$it）", "하드웨어($it)") } ?: tr("软件", "Software", "ソフトウェア", "소프트웨어")),
+        read("video-bitrate")?.toDoubleOrNull()?.let { tr("码率", "Bitrate", "ビットレート", "비트레이트") to formatBitrate(it) },
+        frames(read("estimated-frame-number"), read("estimated-frame-count"))?.let { tr("帧", "Frames", "フレーム", "프레임") to it },
         // 两种丢帧分开写：渲染丢帧多是显示跟不上，解码丢帧是解码跟不上，排查方向不同
-        read("frame-drop-count")?.let { "渲染丢帧" to it },
-        read("decoder-frame-drop-count")?.let { "解码丢帧" to it },
+        read("frame-drop-count")?.let { tr("渲染丢帧", "Dropped frames (VO)", "描画ドロップフレーム", "렌더링 드롭 프레임") to it },
+        read("decoder-frame-drop-count")?.let { tr("解码丢帧", "Dropped frames (decoder)", "デコードドロップフレーム", "디코더 드롭 프레임") to it },
     ).takeIf { width != null }.orEmpty()
 
     val channels = read("audio-params/channel-count")
     val audio = listOfNotNull(
-        read("audio-codec-name")?.let { "编码" to it.uppercase() },
-        channels?.let { "声道" to it },
-        read("audio-params/samplerate")?.toIntOrNull()?.let { "采样率" to "${it / 1000.0} kHz".replace(".0 ", " ") },
-        read("audio-bitrate")?.toDoubleOrNull()?.let { "码率" to formatBitrate(it) },
-        read("current-ao")?.let { "输出" to it },
+        read("audio-codec-name")?.let { tr("编码", "Codec", "コーデック", "코덱") to it.uppercase() },
+        channels?.let { tr("声道", "Channels", "チャンネル", "채널") to it },
+        read("audio-params/samplerate")?.toIntOrNull()?.let { tr("采样率", "Sample rate", "サンプルレート", "샘플 레이트") to "${it / 1000.0} kHz".replace(".0 ", " ") },
+        read("audio-bitrate")?.toDoubleOrNull()?.let { tr("码率", "Bitrate", "ビットレート", "비트레이트") to formatBitrate(it) },
+        read("current-ao")?.let { tr("输出", "Output", "出力", "출력") to it },
     )
 
     val stream = listOfNotNull(
-        read("file-format")?.let { "容器" to it },
-        read("demuxer-cache-duration")?.toDoubleOrNull()?.let { "已缓冲" to "${it.roundToInt()} 秒" },
-        read("cache-speed")?.toDoubleOrNull()?.let { "读取速度" to formatByteRate(it) },
+        read("file-format")?.let { tr("容器", "Container", "コンテナ", "컨테이너") to it },
+        read("demuxer-cache-duration")?.toDoubleOrNull()?.let { tr("已缓冲", "Buffered", "バッファ済み", "버퍼링됨") to tr("${it.roundToInt()} 秒", "${it.roundToInt()} s", "${it.roundToInt()} 秒", "${it.roundToInt()}초") },
+        read("cache-speed")?.toDoubleOrNull()?.let { tr("读取速度", "Read speed", "読み込み速度", "읽기 속도") to formatByteRate(it) },
     )
 
     return listOf(
-        PlaybackStatsSection("视频", video),
-        PlaybackStatsSection("音频", audio),
-        PlaybackStatsSection("数据流", stream),
+        PlaybackStatsSection(tr("视频", "Video", "映像", "비디오"), video),
+        PlaybackStatsSection(tr("音频", "Audio", "音声", "오디오"), audio),
+        PlaybackStatsSection(tr("数据流", "Stream", "ストリーム", "스트림"), stream),
     ).filter { it.rows.isNotEmpty() }
 }
 

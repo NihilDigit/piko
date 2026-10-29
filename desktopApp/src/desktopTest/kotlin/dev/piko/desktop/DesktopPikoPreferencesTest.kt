@@ -1,6 +1,7 @@
 package dev.piko.desktop
 
 import dev.piko.shared.auth.PlainFileVault
+import dev.piko.data.auth.AppLanguage
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -11,6 +12,19 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 
 class DesktopPikoPreferencesTest {
+
+    @Test
+    fun appLanguagePersistsLocallyAndUpdatesItsFlow() = runBlocking {
+        val file = tempFile()
+        val preferences = DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }
+        assertEquals(AppLanguage.SYSTEM, preferences.appLanguageFlow.first())
+        for (language in AppLanguage.entries) {
+            preferences.setAppLanguage(language)
+            assertEquals(language, preferences.appLanguageFlow.first())
+            assertEquals(language.tag, DesktopSettingsStore(file).get("ui.language"))
+            assertEquals(language, DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }.appLanguageFlow.first())
+        }
+    }
 
     private fun tempFile(): File = File.createTempFile("piko-prefs-test", ".properties").also { it.delete() }
 

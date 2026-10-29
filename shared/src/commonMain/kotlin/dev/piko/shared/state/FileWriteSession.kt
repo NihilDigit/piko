@@ -1,5 +1,9 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.DriveWriteAccess
@@ -131,10 +135,10 @@ class FileWriteSession(
                     else -> FileWriteCompletion.SUCCEEDED
                 }
                 val text = message ?: when (completion) {
-                    FileWriteCompletion.SUCCEEDED -> "已完成"
-                    FileWriteCompletion.PARTIAL -> "已确认 ${confirmed.size} 项完成；${unknown.size} 项待确认，${failed.size} 项失败，${notAttempted.size} 项未执行"
-                    FileWriteCompletion.FAILED -> "操作未完成；${failed.size} 项失败，${notAttempted.size} 项未执行"
-                    FileWriteCompletion.UNCONFIRMED -> "结果尚未确认，请查询任务或检查文件，避免重复提交"
+                    FileWriteCompletion.SUCCEEDED -> tr("已完成", "Completed", "完了", "완료")
+                    FileWriteCompletion.PARTIAL -> tr("已确认 ${confirmed.size} 项完成；${unknown.size} 项待确认，${failed.size} 项失败，${notAttempted.size} 项未执行", "${confirmed.size} completed; ${unknown.size} unconfirmed, ${failed.size} failed, ${notAttempted.size} not attempted", "${confirmed.size} 項目完了、${unknown.size} 項目未確認、${failed.size} 項目失敗、${notAttempted.size} 項目未実行", "${confirmed.size}개 완료, ${unknown.size}개 미확인, ${failed.size}개 실패, ${notAttempted.size}개 미실행")
+                    FileWriteCompletion.FAILED -> tr("操作未完成；${failed.size} 项失败，${notAttempted.size} 项未执行", "Operation incomplete; ${failed.size} failed, ${notAttempted.size} not attempted", "操作未完了。${failed.size} 項目失敗、${notAttempted.size} 項目未実行", "작업 미완료. ${failed.size}개 실패, ${notAttempted.size}개 미실행")
+                    FileWriteCompletion.UNCONFIRMED -> tr("结果尚未确认，请查询任务或检查文件，避免重复提交", "Result unconfirmed. Check Tasks or files to avoid duplicate submissions", "結果は未確認です。二重送信を避けるため、タスクかファイルを確認してください", "결과가 미확인입니다. 중복 제출을 피하려면 작업이나 파일을 확인해 주세요")
                 }
                 val result = FileWriteResult(completion, text, confirmed.toSet(), unknown.toSet(), notAttempted.toSet(),
                     failed.toSet(), undo.toList(), createdId, now())
@@ -155,9 +159,9 @@ class FileWriteSession(
                 val command = work.command
                 val change = when (command) {
                     is FileWriteCommand.Move -> DriveChangeJournal.Change.Move(
-                        newlyConfirmed.associateWith { work.before.getValue(it).parentId }, command.target.id, "已移动 ${newlyConfirmed.size} 项")
+                        newlyConfirmed.associateWith { work.before.getValue(it).parentId }, command.target.id, tr("已移动 ${newlyConfirmed.size} 项", "Moved ${enCount(newlyConfirmed.size, "item", "items")}", "${newlyConfirmed.size} 項目を移動しました", "${newlyConfirmed.size}개 항목 이동 완료"))
                     is FileWriteCommand.Rename -> work.before[command.id]?.takeIf { it.name != command.name }?.let {
-                        DriveChangeJournal.Change.Rename(listOf(DriveChangeJournal.Renamed(command.id, it.name, command.name)), "已重命名")
+                        DriveChangeJournal.Change.Rename(listOf(DriveChangeJournal.Renamed(command.id, it.name, command.name)), tr("已重命名", "Renamed", "名前を変更しました", "이름을 변경했습니다"))
                     }
                     else -> null
                 }
@@ -273,7 +277,7 @@ class FileWriteSession(
                         }
                     } }.awaitAll() }
                     check()
-                    if (details.any { it.second == null }) { finish("未能确认文件的原位置或名称，尚未提交修改"); return@launch }
+                    if (details.any { it.second == null }) { finish(tr("未能确认文件的原位置或名称，尚未提交修改", "Cannot confirm the original file location or name; changes not submitted", "元のファイルの場所や名前を確認できないため、変更は未送信です", "파일의 원래 위치나 이름을 확인할 수 없어 변경을 제출하지 않았습니다")); return@launch }
                     work = work.copy(before = details.associate { (id, before) -> id to requireNotNull(before) }); publish()
                 }
                 for (batch in ids.chunked(100)) {
@@ -317,7 +321,7 @@ class FileWriteSession(
                 dev.piko.shared.log.PikoLog.w("FileWrite", "文件处理异常，保留待确认结果", error)
                 unknown += work.command.ids.toSet() - confirmed - failed - notAttempted
                 if (work.command is FileWriteCommand.CreateFolder && confirmed.isEmpty()) unknown += "create"
-                finish("未能确认最终结果，请检查文件后再决定下一步")
+                finish(tr("未能确认最终结果，请检查文件后再决定下一步", "Cannot confirm the final result. Check files before continuing", "最終結果を確認できません。次の操作の前にファイルを確認してください", "최종 결과를 확인할 수 없습니다. 다음 작업 전에 파일을 확인해 주세요"))
             } finally {
                 guard.cancel()
                 if (epoch == generation.value) jobs.update { if (it[initial.id] === execution) it - initial.id else it }

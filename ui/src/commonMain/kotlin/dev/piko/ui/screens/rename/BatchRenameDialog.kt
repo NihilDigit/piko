@@ -1,5 +1,12 @@
 package dev.piko.ui.screens.rename
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -106,7 +113,7 @@ fun BatchRenameDialog(
     CloseWhenFinished(state, onDismiss, onFinished)
     val dismiss = { if (state.phase != Phase.RUNNING) onDismiss() }
     BatchRenameWindow(dismiss) { twoPane, fullscreen ->
-        BatchRenameContent(state, "批量重命名", dismiss, twoPane, fullscreen)
+        BatchRenameContent(state, tr("批量重命名", "Batch rename", "一括で名前を変更", "이름 일괄 변경"), dismiss, twoPane, fullscreen)
     }
 }
 
@@ -292,7 +299,7 @@ internal fun RenameTopBar(title: String, onClose: () -> Unit, fullscreen: Boolea
         navigationIcon = if (fullscreen) {
             {
                 IconButton(onClick = onClose, enabled = closeEnabled) {
-                    Icon(Icons.Outlined.Close, contentDescription = "关闭")
+                    Icon(Icons.Outlined.Close, contentDescription = tr("关闭", "Close", "閉じる", "닫기"))
                 }
             }
         } else {
@@ -352,7 +359,7 @@ private fun PreviewList(
             if (state.phase == Phase.EDITING && rows.isEmpty()) {
                 item(key = "empty") {
                     Text(
-                        text = "无变更项",
+                        text = stringResource(Res.string.text_no_changes),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(16.dp),
@@ -388,7 +395,7 @@ private fun RenameActionBar(state: BatchRenameState, onClose: () -> Unit, showCa
             // 教程只讲积木，正则文本模式与一棵树（没有积木）不给
             if (state.phase == Phase.EDITING && !state.textMode && !state.isNamingTree) {
                 var showGuide by remember { mutableStateOf(false) }
-                TooltipIconButton(Icons.AutoMirrored.Outlined.HelpOutline, "使用说明", { showGuide = true })
+                TooltipIconButton(Icons.AutoMirrored.Outlined.HelpOutline, tr("使用说明", "Instructions", "使い方", "사용 안내"), { showGuide = true })
                 if (showGuide) RenameGuideDialog(onDismiss = { showGuide = false })
             }
             val (status, isError) = actionStatus(state)
@@ -401,23 +408,23 @@ private fun RenameActionBar(state: BatchRenameState, onClose: () -> Unit, showCa
             val count = state.plan.changeCount
             val renameButton: @Composable () -> Unit = {
                 Button(onClick = state::rename, enabled = state.canRename, shape = MaterialTheme.shapes.medium) {
-                    Text(if (count == 0) "重命名" else "重命名 $count 项")
+                    Text(if (count == 0) tr("重命名", "Rename", "名前を変更", "이름 변경") else tr("重命名 $count 项", "Rename ${enCount(count, "item", "items")}", "$count 項目の名前を変更", "${count}개 항목 이름 변경"))
                 }
             }
             when (state.phase) {
                 Phase.EDITING -> {
-                    if (state.siblingsFailed) TextButton(onClick = state::loadSiblings) { Text("重试") }
+                    if (state.siblingsFailed) TextButton(onClick = state::loadSiblings) { Text(stringResource(Res.string.common_retry)) }
                     // 查到的照用，其余用原名里的片名
-                    if (state.metaTubeProgress != null) TextButton(onClick = state::skipMetaTube) { Text("跳过") }
-                    if (showCancel) TextButton(onClick = onClose) { Text("取消") }
+                    if (state.metaTubeProgress != null) TextButton(onClick = state::skipMetaTube) { Text(stringResource(Res.string.text_skip)) }
+                    if (showCancel) TextButton(onClick = onClose) { Text(stringResource(Res.string.common_cancel)) }
                     renameButton()
                 }
                 // 执行中「停止」占「取消」的位置，全屏形态本来没有取消，也放在同一处
                 Phase.RUNNING -> {
-                    TextButton(onClick = state::stop) { Text("停止") }
+                    TextButton(onClick = state::stop) { Text(stringResource(Res.string.text_stop)) }
                     renameButton()
                 }
-                Phase.DONE -> Button(onClick = onClose, shape = MaterialTheme.shapes.medium) { Text("完成") }
+                Phase.DONE -> Button(onClick = onClose, shape = MaterialTheme.shapes.medium) { Text(stringResource(Res.string.common_done)) }
             }
         }
     }
@@ -430,13 +437,13 @@ private fun RenameActionBar(state: BatchRenameState, onClose: () -> Unit, showCa
 private fun problemStatus(plan: RenamePlan): String {
     val taken = plan.rows.count { it.problem == RenameProblem.TAKEN }
     val blocked = plan.rows.count { it.problem == RenameProblem.BLOCKED }
-    if (taken == 0) return "${plan.problemCount} 项有问题，修正或取消勾选后才能重命名"
+    if (taken == 0) return tr("${plan.problemCount} 项有问题，修正或取消勾选后才能重命名", "${enCount(plan.problemCount, "item", "items")} have issues. Fix or deselect them before renaming", "${plan.problemCount} 項目に問題があります。修正するか選択を外してください", "${plan.problemCount}개 항목에 문제가 있습니다. 수정하거나 선택을 해제한 후 이름을 변경하세요")
     val others = plan.problemCount - taken - blocked
     return buildString {
-        append("$taken 项与同目录现有文件重名")
-        if (blocked > 0) append("，另有 $blocked 项因此无法重命名")
-        if (others > 0) append("，$others 项有其他问题")
-        append("。可同时选中重名的文件，或调整新名称")
+        append(tr("$taken 项与同目录现有文件重名", "${enCount(taken, "item", "items")} conflict with existing names", "$taken 項目が既存の名前と重複", "${taken}개 항목이 기존 파일 이름과 중복"))
+        if (blocked > 0) append(tr("，另有 $blocked 项因此无法重命名", "; $blocked more cannot be renamed as a result", "、そのためほか $blocked 項目も改名できません", ", 이로 인해 추가 ${blocked}개 항목 이름 변경 불가"))
+        if (others > 0) append(tr("，$others 项有其他问题", "; $others have other issues", "、$others 項目にほかの問題があります", ", ${others}개 항목에 다른 문제가 있습니다"))
+        append(tr("。可同时选中重名的文件，或调整新名称", ". Select conflicting files together or adjust the new names", "。同名ファイルを一緒に選択するか、新しい名前を変更してください", ". 같은 이름의 파일을 함께 선택하거나 새 이름을 수정하세요"))
     }
 }
 
@@ -444,24 +451,24 @@ private fun problemStatus(plan: RenamePlan): String {
 private fun actionStatus(state: BatchRenameState): Pair<String, Boolean> {
     val plan = state.plan
     return when (state.phase) {
-        Phase.RUNNING -> "正在重命名 ${state.processed}/${state.total}" to false
+        Phase.RUNNING -> tr("正在重命名 ${state.processed}/${state.total}", "Renaming ${state.processed}/${state.total}", "名前を変更中 ${state.processed}/${state.total}", "이름 변경 중 ${state.processed}/${state.total}") to false
         Phase.DONE -> {
             val succeeded = state.processed - state.failures.size
             when {
-                state.wasStopped -> "已停止，已重命名 $succeeded 项" to false
-                state.failures.isEmpty() -> "已重命名 $succeeded 项" to false
-                else -> "已重命名 $succeeded 项，${state.failures.size} 项失败" to true
+                state.wasStopped -> tr("已停止，已重命名 $succeeded 项", "Stopped; renamed ${enCount(succeeded, "item", "items")}", "停止しました。$succeeded 項目の名前を変更しました", "중지됨. ${succeeded}개 항목 이름 변경 완료") to false
+                state.failures.isEmpty() -> tr("已重命名 $succeeded 项", "Renamed ${enCount(succeeded, "item", "items")}", "$succeeded 項目の名前を変更しました", "${succeeded}개 항목 이름 변경 완료") to false
+                else -> tr("已重命名 $succeeded 项，${state.failures.size} 项失败", "Renamed ${enCount(succeeded, "item", "items")}; ${state.failures.size} failed", "$succeeded 項目を改名、${state.failures.size} 項目失敗", "${succeeded}개 이름 변경 완료, ${state.failures.size}개 실패") to true
             }
         }
         Phase.EDITING -> when {
-            state.patternError != null -> "正则表达式有误" to true
-            state.metaTubeProgress != null -> state.metaTubeProgress!!.let { (done, total) -> "正在从 MetaTube 查询片名 $done/$total" } to false
-            state.isCheckingSiblings -> "正在检查同目录名称" to false
-            state.siblingsFailed -> "无法检查同目录名称" to true
+            state.patternError != null -> tr("正则表达式有误", "Invalid regular expression", "正規表現が正しくありません", "잘못된 정규식") to true
+            state.metaTubeProgress != null -> state.metaTubeProgress!!.let { (done, total) -> tr("正在从 MetaTube 查询片名 $done/$total", "Fetching titles from MetaTube $done/$total", "MetaTubeから作品名を取得中 $done/$total", "MetaTube에서 제목 조회 중 $done/$total") } to false
+            state.isCheckingSiblings -> tr("正在检查同目录名称", "Checking sibling names", "同じフォルダーの名前を確認中", "같은 폴더의 이름 확인 중") to false
+            state.siblingsFailed -> tr("无法检查同目录名称", "Unable to check sibling names", "同じフォルダーの名前を確認できません", "같은 폴더의 이름을 확인할 수 없습니다") to true
             plan.problemCount > 0 -> problemStatus(plan) to true
-            plan.changeCount == 0 -> "无需改名" to false
+            plan.changeCount == 0 -> tr("无需改名", "No rename needed", "名前の変更は不要です", "이름 변경 불필요") to false
             // 查不成的用了原名里的片名，说一句，免得以为都查到了
-            state.useMetaTubeTitles && state.metaTubeFailed > 0 -> "${state.metaTubeFailed} 个番号查询失败，沿用原名中的片名" to false
+            state.useMetaTubeTitles && state.metaTubeFailed > 0 -> tr("${state.metaTubeFailed} 个番号查询失败，沿用原名中的片名", "${state.metaTubeFailed} code lookups failed; keeping original titles", "${state.metaTubeFailed} 件の作品番号の照会に失敗。元の作品名を保持", "품번 ${state.metaTubeFailed}개 조회 실패. 기존 제목 유지") to false
             else -> "" to false
         }
     }

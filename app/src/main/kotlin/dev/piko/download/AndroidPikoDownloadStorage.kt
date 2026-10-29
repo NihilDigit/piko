@@ -1,5 +1,7 @@
 package dev.piko.download
 
+import dev.piko.shared.i18n.tr
+
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
@@ -74,16 +76,16 @@ class AndroidPikoDownloadStorage(
     override suspend fun commit(fileName: String, downloadedPath: String): String = withContext(Dispatchers.IO) {
         val tree = treeUri ?: return@withContext downloadedPath
         val staged = File(downloadedPath)
-        val root = DocumentFile.fromTreeUri(context, tree) ?: error("无法访问下载目录")
+        val root = DocumentFile.fromTreeUri(context, tree) ?: error(tr("无法访问下载目录", "Cannot access download folder", "ダウンロード先にアクセスできません", "다운로드 폴더에 접근할 수 없습니다"))
         val segments = fileName.split('/')
         val name = segments.last()
         // 同一文件夹下载的几个文件并行交付，同时发现子文件夹不存在时会各建一个，
         // 系统给后建的改名成「文件夹 (1)」，所以找与建放在一把锁里
         val parent = folderLock.withLock { findDocument(root, segments.dropLast(1), createFolders = true) }
-            ?: error("无法创建下载文件夹")
+            ?: error(tr("无法创建下载文件夹", "Cannot create download folder", "ダウンロード先を作成できません", "다운로드 폴더를 만들 수 없습니다"))
         val document = parent.findFile(name) ?: parent.createFile("application/octet-stream", name)
-            ?: error("无法创建下载文件")
-        val output = context.contentResolver.openOutputStream(document.uri, "wt") ?: error("无法写入下载文件")
+            ?: error(tr("无法创建下载文件", "Cannot create download file", "ダウンロードファイルを作成できません", "다운로드 파일을 만들 수 없습니다"))
+        val output = context.contentResolver.openOutputStream(document.uri, "wt") ?: error(tr("无法写入下载文件", "Cannot write download file", "ダウンロードファイルに書き込めません", "다운로드 파일에 쓸 수 없습니다"))
         output.use { sink -> staged.inputStream().use { it.copyTo(sink, COPY_BUFFER_BYTES) } }
         staged.delete()
         document.uri.toString()

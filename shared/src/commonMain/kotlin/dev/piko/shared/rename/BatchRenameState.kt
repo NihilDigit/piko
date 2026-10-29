@@ -1,5 +1,9 @@
 package dev.piko.shared.rename
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -282,9 +286,9 @@ class BatchRenameState(
         val replace = templateToReplaceBlocks(options.replacement)
         if (find == null || replace == null) {
             modeNote = when {
-                find == null && replace == null -> "查找和替换无法用块表示，将继续使用正则表达式"
-                find == null -> "查找无法用块表示，将继续使用正则表达式"
-                else -> "替换无法用块表示，将继续使用正则表达式"
+                find == null && replace == null -> tr("查找和替换无法用块表示，将继续使用正则表达式", "Find and replace cannot be represented as blocks; continuing with regular expressions", "検索と置換をブロックで表せないため、正規表現を使用します", "찾기 및 바꾸기를 블록으로 표현할 수 없어 정규식을 계속 사용합니다")
+                find == null -> tr("查找无法用块表示，将继续使用正则表达式", "Find pattern cannot be represented as blocks; continuing with regular expressions", "検索をブロックで表せないため、正規表現を使用します", "찾기 패턴을 블록으로 표현할 수 없어 정규식을 계속 사용합니다")
+                else -> tr("替换无法用块表示，将继续使用正则表达式", "Replacement cannot be represented as blocks; continuing with regular expressions", "置換をブロックで表せないため、正規表現を使用します", "바꾸기 패턴을 블록으로 표현할 수 없어 정규식을 계속 사용합니다")
             }
             return
         }
@@ -308,7 +312,7 @@ class BatchRenameState(
             pendingFindText = ""
             updateFindBlocks(blocks)
         } else {
-            forceTextMode(effectiveOptions.copy(search = search), "此查找无法用块表示，已切换到正则表达式")
+            forceTextMode(effectiveOptions.copy(search = search), tr("此查找无法用块表示，已切换到正则表达式", "This find pattern requires regular expressions; mode switched", "この検索はブロックで表せないため、正規表現に切り替えました", "이 찾기 패턴을 블록으로 표현할 수 없어 정규식으로 전환했습니다"))
         }
     }
 
@@ -322,7 +326,7 @@ class BatchRenameState(
             pendingReplaceText = ""
             updateReplaceBlocks(blocks)
         } else {
-            forceTextMode(effectiveOptions.copy(replacement = replacement), "此替换无法用块表示，已切换到正则表达式")
+            forceTextMode(effectiveOptions.copy(replacement = replacement), tr("此替换无法用块表示，已切换到正则表达式", "This replacement requires regular expressions; mode switched", "この置換はブロックで表せないため、正規表現に切り替えました", "이 바꾸기 패턴을 블록으로 표현할 수 없어 정규식으로 전환했습니다"))
         }
     }
 
@@ -545,9 +549,9 @@ class BatchRenameState(
     private fun summary(): String {
         val succeeded = processed - failures.size
         return when {
-            wasStopped -> "已停止，已重命名 $succeeded 项"
-            failures.isEmpty() -> "已重命名 $succeeded 项"
-            else -> "已重命名 $succeeded 项，${failures.size} 项失败"
+            wasStopped -> tr("已停止，已重命名 $succeeded 项", "Stopped; renamed ${enCount(succeeded, "item", "items")}", "停止しました。$succeeded 項目の名前を変更しました", "중지됨. ${succeeded}개 항목 이름 변경 완료")
+            failures.isEmpty() -> tr("已重命名 $succeeded 项", "Renamed ${enCount(succeeded, "item", "items")}", "$succeeded 項目の名前を変更しました", "${succeeded}개 항목 이름 변경 완료")
+            else -> tr("已重命名 $succeeded 项，${failures.size} 项失败", "Renamed ${enCount(succeeded, "item", "items")}; ${failures.size} failed", "$succeeded 項目の名前を変更しました。${failures.size} 項目は失敗しました", "${succeeded}개 항목 이름 변경 완료, ${failures.size}개 실패")
         }
     }
 

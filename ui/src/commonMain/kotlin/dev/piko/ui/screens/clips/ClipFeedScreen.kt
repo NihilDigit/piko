@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.clips
 
+import dev.piko.shared.i18n.tr
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateFloatAsState
@@ -218,17 +223,17 @@ fun ClipFeedScreen(
     PlayerTheme {
         Box(modifier = modifier.fillMaxSize().background(Color.Black)) {
             when {
-                videoPreview == null -> FeedMessage("此平台暂不支持信息流", null, topBar)
+                videoPreview == null -> FeedMessage(tr("此平台暂不支持信息流", "Feed is not supported on this platform yet", "このプラットフォームではフィードにまだ対応していません", "이 플랫폼은 아직 피드를 지원하지 않습니다"), null, topBar)
                 clips.isEmpty() && !session.isEmpty -> {
                     Box(Modifier.fillMaxSize()) {
                         Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                             MediaLoadingIndicator()
-                            Text("正在准备", color = Color.White, modifier = Modifier.padding(top = 16.dp))
+                            Text(stringResource(Res.string.text_preparing), color = Color.White, modifier = Modifier.padding(top = 16.dp))
                         }
                         topBar(null)
                     }
                 }
-                clips.isEmpty() -> FeedMessage("这里没有可播放的视频", "只挑一分钟以上的正片，子文件夹里的也算", topBar)
+                clips.isEmpty() -> FeedMessage(tr("这里没有可播放的视频", "No playable videos here", "再生できる動画はありません", "재생할 수 있는 동영상이 없습니다"), tr("只挑一分钟以上的正片，子文件夹里的也算", "Includes main videos over one minute, including subfolders", "サブフォルダーを含め、1分以上の本編動画を選びます", "하위 폴더를 포함하여 1분 이상의 본편 동영상만 선택합니다"), topBar)
                 // 换了范围就是另一条队列，页码、播放器与各段的装载状态都不再对得上，整个重建
                 else -> key(scopeVersion) {
                     ClipPager(
@@ -513,7 +518,7 @@ private fun ClipPager(
         val loading = load(settled)
         loading?.join()
         if (loaded[slotOf(settled)] != current) {
-            snackbarHostState.showSnackbar("这一段打不开，已跳过")
+            snackbarHostState.showSnackbar(tr("这一段打不开，已跳过", "Unable to open this clip; skipped", "このクリップを開けないためスキップしました", "이 클립을 열 수 없어 건너뛰었습니다"))
             go(1)
             return@LaunchedEffect
         }
@@ -618,7 +623,7 @@ private fun ClipPager(
             PikoLog.d(
                 "Clips",
                 "开播 ${logFile(current.fileId, current.name)}：画面走起来 ${started.elapsedNow().inWholeMilliseconds - PLAYING_EVIDENCE_MS} ms，" +
-                    "就绪 $openedMs ms，" + if (preRendered) "翻到时已就绪" else "翻到时未就绪",
+                    "就绪 $openedMs ms，" + if (preRendered) tr("翻到时已就绪", "Ready when reached", "表示時に準備済み", "도달 시 준비됨") else tr("翻到时未就绪", "Not ready when reached", "表示時に未準備", "도달 시 미준비"),
             )
             // 位置停住却没报缓冲：切片到头、解码卡住一类，转圈不会出现，只能看位置
             launch {
@@ -827,7 +832,7 @@ private fun ClipPager(
             if (clip == null) {
                 Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                     MediaLoadingIndicator()
-                    Text("正在缓存下一段", color = Color.White, modifier = Modifier.padding(top = 16.dp))
+                    Text(stringResource(Res.string.text_buffering_next_clip), color = Color.White, modifier = Modifier.padding(top = 16.dp))
                 }
                 return@VerticalPager
             }
@@ -877,7 +882,7 @@ private fun ClipPager(
                 if (active && !warmUpDone) {
                     Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                         MediaLoadingIndicator()
-                        Text("正在缓存 $warmed/$WARM_UP_CLIPS", color = Color.White, modifier = Modifier.padding(top = 16.dp))
+                        Text(tr("正在缓存 $warmed/$WARM_UP_CLIPS", "Buffering $warmed/$WARM_UP_CLIPS", "バッファ中 $warmed/$WARM_UP_CLIPS", "버퍼링 중 $warmed/$WARM_UP_CLIPS"), color = Color.White, modifier = Modifier.padding(top = 16.dp))
                     }
                 } else {
                     // 缓冲过一会儿才转圈：开播与换源时缓冲状态会闪一两下，每次都转就像卡了两次

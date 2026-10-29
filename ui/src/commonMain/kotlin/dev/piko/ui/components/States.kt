@@ -1,5 +1,10 @@
 package dev.piko.ui.components
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -56,11 +61,11 @@ fun PikoErrorState(
     message: String,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
-    title: String = "加载失败",
+    title: String = tr("加载失败", "Failed to load", "読み込みに失敗しました", "불러오지 못했습니다"),
 ) {
     StateLayout(title = title, description = message, icon = Icons.Outlined.ErrorOutline, modifier = modifier) {
         Spacer(modifier = Modifier.height(12.dp))
-        TextButton(onClick = onRetry) { Text("重试") }
+        TextButton(onClick = onRetry) { Text(stringResource(Res.string.common_retry)) }
     }
 }
 

@@ -7,6 +7,9 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
+import dev.piko.data.auth.AppLanguage
+import dev.piko.shared.i18n.PikoLocale
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.ui.components.FullScreenLoading
@@ -23,6 +26,8 @@ import dev.piko.ui.theme.LocalPikoMotion
 import dev.piko.ui.theme.PikoTheme
 import dev.piko.update.StartupUpdatePrompt
 
+val LocalAppLanguage = staticCompositionLocalOf { AppLanguage.ZH_CN }
+
 /**
  * 两端共用的根界面：主题、初始化、登录与主界面之间的切换。
  *
@@ -36,9 +41,17 @@ fun PikoApp(
     appearance: Appearance,
     videoPlayer: VideoPlayerHost,
     modifier: Modifier = Modifier,
+    onLanguageChanged: (AppLanguage) -> Unit = {},
 ) {
+    val appLanguage by services.preferences.appLanguageFlow.collectAsStateWithLifecycle(initialValue = PikoLocale.effectiveLanguage)
+    LaunchedEffect(appLanguage) {
+        onLanguageChanged(PikoLocale.resolve(appLanguage))
+        PikoLocale.apply(appLanguage)
+    }
+    val effectiveLanguage by PikoLocale.effectiveLanguageState
     val pointerSource = remember { PointerSource() }
     CompositionLocalProvider(
+        LocalAppLanguage provides effectiveLanguage,
         LocalPikoServices provides services,
         LocalPikoPlatform provides platform,
         LocalPointerSource provides pointerSource,

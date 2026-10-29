@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.transfers
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.CloudDownload
@@ -35,21 +37,21 @@ internal val DriveTask.canPlayVideo: Boolean
     get() = canOpen && (fileName.isPlayableVideo() || name.isPlayableVideo())
 
 internal val DriveTask.displayName: String
-    get() = name.ifEmpty { fileName.ifEmpty { "离线任务" } }
+    get() = name.ifEmpty { fileName.ifEmpty { tr("离线任务", "Cloud download task", "クラウドダウンロードタスク", "클라우드 다운로드 작업") } }
 
 internal fun DriveTask.statusLabel(): String = when {
-    isOutputDeleted -> "文件已删除"
-    phase == TaskPhase.PENDING -> "排队中"
+    isOutputDeleted -> tr("文件已删除", "File deleted", "ファイルは削除されています", "파일이 삭제되었습니다")
+    phase == TaskPhase.PENDING -> tr("排队中", "Queued", "待機中", "대기 중")
     phase == TaskPhase.RUNNING -> "$progress%"
-    phase == TaskPhase.COMPLETE -> "已完成"
-    else -> "离线失败"
+    phase == TaskPhase.COMPLETE -> tr("已完成", "Completed", "完了", "완료")
+    else -> tr("离线失败", "Cloud download failed", "クラウドダウンロード失敗", "클라우드 다운로드 실패")
 }
 
 internal fun DriveTask.sizeParts(): List<String> =
     listOfNotNull(fileSize.toLongOrNull()?.takeIf { it > 0 }?.toReadableSize())
 
 /** 失败原因。服务端的 message 可能为空。 */
-internal fun DriveTask.failureReason(): String = message.ifEmpty { "服务端未给出原因" }
+internal fun DriveTask.failureReason(): String = message.ifEmpty { tr("服务端未给出原因", "No reason provided by server", "サーバーから理由が返されませんでした", "서버에서 사유를 제공하지 않았습니다") }
 
 // 文件已删除的任务不是失败，不用错误色；弱化由 FileListItem 的 dimmed 统一处理
 @Composable
@@ -70,7 +72,7 @@ internal fun CloudTransferDetails(task: DriveTask, actions: List<SheetAction>, m
         title = task.displayName,
         headerIcon = { TaskFileTypeIcon(task.fileName.ifEmpty { task.displayName }, Icons.Outlined.CloudDownload) },
         actions = actions,
-        metaParts = listOf("云端", task.statusLabel()) + task.sizeParts(),
+        metaParts = listOf(tr("云端", "Cloud", "クラウド", "클라우드"), task.statusLabel()) + task.sizeParts(),
         extraLines = {
             if (task.isFailed) Text(text = task.failureReason(), color = statusColor)
         },
@@ -99,16 +101,16 @@ internal fun cloudTransferActions(
     onOpen: () -> Unit,
     onCopySource: (() -> Unit)? = null,
 ): List<SheetAction> = buildList {
-    if (task.canPlayVideo && onPlay != null) add(SheetAction(Icons.Outlined.PlayArrow, "播放", onPlay))
-    if (task.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, "在网盘中显示", onOpen))
-    if (onCopySource != null) add(SheetAction(Icons.Outlined.ContentCopy, "复制来源链接", onCopySource))
+    if (task.canPlayVideo && onPlay != null) add(SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생"), onPlay))
+    if (task.canOpen) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onOpen))
+    if (onCopySource != null) add(SheetAction(Icons.Outlined.ContentCopy, tr("复制来源链接", "Copy source link", "ソースリンクをコピー", "출처 링크 복사"), onCopySource))
     if (onResubmit != null && (task.isFailed || task.isOutputDeleted)) {
-        add(SheetAction(Icons.Outlined.Refresh, if (task.isOutputDeleted) "重新下载" else "重试", onResubmit))
+        add(SheetAction(Icons.Outlined.Refresh, if (task.isOutputDeleted) tr("重新下载", "Download again", "再ダウンロード", "다시 다운로드") else tr("重试", "Retry", "再試行", "다시 시도"), onResubmit))
     }
     val deleteLabel = when {
-        task.isActive -> "删除任务"
-        task.phase == TaskPhase.COMPLETE -> "移除记录"
-        else -> "删除记录"
+        task.isActive -> tr("删除任务", "Delete task", "タスクを削除", "작업 삭제")
+        task.phase == TaskPhase.COMPLETE -> tr("移除记录", "Remove record", "記録を削除", "기록 삭제")
+        else -> tr("删除记录", "Delete record", "記録を削除", "기록 삭제")
     }
     add(SheetAction(Icons.Outlined.Delete, deleteLabel, onDelete, destructive = true))
 }

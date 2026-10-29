@@ -137,7 +137,7 @@ class DuplicateFinderState(
 
     fun rescan() {
         scanJob?.cancel()
-        val scanner = DuplicateScanner(clients).also { scanner = it }
+        val scanner = DuplicateScanner(clients, driveRepo).also { scanner = it }
         phase = Phase.SCANNING
         scannedFolders = 0
         scannedFiles = 0

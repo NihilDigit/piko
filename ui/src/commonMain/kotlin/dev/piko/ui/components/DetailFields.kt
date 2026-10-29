@@ -1,5 +1,7 @@
 package dev.piko.ui.components
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -163,7 +165,7 @@ internal fun DetailActionIconButton(action: DetailAction, modifier: Modifier = M
             copied = false
         }
     }
-    val label = if (copied) "已复制" else action.label
+    val label = if (copied) tr("已复制", "Copied", "コピーしました", "복사했습니다") else action.label
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
         tooltip = { PlainTooltip { Text(label) } },

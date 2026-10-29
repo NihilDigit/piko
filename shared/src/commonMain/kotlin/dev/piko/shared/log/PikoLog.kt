@@ -277,12 +277,7 @@ fun <T> Result<T>.logFailure(tag: String, message: String): Result<T> = onFailur
  * 用户做 [action]（「保存」「移动」）失败时看到的一句。能说清原因、用户能照着处理的写原因，其余只说失败了：
  * 服务端的错误名、HTTP 状态与英文描述用户读不懂，也做不了什么，只进日志，见 [reportFailure]。
  */
-fun failureText(action: String, error: Throwable): String = when {
-    error is InstantContentUnavailableException -> "云端暂无该文件内容，需离线下载"
-    error is PikPakException && error.errorMessage == "file_duplicated_name" -> "${action}失败：目标位置已有同名文件"
-    error is IOException -> "${action}失败：网络连接中断，请重试"
-    else -> "${action}失败，请重试"
-}
+fun failureText(action: String, error: Throwable): String = dev.piko.shared.notice.PikoErrorMapper.failure(action, error)
 
 /** 失败时记一条日志，再把 [failureText] 交给 [show]。日志与提示出自同一处，两边说的是同一件事。 */
 fun <T> Result<T>.reportFailure(tag: String, action: String, show: (String) -> Unit): Result<T> = onFailure {

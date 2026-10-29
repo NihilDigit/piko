@@ -1,5 +1,10 @@
 package dev.piko.desktop
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.Text
@@ -50,19 +55,19 @@ internal fun LinkAssociationPrompt(association: LinkAssociation?, settings: Desk
     PikoDialog(
         // 点外面或按 Esc 关掉也算答过：用户已经看到了这个问题
         onDismissRequest = answer,
-        title = { Text("用 Piko 打开磁力链接与种子文件？") },
+        title = { Text(stringResource(Res.string.text_open_magnet_links_and_torrent_files_with_piko)) },
         text = {
             Text(
                 if (association.needsSystemConfirmation) {
-                    "需在随后打开的系统设置中确认。之后也可在设置的「链接」中更改。"
+                    tr("需在随后打开的系统设置中确认。之后也可在设置的「链接」中更改。", "Confirm in system settings next. Change this later in Link settings.", "続いて開くシステム設定で確認してください。後でリンク設定から変更できます。", "다음에 열리는 시스템 설정에서 확인하세요. 나중에 링크 설정에서 변경할 수 있습니다.")
                 } else {
-                    "之后也可在设置的「链接」中更改。"
+                    tr("之后也可在设置的「链接」中更改。", "Change this later in Link settings.", "後でリンク設定から変更できます。", "나중에 링크 설정에서 변경할 수 있습니다.")
                 },
             )
         },
         confirmButton = {
             PikoDialogConfirm(
-                label = "设为默认",
+                label = tr("设为默认", "Set as default", "既定に設定", "기본으로 설정"),
                 onClick = {
                     answer()
                     scope.launch { association.register() }
@@ -70,7 +75,7 @@ internal fun LinkAssociationPrompt(association: LinkAssociation?, settings: Desk
             )
         },
         dismissButton = {
-            TextButton(onClick = answer) { Text("暂不") }
+            TextButton(onClick = answer) { Text(stringResource(Res.string.text_not_now)) }
         },
     )
 }

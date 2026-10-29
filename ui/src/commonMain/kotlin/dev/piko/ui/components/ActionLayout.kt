@@ -28,7 +28,10 @@ class SheetAction(
     val shortLabel: String = label,
     /** 图标上挂小圆点（[PendingBadge]）：这一项收着没做完的东西。眼下只有主操作的按钮与 FAB 画它。 */
     val pending: Boolean = false,
+    val role: SheetActionRole = SheetActionRole.Default,
 )
+
+enum class SheetActionRole { Default, Stop }
 
 /** 一项操作摆在哪一档。只在项数多到要分档时起作用，见 [layoutActions]。 */
 enum class ActionTier {

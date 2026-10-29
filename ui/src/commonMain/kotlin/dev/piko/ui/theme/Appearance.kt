@@ -1,5 +1,7 @@
 package dev.piko.ui.theme
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
@@ -10,10 +12,13 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 
-enum class ThemeMode(val label: String) {
-    SYSTEM("跟随系统"),
-    LIGHT("浅色"),
-    DARK("深色"),
+enum class ThemeMode(private val labelText: () -> String) {
+    SYSTEM({ tr("跟随系统", "System", "システムに従う", "시스템 설정 따르기") }),
+    LIGHT({ tr("浅色", "Light", "ライト", "라이트") }),
+    DARK({ tr("深色", "Dark", "ダーク", "다크") }),
+    ;
+
+    val label: String get() = labelText()
 }
 
 /** 用户的外观选择。[seed] 为 null 表示系统取色。 */

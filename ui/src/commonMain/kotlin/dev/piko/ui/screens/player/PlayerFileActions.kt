@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.player
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -85,7 +87,7 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
                         ),
                     )
                 }
-                .onFailure { message("找不到这个文件，它可能已被删除") }
+                .onFailure { message(tr("找不到这个文件，它可能已被删除", "File not found; it may have been deleted", "ファイルが見つかりません。削除された可能性があります", "파일을 찾을 수 없습니다. 삭제되었을 수 있습니다")) }
         }
     }
 
@@ -93,7 +95,7 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
         ShareDialog(
             files = listOf(file),
             onDismiss = { sharing = null },
-            onCopied = { message("已复制分享链接") },
+            onCopied = { message(tr("已复制分享链接", "Share link copied", "共有リンクをコピーしました", "공유 링크를 복사했습니다")) },
         )
     }
 
@@ -106,9 +108,9 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
                         val resolved = LeasedFile.resolvedFileOf(fileId)
                         if (resolved != null) {
                             services.downloadManager.enqueueResolved(listOf(resolved), "")
-                            message("已加入下载")
+                            message(tr("已加入下载", "Added to downloads", "ダウンロードに追加しました", "다운로드에 추가했습니다"))
                         } else {
-                            withFile { file -> downloads.download(listOf(file)) { notice -> message(notice ?: "已加入下载") } }
+                            withFile { file -> downloads.download(listOf(file)) { notice -> message(notice ?: tr("已加入下载", "Added to downloads", "ダウンロードに追加しました", "다운로드에 추가했습니다")) } }
                         }
                     },
                 ),
@@ -120,10 +122,10 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
                             .logFailure(TAG, "播放器查文件下载链接失败")
                             .getOrNull()
                         if (!url.isNullOrBlank()) {
-                            platform.copyToClipboard("下载链接", url)
-                            message("已复制下载链接")
+                            platform.copyToClipboard(tr("下载链接", "Download link", "ダウンロードリンク", "다운로드 링크"), url)
+                            message(tr("已复制下载链接", "Download link copied", "ダウンロードリンクをコピーしました", "다운로드 링크를 복사했습니다"))
                         } else {
-                            message("未能获取下载链接")
+                            message(tr("未能获取下载链接", "Failed to get download link", "ダウンロードリンクを取得できませんでした", "다운로드 링크를 가져오지 못했습니다"))
                         }
                     }
                 },
@@ -138,11 +140,11 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
                         isStarred = target
                         scope.launch {
                             services.driveRepository.setStarred(listOf(fileId), target)
-                                .onSuccess { message(if (target) "已添加星标" else "已取消星标") }
+                                .onSuccess { message(if (target) tr("已添加星标", "Starred", "スターを付けました", "별표를 추가했습니다") else tr("已取消星标", "Unstarred", "スターを外しました", "별표를 해제했습니다")) }
                                 .logFailure(TAG, "播放器修改星标失败")
                                 .onFailure {
                                     isStarred = !target
-                                    message(if (target) "添加星标失败" else "取消星标失败")
+                                    message(if (target) tr("添加星标失败", "Failed to add star", "スターを付けられませんでした", "별표를 추가하지 못했습니다") else tr("取消星标失败", "Failed to remove star", "スターを外せませんでした", "별표를 해제하지 못했습니다"))
                                 }
                         }
                     },

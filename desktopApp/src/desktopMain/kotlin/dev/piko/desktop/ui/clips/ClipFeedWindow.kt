@@ -1,5 +1,7 @@
 package dev.piko.desktop.ui.clips
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -51,7 +53,7 @@ fun ClipFeedWindow(
     val windowState = rememberRememberedWindowState(settings, "clips", DpSize(1000.dp, 620.dp))
     PikoWindow(
         onCloseRequest = links.dock,
-        title = "信息流 - Piko",
+        title = tr("信息流 - Piko", "Feed - Piko", "フィード - Piko", "피드 - Piko"),
         icon = icon,
         state = windowState,
     ) {
@@ -67,7 +69,7 @@ fun ClipFeedWindow(
         ) {
             PikoTheme(appearance = appearance) {
                 WindowFrame(
-                    title = "信息流 - Piko",
+                    title = tr("信息流 - Piko", "Feed - Piko", "フィード - Piko", "피드 - Piko"),
                     icon = icon,
                     colors = ClipTitleBarColors,
                     onCloseInContent = links.dock,

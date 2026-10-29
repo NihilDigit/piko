@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.settings
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Speed
@@ -27,14 +29,14 @@ fun SnailModeDialog(
 
     SettingsInputDialog(
         icon = Icons.Outlined.Speed,
-        title = "蜗牛模式",
-        footer = "下载与上传各自不超过此速度，不影响在线播放。",
+        title = tr("蜗牛模式", "Snail mode", "低速モード", "저속 모드"),
+        footer = tr("下载与上传各自不超过此速度，不影响在线播放。", "Limit download and upload speeds separately. Streaming is unaffected.", "ダウンロードとアップロードの速度を個別に制限します。ストリーミングには影響しません。", "다운로드 및 업로드 속도를 각각 제한합니다. 스트리밍에는 영향이 없습니다."),
         onSave = { onSave(current.copy(downloadKiBps = downloadValue!!, uploadKiBps = uploadValue!!)) },
         saveEnabled = downloadValue != null && uploadValue != null,
         onDismiss = onDismiss,
     ) {
-        LimitField("下载上限", download, downloadValue == null) { download = it }
-        LimitField("上传上限", upload, uploadValue == null) { upload = it }
+        LimitField(tr("下载上限", "Download limit", "ダウンロード上限", "다운로드 한도"), download, downloadValue == null) { download = it }
+        LimitField(tr("上传上限", "Upload limit", "アップロード上限", "업로드 한도"), upload, uploadValue == null) { upload = it }
     }
 }
 
@@ -46,11 +48,11 @@ private fun LimitField(label: String, value: String, invalid: Boolean, onValueCh
         label = label,
         suffix = "KB/s",
         isError = invalid,
-        supportingText = "大于 0 的整数",
+        supportingText = tr("大于 0 的整数", "A positive integer", "0より大きい整数", "0보다 큰 정수"),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
     )
 }
 
 /** 设置页与提示里的一句话：「下载 1 MB/s，上传 512 KB/s」。 */
 fun SnailMode.limitSummary(): String =
-    "下载 ${(downloadKiBps * 1024L).toReadableSize()}/s，上传 ${(uploadKiBps * 1024L).toReadableSize()}/s"
+    tr("下载 ${(downloadKiBps * 1024L).toReadableSize()}/s，上传 ${(uploadKiBps * 1024L).toReadableSize()}/s", "Download ${(downloadKiBps * 1024L).toReadableSize()}/s, upload ${(uploadKiBps * 1024L).toReadableSize()}/s", "ダウンロード ${(downloadKiBps * 1024L).toReadableSize()}/s、アップロード ${(uploadKiBps * 1024L).toReadableSize()}/s", "다운로드 ${(downloadKiBps * 1024L).toReadableSize()}/s, 업로드 ${(uploadKiBps * 1024L).toReadableSize()}/s")

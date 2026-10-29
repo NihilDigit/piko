@@ -1,5 +1,8 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.i18n.tr
+import dev.piko.shared.presentation.localizedName
+
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -75,13 +78,13 @@ internal fun ColumnScope.QuickAccessSection(
     // 库也只有一级，但它在「库」那一组里亮，不算在根目录
     val atRoot = onFilesTab && currentStack.singleOrNull()?.id?.isEmpty() == true
     val myPacks = state.myPacks
-    SectionLabel("快速访问")
+    SectionLabel(tr("快速访问", "Quick access", "クイックアクセス", "빠른 액세스"))
     val root = PikoDriveRepository.ROOT_BREADCRUMB
-    ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.AddToPhotos, "在新标签页打开", { state.openRootInNewTab() })) }) {
+    ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.AddToPhotos, tr("在新标签页打开", "Open in new tab", "新しいタブで開く", "새 탭에서 열기"), { state.openRootInNewTab() })) }) {
         SidebarItem(
             icon = Icons.Outlined.Home,
             selectedIcon = Icons.Filled.Home,
-            label = root.name,
+            label = root.localizedName,
             // 拖到这里就是移回根目录
             modifier = Modifier.fileDropTarget("quick:root", root),
             selected = atRoot,
@@ -90,11 +93,11 @@ internal fun ColumnScope.QuickAccessSection(
         )
     }
     if (myPacks != null) {
-        ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.AddToPhotos, "在新标签页打开", { state.openMyPacksInNewTab(myPacks) })) }) {
+        ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.AddToPhotos, tr("在新标签页打开", "Open in new tab", "新しいタブで開く", "새 탭에서 열기"), { state.openMyPacksInNewTab(myPacks) })) }) {
             SidebarItem(
                 icon = Icons.Outlined.CloudDownload,
                 selectedIcon = Icons.Filled.CloudDownload,
-                label = myPacks.name,
+                label = myPacks.localizedName,
                 modifier = Modifier.fileDropTarget("quick:packs", myPacks),
                 selected = myPacks.id == currentId,
                 // My Pack 就在根目录下，路径不必再查
@@ -108,14 +111,14 @@ internal fun ColumnScope.QuickAccessSection(
         // 右键与网盘里的文件夹同一种说法，再加这一栏自己的「取消固定」
         ContextMenuArea(actions = {
             listOf(
-                SheetAction(Icons.Outlined.AddToPhotos, "在新标签页打开", { state.openInNewTab(folder) }),
-                SheetAction(Icons.Outlined.PushPin, "从快速访问取消固定", { state.unpin(folder) }),
+                SheetAction(Icons.Outlined.AddToPhotos, tr("在新标签页打开", "Open in new tab", "新しいタブで開く", "새 탭에서 열기"), { state.openInNewTab(folder) }),
+                SheetAction(Icons.Outlined.PushPin, tr("从快速访问取消固定", "Unpin from quick access", "クイックアクセスから外す", "빠른 액세스에서 고정 해제"), { state.unpin(folder) }),
             )
         }) {
             SidebarItem(
                 icon = Icons.Outlined.Folder,
                 selectedIcon = Icons.Filled.Folder,
-                label = folder.name,
+                label = folder.localizedName,
                 modifier = Modifier.fileDropTarget("pinned:${folder.id}", folder),
                 selected = folder.id == currentId,
                 onClick = { state.locate(folder, onOpen) },

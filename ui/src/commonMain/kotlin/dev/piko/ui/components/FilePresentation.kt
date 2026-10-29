@@ -1,5 +1,7 @@
 package dev.piko.ui.components
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.selection.triStateToggleable
@@ -106,7 +108,7 @@ internal fun FileStat.fileItemMarks(folderHasVault: Boolean): Set<FileItemMark> 
 internal fun ResolvedFile.filePresentation(key: String): FilePresentation = FilePresentation(
     key, FileItemName(name), FileVisual(name, isVideo = name.isPlayableVideo()),
     metadata = listOf(size.toReadableSize()),
-    status = if (gcid == null) FileItemStatus("未收录", needsAttention = true) else null,
+    status = if (gcid == null) FileItemStatus(tr("未收录", "Not indexed", "未収録", "미등록"), needsAttention = true) else null,
 )
 
 @Composable

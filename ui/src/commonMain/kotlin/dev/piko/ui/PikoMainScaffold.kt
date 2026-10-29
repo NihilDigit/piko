@@ -1,5 +1,13 @@
 package dev.piko.ui
 
+import dev.piko.shared.i18n.enCount
+import dev.piko.shared.presentation.localizedName
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import dev.piko.ui.workbench.rememberTransferActivity
 import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material3.TonalToggleButton
@@ -618,15 +626,15 @@ fun PikoMainScaffold(
     if (askingCloseFeed) {
         PikoDialog(
             onDismissRequest = { askingCloseFeed = false },
-            title = { Text("关闭信息流？") },
-            text = { Text("关闭后将清空当前播放队列与浏览进度。") },
+            title = { Text(stringResource(Res.string.text_close_feed_alt)) },
+            text = { Text(stringResource(Res.string.text_closing_clears_the_current_queue_and_browsing_progress)) },
             confirmButton = {
-                PikoDialogConfirm("关闭", destructive = true, onClick = {
+                PikoDialogConfirm(tr("关闭", "Close", "閉じる", "닫기"), destructive = true, onClick = {
                     askingCloseFeed = false
                     setFeedShown(false)
                 })
             },
-            dismissButton = { TextButton(onClick = { askingCloseFeed = false }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { askingCloseFeed = false }) { Text(stringResource(Res.string.common_cancel)) } },
         )
     }
     val addLinkDocked = panelFits && addLink.state != null && addLink.isExpanded &&
@@ -755,8 +763,8 @@ fun PikoMainScaffold(
     fun openAddLinkWithConfirm(initialLink: String = "") {
         val replacing = initialLink.isNotBlank() && addLink.state?.isBlank == false && addLink.state?.input != initialLink
         taskSlot.claim(
-            action = if (replacing) "打开新链接" else "添加链接",
-            confirmLabel = if (replacing) "打开新链接" else "添加链接",
+            action = if (replacing) tr("打开新链接", "Open new link", "新しいリンクを開く", "새 링크 열기") else tr("添加链接", "Add link", "リンクを追加", "링크 추가"),
+            confirmLabel = if (replacing) tr("打开新链接", "Open new link", "新しいリンクを開く", "새 링크 열기") else tr("添加链接", "Add link", "リンクを追加", "링크 추가"),
             task = TaskSlot.Task.ADD_LINK,
             replacesSame = replacing,
             conflictsWith = setOf(TaskSlot.Task.ADD_LINK, TaskSlot.Task.FEED),
@@ -787,15 +795,15 @@ fun PikoMainScaffold(
         taskSlot.occupants = listOf(
             TaskSlot.Occupant(
                 task = TaskSlot.Task.FEED,
-                name = "信息流",
-                loss = "当前播放队列与浏览进度将清空。",
+                name = tr("信息流", "Feed", "フィード", "피드"),
+                loss = tr("当前播放队列与浏览进度将清空。", "The current queue and browsing progress will be cleared.", "現在の再生キューと閲覧位置を消去します。", "현재 재생 대기열과 탐색 진행 상황이 지워집니다."),
                 active = { feedShown },
                 end = { setFeedShown(false) },
             ),
             TaskSlot.Occupant(
                 task = TaskSlot.Task.ADD_LINK,
-                name = "添加链接",
-                loss = "当前输入的链接和勾选的文件不会保存。",
+                name = tr("添加链接", "Add link", "リンクを追加", "링크 추가"),
+                loss = tr("当前输入的链接和勾选的文件不会保存。", "Entered links and selected files will not be saved.", "入力したリンクと選択したファイルは保存されません。", "입력한 링크와 선택한 파일은 저장되지 않습니다."),
                 active = { addLink.state != null },
                 end = { addLink.discard() },
                 replacementAvailability = { addLink.replacementAvailability },
@@ -836,8 +844,8 @@ fun PikoMainScaffold(
         SidePanelLayout(
             open = columnContent != null,
             savedWidthDp = panelPrefs.widthDp,
-            title = if (showAddLink) "添加链接" else "信息流",
-            closeDescription = if (showAddLink) dev.piko.ui.screens.instant.CollapseAddLinkLabel else "关闭信息流",
+            title = if (showAddLink) tr("添加链接", "Add link", "リンクを追加", "링크 추가") else tr("信息流", "Feed", "フィード", "피드"),
+            closeDescription = if (showAddLink) dev.piko.ui.screens.instant.CollapseAddLinkLabel else tr("关闭信息流", "Close feed", "フィードを閉じる", "피드 닫기"),
             onClose = if (showAddLink) ({ addLink.collapse() }) else ::requestCloseFeed,
             endActions = {
                 val addLinkState = addLink.state
@@ -854,7 +862,7 @@ fun PikoMainScaffold(
                     drive()
                     FeedResumeBar(
                         visible = feedSuspended && !desktop && !fileBrowser.state.isSelectionMode && (addLink.state == null || !addLink.isExpanded),
-                        folderName = clipFeedSession.root?.name,
+                        folderName = clipFeedSession.root?.localizedName,
                         onResume = ::resumeFeed,
                         onClose = ::requestCloseFeed,
                         modifier = Modifier.align(Alignment.BottomStart).padding(end = FeedResumeBarFabWidth),
@@ -916,9 +924,9 @@ fun PikoMainScaffold(
     fun tabDestinations(): List<PaletteItem> {
         val label = shortcutModifier::label
         return listOfNotNull(
-            PaletteItem("文件", Icons.Outlined.Folder, "前往", detail = label("1"), keywords = "files drive") { currentTab = MainTab.FILES; resetToHome() },
-            PaletteItem("任务", Icons.Outlined.SyncAlt, "前往", detail = label("2"), keywords = "tasks transfers downloads uploads") { openTransfers() },
-            if (desktop) null else PaletteItem("我的", Icons.Outlined.Person, "前往", detail = label("3"), keywords = "profile me") { currentTab = MainTab.SETTINGS; resetToHome() },
+            PaletteItem(tr("文件", "Files", "ファイル", "파일"), Icons.Outlined.Folder, tr("前往", "Go", "移動", "이동"), detail = label("1"), keywords = "files drive") { currentTab = MainTab.FILES; resetToHome() },
+            PaletteItem(tr("任务", "Tasks", "タスク", "작업"), Icons.Outlined.SyncAlt, tr("前往", "Go", "移動", "이동"), detail = label("2"), keywords = "tasks transfers downloads uploads") { openTransfers() },
+            if (desktop) null else PaletteItem(tr("我的", "Me", "マイページ", "내 정보"), Icons.Outlined.Person, tr("前往", "Go", "移動", "이동"), detail = label("3"), keywords = "profile me") { currentTab = MainTab.SETTINGS; resetToHome() },
         )
     }
 
@@ -939,15 +947,15 @@ fun PikoMainScaffold(
     }
 
     fun libraryDestination(library: DriveLibrary, keywords: String) =
-        PaletteItem(library.title, library.icon, "页面", keywords = keywords) { openLibrary(library) }
+        PaletteItem(library.title, library.icon, tr("页面", "Page", "ページ", "페이지"), keywords = keywords) { openLibrary(library) }
 
     fun pageDestinations(): List<PaletteItem> = listOf(
         libraryDestination(DriveLibrary.STARRED, "starred"),
         libraryDestination(DriveLibrary.RECENT, "recent added uploads 新增"),
         libraryDestination(DriveLibrary.HISTORY, "history"),
-        PaletteItem("我的分享", Icons.Outlined.Share, "页面", keywords = "shares") { openPage(Screen.MyShares) },
+        PaletteItem(tr("我的分享", "My shares", "自分の共有", "내 공유"), Icons.Outlined.Share, tr("页面", "Page", "ページ", "페이지"), keywords = "shares") { openPage(Screen.MyShares) },
         libraryDestination(DriveLibrary.TRASH, "trash bin"),
-        PaletteItem("设置", Icons.Outlined.Settings, "页面", keywords = "settings preferences") { openPage(Screen.Settings) },
+        PaletteItem(tr("设置", "Settings", "設定", "설정"), Icons.Outlined.Settings, tr("页面", "Page", "ページ", "페이지"), keywords = "settings preferences") { openPage(Screen.Settings) },
     )
 
     @Composable
@@ -984,19 +992,19 @@ fun PikoMainScaffold(
                                     feedShown = feedShown && !feedSuspended,
                                     onFeedShownChange = { shown ->
                                         when {
-                                            shown && feedSuspended -> taskSlot.claim("继续刷信息流", "继续刷", TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) { resumeFeed() }
-                                            shown -> taskSlot.claim("打开信息流", "打开信息流", TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) { setFeedShown(true) }
+                                            shown && feedSuspended -> taskSlot.claim(tr("继续刷信息流", "Continue browsing feed", "フィードの続きを見る", "피드 계속 보기"), tr("继续刷", "Keep watching", "続きを見る", "계속 보기"), TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) { resumeFeed() }
+                                            shown -> taskSlot.claim(tr("打开信息流", "Open feed", "フィードを開く", "피드 열기"), tr("打开信息流", "Open feed", "フィードを開く", "피드 열기"), TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) { setFeedShown(true) }
                                             else -> requestCloseFeed()
                                         }
                                     },
                                     onOpenSelectedFeed = { selected ->
-                                        taskSlot.claim("打开所选视频的信息流", "打开信息流", TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) {
+                                        taskSlot.claim(tr("打开所选视频的信息流", "Open selected videos as feed", "選択した動画をフィードで開く", "선택한 동영상의 피드 열기"), tr("打开信息流", "Open feed", "フィードを開く", "피드 열기"), TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) {
                                             setFeedShown(true, selected.toList())
                                         }
                                     },
                                     feedStashed = feedSuspended,
                                     onResumeFeed = {
-                                        taskSlot.claim("继续刷信息流", "继续刷", TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) {
+                                        taskSlot.claim(tr("继续刷信息流", "Continue browsing feed", "フィードの続きを見る", "피드 계속 보기"), tr("继续刷", "Keep watching", "続きを見る", "계속 보기"), TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) {
                                             resumeFeed()
                                         }
                                     },
@@ -1116,39 +1124,39 @@ fun PikoMainScaffold(
         contributed: List<PaletteItem>,
     ): List<PaletteItem> = buildList {
         val here = folderStack.lastOrNull()?.id
-        fun path(stack: List<PikoPathBreadcrumb>) = stack.joinToString(" › ") { it.name }
+        fun path(stack: List<PikoPathBreadcrumb>) = stack.joinToString(" › ") { it.localizedName }
         recent.filter { it.last().id != here }.forEach { stack ->
-            add(PaletteItem(stack.last().name, Icons.Outlined.History, "最近", detail = path(stack)) { openFolderStack(stack) })
+            add(PaletteItem(stack.last().localizedName, Icons.Outlined.History, tr("最近", "Recent", "最近", "최근"), detail = path(stack)) { openFolderStack(stack) })
         }
         val label = shortcutModifier::label
         addAll(tabDestinations())
         pinned.forEach { folder ->
-            add(PaletteItem(folder.name, Icons.Outlined.PushPin, "快速访问") {
+            add(PaletteItem(folder.localizedName, Icons.Outlined.PushPin, tr("快速访问", "Quick access", "クイックアクセス", "빠른 액세스")) {
                 quickAccess.locate(folder) { stack -> goToDrive(stack) }
             })
         }
         folderStack.takeIf { it.isNotEmpty() }?.let { stack ->
             subfolders.forEach { folder ->
                 val target = stack + PikoPathBreadcrumb(folder.id, folder.name)
-                add(PaletteItem(folder.name, Icons.Outlined.Folder, "当前文件夹", detail = path(target)) { openFolderStack(target) })
+                add(PaletteItem(folder.name, Icons.Outlined.Folder, tr("当前文件夹", "Current folder", "現在のフォルダー", "현재 폴더"), detail = path(target)) { openFolderStack(target) })
             }
         }
         addAll(contributed)
-        add(PaletteItem("添加链接", Icons.Outlined.Bolt, "操作", keywords = "magnet link offline 磁力 离线") {
+        add(PaletteItem(tr("添加链接", "Add link", "リンクを追加", "링크 추가"), Icons.Outlined.Bolt, tr("操作", "Actions", "操作", "작업"), keywords = "magnet link offline 磁力 离线") {
             openAddLinkWithConfirm()
         })
-        add(PaletteItem("撤销", Icons.AutoMirrored.Outlined.Undo, "操作", detail = label("Z"), keywords = "undo") {
+        add(PaletteItem(tr("撤销", "Undo", "元に戻す", "실행 취소"), Icons.AutoMirrored.Outlined.Undo, tr("操作", "Actions", "操作", "작업"), detail = label("Z"), keywords = "undo") {
             if (services.driveRepository.currentAccount == account) taskSlot.requestUndoLast(services.driveRepository.changes, workspaceModel.fileCommands)
         })
         if (feedSuspended) {
-            add(PaletteItem("继续刷信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips resume", disabledReason = feedBlockedReason) {
-                taskSlot.claim("继续刷信息流", "继续刷", TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) { resumeFeed() }
+            add(PaletteItem(tr("继续刷信息流", "Continue browsing feed", "フィードの続きを見る", "피드 계속 보기"), Icons.Outlined.SwipeVertical, tr("操作", "Actions", "操作", "작업"), keywords = "feed clips resume", disabledReason = feedBlockedReason) {
+                taskSlot.claim(tr("继续刷信息流", "Continue browsing feed", "フィードの続きを見る", "피드 계속 보기"), tr("继续刷", "Keep watching", "続きを見る", "계속 보기"), TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) { resumeFeed() }
             })
         }
         // 信息流刷的是网盘里的一个文件夹，库与压缩包都不是
         if (feedShown || isDriveFolderId(folderStack.lastOrNull()?.id.orEmpty())) {
             add(PaletteItem(
-                if (feedShown) "关闭信息流" else "打开信息流", Icons.Outlined.SwipeVertical, "操作", keywords = "feed clips",
+                if (feedShown) tr("关闭信息流", "Close feed", "フィードを閉じる", "피드 닫기") else tr("打开信息流", "Open feed", "フィードを開く", "피드 열기"), Icons.Outlined.SwipeVertical, tr("操作", "Actions", "操作", "작업"), keywords = "feed clips",
                 disabledReason = feedBlockedReason.takeIf { !feedShown },
             ) {
                 if (feedShown) {
@@ -1156,7 +1164,7 @@ fun PikoMainScaffold(
                     resetToHome()
                     requestCloseFeed()
                 } else {
-                    taskSlot.claim("打开信息流", "打开信息流", TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) {
+                    taskSlot.claim(tr("打开信息流", "Open feed", "フィードを開く", "피드 열기"), tr("打开信息流", "Open feed", "フィードを開く", "피드 열기"), TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) {
                         currentTab = MainTab.FILES
                         resetToHome()
                         workspaceModel.activateFileBrowser()
@@ -1165,10 +1173,10 @@ fun PikoMainScaffold(
                 }
             })
         }
-        add(PaletteItem("快捷键一览", Icons.Outlined.Keyboard, "操作", detail = "F1", keywords = "shortcuts keyboard help 帮助") { shortcutsOpen = true })
-        add(PaletteItem("立即同步设置", Icons.Outlined.CloudSync, "操作", keywords = "sync settings") { coroutineScope.launch { services.settingsSync.syncNow() } })
+        add(PaletteItem(tr("快捷键一览", "Keyboard shortcuts", "キーボードショートカット", "키보드 단축키"), Icons.Outlined.Keyboard, tr("操作", "Actions", "操作", "작업"), detail = "F1", keywords = "shortcuts keyboard help 帮助") { shortcutsOpen = true })
+        add(PaletteItem(tr("立即同步设置", "Sync settings now", "設定を今すぐ同期", "지금 설정 동기화"), Icons.Outlined.CloudSync, tr("操作", "Actions", "操作", "작업"), keywords = "sync settings") { coroutineScope.launch { services.settingsSync.syncNow() } })
         ThemeMode.entries.forEach { mode ->
-            add(PaletteItem("主题：${mode.label}", Icons.Outlined.Palette, "操作", keywords = "theme ${mode.name.lowercase()}") {
+            add(PaletteItem(tr("主题：${mode.label}", "Theme: ${mode.label}", "テーマ：${mode.label}", "테마: ${mode.label}"), Icons.Outlined.Palette, tr("操作", "Actions", "操作", "작업"), keywords = "theme ${mode.name.lowercase()}") {
                 coroutineScope.launch { preferences.setThemeMode(mode.name) }
             })
         }
@@ -1182,6 +1190,7 @@ fun PikoMainScaffold(
     var paletteOpen by remember { mutableStateOf(false) }
     val focusFallback = remember { FocusFallback(shortcutFocus) }
     val rootSnackbar = remember { SnackbarHostState() }
+    ObserveMessages(services.appNotices, rootSnackbar)
     val clipboardPlatform = LocalPikoPlatform.current
     val detectClipboard by preferences.autoDetectClipboardLinksFlow.collectAsStateWithLifecycle(initialValue = false)
     val clipboardWindowFocused = LocalWindowInfo.current.isWindowFocused
@@ -1190,7 +1199,7 @@ fun PikoMainScaffold(
             val links = ClipboardLinkDetection.session.detect(clipboardPlatform.readClipboardText())
             if (links != null) {
                 val result = rootSnackbar.showSnackbar(
-                    "检测到剪贴板中的链接", actionLabel = "解析", withDismissAction = true,
+                    tr("检测到剪贴板中的链接", "Link detected in clipboard", "クリップボードにリンクがあります", "클립보드에서 링크 감지됨"), actionLabel = tr("解析", "Resolve", "解析", "분석"), withDismissAction = true,
                 )
                 if (result == SnackbarResult.ActionPerformed) openAddLinkWithConfirm(links)
             }
@@ -1200,7 +1209,7 @@ fun PikoMainScaffold(
         services.uploadManager.enqueued.collect { event ->
             if (event.account == services.driveRepository.currentAccount && currentTab != MainTab.TRANSFERS) {
                 launch {
-                    val result = rootSnackbar.showSnackbar("已加入上传队列（${event.count} 项）", actionLabel = "查看", withDismissAction = true)
+                    val result = rootSnackbar.showSnackbar(tr("已加入上传队列（${event.count} 项）", "Added to upload queue (${enCount(event.count, "item", "items")})", "アップロードキューに追加しました（${event.count} 項目）", "업로드 대기열에 추가했습니다 (${event.count}개 항목)"), actionLabel = tr("查看", "View", "表示", "보기"), withDismissAction = true)
                     if (result == SnackbarResult.ActionPerformed && event.account == services.driveRepository.currentAccount) openTransfers()
                 }
             }
@@ -1219,12 +1228,12 @@ fun PikoMainScaffold(
                 if (visibleReport) return@LaunchedEffect
                 val groups = finder.report.identical.size + finder.report.versions.size
                 val message = when {
-                    finder.phase == dev.piko.shared.state.DuplicateFinderState.Phase.FAILED -> "查找重复失败"
-                    finder.scanStop != null || finder.failedFolders > 0 -> "部分扫描结果，发现 $groups 组重复文件"
-                    groups > 0 -> "发现 $groups 组重复文件"
-                    else -> "未发现重复文件"
+                    finder.phase == dev.piko.shared.state.DuplicateFinderState.Phase.FAILED -> tr("查找重复失败", "Duplicate search failed", "重複検索に失敗しました", "중복 검색 실패")
+                    finder.scanStop != null || finder.failedFolders > 0 -> tr("部分扫描结果，发现 $groups 组重复文件", "Partial results: $groups duplicate groups found", "検索の途中結果：$groups 組の重複ファイル", "부분 검색 결과: 중복 파일 ${groups}개 그룹")
+                    groups > 0 -> tr("发现 $groups 组重复文件", "Found $groups duplicate groups", "$groups 組の重複ファイルが見つかりました", "중복 파일 ${groups}개 그룹 찾음")
+                    else -> tr("未发现重复文件", "No duplicate files found", "重複ファイルはありません", "중복 파일이 없습니다")
                 }
-                val result = rootSnackbar.showSnackbar(message, actionLabel = "查看报告", withDismissAction = true)
+                val result = rootSnackbar.showSnackbar(message, actionLabel = tr("查看报告", "View report", "レポートを表示", "보고서 보기"), withDismissAction = true)
                 if (result == SnackbarResult.ActionPerformed && workspaceModel.duplicateSessions[id]?.state === finder) {
                     workspaceModel.activateContext(id, rememberOrigin = true)
                 }
@@ -1242,10 +1251,10 @@ fun PikoMainScaffold(
                 if (session.pendingCompletions.value.none { it.id == completion.id }) return@collect
                 val outcome = completion.outcome
                 val message = when (outcome) {
-                    is dev.piko.shared.state.InstantSaveOutcome.InstantSaved -> "已保存 ${outcome.createdIds.size} 个文件"
-                    is dev.piko.shared.state.InstantSaveOutcome.OfflineTaskCreated -> "已提交云端保存"
+                    is dev.piko.shared.state.InstantSaveOutcome.InstantSaved -> tr("已保存 ${outcome.createdIds.size} 个文件", "Saved ${enCount(outcome.createdIds.size, "file", "files")}", "${outcome.createdIds.size} ファイルを保存しました", "파일 ${outcome.createdIds.size}개 저장 완료")
+                    is dev.piko.shared.state.InstantSaveOutcome.OfflineTaskCreated -> tr("已提交云端保存", "Cloud save submitted", "クラウドへの保存を送信しました", "클라우드 저장 제출 완료")
                 }
-                val result = rootSnackbar.showSnackbar(message, actionLabel = "查看", withDismissAction = true)
+                val result = rootSnackbar.showSnackbar(message, actionLabel = tr("查看", "View", "表示", "보기"), withDismissAction = true)
                 if (session.pendingCompletions.value.none { it.id == completion.id }) return@collect
                 session.acknowledgeCompletion(completion.id)
                 if (result == SnackbarResult.ActionPerformed) {
@@ -1267,7 +1276,7 @@ fun PikoMainScaffold(
             if (outcome.account != services.driveRepository.currentAccount) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
             if (outcome.account != services.driveRepository.currentAccount || services.historyEdits.works.value.none { it.id == outcome.id }) return@collect
-            val answer = rootSnackbar.showSnackbar("${outcome.title}：${outcome.result.message}", actionLabel = "查看任务", withDismissAction = true)
+            val answer = rootSnackbar.showSnackbar("${outcome.title}：${outcome.result.message}", actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기"), withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
         }
     }
@@ -1276,7 +1285,7 @@ fun PikoMainScaffold(
             if (outcome.account != services.driveRepository.currentAccount) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
             if (outcome.account != services.driveRepository.currentAccount || services.instantSaveRecords.attempts.value.none { it.id == outcome.id } || (currentTab == MainTab.FILES && backStack.size == 1 && workspaceModel.contexts.activeContextId.value in workspaceModel.importModels)) return@collect
-            val answer = rootSnackbar.showSnackbar(outcome.message, actionLabel = "查看任务", withDismissAction = true)
+            val answer = rootSnackbar.showSnackbar(outcome.message, actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기"), withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
         }
     }
@@ -1285,7 +1294,7 @@ fun PikoMainScaffold(
             if (outcome.account != services.driveRepository.currentAccount) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
             if (outcome.account != services.driveRepository.currentAccount || services.uploadManager.preparations.value.none { it.id == outcome.id }) return@collect
-            val answer = rootSnackbar.showSnackbar(outcome.result?.message.orEmpty(), actionLabel = "查看任务", withDismissAction = true)
+            val answer = rootSnackbar.showSnackbar(outcome.result?.message.orEmpty(), actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기"), withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
         }
     }
@@ -1295,7 +1304,7 @@ fun PikoMainScaffold(
             if (outcome.account != services.driveRepository.currentAccount || outcome.status == dev.piko.shared.state.OfflineSubmitStatus.COMPLETE) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
             if (outcome.account != services.driveRepository.currentAccount || submissions.works.value.none { it.id == outcome.id } || (currentTab == MainTab.FILES && backStack.size == 1 && workspaceModel.contexts.activeContextId.value in workspaceModel.importModels)) return@collect
-            val answer = rootSnackbar.showSnackbar(outcome.message, actionLabel = "查看任务", withDismissAction = true)
+            val answer = rootSnackbar.showSnackbar(outcome.message, actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기"), withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
         }
     }
@@ -1305,7 +1314,7 @@ fun PikoMainScaffold(
             if (outcome.result.completion == dev.piko.shared.state.ShareSaveCompletion.SUCCEEDED && services.shareSaves.works.value.firstOrNull { it.id == outcome.id }?.undoChangeIds?.isNotEmpty() == true) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
             if (outcome.account != services.driveRepository.currentAccount || services.shareSaves.works.value.none { it.id == outcome.id } || (currentTab == MainTab.FILES && backStack.size == 1 && workspaceModel.contexts.activeContextId.value in workspaceModel.importModels)) return@collect
-            val answer = rootSnackbar.showSnackbar(outcome.result.message, actionLabel = "查看任务", withDismissAction = true)
+            val answer = rootSnackbar.showSnackbar(outcome.result.message, actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기"), withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
         }
     }
@@ -1318,7 +1327,7 @@ fun PikoMainScaffold(
             if (outcome.account != services.driveRepository.currentAccount) return@collect
             val answer = rootSnackbar.showSnackbar(
                 "${outcome.title}：${outcome.result.message}",
-                actionLabel = "查看任务".takeIf { work.showsInTaskPage },
+                actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기").takeIf { work.showsInTaskPage },
                 withDismissAction = true,
             )
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
@@ -1335,7 +1344,7 @@ fun PikoMainScaffold(
             if (outcome.account != services.driveRepository.currentAccount) return@collect
             val answer = rootSnackbar.showSnackbar(
                 "${outcome.title}：${outcome.result.message}",
-                actionLabel = "查看任务".takeIf { work.showsInTaskPage },
+                actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기").takeIf { work.showsInTaskPage },
                 withDismissAction = true,
             )
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) openTransfers()
@@ -1349,7 +1358,7 @@ fun PikoMainScaffold(
             awaitVisible = { lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) } },
             undo = { change ->
                 val result = workspaceModel.fileCommands.undo(change.id)
-                if (result is dev.piko.shared.presentation.FileCommandResult.Rejected) taskSlot.showBlocked("撤销", result.reason)
+                if (result is dev.piko.shared.presentation.FileCommandResult.Rejected) taskSlot.showBlocked(tr("撤销", "Undo", "元に戻す", "실행 취소"), result.reason)
             },
             isCurrent = { event -> services.driveRepository.currentAccount == account &&
                 (event.generation == null || event.generation == changes.state.value.generation) },
@@ -1652,7 +1661,7 @@ private fun MainSidebar(
             }
             TooltipIconButton(
                 icon = if (collapsed) Icons.Outlined.Menu else Icons.AutoMirrored.Outlined.MenuOpen,
-                label = if (collapsed) "展开侧边栏" else "收起侧边栏",
+                label = if (collapsed) tr("展开侧边栏", "Expand sidebar", "サイドバーを展開", "사이드바 펼치기") else tr("收起侧边栏", "Collapse sidebar", "サイドバーを折りたたむ", "사이드바 접기"),
                 onClick = onToggleCollapsed,
                 shortcut = LocalPikoPlatform.current.shortcutModifier.label("B"),
                 modifier = if (collapsed) Modifier else Modifier.padding(end = 8.dp),
@@ -1682,7 +1691,7 @@ private fun MainSidebar(
                 onFilesTab = selectedPage == null && currentTab == MainTab.FILES,
                 onOpen = onOpenQuickAccess,
             )
-            SectionLabel("库")
+            SectionLabel(tr("库", "Library", "ライブラリ", "라이브러리"))
             for (entry in LibraryEntries) {
                 val library = entry.library
                 val targetScreen = entry.screen ?: library?.let { Screen.Library(it.id) }
@@ -1721,7 +1730,7 @@ private fun MainTabSwitch(currentTab: MainTab?, onTabClick: (MainTab) -> Unit, a
             SidebarItem(
                 icon = tab.icon(false),
                 selectedIcon = tab.icon(true),
-                label = if (snailed) "任务（蜗牛模式）" else tab.title,
+                label = if (snailed) tr("任务（蜗牛模式）", "Tasks (snail mode)", "タスク（低速モード）", "작업 (저속 모드)") else tab.title,
                 selected = selected,
                 onClick = { onTabClick(tab) },
                 trailing = if (tab == MainTab.TRANSFERS && activity.hasReadout) {
@@ -1770,12 +1779,14 @@ private fun MainTabSwitch(currentTab: MainTab?, onTabClick: (MainTab) -> Unit, a
 
 /** 「库」里的一项：网盘页里的一个库（[library]），或是单独的一页（[screen]，只有我的分享）。 */
 private class LibraryEntry(
-    val label: String,
+    private val labelText: () -> String,
     val icon: ImageVector,
     val selectedIcon: ImageVector,
     val library: DriveLibrary? = null,
     val screen: Screen? = null,
-)
+) {
+    val label: String get() = labelText()
+}
 
 /**
  * 侧边栏「库」一组：看内容的在前，管理的在后，与「我的」页的顺序一致。
@@ -1787,8 +1798,8 @@ private val LibraryEntries = listOf(
     LibraryEntry(DriveLibrary.RECENT),
     LibraryEntry(DriveLibrary.STARRED),
     LibraryEntry(DriveLibrary.HISTORY),
-    LibraryEntry("我的分享", Icons.Outlined.FolderShared, Icons.Filled.FolderShared, screen = Screen.MyShares),
+    LibraryEntry({ tr("我的分享", "My shares", "自分の共有", "내 공유") }, Icons.Outlined.FolderShared, Icons.Filled.FolderShared, screen = Screen.MyShares),
     LibraryEntry(DriveLibrary.TRASH),
 )
 
-private fun LibraryEntry(library: DriveLibrary) = LibraryEntry(library.title, library.icon, library.selectedIcon, library = library)
+private fun LibraryEntry(library: DriveLibrary) = LibraryEntry({ library.title }, library.icon, library.selectedIcon, library = library)

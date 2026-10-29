@@ -1,6 +1,7 @@
 package dev.piko.shared.naming
 
 import dev.piko.data.repository.NaturalOrder
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.naming.av.AvInfo
 
 /**
@@ -10,16 +11,18 @@ import dev.piko.shared.naming.av.AvInfo
 enum class FileKind { VIDEO, AUDIO, IMAGE, SUBTITLE, ARCHIVE, DOCUMENT, FONT, LINK, PROGRAM, DISC_IMAGE, DISC_METADATA }
 
 /** 分区。声明顺序即各分区之间的展示顺序。 */
-enum class Section(val label: String) {
-    MAIN("正片"),
-    SPECIAL("SP"),
-    OVA("OVA/OAD"),
-    MOVIE("剧场版"),
-    PREVIEW("PV/CM"),
-    CREDITLESS("NCOP/NCED"),
-    BONUS("特典"),
-    MENU("菜单"),
-    OTHER("其他"),
+enum class Section(private val labelText: () -> String) {
+    MAIN({ tr("正片", "Main", "本編", "본편") }),
+    SPECIAL({ "SP" }),
+    OVA({ "OVA/OAD" }),
+    MOVIE({ tr("剧场版", "Movies", "劇場版", "극장판") }),
+    PREVIEW({ "PV/CM" }),
+    CREDITLESS({ "NCOP/NCED" }),
+    BONUS({ tr("特典", "Extras", "特典", "특전") }),
+    MENU({ tr("菜单", "Menus", "メニュー", "메뉴") }),
+    OTHER({ tr("其他", "Other", "その他", "기타") });
+
+    val label: String get() = labelText()
 }
 
 enum class NameKind {

@@ -11,6 +11,9 @@ import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.i18n.enCount
+import dev.piko.shared.i18n.tr
+import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
@@ -79,7 +82,7 @@ class ClipFeedSession(
     var selectedVideoCount by mutableStateOf<Int?>(null)
         private set
 
-    val scopeLabel: String get() = selectedVideoCount?.let { "已选 $it 个视频" } ?: root?.name.orEmpty()
+    val scopeLabel: String get() = selectedVideoCount?.let { tr("已选 $it 个视频", "Selected ${enCount(it, "video", "videos")}", "$it 件の動画を選択", "동영상 ${it}개 선택됨") } ?: root?.localizedName.orEmpty()
 
     private var selectedIds: Set<String>? = null
     private var generation by mutableStateOf(0L)

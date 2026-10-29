@@ -1,5 +1,7 @@
 package dev.piko.shared.rename
 
+import dev.piko.shared.i18n.tr
+
 /**
  * 替换的积木，拼成 [ReplaceTemplate] 认的替换串（正则模式）。与 [FindBlock] 一样只是另一种写法。
  */
@@ -22,10 +24,13 @@ sealed interface ReplaceBlock {
     data object Uuid : ReplaceBlock
 }
 
-enum class RandomKind(val key: String, val label: String) {
-    ALNUM("rstringalnum", "随机字母与数字"),
-    ALPHA("rstringalpha", "随机字母"),
-    DIGIT("rstringdigit", "随机数字"),
+enum class RandomKind(val key: String, private val labelText: () -> String) {
+    ALNUM("rstringalnum", { tr("随机字母与数字", "Random letters and digits", "ランダムな英数字", "무작위 영문자와 숫자") }),
+    ALPHA("rstringalpha", { tr("随机字母", "Random letters", "ランダムな英字", "무작위 영문자") }),
+    DIGIT("rstringdigit", { tr("随机数字", "Random digits", "ランダムな数字", "무작위 숫자") }),
+;
+
+    val label: String get() = labelText()
 }
 
 /** 合并相邻的文字积木，去掉空文字。 */
@@ -153,13 +158,13 @@ private fun placeholderBlock(content: String): ReplaceBlock? {
 
 /** 一块替换积木的中文说明。 */
 fun ReplaceBlock.describe(): String = when (this) {
-    is ReplaceBlock.Piece -> if (number == 0) "匹配内容" else "片段" + circled(number)
+    is ReplaceBlock.Piece -> if (number == 0) tr("匹配内容", "Matched text", "一致した文字列", "일치한 텍스트") else tr("片段", "Capture", "キャプチャ", "캡처") + circled(number)
     is ReplaceBlock.Text -> "「$text」"
     // 直接写出前两个号：「序号 01、02…」比「从 1 开始，步长 1，补足 2 位」一眼看得懂
-    is ReplaceBlock.Counter -> "序号 ${counterValue(start, padding)}、${counterValue(start + increment, padding)}…"
+    is ReplaceBlock.Counter -> tr("序号 ${counterValue(start, padding)}、${counterValue(start + increment, padding)}…", "Counter ${counterValue(start, padding)}, ${counterValue(start + increment, padding)}…", "連番 ${counterValue(start, padding)}、${counterValue(start + increment, padding)}…", "번호 ${counterValue(start, padding)}, ${counterValue(start + increment, padding)}…")
     is ReplaceBlock.Date -> DATE_TOKEN_LABELS.getValue(token)
-    is ReplaceBlock.RandomText -> "$length 位${kind.label}"
-    ReplaceBlock.Uuid -> "随机 UUID"
+    is ReplaceBlock.RandomText -> tr("$length 位${kind.label}", "$length characters: ${kind.label}", "$length 文字：${kind.label}", "${length}자리 ${kind.label}")
+    ReplaceBlock.Uuid -> tr("随机 UUID", "Random UUID", "ランダムUUID", "무작위 UUID")
 }
 
 private fun counterValue(value: Int, padding: Int): String =
@@ -167,34 +172,34 @@ private fun counterValue(value: Int, padding: Int): String =
 
 /** 整条替换拼成一句话，如「片段①、「 - 」、序号 01、02…」。 */
 fun describeReplace(blocks: List<ReplaceBlock>): String =
-    if (blocks.isEmpty()) "留空将删除匹配内容" else blocks.joinToString("、") { it.describe() }
+    if (blocks.isEmpty()) tr("留空将删除匹配内容", "Leave empty to delete matched text", "空欄にすると一致した文字列を削除します", "비워 두면 일치한 텍스트를 삭제합니다") else blocks.joinToString("、") { it.describe() }
 
 /** 日期积木可选的各项及其说明，按 [DATE_TOKENS] 的顺序。 */
 val DATE_TOKEN_CHOICES: List<Pair<String, String>> get() = DATE_TOKENS.map { it to DATE_TOKEN_LABELS.getValue(it) }
 
-private val DATE_TOKEN_LABELS = mapOf(
-    "YYYY" to "四位年份",
-    "YY" to "两位年份",
-    "Y" to "年份末位",
-    "MMMM" to "月份全称",
-    "MMM" to "月份简称",
-    "MM" to "两位月份",
-    "M" to "月份",
-    "DDDD" to "星期全称",
-    "DDD" to "星期简称",
-    "DD" to "两位日期",
-    "D" to "日期",
-    "HH" to "两位小时（12 小时制）",
-    "H" to "小时（12 小时制）",
-    "TT" to "AM 或 PM",
-    "tt" to "am 或 pm",
-    "hh" to "两位小时",
-    "h" to "小时",
-    "mm" to "两位分钟",
-    "m" to "分钟",
-    "ss" to "两位秒",
-    "s" to "秒",
-    "fff" to "毫秒",
-    "ff" to "百分之一秒",
-    "f" to "十分之一秒",
+private val DATE_TOKEN_LABELS: Map<String, String> get() = mapOf(
+    "YYYY" to tr("四位年份", "Four-digit year", "年（4桁）", "4자리 연도"),
+    "YY" to tr("两位年份", "Two-digit year", "年（2桁）", "2자리 연도"),
+    "Y" to tr("年份末位", "Last digit of year", "年の末尾1桁", "연도의 마지막 자리"),
+    "MMMM" to tr("月份全称", "Full month name", "月名", "월 이름"),
+    "MMM" to tr("月份简称", "Short month name", "月名（略称）", "월 이름 약어"),
+    "MM" to tr("两位月份", "Two-digit month", "月（2桁）", "2자리 월"),
+    "M" to tr("月份", "Month", "月", "월"),
+    "DDDD" to tr("星期全称", "Full weekday name", "曜日名", "요일 이름"),
+    "DDD" to tr("星期简称", "Short weekday name", "曜日名（略称）", "요일 약어"),
+    "DD" to tr("两位日期", "Two-digit day", "日（2桁）", "2자리 일"),
+    "D" to tr("日期", "Day", "日", "일"),
+    "HH" to tr("两位小时（12 小时制）", "Two-digit hour (12-hour)", "時（12時間制、2桁）", "2자리 시 (12시간제)"),
+    "H" to tr("小时（12 小时制）", "Hour (12-hour)", "時（12時間制）", "시 (12시간제)"),
+    "TT" to tr("AM 或 PM", "AM or PM", "AM または PM", "AM 또는 PM"),
+    "tt" to tr("am 或 pm", "am or pm", "am または pm", "am 또는 pm"),
+    "hh" to tr("两位小时", "Two-digit hour", "時（2桁）", "2자리 시"),
+    "h" to tr("小时", "Hour", "時", "시"),
+    "mm" to tr("两位分钟", "Two-digit minute", "分（2桁）", "2자리 분"),
+    "m" to tr("分钟", "Minute", "分", "분"),
+    "ss" to tr("两位秒", "Two-digit second", "秒（2桁）", "2자리 초"),
+    "s" to tr("秒", "Second", "秒", "초"),
+    "fff" to tr("毫秒", "Milliseconds", "ミリ秒", "밀리초"),
+    "ff" to tr("百分之一秒", "Hundredths of a second", "100分の1秒", "100분의 1초"),
+    "f" to tr("十分之一秒", "Tenths of a second", "10分の1秒", "10분의 1초"),
 )

@@ -1,5 +1,12 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileCopy
@@ -40,15 +47,15 @@ internal fun libraryNote(library: DriveLibrary, file: FileStat, event: DriveEven
     // 查找重复的附注要从会话取，见 duplicateLocations
     DriveLibrary.STARRED, DriveLibrary.DUPLICATES -> null
     // delete_time 是服务端排定的彻底清除时间。实测为移入回收站后 15 天，但期限由服务端决定，不在这里按固定天数推算
-    DriveLibrary.TRASH -> file.deleteTime.takeIf { it.isNotEmpty() }?.let { "将于 ${it.take(10)} 彻底删除" }
+    DriveLibrary.TRASH -> file.deleteTime.takeIf { it.isNotEmpty() }?.let { tr("将于 ${it.take(10)} 彻底删除", "Permanently deleted on ${it.take(10)}", "${it.take(10)} に完全削除", "${it.take(10)}에 영구 삭제 예정") }
     DriveLibrary.RECENT -> event?.let {
-        val how = if (it.type == EventType.UPLOAD) "上传" else "离线或秒传"
+        val how = if (it.type == EventType.UPLOAD) tr("上传", "Uploads", "アップロード", "업로드") else tr("离线或秒传", "Cloud download or instant save", "クラウドダウンロード・インスタント保存", "클라우드 다운로드 또는 즉시 저장")
         listOfNotNull(formatEventTime(it.updatedTime), how).joinToString(" ")
     }
     DriveLibrary.HISTORY -> event?.let {
         val watched = it.playSeconds?.let { seconds ->
             val at = formatTime(seconds * 1000)
-            it.playDuration?.takeIf { d -> d > 0 }?.let { d -> "播放至 $at / ${formatTime(d * 1000)}" } ?: "播放至 $at"
+            it.playDuration?.takeIf { d -> d > 0 }?.let { d -> tr("播放至 $at / ${formatTime(d * 1000)}", "Played $at / ${formatTime(d * 1000)}", "再生位置 $at / ${formatTime(d * 1000)}", "재생 위치 $at / ${formatTime(d * 1000)}") } ?: tr("播放至 $at", "Played to $at", "再生位置 $at", "재생 위치 $at")
         }
         listOfNotNull(formatEventTime(it.updatedTime), watched).joinToString(" ").ifEmpty { null }
     }
@@ -61,10 +68,10 @@ private fun formatEventTime(rfc3339: String): String? = runCatching {
     val date = time.toLocalDate()
     val clock = time.format(DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault()))
     when {
-        date == today -> "今天 $clock"
-        date == today.minusDays(1) -> "昨天 $clock"
-        date.year == today.year -> time.format(DateTimeFormatter.ofPattern("M 月 d 日", Locale.getDefault()))
-        else -> time.format(DateTimeFormatter.ofPattern("yyyy 年 M 月 d 日", Locale.getDefault()))
+        date == today -> tr("今天 $clock", "Today $clock", "今日 $clock", "오늘 $clock")
+        date == today.minusDays(1) -> tr("昨天 $clock", "Yesterday $clock", "昨日 $clock", "어제 $clock")
+        date.year == today.year -> time.format(DateTimeFormatter.ofPattern(tr("M 月 d 日", "MMM d", "M月d日", "M월 d일"), Locale.getDefault()))
+        else -> time.format(DateTimeFormatter.ofPattern(tr("yyyy 年 M 月 d 日", "MMM d, yyyy", "yyyy年M月d日", "yyyy년 M월 d일"), Locale.getDefault()))
     }
 }.getOrNull()
 
@@ -94,12 +101,12 @@ internal val DriveLibrary.selectedIcon: ImageVector
 
 internal val DriveLibrary.empty: LibraryEmpty
     get() = when (this) {
-        DriveLibrary.RECENT -> LibraryEmpty("暂无最近添加", "上传、离线下载与秒传的文件显示于此", icon)
-        DriveLibrary.STARRED -> LibraryEmpty("暂无星标", "在文件菜单中添加星标后显示于此", icon)
-        DriveLibrary.HISTORY -> LibraryEmpty("暂无播放记录", "包含 PikPak 各客户端的播放记录", icon)
-        DriveLibrary.TRASH -> LibraryEmpty("回收站为空", "移入回收站的文件显示于此，可恢复或彻底删除", icon)
+        DriveLibrary.RECENT -> LibraryEmpty(tr("暂无最近添加", "No recently added files", "最近追加したファイルはありません", "최근 추가 파일이 없습니다"), tr("上传、离线下载与秒传的文件显示于此", "Uploads, cloud downloads and instant saves appear here", "アップロード・クラウドダウンロード・インスタント保存したファイルを表示します", "업로드, 클라우드 다운로드 및 즉시 저장 파일이 여기에 표시됩니다"), icon)
+        DriveLibrary.STARRED -> LibraryEmpty(tr("暂无星标", "No starred items", "スター付きの項目はありません", "별표 항목이 없습니다"), tr("在文件菜单中添加星标后显示于此", "Star items from the file menu to see them here", "ファイルメニューでスターを付けると表示されます", "파일 메뉴에서 별표를 추가하면 여기에 표시됩니다"), icon)
+        DriveLibrary.HISTORY -> LibraryEmpty(tr("暂无播放记录", "No playback history", "再生履歴はありません", "재생 기록이 없습니다"), tr("包含 PikPak 各客户端的播放记录", "Includes playback from all PikPak apps", "PikPakの各アプリの再生履歴を含みます", "모든 PikPak 앱의 재생 기록을 포함합니다"), icon)
+        DriveLibrary.TRASH -> LibraryEmpty(tr("回收站为空", "Trash is empty", "ゴミ箱は空です", "휴지통이 비어 있습니다"), tr("移入回收站的文件显示于此，可恢复或彻底删除", "Trashed files appear here for restoration or permanent deletion", "ゴミ箱に移動したファイルを表示します。復元または完全に削除できます", "휴지통의 파일을 여기에서 복원하거나 영구 삭제할 수 있습니다"), icon)
         // 实际画的是 DuplicatesEmptyState，要分扫描中、失败与已结束
-        DriveLibrary.DUPLICATES -> LibraryEmpty("未发现重复文件", "",Icons.Outlined.FolderOpen)
+        DriveLibrary.DUPLICATES -> LibraryEmpty(tr("未发现重复文件", "No duplicate files found", "重複ファイルはありません", "중복 파일이 없습니다"), "",Icons.Outlined.FolderOpen)
     }
 
 /**
@@ -118,16 +125,16 @@ internal sealed interface LibraryConfirm {
     val confirmLabel: String
 
     class DeleteForever(val ids: List<String>, val emptying: Boolean) : LibraryConfirm {
-        override val title get() = if (emptying) "清空回收站" else "彻底删除"
+        override val title get() = if (emptying) tr("清空回收站", "Empty trash", "ゴミ箱を空にする", "휴지통 비우기") else tr("彻底删除", "Delete permanently", "完全に削除", "영구 삭제")
         override val message
-            get() = if (emptying) "将彻底删除回收站中的全部 ${ids.size} 项，删除后无法恢复。" else "将彻底删除所选的 ${ids.size} 项，删除后无法恢复。"
-        override val confirmLabel get() = "彻底删除"
+            get() = if (emptying) tr("将彻底删除回收站中的全部 ${ids.size} 项，删除后无法恢复。", "Permanently delete all ${enCount(ids.size, "item", "items")} in trash. This cannot be undone.", "ゴミ箱の全 ${ids.size} 項目を完全に削除します。元に戻せません。", "휴지통의 모든 ${ids.size}개 항목을 영구 삭제합니다. 복원할 수 없습니다.") else tr("将彻底删除所选的 ${ids.size} 项，删除后无法恢复。", "Permanently delete ${ids.size} selected items. This cannot be undone.", "選択した ${ids.size} 項目を完全に削除します。元に戻せません。", "선택한 ${ids.size}개 항목을 영구 삭제합니다. 복원할 수 없습니다.")
+        override val confirmLabel get() = tr("彻底删除", "Delete permanently", "完全に削除", "영구 삭제")
     }
 
     data object ClearHistory : LibraryConfirm {
-        override val title get() = "清空播放历史"
-        override val message get() = "将删除全部播放记录，官方客户端同步清空，无法恢复。"
-        override val confirmLabel get() = "清空"
+        override val title get() = tr("清空播放历史", "Clear playback history", "再生履歴を消去", "재생 기록 지우기")
+        override val message get() = tr("将删除全部播放记录，官方客户端同步清空，无法恢复。", "Delete all playback history, including official apps. This cannot be undone.", "すべての再生履歴を削除し、公式アプリにも反映します。元に戻せません。", "모든 재생 기록을 삭제하며 공식 앱에도 반영됩니다. 복원할 수 없습니다.")
+        override val confirmLabel get() = tr("清空", "Clear all", "すべて消去", "모두 지우기")
     }
 }
 
@@ -138,7 +145,7 @@ internal fun LibraryConfirmDialog(request: LibraryConfirm, onConfirm: () -> Unit
         title = { Text(request.title) },
         text = { Text(request.message) },
         confirmButton = { PikoDialogConfirm(request.confirmLabel, onClick = onConfirm, destructive = true) },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) } },
     )
 }
 
@@ -147,8 +154,8 @@ internal fun libraryPageActions(library: DriveLibrary?, isEmpty: Boolean, onConf
     when {
         isEmpty -> emptyList()
         library == DriveLibrary.TRASH ->
-            listOf(SheetAction(Icons.Outlined.DeleteSweep, "清空回收站", { onConfirm(LibraryConfirm.DeleteForever(allIds(), emptying = true)) }, destructive = true))
+            listOf(SheetAction(Icons.Outlined.DeleteSweep, tr("清空回收站", "Empty trash", "ゴミ箱を空にする", "휴지통 비우기"), { onConfirm(LibraryConfirm.DeleteForever(allIds(), emptying = true)) }, destructive = true))
         library == DriveLibrary.HISTORY ->
-            listOf(SheetAction(Icons.Outlined.DeleteSweep, "清空播放历史", { onConfirm(LibraryConfirm.ClearHistory) }, destructive = true))
+            listOf(SheetAction(Icons.Outlined.DeleteSweep, tr("清空播放历史", "Clear playback history", "再生履歴を消去", "재생 기록 지우기"), { onConfirm(LibraryConfirm.ClearHistory) }, destructive = true))
         else -> emptyList()
     }

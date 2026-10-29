@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.settings
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -446,7 +451,7 @@ internal fun SettingsChoiceDialog(
                 if (footer != null) DialogFootnote(footer)
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_close)) } },
     )
 }
 
@@ -525,8 +530,8 @@ internal fun SettingsInputDialog(
                 if (footer != null) DialogFootnote(footer)
             }
         },
-        confirmButton = { PikoDialogConfirm("保存", onClick = onSave, enabled = saveEnabled) },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = { PikoDialogConfirm(tr("保存", "Save", "保存", "저장"), onClick = onSave, enabled = saveEnabled) },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) } },
     )
 }
 

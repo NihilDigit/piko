@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.clips
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -60,7 +62,7 @@ internal class ClipActions(
     /** [value] 为 null 时切换。双击画面只加不减，与短视频应用的点赞一致。 */
     fun setStarred(clip: Clip, value: Boolean? = null) {
         if (dev.piko.shared.data.VaultEntry.isVaulted(clip.fileId)) {
-            onMessage("归档文件需要先恢复到网盘才能添加星标")
+            onMessage(tr("归档文件需要先恢复到网盘才能添加星标", "Restore archived files to the drive before starring them", "スターを付ける前にアーカイブをドライブに復元してください", "별표를 추가하려면 보관 파일을 먼저 드라이브로 복원하세요"))
             return
         }
         val before = isStarred(clip)
@@ -73,11 +75,11 @@ internal class ClipActions(
             try {
                 driveRepo.setStarred(listOf(clip.fileId), target)
                     // 网盘页可能就在旁边，列表里的星标由仓库通知它重列
-                    .onSuccess { onMessage(if (target) "已添加星标" else "已取消星标") }
+                    .onSuccess { onMessage(if (target) tr("已添加星标", "Starred", "スターを付けました", "별표를 추가했습니다") else tr("已取消星标", "Unstarred", "スターを外しました", "별표를 해제했습니다")) }
                     .logFailure(TAG, "信息流修改星标失败")
                     .onFailure {
                         starred[clip.fileId] = before
-                        onMessage(if (target) "添加星标失败" else "取消星标失败")
+                        onMessage(if (target) tr("添加星标失败", "Failed to add star", "スターを付けられませんでした", "별표를 추가하지 못했습니다") else tr("取消星标失败", "Failed to remove star", "スターを外せませんでした", "별표를 해제하지 못했습니다"))
                     }
             } finally {
                 pending -= clip.fileId

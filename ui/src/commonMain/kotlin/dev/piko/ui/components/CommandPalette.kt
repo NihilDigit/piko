@@ -1,5 +1,10 @@
 package dev.piko.ui.components
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -157,7 +162,7 @@ fun CommandPalette(items: List<PaletteItem>, onDismiss: () -> Unit) {
                         Box(Modifier.weight(1f).padding(start = 12.dp)) {
                             if (query.isEmpty()) {
                                 Text(
-                                    "跳到文件夹，或输入命令",
+                                    stringResource(Res.string.text_go_to_folder_or_enter_a_command),
                                     style = MaterialTheme.typography.bodyLarge,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -187,7 +192,7 @@ fun CommandPalette(items: List<PaletteItem>, onDismiss: () -> Unit) {
                         // 与搜索框同一条规矩：右端一直有个取消，有字时清空，没字时关掉面板。触屏上没有 Esc
                         TooltipIconButton(
                             icon = Icons.Outlined.Close,
-                            label = if (query.isNotEmpty()) "清除" else "关闭",
+                            label = if (query.isNotEmpty()) tr("清除", "Clear", "消去", "지우기") else tr("关闭", "Close", "閉じる", "닫기"),
                             onClick = { if (query.isNotEmpty()) query = "" else onDismiss() },
                             shortcut = if (query.isNotEmpty()) null else "Esc",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -195,7 +200,7 @@ fun CommandPalette(items: List<PaletteItem>, onDismiss: () -> Unit) {
                     }
                     if (results.isEmpty()) {
                         Text(
-                            "没有匹配的文件夹或命令",
+                            stringResource(Res.string.text_no_matching_folders_or_commands),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(20.dp),

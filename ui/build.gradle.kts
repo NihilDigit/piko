@@ -6,6 +6,12 @@ plugins {
     alias(libs.plugins.android.kotlin.multiplatform.library)
 }
 
+compose.resources {
+    generateResClass = always
+    publicResClass = true
+    packageOfResClass = "dev.piko.ui.resources"
+}
+
 // 两端共用的 Material 3 Expressive 界面。与 shared 分开：shared 只放状态与业务，
 // 冒烟测试编译它时不必带上整套 material3 与图标库。
 kotlin {
@@ -28,6 +34,7 @@ kotlin {
             languageSettings.optIn("androidx.compose.material3.ExperimentalMaterial3ExpressiveApi")
         }
         commonMain.dependencies {
+            api(libs.cmp.components.resources)
             api(project(":shared"))
             api(libs.cmp.runtime)
             api(libs.cmp.foundation)
@@ -62,6 +69,16 @@ kotlin {
         val desktopTest by getting {
             dependencies {
                 implementation(kotlin("test"))
+                // Official resource lookup reads the desktop theme through Skiko.
+                val hostOs = System.getProperty("os.name").let {
+                    when {
+                        it.startsWith("Windows") -> "windows"
+                        it.startsWith("Mac") -> "macos"
+                        else -> "linux"
+                    }
+                }
+                val hostArch = if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
+                runtimeOnly("org.jetbrains.compose.desktop:desktop-jvm-$hostOs-$hostArch:${libs.versions.composeMultiplatform.get()}")
             }
         }
     }

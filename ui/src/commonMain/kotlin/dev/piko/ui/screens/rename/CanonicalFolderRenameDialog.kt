@@ -1,5 +1,12 @@
 package dev.piko.ui.screens.rename
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +34,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.ScanStop
+import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.rename.BatchRenameState
 import dev.piko.shared.rename.BatchRenameState.Phase
 import dev.piko.shared.rename.CanonicalTreeScan
@@ -55,7 +63,7 @@ fun CanonicalFolderRenameDialog(
     val (memory, textMode) = rememberRenameMemory() ?: return
     val scope = rememberCoroutineScope()
     val scan = remember(root.id) { CanonicalTreeScan(services.clientManager, services.driveRepository, scope, root) }
-    val title = "按番号规范命名「${root.name}」"
+    val title = tr("按番号规范命名「${root.localizedName}」", "Normalize “${root.localizedName}” by catalog code", "「${root.localizedName}」を作品番号で命名", "“${root.localizedName}”을(를) 품번으로 이름 정리")
     val tree = scan.tree
     if (tree == null) {
         BatchRenameWindow(onDismiss) { _, fullscreen -> ScanContent(scan, title, onDismiss, fullscreen) }
@@ -84,13 +92,13 @@ private fun ScanContent(scan: CanonicalTreeScan, title: String, onClose: () -> U
         Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 if (failed) {
-                    Text("扫描失败", style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(Res.string.text_scan_failed), style = MaterialTheme.typography.titleMedium)
                     Text(scan.errorMessage.orEmpty(), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                 } else {
                     LinearProgressIndicator(Modifier.widthIn(max = 240.dp).fillMaxWidth())
-                    Text("正在扫描", style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(Res.string.text_scanning), style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "已扫描 ${scan.scannedFolders} 个文件夹、${scan.scannedFiles} 个文件",
+                        tr("已扫描 ${scan.scannedFolders} 个文件夹、${scan.scannedFiles} 个文件", "Scanned ${enCount(scan.scannedFolders, "folder", "folders")} and ${enCount(scan.scannedFiles, "file", "files")}", "${scan.scannedFolders} フォルダー、${scan.scannedFiles} ファイルを検索済み", "폴더 ${scan.scannedFolders}개, 파일 ${scan.scannedFiles}개 검색 완료"),
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.onSurfaceVariant,
                     )
@@ -101,12 +109,12 @@ private fun ScanContent(scan: CanonicalTreeScan, title: String, onClose: () -> U
             modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 24.dp, vertical = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
         ) {
-            if (!fullscreen) TextButton(onClick = onClose) { Text("取消") }
+            if (!fullscreen) TextButton(onClick = onClose) { Text(stringResource(Res.string.common_cancel)) }
             if (failed) {
-                TextButton(onClick = scan::start) { Text("重试") }
+                TextButton(onClick = scan::start) { Text(stringResource(Res.string.common_retry)) }
             } else {
                 // 停止不丢已扫到的部分，文案据此写明
-                TextButton(onClick = scan::stop) { Text("停止并查看结果") }
+                TextButton(onClick = scan::stop) { Text(stringResource(Res.string.text_stop_and_view_results)) }
             }
         }
     }
@@ -128,16 +136,16 @@ internal fun CanonicalTreeOptions(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(summary, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
-            "有冲突的项默认不勾选。可取消勾选不想改的项，或点行尾的按钮单独修改新名称",
+            stringResource(Res.string.text_conflicting_items_are_unchecked_deselect_unwanted_changes_or_edit_individual),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Column {
             // 只在用户配了 MetaTube 时出现
             if (state.metaTubeAvailable) {
-                CheckboxRow("片名取自 MetaTube", state.useMetaTubeTitles, enabled, onChange = state::updateUseMetaTubeTitles)
+                CheckboxRow(tr("片名取自 MetaTube", "Titles from MetaTube", "作品名はMetaTubeから取得", "MetaTube에서 제목 가져오기"), state.useMetaTubeTitles, enabled, onChange = state::updateUseMetaTubeTitles)
             }
-            CheckboxRow("仅显示变更项", changedOnly, enabled = true, onChange = onChangedOnlyChange)
+            CheckboxRow(tr("仅显示变更项", "Show changes only", "変更項目のみ表示", "변경 항목만 표시"), changedOnly, enabled = true, onChange = onChangedOnlyChange)
         }
     }
 }
@@ -151,30 +159,30 @@ internal fun EditNewNameDialog(row: RenameRow, overridden: Boolean, onConfirm: (
     }
     PikoDialog(
         onDismissRequest = onDismiss,
-        title = { Text("修改新名称") },
+        title = { Text(stringResource(Res.string.text_edit_new_name)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("原名：${row.source.name}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(tr("原名：${row.source.name}", "Original: ${row.source.name}", "元の名前：${row.source.name}", "원래 이름: ${row.source.name}"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedTextField(value = value, onValueChange = { value = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
             }
         },
-        confirmButton = { PikoDialogConfirm("确定", { onConfirm(value.text) }, enabled = value.text.isNotBlank()) },
+        confirmButton = { PikoDialogConfirm(tr("确定", "Confirm", "確認", "확인"), { onConfirm(value.text) }, enabled = value.text.isNotBlank()) },
         dismissButton = {
             Row {
-                if (overridden) TextButton(onClick = { onConfirm(null) }) { Text("恢复规范名") }
-                TextButton(onClick = onDismiss) { Text("取消") }
+                if (overridden) TextButton(onClick = { onConfirm(null) }) { Text(stringResource(Res.string.text_reset_normalized_name)) }
+                TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) }
             }
         },
     )
 }
 
 private fun scanSummary(scan: CanonicalTreeScan): String = buildString {
-    append("已扫描 ${scan.scannedFolders} 个文件夹、${scan.scannedFiles} 个文件")
+    append(tr("已扫描 ${scan.scannedFolders} 个文件夹、${scan.scannedFiles} 个文件", "Scanned ${enCount(scan.scannedFolders, "folder", "folders")} and ${enCount(scan.scannedFiles, "file", "files")}", "${scan.scannedFolders} フォルダー、${scan.scannedFiles} ファイルを検索済み", "폴더 ${scan.scannedFolders}개, 파일 ${scan.scannedFiles}개 검색 완료"))
     when (scan.scanStop) {
-        ScanStop.CANCELLED -> append("，扫描已停止")
-        ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> append("，已达扫描上限")
-        ScanStop.TIMEOUT -> append("，扫描超时")
+        ScanStop.CANCELLED -> append(tr("，扫描已停止", "; scan stopped", "、検索停止", ", 검색 중지됨"))
+        ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> append(tr("，已达扫描上限", "; scan limit reached", "、検索上限に達しました", ", 검색 한도 도달"))
+        ScanStop.TIMEOUT -> append(tr("，扫描超时", "; scan timed out", "、検索がタイムアウトしました", ", 검색 시간 초과"))
         null -> Unit
     }
-    if (scan.failedFolders > 0) append("，${scan.failedFolders} 个文件夹读取失败")
+    if (scan.failedFolders > 0) append(tr("，${scan.failedFolders} 个文件夹读取失败", "; ${enCount(scan.failedFolders, "folder", "folders")} failed to load", "、${scan.failedFolders} フォルダーの読み込みに失敗", ", 폴더 ${scan.failedFolders}개 불러오기 실패"))
 }

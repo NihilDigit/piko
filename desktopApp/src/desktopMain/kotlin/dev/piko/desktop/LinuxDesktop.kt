@@ -1,5 +1,7 @@
 package dev.piko.desktop
 
+import dev.piko.shared.i18n.tr
+
 import dev.piko.shared.log.PikoLog
 import java.awt.SystemTray
 import java.awt.Toolkit
@@ -53,9 +55,17 @@ internal object LinuxDesktop {
      * 界面字体。汉字交给 fontconfig 的后备时按系统语言挑，英文环境下常落到日文字形，一个词里两种字形，
      * 与 Windows 上指定雅黑、mac 上指定苹方同理，这里按顺序挑一个装了的简体中文字体。都没有时为 null，用默认字体。
      */
-    val cjkFontFamily: String? by lazy {
-        val candidates = listOf("Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "Source Han Sans CN", "WenQuanYi Micro Hei", "Droid Sans Fallback")
-        runCatching {
+    val cjkFontCandidates = listOf("Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK KR", "Noto Sans SC", "Source Han Sans SC", "Source Han Sans CN", "WenQuanYi Micro Hei", "Droid Sans Fallback")
+
+    val cjkFontFamily: String?
+        get() {
+        val preferred = when (dev.piko.shared.i18n.PikoLocale.effectiveLanguage) {
+            dev.piko.data.auth.AppLanguage.JA -> 1
+            dev.piko.data.auth.AppLanguage.KO -> 2
+            else -> 0
+        }
+        val candidates = listOf(cjkFontCandidates[preferred]) + cjkFontCandidates
+        return runCatching {
             val fonts = FontMgr.default
             candidates.firstOrNull { name -> fonts.matchFamily(name).use { it.count() > 0 } }
         }.getOrNull()
@@ -63,7 +73,7 @@ internal object LinuxDesktop {
 
     /** 关窗后在后台传输时的提示。GNOME 默认没有托盘，AWT 的托盘在那里不可用，只能再次打开 Piko 叫回窗口。 */
     fun backgroundHint(): String =
-        if (runCatching { SystemTray.isSupported() }.getOrDefault(false)) "可从系统托盘图标重新打开" else "再次打开 Piko 即可回到窗口"
+        if (runCatching { SystemTray.isSupported() }.getOrDefault(false)) tr("可从系统托盘图标重新打开", "Reopen from the system tray icon", "システムトレイのアイコンから開けます", "시스템 트레이 아이콘에서 다시 열 수 있습니다") else tr("再次打开 Piko 即可回到窗口", "Open Piko again to return to the window", "Pikoを再度起動するとウィンドウに戻れます", "Piko를 다시 열면 창으로 돌아옵니다")
 
     /**
      * 系统通知，经 org.freedesktop.Notifications。gdbus 不在时退到 notify-send。
@@ -88,7 +98,7 @@ internal object LinuxDesktop {
      */
     fun preventSleep(): AutoCloseable? = runCatching {
         val process = ProcessBuilder(
-            "systemd-inhibit", "--what=idle:sleep", "--who=Piko", "--why=正在播放视频", "--mode=block",
+            "systemd-inhibit", "--what=idle:sleep", "--who=Piko", tr("--why=正在播放视频", "--why=Video playback", "--why=動画を再生中", "--why=동영상 재생 중"), "--mode=block",
             "tail", "--pid=${ProcessHandle.current().pid()}", "-f", "/dev/null",
         ).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
         AutoCloseable { process.descendants().forEach { it.destroy() }; process.destroy() }

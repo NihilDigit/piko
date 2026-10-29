@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -142,7 +144,7 @@ internal fun TaskSheetScaffold(model: TaskSheetModel?, content: @Composable () -
                     Box(
                         Modifier
                             .onSizeChanged { headerHeight = it.height }
-                            .then(if (model.expanded) Modifier else Modifier.clickable(onClickLabel = "展开") { model.onExpandedChange(true) }),
+                            .then(if (model.expanded) Modifier else Modifier.clickable(onClickLabel = tr("展开", "Expand", "展開", "펼치기")) { model.onExpandedChange(true) }),
                     ) {
                         model.header()
                     }

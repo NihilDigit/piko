@@ -1,6 +1,8 @@
 package dev.piko.shared.state
 
 import dev.piko.shared.data.ChildFile
+import dev.piko.shared.i18n.enCount
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.naming.FolderDescription
 import dev.piko.shared.naming.MediaFileInput
 import dev.piko.shared.naming.Section
@@ -26,12 +28,13 @@ class DriveFolderView(
 )
 
 /** 正片之外值得在标签里点明的分区。PV、NCOP、菜单几乎每个 BD 合集都有，写出来只是噪声。 */
-private val NOTABLE_EXTRAS = mapOf(
-    Section.SPECIAL to "SP",
-    Section.OVA to "OVA",
-    Section.MOVIE to "剧场版",
-    Section.BONUS to "特典",
-)
+private fun notableExtraLabel(section: Section): String? = when (section) {
+    Section.SPECIAL -> "SP"
+    Section.OVA -> "OVA"
+    Section.MOVIE -> tr("剧场版", "Movie", "劇場版", "극장판")
+    Section.BONUS -> tr("特典", "Extras", "特典", "특전")
+    else -> null
+}
 
 /** [content] 为 null 表示还不知道文件夹里有什么，只按文件夹名描述。 */
 fun describeDriveFolder(name: String, content: List<ChildFile>?): DriveFolderView {
@@ -50,7 +53,7 @@ fun describeDriveFolder(name: String, content: List<ChildFile>?): DriveFolderVie
 
 private fun seriesTags(description: FolderDescription): List<String> = buildList {
     description.episodeRange?.let(::add)
-    description.extras.mapNotNull(NOTABLE_EXTRAS::get).forEach(::add)
+    description.extras.mapNotNull(::notableExtraLabel).forEach(::add)
     description.tags.filter { it.kind == TagKind.GROUP }.forEach { add(it.text) }
     description.tags.filter { it.kind == TagKind.RESOLUTION }.forEach { add(it.text) }
     description.tags.filter { it.kind != TagKind.GROUP && it.kind != TagKind.RESOLUTION }.forEach { add(it.text) }
@@ -67,16 +70,21 @@ private fun avTags(description: FolderDescription, content: List<MediaFileInput>
         val batch = analyzeMediaBatch(content)
         val entries = batch.works.firstOrNull { it.kind == WorkKind.AV && it.title == description.code }
             ?.sections?.flatMap { it.entries }.orEmpty()
-        if (entries.size > 1) add("${entries.size} 段")
+        if (entries.size > 1) add(tr("${entries.size} 段", "${enCount(entries.size, "part", "parts")}", "${entries.size} パート", "${entries.size}개 파트"))
         val versions = entries.maxOfOrNull { it.files.size } ?: 0
-        if (versions > 1) add("$versions 版本")
+        if (versions > 1) add(tr("$versions 版本", "${enCount(versions, "version", "versions")}", "$versions バージョン", "${versions}개 버전"))
     }
     return (pinned + counts + rest).distinct()
 }
 
 private fun folderFields(description: FolderDescription): List<DriveParsedField> = listOfNotNull(
-    (description.code ?: description.title)?.let { DriveParsedField(if (description.kind == WorkKind.AV) "番号" else "作品", it) },
-    description.episodeRange?.let { DriveParsedField("集数", it) },
-    description.extras.takeIf { it.isNotEmpty() }?.let { extras -> DriveParsedField("包含", extras.joinToString(" ") { it.label }) },
-    description.tags.takeIf { it.isNotEmpty() }?.let { tags -> DriveParsedField("标签", tags.joinToString(" ") { it.text }) },
+    (description.code ?: description.title)?.let {
+        DriveParsedField(
+            if (description.kind == WorkKind.AV) tr("番号", "Code", "作品番号", "품번") else tr("作品", "Work", "作品", "작품"),
+            it,
+        )
+    },
+    description.episodeRange?.let { DriveParsedField(tr("集数", "Episodes", "話数", "화수"), it) },
+    description.extras.takeIf { it.isNotEmpty() }?.let { extras -> DriveParsedField(tr("包含", "Includes", "収録", "포함"), extras.joinToString(" ") { it.label }) },
+    description.tags.takeIf { it.isNotEmpty() }?.let { tags -> DriveParsedField(tr("标签", "Tags", "タグ", "태그"), tags.joinToString(" ") { it.text }) },
 )

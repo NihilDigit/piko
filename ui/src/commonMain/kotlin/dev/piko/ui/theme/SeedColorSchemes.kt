@@ -5,11 +5,12 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
+import dev.piko.shared.i18n.tr
 
 /** 系统取色之外的内置主题。TonalSpot 方案，Material 色彩规范 2025 版。 */
-enum class SeedTheme(val label: String, val seed: Color, val light: ColorScheme, val dark: ColorScheme) {
+enum class SeedTheme(private val labelText: () -> String, val seed: Color, val light: ColorScheme, val dark: ColorScheme) {
     RURI(
-        label = "瑠璃",
+        labelText = { tr("瑠璃", "Lapis blue", "瑠璃", "청금석") },
         seed = Color(0xFF005CAF),
         light = lightColorScheme(
             primary = Color(0xFF45608A),
@@ -113,7 +114,7 @@ enum class SeedTheme(val label: String, val seed: Color, val light: ColorScheme,
         ),
     ),
     TOKIWA(
-        label = "常磐",
+        labelText = { tr("常磐", "Evergreen", "常磐", "상록") },
         seed = Color(0xFF1B813E),
         light = lightColorScheme(
             primary = Color(0xFF3C6943),
@@ -217,7 +218,7 @@ enum class SeedTheme(val label: String, val seed: Color, val light: ColorScheme,
         ),
     ),
     KIKYO(
-        label = "桔梗",
+        labelText = { tr("桔梗", "Bellflower", "桔梗", "도라지") },
         seed = Color(0xFF6A4C9C),
         light = lightColorScheme(
             primary = Color(0xFF695687),
@@ -321,7 +322,7 @@ enum class SeedTheme(val label: String, val seed: Color, val light: ColorScheme,
         ),
     ),
     YAMABUKI(
-        label = "山吹",
+        labelText = { tr("山吹", "Kerria gold", "山吹", "황매화") },
         seed = Color(0xFFFFB11B),
         light = lightColorScheme(
             primary = Color(0xFF7C581C),
@@ -425,7 +426,7 @@ enum class SeedTheme(val label: String, val seed: Color, val light: ColorScheme,
         ),
     ),
     NADESHIKO(
-        label = "撫子",
+        labelText = { tr("撫子", "Dianthus pink", "撫子", "패랭이") },
         seed = Color(0xFFDC9FB4),
         light = lightColorScheme(
             primary = Color(0xFF874D64),
@@ -529,7 +530,7 @@ enum class SeedTheme(val label: String, val seed: Color, val light: ColorScheme,
         ),
     ),
     BENIHI(
-        label = "紅緋",
+        labelText = { tr("紅緋", "Crimson", "紅緋", "홍비") },
         seed = Color(0xFFF75C2F),
         light = lightColorScheme(
             primary = Color(0xFF8C4F3D),
@@ -632,4 +633,7 @@ enum class SeedTheme(val label: String, val seed: Color, val light: ColorScheme,
             onTertiaryFixedVariant = Color(0xFF6E541F),
         ),
     ),
+    ;
+
+    val label: String get() = labelText()
 }

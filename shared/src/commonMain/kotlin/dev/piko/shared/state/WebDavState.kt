@@ -1,5 +1,7 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -89,18 +91,18 @@ class WebDavState(
         if (refresh) isRefreshing = true else isLoading = true
         loadJob?.cancel()
         loadJob = scope.launch {
-            val result = runCatching { client.getWebDav() }.logFailure(TAG, "读取 WebDAV 设置失败")
+            val result = runCatching { client.getWebDav() }.logFailure(TAG, tr("读取 WebDAV 设置失败", "Failed to load WebDAV settings", "WebDAV設定を読み込めませんでした", "WebDAV 설정을 불러오지 못했습니다"))
             if (!isCurrent(client)) return@launch
             result
                 .onSuccess {
                     // 入口只对会员显示，这里兜底：等级识别与 WebDAV 接口说法不一时，至少说清开关为何开不了
-                    if (!it.isPremium && settings?.isPremium != false) _messages.tryEmit("WebDAV 仅限 PikPak 会员使用")
+                    if (!it.isPremium && settings?.isPremium != false) _messages.tryEmit(tr("WebDAV 仅限 PikPak 会员使用", "WebDAV requires PikPak Premium", "WebDAVはPikPakプレミアム会員限定です", "WebDAV는 PikPak 프리미엄 회원만 사용할 수 있습니다"))
                     settings = it
                     loadError = null
                 }
                 .onFailure {
-                    loadError = "读取 WebDAV 设置失败"
-                    if (refresh || settings != null) _messages.tryEmit(failureText("刷新", it))
+                    loadError = tr("读取 WebDAV 设置失败", "Failed to load WebDAV settings", "WebDAV設定を読み込めませんでした", "WebDAV 설정을 불러오지 못했습니다")
+                    if (refresh || settings != null) _messages.tryEmit(failureText(tr("刷新", "Refresh", "更新", "새로고침"), it))
                 }
             isLoading = false
             isRefreshing = false
@@ -120,7 +122,7 @@ class WebDavState(
             isToggling = false
             result.onFailure {
                 settings = settings?.copy(enabled = before.enabled)
-                _messages.tryEmit(failureText(if (enabled) "开启" else "关闭", it))
+                _messages.tryEmit(failureText(if (enabled) tr("开启", "Enable", "有効にする", "사용") else tr("关闭", "Close", "閉じる", "닫기"), it))
             }
         }
     }
@@ -139,7 +141,7 @@ class WebDavState(
                     issued = IssuedCredentials(created, renewed = false)
                     load(refresh = true)
                 }
-                .onFailure { _messages.tryEmit(failureText("添加", it)) }
+                .onFailure { _messages.tryEmit(failureText(tr("添加", "Add", "追加", "추가"), it)) }
         }
     }
 
@@ -148,15 +150,15 @@ class WebDavState(
         val newName = name.trim()
         if (newName.isEmpty() || newName == target.name) return
         mutate(
-            target, action = "保存", logMessage = "修改 WebDAV 应用失败",
+            target, action = tr("保存", "Save", "保存", "저장"), logMessage = "修改 WebDAV 应用失败",
             request = { it.updateWebDavClient(target, name = newName) },
-            apply = { _messages.tryEmit("已保存") },
+            apply = { _messages.tryEmit(tr("已保存", "Saved", "保存しました", "저장했습니다")) },
         )
     }
 
     fun renewPassword(target: WebDavClient) {
         mutate(
-            target, action = "重置密码", logMessage = "重置 WebDAV 密码失败",
+            target, action = tr("重置密码", "Reset password", "パスワードをリセット", "비밀번호 재설정"), logMessage = "重置 WebDAV 密码失败",
             request = { it.renewWebDavPassword(target) },
             apply = { renewed ->
                 settings = settings?.let { s -> s.copy(clients = s.clients.map { if (it.id == renewed.id) renewed else it }) }
@@ -167,11 +169,11 @@ class WebDavState(
 
     fun delete(target: WebDavClient) {
         mutate(
-            target, action = "删除", logMessage = "删除 WebDAV 应用失败",
+            target, action = tr("删除", "Delete", "削除", "삭제"), logMessage = "删除 WebDAV 应用失败",
             request = { it.deleteWebDavClient(target) },
             apply = {
                 settings = settings?.let { s -> s.copy(clients = s.clients.filterNot { it.id == target.id }) }
-                _messages.tryEmit("已删除「${target.name}」")
+                _messages.tryEmit(tr("已删除「${target.name}」", "Deleted “${target.name}”", "「${target.name}」を削除しました", "“${target.name}” 삭제 완료"))
             },
         )
     }

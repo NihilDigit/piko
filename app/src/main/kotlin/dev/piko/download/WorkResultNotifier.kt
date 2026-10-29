@@ -1,5 +1,7 @@
 package dev.piko.download
 
+import dev.piko.shared.i18n.tr
+
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -81,8 +83,8 @@ internal class WorkResultNotifier(
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val channel = NotificationChannel(CHANNEL_ID, "任务结果", NotificationManager.IMPORTANCE_DEFAULT).apply {
-            description = "下载、上传、解压、归档与查找重复完成或失败时提醒"
+        val channel = NotificationChannel(CHANNEL_ID, tr("任务结果", "Task results", "タスクの結果", "작업 결과"), NotificationManager.IMPORTANCE_DEFAULT).apply {
+            description = tr("下载、上传、解压、归档与查找重复完成或失败时提醒", "Notify when downloads, uploads, extraction, archiving or duplicate searches finish or fail", "ダウンロード・アップロード・解凍・アーカイブ・重複検索の完了や失敗を通知", "다운로드, 업로드, 압축 해제, 보관 또는 중복 검색의 완료 및 실패 알림")
         }
         app.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }

@@ -8,6 +8,7 @@ import dev.piko.shared.data.DuplicateScanner
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.data.ScanStop
 import dev.piko.shared.data.ScannedFile
 import dev.piko.shared.data.VaultStore
@@ -119,7 +120,7 @@ class CanonicalTreeScan(
                 val included = ordered.mapTo(HashSet()) { it.file.id }
                 files = listOfNotNull(rootEntry) + ordered.map { it.file }
                 tree = RenameTree(
-                    locations = ordered.associate { it.file.id to if (it.folderPath.isEmpty()) root.name else "${root.name}/${it.folderPath}" },
+                    locations = ordered.associate { it.file.id to if (it.folderPath.isEmpty()) root.localizedName else "${root.localizedName}/${it.folderPath}" },
                     siblingNames = listingsLock.withLock {
                         listings.mapValues { (_, entries) -> entries.filter { it.id !in included && !it.trashed }.mapTo(HashSet()) { it.name } }
                     },
@@ -129,7 +130,7 @@ class CanonicalTreeScan(
                 throw e
             } catch (e: Throwable) {
                 PikoLog.w(TAG, "按番号规范命名的扫描失败", e)
-                errorMessage = e.message ?: "未知错误"
+                errorMessage = e.message ?: dev.piko.shared.i18n.tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류")
                 phase = Phase.FAILED
             }
         }
