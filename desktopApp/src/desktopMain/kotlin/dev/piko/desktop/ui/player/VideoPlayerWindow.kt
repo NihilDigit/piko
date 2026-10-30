@@ -46,6 +46,8 @@ import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.desktop.winrt.WindowsFullscreen
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.shared.media.player.PlayerScreenState
+import dev.piko.shared.i18n.PikoLocale
+import dev.piko.ui.LocalAppLanguage
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.PikoServices
 import dev.piko.ui.VideoPlayerRequest
@@ -124,7 +126,7 @@ fun VideoPlayerWindow(
 
     PikoWindow(
         onCloseRequest = onClose,
-        title = tr("$title - Piko 播放器", "$title - Piko Player", "$title - Pikoプレーヤー", "$title - Piko 플레이어"),
+        title = tr("$title - Piko 播放器", "$title - Piko Player", "$title - Pikoプレーヤー", "$title - Piko 플레이어", "$title - Piko 播放器"),
         icon = icon,
         state = windowState,
     ) {
@@ -134,7 +136,9 @@ fun VideoPlayerWindow(
         val fullscreen = remember(window) { WindowsFullscreen(window) }
         // 播放窗口是独立的组合树，主窗口根部的输入来源追踪管不到这里
         val pointerSource = remember { PointerSource() }
+        val effectiveLanguage by PikoLocale.effectiveLanguageState
         CompositionLocalProvider(
+            LocalAppLanguage provides effectiveLanguage,
             LocalPikoServices provides services,
             LocalPikoPlatform provides platform,
             LocalPointerSource provides pointerSource,
@@ -144,7 +148,7 @@ fun VideoPlayerWindow(
             val inFullscreen = if (usesSystemFullscreen) windowState.placement == WindowPlacement.Fullscreen else isFullscreen
             PikoTheme(appearance = appearance) {
                 WindowFrame(
-                    title = tr("$title - Piko 播放器", "$title - Piko Player", "$title - Pikoプレーヤー", "$title - Piko 플레이어"),
+                    title = tr("$title - Piko 播放器", "$title - Piko Player", "$title - Pikoプレーヤー", "$title - Piko 플레이어", "$title - Piko 播放器"),
                     icon = icon,
                     colors = PlayerTitleBarColors,
                     showTitleBar = !inFullscreen,
@@ -305,7 +309,7 @@ private fun VideoPlayerContent(
             delay(1_000)
             if (window.renderApi.name.startsWith("SOFTWARE")) {
                 PikoLog.w("Player", "Skiko 以 ${window.renderApi} 渲染，Linux 上播放器画面出不来")
-                snackbarHostState.showSnackbar(tr("没有可用的硬件 OpenGL，无法显示视频画面。请检查显卡驱动", "Hardware OpenGL is unavailable. Check your graphics driver to display video.", "ハードウェアOpenGLが使えないため映像を表示できません。グラフィックスドライバーを確認してください", "하드웨어 OpenGL을 사용할 수 없어 동영상을 표시할 수 없습니다. 그래픽 드라이버를 확인해 주세요"), withDismissAction = true)
+                snackbarHostState.showSnackbar(tr("未检测到可用的硬件 OpenGL，无法渲染视频画面。请检查显卡驱动程序。", "Hardware OpenGL is unavailable; unable to render video. Check your graphics driver.", "利用可能なハードウェアOpenGLがないため映像を描画できません。グラフィックスドライバーを確認してください。", "사용 가능한 하드웨어 OpenGL이 없어 동영상을 렌더링할 수 없습니다. 그래픽 드라이버를 확인해 주세요.", "未偵測到可用的硬體 OpenGL，無法繪製影片畫面。請檢查顯示卡驅動程式。"), withDismissAction = true)
             }
         }
     }
@@ -418,7 +422,7 @@ private fun VideoPlayerContent(
                         if (isPlayerSubtitleName(file.name)) {
                             state.addLocalSubtitle(videoFileId, file.absolutePath, file.name)
                         } else {
-                            snackbarHostState.showSnackbar(tr("不支持这种字幕格式", "Unsupported subtitle format", "対応していない字幕形式です", "지원하지 않는 자막 형식입니다"), withDismissAction = true)
+                            snackbarHostState.showSnackbar(tr("不支持此字幕格式", "Unsupported subtitle format", "未対応の字幕形式です", "지원하지 않는 자막 형식입니다", "不支援此字幕格式"), withDismissAction = true)
                         }
                     }
                 }.takeIf { state.canAddSubtitle },
@@ -432,7 +436,7 @@ private fun VideoPlayerContent(
 /** 系统的文件框，只挑一个字幕文件，经 [AwtDialogs] 弹。取消时为 null。 */
 private suspend fun chooseSubtitleFile(owner: Window?): File? = AwtDialogs.chooseFiles(
     owner = owner,
-    title = tr("选择字幕文件", "Choose subtitle file", "字幕ファイルを選択", "자막 파일 선택"),
+    title = tr("选择字幕文件", "Choose subtitle file", "字幕ファイルを選択", "자막 파일 선택", "選擇字幕檔案"),
     multiple = false,
     pattern = PLAYER_SUBTITLE_EXTENSIONS.joinToString(";") { "*.$it" },
     filter = ::isPlayerSubtitleName,

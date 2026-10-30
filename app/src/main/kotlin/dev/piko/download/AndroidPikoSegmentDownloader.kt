@@ -22,7 +22,7 @@ class AndroidPikoSegmentDownloader(private val context: Context) : PikoSegmentDo
     ): Result<String> = withContext(Dispatchers.IO) {
         val treeRoot = if (request.destinationPath.startsWith("content:")) {
             DocumentFile.fromTreeUri(context, Uri.parse(request.destinationPath))
-                ?: return@withContext Result.failure(IllegalStateException(tr("无法访问下载目录", "Cannot access download folder", "ダウンロード先にアクセスできません", "다운로드 폴더에 접근할 수 없습니다")))
+                ?: return@withContext Result.failure(IllegalStateException(tr("无法访问下载目录", "Cannot access download folder", "ダウンロード先にアクセスできません", "다운로드 폴더에 접근할 수 없습니다", "無法存取下載資料夾")))
         } else null
         // SAF 目录先抽到缓存再拷过去。中转文件不带 .part：抽取器自己会以 .part 写入、完成后改名
         val stagingFile = treeRoot?.let { context.cacheDir.resolve(request.fileName) }
@@ -50,9 +50,9 @@ class AndroidPikoSegmentDownloader(private val context: Context) : PikoSegmentDo
         // 抽取成功后才在下载目录里建文件：先建的话，失败会在那里留下一个 0 字节的空文件
         try {
             val targetDocument = treeRoot.findFile(request.fileName) ?: treeRoot.createFile("video/mp4", request.fileName)
-                ?: error(tr("无法创建分段文件", "Cannot create segment file", "分割ファイルを作成できません", "분할 파일을 만들 수 없습니다"))
+                ?: error(tr("无法创建分段文件", "Cannot create segment file", "分割ファイルを作成できません", "분할 파일을 만들 수 없습니다", "無法建立片段檔案"))
             val output = context.contentResolver.openOutputStream(targetDocument.uri, "wt")
-                ?: error(tr("无法打开目标文件", "Cannot open destination file", "出力ファイルを開けません", "대상 파일을 열 수 없습니다"))
+                ?: error(tr("无法打开目标文件", "Cannot open destination file", "出力ファイルを開けません", "대상 파일을 열 수 없습니다", "無法開啟目標檔案"))
             output.use { stream -> stagingFile!!.inputStream().use { input -> input.copyTo(stream) } }
             Result.success(targetDocument.uri.toString())
         } catch (error: Throwable) {

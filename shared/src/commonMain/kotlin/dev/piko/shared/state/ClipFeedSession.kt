@@ -82,7 +82,7 @@ class ClipFeedSession(
     var selectedVideoCount by mutableStateOf<Int?>(null)
         private set
 
-    val scopeLabel: String get() = selectedVideoCount?.let { tr("已选 $it 个视频", "Selected ${enCount(it, "video", "videos")}", "$it 件の動画を選択", "동영상 ${it}개 선택됨") } ?: root?.localizedName.orEmpty()
+    val scopeLabel: String get() = selectedVideoCount?.let { tr("已选 $it 个视频", "Selected ${enCount(it, "video", "videos")}", "$it 件の動画を選択", "동영상 ${it}개 선택됨", "已選 $it 部影片") } ?: root?.localizedName.orEmpty()
 
     private var selectedIds: Set<String>? = null
     private var generation by mutableStateOf(0L)
@@ -134,6 +134,9 @@ class ClipFeedSession(
 
     /** 请求了横屏（Android）。看完整回来要重新锁上，所以同样放在会话上，关掉信息流时清零。 */
     var landscape by mutableStateOf(false)
+
+    /** 自动连刷模式：开启后不自动顺延续播当前片段，播完当前片段自动翻到下一条视频。关掉信息流时清零。 */
+    var autoAdvance by mutableStateOf(false)
 
     /** 各段的代理会话与预取，同样不随页面走，见 [ClipStreams]。换文件夹或关掉信息流时清空。 */
     val streams = ClipStreams(media, onReady = ::promote, onDead = ::drop)
@@ -322,6 +325,7 @@ class ClipFeedSession(
         isCollecting = false
         immersive = false
         landscape = false
+        autoAdvance = false
     }
 
     /**

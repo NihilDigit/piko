@@ -7,6 +7,9 @@ import dev.piko.shared.upload.isUploading
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -84,6 +87,51 @@ class VideoDiscovery internal constructor(
         val batch = readBatch(id)
         level.removeFirst()
         return batch
+    }
+
+    /**
+     * 同层批量并行列目录与分析作品结构（至多取 [maxFolders] 个且单轮并发不超过 [concurrency]）。
+     * 若中途协程取消，未完成的目录保持在当前层队列中不丢失。
+     */
+    suspend fun nextBatch(maxFolders: Int, concurrency: Int = 8): List<VideoFolderBatch> {
+        if (maxFolders <= 0) return emptyList()
+        currentCoroutineContext().ensureActive()
+        if (level.isEmpty()) {
+            level.addAll(nextLevel.shuffled(random))
+            nextLevel.clear()
+        }
+        val takeCount = minOf(maxFolders, concurrency.coerceAtLeast(1), level.size)
+        if (takeCount == 0) return emptyList()
+        if (takeCount == 1) return listOfNotNull(next())
+        val targets = (0 until takeCount).map { level.elementAt(it) }
+        val fetched = coroutineScope {
+            targets.map { id ->
+                async {
+                    currentCoroutineContext().ensureActive()
+                    val result = readFolder(id)
+                    currentCoroutineContext().ensureActive()
+                    val error = result.exceptionOrNull()
+                    if (error != null) {
+                        if (error is CancellationException) throw error
+                        id to VideoFolderBatch(id, failure = error)
+                    } else {
+                        id to analyzeVideoFolder(id, result.getOrThrow())
+                    }
+                }
+            }.awaitAll()
+        }
+        repeat(takeCount) { level.removeFirst() }
+        return fetched.map { (id, batch) ->
+            if (batch.failure != null) {
+                failures[id] = batch.failure
+            } else {
+                failures.remove(id)
+                batch.files.filter { it.isFolder && !it.trashed }.forEach { folder ->
+                    if (enqueued.add(folder.id)) nextLevel += folder.id
+                }
+            }
+            batch
+        }
     }
 
     /** 重列不改变已探索位置；新出现的子目录接在仍未探索的下一层。 */

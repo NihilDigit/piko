@@ -160,12 +160,12 @@ internal fun ResumeTipCapsule(
             },
             dismissAction = {
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Filled.Close, contentDescription = tr("关闭", "Close", "閉じる", "닫기"))
+                    Icon(Icons.Filled.Close, contentDescription = tr("关闭", "Close", "閉じる", "닫기", "關閉"))
                 }
             },
             modifier = Modifier.widthIn(max = 480.dp),
         ) {
-            Text(tr("从 ${formatTime(resumedPositionMillis)} 继续播放", "Resume at ${formatTime(resumedPositionMillis)}", "${formatTime(resumedPositionMillis)} から再生", "${formatTime(resumedPositionMillis)}부터 이어 재생"))
+            Text(tr("从 ${formatTime(resumedPositionMillis)} 继续播放", "Resume at ${formatTime(resumedPositionMillis)}", "${formatTime(resumedPositionMillis)} から再生", "${formatTime(resumedPositionMillis)}부터 이어 재생", "從 ${formatTime(resumedPositionMillis)} 繼續播放"))
         }
     }
 }
@@ -223,7 +223,7 @@ internal fun LockToggle(
     ) {
         Icon(
             imageVector = if (isLocked) Icons.Filled.Lock else Icons.Filled.LockOpen,
-            contentDescription = if (isLocked) tr("解锁屏幕", "Unlock screen", "画面ロックを解除", "화면 잠금 해제") else tr("锁定屏幕", "Lock screen", "画面をロック", "화면 잠금"),
+            contentDescription = if (isLocked) tr("解锁屏幕", "Unlock screen", "画面ロックを解除", "화면 잠금 해제", "解除螢幕鎖定") else tr("锁定屏幕", "Lock screen", "画面をロック", "화면 잠금", "鎖定螢幕"),
         )
     }
 }

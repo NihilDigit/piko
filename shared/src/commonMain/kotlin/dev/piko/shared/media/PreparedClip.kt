@@ -22,8 +22,8 @@ class PreparedClip internal constructor(
     clipStartMs: Long,
     /** 这条流每毫秒视频的平均字节数。预取与预读的深度都按它折算。 */
     private val bytesPerMs: Double,
-    /** 切片首段预取与落盘的窗口长度；未给时取整个 [stream] 长度。 */
-    private val prefetchBytes: Long? = null,
+    /** 切片允许扩展到的最大窗口时长（毫秒）；预取后按实测切片首尾 PTS 校准，原画整流不设切片上限，为 null。 */
+    maxWindowMs: Long? = null,
     /** 按磁盘上的记录重建，没查详情；开头与末尾多半也在盘上，见 ClipCache。 */
     val fromDisk: Boolean = false,
     /**
@@ -31,12 +31,18 @@ class PreparedClip internal constructor(
      * 与原定的起点差出十几秒，看完整就接不上眼前的画面。null 是起点已经准了（原画、盘上记着的）。
      */
     private val resolveStart: (suspend () -> Long?)? = null,
-    /** 切片的开头与末尾都取到了，调用方据此记下这一段与它的实际起点，见 ClipCache。 */
-    private val onWarmed: (suspend (clipStartMs: Long) -> Unit)? = null,
+    /** 读已预取的切片流尾 PTS，得出该有界切片实际覆盖的视频时长（毫秒），避免高码率段落实际不足 180 秒却向界面承诺 180 秒。 */
+    private val resolveWindowDuration: (suspend () -> Long?)? = null,
+    /** 切片的开头与末尾都取到了，调用方据此记下这一段与它的实际起点和实测时长，见 ClipCache。 */
+    private val onWarmed: (suspend (clipStartMs: Long, actualWindowMs: Long) -> Unit)? = null,
 ) : AutoCloseable {
     /** 这一段从全片哪一刻开始。切片在 [prefetch] 读过时间戳后改成实际的起点。 */
     @Volatile
     var clipStartMs: Long = clipStartMs
+        private set
+
+    @Volatile
+    var maxWindowMs: Long? = maxWindowMs
         private set
 
     val url: String? get() = stream?.url ?: fallbackUrl.takeUnless { sliced }
@@ -87,7 +93,9 @@ class PreparedClip internal constructor(
             proxy.prefetch(originalRanges(proxy.size), role, priority = PikPakStreamReader.WARM_PRIORITY - 1)
             return
         }
-        proxy.prefetch(sliceRanges(prefetchBytes ?: proxy.size, bytesPerMs), role)
+        // 预取切片开头几秒与整个开放切片的真正流尾：FFmpeg 打开 TS 时会读流最末尾 250 KB 的 PTS 估算总时长，
+        // 缺少流尾 PTS 会导致 duration 未知、进度条无法按时间 seek。
+        proxy.prefetch(sliceRanges(proxy.size, bytesPerMs), role)
         resolveStart?.let { resolve ->
             // 读不出来就沿用按码率估的起点：偏几秒，不值得为此让这一段放不了
             try {
@@ -98,7 +106,19 @@ class PreparedClip internal constructor(
                 PikoLog.w("Clips", "读切片时间戳失败，沿用估算的起点", e)
             }
         }
-        onWarmed?.invoke(clipStartMs)
+        resolveWindowDuration?.let { resolveDur ->
+            try {
+                resolveDur()?.takeIf { it > 0L }?.let { actual ->
+                    val currentCap = maxWindowMs
+                    maxWindowMs = if (currentCap != null) minOf(currentCap, actual) else actual
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                PikoLog.w("Clips", "读切片流尾时长失败，沿用策略窗口上限", e)
+            }
+        }
+        onWarmed?.invoke(clipStartMs, maxWindowMs ?: 0L)
     }
 
     private fun originalRanges(streamBytes: Long): List<LongRange> = buildList {
@@ -120,11 +140,11 @@ class PreparedClip internal constructor(
     }
 
     /**
-     * 真在看这一段了：往后读 [seconds] 秒，以前台预读的档位排在所有段的预取之前。
-     * 与播放器的缓冲时长一起放开，见 ClipPager 的升档。
+     * 真在看这一段了：往后读 [seconds] 秒（不少于 [minBytes]），以前台预读的档位排在所有段的预取之前。
+     * 代理预读窗口应显著大于播放器的缓冲时长（cache-secs），避免播放器读游标顶在窗口前沿导致退化为单块阻塞请求。
      */
-    fun extendReadAhead(seconds: Int) {
-        stream?.readAheadLimit = maxOf((bytesPerMs * seconds * 1000 * BITRATE_MARGIN).toLong(), MIN_AHEAD_BYTES)
+    fun extendReadAhead(seconds: Int, minBytes: Long = MIN_AHEAD_BYTES) {
+        stream?.readAheadLimit = maxOf((bytesPerMs * seconds * 1000 * BITRATE_MARGIN).toLong(), minBytes)
     }
 
     override fun close() {

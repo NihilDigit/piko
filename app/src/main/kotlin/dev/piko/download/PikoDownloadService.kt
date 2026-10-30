@@ -180,10 +180,10 @@ class PikoDownloadService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                tr("文件传输", "File transfers", "ファイル転送", "파일 전송"),
+                tr("文件传输", "File transfers", "ファイル転送", "파일 전송", "檔案傳輸"),
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = tr("应用在后台时下载、上传、解压、归档与查找重复的进度", "Background progress for downloads, uploads, extraction, archiving and duplicate searches", "ダウンロード・アップロード・解凍・アーカイブ・重複検索のバックグラウンド進捗", "다운로드, 업로드, 압축 해제, 보관 및 중복 검색의 백그라운드 진행 상황")
+                description = tr("应用在后台时下载、上传、解压、归档与查找重复的进度", "Background progress for downloads, uploads, extraction, archiving and duplicate searches", "ダウンロード・アップロード・解凍・アーカイブ・重複検索のバックグラウンド進捗", "다운로드, 업로드, 압축 해제, 보관 및 중복 검색의 백그라운드 진행 상황", "應用程式在背景執行下載、上傳、解壓縮、歸檔與尋找重複檔案的進度")
                 setShowBadge(false)
             }
             notificationManager.createNotificationChannel(channel)

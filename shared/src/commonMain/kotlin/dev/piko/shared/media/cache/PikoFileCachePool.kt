@@ -1,5 +1,6 @@
 package dev.piko.shared.media.cache
 
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.logRangeAttempt
 import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.PikPakClient
@@ -102,7 +103,7 @@ class PikoFileCachePool(
             val old = entries[key]
             // 换号后的旧客户端不能用于新请求；旧读者会随账号切换结束。
             if (old != null && old.client !== client) {
-                check(old.references == 0) { "账号会话正在切换，请稍后重试" }
+                check(old.references == 0) { tr("正在切换账号，请稍后重试", "Switching account. Try again shortly", "アカウントを切り替え中です。しばらくしてから再試行してください", "계정을 전환 중입니다. 잠시 후 다시 시도해 주세요", "正在切換帳號，請稍後重試") }
             }
             val entry = old ?: run {
                 val store = persistentFileStore(pathOf(key), key, streamSize, scope)

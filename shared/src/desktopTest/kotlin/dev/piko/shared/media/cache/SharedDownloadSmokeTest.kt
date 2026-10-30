@@ -47,7 +47,11 @@ class SharedDownloadSmokeTest {
     @Test
     fun `a paused sparse download supplies playback and remains resumable after playback closes`() = smoke { scope ->
         val payload = ByteArray(12 * 1024 * 1024) { (it % 251).toByte() }
-        val cloud = FakePikPakCloud(payload, blockDelayMillis = 100)
+        val remainingBlocks = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val requests = java.util.concurrent.atomic.AtomicInteger()
+        val cloud = FakePikPakCloud(payload, beforeCdnResponse = {
+            if (requests.incrementAndGet() > 1) remainingBlocks.await()
+        })
         val root = Files.createTempDirectory("piko-partial").toFile()
         val repository = PikoMediaRepository(cloud.provider)
         val coordinator = PikoDownloadCoordinator(cloud.provider, MemoryPreferences(), DirectoryStorage(root), scope,
@@ -57,6 +61,7 @@ class SharedDownloadSmokeTest {
             coordinator.tasks.value["f1"]?.let { it.downloadedBytes > 0 && it.downloadedBytes < payload.size } == true
         }
         coordinator.pauseDownload("f1")
+        remainingBlocks.complete(Unit)
         val task = coordinator.tasks.value.getValue("f1")
         val path = root.resolve(".piko-cache/${fileCacheName(PikoFileCachePool.identity(task.account, task.gcid, task.totalBytes))}.data").path
         awaitUntil("暂停数据已持久化") { java.io.File("$path.blocks").exists() }

@@ -1,5 +1,6 @@
 package dev.piko.shared.media.proxy
 
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.media.PikoMediaRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -16,7 +17,7 @@ suspend fun PikoMediaRepository.openForExternalPlayer(fileId: String): Result<St
     val url = playback.proxyUrl
     if (url == null) {
         playback.close()
-        return Result.failure(IllegalStateException("文件缺少内容哈希，无法经本机代理读取"))
+        return Result.failure(IllegalStateException(tr("文件缺少内容哈希，无法读取", "File is missing content hash and cannot be read", "ファイルにハッシュ情報がないため読み込めません", "파일에 콘텐츠 해시가 없어 읽을 수 없습니다", "檔案缺少內容雜湊值，無法讀取")))
     }
     try {
         ExternalPlayerStreams.retain(playback)

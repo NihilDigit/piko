@@ -1,5 +1,7 @@
 package dev.piko.shared.download
 
+import dev.piko.shared.i18n.tr
+
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.FileNameSanitizer
 import dev.piko.download.DownloadBatch
@@ -305,7 +307,7 @@ class PikoDownloadCoordinator(
             enqueueLock.withLock {
                 val now = Clock.System.now().toEpochMilliseconds()
                 val cap = if (chosen == null && !leasedSource) maxHeight ?: defaultMaxHeight() else 0
-                val batch = if (accepted.size > 1) DownloadBatch("files@$now-${++batchSequence}", "批量下载", isFolder = false) else null
+                val batch = if (accepted.size > 1) DownloadBatch("files@$now-${++batchSequence}", tr("批量下载", "Batch download", "一括ダウンロード", "일괄 다운로드", "批次下載"), isFolder = false) else null
                 val taken = _tasks.value.values.mapTo(mutableSetOf()) { it.fileName.lowercase() }
                 val reused = accepted.count { existingTask(it, account, chosen) != null }
                 val added = accepted.map { file ->
@@ -427,12 +429,12 @@ class PikoDownloadCoordinator(
                 throw e
             } catch (e: Throwable) {
                 PikoLog.w(TAG, "列出文件夹失败：${logFile(work.folder.id, work.folder.name)}", e)
-                updateListing(batchId) { it.copy(error = e.message?.takeIf { m -> m.isNotBlank() } ?: "网络中断") }
+                updateListing(batchId) { it.copy(error = e.message?.takeIf { m -> m.isNotBlank() } ?: tr("网络中断", "Network interrupted", "ネットワークが切断されました", "네트워크 연결이 끊어졌습니다", "網路中斷")) }
                 return@launch
             }
             if (planned.isEmpty()) {
                 PikoLog.d(TAG, "列出文件夹：${logFile(work.folder.id, work.folder.name)}，没有可下载的文件")
-                updateListing(batchId) { it.copy(error = "文件夹里没有可下载的文件") }
+                updateListing(batchId) { it.copy(error = tr("此文件夹中无可下载的文件", "No downloadable files in this folder", "このフォルダーにダウンロード可能なファイルはありません", "이 폴더에 다운로드할 수 있는 파일이 없습니다", "此資料夾中無可下載的檔案")) }
                 return@launch
             }
             // 已在本机的按长度认作完成，与单个文件的下载一样；上千个文件逐个查长度，放在 IO 线程上
@@ -626,7 +628,7 @@ class PikoDownloadCoordinator(
         val taskId = task.taskId
         val client = clientProvider.currentClient.value ?: run {
             PikoLog.w(TAG, "下载失败：未登录，${logFile(task.fileId, task.fileName)}")
-            update(taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = "未登录") }
+            update(taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入")) }
             return
         }
         var lease: PikoFileCachePool.Lease? = null
@@ -795,7 +797,7 @@ class PikoDownloadCoordinator(
 
     /** 把下完的转码流（MPEG-TS）在本机转封装成 MP4 写到 [target]，任务显示为「转换中」。 */
     private suspend fun convertTranscode(task: DownloadTask, source: String, target: String) {
-        val converter = segmentDownloader ?: error("当前平台不支持转封装")
+        val converter = segmentDownloader ?: error(tr("当前平台不支持转封装", "Remuxing is not supported on this platform", "このプラットフォームでは再多重化に対応していません", "이 플랫폼에서는 리먹싱을 지원하지 않습니다", "目前平台不支援轉封裝"))
         update(task.taskId) { it.copy(converting = true, progressFraction = 0f, speedBytesPerSec = 0L) }
         val started = TimeSource.Monotonic.markNow()
         converter.remux(PikoRemuxRequest(source, target, durationMillis = task.endMs)) { fraction ->
@@ -870,7 +872,7 @@ class PikoDownloadCoordinator(
     private fun startSegment(task: DownloadTask) {
         val extractor = segmentDownloader ?: run {
             PikoLog.w(TAG, "片段抽取失败：本平台没有抽取器")
-            update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = "当前平台不支持分段抽取") }
+            update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = tr("当前平台不支持片段截取", "Clip extraction is not supported on this platform", "このプラットフォームでは区間切り出しに対応していません", "이 플랫폼에서는 구간 추출을 지원하지 않습니다", "目前平台不支援片段擷取")) }
             return
         }
         launchTracked(task.taskId) {

@@ -74,7 +74,7 @@ class PikPakPlaybackProxySmokeTest {
     }
 
     @Test
-    fun clipSliceServesOpenEndedTailWhileBoundedPrefetchWarmsOnlyTheOpeningWindow() = runBlocking {
+    fun clipSliceServesBoundedMultiExtendWindowAndPrefetchesHeadAndTail() = runBlocking {
         val origin = FakePikPakCloud.payload(4 * 1024 * 1024)
         // TS 流长度是 188 的整数倍：188 * 20_000 = 3_760_000 字节，在 600 秒时长下每 30 秒约 188_000 字节
         val transcode = FakePikPakCloud.payload(188 * 20_000)
@@ -86,15 +86,19 @@ class PikPakPlaybackProxySmokeTest {
             assertTrue(clip.sliced)
             val url = assertNotNull(clip.url)
             clip.prefetch(io.github.nihildigit.pikpak.StreamRole.FOREGROUND)
-            // 预取只取首段窗口的开头与末尾，不应把整条 3.76 MB 转码流全部拉下来
-            assertTrue(cloud.deliveredCdnBytes.get() < 2_600_000L, "delivered=${cloud.deliveredCdnBytes.get()}")
-            // 但代理会话暴露给播放器的长度直通转码流末尾，30 秒后无需换源即可继续往后读
+            // 预取只取有界切片窗口的开头 5s 与末尾 512 KB，不应把整条 3.76 MB 转码流全部拉下来
+            assertTrue(cloud.deliveredCdnBytes.get() < 2_000_000L, "delivered=${cloud.deliveredCdnBytes.get()}")
+            // 有界窗口覆盖 180s 多轮续播，且小于整条剩余转码流，避免暴露长流尾部引发无索引 TS 二分查找失败
             val expectedOffset = (transcode.size.toDouble() / 600_000.0 * 120_000L).toLong() / 188L * 188L
-            val expectedOpenLength = transcode.size - expectedOffset
-            assertEquals(expectedOpenLength, clip.streamBytes)
-            val tailRead = withTimeout(30_000) { request(url, range = "bytes=${expectedOpenLength - 1024}-") }
+            val fullRemaining = transcode.size - expectedOffset
+            val sliceBytes = assertNotNull(clip.streamBytes)
+            assertTrue(sliceBytes in 1_000_000L until fullRemaining, "sliceBytes=$sliceBytes, fullRemaining=$fullRemaining")
+            val tailRead = withTimeout(30_000) { request(url, range = "bytes=${sliceBytes - 1024}-") }
             assertEquals(206, tailRead.status)
-            assertContentEquals(transcode.copyOfRange(transcode.size - 1024, transcode.size), tailRead.body)
+            assertContentEquals(
+                transcode.copyOfRange((expectedOffset + sliceBytes - 1024).toInt(), (expectedOffset + sliceBytes).toInt()),
+                tailRead.body,
+            )
         } finally {
             clip.close()
         }

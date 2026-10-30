@@ -196,7 +196,7 @@ fun PlayerTopBar(
         if (framelessWindow == null) {
             PlayerIconButton(
                 icon = Icons.AutoMirrored.Filled.ArrowBack,
-                label = tr("返回", "Back", "戻る", "뒤로"),
+                label = tr("返回", "Back", "戻る", "뒤로", "返回"),
                 onClick = onBackClick,
                 tooltipBelow = true,
                 containerSize = IconButtonDefaults.smallContainerSize(IconButtonDefaults.IconButtonWidthOption.Narrow),
@@ -240,7 +240,7 @@ fun PlayerTopBar(
         if (onTracksClick != null) {
             PlayerIconButton(
                 icon = Icons.Outlined.Subtitles,
-                label = tr("音轨与字幕", "Audio and subtitles", "音声と字幕", "오디오 및 자막"),
+                label = tr("音轨与字幕", "Audio and subtitles", "音声と字幕", "오디오 및 자막", "音軌與字幕"),
                 onClick = onTracksClick,
                 tooltipBelow = true,
                 shortcut = "C",
@@ -249,7 +249,7 @@ fun PlayerTopBar(
         if (onStatsClick != null) {
             PlayerIconButton(
                 icon = Icons.Outlined.Info,
-                label = tr("详细信息", "Details", "詳細情報", "세부 정보"),
+                label = tr("详细信息", "Details", "詳細情報", "세부 정보", "詳細資訊"),
                 onClick = onStatsClick,
                 tooltipBelow = true,
             )
@@ -257,7 +257,7 @@ fun PlayerTopBar(
         if (onSettingsClick != null) {
             PlayerIconButton(
                 icon = Icons.Outlined.Tune,
-                label = tr("播放设置", "Playback settings", "再生設定", "재생 설정"),
+                label = tr("播放设置", "Playback settings", "再生設定", "재생 설정", "播放設定"),
                 onClick = onSettingsClick,
                 tooltipBelow = true,
             )
@@ -266,13 +266,13 @@ fun PlayerTopBar(
             val onTop = framelessWindow.isAlwaysOnTop
             PlayerIconButton(
                 icon = if (onTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
-                label = if (onTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시"),
+                label = if (onTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제", "取消置頂") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시", "置頂"),
                 onClick = { framelessWindow.setAlwaysOnTop(!onTop) },
                 tooltipBelow = true,
             )
             PlayerIconButton(
                 icon = Icons.Filled.Close,
-                label = tr("关闭", "Close", "閉じる", "닫기"),
+                label = tr("关闭", "Close", "閉じる", "닫기", "關閉"),
                 onClick = framelessWindow::close,
                 tooltipBelow = true,
             )
@@ -442,9 +442,9 @@ private fun PlayPauseButton(
     }
     // 按钮的标签只说点下去做什么：读数形态下点击照样是播放或暂停，标签换成读数的话，读屏念完读数却不知道这一下做了什么
     val actionLabel = when {
-        isLoading -> tr("加载中", "Loading", "読み込み中", "불러오는 중")
-        isPlaying -> tr("暂停", "Pause", "一時停止", "일시 중지")
-        else -> tr("播放", "Play", "再生", "재생")
+        isLoading -> tr("加载中", "Loading", "読み込み中", "불러오는 중", "載入中")
+        isPlaying -> tr("暂停", "Pause", "一時停止", "일시 중지", "暫停")
+        else -> tr("播放", "Play", "再生", "재생", "播放")
     }
 
     // 外框固定为静止尺寸，容器在里面伸缩，两侧按钮不会随之挪动；读数形态比外框宽，用 requiredSize 向两侧溢出
@@ -609,8 +609,8 @@ internal fun PlayerBottomBar(
             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                 // 换集在时间前面，照多数播放器底栏的排法。没有上一集或下一集时禁用而不是隐藏，时间不会左右跳
                 if (showEpisodeSkip) {
-                    PlayerIconButton(icon = Icons.Filled.SkipPrevious, label = tr("上一集", "Previous episode", "前のエピソード", "이전 에피소드"), onClick = onPrevious, enabled = hasPrevious)
-                    PlayerIconButton(icon = Icons.Filled.SkipNext, label = tr("下一集", "Next episode", "次のエピソード", "다음 에피소드"), onClick = onNext, enabled = hasNext)
+                    PlayerIconButton(icon = Icons.Filled.SkipPrevious, label = tr("上一集", "Previous episode", "前のエピソード", "이전 에피소드", "上一集"), onClick = onPrevious, enabled = hasPrevious)
+                    PlayerIconButton(icon = Icons.Filled.SkipNext, label = tr("下一集", "Next episode", "次のエピソード", "다음 에피소드", "下一集"), onClick = onNext, enabled = hasNext)
                     Spacer(Modifier.width(8.dp))
                 }
                 // 照 YouTube 放在换集之后、时间之前，右边一组的位置不变
@@ -644,7 +644,7 @@ internal fun PlayerBottomBar(
                     PlayerChipButton(
                         text = formatSpeed(playbackSpeed),
                         onClick = { onSpeedPopupOpenChange(!isSpeedPopupOpen) },
-                        modifier = Modifier.semantics { contentDescription = tr("倍速 ${formatSpeed(playbackSpeed)}", "Speed ${formatSpeed(playbackSpeed)}", "再生速度 ${formatSpeed(playbackSpeed)}", "재생 속도 ${formatSpeed(playbackSpeed)}") },
+                        modifier = Modifier.semantics { contentDescription = tr("倍速 ${formatSpeed(playbackSpeed)}", "Speed ${formatSpeed(playbackSpeed)}", "再生速度 ${formatSpeed(playbackSpeed)}", "재생 속도 ${formatSpeed(playbackSpeed)}", "倍速 ${formatSpeed(playbackSpeed)}") },
                     )
                     if (isSpeedPopupOpen) {
                         SpeedPopup(
@@ -659,19 +659,19 @@ internal fun PlayerBottomBar(
                 // 窄窗口只留图标，名字在提示里：带字的这一格约 80dp，省下的地方让旋转按钮常驻，
                 // 360dp 的手机竖屏里时间、倍速、选集、旋转、全屏才排得下
                 if (compactWidth) {
-                    PlayerIconButton(icon = Icons.Outlined.VideoLibrary, label = tr("选集", "Playlist", "再生リスト", "재생 목록"), onClick = onEpisodesClick)
+                    PlayerIconButton(icon = Icons.Outlined.VideoLibrary, label = tr("选集", "Playlist", "再生リスト", "재생 목록", "選集"), onClick = onEpisodesClick)
                 } else {
-                    PlayerChipButton(text = tr("选集", "Playlist", "再生リスト", "재생 목록"), icon = Icons.Outlined.VideoLibrary, onClick = onEpisodesClick)
+                    PlayerChipButton(text = tr("选集", "Playlist", "再生リスト", "재생 목록", "選集"), icon = Icons.Outlined.VideoLibrary, onClick = onEpisodesClick)
                 }
             }
             // 一次转 90 度，与 R 键相同。原先在播放设置里列四个角度，要转画面得先开面板，
             // 桌面上转了窗口还跟着对调，这一步该是顺手就点的
             if (onRotate != null) {
-                PlayerIconButton(icon = Icons.Filled.Rotate90DegreesCw, label = tr("顺时针旋转 90 度", "Rotate 90° clockwise", "右に90度回転", "시계 방향으로 90도 회전"), onClick = onRotate)
+                PlayerIconButton(icon = Icons.Filled.Rotate90DegreesCw, label = tr("顺时针旋转 90 度", "Rotate 90° clockwise", "右に90度回転", "시계 방향으로 90도 회전", "順時針旋轉 90 度"), onClick = onRotate)
             }
             PlayerIconButton(
                 icon = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
-                label = if (isFullscreen) tr("退出全屏", "Exit fullscreen", "全画面を終了", "전체 화면 종료") else tr("全屏", "Fullscreen", "全画面", "전체 화면"),
+                label = if (isFullscreen) tr("退出全屏", "Exit fullscreen", "全画面を終了", "전체 화면 종료", "結束全螢幕") else tr("全屏", "Fullscreen", "全画面", "전체 화면", "全螢幕"),
                 onClick = onToggleFullscreen,
             )
         }
@@ -720,7 +720,7 @@ private fun PlayerVolumeControl(
                 volume < VOLUME_LOW_THRESHOLD -> Icons.AutoMirrored.Filled.VolumeDown
                 else -> Icons.AutoMirrored.Filled.VolumeUp
             },
-            label = if (muted) tr("取消静音", "Unmute", "ミュートを解除", "음소거 해제") else tr("静音", "Mute", "ミュート", "음소거"),
+            label = if (muted) tr("取消静音", "Unmute", "ミュートを解除", "음소거 해제", "取消靜音") else tr("静音", "Mute", "ミュート", "음소거", "靜音"),
             onClick = onToggleMute,
             shortcut = "M",
         )
@@ -801,7 +801,7 @@ private fun PlayerVolumeSlider(
             }
             .focusable(interactionSource = focusInteraction)
             .semantics {
-                contentDescription = tr("音量", "Volume", "音量", "볼륨")
+                contentDescription = tr("音量", "Volume", "音量", "볼륨", "音量")
                 stateDescription = "$percent%"
                 progressBarRangeInfo = ProgressBarRangeInfo(volume, 0f..1f)
                 setProgress { target ->
@@ -827,7 +827,7 @@ private fun PlayerVolumeSlider(
             ) {
                 Text(
                     // 悬停时顺带写出快捷键：音量能用方向键调，原先只有快捷键一览里写着
-                    text = if (dragging) "$percent%" else tr("音量 $percent% (↑ / ↓)", "Volume $percent% (↑ / ↓)", "音量 $percent% (↑ / ↓)", "볼륨 $percent% (↑ / ↓)"),
+                    text = if (dragging) "$percent%" else tr("音量 $percent% (↑ / ↓)", "Volume $percent% (↑ / ↓)", "音量 $percent% (↑ / ↓)", "볼륨 $percent% (↑ / ↓)", "音量 $percent% (↑ / ↓)"),
                     style = TimeTextStyle(),
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
@@ -873,7 +873,7 @@ private fun SpeedPopup(playbackSpeed: Float, onSpeedChange: (Float) -> Unit, onD
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .clip(MaterialTheme.shapes.small)
-                        .clickable(onClickLabel = tr("恢复 1x", "Reset to 1x", "1倍速に戻す", "1배속으로 복원")) { onSpeedChange(1f) }
+                        .clickable(onClickLabel = tr("恢复 1x", "Reset to 1x", "1倍速に戻す", "1배속으로 복원", "還原為 1x")) { onSpeedChange(1f) }
                         .widthIn(min = 56.dp)
                         .padding(vertical = 12.dp),
                 )
@@ -1100,7 +1100,7 @@ internal fun PlayerSeekBar(
                 }
                 .focusable(enabled, focusInteraction)
                 .semantics {
-                    contentDescription = tr("播放进度", "Playback progress", "再生位置", "재생 위치")
+                    contentDescription = tr("播放进度", "Playback progress", "再生位置", "재생 위치", "播放進度")
                     stateDescription = "$positionText / $durationText"
                     progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f)
                     if (enabled) {

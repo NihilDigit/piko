@@ -68,7 +68,7 @@ class PikoMediaProxy(
     suspend fun register(source: ProxyByteSource, fileName: String?, role: StreamRole = StreamRole.FOREGROUND): ProxyStream {
         val port = ensureStarted()
         val token = newToken()
-        val session = ProxySession(source).also { it.role = role }
+        val session = ProxySession(source, scope).also { it.role = role }
         sessionsLock.withLock { sessions[token] = session }
         return ProxyStream(url = "http://$LOOPBACK:$port/$token/${pathNameOf(fileName)}", session = session) {
             session.close()

@@ -24,6 +24,7 @@ import dev.piko.shared.media.player.mpvSubtitleSelectCommand
 import dev.piko.shared.media.player.readMpvTracks
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -55,10 +56,10 @@ import java.io.File
  */
 internal class MediampPlaybackBackend(
     val player: MediampPlayer,
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
     preview: Boolean = false,
     // 见 VideoPreviewSupport.rememberPreviewBackend
-    keyframeStart: Boolean = false,
+    private val keyframeStart: Boolean = false,
     /** 设置里的「硬件解码」，见 PikoUserPreferences.hardwareDecodingFlow。 */
     hardwareDecoding: Boolean = true,
 ) : PlaybackBackend {
@@ -77,8 +78,10 @@ internal class MediampPlaybackBackend(
         private set
     override var isPlaying by mutableStateOf(false)
         private set
-    override var isBuffering by mutableStateOf(false)
-        private set
+    private var playerBuffering by mutableStateOf(false)
+    private var manualSeeking by mutableStateOf(false)
+    private var manualSeekGen = 0
+    override val isBuffering: Boolean get() = playerBuffering || manualSeeking
 
     // 不能写成 private set 的属性：生成的 setter 与接口的 setSpeed/setAspectRatio 签名相撞
     private var currentSpeed by mutableFloatStateOf(speedFeature?.value ?: 1f)
@@ -141,7 +144,14 @@ internal class MediampPlaybackBackend(
         // MediaMP 写死 hwdec=auto。这里在打开文件之前改属性就够了，不必经它的 configureOptions：mpv 的 hwdec 运行时可改，
         // 下一次建解码器时生效。只关解码，画面照旧经 D3D11 交给 Skia
         if (!hardwareDecoding) mpv?.setPropertyString("hwdec", "no")
-        scope.launch { player.currentPositionMillis.collect { positionMillis = it } }
+        scope.launch {
+            player.currentPositionMillis.collect { pos ->
+                if (manualSeeking && pos != positionMillis) {
+                    manualSeeking = false
+                }
+                positionMillis = pos
+            }
+        }
         metadataFeature?.let { feature ->
             // MediaMP 自己读的轨道丢了音轨语言与外挂标志，只拿它的变化当通知，列表从 mpv 重读
             feature.audioTracks?.let { group ->
@@ -167,7 +177,7 @@ internal class MediampPlaybackBackend(
         scope.launch {
             player.state.collect { state ->
                 isPlaying = state.playWhenReady
-                isBuffering = state.isLoadingOrBuffering
+                playerBuffering = state.isLoadingOrBuffering
                 if (awaitingReady && state.isMediaLoaded && !state.isLoadingOrBuffering) {
                     awaitingReady = false
                     attachPendingSubtitles()
@@ -218,6 +228,8 @@ internal class MediampPlaybackBackend(
             is PlaybackTarget.Url -> target.url
         }
         awaitingReady = true
+        manualSeeking = false
+        manualSeekGen++
         pendingSubtitles = subtitles
         try {
             player.setMediaData(UriMediaData(uri), playWhenReady = playWhenReady, startPositionMillis = startMillis)
@@ -299,6 +311,8 @@ internal class MediampPlaybackBackend(
 
     override fun stop() {
         awaitingReady = false
+        manualSeeking = false
+        manualSeekGen++
         player.stopPlayback()
     }
 
@@ -306,7 +320,26 @@ internal class MediampPlaybackBackend(
 
     override fun pause() = player.pause()
 
-    override fun seekTo(positionMillis: Long) = player.seekTo(positionMillis)
+    override fun seekTo(positionMillis: Long) {
+        val target = positionMillis.coerceAtLeast(0L)
+        // 1. 信息流预览（keyframeStart = true）启用了 hr-seek=no 与 8 MiB 小队列，
+        //    而 MediaMP 的 player.seekTo 硬编码下发 "absolute+exact" 会强行覆盖 hr-seek=no，
+        //    追帧对齐音视频时极易撑爆 8 MiB 队列导致 seek 卡死；
+        // 2. 流总长未知（durationMillis <= 0）时 MediaMP 还会把目标 clamp 到 0。
+        // 这两类情形直接经底层 mpv 句柄下发定位命令。
+        if (mpv != null && (keyframeStart || durationMillis <= 0L)) {
+            val mode = if (keyframeStart) "absolute+keyframes" else "absolute"
+            val gen = ++manualSeekGen
+            manualSeeking = true
+            mpv.command("seek", "${target / 1000.0}", mode)
+            scope.launch {
+                delay(5_000L)
+                if (manualSeekGen == gen) manualSeeking = false
+            }
+            return
+        }
+        player.seekTo(target)
+    }
 
     override fun setSpeed(speed: Float) {
         speedFeature?.set(speed)
@@ -408,13 +441,19 @@ private fun mpvHandleOf(player: MediampPlayer): MPVHandle? = runCatching {
     JvmMpvMediampPlayer::class.java.getMethod("getHandle" + "$" + "mediamp_mpv").invoke(player) as? MPVHandle
 }.getOrNull()
 
-// macOS 的 libass 经 CoreText 找字体，苹方同样简繁都全，系统自带。Linux 的 libass 经 fontconfig 找，
+// macOS 的 libass 经 CoreText 找字体，苹方简繁都全，系统自带。Linux 的 libass 经 fontconfig 找，
 // 取界面用的那个中文字体，都没装时交给 fontconfig 按 sans-serif 挑
-private val SUBTITLE_FALLBACK_FONT = when {
-    isMacOs -> "PingFang SC"
-    isLinux -> LinuxDesktop.cjkFontFamily ?: "sans-serif"
-    else -> "Microsoft YaHei"
-}
+private val SUBTITLE_FALLBACK_FONT: String
+    get() {
+        val preferTraditional = dev.piko.shared.i18n.PikoLocale.effectiveLanguage == dev.piko.data.auth.AppLanguage.ZH_HANT ||
+            (dev.piko.shared.i18n.PikoLocale.effectiveLanguage == dev.piko.data.auth.AppLanguage.EN &&
+                dev.piko.shared.i18n.PikoLocale.systemLanguage == dev.piko.data.auth.AppLanguage.ZH_HANT)
+        return when {
+            isMacOs -> if (preferTraditional) "PingFang TC" else "PingFang SC"
+            isLinux -> LinuxDesktop.cjkFontFamily ?: "sans-serif"
+            else -> if (preferTraditional) "Microsoft JhengHei" else "Microsoft YaHei"
+        }
+    }
 
 private const val MIB = 1024 * 1024
 

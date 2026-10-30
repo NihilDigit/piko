@@ -24,9 +24,9 @@ data class ProxySetting(
     val isManualComplete: Boolean get() = host.isNotBlank() && port in 1..65535
 
     fun summary(): String = when (mode) {
-        ProxyMode.SYSTEM -> tr("跟随系统", "System", "システムに従う", "시스템 설정 따르기")
-        ProxyMode.NONE -> tr("不使用代理", "No proxy", "プロキシを使用しない", "프록시 사용 안 함")
-        ProxyMode.MANUAL -> if (isManualComplete) "${protocol.label} $host:$port" else tr("手动（未填写地址）", "Manual (no address)", "手動（アドレス未入力）", "수동 (주소 없음)")
+        ProxyMode.SYSTEM -> tr("跟随系统", "System", "システムに従う", "시스템 설정 따르기", "跟隨系統")
+        ProxyMode.NONE -> tr("不使用代理", "No proxy", "プロキシを使用しない", "프록시 사용 안 함", "不使用代理")
+        ProxyMode.MANUAL -> if (isManualComplete) "${protocol.label} $host:$port" else tr("手动（未填写地址）", "Manual (no address)", "手動（アドレス未入力）", "수동 (주소 없음)", "手動（未填寫位址）")
     }
 
     fun encode(): String = json.encodeToString(serializer(), this)

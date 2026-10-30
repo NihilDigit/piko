@@ -179,17 +179,17 @@ class PikoUploadCoordinator(
      * 其下的文件各成一个任务，排进队列时已知道自己的上级目录。
      */
     fun enqueue(selection: UploadSelection, parentId: String, parentName: String): UploadEnqueueResult {
-        if (selection.isEmpty || !scope.isActive) return UploadEnqueueResult.Rejected(tr("当前上传上下文已结束，或未选择文件", "Upload session ended or no files selected", "アップロードセッションが終了したか、ファイルが未選択です", "업로드 세션이 종료되었거나 파일을 선택하지 않았습니다"))
+        if (selection.isEmpty || !scope.isActive) return UploadEnqueueResult.Rejected(tr("上传会话已结束，或未选择文件", "Upload session ended or no files selected", "アップロードセッションが終了したか、ファイルが選択されていません", "업로드 세션이 종료되었거나 파일을 선택하지 않았습니다", "上傳工作階段已結束，或未選取檔案"))
         val client = clientProvider.currentClient.value
         if (client == null) {
             PikoLog.w(TAG, "上传入队失败：未登录")
-            _messages.tryEmit(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다"))
-            return UploadEnqueueResult.Rejected(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다"))
+            _messages.tryEmit(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入"))
+            return UploadEnqueueResult.Rejected(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入"))
         }
         preparationBlockReason(selection, parentId)?.let { return UploadEnqueueResult.Rejected(it) }
         val frozen = selection.copy(files = selection.files.distinct(), folders = selection.folders.distinct())
-        val origins = frozen.files.mapIndexed { index, uri -> UploadPreparationSource(sourceKey(uri, false), tr("所选文件 ${index + 1}", "Selected file ${index + 1}", "選択したファイル ${index + 1}", "선택한 파일 ${index + 1}"), false) } +
-            frozen.folders.mapIndexed { index, uri -> UploadPreparationSource(sourceKey(uri, true), tr("所选文件夹 ${index + 1}", "Selected folder ${index + 1}", "選択したフォルダー ${index + 1}", "선택한 폴더 ${index + 1}"), true) }
+        val origins = frozen.files.mapIndexed { index, uri -> UploadPreparationSource(sourceKey(uri, false), tr("所选文件 ${index + 1}", "Selected file ${index + 1}", "選択したファイル ${index + 1}", "선택한 파일 ${index + 1}", "所選檔案 ${index + 1}"), false) } +
+            frozen.folders.mapIndexed { index, uri -> UploadPreparationSource(sourceKey(uri, true), tr("所选文件夹 ${index + 1}", "Selected folder ${index + 1}", "選択したフォルダー ${index + 1}", "선택한 폴더 ${index + 1}", "所選資料夾 ${index + 1}"), true) }
         val preparation = UploadPreparation("${nowMs()}-${Random.nextLong()}", client.account, parentId, parentName, frozen.count, nowMs(),
             origins)
         while (true) {
@@ -213,7 +213,7 @@ class PikoUploadCoordinator(
                 pausedBatches.remove(preparation.id)
             } }
             if (error != null) _preparations.update { all -> all.map { work -> if (work.id == preparation.id && work.isRunning)
-                work.copy(result = UploadPreparationResult(UploadPreparationCompletion.STOPPED, tr("上传准备已结束，请检查已入队文件与目标目录", "Upload preparation ended. Check queued files and destination", "アップロードの準備が終了しました。キュー内のファイルと保存先を確認してください", "업로드 준비가 종료되었습니다. 대기열의 파일과 대상 폴더를 확인해 주세요"), nowMs())) else work } }
+                work.copy(result = UploadPreparationResult(UploadPreparationCompletion.STOPPED, tr("上传准备已停止，请核对队列中的文件与目标文件夹", "Upload preparation stopped. Check queued files and destination folder", "アップロードの準備が停止しました。キュー内のファイルと保存先フォルダーを確認してください", "업로드 준비가 중지되었습니다. 대기열의 파일과 대상 폴더를 확인해 주세요", "上傳準備已停止，請核對佇列中的檔案與目標資料夾"), nowMs())) else work } }
             val released = runBlocking { sourceLock.withLock { preparingSources.remove(preparation.id).orEmpty() } }
             released.forEach(::releaseIfUnused)
         }
@@ -232,10 +232,10 @@ class PikoUploadCoordinator(
         }
         suspend fun queue(key: String, path: String, task: UploadTask) = preparationLock.withLock {
             currentCoroutineContext().ensureActive()
-            if (work.id !in preparationJobs) throw CancellationException(tr("上传准备已移除", "Upload preparation removed", "アップロードの準備を削除しました", "업로드 준비를 삭제했습니다"))
+            if (work.id !in preparationJobs) throw CancellationException(tr("上传准备已移除", "Upload preparation removed", "アップロードの準備を削除しました", "업로드 준비를 삭제했습니다", "上傳準備已移除"))
             if (batchName == null) {
                 val firstName = work.sources.firstOrNull()?.title ?: task.fileName
-                batchName = if (selection.files.isEmpty() && selection.folders.size == 1) firstName else tr("$firstName 等 ${selection.count} 项", "$firstName and ${enCount(selection.count, "item", "items")}", "$firstName ほか ${selection.count} 項目", "$firstName 등 ${selection.count}개 항목")
+                batchName = if (selection.files.isEmpty() && selection.folders.size == 1) firstName else tr("$firstName 等 ${selection.count} 项", "$firstName and ${enCount(selection.count, "item", "items")}", "$firstName ほか ${selection.count} 項目", "$firstName 등 ${selection.count}개 항목", "$firstName 等 ${selection.count} 項")
             }
             val queued = if (grouped) task.copy(batchId = work.id, batchName = batchName,
                 batchParentId = work.parentId, batchParentName = work.parentName, batchIsFolder = selection.folders.isNotEmpty()) else task
@@ -277,7 +277,7 @@ class PikoUploadCoordinator(
                         currentCoroutineContext().ensureActive()
                         attempted = true
                         val id = client.createFolder(parent, name)
-                        check(id.isNotBlank()) { tr("目录创建响应缺少 ID", "Folder creation response has no ID", "フォルダー作成の応答にIDがありません", "폴더 생성 응답에 ID가 없습니다") }
+                        check(id.isNotBlank()) { tr("新建文件夹响应缺少 ID", "Folder creation response missing ID", "フォルダー作成の応答にIDが含まれていません", "폴더 생성 응답에 ID가 없습니다", "新增資料夾回應缺少 ID") }
                         directories[path] = id
                         work = work.copy(directories = work.directories + UploadPreparedDirectory(key, path, id, parent)); publish()
                         driveRepository.applyWriteChange(client.account, DriveChange.Created(parent, id, name, isFolder = true))
@@ -295,7 +295,7 @@ class PikoUploadCoordinator(
                     }
                 }
                 for ((index, entry) in folder.files.withIndex()) {
-                    val sourcePath = listOf(entry.relativeDir, tr("所选文件 ${index + 1}", "Selected file ${index + 1}", "選択したファイル ${index + 1}", "선택한 파일 ${index + 1}")).filter { it.isNotEmpty() }.joinToString("/")
+                    val sourcePath = listOf(entry.relativeDir, tr("所选文件 ${index + 1}", "Selected file ${index + 1}", "選択したファイル ${index + 1}", "선택한 파일 ${index + 1}", "所選檔案 ${index + 1}")).filter { it.isNotEmpty() }.joinToString("/")
                     val task = readFile(key, sourcePath, entry.uri, "", "") ?: continue
                     val path = listOf(entry.relativeDir, task.fileName).filter { it.isNotEmpty() }.joinToString("/")
                     val parent = directory(entry.relativeDir)
@@ -319,16 +319,16 @@ class PikoUploadCoordinator(
                 else -> UploadPreparationCompletion.FAILED
             }
             val message = buildList {
-                add(tr("已入队 ${work.files.size} 个文件", "Queued ${enCount(work.files.size, "file", "files")}", "${work.files.size} ファイルをキューに追加しました", "파일 ${work.files.size}개 대기열에 추가"))
-                if (work.directories.isNotEmpty()) add(tr("已创建 ${work.directories.size} 个目录", "Created ${enCount(work.directories.size, "folder", "folders")}", "${work.directories.size} フォルダーを作成しました", "폴더 ${work.directories.size}개 생성 완료"))
+                add(tr("已入队 ${work.files.size} 个文件", "Queued ${enCount(work.files.size, "file", "files")}", "${work.files.size} ファイルをキューに追加しました", "파일 ${work.files.size}개 대기열에 추가", "已將 ${work.files.size} 個檔案加入佇列"))
+                if (work.directories.isNotEmpty()) add(tr("已创建 ${work.directories.size} 个文件夹", "Created ${enCount(work.directories.size, "folder", "folders")}", "${work.directories.size} 個のフォルダーを作成しました", "폴더 ${work.directories.size}개 생성 완료", "已建立 ${work.directories.size} 個資料夾"))
                 val unknown = work.issues.count { it.kind == UploadPreparationIssueKind.DIRECTORY_UNCONFIRMED }
-                if (unknown > 0) add(tr("$unknown 个目录创建结果待确认", "$unknown folder creations unconfirmed", "$unknown フォルダーの作成が未確認です", "폴더 ${unknown}개 생성 결과 미확인"))
+                if (unknown > 0) add(tr("$unknown 个文件夹创建结果待确认", "$unknown folder creations unconfirmed", "$unknown 個のフォルダー作成結果が未確認です", "폴더 ${unknown}개 생성 결과 미확인", "$unknown 個資料夾建立結果待確認"))
                 val skipped = work.issues.count { it.kind == UploadPreparationIssueKind.NOT_ATTEMPTED }
-                if (skipped > 0) add(tr("$skipped 个文件未入队", "${enCount(skipped, "file", "files")} not queued", "$skipped ファイルをキューに追加していません", "파일 ${skipped}개 대기열에 추가 안 됨"))
+                if (skipped > 0) add(tr("$skipped 个文件未入队", "${enCount(skipped, "file", "files")} not queued", "$skipped ファイルをキューに追加していません", "파일 ${skipped}개 대기열에 추가 안 됨", "$skipped 個檔案未加入佇列"))
                 val failed = work.issues.size - unknown - skipped
-                if (failed > 0) add(tr("$failed 项未准备成功", "${enCount(failed, "item", "items")} failed preparation", "$failed 項目の準備に失敗しました", "${failed}개 항목 준비 실패"))
-                if (stopped) add(tr("准备已停止，请检查目标目录", "Preparation stopped. Check the destination folder", "準備を停止しました。保存先フォルダーを確認してください", "준비를 중지했습니다. 대상 폴더를 확인해 주세요"))
-                if (unexpected) add(tr("准备发生异常，请检查已入队文件与目标目录", "Preparation failed. Check queued files and destination", "準備中にエラーが発生しました。キュー内のファイルと保存先を確認してください", "준비 중 오류가 발생했습니다. 대기열의 파일과 대상 폴더를 확인해 주세요"))
+                if (failed > 0) add(tr("$failed 项未准备成功", "${enCount(failed, "item", "items")} failed preparation", "$failed 項目の準備に失敗しました", "${failed}개 항목 준비 실패", "$failed 項未準備成功"))
+                if (stopped) add(tr("准备已停止，请核对目标文件夹", "Preparation stopped. Check the destination folder", "準備を停止しました。保存先フォルダーを確認してください", "준비를 중지했습니다. 대상 폴더를 확인해 주세요", "準備已停止，請核對目標資料夾"))
+                if (unexpected) add(tr("准备出错，请核对队列中的文件与目标文件夹", "Preparation failed. Check queued files and destination folder", "準備中にエラーが発生しました。キュー内のファイルと保存先フォルダーを確認してください", "준비 중 오류가 발생했습니다. 대기열의 파일과 대상 폴더를 확인해 주세요", "準備發生錯誤，請核對佇列中的檔案與目標資料夾"))
             }.joinToString("，")
             work = work.copy(result = UploadPreparationResult(completion, message, nowMs()))
             PikoLog.i(TAG, "上传准备 ${work.id}结束：$completion，入队 ${work.files.size} 个文件，创建 ${work.directories.size} 个目录，${work.issues.size} 项问题")
@@ -351,12 +351,12 @@ class PikoUploadCoordinator(
         return true
     }
     fun preparationBlockReason(selection: UploadSelection, parentId: String, snapshot: List<UploadPreparation> = _preparations.value): String? {
-        val account = clientProvider.currentClient.value?.account ?: return tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다")
-        if (_isRestoring.value) return tr("正在恢复上传任务，请稍后", "Restoring upload tasks. Please wait", "アップロードタスクを復元中です。お待ちください", "업로드 작업을 복원 중입니다. 잠시 기다려 주세요")
+        val account = clientProvider.currentClient.value?.account ?: return tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入")
+        if (_isRestoring.value) return tr("正在恢复上传任务，请稍候", "Restoring upload tasks. Please wait", "アップロードタスクを復元中です。しばらくお待ちください", "업로드 작업을 복원 중입니다. 잠시 기다려 주세요", "正在恢復上傳任務，請稍候")
         if (_tasks.value.values.any { it.account == account && it.parentId == parentId && it.sourceUri in selection.files && it.status != UploadStatus.COMPLETED })
-            return tr("此文件已有未完成的上传，请在任务页继续或先移除原任务", "This file has an unfinished upload. Resume or remove it in Tasks first", "このファイルには未完了のアップロードがあります。先にタスク画面で再開または削除してください", "이 파일에 미완료 업로드가 있습니다. 먼저 작업 페이지에서 계속하거나 삭제해 주세요")
+            return tr("此文件已有未完成的上传任务，请在任务页继续或移除原任务", "An unfinished upload already exists for this file. Resume or remove it in Tasks", "このファイルには未完了のアップロードがあります。タスク画面で再開または削除してください", "이 파일에 미완료 업로드가 있습니다. 작업 페이지에서 계속하거나 삭제해 주세요", "此檔案已有未完成的上傳任務，請至任務頁繼續或移除原任務")
         val keys = selection.files.map { sourceKey(it, false) } + selection.folders.map { sourceKey(it, true) }
-        return tr("相同来源在此目录有准备中或已有副作用的上传，请先在任务页检查", "This source already has an upload in this folder. Check Tasks first", "同じソースのアップロードをこのフォルダーで準備中か処理済みです。先にタスク画面で確認してください", "이 폴더에 같은 원본의 업로드가 준비 중이거나 처리된 상태입니다. 먼저 작업 페이지에서 확인해 주세요").takeIf {
+        return tr("此文件夹中已有相同来源的上传记录，请先在任务页核对", "An upload from this source already exists in this folder. Check Tasks first", "このフォルダーには同じソースのアップロード記録があります。先にタスク画面で確認してください", "이 폴더에 동일한 원본의 업로드 기록이 있습니다. 먼저 작업 페이지에서 확인해 주세요", "此資料夾中已有相同來源的上傳記錄，請先至任務頁核對").takeIf {
             snapshot.any { it.account == account && it.parentId == parentId && it.blockedSources.any { key -> key in keys } }
         }
     }
@@ -766,9 +766,9 @@ class PikoUploadCoordinator(
     }
 
     private fun failureMessage(e: Throwable): String = when {
-        e is SourceUnavailableException -> tr("无法读取源文件，请重新选择", "Unable to read source file. Select it again", "元のファイルを読み込めません。選択し直してください", "원본 파일을 읽을 수 없습니다. 다시 선택해 주세요")
-        e.isNetworkFailure() -> tr("网络中断", "Network interrupted", "ネットワークが切断されました", "네트워크 연결이 끊어졌습니다")
-        else -> dev.piko.shared.notice.PikoErrorMapper.failure(tr("上传", "Upload", "アップロード", "업로드"), e)
+        e is SourceUnavailableException -> tr("无法读取源文件，请重新选择", "Unable to read source file. Select it again", "元のファイルを読み込めません。選択し直してください", "원본 파일을 읽을 수 없습니다. 다시 선택해 주세요", "無法讀取來源檔案，請重新選擇")
+        e.isNetworkFailure() -> tr("网络中断", "Network interrupted", "ネットワークが切断されました", "네트워크 연결이 끊어졌습니다", "網路中斷")
+        else -> dev.piko.shared.notice.PikoErrorMapper.failure(tr("上传", "Upload", "アップロード", "업로드", "上傳"), e)
     }
 
     private fun update(taskId: String, transform: (UploadTask) -> UploadTask) {
@@ -778,7 +778,7 @@ class PikoUploadCoordinator(
     /** 任务在途中被删除时抛出取消，[run] 随之结束。 */
     private fun updated(taskId: String, transform: (UploadTask) -> UploadTask): UploadTask {
         update(taskId, transform)
-        return _tasks.value[taskId] ?: throw CancellationException(tr("任务已移除", "Task removed", "タスクを削除しました", "작업을 삭제했습니다"))
+        return _tasks.value[taskId] ?: throw CancellationException(tr("任务已移除", "Task removed", "タスクを削除しました", "작업을 삭제했습니다", "任務已移除"))
     }
 
     private fun UploadSession.canContinue(): Boolean {

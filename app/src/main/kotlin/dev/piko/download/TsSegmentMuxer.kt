@@ -91,7 +91,7 @@ internal object TsSegmentMuxer {
                 if (started) runCatching { muxer.stop() }
                 runCatching { muxer.release() }
             }
-            check(tempFile.length() > 1024L) { tr("视频片段提取未生成有效数据", "No valid data produced by video extraction", "動画の切り出しで有効なデータが生成されませんでした", "동영상 구간 추출에서 유효한 데이터가 생성되지 않았습니다") }
+            check(tempFile.length() > 1024L) { tr("视频片段提取未生成有效数据", "No valid data produced by video extraction", "動画の切り出しで有効なデータが生成されませんでした", "동영상 구간 추출에서 유효한 데이터가 생성되지 않았습니다", "影片片段擷取未產生有效資料") }
             destinationFile.delete()
             if (!tempFile.renameTo(destinationFile)) {
                 tempFile.copyTo(destinationFile, overwrite = true)

@@ -58,7 +58,7 @@ internal class MpvPlaybackBackend(
     private val hardwareDecoding: Boolean = true,
 ) : PlaybackBackend, MPVLib.EventObserver, MPVLib.LogObserver {
 
-    private val mpv: MPVLib = MPVLib.create(context) ?: error(tr("libmpv 初始化失败", "libmpv initialization failed", "libmpvの初期化に失敗しました", "libmpv 초기화 실패"))
+    private val mpv: MPVLib = MPVLib.create(context) ?: error(tr("libmpv 初始化失败", "libmpv initialization failed", "libmpvの初期化に失敗しました", "libmpv 초기화 실패", "libmpv 初始化失敗"))
 
     override var positionMillis by mutableLongStateOf(0L)
         private set
@@ -154,6 +154,8 @@ internal class MpvPlaybackBackend(
         mpv.setOptionString("sub-font-provider", "fontconfig")
         mpv.setOptionString("slang", MPV_SUBTITLE_LANGUAGES)
         mpv.setOptionString("network-timeout", "30")
+        // 仅向 JNI 与 logcat 输出警告及错误，阻断 C 层每秒上千条 verbose 字符串跨界回调拖慢主线程与 GC
+        mpv.setOptionString("msg-level", "all=warn")
         // 代理背后的 SDK reader 已经预读 32 MiB，mpv 这层不必再囤太多
         mpv.setOptionString("cache", "yes")
         if (preview) {
@@ -553,7 +555,12 @@ internal class MpvPlaybackBackend(
             }
 
             "duration" -> durationMillis = (value * 1000).toLong().coerceAtLeast(0L)
-            "demuxer-cache-time" -> bufferedPositionMillis = (value * 1000).toLong().coerceAtLeast(0L)
+            "demuxer-cache-time" -> {
+                val millis = (value * 1000).toLong().coerceAtLeast(0L)
+                if (millis == 0L || abs(millis - bufferedPositionMillis) >= POSITION_GRANULARITY_MILLIS) {
+                    bufferedPositionMillis = millis
+                }
+            }
             "speed" -> currentSpeed = value.toFloat()
             "volume" -> currentVolume = (value / 100).toFloat().coerceIn(0f, 1f)
             "video-params/aspect" -> {

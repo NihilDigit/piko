@@ -75,7 +75,7 @@ internal fun DriveSubtitlePanel(
             modifier = Modifier.fillMaxWidth().weight(1f),
         ) {
             if (state.path.size > 1) {
-                item(key = "up") { PickerRow(icon = Icons.Filled.ArrowUpward, label = tr("上一级", "Parent folder", "上の階層", "상위 폴더"), onClick = { state.navigateUp() }) }
+                item(key = "up") { PickerRow(icon = Icons.Filled.ArrowUpward, label = tr("上一级", "Parent folder", "上の階層", "상위 폴더", "上一層"), onClick = { state.navigateUp() }) }
             }
             items(state.folders, key = { "d:" + it.id }) { folder ->
                 PickerRow(icon = Icons.Outlined.Folder, label = folder.name, onClick = { state.open(folder) })
@@ -88,7 +88,7 @@ internal fun DriveSubtitlePanel(
                 state.isLoading -> item(key = "loading") { PickerRowsSkeleton() }
                 error != null -> item(key = "error") {
                     Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(tr("读取目录失败：$error", "Failed to load folder: $error", "フォルダーを読み込めません：$error", "폴더를 불러오지 못했습니다: $error"), textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(tr("读取目录失败：$error", "Failed to load folder: $error", "フォルダーを読み込めません：$error", "폴더를 불러오지 못했습니다: $error", "讀取資料夾失敗：$error"), textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         TextButton(onClick = { state.reload() }) { Text(stringResource(Res.string.common_retry)) }
                     }
                 }

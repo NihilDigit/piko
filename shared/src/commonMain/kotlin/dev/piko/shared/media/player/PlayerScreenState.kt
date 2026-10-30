@@ -281,7 +281,7 @@ class PlayerScreenState(
      */
     fun addLocalSubtitle(forFileId: String, path: String, name: String) {
         if (fileId != forFileId || released) {
-            _messages.tryEmit(tr("视频已切换，字幕未挂上", "Video changed; subtitles were not attached", "動画が切り替わったため字幕を追加できませんでした", "동영상이 변경되어 자막을 추가하지 못했습니다"))
+            _messages.tryEmit(tr("视频已切换，未加载字幕", "Video changed; subtitle not loaded", "動画が切り替わったため、字幕を読み込めませんでした", "동영상이 전환되어 자막을 불러오지 않았습니다", "影片已切換，未載入字幕"))
             return
         }
         val subtitle = ManualSubtitle(title = name, localPath = path, fileId = null)
@@ -295,7 +295,7 @@ class PlayerScreenState(
         scope.launch {
             val stream = repository.prepareSubtitle(subtitleFileId)
             if (stream == null) {
-                _messages.tryEmit(tr("无法打开字幕文件", "Unable to open subtitle file", "字幕ファイルを開けません", "자막 파일을 열 수 없습니다"))
+                _messages.tryEmit(tr("无法打开字幕文件", "Unable to open subtitle file", "字幕ファイルを開けません", "자막 파일을 열 수 없습니다", "無法開啟字幕檔案"))
                 return@launch
             }
             // 取流期间换了集，这条字幕不属于新文件
@@ -410,9 +410,9 @@ class PlayerScreenState(
     /** 播放详细信息面板的内容：从哪里读、哪一档，再加 mpv 读得到的编码与缓冲。面板开着时每秒取一次。 */
     fun stats(): List<PlaybackStatsSection> {
         // 走不走本机代理是实现细节，看的人只关心是不是在用流量
-        val source = if (isLocalPlayback) tr("本机", "This device", "この端末", "이 기기") else tr("网盘", "Drive", "ドライブ", "드라이브")
-        val quality = if (isLocalPlayback) null else activeQuality ?: tr("原画", "Original", "オリジナル", "원본")
-        val playback = PlaybackStatsSection(tr("播放", "Play", "再生", "재생"), listOfNotNull(tr("来源", "Source", "ソース", "출처") to source, quality?.let { tr("画质", "Quality", "画質", "화질") to it }))
+        val source = if (isLocalPlayback) tr("本机", "This device", "この端末", "이 기기", "本機") else tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟")
+        val quality = if (isLocalPlayback) null else activeQuality ?: tr("原画", "Original", "オリジナル", "원본", "原畫")
+        val playback = PlaybackStatsSection(tr("播放", "Play", "再生", "재생", "播放"), listOfNotNull(tr("来源", "Source", "ソース", "출처", "來源") to source, quality?.let { tr("画质", "Quality", "画質", "화질", "畫質") to it }))
         return listOf(playback) + readPlaybackStats(backend::mpvProperty)
     }
 
@@ -564,7 +564,7 @@ class PlayerScreenState(
                 activeQuality = playback.info.transcodeName
                 when (playback.info.kind) {
                     PlayableMediaKind.Image -> Unit
-                    PlayableMediaKind.UnsupportedImage -> failure = tr("GIF 暂不支持预览", "GIF preview is not supported yet", "GIFのプレビューにはまだ対応していません", "GIF 미리 보기는 아직 지원하지 않습니다")
+                    PlayableMediaKind.UnsupportedImage -> failure = tr("GIF 暂不支持预览", "GIF preview is not supported yet", "GIFのプレビューにはまだ対応していません", "GIF 미리 보기는 아직 지원하지 않습니다", "GIF 暫不支援預覽")
                     PlayableMediaKind.Video -> {
                         val proxyUrl = playback.proxyUrl.takeUnless { preferDirectLink }
                         usingProxy = proxyUrl != null
@@ -587,7 +587,7 @@ class PlayerScreenState(
             throw e
         } catch (e: Exception) {
             PikoLog.w(TAG, "取流失败：${logFile(fileId, title)}", e)
-            failure = dev.piko.shared.notice.PikoErrorMapper.failure(tr("播放", "Playback", "再生", "재생"), e)
+            failure = dev.piko.shared.notice.PikoErrorMapper.failure(tr("播放", "Playback", "再生", "재생", "播放"), e)
             isPreparing = false
             // 这一轮连流都没拿到，退避到此为止，否则失败卡片会被加载态一直挡着
             isRecovering = false
@@ -623,7 +623,7 @@ class PlayerScreenState(
 
     private fun onPlaybackError(detail: String?) {
         stableJob?.cancel()
-        val message = detail?.takeIf { it.isNotBlank() }?.let { "播放失败：$it" } ?: tr("播放中断", "Playback interrupted", "再生が中断されました", "재생이 중단되었습니다")
+        val message = detail?.takeIf { it.isNotBlank() }?.let { tr("播放失败：$it", "Playback failed: $it", "再生に失敗しました：$it", "재생 실패: $it", "播放失敗：$it") } ?: tr("播放中断", "Playback interrupted", "再生が中断されました", "재생이 중단되었습니다", "播放中斷")
         PikoLog.w(
             TAG,
             "$message（${if (isLocalPlayback) "本地" else if (usingProxy) "代理" else "直链"}，" +
@@ -654,7 +654,7 @@ class PlayerScreenState(
                 preferDirectLink = false
                 requestedQuality = transcode
                 isRecovering = true
-                _messages.tryEmit(tr("原画无法播放，已切换转码", "Original unavailable; switched to transcoded video", "オリジナルを再生できないため、変換済み動画に切り替えました", "원본을 재생할 수 없어 변환된 동영상으로 전환했습니다"))
+                _messages.tryEmit(tr("无法播放原画，已切换至转码画质", "Unable to play original; switched to transcoded stream", "オリジナルを再生できないため、変換ストリームに切り替えました", "원본을 재생할 수 없어 변환 화질로 전환했습니다", "無法播放原畫，已切換至轉碼畫質"))
                 reload()
                 return
             }
@@ -663,7 +663,7 @@ class PlayerScreenState(
             isRecovering = false
             // 转码流一帧都没放出来，多半是服务端那一档坏了（有的档回 206 却没有正文，见 PikoMediaRepository.probeTranscode），
             // 播放器给的原因只是读不到数据，照抄会让人以为是网络或 Piko 的问题
-            failure = activeQuality?.let { tr("PikPak 的 $it 转码文件暂不可读，请改选其他画质", "PikPak’s $it transcode is unavailable. Choose another quality", "PikPakの $it 変換済み動画を読み込めません。別の画質を選択してください", "PikPak의 $it 변환 파일을 읽을 수 없습니다. 다른 화질을 선택해 주세요") } ?: message
+            failure = activeQuality?.let { tr("$it 转码流暂不可用，请切换其他画质", "$it transcoded stream is unavailable. Choose another quality", "$it の変換ストリームを利用できません。別の画質を選択してください", "$it 변환 스트림을 사용할 수 없습니다. 다른 화질을 선택해 주세요", "$it 轉碼串流暫時無法使用，請切換其他畫質") } ?: message
             return
         }
 
@@ -765,7 +765,7 @@ class PlayerScreenState(
         }
         val subtitles = refs.mapNotNull { ref ->
             val stream = repository.prepareSubtitle(ref.fileId) ?: return@mapNotNull null
-            ExternalSubtitle(url = register(stream), title = ref.language ?: tr("外挂字幕", "External subtitles", "外部字幕", "외부 자막"), language = ref.language?.let(::subtitleLanguageCode))
+            ExternalSubtitle(url = register(stream), title = ref.language ?: tr("外挂字幕", "External subtitles", "外部字幕", "외부 자막", "外掛字幕"), language = ref.language?.let(::subtitleLanguageCode))
         }
         val manual = manualSubtitles.mapNotNull { subtitle ->
             val url = subtitle.localPath

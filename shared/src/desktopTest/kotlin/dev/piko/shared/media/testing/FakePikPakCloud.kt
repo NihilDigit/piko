@@ -44,6 +44,8 @@ internal class FakePikPakCloud(
      * null 表示没有这一档。
      */
     private val unreadableTranscodeHeight: Int? = null,
+    /** 测试可挂起后续块，让暂停发生在确定的部分下载状态。 */
+    private val beforeCdnResponse: (suspend () -> Unit)? = null,
 ) {
     val detailCalls = AtomicInteger()
     val cdnRequests = AtomicInteger()
@@ -143,6 +145,7 @@ internal class FakePikPakCloud(
         }
         try {
             if (blockDelayMillis > 0) delay(blockDelayMillis)
+            beforeCdnResponse?.invoke()
             val (start, endInclusive) = parseRange(request.headers[HttpHeaders.Range], body.size.toLong())
             val slice = body.copyOfRange(start.toInt(), endInclusive.toInt() + 1)
             deliveredCdnBytes.addAndGet(slice.size.toLong())

@@ -202,6 +202,20 @@ fun ClipFeedScreen(
     // 横屏时 × 与返回都先回到竖屏，第二次才关掉信息流；后登记的先收到，压在外层的返回之上
     val inLandscape = landscapeLock != null && session.landscape
     BackHandler(enabled = inLandscape) { session.landscape = false }
+    val toggleAutoAdvance: () -> Unit = {
+        val next = !session.autoAdvance
+        session.autoAdvance = next
+        scope.launch {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            snackbarHostState.showSnackbar(
+                if (next) {
+                    tr("已开启自动连刷：播完当前片段自动翻到下一条", "Auto-advance enabled: advancing after each clip", "自動送りオン：再生後に次のクリップへ移動します", "자동 넘김 켜짐: 클립 재생 후 다음으로 이동합니다", "已開啟自動連刷：播完目前片段自動切換至下一條")
+                } else {
+                    tr("已关闭自动连刷", "Auto-advance disabled", "自動送りをオフにしました", "자동 넘김을 껐습니다", "已關閉自動連刷")
+                },
+            )
+        }
+    }
     val topBar: @Composable BoxScope.(onHideChrome: (() -> Unit)?) -> Unit = { onHideChrome ->
         ClipFeedTopBar(
             title = session.scopeLabel,
@@ -209,6 +223,8 @@ fun ClipFeedScreen(
             onToggleMute = { session.muted = !session.muted },
             onClose = { if (inLandscape) session.landscape = false else onBackClick() },
             compact = compact,
+            autoAdvance = session.autoAdvance,
+            onToggleAutoAdvance = if (onHideChrome != null) toggleAutoAdvance else null,
             onPopOut = onPopOut,
             onDock = onDock,
             onToggleFullscreen = onToggleFullscreen,
@@ -223,7 +239,7 @@ fun ClipFeedScreen(
     PlayerTheme {
         Box(modifier = modifier.fillMaxSize().background(Color.Black)) {
             when {
-                videoPreview == null -> FeedMessage(tr("此平台暂不支持信息流", "Feed is not supported on this platform yet", "このプラットフォームではフィードにまだ対応していません", "이 플랫폼은 아직 피드를 지원하지 않습니다"), null, topBar)
+                videoPreview == null -> FeedMessage(tr("此平台暂不支持信息流", "Feed is not supported on this platform yet", "このプラットフォームではフィードにまだ対応していません", "이 플랫폼은 아직 피드를 지원하지 않습니다", "此平台尚不支援資訊流"), null, topBar)
                 clips.isEmpty() && !session.isEmpty -> {
                     Box(Modifier.fillMaxSize()) {
                         Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -233,7 +249,7 @@ fun ClipFeedScreen(
                         topBar(null)
                     }
                 }
-                clips.isEmpty() -> FeedMessage(tr("这里没有可播放的视频", "No playable videos here", "再生できる動画はありません", "재생할 수 있는 동영상이 없습니다"), tr("只挑一分钟以上的正片，子文件夹里的也算", "Includes main videos over one minute, including subfolders", "サブフォルダーを含め、1分以上の本編動画を選びます", "하위 폴더를 포함하여 1분 이상의 본편 동영상만 선택합니다"), topBar)
+                clips.isEmpty() -> FeedMessage(tr("当前范围无可播放视频", "No playable videos", "再生可能な動画がありません", "재생 가능한 동영상이 없습니다", "目前範圍無可播放影片"), tr("仅包含时长超过 1 分钟的正片视频（含子文件夹）", "Includes main videos over 1 minute, including subfolders", "サブフォルダーを含む1分以上の本編動画が対象です", "하위 폴더를 포함하여 1분 이상의 본편 동영상만 포함됩니다", "僅包含時長超過 1 分鐘的正片影片（含子資料夾）"), topBar)
                 // 换了范围就是另一条队列，页码、播放器与各段的装载状态都不再对得上，整个重建
                 else -> key(scopeVersion) {
                     ClipPager(
@@ -247,6 +263,7 @@ fun ClipFeedScreen(
                         pausedByHost = pausedByHost,
                         onPlayFull = playFull,
                         onLocate = onLocate,
+                        onToggleAutoAdvance = toggleAutoAdvance,
                         onStarted = { started = true },
                         overlay = topBar,
                     )
@@ -281,6 +298,7 @@ private fun ClipPager(
     pausedByHost: Boolean,
     onPlayFull: (FileStat, Long) -> Unit,
     onLocate: (FileStat) -> Unit,
+    onToggleAutoAdvance: () -> Unit,
     /** 头一段画面走起来了，冷开的限制可以放开。 */
     onStarted: () -> Unit,
     /** 顶栏，传进去的是进入沉浸；沉浸时整条藏起。 */
@@ -292,6 +310,10 @@ private fun ClipPager(
     val preferences = LocalPikoServices.current.preferences
     val boostSpeed by preferences.playerBoostSpeedFlow.collectAsState(initial = PlayerGestureDefaults.BOOST_SPEED)
     val seekStepSeconds by preferences.playerSeekStepSecondsFlow.collectAsState(initial = PlayerGestureDefaults.SEEK_STEP_SECONDS)
+    val clipAutoExtend by preferences.clipAutoExtendFlow.collectAsState(initial = true)
+    val latestAutoExtend by rememberUpdatedState(clipAutoExtend)
+    val autoAdvance = session.autoAdvance
+    val latestAutoAdvance by rememberUpdatedState(autoAdvance)
     val seekStepMillis = seekStepSeconds * 1000L
     // 末尾多一页等待页：下一段还没取好时翻得过去看它转圈，再往后翻不动；候补一取好，这一页就原地变成那一段
     val pageCount = clips.size + if (upcoming.isNotEmpty()) 1 else 0
@@ -314,11 +336,15 @@ private fun ClipPager(
     val clipStartMs = remember { List(POOL_SIZE) { 0L }.toMutableStateList() }
     // 每个播放器所装那一段当前开放的播放长度，初值为 CLIP_LENGTH_MS，播完一段自动往后续 30s
     val clipLengths = remember { List(POOL_SIZE) { CLIP_LENGTH_MS }.toMutableStateList() }
-    // 按 Clip 记住已扩展的窗口长度，回翻重新装入时保留已 extend 的进度窗口，不重置回 30s
+    // 每个播放器所装那一段允许扩展到的最大时长（有界 TS 切片取切片窗口上限，原画取剩余片长）
+    val maxWindowLengths = remember { List<Long?>(POOL_SIZE) { null }.toMutableStateList() }
+    // 按 Clip 记住已扩展的窗口长度与离开时的播放进度，回翻重新装入时保留进度与窗口，不重置回 0s / 30s
     val rememberedLengths = remember { mutableStateMapOf<Clip, Long>() }
+    val rememberedPositions = remember { mutableStateMapOf<Clip, Long>() }
     val loadJobs = remember { arrayOfNulls<Job>(POOL_SIZE) }
     val focusRequester = remember { FocusRequester() }
     var paused by remember { mutableStateOf(pausedByHost) }
+    val latestPaused by rememberUpdatedState(paused)
     val latestHostPaused by rememberUpdatedState(pausedByHost)
     // 长按期间两倍速
     var boosting by remember { mutableStateOf(false) }
@@ -346,6 +372,7 @@ private fun ClipPager(
     // 翻到预渲染好的一段也要顿 0.3 到 0.4 秒；桌面用滚轮与按键翻页，收尾短，看不出来（2026-09-28）
     val dragging by pagerState.interactionSource.collectIsDraggedAsState()
     val settled = (if (dragging) pagerState.settledPage else pagerState.targetPage).coerceIn(0, pageCount - 1)
+    val latestSettled by rememberUpdatedState(settled)
     // 停在等待页上时为 null
     val current = clips.getOrNull(settled)
     fun slotOf(page: Int) = page % POOL_SIZE
@@ -360,29 +387,70 @@ private fun ClipPager(
     // 按下还没松开的键，用来认出连发
     var heldKey by remember { mutableStateOf<Key?>(null) }
 
-    // 自动翻页等着下一段取好
-    var autoStepPending by remember { mutableStateOf(false) }
+    // 自动翻页请求绑定来源片段身份与开关状态：慢网预取超过 10s 不会丢失请求，关闭开关或换页立即取消
+    var pendingAdvanceClip by remember { mutableStateOf<Clip?>(null) }
+
+    LaunchedEffect(autoAdvance, current) {
+        if (!autoAdvance || pendingAdvanceClip != current) {
+            pendingAdvanceClip = null
+        }
+    }
 
     /**
      * 放满一段后翻到下一段。翻页器里只有取好的，下一段还没取好就让这一段接着放，取好了再翻，
      * 不翻过去对着黑屏。
      */
-    fun autoStep() {
-        autoStepPending = true
+    fun autoStep(forClip: Clip?) {
+        if (forClip != null && latestAutoAdvance) {
+            pendingAdvanceClip = forClip
+        }
     }
-    LaunchedEffect(autoStepPending) {
-        if (!autoStepPending) return@LaunchedEffect
-        val target = pagerState.currentPage + 1
+    LaunchedEffect(pendingAdvanceClip, autoAdvance) {
+        val sourceClip = pendingAdvanceClip
+        if (!autoAdvance || sourceClip == null) return@LaunchedEffect
+        val sourcePage = latestSettled
+        if (latestClips.getOrNull(sourcePage) != sourceClip) {
+            pendingAdvanceClip = null
+            return@LaunchedEffect
+        }
+        val target = sourcePage + 1
         snapshotFlow { latestClips.size > target }.first { it }
-        autoStepPending = false
-        go(1)
+        if (latestAutoAdvance && pendingAdvanceClip == sourceClip && latestSettled == sourcePage && latestClips.getOrNull(sourcePage) == sourceClip) {
+            pendingAdvanceClip = null
+            go(1)
+        } else {
+            pendingAdvanceClip = null
+        }
     }
 
-    /** 把第 [page] 段装进它的播放器，停在片段起点的第一帧。已经装着这一段就不动，停在哪里算哪里。 */
+    fun maxPlayableLength(slot: Int, clip: Clip, videoStart: Long = clipStartMs[slot]): Long {
+        val videoRemaining = (clip.videoDurationMs - videoStart).coerceAtLeast(1_000L)
+        val cap = maxWindowLengths[slot]?.takeIf { it > 0L }
+        val playerDur = if (rendered[slot] == clip) {
+            (players[slot].durationMillis - startOnPlayer[slot]).takeIf { it > 0L }
+        } else null
+        var bound = videoRemaining
+        if (cap != null) bound = minOf(bound, cap)
+        if (playerDur != null) bound = minOf(bound, playerDur)
+        return bound.coerceAtLeast(1_000L)
+    }
+
+    fun saveSlotProgress(slot: Int) {
+        val oldClip = loaded[slot] ?: return
+        if (rendered[slot] != oldClip) return
+        val len = clipLengths[slot].coerceAtLeast(CLIP_LENGTH_MS)
+        val maxRem = maxPlayableLength(slot, oldClip)
+        val pos = (players[slot].positionMillis - startOnPlayer[slot]).coerceIn(0L, len)
+        val finished = ended[slot] == oldClip || (len >= maxRem && pos >= len - REPLAY_WITHIN_MS)
+        rememberedPositions[oldClip] = if (finished) 0L else pos
+    }
+
+    /** 把第 [page] 段装进它的播放器，停在片段起点（或上次离开处）的第一帧。已经装着这一段就不动，停在哪里算哪里。 */
     fun load(page: Int): Job? {
         val clip = clips.getOrNull(page) ?: return null
         val slot = slotOf(page)
         if (loaded[slot] == clip) return loadJobs[slot]
+        saveSlotProgress(slot)
         loadJobs[slot]?.cancel()
         loaded[slot] = clip
         rendered[slot] = null
@@ -398,11 +466,23 @@ private fun ClipPager(
             val preparedMs = started.elapsedNow().inWholeMilliseconds
             startOnPlayer[slot] = prepared.startOnPlayer
             clipStartMs[slot] = prepared.clipStartMs
-            clipLengths[slot] = rememberedLengths[clip] ?: CLIP_LENGTH_MS
+            maxWindowLengths[slot] = prepared.maxWindowMs
+            val maxRem = maxPlayableLength(slot, clip, prepared.clipStartMs)
+            val savedLength = if (latestAutoAdvance || !latestAutoExtend) CLIP_LENGTH_MS else (rememberedLengths[clip] ?: CLIP_LENGTH_MS)
+            val initialLength = savedLength.coerceAtMost(maxRem)
+            clipLengths[slot] = initialLength
+            val rawSaved = (rememberedPositions[clip] ?: 0L).coerceIn(0L, initialLength)
+            val resumeOffset = if (initialLength >= maxRem && rawSaved >= initialLength - REPLAY_WITHIN_MS) 0L else rawSaved
             try {
+                // 回翻恢复到半途位置时，先放开代理侧预读，确保跳出开头 5 秒预取区也能顺畅解出首帧
+                if (resumeOffset > 0L) streams.boost(clip, BOOSTED_READ_AHEAD_SECONDS, BOOSTED_MIN_AHEAD_BYTES)
                 // 新装的段先压着，真看起来才升档，见 LaunchedEffect(current)
                 players[slot].setBufferAhead(HOLD_BUFFER_SECONDS)
-                players[slot].open(PlaybackTarget.Url(url), startMillis = prepared.startOnPlayer, playWhenReady = false)
+                players[slot].open(
+                    PlaybackTarget.Url(url),
+                    startMillis = prepared.startOnPlayer + resumeOffset,
+                    playWhenReady = false,
+                )
                 // 换文件后音量是否沿用看后端，静音时每次装完都再设一遍
                 if (latestMuted) players[slot].setVolume(0f)
             } catch (e: CancellationException) {
@@ -436,7 +516,6 @@ private fun ClipPager(
     LaunchedEffect(pointerSource.isTouchLike) {
         if (!pointerSource.isTouchLike) runCatching { focusRequester.requestFocus() }
     }
-    val latestSettled by rememberUpdatedState(settled)
     LaunchedEffect(pagerState) { snapshotFlow { latestSettled }.collect(session::moveTo) }
     LaunchedEffect(muted) { players.forEach { it.setVolume(if (muted) 0f else 1f) } }
     // 手指还按着就翻走了，松手的事件落不到这一页
@@ -465,7 +544,16 @@ private fun ClipPager(
                     // 预渲染的那两个出错不翻页，轮到它们时再装一次
                     PlaybackBackendEvent.Ended -> {
                         ended[slot] = loaded[slot]
-                        if (slot == slotOf(latestSettled)) autoStep()
+                        loaded[slot]?.let { rememberedPositions[it] = 0L }
+                        if (slot == slotOf(latestSettled)) {
+                            if (latestAutoAdvance) {
+                                autoStep(loaded[slot])
+                            } else {
+                                ended[slot] = null
+                                player.seekTo(startOnPlayer[slot])
+                                if (!latestPaused) player.play()
+                            }
+                        }
                     }
                     is PlaybackBackendEvent.Error -> if (slot == slotOf(latestSettled)) go(1)
                 }
@@ -515,10 +603,13 @@ private fun ClipPager(
             }
         }
         streams.holdAllBut(current)
+        if ((rememberedPositions[current] ?: 0L) <= 0L) {
+            streams.boost(current, ACTIVE_INITIAL_READ_AHEAD_SECONDS, ACTIVE_INITIAL_MIN_AHEAD_BYTES)
+        }
         val loading = load(settled)
         loading?.join()
         if (loaded[slotOf(settled)] != current) {
-            snackbarHostState.showSnackbar(tr("这一段打不开，已跳过", "Unable to open this clip; skipped", "このクリップを開けないためスキップしました", "이 클립을 열 수 없어 건너뛰었습니다"))
+            snackbarHostState.showSnackbar(tr("无法播放此片段，已自动跳过", "Unable to play clip; skipped", "このクリップを再生できないためスキップしました", "이 클립을 재생할 수 없어 건너뛰었습니다", "無法播放此片段，已自動略過"))
             go(1)
             return@LaunchedEffect
         }
@@ -530,10 +621,26 @@ private fun ClipPager(
         // 播放器停在流尾，只按播放不会动
         val positionIsOurs = rendered[slot] == current
         val atEnd = ended[slot] == current
-        val maxRemaining = (current.videoDurationMs - clipStartMs[slot]).coerceAtLeast(CLIP_LENGTH_MS)
+        val maxRemaining = maxPlayableLength(slot, current)
         if (positionIsOurs && (atEnd || (end >= start + maxRemaining && currentPlayer.positionMillis >= end - REPLAY_WITHIN_MS))) {
             ended[slot] = null
+            rememberedPositions[current] = 0L
             currentPlayer.seekTo(start)
+        }
+        if ((rememberedPositions[current] ?: 0L) > 0L) {
+            currentPlayer.setBufferAhead(BOOSTED_SECONDS)
+            streams.boost(current, BOOSTED_READ_AHEAD_SECONDS, BOOSTED_MIN_AHEAD_BYTES)
+        }
+        // 持续同步当前已渲染段的相对播放进度，翻过多个槽位再翻回来时也能精确接上
+        launch {
+            snapshotFlow {
+                if (rendered[slot] != current) null
+                else (currentPlayer.positionMillis - startOnPlayer[slot]).coerceIn(0L, clipLengths[slot].coerceAtLeast(CLIP_LENGTH_MS))
+            }.collect { pos ->
+                if (pos != null && ended[slot] != current) {
+                    rememberedPositions[current] = pos
+                }
+            }
         }
         // 翻到一段就是要看它：在上一段暂停过，不能带到这一段，看着像没播动
         paused = latestHostPaused
@@ -592,7 +699,7 @@ private fun ClipPager(
             // bufferedPositionMillis 在转码切片上按流里的时间戳算，与播放位置不在一把尺子上，核对要问 mpv 自己
             val before = currentPlayer.bufferReport()
             currentPlayer.setBufferAhead(BOOSTED_SECONDS)
-            streams.boost(current, BOOSTED_SECONDS)
+            streams.boost(current, BOOSTED_READ_AHEAD_SECONDS, BOOSTED_MIN_AHEAD_BYTES)
             delay(BOOST_CHECK_AFTER)
             PikoLog.d(
                 "Clips",
@@ -623,7 +730,7 @@ private fun ClipPager(
             PikoLog.d(
                 "Clips",
                 "开播 ${logFile(current.fileId, current.name)}：画面走起来 ${started.elapsedNow().inWholeMilliseconds - PLAYING_EVIDENCE_MS} ms，" +
-                    "就绪 $openedMs ms，" + if (preRendered) tr("翻到时已就绪", "Ready when reached", "表示時に準備済み", "도달 시 준비됨") else tr("翻到时未就绪", "Not ready when reached", "表示時に未準備", "도달 시 미준비"),
+                    "就绪 $openedMs ms，" + if (preRendered) tr("翻到时已就绪", "Ready when reached", "表示時に準備済み", "도달 시 준비됨", "切換至此時已就緒") else tr("翻到时未就绪", "Not ready when reached", "表示時に未準備", "도달 시 미준비", "切換至此時尚未就緒"),
             )
             // 位置停住却没报缓冲：切片到头、解码卡住一类，转圈不会出现，只能看位置
             launch {
@@ -662,7 +769,7 @@ private fun ClipPager(
             }
         }
         // 刚换源时 positionMillis 可能还是上一段的，只认落在这一段范围里的位置。
-        // 放满当前 30 秒窗口时，若全片后面还有内容则自动续上 30 秒接着播，直到全片末尾才翻到下一段
+        // 开启自动连刷时，播完当前片段自动翻到下一条；未开启自动连刷时，按「信息流自动续播」设置顺延 30 秒或单段循环重播
         snapshotFlow {
             val length = clipLengths[slot]
             val currentEnd = start + length
@@ -670,19 +777,25 @@ private fun ClipPager(
             Triple(reachedWindowEnd, length, clipStartMs[slot])
         }.collect { (reachedWindowEnd, length, videoStart) ->
             if (!reachedWindowEnd) {
-                autoStepPending = false
                 return@collect
             }
-            val maxRemaining = (current.videoDurationMs - videoStart).coerceAtLeast(CLIP_LENGTH_MS)
-            if (ended[slot] != current && length < maxRemaining) {
-                val nextLength = (length + CLIP_LENGTH_MS).coerceAtMost(maxRemaining)
-                clipLengths[slot] = nextLength
-                rememberedLengths[current] = nextLength
-                currentPlayer.setBufferAhead(BOOSTED_SECONDS)
-                streams.boost(current, BOOSTED_SECONDS)
-                PikoLog.d("Clips", "自动续播 30s ${logFile(current.fileId, current.name)}：当前窗口 ${nextLength / 1000}s")
-            } else {
-                autoStep()
+            val maxRemaining = maxPlayableLength(slot, current, videoStart)
+            when {
+                latestAutoAdvance -> autoStep(current)
+                latestAutoExtend && ended[slot] != current && length < maxRemaining -> {
+                    val nextLength = (length + CLIP_LENGTH_MS).coerceAtMost(maxRemaining)
+                    clipLengths[slot] = nextLength
+                    rememberedLengths[current] = nextLength
+                    currentPlayer.setBufferAhead(BOOSTED_SECONDS)
+                    streams.boost(current, BOOSTED_READ_AHEAD_SECONDS, BOOSTED_MIN_AHEAD_BYTES)
+                    PikoLog.d("Clips", "自动续播 30s ${logFile(current.fileId, current.name)}：当前窗口 ${nextLength / 1000}s")
+                }
+                else -> {
+                    ended[slot] = null
+                    rememberedPositions[current] = 0L
+                    currentPlayer.seekTo(start)
+                    if (!latestPaused) currentPlayer.play()
+                }
             }
         }
     }
@@ -707,39 +820,66 @@ private fun ClipPager(
     // 定位只在当前段的范围里：段首是播放器时钟上的 startOnPlayer，见 PreparedClip
     val currentSlot = slotOf(settled)
     val currentStart = startOnPlayer[currentSlot]
-    val currentLength = clipLengths[currentSlot].coerceAtLeast(CLIP_LENGTH_MS)
+    val currentLength = clipLengths[currentSlot].coerceAtLeast(1_000L)
     // 出过首帧才定位：刚装上的播放器位置读数可能还是它上一段的
     val seekable = current != null && rendered[currentSlot] == current
 
-    /** 当前段已放了多久，从段首算起。 */
-    fun clipPosition(): Long = (currentPlayer.positionMillis - currentStart).coerceIn(0L, currentLength)
+    /** 当前段已放了多久，从段首算起；回翻重装首帧未出时回落到离开前记住的位置，避免进度条闪回 0。 */
+    fun clipPosition(): Long = when {
+        current == null -> 0L
+        rendered[currentSlot] == current -> (currentPlayer.positionMillis - currentStart).coerceIn(0L, currentLength)
+        else -> (rememberedPositions[current] ?: 0L).coerceIn(0L, currentLength)
+    }
 
     fun seekClip(millis: Long) {
-        val activeClip = clips.getOrNull(latestSettled)
-        val slot = slotOf(latestSettled)
-        if (activeClip == null || rendered[slot] != activeClip) return
+        val page = latestSettled
+        val activeClip = latestClips.getOrNull(page)
+        val slot = slotOf(page)
+        if (activeClip == null || rendered[slot] != activeClip) {
+            PikoLog.d("Clips", "忽略定位：page=$page, clips=${latestClips.size}, active=${activeClip != null}, rendered=${rendered[slot] == activeClip}")
+            return
+        }
         val player = players[slot]
         // 放到流尾停住的播放器靠定位重新走起来；不清掉的话翻回来时会被当作已放完，从头再放
         ended[slot] = null
-        // 主动定位时立即放开缓存与预读：还没播满升档时间的段，预读原本锁在 0，不放开的话拖到未预取处读不到字节
+        // 先于 player.seekTo 同步置上 urgent（优先级 100）并放开预读窗口：mpv C 线程在 0.5 ms 内即发出新 HTTP Range 请求，
+        // 晚于 seekTo 再经 snapshotFlow 异步置 urgent 会错失定位首块的最高优先级
+        streams.setUrgent(activeClip, true)
         player.setBufferAhead(BOOSTED_SECONDS)
-        streams.boost(activeClip, BOOSTED_SECONDS)
-        val currentClipLen = clipLengths[slot].coerceAtLeast(CLIP_LENGTH_MS)
-        val maxRemaining = (activeClip.videoDurationMs - clipStartMs[slot]).coerceAtLeast(CLIP_LENGTH_MS)
-        if (millis >= currentClipLen - SEEK_EXTEND_THRESHOLD_MS && currentClipLen < maxRemaining) {
+        streams.boost(activeClip, BOOSTED_READ_AHEAD_SECONDS, BOOSTED_MIN_AHEAD_BYTES)
+        val currentClipLen = clipLengths[slot].coerceAtLeast(1_000L)
+        val maxRemaining = maxPlayableLength(slot, activeClip)
+        if (latestAutoExtend && !latestAutoAdvance && millis >= currentClipLen - SEEK_EXTEND_THRESHOLD_MS && currentClipLen < maxRemaining) {
             val nextLength = (currentClipLen + CLIP_LENGTH_MS).coerceAtMost(maxRemaining)
             clipLengths[slot] = nextLength
             rememberedLengths[activeClip] = nextLength
         }
-        val limit = clipLengths[slot].coerceAtLeast(CLIP_LENGTH_MS)
-        val targetOnPlayer = startOnPlayer[slot] + millis.coerceIn(0L, limit)
+        val limit = clipLengths[slot].coerceAtLeast(1_000L)
+        val clampedOffset = millis.coerceIn(0L, limit)
+        if (clampedOffset < limit - SEEK_EXTEND_THRESHOLD_MS && pendingAdvanceClip == activeClip) {
+            pendingAdvanceClip = null
+        }
+        rememberedPositions[activeClip] = clampedOffset
+        val targetOnPlayer = startOnPlayer[slot] + clampedOffset
+        PikoLog.d("Clips", "请求定位 ${logFile(activeClip.fileId, activeClip.name)}：段内 $clampedOffset/$limit ms（播放器 $targetOnPlayer ms）")
         player.seekTo(targetOnPlayer)
         seekPending++
     }
 
     val latestSeekClip by rememberUpdatedState(::seekClip)
 
-    fun seekClipBy(deltaMillis: Long) = latestSeekClip(clipPosition() + deltaMillis)
+    fun seekClipBy(deltaMillis: Long) {
+        val page = latestSettled
+        val activeClip = latestClips.getOrNull(page) ?: return
+        val slot = slotOf(page)
+        val len = clipLengths[slot].coerceAtLeast(CLIP_LENGTH_MS)
+        val base = if (rendered[slot] == activeClip) {
+            (players[slot].positionMillis - startOnPlayer[slot]).coerceIn(0L, len)
+        } else {
+            (rememberedPositions[activeClip] ?: 0L).coerceIn(0L, len)
+        }
+        latestSeekClip(base + deltaMillis)
+    }
 
     // 按键拦在最外层：焦点可能落在翻页器里的操作栏上，也可能落在翻页器外的顶栏按钮上，两处都要接得住。
     // 用 Preview 先于按钮拦下：焦点落在按钮上时，空格不该变成点一下那个按钮
@@ -764,6 +904,7 @@ private fun ClipPager(
                     Key.MediaPlay -> if (!repeat && paused) togglePause()
                     Key.MediaPause, Key.MediaStop -> if (!repeat && !paused) togglePause()
                     Key.M -> if (!repeat) session.muted = !session.muted
+                    Key.A -> if (!repeat) onToggleAutoAdvance()
                     else -> return@onPreviewKeyEvent false
                 }
                 true
@@ -796,10 +937,12 @@ private fun ClipPager(
                     Box(
                         Modifier
                             .fillMaxSize()
-                            .offset {
-                                // 没在哪一页上的挪出画面外，表面照旧挂着
+                            .graphicsLayer {
+                                // 在绘制阶段走 GPU RenderNode 硬件层矩阵平移，滑动中零 Layout 重测、不触发 AndroidView 重新 layout；
+                                // 完全移出视口外的播放器置透明以跳过 3 层全屏大纹理混合 Overdraw
                                 val pages = if (page == null) 2f else page - pagerState.currentPage - pagerState.currentPageOffsetFraction
-                                IntOffset(0, (pages * constraints.maxHeight).roundToInt())
+                                translationY = pages * size.height
+                                alpha = if (abs(pages) >= 1.05f) 0f else 1f
                             },
                     ) {
                         if (clip != null) {
@@ -882,7 +1025,7 @@ private fun ClipPager(
                 if (active && !warmUpDone) {
                     Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                         MediaLoadingIndicator()
-                        Text(tr("正在缓存 $warmed/$WARM_UP_CLIPS", "Buffering $warmed/$WARM_UP_CLIPS", "バッファ中 $warmed/$WARM_UP_CLIPS", "버퍼링 중 $warmed/$WARM_UP_CLIPS"), color = Color.White, modifier = Modifier.padding(top = 16.dp))
+                        Text(tr("正在缓存 $warmed/$WARM_UP_CLIPS", "Buffering $warmed/$WARM_UP_CLIPS", "バッファ中 $warmed/$WARM_UP_CLIPS", "버퍼링 중 $warmed/$WARM_UP_CLIPS", "正在快取 $warmed/$WARM_UP_CLIPS"), color = Color.White, modifier = Modifier.padding(top = 16.dp))
                     }
                 } else {
                     // 缓冲过一会儿才转圈：开播与换源时缓冲状态会闪一两下，每次都转就像卡了两次
@@ -961,10 +1104,13 @@ private fun ClipPager(
                     )
                 }
                 if (current != null) {
-                    ClipProgressBar(
-                        positionMillis = clipPosition(),
-                        lengthMillis = currentLength,
-                        bufferedPositionMillis = (currentPlayer.bufferedPositionMillis - currentStart).coerceIn(0L, currentLength),
+                    ActiveClipProgressBar(
+                        clip = current,
+                        player = currentPlayer,
+                        isRendered = { rendered[currentSlot] == current },
+                        rememberedPosition = { rememberedPositions[current] ?: 0L },
+                        currentStart = currentStart,
+                        currentLength = currentLength,
                         onSeek = { latestSeekClip(it) },
                         onScrubbingChange = { scrubbing = it },
                         modifier = Modifier
@@ -997,6 +1143,35 @@ private fun ClipPager(
     }
 }
 
+/** 独立隔离高频变化的播放位置与缓冲读数，避免每 250ms 触发外层 ClipPager 整树重组。 */
+@Composable
+private fun ActiveClipProgressBar(
+    clip: Clip,
+    player: PreviewBackend,
+    isRendered: () -> Boolean,
+    rememberedPosition: () -> Long,
+    currentStart: Long,
+    currentLength: Long,
+    onSeek: (Long) -> Unit,
+    onScrubbingChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val pos = if (isRendered()) {
+        (player.positionMillis - currentStart).coerceIn(0L, currentLength)
+    } else {
+        rememberedPosition().coerceIn(0L, currentLength)
+    }
+    val buffered = (player.bufferedPositionMillis - currentStart).coerceIn(0L, currentLength)
+    ClipProgressBar(
+        positionMillis = pos,
+        lengthMillis = currentLength,
+        bufferedPositionMillis = buffered,
+        onSeek = onSeek,
+        onScrubbingChange = onScrubbingChange,
+        modifier = modifier,
+    )
+}
+
 /** 列目录时带回的显示宽高比；没有宽高的为 null。不计旋转，只作就绪前的估计。 */
 private fun listedAspect(file: FileStat): Float? {
     val width = file.params["width"]?.toFloatOrNull() ?: return null
@@ -1016,8 +1191,13 @@ private val NEIGHBOURS = listOf(1, -1)
 private const val COLD_START_CLIPS = 3
 
 /** 放过这么久才算真在看，升档往后取 [BOOSTED_SECONDS]，见 ClipPager 的升档。 */
-private const val BOOST_AFTER_MS = 3_000L
+private const val BOOST_AFTER_MS = 2_500L
 private const val BOOSTED_SECONDS = 10
+/** 代理侧预读必须显著超前于播放器的 cache-secs（10s），使并发 READ_AHEAD 大块铺路而不退化为单块阻塞读。 */
+private const val ACTIVE_INITIAL_READ_AHEAD_SECONDS = 8
+private const val ACTIVE_INITIAL_MIN_AHEAD_BYTES = 2L * 1024 * 1024
+private const val BOOSTED_READ_AHEAD_SECONDS = 25
+private const val BOOSTED_MIN_AHEAD_BYTES = 6L * 1024 * 1024
 
 /**
  * 还没升档的段播放器往后缓冲的秒数。播放器的缓冲读都是最高档，压着它才不越过预取好的 5 秒开头：

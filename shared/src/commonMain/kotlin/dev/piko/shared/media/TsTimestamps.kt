@@ -11,6 +11,17 @@ internal object TsTimestamps {
     /** [bytes] 里第一个带 PTS 的视频 PES 的时间戳。 */
     fun firstVideoPtsMs(bytes: ByteArray): Long? = videoPes(bytes, keyframeOnly = false)?.ptsMs
 
+    /** [bytes] 里最后一个带 PTS 的视频 PES 的时间戳，用于测算有界 TS 切片的实际可播放时长。 */
+    fun lastVideoPtsMs(bytes: ByteArray): Long? {
+        var at = syncOffset(bytes) ?: return null
+        var lastPts: Long? = null
+        while (at + PACKET <= bytes.size) {
+            ptsOfPacket(bytes, at, keyframeOnly = false)?.let { lastPts = it }
+            at += PACKET
+        }
+        return lastPts
+    }
+
     /**
      * [bytes] 里第一个视频关键帧：它起头的那个 TS 包在 [bytes] 里的偏移与它的时间戳。
      * 关键帧按 TS 包自适应字段的 random_access_indicator 认。从这个包截起的一截 TS，解码器头一帧就能出画面，
@@ -28,11 +39,27 @@ internal object TsTimestamps {
 
     private fun videoPes(bytes: ByteArray, keyframeOnly: Boolean): VideoPes? {
         var at = syncOffset(bytes) ?: return null
+        var lastPatAt = -1
         while (at + PACKET <= bytes.size) {
-            ptsOfPacket(bytes, at, keyframeOnly)?.let { return VideoPes(at, it) }
+            if (keyframeOnly && isPatStartPacket(bytes, at)) {
+                lastPatAt = at
+            }
+            ptsOfPacket(bytes, at, keyframeOnly)?.let { pts ->
+                // 关键帧前通常紧挨着 PAT 与 PMT 两个包；从 PAT 截起，解复用器首包即可建起节目表与视频流参数，
+                // 避免首帧关键帧及其 VPS/SPS/PPS 因尚未见到节目表而被丢弃。
+                val sliceStart = if (keyframeOnly && lastPatAt >= 0 && at - lastPatAt <= MAX_PAT_LEAD_BYTES) lastPatAt else at
+                return VideoPes(sliceStart, pts)
+            }
             at += PACKET
         }
         return null
+    }
+
+    private fun isPatStartPacket(bytes: ByteArray, at: Int): Boolean {
+        val payloadStart = bytes[at + 1].toInt() and 0x40 != 0
+        if (!payloadStart) return false
+        val pid = ((bytes[at + 1].toInt() and 0x1F) shl 8) or (bytes[at + 2].toInt() and 0xFF)
+        return pid == 0
     }
 
     // 切片起点按 188 对齐，但不假定：连着两个包头都是 0x47 才算找到包边界
@@ -69,6 +96,7 @@ internal object TsTimestamps {
     }
 
     private const val PACKET = 188
+    private const val MAX_PAT_LEAD_BYTES = 32 * PACKET
     private const val SYNC = 0x47.toByte()
     private const val WRAP_MS = (1L shl 33) / 90
 }

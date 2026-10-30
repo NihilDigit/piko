@@ -157,11 +157,11 @@ internal fun PlayerSheetHost(
 
 private val PlayerSheet.title: String
     get() = when (this) {
-        PlayerSheet.Episodes -> tr("选集", "Playlist", "再生リスト", "재생 목록")
-        PlayerSheet.Settings -> tr("播放设置", "Playback settings", "再生設定", "재생 설정")
-        PlayerSheet.Tracks -> tr("音轨与字幕", "Audio and subtitles", "音声と字幕", "오디오 및 자막")
-        PlayerSheet.DriveSubtitles -> tr("从网盘选择字幕", "Choose subtitles from drive", "ドライブから字幕を選択", "드라이브에서 자막 선택")
-        PlayerSheet.Stats -> tr("详细信息", "Details", "詳細情報", "세부 정보")
+        PlayerSheet.Episodes -> tr("选集", "Playlist", "再生リスト", "재생 목록", "選集")
+        PlayerSheet.Settings -> tr("播放设置", "Playback settings", "再生設定", "재생 설정", "播放設定")
+        PlayerSheet.Tracks -> tr("音轨与字幕", "Audio and subtitles", "音声と字幕", "오디오 및 자막", "音軌與字幕")
+        PlayerSheet.DriveSubtitles -> tr("从网盘选择字幕", "Choose subtitles from drive", "ドライブから字幕を選択", "드라이브에서 자막 선택", "從雲端硬碟選擇字幕")
+        PlayerSheet.Stats -> tr("详细信息", "Details", "詳細情報", "세부 정보", "詳細資訊")
     }
 
 /**
@@ -241,7 +241,7 @@ private fun PlayerSideSheet(
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                        onClickLabel = tr("关闭面板", "Close panel", "パネルを閉じる", "패널 닫기"),
+                        onClickLabel = tr("关闭面板", "Close panel", "パネルを閉じる", "패널 닫기", "關閉面板"),
                         onClick = onDismiss,
                     ),
             )
@@ -267,7 +267,7 @@ private fun PlayerSideSheet(
                     ) {
                         Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                         IconButton(onClick = onDismiss, shapes = IconButtonDefaults.shapes()) {
-                            Icon(Icons.Filled.Close, contentDescription = tr("关闭", "Close", "閉じる", "닫기"))
+                            Icon(Icons.Filled.Close, contentDescription = tr("关闭", "Close", "閉じる", "닫기", "關閉"))
                         }
                     }
                     content()
@@ -486,7 +486,7 @@ private fun VersionRow(entry: PlaylistEntry, isCurrent: Boolean, indented: Boole
                 modifier = Modifier.weight(1f),
             )
             if (isCurrent) {
-                Icon(Icons.Filled.GraphicEq, contentDescription = tr("正在播放", "Now playing", "再生中", "재생 중"), modifier = Modifier.size(18.dp))
+                Icon(Icons.Filled.GraphicEq, contentDescription = tr("正在播放", "Now playing", "再生中", "재생 중", "正在播放"), modifier = Modifier.size(18.dp))
             }
         }
     }
@@ -535,7 +535,7 @@ private fun EpisodeCard(
             if (isCurrent) {
                 Icon(
                     imageVector = Icons.Filled.GraphicEq,
-                    contentDescription = tr("正在播放", "Now playing", "再生中", "재생 중"),
+                    contentDescription = tr("正在播放", "Now playing", "再生中", "재생 중", "正在播放"),
                     tint = colors.onPrimary,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -642,7 +642,7 @@ private fun EpisodeRow(
             if (isCurrent) {
                 Icon(
                     imageVector = Icons.Filled.GraphicEq,
-                    contentDescription = tr("正在播放", "Now playing", "再生中", "재생 중"),
+                    contentDescription = tr("正在播放", "Now playing", "再生中", "재생 중", "正在播放"),
                     modifier = Modifier.padding(start = 12.dp).size(20.dp),
                 )
             }
@@ -662,7 +662,7 @@ internal fun SpeedSlider(playbackSpeed: Float, onSpeedChange: (Float) -> Unit) {
         valueRange = MIN_SPEED..MAX_SPEED,
         modifier = Modifier
             .fillMaxWidth()
-            .semantics { contentDescription = tr("播放倍速", "Playback speed", "再生速度", "재생 속도") },
+            .semantics { contentDescription = tr("播放倍速", "Playback speed", "再生速度", "재생 속도", "播放倍速") },
     )
 }
 
@@ -702,7 +702,7 @@ internal fun PlayerSettingsPanel(
         // 文件操作排成一排，带圆角底色块与清晰短标签
         val rowActions = fileActions + actions
         if (title != null || rowActions.isNotEmpty()) {
-            SettingsSection(tr("文件", "Files", "ファイル", "파일")) {
+            SettingsSection(tr("文件", "Files", "ファイル", "파일", "檔案")) {
                 if (title != null) {
                     // 可选中：文件名常要拿去搜字幕、查资料
                     SelectionContainer {
@@ -724,7 +724,7 @@ internal fun PlayerSettingsPanel(
             }
         }
         if (playbackSpeed != null) {
-            SettingsSection(tr("倍速", "Speed", "再生速度", "재생 속도"), trailing = formatSpeed(playbackSpeed)) {
+            SettingsSection(tr("倍速", "Speed", "再生速度", "재생 속도", "倍速"), trailing = formatSpeed(playbackSpeed)) {
                 ConnectedChoiceRow(
                     options = PlayerSpeedPresets,
                     isSelected = { abs(playbackSpeed - it) < SPEED_MATCH_TOLERANCE },
@@ -734,7 +734,7 @@ internal fun PlayerSettingsPanel(
             }
         }
         if (qualityOptions.isNotEmpty()) {
-            SettingsSection(tr("清晰度", "Quality", "画質", "화질")) {
+            SettingsSection(tr("清晰度", "Quality", "画質", "화질", "畫質")) {
                 ChoiceGroup(
                     options = qualityOptions,
                     isSelected = { it == currentQuality },
@@ -745,7 +745,7 @@ internal fun PlayerSettingsPanel(
         }
         // 后端不支持画面比例时整节隐藏，避免点了没反应
         if (aspectRatio != null) {
-            SettingsSection(tr("画面比例", "Aspect ratio", "アスペクト比", "화면 비율")) {
+            SettingsSection(tr("画面比例", "Aspect ratio", "アスペクト比", "화면 비율", "畫面比例")) {
                 ConnectedChoiceRow(
                     options = PlayerAspectRatio.entries,
                     isSelected = { it == aspectRatio },
@@ -755,7 +755,7 @@ internal fun PlayerSettingsPanel(
             }
         }
         if (onSeekStepChange != null) {
-            SettingsSection(tr("进退步长", "Seek step", "シーク間隔", "탐색 간격"), trailing = tr("$seekStepSeconds 秒", "$seekStepSeconds sec", "$seekStepSeconds 秒", "${seekStepSeconds}초")) {
+            SettingsSection(tr("进退步长", "Seek step", "シーク間隔", "탐색 간격", "快轉與倒轉間隔"), trailing = tr("$seekStepSeconds 秒", "$seekStepSeconds sec", "$seekStepSeconds 秒", "${seekStepSeconds}초", "$seekStepSeconds 秒")) {
                 ConnectedChoiceRow(
                     options = PlayerGestureDefaults.SeekStepChoices,
                     isSelected = { it == seekStepSeconds },
@@ -766,7 +766,7 @@ internal fun PlayerSettingsPanel(
         }
         // 后端不能变速时长按本来就不加速，这一项也不给
         if (playbackSpeed != null && onLongPressSpeedChange != null) {
-            SettingsSection(tr("长按倍速", "Hold speed", "長押し時の再生速度", "길게 누르기 재생 속도"), trailing = formatSpeed(longPressSpeed)) {
+            SettingsSection(tr("长按倍速", "Hold speed", "長押し時の再生速度", "길게 누르기 재생 속도", "長按倍速"), trailing = formatSpeed(longPressSpeed)) {
                 ConnectedChoiceRow(
                     options = PlayerGestureDefaults.BoostSpeedChoices,
                     isSelected = { abs(longPressSpeed - it) < SPEED_MATCH_TOLERANCE },
@@ -803,7 +803,7 @@ internal fun TracksPanel(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         if (audioTracks.size > 1) {
-            TrackSection(tr("音轨", "Audio track", "音声トラック", "오디오 트랙")) {
+            TrackSection(tr("音轨", "Audio track", "音声トラック", "오디오 트랙", "音軌")) {
                 audioTracks.forEachIndexed { index, track ->
                     TrackRow(
                         label = trackDisplayName(track, index),
@@ -813,8 +813,8 @@ internal fun TracksPanel(
                 }
             }
         }
-        TrackSection(tr("字幕", "Subtitles", "字幕", "자막")) {
-            TrackRow(label = tr("关闭", "Close", "閉じる", "닫기"), selected = selectedSubtitleTrackId == null, onClick = { onSelectSubtitle(null) })
+        TrackSection(tr("字幕", "Subtitles", "字幕", "자막", "字幕")) {
+            TrackRow(label = tr("关闭", "Close", "閉じる", "닫기", "關閉"), selected = selectedSubtitleTrackId == null, onClick = { onSelectSubtitle(null) })
             subtitleTracks.forEachIndexed { index, track ->
                 TrackRow(
                     label = trackDisplayName(track, index),
@@ -823,10 +823,10 @@ internal fun TracksPanel(
                 )
             }
             if (onPickLocalSubtitle != null) {
-                PickerRow(icon = Icons.Outlined.FileOpen, label = tr("从本机选择字幕…", "Choose subtitles from device…", "この端末から字幕を選択…", "기기에서 자막 선택…"), onClick = onPickLocalSubtitle)
+                PickerRow(icon = Icons.Outlined.FileOpen, label = tr("从本机选择字幕…", "Choose subtitles from device…", "この端末から字幕を選択…", "기기에서 자막 선택…", "從本機選擇字幕…"), onClick = onPickLocalSubtitle)
             }
             if (onPickDriveSubtitle != null) {
-                PickerRow(icon = Icons.Outlined.Cloud, label = tr("从网盘选择字幕…", "Choose subtitles from drive…", "ドライブから字幕を選択…", "드라이브에서 자막 선택…"), onClick = onPickDriveSubtitle)
+                PickerRow(icon = Icons.Outlined.Cloud, label = tr("从网盘选择字幕…", "Choose subtitles from drive…", "ドライブから字幕を選択…", "드라이브에서 자막 선택…", "從雲端硬碟選擇字幕…"), onClick = onPickDriveSubtitle)
             }
         }
     }
@@ -903,7 +903,7 @@ private fun TrackRow(label: String, selected: Boolean, onClick: () -> Unit) {
 
 // 原画的选项值是共用层的常量 ORIGINAL_QUALITY（英文），只在显示时换成中文
 private val String.qualityLabel: String
-    get() = if (this == ORIGINAL_QUALITY) tr("原画", "Original", "オリジナル", "원본") else this
+    get() = if (this == ORIGINAL_QUALITY) tr("原画", "Original", "オリジナル", "원본", "原畫") else this
 
 @Composable
 private fun SettingsSection(
@@ -988,10 +988,10 @@ private fun <T> ConnectedChoiceRow(
 
 internal val PlayerAspectRatio.label: String
     get() = when (this) {
-        PlayerAspectRatio.Fit -> tr("适应屏幕", "Fit screen", "画面に合わせる", "화면에 맞춤")
-        PlayerAspectRatio.Crop -> tr("裁剪填充", "Crop to fill", "切り抜いて拡大", "잘라서 채우기")
-        PlayerAspectRatio.Stretch -> tr("拉伸全屏", "Stretch to fill", "引き伸ばして表示", "늘려서 채우기")
-        PlayerAspectRatio.RegionCrop -> tr("框选填充", "Fill selected area", "選択範囲を拡大", "선택 영역 채우기")
+        PlayerAspectRatio.Fit -> tr("适应屏幕", "Fit screen", "画面に合わせる", "화면에 맞춤", "符合螢幕")
+        PlayerAspectRatio.Crop -> tr("裁剪填充", "Crop to fill", "切り抜いて拡大", "잘라서 채우기", "裁切填滿")
+        PlayerAspectRatio.Stretch -> tr("拉伸全屏", "Stretch to fill", "引き伸ばして表示", "늘려서 채우기", "拉伸至全螢幕")
+        PlayerAspectRatio.RegionCrop -> tr("框选填充", "Fill selected area", "選択範囲を拡大", "선택 영역 채우기", "框選填滿")
     }
 
 // 设置面板的倍速选项，[ ] 键也按这几档换

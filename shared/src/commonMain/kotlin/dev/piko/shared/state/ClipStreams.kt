@@ -10,6 +10,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -49,6 +50,16 @@ class ClipStreams internal constructor(
     private val ripening = mutableSetOf<Clip>()
     private var foreground: Set<Clip> = emptySet()
     private val preparing = Semaphore(PREPARE_LANES)
+    private val prefetching = Semaphore(PREFETCH_LANES)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private inline fun withPrepared(stream: Deferred<PreparedClip?>, crossinline action: (PreparedClip) -> Unit) {
+        if (stream.isCompleted) {
+            runCatching { stream.getCompleted() }.getOrNull()?.let(action)
+        } else {
+            scope.launch { runCatching { stream.await() }.getOrNull()?.let(action) }
+        }
+    }
 
     /**
      * 备好的会话一律以后台建起，装进播放器的由 [bringToFront] 升为前台。来源见 PikoMediaRepository.prepareClip。
@@ -103,9 +114,15 @@ class ClipStreams internal constructor(
     }
 
     private suspend fun fetchOnce(clip: Clip, prepared: PreparedClip): Boolean {
-        val started = TimeSource.Monotonic.markNow()
+        var started = TimeSource.Monotonic.markNow()
         val fetched = try {
-            withTimeoutOrNull(RIPEN_TIMEOUT) { withContext(Dispatchers.Default) { prepared.prefetch(StreamRole.FOREGROUND) } } != null
+            prefetching.withPermit {
+                // 只对拿到预取车道后的真实网络下载计时，避免本地排队等待被误判为资源坏死踢出队列
+                started = TimeSource.Monotonic.markNow()
+                withTimeoutOrNull(RIPEN_TIMEOUT) {
+                    withContext(Dispatchers.Default) { prepared.prefetch(StreamRole.FOREGROUND) }
+                } != null
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -128,32 +145,30 @@ class ClipStreams internal constructor(
         val demoted = foreground - clips
         foreground = clips
         for ((clip, role) in demoted.map { it to StreamRole.BACKGROUND } + clips.map { it to StreamRole.FOREGROUND }) {
-            streams[clip]?.let { stream -> scope.launch { runCatching { stream.await() }.getOrNull()?.role = role } }
+            streams[clip]?.let { stream -> withPrepared(stream) { it.role = role } }
         }
     }
 
-    /** [clip] 真在看了，代理往后预读 [seconds] 秒，见 PreparedClip.extendReadAhead。 */
-    fun boost(clip: Clip, seconds: Int) {
-        streams[clip]?.let { stream -> scope.launch { runCatching { stream.await() }.getOrNull()?.extendReadAhead(seconds) } }
+    /** [clip] 真在看了，代理往后预读 [seconds] 秒（保底 [minBytes]），见 PreparedClip.extendReadAhead。 */
+    fun boost(clip: Clip, seconds: Int, minBytes: Long = PreparedClip.MIN_AHEAD_BYTES) {
+        streams[clip]?.let { stream -> withPrepared(stream) { it.extendReadAhead(seconds, minBytes) } }
     }
 
     /** 除 [clip] 外都压回只读开头，也不再算有人在等；升过档的段翻走后不该再往后取。 */
     fun holdAllBut(clip: Clip) {
         for ((other, stream) in streams) {
             if (other != clip) {
-                scope.launch {
-                    runCatching { stream.await() }.getOrNull()?.let {
-                        it.holdReadAhead()
-                        it.urgent = false
-                    }
+                withPrepared(stream) {
+                    it.holdReadAhead()
+                    it.urgent = false
                 }
             }
         }
     }
 
-    /** [clip] 是否有人正等着，见 PreparedClip.urgent。 */
+    /** [clip] 是否有人正等着，见 PreparedClip.urgent。已就绪的会话当场同步写入，保证紧随其后的 seek 首块立享最高优先级。 */
     fun setUrgent(clip: Clip, urgent: Boolean) {
-        streams[clip]?.let { stream -> scope.launch { runCatching { stream.await() }.getOrNull()?.urgent = urgent } }
+        streams[clip]?.let { stream -> withPrepared(stream) { it.urgent = urgent } }
     }
 
     /** 翻出 [window] 的段关掉会话；看过的在窗口里保留缓存，不再为它发请求。 */
@@ -180,6 +195,12 @@ class ClipStreams internal constructor(
 
         /** 同时备会话的段数。每段要查一次详情，再探一次转码流的长度。 */
         const val PREPARE_LANES = 4
+
+        /**
+         * 同时下载预取字节的候补段数。HTTP/1.1 在途请求不可抢占，8 段齐发会瞬间吃满账号全部 16 个连接槽，
+         * 一旦撞上慢节点，当前段的用户拖动（seek）就要排队苦等；限制为 2 段既足够连翻供给，又常留 10+ 空闲槽给前台交互。
+         */
+        const val PREFETCH_LANES = 2
 
         /**
          * 候补的一段这么久还没取完开头，当它取不到，见 [ripen]。只兜住一直在慢慢出字节、不报错的主机；
