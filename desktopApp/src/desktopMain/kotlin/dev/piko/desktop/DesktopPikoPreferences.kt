@@ -52,6 +52,7 @@ class DesktopPikoPreferences(
     private val playerBoostSpeed = MutableStateFlow(
         settings.get(KEY_PLAYER_BOOST_SPEED).toFloatOrNull() ?: PlayerGestureDefaults.BOOST_SPEED,
     )
+    private val clipAutoExtend = MutableStateFlow(settings.get(KEY_CLIP_AUTO_EXTEND, "true").toBoolean())
     private val folderMapOpen = MutableStateFlow(settings.get(KEY_FOLDER_MAP_OPEN) == "true")
     private val folderMapPinned = MutableStateFlow(settings.get(KEY_FOLDER_MAP_PINNED) == "true")
     private val heuristic = MutableStateFlow(settings.get(KEY_HEURISTIC, "true").toBoolean())
@@ -119,7 +120,7 @@ class DesktopPikoPreferences(
     override suspend fun getLastFolder(): Triple<String, String, String> =
         Triple(
             settings.get(KEY_LAST_FOLDER_ID),
-            settings.get(KEY_LAST_FOLDER_NAME, tr("我的网盘", "My drive", "マイドライブ", "내 드라이브")),
+            settings.get(KEY_LAST_FOLDER_NAME, tr("我的网盘", "My drive", "マイドライブ", "내 드라이브", "我的雲端硬碟")),
             settings.get(KEY_LAST_FOLDER_STACK),
         )
 
@@ -175,6 +176,12 @@ class DesktopPikoPreferences(
     override suspend fun setPlayerBoostSpeed(speed: Float) {
         settings.set(KEY_PLAYER_BOOST_SPEED, speed.toString())
         playerBoostSpeed.value = speed
+    }
+
+    override val clipAutoExtendFlow: Flow<Boolean> = clipAutoExtend.asStateFlow()
+    override suspend fun setClipAutoExtend(enabled: Boolean) {
+        settings.set(KEY_CLIP_AUTO_EXTEND, enabled.toString())
+        clipAutoExtend.value = enabled
     }
 
     override val folderMapOpenFlow: Flow<Boolean> = folderMapOpen.asStateFlow()
@@ -454,6 +461,7 @@ class DesktopPikoPreferences(
         const val KEY_DOWNLOAD_MAX_HEIGHT = "download.defaultMaxHeight"
         const val KEY_PLAYER_SEEK_STEP_SECONDS = "player.seekStepSeconds"
         const val KEY_PLAYER_BOOST_SPEED = "player.boostSpeed"
+        const val KEY_CLIP_AUTO_EXTEND = "player.clipAutoExtend"
         const val KEY_FOLDER_MAP_OPEN = "ui.folderMapOpen"
         const val KEY_FOLDER_MAP_PINNED = "ui.folderMapPinned"
         const val KEY_HEURISTIC = "ui.heuristicFilter"

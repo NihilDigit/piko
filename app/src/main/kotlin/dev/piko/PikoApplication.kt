@@ -24,6 +24,7 @@ import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.PikoClientManager
 import java.io.File
 import dev.piko.shared.download.PikoDownloadCoordinator
+import dev.piko.shared.i18n.PikoLocale
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.FileClipCache
@@ -77,6 +78,10 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
         installLog()
 
         sessionManager = SessionManager(this)
+        // 先于进程级服务与系统通知渠道初始化语言绑定，确保无 Activity 唤起或冷启动时通知渠道按用户语言注册
+        val systemLocale = android.content.res.Resources.getSystem().configuration.locales.get(0) ?: java.util.Locale.getDefault()
+        PikoLocale.bindSystemLocale(systemLocale.toLanguageTag())
+        PikoLocale.apply(runBlocking { sessionManager.appLanguageFlow.first() })
         installProxy()
         val clientManager = PikoClientManager(AndroidPikoSessionStore(this), appScope)
         val mediaRepository = PikoMediaRepository(
@@ -84,6 +89,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
             sessionManager,
             clipCache = FileClipCache(File(cacheDir, "piko/clip-cache")),
         )
+        val cacheStore = FilePikoCacheStore(File(cacheDir, "piko").path)
         services = PikoServices(
             platformPreferences = sessionManager,
             clientManager = clientManager,
@@ -97,14 +103,31 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
                 mediaRepository = mediaRepository,
             ),
             uploadSources = AndroidPikoUploadSources(this),
-            cacheStore = FilePikoCacheStore(File(cacheDir, "piko").path),
+            cacheStore = cacheStore,
             syncCipher = JvmSyncCipher(),
-            metaTube = MetaTubeService(sessionManager) { HttpClient(OkHttp) },
+            metaTube = MetaTubeService(sessionManager, cacheStore = cacheStore, scope = appScope) {
+                HttpClient(OkHttp) {
+                    engine {
+                        config {
+                            dispatcher(okhttp3.Dispatcher().apply {
+                                maxRequests = 64
+                                maxRequestsPerHost = 16
+                            })
+                        }
+                    }
+                }
+            },
         )
         val motionScale = PikoMotionScale().apply { followSystemAnimatorScale(this@PikoApplication) }
         appScope.launch { sessionManager.reduceMotionFlow.collect { motionScale.appReduced = it } }
         platform = AndroidPikoPlatform(this, { appUpdater }, motionScale)
-        WorkResultNotifier(this, services, appScope).start()
+        val notifier = WorkResultNotifier(this, services, appScope).also { it.start() }
+        appScope.launch {
+            sessionManager.appLanguageFlow.collect { lang ->
+                PikoLocale.apply(lang)
+                notifier.refreshChannel()
+            }
+        }
     }
 
     /**
@@ -150,7 +173,12 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
 
     override fun newImageLoader(context: PlatformContext): ImageLoader {
         val okHttpClient = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
+            .dispatcher(okhttp3.Dispatcher().apply {
+                maxRequests = 96
+                maxRequestsPerHost = 32
+            })
+            .connectionPool(okhttp3.ConnectionPool(32, 2, TimeUnit.MINUTES))
+            .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .build()
 

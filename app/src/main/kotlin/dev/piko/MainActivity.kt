@@ -190,7 +190,7 @@ class MainActivity : ComponentActivity() {
             if (magnet != null) {
                 app.instantMagnetRepository.onIncomingMagnet(magnet)
             } else {
-                withContext(Dispatchers.Main) { app.services.postAppNotice(tr("无法读取种子文件", "Unable to read torrent file", "トレントファイルを読み込めません", "토렌트 파일을 읽을 수 없습니다")) }
+                withContext(Dispatchers.Main) { app.services.postAppNotice(tr("无法读取种子文件", "Unable to read torrent file", "トレントファイルを読み込めません", "토렌트 파일을 읽을 수 없습니다", "無法讀取種子檔案")) }
             }
         }
     }
@@ -229,9 +229,15 @@ class MainActivity : ComponentActivity() {
             ?.joinToString("\n")
     }
 
-    private fun extractMagnet(intent: Intent): String? = sharedTexts(intent)
-        .flatMap { extractLinks(it) }.filter { it.isMagnet }.distinctBy { it.key }
-        .takeIf { it.isNotEmpty() }?.joinToString("\n") { it.uri }
+    private fun extractMagnet(intent: Intent): String? {
+        val allowAnyDownloadLink = intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE
+        return sharedTexts(intent)
+            .flatMap { extractLinks(it) }
+            .filter { allowAnyDownloadLink || it.isMagnet }
+            .distinctBy { it.key }
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString("\n") { it.uri }
+    }
 
 }
 

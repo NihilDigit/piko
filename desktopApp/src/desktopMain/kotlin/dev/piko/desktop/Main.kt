@@ -160,15 +160,16 @@ fun main(args: Array<String>) {
     }
 
     BundledMpvRuntime.prepareInBackground()
-    installImageLoader()
 
     val settings = DesktopSettingsStore()
     val preferences = DesktopPikoPreferences(settings, ::desktopPreferenceSecrets)
-    PikoLocale.apply(runBlocking { preferences.appLanguageFlow.first() })
-    Locale.setDefault(Locale.forLanguageTag(PikoLocale.effectiveLanguage.tag))
-    // 赶在任何 OkHttpClient 建出来之前，理由见 PikoProxySelector
+    val initialLanguage = runBlocking { preferences.appLanguageFlow.first() }
+    Locale.setDefault(Locale.forLanguageTag(PikoLocale.resolve(initialLanguage).tag))
+    PikoLocale.apply(initialLanguage)
+    // 赶在任何 OkHttpClient（含图片加载器与 SDK）建出来之前，理由见 PikoProxySelector
     PikoProxySelector.install(runBlocking { preferences.proxySettingFlow.first() })
     CoroutineScope(Dispatchers.Default).launch { preferences.proxySettingFlow.collect(PikoProxySelector::apply) }
+    installImageLoader()
     val motionScale = PikoMotionScale()
     SystemReducedMotion.follow(motionScale)
     motionScale.appReduced = runBlocking { preferences.reduceMotionFlow.first() }
@@ -288,8 +289,8 @@ fun main(args: Array<String>) {
                 tooltip = if (hasActiveTransfers) backgroundTooltip(downloads.values, uploads.values.filter { it.account == account }) else "Piko",
                 onAction = { isInBackground = false },
                 menu = {
-                    Item(tr("显示 Piko", "Show Piko", "Pikoを表示", "Piko 표시"), onClick = { isInBackground = false })
-                    Item(tr("立即退出", "Quit now", "今すぐ終了", "지금 종료"), onClick = ::exitApplication)
+                    Item(tr("显示 Piko", "Show Piko", "Pikoを表示", "Piko 표시", "顯示 Piko"), onClick = { isInBackground = false })
+                    Item(tr("立即退出", "Quit now", "今すぐ終了", "지금 종료", "立即結束"), onClick = ::exitApplication)
                 },
             )
         }
@@ -300,13 +301,13 @@ fun main(args: Array<String>) {
             // Toast 同步等系统结果，不能压在界面线程上
             Thread {
                 val reopenHint = when {
-                    isMacOs -> tr("可从菜单栏图标重新打开", "Reopen from the menu bar icon", "メニューバーのアイコンから開けます", "메뉴 막대 아이콘에서 다시 열 수 있습니다")
+                    isMacOs -> tr("可从菜单栏图标重新打开", "Reopen from the menu bar icon", "メニューバーのアイコンから開けます", "메뉴 막대 아이콘에서 다시 열 수 있습니다", "可從選單列圖示重新開啟")
                     isLinux -> LinuxDesktop.backgroundHint()
-                    else -> tr("可从通知区域图标重新打开", "Reopen from the notification area icon", "通知領域のアイコンから開けます", "알림 영역 아이콘에서 다시 열 수 있습니다")
+                    else -> tr("可从通知区域图标重新打开", "Reopen from the notification area icon", "通知領域のアイコンから開けます", "알림 영역 아이콘에서 다시 열 수 있습니다", "可從通知區域圖示重新開啟")
                 }
-                if (closeToTray || manual) showSystemNotification(tr("Piko 已最小化到系统托盘", "Piko minimized to tray", "Pikoをシステムトレイに最小化しました", "Piko를 시스템 트레이로 최소화했습니다"), tr("$reopenHint；可从托盘菜单退出程序。", "$reopenHint. Quit from the tray menu.", "$reopenHint。トレイメニューから終了できます。", "$reopenHint. 트레이 메뉴에서 종료할 수 있습니다."))
-                else if (services.hasBackgroundWork()) showSystemNotification(tr("Piko 在后台继续处理", "Piko is working in the background", "Pikoはバックグラウンドで処理中です", "Piko가 백그라운드에서 작업 중입니다"), tr("工作完成后自动退出；需你处理的结果会保留，$reopenHint。", "Quits automatically when work finishes. Results requiring attention are kept. $reopenHint.", "処理完了後に自動終了します。確認が必要な結果は保持します。$reopenHint。", "작업 완료 후 자동 종료합니다. 확인이 필요한 결과는 유지됩니다. $reopenHint."))
-                else showSystemNotification(tr("Piko 已保留待处理工作", "Piko kept your pending work", "Pikoは未処理の作業を保持しています", "Piko가 대기 중인 작업을 유지했습니다"), tr("重新打开窗口可继续处理，$reopenHint。", "Reopen the window to continue. $reopenHint.", "ウィンドウを開き直すと続行できます。$reopenHint。", "창을 다시 열어 계속할 수 있습니다. $reopenHint."))
+                if (closeToTray || manual) showSystemNotification(tr("Piko 已最小化到系统托盘", "Piko minimized to tray", "Pikoをシステムトレイに最小化しました", "Piko를 시스템 트레이로 최소화했습니다", "Piko 已最小化至系統匣"), tr("$reopenHint；可从托盘菜单退出程序。", "$reopenHint. Quit from the tray menu.", "$reopenHint。トレイメニューから終了できます。", "$reopenHint. 트레이 메뉴에서 종료할 수 있습니다.", "$reopenHint；可從系統匣選單結束程式。"))
+                else if (services.hasBackgroundWork()) showSystemNotification(tr("Piko 在后台继续处理", "Piko is working in the background", "Pikoはバックグラウンドで処理中です", "Piko가 백그라운드에서 작업 중입니다", "Piko 在背景繼續處理"), tr("任务完成后将自动退出；待确认的结果会保留，$reopenHint。", "Quits automatically when tasks finish. Results requiring attention are kept. $reopenHint.", "タスク完了後に自動終了します。確認が必要な結果は保持されます。$reopenHint。", "작업 완료 후 자동 종료됩니다. 확인이 필요한 결과는 유지됩니다. $reopenHint.", "任務完成後將自動結束；待確認的結果會保留，$reopenHint。"))
+                else showSystemNotification(tr("Piko 已保留待处理工作", "Piko kept your pending work", "Pikoは未処理の作業を保持しています", "Piko가 대기 중인 작업을 유지했습니다", "Piko 已保留待處理工作"), tr("重新打开窗口可继续处理，$reopenHint。", "Reopen the window to continue. $reopenHint.", "ウィンドウを開き直すと続行できます。$reopenHint。", "창을 다시 열어 계속할 수 있습니다. $reopenHint.", "重新開啟視窗即可繼續處理，$reopenHint。"))
             }.start()
         }
 
@@ -412,7 +413,7 @@ fun main(args: Array<String>) {
                             },
                             confirmButton = {
                                 PikoDialogConfirm(
-                                    label = tr("最小化到托盘", "Minimize to tray", "トレイに最小化", "트레이로 최소화"),
+                                    label = tr("最小化到托盘", "Minimize to tray", "トレイに最小化", "트레이로 최소화", "最小化至系統匣"),
                                     onClick = {
                                         askCloseBehavior = false
                                         if (rememberCloseChoice) {
@@ -535,16 +536,16 @@ private fun backgroundTooltip(downloads: Collection<DownloadTask>, uploads: Coll
     val activeDownloads = downloads.filter { it.status.isActive }
     val activeUploads = uploads.filter { it.status.isActive }
     val parts = listOfNotNull(
-        transferSummary(tr("下载", "Downloads", "ダウンロード", "다운로드"), activeDownloads.size, activeDownloads.sumOf { it.downloadedBytes }, activeDownloads.sumOf { it.totalBytes }),
-        transferSummary(tr("上传", "Uploads", "アップロード", "업로드"), activeUploads.size, activeUploads.sumOf { it.processedBytes }, activeUploads.sumOf { it.size }),
+        transferSummary(tr("下载", "Downloads", "ダウンロード", "다운로드", "下載"), activeDownloads.size, activeDownloads.sumOf { it.downloadedBytes }, activeDownloads.sumOf { it.totalBytes }),
+        transferSummary(tr("上传", "Uploads", "アップロード", "업로드", "上傳"), activeUploads.size, activeUploads.sumOf { it.processedBytes }, activeUploads.sumOf { it.size }),
     )
-    return "Piko：" + parts.joinToString("；").ifEmpty { tr("正在后台处理", "Working in background", "バックグラウンドで処理中", "백그라운드 작업 중") }
+    return "Piko：" + parts.joinToString("；").ifEmpty { tr("正在后台处理", "Working in background", "バックグラウンドで処理中", "백그라운드 작업 중", "正在背景處理") }
 }
 
 private fun transferSummary(verb: String, count: Int, doneBytes: Long, totalBytes: Long): String? = when {
     count == 0 -> null
-    totalBytes <= 0 -> tr("正在${verb} $count 个文件", "$verb ${enCount(count, "file", "files")}", "$count ファイルを${verb}中", "파일 ${count}개 $verb 중")
-    else -> tr("正在${verb} $count 个文件，${doneBytes * 100 / totalBytes}%", "$verb ${enCount(count, "file", "files")}, ${doneBytes * 100 / totalBytes}%", "$count ファイルを${verb}中、${doneBytes * 100 / totalBytes}%", "파일 ${count}개 $verb 중, ${doneBytes * 100 / totalBytes}%")
+    totalBytes <= 0 -> tr("正在${verb} $count 个文件", "$verb ${enCount(count, "file", "files")}", "$count ファイルを${verb}中", "파일 ${count}개 $verb 중", "正在${verb} $count 個檔案")
+    else -> tr("正在${verb} $count 个文件，${doneBytes * 100 / totalBytes}%", "$verb ${enCount(count, "file", "files")}, ${doneBytes * 100 / totalBytes}%", "$count ファイルを${verb}中、${doneBytes * 100 / totalBytes}%", "파일 ${count}개 $verb 중, ${doneBytes * 100 / totalBytes}%", "正在${verb} $count 個檔案，${doneBytes * 100 / totalBytes}%")
 }
 
 /**
@@ -568,6 +569,7 @@ private fun createServices(settings: DesktopSettingsStore, preferences: DesktopP
         preferences,
         clipCache = FileClipCache(PikoHome.root.resolve("cache/clip-cache").toFile()),
     )
+    val cacheStore = FilePikoCacheStore(PikoHome.root.resolve("cache").toString())
     return PikoServices(
         platformPreferences = preferences,
         clientManager = clientManager,
@@ -581,9 +583,20 @@ private fun createServices(settings: DesktopSettingsStore, preferences: DesktopP
             mediaRepository = mediaRepository,
         ),
         uploadSources = DesktopPikoUploadSources(),
-        cacheStore = FilePikoCacheStore(PikoHome.root.resolve("cache").toString()),
+        cacheStore = cacheStore,
         syncCipher = JvmSyncCipher(),
-        metaTube = MetaTubeService(preferences) { HttpClient(OkHttp) },
+        metaTube = MetaTubeService(preferences, cacheStore = cacheStore, scope = appScope) {
+            HttpClient(OkHttp) {
+                engine {
+                    config {
+                        dispatcher(okhttp3.Dispatcher().apply {
+                            maxRequests = 64
+                            maxRequestsPerHost = 16
+                        })
+                    }
+                }
+            }
+        },
     )
 }
 

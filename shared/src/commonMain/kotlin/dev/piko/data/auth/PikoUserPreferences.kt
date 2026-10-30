@@ -39,13 +39,36 @@ object PlayerGestureDefaults {
 enum class AppLanguage(val tag: String, val nativeLabel: String) {
     SYSTEM("system", ""),
     ZH_CN("zh-CN", "简体中文"),
-    EN("en", "English"),
-    JA("ja", "日本語"),
-    KO("ko", "한국어");
+    ZH_HANT("zh-TW", "繁體中文"),
+    KO("ko-KR", "한국어"),
+    JA("ja-JP", "日本語"),
+    EN("en", "English");
 
     companion object {
-        fun fromStorage(raw: String?): AppLanguage =
-            entries.firstOrNull { it.name.equals(raw, ignoreCase = true) || it.tag.equals(raw, ignoreCase = true) } ?: SYSTEM
+        fun fromStorage(raw: String?): AppLanguage {
+            val normalized = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return SYSTEM
+            entries.firstOrNull {
+                it.name.equals(normalized, ignoreCase = true) || it.tag.equals(normalized, ignoreCase = true)
+            }?.let { return it }
+            val parts = normalized.lowercase().split('-', '_').filter { it.isNotEmpty() }
+            return when (parts.firstOrNull()) {
+                "system" -> SYSTEM
+                "zh" -> when {
+                    "hant" in parts -> ZH_HANT
+                    "hans" in parts -> ZH_CN
+                    parts.any { it in TRADITIONAL_CHINESE_REGIONS } -> ZH_HANT
+                    parts.size == 1 || parts.any { it in SIMPLIFIED_CHINESE_REGIONS } -> ZH_CN
+                    else -> SYSTEM
+                }
+                "ko" -> KO
+                "ja" -> JA
+                "en" -> EN
+                else -> SYSTEM
+            }
+        }
+
+        private val TRADITIONAL_CHINESE_REGIONS = setOf("tw", "hk", "mo")
+        private val SIMPLIFIED_CHINESE_REGIONS = setOf("cn", "sg", "my")
     }
 }
 
@@ -249,6 +272,10 @@ interface PikoUserPreferences {
     /** 长按画面临时加速到的倍速，默认 2。同上，在播放设置里改、跟着设置同步。 */
     val playerBoostSpeedFlow: Flow<Float>
     suspend fun setPlayerBoostSpeed(speed: Float)
+
+    /** 信息流 30 秒片段播完后自动顺延续播当前视频后续内容，默认开启。跟着设置同步。 */
+    val clipAutoExtendFlow: Flow<Boolean>
+    suspend fun setClipAutoExtend(enabled: Boolean)
 
     /**
      * 网盘页的目录图（FolderMap）开着与钉着，默认都否。两项各自独立：× 关掉不改钉住，再打开照旧钉着；

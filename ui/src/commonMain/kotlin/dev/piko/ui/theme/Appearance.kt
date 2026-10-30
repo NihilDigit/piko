@@ -13,9 +13,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 
 enum class ThemeMode(private val labelText: () -> String) {
-    SYSTEM({ tr("跟随系统", "System", "システムに従う", "시스템 설정 따르기") }),
-    LIGHT({ tr("浅色", "Light", "ライト", "라이트") }),
-    DARK({ tr("深色", "Dark", "ダーク", "다크") }),
+    SYSTEM({ tr("跟随系统", "System", "システムに従う", "시스템 설정 따르기", "跟隨系統") }),
+    LIGHT({ tr("浅色", "Light", "ライト", "라이트", "淺色") }),
+    DARK({ tr("深色", "Dark", "ダーク", "다크", "深色") }),
     ;
 
     val label: String get() = labelText()

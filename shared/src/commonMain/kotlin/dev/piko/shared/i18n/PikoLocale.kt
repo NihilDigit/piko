@@ -13,6 +13,8 @@ object PikoLocale {
     @Volatile
     var revision: Long = 0L
         private set
+    val preference: AppLanguage get() = currentPreference
+    val systemLanguage: AppLanguage get() = resolveTag(systemLanguageTag)
     val effectiveLanguageState: State<AppLanguage> get() = language
     val effectiveLanguage: AppLanguage get() = language.value
 
@@ -23,9 +25,18 @@ object PikoLocale {
         }
     }
 
-    fun resolve(preference: AppLanguage): AppLanguage = if (preference != AppLanguage.SYSTEM) preference else {
-        when (systemLanguageTag.substringBefore('-').substringBefore('_').lowercase()) {
-            "zh" -> AppLanguage.ZH_CN
+    fun resolve(preference: AppLanguage): AppLanguage =
+        if (preference != AppLanguage.SYSTEM) preference else resolveTag(systemLanguageTag)
+
+    fun resolveTag(languageTag: String): AppLanguage {
+        val parts = languageTag.trim().lowercase().split('-', '_', '#').filter { it.isNotEmpty() }
+        return when (parts.firstOrNull()) {
+            "zh" -> when {
+                "hant" in parts -> AppLanguage.ZH_HANT
+                "hans" in parts -> AppLanguage.ZH_CN
+                parts.any { it in TRADITIONAL_REGIONS } -> AppLanguage.ZH_HANT
+                else -> AppLanguage.ZH_CN
+            }
             "ja" -> AppLanguage.JA
             "ko" -> AppLanguage.KO
             else -> AppLanguage.EN
@@ -43,10 +54,13 @@ object PikoLocale {
             language.value = next
         }
     }
+
+    private val TRADITIONAL_REGIONS = setOf("tw", "hk", "mo")
 }
 
-fun tr(zh: String, en: String, ja: String = en, ko: String = en): String = when (PikoLocale.effectiveLanguage) {
+fun tr(zh: String, en: String, ja: String, ko: String, zhHant: String): String = when (PikoLocale.effectiveLanguage) {
     AppLanguage.ZH_CN -> zh
+    AppLanguage.ZH_HANT -> zhHant
     AppLanguage.JA -> ja
     AppLanguage.KO -> ko
     else -> en

@@ -11,7 +11,7 @@ class AddressPathLanguageTest {
     fun rootAliasesRemainValidAcrossLanguagesAndDoNotReplaceFolderNames() {
         try {
             PikoLocale.apply(AppLanguage.KO)
-            for (root in listOf("网盘", "我的网盘", "My drive", "マイドライブ", "내 드라이브")) {
+            for (root in listOf("网盘", "我的网盘", "雲端硬碟", "我的雲端硬碟", "My drive", "マイドライブ", "내 드라이브")) {
                 assertEquals(listOf("目录"), addressPathNames("$root/目录", emptyList()), root)
             }
             assertEquals(listOf("Drive", "目录"), addressPathNames("Drive/目录", emptyList()))

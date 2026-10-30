@@ -108,6 +108,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val DOWNLOAD_MAX_HEIGHT = intPreferencesKey("download_default_max_height")
         val PLAYER_SEEK_STEP_SECONDS = intPreferencesKey("player_seek_step_seconds")
         val PLAYER_BOOST_SPEED = floatPreferencesKey("player_boost_speed")
+        val CLIP_AUTO_EXTEND = booleanPreferencesKey("clip_auto_extend")
         val FOLDER_MAP_OPEN = booleanPreferencesKey("folder_map_open")
         val FOLDER_MAP_PINNED = booleanPreferencesKey("folder_map_pinned")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
@@ -176,7 +177,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val prefs = context.dataStore.data.first()
         return Triple(
             prefs[PreferencesKeys.LAST_FOLDER_ID] ?: "",
-            prefs[PreferencesKeys.LAST_FOLDER_NAME] ?: tr("我的网盘", "My drive", "マイドライブ", "내 드라이브"),
+            prefs[PreferencesKeys.LAST_FOLDER_NAME] ?: tr("我的网盘", "My drive", "マイドライブ", "내 드라이브", "我的雲端硬碟"),
             prefs[PreferencesKeys.LAST_FOLDER_STACK_SERIALIZED] ?: "",
         )
     }
@@ -254,6 +255,15 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setPlayerBoostSpeed(speed: Float) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.PLAYER_BOOST_SPEED] = speed
+        }
+    }
+
+    override val clipAutoExtendFlow: Flow<Boolean> =
+        preference { it[PreferencesKeys.CLIP_AUTO_EXTEND] ?: true }
+
+    override suspend fun setClipAutoExtend(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.CLIP_AUTO_EXTEND] = enabled
         }
     }
 

@@ -23,7 +23,7 @@ class VaultActionsLanguageTest {
                     action.onClick()
                 }
             }
-            assertEquals(8, stopped)
+            assertEquals(10, stopped)
         } finally {
             PikoLocale.apply(AppLanguage.ZH_CN)
         }

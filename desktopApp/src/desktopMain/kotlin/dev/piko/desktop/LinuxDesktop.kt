@@ -51,29 +51,65 @@ internal object LinuxDesktop {
         }.onFailure { PikoLog.w(TAG, "设置 WM_CLASS 失败，桌面环境可能认不出窗口", it) }
     }
 
+    private val scFontCandidates = listOf(
+        "Noto Sans CJK SC",
+        "Noto Sans SC",
+        "Source Han Sans SC",
+        "Source Han Sans CN",
+        "WenQuanYi Micro Hei",
+        "Droid Sans Fallback",
+    )
+    private val tcFontCandidates = listOf(
+        "Noto Sans CJK TC",
+        "Noto Sans CJK HK",
+        "Noto Sans TC",
+        "Noto Sans HK",
+        "Source Han Sans TC",
+        "Source Han Sans TW",
+        "Source Han Sans HK",
+    ) + scFontCandidates
+    private val jpFontCandidates = listOf(
+        "Noto Sans CJK JP",
+        "Noto Sans JP",
+        "Source Han Sans JP",
+    ) + scFontCandidates
+    private val krFontCandidates = listOf(
+        "Noto Sans CJK KR",
+        "Noto Sans KR",
+        "Source Han Sans KR",
+    ) + scFontCandidates
+
     /**
-     * 界面字体。汉字交给 fontconfig 的后备时按系统语言挑，英文环境下常落到日文字形，一个词里两种字形，
-     * 与 Windows 上指定雅黑、mac 上指定苹方同理，这里按顺序挑一个装了的简体中文字体。都没有时为 null，用默认字体。
+     * 界面字体候选列表。按当前有效语言（英文下跟随系统原始 CJK 偏好，非 CJK 默认简中）排定优先级。
      */
-    val cjkFontCandidates = listOf("Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK KR", "Noto Sans SC", "Source Han Sans SC", "Source Han Sans CN", "WenQuanYi Micro Hei", "Droid Sans Fallback")
+    fun cjkFontCandidatesFor(
+        effectiveLanguage: dev.piko.data.auth.AppLanguage = dev.piko.shared.i18n.PikoLocale.effectiveLanguage,
+        systemLanguage: dev.piko.data.auth.AppLanguage = dev.piko.shared.i18n.PikoLocale.systemLanguage,
+    ): List<String> = when (effectiveLanguage) {
+        dev.piko.data.auth.AppLanguage.ZH_HANT -> tcFontCandidates
+        dev.piko.data.auth.AppLanguage.JA -> jpFontCandidates
+        dev.piko.data.auth.AppLanguage.KO -> krFontCandidates
+        dev.piko.data.auth.AppLanguage.EN, dev.piko.data.auth.AppLanguage.SYSTEM -> when (systemLanguage) {
+            dev.piko.data.auth.AppLanguage.ZH_HANT -> tcFontCandidates
+            dev.piko.data.auth.AppLanguage.JA -> jpFontCandidates
+            dev.piko.data.auth.AppLanguage.KO -> krFontCandidates
+            else -> scFontCandidates
+        }
+        dev.piko.data.auth.AppLanguage.ZH_CN -> scFontCandidates
+    }
+
+    val cjkFontCandidates: List<String>
+        get() = cjkFontCandidatesFor()
 
     val cjkFontFamily: String?
-        get() {
-        val preferred = when (dev.piko.shared.i18n.PikoLocale.effectiveLanguage) {
-            dev.piko.data.auth.AppLanguage.JA -> 1
-            dev.piko.data.auth.AppLanguage.KO -> 2
-            else -> 0
-        }
-        val candidates = listOf(cjkFontCandidates[preferred]) + cjkFontCandidates
-        return runCatching {
+        get() = runCatching {
             val fonts = FontMgr.default
-            candidates.firstOrNull { name -> fonts.matchFamily(name).use { it.count() > 0 } }
+            cjkFontCandidates.firstOrNull { name -> fonts.matchFamily(name).use { it.count() > 0 } }
         }.getOrNull()
-    }
 
     /** 关窗后在后台传输时的提示。GNOME 默认没有托盘，AWT 的托盘在那里不可用，只能再次打开 Piko 叫回窗口。 */
     fun backgroundHint(): String =
-        if (runCatching { SystemTray.isSupported() }.getOrDefault(false)) tr("可从系统托盘图标重新打开", "Reopen from the system tray icon", "システムトレイのアイコンから開けます", "시스템 트레이 아이콘에서 다시 열 수 있습니다") else tr("再次打开 Piko 即可回到窗口", "Open Piko again to return to the window", "Pikoを再度起動するとウィンドウに戻れます", "Piko를 다시 열면 창으로 돌아옵니다")
+        if (runCatching { SystemTray.isSupported() }.getOrDefault(false)) tr("可从系统托盘图标重新打开", "Reopen from the system tray icon", "システムトレイのアイコンから開けます", "시스템 트레이 아이콘에서 다시 열 수 있습니다", "可從系統匣圖示重新開啟") else tr("再次打开 Piko 即可回到窗口", "Open Piko again to return to the window", "Pikoを再度起動するとウィンドウに戻れます", "Piko를 다시 열면 창으로 돌아옵니다", "再次開啟 Piko 即可回到視窗")
 
     /**
      * 系统通知，经 org.freedesktop.Notifications。gdbus 不在时退到 notify-send。
@@ -98,7 +134,7 @@ internal object LinuxDesktop {
      */
     fun preventSleep(): AutoCloseable? = runCatching {
         val process = ProcessBuilder(
-            "systemd-inhibit", "--what=idle:sleep", "--who=Piko", tr("--why=正在播放视频", "--why=Video playback", "--why=動画を再生中", "--why=동영상 재생 중"), "--mode=block",
+            "systemd-inhibit", "--what=idle:sleep", "--who=Piko", tr("--why=正在播放视频", "--why=Video playback", "--why=動画を再生中", "--why=동영상 재생 중", "--why=正在播放影片"), "--mode=block",
             "tail", "--pid=${ProcessHandle.current().pid()}", "-f", "/dev/null",
         ).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
         AutoCloseable { process.descendants().forEach { it.destroy() }; process.destroy() }

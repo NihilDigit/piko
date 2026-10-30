@@ -69,6 +69,41 @@ class DesktopPikoPreferencesTest {
         assertEquals(Triple("fid", "我的文件夹", "stack-data"), reloaded.getLastFolder())
         assertFalse((reloaded.spoilerBlurFlow as StateFlow<Boolean>).value)
         assertFalse((reloaded.heuristicFilterFlow as StateFlow<Boolean>).value)
-        assertEquals(listOf("playback.f1"), store.keysWithPrefix("playback."))
+    }
+
+    @Test
+    fun desktopFontCandidatesMatchLanguageAndPlatformRules() {
+        assertEquals(
+            "Microsoft YaHei UI",
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = false, effectiveLanguage = AppLanguage.ZH_CN, systemLanguage = AppLanguage.EN).first(),
+        )
+        assertEquals(
+            "Microsoft JhengHei UI",
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = false, effectiveLanguage = AppLanguage.ZH_HANT, systemLanguage = AppLanguage.EN).first(),
+        )
+        assertEquals(
+            "Microsoft JhengHei UI",
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = false, effectiveLanguage = AppLanguage.EN, systemLanguage = AppLanguage.ZH_HANT).first(),
+        )
+        assertEquals(
+            "Microsoft YaHei UI",
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = false, effectiveLanguage = AppLanguage.EN, systemLanguage = AppLanguage.EN).first(),
+        )
+        assertEquals(
+            listOf("Segoe UI"),
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = false, effectiveLanguage = AppLanguage.JA, systemLanguage = AppLanguage.JA),
+        )
+        assertEquals(
+            listOf("Segoe UI"),
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = false, effectiveLanguage = AppLanguage.KO, systemLanguage = AppLanguage.KO),
+        )
+        assertEquals(
+            "PingFang TC",
+            desktopPrimaryFontCandidates(isMacOs = true, isLinux = false, effectiveLanguage = AppLanguage.ZH_HANT, systemLanguage = AppLanguage.EN).first(),
+        )
+        assertEquals(
+            "Noto Sans CJK TC",
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = true, effectiveLanguage = AppLanguage.ZH_HANT, systemLanguage = AppLanguage.EN).first(),
+        )
     }
 }

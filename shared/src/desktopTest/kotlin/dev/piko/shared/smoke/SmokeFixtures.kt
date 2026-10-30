@@ -48,6 +48,8 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setPlayerSeekStepSeconds(seconds: Int) = Unit
     override val playerBoostSpeedFlow: Flow<Float> = MutableStateFlow(2f)
     override suspend fun setPlayerBoostSpeed(speed: Float) = Unit
+    override val clipAutoExtendFlow = MutableStateFlow(true)
+    override suspend fun setClipAutoExtend(enabled: Boolean) { clipAutoExtendFlow.value = enabled }
     override val folderMapOpenFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setFolderMapOpen(open: Boolean) = Unit
     override val folderMapPinnedFlow: Flow<Boolean> = MutableStateFlow(false)

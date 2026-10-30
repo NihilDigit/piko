@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
+import dev.piko.shared.i18n.PikoLocale
 import dev.piko.ui.platform.LocalPikoPlatform
 
 val LocalFixedColors = staticCompositionLocalOf { FixedColors }
@@ -39,8 +40,17 @@ fun PikoTheme(
         MotionStyle.Standard -> MotionScheme.standard()
     }
     val colorScheme = animateColorScheme(appearance.colorScheme(darkTheme), motionScheme)
-    val fontFamily = platform.fontFamily
-    val typography = remember(fontFamily) { pikoTypography(fontFamily) }
+    val effectiveLanguage = PikoLocale.effectiveLanguageState.value
+    val systemLanguage = PikoLocale.systemLanguage
+    val localeList = remember(effectiveLanguage, systemLanguage) {
+        pikoLocaleList(effectiveLanguage, systemLanguage)
+    }
+    val fontFamily = remember(platform, effectiveLanguage, systemLanguage) {
+        platform.fontFamily
+    }
+    val typography = remember(fontFamily, localeList, effectiveLanguage) {
+        pikoTypography(fontFamily, localeList)
+    }
 
     MaterialExpressiveTheme(
         colorScheme = colorScheme,
