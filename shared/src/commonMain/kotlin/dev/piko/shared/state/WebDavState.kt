@@ -91,18 +91,18 @@ class WebDavState(
         if (refresh) isRefreshing = true else isLoading = true
         loadJob?.cancel()
         loadJob = scope.launch {
-            val result = runCatching { client.getWebDav() }.logFailure(TAG, tr("读取 WebDAV 设置失败", "Failed to load WebDAV settings", "WebDAV設定を読み込めませんでした", "WebDAV 설정을 불러오지 못했습니다"))
+            val result = runCatching { client.getWebDav() }.logFailure(TAG, tr("读取 WebDAV 设置失败", "Failed to load WebDAV settings", "WebDAV設定を読み込めませんでした", "WebDAV 설정을 불러오지 못했습니다", "讀取 WebDAV 設定失敗"))
             if (!isCurrent(client)) return@launch
             result
                 .onSuccess {
                     // 入口只对会员显示，这里兜底：等级识别与 WebDAV 接口说法不一时，至少说清开关为何开不了
-                    if (!it.isPremium && settings?.isPremium != false) _messages.tryEmit(tr("WebDAV 仅限 PikPak 会员使用", "WebDAV requires PikPak Premium", "WebDAVはPikPakプレミアム会員限定です", "WebDAV는 PikPak 프리미엄 회원만 사용할 수 있습니다"))
+                    if (!it.isPremium && settings?.isPremium != false) _messages.tryEmit(tr("WebDAV 仅限 PikPak 会员使用", "WebDAV requires PikPak Premium", "WebDAVはPikPakプレミアム会員限定です", "WebDAV는 PikPak 프리미엄 회원만 사용할 수 있습니다", "WebDAV 僅限 PikPak 會員使用"))
                     settings = it
                     loadError = null
                 }
                 .onFailure {
-                    loadError = tr("读取 WebDAV 设置失败", "Failed to load WebDAV settings", "WebDAV設定を読み込めませんでした", "WebDAV 설정을 불러오지 못했습니다")
-                    if (refresh || settings != null) _messages.tryEmit(failureText(tr("刷新", "Refresh", "更新", "새로고침"), it))
+                    loadError = tr("读取 WebDAV 设置失败", "Failed to load WebDAV settings", "WebDAV設定を読み込めませんでした", "WebDAV 설정을 불러오지 못했습니다", "讀取 WebDAV 設定失敗")
+                    if (refresh || settings != null) _messages.tryEmit(failureText(tr("刷新", "Refresh", "更新", "새로고침", "重新整理"), it))
                 }
             isLoading = false
             isRefreshing = false
@@ -122,7 +122,7 @@ class WebDavState(
             isToggling = false
             result.onFailure {
                 settings = settings?.copy(enabled = before.enabled)
-                _messages.tryEmit(failureText(if (enabled) tr("开启", "Enable", "有効にする", "사용") else tr("关闭", "Close", "閉じる", "닫기"), it))
+                _messages.tryEmit(failureText(if (enabled) tr("开启", "Enable", "有効にする", "사용", "啟用") else tr("关闭", "Close", "閉じる", "닫기", "關閉"), it))
             }
         }
     }
@@ -141,7 +141,7 @@ class WebDavState(
                     issued = IssuedCredentials(created, renewed = false)
                     load(refresh = true)
                 }
-                .onFailure { _messages.tryEmit(failureText(tr("添加", "Add", "追加", "추가"), it)) }
+                .onFailure { _messages.tryEmit(failureText(tr("添加", "Add", "追加", "추가", "新增"), it)) }
         }
     }
 
@@ -150,15 +150,15 @@ class WebDavState(
         val newName = name.trim()
         if (newName.isEmpty() || newName == target.name) return
         mutate(
-            target, action = tr("保存", "Save", "保存", "저장"), logMessage = "修改 WebDAV 应用失败",
+            target, action = tr("保存", "Save", "保存", "저장", "儲存"), logMessage = "修改 WebDAV 应用失败",
             request = { it.updateWebDavClient(target, name = newName) },
-            apply = { _messages.tryEmit(tr("已保存", "Saved", "保存しました", "저장했습니다")) },
+            apply = { _messages.tryEmit(tr("已保存", "Saved", "保存しました", "저장했습니다", "已儲存")) },
         )
     }
 
     fun renewPassword(target: WebDavClient) {
         mutate(
-            target, action = tr("重置密码", "Reset password", "パスワードをリセット", "비밀번호 재설정"), logMessage = "重置 WebDAV 密码失败",
+            target, action = tr("重置密码", "Reset password", "パスワードをリセット", "비밀번호 재설정", "重設密碼"), logMessage = "重置 WebDAV 密码失败",
             request = { it.renewWebDavPassword(target) },
             apply = { renewed ->
                 settings = settings?.let { s -> s.copy(clients = s.clients.map { if (it.id == renewed.id) renewed else it }) }
@@ -169,11 +169,11 @@ class WebDavState(
 
     fun delete(target: WebDavClient) {
         mutate(
-            target, action = tr("删除", "Delete", "削除", "삭제"), logMessage = "删除 WebDAV 应用失败",
+            target, action = tr("删除", "Delete", "削除", "삭제", "刪除"), logMessage = "删除 WebDAV 应用失败",
             request = { it.deleteWebDavClient(target) },
             apply = {
                 settings = settings?.let { s -> s.copy(clients = s.clients.filterNot { it.id == target.id }) }
-                _messages.tryEmit(tr("已删除「${target.name}」", "Deleted “${target.name}”", "「${target.name}」を削除しました", "“${target.name}” 삭제 완료"))
+                _messages.tryEmit(tr("已删除「${target.name}」", "Deleted “${target.name}”", "「${target.name}」を削除しました", "“${target.name}” 삭제 완료", "已刪除「${target.name}」"))
             },
         )
     }

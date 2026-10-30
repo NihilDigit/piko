@@ -88,7 +88,7 @@ class ShareSaveSession(private val repository: PikoDriveRepository, private val 
             var submitted = token == null || initial.phase != ShareSavePhase.PREPARING
             suspend fun check() {
                 currentCoroutineContext().ensureActive()
-                if (repository.currentAccount != work.account || _works.value.none { it.id == work.id }) throw CancellationException(tr("转存账号已结束", "Share save account session ended", "共有保存アカウントのセッションは終了しました", "공유 저장 계정 세션이 종료되었습니다"))
+                if (repository.currentAccount != work.account || _works.value.none { it.id == work.id }) throw CancellationException(tr("账号会话已结束", "Account session ended", "アカウントのセッションが終了しました", "계정 세션이 종료되었습니다", "帳號工作階段已結束"))
             }
             fun publish() { _works.update { all -> all.map { if (it.id == work.id) work else it } } }
             fun phase(value: ShareSavePhase) { work = work.copy(phase = value); publish() }
@@ -104,7 +104,7 @@ class ShareSaveSession(private val repository: PikoDriveRepository, private val 
                 val dependent = renamed.filter { it.id in work.recordedRenameIds }
                 val independent = renamed.filterNot { it.id in work.recordedRenameIds }
                 if (independent.isNotEmpty()) {
-                    val inverse = DriveChangeJournal.Change.Rename(independent, tr("已处理转存文件名称", "Saved file names processed", "保存したファイル名を処理しました", "저장한 파일 이름을 처리했습니다"))
+                    val inverse = DriveChangeJournal.Change.Rename(independent, tr("已处理转存文件名称", "Saved file names processed", "保存したファイル名を処理しました", "저장한 파일 이름을 처리했습니다", "已處理轉存檔案名稱"))
                     if (repository.changes.record(inverse, work.journalGeneration)) work = work.copy(undoChangeIds = work.undoChangeIds + inverse.id)
                     else work = work.copy(undoUnavailableNames = work.undoUnavailableNames + independent.map { it.id }, undoLimited = true)
                 }
@@ -124,15 +124,15 @@ class ShareSaveSession(private val repository: PikoDriveRepository, private val 
                 }
                 val message = buildList {
                     add(when (completion) {
-                        ShareSaveCompletion.SUCCEEDED -> tr("已转存 ${all.size} 项到「${work.command.target.name}」", "Saved ${enCount(all.size, "item", "items")} to “${work.command.target.name}”", "${all.size} 項目を「${work.command.target.name}」に保存しました", "${all.size}개 항목을 “${work.command.target.name}”에 저장했습니다")
-                        ShareSaveCompletion.FAILED -> work.refusalMessage ?: tr("未能提交分享转存", "Failed to submit share save", "共有の保存を送信できませんでした", "공유 저장을 제출하지 못했습니다")
-                        ShareSaveCompletion.UNCONFIRMED -> tr("转存结果待确认，请先检查任务与实际文件", "Share save result is unconfirmed. Check Tasks and actual files", "共有保存の結果は未確認です。タスクと実際のファイルを確認してください", "공유 저장 결과가 미확인입니다. 작업과 실제 파일을 확인해 주세요")
-                        ShareSaveCompletion.PARTIAL -> tr("已确认转存 ${work.confirmedSources.size} / ${all.size} 项到「${work.command.target.name}」", "Saved ${work.confirmedSources.size} / ${enCount(all.size, "item", "items")} to “${work.command.target.name}”", "${work.confirmedSources.size} / ${all.size} 項目を「${work.command.target.name}」に保存済み", "${work.confirmedSources.size} / ${all.size}개 항목을 “${work.command.target.name}”에 저장 확인")
+                        ShareSaveCompletion.SUCCEEDED -> tr("已转存 ${all.size} 项到「${work.command.target.name}」", "Saved ${enCount(all.size, "item", "items")} to “${work.command.target.name}”", "${all.size} 項目を「${work.command.target.name}」に保存しました", "${all.size}개 항목을 “${work.command.target.name}”에 저장했습니다", "已轉存 ${all.size} 項至「${work.command.target.name}」")
+                        ShareSaveCompletion.FAILED -> work.refusalMessage ?: tr("未能提交分享转存", "Failed to submit share save", "共有の保存を送信できませんでした", "공유 저장을 제출하지 못했습니다", "未能提交分享轉存")
+                        ShareSaveCompletion.UNCONFIRMED -> tr("转存结果待确认，请在任务页或目标文件夹中核对", "Share save result unconfirmed. Check Tasks or destination folder", "共有保存の結果が未確認です。タスク画面または保存先フォルダーを確認してください", "공유 저장 결과가 미확인 상태입니다. 작업 페이지나 대상 폴더를 확인해 주세요", "轉存結果待確認，請至任務頁或目標資料夾核對")
+                        ShareSaveCompletion.PARTIAL -> tr("已确认转存 ${work.confirmedSources.size} / ${all.size} 项到「${work.command.target.name}」", "Saved ${work.confirmedSources.size} / ${enCount(all.size, "item", "items")} to “${work.command.target.name}”", "${work.confirmedSources.size} / ${all.size} 項目を「${work.command.target.name}」に保存済み", "${work.confirmedSources.size} / ${all.size}개 항목을 “${work.command.target.name}”에 저장 확인", "已確認轉存 ${work.confirmedSources.size} / ${all.size} 項至「${work.command.target.name}」")
                     })
-                    if (unknown.isNotEmpty() && completion == ShareSaveCompletion.PARTIAL) add(tr("${unknown.size} 项待确认", "${enCount(unknown.size, "item", "items")} unconfirmed", "${unknown.size} 項目が未確認です", "${unknown.size}개 항목 미확인"))
-                    if (work.renamedCount > 0) add(tr("已规范命名 ${work.renamedCount} 项", "Normalized ${enCount(work.renamedCount, "name", "names")}", "${work.renamedCount} 項目の名前を整理しました", "${work.renamedCount}개 이름 정리 완료"))
-                    if (work.namingSkipped > 0) add(tr("${work.namingSkipped} 项名称未处理", "${enCount(work.namingSkipped, "name", "names")} skipped", "${work.namingSkipped} 項目の名前を未処理", "${work.namingSkipped}개 이름 처리 안 됨"))
-                    if (work.pendingRenames.isNotEmpty()) add(tr("${work.pendingRenames.size} 项改名待确认", "${enCount(work.pendingRenames.size, "rename", "renames")} unconfirmed", "${work.pendingRenames.size} 項目の改名が未確認です", "${work.pendingRenames.size}개 이름 변경 미확인"))
+                    if (unknown.isNotEmpty() && completion == ShareSaveCompletion.PARTIAL) add(tr("${unknown.size} 项待确认", "${enCount(unknown.size, "item", "items")} unconfirmed", "${unknown.size} 項目が未確認です", "${unknown.size}개 항목 미확인", "${unknown.size} 項待確認"))
+                    if (work.renamedCount > 0) add(tr("已规范命名 ${work.renamedCount} 项", "Normalized ${enCount(work.renamedCount, "name", "names")}", "${work.renamedCount} 項目の名前を整理しました", "${work.renamedCount}개 이름 정리 완료", "已規範命名 ${work.renamedCount} 項"))
+                    if (work.namingSkipped > 0) add(tr("${work.namingSkipped} 项名称未处理", "${enCount(work.namingSkipped, "name", "names")} skipped", "${work.namingSkipped} 項目の名前を未処理", "${work.namingSkipped}개 이름 처리 안 됨", "${work.namingSkipped} 項名稱未處理"))
+                    if (work.pendingRenames.isNotEmpty()) add(tr("${work.pendingRenames.size} 项改名待确认", "${enCount(work.pendingRenames.size, "rename", "renames")} unconfirmed", "${work.pendingRenames.size} 項目の改名が未確認です", "${work.pendingRenames.size}개 이름 변경 미확인", "${work.pendingRenames.size} 項重新命名待確認"))
                 }.joinToString("，")
                 val result = ShareSaveResult(completion, message, work.confirmedSources, unknown, failed, notAttempted, now())
                 val pendingIds = work.pendingRenames.mapTo(HashSet()) { it.id }
@@ -172,8 +172,8 @@ class ShareSaveSession(private val repository: PikoDriveRepository, private val 
                         else -> ShareCopyState.UNKNOWN
                     }, needsPassCode = unavailable?.needsPassCode == true, refusalMessage = when {
                         ownShare -> dev.piko.shared.notice.PikoErrorMapper.reason("file_restore_own")
-                        unavailable?.needsPassCode == true -> tr("提取码需要重新验证，尚未转存", "Access code must be verified again; share not saved", "アクセスコードの再確認が必要です。共有は保存されていません", "접근 코드를 다시 확인해야 합니다. 공유는 저장되지 않았습니다")
-                        unavailable != null -> tr("分享已失效，尚未转存", "Share expired; nothing saved", "共有が無効です。保存されていません", "공유가 만료되어 저장하지 못했습니다")
+                        unavailable?.needsPassCode == true -> tr("提取码需重新验证，未提交转存", "Access code requires verification; share not saved", "アクセスコードの再確認が必要なため、保存されませんでした", "접근 코드를 다시 확인해야 하므로 저장하지 않았습니다", "提取碼需重新驗證，未提交轉存")
+                        unavailable != null -> tr("分享链接已失效，未提交转存", "Share link expired; nothing saved", "共有リンクが無効なため、保存されませんでした", "공유 링크가 만료되어 저장하지 않았습니다", "分享連結已失效，未提交轉存")
                         else -> null
                     })
                     publish()

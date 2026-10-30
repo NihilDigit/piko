@@ -12,15 +12,15 @@ enum class FileKind { VIDEO, AUDIO, IMAGE, SUBTITLE, ARCHIVE, DOCUMENT, FONT, LI
 
 /** 分区。声明顺序即各分区之间的展示顺序。 */
 enum class Section(private val labelText: () -> String) {
-    MAIN({ tr("正片", "Main", "本編", "본편") }),
+    MAIN({ tr("正片", "Main", "本編", "본편", "正片") }),
     SPECIAL({ "SP" }),
     OVA({ "OVA/OAD" }),
-    MOVIE({ tr("剧场版", "Movies", "劇場版", "극장판") }),
+    MOVIE({ tr("剧场版", "Movies", "劇場版", "극장판", "劇場版") }),
     PREVIEW({ "PV/CM" }),
     CREDITLESS({ "NCOP/NCED" }),
-    BONUS({ tr("特典", "Extras", "特典", "특전") }),
-    MENU({ tr("菜单", "Menus", "メニュー", "메뉴") }),
-    OTHER({ tr("其他", "Other", "その他", "기타") });
+    BONUS({ tr("特典", "Extras", "特典", "특전", "特典") }),
+    MENU({ tr("菜单", "Menus", "メニュー", "메뉴", "選單") }),
+    OTHER({ tr("其他", "Other", "その他", "기타", "其他") });
 
     val label: String get() = labelText()
 }

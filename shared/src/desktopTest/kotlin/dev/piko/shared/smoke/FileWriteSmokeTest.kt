@@ -367,7 +367,7 @@ class FileWriteSmokeTest {
     @Test
     fun `rename waves limit concurrency retry transient errors and keep journal order`() = smoke { _ ->
         val server = FakePikPakServer()
-        val files = (1..9).map { server.addFile("$it.txt") }
+        val files = (1..24).map { server.addFile("$it.txt") }
         val attempts = java.util.concurrent.atomic.AtomicInteger()
         val active = java.util.concurrent.atomic.AtomicInteger()
         val maximum = java.util.concurrent.atomic.AtomicInteger()
@@ -387,8 +387,8 @@ class FileWriteSmokeTest {
         val run = dev.piko.shared.rename.RenameRun(repo, "test")
         run.execute(plan)
         assertEquals(4, attempts.get())
-        assertTrue(maximum.get() in 2..4)
-        assertEquals(9, run.processed)
+        assertTrue(maximum.get() in 2..16)
+        assertEquals(24, run.processed)
         assertTrue(run.failures.isEmpty())
         assertEquals(files.map { it.id }, run.renamed.map { it.id })
         files.forEach { assertEquals(0, server.count("GET /drive/v1/files/${it.id}")) }

@@ -172,7 +172,7 @@ fun TransfersScreen(
     val openCloudFileById = { fileId: String, fileName: String ->
         scope.launch {
             if (!onOpenCloudFile(fileId, fileName)) {
-                snackbarHostState.showSnackbar(tr("文件已不存在", "File no longer exists", "ファイルは存在しません", "파일이 더 이상 존재하지 않습니다"), withDismissAction = true)
+                snackbarHostState.showSnackbar(tr("文件已不存在", "File no longer exists", "ファイルは存在しません", "파일이 더 이상 존재하지 않습니다", "檔案已不存在"), withDismissAction = true)
             }
         }
         Unit
@@ -220,10 +220,10 @@ fun TransfersScreen(
     }
 
     fun copySourceUrl(url: String) {
-        platform.copyToClipboard(tr("来源链接", "Source link", "ソースリンク", "출처 링크"), url)
+        platform.copyToClipboard(tr("来源链接", "Source link", "ソースリンク", "출처 링크", "來源連結"), url)
         scope.launch {
             snackbarHostState.showSnackbar(
-                if (url.startsWith("magnet:", true)) tr("已复制磁力链接", "Magnet link copied", "マグネットリンクをコピーしました", "마그넷 링크를 복사했습니다") else tr("已复制来源链接", "Source link copied", "ソースリンクをコピーしました", "출처 링크를 복사했습니다"),
+                if (url.startsWith("magnet:", true)) tr("已复制磁力链接", "Magnet link copied", "マグネットリンクをコピーしました", "마그넷 링크를 복사했습니다", "已複製磁力連結") else tr("已复制来源链接", "Source link copied", "ソースリンクをコピーしました", "출처 링크를 복사했습니다", "已複製來源連結"),
                 withDismissAction = true,
             )
         }
@@ -408,7 +408,7 @@ fun TransfersScreen(
                     } else state.remove(item)
                 })
         }
-        return base + SheetAction(Icons.Outlined.Info, tr("详情", "Details", "詳細", "세부 정보"), { showDetails(item.key) }, group = ActionGroup.Properties)
+        return base + SheetAction(Icons.Outlined.Info, tr("详情", "Details", "詳細", "세부 정보", "詳細資料"), { showDetails(item.key) }, group = ActionGroup.Properties)
     }
 
     // 点按一项做的事，轻点与鼠标双击共用；不弹详情面板，详情在右键菜单与触屏长按里
@@ -482,13 +482,13 @@ fun TransfersScreen(
             val pausableCount = bulkSelected.count(state::isPausable)
             val resumableCount = bulkSelected.count(state::isResumable)
             return buildList {
-                pauseSelected?.let { add(SheetAction(Icons.Outlined.Pause, tr("暂停所选 $pausableCount 项", "Pause $pausableCount selected items", "選択した $pausableCount 項目を一時停止", "선택한 ${pausableCount}개 항목 일시 중지"), it)) }
-                resumeSelected?.let { add(SheetAction(Icons.Outlined.PlayArrow, tr("继续所选 $resumableCount 项", "Resume $resumableCount selected items", "選択した $resumableCount 項目を再開", "선택한 ${resumableCount}개 항목 계속"), it)) }
+                pauseSelected?.let { add(SheetAction(Icons.Outlined.Pause, tr("暂停所选 $pausableCount 项", "Pause $pausableCount selected items", "選択した $pausableCount 項目を一時停止", "선택한 ${pausableCount}개 항목 일시 중지", "暫停所選 $pausableCount 項"), it)) }
+                resumeSelected?.let { add(SheetAction(Icons.Outlined.PlayArrow, tr("继续所选 $resumableCount 项", "Resume $resumableCount selected items", "選択した $resumableCount 項目を再開", "선택한 ${resumableCount}개 항목 계속", "繼續所選 $resumableCount 項"), it)) }
                 if (bulkSelected.size < visibleOrder.size) {
-                    add(SheetAction(Icons.Outlined.SelectAll, tr("全选", "Select all", "すべて選択", "모두 선택"), { state.selectAll(visibleOrder) }, group = ActionGroup.Select))
+                    add(SheetAction(Icons.Outlined.SelectAll, tr("全选", "Select all", "すべて選択", "모두 선택", "全選"), { state.selectAll(visibleOrder) }, group = ActionGroup.Select))
                 }
-                add(SheetAction(Icons.Outlined.Close, tr("取消选择", "Deselect", "選択を解除", "선택 해제"), state::clearSelection, group = ActionGroup.Select))
-                add(SheetAction(Icons.Outlined.Delete, tr("删除所选 ${bulkSelected.size} 项", "Delete ${bulkSelected.size} selected items", "選択した ${bulkSelected.size} 項目を削除", "선택한 ${bulkSelected.size}개 항목 삭제"), { confirmingDeleteKeys = state.selectedKeys.toSet() }, destructive = true))
+                add(SheetAction(Icons.Outlined.Close, tr("取消选择", "Deselect", "選択を解除", "선택 해제", "取消選取"), state::clearSelection, group = ActionGroup.Select))
+                add(SheetAction(Icons.Outlined.Delete, tr("删除所选 ${bulkSelected.size} 项", "Delete ${bulkSelected.size} selected items", "選択した ${bulkSelected.size} 項目を削除", "선택한 ${bulkSelected.size}개 항목 삭제", "刪除所選 ${bulkSelected.size} 項"), { confirmingDeleteKeys = state.selectedKeys.toSet() }, destructive = true))
             }
         }
         return actionsFor(item)
@@ -515,49 +515,49 @@ fun TransfersScreen(
     val attentionKeys by remember(rowSections) { derivedStateOf { rowSections.needsAttention.mapTo(HashSet()) { it.key } } }
 
     fun pauseOrResumeAction(item: TransferItem): SheetAction? = when {
-        state.isPausable(item) -> SheetAction(Icons.Outlined.Pause, tr("暂停", "Pause", "一時停止", "일시 중지"), { state.pause(item) })
+        state.isPausable(item) -> SheetAction(Icons.Outlined.Pause, tr("暂停", "Pause", "一時停止", "일시 중지", "暫停"), { state.pause(item) })
         state.isResumable(item) -> {
             val isFailed = (item is TransferItem.Local && item.task.status == DownloadStatus.FAILED) ||
                 (item is TransferItem.Upload && item.task.status == UploadStatus.FAILED)
-            SheetAction(if (isFailed) Icons.Outlined.Refresh else Icons.Outlined.PlayArrow, if (isFailed) tr("重试", "Retry", "再試行", "다시 시도") else tr("继续", "Resume", "再開", "계속"), { state.resume(item) })
+            SheetAction(if (isFailed) Icons.Outlined.Refresh else Icons.Outlined.PlayArrow, if (isFailed) tr("重试", "Retry", "再試行", "다시 시도", "重試") else tr("继续", "Resume", "再開", "계속", "繼續"), { state.resume(item) })
         }
-        else -> actionsFor(item).firstOrNull { it.role == SheetActionRole.Stop || it.label == tr("重新查询结果", "Check results again", "結果を再確認", "결과 다시 확인") || it.label == tr("解析来源链接", "Resolve source link", "ソースリンクを解析", "출처 링크 분석") }
+        else -> actionsFor(item).firstOrNull { it.role == SheetActionRole.Stop || it.label == tr("重新查询结果", "Check results again", "結果を再確認", "결과 다시 확인", "重新查詢結果") || it.label == tr("解析来源链接", "Resolve source link", "ソースリンクを解析", "출처 링크 분석", "解析來源連結") }
     }
 
     fun quickAction(item: TransferItem): SheetAction? = when (item) {
         is TransferItem.Local -> when {
             item.task.status == DownloadStatus.COMPLETED -> if (item.task.isMedia()) {
-                SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생"), { playLocal(item.task) })
+                SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생", "播放"), { playLocal(item.task) })
             } else {
-                SheetAction(Icons.Outlined.FolderOpen, tr("打开所在文件夹", "Open containing folder", "保存先フォルダーを開く", "파일 위치 열기"), { localFiles.openContainingFolder(item.task.destinationPath) })
+                SheetAction(Icons.Outlined.FolderOpen, tr("打开所在文件夹", "Open containing folder", "保存先フォルダーを開く", "파일 위치 열기", "開啟所在資料夾"), { localFiles.openContainingFolder(item.task.destinationPath) })
             }
-            item.task.canPlayWhileDownloading() -> SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생"), { playLocal(item.task) })
+            item.task.canPlayWhileDownloading() -> SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생", "播放"), { playLocal(item.task) })
             else -> pauseOrResumeAction(item)
         }
         is TransferItem.Cloud -> when {
-            item.task.canPlayVideo -> SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생"), { playCloud(item.task.fileId, item.task.displayName) })
-            item.task.canOpen -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), { openCloudFile(item.task) })
+            item.task.canPlayVideo -> SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생", "播放"), { playCloud(item.task.fileId, item.task.displayName) })
+            item.task.canOpen -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { openCloudFile(item.task) })
             item.task.phase == io.github.nihildigit.pikpak.TaskPhase.ERROR && !item.task.isOutputDeleted ->
-                resubmitAction(item.task)?.let { SheetAction(Icons.Outlined.Refresh, tr("重试", "Retry", "再試行", "다시 시도"), it) }
+                resubmitAction(item.task)?.let { SheetAction(Icons.Outlined.Refresh, tr("重试", "Retry", "再試行", "다시 시도", "重試"), it) }
             else -> null
         }
         is TransferItem.Instant -> when {
-            item.record.canPlayVideo -> SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생"), { playCloud(item.record.locateId, item.record.name) })
-            else -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), { openCloudFileById(item.record.locateId, item.record.name) })
+            item.record.canPlayVideo -> SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생", "播放"), { playCloud(item.record.locateId, item.record.name) })
+            else -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { openCloudFileById(item.record.locateId, item.record.name) })
         }
         is TransferItem.Upload -> when {
-            item.task.canPlayVideo -> SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생"), { playCloud(requireNotNull(item.task.fileId), item.task.fileName) })
-            item.task.canOpen -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), { openCloudFileById(requireNotNull(item.task.fileId), item.task.fileName) })
+            item.task.canPlayVideo -> SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생", "播放"), { playCloud(requireNotNull(item.task.fileId), item.task.fileName) })
+            item.task.canOpen -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { openCloudFileById(requireNotNull(item.task.fileId), item.task.fileName) })
             else -> pauseOrResumeAction(item)
         }
         is TransferItem.Pack -> when {
-            item.job.canOpen && item.job.folderName.isPlayableVideo() -> SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생"), { playCloud(item.job.outputId, item.job.folderName) })
-            item.job.canOpen -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), { openCloudFileById(item.job.outputId, item.job.folderName) })
-            !item.isBusy && item.job.stage == dev.piko.shared.data.OfflinePackStage.FAILED -> SheetAction(Icons.Outlined.Refresh, tr("重试", "Retry", "再試行", "다시 시도"), { state.retryPack(item.job.taskId) })
+            item.job.canOpen && item.job.folderName.isPlayableVideo() -> SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생", "播放"), { playCloud(item.job.outputId, item.job.folderName) })
+            item.job.canOpen -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { openCloudFileById(item.job.outputId, item.job.folderName) })
+            !item.isBusy && item.job.stage == dev.piko.shared.data.OfflinePackStage.FAILED -> SheetAction(Icons.Outlined.Refresh, tr("重试", "Retry", "再試行", "다시 시도", "重試"), { state.retryPack(item.job.taskId) })
             else -> null
         }
         else -> pauseOrResumeAction(item) ?: actionsFor(item).firstOrNull {
-            it.label == tr("输入解压密码", "Enter archive password", "解凍パスワードを入力", "압축 해제 비밀번호 입력") || it.role == SheetActionRole.Stop || it.label == tr("重新查询结果", "Check results again", "結果を再確認", "결과 다시 확인") || it.label == tr("重试", "Retry", "再試行", "다시 시도") || it.label == tr("仍然下载", "Download anyway", "ダウンロードを続行", "계속 다운로드") || it.label == tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기")
+            it.label == tr("输入解压密码", "Enter archive password", "解凍パスワードを入力", "압축 해제 비밀번호 입력", "輸入解壓縮密碼") || it.role == SheetActionRole.Stop || it.label == tr("重新查询结果", "Check results again", "結果を再確認", "결과 다시 확인", "重新查詢結果") || it.label == tr("重试", "Retry", "再試行", "다시 시도", "重試") || it.label == tr("仍然下载", "Download anyway", "ダウンロードを続行", "계속 다운로드", "仍然下載") || it.label == tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示")
         }
     }
 
@@ -566,26 +566,26 @@ fun TransfersScreen(
         return when (item) {
             is TransferItem.LocalBatch, is TransferItem.UploadBatch -> if (item.children.isNotEmpty()) SheetAction(
                 if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                if (expanded) tr("收起文件", "Collapse files", "ファイルを折りたたむ", "파일 접기") else tr("展开文件", "Expand files", "ファイルを展開", "파일 펼치기"),
+                if (expanded) tr("收起文件", "Collapse files", "ファイルを折りたたむ", "파일 접기", "收合檔案") else tr("展开文件", "Expand files", "ファイルを展開", "파일 펼치기", "展開檔案"),
                 { toggleBatch(item.key) },
             ) else null
             is TransferItem.Local -> when {
                 item.task.status == DownloadStatus.COMPLETED && item.task.isMedia() && taskLayout.wide ->
-                    SheetAction(Icons.Outlined.FolderOpen, tr("打开所在文件夹", "Open containing folder", "保存先フォルダーを開く", "파일 위치 열기"), { localFiles.openContainingFolder(item.task.destinationPath) })
+                    SheetAction(Icons.Outlined.FolderOpen, tr("打开所在文件夹", "Open containing folder", "保存先フォルダーを開く", "파일 위치 열기", "開啟所在資料夾"), { localFiles.openContainingFolder(item.task.destinationPath) })
                 item.task.canPlayWhileDownloading() -> pauseOrResumeAction(item)
                 else -> null
             }
             is TransferItem.Cloud -> if (item.task.canPlayVideo) {
-                SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), { openCloudFile(item.task) })
+                SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { openCloudFile(item.task) })
             } else null
             is TransferItem.Instant -> if (item.record.canPlayVideo) {
-                SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), { openCloudFileById(item.record.locateId, item.record.name) })
+                SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { openCloudFileById(item.record.locateId, item.record.name) })
             } else null
             is TransferItem.Upload -> if (item.task.canPlayVideo) {
-                SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), { openCloudFileById(requireNotNull(item.task.fileId), item.task.fileName) })
+                SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { openCloudFileById(requireNotNull(item.task.fileId), item.task.fileName) })
             } else null
             is TransferItem.Pack -> if (item.job.canOpen && item.job.folderName.isPlayableVideo()) {
-                SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), { openCloudFileById(item.job.outputId, item.job.folderName) })
+                SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { openCloudFileById(item.job.outputId, item.job.folderName) })
             } else null
             else -> null
         }
@@ -848,10 +848,10 @@ fun TransfersScreen(
                         )
                         TransfersPhase.EMPTY -> PullableCentered {
                             PikoEmptyState(
-                                title = tr("暂无任务", "No tasks", "タスクはありません", "작업이 없습니다"),
-                                description = tr("已提交的传输和文件处理将显示于此", "Submitted transfers and file operations appear here", "送信した転送やファイル操作を表示します", "제출된 전송 및 파일 작업이 여기에 표시됩니다"),
+                                title = tr("暂无任务", "No tasks", "タスクはありません", "작업이 없습니다", "暫無任務"),
+                                description = tr("已提交的传输和文件处理将显示于此", "Submitted transfers and file operations appear here", "送信した転送やファイル操作を表示します", "제출된 전송 및 파일 작업이 여기에 표시됩니다", "已提交的傳輸和檔案處理將顯示於此"),
                                 icon = Icons.Outlined.SyncAlt,
-                                actionText = tr("添加链接", "Add link", "リンクを追加", "링크 추가"),
+                                actionText = tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結"),
                                 onActionClick = { onCreateImport("") },
                             )
                         }
@@ -878,7 +878,7 @@ fun TransfersScreen(
             text = { Text(stringResource(Res.string.text_clear_completed_records_from_all_categories_downloaded_and_cloud_files_are_k)) },
             confirmButton = {
                 PikoDialogConfirm(
-                    label = tr("清除", "Clear", "消去", "지우기"),
+                    label = tr("清除", "Clear", "消去", "지우기", "清除"),
                     destructive = true,
                     onClick = {
                         confirmingClearCompleted = false
@@ -902,7 +902,7 @@ fun TransfersScreen(
             if (!LocalFramed.current) TaskRateBar(state)
             Box(Modifier.weight(1f).fillMaxWidth().onSizeChanged { taskContentWidth = it.width }
                 .itemPanelAnchorArea(detailState.anchors)) {
-                Box(Modifier.fillMaxSize().semantics { contentDescription = tr("任务列表", "Task list", "タスク一覧", "작업 목록") }) { transfersListBody(PaddingValues()) }
+                Box(Modifier.fillMaxSize().semantics { contentDescription = tr("任务列表", "Task list", "タスク一覧", "작업 목록", "任務清單") }) { transfersListBody(PaddingValues()) }
                 DetailHost(detailState) { _, contentModifier -> TaskDetails(contentModifier) }
             }
         }
@@ -961,7 +961,7 @@ private fun TransfersList(
             // 筛到一项不剩时说清是这一类没有，而不是整页空白像没加载出来
             PullableCentered {
                 Text(
-                    text = tr("没有${kind.label}任务", "No ${enCount(kind.label, "task", "tasks")}", "${kind.label}タスクはありません", "${kind.label} 작업이 없습니다"),
+                    text = tr("没有${kind.label}任务", "No ${enCount(kind.label, "task", "tasks")}", "${kind.label}タスクはありません", "${kind.label} 작업이 없습니다", "沒有${kind.label}任務"),
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -994,10 +994,10 @@ private fun TransfersList(
             if (state.cleanupCount(kind) > 0) fullLineItem(key = "cleanup") {
                 dev.piko.ui.workbench.CleanupTaskCard(requireNotNull(state.cleanup), Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp))
             }
-            transferSection(tr("需要处理", "Needs attention", "対応が必要", "처리 필요"), sections.needsAttention, expanded, renderItem,
+            transferSection(tr("需要处理", "Needs attention", "対応が必要", "처리 필요", "需要處理"), sections.needsAttention, expanded, renderItem,
                 attention = true, onClearCloud = state::clearFailedCloud)
-            transferSection(tr("进行中", "In progress", "処理中", "진행 중"), sections.inProgress, expanded, renderItem)
-            transferSection(tr("已完成", "Completed", "完了", "완료"), sections.completed, expanded, renderItem,
+            transferSection(tr("进行中", "In progress", "処理中", "진행 중", "進行中"), sections.inProgress, expanded, renderItem)
+            transferSection(tr("已完成", "Completed", "完了", "완료", "已完成"), sections.completed, expanded, renderItem,
                 sectionExpanded = completedExpanded, onToggle = onToggleCompleted)
             deletedOutputSection(
                 items = sections.outputDeleted,
@@ -1021,36 +1021,36 @@ private fun DeleteSelectedDialog(items: List<TransferItem>, onConfirm: () -> Uni
     val cancelsUploads = items.any { (it is TransferItem.Upload && it.task.status != UploadStatus.COMPLETED) ||
         (it is TransferItem.UploadBatch && it.tasks.any { task -> task.status != UploadStatus.COMPLETED }) }
     val notes = listOfNotNull(
-        tr("已下载的文件会从本机删除。", "Downloaded files will be deleted from this device.", "ダウンロード済みファイルをこの端末から削除します。", "다운로드한 파일이 기기에서 삭제됩니다.").takeIf { deletesFiles },
-        tr("未传完的上传会取消，网盘里上传到一半的文件随之删除。", "Unfinished uploads will be cancelled and partial cloud files deleted.", "未完了のアップロードを取り消し、ドライブ内の途中のファイルも削除します。", "미완료 업로드를 취소하고 클라우드에 일부 업로드된 파일도 삭제합니다.").takeIf { cancelsUploads },
-        tr("云端任务只删记录，已保存到网盘的文件不受影响。", "Only cloud task records are removed; saved drive files are kept.", "クラウドタスクの記録のみ削除し、ドライブに保存したファイルは保持します。", "클라우드 작업 기록만 삭제하며 저장된 드라이브 파일은 유지됩니다.").takeIf { items.any { TransferKind.CLOUD.matches(it) } },
-        tr("待确认的文件操作仍可能已在服务端执行。移除记录不会取消操作，也不证明可以重新提交，请先检查实际文件。", "Unconfirmed operations may have run on the server. Removing records does not cancel them or justify resubmission. Inspect files first.", "未確認の操作がサーバーで実行済みの可能性があります。記録を削除しても取り消されず、再送信できるとは限りません。先に実際のファイルを確認してください。", "미확인 작업이 서버에서 실행되었을 수 있습니다. 기록을 삭제해도 취소되지 않으며 다시 제출해도 된다는 뜻이 아닙니다. 실제 파일을 먼저 확인하세요.").takeIf {
+        tr("已下载的文件会从本机删除。", "Downloaded files will be deleted from this device.", "ダウンロード済みファイルをこの端末から削除します。", "다운로드한 파일이 기기에서 삭제됩니다.", "已下載的檔案會從本機刪除。").takeIf { deletesFiles },
+        tr("未完成的上传任务将取消，云端未传完的临时文件将一并删除。", "Unfinished uploads will be cancelled and incomplete cloud files deleted.", "未完了のアップロードをキャンセルし、クラウド上の不完全なファイルも削除します。", "미완료 업로드를 취소하고 클라우드의 미완성 파일도 함께 삭제합니다.", "未完成的上傳任務將取消，雲端未傳完的暫存檔案將一併刪除。").takeIf { cancelsUploads },
+        tr("仅移除云端任务记录，已保存至网盘的文件不受影响。", "Only cloud task records will be removed; files saved in drive are kept.", "クラウドタスクの記録のみを削除します。ドライブに保存済みのファイルは保持されます。", "클라우드 작업 기록만 삭제하며 드라이브에 저장된 파일은 유지됩니다.", "僅移除雲端任務記錄，已儲存至雲端硬碟的檔案不受影響。").takeIf { items.any { TransferKind.CLOUD.matches(it) } },
+        tr("待确认的文件操作可能已在服务端执行。移除记录不会取消已提交的操作，重试前请先核对实际文件。", "Unconfirmed file operations may have already run on the server. Removing records does not cancel them; inspect files before retrying.", "未確認のファイル操作はサーバーで既に実行されている可能性があります。記録を削除しても操作は取り消されないため、再試行前に実際のファイルを確認してください。", "미확인 파일 작업이 서버에서 이미 실행되었을 수 있습니다. 기록을 삭제해도 작업은 취소되지 않으므로 다시 시도하기 전에 실제 파일을 확인해 주세요.", "待確認的檔案操作可能已在伺服器執行。移除記錄不會取消已提交的操作，重試前請先核對實際檔案。").takeIf {
             items.any { it is TransferItem.Write && it.work.result?.unconfirmed?.isNotEmpty() == true }
         },
-        tr("历史记录的处理结果尚未确认。移除这里的结果不会取消原操作，也不会恢复续播位置。", "History results are unconfirmed. Removing this result does not cancel the operation or restore resume positions.", "履歴の処理結果は未確認です。この結果を削除しても元の操作は取り消されず、再開位置も復元しません。", "기록 처리 결과가 미확인입니다. 이 결과를 삭제해도 원래 작업이 취소되거나 이어보기 위치가 복원되지 않습니다.").takeIf {
+        tr("待确认的历史记录操作不会因移除此记录而取消，已清除的续播进度亦不会恢复。", "Removing unconfirmed history records does not cancel the request or restore playback positions.", "未確認の履歴記録を削除しても元の操作は取り消されず、消去された再生位置も復元されません。", "미확인 기록 항목을 삭제해도 원래 요청이 취소되거나 지워진 이어보기 위치가 복원되지 않습니다.", "待確認的歷史記錄操作不會因移除此記錄而取消，已清除的續播進度亦不會還原。").takeIf {
             items.any { it is TransferItem.History && it.work.result?.completion in setOf(dev.piko.shared.state.HistoryEditCompletion.PARTIAL, dev.piko.shared.state.HistoryEditCompletion.UNCONFIRMED) }
         },
-        tr("归档清单编辑结果尚未确认。移除记录不会取消已经提交的编辑，请先检查实际清单。", "Manifest edits are unconfirmed. Removing records does not cancel submitted edits. Inspect the manifest first.", "アーカイブ一覧の編集結果は未確認です。記録を削除しても送信済みの編集は取り消されません。先に実際の一覧を確認してください。", "보관 목록 편집 결과가 미확인입니다. 기록을 삭제해도 제출된 편집은 취소되지 않습니다. 실제 목록을 먼저 확인하세요.").takeIf {
+        tr("归档清单修改结果待确认。移除记录不会取消已提交的修改，请先核对归档清单。", "Archive manifest edits are unconfirmed. Removing records does not cancel submitted edits; check the manifest first.", "アーカイブ一覧の変更結果が未確認です。記録を削除しても送信済みの変更は取り消されません。", "보관 목록 편집 결과가 미확인 상태입니다. 기록을 삭제해도 제출된 변경은 취소되지 않습니다.", "歸檔清單修改結果待確認。移除記錄不會取消已提交的修改，請先核對歸檔清單。").takeIf {
             items.any { it is TransferItem.VaultEdit && it.work.result?.unconfirmed?.isNotEmpty() == true }
         },
-        tr("部分秒传请求可能已执行。移除结果不会取消请求，也不证明可以再次保存。", "Some instant saves may have run. Removing results does not cancel requests or establish that saving again is safe.", "一部のインスタント保存は実行済みの可能性があります。結果を削除してもリクエストは取り消されず、再保存できることを意味しません。", "일부 즉시 저장 요청이 실행되었을 수 있습니다. 결과를 삭제해도 요청이 취소되지 않으며 다시 저장해도 된다는 뜻이 아닙니다.").takeIf {
+        tr("部分保存请求可能已在服务端执行。移除记录不会取消请求，重新保存前请先核对目标文件夹。", "Some save requests may have already run. Removing records does not cancel them; check the destination folder before saving again.", "一部の保存リクエストは既に実行されている可能性があります。記録を削除しても取り消されないため、再保存前に保存先フォルダーを確認してください。", "일부 저장 요청이 이미 실행되었을 수 있습니다. 기록을 삭제해도 취소되지 않으므로 다시 저장하기 전에 대상 폴더를 확인해 주세요.", "部分儲存請求可能已在伺服器執行。移除記錄不會取消請求，重新儲存前請先核對目標資料夾。").takeIf {
             items.any { it is TransferItem.InstantAttempt && it.work.receipt?.requiresInspection == true }
         },
-        tr("分享转存或名称修改的结果尚未确认。移除记录不会取消原请求，也不证明可以重新转存。", "Share saves or renames are unconfirmed. Removing records does not cancel requests or establish that saving again is safe.", "共有保存や改名の結果は未確認です。記録を削除しても元のリクエストは取り消されず、再保存できることを意味しません。", "공유 저장이나 이름 변경 결과가 미확인입니다. 기록을 삭제해도 원래 요청이 취소되지 않으며 다시 저장해도 된다는 뜻이 아닙니다.").takeIf {
+        tr("分享转存或重命名结果待确认。移除记录不会取消已提交的请求，重试前请先核对目标文件夹。", "Share save or rename results are unconfirmed. Removing records does not cancel submitted requests; check the destination folder first.", "共有保存または名前変更の結果が未確認です。記録を削除しても送信済みのリクエストは取り消されません。", "공유 저장 또는 이름 변경 결과가 미확인 상태입니다. 기록을 삭제해도 제출된 요청은 취소되지 않습니다.", "分享轉存或重新命名結果待確認。移除記錄不會取消已提交的請求，重試前請先核對目標資料夾。").takeIf {
             items.any { it is TransferItem.Share && (it.work.result?.unconfirmedSources?.isNotEmpty() == true || it.work.pendingRenames.isNotEmpty()) }
         },
-        tr("离线请求可能已经执行。移除记录不会取消远端任务，也不证明可以再次提交。", "The cloud download may have run. Removing records does not cancel remote tasks or justify resubmission.", "クラウドダウンロードが実行済みの可能性があります。記録を削除してもリモートタスクは取り消されず、再送信できるとは限りません。", "클라우드 다운로드가 실행되었을 수 있습니다. 기록을 삭제해도 원격 작업이 취소되지 않으며 다시 제출해도 된다는 뜻이 아닙니다.").takeIf {
+        tr("离线下载请求可能已在服务端执行。移除记录不会取消云端任务，重新提交前请先核对云端任务列表。", "The cloud download request may have already run. Removing records does not cancel remote tasks; check cloud tasks before resubmitting.", "クラウドダウンロードは既に実行されている可能性があります。記録を削除してもリモートタスクは取り消されません。", "클라우드 다운로드 요청이 이미 실행되었을 수 있습니다. 기록을 삭제해도 원격 작업은 취소되지 않습니다.", "離線下載請求可能已在伺服器執行。移除記錄不會取消雲端任務，重新提交前請先核對雲端任務清單。").takeIf {
             items.any { it is TransferItem.OfflineSubmit && it.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED }
         },
-        tr("上传准备可能已创建目录或将部分文件入队。移除准备记录不会删除目录或取消上传，也不证明可以重新创建。", "Preparation may have created folders or queued files. Removing records does not delete folders, cancel uploads or justify recreating them.", "準備中にフォルダーを作成したりファイルをキューに追加した可能性があります。記録を削除してもフォルダーやアップロードは取り消されず、再作成できるとは限りません。", "준비 중 폴더를 만들거나 일부 파일을 대기열에 추가했을 수 있습니다. 기록을 삭제해도 폴더나 업로드가 취소되지 않으며 다시 생성해도 된다는 뜻이 아닙니다.").takeIf {
+        tr("上传准备可能已创建文件夹或将部分文件加入队列。移除此记录不会删除已创建的文件夹或取消队列中的上传任务。", "Upload preparation may have created folders or queued files. Removing this record does not delete created folders or cancel queued uploads.", "アップロード準備によりフォルダーの作成やキューへの追加が行われた可能性があります。この記録を削除しても、作成済みフォルダーやキュー内のアップロードは取り消されません。", "업로드 준비 중 폴더가 생성되었거나 파일이 대기열에 추가되었을 수 있습니다. 이 기록을 삭제해도 생성된 폴더나 대기열의 업로드는 취소되지 않습니다.", "上傳準備可能已建立資料夾或將部分檔案加入佇列。移除此記錄不會刪除已建立的資料夾或取消佇列中的上傳任務。").takeIf {
             items.any { it is TransferItem.UploadPreparing && it.work.hasSideEffects }
         },
     )
     PikoDialog(
         onDismissRequest = onDismiss,
-        title = { Text(tr("删除所选的 ${items.size} 项？", "Delete ${items.size} selected items?", "選択した ${items.size} 項目を削除しますか？", "선택한 ${items.size}개 항목을 삭제할까요?")) },
+        title = { Text(tr("删除所选的 ${items.size} 项？", "Delete ${items.size} selected items?", "選択した ${items.size} 項目を削除しますか？", "선택한 ${items.size}개 항목을 삭제할까요?", "刪除所選的 ${items.size} 項？")) },
         text = if (notes.isEmpty()) null else ({ Text(notes.joinToString("\n")) }),
-        confirmButton = { PikoDialogConfirm(tr("删除", "Delete", "削除", "삭제"), onClick = onConfirm, destructive = true) },
+        confirmButton = { PikoDialogConfirm(tr("删除", "Delete", "削除", "삭제", "刪除"), onClick = onConfirm, destructive = true) },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) } },
     )
 }
@@ -1121,7 +1121,7 @@ private fun LazyGridScope.transferSection(
             Row(
                 modifier = Modifier.weight(1f).then(
                     if (onToggle != null) Modifier.clickable(
-                        onClickLabel = if (sectionExpanded) tr("收起已完成", "Collapse completed", "完了済みを折りたたむ", "완료 항목 접기") else tr("展开已完成", "Expand completed", "完了済みを展開", "완료 항목 펼치기"),
+                        onClickLabel = if (sectionExpanded) tr("收起已完成", "Collapse completed", "完了済みを折りたたむ", "완료 항목 접기", "收合已完成") else tr("展开已完成", "Expand completed", "完了済みを展開", "완료 항목 펼치기", "展開已完成"),
                         onClick = onToggle,
                     ) else Modifier,
                 ).heightIn(min = 40.dp),
@@ -1137,7 +1137,7 @@ private fun LazyGridScope.transferSection(
                     shape = MaterialTheme.shapes.small,
                 ) {
                     Text(
-                        text = "$title（${items.size}）",
+                        text = tr("$title（${items.size}）", "$title (${items.size})", "$title（${items.size}）", "$title (${items.size})", "$title（${items.size}）"),
                         style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.padding(horizontal = if (attention) 10.dp else 0.dp, vertical = 6.dp),
                     )
@@ -1145,7 +1145,7 @@ private fun LazyGridScope.transferSection(
             }
             if (onClearCompleted != null) {
                 TextButton(onClick = onClearCompleted, enabled = canClearCompleted,
-                    modifier = Modifier.semantics { contentDescription = tr("清空所有类别的已完成记录，保留本地下载", "Clear completed records in all categories; keep local downloads", "すべての種類の完了済み記録を消去し、ダウンロード済みファイルは保持", "모든 유형의 완료 기록 지우기, 로컬 다운로드 유지") },
+                    modifier = Modifier.semantics { contentDescription = tr("清空所有类别的已完成记录，保留本地下载", "Clear completed records in all categories; keep local downloads", "すべての種類の完了済み記録を消去し、ダウンロード済みファイルは保持", "모든 유형의 완료 기록 지우기, 로컬 다운로드 유지", "清空所有類別的已完成記錄，保留本機下載") },
                 ) { Text(stringResource(Res.string.text_clear_completed_alt)) }
             }
             if (onClearCloud != null && hasCloud) {
@@ -1180,7 +1180,7 @@ private fun LazyGridScope.deletedOutputSection(
                 .fillMaxWidth()
                 .animateItem()
                 .padding(top = 8.dp)
-                .clickable(onClickLabel = if (expanded) tr("收起", "Collapse", "折りたたむ", "접기") else tr("展开", "Expand", "展開", "펼치기"), onClick = onToggle)
+                .clickable(onClickLabel = if (expanded) tr("收起", "Collapse", "折りたたむ", "접기", "收合") else tr("展开", "Expand", "展開", "펼치기", "展開"), onClick = onToggle)
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1211,5 +1211,5 @@ private fun LazyGridScope.deletedOutputSection(
     }
 }
 
-private val TaskDetailSpec = DetailPanelSpec({ tr("任务详情", "Task details", "タスクの詳細", "작업 세부 정보") }, { tr("关闭任务详情", "Close task details", "タスクの詳細を閉じる", "작업 세부 정보 닫기") }, 320.dp, 560.dp)
+private val TaskDetailSpec = DetailPanelSpec({ tr("任务详情", "Task details", "タスクの詳細", "작업 세부 정보", "任務詳細資料") }, { tr("关闭任务详情", "Close task details", "タスクの詳細を閉じる", "작업 세부 정보 닫기", "關閉任務詳細資料") }, 320.dp, 560.dp)
 private val TaskDetailKey = dev.piko.ui.components.DetailPanelKey<String>(TaskDetailSpec)

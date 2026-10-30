@@ -11,16 +11,16 @@ import dev.piko.shared.i18n.tr
  * ID 带保留前缀，PikPak 的文件 ID 只有字母与数字，不会与它相撞。
  */
 enum class DriveLibrary(val id: String, private val titleText: () -> String) {
-    RECENT("piko:recent", { tr("最近添加", "Recently added", "最近追加した項目", "최근 추가") }),
-    STARRED("piko:starred", { tr("星标", "Starred", "スター付き", "별표") }),
-    HISTORY("piko:history", { tr("播放历史", "Playback history", "再生履歴", "재생 기록") }),
-    TRASH("piko:trash", { tr("回收站", "Trash", "ゴミ箱", "휴지통") }),
+    RECENT("piko:recent", { tr("最近添加", "Recently added", "最近追加した項目", "최근 추가", "最近新增") }),
+    STARRED("piko:starred", { tr("星标", "Starred", "スター付き", "별표", "星號") }),
+    HISTORY("piko:history", { tr("播放历史", "Playback history", "再生履歴", "재생 기록", "播放記錄") }),
+    TRASH("piko:trash", { tr("回收站", "Trash", "ゴミ箱", "휴지통", "資源回收筒") }),
 
     /**
      * 查找重复的结果，按组列出，每组一个分区标题。内容来自进程级的 DuplicateSession，不经网络；
      * 不在侧边栏里，由「查找重复」进来。做成网盘页的位置而不是面板：要挑留哪一份，得看得到缩略图与详情。
      */
-    DUPLICATES("piko:duplicates", { tr("查找重复", "Find duplicates", "重複を検索", "중복 찾기") }),
+    DUPLICATES("piko:duplicates", { tr("查找重复", "Find duplicates", "重複を検索", "중복 찾기", "尋找重複檔案") }),
     ;
 
     val title: String get() = titleText()

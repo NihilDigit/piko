@@ -107,7 +107,7 @@ class TrashSession(private val repository: PikoDriveRepository, private val scop
                         undoChange = repository.changes.recordTrash(
                             previousChange = undoChange,
                             ids = completed.toList(),
-                            summary = tr("已将 ${completed.size} 项移入回收站", "Moved ${enCount(completed.size, "item", "items")} to trash", "${completed.size} 項目をゴミ箱に移動しました", "${completed.size}개 항목을 휴지통으로 이동했습니다"),
+                            summary = tr("已将 ${completed.size} 项移入回收站", "Moved ${enCount(completed.size, "item", "items")} to trash", "${completed.size} 項目をゴミ箱に移動しました", "${completed.size}개 항목을 휴지통으로 이동했습니다", "已將 ${completed.size} 項移至資源回收筒"),
                         )
                     }
                     progress = null

@@ -225,7 +225,7 @@ internal fun DriveTabBar(
             }
             TooltipIconButton(
                 Icons.Outlined.Add,
-                tr("新建标签页", "New tab", "新しいタブ", "새 탭"),
+                tr("新建标签页", "New tab", "新しいタブ", "새 탭", "新增分頁"),
                 onNewTab,
                 shortcut = newTabShortcut,
                 modifier = Modifier.onGloballyPositioned { dragArea.plusRight = it.boundsInWindow().right },
@@ -233,7 +233,7 @@ internal fun DriveTabBar(
             if (onCloseOthers != null && tabs.size > 1) {
                 var menuOpen by remember { mutableStateOf(false) }
                 Box(Modifier.onGloballyPositioned { dragArea.plusRight = it.boundsInWindow().right }) {
-                    TooltipIconButton(Icons.Outlined.MoreVert, tr("标签页操作", "Tab actions", "タブの操作", "탭 작업"), { menuOpen = true })
+                    TooltipIconButton(Icons.Outlined.MoreVert, tr("标签页操作", "Tab actions", "タブの操作", "탭 작업", "分頁操作"), { menuOpen = true })
                     androidx.compose.material3.DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         androidx.compose.material3.DropdownMenuItem(
                             text = { Text(stringResource(Res.string.text_close_other_tabs)) },
@@ -325,7 +325,7 @@ private fun TabChip(
     val icon = session?.icon ?: library?.icon ?: if (fromFeed) Icons.Outlined.SwipeVertical else Icons.Outlined.Folder
     val title = session?.title ?: tab.title
     val tooltip = when {
-        fromFeed -> tr("从信息流打开：", "Opened from feed:", "フィードから開く：", "피드에서 열기:") + tab.stack.joinToString(" › ") { it.localizedName }
+        fromFeed -> tr("从信息流打开：", "Opened from feed:", "フィードから開く：", "피드에서 열기:", "從資訊流開啟：") + tab.stack.joinToString(" › ") { it.localizedName }
         session != null -> session.tooltip
         else -> tab.stack.joinToString(" › ") { it.localizedName }
     }
@@ -382,7 +382,7 @@ private fun TabChip(
                 if (onClose != null && (active || hovered)) {
                     Icon(
                         Icons.Outlined.Close,
-                        contentDescription = tr("关闭标签页", "Close tab", "タブを閉じる", "탭 닫기"),
+                        contentDescription = tr("关闭标签页", "Close tab", "タブを閉じる", "탭 닫기", "關閉分頁"),
                         tint = contentColor,
                         modifier = Modifier.size(24.dp).clip(CircleShape).clickable(onClick = onClose).padding(4.dp),
                     )

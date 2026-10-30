@@ -141,7 +141,7 @@ class ShareSaveState(
                     entries = it
                 }
                 .logFailure(TAG, "列出分享里的文件夹失败：${folder.id}")
-                .onFailure { errorMessage = tr("无法打开文件夹", "Unable to open folder", "フォルダーを開けません", "폴더를 열 수 없습니다") }
+                .onFailure { errorMessage = tr("无法打开文件夹", "Unable to open folder", "フォルダーを開けません", "폴더를 열 수 없습니다", "無法開啟資料夾") }
         }
     }
 
@@ -165,7 +165,7 @@ class ShareSaveState(
                     entries = it
                 }
                 .logFailure(TAG, "列出分享里的文件夹失败：${folder.id}")
-                .onFailure { errorMessage = tr("无法打开文件夹", "Unable to open folder", "フォルダーを開けません", "폴더를 열 수 없습니다") }
+                .onFailure { errorMessage = tr("无法打开文件夹", "Unable to open folder", "フォルダーを開けません", "폴더를 열 수 없습니다", "無法開啟資料夾") }
         }
     }
 

@@ -70,7 +70,7 @@ internal fun DownloadQualityDialog(
             Column(modifier = Modifier.selectableGroup()) {
                 PlayerGestureDefaults.MaxHeightChoices.forEach { height ->
                     QualityRow(
-                        label = if (height <= 0) tr("原画", "Original", "オリジナル", "원본") else "${height}P",
+                        label = if (height <= 0) tr("原画", "Original", "オリジナル", "원본", "原畫") else "${height}P",
                         detail = null,
                         selected = height == picked,
                         enabled = true,
@@ -131,16 +131,16 @@ private fun SingleVideoDialog(
             options == null -> QualityListSkeleton()
             else -> {
                 Text(
-                    if (options.size > 1) tr("转码档下载后存为 MP4。", "Transcoded video is saved as MP4.", "変換済み動画はMP4で保存します。", "변환 영상은 MP4로 저장합니다.") else tr("这个视频没有转码档，只能下载原画。", "No transcodes available. Only the original can be downloaded.", "変換済み動画がないため、オリジナルのみダウンロードできます。", "변환 영상이 없어 원본만 다운로드할 수 있습니다."),
+                    if (options.size > 1) tr("转码视频将保存为 MP4 格式。", "Transcoded videos are saved as MP4.", "変換動画はMP4形式で保存されます。", "변환 동영상은 MP4 형식으로 저장됩니다.", "轉碼影片將儲存為 MP4 格式。") else tr("此视频无可用转码版本，仅可下载原画。", "No transcoded versions available. Only the original can be downloaded.", "利用可能な変換バージョンがないため、オリジナルのみダウンロードできます。", "사용 가능한 변환 버전이 없어 원본만 다운로드할 수 있습니다.", "此影片無可用轉碼版本，僅可下載原畫。"),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Column(modifier = Modifier.selectableGroup()) {
                     options.forEach { option ->
                         QualityRow(
-                            label = option.name ?: tr("原画", "Original", "オリジナル", "원본"),
+                            label = option.name ?: tr("原画", "Original", "オリジナル", "원본", "原畫"),
                             detail = when {
-                                option.unreadable -> tr("PikPak 暂不可读", "Temporarily unavailable from PikPak", "PikPakから一時的に読み込めません", "PikPak에서 일시적으로 읽을 수 없습니다")
-                                else -> option.sizeBytes?.toReadableSize() ?: if (choices.probing) tr("正在查询大小", "Checking size", "サイズを確認中", "크기 확인 중") else tr("大小未知", "Unknown size", "サイズ不明", "크기 알 수 없음")
+                                option.unreadable -> tr("转码流暂不可用", "Temporarily unavailable", "一時的に利用不可", "일시적으로 사용 불가", "轉碼串流暫無法使用")
+                                else -> option.sizeBytes?.toReadableSize() ?: if (choices.probing) tr("正在查询大小", "Checking size", "サイズを確認中", "크기 확인 중", "正在查詢大小") else tr("大小未知", "Unknown size", "サイズ不明", "크기 알 수 없음", "大小未知")
                             },
                             selected = option.name == selected?.name,
                             enabled = !option.unreadable,
@@ -149,7 +149,7 @@ private fun SingleVideoDialog(
                 }
                 if (pickedUnreadable) {
                     Text(
-                        tr("PikPak 的 ${pickedOption?.name} 转码文件暂不可读，请改选其他画质。", "PikPak’s ${pickedOption?.name} transcode is unavailable. Choose another quality.", "PikPakの ${pickedOption?.name} 変換済み動画を読み込めません。別の画質を選択してください。", "PikPak의 ${pickedOption?.name} 변환 파일을 읽을 수 없습니다. 다른 화질을 선택하세요."),
+                        tr("${pickedOption?.name} 转码流暂不可用，请选择其他画质。", "${pickedOption?.name} transcoded stream is unavailable. Choose another quality.", "${pickedOption?.name} の変換ストリームを利用できません。別の画質を選択してください。", "${pickedOption?.name} 변환 스트림을 사용할 수 없습니다. 다른 화질을 선택해 주세요.", "${pickedOption?.name} 轉碼串流暫時無法使用，請選擇其他畫質。"),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error,
                     )
@@ -173,7 +173,7 @@ private fun QualityDialogFrame(
         title = { Text(stringResource(Res.string.text_choose_download_quality)) },
         text = { Column(verticalArrangement = Arrangement.spacedBy(16.dp)) { content() } },
         confirmButton = {
-            PikoDialogConfirm(label = tr("下载", "Downloads", "ダウンロード", "다운로드"), onClick = onConfirm, enabled = confirmEnabled)
+            PikoDialogConfirm(label = tr("下载", "Downloads", "ダウンロード", "다운로드", "下載"), onClick = onConfirm, enabled = confirmEnabled)
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) }

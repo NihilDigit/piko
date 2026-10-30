@@ -1,5 +1,6 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.i18n.tr
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
@@ -175,7 +176,7 @@ class OfflinePackTracker(
         val job = lock.withLock {
             val job = all.orEmpty().firstOrNull { it.account == account && it.taskId == taskId } ?: return Result.success(Unit)
             val ref = OfflinePackRef(job.account, taskId)
-            if (ref in _busy.value) return Result.failure(IllegalStateException("此整包任务正在处理，完成后再试"))
+            if (ref in _busy.value) return Result.failure(IllegalStateException(tr("此整包离线任务正在处理，请待完成后重试", "This batch download task is being processed. Try again when finished", "この一括ダウンロードタスクは処理中です。完了後に再試行してください", "이 전체 다운로드 작업을 처리 중입니다. 완료 후 다시 시도해 주세요", "此整包離線任務正在處理，請待完成後重試")))
             _busy.update { it + ref }
             job
         }
@@ -196,7 +197,7 @@ class OfflinePackTracker(
         val job = lock.withLock {
             val job = all.orEmpty().firstOrNull { it.account == account && it.taskId == taskId } ?: return Result.success(Unit)
             val ref = OfflinePackRef(job.account, taskId)
-            if (ref in _busy.value) return Result.failure(IllegalStateException("此整包任务正在处理，完成后再试"))
+            if (ref in _busy.value) return Result.failure(IllegalStateException(tr("此整包离线任务正在处理，请待完成后重试", "This batch download task is being processed. Try again when finished", "この一括ダウンロードタスクは処理中です。完了後に再試行してください", "이 전체 다운로드 작업을 처리 중입니다. 완료 후 다시 시도해 주세요", "此整包離線任務正在處理，請待完成後重試")))
             if (job.stage != OfflinePackStage.FAILED) return Result.success(Unit)
             _busy.update { it + ref }
             job
@@ -275,7 +276,7 @@ class OfflinePackTracker(
                 update(job.taskId, persist = true) {
                     it.copy(
                         stage = OfflinePackStage.FAILED,
-                        message = task.message.ifEmpty { "离线下载失败" },
+                        message = task.message.ifEmpty { tr("离线下载失败", "Cloud download failed", "クラウドダウンロードに失敗しました", "클라우드 다운로드 실패", "離線下載失敗") },
                         finishedAtMs = now(),
                     )
                 }
@@ -289,20 +290,20 @@ class OfflinePackTracker(
             update(job.taskId, persist = true) { it.copy(stage = OfflinePackStage.PRUNING, progress = 100, outputId = task.fileId) }
         }
         if (task.fileId.isEmpty()) {
-            fail(job, "任务没有产出文件", cleanup = false)
+            fail(job, tr("云端任务未生成文件", "Cloud task produced no files", "クラウドタスクからファイルが生成されませんでした", "클라우드 작업에서 생성된 파일이 없습니다", "雲端任務未產生檔案"), cleanup = false)
             return
         }
         // 全选时没有要删的，省掉逐层列目录
-        if (job.prunedCount > 0) {
+        val pruneResult = if (job.prunedCount > 0) {
             instantRepo.pruneOfflineOutput(task, job.keep, job.url).getOrElse { err ->
                 recordFailure(job, err)
                 return
             }
-        }
+        } else null
         // 单文件的种子产出就是文件本身，不改名。走到整包离线的至少两个文件
         val renameNote = if (job.totalFiles > 1 && job.folderName.isNotBlank() && task.fileName != job.folderName) {
             driveRepo.rename(task.fileId, job.folderName).logFailure(TAG, "整包离线产出 ${task.fileId} 改名失败")
-                .fold({ "" }, { "未能改名为 ${job.folderName}" })
+                .fold({ "" }, { tr("未能重命名为 ${job.folderName}", "Failed to rename to ${job.folderName}", "${job.folderName} に名前を変更できませんでした", "${job.folderName}(으)로 이름을 변경하지 못했습니다", "未能重新命名為 ${job.folderName}") })
         } else {
             ""
         }
@@ -316,8 +317,17 @@ class OfflinePackTracker(
                 message = renameNote,
             )
         }
-        // 清理删的是产出里各层的文件，哪几层不逐一记，按说不清处理
-        driveRepo.applyChange(DriveChange.ContentsChanged(null))
+        if (pruneResult != null && pruneResult.deletedIds.isNotEmpty()) {
+            driveRepo.applyChange(DriveChange.Deleted(pruneResult.deletedIds.toList(), pruneResult.touchedFolderIds))
+        }
+        val affectedFolders = buildSet {
+            add(job.targetId)
+            add(task.fileId)
+            if (pruneResult != null) addAll(pruneResult.touchedFolderIds)
+            addAll(driveRepo.knownDescendantFolders(task.fileId))
+        }
+        // 定向移除已裁剪条目并失效目标接收目录与产出子树中所有已知目录，不作废无关文件树
+        driveRepo.applyChange(DriveChange.ContentsChanged(affectedFolders))
     }
 
     private suspend fun recordFailure(job: OfflinePackJob, err: Throwable) {
@@ -335,7 +345,7 @@ class OfflinePackTracker(
             "第 $count/$MAX_SERVER_FAILURES 次", err.takeIf { count == 1 })
         if (count >= MAX_SERVER_FAILURES) {
             serverFailures.remove(job.taskId)
-            fail(job, err.message ?: "服务端报错", cleanup = job.stage == OfflinePackStage.PRUNING)
+            fail(job, err.message ?: tr("服务端返回错误", "Server error", "サーバーエラーが発生しました", "서버 오류가 발생했습니다", "伺服器傳回錯誤"), cleanup = job.stage == OfflinePackStage.PRUNING)
         }
     }
 
@@ -344,7 +354,7 @@ class OfflinePackTracker(
         update(job.taskId, persist = true) {
             it.copy(
                 stage = OfflinePackStage.FAILED,
-                message = if (cleanup) "清理失败：$reason" else reason,
+                message = if (cleanup) tr("清理失败：$reason", "Cleanup failed: $reason", "整理に失敗しました：$reason", "정리 실패: $reason", "清理失敗：$reason") else reason,
                 cleanupFailed = cleanup,
                 finishedAtMs = now(),
             )

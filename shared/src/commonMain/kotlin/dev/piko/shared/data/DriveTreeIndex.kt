@@ -25,7 +25,9 @@ import kotlinx.serialization.json.Json
  *
  * 有了完整本地树后，再次全盘搜索或边输边改搜索词可直接在内存中毫秒级完成 CJK 模糊匹配。
  */
-internal class DriveTreeIndex {
+internal class DriveTreeIndex(
+    private val locallyCachedManifestIds: () -> Set<String> = ::emptySet,
+) {
     data class State(
         val entries: Map<String, FileStat> = emptyMap(),
         val childrenByParent: Map<String, Set<String>> = emptyMap(),
@@ -142,7 +144,7 @@ internal class DriveTreeIndex {
                 return@update refreshManifestsForFolders(upserted, setOf(parentId) + movedParents)
             }
             val observed = physical.mapTo(HashSet()) { it.id }
-            val winningManifest = VaultStore.winnerOf(physical)
+            val winningManifest = VaultStore.winnerOf(physical, locallyCachedManifestIds())
             val prevManifest = current.manifestsByFolder[parentId]
             val clearStaleVault = prevManifest != null && winningManifest?.id != prevManifest.id
             val missing = current.childrenByParent[parentId].orEmpty().filterTo(HashSet()) {
@@ -159,6 +161,20 @@ internal class DriveTreeIndex {
             for (movedParent in movedParents) {
                 listedAtSeq[movedParent] = seq
             }
+            val nextUsageBytes = if (current.complete && current.lastUsageBytes != null &&
+                directDetachedFolders.isEmpty() && movedParents.isEmpty() &&
+                (parentId in current.listedFolders || parentId in current.dirtyFolders)
+            ) {
+                val oldDirectBytes = current.childrenByParent[parentId].orEmpty().sumOf { id ->
+                    current.entries[id]?.takeIf { !it.isFolder && !it.trashed && !VaultEntry.isVaulted(id) }?.sizeBytes ?: 0L
+                }
+                val newDirectBytes = physical.sumOf { if (it.isFolder) 0L else it.sizeBytes }
+                val delta = newDirectBytes - oldDirectBytes
+                if (delta != 0L) {
+                    usagePatchedAtSeq = seq
+                    (current.lastUsageBytes + delta).coerceAtLeast(0L)
+                } else current.lastUsageBytes
+            } else current.lastUsageBytes
             val upserted = upsert(current, physical, missing)
             val updatedManifests = if (winningManifest != null) {
                 upserted.manifestsByFolder + (parentId to winningManifest)
@@ -176,6 +192,7 @@ internal class DriveTreeIndex {
                     vaultEntriesByFolder = updatedVaultEntries,
                     listedFolders = (upserted.listedFolders - detachedSubtreeFolders) + parentId,
                     dirtyFolders = (upserted.dirtyFolders + detachedSubtreeFolders) - parentId,
+                    lastUsageBytes = nextUsageBytes,
                 ),
                 movedParents,
             )
@@ -192,8 +209,9 @@ internal class DriveTreeIndex {
         entries: List<VaultEntry>,
         expectedManifestId: String? = null,
         requireMatch: Boolean = false,
+        starredEntryIds: Set<String> = emptySet(),
     ): Boolean {
-        val virtualStats = entries.filter { it.isArchived }.map { it.toFileStat(folderId) }
+        val virtualStats = entries.filter { it.isArchived }.map { it.toFileStat(folderId, starred = it.id in starredEntryIds) }
         val storedEntries = entries.toList()
         var accepted = true
         update { current ->
@@ -275,6 +293,9 @@ internal class DriveTreeIndex {
         update { it.copy(complete = true) }
     }
 
+    /** 返回当前本地树中已知属于 [rootFolderId] 子树的全部文件夹 ID（含自身）。 */
+    fun descendantFolders(rootFolderId: String): Set<String> = collectDescendantFolders(flow.value, setOf(rootFolderId))
+
     fun applyChange(change: DriveChange) {
         update { current ->
             val seq = ++mutationSeq
@@ -286,16 +307,20 @@ internal class DriveTreeIndex {
                 }
                 is DriveChange.Moved -> {
                     val known = change.ids.mapNotNull { current.entries[it] }
+                    val allKnown = known.size == change.ids.size
                     val affected = change.folders.orEmpty() + known.map { it.parentId } + change.to
                     for (id in change.ids) {
                         movedAtSeq[id] = seq to change.to
                     }
-                    for (folderId in affected) {
-                        dirtyAtSeq[folderId] = seq
+                    val upserted = upsert(current, known.map { it.copy(parentId = change.to) })
+                    if (allKnown) {
+                        upserted
+                    } else {
+                        for (folderId in affected) {
+                            dirtyAtSeq[folderId] = seq
+                        }
+                        upserted.copy(dirtyFolders = current.dirtyFolders + affected)
                     }
-                    upsert(current, known.map { it.copy(parentId = change.to) }).copy(
-                        dirtyFolders = current.dirtyFolders + affected,
-                    )
                 }
                 is DriveChange.Trashed -> {
                     for (id in change.ids) {
@@ -307,7 +332,7 @@ internal class DriveTreeIndex {
                     for (folderId in change.folders.orEmpty()) {
                         dirtyAtSeq[folderId] = seq
                     }
-                    removeEntriesAndDescendants(current, change.ids.toSet())
+                    removeEntriesAndDescendants(current, change.ids.toSet(), adjustUsageSeq = seq)
                 }
                 is DriveChange.Deleted -> {
                     for (id in change.ids) {
@@ -319,19 +344,66 @@ internal class DriveTreeIndex {
                     for (folderId in change.folders) {
                         dirtyAtSeq[folderId] = seq
                     }
-                    removeEntriesAndDescendants(current, change.ids.toSet())
+                    removeEntriesAndDescendants(current, change.ids.toSet(), adjustUsageSeq = seq)
                 }
                 is DriveChange.Created -> {
-                    for (folderId in change.folders) {
-                        dirtyAtSeq[folderId] = seq
+                    if (change.isFolder) {
+                        val folderStat = FileStat(
+                            kind = FileKind.FOLDER,
+                            id = change.id,
+                            parentId = change.parentId,
+                            name = change.name,
+                        )
+                        removedAtSeq.remove(change.id)
+                        patchedAtSeq[change.id] = seq to folderStat
+                        listedAtSeq[change.id] = seq
+                        upsert(current, listOf(folderStat)).copy(
+                            listedFolders = current.listedFolders + change.id,
+                            dirtyFolders = current.dirtyFolders - change.id,
+                        )
+                    } else if (change.stat != null) {
+                        removedAtSeq.remove(change.id)
+                        patchedAtSeq[change.id] = seq to change.stat
+                        val existed = current.entries[change.id]
+                        val delta = change.stat.sizeBytes - (existed?.sizeBytes ?: 0L)
+                        val nextUsage = if (current.complete && current.lastUsageBytes != null && delta != 0L) {
+                            usagePatchedAtSeq = seq
+                            (current.lastUsageBytes + delta).coerceAtLeast(0L)
+                        } else current.lastUsageBytes
+                        val upserted = upsert(current, listOf(change.stat)).copy(lastUsageBytes = nextUsage)
+                        if (VaultStore.looksLikeManifest(change.stat)) {
+                            refreshManifestsForFolders(upserted, setOf(change.parentId))
+                        } else upserted
+                    } else {
+                        for (folderId in change.folders) {
+                            dirtyAtSeq[folderId] = seq
+                        }
+                        current.copy(dirtyFolders = current.dirtyFolders + change.folders)
                     }
-                    current.copy(dirtyFolders = current.dirtyFolders + change.folders)
                 }
                 is DriveChange.Copied -> {
                     for (folderId in change.folders.orEmpty()) {
                         dirtyAtSeq[folderId] = seq
                     }
                     current.copy(dirtyFolders = current.dirtyFolders + change.folders.orEmpty())
+                }
+                is DriveChange.Starred -> {
+                    var updatedEntries: MutableMap<String, FileStat>? = null
+                    for (id in change.ids) {
+                        val target = current.entries[id] ?: continue
+                        val withoutStar = target.tags.filterNot { it.name.equals("STAR", ignoreCase = true) }
+                        val nextTags = if (change.starred) {
+                            withoutStar + FileTag(id = "STAR", name = "STAR")
+                        } else withoutStar
+                        if (nextTags != target.tags) {
+                            val map = updatedEntries ?: current.entries.toMutableMap().also { updatedEntries = it }
+                            val patched = target.copy(tags = nextTags)
+                            map[id] = patched
+                            if (!VaultEntry.isVaulted(id)) patchedAtSeq[id] = seq to patched
+                        }
+                    }
+                    val finalEntries = updatedEntries
+                    if (finalEntries != null) current.copy(entries = finalEntries.toMap()) else current
                 }
                 is DriveChange.Restored, is DriveChange.ContentsChanged -> {
                     val folders = change.folders
@@ -397,11 +469,12 @@ internal class DriveTreeIndex {
         val vaultByFolder = current.vaultEntriesByFolder.toMutableMap()
         val staleVirtualIds = HashSet<String>()
         var changed = false
+        val cachedIds = locallyCachedManifestIds()
         for (folderId in folderIds) {
             val childStats = current.childrenByParent[folderId].orEmpty().mapNotNull { id ->
                 current.entries[id]?.takeUnless { VaultEntry.isVaulted(id) }
             }
-            val winner = VaultStore.winnerOf(childStats)
+            val winner = VaultStore.winnerOf(childStats, cachedIds)
             val prev = manifests[folderId]
             if (winner != prev) {
                 changed = true
@@ -422,7 +495,11 @@ internal class DriveTreeIndex {
         )
     }
 
-    private fun removeEntriesAndDescendants(current: State, removedIds: Set<String>): State {
+    private fun removeEntriesAndDescendants(
+        current: State,
+        removedIds: Set<String>,
+        adjustUsageSeq: Long? = null,
+    ): State {
         val allRemoved = HashSet<String>()
         val pending = ArrayDeque<String>()
         pending.addAll(removedIds)
@@ -430,6 +507,17 @@ internal class DriveTreeIndex {
             val id = pending.removeFirst()
             if (allRemoved.add(id)) pending.addAll(current.childrenByParent[id].orEmpty())
         }
+        val nextUsageBytes = if (adjustUsageSeq != null && current.complete && current.lastUsageBytes != null &&
+            allRemoved.none { it in current.dirtyFolders }
+        ) {
+            val removedBytes = allRemoved.sumOf { id ->
+                current.entries[id]?.takeIf { !it.isFolder && !it.trashed && !VaultEntry.isVaulted(id) }?.sizeBytes ?: 0L
+            }
+            if (removedBytes > 0L) {
+                usagePatchedAtSeq = adjustUsageSeq
+                (current.lastUsageBytes - removedBytes).coerceAtLeast(0L)
+            } else current.lastUsageBytes
+        } else current.lastUsageBytes
         val affectedManifestParents = allRemoved.mapNotNullTo(HashSet()) { id ->
             current.entries[id]?.takeIf(VaultStore::looksLikeManifest)?.parentId
         } - allRemoved
@@ -440,6 +528,7 @@ internal class DriveTreeIndex {
             vaultEntriesByFolder = refreshed.vaultEntriesByFolder - allRemoved,
             listedFolders = refreshed.listedFolders - allRemoved,
             dirtyFolders = refreshed.dirtyFolders - allRemoved,
+            lastUsageBytes = nextUsageBytes,
         )
     }
 
@@ -525,9 +614,10 @@ internal class DriveTreeIndex {
                     rawManifestsByFolder.getOrPut(rawEntry.parentId) { ArrayList() }.add(rawEntry)
                 }
             }
+            val cachedIds = locallyCachedManifestIds()
             val rawWinnerIds = HashMap<String, String>(rawManifestsByFolder.size)
             for ((folderId, list) in rawManifestsByFolder) {
-                VaultStore.winnerOf(list)?.id?.let { rawWinnerIds[folderId] = it }
+                VaultStore.winnerOf(list, cachedIds)?.id?.let { rawWinnerIds[folderId] = it }
             }
             val candidateIds = HashSet<String>(folders.size + files.size)
             val candidateEntries = buildList(folders.size + files.size + effPatched.size) {
@@ -585,7 +675,7 @@ internal class DriveTreeIndex {
             val candidateManifests = HashMap<String, FileStat>()
             for ((folderId, ids) in candidateBase.childrenByParent) {
                 val childStats = ids.mapNotNull { candidateBase.entries[it] }
-                VaultStore.winnerOf(childStats)?.let { candidateManifests[folderId] = it }
+                VaultStore.winnerOf(childStats, cachedIds)?.let { candidateManifests[folderId] = it }
             }
             val virtualStats = ArrayList<FileStat>()
             val mergedVaultByFolder = HashMap<String, List<VaultEntry>>()
@@ -776,9 +866,10 @@ internal class DriveTreeIndex {
             val base = upsert(State(), patchedEntries)
             val manifestsByFolder = HashMap<String, FileStat>()
             val vaultByFolder = HashMap<String, List<VaultEntry>>()
+            val cachedIds = locallyCachedManifestIds()
             for ((folderId, ids) in base.childrenByParent) {
                 val childStats = ids.mapNotNull { base.entries[it] }
-                val winner = VaultStore.winnerOf(childStats) ?: continue
+                val winner = VaultStore.winnerOf(childStats, cachedIds) ?: continue
                 manifestsByFolder[folderId] = winner
                 val cached = cachedManifests[winner.id]
                 if (cached != null) {
@@ -871,6 +962,7 @@ internal class DriveTreeIndex {
 
     /**
      * 在当前已知的本地文件树中搜索 [parentId] 子树下匹配 [query] 的条目，按匹配度排序返回。
+     * [skipIds] 可传入本轮流式扫描中已确认不匹配的条目 ID，避免分页到达时对数万旧节点重复跑模糊匹配。
      */
     fun searchLocal(
         query: String,
@@ -878,6 +970,7 @@ internal class DriveTreeIndex {
         folderIndex: FolderIndex,
         extraFolderTitle: (FileStat) -> String? = { null },
         transformFile: (FileStat) -> FileStat = { it },
+        skipIds: MutableSet<String>? = null,
     ): List<SearchHit> {
         val currentEntries = flow.value.entries
         if (currentEntries.isEmpty()) return emptyList()
@@ -888,14 +981,26 @@ internal class DriveTreeIndex {
 
         val scoredHits = ArrayList<Pair<Int, SearchHit>>()
         for (entry in currentEntries.values) {
-            if (entry.trashed) continue
-            if (isPikoInternalFolder(entry, entry.parentId)) continue
-            if (VaultStore.looksLikeManifest(entry) || VaultStore.isRecoveryFile(entry)) continue
+            if (skipIds != null && entry.id in skipIds) continue
+            if (entry.trashed) {
+                skipIds?.add(entry.id)
+                continue
+            }
+            if (isPikoInternalFolder(entry, entry.parentId) ||
+                VaultStore.looksLikeManifest(entry) || VaultStore.isRecoveryFile(entry)
+            ) {
+                skipIds?.add(entry.id)
+                continue
+            }
             val nameScore = cjkFuzzyScore(query, entry.name)
             val titleScore = if (nameScore == null && entry.isFolder) {
                 extraFolderTitle(entry)?.let { cjkFuzzyScore(query, it) }
             } else null
-            val score = nameScore ?: titleScore ?: continue
+            val score = nameScore ?: titleScore
+            if (score == null) {
+                if (!entry.isFolder) skipIds?.add(entry.id)
+                continue
+            }
             val crumb = breadcrumbOf(entry) ?: continue
             scoredHits.add(score to SearchHit(transformFile(entry), crumb))
         }

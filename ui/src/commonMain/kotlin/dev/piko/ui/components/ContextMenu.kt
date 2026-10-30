@@ -126,7 +126,7 @@ fun ContextMenuArea(
 
 /** 「选择」单独一组，排在属性与危险项之前，见 [layoutActions]。 */
 internal fun withSelectAction(actions: List<SheetAction>, onSelect: (() -> Unit)?): List<SheetAction> =
-    if (onSelect == null) actions else actions + SheetAction(Icons.Outlined.CheckBox, tr("选择", "Select", "選択", "선택"), onSelect, group = ActionGroup.Select)
+    if (onSelect == null) actions else actions + SheetAction(Icons.Outlined.CheckBox, tr("选择", "Select", "選択", "선택", "選取"), onSelect, group = ActionGroup.Select)
 
 /**
  * 触摸与笔使用条目长按入口；鼠标使用副键菜单。布局变化不改变这条输入规则。
@@ -358,7 +358,7 @@ private fun ActionMenuItem(action: SheetAction, shape: Shape, onDismiss: () -> U
         contentPadding = MenuItemPadding,
         leadingIcon = { MenuItemIcon(action.icon, tint) },
         trailingIcon = if (action.checked == true) {
-            { Icon(Icons.Outlined.Check, contentDescription = tr("当前", "Current", "現在", "현재"), tint = colors.primary, modifier = Modifier.size(MenuIconSize)) }
+            { Icon(Icons.Outlined.Check, contentDescription = tr("当前", "Current", "現在", "현재", "目前"), tint = colors.primary, modifier = Modifier.size(MenuIconSize)) }
         } else {
             null
         },

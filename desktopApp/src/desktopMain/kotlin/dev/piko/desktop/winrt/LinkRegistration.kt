@@ -53,7 +53,7 @@ internal class LinkRegistration(
         val icon = "\"${exe.absolutePath}\",0"
         val writes = mutableListOf(
             // 默认应用页里的两个候选
-            Registry.setString("$CLASSES\\${identity.magnetProgId}", null, tr("磁力链接", "Magnet link", "マグネットリンク", "마그넷 링크")),
+            Registry.setString("$CLASSES\\${identity.magnetProgId}", null, tr("磁力链接", "Magnet link", "マグネットリンク", "마그넷 링크", "磁力連結")),
             Registry.setString("$CLASSES\\${identity.magnetProgId}\\DefaultIcon", null, icon),
             Registry.setString("$CLASSES\\${identity.magnetProgId}\\shell\\open\\command", null, command),
             Registry.setString("$CLASSES\\${identity.torrentProgId}", null, "BitTorrent 种子文件"),

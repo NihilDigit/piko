@@ -61,7 +61,7 @@ fun PikoErrorState(
     message: String,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
-    title: String = tr("加载失败", "Failed to load", "読み込みに失敗しました", "불러오지 못했습니다"),
+    title: String = tr("加载失败", "Failed to load", "読み込みに失敗しました", "불러오지 못했습니다", "載入失敗"),
 ) {
     StateLayout(title = title, description = message, icon = Icons.Outlined.ErrorOutline, modifier = modifier) {
         Spacer(modifier = Modifier.height(12.dp))

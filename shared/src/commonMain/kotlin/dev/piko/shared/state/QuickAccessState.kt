@@ -71,7 +71,7 @@ class QuickAccessState(
             driveRepo.locateFolder(folder.id)
                 .logFailure(TAG, "快速访问定位文件夹失败")
                 .onSuccess { parents -> open(parents + folder) }
-                .onFailure { _messages.emit(tr("找不到这个文件夹，它可能已被删除", "Folder not found; it may have been deleted", "フォルダーが見つかりません。削除された可能性があります", "폴더를 찾을 수 없습니다. 삭제되었을 수 있습니다")) }
+                .onFailure { _messages.emit(tr("未找到此文件夹，可能已被删除", "Folder not found. It may have been deleted", "フォルダーが見つかりません。削除された可能性があります", "폴더를 찾을 수 없습니다. 삭제되었을 수 있습니다", "找不到此資料夾，可能已被刪除")) }
         }
     }
 

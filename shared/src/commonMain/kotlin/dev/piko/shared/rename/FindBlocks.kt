@@ -118,18 +118,18 @@ fun captureNumbers(blocks: List<FindBlock>): List<Int?> {
 fun FindBlock.describe(): String = when (this) {
     is FindBlock.Text -> "「$text」"
     is FindBlock.Digits -> when {
-        max == null && min <= 1 -> tr("数字", "Digits", "数字", "숫자")
-        max == null -> tr("至少 $min 位数字", "At least ${enCount(min, "digit", "digits")}", "$min 桁以上の数字", "최소 ${min}자리 숫자")
-        min == max -> tr("$min 位数字", "${enCount(min, "digit", "digits")}", "$min 桁の数字", "${min}자리 숫자")
-        else -> tr("$min 至 $max 位数字", "$min to ${enCount(max, "digit", "digits")}", "$min ～ $max 桁の数字", "$min~${max}자리 숫자")
+        max == null && min <= 1 -> tr("数字", "Digits", "数字", "숫자", "數字")
+        max == null -> tr("至少 $min 位数字", "At least ${enCount(min, "digit", "digits")}", "$min 桁以上の数字", "최소 ${min}자리 숫자", "至少 $min 位數字")
+        min == max -> tr("$min 位数字", "${enCount(min, "digit", "digits")}", "$min 桁の数字", "${min}자리 숫자", "$min 位數字")
+        else -> tr("$min 至 $max 位数字", "$min to ${enCount(max, "digit", "digits")}", "$min ～ $max 桁の数字", "$min~${max}자리 숫자", "$min 至 $max 位數字")
     }
-    is FindBlock.Letters -> tr("英文字母", "Letters", "英字", "영문자")
-    is FindBlock.AnyText -> if (until == null) tr("任意文字", "Any text", "任意の文字", "모든 문자") else tr("「$until」前的任意文字", "Any text before “$until”", "「$until」の前の任意の文字", "“$until” 앞의 모든 문자")
+    is FindBlock.Letters -> tr("英文字母", "Letters", "英字", "영문자", "英文字母")
+    is FindBlock.AnyText -> if (until == null) tr("任意文字", "Any text", "任意の文字", "모든 문자", "任意文字") else tr("「$until」前的任意文字", "Any text before “$until”", "「$until」の前の任意の文字", "“$until” 앞의 모든 문자", "「$until」前的任意文字")
     // 写成括号本身（[…]）比「方括号内容」一眼看得懂，块上也短
-    is FindBlock.Bracketed -> (kind?.let { "${it.open}…${it.close}" } ?: tr("括号及内容", "Brackets and contents", "括弧とその内容", "괄호 및 내용")) + (if (optional) tr("（可选）", "(optional)", "（省略可）", "(선택 사항)") else "")
-    is FindBlock.OneOf -> options.joinToString(tr("或", " or ", "または", " 또는 ")) { "「$it」" }
-    FindBlock.Start -> tr("开头", "Start", "先頭", "시작")
-    FindBlock.End -> tr("结尾", "End", "末尾", "끝")
+    is FindBlock.Bracketed -> (kind?.let { "${it.open}…${it.close}" } ?: tr("括号及内容", "Brackets and contents", "括弧とその内容", "괄호 및 내용", "括號及內容")) + (if (optional) tr("（可选）", "(optional)", "（省略可）", "(선택 사항)", "（可選）") else "")
+    is FindBlock.OneOf -> options.joinToString(tr("或", " or ", "または", " 또는 ", "或")) { "「$it」" }
+    FindBlock.Start -> tr("开头", "Start", "先頭", "시작", "開頭")
+    FindBlock.End -> tr("结尾", "End", "末尾", "끝", "結尾")
 }
 
 /**
@@ -146,15 +146,15 @@ fun describeFind(blocks: List<FindBlock>): String {
     blocks.forEachIndexed { index, block ->
         when (block) {
             FindBlock.Start -> atStart = true
-            FindBlock.End -> if (parts.isEmpty()) parts += tr("结尾", "End", "末尾", "끝") else parts[parts.lastIndex] = prefixed(tr("结尾的", "At the end", "末尾の", "끝의"), parts.last())
+            FindBlock.End -> if (parts.isEmpty()) parts += tr("结尾", "End", "末尾", "끝", "結尾") else parts[parts.lastIndex] = prefixed(tr("结尾的", "At the end", "末尾の", "끝의", "結尾的"), parts.last())
             else -> {
                 val label = block.describe() + (numbers[index]?.let(::circled) ?: "")
-                parts += if (atStart) prefixed(tr("开头的", "At the start", "先頭の", "시작의"), label) else label
+                parts += if (atStart) prefixed(tr("开头的", "At the start", "先頭の", "시작의", "開頭的"), label) else label
                 atStart = false
             }
         }
     }
-    if (atStart) parts += tr("开头", "Start", "先頭", "시작")
+    if (atStart) parts += tr("开头", "Start", "先頭", "시작", "開頭")
     return parts.joinToString("、")
 }
 

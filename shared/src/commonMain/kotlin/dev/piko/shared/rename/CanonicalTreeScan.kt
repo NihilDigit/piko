@@ -46,7 +46,10 @@ class CanonicalTreeScan(
     val root: PikoPathBreadcrumb,
 ) {
     constructor(clients: PikoClientProvider, driveRepo: PikoDriveRepository, scope: CoroutineScope, root: PikoPathBreadcrumb) : this(
-        listFolder = { folderId -> (clients.currentClient.value ?: error("Not logged in")).listFiles(folderId) },
+        listFolder = { folderId ->
+            val client = clients.currentClient.value ?: error("Not logged in")
+            driveRepo.scanRealChildren(folderId, client)
+        },
         driveRepo = driveRepo,
         scope = scope,
         root = root,
@@ -130,7 +133,7 @@ class CanonicalTreeScan(
                 throw e
             } catch (e: Throwable) {
                 PikoLog.w(TAG, "按番号规范命名的扫描失败", e)
-                errorMessage = e.message ?: dev.piko.shared.i18n.tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류")
+                errorMessage = e.message ?: dev.piko.shared.i18n.tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류", "未知錯誤")
                 phase = Phase.FAILED
             }
         }
@@ -141,9 +144,10 @@ class CanonicalTreeScan(
         scanner?.stop()
     }
 
-    // 网盘根目录没有自己的一项；查不到详情时同样不改树根，其下照常
+    // 网盘根目录没有自己的一项；优先读本地已知节点，查不到时再问详情接口
     private suspend fun loadRoot(): FileStat? {
         if (root.id.isEmpty()) return null
+        driveRepo.knownFile(root.id)?.takeUnless { it.trashed }?.let { return it }
         val detail = driveRepo.getFileDetail(root.id).getOrNull() ?: return null
         return FileStat(kind = detail.kind, id = detail.id, parentId = detail.parentId, name = detail.name)
     }

@@ -28,15 +28,15 @@ internal fun taskPageActions(
     onRequestClearCompleted: () -> Unit = state::clearCompleted,
 ): List<SheetAction> = buildList {
     if (selectedCount > 0) {
-        onPause?.let { add(SheetAction(Icons.Outlined.Pause, tr("暂停 $pauseCount 项", "Pause ${enCount(pauseCount, "item", "items")}", "$pauseCount 項目を一時停止", "${pauseCount}개 항목 일시 중지"), it)) }
-        onResume?.let { add(SheetAction(Icons.Outlined.PlayArrow, tr("继续 $resumeCount 项", "Resume ${enCount(resumeCount, "item", "items")}", "$resumeCount 項目を再開", "${resumeCount}개 항목 계속"), it)) }
-        add(SheetAction(Icons.Outlined.SelectAll, tr("全选当前筛选结果", "Select all filtered items", "絞り込み結果をすべて選択", "현재 필터 결과 모두 선택"), onSelectAll))
-        add(SheetAction(Icons.Outlined.Delete, tr("删除所选 $selectedCount 项", "Delete $selectedCount selected items", "選択した $selectedCount 項目を削除", "선택한 ${selectedCount}개 항목 삭제"), onDelete, destructive = true))
+        onPause?.let { add(SheetAction(Icons.Outlined.Pause, tr("暂停 $pauseCount 项", "Pause ${enCount(pauseCount, "item", "items")}", "$pauseCount 項目を一時停止", "${pauseCount}개 항목 일시 중지", "暫停 $pauseCount 項"), it)) }
+        onResume?.let { add(SheetAction(Icons.Outlined.PlayArrow, tr("继续 $resumeCount 项", "Resume ${enCount(resumeCount, "item", "items")}", "$resumeCount 項目を再開", "${resumeCount}개 항목 계속", "繼續 $resumeCount 項"), it)) }
+        add(SheetAction(Icons.Outlined.SelectAll, tr("全选当前筛选结果", "Select all filtered items", "絞り込み結果をすべて選択", "현재 필터 결과 모두 선택", "全選目前篩選結果"), onSelectAll))
+        add(SheetAction(Icons.Outlined.Delete, tr("删除所选 $selectedCount 项", "Delete $selectedCount selected items", "選択した $selectedCount 項目を削除", "선택한 ${selectedCount}개 항목 삭제", "刪除所選 $selectedCount 項"), onDelete, destructive = true))
     } else {
-        if (state.canPauseAll) add(SheetAction(Icons.Outlined.Pause, tr("全部暂停", "Pause all", "すべて一時停止", "모두 일시 중지"), state::pauseAll))
-        if (state.canResumeAll) add(SheetAction(Icons.Outlined.PlayArrow, tr("全部继续", "Resume all", "すべて再開", "모두 계속"), state::resumeAll))
-        if (state.canClearCompleted) add(SheetAction(Icons.Outlined.ClearAll, tr("清除已完成", "Clear completed", "完了済みを消去", "완료된 항목 지우기"), onRequestClearCompleted))
-        add(SheetAction(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침"), state::refresh))
+        if (state.canPauseAll) add(SheetAction(Icons.Outlined.Pause, tr("全部暂停", "Pause all", "すべて一時停止", "모두 일시 중지", "全部暫停"), state::pauseAll))
+        if (state.canResumeAll) add(SheetAction(Icons.Outlined.PlayArrow, tr("全部继续", "Resume all", "すべて再開", "모두 계속", "全部繼續"), state::resumeAll))
+        if (state.canClearCompleted) add(SheetAction(Icons.Outlined.ClearAll, tr("清除已完成", "Clear completed", "完了済みを消去", "완료된 항목 지우기", "清除已完成"), onRequestClearCompleted))
+        add(SheetAction(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침", "重新整理"), state::refresh))
     }
 }
 
@@ -44,8 +44,8 @@ internal fun taskPageActions(
 internal fun TaskPageHeader(state: TransfersState, selectedCount: Int, actions: List<SheetAction>) {
     Column(Modifier.fillMaxWidth()) {
         PikoTopBar(
-            title = if (selectedCount > 0) tr("已选 $selectedCount 项", "${enCount(selectedCount, "item", "items")} selected", "$selectedCount 項目を選択中", "${selectedCount}개 선택됨") else tr("任务", "Tasks", "タスク", "작업"),
-            navigationIcon = if (selectedCount > 0) ({ TooltipIconButton(Icons.Outlined.Close, tr("取消选择", "Deselect", "選択を解除", "선택 해제"), state::clearSelection) }) else null,
+            title = if (selectedCount > 0) tr("已选 $selectedCount 项", "${enCount(selectedCount, "item", "items")} selected", "$selectedCount 項目を選択中", "${selectedCount}개 선택됨", "已選 $selectedCount 項") else tr("任务", "Tasks", "タスク", "작업", "任務"),
+            navigationIcon = if (selectedCount > 0) ({ TooltipIconButton(Icons.Outlined.Close, tr("取消选择", "Deselect", "選択を解除", "선택 해제", "取消選取"), state::clearSelection) }) else null,
             actions = buildList {
                 addAll(actions.mapIndexed { index, action ->
                     iconBarItem(action.icon, action.label, action.onClick, priority = 50 - index, destructive = action.destructive, key = "${action.label}:$index")

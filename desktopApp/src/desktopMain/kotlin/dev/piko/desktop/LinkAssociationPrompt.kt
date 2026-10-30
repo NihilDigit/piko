@@ -59,15 +59,15 @@ internal fun LinkAssociationPrompt(association: LinkAssociation?, settings: Desk
         text = {
             Text(
                 if (association.needsSystemConfirmation) {
-                    tr("需在随后打开的系统设置中确认。之后也可在设置的「链接」中更改。", "Confirm in system settings next. Change this later in Link settings.", "続いて開くシステム設定で確認してください。後でリンク設定から変更できます。", "다음에 열리는 시스템 설정에서 확인하세요. 나중에 링크 설정에서 변경할 수 있습니다.")
+                    tr("需在随后打开的系统设置中确认。之后也可在设置的「链接」中更改。", "Confirm in system settings next. Change this later in Link settings.", "続いて開くシステム設定で確認してください。後でリンク設定から変更できます。", "다음에 열리는 시스템 설정에서 확인하세요. 나중에 링크 설정에서 변경할 수 있습니다.", "需在隨後開啟的系統設定中確認。之後也可在設定的「連結」中變更。")
                 } else {
-                    tr("之后也可在设置的「链接」中更改。", "Change this later in Link settings.", "後でリンク設定から変更できます。", "나중에 링크 설정에서 변경할 수 있습니다.")
+                    tr("之后也可在设置的「链接」中更改。", "Change this later in Link settings.", "後でリンク設定から変更できます。", "나중에 링크 설정에서 변경할 수 있습니다.", "之後也可在設定的「連結」中變更。")
                 },
             )
         },
         confirmButton = {
             PikoDialogConfirm(
-                label = tr("设为默认", "Set as default", "既定に設定", "기본으로 설정"),
+                label = tr("设为默认", "Set as default", "既定に設定", "기본으로 설정", "設為預設"),
                 onClick = {
                     answer()
                     scope.launch { association.register() }

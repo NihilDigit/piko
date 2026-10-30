@@ -13,6 +13,9 @@ import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -27,6 +30,10 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.getAndUpdate
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 
 private val changeIds = MutableStateFlow(0L)
 private fun nextChangeId(): Long = changeIds.getAndUpdate { it + 1 } + 1
@@ -81,6 +88,10 @@ class DriveChangeJournal internal constructor(
              * 只去掉秒传成功的那几条：云端已不存的留在清单里，引用不丢。
              */
             val recreateOnRevert: Map<String, List<VaultEntry>> = emptyMap(),
+            /** 按目录记录移入回收站归档时的条目 ID → 原文件映射；撤销时逐项核对真实文件已回到原位才将条目标为已取回。 */
+            val untrashByFolder: Map<String, Map<String, FileStat>> = emptyMap(),
+            /** 按目录记录恢复归档时新建或从回收站取回的实体文件 ID；撤销时必须先写回该目录清单引用，才允许移入回收站。 */
+            val trashByFolder: Map<String, List<String>> = emptyMap(),
         ) : Change {
             override val id: Long = nextChangeId()
         }
@@ -188,7 +199,7 @@ class DriveChangeJournal internal constructor(
             if (current.undo[id]?.status == UndoStatus.RUNNING) return false
             val next = current.copy(
                 available = current.available.filterNot { it.id == id },
-                undo = current.undo + (id to UndoResult(UndoStatus.RUNNING, tr("正在撤销", "Undoing", "元に戻しています", "실행 취소 중"), candidate.affectedFileIds(), candidate.affectedManifestFolders(), candidate.affectedTreeIds(),
+                undo = current.undo + (id to UndoResult(UndoStatus.RUNNING, tr("正在撤销", "Undoing", "元に戻しています", "실행 취소 중", "正在復原"), candidate.affectedFileIds(), candidate.affectedManifestFolders(), candidate.affectedTreeIds(),
                     current.undo[id]?.completedRenameSteps ?: 0, current.undo[id]?.completedTrashItems ?: 0)),
             )
             if (_state.compareAndSet(current, next)) { generation = current.generation; change = candidate; break }
@@ -201,7 +212,7 @@ class DriveChangeJournal internal constructor(
             }
             try {
                 val result = revert(change, access, generation)
-                val message = if (result.isSuccess) tr("已撤销", "Undone", "元に戻しました", "실행 취소됨") else tr("撤销未完成，请检查文件现状后再处理", "Undo incomplete. Check the current files before continuing", "元に戻す操作が未完了です。ファイルの現状を確認してください", "실행 취소가 완료되지 않았습니다. 현재 파일 상태를 확인해 주세요")
+                val message = if (result.isSuccess) tr("已撤销", "Undone", "元に戻しました", "실행 취소됨", "已復原") else tr("撤销未完成，请先核对当前文件状态", "Undo incomplete. Check current file states first", "元に戻す操作が未完了です。現在のファイル状態を確認してください", "실행 취소가 완료되지 않았습니다. 현재 파일 상태를 확인해 주세요", "復原未完成，請先核對目前檔案狀態")
                 _state.update { current ->
                     if (current.generation != generation) current else {
                         val undo = current.undo + (id to UndoResult(if (result.isSuccess) UndoStatus.UNDONE else UndoStatus.FAILED, message,
@@ -235,7 +246,7 @@ class DriveChangeJournal internal constructor(
             is Change.Trash -> runSuspendCatching {
                 var completed = state.value.undo[change.id]?.completedTrashItems ?: 0
                 for (batch in change.ids.drop(completed).chunked(100)) {
-                    check(change.id !in stoppedUndos.value) { tr("撤销已停止，可继续撤销剩余项目", "Undo stopped; you can continue with remaining items", "元に戻す操作を停止しました。残りの項目は続行できます", "실행 취소를 중지했습니다. 나머지 항목을 계속 취소할 수 있습니다") }
+                    check(change.id !in stoppedUndos.value) { tr("撤销已停止，可继续撤销剩余项目", "Undo stopped; you can continue with remaining items", "元に戻す操作を停止しました。残りの項目は続行できます", "실행 취소를 중지했습니다. 나머지 항목을 계속 취소할 수 있습니다", "復原已停止，可繼續復原剩餘項目") }
                     access.restore(batch).getOrThrow()
                     access.publish(DriveChange.Restored(batch))
                     completed += batch.size
@@ -253,7 +264,7 @@ class DriveChangeJournal internal constructor(
                 try {
                     change.renames.asReversed().drop(completed).forEachIndexed { offset, step ->
                         val current = access.detail(step.id).getOrThrow()
-                        check(!current.trashed && (current.name == step.newName || current.name == step.oldName)) { tr("文件名称已发生其他变化", "File name has changed again", "ファイル名がさらに変更されています", "파일 이름이 다른 작업으로 변경되었습니다") }
+                        check(!current.trashed && (current.name == step.newName || current.name == step.oldName)) { tr("文件名称已发生其他变化", "File name has changed again", "ファイル名がさらに変更されています", "파일 이름이 다른 작업으로 변경되었습니다", "檔案名稱已發生其他變更") }
                         if (current.name != step.oldName) {
                             val written = access.rename(step.id, step.oldName)
                             if (written.isFailure && access.detail(step.id).getOrNull()?.name != step.oldName) written.getOrThrow()
@@ -272,27 +283,148 @@ class DriveChangeJournal internal constructor(
                 }
             }
             is Change.Vault -> runSuspendCatching {
-                if (change.untrashOnRevert.isNotEmpty()) driveRepo.restore(change.untrashOnRevert).getOrThrow()
-                var missing = 0
-                change.recreateOnRevert.forEach { (folderId, entries) ->
-                    val present = driveRepo.listAllFiles(folderId).getOrThrow().filter { !it.trashed && it.phase == TaskPhase.COMPLETE }
-                    val restored = mutableMapOf<String, FileStat>()
-                    for (entry in entries) {
-                        val existing = present.firstOrNull { entry.matches(it) }
-                        if (existing != null) {
-                            restored[entry.id] = existing
-                            continue
-                        }
-                        val file = ResolvedFile(path = entry.name, size = entry.size, gcid = entry.gcid)
-                        driveRepo.instantCreate(file, folderId, entry.source).onSuccess { id ->
-                            restored[entry.id] = entry.toFileStat(folderId).copy(id = id)
-                        }.onFailure { missing++ }
-                    }
-                    if (restored.isNotEmpty()) driveRepo.vault.update(folderId, VaultEdits.restore(restored)).getOrThrow()
+                val allUntrashIds = buildList {
+                    addAll(change.untrashOnRevert)
+                    change.untrashByFolder.values.forEach { map -> map.values.forEach { add(it.id) } }
+                }.distinct()
+                val untrashCall = if (allUntrashIds.isEmpty()) {
+                    Result.success(Unit)
+                } else {
+                    access.restore(allUntrashIds).onSuccess { access.publish(DriveChange.Restored(allUntrashIds)) }
                 }
-                check(missing == 0) { tr("$missing 个文件云端已无内容，仍留在归档里", "${enCount(missing, "file", "files")} are unavailable in cloud and remain archived", "$missing ファイルはクラウドに存在しないため、アーカイブに残しています", "파일 ${missing}개는 클라우드에 없어 보관 상태로 유지합니다") }
-                change.reverts.forEach { (folderId, revert) -> driveRepo.vault.update(folderId, revert).getOrThrow() }
-                if (change.trashOnRevert.isNotEmpty()) driveRepo.trash(change.trashOnRevert).getOrThrow()
+                if (change.untrashByFolder.isEmpty()) {
+                    untrashCall.getOrThrow()
+                } else {
+                    val unrecoveredLock = Mutex()
+                    var unrecovered = 0
+                    coroutineScope {
+                        val folderSlots = Semaphore(12)
+                        change.untrashByFolder.map { (folderId, entryOriginals) ->
+                            async {
+                                folderSlots.withPermit {
+                                    val liveById = access.listFolder(folderId).getOrThrow()
+                                        .filter { !it.isFolder && !it.trashed }
+                                        .associateBy { it.id }
+                                    val confirmedRestored = LinkedHashMap<String, FileStat>()
+                                    var missingInFolder = 0
+                                    for ((entryId, orig) in entryOriginals) {
+                                        val live = liveById[orig.id]
+                                        if (live != null) {
+                                            confirmedRestored[entryId] = live
+                                        } else {
+                                            missingInFolder++
+                                        }
+                                    }
+                                    if (missingInFolder > 0) {
+                                        unrecoveredLock.withLock { unrecovered += missingInFolder }
+                                    }
+                                    if (confirmedRestored.isNotEmpty()) {
+                                        val starredRestored = confirmedRestored.filterKeys(access::isVaultEntryStarred)
+                                        access.vault.update(folderId, VaultEdits.restore(confirmedRestored)).getOrThrow()
+                                        if (starredRestored.isNotEmpty()) {
+                                            access.star(starredRestored.values.map { it.id }, value = true).onSuccess {
+                                                access.unstarVaultEntries(starredRestored.keys)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                    if (unrecovered > 0) {
+                        throw untrashCall.exceptionOrNull()
+                            ?: IllegalStateException(tr("$unrecovered 个原文件未能从回收站恢复，已保留在归档中", "${enCount(unrecovered, "file", "files")} could not be restored from trash; kept in archive", "$unrecovered ファイルをゴミ箱から復元できなかったため、アーカイブに保持しました", "파일 ${unrecovered}개를 휴지통에서 복원하지 못해 보관 상태로 유지했습니다", "$unrecovered 個原始檔案未能從資源回收筒還原，已保留於歸檔中"))
+                    }
+                }
+                val resultLock = Mutex()
+                var missing = 0
+                if (change.recreateOnRevert.isNotEmpty()) {
+                    coroutineScope {
+                        val folderSlots = Semaphore(12)
+                        val recreateSlots = Semaphore(16)
+                        change.recreateOnRevert.map { (folderId, entries) ->
+                            async {
+                                folderSlots.withPermit {
+                                    val present = access.listFolder(folderId).getOrThrow()
+                                        .filter { !it.trashed && it.phase == TaskPhase.COMPLETE }
+                                    val restored = mutableMapOf<String, FileStat>()
+                                    val usedPresent = HashSet<String>()
+                                    val toRecreate = ArrayList<VaultEntry>()
+                                    for (entry in entries) {
+                                        val existing = present.firstOrNull { it.id !in usedPresent && entry.matches(it) }
+                                        if (existing != null) {
+                                            usedPresent += existing.id
+                                            restored[entry.id] = existing
+                                        } else {
+                                            toRecreate += entry
+                                        }
+                                    }
+                                    toRecreate.map { entry ->
+                                        async {
+                                            recreateSlots.withPermit {
+                                                val file = ResolvedFile(path = entry.name, size = entry.size, gcid = entry.gcid)
+                                                access.instantCreate(file, folderId, entry.source, notifyChange = false)
+                                                    .onSuccess { id ->
+                                                        resultLock.withLock {
+                                                            restored[entry.id] = entry.toFileStat(folderId).copy(id = id)
+                                                        }
+                                                    }
+                                                    .onFailure {
+                                                        resultLock.withLock { missing++ }
+                                                    }
+                                            }
+                                        }
+                                    }.awaitAll()
+                                    val snapshot = resultLock.withLock { restored.toMap() }
+                                    if (snapshot.isNotEmpty()) {
+                                        var updatedManifest = false
+                                        try {
+                                            val starredRestored = snapshot.filterKeys(access::isVaultEntryStarred)
+                                            access.vault.update(folderId, VaultEdits.restore(snapshot)).getOrThrow()
+                                            updatedManifest = true
+                                            if (starredRestored.isNotEmpty()) {
+                                                access.star(starredRestored.values.map { it.id }, value = true).onSuccess {
+                                                    access.unstarVaultEntries(starredRestored.keys)
+                                                }
+                                            }
+                                        } finally {
+                                            if (!updatedManifest) {
+                                                access.publish(DriveChange.ContentsChanged(setOf(folderId)))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                }
+                check(missing == 0) { tr("$missing 个文件在云端不可用，已保留在归档中", "${enCount(missing, "file", "files")} unavailable in the cloud; kept in archive", "$missing ファイルはクラウドで利用できないため、アーカイブに保持しました", "파일 ${missing}개를 클라우드에서 사용할 수 없어 보관 상태로 유지했습니다", "$missing 個檔案在雲端無法使用，已保留於歸檔中") }
+                val standaloneReverts = change.reverts.filterKeys { it !in change.untrashByFolder }
+                if (standaloneReverts.isNotEmpty()) {
+                    coroutineScope {
+                        val folderSlots = Semaphore(12)
+                        standaloneReverts.map { (folderId, revert) ->
+                            async {
+                                folderSlots.withPermit {
+                                    access.vault.update(folderId, revert).getOrThrow()
+                                    val folderTrash = change.trashByFolder[folderId].orEmpty()
+                                    if (folderTrash.isNotEmpty()) {
+                                        access.trash(folderTrash)
+                                            .onSuccess { access.publish(DriveChange.Trashed(folderTrash, setOf(folderId))) }
+                                            .getOrThrow()
+                                    }
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                }
+                val handledTrashIds = change.trashByFolder.filterKeys { it in standaloneReverts }.values.flatten().toSet()
+                val legacyTrash = change.trashOnRevert.filterNot { it in handledTrashIds }
+                if (legacyTrash.isNotEmpty() && standaloneReverts.isNotEmpty()) {
+                    access.trash(legacyTrash)
+                        .onSuccess { access.publish(DriveChange.Trashed(legacyTrash, standaloneReverts.keys)) }
+                        .getOrThrow()
+                }
             }
         }
         val kind = change::class.simpleName

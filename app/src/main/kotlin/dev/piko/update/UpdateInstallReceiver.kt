@@ -31,8 +31,8 @@ class UpdateInstallReceiver : BroadcastReceiver() {
                 confirm?.let { context.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
             }
             PackageInstaller.STATUS_SUCCESS -> Unit
-            PackageInstaller.STATUS_FAILURE_ABORTED -> PikoApplication.instance.appUpdater.onInstallFailed(tr("已取消安装", "Installation cancelled", "インストールをキャンセルしました", "설치 취소됨"))
-            else -> PikoApplication.instance.appUpdater.onInstallFailed(tr("安装失败", "Installation failed", "インストールに失敗しました", "설치 실패"))
+            PackageInstaller.STATUS_FAILURE_ABORTED -> PikoApplication.instance.appUpdater.onInstallFailed(tr("已取消安装", "Installation cancelled", "インストールをキャンセルしました", "설치 취소됨", "已取消安裝"))
+            else -> PikoApplication.instance.appUpdater.onInstallFailed(tr("安装失败", "Installation failed", "インストールに失敗しました", "설치 실패", "安裝失敗"))
         }
     }
 }

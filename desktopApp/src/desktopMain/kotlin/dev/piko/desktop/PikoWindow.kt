@@ -81,7 +81,7 @@ private class PikoWindowExceptionHandlerFactory(
         SwingUtilities.invokeLater {
             JOptionPane.showMessageDialog(
                 window.takeIf { it.isDisplayable },
-                tr("Piko 出现错误，这个窗口需要关闭。\n反馈问题时，请在「设置」→「关于」→「导出日志」中导出日志一并附上。", "Piko encountered an error and this window must close.\nWhen reporting the issue, attach logs from Settings → About → Export logs.", "エラーが発生したため、このウィンドウを閉じる必要があります。\n問題を報告する際は、設定 → このアプリについて → ログをエクスポートからログを添付してください。", "Piko에 오류가 발생하여 이 창을 닫아야 합니다.\n문제를 보고할 때 설정 → 정보 → 로그 내보내기에서 로그를 첨부하세요."),
+                tr("Piko 发生错误，当前窗口即将关闭。\n反馈问题时，可在「设置」→「关于」→「导出日志」中导出日志并附上。", "Piko encountered an error and this window must close.\nWhen reporting the issue, attach logs exported from Settings → About → Export logs.", "エラーが発生したため、このウィンドウを閉じます。\n問題を報告する際は、「設定」→「このアプリについて」→「ログをエクスポート」からログを添付してください。", "Piko에 오류가 발생하여 이 창을 닫아야 합니다.\n문제를 제보할 때 '설정' → '정보' → '로그 내보내기'에서 내보낸 로그를 첨부해 주세요.", "Piko 發生錯誤，目前視窗即將關閉。\n回報問題時，可於「設定」→「關於」→「匯出日誌」中匯出日誌並一併附上。"),
                 "Piko",
                 JOptionPane.ERROR_MESSAGE,
             )

@@ -486,4 +486,34 @@ class DriveTreeIndexTest {
         // Second restoreSnapshot after complete is a no-op
         assertFalse(coldIndex.restoreSnapshot(decoded, emptyMap()))
     }
+
+    @Test
+    fun localDeletionAndFolderListingKeepLastUsageBytesAligned() {
+        val index = DriveTreeIndex()
+        val f1 = FileStat(id = "f1", parentId = "dirA", name = "ep1.mp4", size = "1000", kind = FileKind.FILE)
+        val f2 = FileStat(id = "f2", parentId = "dirA", name = "ep2.mp4", size = "2500", kind = FileKind.FILE)
+        val manifest = FileStat(
+            id = "m1",
+            parentId = "dirA",
+            name = ".piko-vault-v1-abcd.json",
+            size = "120",
+            kind = FileKind.FILE,
+            phase = io.github.nihildigit.pikpak.TaskPhase.COMPLETE,
+        )
+        index.replaceTree(
+            folders = listOf(file("dirA", "", folder = true)),
+            files = listOf(f1, f2),
+            vaultByFolder = emptyMap(),
+            usageBytes = 3500L,
+            syncedAtMillis = 100L,
+        )
+        assertEquals(3500L, index.lastUsageBytes)
+
+        // 本机归档写入新清单并重列该目录、随后彻底删除原文件：lastUsageBytes 应精确跟进为 120，避免误触发全盘重扫
+        index.putFolderListing("dirA", listOf(f1, f2, manifest), complete = true)
+        assertEquals(3620L, index.lastUsageBytes)
+
+        index.applyChange(DriveChange.Deleted(listOf("f1", "f2"), setOf("dirA")))
+        assertEquals(120L, index.lastUsageBytes)
+    }
 }

@@ -71,7 +71,7 @@ internal fun AccountSwitcher(onLoggedOut: (() -> Unit)? = null) {
             SettingsRow(
                 title = saved.displayName,
                 leading = { Avatar(saved.displayName, saved.avatarUrl, size = AccountAvatarSize) },
-                supporting = if (isExpired) tr("需重新登录", "Sign in again", "再ログインが必要です", "다시 로그인 필요") else accountLine(saved),
+                supporting = if (isExpired) tr("需重新登录", "Sign in again", "再ログインが必要です", "다시 로그인 필요", "需重新登入") else accountLine(saved),
                 supportingColor = if (isExpired) MaterialTheme.colorScheme.error else Color.Unspecified,
                 enabled = switching == null,
                 onClick = {
@@ -90,22 +90,22 @@ internal fun AccountSwitcher(onLoggedOut: (() -> Unit)? = null) {
                     if (switching == saved.account) {
                         Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) { InlineLoadingIndicator() }
                     } else {
-                        TooltipIconButton(Icons.Outlined.Close, tr("移除", "Remove", "削除", "제거"), onClick = { forgetting = saved }, enabled = switching == null)
+                        TooltipIconButton(Icons.Outlined.Close, tr("移除", "Remove", "削除", "제거", "移除"), onClick = { forgetting = saved }, enabled = switching == null)
                     }
                 },
             )
         }
         // 这一组的图标放进与头像同宽的格子里，各行标题才对得齐
         SettingsRow(
-            title = tr("添加账号", "Add account", "アカウントを追加", "계정 추가"),
+            title = tr("添加账号", "Add account", "アカウントを追加", "계정 추가", "新增帳號"),
             leading = { AvatarSlot(Icons.Outlined.PersonAdd, MaterialTheme.colorScheme.onSurfaceVariant) },
-            supporting = if (others.isEmpty()) tr("可同时保存多个账号并随时切换", "Save multiple accounts and switch anytime", "複数のアカウントを保存し、いつでも切り替えられます", "여러 계정을 저장하고 언제든 전환할 수 있습니다") else null,
+            supporting = if (others.isEmpty()) tr("可同时保存多个账号并随时切换", "Save multiple accounts and switch anytime", "複数のアカウントを保存し、いつでも切り替えられます", "여러 계정을 저장하고 언제든 전환할 수 있습니다", "可同時儲存多個帳號並隨時切換") else null,
             enabled = switching == null,
             onClick = { clientManager.beginAddingAccount() },
         )
         if (onLoggedOut != null) {
             SettingsRow(
-                title = if (others.isEmpty()) tr("退出登录", "Sign out", "ログアウト", "로그아웃") else tr("退出此账号", "Sign out of this account", "このアカウントからログアウト", "이 계정에서 로그아웃"),
+                title = if (others.isEmpty()) tr("退出登录", "Sign out", "ログアウト", "로그아웃", "登出") else tr("退出此账号", "Sign out of this account", "このアカウントからログアウト", "이 계정에서 로그아웃", "登出此帳號"),
                 leading = { AvatarSlot(Icons.AutoMirrored.Outlined.Logout, MaterialTheme.colorScheme.error) },
                 titleColor = MaterialTheme.colorScheme.error,
                 enabled = switching == null,
@@ -125,10 +125,10 @@ internal fun AccountSwitcher(onLoggedOut: (() -> Unit)? = null) {
         PikoDialog(
             onDismissRequest = { forgetting = null },
             title = { Text(stringResource(Res.string.text_remove_account)) },
-            text = { Text(tr("将清除本机保存的「${saved.displayName}」登录凭据，再次使用需重新登录。", "Remove saved credentials for “${saved.displayName}” from this device. Sign in again to use the account.", "この端末の「${saved.displayName}」のログイン情報を削除します。再度利用するにはログインが必要です。", "기기에 저장된 “${saved.displayName}”의 로그인 정보를 삭제합니다. 다시 사용하려면 로그인해야 합니다.")) },
+            text = { Text(tr("将清除本机保存的「${saved.displayName}」登录凭据，再次使用需重新登录。", "Remove saved credentials for “${saved.displayName}” from this device. Sign in again to use the account.", "この端末の「${saved.displayName}」のログイン情報を削除します。再度利用するにはログインが必要です。", "기기에 저장된 “${saved.displayName}”의 로그인 정보를 삭제합니다. 다시 사용하려면 로그인해야 합니다.", "將清除本機儲存的「${saved.displayName}」登入憑證，再次使用需重新登入。")) },
             confirmButton = {
                 PikoDialogConfirm(
-                    label = tr("移除", "Remove", "削除", "제거"),
+                    label = tr("移除", "Remove", "削除", "제거", "移除"),
                     destructive = true,
                     onClick = {
                         clientManager.forget(saved.account)
@@ -169,7 +169,7 @@ internal fun LogoutButton(onLoggedOut: () -> Unit) {
     ) {
         Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
-        Text(if (others.isEmpty()) tr("退出登录", "Sign out", "ログアウト", "로그아웃") else tr("退出此账号", "Sign out of this account", "このアカウントからログアウト", "이 계정에서 로그아웃"))
+        Text(if (others.isEmpty()) tr("退出登录", "Sign out", "ログアウト", "로그아웃", "登出") else tr("退出此账号", "Sign out of this account", "このアカウントからログアウト", "이 계정에서 로그아웃", "登出此帳號"))
     }
     if (confirmLogout) {
         LogoutDialog(
@@ -223,14 +223,14 @@ private fun AppLinkPromptBanner() {
     if (!showPrompt) return
     SettingsGroup(null) {
         SettingsRow(
-            title = tr("用 Piko 直接打开分享链接", "Open share links in Piko", "共有リンクをPikoで直接開く", "Piko에서 공유 링크 바로 열기"),
+            title = tr("用 Piko 直接打开分享链接", "Open share links in Piko", "共有リンクをPikoで直接開く", "Piko에서 공유 링크 바로 열기", "用 Piko 直接開啟分享連結"),
             leading = { AvatarSlot(Icons.Outlined.Link, MaterialTheme.colorScheme.primary) },
-            supporting = tr("在系统「默认打开」中勾选支持的链接域名，点击 PikPak 分享或跳转链接即可直接用 Piko 打开", "Enable supported domains in the system’s default app settings to open PikPak links in Piko", "システムの既定アプリ設定で対応ドメインを有効にすると、PikPakリンクをPikoで直接開けます", "시스템 기본 앱 설정에서 지원 도메인을 선택하면 PikPak 링크를 Piko에서 바로 열 수 있습니다"),
+            supporting = tr("在系统「默认打开」中勾选支持的链接域名，点击 PikPak 分享或跳转链接即可直接用 Piko 打开", "Enable supported domains in the system’s default app settings to open PikPak links in Piko", "システムの既定アプリ設定で対応ドメインを有効にすると、PikPakリンクをPikoで直接開けます", "시스템 기본 앱 설정에서 지원 도메인을 선택하면 PikPak 링크를 Piko에서 바로 열 수 있습니다", "在系統「預設開啟」中勾選支援的連結網域，點選 PikPak 分享或跳轉連結即可直接用 Piko 開啟"),
             onClick = openSettings,
             trailing = {
                 TooltipIconButton(
                     icon = Icons.Outlined.Close,
-                    label = tr("不再提示", "Do not show again", "今後表示しない", "다시 표시하지 않기"),
+                    label = tr("不再提示", "Do not show again", "今後表示しない", "다시 표시하지 않기", "不再提示"),
                     onClick = {
                         platform.dismissAppLinkPrompt()
                         showPrompt = false

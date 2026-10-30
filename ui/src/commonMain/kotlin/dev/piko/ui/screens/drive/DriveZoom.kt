@@ -32,9 +32,9 @@ internal enum class TileSize {
 
 internal val TileSize.label
     get() = when (this) {
-        TileSize.LARGE -> tr("大", "Large", "大", "크게")
-        TileSize.MEDIUM -> tr("中", "Medium", "中", "중간")
-        TileSize.SMALL -> tr("小", "Small", "小", "작게")
+        TileSize.LARGE -> tr("大", "Large", "大", "크게", "大")
+        TileSize.MEDIUM -> tr("中", "Medium", "中", "중간", "中")
+        TileSize.SMALL -> tr("小", "Small", "小", "작게", "小")
     }
 
 internal const val GALLERY_TILE_PREF_KEY = "GALLERY"
@@ -132,5 +132,5 @@ internal class DriveZoom(private val preferences: PikoUserPreferences) {
 /** 页眉窄到连视图按钮也收起时，仍可从「更多」选择尺寸。 */
 internal fun tileSizeActions(mode: DriveViewMode, size: TileSize, onSelect: (TileSize) -> Unit): List<SheetAction> =
     TileSize.entries.map { option ->
-        SheetAction(mode.icon(), tr("${option.label}尺寸", "${option.label} size", "${option.label}サイズ", "${option.label} 크기"), { onSelect(option) }, group = ActionGroup.ViewSize, checked = option == size)
+        SheetAction(mode.icon(), tr("${option.label}尺寸", "${option.label} size", "${option.label}サイズ", "${option.label} 크기", "${option.label}尺寸"), { onSelect(option) }, group = ActionGroup.ViewSize, checked = option == size)
     }

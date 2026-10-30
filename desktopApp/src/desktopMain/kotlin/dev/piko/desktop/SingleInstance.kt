@@ -134,9 +134,9 @@ class SingleInstance private constructor(
                 javax.swing.UIManager.setLookAndFeel(javax.swing.UIManager.getSystemLookAndFeelClassName())
                 javax.swing.JOptionPane.showMessageDialog(
                     null,
-                    tr("数据目录 ${PikoHome.root} 正由 Windows 账户 $owner 中运行的 Piko 使用，当前账户为 $currentUser。", "Data folder ${PikoHome.root} is used by Piko running as $owner. The current Windows account is $currentUser.", "データフォルダー ${PikoHome.root} は $owner のPikoが使用中です。現在のWindowsアカウントは $currentUser です。", "데이터 폴더 ${PikoHome.root}을(를) $owner 계정의 Piko가 사용 중입니다. 현재 Windows 계정은 ${currentUser}입니다.") +
-                        tr("请先在 $owner 中退出 Piko，或为当前账户另用一份便携版。", "Quit Piko in $owner first, or use a separate portable copy for this account.", "先に $owner のPikoを終了するか、このアカウント用に別のポータブル版を使用してください。", "먼저 ${owner}에서 Piko를 종료하거나 현재 계정에 별도의 포터블 버전을 사용하세요."),
-                    tr("Piko 无法打开", "Piko cannot open", "Pikoを開けません", "Piko를 열 수 없습니다"),
+                    tr("数据目录 ${PikoHome.root} 正由 Windows 账户 $owner 中运行的 Piko 使用，当前账户为 $currentUser。", "Data folder ${PikoHome.root} is used by Piko running as $owner. The current Windows account is $currentUser.", "データフォルダー ${PikoHome.root} は $owner のPikoが使用中です。現在のWindowsアカウントは $currentUser です。", "데이터 폴더 ${PikoHome.root}을(를) $owner 계정의 Piko가 사용 중입니다. 현재 Windows 계정은 ${currentUser}입니다.", "資料資料夾 ${PikoHome.root} 正由 Windows 帳戶 $owner 中執行的 Piko 使用，目前帳戶為 $currentUser。") +
+                        tr("请先在 $owner 中退出 Piko，或为当前账户另用一份便携版。", "Quit Piko in $owner first, or use a separate portable copy for this account.", "先に $owner のPikoを終了するか、このアカウント用に別のポータブル版を使用してください。", "먼저 ${owner}에서 Piko를 종료하거나 현재 계정에 별도의 포터블 버전을 사용하세요.", "請先在 $owner 中結束 Piko，或為目前帳戶另用一份可攜版。"),
+                    tr("Piko 无法打开", "Piko cannot open", "Pikoを開けません", "Piko를 열 수 없습니다", "無法開啟 Piko"),
                     javax.swing.JOptionPane.WARNING_MESSAGE,
                 )
             }

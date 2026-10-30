@@ -143,7 +143,7 @@ fun ProfileScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         // 有外框时（恢复旧版存下的返回栈才会在宽窗口里打开这一页）与别的页同一副骨架，页名是账号名
         island = IslandPage(header = {
-            IslandTitle(saved?.displayName ?: tr("PikPak 用户", "PikPak user", "PikPakユーザー", "PikPak 사용자"))
+            IslandTitle(saved?.displayName ?: tr("PikPak 用户", "PikPak user", "PikPakユーザー", "PikPak 사용자", "PikPak 使用者"))
             IslandHeaderSpace()
         }),
         topBar = {
@@ -157,7 +157,7 @@ fun ProfileScreen(
                     actions = { caption.buttons?.invoke() },
                     title = {
                         Text(
-                            text = saved?.displayName ?: tr("PikPak 用户", "PikPak user", "PikPakユーザー", "PikPak 사용자"),
+                            text = saved?.displayName ?: tr("PikPak 用户", "PikPak user", "PikPakユーザー", "PikPak 사용자", "PikPak 使用者"),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -168,7 +168,7 @@ fun ProfileScreen(
                     navigationIcon = {
                         if (onBackClick != null) {
                             IconButton(onClick = onBackClick) {
-                                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = tr("返回", "Back", "戻る", "뒤로"))
+                                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = tr("返回", "Back", "戻る", "뒤로", "返回"))
                             }
                         }
                     },
@@ -197,21 +197,21 @@ fun ProfileScreen(
                     icon = DriveLibrary.RECENT.icon,
                     selectedIcon = DriveLibrary.RECENT.selectedIcon,
                     title = DriveLibrary.RECENT.title,
-                    supporting = tr("最近上传与离线、秒传的文件", "Recent uploads, cloud downloads and instant saves", "最近アップロード・クラウドダウンロード・インスタント保存したファイル", "최근 업로드, 클라우드 다운로드 및 즉시 저장 파일"),
+                    supporting = tr("最近上传与离线、秒传的文件", "Recent uploads, cloud downloads and instant saves", "最近アップロード・クラウドダウンロード・インスタント保存したファイル", "최근 업로드, 클라우드 다운로드 및 즉시 저장 파일", "最近上傳與離線、秒傳的檔案"),
                     onClick = { onOpenLibrary(DriveLibrary.RECENT) },
                 )
                 SettingsNavigationRow(
                     icon = DriveLibrary.STARRED.icon,
                     selectedIcon = DriveLibrary.STARRED.selectedIcon,
                     title = DriveLibrary.STARRED.title,
-                    supporting = tr("已加星标的文件与文件夹", "Starred files and folders", "スター付きのファイルとフォルダー", "별표를 추가한 파일 및 폴더"),
+                    supporting = tr("已加星标的文件与文件夹", "Starred files and folders", "スター付きのファイルとフォルダー", "별표를 추가한 파일 및 폴더", "已加星號的檔案與資料夾"),
                     onClick = { onOpenLibrary(DriveLibrary.STARRED) },
                 )
                 SettingsNavigationRow(
                     icon = DriveLibrary.HISTORY.icon,
                     selectedIcon = DriveLibrary.HISTORY.selectedIcon,
                     title = DriveLibrary.HISTORY.title,
-                    supporting = tr("与 PikPak 官方客户端同步", "Synced with official PikPak apps", "PikPak公式アプリと同期", "PikPak 공식 앱과 동기화"),
+                    supporting = tr("与 PikPak 官方客户端同步", "Synced with official PikPak apps", "PikPak公式アプリと同期", "PikPak 공식 앱과 동기화", "與 PikPak 官方用戶端同步"),
                     onClick = { onOpenLibrary(DriveLibrary.HISTORY) },
                 )
             }
@@ -220,8 +220,8 @@ fun ProfileScreen(
                 SettingsNavigationRow(
                     icon = Icons.Outlined.FolderShared,
                     selectedIcon = Icons.Filled.FolderShared,
-                    title = tr("我的分享", "My shares", "自分の共有", "내 공유"),
-                    supporting = tr("复制或取消已创建的分享链接", "Copy or revoke your share links", "作成した共有リンクをコピーまたは解除", "만든 공유 링크 복사 또는 취소"),
+                    title = tr("我的分享", "My shares", "自分の共有", "내 공유", "我的分享"),
+                    supporting = tr("复制或取消已创建的分享链接", "Copy or revoke your share links", "作成した共有リンクをコピーまたは解除", "만든 공유 링크 복사 또는 취소", "複製或取消已建立的分享連結"),
                     onClick = { onOpenPane(Screen.MyShares) },
                     selected = selectedPane == Screen.MyShares,
                 )
@@ -229,14 +229,14 @@ fun ProfileScreen(
                     icon = DriveLibrary.TRASH.icon,
                     selectedIcon = DriveLibrary.TRASH.selectedIcon,
                     title = DriveLibrary.TRASH.title,
-                    supporting = tr("恢复或彻底删除已移入回收站的文件", "Restore or permanently delete trashed files", "ゴミ箱内のファイルを復元または完全に削除", "휴지통 파일 복원 또는 영구 삭제"),
+                    supporting = tr("恢复或彻底删除已移入回收站的文件", "Restore or permanently delete trashed files", "ゴミ箱内のファイルを復元または完全に削除", "휴지통 파일 복원 또는 영구 삭제", "還原或永久刪除已移至資源回收筒的檔案"),
                     onClick = { onOpenLibrary(DriveLibrary.TRASH) },
                 )
                 SettingsNavigationRow(
                     icon = Icons.Outlined.Settings,
                     selectedIcon = Icons.Filled.Settings,
-                    title = tr("设置", "Settings", "設定", "설정"),
-                    supporting = tr("外观、网盘、传输与同步", "Appearance, drive, transfers and sync", "外観・ドライブ・転送・同期", "모양, 드라이브, 전송 및 동기화"),
+                    title = tr("设置", "Settings", "設定", "설정", "設定"),
+                    supporting = tr("外观、网盘、传输与同步", "Appearance, drive, transfers and sync", "外観・ドライブ・転送・同期", "모양, 드라이브, 전송 및 동기화", "外觀、雲端硬碟、傳輸與同步"),
                     onClick = { onOpenPane(Screen.Settings) },
                     selected = selectedPane == Screen.Settings,
                 )
@@ -293,7 +293,7 @@ internal fun rememberAccountSummary(): AccountSummary {
             launch {
                 driveRepo.getTransferQuota()
                     .onSuccess { transferQuotaError = null }
-                    .onFailure { transferQuotaError = tr("流量额度加载失败", "Failed to load traffic quota", "転送量の利用枠を読み込めませんでした", "트래픽 할당량을 불러오지 못했습니다") }
+                    .onFailure { transferQuotaError = tr("流量额度加载失败", "Failed to load traffic quota", "転送量の利用枠を読み込めませんでした", "트래픽 할당량을 불러오지 못했습니다", "流量額度載入失敗") }
             }
         }
         refreshing = false
@@ -323,14 +323,14 @@ internal fun LogoutDialog(next: SavedAccount?, onDismiss: () -> Unit, onLoggedOu
                 tint = MaterialTheme.colorScheme.error,
             )
         },
-        title = { Text(if (next == null) tr("退出登录", "Sign out", "ログアウト", "로그아웃") else tr("退出此账号", "Sign out of this account", "このアカウントからログアウト", "이 계정에서 로그아웃")) },
+        title = { Text(if (next == null) tr("退出登录", "Sign out", "ログアウト", "로그아웃", "登出") else tr("退出此账号", "Sign out of this account", "このアカウントからログアウト", "이 계정에서 로그아웃", "登出此帳號")) },
         text = {
-            val after = next?.let { tr("，随后切换至「${it.displayName}」", ", then switch to “${it.displayName}”", "、その後「${it.displayName}」に切り替え", ", 이후 “${it.displayName}”(으)로 전환") }.orEmpty()
-            Text(tr("将清除本机保存的该账号登录凭据$after。", "Remove this account’s saved credentials from this device$after.", "この端末に保存したアカウントのログイン情報を削除します$after。", "이 계정의 기기 내 로그인 정보를 삭제합니다$after."))
+            val after = next?.let { tr("，随后切换至「${it.displayName}」", ", then switch to “${it.displayName}”", "、その後「${it.displayName}」に切り替え", ", 이후 “${it.displayName}”(으)로 전환", "，隨後切換至「${it.displayName}」") }.orEmpty()
+            Text(tr("将清除本机保存的该账号登录凭据$after。", "Remove this account’s saved credentials from this device$after.", "この端末に保存したアカウントのログイン情報を削除します$after。", "이 계정의 기기 내 로그인 정보를 삭제합니다$after.", "將清除本機儲存的此帳號登入憑證$after。"))
         },
         confirmButton = {
             PikoDialogConfirm(
-                label = tr("退出", "Exit", "終了", "나가기"),
+                label = tr("退出", "Exit", "終了", "나가기", "登出"),
                 destructive = true,
                 onClick = {
                     // 退出在进程级作用域里跑，对话框的作用域被取消也照样清完凭据。
@@ -376,8 +376,8 @@ internal fun AccountCard(account: AccountSummary, showRefresh: Boolean = false) 
             // 免费账号的保存与离线规则不同，写明账号类型，行为上的差别才有来由
             val tier = when {
                 allowances == null -> null
-                allowances.isPremium -> allowances.expireTime.let(::formatExpireDate)?.let { tr("会员至 $it", "Premium until $it", "プレミアム有効期限 $it", "프리미엄 만료일 $it") }
-                else -> tr("免费账号", "Free account", "無料アカウント", "무료 계정")
+                allowances.isPremium -> allowances.expireTime.let(::formatExpireDate)?.let { tr("会员至 $it", "Premium until $it", "プレミアム有効期限 $it", "프리미엄 만료일 $it", "會員至 $it") }
+                else -> tr("免费账号", "Free account", "無料アカウント", "무료 계정", "免費帳號")
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Avatar(username = username, avatarUrl = avatarUrl)
@@ -390,7 +390,7 @@ internal fun AccountCard(account: AccountSummary, showRefresh: Boolean = false) 
                 if (showRefresh) {
                     if (quota == null) Spacer(modifier = Modifier.weight(1f))
                     Spacer(modifier = Modifier.width(8.dp))
-                    TooltipIconButton(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침"), account.refresh, enabled = !account.refreshing)
+                    TooltipIconButton(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침", "重新整理"), account.refresh, enabled = !account.refreshing)
                 }
             }
 
@@ -459,7 +459,7 @@ private fun StorageSection(quota: QuotaSnapshot, tier: String?, modifier: Modifi
     val accent = if (nearlyFull) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
     Column(modifier = modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionLabel(tr("网盘空间", "Cloud storage", "ドライブ容量", "클라우드 공간"), Modifier.weight(1f))
+            SectionLabel(tr("网盘空间", "Cloud storage", "ドライブ容量", "클라우드 공간", "雲端硬碟空間"), Modifier.weight(1f))
             if (tier != null) TierChip(tier)
         }
         Spacer(modifier = Modifier.height(2.dp))
@@ -479,7 +479,7 @@ private fun StorageSection(quota: QuotaSnapshot, tier: String?, modifier: Modifi
             Spacer(modifier = Modifier.weight(1f))
             if (quota.limitBytes > 0) {
                 Text(
-                    text = tr("剩余 ${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()}", "${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()} remaining", "残り ${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()}", "남은 공간 ${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()}"),
+                    text = tr("剩余 ${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()}", "${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()} remaining", "残り ${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()}", "남은 공간 ${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()}", "剩餘 ${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()}"),
                     style = MaterialTheme.typography.bodySmall,
                     color = if (nearlyFull) accent else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.alignByBaseline(),
@@ -505,8 +505,8 @@ private fun StorageSection(quota: QuotaSnapshot, tier: String?, modifier: Modifi
 private fun TransferSection(allowances: TransferAllowances?, cloudDownload: CountQuota?, error: String?) {
     val daily = allowances?.let { dailyUsages(it, cloudDownload) }.orEmpty()
     Column {
-        if (daily.isNotEmpty()) UsageSection(tr("今日额度", "Daily quota", "本日の利用枠", "오늘 할당량"), daily, ::dailyQuotaResetLabel, error = null)
-        UsageSection(tr("本月流量", "Monthly traffic", "今月の転送量", "이번 달 트래픽"), allowances?.let(::monthlyUsages).orEmpty(), ::transferQuotaResetLabel, error)
+        if (daily.isNotEmpty()) UsageSection(tr("今日额度", "Daily quota", "本日の利用枠", "오늘 할당량", "今日額度"), daily, ::dailyQuotaResetLabel, error = null)
+        UsageSection(tr("本月流量", "Monthly traffic", "今月の転送量", "이번 달 트래픽", "本月流量"), allowances?.let(::monthlyUsages).orEmpty(), ::transferQuotaResetLabel, error)
     }
 }
 
@@ -525,7 +525,7 @@ private fun UsageSection(title: String, usages: List<Usage>, resetLabel: () -> S
                 .clip(MaterialTheme.shapes.small)
                 .clickable(
                     enabled = usages.isNotEmpty(),
-                    onClickLabel = if (expanded) tr("收起", "Collapse", "折りたたむ", "접기") else tr("展开", "Expand", "展開", "펼치기"),
+                    onClickLabel = if (expanded) tr("收起", "Collapse", "折りたたむ", "접기", "收合") else tr("展开", "Expand", "展開", "펼치기", "展開"),
                     role = Role.Button,
                 ) { expanded = !expanded }
                 .padding(vertical = 4.dp),
@@ -570,30 +570,30 @@ private fun UsageSection(title: String, usages: List<Usage>, resetLabel: () -> S
 }
 
 private fun monthlyUsages(allowances: TransferAllowances): List<Usage> = listOf(
-    Usage(tr("离线", "Cloud download", "クラウドダウンロード", "클라우드 다운로드"), allowances.offline.usedBytes, allowances.offline.limitBytes),
-    Usage(tr("下载", "Downloads", "ダウンロード", "다운로드"), allowances.download.usedBytes, allowances.download.limitBytes),
-    Usage(tr("上传", "Uploads", "アップロード", "업로드"), allowances.upload.usedBytes, allowances.upload.limitBytes),
+    Usage(tr("离线", "Cloud download", "クラウドダウンロード", "클라우드 다운로드", "離線"), allowances.offline.usedBytes, allowances.offline.limitBytes),
+    Usage(tr("下载", "Downloads", "ダウンロード", "다운로드", "下載"), allowances.download.usedBytes, allowances.download.limitBytes),
+    Usage(tr("上传", "Uploads", "アップロード", "업로드", "上傳"), allowances.upload.usedBytes, allowances.upload.limitBytes),
 )
 
 /** 会员两项都没有：每日下载的上限为 0，离线次数不限。 */
 private fun dailyUsages(allowances: TransferAllowances, cloudDownload: CountQuota?): List<Usage> = buildList {
     if (allowances.downloadDaily.limitBytes > 0) {
-        add(Usage(tr("下载", "Downloads", "ダウンロード", "다운로드"), allowances.downloadDaily.usedBytes, allowances.downloadDaily.limitBytes))
+        add(Usage(tr("下载", "Downloads", "ダウンロード", "다운로드", "下載"), allowances.downloadDaily.usedBytes, allowances.downloadDaily.limitBytes))
     }
     // 秒传不算离线次数，这一格只数离线任务
     val remaining = cloudDownload?.remaining
     if (cloudDownload != null && remaining != null) {
         val limit = cloudDownload.limit.toLong()
-        add(Usage(tr("离线", "Cloud download", "クラウドダウンロード", "클라우드 다운로드"), limit - remaining, limit, format = { tr("$it 次", "${enCount(it, "time", "times")}", "$it 回", "${it}회") }))
+        add(Usage(tr("离线", "Cloud download", "クラウドダウンロード", "클라우드 다운로드", "離線"), limit - remaining, limit, format = { tr("$it 次", "${enCount(it, "time", "times")}", "$it 回", "${it}회", "$it 次") }))
     }
 }
 
 /** 额度为 0 的项没有比例可言，写用量本身。 */
 private fun tightestUsageLabel(usage: Usage): String =
     if (usage.limitBytes > 0) {
-        tr("${usage.title}已用 ${(usedFraction(usage.usedBytes, usage.limitBytes) * 100).toInt()}%", "${usage.title}: ${(usedFraction(usage.usedBytes, usage.limitBytes) * 100).toInt()}% used", "${usage.title}：${(usedFraction(usage.usedBytes, usage.limitBytes) * 100).toInt()}% 使用済み", "${usage.title}: ${(usedFraction(usage.usedBytes, usage.limitBytes) * 100).toInt()}% 사용")
+        tr("${usage.title}已用 ${(usedFraction(usage.usedBytes, usage.limitBytes) * 100).toInt()}%", "${usage.title}: ${(usedFraction(usage.usedBytes, usage.limitBytes) * 100).toInt()}% used", "${usage.title}：${(usedFraction(usage.usedBytes, usage.limitBytes) * 100).toInt()}% 使用済み", "${usage.title}: ${(usedFraction(usage.usedBytes, usage.limitBytes) * 100).toInt()}% 사용", "${usage.title}已用 ${(usedFraction(usage.usedBytes, usage.limitBytes) * 100).toInt()}%")
     } else {
-        tr("${usage.title}已用 ${usage.format(usage.usedBytes)}", "${usage.title}: ${usage.format(usage.usedBytes)} used", "${usage.title}：${usage.format(usage.usedBytes)} 使用済み", "${usage.title}: ${usage.format(usage.usedBytes)} 사용")
+        tr("${usage.title}已用 ${usage.format(usage.usedBytes)}", "${usage.title}: ${usage.format(usage.usedBytes)} used", "${usage.title}：${usage.format(usage.usedBytes)} 使用済み", "${usage.title}: ${usage.format(usage.usedBytes)} 사용", "${usage.title}已用 ${usage.format(usage.usedBytes)}")
     }
 
 @Composable
@@ -691,21 +691,21 @@ private fun UsageTile(usage: Usage, modifier: Modifier = Modifier) {
 private fun transferQuotaResetLabel(): String {
     val today = OffsetDateTime.now(ZoneOffset.ofHours(8)).toLocalDate()
     val reset = today.plusMonths(1).withDayOfMonth(1)
-    return tr("${ChronoUnit.DAYS.between(today, reset)} 天后重置", "Resets in ${enCount(ChronoUnit.DAYS.between(today, reset), "day", "days")}", "${ChronoUnit.DAYS.between(today, reset)} 日後にリセット", "${ChronoUnit.DAYS.between(today, reset)}일 후 초기화")
+    return tr("${ChronoUnit.DAYS.between(today, reset)} 天后重置", "Resets in ${enCount(ChronoUnit.DAYS.between(today, reset), "day", "days")}", "${ChronoUnit.DAYS.between(today, reset)} 日後にリセット", "${ChronoUnit.DAYS.between(today, reset)}일 후 초기화", "${ChronoUnit.DAYS.between(today, reset)} 天後重設")
 }
 
 /** 距下一次每日重置（新加坡时间 0 点）还有几小时，不足 1 小时写「1 小时内」。 */
 private fun dailyQuotaResetLabel(): String {
     val now = OffsetDateTime.now(ZoneOffset.ofHours(8))
     val hours = ChronoUnit.HOURS.between(now, now.toLocalDate().plusDays(1).atStartOfDay().atOffset(now.offset))
-    return if (hours < 1) tr("1 小时内重置", "Resets within 1 hour", "1時間以内にリセット", "1시간 이내 초기화") else tr("$hours 小时后重置", "Resets in ${enCount(hours, "hour", "hours")}", "$hours 時間後にリセット", "${hours}시간 후 초기화")
+    return if (hours < 1) tr("1 小时内重置", "Resets within 1 hour", "1時間以内にリセット", "1시간 이내 초기화", "1 小時內重設") else tr("$hours 小时后重置", "Resets in ${enCount(hours, "hour", "hours")}", "$hours 時間後にリセット", "${hours}시간 후 초기화", "$hours 小時後重設")
 }
 
 /** 非会员时 [TransferAllowances.expireTime] 为空字符串，解析失败也一并按「没有」处理。 */
 private fun formatExpireDate(expireTime: String): String? {
     if (expireTime.isBlank()) return null
     return runCatching {
-        OffsetDateTime.parse(expireTime).format(DateTimeFormatter.ofPattern(tr("yyyy 年 M 月 d 日", "MMM d, yyyy", "yyyy年M月d日", "yyyy년 M월 d일"), Locale.getDefault()))
+        OffsetDateTime.parse(expireTime).format(DateTimeFormatter.ofPattern(tr("yyyy 年 M 月 d 日", "MMM d, yyyy", "yyyy年M月d日", "yyyy년 M월 d일", "yyyy 年 M 月 d 日"), Locale.getDefault()))
     }.getOrNull()
 }
 

@@ -153,8 +153,8 @@ internal fun DrivePathTitle(model: AddressBarModel, editRequests: Int) {
     ContextMenuArea(
         actions = {
             listOf(
-                SheetAction(Icons.Outlined.ContentCopy, tr("复制路径", "Copy path", "パスをコピー", "경로 복사"), { platform.copyToClipboard(tr("路径", "Path", "パス", "경로"), pathText) }),
-                SheetAction(Icons.Outlined.Edit, tr("编辑路径", "Edit path", "パスを編集", "경로 편집"), { editing = true }),
+                SheetAction(Icons.Outlined.ContentCopy, tr("复制路径", "Copy path", "パスをコピー", "경로 복사", "複製路徑"), { platform.copyToClipboard(tr("路径", "Path", "パス", "경로", "路徑"), pathText) }),
+                SheetAction(Icons.Outlined.Edit, tr("编辑路径", "Edit path", "パスを編集", "경로 편집", "編輯路徑"), { editing = true }),
             )
         },
         enabled = !editing,
@@ -169,7 +169,7 @@ internal fun DrivePathTitle(model: AddressBarModel, editRequests: Int) {
                 .clip(CircleShape)
                 .background(colors.headerFieldColor)
                 // 各段自己接住单击；落在段外的（路径后面的空白）进入输入
-                .then(if (editing) Modifier else Modifier.clickable(onClickLabel = tr("输入路径", "Enter path", "パスを入力", "경로 입력")) { editing = true })
+                .then(if (editing) Modifier else Modifier.clickable(onClickLabel = tr("输入路径", "Enter path", "パスを入力", "경로 입력", "輸入路徑")) { editing = true })
                 .padding(start = 8.dp),
             contentAlignment = Alignment.CenterStart,
         ) {
@@ -185,7 +185,7 @@ internal fun DrivePathTitle(model: AddressBarModel, editRequests: Int) {
                     Box(Modifier.weight(1f)) { PathCrumbs(model) }
                     // 触屏没有右键与快捷键，历史与输入从这里进
                     IconButton(onClick = { editing = true }) {
-                        Icon(Icons.Outlined.ExpandMore, contentDescription = tr("最近去过的文件夹", "Recently visited folders", "最近開いたフォルダー", "최근 방문 폴더"), tint = colors.onSurfaceVariant)
+                        Icon(Icons.Outlined.ExpandMore, contentDescription = tr("最近访问的文件夹", "Recent folders", "最近開いたフォルダー", "최근 방문한 폴더", "最近造訪的資料夾"), tint = colors.onSurfaceVariant)
                     }
                 }
             }
@@ -249,41 +249,41 @@ private fun AddressField(model: AddressBarModel, initial: String, menuWidth: Dp,
             val shown = if (showAllRecent) recent else recent.take(RECENT_SHOWN)
             shown.forEach { stack ->
                 val id = stack.last().id
-                add(Suggestion("recent:$id", tr("最近", "Recent", "最近", "최근"), stack.last().localizedName, Icons.Outlined.History, detail = stack.displayPath(),
+                add(Suggestion("recent:$id", tr("最近", "Recent", "最近", "최근", "最近"), stack.last().localizedName, Icons.Outlined.History, detail = stack.displayPath(),
                     completion = stack.pathText(), onRemove = { model.onRemoveRecent(id) }) { model.onOpenStack(stack) })
             }
             if (recent.size > shown.size) {
-                add(Suggestion("recent:all", tr("最近", "Recent", "最近", "최근"), tr("显示全部（${recent.size} 项）", "Show all (${enCount(recent.size, "item", "items")})", "すべて表示（${recent.size} 項目）", "모두 표시 (${recent.size}개 항목)"), Icons.Outlined.UnfoldMore, keepsOpen = true) { showAllRecent = true })
+                add(Suggestion("recent:all", tr("最近", "Recent", "最近", "최근", "最近"), tr("显示全部（${recent.size} 项）", "Show all (${enCount(recent.size, "item", "items")})", "すべて表示（${recent.size} 項目）", "모두 표시 (${recent.size}개 항목)", "顯示全部（${recent.size} 項）"), Icons.Outlined.UnfoldMore, keepsOpen = true) { showAllRecent = true })
             }
             model.pinned.forEach { folder ->
-                add(Suggestion("pinned:${folder.id}", tr("快速访问", "Quick access", "クイックアクセス", "빠른 액세스"), folder.localizedName, Icons.Outlined.PushPin) { model.onOpenPinned(folder) })
+                add(Suggestion("pinned:${folder.id}", tr("快速访问", "Quick access", "クイックアクセス", "빠른 액세스", "快速存取"), folder.localizedName, Icons.Outlined.PushPin) { model.onOpenPinned(folder) })
             }
-            add(Suggestion("copy", tr("操作", "Actions", "操作", "작업"), tr("复制路径", "Copy path", "パスをコピー", "경로 복사"), Icons.Outlined.ContentCopy) { platform.copyToClipboard(tr("路径", "Path", "パス", "경로"), initial) })
+            add(Suggestion("copy", tr("操作", "Actions", "操作", "작업", "操作"), tr("复制路径", "Copy path", "パスをコピー", "경로 복사", "複製路徑"), Icons.Outlined.ContentCopy) { platform.copyToClipboard(tr("路径", "Path", "パス", "경로", "路徑"), initial) })
             return@buildList
         }
         if (link != null) {
             val isShare = InstantSheetState.findShareLink(link) != null
-            add(Suggestion("link", tr("链接", "Link", "リンク", "링크"), if (isShare) tr("打开分享链接", "Open share link", "共有リンクを開く", "공유 링크 열기") else tr("添加磁力链接", "Add magnet link", "マグネットリンクを追加", "마그넷 링크 추가"), if (isShare) Icons.Outlined.Link else Icons.Outlined.Bolt) {
+            add(Suggestion("link", tr("链接", "Link", "リンク", "링크", "連結"), if (isShare) tr("打开分享链接", "Open share link", "共有リンクを開く", "공유 링크 열기", "開啟分享連結") else tr("添加磁力链接", "Add magnet link", "マグネットリンクを追加", "마그넷 링크 추가", "新增磁力連結"), if (isShare) Icons.Outlined.Link else Icons.Outlined.Bolt) {
                 model.onOpenLink(link)
             })
             return@buildList
         }
         val result = completion
         result?.matches?.forEach { stack ->
-            add(Suggestion("folder:${stack.last().id}", tr("文件夹", "Folder", "フォルダー", "폴더"), stack.last().localizedName, Icons.Outlined.Folder,
+            add(Suggestion("folder:${stack.last().id}", tr("文件夹", "Folder", "フォルダー", "폴더", "資料夾"), stack.last().localizedName, Icons.Outlined.Folder,
                 detail = stack.displayPath(), completion = stack.pathText() + "/") { model.onOpenStack(stack) })
         }
         val needle = text.trim()
         if (needle.isNotEmpty() && '/' !in needle && '\\' !in needle) {
             model.destinations.filter { it.title.contains(needle, ignoreCase = true) || it.keywords.contains(needle, ignoreCase = true) }
-                .forEach { item -> add(Suggestion("page:${item.title}", tr("前往", "Go", "移動", "이동"), item.title, item.icon, detail = item.detail) { item.run() }) }
+                .forEach { item -> add(Suggestion("page:${item.title}", tr("前往", "Go", "移動", "이동", "前往"), item.title, item.icon, detail = item.detail) { item.run() }) }
         }
         // 输入的已是一个现有文件夹时不给搜索：回车就过去了
         val term = result?.partial.orEmpty()
         val exact = result != null && result.parentFound && result.matches.any { it.last().name.equals(term, ignoreCase = true) }
         if (result != null && term.isNotEmpty() && !exact) {
-            add(Suggestion("search:here", tr("搜索", "Search", "検索", "검색"), tr("在当前文件夹中搜索「$term」", "Search “$term” in this folder", "現在のフォルダーで「$term」を検索", "현재 폴더에서 “$term” 검색"), Icons.Outlined.Search) { model.onSearchHere(term) })
-            add(Suggestion("search:all", tr("搜索", "Search", "検索", "검색"), tr("全盘搜索「$term」", "Search drive for “$term”", "ドライブ全体で「$term」を検索", "전체 드라이브에서 “$term” 검색"), Icons.Outlined.TravelExplore) { model.onSearchAll(term) })
+            add(Suggestion("search:here", tr("搜索", "Search", "検索", "검색", "搜尋"), tr("在当前文件夹中搜索「$term」", "Search “$term” in this folder", "現在のフォルダーで「$term」を検索", "현재 폴더에서 “$term” 검색", "在目前資料夾中搜尋「$term」"), Icons.Outlined.Search) { model.onSearchHere(term) })
+            add(Suggestion("search:all", tr("搜索", "Search", "検索", "검색", "搜尋"), tr("全盘搜索「$term」", "Search drive for “$term”", "ドライブ全体で「$term」を検索", "전체 드라이브에서 “$term” 검색", "搜尋整個雲端硬碟中的「$term」"), Icons.Outlined.TravelExplore) { model.onSearchAll(term) })
         }
     }
     // 下拉的内容换了，高亮回到「没挑」；链接只有一项，直接挑上，回车即处理
@@ -348,7 +348,7 @@ private fun AddressField(model: AddressBarModel, initial: String, menuWidth: Dp,
         // 逐层列目录要几次请求，慢的时候得看得出在找
         if (resolving) InlineLoadingIndicator()
         // 触屏没有 Esc，点外面也不失焦（见 releasesFocusOnOutsidePress），输入态得有一个看得见的出口
-        TooltipIconButton(Icons.Outlined.Close, tr("取消", "Cancel", "キャンセル", "취소"), onClose, shortcut = "Esc", tint = colors.onSurfaceVariant)
+        TooltipIconButton(Icons.Outlined.Close, tr("取消", "Cancel", "キャンセル", "취소", "取消"), onClose, shortcut = "Esc", tint = colors.onSurfaceVariant)
     }
 
     // 不抢焦点的弹层：键盘留在输入框里，↑↓ 只挪高亮。点弹层外面时输入框失焦、整个收起，不必另外处理
@@ -405,7 +405,7 @@ private fun SuggestionRow(item: Suggestion, highlighted: Boolean, onClick: () ->
         }
         item.onRemove?.let { remove ->
             IconButton(onClick = remove) {
-                Icon(Icons.Outlined.Close, contentDescription = tr("从最近去过的文件夹中删除", "Remove from recent folders", "最近開いたフォルダーから削除", "최근 방문 폴더에서 삭제"), tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                Icon(Icons.Outlined.Close, contentDescription = tr("从最近访问中移除", "Remove from recent folders", "最近開いたフォルダーから削除", "최근 방문한 폴더에서 제거", "從最近造訪中移除"), tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
             }
         }
     }
@@ -433,7 +433,7 @@ private fun PathCrumbs(model: AddressBarModel) {
                     // 每一段都接得住拖来的条目：拖到「网盘」就是移回根目录
                     .fileDropTarget("crumb:${crumb.id}", crumb)
                     .clip(MaterialTheme.shapes.small)
-                    .clickable(onClickLabel = tr("打开", "Open", "開く", "열기")) { model.onNavigate(index) }
+                    .clickable(onClickLabel = tr("打开", "Open", "開く", "열기", "開啟")) { model.onNavigate(index) }
                     .padding(horizontal = 6.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -503,7 +503,7 @@ private fun SiblingChevron(
     Box {
         Icon(
             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-            contentDescription = tr("「${level.last().name}」里的文件夹", "Folders in “${level.last().name}”", "「${level.last().name}」内のフォルダー", "“${level.last().name}” 내 폴더"),
+            contentDescription = tr("「${level.last().name}」里的文件夹", "Folders in “${level.last().name}”", "「${level.last().name}」内のフォルダー", "“${level.last().name}” 내 폴더", "「${level.last().name}」中的資料夾"),
             tint = colors.onSurfaceVariant,
             modifier = Modifier
                 .clip(MaterialTheme.shapes.small)
@@ -515,8 +515,8 @@ private fun SiblingChevron(
             val loaded = folders
             when {
                 loaded == null -> Box(Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) { InlineLoadingIndicator() }
-                loaded.isFailure -> MenuNote(loaded.exceptionOrNull()?.message ?: tr("列不出这个文件夹，请检查网络", "Unable to list this folder. Check your connection", "フォルダーの内容を表示できません。接続を確認してください", "폴더 내용을 표시할 수 없습니다. 네트워크를 확인해 주세요"))
-                loaded.getOrThrow().isEmpty() -> MenuNote(tr("没有子文件夹", "No subfolders", "サブフォルダーはありません", "하위 폴더가 없습니다"))
+                loaded.isFailure -> MenuNote(loaded.exceptionOrNull()?.message ?: tr("列不出这个文件夹，请检查网络", "Unable to list this folder. Check your connection", "フォルダーの内容を表示できません。接続を確認してください", "폴더 내용을 표시할 수 없습니다. 네트워크를 확인해 주세요", "無法列出此資料夾，請檢查網路"))
+                loaded.getOrThrow().isEmpty() -> MenuNote(tr("没有子文件夹", "No subfolders", "サブフォルダーはありません", "하위 폴더가 없습니다", "沒有子資料夾"))
                 else -> {
                     val list = loaded.getOrThrow()
                     list.forEachIndexed { index, folder ->

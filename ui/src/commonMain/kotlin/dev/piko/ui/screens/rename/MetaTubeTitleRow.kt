@@ -45,7 +45,7 @@ internal fun MetaTubeTitleRow(fileName: String, service: MetaTubeService, onName
             onClick = {
                 val info = parseMediaName(fileName).av ?: return@TextButton
                 querying = true
-                status = tr("正在查询", "Checking", "照会中", "조회 중")
+                status = tr("正在查询", "Checking", "照会中", "조회 중", "正在查詢")
                 failed = false
                 scope.launch {
                     val result = service.titles(listOf(info))
@@ -55,10 +55,10 @@ internal fun MetaTubeTitleRow(fileName: String, service: MetaTubeService, onName
                     status = when {
                         title != null -> {
                             canonicalAvNameOf(fileName, title)?.let(onNameFound)
-                            tr("已填入查到的片名", "Retrieved title inserted", "取得した作品名を入力しました", "조회한 제목을 입력했습니다")
+                            tr("已填入查到的片名", "Retrieved title inserted", "取得した作品名を入力しました", "조회한 제목을 입력했습니다", "已填入查到的片名")
                         }
-                        failed -> tr("查询失败", "Query failed", "照会に失敗しました", "조회 실패")
-                        else -> tr("未查到片名", "Title not found", "作品名が見つかりません", "제목을 찾지 못했습니다")
+                        failed -> tr("查询失败", "Query failed", "照会に失敗しました", "조회 실패", "查詢失敗")
+                        else -> tr("未查到片名", "Title not found", "作品名が見つかりません", "제목을 찾지 못했습니다", "未查到片名")
                     }
                 }
             },

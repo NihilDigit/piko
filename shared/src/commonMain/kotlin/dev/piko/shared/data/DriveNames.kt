@@ -1,5 +1,7 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.i18n.tr
+
 /**
  * PikPak 对网盘里名称的限制。2026-09-26 实测重命名与新建文件夹，拒绝时都回 file_name_with_illegal_chars：
  * 含 / \ : * ? " < > | 或制表符、换行、回车，以句点结尾（含 . 与 ..），首尾有空格。
@@ -47,10 +49,10 @@ object DriveNames {
         val chars = trimmed.filter { it in UNSUPPORTED }.toSet()
         return buildList {
             val visible = chars.filterNot { it.isWhitespace() }
-            if (visible.isNotEmpty()) add(visible.joinToString(" ", prefix = "字符 "))
-            if ('\n' in chars || '\r' in chars) add("换行")
-            if ('\t' in chars) add("制表符")
-            if (trimmed.filterNot { it in UNSUPPORTED }.trimEnd(' ').endsWith('.')) add("结尾的句点")
+            if (visible.isNotEmpty()) add(visible.joinToString(" ", prefix = tr("字符 ", "characters ", "文字 ", "문자 ", "字元 ")))
+            if ('\n' in chars || '\r' in chars) add(tr("换行符", "line breaks", "改行", "줄바꿈", "換行符號"))
+            if ('\t' in chars) add(tr("制表符", "tabs", "タブ文字", "탭 문자", "定位字元"))
+            if (trimmed.filterNot { it in UNSUPPORTED }.trimEnd(' ').endsWith('.')) add(tr("末尾句点", "trailing periods", "末尾のピリオド", "끝의 마침표", "結尾句點"))
         }
     }
 }

@@ -1,5 +1,6 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.tr
 import dev.piko.data.repository.NaturalOrder
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.ArchiveEntryId
@@ -123,8 +124,8 @@ class ArchiveBrowser(
     suspend fun prepare(entry: FileStat, siblings: List<FileStat>): Result<FileStat> = runSuspendCatching {
         val owner = owner()
         val revision = generation
-        val location = ArchiveLocation.of(entry.parentId) ?: error("不是压缩包里的文件")
-        val path = ArchiveEntryId.pathOf(entry.id)?.second ?: error("不是压缩包里的文件")
+        val location = ArchiveLocation.of(entry.parentId) ?: error(tr("非压缩包内文件", "Not a file inside an archive", "圧縮ファイル内の項目ではありません", "압축 파일 내 항목이 아닙니다", "非壓縮檔內檔案"))
+        val path = ArchiveEntryId.pathOf(entry.id)?.second ?: error(tr("非压缩包内文件", "Not a file inside an archive", "圧縮ファイル内の項目ではありません", "압축 파일 내 항목이 아닙니다", "非壓縮檔內檔案"))
         val scratch = scratchFolder(owner).getOrThrow()
         ensureOwner(owner, revision)
         val relisted = listings[location.id]?.firstOrNull {
@@ -141,9 +142,9 @@ class ArchiveBrowser(
             ensureOwner(owner, revision)
             listings.keys.removeAll { ArchiveLocation.of(it)?.archiveId == location.archiveId }
             list(location).getOrThrow().firstOrNull { ArchiveEntryId.pathOf(it.id)?.second == path }
-                ?: error("压缩包里已没有这个文件")
+                ?: error(tr("压缩包内未找到此文件", "File not found in archive", "圧縮ファイル内にこのファイルが見つかりません", "압축 파일에서 이 파일을 찾을 수 없습니다", "壓縮檔內找不到此檔案"))
         }
-        checkNotNull(ArchiveEntryId.resolvedFileOf(ready.id)) { "服务端未给出这个文件的内容标识" }
+        checkNotNull(ArchiveEntryId.resolvedFileOf(ready.id)) { tr("服务端未返回文件内容标识", "Server did not return file content ID", "サーバーからファイルの内容識別子が返されませんでした", "서버에서 파일 콘텐츠 식별자를 반환하지 않았습니다", "伺服器未傳回檔案內容識別碼") }
         ensureOwner(owner, revision)
         ready.copy(parentId = scratch)
     }

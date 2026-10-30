@@ -85,7 +85,7 @@ class InstantFlowSmokeTest {
     }
 
     @Test
-    fun `repository shares four file permits across independent saves`() = smoke { scope ->
+    fun `repository shares sixteen file permits across independent saves`() = smoke { scope ->
         val server = FakePikPakServer()
         val http = server.httpClient()
         val client = PikPakClient("smoke@piko.dev", "pw",
@@ -109,16 +109,16 @@ class InstantFlowSmokeTest {
         }
         try {
             val saves = (1..3).map { row -> scope.async {
-                repo.instantSave((1..3).map { file -> InstantFileItem(
+                repo.instantSave((1..8).map { file -> InstantFileItem(
                     ResolvedFile("$row-$file.mkv", 10, "HASH$row$file"), true) }).getOrThrow()
             } }
-            withTimeout(5_000) { repeat(4) { entered.receive() } }
-            assertEquals(4, peak.get())
+            withTimeout(5_000) { repeat(16) { entered.receive() } }
+            assertEquals(16, peak.get())
             assertTrue(entered.tryReceive().isFailure)
-            repeat(9) { release.send(Unit) }
-            saves.forEach { assertEquals(3, it.await().size) }
-            assertEquals(4, peak.get())
-            assertEquals(9, server.instantCreates.get())
+            repeat(24) { release.send(Unit) }
+            saves.forEach { assertEquals(8, it.await().size) }
+            assertEquals(16, peak.get())
+            assertEquals(24, server.instantCreates.get())
         } finally { release.close() }
     }
 

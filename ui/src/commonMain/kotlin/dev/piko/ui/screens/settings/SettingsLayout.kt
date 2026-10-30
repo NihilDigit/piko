@@ -530,7 +530,7 @@ internal fun SettingsInputDialog(
                 if (footer != null) DialogFootnote(footer)
             }
         },
-        confirmButton = { PikoDialogConfirm(tr("保存", "Save", "保存", "저장"), onClick = onSave, enabled = saveEnabled) },
+        confirmButton = { PikoDialogConfirm(tr("保存", "Save", "保存", "저장", "儲存"), onClick = onSave, enabled = saveEnabled) },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) } },
     )
 }

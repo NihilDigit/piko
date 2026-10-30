@@ -90,7 +90,7 @@ internal fun GalleryTile(
             } else if (file.isPlayableVideo()) {
                 Icon(
                     imageVector = Icons.Filled.PlayCircle,
-                    contentDescription = tr("视频", "Video", "動画", "동영상"),
+                    contentDescription = tr("视频", "Video", "動画", "동영상", "影片"),
                     tint = Color.White.copy(alpha = 0.9f),
                     modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp).size(20.dp),
                 )
@@ -122,7 +122,7 @@ internal fun GalleryTile(
             ) {
                 Icon(
                     imageVector = Icons.Filled.Inventory2,
-                    contentDescription = if (file.isFolder) tr("含归档条目", "Includes archived items", "アーカイブ項目を含む", "보관 항목 포함") else tr("已归档", "Archived", "アーカイブ済み", "보관됨"),
+                    contentDescription = if (file.isFolder) tr("含归档条目", "Includes archived items", "アーカイブ項目を含む", "보관 항목 포함", "含歸檔項目") else tr("已归档", "Archived", "アーカイブ済み", "보관됨", "已歸檔"),
                     tint = fixed.OnMedia,
                     modifier = Modifier.size(14.dp),
                 )

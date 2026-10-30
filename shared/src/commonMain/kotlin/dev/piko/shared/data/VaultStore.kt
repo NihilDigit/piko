@@ -4,12 +4,14 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
+import io.github.nihildigit.pikpak.FileTag
 import io.github.nihildigit.pikpak.ResolvedFile
 import io.github.nihildigit.pikpak.TaskPhase
 import io.github.nihildigit.pikpak.videoThumbnailUrlOf
 import io.github.nihildigit.pikpak.imageThumbnailUrlOf
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -66,7 +68,7 @@ data class VaultEntry(
         file.hash.equals(gcid, ignoreCase = true) && file.sizeBytes == size &&
         (file.id == restoredFileId || file.name == name)
 
-    fun enrich(file: FileStat): FileStat {
+    fun enrich(file: FileStat, preserveStar: Boolean = false): FileStat {
         if (!matches(file)) return file
         val metadata = buildMap {
             if (!source.isNullOrBlank() && file.sourceUrl.isNullOrBlank()) put("url", source)
@@ -75,7 +77,16 @@ data class VaultEntry(
             if (file.params["width"].isNullOrBlank() && width != null) put("width", width)
             if (file.params["height"].isNullOrBlank() && height != null) put("height", height)
         }
-        return file.copy(params = file.params + metadata, mimeType = file.mimeType.ifBlank { mimeType.orEmpty() })
+        val nextTags = if (preserveStar && file.tags.none { it.name.equals("STAR", ignoreCase = true) }) {
+            file.tags + FileTag(id = "STAR", name = "STAR")
+        } else {
+            file.tags
+        }
+        return file.copy(
+            params = file.params + metadata,
+            mimeType = file.mimeType.ifBlank { mimeType.orEmpty() },
+            tags = nextTags,
+        )
     }
 
     /**
@@ -86,9 +97,9 @@ data class VaultEntry(
 
     /**
      * 列表里的一行。网盘页的解析、分组、排序与图标都照真实文件走；来源放进 params 的 url，与离线、转存的文件同处。
-     * 时间用记进清单的时刻。
+     * 时间用记进清单的时刻；[starred] 为真时由 Piko 补上 STAR 标签。
      */
-    fun toFileStat(folderId: String): FileStat {
+    fun toFileStat(folderId: String, starred: Boolean = false): FileStat {
         val time = Instant.fromEpochMilliseconds(addedAt).toString()
         val row = FileStat(
             kind = FileKind.FILE,
@@ -102,6 +113,7 @@ data class VaultEntry(
             hash = gcid,
             phase = TaskPhase.COMPLETE,
             mimeType = mimeType.orEmpty(),
+            tags = if (starred) listOf(FileTag(id = "STAR", name = "STAR")) else emptyList(),
             params = buildMap {
                 source?.let { put("url", it) }
                 duration?.let { put("duration", it) }
@@ -210,6 +222,15 @@ interface VaultFolderIo {
  * 剩下的风险在列目录的延迟：两边都没看到对方的文件，就都以为自己赢了。读的时候只认一个，状态不会分叉，
  * 但输的那次改动会丢。赢了之后隔 [confirmDelay] 再列一次确认，确认完才算写成；这要两台设备在同一秒改同一个文件夹。
  */
+/** 清单提交确认后传给本地文件树的目录证据：区分经过真实列举的完整快照与新目录快速通道的增量文件。 */
+sealed interface VaultCommitSnapshot {
+    /** 真实列举确认的完整目录快照，携带发起该次列举前采样的目录变更序号 [listedAtSerial]。 */
+    class FullListing(val listing: List<FileStat>, val listedAtSerial: Long? = null) : VaultCommitSnapshot
+
+    /** 新建专属目录快速通道产生的增量文件（归档来源与清单文件），不覆盖同目录已建好的嵌套子目录。 */
+    class IncrementalFiles(val added: List<FileStat>) : VaultCommitSnapshot
+}
+
 class VaultStore(
     private val io: VaultFolderIo,
     private val confirmDelay: Duration = 1.seconds,
@@ -218,6 +239,10 @@ class VaultStore(
     private val onChanged: (folderId: String) -> Unit = {},
     /** 写成之后这个文件夹里的条目。归档一整棵树时子文件夹没人列过，靠它给文件夹挂上标记。 */
     private val onWritten: (folderId: String, entries: List<VaultEntry>) -> Unit = { _, _ -> },
+    /** 清单确认落盘后连同确认时的目录证据一并同步给本地文件树，免去外层盲目标脏重列。 */
+    private val onCommitted: (folderId: String, entries: List<VaultEntry>, snapshot: VaultCommitSnapshot?) -> Unit = { _, _, _ -> },
+    /** 发起列目录前采样该目录在仓库中的变更序号，供提交完整快照时拦截挂起期间发生的并发文件变更。 */
+    private val currentFolderSerial: (folderId: String) -> Long? = { null },
     private val cacheStore: PikoCacheStore? = null,
     private val account: String? = null,
     private val scope: CoroutineScope? = null,
@@ -235,17 +260,32 @@ class VaultStore(
     private val locks = HashMap<String, Mutex>()
     private val locksGuard = Mutex()
 
-    // 清单文件 ID（及正式随机串文件名）到其中的条目。一份清单写成后不再改动，改动总是另写一份，所以按 ID/文件名缓存不会过时
+    // 清单文件 ID 到其中的条目。一份清单写成后不再改动，改动总是另写一份，所以按 ID 缓存不会过时
     private val parsed = MutableStateFlow(initialParsed)
     val parsedFlow: StateFlow<Map<String, List<VaultEntry>>> = parsed.asStateFlow()
+    // 本实例各目录最后一次已确认写成的清单（id 与版本号），防止服务端列表可见性滞后时回退到空/旧基线
+    private val lastCommittedByFolder = MutableStateFlow<Map<String, Pair<String, Int>>>(emptyMap())
+    private val cacheLoaded = CompletableDeferred<Unit>()
     private var pendingSave: Job? = null
 
     init {
         if (cacheStore != null && !account.isNullOrEmpty() && scope != null) {
             scope.launch {
-                val stored = cacheStore.read(cacheKeyOf(account))?.let(::decodeParsed) ?: return@launch
-                parsed.update { stored + it }
+                try {
+                    val storedParsed = cacheStore.read(cacheKeyOf(account))?.let(::decodeParsed)
+                    if (!storedParsed.isNullOrEmpty()) {
+                        parsed.update { storedParsed + it }
+                    }
+                    val storedCommitted = cacheStore.read(committedCacheKeyOf(account))?.let(::decodeCommitted)
+                    if (!storedCommitted.isNullOrEmpty()) {
+                        lastCommittedByFolder.update { storedCommitted + it }
+                    }
+                } finally {
+                    cacheLoaded.complete(Unit)
+                }
             }
+        } else {
+            cacheLoaded.complete(Unit)
         }
     }
 
@@ -280,27 +320,56 @@ class VaultStore(
         }
     }
 
-    private fun rememberParsed(id: String, name: String, entries: List<VaultEntry>) {
+    private suspend fun rememberParsed(id: String, entries: List<VaultEntry>, awaitPersist: Boolean = false) {
         parsed.update { current -> current + (id to entries) }
+        if (awaitPersist) {
+            pendingSave?.cancel()
+            pendingSave = null
+            val store = cacheStore
+            val owner = account?.takeIf { it.isNotEmpty() }
+            if (store != null && owner != null) {
+                store.write(cacheKeyOf(owner), encodeParsed(parsed.value))
+                return
+            }
+        }
         scheduleSave()
     }
 
+    private suspend fun recordCommittedBaseline(folderId: String, manifestId: String, version: Int) {
+        lastCommittedByFolder.update { current ->
+            val prev = current[folderId]
+            if (prev != null && prev.second > version) current else current + (folderId to (manifestId to version))
+        }
+        val store = cacheStore
+        val owner = account?.takeIf { it.isNotEmpty() }
+        if (store != null && owner != null) {
+            store.write(committedCacheKeyOf(owner), encodeCommitted(lastCommittedByFolder.value))
+        }
+    }
+
     private fun lookupParsed(file: FileStat): List<VaultEntry>? = parsed.value[file.id]
+
+    private fun activeWinner(listing: Collection<FileStat>): Candidate? = winner(listing, parsed.value.keys)
+
+    /** 挑出目录列表中对本实例生效的归档清单文件（含本机已完整上传并缓存条目的在途转正清单）。 */
+    fun winnerOf(listing: Collection<FileStat>): FileStat? = activeWinner(listing)?.file
 
     /**
      * [folderId] 的条目，[listing] 是它的目录列表。有正在写的改动时是改动之后的样子。
      * 读不出来就失败，不当作空。
      */
     suspend fun read(folderId: String, listing: List<FileStat>): Result<List<VaultEntry>> = runSuspendCatching {
+        cacheLoaded.await()
         pending.value[folderId]?.let { return@runSuspendCatching it }
-        val entries = winner(listing)?.let { entriesOf(it.file) }.orEmpty()
+        val entries = activeWinner(listing)?.let { entriesOf(it.file) }.orEmpty()
         known.update { it + (folderId to entries) }
         entries
     }
 
     /** 核对业务结果时只读当前胜出的清单，不把其他待写操作的乐观投影当作已提交结果。 */
     suspend fun committed(folderId: String): Result<List<VaultEntry>> = runSuspendCatching {
-        winner(io.list(folderId))?.let { entriesOf(it.file) }.orEmpty()
+        cacheLoaded.await()
+        activeWinner(io.list(folderId))?.let { entriesOf(it.file) }.orEmpty()
     }
 
     /** 只用缓存的 [read]：算数的那份没读过时返回 null。 */
@@ -311,7 +380,7 @@ class VaultStore(
 
     /** 只查已提交清单的缓存（不读 [pending]）：目录中无清单时返回空列表，清单未缓存时返回 null。 */
     fun cachedCommitted(listing: Collection<FileStat>): List<VaultEntry>? {
-        val file = winner(listing)?.file ?: return emptyList()
+        val file = activeWinner(listing)?.file ?: return emptyList()
         return lookupParsed(file)
     }
 
@@ -324,105 +393,289 @@ class VaultStore(
         }
     }
 
+    /** 从本机已缓存的清单条目中按内容哈希与字节数零网络查找已知媒体与校验元数据（含取样 CID、时长、分辨率与 MIME）。 */
+    fun knownMetaOf(gcid: String, size: Long): VaultMediaMeta? {
+        if (gcid.isBlank()) return null
+        var merged = VaultMediaMeta()
+        fun absorb(entriesMap: Map<String, List<VaultEntry>>): Boolean {
+            for (entries in entriesMap.values) {
+                for (entry in entries) {
+                    if (entry.size == size && entry.gcid.equals(gcid, ignoreCase = true)) {
+                        merged = merged.mergeWith(VaultMediaMeta.fromVaultEntry(entry))
+                        if (merged.cid != null && merged.duration != null && merged.width != null &&
+                            merged.height != null && merged.mimeType != null
+                        ) {
+                            return true
+                        }
+                    }
+                }
+            }
+            return false
+        }
+        if (!absorb(known.value)) absorb(parsed.value)
+        return merged.takeUnless { it.isEmpty }
+    }
+
+    /** 从本机已缓存的清单条目中按内容哈希与字节数查找已知的非空取样 CID，命中时归档免去重复请求 CDN。 */
+    fun knownCidOf(gcid: String, size: Long): String? = knownMetaOf(gcid, size)?.cid
+
     /**
      * 把 [edit] 写进 [folderId] 的清单。现列目录再读，不用调用方手上的列表：它可能已经过时。
+     * [freshlyCreatedFolder] 为真时表示该目录刚由本次事务新建（全球尚无其他设备持有其 ID），可跳过空目录基线查询与跨端竞争等待。
+     * [requireRemoteComplete] 为真时（例如永久删除原文件的破坏性归档），要求新清单在服务端目录列表中已翻转为 `COMPLETE` 才返回成功。
      * 改完与原来相同就不写。
      */
-    suspend fun update(folderId: String, edit: VaultEdit): Result<VaultWrite> {
+    suspend fun update(
+        folderId: String,
+        edit: VaultEdit,
+        freshlyCreatedFolder: Boolean = false,
+        requireRemoteComplete: Boolean = false,
+    ): Result<VaultWrite> {
+        cacheLoaded.await()
         // 前一个改动还没写完时接着它的样子画，免得第二下把第一下暂时盖回去
         (pending.value[folderId] ?: known.value[folderId])?.let { before ->
             pending.update { it + (folderId to edit(before)) }
             onChanged(folderId)
         }
+        var committed = false
         return try {
             var attempted: VaultWrite? = null
-            val result = write(folderId, edit) { attempted = it }
+            var committedSnapshot: VaultCommitSnapshot? = null
+            val result = write(
+                folderId = folderId,
+                edit = edit,
+                freshlyCreatedFolder = freshlyCreatedFolder && !requireRemoteComplete,
+                requireRemoteComplete = requireRemoteComplete,
+                onAttempt = { attempted = it },
+                onListingConfirmed = { committedSnapshot = it },
+            )
             val outcome = result.exceptionOrNull()?.let { error ->
                 attempted?.let { Result.failure<VaultWrite>(VaultWriteUnconfirmed(it, error)) }
             } ?: result
             outcome.onSuccess { write ->
                 known.update { it + (folderId to write.after) }
+                pending.update { it - folderId }
+                committed = true
+                onCommitted(folderId, write.after, committedSnapshot)
                 onWritten(folderId, write.after)
             }
         } finally {
-            pending.update { it - folderId }
-            onChanged(folderId)
+            val hadPending = folderId in pending.value
+            if (hadPending) pending.update { it - folderId }
+            if (!committed) {
+                onChanged(folderId)
+            }
         }
     }
 
-    private suspend fun write(folderId: String, edit: VaultEdit, onAttempt: (VaultWrite) -> Unit): Result<VaultWrite> =
+    private sealed interface ConfirmOutcome {
+        class Won(val listing: List<FileStat>, val listedAtSerial: Long?) : ConfirmOutcome
+        class Lost(val winner: Candidate) : ConfirmOutcome
+        class Unconfirmed(val ownPhase: String?) : ConfirmOutcome
+    }
+
+    private suspend fun listWithSerial(folderId: String): Pair<List<FileStat>, Long?> {
+        val serial = currentFolderSerial(folderId)
+        return io.list(folderId) to serial
+    }
+
+    private suspend fun write(
+        folderId: String,
+        edit: VaultEdit,
+        freshlyCreatedFolder: Boolean,
+        requireRemoteComplete: Boolean,
+        onAttempt: (VaultWrite) -> Unit,
+        onListingConfirmed: (VaultCommitSnapshot?) -> Unit,
+    ): Result<VaultWrite> =
         lockOf(folderId).withLock {
             runSuspendCatching {
                 repeat(MAX_ATTEMPTS) { attempt ->
-                    val listing = io.list(folderId)
-                    val base = winner(listing)
+                    val useFastNewFolderPath = freshlyCreatedFolder && attempt == 0
+                    var baseSerial: Long? = null
+                    var listing = if (useFastNewFolderPath) {
+                        emptyList()
+                    } else {
+                        val (fetched, serial) = listWithSerial(folderId)
+                        baseSerial = serial
+                        fetched
+                    }
+                    if (!useFastNewFolderPath) {
+                        val expectedCommitted = lastCommittedByFolder.value[folderId]
+                        fun satisfiesCommittedLineage(cand: Candidate?): Boolean {
+                            if (expectedCommitted == null) return true
+                            val baseVer = cand?.version ?: 0
+                            if (baseVer < expectedCommitted.second) return false
+                            if (baseVer == expectedCommitted.second && cand?.file?.id != expectedCommitted.first) return false
+                            return true
+                        }
+                        fun baselineReady(files: Collection<FileStat>): Boolean {
+                            val cachedIds = if (requireRemoteComplete) emptySet() else parsed.value.keys
+                            val cand = winner(files, cachedIds)
+                            val baseVer = cand?.version ?: 0
+                            if (!satisfiesCommittedLineage(cand)) return false
+                            if (hasPendingStrangerAbove(files, baseVer, cachedIds)) return false
+                            return true
+                        }
+                        if (!baselineReady(listing)) {
+                            val retries = if (requireRemoteComplete) REMOTE_COMPLETE_RETRY_MILLIS else VISIBILITY_RETRY_MILLIS
+                            for (wait in retries) {
+                                delay(wait)
+                                val (refetched, serial) = listWithSerial(folderId)
+                                listing = refetched
+                                baseSerial = serial
+                                if (baselineReady(listing)) break
+                            }
+                            val cachedIds = if (requireRemoteComplete) emptySet() else parsed.value.keys
+                            val cand = winner(listing, cachedIds)
+                            val baseVer = cand?.version ?: 0
+                            if (!satisfiesCommittedLineage(cand)) {
+                                error("上一份已提交清单尚未在目录列表就绪（expected=v${expectedCommitted?.second}，id=${expectedCommitted?.first}），拒绝回退至旧基线")
+                            }
+                            if (hasPendingStrangerAbove(listing, baseVer, cachedIds)) {
+                                error("目录中存在其他设备尚未转正的新版清单，拒绝从旧基线覆盖")
+                            }
+                        }
+                    }
+                    val base = if (requireRemoteComplete) winner(listing) else activeWinner(listing)
                     val before = base?.let { entriesOf(it.file) }.orEmpty()
                     val after = edit(before)
-                    if (after == before) return@runSuspendCatching VaultWrite(before, after)
+                    if (after == before) {
+                        if (!useFastNewFolderPath) onListingConfirmed(VaultCommitSnapshot.FullListing(listing, baseSerial))
+                        return@runSuspendCatching VaultWrite(before, after)
+                    }
 
                     val version = (base?.version ?: 0) + 1
                     val token = newToken()
                     val text = JSON.encodeToString(Manifest.serializer(), Manifest(after))
+                    val manifestBytes = text.encodeToByteArray()
                     // 上传完成即内容已按 gcid 核对过，不读回：刚传完的文件常常一时还没有直链，读回反倒失败。
-                    // 自己写的这份直接记进缓存，确认输赢时不必下载
-                    writeRecoveryFiles(folderId, after)
+                    // 自己写的这份直接记进缓存并等待落盘，每次只写这唯一一份清单文件。
                     onAttempt(VaultWrite(before, after))
                     val manifestName = nameOf(version, token)
-                    val id = io.upload(folderId, manifestName, text.encodeToByteArray())
-                    rememberParsed(id, manifestName, after)
+                    val id = io.upload(folderId, manifestName, manifestBytes)
+                    rememberParsed(id, after, awaitPersist = true)
 
-                    if (won(folderId, version, token) && won(folderId, version, token, afterDelay = true)) {
-                        // 旧版本连同同版本里输掉又没来得及删的一并清掉；同版本别人的那份留给它自己
-                        val cleaned = runSuspendCatching {
-                            val stale = io.list(folderId).filter { file ->
-                                looksLikeManifest(file) && file.id != id && (versionOf(file)?.let { it.first < version } ?: true)
-                            }
-                            if (stale.isNotEmpty()) io.delete(stale.map { it.id })
-                            stale.size
-                        }.logFailure(TAG, "清单已可信写成，旧版本清理留待下次更新").getOrNull()
-                        PikoLog.i(TAG, "写成归档清单：文件夹 $folderId，v$version，条目 ${before.size} → ${after.size}，" +
-                            "第 ${attempt + 1} 次尝试，${cleaned?.let { "清掉旧清单 $it 份" } ?: "旧版本清理未完成"}")
+                    if (useFastNewFolderPath) {
+                        recordCommittedBaseline(folderId, id, version)
+                        val syntheticManifest = FileStat(
+                            kind = FileKind.FILE,
+                            id = id,
+                            parentId = folderId,
+                            name = manifestName,
+                            size = manifestBytes.size.toString(),
+                            phase = TaskPhase.COMPLETE,
+                        )
+                        onListingConfirmed(VaultCommitSnapshot.IncrementalFiles(listOf(syntheticManifest)))
+                        PikoLog.i(TAG, "写成归档清单：新建文件夹 $folderId，v$version，条目 0 → ${after.size}")
                         return@runSuspendCatching VaultWrite(before, after)
                     }
-                    PikoLog.w(TAG, "归档清单写入冲突：文件夹 $folderId，v$version 输给同版本的另一份，第 ${attempt + 1}/$MAX_ATTEMPTS 次，重读重写")
-                    io.delete(listOf(id))
+
+                    val firstCheck = confirmWin(folderId, id, version, token, afterDelay = false, requireRemoteComplete = requireRemoteComplete)
+                    val secondCheck = if (firstCheck is ConfirmOutcome.Won) {
+                        confirmWin(folderId, id, version, token, afterDelay = true, requireRemoteComplete = requireRemoteComplete)
+                    } else firstCheck
+
+                    when (secondCheck) {
+                        is ConfirmOutcome.Won -> {
+                            recordCommittedBaseline(folderId, id, version)
+                            val confirmedListing = secondCheck.listing
+                            val ownComplete = confirmedListing.any { it.id == id && it.phase == TaskPhase.COMPLETE }
+                            // 新清单尚处服务端异步转正窗口（PENDING）时，暂留旧版 COMPLETE 清单供其他设备兜底读取
+                            val stale = if (ownComplete) {
+                                confirmedListing.filter { file ->
+                                    looksLikeManifest(file) && file.id != id && (versionOf(file)?.let { it.first < version } ?: true)
+                                }
+                            } else emptyList()
+                            val staleIds = stale.mapTo(HashSet()) { it.id }
+                            val cleaned = if (stale.isEmpty()) 0 else runSuspendCatching {
+                                io.delete(stale.map { it.id })
+                                stale.size
+                            }.logFailure(TAG, "清单已可信写成，旧版本清理留待下次更新").getOrNull()
+                            val finalListing = if (cleaned != null && staleIds.isNotEmpty()) {
+                                confirmedListing.filterNot { it.id in staleIds }
+                            } else confirmedListing
+                            onListingConfirmed(VaultCommitSnapshot.FullListing(finalListing, secondCheck.listedAtSerial))
+                            val cleanNote = when {
+                                !ownComplete -> "云端转正中，暂留旧清单兜底"
+                                cleaned != null -> "清掉旧清单 $cleaned 份"
+                                else -> "旧版本清理未完成"
+                            }
+                            PikoLog.i(TAG, "写成归档清单：文件夹 $folderId，v$version，条目 ${before.size} → ${after.size}，" +
+                                "第 ${attempt + 1} 次尝试，$cleanNote")
+                            return@runSuspendCatching VaultWrite(before, after)
+                        }
+                        is ConfirmOutcome.Lost -> {
+                            PikoLog.w(
+                                TAG,
+                                "归档清单写入冲突：文件夹 $folderId，v$version-$token 输给 v${secondCheck.winner.version}-${secondCheck.winner.token}，" +
+                                    "第 ${attempt + 1}/$MAX_ATTEMPTS 次，重读重写",
+                            )
+                            io.delete(listOf(id))
+                        }
+                        is ConfirmOutcome.Unconfirmed -> {
+                            error("清单上传后状态未确认（phase=${secondCheck.ownPhase ?: "不可见"}），保留已传清单避免删己重传")
+                        }
+                    }
                 }
                 error("清单写入冲突，重试 $MAX_ATTEMPTS 次仍未写成")
             }.logFailure(TAG, "写归档清单失败：文件夹 $folderId")
         }
 
-    /** 可读文件与来源链接先落盘，原文件之后才能处置。每个来源只保存一份链接。 */
-    private suspend fun writeRecoveryFiles(folderId: String, entries: List<VaultEntry>) {
-        val sources = entries.mapNotNull { it.source?.takeIf(String::isNotBlank) }.distinct()
-        if (sources.isEmpty()) return
-        val listing = io.list(folderId)
-        for (source in sources) {
-            val magnet = source.startsWith("magnet:", ignoreCase = true)
-            val name = "归档来源-${sourceToken(source)}.${if (magnet) "magnet" else "txt"}"
-            val bytes = (source + "\n").encodeToByteArray()
-            val existing = listing.firstOrNull { !it.isFolder && it.name == name }
-            if (existing == null) io.upload(folderId, name, bytes)
-            else check(io.read(existing.id).contentEquals(bytes)) { "来源文件同名但内容不同，未处置原文件：$name" }
-        }
-    }
-
-    /** 眼下 [version] 这一版里算数的是不是 [token]。 */
-    private suspend fun won(folderId: String, version: Int, token: String, afterDelay: Boolean = false): Boolean {
-        if (afterDelay) delay(confirmDelay)
-        var rivals = io.list(folderId).mapNotNull(::candidateOf).filter { it.version >= version }
-        // 上传成功与目录列表可见并非同时发生，后续列表也可能暂时回退。等待自己的版本出现，避免误判冲突。
-        for (wait in listOf(100L, 200L, 400L, 800L, 1600L)) {
-            if (rivals.any { it.version > version || (it.version == version && it.token == token) }) break
+    /**
+     * 核对 [version]-[token] 是否胜出。
+     * OSS 直传完成后服务端把 phase 从 PENDING 翻转为 COMPLETE 可能异步滞后数秒至一分钟，但本机上传成功后的清单已在 [parsed] 中持有完整条目。
+     * 若目录中已出现自身清单且无任何优胜竞争者（含陌生的更高优先级 PENDING 清单），无需死等服务端转正即可确认胜出；
+     * 若存在陌生优胜 PENDING 或自身清单尚未出现在目录列表中，则退避重列，耗尽后诚实返回 [ConfirmOutcome.Unconfirmed]。
+     */
+    private suspend fun confirmWin(
+        folderId: String,
+        uploadedId: String,
+        version: Int,
+        token: String,
+        afterDelay: Boolean,
+        requireRemoteComplete: Boolean,
+    ): ConfirmOutcome {
+        if (afterDelay && confirmDelay > Duration.ZERO) delay(confirmDelay)
+        val cachedIds = if (requireRemoteComplete) emptySet() else parsed.value.keys
+        // 任何同版本或更高版本的陌生非 COMPLETE 清单一律视为未决跨端竞争者（不凭本机时钟或年龄跳过），必须等其转正裁决，禁止提前判赢
+        fun hasCompetingPendingStranger(files: Collection<FileStat>): Boolean =
+            files.any { file ->
+                !file.isFolder && !file.trashed && file.id != uploadedId && file.id !in cachedIds &&
+                    file.phase != TaskPhase.COMPLETE &&
+                    versionOf(file)?.let { (v, _) -> v >= version } == true
+            }
+        var (listing, listedAtSerial) = listWithSerial(folderId)
+        var rivals = listing.mapNotNull { candidateOf(it, cachedIds) }.filter { it.version >= version }
+        val retries = if (requireRemoteComplete) REMOTE_COMPLETE_RETRY_MILLIS else VISIBILITY_RETRY_MILLIS
+        for (wait in retries) {
+            val settled = rivals.any { it.version > version || (it.version == version && it.token <= token) } &&
+                !hasCompetingPendingStranger(listing)
+            if (settled) break
             delay(wait)
-            rivals = io.list(folderId).mapNotNull(::candidateOf).filter { it.version >= version }
+            val refetched = listWithSerial(folderId)
+            listing = refetched.first
+            listedAtSerial = refetched.second
+            rivals = listing.mapNotNull { candidateOf(it, cachedIds) }.filter { it.version >= version }
         }
-        return rivals.minWithOrNull(ORDER)?.let { it.version == version && it.token == token } ?: false
+        val ownEntry = listing.firstOrNull { it.id == uploadedId || (it.name == nameOf(version, token) && !it.trashed) }
+        if (hasCompetingPendingStranger(listing)) {
+            return ConfirmOutcome.Unconfirmed(ownEntry?.phase)
+        }
+        val best = rivals.minWithOrNull(ORDER)
+        if (best != null) {
+            return if (best.version == version && best.token == token) {
+                ConfirmOutcome.Won(listing, listedAtSerial)
+            } else {
+                ConfirmOutcome.Lost(best)
+            }
+        }
+        return ConfirmOutcome.Unconfirmed(ownEntry?.phase)
     }
 
     private suspend fun entriesOf(file: FileStat): List<VaultEntry> {
         lookupParsed(file)?.let { return it }
         val entries = JSON.decodeFromString(Manifest.serializer(), io.read(file.id).decodeToString()).entries
-        rememberParsed(file.id, file.name, entries)
+        rememberParsed(file.id, entries)
         return entries
     }
 
@@ -431,6 +684,9 @@ class VaultStore(
     @Serializable
     private class Manifest(val entries: List<VaultEntry>)
 
+    @Serializable
+    private data class StoredCommitted(val id: String, val version: Int)
+
     private class Candidate(val file: FileStat, val version: Int, val token: String)
 
     companion object {
@@ -438,10 +694,13 @@ class VaultStore(
         private const val PREFIX = ".piko-vault-"
         private const val SUFFIX = ".json"
         private const val MAX_ATTEMPTS = 5
+        private val VISIBILITY_RETRY_MILLIS = listOf(100L, 200L, 400L, 800L, 1600L, 3200L)
+        private val REMOTE_COMPLETE_RETRY_MILLIS = VISIBILITY_RETRY_MILLIS + List(17) { 5_000L }
         private val JSON = Json { ignoreUnknownKeys = true }
         private val NAME = Regex("""\.piko-vault-v([0-9]+)-([0-9a-f]+)\.json""")
         private val UNSAFE_KEY_CHARS = Regex("""[^A-Za-z0-9._@-]""")
         private val PARSED_SERIALIZER = MapSerializer(String.serializer(), ListSerializer(VaultEntry.serializer()))
+        private val COMMITTED_SERIALIZER = MapSerializer(String.serializer(), StoredCommitted.serializer())
 
         // 版本大的在前，同版本随机串小的在前：排第一的算数
         private val ORDER = compareByDescending<Candidate> { it.version }.thenBy { it.token }
@@ -460,35 +719,54 @@ class VaultStore(
         fun cacheKeyOf(account: String): String =
             "vault-manifests-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
 
+        fun committedCacheKeyOf(account: String): String =
+            "vault-committed-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
+
         fun encodeParsed(parsed: Map<String, List<VaultEntry>>): String =
             JSON.encodeToString(PARSED_SERIALIZER, parsed)
 
         fun decodeParsed(text: String): Map<String, List<VaultEntry>>? =
             runCatching { JSON.decodeFromString(PARSED_SERIALIZER, text) }.getOrNull()
 
+        private fun encodeCommitted(committed: Map<String, Pair<String, Int>>): String =
+            JSON.encodeToString(COMMITTED_SERIALIZER, committed.mapValues { StoredCommitted(it.value.first, it.value.second) })
+
+        private fun decodeCommitted(text: String): Map<String, Pair<String, Int>>? =
+            runCatching {
+                JSON.decodeFromString(COMMITTED_SERIALIZER, text).mapValues { it.value.id to it.value.version }
+            }.getOrNull()
+
         private val SOURCE_NAME = Regex("""归档来源-[0-9a-f]{16}\.(magnet|txt)""")
+        /** 历史版本曾写入同目录的来源旁路文件，现已不再生成，列表里仍过滤隐藏。 */
         fun isRecoveryFile(file: FileStat): Boolean = !file.isFolder && SOURCE_NAME.matches(file.name)
 
-        private fun sourceToken(source: String): String {
-            var hash = 0xcbf29ce484222325uL
-            for (byte in source.encodeToByteArray()) hash = (hash xor byte.toUByte().toULong()) * 0x100000001b3uL
-            return hash.toString(16).padStart(16, '0')
+        private fun hasPendingStrangerAbove(
+            files: Collection<FileStat>,
+            baseVersion: Int,
+            locallyCachedIds: Set<String>,
+        ): Boolean = files.any { file ->
+            !file.isFolder && !file.trashed && file.id !in locallyCachedIds &&
+                file.phase != TaskPhase.COMPLETE &&
+                (versionOf(file)?.first ?: 0) > baseVersion
         }
 
         /**
-         * 能算数的清单。上传中途进程被杀会留下 PENDING 的空壳，读不出内容，不算：
-         * 否则它的版本最新，次次读它失败，这个目录再也改不动。
+         * 能算数的清单：服务端已 COMPLETE，或属于本机已完整上传并持久缓存解析条目的在途转正清单（[locallyCachedIds]）。
+         * 上传中途进程被杀留下的陌生 PENDING 空壳不在 [locallyCachedIds] 中，仍跳过不算。
          */
-        private fun candidateOf(file: FileStat): Candidate? {
-            if (file.isFolder || file.trashed || file.phase != TaskPhase.COMPLETE) return null
+        private fun candidateOf(file: FileStat, locallyCachedIds: Set<String> = emptySet()): Candidate? {
+            if (file.isFolder || file.trashed) return null
+            if (file.phase != TaskPhase.COMPLETE && !(file.phase == TaskPhase.PENDING && file.id in locallyCachedIds)) return null
             val (version, token) = versionOf(file) ?: return null
             return Candidate(file, version, token)
         }
 
-        private fun winner(listing: Collection<FileStat>): Candidate? = listing.mapNotNull(::candidateOf).minWithOrNull(ORDER)
+        private fun winner(listing: Collection<FileStat>, locallyCachedIds: Set<String> = emptySet()): Candidate? =
+            listing.mapNotNull { candidateOf(it, locallyCachedIds) }.minWithOrNull(ORDER)
 
         /** 挑出目录列表中当前胜出的归档清单文件。 */
-        fun winnerOf(listing: Collection<FileStat>): FileStat? = winner(listing)?.file
+        fun winnerOf(listing: Collection<FileStat>, locallyCachedIds: Set<String> = emptySet()): FileStat? =
+            winner(listing, locallyCachedIds)?.file
 
         /** 清单文件，含没写完的空壳与输掉的那几份。列表里一概不显示。 */
         fun looksLikeManifest(file: FileStat): Boolean =

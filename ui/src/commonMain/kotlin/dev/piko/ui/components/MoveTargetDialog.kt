@@ -194,16 +194,16 @@ fun MoveTargetDialog(
         onConfirmPath = history::remember,
         onRemoveRecent = history::remove,
         onClearRecent = history::clear,
-        title = tr("移动 $itemCount 项", "Move ${enCount(itemCount, "item", "items")}", "$itemCount 項目を移動", "${itemCount}개 항목 이동"),
-        confirmLabel = tr("移动到这里", "Move here", "ここに移動", "여기로 이동"),
+        title = tr("移动 $itemCount 项", "Move ${enCount(itemCount, "item", "items")}", "$itemCount 項目を移動", "${itemCount}개 항목 이동", "移動 $itemCount 項"),
+        confirmLabel = tr("移动到此处", "Move here", "ここに移動", "여기로 이동", "移至此處"),
         onDismiss = onDismiss,
         onConfirm = onConfirm,
         blockedFolderIds = movingIds,
-        blockedFolderHint = tr("待移动项", "Items to move", "移動する項目", "이동할 항목"),
+        blockedFolderHint = tr("待移动项", "Items to move", "移動する項目", "이동할 항목", "待移動項目"),
         confirmBlockedReason = { current ->
             when {
-                current.id == sourceParentId -> tr("已在此目录", "Already in this folder", "既にこのフォルダーにあります", "이미 이 폴더에 있습니다")
-                current.id in movingIds -> tr("不能移动到自身", "Cannot move into itself", "自身には移動できません", "자기 자신으로 이동할 수 없습니다")
+                current.id == sourceParentId -> tr("已在此文件夹中", "Already in this folder", "既にこのフォルダーにあります", "이미 이 폴더에 있습니다", "已在此資料夾中")
+                current.id in movingIds -> tr("不能移动到自身", "Cannot move into itself", "自身には移動できません", "자기 자신으로 이동할 수 없습니다", "不能移動至自身")
                 else -> null
             }
         },
@@ -220,8 +220,8 @@ fun CopyTargetDialog(
     val history = LocalPikoServices.current.moveHistory
     val recent by history.targets.collectAsState(initial = emptyList())
     FolderPickerDialog(
-        title = tr("复制 $itemCount 项", "Copy ${enCount(itemCount, "item", "items")}", "$itemCount 項目をコピー", "${itemCount}개 항목 복사"),
-        confirmLabel = tr("复制到这里", "Copy here", "ここにコピー", "여기로 복사"),
+        title = tr("复制 $itemCount 项", "Copy ${enCount(itemCount, "item", "items")}", "$itemCount 項目をコピー", "${itemCount}개 항목 복사", "複製 $itemCount 項"),
+        confirmLabel = tr("复制到此处", "Copy here", "ここにコピー", "여기로 복사", "複製至此處"),
         onDismiss = onDismiss,
         onConfirm = onConfirm,
         recentTargets = recent.filter { path -> path.none { it.id in copyingIds } },
@@ -229,8 +229,8 @@ fun CopyTargetDialog(
         onRemoveRecent = history::remove,
         onClearRecent = history::clear,
         blockedFolderIds = copyingIds,
-        blockedFolderHint = tr("待复制项", "Items to copy", "コピーする項目", "복사할 항목"),
-        confirmBlockedReason = { current -> tr("不能复制到自身", "Cannot copy into itself", "自身にはコピーできません", "자기 자신으로 복사할 수 없습니다").takeIf { current.id in copyingIds } },
+        blockedFolderHint = tr("待复制项", "Items to copy", "コピーする項目", "복사할 항목", "待複製項目"),
+        confirmBlockedReason = { current -> tr("不能复制到自身", "Cannot copy into itself", "自身にはコピーできません", "자기 자신으로 복사할 수 없습니다", "不能複製至自身").takeIf { current.id in copyingIds } },
     )
 }
 
@@ -253,10 +253,10 @@ private fun FolderPickerContent(
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
 
-    var path by remember { mutableStateOf(listOf(PathBreadcrumb("", tr("我的网盘", "My drive", "マイドライブ", "내 드라이브")))) }
+    var path by remember { mutableStateOf(listOf(PathBreadcrumb("", tr("我的网盘", "My drive", "マイドライブ", "내 드라이브", "我的雲端硬碟")))) }
     LaunchedEffect(dev.piko.shared.i18n.PikoLocale.effectiveLanguage) {
         path = path.map { crumb ->
-            if (crumb.id.isEmpty()) crumb.copy(name = tr("我的网盘", "My drive", "マイドライブ", "내 드라이브")) else crumb
+            if (crumb.id.isEmpty()) crumb.copy(name = tr("我的网盘", "My drive", "マイドライブ", "내 드라이브", "我的雲端硬碟")) else crumb
         }
     }
     val current = path.last()
@@ -290,7 +290,7 @@ private fun FolderPickerContent(
         // 因此本轮零收获时继续向后翻，直到拿到文件夹或翻完为止。
         while (true) {
             val page = driveRepo.listFiles(parentId = current.id, pageToken = token).getOrElse { error ->
-                loadError = error.localizedMessage ?: tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류")
+                loadError = error.localizedMessage ?: tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류", "未知錯誤")
                 isLoading = false
                 isLoadingMore = false
                 return
@@ -337,8 +337,8 @@ private fun FolderPickerContent(
         if (loadError == null) return@LaunchedEffect
         loadError = null
         val result = snackbarHostState.showSnackbar(
-            message = tr("加载失败", "Failed to load", "読み込みに失敗しました", "불러오지 못했습니다"),
-            actionLabel = tr("重试", "Retry", "再試行", "다시 시도"),
+            message = tr("加载失败", "Failed to load", "読み込みに失敗しました", "불러오지 못했습니다", "載入失敗"),
+            actionLabel = tr("重试", "Retry", "再試行", "다시 시도", "重試"),
             withDismissAction = true,
             duration = SnackbarDuration.Long,
         )
@@ -367,7 +367,7 @@ private fun FolderPickerContent(
                 navigationIcon = if (fullscreen) {
                     {
                         IconButton(onClick = onDismiss) {
-                            Icon(Icons.Outlined.Close, contentDescription = tr("关闭", "Close", "閉じる", "닫기"))
+                            Icon(Icons.Outlined.Close, contentDescription = tr("关闭", "Close", "閉じる", "닫기", "關閉"))
                         }
                     }
                 } else {
@@ -376,7 +376,7 @@ private fun FolderPickerContent(
                 actions = listOf(
                     iconBarItem(
                         icon = Icons.Outlined.CreateNewFolder,
-                        label = tr("新建文件夹", "New folder", "新規フォルダー", "새 폴더"),
+                        label = tr("新建文件夹", "New folder", "新規フォルダー", "새 폴더", "新增資料夾"),
                         onClick = {
                             newFolderName = ""
                             showNewFolderDialog = true
@@ -427,8 +427,8 @@ private fun FolderPickerContent(
                         contentAlignment = Alignment.Center,
                     ) {
                         PikoEmptyState(
-                            title = tr("此文件夹没有子文件夹", "No subfolders", "サブフォルダーはありません", "하위 폴더가 없습니다"),
-                            description = tr("可直接选择这里，或新建文件夹后再选", "Choose this location or create a folder first", "この場所を選ぶか、フォルダーを作成して選択してください", "이 위치를 선택하거나 새 폴더를 만들어 선택하세요"),
+                            title = tr("此文件夹没有子文件夹", "No subfolders", "サブフォルダーはありません", "하위 폴더가 없습니다", "此資料夾沒有子資料夾"),
+                            description = tr("可直接选择当前文件夹，或新建子文件夹", "Choose this folder or create a subfolder", "このフォルダーを選択するか、新しいフォルダーを作成してください", "이 폴더를 선택하거나 하위 폴더를 새로 만드세요", "可直接選擇目前資料夾，或新增子資料夾"),
                             icon = Icons.Outlined.Folder,
                         )
                     }
@@ -486,7 +486,7 @@ private fun FolderPickerContent(
                 .onFailure { error ->
                     isCreatingFolder = false
                     showNewFolderDialog = false
-                    snackbarHostState.showSnackbar(tr("新建文件夹失败", "Failed to create folder", "フォルダーを作成できませんでした", "폴더를 만들지 못했습니다"), withDismissAction = true)
+                    snackbarHostState.showSnackbar(tr("新建文件夹失败", "Failed to create folder", "フォルダーを作成できませんでした", "폴더를 만들지 못했습니다", "新增資料夾失敗"), withDismissAction = true)
                 }
         }
     }
@@ -502,7 +502,7 @@ private fun FolderPickerContent(
                 LaunchedEffect(Unit) { runCatching { nameFocus.requestFocus() } }
                 Column {
                     Text(
-                        text = tr("创建于 ${current.name}，创建后自动进入", "Create in ${current.name} and open it", "${current.name} に作成し、自動的に開きます", "${current.name}에 만들고 자동으로 열기"),
+                        text = tr("创建于 ${current.name}，创建后自动进入", "Create in ${current.name} and open it", "${current.name} に作成し、自動的に開きます", "${current.name}에 만들고 자동으로 열기", "建立於 ${current.name}，建立後自動進入"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -524,7 +524,7 @@ private fun FolderPickerContent(
             },
             confirmButton = {
                 PikoDialogConfirm(
-                    label = tr("创建", "Create", "作成", "만들기"),
+                    label = tr("创建", "Create", "作成", "만들기", "建立"),
                     enabled = newFolderName.isNotBlank() && !isCreatingFolder && !unfixable,
                     onClick = { pendingFolderName = submitDriveName(newFolderName, autoCleanNames, ::createFolder) },
                 )
@@ -592,7 +592,7 @@ private fun FolderPickerActionBar(
             // 不能确认的原因顶替「目标位置」这一行，不另起一行：底栏高度随之变化的话，进出源目录时列表会上下跳
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = disabledReason ?: tr("目标位置", "Destination", "保存先", "대상 위치"),
+                    text = disabledReason ?: tr("目标位置", "Destination", "保存先", "대상 위치", "目標位置"),
                     style = MaterialTheme.typography.labelMedium,
                     color = if (disabledReason != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -646,7 +646,7 @@ private fun RecentTargetsRow(
                     leadingIcon = { Icon(Icons.Outlined.History, contentDescription = null, modifier = Modifier.size(18.dp)) },
                     trailingIcon = onRemoveRecent?.let { remove -> {
                         IconButton(onClick = { remove(target.last().id) }, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Outlined.Close, contentDescription = tr("移除最近目录", "Remove recent folder", "最近のフォルダーから削除", "최근 폴더에서 삭제"), modifier = Modifier.size(16.dp))
+                            Icon(Icons.Outlined.Close, contentDescription = tr("移除最近位置", "Remove recent location", "最近の場所から削除", "최근 위치에서 제거", "移除最近位置"), modifier = Modifier.size(16.dp))
                         }
                     } },
                     modifier = Modifier.widthIn(max = 240.dp),

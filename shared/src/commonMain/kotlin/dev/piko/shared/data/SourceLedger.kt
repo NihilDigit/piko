@@ -50,23 +50,26 @@ class SourceLedger internal constructor(
     private var account: String? = null
     private var pendingSave: Job? = null
 
-    /** 记下 [files] 来自 [source]。没有 gcid 的跳过，[source] 为空时什么也不记。 */
-    fun record(source: String, files: List<ResolvedFile>) {
+    /** 记下 [files] 来自 [source]。没有 gcid 的跳过，[source] 为空或目标账号已切换时什么也不记。 */
+    fun record(source: String, files: List<ResolvedFile>, expectedAccount: String? = null) {
         if (source.isBlank()) return
+        if (expectedAccount != null && account != expectedAccount) return
         val at = now()
         merge(
             files.mapNotNull { file ->
                 val gcid = file.gcid?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 keyOf(gcid, file.size) to SourceRecord(source, file.path, at)
             }.toMap(),
+            expectedAccount = expectedAccount,
         )
     }
 
     /** 并进别处的账本。有新内容时返回 true。 */
-    fun merge(other: Map<String, SourceRecord>): Boolean {
+    fun merge(other: Map<String, SourceRecord>, expectedAccount: String? = null): Boolean {
         if (other.isEmpty()) return false
         var changed: Set<String>
         do {
+            if (expectedAccount != null && account != expectedAccount) return false
             val current = records.value
             val next = union(current, other)
             changed = other.keys.filterTo(HashSet()) { next[it] != current[it] }

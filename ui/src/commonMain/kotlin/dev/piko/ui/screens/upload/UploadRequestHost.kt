@@ -64,8 +64,8 @@ fun UploadRequestHost(uploads: PikoUploadCoordinator, saveTarget: SaveTargetCont
 
     if (isPickingTarget) {
         FolderPickerDialog(
-            title = tr("上传到", "Upload to", "アップロード先", "업로드 위치"),
-            confirmLabel = tr("选择此目录", "Choose this folder", "このフォルダーを選択", "이 폴더 선택"),
+            title = tr("上传到", "Upload to", "アップロード先", "업로드 위치", "上傳至"),
+            confirmLabel = tr("选择此目录", "Choose this folder", "このフォルダーを選択", "이 폴더 선택", "選擇此資料夾"),
             onDismiss = { isPickingTarget = false },
             onConfirm = { id, name ->
                 target = id to name
@@ -79,7 +79,7 @@ fun UploadRequestHost(uploads: PikoUploadCoordinator, saveTarget: SaveTargetCont
 
     PikoDialog(
         onDismissRequest = uploads::clearRequest,
-        title = { Text(tr("上传 ${request.describe()}", "Upload ${request.describe()}", "${request.describe()} をアップロード", "${request.describe()} 업로드")) },
+        title = { Text(tr("上传 ${request.describe()}", "Upload ${request.describe()}", "${request.describe()} をアップロード", "${request.describe()} 업로드", "上傳 ${request.describe()}")) },
         text = {
             Column {
                 Text(stringResource(Res.string.text_save_to), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -99,11 +99,11 @@ fun UploadRequestHost(uploads: PikoUploadCoordinator, saveTarget: SaveTargetCont
         },
         confirmButton = {
             PikoDialogConfirm(
-                label = tr("上传", "Uploads", "アップロード", "업로드"),
+                label = tr("上传", "Uploads", "アップロード", "업로드", "上傳"),
                 enabled = blocked == null,
                 onClick = {
                     val currentBlock = saveTarget.availability(target.first) as? ActionAvailability.Blocked
-                    if (services.driveRepository.currentAccount != shownAccount) rejection = tr("账号已改变，请重新选择上传目标", "Account changed. Choose an upload destination again", "アカウントが変わりました。アップロード先を選択し直してください", "계정이 변경되었습니다. 업로드 대상을 다시 선택하세요")
+                    if (services.driveRepository.currentAccount != shownAccount) rejection = tr("账号已改变，请重新选择上传目标", "Account changed. Choose an upload destination again", "アカウントが変わりました。アップロード先を選択し直してください", "계정이 변경되었습니다. 업로드 대상을 다시 선택하세요", "帳號已變更，請重新選擇上傳目標")
                     else if (currentBlock != null) rejection = currentBlock.reason else {
                         when (val accepted = uploads.enqueue(request, target.first, target.second)) {
                             is UploadEnqueueResult.Accepted -> uploads.clearRequest()
@@ -118,7 +118,7 @@ fun UploadRequestHost(uploads: PikoUploadCoordinator, saveTarget: SaveTargetCont
 }
 
 private fun UploadSelection.describe(): String = when {
-    folders.isEmpty() -> tr("${files.size} 个文件", "${enCount(files.size, "file", "files")}", "${files.size} ファイル", "파일 ${files.size}개")
-    files.isEmpty() -> tr("${folders.size} 个文件夹", "${enCount(folders.size, "folder", "folders")}", "${folders.size} フォルダー", "폴더 ${folders.size}개")
-    else -> tr("$count 项", "${enCount(count, "item", "items")}", "$count 項目", "${count}개 항목")
+    folders.isEmpty() -> tr("${files.size} 个文件", "${enCount(files.size, "file", "files")}", "${files.size} ファイル", "파일 ${files.size}개", "${files.size} 個檔案")
+    files.isEmpty() -> tr("${folders.size} 个文件夹", "${enCount(folders.size, "folder", "folders")}", "${folders.size} フォルダー", "폴더 ${folders.size}개", "${folders.size} 個資料夾")
+    else -> tr("$count 项", "${enCount(count, "item", "items")}", "$count 項目", "${count}개 항목", "$count 項")
 }

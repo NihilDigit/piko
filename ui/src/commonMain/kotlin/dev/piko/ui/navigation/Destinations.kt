@@ -45,9 +45,9 @@ sealed interface Screen : NavKey {
 }
 
 enum class MainTab(private val titleText: () -> String) {
-    FILES({ tr("文件", "Files", "ファイル", "파일") }),
-    TRANSFERS({ tr("任务", "Tasks", "タスク", "작업") }),
-    SETTINGS({ tr("我的", "Me", "マイページ", "내 정보") }),
+    FILES({ tr("文件", "Files", "ファイル", "파일", "檔案") }),
+    TRANSFERS({ tr("任务", "Tasks", "タスク", "작업", "任務") }),
+    SETTINGS({ tr("我的", "Me", "マイページ", "내 정보", "我的") }),
 ;
 
     val title: String get() = titleText()

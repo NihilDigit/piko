@@ -21,8 +21,8 @@ import dev.piko.ui.workProgress
 
 internal fun historyTransferActions(work: HistoryEditWork, canRecheck: Boolean, onRecheck: () -> Unit, onForget: () -> Unit): List<SheetAction> = buildList {
     if (!work.isRunning) {
-        if (canRecheck) add(SheetAction(Icons.Outlined.Refresh, tr("重新查询结果", "Check results again", "結果を再確認", "결과 다시 확인"), onRecheck))
-        add(SheetAction(Icons.Outlined.Close, tr("移除记录", "Remove record", "記録を削除", "기록 삭제"), onForget))
+        if (canRecheck) add(SheetAction(Icons.Outlined.Refresh, tr("重新查询结果", "Check results again", "結果を再確認", "결과 다시 확인", "重新查詢結果"), onRecheck))
+        add(SheetAction(Icons.Outlined.Close, tr("移除记录", "Remove record", "記録を削除", "기록 삭제", "移除記錄"), onForget))
     }
 }
 
@@ -30,7 +30,7 @@ internal fun historyTransferActions(work: HistoryEditWork, canRecheck: Boolean, 
 internal fun HistoryTransferDetails(work: HistoryEditWork, actions: List<SheetAction>, modifier: Modifier = Modifier) {
     val progress = work.workProgress()
     ItemDetailsContent(modifier = modifier, showIcon = false, title = progress.title, headerIcon = { ListLeadingIcon(Icons.Outlined.History) },
-        actions = actions, metaParts = listOf(tr("历史记录", "History", "履歴", "기록"), progress.status),
+        actions = actions, metaParts = listOf(tr("历史记录", "History", "履歴", "기록", "歷史記錄"), progress.status),
         extraLines = {
             progress.detail?.let { Text(it) }
             Text(stringResource(Res.string.text_only_history_records_are_changed_drive_files_are_kept_deleting_playback_reco))

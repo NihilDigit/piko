@@ -33,9 +33,9 @@ internal fun ClipboardBanner(clip: DriveClipboard, canPaste: Boolean, onCancel: 
     Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             val message = if (clip.cut) {
-                tr("已剪切 ${clip.sources.size} 项", "Cut ${enCount(clip.sources.size, "item", "items")}", "${clip.sources.size} 項目を切り取りました", "${clip.sources.size}개 항목 잘라내기 완료")
+                tr("已剪切 ${clip.sources.size} 项", "Cut ${enCount(clip.sources.size, "item", "items")}", "${clip.sources.size} 項目を切り取りました", "${clip.sources.size}개 항목 잘라내기 완료", "已剪下 ${clip.sources.size} 項")
             } else {
-                tr("已复制 ${clip.sources.size} 项", "Copied ${enCount(clip.sources.size, "item", "items")}", "${clip.sources.size} 項目をコピーしました", "${clip.sources.size}개 항목 복사 완료")
+                tr("已复制 ${clip.sources.size} 项", "Copied ${enCount(clip.sources.size, "item", "items")}", "${clip.sources.size} 項目をコピーしました", "${clip.sources.size}개 항목 복사 완료", "已複製 ${clip.sources.size} 項")
             }
             Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
             TextButton(onClick = onCancel) { Text(stringResource(Res.string.common_cancel)) }
@@ -54,17 +54,17 @@ internal fun BatchOperationDialog(work: FileWriteWork?, trash: TrashSession, onS
     val preparing = work?.phase == FileWritePhase.PREPARING || work?.phase == FileWritePhase.CHECKING
     PikoDialog(
         onDismissRequest = {},
-        title = { Text(work?.command?.title ?: if (trash.isUndoing) tr("撤销清理", "Undo cleanup", "整理を元に戻す", "정리 실행 취소") else tr("移入回收站", "Move to trash", "ゴミ箱に移動", "휴지통으로 이동")) },
+        title = { Text(work?.command?.title ?: if (trash.isUndoing) tr("撤销清理", "Undo cleanup", "整理を元に戻す", "정리 실행 취소", "復原清理") else tr("移入回收站", "Move to trash", "ゴミ箱に移動", "휴지통으로 이동", "移至資源回收筒")) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 if (total != null && total > 0 && completed != null && !preparing) {
                     LinearProgressIndicator(progress = { completed.toFloat() / total }, modifier = Modifier.fillMaxWidth())
                     val batchCount = (total + 99) / 100
                     val batch = (completed / 100 + 1).coerceAtMost(batchCount)
-                    Text(tr("已处理 $completed / $total 项（第 $batch / $batchCount 批）", "Processed $completed / ${enCount(total, "item", "items")} (batch $batch / $batchCount)", "処理済み $completed / $total 項目（$batch / $batchCount バッチ）", "$completed / ${total}개 항목 처리 완료 ($batch / $batchCount 배치)"))
+                    Text(tr("已处理 $completed / $total 项（第 $batch / $batchCount 批）", "Processed $completed / ${enCount(total, "item", "items")} (batch $batch / $batchCount)", "処理済み $completed / $total 項目（$batch / $batchCount バッチ）", "$completed / ${total}개 항목 처리 완료 ($batch / $batchCount 배치)", "已處理 $completed / $total 項（第 $batch / $batchCount 批）"))
                 } else {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    Text(if (trash.isUndoing && work == null) tr("正在恢复已清理的项目", "Restoring cleaned items", "整理した項目を復元中", "정리된 항목 복원 중") else tr("正在检查待处理项目", "Checking pending items", "未処理の項目を確認中", "처리 대기 항목 확인 중"))
+                    Text(if (trash.isUndoing && work == null) tr("正在恢复已清理的项目", "Restoring cleaned items", "整理した項目を復元中", "정리된 항목 복원 중", "正在還原已清理的項目") else tr("正在检查待处理项目", "Checking pending items", "未処理の項目を確認中", "처리 대기 항목 확인 중", "正在檢查待處理項目"))
                 }
                 if (stopping) Text(stringResource(Res.string.text_stop_after_current_batch), style = MaterialTheme.typography.bodySmall)
                 if (work?.command is FileWriteCommand.Copy) {
@@ -74,7 +74,7 @@ internal fun BatchOperationDialog(work: FileWriteWork?, trash: TrashSession, onS
         },
         confirmButton = {
             TextButton(onClick = { if (work != null) onStopWrite(work.id) else trash.requestStop() }, enabled = !stopping) {
-                Text(if (stopping) tr("正在停止", "Stopping", "停止中", "중지 중") else tr("停止", "Stop", "停止", "중지"))
+                Text(if (stopping) tr("正在停止", "Stopping", "停止中", "중지 중", "正在停止") else tr("停止", "Stop", "停止", "중지", "停止"))
             }
         },
     )

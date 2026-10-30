@@ -81,8 +81,8 @@ internal enum class Handle {
     START, END;
 
     val label: String get() = when (this) {
-        START -> tr("起点", "Start point", "開始点", "시작점")
-        END -> tr("终点", "End point", "終了点", "끝점")
+        START -> tr("起点", "Start point", "開始点", "시작점", "起點")
+        END -> tr("终点", "End point", "終了点", "끝점", "終點")
     }
 }
 
@@ -223,7 +223,7 @@ fun SegmentDownloadSheet(
             onDismissRequest = { confirmDiscard = false },
             title = { Text(stringResource(Res.string.text_discard_clip_download)) },
             text = { Text(stringResource(Res.string.text_the_selected_start_and_end_points_will_be_lost)) },
-            confirmButton = { PikoDialogConfirm(tr("放弃", "Discard", "破棄", "버리기"), onClick = { confirmDiscard = false; session.end() }) },
+            confirmButton = { PikoDialogConfirm(tr("放弃", "Discard", "破棄", "버리기", "放棄"), onClick = { confirmDiscard = false; session.end() }) },
             dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text(stringResource(Res.string.text_keep_editing)) } },
         )
     }
@@ -315,12 +315,12 @@ fun SegmentDownloadSheet(
                     )
                     Row(modifier = Modifier.fillMaxWidth()) {
                         Text(
-                            text = tr("${formatTimeMs(startPosMs)} 至 ${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)} to ${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)} ～ ${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)}~${formatTimeMs(endPosMs)}"),
+                            text = tr("${formatTimeMs(startPosMs)} 至 ${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)} to ${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)} ～ ${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)}~${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)} 至 ${formatTimeMs(endPosMs)}"),
                             style = MaterialTheme.typography.labelMedium,
                             modifier = Modifier.weight(1f),
                         )
                         Text(
-                            text = tr("全长 ${formatTimeMs(totalDurationMs)}", "Total ${formatTimeMs(totalDurationMs)}", "全長 ${formatTimeMs(totalDurationMs)}", "전체 길이 ${formatTimeMs(totalDurationMs)}"),
+                            text = tr("全长 ${formatTimeMs(totalDurationMs)}", "Total ${formatTimeMs(totalDurationMs)}", "全長 ${formatTimeMs(totalDurationMs)}", "전체 길이 ${formatTimeMs(totalDurationMs)}", "全長 ${formatTimeMs(totalDurationMs)}"),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -336,14 +336,14 @@ fun SegmentDownloadSheet(
                     ConnectedToggle(
                         options = qualities,
                         selected = selectedQuality?.let { chosen -> qualities.first { it.name == chosen.name } },
-                        label = { it.name ?: tr("原画", "Original", "オリジナル", "원본") },
+                        label = { it.name ?: tr("原画", "Original", "オリジナル", "원본", "原畫") },
                         enabled = { !it.unreadable },
                         onSelect = { session.pickedQuality = it.name ?: ORIGINAL_QUALITY },
                     )
                 }
                 if (pickedUnreadable) {
                     Text(
-                        tr("PikPak 的 ${pickedOption?.name} 转码文件暂不可读，请改选其他画质。", "PikPak’s ${pickedOption?.name} transcode is unavailable. Choose another quality.", "PikPakの ${pickedOption?.name} 変換済み動画を読み込めません。別の画質を選択してください。", "PikPak의 ${pickedOption?.name} 변환 파일을 읽을 수 없습니다. 다른 화질을 선택하세요."),
+                        tr("${pickedOption?.name} 转码流暂不可用，请选择其他画质。", "${pickedOption?.name} transcoded stream is unavailable. Choose another quality.", "${pickedOption?.name} の変換ストリームを利用できません。別の画質を選択してください。", "${pickedOption?.name} 변환 스트림을 사용할 수 없습니다. 다른 화질을 선택해 주세요.", "${pickedOption?.name} 轉碼串流暫時無法使用，請選擇其他畫質。"),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error,
                     )
@@ -357,7 +357,7 @@ fun SegmentDownloadSheet(
             val estimatedBytes = sourceBytes?.let { (it * ratio).toLong().coerceIn(0L, it) }
             Column {
                 MetaRow(
-                    parts = listOfNotNull(tr("时长 ${formatTimeMs(clipDurationMs)}", "Duration ${formatTimeMs(clipDurationMs)}", "長さ ${formatTimeMs(clipDurationMs)}", "길이 ${formatTimeMs(clipDurationMs)}"), estimatedBytes?.let { tr("约 ${it.toReadableSize()}", "About ${it.toReadableSize()}", "約 ${it.toReadableSize()}", "약 ${it.toReadableSize()}") }),
+                    parts = listOfNotNull(tr("时长 ${formatTimeMs(clipDurationMs)}", "Duration ${formatTimeMs(clipDurationMs)}", "長さ ${formatTimeMs(clipDurationMs)}", "길이 ${formatTimeMs(clipDurationMs)}", "時長 ${formatTimeMs(clipDurationMs)}"), estimatedBytes?.let { tr("约 ${it.toReadableSize()}", "About ${it.toReadableSize()}", "約 ${it.toReadableSize()}", "약 ${it.toReadableSize()}", "約 ${it.toReadableSize()}") }),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(

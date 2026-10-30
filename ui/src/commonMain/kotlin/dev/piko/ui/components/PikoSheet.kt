@@ -182,7 +182,7 @@ private fun ModalSideSheet(
                             } else {
                                 Spacer(Modifier.weight(1f))
                             }
-                            if (buttons != null) buttons(dismiss) else TooltipIconButton(Icons.Outlined.Close, tr("关闭", "Close", "閉じる", "닫기"), dismiss, shortcut = "Esc")
+                            if (buttons != null) buttons(dismiss) else TooltipIconButton(Icons.Outlined.Close, tr("关闭", "Close", "閉じる", "닫기", "關閉"), dismiss, shortcut = "Esc")
                         }
                         val sheetScope = remember(this) {
                             SheetScopeImpl(this, isSideSheet = true) { action ->

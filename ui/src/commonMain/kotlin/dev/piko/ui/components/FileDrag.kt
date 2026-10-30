@@ -321,7 +321,7 @@ fun FileDragOverlay(drag: FileDragState) {
     Box(Modifier.fillMaxSize().onGloballyPositioned { origin = it.positionInRoot() }) {
         val payload = drag.payload ?: return@Box
         val target = drag.hoveredFolder
-        val verb = if (drag.copy) tr("复制", "Copy", "コピー", "복사") else tr("移动", "Move", "移動", "이동")
+        val verb = if (drag.copy) tr("复制", "Copy", "コピー", "복사", "複製") else tr("移动", "Move", "移動", "이동", "移動")
         Surface(
             shape = MaterialTheme.shapes.large,
             color = MaterialTheme.colorScheme.inverseSurface,
@@ -353,7 +353,7 @@ fun FileDragOverlay(drag: FileDragState) {
                 // 头一行是要做的事，落点的名字一定看得见；拖的是什么放第二行，长文件名在这里截断
                 Column {
                     Text(
-                        text = if (target != null) tr("${verb}到 ${target.localizedName}", "$verb to ${target.localizedName}", "${target.localizedName} に$verb", "${target.localizedName}(으)로 $verb") else verb,
+                        text = if (target != null) tr("${verb}到 ${target.localizedName}", "$verb to ${target.localizedName}", "${target.localizedName} に$verb", "${target.localizedName}(으)로 $verb", "${verb}至 ${target.localizedName}") else verb,
                         style = MaterialTheme.typography.labelLarge,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,

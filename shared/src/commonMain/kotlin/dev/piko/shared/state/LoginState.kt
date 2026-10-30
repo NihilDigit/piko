@@ -57,7 +57,7 @@ class LoginState(
         scope.launch {
             try {
                 clientManager.login(account.trim()) { submittedPassword }
-                    .onFailure { errorMessage = it.message ?: tr("登录失败，请检查账号密码", "Sign-in failed. Check your account and password", "ログインに失敗しました。アカウントとパスワードを確認してください", "로그인 실패. 계정과 비밀번호를 확인해 주세요") }
+                    .onFailure { errorMessage = it.message ?: tr("登录失败，请检查账号密码", "Sign-in failed. Check your account and password", "ログインに失敗しました。アカウントとパスワードを確認してください", "로그인 실패. 계정과 비밀번호를 확인해 주세요", "登入失敗，請檢查帳號密碼") }
             } finally {
                 isLoggingIn = false
             }
@@ -65,6 +65,6 @@ class LoginState(
     }
 
     private companion object {
-        fun expiredMessage() = tr("登录已失效，请重新输入密码", "Session expired. Please enter your password again", "セッションの有効期限が切れました。パスワードを再入力してください", "세션이 만료되었습니다. 비밀번호를 다시 입력해 주세요")
+        fun expiredMessage() = tr("登录已失效，请重新输入密码", "Session expired. Please enter your password again", "セッションの有効期限が切れました。パスワードを再入力してください", "세션이 만료되었습니다. 비밀번호를 다시 입력해 주세요", "登入已失效，請重新輸入密碼")
     }
 }

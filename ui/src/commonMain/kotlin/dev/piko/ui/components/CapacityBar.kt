@@ -84,14 +84,14 @@ fun CloudCapacityRow(incomingBytes: Long = 0L) {
     LaunchedEffect(Unit) { if (quota == null) driveRepository.getQuota() }
     val cloud = quota?.quota?.takeIf { it.limitBytes > 0 } ?: return
     CapacityRow(
-        label = tr("网盘", "Drive", "ドライブ", "드라이브"),
+        label = tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"),
         usedBytes = cloud.usageBytes,
         incomingBytes = incomingBytes,
         totalBytes = cloud.limitBytes,
         readout = "${cloud.usageBytes.toReadableSize()} / ${cloud.limitBytes.toReadableSize()}",
         tooltip = buildString {
-            append(tr("网盘已用 ${cloud.usageBytes.toReadableSize()}，共 ${cloud.limitBytes.toReadableSize()}", "Cloud storage: ${cloud.usageBytes.toReadableSize()} of ${cloud.limitBytes.toReadableSize()} used", "ドライブ使用量 ${cloud.usageBytes.toReadableSize()} / ${cloud.limitBytes.toReadableSize()}", "클라우드 사용량 ${cloud.usageBytes.toReadableSize()} / ${cloud.limitBytes.toReadableSize()}"))
-            if (incomingBytes > 0) append(tr("\n进行中的离线任务还将占用 ${incomingBytes.toReadableSize()}", "\nActive cloud downloads will use another ${incomingBytes.toReadableSize()}", "\n実行中のクラウドダウンロードでさらに ${incomingBytes.toReadableSize()} 使用します", "\n진행 중인 클라우드 다운로드에서 ${incomingBytes.toReadableSize()} 추가 사용 예정"))
+            append(tr("网盘已用 ${cloud.usageBytes.toReadableSize()}，共 ${cloud.limitBytes.toReadableSize()}", "Cloud storage: ${cloud.usageBytes.toReadableSize()} of ${cloud.limitBytes.toReadableSize()} used", "ドライブ使用量 ${cloud.usageBytes.toReadableSize()} / ${cloud.limitBytes.toReadableSize()}", "클라우드 사용량 ${cloud.usageBytes.toReadableSize()} / ${cloud.limitBytes.toReadableSize()}", "雲端硬碟已使用 ${cloud.usageBytes.toReadableSize()}，共 ${cloud.limitBytes.toReadableSize()}"))
+            if (incomingBytes > 0) append(tr("\n进行中的离线任务还将占用 ${incomingBytes.toReadableSize()}", "\nActive cloud downloads will use another ${incomingBytes.toReadableSize()}", "\n実行中のクラウドダウンロードでさらに ${incomingBytes.toReadableSize()} 使用します", "\n진행 중인 클라우드 다운로드에서 ${incomingBytes.toReadableSize()} 추가 사용 예정", "\n進行中的離線任務還將占用 ${incomingBytes.toReadableSize()}"))
         },
     )
 }

@@ -63,7 +63,7 @@ fun CanonicalFolderRenameDialog(
     val (memory, textMode) = rememberRenameMemory() ?: return
     val scope = rememberCoroutineScope()
     val scan = remember(root.id) { CanonicalTreeScan(services.clientManager, services.driveRepository, scope, root) }
-    val title = tr("按番号规范命名「${root.localizedName}」", "Normalize “${root.localizedName}” by catalog code", "「${root.localizedName}」を作品番号で命名", "“${root.localizedName}”을(를) 품번으로 이름 정리")
+    val title = tr("按番号规范命名「${root.localizedName}」", "Normalize “${root.localizedName}” by catalog code", "「${root.localizedName}」を作品番号で命名", "“${root.localizedName}”을(를) 품번으로 이름 정리", "依番號規範命名「${root.localizedName}」")
     val tree = scan.tree
     if (tree == null) {
         BatchRenameWindow(onDismiss) { _, fullscreen -> ScanContent(scan, title, onDismiss, fullscreen) }
@@ -98,7 +98,7 @@ private fun ScanContent(scan: CanonicalTreeScan, title: String, onClose: () -> U
                     LinearProgressIndicator(Modifier.widthIn(max = 240.dp).fillMaxWidth())
                     Text(stringResource(Res.string.text_scanning), style = MaterialTheme.typography.titleMedium)
                     Text(
-                        tr("已扫描 ${scan.scannedFolders} 个文件夹、${scan.scannedFiles} 个文件", "Scanned ${enCount(scan.scannedFolders, "folder", "folders")} and ${enCount(scan.scannedFiles, "file", "files")}", "${scan.scannedFolders} フォルダー、${scan.scannedFiles} ファイルを検索済み", "폴더 ${scan.scannedFolders}개, 파일 ${scan.scannedFiles}개 검색 완료"),
+                        tr("已扫描 ${scan.scannedFolders} 个文件夹、${scan.scannedFiles} 个文件", "Scanned ${enCount(scan.scannedFolders, "folder", "folders")} and ${enCount(scan.scannedFiles, "file", "files")}", "${scan.scannedFolders} フォルダー、${scan.scannedFiles} ファイルを検索済み", "폴더 ${scan.scannedFolders}개, 파일 ${scan.scannedFiles}개 검색 완료", "已掃描 ${scan.scannedFolders} 個資料夾、${scan.scannedFiles} 個檔案"),
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.onSurfaceVariant,
                     )
@@ -143,9 +143,9 @@ internal fun CanonicalTreeOptions(
         Column {
             // 只在用户配了 MetaTube 时出现
             if (state.metaTubeAvailable) {
-                CheckboxRow(tr("片名取自 MetaTube", "Titles from MetaTube", "作品名はMetaTubeから取得", "MetaTube에서 제목 가져오기"), state.useMetaTubeTitles, enabled, onChange = state::updateUseMetaTubeTitles)
+                CheckboxRow(tr("片名取自 MetaTube", "Titles from MetaTube", "作品名はMetaTubeから取得", "MetaTube에서 제목 가져오기", "片名取自 MetaTube"), state.useMetaTubeTitles, enabled, onChange = state::updateUseMetaTubeTitles)
             }
-            CheckboxRow(tr("仅显示变更项", "Show changes only", "変更項目のみ表示", "변경 항목만 표시"), changedOnly, enabled = true, onChange = onChangedOnlyChange)
+            CheckboxRow(tr("仅显示变更项", "Show changes only", "変更項目のみ表示", "변경 항목만 표시", "僅顯示變更項目"), changedOnly, enabled = true, onChange = onChangedOnlyChange)
         }
     }
 }
@@ -162,11 +162,11 @@ internal fun EditNewNameDialog(row: RenameRow, overridden: Boolean, onConfirm: (
         title = { Text(stringResource(Res.string.text_edit_new_name)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(tr("原名：${row.source.name}", "Original: ${row.source.name}", "元の名前：${row.source.name}", "원래 이름: ${row.source.name}"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(tr("原名：${row.source.name}", "Original: ${row.source.name}", "元の名前：${row.source.name}", "원래 이름: ${row.source.name}", "原名：${row.source.name}"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedTextField(value = value, onValueChange = { value = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
             }
         },
-        confirmButton = { PikoDialogConfirm(tr("确定", "Confirm", "確認", "확인"), { onConfirm(value.text) }, enabled = value.text.isNotBlank()) },
+        confirmButton = { PikoDialogConfirm(tr("确定", "Confirm", "確認", "확인", "確定"), { onConfirm(value.text) }, enabled = value.text.isNotBlank()) },
         dismissButton = {
             Row {
                 if (overridden) TextButton(onClick = { onConfirm(null) }) { Text(stringResource(Res.string.text_reset_normalized_name)) }
@@ -177,12 +177,12 @@ internal fun EditNewNameDialog(row: RenameRow, overridden: Boolean, onConfirm: (
 }
 
 private fun scanSummary(scan: CanonicalTreeScan): String = buildString {
-    append(tr("已扫描 ${scan.scannedFolders} 个文件夹、${scan.scannedFiles} 个文件", "Scanned ${enCount(scan.scannedFolders, "folder", "folders")} and ${enCount(scan.scannedFiles, "file", "files")}", "${scan.scannedFolders} フォルダー、${scan.scannedFiles} ファイルを検索済み", "폴더 ${scan.scannedFolders}개, 파일 ${scan.scannedFiles}개 검색 완료"))
+    append(tr("已扫描 ${scan.scannedFolders} 个文件夹、${scan.scannedFiles} 个文件", "Scanned ${enCount(scan.scannedFolders, "folder", "folders")} and ${enCount(scan.scannedFiles, "file", "files")}", "${scan.scannedFolders} フォルダー、${scan.scannedFiles} ファイルを検索済み", "폴더 ${scan.scannedFolders}개, 파일 ${scan.scannedFiles}개 검색 완료", "已掃描 ${scan.scannedFolders} 個資料夾、${scan.scannedFiles} 個檔案"))
     when (scan.scanStop) {
-        ScanStop.CANCELLED -> append(tr("，扫描已停止", "; scan stopped", "、検索停止", ", 검색 중지됨"))
-        ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> append(tr("，已达扫描上限", "; scan limit reached", "、検索上限に達しました", ", 검색 한도 도달"))
-        ScanStop.TIMEOUT -> append(tr("，扫描超时", "; scan timed out", "、検索がタイムアウトしました", ", 검색 시간 초과"))
+        ScanStop.CANCELLED -> append(tr("，扫描已停止", "; scan stopped", "、検索停止", ", 검색 중지됨", "，掃描已停止"))
+        ScanStop.FOLDER_LIMIT, ScanStop.FILE_LIMIT -> append(tr("，已达扫描上限", "; scan limit reached", "、検索上限に達しました", ", 검색 한도 도달", "，已達掃描上限"))
+        ScanStop.TIMEOUT -> append(tr("，扫描超时", "; scan timed out", "、検索がタイムアウトしました", ", 검색 시간 초과", "，掃描逾時"))
         null -> Unit
     }
-    if (scan.failedFolders > 0) append(tr("，${scan.failedFolders} 个文件夹读取失败", "; ${enCount(scan.failedFolders, "folder", "folders")} failed to load", "、${scan.failedFolders} フォルダーの読み込みに失敗", ", 폴더 ${scan.failedFolders}개 불러오기 실패"))
+    if (scan.failedFolders > 0) append(tr("，${scan.failedFolders} 个文件夹读取失败", "; ${enCount(scan.failedFolders, "folder", "folders")} failed to load", "、${scan.failedFolders} フォルダーの読み込みに失敗", ", 폴더 ${scan.failedFolders}개 불러오기 실패", "，${scan.failedFolders} 個資料夾讀取失敗"))
 }

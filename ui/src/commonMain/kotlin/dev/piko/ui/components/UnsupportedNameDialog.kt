@@ -82,7 +82,7 @@ fun UnsupportedNameDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 Text(
-                    text = tr("PikPak 不支持名称中的${DriveNames.unsupportedParts(name).joinToString("、")}。", "PikPak does not support ${DriveNames.unsupportedParts(name).joinToString(", ")} in names.", "名前に ${DriveNames.unsupportedParts(name).joinToString("、")} は使用できません。", "PikPak 이름에는 ${DriveNames.unsupportedParts(name).joinToString(", ")}을(를) 사용할 수 없습니다."),
+                    text = tr("PikPak 不支持名称中的${DriveNames.unsupportedParts(name).joinToString("、")}。", "PikPak does not support ${DriveNames.unsupportedParts(name).joinToString(", ")} in names.", "名前に ${DriveNames.unsupportedParts(name).joinToString("、")} は使用できません。", "PikPak 이름에는 ${DriveNames.unsupportedParts(name).joinToString(", ")}을(를) 사용할 수 없습니다.", "PikPak 不支援名稱中的${DriveNames.unsupportedParts(name).joinToString("、")}。"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -96,8 +96,8 @@ fun UnsupportedNameDialog(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.padding(16.dp),
                     ) {
-                        LabeledName(tr("原名称", "Original name", "元の名前", "원래 이름")) { Text(original, style = MaterialTheme.typography.bodyLarge) }
-                        LabeledName(tr("改为", "Change to", "変更先", "변경")) {
+                        LabeledName(tr("原名称", "Original name", "元の名前", "원래 이름", "原名稱")) { Text(original, style = MaterialTheme.typography.bodyLarge) }
+                        LabeledName(tr("改为", "Change to", "変更先", "변경", "改為")) {
                             SelectionContainer { Text(cleaned, style = MaterialTheme.typography.bodyLarge) }
                         }
                     }
@@ -118,7 +118,7 @@ fun UnsupportedNameDialog(
         },
         confirmButton = {
             PikoDialogConfirm(
-                label = tr("使用此名称", "Use this name", "この名前を使用", "이 이름 사용"),
+                label = tr("使用此名称", "Use this name", "この名前を使用", "이 이름 사용", "使用此名稱"),
                 // 先写偏好再交出名称：交出后对话框随即关闭，它的作用域一取消，还没写完的偏好就丢了
                 onClick = {
                     scope.launch {
@@ -163,9 +163,9 @@ fun submitDriveName(name: String, autoClean: Boolean, onValid: (String) -> Unit)
 fun driveNameHint(name: String, autoClean: Boolean): String {
     val parts = DriveNames.unsupportedParts(name)
     return when {
-        isUnfixableDriveName(name) -> tr("名称只含 PikPak 不支持的字符", "Name only contains unsupported PikPak characters", "名前がPikPakで使えない文字のみで構成されています", "이름이 PikPak에서 지원하지 않는 문자로만 되어 있습니다")
-        autoClean && parts.isNotEmpty() -> tr("将去掉${parts.joinToString("、")}", "Will remove ${parts.joinToString(", ")}", "${parts.joinToString("、")} を除去します", "${parts.joinToString(", ")} 제거 예정")
-        else -> tr("不能含 \\ / : * ? \" < > |", "Cannot contain \\ / : * ? \" < > |", "\\ / : * ? \" < > | は使用できません", "\\ / : * ? \" < > | 포함 불가")
+        isUnfixableDriveName(name) -> tr("名称仅包含不支持的字符", "Name contains only unsupported characters", "使用できない文字のみで構成されています", "지원하지 않는 문자로만 구성되어 있습니다", "名稱僅包含不支援的字元")
+        autoClean && parts.isNotEmpty() -> tr("将自动移除：${parts.joinToString("、")}", "Will remove: ${parts.joinToString(", ")}", "自動除去：${parts.joinToString("、")}", "자동 제거: ${parts.joinToString(", ")}", "將自動移除：${parts.joinToString("、")}")
+        else -> tr("不能包含 \\ / : * ? \" < > |", "Cannot contain \\ / : * ? \" < > |", "\\ / : * ? \" < > | は使用できません", "\\ / : * ? \" < > | 문자는 사용할 수 없습니다", "不能包含 \\ / : * ? \" < > |")
     }
 }
 

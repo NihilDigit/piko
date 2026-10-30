@@ -264,7 +264,7 @@ internal fun InstantSheetContent(
             val missing = referenceStates.sumOf { it.missingReferenceCount }
             if (reference && missing > 0) {
                 val allMissing = referenceStates.all { it.referenceItemsToSave.isEmpty() }
-                Text(if (allMissing) tr("所选内容均缺少引用，无法以引用保存", "Selected items have no references and cannot be saved as references", "選択した項目に参照がないため、参照として保存できません", "선택한 항목에 참조가 없어 참조로 저장할 수 없습니다") else tr("已选文件中有 $missing 项缺少引用，保存时将跳过", "${enCount(missing, "selected item", "selected items")} lack references and will be skipped", "選択したファイルのうち $missing 項目は参照がないためスキップします", "선택한 파일 중 ${missing}개 항목은 참조가 없어 건너뜁니다"),
+                Text(if (allMissing) tr("所选项目均缺少引用，无法以引用保存", "Selected items lack references and cannot be saved as references", "選択した項目に参照情報がないため、参照として保存できません", "선택한 항목에 참조가 없어 참조로 저장할 수 없습니다", "所選項目均缺少引用，無法以引用儲存") else tr("已选文件中有 $missing 项缺少引用，保存时将跳过", "${enCount(missing, "selected item", "selected items")} lack references and will be skipped", "選択したファイルのうち $missing 項目は参照がないためスキップします", "선택한 파일 중 ${missing}개 항목은 참조가 없어 건너뜁니다", "已選檔案中有 $missing 項缺少引用，儲存時將略過"),
                     color = if (allMissing) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
                 if (!allMissing) TextButton(onClick = { referenceStates.forEach { it.deselectUnindexed() } }, enabled = referenceEnabled) { Text(stringResource(Res.string.text_deselect_items_without_references)) }
             }
@@ -409,8 +409,8 @@ internal fun InstantSheetContent(
 
     if (showTargetPicker) {
         FolderPickerDialog(
-            title = tr("选择保存位置", "Choose save location", "保存先を選択", "저장 위치 선택"),
-            confirmLabel = tr("存到这里", "Save here", "ここに保存", "여기에 저장"),
+            title = tr("选择保存位置", "Choose save location", "保存先を選択", "저장 위치 선택", "選擇儲存位置"),
+            confirmLabel = tr("保存到此处", "Save here", "ここに保存", "여기에 저장", "儲存至此處"),
             onDismiss = { showTargetPicker = false },
             onConfirm = { targetId, targetName ->
                 showTargetPicker = false
@@ -453,9 +453,9 @@ private fun ColumnScope.InstantBody(
 ) {
     if (state.resolution?.resource?.truncated == true) {
         StatusBanner(
-            tr("清单不完整：仅保存已解析文件，禁用自动裁剪", "Incomplete list: save resolved files only; automatic trimming disabled", "一覧が不完全です。解析済みのファイルのみ保存し、自動整理は行いません", "불완전한 목록: 분석된 파일만 저장하고 자동 정리는 사용하지 않습니다"),
+            tr("清单不完整：仅保存已解析文件，禁用自动裁剪", "Incomplete list: save resolved files only; automatic trimming disabled", "一覧が不完全です。解析済みのファイルのみ保存し、自動整理は行いません", "불완전한 목록: 분석된 파일만 저장하고 자동 정리는 사용하지 않습니다", "清單不完整：僅儲存已解析的檔案，停用自動裁剪"),
             Icons.Outlined.Info, MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer,
-            actionLabel = tr("重新解析", "Resolve again", "再解析", "다시 분석"), onAction = state::retryResolve,
+            actionLabel = tr("重新解析", "Resolve again", "再解析", "다시 분석", "重新解析"), onAction = state::retryResolve,
         )
     }
     val platform = LocalPikoPlatform.current
@@ -543,16 +543,16 @@ private fun LinkInput(state: InstantSheetState) {
                 val clip = platform.readClipboardText()
                 if (!clip.isNullOrBlank()) state.updateInput(clip.trim())
             }) {
-                Icon(Icons.Outlined.ContentPaste, contentDescription = tr("从剪贴板粘贴", "Paste from clipboard", "クリップボードから貼り付け", "클립보드에서 붙여넣기"))
+                Icon(Icons.Outlined.ContentPaste, contentDescription = tr("从剪贴板粘贴", "Paste from clipboard", "クリップボードから貼り付け", "클립보드에서 붙여넣기", "從剪貼簿貼上"))
             }
         },
     )
 }
 
-internal val QUEUED_RECEIPT: String get() = tr("已加入下载队列", "Added to download queue", "ダウンロードキューに追加しました", "다운로드 대기열에 추가했습니다")
+internal val QUEUED_RECEIPT: String get() = tr("已加入下载队列", "Added to download queue", "ダウンロードキューに追加しました", "다운로드 대기열에 추가했습니다", "已加入下載佇列")
 
 /** 解析的两段：先等服务端列出文件，再在本机按文件名整理。用户只需知道还在进行，不提「索引」这类内部说法。 */
-internal fun resolvingText(state: InstantSheetState): String = if (state.isAnalyzing) tr("正在整理文件", "Organizing files", "ファイルを整理中", "파일 정리 중") else tr("正在解析链接", "Resolving link", "リンクを解析中", "링크 분석 중")
+internal fun resolvingText(state: InstantSheetState): String = if (state.isAnalyzing) tr("正在整理文件", "Organizing files", "ファイルを整理中", "파일 정리 중", "正在整理檔案") else tr("正在解析链接", "Resolving link", "リンクを解析中", "링크 분석 중", "正在解析連結")
 
 /** 免费账号这次保存要不要先确认离线；会员与秒传为 null。 */
 private fun offlineConfirmOf(state: InstantSheetState, action: InstantPrimaryAction): OfflineConfirm? {
@@ -580,33 +580,33 @@ private fun SaveBar(state: InstantSheetState, action: InstantPrimaryAction, onSa
     val fallback = plan?.fallback
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (showProblems && plan?.incompleteCatalog == true) {
-            ErrorBanner(tr("文件清单不完整，不能整包离线后自动裁剪", "Incomplete file list; cannot trim after full cloud download", "一覧が不完全なため、一括クラウドダウンロード後の自動整理はできません", "파일 목록이 불완전하여 전체 클라우드 다운로드 후 자동 정리를 할 수 없습니다"), onRetry = null)
+            ErrorBanner(tr("文件清单不完整，无法在整包离线下载后自动裁剪", "Incomplete file list; automatic trimming unavailable after full cloud download", "ファイル一覧が不完全なため、一括クラウドダウンロード後の自動整理は利用できません", "파일 목록이 불완전하여 전체 클라우드 다운로드 후 자동 정리를 사용할 수 없습니다", "檔案清單不完整，無法於整包離線下載後自動裁剪"), onRetry = null)
         } else if (showProblems && plan != null && plan.lacksSpace) {
             // 秒传没有退路按钮可给，只能少选几项；整包离线的退路在下面的按钮上
-            val hint = if (plan.route == SaveRoute.INSTANT) tr("，请减少勾选", "; select fewer files", "。選択を減らしてください", ". 선택을 줄여 주세요") else ""
+            val hint = if (plan.route == SaveRoute.INSTANT) tr("，请减少所选文件", "; select fewer files", "。選択数を減らしてください", ". 선택 항목을 줄여 주세요", "，請減少所選檔案") else ""
             ErrorBanner(
-                message = tr("网盘空间不足：需要 ${plan.neededBytes.toReadableSize()}，", "Insufficient cloud space: ${plan.neededBytes.toReadableSize()} required, ", "空き容量不足：${plan.neededBytes.toReadableSize()} 必要、", "클라우드 공간 부족: ${plan.neededBytes.toReadableSize()} 필요, ") +
-                    tr("剩余 ${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}$hint", "${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()} available$hint", "空き容量 ${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}$hint", "남은 공간 ${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}$hint"),
+                message = tr("网盘空间不足：需要 ${plan.neededBytes.toReadableSize()}，", "Insufficient cloud space: ${plan.neededBytes.toReadableSize()} required, ", "空き容量不足：${plan.neededBytes.toReadableSize()} 必要、", "클라우드 공간 부족: ${plan.neededBytes.toReadableSize()} 필요, ", "雲端硬碟空間不足：需要 ${plan.neededBytes.toReadableSize()}，") +
+                    tr("剩余 ${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}$hint", "${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()} available$hint", "空き容量 ${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}$hint", "남은 공간 ${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}$hint", "剩餘 ${(state.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}$hint"),
                 onRetry = null,
             )
         } else if (showProblems && plan != null && plan.lacksOfflineCount) {
-            ErrorBanner(message = tr("今日离线次数已用完", "Daily cloud download limit reached", "本日のクラウドダウンロード回数を使い切りました", "오늘의 클라우드 다운로드 횟수를 모두 사용했습니다"), onRetry = null)
+            ErrorBanner(message = tr("今日离线次数已用完", "Daily cloud download limit reached", "本日のクラウドダウンロード回数を使い切りました", "오늘의 클라우드 다운로드 횟수를 모두 사용했습니다", "今日離線次數已用完"), onRetry = null)
         }
         if (plan?.blocked == true && fallback != null) {
             SaveButton(
-                label = if (fallback.skippedCount > 0) tr("只保存已收录文件", "Save indexed files only", "収録済みファイルのみ保存", "등록된 파일만 저장") else tr("只保存所选文件", "Save selected files only", "選択したファイルのみ保存", "선택한 파일만 저장"),
+                label = if (fallback.skippedCount > 0) tr("仅保存已收录文件", "Save indexed files only", "収録済みファイルのみ保存", "등록된 파일만 저장", "僅儲存已收錄檔案") else tr("仅保存所选文件", "Save selected files only", "選択したファイルのみ保存", "선택한 파일만 저장", "僅儲存所選檔案"),
                 enabled = state.canSaveSelection,
                 isSaving = state.isSaving,
                 onClick = state::saveSelectionInstantly,
             )
-            if (fallback.skippedCount > 0) SaveCaption(tr("将跳过 ${fallback.skippedCount} 个未收录文件", "Skip ${fallback.skippedCount} unindexed files", "未収録の ${fallback.skippedCount} ファイルをスキップ", "미등록 파일 ${fallback.skippedCount}개 건너뛰기"))
+            if (fallback.skippedCount > 0) SaveCaption(tr("将跳过 ${fallback.skippedCount} 个未收录文件", "Skip ${fallback.skippedCount} unindexed files", "未収録の ${fallback.skippedCount} ファイルをスキップ", "미등록 파일 ${fallback.skippedCount}개 건너뛰기", "將略過 ${fallback.skippedCount} 個未收錄檔案"))
         } else {
             SaveButton(
                 label = when {
-                    state.hasInstantRetry && state.retryFileCount > 0 -> tr("重试未保存的 ${state.retryFileCount} 个文件", "Retry ${state.retryFileCount} unsaved files", "未保存の ${state.retryFileCount} ファイルを再試行", "저장 안 된 파일 ${state.retryFileCount}개 다시 시도")
-                    state.saveIssue?.requiresInspection == true -> tr("请先核对保存结果", "Check save results first", "先に保存結果を確認してください", "먼저 저장 결과를 확인하세요")
-                    state.contentMissing -> tr("离线下载", "Cloud download", "クラウドダウンロード", "클라우드 다운로드")
-                    else -> tr("保存", "Save", "保存", "저장")
+                    state.hasInstantRetry && state.retryFileCount > 0 -> tr("重试未保存的 ${state.retryFileCount} 个文件", "Retry ${state.retryFileCount} unsaved files", "未保存の ${state.retryFileCount} ファイルを再試行", "저장 안 된 파일 ${state.retryFileCount}개 다시 시도", "重試未儲存的 ${state.retryFileCount} 個檔案")
+                    state.saveIssue?.requiresInspection == true -> tr("请先核对保存结果", "Check save results first", "先に保存結果を確認してください", "먼저 저장 결과를 확인하세요", "請先核對儲存結果")
+                    state.contentMissing -> tr("离线下载", "Cloud download", "クラウドダウンロード", "클라우드 다운로드", "離線下載")
+                    else -> tr("保存", "Save", "保存", "저장", "儲存")
                 },
                 enabled = action.enabled,
                 isSaving = state.isSaving,
@@ -637,15 +637,15 @@ private fun OfflineConfirmDialog(
     onInstant: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val count = offlineLeft?.let { tr("（今日剩 $it 次）", " ($it left today)", "（本日の残り $it 回）", " (오늘 ${it}회 남음)") }.orEmpty()
+    val count = offlineLeft?.let { tr("（今日剩余 $it 次）", " ($it remaining today)", "（本日の残り $it 回）", " (오늘 ${it}회 남음)", "（今日剩餘 $it 次）") }.orEmpty()
     val (title, message) = when (confirm) {
-        OfflineConfirm.WholeLink -> tr("离线下载", "Cloud download", "クラウドダウンロード", "클라우드 다운로드") to tr("将占用 1 次离线$count。", "Uses 1 cloud download$count.", "1回のクラウドダウンロード枠を使用します$count。", "클라우드 다운로드 1회를 사용합니다$count.")
-        is OfflineConfirm.Pack -> tr("整包离线", "Download entire package to cloud", "一括クラウドダウンロード", "전체 클라우드 다운로드") to
-            tr("所选文件未收录，需整包离线，占用 ${confirm.plan.packBytes.toReadableSize()} 空间与 1 次离线$count。", "Selected files are not indexed. Downloading the full package uses ${confirm.plan.packBytes.toReadableSize()} and 1 cloud download$count.", "選択したファイルは未収録です。一括クラウドダウンロードに ${confirm.plan.packBytes.toReadableSize()} と1回の利用枠を使います$count。", "선택한 파일이 미등록입니다. 전체 다운로드에 ${confirm.plan.packBytes.toReadableSize()} 공간과 클라우드 다운로드 1회를 사용합니다$count.")
-        is OfflineConfirm.PackOrInstant -> tr("部分文件未收录", "Some files are not indexed", "一部のファイルは未収録です", "일부 파일이 미등록입니다") to
-            tr("${confirm.fallback.skippedCount} 个文件未收录，需整包离线，", "${enCount(confirm.fallback.skippedCount, "file", "files")} are not indexed and require a full cloud download, ", "${confirm.fallback.skippedCount} ファイルが未収録のため、一括クラウドダウンロードが必要です。", "파일 ${confirm.fallback.skippedCount}개가 미등록이므로 전체 클라우드 다운로드가 필요하며, ") +
-            tr("占用 ${confirm.plan.packBytes.toReadableSize()} 空间与 1 次离线$count。", "using ${confirm.plan.packBytes.toReadableSize()} and 1 cloud download$count.", "${confirm.plan.packBytes.toReadableSize()} と1回の利用枠を使います$count。", "${confirm.plan.packBytes.toReadableSize()} 공간과 클라우드 다운로드 1회를 사용합니다$count.") +
-            tr("也可只秒传已收录的 ${confirm.fallback.fileCount} 个文件。", "You can instead instantly save ${confirm.fallback.fileCount} indexed files.", "収録済みの ${confirm.fallback.fileCount} ファイルのみインスタント保存することもできます。", "등록된 파일 ${confirm.fallback.fileCount}개만 즉시 저장할 수도 있습니다.")
+        OfflineConfirm.WholeLink -> tr("离线下载", "Cloud download", "クラウドダウンロード", "클라우드 다운로드", "離線下載") to tr("将使用 1 次离线下载额度$count。", "Uses 1 cloud download quota$count.", "クラウドダウンロード枠を1回使用します$count。", "클라우드 다운로드 할당량 1회를 사용합니다$count.", "將使用 1 次離線下載額度$count。")
+        is OfflineConfirm.Pack -> tr("整包离线", "Download entire package to cloud", "一括クラウドダウンロード", "전체 클라우드 다운로드", "整包離線下載") to
+            tr("所选文件未收录，需执行整包离线下载，将占用 ${confirm.plan.packBytes.toReadableSize()} 网盘空间与 1 次离线下载额度$count。", "Selected files are not indexed. Full cloud download requires ${confirm.plan.packBytes.toReadableSize()} of storage and 1 cloud download quota$count.", "選択したファイルは未収録のため、一括クラウドダウンロードが必要です。${confirm.plan.packBytes.toReadableSize()} の容量と1回の利用枠を使用します$count。", "선택한 파일이 미등록 상태이므로 전체 클라우드 다운로드가 필요하며, ${confirm.plan.packBytes.toReadableSize()} 공간과 할당량 1회를 사용합니다$count.", "所選檔案未收錄，需執行整包離線下載，將占用 ${confirm.plan.packBytes.toReadableSize()} 雲端硬碟空間與 1 次離線下載額度$count。")
+        is OfflineConfirm.PackOrInstant -> tr("部分文件未收录", "Some files are not indexed", "一部のファイルは未収録です", "일부 파일이 미등록입니다", "部分檔案未收錄") to
+            tr("${confirm.fallback.skippedCount} 个文件未收录，整包离线下载将", "${enCount(confirm.fallback.skippedCount, "file", "files")} are not indexed. Full cloud download ", "${confirm.fallback.skippedCount} ファイルが未収録です。一括クラウドダウンロードでは ", "파일 ${confirm.fallback.skippedCount}개가 미등록 상태입니다. 전체 클라우드 다운로드 시 ", "${confirm.fallback.skippedCount} 個檔案未收錄，整包離線下載將") +
+            tr("占用 ${confirm.plan.packBytes.toReadableSize()} 网盘空间与 1 次离线下载额度$count。", "requires ${confirm.plan.packBytes.toReadableSize()} of storage and 1 cloud download quota$count.", "${confirm.plan.packBytes.toReadableSize()} の容量と1回の利用枠を使用します$count。", "${confirm.plan.packBytes.toReadableSize()} 공간과 할당량 1회를 사용합니다$count.", "占用 ${confirm.plan.packBytes.toReadableSize()} 雲端硬碟空間與 1 次離線下載額度$count。") +
+            tr("也可仅秒传已收录的 ${confirm.fallback.fileCount} 个文件。", "Alternatively, instantly save the ${confirm.fallback.fileCount} indexed files only.", "収録済みの ${confirm.fallback.fileCount} ファイルのみをインスタント保存することも可能です。", "등록된 파일 ${confirm.fallback.fileCount}개만 즉시 저장할 수도 있습니다.", "亦可僅秒傳已收錄的 ${confirm.fallback.fileCount} 個檔案。")
     }
     PikoDialog(
         onDismissRequest = onDismiss,
@@ -659,7 +659,7 @@ private fun OfflineConfirmDialog(
                     TextButton(onClick = onInstant) { Text(stringResource(Res.string.text_save_indexed_only)) }
                 }
             } else {
-                PikoDialogConfirm(tr("离线", "Cloud download", "クラウドダウンロード", "클라우드 다운로드"), onClick = onOffline)
+                PikoDialogConfirm(tr("离线下载", "Cloud download", "クラウドダウンロード", "클라우드 다운로드", "離線下載"), onClick = onOffline)
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) } },
@@ -721,7 +721,7 @@ internal fun ErrorBanner(message: String, onRetry: (() -> Unit)?) {
         icon = Icons.Outlined.ErrorOutline,
         containerColor = MaterialTheme.colorScheme.errorContainer,
         contentColor = MaterialTheme.colorScheme.onErrorContainer,
-        actionLabel = tr("重试", "Retry", "再試行", "다시 시도").takeIf { onRetry != null },
+        actionLabel = tr("重试", "Retry", "再試行", "다시 시도", "重試").takeIf { onRetry != null },
         onAction = onRetry,
     )
 }
@@ -794,11 +794,11 @@ internal fun ColumnScope.ResolutionSection(
                 FileNameField(
                     value = state.folderNameToSave,
                     onValueChange = state::updateFolderName,
-                    label = tr("新建文件夹", "New folder", "新規フォルダー", "새 폴더"),
+                    label = tr("新建文件夹", "New folder", "新規フォルダー", "새 폴더", "新增資料夾"),
                     collapseWhenIdle = true,
                     enabled = state.canEdit,
                     isError = isBlank,
-                    supportingText = if (isBlank) tr("名称不能为空", "Name cannot be empty", "名前を入力してください", "이름을 입력해 주세요") else null,
+                    supportingText = if (isBlank) tr("名称不能为空", "Name cannot be empty", "名前を入力してください", "이름을 입력해 주세요", "名稱不能為空") else null,
                     modifier = Modifier.fillMaxWidth(),
                 )
             } else {
@@ -852,11 +852,11 @@ private fun UnindexedBanner(state: InstantSheetState) {
     if (count == 0) return
     val filtering = state.isUnindexedFilterActive
     StatusBanner(
-        message = tr("$count 项$UNINDEXED_HINT", "${enCount(count, "item", "items")}: $UNINDEXED_HINT", "$count 項目：$UNINDEXED_HINT", "${count}개 항목: $UNINDEXED_HINT"),
+        message = tr("$count 项$UNINDEXED_HINT", "${enCount(count, "item", "items")}: $UNINDEXED_HINT", "$count 項目：$UNINDEXED_HINT", "${count}개 항목: $UNINDEXED_HINT", "$count 項$UNINDEXED_HINT"),
         icon = UnindexedIcon,
         containerColor = MaterialTheme.colorScheme.tertiaryContainer,
         contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-        actionLabel = if (filtering) tr("显示全部", "Show all", "すべて表示", "모두 표시") else tr("只看这些", "Show these only", "これらのみ表示", "이 항목만 보기"),
+        actionLabel = if (filtering) tr("显示全部", "Show all", "すべて表示", "모두 표시", "顯示全部") else tr("仅显示未收录", "Show unindexed only", "未収録のみ表示", "미등록만 표시", "僅顯示未收錄"),
         onAction = state::toggleOnlyUnindexed,
     )
 }
@@ -881,7 +881,7 @@ internal fun CanonicalNamesToggle(checked: Boolean, enabled: Boolean, onChange: 
 
 // 横幅、组行与文件行的标记同一种说法与图标。用沙漏而不是云下载：行上的「下载到本机」按钮就是云下载，
 // 两者挨着时分不清哪个能点
-internal val UNINDEXED_HINT: String get() = tr("未收录，保存较慢", "Not indexed; saving may take longer", "未収録のため保存に時間がかかります", "미등록. 저장에 시간이 걸릴 수 있습니다")
+internal val UNINDEXED_HINT: String get() = tr("未收录，需离线下载", "not indexed; requires cloud download", "未収録（クラウドダウンロードが必要）", "미등록 (클라우드 다운로드 필요)", "未收錄，需離線下載")
 internal val UnindexedIcon = Icons.Outlined.HourglassTop
 
 /** 已选计数、全选与展开/收起文件树按钮。筛选只看未收录时不给全选：它作用于全部行，眼前却只列着几行，点了会动到看不见的勾选。 */
@@ -898,20 +898,20 @@ private fun SelectionHeader(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = tr("原始文件（已选 ${state.sourceSelectedIndices.size} / ${state.items.size}）", "Original files (${state.sourceSelectedIndices.size} / ${state.items.size} selected)", "元ファイル（${state.sourceSelectedIndices.size} / ${state.items.size} 選択済み）", "원본 파일 (${state.sourceSelectedIndices.size} / ${state.items.size}개 선택됨)"),
+            text = tr("原始文件（已选 ${state.sourceSelectedIndices.size} / ${state.items.size}）", "Original files (${state.sourceSelectedIndices.size} / ${state.items.size} selected)", "元ファイル（${state.sourceSelectedIndices.size} / ${state.items.size} 選択済み）", "원본 파일 (${state.sourceSelectedIndices.size} / ${state.items.size}개 선택됨)", "原始檔案（已選 ${state.sourceSelectedIndices.size} / ${state.items.size}）"),
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )
         if (!state.isUnindexedFilterActive) {
             TextButton(onClick = state::toggleSelectAll, enabled = state.canEdit) {
-                Text(if (state.isAllSelected) tr("全不选", "Deselect all", "すべての選択を解除", "모두 선택 해제") else tr("全选", "Select all", "すべて選択", "모두 선택"))
+                Text(if (state.isAllSelected) tr("取消全选", "Deselect all", "すべて選択解除", "모두 선택 해제", "取消全選") else tr("全选", "Select all", "すべて選択", "모두 선택", "全選"))
             }
         }
         if (onToggleMaximized != null) {
             TooltipIconButton(
                 icon = if (isMaximized) Icons.Outlined.CloseFullscreen else Icons.Outlined.OpenInFull,
-                label = if (isMaximized) tr("收起文件树", "Collapse file tree", "ファイルツリーを折りたたむ", "파일 트리 접기") else tr("展开文件树", "Expand file tree", "ファイルツリーを展開", "파일 트리 펼치기"),
+                label = if (isMaximized) tr("收起文件树", "Collapse file tree", "ファイルツリーを折りたたむ", "파일 트리 접기", "收起檔案樹狀目錄") else tr("展开文件树", "Expand file tree", "ファイルツリーを展開", "파일 트리 펼치기", "展開檔案樹狀目錄"),
                 onClick = onToggleMaximized,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -966,7 +966,7 @@ private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, mod
                 val toggle = { collapsed = if (node.key in collapsed) collapsed - node.key else collapsed + node.key }
                 val item = if (index == null) FilePresentation(
                     node.key, FileItemName(node.name), FileVisual(node.name, isFolder = true),
-                    metadata = listOf(tr("${node.indices.size} 个文件", "${enCount(node.indices.size, "file", "files")}", "${node.indices.size} ファイル", "파일 ${node.indices.size}개")),
+                    metadata = listOf(tr("${node.indices.size} 个文件", "${enCount(node.indices.size, "file", "files")}", "${node.indices.size} ファイル", "파일 ${node.indices.size}개", "${node.indices.size} 個檔案")),
                 ) else state.items[index].file.filePresentation(node.key)
                 val open = { if (node.isFolder) toggle() else if (editable) state.setSourceSelected(node.indices, selected == 0) }
                 WorkspaceTreeRow(
@@ -985,7 +985,7 @@ private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, mod
                                 checked,
                                 { if (editable) state.setSourceSelected(node.indices, checked != ToggleableState.On) },
                                 enabled = editable,
-                                label = tr("选择来源 ${node.name}", "Select source ${node.name}", "ソース ${node.name} を選択", "원본 ${node.name} 선택"),
+                                label = tr("选择来源 ${node.name}", "Select source ${node.name}", "ソース ${node.name} を選択", "원본 ${node.name} 선택", "選取來源 ${node.name}"),
                             ),
                         )
                     },
@@ -1028,7 +1028,7 @@ private fun GroupRow(
             .fillMaxWidth()
             .then(
                 if (onToggleExpanded != null) {
-                    Modifier.clickable(onClickLabel = if (isExpanded) tr("收起", "Collapse", "折りたたむ", "접기") else tr("展开", "Expand", "展開", "펼치기"), onClick = onToggleExpanded)
+                    Modifier.clickable(onClickLabel = if (isExpanded) tr("收起", "Collapse", "折りたたむ", "접기", "收起") else tr("展开", "Expand", "展開", "펼치기", "展開"), onClick = onToggleExpanded)
                 } else {
                     Modifier
                 },
@@ -1053,7 +1053,7 @@ private fun GroupRow(
             MediaTagRow(tags = group.tags, modifier = Modifier.padding(vertical = 2.dp))
             MetaRow(
                 parts = listOf(
-                    if (selectedCount == total || selectedCount == 0) tr("$total 项", "${enCount(total, "item", "items")}", "$total 項目", "${total}개 항목") else tr("已选 $selectedCount / $total", "Selected $selectedCount / $total", "選択済み $selectedCount / $total", "$selectedCount / ${total}개 선택됨"),
+                    if (selectedCount == total || selectedCount == 0) tr("$total 项", "${enCount(total, "item", "items")}", "$total 項目", "${total}개 항목", "$total 項") else tr("已选 $selectedCount / $total", "Selected $selectedCount / $total", "選択済み $selectedCount / $total", "$selectedCount / ${total}개 선택됨", "已選 $selectedCount / $total"),
                     summary.bytes.toReadableSize(),
                 ),
                 style = MaterialTheme.typography.bodySmall,
@@ -1082,7 +1082,7 @@ private fun GroupRow(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun UnindexedMark(count: Int? = null) {
-    val description = if (count != null) tr("其中 $count 项$UNINDEXED_HINT", "Including ${enCount(count, "item", "items")}: $UNINDEXED_HINT", "うち $count 項目：$UNINDEXED_HINT", "그중 ${count}개 항목: $UNINDEXED_HINT") else UNINDEXED_HINT
+    val description = if (count != null) tr("其中 $count 项$UNINDEXED_HINT", "Including ${enCount(count, "item", "items")}: $UNINDEXED_HINT", "うち $count 項目：$UNINDEXED_HINT", "그중 ${count}개 항목: $UNINDEXED_HINT", "其中 $count 項$UNINDEXED_HINT") else UNINDEXED_HINT
     val tint = MaterialTheme.colorScheme.tertiary
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
@@ -1117,7 +1117,7 @@ private fun UnindexedMark(count: Int? = null) {
 internal fun CopyLinkButton(link: String, modifier: Modifier = Modifier) {
     val platform = LocalPikoPlatform.current
     // 批量列表里也有 http 与 ed2k 链接
-    val kind = if (link.startsWith("magnet:", ignoreCase = true)) tr("磁力链接", "Magnet link", "マグネットリンク", "마그넷 링크") else tr("链接", "Link", "リンク", "링크")
+    val kind = if (link.startsWith("magnet:", ignoreCase = true)) tr("磁力链接", "Magnet link", "マグネットリンク", "마그넷 링크", "磁力連結") else tr("链接", "Link", "リンク", "링크", "連結")
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) {
         if (copied) {
@@ -1127,7 +1127,7 @@ internal fun CopyLinkButton(link: String, modifier: Modifier = Modifier) {
     }
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-        tooltip = { PlainTooltip { Text(tr("复制$kind", "Copy $kind", "$kind をコピー", "$kind 복사")) } },
+        tooltip = { PlainTooltip { Text(tr("复制$kind", "Copy $kind", "$kind をコピー", "$kind 복사", "複製$kind")) } },
         state = rememberTooltipState(),
         modifier = modifier,
     ) {
@@ -1138,7 +1138,7 @@ internal fun CopyLinkButton(link: String, modifier: Modifier = Modifier) {
             Crossfade(targetState = copied, label = "copy-link") { done ->
                 Icon(
                     imageVector = if (done) Icons.Outlined.Check else Icons.Outlined.Link,
-                    contentDescription = if (done) tr("已复制", "Copied", "コピーしました", "복사했습니다") else tr("复制$kind", "Copy $kind", "$kind をコピー", "$kind 복사"),
+                    contentDescription = if (done) tr("已复制", "Copied", "コピーしました", "복사했습니다", "已複製") else tr("复制$kind", "Copy $kind", "$kind をコピー", "$kind 복사", "複製$kind"),
                     tint = if (done) LocalStatusColors.current.success else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -1162,8 +1162,8 @@ private fun InstantFileRow(
     val isCompact = row.label.length <= SHORT_LABEL
     val meta = listOfNotNull(
         row.bytes.toReadableSize(),
-        tr("+${row.subtitleCount} 字幕", "+${row.subtitleCount} subtitles", "+${row.subtitleCount} 字幕", "+${row.subtitleCount}개 자막").takeIf { row.subtitleCount > 0 },
-        tr("+${row.audioTrackCount} 音轨", "+${row.audioTrackCount} audio tracks", "+${row.audioTrackCount} 音声", "+${row.audioTrackCount}개 오디오 트랙").takeIf { row.audioTrackCount > 0 },
+        tr("+${row.subtitleCount} 字幕", "+${row.subtitleCount} subtitles", "+${row.subtitleCount} 字幕", "+${row.subtitleCount}개 자막", "+${row.subtitleCount} 字幕").takeIf { row.subtitleCount > 0 },
+        tr("+${row.audioTrackCount} 音轨", "+${row.audioTrackCount} audio tracks", "+${row.audioTrackCount} 音声", "+${row.audioTrackCount}개 오디오 트랙", "+${row.audioTrackCount} 音軌").takeIf { row.audioTrackCount > 0 },
     )
     // 整行是一个复选项，Checkbox 只作显示，免得同一次点击被行与复选框各处理一遍
     Row(
@@ -1256,7 +1256,7 @@ internal fun PreviewButton(onClick: () -> Unit, isPreviewing: Boolean) {
     } else {
         TooltipIconButton(
             icon = Icons.Outlined.PlayCircle,
-            label = tr("预览", "Preview", "プレビュー", "미리 보기"),
+            label = tr("预览", "Preview", "プレビュー", "미리 보기", "預覽"),
             onClick = onClick,
             modifier = Modifier.padding(start = 4.dp),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1266,7 +1266,7 @@ internal fun PreviewButton(onClick: () -> Unit, isPreviewing: Boolean) {
 
 @Composable
 internal fun DownloadContentButton(onClick: () -> Unit) {
-    TooltipIconButton(Icons.Outlined.CloudDownload, tr("下载", "Downloads", "ダウンロード", "다운로드"), onClick,
+    TooltipIconButton(Icons.Outlined.CloudDownload, tr("下载", "Downloads", "ダウンロード", "다운로드", "下載"), onClick,
         modifier = Modifier.padding(start = 4.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
@@ -1305,7 +1305,7 @@ internal fun TargetRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    text = target?.localizedName ?: tr("正在确认", "Confirming", "確認中", "확인 중"),
+                    text = target?.localizedName ?: tr("正在确认", "Confirming", "確認中", "확인 중", "正在確認"),
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
@@ -1318,7 +1318,7 @@ internal fun TargetRow(
             if (target != null) {
                 Icon(
                     Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                    contentDescription = tr("更换保存位置", "Change save location", "保存先を変更", "저장 위치 변경"),
+                    contentDescription = tr("更换保存位置", "Change save location", "保存先を変更", "저장 위치 변경", "更換儲存位置"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -1334,18 +1334,18 @@ internal fun InstantSheetState.summary(): InstantSummary {
     val batch = batch
     val saving = isSaving || batch?.isSaving == true
     val title = when {
-        batch != null -> tr("${batch.rows.size} 条链接", "${enCount(batch.rows.size, "link", "links")}", "${batch.rows.size} 件のリンク", "링크 ${batch.rows.size}개")
+        batch != null -> tr("${batch.rows.size} 条链接", "${enCount(batch.rows.size, "link", "links")}", "${batch.rows.size} 件のリンク", "링크 ${batch.rows.size}개", "${batch.rows.size} 條連結")
         else -> result?.resource?.name ?: shareSave?.info?.title?.takeIf { it.isNotBlank() }
-            ?: input.trim().ifEmpty { tr("添加链接", "Add link", "リンクを追加", "링크 추가") }
+            ?: input.trim().ifEmpty { tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結") }
     }
     val status = when {
-        saving -> tr("正在保存", "Saving", "保存中", "저장 중")
-        batch != null -> batch.blockedReason ?: tr("可保存 ${batch.submittableCount} 项", "${enCount(batch.submittableCount, "item", "items")} ready to save", "${batch.submittableCount} 項目を保存可能", "${batch.submittableCount}개 항목 저장 가능")
+        saving -> tr("正在保存", "Saving", "保存中", "저장 중", "正在儲存")
+        batch != null -> batch.blockedReason ?: tr("可保存 ${batch.submittableCount} 项", "${enCount(batch.submittableCount, "item", "items")} ready to save", "${batch.submittableCount} 項目を保存可能", "${batch.submittableCount}개 항목 저장 가능", "可儲存 ${batch.submittableCount} 項")
         // 分享链接不走磁力解析，errorMessage 里那句「非磁力链接，可离线下载」说的不是它
-        shareSave != null -> shareSave?.doneMessage ?: shareSave?.errorMessage ?: tr("分享链接", "Share link", "共有リンク", "공유 링크")
+        shareSave != null -> shareSave?.doneMessage ?: shareSave?.errorMessage ?: tr("分享链接", "Share link", "共有リンク", "공유 링크", "分享連結")
         isResolving -> resolvingText(this)
         errorMessage != null -> errorMessage
-        result != null -> tr("已选 $selectedEntryCount / $entryCount", "Selected $selectedEntryCount / $entryCount", "選択済み $selectedEntryCount / $entryCount", "$selectedEntryCount / ${entryCount}개 선택됨")
+        result != null -> tr("已选 $selectedEntryCount / $entryCount", "Selected $selectedEntryCount / $entryCount", "選択済み $selectedEntryCount / $entryCount", "$selectedEntryCount / ${entryCount}개 선택됨", "已選 $selectedEntryCount / $entryCount")
         else -> null
     }
     return InstantSummary(title, status, busy = saving, resolving = saving || isResolving)

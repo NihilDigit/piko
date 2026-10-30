@@ -136,7 +136,7 @@ private fun VideoPlayMark(modifier: Modifier = Modifier) {
         modifier = modifier.size(40.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(Icons.Filled.PlayArrow, contentDescription = tr("视频", "Video", "動画", "동영상"), tint = Color.White, modifier = Modifier.size(24.dp))
+        Icon(Icons.Filled.PlayArrow, contentDescription = tr("视频", "Video", "動画", "동영상", "影片"), tint = Color.White, modifier = Modifier.size(24.dp))
     }
 }
 

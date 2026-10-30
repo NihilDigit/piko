@@ -60,7 +60,7 @@ internal fun WorkspaceControls(compact: Boolean = false) {
     val colors = MaterialTheme.colorScheme
     IconButton(
         onClick = show,
-        modifier = Modifier.semantics { contentDescription = tr("标签总览", "Tab overview", "タブ一覧", "탭 개요") },
+        modifier = Modifier.semantics { contentDescription = tr("标签总览", "Tab overview", "タブ一覧", "탭 개요", "分頁總覽") },
     ) {
         Box(
             modifier = Modifier
@@ -105,9 +105,9 @@ internal fun WorkspaceControls(compact: Boolean = false) {
 }
 
 internal fun workspaceTitle(model: WorkspaceViewModel, context: WorkspaceContext): String = when (context) {
-    is WorkspaceContext.File -> tr("文件", "Files", "ファイル", "파일")
-    is WorkspaceContext.Duplicate -> tr("查重：${context.root.localizedName}", "Duplicates: ${context.root.localizedName}", "重複検索：${context.root.localizedName}", "중복 검색: ${context.root.localizedName}")
-    is WorkspaceContext.ImportDraft -> model.importModels[context.id]?.state?.summary()?.title ?: tr("添加链接", "Add link", "リンクを追加", "링크 추가")
+    is WorkspaceContext.File -> tr("文件", "Files", "ファイル", "파일", "檔案")
+    is WorkspaceContext.Duplicate -> tr("查重：${context.root.localizedName}", "Duplicates: ${context.root.localizedName}", "重複検索：${context.root.localizedName}", "중복 검색: ${context.root.localizedName}", "查重：${context.root.localizedName}")
+    is WorkspaceContext.ImportDraft -> model.importModels[context.id]?.state?.summary()?.title ?: tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結")
 }
 
 @Composable
@@ -127,8 +127,8 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                 Modifier.fillMaxWidth().then(caption.modifier).padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(tr("${contexts.size} 个标签页", "${contexts.size} tabs", "${contexts.size} タブ", "탭 ${contexts.size}개"), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1)
-                TooltipIconButton(Icons.Outlined.Close, tr("关闭标签总览", "Close tab overview", "タブ一覧を閉じる", "탭 개요 닫기"), onDismiss)
+                Text(tr("${contexts.size} 个标签页", "${contexts.size} tabs", "${contexts.size} タブ", "탭 ${contexts.size}개", "${contexts.size} 個分頁"), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                TooltipIconButton(Icons.Outlined.Close, tr("关闭标签总览", "Close tab overview", "タブ一覧を閉じる", "탭 개요 닫기", "關閉分頁總覽"), onDismiss)
                 caption.buttons?.invoke()
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -186,7 +186,7 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                     if (canClose) {
-                                        TooltipIconButton(Icons.Outlined.Close, tr("关闭 $title", "Close $title", "$title を閉じる", "$title 닫기"), { model.requestCloseContext(context.id) })
+                                        TooltipIconButton(Icons.Outlined.Close, tr("关闭 $title", "Close $title", "$title を閉じる", "$title 닫기", "關閉 $title"), { model.requestCloseContext(context.id) })
                                     } else {
                                         Spacer(Modifier.width(40.dp))
                                     }
@@ -201,7 +201,7 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                                         if (snapshot != null) {
                                             Image(
                                                 bitmap = snapshot,
-                                                contentDescription = tr("页面快照：$title", "Page snapshot: $title", "ページスナップショット：$title", "페이지 스냅샷: $title"),
+                                                contentDescription = tr("页面快照：$title", "Page snapshot: $title", "ページスナップショット：$title", "페이지 스냅샷: $title", "頁面快照：$title"),
                                                 contentScale = ContentScale.FillWidth,
                                                 alignment = Alignment.TopCenter,
                                                 modifier = Modifier.fillMaxSize(),

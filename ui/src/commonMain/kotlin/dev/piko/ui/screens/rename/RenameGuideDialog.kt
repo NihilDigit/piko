@@ -67,7 +67,7 @@ internal fun RenameGuideDialog(onDismiss: () -> Unit) {
     val columns = if (wide) 2 else 1
     RenameDialogSurface(onDismiss, maxWidth = if (wide) 840 else 560, heightFraction = 0.72f) {
         Column(modifier = Modifier.fillMaxSize()) {
-            PikoTopBar(title = tr("使用说明", "Instructions", "使い方", "사용 안내"), colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent))
+            PikoTopBar(title = tr("使用说明", "Instructions", "使い方", "사용 안내", "使用說明"), colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent))
             Column(
                 modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -106,12 +106,12 @@ private fun GuideExample(example: BlockGuideExample) {
     val colors = MaterialTheme.colorScheme
     val numbers = captureNumbers(example.find)
     Column(modifier = Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        GuideBlocks(tr("查找", "Find", "検索", "찾기")) {
+        GuideBlocks(tr("查找", "Find", "検索", "찾기", "尋找")) {
             example.find.forEachIndexed { index, block ->
                 MiniChip(chipLabel(block) + (numbers[index]?.let(::circled) ?: ""), blockColor(index), blockContentColor(index))
             }
         }
-        GuideBlocks(tr("替换", "Replace", "置換", "바꾸기")) {
+        GuideBlocks(tr("替换", "Replace", "置換", "바꾸기", "取代")) {
             if (example.replace.isEmpty()) Text(stringResource(Res.string.text_leave_empty), style = label, color = colors.onSurfaceVariant)
             example.replace.forEach { block ->
                 val source = (block as? ReplaceBlock.Piece)?.number?.let { number -> numbers.indexOf(number).takeIf { it >= 0 } }
@@ -134,7 +134,7 @@ private fun GuideExample(example: BlockGuideExample) {
                 },
                 style = MaterialTheme.typography.bodyMedium,
             )
-            Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = tr("改为", "Change to", "変更先", "변경"), tint = colors.primary, modifier = Modifier.size(16.dp))
+            Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = tr("改为", "Change to", "変更先", "변경", "改為"), tint = colors.primary, modifier = Modifier.size(16.dp))
             Text(example.result, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
         }
     }

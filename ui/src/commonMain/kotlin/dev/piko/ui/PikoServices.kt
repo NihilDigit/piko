@@ -136,6 +136,8 @@ class PikoServices(
         .also { it.start() }
     private val vaultTreeSync = VaultTreeSync(clientManager, driveRepository, backgroundScope, preferences.settingsSyncFlow)
         .also { it.start() }
+    private val vaultStarSync = dev.piko.shared.sync.VaultStarSync(clientManager, driveRepository, backgroundScope, preferences.settingsSyncFlow)
+        .also { it.start() }
     private val sourceLedgerSync = SourceLedgerSync(clientManager, driveRepository, backgroundScope, preferences.settingsSyncFlow)
         .also { it.start() }
     /** 当前账号存过的压缩包密码，解压、浏览压缩包与设置页共用这一个，见 ArchivePasswordVault。 */

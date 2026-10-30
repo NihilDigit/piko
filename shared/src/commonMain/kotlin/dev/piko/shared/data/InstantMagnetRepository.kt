@@ -1,5 +1,6 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import io.ktor.client.request.prepareRequest
 import io.ktor.http.decodeURLPart
@@ -38,6 +39,7 @@ data class InstantFileItem(
     val file: ResolvedFile,
     val isInstantReady: Boolean,
     val isSelected: Boolean = true,
+    val meta: VaultMediaMeta? = null,
 )
 
 data class MagnetResolutionResult(
@@ -143,33 +145,87 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
         keepStructure: Boolean = false,
         names: Map<String, String> = emptyMap(),
         existingFolders: Map<String, String> = emptyMap(),
+        onFolderCreated: (parentId: String, id: String, name: String) -> Unit = { _, _, _ -> },
+        onFoldersResolved: (Map<String, String>) -> Unit = {},
     ): Result<List<String>> {
         val owner = clientManager.currentClient.value ?: return Result.failure(IllegalStateException("Not logged in"))
         val accepted = items.toList()
         val previews = reuse.toMap()
         val acceptedNames = names.toMap()
         val folders = existingFolders.toMap()
-        return withContext(Dispatchers.Default) { saveFiles(owner, accepted, targetParentId, previews, keepStructure, acceptedNames, folders) }
+        return withContext(Dispatchers.Default) {
+            saveFiles(
+                owner, accepted, targetParentId, previews, keepStructure, acceptedNames, folders,
+                onFolderCreated = onFolderCreated, onFoldersResolved = onFoldersResolved,
+            )
+        }
     }
 
-    suspend fun saveReferences(items: List<InstantFileItem>, targetParentId: String, keepStructure: Boolean,
-        names: Map<String, String>, existingFolders: Map<String, String>, vault: VaultStore, source: String?,
-        onReferencesSaved: (Map<String, Set<String>>) -> Unit = {}): Result<List<String>> {
+    suspend fun saveReferences(
+        items: List<InstantFileItem>,
+        targetParentId: String,
+        keepStructure: Boolean,
+        names: Map<String, String>,
+        existingFolders: Map<String, String>,
+        vault: VaultStore,
+        source: String?,
+        targetIsFreshFolder: Boolean = false,
+        knownMetaLookup: (gcid: String, size: Long) -> VaultMediaMeta? = vault::knownMetaOf,
+        onFolderCreated: (parentId: String, id: String, name: String) -> Unit = { _, _, _ -> },
+        onFoldersResolved: (Map<String, String>) -> Unit = {},
+        onFreshVaultFolders: (Set<String>) -> Unit = {},
+        onReferencesSaved: (Map<String, Set<String>>) -> Unit = {},
+    ): Result<List<String>> {
         val owner = clientManager.currentClient.value ?: return Result.failure(IllegalStateException("未登录"))
-        return withContext(Dispatchers.Default) { saveFiles(owner, items.toList(), targetParentId, emptyMap(), keepStructure,
-            names.toMap(), existingFolders.toMap(), vault, source, onReferencesSaved) }
+        return withContext(Dispatchers.Default) {
+            saveFiles(
+                owner = owner,
+                items = items.toList(),
+                targetParentId = targetParentId,
+                reuse = emptyMap(),
+                keepStructure = keepStructure,
+                names = names.toMap(),
+                existingFolders = existingFolders.toMap(),
+                referenceVault = vault,
+                source = source,
+                targetIsFreshFolder = targetIsFreshFolder,
+                knownMetaLookup = knownMetaLookup,
+                onReferencesSaved = onReferencesSaved,
+                onFreshVaultFolders = onFreshVaultFolders,
+                onFolderCreated = onFolderCreated,
+                onFoldersResolved = onFoldersResolved,
+            )
+        }
     }
 
-    private suspend fun saveFiles(owner: PikPakClient, items: List<InstantFileItem>, targetParentId: String,
-        reuse: Map<String, String>, keepStructure: Boolean, names: Map<String, String>, existingFolders: Map<String, String>, referenceVault: VaultStore? = null, source: String? = null,
-        onReferencesSaved: (Map<String, Set<String>>) -> Unit = {}): Result<List<String>> {
+    private suspend fun saveFiles(
+        owner: PikPakClient,
+        items: List<InstantFileItem>,
+        targetParentId: String,
+        reuse: Map<String, String>,
+        keepStructure: Boolean,
+        names: Map<String, String>,
+        existingFolders: Map<String, String>,
+        referenceVault: VaultStore? = null,
+        source: String? = null,
+        targetIsFreshFolder: Boolean = false,
+        knownMetaLookup: (gcid: String, size: Long) -> VaultMediaMeta? = { _, _ -> null },
+        onReferencesSaved: (Map<String, Set<String>>) -> Unit = {},
+        onFreshVaultFolders: (Set<String>) -> Unit = {},
+        onFolderCreated: (parentId: String, id: String, name: String) -> Unit = { _, _, _ -> },
+        onFoldersResolved: (Map<String, String>) -> Unit = {},
+    ): Result<List<String>> {
         val started = TimeSource.Monotonic.markNow()
-        val files = items.map { it.file }.filter { it.gcid != null }
+        val readyItems = items.filter { it.file.gcid != null }
+        val files = readyItems.map { it.file }
         val reused = files.count { it.gcid in reuse }
         val renamed = files.count { names[it.path].let { name -> name != null && name != it.name } }
         val summary = "${files.size} 个文件（跳过无 gcid 的 ${items.size - files.size} 个，移用预览副本 $reused 个，按番号改名 $renamed 个），" +
             "${files.sumOf { it.size }} 字节，到文件夹 ${targetParentId.ifEmpty { "根目录" }}${if (keepStructure) "，保留目录结构" else ""}"
         val folderIds = existingFolders.toMutableMap().apply { put("", targetParentId) }
+        val freshlyCreatedFolderIds = HashSet<String>().apply {
+            if (targetIsFreshFolder && targetParentId.isNotEmpty()) add(targetParentId)
+        }
         var creatingFolder: String? = null
         val directories = if (keepStructure) files.flatMap { ancestorsOf(it.path) }.distinct().sortedBy { it.count { c -> c == '/' } } else emptyList()
         val prepared = runSuspendCatching {
@@ -177,23 +233,33 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
                 val results = coroutineScope {
                     level.filterNot { it in folderIds }.map { dir ->
                         async {
-                            dir to runSuspendCatching {
+                            val parentPath = dir.substringBeforeLast('/', "")
+                            val parentId = folderIds.getValue(parentPath)
+                            val folderName = dir.substringAfterLast('/')
+                            Triple(dir, parentId to folderName, runSuspendCatching {
                                 savePermits.withPermit {
-                                    owner.createFolder(folderIds.getValue(dir.substringBeforeLast('/', "")), dir.substringAfterLast('/'))
+                                    owner.createFolder(parentId, folderName)
                                 }
-                            }
+                            })
                         }
                     }.awaitAll()
                 }
                 // 每层完成后单线程合并，失败也保留同层已经确认创建的目录。
-                results.forEach { (dir, result) -> result.getOrNull()?.let { folderIds[dir] = it } }
-                val failure = results.firstOrNull { it.second.isFailure }
+                results.forEach { (dir, meta, result) ->
+                    result.getOrNull()?.let { createdId ->
+                        folderIds[dir] = createdId
+                        freshlyCreatedFolderIds += createdId
+                        onFolderCreated(meta.first, createdId, meta.second)
+                    }
+                }
+                val failure = results.firstOrNull { it.third.isFailure }
                 if (failure != null) {
-                    creatingFolder = results.firstOrNull { it.second.isFailure && !definitelyNotSaved(it.second.exceptionOrNull()) }?.first
-                    throw failure.second.exceptionOrNull()!!
+                    creatingFolder = results.firstOrNull { it.third.isFailure && !definitelyNotSaved(it.third.exceptionOrNull()) }?.first
+                    throw failure.third.exceptionOrNull()!!
                 }
             }
         }
+        onFoldersResolved(folderIds.toMap())
         if (prepared.isFailure) {
             val error = prepared.exceptionOrNull()!!
             val receipt = InstantSaveReceipt(owner.account, targetParentId,
@@ -206,30 +272,46 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
             val unknown = linkedSetOf<String>()
             val remaining = files.mapTo(linkedSetOf()) { it.path }
             var failure: Throwable? = null
-            val groups = files.groupBy { if (keepStructure) it.path.substringBeforeLast('/', "") else "" }
-            val writes = coroutineScope {
-                groups.map { (directory, group) ->
-                    async {
-                        savePermits.withPermit {
-                            val folderId = folderIds.getValue(directory)
-                            val entries = group.map { file -> VaultEntry.create(names[file.path] ?: file.name, file.size, requireNotNull(file.gcid), source,
-                                kotlin.time.Clock.System.now().toEpochMilliseconds()) }
-                            val write = referenceVault.update(folderId, VaultEdits.add(entries))
-                            val actual = write.getOrNull()?.after ?: referenceVault.committed(folderId).getOrNull()
-                            Triple(entries, write, actual)
-                        }
-                    }
-                }.awaitAll()
-            }
-            for ((indexed, outcome) in groups.entries.zip(writes)) {
-                val (directory, group) = indexed
+            val directoryByFolderId = LinkedHashMap<String, String>()
+            val batches = LinkedHashMap<String, MutableList<VaultEntryDraft>>()
+            for (item in readyItems) {
+                val file = item.file
+                val directory = if (keepStructure) file.path.substringBeforeLast('/', "") else ""
                 val folderId = folderIds.getValue(directory)
-                val (entries, write, actual) = outcome
-                group.zip(entries).forEach { (file, entry) ->
-                    if(actual?.any { it.id == entry.id } == true) confirmed[file.path] = entry.virtualId
-                    else if(write.exceptionOrNull() is VaultWriteUnconfirmed) unknown += file.path
+                directoryByFolderId[folderId] = directory
+                batches.getOrPut(folderId) { ArrayList() } += VaultEntryDraft(
+                    name = names[file.path] ?: file.name,
+                    size = file.size,
+                    gcid = requireNotNull(file.gcid),
+                    source = source,
+                    sourcePath = file.path,
+                    meta = item.meta,
+                )
+            }
+            val writes = VaultIngest.ingestFolders(
+                batches = batches,
+                folderPermits = savePermits,
+                freshFolderIds = freshlyCreatedFolderIds,
+                knownMetaLookup = knownMetaLookup,
+                writeFolder = { folderId, entries, isFresh ->
+                    referenceVault.update(folderId, VaultEdits.add(entries), freshlyCreatedFolder = isFresh).map { }
+                },
+                verifyCommittedOnFailure = { folderId ->
+                    referenceVault.committed(folderId).getOrNull()
+                },
+            )
+            for (outcome in writes) {
+                val folderId = outcome.folderId
+                val directory = directoryByFolderId.getValue(folderId)
+                val actualIds = outcome.confirmedEntries?.mapTo(HashSet()) { it.id }
+                outcome.drafts.zip(outcome.entries).forEach { (draft, entry) ->
+                    if (actualIds?.contains(entry.id) == true) {
+                        confirmed[draft.sourcePath] = entry.virtualId
+                    } else if (outcome.writeResult.exceptionOrNull() is VaultWriteUnconfirmed) {
+                        unknown += draft.sourcePath
+                    }
                 }
-                if (group.any { it.path in confirmed }) {
+                if (outcome.drafts.any { it.sourcePath in confirmed }) {
                     val ancestors = folderIds.filterKeys { it.isEmpty() || directory == it || directory.startsWith("$it/") }
                     val tree = ancestors.values.associateWith { setOf(folderId) }.toMutableMap()
                     if (targetParentId.isNotEmpty() && folderId != targetParentId) {
@@ -238,12 +320,18 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
                     onReferencesSaved(tree)
                 }
                 remaining.removeAll(confirmed.keys + unknown)
-                if (write.isFailure && failure == null) failure = write.exceptionOrNull()
+                if (outcome.failure != null && failure == null) failure = outcome.failure
             }
             val receipt = InstantSaveReceipt(owner.account, targetParentId, confirmed = confirmed, unconfirmed = unknown,
                 notAttempted = remaining, folders = folderIds.toMap())
-            return if(failure == null && remaining.isEmpty() && unknown.isEmpty()) Result.success(files.map { confirmed.getValue(it.path) })
-                else Result.failure(InstantSaveIncomplete(receipt, failure ?: IllegalStateException("引用保存待确认")))
+            return if (failure == null && remaining.isEmpty() && unknown.isEmpty()) {
+                if (freshlyCreatedFolderIds.isNotEmpty()) {
+                    onFreshVaultFolders(freshlyCreatedFolderIds.toSet())
+                }
+                Result.success(files.map { confirmed.getValue(it.path) })
+            } else {
+                Result.failure(InstantSaveIncomplete(receipt, failure ?: IllegalStateException("引用保存待确认")))
+            }
         }
         val consumedPreviews = HashSet<String>()
         val previews = files.associate { file ->
@@ -328,9 +416,9 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
                 val owner = client
                 // Persisted jobs may predate the completeness guard. Revalidate before any deletion.
                 val resource = owner.resolveMagnet(sourceUrl)
-                if (resource == null || resource.truncated) throw OfflinePruneBlocked("文件清单不完整，已保留全部离线产出")
+                if (resource == null || resource.truncated) throw OfflinePruneBlocked(tr("文件清单不完整，已保留全部离线下载文件", "Incomplete file list; all downloaded cloud files were kept", "ファイル一覧が不完全なため、ダウンロードされたすべてのファイルを保持しました", "파일 목록이 불완전하여 다운로드된 모든 파일을 유지했습니다", "檔案清單不完整，已保留全部離線下載檔案"))
                 val paths = resource.files.mapTo(HashSet()) { it.path }
-                if (keep.any { it !in paths }) throw OfflinePruneBlocked("保留路径与来源清单不一致，已保留全部离线产出")
+                if (keep.any { it !in paths }) throw OfflinePruneBlocked(tr("保留路径与来源清单不一致，已保留全部离线下载文件", "Retained paths do not match source list; all downloaded cloud files were kept", "保持対象パスがソース一覧と一致しないため、すべてのファイルを保持しました", "유지할 경로가 원본 목록과 일치하지 않아 모든 파일을 유지했습니다", "保留路徑與來源清單不一致，已保留全部離線下載檔案"))
                 check(clientManager.currentClient.value === owner) { "账号已改变，未裁剪离线产出" }
                 owner.pruneOfflineOutput(task, keep)
             }
@@ -347,7 +435,7 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
 
     private companion object {
         const val TAG = "Instant"
-        const val SAVE_CONCURRENCY = 4
+        const val SAVE_CONCURRENCY = 16
     }
 }
 

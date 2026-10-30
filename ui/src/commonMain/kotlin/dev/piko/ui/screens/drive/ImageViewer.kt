@@ -230,7 +230,7 @@ internal fun ImageViewer(
                 PageButton(
                     visible = isChromeVisible && pagerState.currentPage > 0,
                     icon = Icons.AutoMirrored.Outlined.KeyboardArrowLeft,
-                    description = tr("上一张", "Previous image", "前の画像", "이전 이미지"),
+                    description = tr("上一张", "Previous image", "前の画像", "이전 이미지", "上一張"),
                     shortcut = "←",
                     onClick = { goTo(pagerState.currentPage - 1) },
                     modifier = Modifier.align(Alignment.CenterStart),
@@ -238,7 +238,7 @@ internal fun ImageViewer(
                 PageButton(
                     visible = isChromeVisible && pagerState.currentPage < images.lastIndex,
                     icon = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                    description = tr("下一张", "Next image", "次の画像", "다음 이미지"),
+                    description = tr("下一张", "Next image", "次の画像", "다음 이미지", "下一張"),
                     shortcut = "→",
                     onClick = { goTo(pagerState.currentPage + 1) },
                     modifier = Modifier.align(Alignment.CenterEnd),
@@ -296,7 +296,7 @@ private fun ViewerTopBar(title: String, position: String?, onClose: () -> Unit) 
                 .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, tr("关闭", "Close", "閉じる", "닫기"), onClose, shortcut = "Esc", tint = Color.White)
+            TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, tr("关闭", "Close", "閉じる", "닫기", "關閉"), onClose, shortcut = "Esc", tint = Color.White)
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleMedium,

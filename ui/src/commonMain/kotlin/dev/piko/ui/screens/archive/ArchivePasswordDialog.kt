@@ -71,8 +71,8 @@ internal fun ArchivePasswordDialog(
     incorrect = (job.status as? ArchiveJobStatus.NeedsPassword)?.incorrect == true,
     initialPassword = job.password,
     savedPasswords = savedPasswords,
-    confirmLabel = tr("解压", "Extract", "解凍", "압축 해제"),
-    dismissLabel = tr("跳过", "Skip", "スキップ", "건너뛰기"),
+    confirmLabel = tr("解压", "Extract", "解凍", "압축 해제", "解壓縮"),
+    dismissLabel = tr("跳过", "Skip", "スキップ", "건너뛰기", "略過"),
     onSubmit = onSubmit,
     onDismiss = onSkip,
 )
@@ -93,8 +93,8 @@ internal fun ArchiveBrowsePasswordDialog(
     incorrect = incorrect,
     initialPassword = "",
     savedPasswords = emptyList(),
-    confirmLabel = tr("打开", "Open", "開く", "열기"),
-    dismissLabel = tr("取消", "Cancel", "キャンセル", "취소"),
+    confirmLabel = tr("打开", "Open", "開く", "열기", "開啟"),
+    dismissLabel = tr("取消", "Cancel", "キャンセル", "취소", "取消"),
     onSubmit = onSubmit,
     onDismiss = onDismiss,
 )
@@ -124,7 +124,7 @@ private fun ArchivePasswordDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(dismissOnClickOutside = false),
         icon = { Icon(Icons.Outlined.Key, contentDescription = null) },
-        title = { Text(if (incorrect) tr("密码错误", "Incorrect password", "パスワードが違います", "비밀번호가 틀렸습니다") else tr("需要密码", "Password required", "パスワードが必要です", "비밀번호가 필요합니다")) },
+        title = { Text(if (incorrect) tr("密码错误", "Incorrect password", "パスワードが違います", "비밀번호가 틀렸습니다", "密碼錯誤") else tr("需要密码", "Password required", "パスワードが必要です", "비밀번호가 필요합니다", "需要密碼")) },
         text = {
             // 整段可滚：横屏时键盘上方只剩四百来 dp，放不下密码表，不滚的话底部按钮会被截掉。
             // AlertDialog 的正文区可以收缩，正文能滚时按钮始终留在可见范围内
@@ -154,7 +154,7 @@ private fun ArchivePasswordDialog(
                     trailingIcon = {
                         TooltipIconButton(
                             icon = if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                            label = if (visible) tr("隐藏密码", "Hide password", "パスワードを隠す", "비밀번호 숨기기") else tr("显示密码", "Show password", "パスワードを表示", "비밀번호 표시"),
+                            label = if (visible) tr("隐藏密码", "Hide password", "パスワードを隠す", "비밀번호 숨기기", "隱藏密碼") else tr("显示密码", "Show password", "パスワードを表示", "비밀번호 표시", "顯示密碼"),
                             onClick = { visible = !visible },
                         )
                     },
@@ -206,10 +206,10 @@ private fun SavedPasswordRow(
         },
         trailingContent = when {
             onDelete != null -> {
-                { TooltipIconButton(icon = Icons.Outlined.Delete, label = tr("删除", "Delete", "削除", "삭제"), onClick = onDelete) }
+                { TooltipIconButton(icon = Icons.Outlined.Delete, label = tr("删除", "Delete", "削除", "삭제", "刪除"), onClick = onDelete) }
             }
             selected -> {
-                { Icon(Icons.Outlined.Check, contentDescription = tr("已选", "Selected", "選択済み", "선택됨"), tint = MaterialTheme.colorScheme.primary) }
+                { Icon(Icons.Outlined.Check, contentDescription = tr("已选", "Selected", "選択済み", "선택됨", "已選取"), tint = MaterialTheme.colorScheme.primary) }
             }
             else -> null
         },

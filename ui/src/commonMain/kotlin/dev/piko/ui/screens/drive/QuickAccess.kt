@@ -78,9 +78,9 @@ internal fun ColumnScope.QuickAccessSection(
     // 库也只有一级，但它在「库」那一组里亮，不算在根目录
     val atRoot = onFilesTab && currentStack.singleOrNull()?.id?.isEmpty() == true
     val myPacks = state.myPacks
-    SectionLabel(tr("快速访问", "Quick access", "クイックアクセス", "빠른 액세스"))
+    SectionLabel(tr("快速访问", "Quick access", "クイックアクセス", "빠른 액세스", "快速存取"))
     val root = PikoDriveRepository.ROOT_BREADCRUMB
-    ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.AddToPhotos, tr("在新标签页打开", "Open in new tab", "新しいタブで開く", "새 탭에서 열기"), { state.openRootInNewTab() })) }) {
+    ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.AddToPhotos, tr("在新标签页打开", "Open in new tab", "新しいタブで開く", "새 탭에서 열기", "在新分頁開啟"), { state.openRootInNewTab() })) }) {
         SidebarItem(
             icon = Icons.Outlined.Home,
             selectedIcon = Icons.Filled.Home,
@@ -93,7 +93,7 @@ internal fun ColumnScope.QuickAccessSection(
         )
     }
     if (myPacks != null) {
-        ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.AddToPhotos, tr("在新标签页打开", "Open in new tab", "新しいタブで開く", "새 탭에서 열기"), { state.openMyPacksInNewTab(myPacks) })) }) {
+        ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.AddToPhotos, tr("在新标签页打开", "Open in new tab", "新しいタブで開く", "새 탭에서 열기", "在新分頁開啟"), { state.openMyPacksInNewTab(myPacks) })) }) {
             SidebarItem(
                 icon = Icons.Outlined.CloudDownload,
                 selectedIcon = Icons.Filled.CloudDownload,
@@ -111,8 +111,8 @@ internal fun ColumnScope.QuickAccessSection(
         // 右键与网盘里的文件夹同一种说法，再加这一栏自己的「取消固定」
         ContextMenuArea(actions = {
             listOf(
-                SheetAction(Icons.Outlined.AddToPhotos, tr("在新标签页打开", "Open in new tab", "新しいタブで開く", "새 탭에서 열기"), { state.openInNewTab(folder) }),
-                SheetAction(Icons.Outlined.PushPin, tr("从快速访问取消固定", "Unpin from quick access", "クイックアクセスから外す", "빠른 액세스에서 고정 해제"), { state.unpin(folder) }),
+                SheetAction(Icons.Outlined.AddToPhotos, tr("在新标签页打开", "Open in new tab", "新しいタブで開く", "새 탭에서 열기", "在新分頁開啟"), { state.openInNewTab(folder) }),
+                SheetAction(Icons.Outlined.PushPin, tr("从快速访问取消固定", "Unpin from quick access", "クイックアクセスから外す", "빠른 액세스에서 고정 해제", "從快速存取取消釘選"), { state.unpin(folder) }),
             )
         }) {
             SidebarItem(

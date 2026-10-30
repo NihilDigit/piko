@@ -88,7 +88,7 @@ fun UpdateDialog(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Piko ${update.version}")
                 Text(
-                    text = tr("当前版本 ${platform.appVersion}，需下载 ${update.downloadSize.toReadableSize()}", "Current version ${platform.appVersion}; download ${update.downloadSize.toReadableSize()}", "現在のバージョン ${platform.appVersion}、ダウンロード ${update.downloadSize.toReadableSize()}", "현재 버전 ${platform.appVersion}, 다운로드 ${update.downloadSize.toReadableSize()}"),
+                    text = tr("当前版本 ${platform.appVersion}，需下载 ${update.downloadSize.toReadableSize()}", "Current version ${platform.appVersion}; download ${update.downloadSize.toReadableSize()}", "現在のバージョン ${platform.appVersion}、ダウンロード ${update.downloadSize.toReadableSize()}", "현재 버전 ${platform.appVersion}, 다운로드 ${update.downloadSize.toReadableSize()}", "目前版本 ${platform.appVersion}，需下載 ${update.downloadSize.toReadableSize()}"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -103,7 +103,7 @@ fun UpdateDialog(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     ReleaseNotes(
-                        markdown = update.notes.ifBlank { tr("此版本没有更新说明", "No release notes for this version", "このバージョンの更新情報はありません", "이 버전의 업데이트 정보가 없습니다") },
+                        markdown = update.notes.ifBlank { tr("此版本没有更新说明", "No release notes for this version", "このバージョンの更新情報はありません", "이 버전의 업데이트 정보가 없습니다", "此版本沒有更新說明") },
                         modifier = Modifier
                             .heightIn(max = 320.dp)
                             .verticalScroll(rememberScrollState())
@@ -127,7 +127,7 @@ fun UpdateDialog(
             when {
                 !update.canInstallInApp -> Button(onClick = { platform.openUrl(update.pageUrl) }) { Text(stringResource(Res.string.text_go_to_download_page)) }
                 status is UpdateStatus.Downloading -> Button(onClick = {}, enabled = false) {
-                    Text(tr("正在下载 ${(status.progress * 100).toInt()}%", "Downloading ${(status.progress * 100).toInt()}%", "ダウンロード中 ${(status.progress * 100).toInt()}%", "다운로드 중 ${(status.progress * 100).toInt()}%"))
+                    Text(tr("正在下载 ${(status.progress * 100).toInt()}%", "Downloading ${(status.progress * 100).toInt()}%", "ダウンロード中 ${(status.progress * 100).toInt()}%", "다운로드 중 ${(status.progress * 100).toInt()}%", "正在下載 ${(status.progress * 100).toInt()}%"))
                 }
                 status is UpdateStatus.ReadyToRestart -> Button(onClick = restart) { Text(stringResource(Res.string.text_restart_and_update)) }
                 status is UpdateStatus.Installing -> Button(onClick = {}, enabled = false) { Text(stringResource(Res.string.text_waiting_to_install)) }
@@ -158,7 +158,7 @@ fun UpdateDialog(
             text = { Text(stringResource(Res.string.text_restarting_to_update_interrupts_active_downloads)) },
             confirmButton = {
                 PikoDialogConfirm(
-                    label = tr("重启并更新", "Restart and update", "再起動して更新", "다시 시작 및 업데이트"),
+                    label = tr("重启并更新", "Restart and update", "再起動して更新", "다시 시작 및 업데이트", "重新啟動並更新"),
                     onClick = {
                         confirmInterrupt = false
                         scope.launch { updater.restartToInstall(update) }

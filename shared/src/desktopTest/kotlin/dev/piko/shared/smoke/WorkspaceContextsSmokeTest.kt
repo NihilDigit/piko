@@ -3,12 +3,16 @@ package dev.piko.shared.smoke
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.DriveLibrary
+import dev.piko.shared.data.InstantMagnetRepository
+import dev.piko.shared.data.OfflinePackTracker
 import dev.piko.shared.data.PikoCacheStore
+import dev.piko.shared.data.PreviewTempFolder
 import dev.piko.shared.presentation.DriveWorkspace
 import dev.piko.shared.presentation.WorkspaceContext
 import dev.piko.shared.presentation.WorkspaceContexts
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateSession
+import dev.piko.shared.state.InstantSaveRecords
 import dev.piko.shared.state.TransferKind
 import dev.piko.shared.state.TrashSession
 import kotlinx.coroutines.CoroutineScope
@@ -218,6 +222,50 @@ class WorkspaceContextsSmokeTest {
         assertIs<WorkspaceContext.Duplicate>(workspace.closeContext(duplicate))
         assertEquals(listOf(duplicate), closed.map { it.id })
         assertEquals(path, workspace.tabsFlow.value.first { it.id == first }.stack)
+    }
+
+    @Test
+    fun `cold start incoming link bound to placeholder tab rebinds to restored active tab`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val folder = server.addFolder("Movies")
+        val cache = MemoryCacheStore()
+        cache.write(
+            "drive-tabs-smoke@piko.dev.json",
+            """{"tabs":[[{"id":"","name":"网盘"},{"id":"${folder.id}","name":"Movies"}]],"active":0,"ids":[73]}""",
+        )
+        val provider = server.provider()
+        val repository = PikoDriveRepository(provider, MemoryPreferences(), cache)
+        val workspace = DriveWorkspace(repository, cacheStore = cache, backgroundScope = scope)
+        val instantRepo = InstantMagnetRepository(provider)
+        val prefs = MemoryPreferences()
+        val temp = PreviewTempFolder(provider, repository, instantRepo, scope)
+        val packs = OfflinePackTracker(instantRepo, repository, prefs)
+        val records = InstantSaveRecords(provider, cache, scope)
+        val session = dev.piko.shared.state.InstantSession(
+            newScope = { kotlinx.coroutines.CoroutineScope(scope.coroutineContext + kotlinx.coroutines.SupervisorJob()) },
+            newState = { draftScope, magnet ->
+                dev.piko.shared.state.InstantSheetState(instantRepo, repository, prefs, temp, packs, records, draftScope, magnet)
+            },
+        )
+        val addLink = dev.piko.shared.presentation.AddLinkViewModel(session)
+        val magnet = "magnet:?xt=urn:btih:" + "f".repeat(40)
+
+        // 模拟冷启动首帧：restoreLocation 尚未从磁盘读完，外部链接先绑在初始占位标签 1L 上
+        assertEquals(1L, workspace.activeTabId.value)
+        addLink.open(magnet, tabId = workspace.activeTabId.value)
+        assertEquals(1L, addLink.ownerTabId)
+        assertTrue(addLink.isExpanded)
+
+        // 随后 restoreLocation 将初始占位标签 1L 替换为存盘标签 73L
+        assertTrue(workspace.restoreLocation())
+        assertEquals(73L, workspace.activeTabId.value)
+        addLink.rebindTabIfMissing(workspace.tabsFlow.value.mapTo(HashSet()) { it.id }, workspace.activeTabId.value)
+
+        assertEquals(73L, addLink.ownerTabId, "初始占位标签被恢复标签替换后，添加链接面板必须跟随迁移到恢复后的活动标签")
+        assertTrue(addLink.isExpanded)
+        assertEquals(magnet, addLink.state?.input)
+        session.clear()
+        workspace.close()
     }
 
 }

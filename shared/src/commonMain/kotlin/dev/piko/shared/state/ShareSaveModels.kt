@@ -35,6 +35,6 @@ data class ShareSaveWork(val id: Long, val account: String, val command: ShareSa
     val isRunning: Boolean get() = result == null
     val sourceIds: Set<String> get() = command.sources.mapTo(HashSet()) { it.id }
     val blockedSources: Set<String> get() = if (isRunning) sourceIds else result?.unconfirmedSources.orEmpty() + pendingRenames.mapNotNull { renameSources[it.id] }
-    val title: String get() = tr("转存 ${command.sources.size} 项到「${command.target.name}」", "Save ${enCount(command.sources.size, "item", "items")} to “${command.target.name}”", "${command.sources.size} 項目を「${command.target.name}」に保存", "${command.sources.size}개 항목을 “${command.target.name}”에 저장")
+    val title: String get() = tr("转存 ${command.sources.size} 项到「${command.target.name}」", "Save ${enCount(command.sources.size, "item", "items")} to “${command.target.name}”", "${command.sources.size} 項目を「${command.target.name}」に保存", "${command.sources.size}개 항목을 “${command.target.name}”에 저장", "轉存 ${command.sources.size} 項至「${command.target.name}」")
 }
 data class ShareSaveOutcome(val account: String, val id: Long, val title: String, val result: ShareSaveResult)

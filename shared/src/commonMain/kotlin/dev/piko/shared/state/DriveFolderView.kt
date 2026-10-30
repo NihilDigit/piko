@@ -31,8 +31,8 @@ class DriveFolderView(
 private fun notableExtraLabel(section: Section): String? = when (section) {
     Section.SPECIAL -> "SP"
     Section.OVA -> "OVA"
-    Section.MOVIE -> tr("剧场版", "Movie", "劇場版", "극장판")
-    Section.BONUS -> tr("特典", "Extras", "特典", "특전")
+    Section.MOVIE -> tr("剧场版", "Movie", "劇場版", "극장판", "劇場版")
+    Section.BONUS -> tr("特典", "Extras", "特典", "특전", "特典")
     else -> null
 }
 
@@ -70,9 +70,9 @@ private fun avTags(description: FolderDescription, content: List<MediaFileInput>
         val batch = analyzeMediaBatch(content)
         val entries = batch.works.firstOrNull { it.kind == WorkKind.AV && it.title == description.code }
             ?.sections?.flatMap { it.entries }.orEmpty()
-        if (entries.size > 1) add(tr("${entries.size} 段", "${enCount(entries.size, "part", "parts")}", "${entries.size} パート", "${entries.size}개 파트"))
+        if (entries.size > 1) add(tr("${entries.size} 段", "${enCount(entries.size, "part", "parts")}", "${entries.size} パート", "${entries.size}개 파트", "${entries.size} 段"))
         val versions = entries.maxOfOrNull { it.files.size } ?: 0
-        if (versions > 1) add(tr("$versions 版本", "${enCount(versions, "version", "versions")}", "$versions バージョン", "${versions}개 버전"))
+        if (versions > 1) add(tr("$versions 版本", "${enCount(versions, "version", "versions")}", "$versions バージョン", "${versions}개 버전", "$versions 個版本"))
     }
     return (pinned + counts + rest).distinct()
 }
@@ -80,11 +80,11 @@ private fun avTags(description: FolderDescription, content: List<MediaFileInput>
 private fun folderFields(description: FolderDescription): List<DriveParsedField> = listOfNotNull(
     (description.code ?: description.title)?.let {
         DriveParsedField(
-            if (description.kind == WorkKind.AV) tr("番号", "Code", "作品番号", "품번") else tr("作品", "Work", "作品", "작품"),
+            if (description.kind == WorkKind.AV) tr("番号", "Code", "作品番号", "품번", "番號") else tr("作品", "Work", "作品", "작품", "作品"),
             it,
         )
     },
-    description.episodeRange?.let { DriveParsedField(tr("集数", "Episodes", "話数", "화수"), it) },
-    description.extras.takeIf { it.isNotEmpty() }?.let { extras -> DriveParsedField(tr("包含", "Includes", "収録", "포함"), extras.joinToString(" ") { it.label }) },
-    description.tags.takeIf { it.isNotEmpty() }?.let { tags -> DriveParsedField(tr("标签", "Tags", "タグ", "태그"), tags.joinToString(" ") { it.text }) },
+    description.episodeRange?.let { DriveParsedField(tr("集数", "Episodes", "話数", "화수", "集數"), it) },
+    description.extras.takeIf { it.isNotEmpty() }?.let { extras -> DriveParsedField(tr("包含", "Includes", "収録", "포함", "包含"), extras.joinToString(" ") { it.label }) },
+    description.tags.takeIf { it.isNotEmpty() }?.let { tags -> DriveParsedField(tr("标签", "Tags", "タグ", "태그", "標籤"), tags.joinToString(" ") { it.text }) },
 )

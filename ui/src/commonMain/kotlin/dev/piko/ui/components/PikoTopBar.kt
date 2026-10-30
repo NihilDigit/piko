@@ -158,7 +158,7 @@ private fun PikoTopBarContent(
                 IconButton(onClick = onBackClick) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = tr("返回", "Back", "戻る", "뒤로"),
+                        contentDescription = tr("返回", "Back", "戻る", "뒤로", "返回"),
                     )
                 }
             }

@@ -28,11 +28,11 @@ sealed interface HistoryEditCommand {
     val kind: HistoryKind
     val title: String
     data class Remove(override val kind: HistoryKind, val eventIds: List<String>) : HistoryEditCommand {
-        override val title get() = tr("从${kind.title}移除 ${eventIds.size} 项记录", "Remove ${enCount(eventIds.size, "record", "records")} from ${kind.title}", "${kind.title}から ${eventIds.size} 件の記録を削除", "${kind.title}에서 기록 ${eventIds.size}건 삭제")
+        override val title get() = tr("从${kind.title}移除 ${eventIds.size} 项记录", "Remove ${enCount(eventIds.size, "record", "records")} from ${kind.title}", "${kind.title}から ${eventIds.size} 件の記録を削除", "${kind.title}에서 기록 ${eventIds.size}건 삭제", "從${kind.title}移除 ${eventIds.size} 項記錄")
     }
     data object ClearPlay : HistoryEditCommand {
         override val kind = HistoryKind.PLAY
-        override val title get() = tr("清空播放历史", "Clear playback history", "再生履歴を消去", "재생 기록 지우기")
+        override val title get() = tr("清空播放历史", "Clear playback history", "再生履歴を消去", "재생 기록 지우기", "清空播放歷史")
     }
 }
 
@@ -114,7 +114,7 @@ class HistoryEditSession(private val repository: PikoDriveRepository, private va
                 currentCoroutineContext().ensureActive()
                 if (!active(work)) return@launch
                 val result = if (response?.isSuccess == true) {
-                    HistoryEditResult(HistoryEditCompletion.SUCCEEDED, tr("已完成", "Completed", "完了", "완료"), (work.command as? HistoryEditCommand.Remove)?.eventIds.orEmpty().toSet(), now())
+                    HistoryEditResult(HistoryEditCompletion.SUCCEEDED, tr("已完成", "Completed", "完了", "완료", "已完成"), (work.command as? HistoryEditCommand.Remove)?.eventIds.orEmpty().toSet(), now())
                 } else verify(access, work.command, initial.result?.confirmedEvents.orEmpty(), response?.exceptionOrNull())
                 currentCoroutineContext().ensureActive()
                 if (!active(work)) return@launch
@@ -146,9 +146,9 @@ class HistoryEditSession(private val repository: PikoDriveRepository, private va
             if (command == HistoryEditCommand.ClearPlay) {
                 val completion = if (page.events.isEmpty() && page.nextPageToken.isEmpty()) HistoryEditCompletion.SUCCEEDED else failureKind(error)
                 val message = when (completion) {
-                    HistoryEditCompletion.SUCCEEDED -> tr("播放历史已清空", "Playback history cleared", "再生履歴を消去しました", "재생 기록을 지웠습니다")
-                    HistoryEditCompletion.FAILED -> tr("未能清空播放历史", "Failed to clear playback history", "再生履歴を消去できませんでした", "재생 기록을 지우지 못했습니다")
-                    else -> tr("清空结果尚未确认，请检查播放历史后再决定下一步", "Clear result unconfirmed. Check playback history before continuing", "消去の結果は未確認です。次の操作の前に再生履歴を確認してください", "지우기 결과가 미확인입니다. 다음 작업 전에 재생 기록을 확인해 주세요")
+                    HistoryEditCompletion.SUCCEEDED -> tr("播放历史已清空", "Playback history cleared", "再生履歴を消去しました", "재생 기록을 지웠습니다", "播放歷史已清空")
+                    HistoryEditCompletion.FAILED -> tr("未能清空播放历史", "Failed to clear playback history", "再生履歴を消去できませんでした", "재생 기록을 지우지 못했습니다", "未能清空播放歷史")
+                    else -> tr("清空结果待确认，请先核对播放历史", "Clear result unconfirmed. Check playback history first", "消去の結果が未確認です。先に再生履歴を確認してください", "비우기 결과가 미확인 상태입니다. 먼저 재생 기록을 확인해 주세요", "清空結果待確認，請先核對播放記錄")
                 }
                 return HistoryEditResult(completion, message, finishedAtMs = now())
             }
@@ -168,10 +168,10 @@ class HistoryEditSession(private val repository: PikoDriveRepository, private va
             else -> failureKind(error)
         }
         val message = when (completion) {
-            HistoryEditCompletion.SUCCEEDED -> tr("已移除记录", "Record removed", "記録を削除しました", "기록을 삭제했습니다")
-            HistoryEditCompletion.PARTIAL -> tr("已确认移除 ${confirmed.size} 项，其余结果尚未确认", "${confirmed.size} removals confirmed; remaining results unconfirmed", "${confirmed.size} 件の削除を確認しました。残りは未確認です", "${confirmed.size}개 삭제 확인 완료, 나머지 결과 미확인")
-            HistoryEditCompletion.FAILED -> tr("未能移除记录", "Failed to remove record", "記録を削除できませんでした", "기록을 삭제하지 못했습니다")
-            HistoryEditCompletion.UNCONFIRMED -> tr("结果尚未确认，重新查询不会再次提交删除", "Result unconfirmed; checking again will not delete again", "結果は未確認です。再確認で削除を再送信しません", "결과가 미확인입니다. 다시 확인해도 삭제를 재요청하지 않습니다")
+            HistoryEditCompletion.SUCCEEDED -> tr("已移除记录", "Record removed", "記録を削除しました", "기록을 삭제했습니다", "已移除記錄")
+            HistoryEditCompletion.PARTIAL -> tr("已确认移除 ${confirmed.size} 项，其余结果尚未确认", "${confirmed.size} removals confirmed; remaining results unconfirmed", "${confirmed.size} 件の削除を確認しました。残りは未確認です", "${confirmed.size}개 삭제 확인 완료, 나머지 결과 미확인", "已確認移除 ${confirmed.size} 項，其餘結果尚未確認")
+            HistoryEditCompletion.FAILED -> tr("未能移除记录", "Failed to remove record", "記録を削除できませんでした", "기록을 삭제하지 못했습니다", "未能移除記錄")
+            HistoryEditCompletion.UNCONFIRMED -> tr("移除结果待确认，可在任务页重新查询", "Removal unconfirmed; check results again in Tasks", "削除結果が未確認です。タスク画面で再確認できます", "삭제 결과가 미확인 상태입니다. 작업 페이지에서 다시 확인할 수 있습니다", "移除結果待確認，可至任務頁重新查詢")
         }
         return HistoryEditResult(completion, message, confirmed, now())
     }

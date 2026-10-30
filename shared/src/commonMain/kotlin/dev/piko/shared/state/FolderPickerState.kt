@@ -107,8 +107,8 @@ class FolderPickerState(
                         reload()
                     }
                 }
-                .logFailure("FolderPicker", tr("新建文件夹失败", "Failed to create folder", "フォルダーを作成できませんでした", "폴더를 만들지 못했습니다"))
-                .onFailure { _messages.tryEmit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("新建文件夹", "Create folder", "フォルダーを作成", "폴더 만들기"), it)) }
+                .logFailure("FolderPicker", tr("新建文件夹失败", "Failed to create folder", "フォルダーを作成できませんでした", "폴더를 만들지 못했습니다", "新增資料夾失敗"))
+                .onFailure { _messages.tryEmit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("新建文件夹", "Create folder", "フォルダーを作成", "폴더 만들기", "新增資料夾"), it)) }
             isCreatingFolder = false
         }
     }
@@ -125,7 +125,7 @@ class FolderPickerState(
             while (true) {
                 val (list, next) = driveRepo.listFiles(parentId = parentId, pageToken = token)
                     .getOrElse { error ->
-                        PikoLog.w("FolderPicker", tr("读取目录失败", "Failed to load folder", "フォルダーを読み込めませんでした", "폴더를 불러오지 못했습니다"), error)
+                        PikoLog.w("FolderPicker", tr("读取目录失败", "Failed to load folder", "フォルダーを読み込めませんでした", "폴더를 불러오지 못했습니다", "讀取資料夾失敗"), error)
                         loadError = dev.piko.shared.notice.PikoErrorMapper.message(error)
                         return
                     }

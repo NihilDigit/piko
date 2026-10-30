@@ -128,8 +128,8 @@ private fun SingleDetails(
     val blurred = if (isRevealed != null && onToggleBlur != null) !isRevealed(file) else target.isBlurred
     val copyNameAction = DetailAction(
         icon = Icons.Outlined.ContentCopy,
-        label = tr("复制名称", "Copy name", "名前をコピー", "이름 복사"),
-        onClick = { platform.copyToClipboard(tr("名称", "Name", "名前", "이름"), file.name) },
+        label = tr("复制名称", "Copy name", "名前をコピー", "이름 복사", "複製名稱"),
+        onClick = { platform.copyToClipboard(tr("名称", "Name", "名前", "이름", "名稱"), file.name) },
         copyFeedback = true,
     )
 
@@ -160,7 +160,7 @@ private fun SingleDetails(
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = if (blurred) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                                contentDescription = if (blurred) tr("显示预览", "Show preview", "プレビューを表示", "미리 보기 표시") else tr("隐藏预览", "Hide preview", "プレビューを隠す", "미리 보기 숨기기"),
+                                contentDescription = if (blurred) tr("显示预览", "Show preview", "プレビューを表示", "미리 보기 표시", "顯示預覽") else tr("隐藏预览", "Hide preview", "プレビューを隠す", "미리 보기 숨기기", "隱藏預覽"),
                                 tint = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.size(18.dp),
                             )
@@ -210,28 +210,28 @@ private fun SingleDetails(
     DetailSection(
         buildList {
             if (file.isFolder) {
-                val typeField = DetailField(tr("类型", "Type", "種類", "유형"), tr("文件夹", "Folder", "フォルダー", "폴더"))
-                val usageField = usage.takeIf { it.isNotEmpty() }?.let { DetailField(tr("内容", "Contents", "内容", "내용"), it) }
+                val typeField = DetailField(tr("类型", "Type", "種類", "유형", "類型"), tr("文件夹", "Folder", "フォルダー", "폴더", "資料夾"))
+                val usageField = usage.takeIf { it.isNotEmpty() }?.let { DetailField(tr("内容", "Contents", "内容", "내용", "內容"), it) }
                 if (usageField != null) add(DetailRow.PairRow(typeField, usageField)) else add(DetailRow.Single(typeField))
                 when (file.id) {
-                    in fullyVaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태"), tr("完全归档（仅保留引用，不占网盘空间）", "Fully archived (references only; no cloud storage used)", "完全アーカイブ（参照のみ、ドライブ容量を使用しません）", "전체 보관 (참조만 유지, 클라우드 공간 사용 안 함)"))))
-                    in vaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태"), tr("部分归档（包含归档引用）", "Partially archived (includes archive references)", "一部アーカイブ（アーカイブ参照を含む）", "일부 보관 (보관 참조 포함)"))))
+                    in fullyVaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태", "歸檔狀態"), tr("完全归档（仅保留引用，不占网盘空间）", "Fully archived (references only; no cloud storage used)", "完全アーカイブ（参照のみ、ドライブ容量を使用しません）", "전체 보관 (참조만 유지, 클라우드 공간 사용 안 함)", "完全歸檔（僅保留引用，不占雲端硬碟空間）"))))
+                    in vaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태", "歸檔狀態"), tr("部分归档（包含归档引用）", "Partially archived (includes archive references)", "一部アーカイブ（アーカイブ参照を含む）", "일부 보관 (보관 참조 포함)", "部分歸檔（包含歸檔引用）"))))
                 }
             } else {
-                val ext = file.name.substringAfterLast('.', "").uppercase().ifEmpty { tr("文件", "Files", "ファイル", "파일") }
-                val typeField = DetailField(tr("类型", "Type", "種類", "유형"), ext)
+                val ext = file.name.substringAfterLast('.', "").uppercase().ifEmpty { tr("文件", "Files", "ファイル", "파일", "檔案") }
+                val typeField = DetailField(tr("类型", "Type", "種類", "유형", "類型"), ext)
                 val sizeField = DetailField(
-                    label = tr("大小", "Size", "サイズ", "크기"),
+                    label = tr("大小", "Size", "サイズ", "크기", "大小"),
                     value = file.sizeBytes.toReadableSize(),
-                    supportingText = if (file.isVaulted) tr("已归档引用，不占网盘空间", "Archived reference; uses no cloud storage", "アーカイブ参照。ドライブ容量を使用しません", "보관 참조. 클라우드 공간을 사용하지 않습니다") else null,
+                    supportingText = if (file.isVaulted) tr("已归档引用，不占网盘空间", "Archived reference; uses no cloud storage", "アーカイブ参照。ドライブ容量を使用しません", "보관 참조. 클라우드 공간을 사용하지 않습니다", "已歸檔引用，不占雲端硬碟空間") else null,
                 )
                 add(DetailRow.PairRow(typeField, sizeField))
                 if (file.isPlayableVideo()) {
-                    val duration = file.params["duration"]?.toDoubleOrNull()?.let { DetailField(tr("时长", "Duration", "再生時間", "재생 시간"), formatDuration(it.toLong())) }
+                    val duration = file.params["duration"]?.toDoubleOrNull()?.let { DetailField(tr("时长", "Duration", "再生時間", "재생 시간", "時長"), formatDuration(it.toLong())) }
                     val width = file.params["width"]
                     val height = file.params["height"]
                     val resolution = if (!width.isNullOrEmpty() && !height.isNullOrEmpty()) {
-                        DetailField(tr("分辨率", "Resolution", "解像度", "해상도"), "$width × $height")
+                        DetailField(tr("分辨率", "Resolution", "解像度", "해상도", "解析度"), "$width × $height")
                     } else null
                     when {
                         duration != null && resolution != null -> add(DetailRow.PairRow(duration, resolution))
@@ -242,8 +242,8 @@ private fun SingleDetails(
             }
             val modifiedText = timestamp(file.modifiedTime)
             val createdText = timestamp(file.createdTime)?.takeIf { it != modifiedText }
-            val modified = modifiedText?.let { DetailField(tr("修改时间", "Modified", "更新日時", "수정한 날짜"), it) }
-            val created = createdText?.let { DetailField(tr("创建时间", "Created", "作成日時", "만든 날짜"), it) }
+            val modified = modifiedText?.let { DetailField(tr("修改时间", "Modified", "更新日時", "수정한 날짜", "修改時間"), it) }
+            val created = createdText?.let { DetailField(tr("创建时间", "Created", "作成日時", "만든 날짜", "建立時間"), it) }
             when {
                 modified != null && created != null -> add(DetailRow.PairRow(modified, created))
                 modified != null -> add(DetailRow.Single(modified))
@@ -258,17 +258,17 @@ private fun SingleDetails(
                 add(
                     DetailRow.Single(
                         DetailField(
-                            label = tr("位置", "Location", "場所", "위치"),
+                            label = tr("位置", "Location", "場所", "위치", "位置"),
                             value = loc,
                             actions = buildList {
                                 if (onLocate != null) {
-                                    add(DetailAction(Icons.Outlined.FolderOpen, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), { onLocate(file) }))
+                                    add(DetailAction(Icons.Outlined.FolderOpen, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { onLocate(file) }))
                                 }
                                 add(
                                     DetailAction(
                                         icon = Icons.Outlined.ContentCopy,
-                                        label = tr("复制位置", "Copy location", "場所をコピー", "위치 복사"),
-                                        onClick = { platform.copyToClipboard(tr("位置", "Location", "場所", "위치"), loc) },
+                                        label = tr("复制位置", "Copy location", "場所をコピー", "위치 복사", "複製位置"),
+                                        onClick = { platform.copyToClipboard(tr("位置", "Location", "場所", "위치", "位置"), loc) },
                                         copyFeedback = true,
                                     ),
                                 )
@@ -283,18 +283,18 @@ private fun SingleDetails(
                 add(
                     DetailRow.Single(
                         DetailField(
-                            label = tr("来源", "Source", "ソース", "출처"),
-                            value = source.label.removePrefix(tr("来源：", "Source:", "ソース：", "출처:")),
+                            label = tr("来源", "Source", "ソース", "출처", "來源"),
+                            value = source.label.removePrefix(tr("来源：", "Source:", "ソース：", "출처:", "來源：")),
                             supportingText = summarizeSourceUrl(sourceUrl),
                             actions = buildList {
                                 if (onParseSource != null) {
-                                    add(DetailAction(Icons.Outlined.Link, tr("解析来源链接", "Resolve source link", "ソースリンクを解析", "출처 링크 분석"), { onParseSource(sourceUrl) }))
+                                    add(DetailAction(Icons.Outlined.Link, tr("解析来源链接", "Resolve source link", "ソースリンクを解析", "출처 링크 분석", "解析來源連結"), { onParseSource(sourceUrl) }))
                                 }
                                 add(
                                     DetailAction(
                                         icon = Icons.Outlined.ContentCopy,
                                         label = source.copyLabel,
-                                        onClick = { platform.copyToClipboard(source.copyLabel.removePrefix(tr("复制", "Copy", "コピー", "복사")), sourceUrl) },
+                                        onClick = { platform.copyToClipboard(source.copyLabel.removePrefix(tr("复制", "Copy", "コピー", "복사", "複製")), sourceUrl) },
                                         copyFeedback = true,
                                     ),
                                 )
@@ -307,14 +307,14 @@ private fun SingleDetails(
                 add(
                     DetailRow.Single(
                         DetailField(
-                            label = tr("哈希", "Hash", "ハッシュ", "해시"),
+                            label = tr("哈希", "Hash", "ハッシュ", "해시", "雜湊"),
                             value = file.hash,
                             monospace = true,
                             actions = listOf(
                                 DetailAction(
                                     icon = Icons.Outlined.ContentCopy,
-                                    label = tr("复制哈希", "Copy hash", "ハッシュをコピー", "해시 복사"),
-                                    onClick = { platform.copyToClipboard(tr("哈希", "Hash", "ハッシュ", "해시"), file.hash) },
+                                    label = tr("复制哈希", "Copy hash", "ハッシュをコピー", "해시 복사", "複製雜湊"),
+                                    onClick = { platform.copyToClipboard(tr("哈希", "Hash", "ハッシュ", "해시", "雜湊"), file.hash) },
                                     copyFeedback = true,
                                 ),
                             ),
@@ -357,8 +357,8 @@ private fun FolderDetails(target: PropertiesTarget.Folder) {
             DetailActionIconButton(
                 DetailAction(
                     icon = Icons.Outlined.ContentCopy,
-                    label = tr("复制名称", "Copy name", "名前をコピー", "이름 복사"),
-                    onClick = { platform.copyToClipboard(tr("名称", "Name", "名前", "이름"), target.name) },
+                    label = tr("复制名称", "Copy name", "名前をコピー", "이름 복사", "複製名稱"),
+                    onClick = { platform.copyToClipboard(tr("名称", "Name", "名前", "이름", "名稱"), target.name) },
                     copyFeedback = true,
                 ),
             )
@@ -370,18 +370,18 @@ private fun FolderDetails(target: PropertiesTarget.Folder) {
     val recursiveUsage = if (folders > 0) folderUsageById(target.id) else ""
     DetailSection(
         buildList {
-            val itemsField = DetailField(tr("项目", "Items", "項目", "항목"), itemsSummary(folders, others))
+            val itemsField = DetailField(tr("项目", "Items", "項目", "항목", "項目"), itemsSummary(folders, others))
             val sumField = if (others > 0) {
-                DetailField(tr("文件合计", "Total files", "ファイル合計", "파일 합계"), target.files.filterNot { it.isFolder }.sumOf { it.sizeBytes }.toReadableSize())
+                DetailField(tr("文件合计", "Total files", "ファイル合計", "파일 합계", "檔案合計"), target.files.filterNot { it.isFolder }.sumOf { it.sizeBytes }.toReadableSize())
             } else null
             if (sumField != null) add(DetailRow.PairRow(itemsField, sumField)) else add(DetailRow.Single(itemsField))
             if (recursiveUsage.isNotEmpty()) {
-                add(DetailRow.Single(DetailField(tr("包含内容", "Includes", "含まれる内容", "포함 내용"), recursiveUsage)))
+                add(DetailRow.Single(DetailField(tr("包含内容", "Includes", "含まれる内容", "포함 내용", "包含內容"), recursiveUsage)))
             }
             if (target.id.isNotEmpty()) {
                 when (target.id) {
-                    in fullyVaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태"), tr("完全归档（仅保留引用，不占网盘空间）", "Fully archived (references only; no cloud storage used)", "完全アーカイブ（参照のみ、ドライブ容量を使用しません）", "전체 보관 (참조만 유지, 클라우드 공간 사용 안 함)"))))
-                    in vaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태"), tr("部分归档（包含归档引用）", "Partially archived (includes archive references)", "一部アーカイブ（アーカイブ参照を含む）", "일부 보관 (보관 참조 포함)"))))
+                    in fullyVaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태", "歸檔狀態"), tr("完全归档（仅保留引用，不占网盘空间）", "Fully archived (references only; no cloud storage used)", "完全アーカイブ（参照のみ、ドライブ容量を使用しません）", "전체 보관 (참조만 유지, 클라우드 공간 사용 안 함)", "完全歸檔（僅保留引用，不占雲端硬碟空間）"))))
+                    in vaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태", "歸檔狀態"), tr("部分归档（包含归档引用）", "Partially archived (includes archive references)", "一部アーカイブ（アーカイブ参照を含む）", "일부 보관 (보관 참조 포함)", "部分歸檔（包含歸檔引用）"))))
                 }
             }
         },
@@ -392,13 +392,13 @@ private fun FolderDetails(target: PropertiesTarget.Folder) {
             listOf(
                 DetailRow.Single(
                     DetailField(
-                        label = tr("位置", "Location", "場所", "위치"),
+                        label = tr("位置", "Location", "場所", "위치", "位置"),
                         value = loc,
                         actions = listOf(
                             DetailAction(
                                 icon = Icons.Outlined.ContentCopy,
-                                label = tr("复制位置", "Copy location", "場所をコピー", "위치 복사"),
-                                onClick = { platform.copyToClipboard(tr("位置", "Location", "場所", "위치"), loc) },
+                                label = tr("复制位置", "Copy location", "場所をコピー", "위치 복사", "複製位置"),
+                                onClick = { platform.copyToClipboard(tr("位置", "Location", "場所", "위치", "位置"), loc) },
                                 copyFeedback = true,
                             ),
                         ),
@@ -433,19 +433,19 @@ private fun SelectionDetails(target: PropertiesTarget.Selection) {
         }
         Spacer(Modifier.width(14.dp))
         Box(Modifier.weight(1f)) {
-            DetailHeading(tr("已选择 ${target.files.size} 项", "${enCount(target.files.size, "item", "items")} selected", "${target.files.size} 項目を選択中", "${target.files.size}개 선택됨"))
+            DetailHeading(tr("已选择 ${target.files.size} 项", "${enCount(target.files.size, "item", "items")} selected", "${target.files.size} 項目を選択中", "${target.files.size}개 선택됨", "已選取 ${target.files.size} 項"))
         }
     }
 
     DetailSection(
         buildList {
-            val itemsField = DetailField(tr("项目", "Items", "項目", "항목"), itemsSummary(folders, others))
+            val itemsField = DetailField(tr("项目", "Items", "項目", "항목", "項目"), itemsSummary(folders, others))
             val sumField = if (others > 0) {
-                DetailField(tr("文件合计", "Total files", "ファイル合計", "파일 합계"), target.files.filterNot { it.isFolder }.sumOf { it.sizeBytes }.toReadableSize())
+                DetailField(tr("文件合计", "Total files", "ファイル合計", "파일 합계", "檔案合計"), target.files.filterNot { it.isFolder }.sumOf { it.sizeBytes }.toReadableSize())
             } else null
             if (sumField != null) add(DetailRow.PairRow(itemsField, sumField)) else add(DetailRow.Single(itemsField))
             if (vaultedCount > 0) {
-                add(DetailRow.Single(DetailField(tr("归档引用", "Archive references", "アーカイブ参照", "보관 참조"), tr("$vaultedCount 项已归档（不占网盘空间）", "${enCount(vaultedCount, "item", "items")} archived (no drive quota used)", "$vaultedCount 項目をアーカイブ済み（容量消費なし）", "${vaultedCount}개 항목 보관됨 (용량 미사용)"))))
+                add(DetailRow.Single(DetailField(tr("归档引用", "Archive references", "アーカイブ参照", "보관 참조", "歸檔引用"), tr("$vaultedCount 项已归档（不占网盘空间）", "${enCount(vaultedCount, "item", "items")} archived (no drive quota used)", "$vaultedCount 項目をアーカイブ済み（容量消費なし）", "${vaultedCount}개 항목 보관됨 (용량 미사용)", "$vaultedCount 項已歸檔（不占雲端硬碟空間）"))))
             }
         },
     )
@@ -455,14 +455,14 @@ private fun SelectionDetails(target: PropertiesTarget.Selection) {
             listOf(
                 DetailRow.Single(
                     DetailField(
-                        label = tr("位置", "Location", "場所", "위치"),
+                        label = tr("位置", "Location", "場所", "위치", "位置"),
                         value = loc,
-                        actions = if (loc != tr("多个位置", "Multiple locations", "複数の場所", "여러 위치")) {
+                        actions = if (loc != tr("多个位置", "Multiple locations", "複数の場所", "여러 위치", "多個位置")) {
                             listOf(
                                 DetailAction(
                                     icon = Icons.Outlined.ContentCopy,
-                                    label = tr("复制位置", "Copy location", "場所をコピー", "위치 복사"),
-                                    onClick = { platform.copyToClipboard(tr("位置", "Location", "場所", "위치"), loc) },
+                                    label = tr("复制位置", "Copy location", "場所をコピー", "위치 복사", "複製位置"),
+                                    onClick = { platform.copyToClipboard(tr("位置", "Location", "場所", "위치", "位置"), loc) },
                                     copyFeedback = true,
                                 ),
                             )
@@ -476,9 +476,9 @@ private fun SelectionDetails(target: PropertiesTarget.Selection) {
 
 private fun itemsSummary(folders: Int, others: Int): String =
     listOfNotNull(
-        folders.takeIf { it > 0 }?.let { tr("$it 个文件夹", "${enCount(it, "folder", "folders")}", "$it フォルダー", "폴더 ${it}개") },
-        others.takeIf { it > 0 }?.let { tr("$it 个文件", "${enCount(it, "file", "files")}", "$it ファイル", "파일 ${it}개") },
-    ).joinToString("、").ifEmpty { tr("空", "Empty", "空", "비어 있음") }
+        folders.takeIf { it > 0 }?.let { tr("$it 个文件夹", "${enCount(it, "folder", "folders")}", "$it フォルダー", "폴더 ${it}개", "$it 個資料夾") },
+        others.takeIf { it > 0 }?.let { tr("$it 个文件", "${enCount(it, "file", "files")}", "$it ファイル", "파일 ${it}개", "$it 個檔案") },
+    ).joinToString("、").ifEmpty { tr("空", "Empty", "空", "비어 있음", "空") }
 
 private fun summarizeSourceUrl(url: String): String {
     val trimmed = url.trim()
@@ -512,12 +512,12 @@ private fun folderUsageById(folderId: String): String {
             value = null
         }
     }
-    val counted = usage ?: return tr("统计中", "Calculating", "集計中", "계산 중")
-    val text = tr("${counted.fileCount} 个文件，${counted.bytes.toReadableSize()}", "${enCount(counted.fileCount, "file", "files")}, ${counted.bytes.toReadableSize()}", "${counted.fileCount} ファイル、${counted.bytes.toReadableSize()}", "파일 ${counted.fileCount}개, ${counted.bytes.toReadableSize()}")
+    val counted = usage ?: return tr("统计中", "Calculating", "集計中", "계산 중", "統計中")
+    val text = tr("${counted.fileCount} 个文件，${counted.bytes.toReadableSize()}", "${enCount(counted.fileCount, "file", "files")}, ${counted.bytes.toReadableSize()}", "${counted.fileCount} ファイル、${counted.bytes.toReadableSize()}", "파일 ${counted.fileCount}개, ${counted.bytes.toReadableSize()}", "${counted.fileCount} 個檔案，${counted.bytes.toReadableSize()}")
     return when (counted.progress) {
-        FolderUsage.Progress.COUNTING -> tr("$text（统计中）", "$text (calculating)", "$text（集計中）", "$text (계산 중)")
+        FolderUsage.Progress.COUNTING -> tr("$text（统计中）", "$text (calculating)", "$text（集計中）", "$text (계산 중)", "$text（統計中）")
         FolderUsage.Progress.COMPLETE -> text
-        FolderUsage.Progress.TRUNCATED -> tr("至少 $text", "At least $text", "少なくとも $text", "최소 $text")
+        FolderUsage.Progress.TRUNCATED -> tr("至少 $text", "At least $text", "少なくとも $text", "최소 $text", "至少 $text")
     }
 }
 
@@ -534,5 +534,5 @@ private fun formatDuration(seconds: Long): String {
 internal val PropertiesMinWidth = 360.dp
 internal val PropertiesMaxWidth = 440.dp
 internal val FilePropertiesPanelKey = DetailPanelKey<PropertiesTarget>(
-    DetailPanelSpec({ tr("属性", "Properties", "プロパティ", "속성") }, { tr("关闭属性", "Close properties", "プロパティを閉じる", "속성 닫기") }, PropertiesMinWidth, PropertiesMaxWidth),
+    DetailPanelSpec({ tr("属性", "Properties", "プロパティ", "속성", "屬性") }, { tr("关闭属性", "Close properties", "プロパティを閉じる", "속성 닫기", "關閉屬性") }, PropertiesMinWidth, PropertiesMaxWidth),
 )

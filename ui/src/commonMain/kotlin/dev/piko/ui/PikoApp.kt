@@ -43,7 +43,7 @@ fun PikoApp(
     modifier: Modifier = Modifier,
     onLanguageChanged: (AppLanguage) -> Unit = {},
 ) {
-    val appLanguage by services.preferences.appLanguageFlow.collectAsStateWithLifecycle(initialValue = PikoLocale.effectiveLanguage)
+    val appLanguage by services.preferences.appLanguageFlow.collectAsStateWithLifecycle(initialValue = PikoLocale.preference)
     LaunchedEffect(appLanguage) {
         onLanguageChanged(PikoLocale.resolve(appLanguage))
         PikoLocale.apply(appLanguage)

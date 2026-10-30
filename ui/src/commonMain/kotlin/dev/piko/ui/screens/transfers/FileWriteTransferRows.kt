@@ -26,11 +26,11 @@ import dev.piko.ui.workProgress
 
 internal fun fileWriteActions(work: FileWriteWork, undo: DriveChangeJournal.UndoResult?, canUndo: Boolean, canRecheck: Boolean,
     onUndo: () -> Unit, onRecheck: () -> Unit, onForget: () -> Unit, onShow: (() -> Unit)? = null): List<SheetAction> = buildList {
-    if (onShow != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onShow))
+    if (onShow != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), onShow))
     if (!work.isRunning && undo?.status != DriveChangeJournal.UndoStatus.RUNNING) {
-        if (canUndo) add(SheetAction(Icons.Outlined.Refresh, tr("撤销已确认部分", "Undo confirmed changes", "確認済みの変更を元に戻す", "확인된 변경 실행 취소"), onUndo))
-        if (canRecheck) add(SheetAction(Icons.Outlined.Refresh, tr("重新查询结果", "Check results again", "結果を再確認", "결과 다시 확인"), onRecheck))
-        add(SheetAction(Icons.Outlined.Close, tr("移除记录", "Remove record", "記録を削除", "기록 삭제"), onForget))
+        if (canUndo) add(SheetAction(Icons.Outlined.Refresh, tr("撤销已确认部分", "Undo confirmed changes", "確認済みの変更を元に戻す", "확인된 변경 실행 취소", "復原已確認部分"), onUndo))
+        if (canRecheck) add(SheetAction(Icons.Outlined.Refresh, tr("重新查询结果", "Check results again", "結果を再確認", "결과 다시 확인", "重新查詢結果"), onRecheck))
+        add(SheetAction(Icons.Outlined.Close, tr("移除记录", "Remove record", "記録を削除", "기록 삭제", "移除記錄"), onForget))
     }
 }
 
@@ -38,7 +38,7 @@ internal fun fileWriteActions(work: FileWriteWork, undo: DriveChangeJournal.Undo
 internal fun FileWriteTransferDetails(work: FileWriteWork, undo: DriveChangeJournal.UndoResult?, actions: List<SheetAction>, modifier: Modifier = Modifier) {
     val progress = work.workProgress(undo)
     ItemDetailsContent(modifier = modifier, showIcon = false,
-        title = progress.title, headerIcon = { ListLeadingIcon(Icons.Outlined.Description) }, actions = actions, metaParts = listOf(tr("文件处理", "File operations", "ファイル操作", "파일 작업"), progress.status),
+        title = progress.title, headerIcon = { ListLeadingIcon(Icons.Outlined.Description) }, actions = actions, metaParts = listOf(tr("文件处理", "File operations", "ファイル操作", "파일 작업", "檔案處理"), progress.status),
         extraLines = {
             progress.detail?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             if (progress.meter != WorkMeter.None) WorkMeterBar(progress.meter, progress.title, Modifier.fillMaxWidth())

@@ -186,7 +186,7 @@ class AndroidPikoPlatform(
             .putExtra(Intent.EXTRA_TITLE, fileName)
             .putExtra("title", fileName)
         runCatching {
-            context.startActivity(Intent.createChooser(view, tr("选择播放器", "Choose player", "プレーヤーを選択", "플레이어 선택")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            context.startActivity(Intent.createChooser(view, tr("选择播放器", "Choose player", "プレーヤーを選択", "플레이어 선택", "選擇播放器")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }.isSuccess
     }
 
@@ -265,7 +265,7 @@ class AndroidPikoPlatform(
             clipData = ClipData.newRawUri(fileName, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(send, tr("导出日志", "Export logs", "ログをエクスポート", "로그 내보내기")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        context.startActivity(Intent.createChooser(send, tr("导出日志", "Export logs", "ログをエクスポート", "로그 내보내기", "匯出日誌")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         true
     }.getOrDefault(false)
 
@@ -302,7 +302,7 @@ class AndroidPikoPlatform(
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            startActivity(Intent.createChooser(send, tr("分享文件", "Share file", "ファイルを共有", "파일 공유")))
+            startActivity(Intent.createChooser(send, tr("分享文件", "Share file", "ファイルを共有", "파일 공유", "分享檔案")))
         }
 
         override fun openContainingFolder(path: String) {
@@ -360,11 +360,11 @@ class AndroidPikoPlatform(
     /** 下载位置是 SAF 目录树，选中后持久化授权，偏好里存 content: URI。 */
     private inner class AndroidDownloadLocation : DownloadLocationPicker {
         override val description: String
-            get() = tr("默认保存到应用私有目录。选择公共目录后，文件保存到你授权的文件夹。", "Defaults to app-private storage. Choose a public folder to save files to a location you authorize.", "既定ではアプリ専用領域に保存します。共有フォルダーを選ぶと、許可した場所に保存します。", "기본적으로 앱 전용 폴더에 저장합니다. 공용 폴더를 선택하면 권한을 부여한 위치에 저장합니다.")
+            get() = tr("默认保存至应用私有目录。选择公共目录后，文件将保存至已授权的文件夹。", "Saved to app-private storage by default. Choose a public folder to save to an authorized location.", "既定ではアプリ専用領域に保存されます。共有フォルダーを選択すると、許可した場所に保存されます。", "기본적으로 앱 전용 폴더에 저장됩니다. 공용 폴더를 선택하면 권한을 허용한 폴더에 저장됩니다.", "預設儲存至應用程式專用目錄。選擇共用目錄後，檔案將儲存至已授權的資料夾。")
 
         override fun displayName(storedPath: String): String {
             if (storedPath.startsWith("content:")) {
-                return DocumentFile.fromTreeUri(context, Uri.parse(storedPath))?.name ?: tr("已选择的文件夹", "Selected folder", "選択したフォルダー", "선택한 폴더")
+                return DocumentFile.fromTreeUri(context, Uri.parse(storedPath))?.name ?: tr("已选择的文件夹", "Selected folder", "選択したフォルダー", "선택한 폴더", "已選擇的資料夾")
             }
             return storedPath.ifBlank {
                 context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.absolutePath

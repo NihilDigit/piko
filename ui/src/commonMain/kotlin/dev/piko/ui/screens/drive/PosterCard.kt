@@ -73,7 +73,7 @@ internal fun Modifier.cardInteraction(
             toggleableState = if (isSelected) ToggleableState.On else ToggleableState.Off
         }
     }.combinedClickable(
-        onLongClickLabel = tr("操作", "Actions", "操作", "작업"),
+        onLongClickLabel = tr("操作", "Actions", "操作", "작업", "操作"),
         onLongClick = longPress,
         onClick = { if (isSelectionMode) onSelectToggle(!isSelected) else onClick() },
     )
@@ -141,7 +141,7 @@ internal fun PosterCard(
             if (isSelectionMode || (hover.mouseHovered && onStartSelection != null)) {
                 FileOverlaySelectionControl(FileItemSelection(
                     if (isSelected) androidx.compose.ui.state.ToggleableState.On else androidx.compose.ui.state.ToggleableState.Off,
-                    { if (isSelectionMode) onSelectToggle(!isSelected) else onStartSelection?.invoke() }, label = tr("选择 ${item.name.fullName}", "Select ${item.name.fullName}", "${item.name.fullName} を選択", "${item.name.fullName} 선택")),
+                    { if (isSelectionMode) onSelectToggle(!isSelected) else onStartSelection?.invoke() }, label = tr("选择 ${item.name.fullName}", "Select ${item.name.fullName}", "${item.name.fullName} を選択", "${item.name.fullName} 선택", "選取 ${item.name.fullName}")),
                     modifier = Modifier.align(Alignment.TopStart).padding(6.dp).then(if (!isSelectionMode) Modifier.ownsClicks() else Modifier), interactive = !isSelectionMode)
             }
             val cornerTags = tags.filter { it != resolution }.take(COVER_CORNER_TAGS)
@@ -227,7 +227,7 @@ private fun CardTrailing(
 ) {
         // 盖在标题上时要有底色，否则图标压在字上读不清
         FilledTonalIconButton(onClick = onMoreClick, modifier = modifier.size(28.dp).ownsClicks()) {
-            Icon(Icons.Outlined.MoreVert, contentDescription = tr("更多操作", "More actions", "その他の操作", "추가 작업"), modifier = Modifier.size(18.dp))
+            Icon(Icons.Outlined.MoreVert, contentDescription = tr("更多操作", "More actions", "その他の操作", "추가 작업", "更多操作"), modifier = Modifier.size(18.dp))
         }
 }
 

@@ -159,14 +159,14 @@ class InstantBatchState internal constructor(
         val failed = rows.count { it.status == InstantBatchRowStatus.FAILED }
         val unnamed = rows.count { it.status == InstantBatchRowStatus.NEEDS_NAME }
         when {
-            resolving > 0 -> tr("$resolving 项正在解析", "Resolving ${enCount(resolving, "item", "items")}", "$resolving 項目を解析中", "${resolving}개 항목 분석 중")
-            failed > 0 -> tr("$failed 项解析失败，重试或移除后再保存", "Failed to resolve ${enCount(failed, "item", "items")}. Retry or remove before saving", "$failed 項目の解析に失敗しました。再試行または削除してから保存してください", "${failed}개 항목 분석 실패. 다시 시도하거나 제거한 후 저장하세요")
-            unnamed > 0 -> tr("$unnamed 项的文件夹名为空", "${enCount(unnamed, "item", "items")} have an empty folder name", "$unnamed 項目のフォルダー名が空です", "${unnamed}개 항목의 폴더 이름이 비어 있습니다")
+            resolving > 0 -> tr("$resolving 项正在解析", "Resolving ${enCount(resolving, "item", "items")}", "$resolving 項目を解析中", "${resolving}개 항목 분석 중", "$resolving 項正在解析")
+            failed > 0 -> tr("$failed 项解析失败，请重试或移除后再保存", "Failed to resolve ${enCount(failed, "item", "items")}. Retry or remove before saving", "$failed 項目の解析に失敗しました。再試行または削除してから保存してください", "${failed}개 항목 분석 실패. 다시 시도하거나 제거한 후 저장해 주세요", "$failed 項解析失敗，請重試或移除後再儲存")
+            unnamed > 0 -> tr("$unnamed 项的文件夹名为空", "${enCount(unnamed, "item", "items")} have an empty folder name", "$unnamed 項目のフォルダー名が空です", "${unnamed}개 항목의 폴더 이름이 비어 있습니다", "$unnamed 項的資料夾名稱為空")
             saveAsReference && rows.none { it.state.referenceItemsToSave.isNotEmpty() } ->
-                tr("所选内容均缺少引用，无法以引用保存", "Selected items have no references and cannot be saved as references", "選択した項目に参照がないため、参照として保存できません", "선택한 항목에 참조가 없어 참조로 저장할 수 없습니다")
-            rows.any { it.state.savePlan?.incompleteCatalog == true } -> tr("有不完整的文件清单，请逐项检查并选择可保存的内容", "Some file catalogs are incomplete. Inspect each item and select savable content", "不完全なファイル一覧があります。各項目を確認して保存できる内容を選択してください", "불완전한 파일 목록이 있습니다. 각 항목을 확인하고 저장 가능한 내용을 선택하세요")
-            submittableRows.isEmpty() && rows.any { it.status == InstantBatchRowStatus.NEEDS_REVIEW } -> rows.firstNotNullOfOrNull { it.state.saveBlockReason } ?: tr("保存结果需要先在任务页核对", "Check save results in Tasks first", "先にタスクページで保存結果を確認してください", "먼저 작업 페이지에서 저장 결과를 확인하세요")
-            submittableRows.isEmpty() -> tr("没有要保存的项", "No items to save", "保存する項目がありません", "저장할 항목이 없습니다")
+                tr("所选项目均缺少引用，无法以引用保存", "Selected items lack references and cannot be saved as references", "選択した項目に参照情報がないため、参照として保存できません", "선택한 항목에 참조가 없어 참조로 저장할 수 없습니다", "所選項目均缺少引用，無法以引用儲存")
+            rows.any { it.state.savePlan?.incompleteCatalog == true } -> tr("有不完整的文件清单，请逐项检查并选择可保存的内容", "Some file catalogs are incomplete. Inspect each item and select savable content", "不完全なファイル一覧があります。各項目を確認して保存できる内容を選択してください", "불완전한 파일 목록이 있습니다. 각 항목을 확인하고 저장 가능한 내용을 선택하세요", "有不完整的檔案清單，請逐項檢查並選擇可儲存的內容")
+            submittableRows.isEmpty() && rows.any { it.status == InstantBatchRowStatus.NEEDS_REVIEW } -> rows.firstNotNullOfOrNull { it.state.saveBlockReason } ?: tr("请先在任务页核对保存结果", "Check save results in Tasks first", "先にタスク画面で保存結果を確認してください", "먼저 작업 페이지에서 저장 결과를 확인해 주세요", "請先至任務頁核對儲存結果")
+            submittableRows.isEmpty() -> tr("无可保存的项目", "No items to save", "保存できる項目がありません", "저장할 항목이 없습니다", "無可儲存的項目")
             else -> null
         }
     }
@@ -241,10 +241,10 @@ class InstantBatchState internal constructor(
                             succeeded += row
                         }
                         // 行里的保存已经记过日志，这里只换成给列表看的一句
-                        .onFailure { saveErrors[row.key] = failureText(tr("保存", "Save", "保存", "저장"), it) }
+                        .onFailure { saveErrors[row.key] = failureText(tr("保存", "Save", "保存", "저장", "儲存"), it) }
                 }
                 rows.filter { it !in succeeded && it.status == InstantBatchRowStatus.NEEDS_REVIEW }.forEach { row ->
-                    saveErrors[row.key] = row.state.saveBlockReason ?: row.state.saveIssue?.message ?: tr("保存结果需要核对", "Save results need inspection", "保存結果の確認が必要です", "저장 결과 확인 필요")
+                    saveErrors[row.key] = row.state.saveBlockReason ?: row.state.saveIssue?.message ?: tr("保存结果需要核对", "Save results need inspection", "保存結果の確認が必要です", "저장 결과 확인 필요", "儲存結果需要核對")
                 }
                 PikoLog.i(TAG, "批量保存：${toSubmit.size} 条链接，成功 ${succeeded.size} 条（秒传出 ${createdIds.size} 个文件），失败 ${saveErrors.size} 条")
                 if (saveErrors.isEmpty() && !stopRequested) {
@@ -259,9 +259,9 @@ class InstantBatchState internal constructor(
                     succeeded.forEach(::dropRow)
                     emitMessage(
                         if (stopRequested) {
-                            tr("已停止，已提交 ${succeeded.size} 项", "Stopped; submitted ${enCount(succeeded.size, "item", "items")}", "停止しました。${succeeded.size} 項目を送信しました", "중지됨. ${succeeded.size}개 항목 제출 완료")
+                            tr("已停止，已提交 ${succeeded.size} 项", "Stopped; submitted ${enCount(succeeded.size, "item", "items")}", "停止しました。${succeeded.size} 項目を送信しました", "중지됨. ${succeeded.size}개 항목 제출 완료", "已停止，已提交 ${succeeded.size} 項")
                         } else {
-                            tr("已提交 ${succeeded.size} 项，${saveErrors.size} 项需要处理", "Submitted ${enCount(succeeded.size, "item", "items")}; ${enCount(saveErrors.size, "item", "items")} need attention", "${succeeded.size} 項目を送信しました。${saveErrors.size} 項目の確認が必要です", "${succeeded.size}개 항목 제출 완료, ${saveErrors.size}개 항목 확인 필요")
+                            tr("已提交 ${succeeded.size} 项，${saveErrors.size} 项需要处理", "Submitted ${enCount(succeeded.size, "item", "items")}; ${enCount(saveErrors.size, "item", "items")} need attention", "${succeeded.size} 項目を送信しました。${saveErrors.size} 項目の確認が必要です", "${succeeded.size}개 항목 제출 완료, ${saveErrors.size}개 항목 확인 필요", "已提交 ${succeeded.size} 項，${saveErrors.size} 項需要處理")
                         },
                     )
                 }

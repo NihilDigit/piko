@@ -133,7 +133,7 @@ fun LoginScreen(
                 if (onCancel != null) {
                     TooltipIconButton(
                         Icons.Outlined.Close,
-                        tr("取消", "Cancel", "キャンセル", "취소"),
+                        tr("取消", "Cancel", "キャンセル", "취소", "取消"),
                         onClick = onCancel,
                         enabled = !state.isLoggingIn,
                         modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
@@ -195,13 +195,13 @@ private fun LoginForm(
             )
             Spacer(Modifier.height(24.dp))
             Text(
-                text = if (adding) tr("添加账号", "Add account", "アカウントを追加", "계정 추가") else tr("登录", "Sign in", "ログイン", "로그인"),
+                text = if (adding) tr("添加账号", "Add account", "アカウントを追加", "계정 추가", "新增帳號") else tr("登录", "Sign in", "ログイン", "로그인", "登入"),
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = if (adding) tr("当前账号保持登录，可随时切换", "Your current account stays signed in and can be switched anytime", "現在のアカウントはログイン状態のまま、いつでも切り替えられます", "현재 계정의 로그인은 유지되며 언제든 전환할 수 있습니다") else tr("使用 PikPak 账号", "Use your PikPak account", "PikPakアカウントでログイン", "PikPak 계정으로 로그인"),
+                text = if (adding) tr("当前账号保持登录，可随时切换", "Your current account stays signed in and can be switched anytime", "現在のアカウントはログイン状態のまま、いつでも切り替えられます", "현재 계정의 로그인은 유지되며 언제든 전환할 수 있습니다", "目前帳號將保持登入，可隨時切換") else tr("使用 PikPak 账号", "Use your PikPak account", "PikPakアカウントでログイン", "PikPak 계정으로 로그인", "使用 PikPak 帳號"),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -233,7 +233,7 @@ private fun LoginForm(
                     IconButton(onClick = { passwordVisible = !passwordVisible }) {
                         Icon(
                             imageVector = if (passwordVisible) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                            contentDescription = if (passwordVisible) tr("隐藏密码", "Hide password", "パスワードを隠す", "비밀번호 숨기기") else tr("显示密码", "Show password", "パスワードを表示", "비밀번호 표시"),
+                            contentDescription = if (passwordVisible) tr("隐藏密码", "Hide password", "パスワードを隠す", "비밀번호 숨기기", "隱藏密碼") else tr("显示密码", "Show password", "パスワードを表示", "비밀번호 표시", "顯示密碼"),
                         )
                     }
                 },
@@ -277,7 +277,7 @@ private fun LoginForm(
             TextButton(onClick = onOpenProxy, enabled = !isLoading) {
                 Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text(tr("网络代理：$proxySummary", "Proxy: $proxySummary", "プロキシ：$proxySummary", "프록시: $proxySummary"), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(tr("网络代理：$proxySummary", "Proxy: $proxySummary", "プロキシ：$proxySummary", "프록시: $proxySummary", "網路代理：$proxySummary"), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }

@@ -73,12 +73,12 @@ private fun DownloadTask.typeIcon(): ImageVector = when {
 
 /** 状态词。下载中没有状态词：进度条与速度已经说明它在下载。 */
 internal fun DownloadTask.statusLabel(): String? = when (status) {
-    DownloadStatus.COMPLETED -> tr("已完成", "Completed", "完了", "완료")
+    DownloadStatus.COMPLETED -> tr("已完成", "Completed", "完了", "완료", "已完成")
     // 转码档下完后在本机转为 MP4，这一段不走网络，速度一栏是空的，要写明在做什么
-    DownloadStatus.DOWNLOADING -> if (converting) tr("转换中", "Converting", "変換中", "변환 중") else null
-    DownloadStatus.PAUSED -> tr("已暂停", "Paused", "一時停止中", "일시 중지됨")
-    DownloadStatus.PENDING -> tr("等待中", "Waiting", "待機中", "대기 중")
-    DownloadStatus.FAILED -> tr("下载失败", "Download failed", "ダウンロード失敗", "다운로드 실패")
+    DownloadStatus.DOWNLOADING -> if (converting) tr("转换中", "Converting", "変換中", "변환 중", "轉換中") else null
+    DownloadStatus.PAUSED -> tr("已暂停", "Paused", "一時停止中", "일시 중지됨", "已暫停")
+    DownloadStatus.PENDING -> tr("等待中", "Waiting", "待機中", "대기 중", "等待中")
+    DownloadStatus.FAILED -> tr("下载失败", "Download failed", "ダウンロード失敗", "다운로드 실패", "下載失敗")
 }
 
 /** 状态词之后的各段数据，片段任务以时间段打头。失败原因由 failureReason 提供。 */
@@ -88,10 +88,10 @@ internal fun DownloadTask.statusDetails(): List<String> {
     val progress = when {
         converting -> "${(this.progress * 100).toInt()}%"
         !isSegment -> "${downloadedBytes.toReadableSize()} / ${totalBytes.toReadableSize()}"
-        this.progress <= 0f -> tr("正在定位起点", "Locating start", "開始点を特定中", "시작점 찾는 중")
+        this.progress <= 0f -> tr("正在定位起点", "Locating start", "開始点を特定中", "시작점 찾는 중", "正在定位起點")
         else -> "${(this.progress * 100).toInt()}%"
     }
-    val segment = listOfNotNull(timeRangeLabel?.takeIf { isSegment }?.let { tr("段落 $it", "Segment $it", "区間 $it", "구간 $it") })
+    val segment = listOfNotNull(timeRangeLabel?.takeIf { isSegment }?.let { tr("段落 $it", "Segment $it", "区間 $it", "구간 $it", "段落 $it") })
     return segment + when (status) {
         DownloadStatus.COMPLETED -> listOf(totalBytes.toReadableSize())
         DownloadStatus.PENDING -> if (isSegment) emptyList() else listOf(totalBytes.toReadableSize())
@@ -99,14 +99,14 @@ internal fun DownloadTask.statusDetails(): List<String> {
             add(progress)
             if (speedBytesPerSec > 0) add("${speedBytesPerSec.toReadableSize()}/s")
             // 片段事先不知道产物大小，剩余时间无从算起
-            if (!isSegment && !converting) remainingTime(totalBytes - downloadedBytes, speedBytesPerSec)?.let { add(tr("剩余 $it", "$it remaining", "残り $it", "$it 남음")) }
+            if (!isSegment && !converting) remainingTime(totalBytes - downloadedBytes, speedBytesPerSec)?.let { add(tr("剩余 $it", "$it remaining", "残り $it", "$it 남음", "剩餘 $it")) }
         }
         DownloadStatus.PAUSED -> listOf(progress)
         DownloadStatus.FAILED -> emptyList()
     }
 }
 
-internal fun DownloadTask.failureReason(): String = errorMessage?.takeIf { it.isNotBlank() } ?: tr("网络中断", "Network interrupted", "ネットワークが切断されました", "네트워크 연결이 끊어졌습니다")
+internal fun DownloadTask.failureReason(): String = errorMessage?.takeIf { it.isNotBlank() } ?: tr("网络中断", "Network interrupted", "ネットワークが切断されました", "네트워크 연결이 끊어졌습니다", "網路中斷")
 
 /** 列表与面板共用的外部动作：用其他应用打开、分享、打开所在文件夹。 */
 private class LocalFileIntents(private val files: LocalFileActions, private val task: DownloadTask, private val isMedia: Boolean) {
@@ -164,45 +164,45 @@ internal fun localTransferActions(
     return buildList {
         // 边下边播只认原画的暂存；转码档的暂存是转封装前的 TS，播放走不到它
         if (task.canPlayWhileDownloading()) {
-            add(SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생"), onPlay))
+            add(SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생", "播放"), onPlay))
         }
         if (previewHidden != null) {
             add(
                 SheetAction(
                     icon = if (previewHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                    label = if (previewHidden) tr("显示预览", "Show preview", "プレビューを表示", "미리 보기 표시") else tr("隐藏预览", "Hide preview", "プレビューを隠す", "미리 보기 숨기기"),
+                    label = if (previewHidden) tr("显示预览", "Show preview", "プレビューを表示", "미리 보기 표시", "顯示預覽") else tr("隐藏预览", "Hide preview", "プレビューを隠す", "미리 보기 숨기기", "隱藏預覽"),
                     onClick = onTogglePreview,
                 ),
             )
         }
         when (task.status) {
             DownloadStatus.COMPLETED -> {
-                if (isMedia) add(SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생"), onPlay))
-                add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("用其他应用打开", "Open with another app", "ほかのアプリで開く", "다른 앱으로 열기"), intents::openExternal))
-                add(SheetAction(Icons.Outlined.FolderOpen, tr("打开所在文件夹", "Open containing folder", "保存先フォルダーを開く", "파일 위치 열기"), intents::openContainingFolder))
-                if (files.canShare) add(SheetAction(Icons.Outlined.Share, tr("分享", "Share", "共有", "공유"), intents::share))
+                if (isMedia) add(SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생", "播放"), onPlay))
+                add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("用其他应用打开", "Open with another app", "ほかのアプリで開く", "다른 앱으로 열기", "使用其他應用程式開啟"), intents::openExternal))
+                add(SheetAction(Icons.Outlined.FolderOpen, tr("打开所在文件夹", "Open containing folder", "保存先フォルダーを開く", "파일 위치 열기", "開啟所在資料夾"), intents::openContainingFolder))
+                if (files.canShare) add(SheetAction(Icons.Outlined.Share, tr("分享", "Share", "共有", "공유", "分享"), intents::share))
             }
             DownloadStatus.DOWNLOADING -> {
-                add(SheetAction(Icons.Outlined.Pause, tr("暂停", "Pause", "一時停止", "일시 중지"), onPause))
+                add(SheetAction(Icons.Outlined.Pause, tr("暂停", "Pause", "一時停止", "일시 중지", "暫停"), onPause))
                 if (task.destinationPath.isNotEmpty()) {
-                    add(SheetAction(Icons.Outlined.FolderOpen, tr("打开所在文件夹", "Open containing folder", "保存先フォルダーを開く", "파일 위치 열기"), intents::openContainingFolder))
+                    add(SheetAction(Icons.Outlined.FolderOpen, tr("打开所在文件夹", "Open containing folder", "保存先フォルダーを開く", "파일 위치 열기", "開啟所在資料夾"), intents::openContainingFolder))
                 }
             }
             DownloadStatus.PAUSED, DownloadStatus.PENDING -> {
-                add(SheetAction(Icons.Outlined.PlayArrow, tr("继续下载", "Resume download", "ダウンロードを再開", "다운로드 계속"), onStart))
+                add(SheetAction(Icons.Outlined.PlayArrow, tr("继续下载", "Resume download", "ダウンロードを再開", "다운로드 계속", "繼續下載"), onStart))
                 if (task.destinationPath.isNotEmpty() && task.downloadedBytes > 0) {
-                    add(SheetAction(Icons.Outlined.FolderOpen, tr("打开所在文件夹", "Open containing folder", "保存先フォルダーを開く", "파일 위치 열기"), intents::openContainingFolder))
+                    add(SheetAction(Icons.Outlined.FolderOpen, tr("打开所在文件夹", "Open containing folder", "保存先フォルダーを開く", "파일 위치 열기", "開啟所在資料夾"), intents::openContainingFolder))
                 }
             }
-            DownloadStatus.FAILED -> add(SheetAction(Icons.Outlined.Refresh, tr("重试", "Retry", "再試行", "다시 시도"), onStart))
+            DownloadStatus.FAILED -> add(SheetAction(Icons.Outlined.Refresh, tr("重试", "Retry", "再試行", "다시 시도", "重試"), onStart))
         }
         if (onShowInDrive != null) {
-            add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onShowInDrive))
+            add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), onShowInDrive))
         }
         val removeLabel = when (task.status) {
-            DownloadStatus.COMPLETED -> tr("删除本地文件", "Delete local file", "ローカルファイルを削除", "로컬 파일 삭제")
-            DownloadStatus.FAILED -> tr("移除记录", "Remove record", "記録を削除", "기록 삭제")
-            else -> tr("取消并删除", "Cancel and delete", "キャンセルして削除", "취소 및 삭제")
+            DownloadStatus.COMPLETED -> tr("删除本地文件", "Delete local file", "ローカルファイルを削除", "로컬 파일 삭제", "刪除本機檔案")
+            DownloadStatus.FAILED -> tr("移除记录", "Remove record", "記録を削除", "기록 삭제", "移除記錄")
+            else -> tr("取消并删除", "Cancel and delete", "キャンセルして削除", "취소 및 삭제", "取消並刪除")
         }
         add(SheetAction(Icons.Outlined.Delete, removeLabel, onRemove, destructive = true))
     }

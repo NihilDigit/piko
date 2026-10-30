@@ -68,7 +68,7 @@ fun ShareDialog(
     PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.Share, contentDescription = null) },
-        title = { Text(if (created == null) tr("分享", "Share", "共有", "공유") else tr("已创建分享链接", "Share link created", "共有リンクを作成しました", "공유 링크를 만들었습니다")) },
+        title = { Text(if (created == null) tr("分享", "Share", "共有", "공유", "分享") else tr("已创建分享链接", "Share link created", "共有リンクを作成しました", "공유 링크를 만들었습니다", "已建立分享連結")) },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -84,13 +84,13 @@ fun ShareDialog(
         },
         confirmButton = {
             if (created == null) {
-                PikoDialogConfirm(if (state.isCreating) tr("正在创建", "Creating", "作成中", "생성 중") else tr("创建链接", "Create link", "リンクを作成", "링크 만들기"), onClick = state::create, enabled = state.canCreate)
+                PikoDialogConfirm(if (state.isCreating) tr("正在创建", "Creating", "作成中", "생성 중", "正在建立") else tr("创建链接", "Create link", "リンクを作成", "링크 만들기", "建立連結"), onClick = state::create, enabled = state.canCreate)
             } else {
                 // 与我的分享同一个说法：复制的总是 shareText，有提取码时连同提取码
                 PikoDialogConfirm(
-                    label = tr("复制链接", "Copy link", "リンクをコピー", "링크 복사"),
+                    label = tr("复制链接", "Copy link", "リンクをコピー", "링크 복사", "複製連結"),
                     onClick = {
-                        platform.copyToClipboard(tr("分享链接", "Share link", "共有リンク", "공유 링크"), state.shareText.orEmpty())
+                        platform.copyToClipboard(tr("分享链接", "Share link", "共有リンク", "공유 링크", "分享連結"), state.shareText.orEmpty())
                         onDismiss()
                         onCopied()
                     },
@@ -98,7 +98,7 @@ fun ShareDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text(if (created == null) tr("取消", "Cancel", "キャンセル", "취소") else tr("关闭", "Close", "閉じる", "닫기")) }
+            TextButton(onClick = onDismiss) { Text(if (created == null) tr("取消", "Cancel", "キャンセル", "취소", "取消") else tr("关闭", "Close", "閉じる", "닫기", "關閉")) }
         },
     )
 }
@@ -128,7 +128,7 @@ private fun SharedItems(files: List<FileStat>) {
             )
             if (files.size > 1) {
                 Text(
-                    text = tr("等 ${files.size} 项", "and ${enCount(files.size, "item", "items")}", "ほか ${files.size} 項目", "등 ${files.size}개 항목"),
+                    text = tr("等 ${files.size} 项", "and ${enCount(files.size, "item", "items")}", "ほか ${files.size} 項目", "등 ${files.size}개 항목", "等 ${files.size} 項"),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -139,7 +139,7 @@ private fun SharedItems(files: List<FileStat>) {
 
 @Composable
 private fun ShareOptions(state: ShareCreateState) {
-    Option(tr("提取码", "Access code", "アクセスコード", "접근 코드")) {
+    Option(tr("提取码", "Access code", "アクセスコード", "접근 코드", "提取碼")) {
         ConnectedToggle(
             options = SharePassCodeMode.entries,
             selected = state.passCodeMode,
@@ -163,11 +163,11 @@ private fun ShareOptions(state: ShareCreateState) {
             modifier = Modifier.fillMaxWidth(),
         )
     }
-    Option(tr("有效期", "Expiration", "有効期限", "유효 기간")) {
+    Option(tr("有效期", "Expiration", "有効期限", "유효 기간", "有效期")) {
         ConnectedToggle(
             options = ShareCreateState.EXPIRATION_CHOICES,
             selected = state.expirationDays,
-            label = { days -> if (days < 0) tr("永久", "Never expires", "無期限", "영구") else tr("$days 天", "$days days", "$days 日間", "${days}일") },
+            label = { days -> if (days < 0) tr("永久", "Never expires", "無期限", "영구", "永久") else tr("$days 天", "$days days", "$days 日間", "${days}일", "$days 天") },
             enabled = !state.isCreating,
             onSelect = { state.expirationDays = it },
         )
@@ -235,10 +235,10 @@ private fun ShareResult(url: String, passCode: String, expirationDays: Int) {
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.padding(16.dp),
                 ) {
-                    LabeledValue(tr("链接", "Link", "リンク", "링크"), url, MaterialTheme.typography.bodyLarge)
+                    LabeledValue(tr("链接", "Link", "リンク", "링크", "連結"), url, MaterialTheme.typography.bodyLarge)
                     if (passCode.isNotEmpty()) {
                         LabeledValue(
-                            label = tr("提取码", "Access code", "アクセスコード", "접근 코드"),
+                            label = tr("提取码", "Access code", "アクセスコード", "접근 코드", "提取碼"),
                             value = passCode,
                             style = MaterialTheme.typography.headlineSmall.copy(letterSpacing = 2.sp),
                         )
@@ -247,7 +247,7 @@ private fun ShareResult(url: String, passCode: String, expirationDays: Int) {
             }
         }
         Text(
-            text = if (expirationDays < 0) tr("永久有效", "Never expires", "無期限", "영구 유효") else "$expirationDays 天后失效",
+            text = if (expirationDays < 0) tr("永久有效", "Never expires", "無期限", "영구 유효", "永久有效") else tr("$expirationDays 天后过期", "Expires in $expirationDays days", "$expirationDays 日後に期限切れ", "${expirationDays}일 후 만료", "$expirationDays 天後過期"),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 4.dp),

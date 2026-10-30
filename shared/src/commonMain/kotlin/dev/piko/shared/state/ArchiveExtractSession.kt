@@ -140,9 +140,9 @@ class ArchiveExtractSession(
         if (volumes > 0 || archives.isEmpty()) {
             PikoLog.i(TAG, "解压：选了 ${files.size} 个，入队 ${archives.size} 个，分卷跳过 $volumes 个，已在队列 ${files.count { it.id in queued }} 个")
         }
-        if (volumes > 0) _messages.tryEmit(if (volumes == files.size) VOLUME_UNSUPPORTED else tr("已跳过 $volumes 个分卷：$VOLUME_UNSUPPORTED", "Skipped $volumes split archives: $VOLUME_UNSUPPORTED", "$volumes 個の分割アーカイブをスキップしました：$VOLUME_UNSUPPORTED", "분할 압축 파일 ${volumes}개 건너뜀: $VOLUME_UNSUPPORTED"))
+        if (volumes > 0) _messages.tryEmit(if (volumes == files.size) VOLUME_UNSUPPORTED else tr("已跳过 $volumes 个分卷压缩包：$VOLUME_UNSUPPORTED", "Skipped $volumes multi-volume archives: $VOLUME_UNSUPPORTED", "$volumes 個の分割圧縮ファイルをスキップしました：$VOLUME_UNSUPPORTED", "분할 압축 파일 ${volumes}개 건너뜀: $VOLUME_UNSUPPORTED", "已略過 $volumes 個分割壓縮檔：$VOLUME_UNSUPPORTED"))
         if (archives.isEmpty()) {
-            if (volumes == 0 && files.none { it.isExtractableArchive }) _messages.tryEmit(tr("所选文件中没有可解压的压缩包", "No extractable archives selected", "解凍できるアーカイブが選択されていません", "선택한 파일 중 압축 해제할 수 있는 파일이 없습니다"))
+            if (volumes == 0 && files.none { it.isExtractableArchive }) _messages.tryEmit(tr("所选项目中无可解压的压缩包", "No extractable archives selected", "解凍可能な圧縮ファイルが選択されていません", "선택한 항목 중 압축 해제 가능한 파일이 없습니다", "所選項目中無可解壓縮的壓縮檔"))
             return
         }
         jobs = jobs + archives.map { newJob(it) }
@@ -155,7 +155,7 @@ class ArchiveExtractSession(
      */
     fun extractEntries(archive: FileStat, paths: List<String>, password: String) {
         if (jobs.any { it.file.id == archive.id }) {
-            _messages.tryEmit(tr("这个压缩包已在解压中", "This archive is already being extracted", "このアーカイブは解凍中です", "이미 압축 해제 중인 파일입니다"))
+            _messages.tryEmit(tr("此压缩包正在解压", "This archive is already being extracted", "この圧縮ファイルは解凍中です", "이미 압축 해제 중인 파일입니다", "此壓縮檔正在解壓縮"))
             return
         }
         jobs = jobs + newJob(archive, password = password, paths = paths)
@@ -228,9 +228,9 @@ class ArchiveExtractSession(
                 // 没带密码时服务端报的是「缺少」；带了还被拒才算输错
                 update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
             } else if (err is ArchiveSubmissionUnconfirmed) {
-                finish(job, tr("无法确认 ${job.file.name} 是否已提交解压，请先检查所在目录", "Cannot confirm extraction submission for ${job.file.name}. Check its folder first", "${job.file.name} の解凍送信を確認できません。先に保存先フォルダーを確認してください", "${job.file.name}의 압축 해제 제출 여부를 확인할 수 없습니다. 먼저 해당 폴더를 확인해 주세요"), outcome = ArchiveCompletion.UNCONFIRMED)
+                finish(job, tr("无法确认 ${job.file.name} 是否已提交解压，请先核对所在文件夹", "Unable to confirm extraction submission for ${job.file.name}. Check its containing folder first", "${job.file.name} の解凍リクエストを確認できません。先に保存先フォルダーを確認してください", "${job.file.name}의 압축 해제 요청 여부를 확인할 수 없습니다. 먼저 해당 폴더를 확인해 주세요", "無法確認 ${job.file.name} 是否已提交解壓縮，請先核對所在資料夾"), outcome = ArchiveCompletion.UNCONFIRMED)
             } else {
-                finish(job, tr("${job.file.name} 解压失败：${failureReason(err)}", "Failed to extract ${job.file.name}: ${failureReason(err)}", "${job.file.name} の解凍に失敗しました：${failureReason(err)}", "${job.file.name} 압축 해제 실패: ${failureReason(err)}"))
+                finish(job, tr("${job.file.name} 解压失败：${failureReason(err)}", "Failed to extract ${job.file.name}: ${failureReason(err)}", "${job.file.name} の解凍に失敗しました：${failureReason(err)}", "${job.file.name} 압축 해제 실패: ${failureReason(err)}", "${job.file.name} 解壓縮失敗：${failureReason(err)}"))
             }
             return
         }
@@ -249,7 +249,7 @@ class ArchiveExtractSession(
                 PikoLog.w(TAG, "查询解压进度失败：${logFile(job.file.id, job.file.name)}，第 ${failures + 1} 次", err)
                 failures++
                 if (failures >= MAX_POLL_FAILURES) {
-                    finish(job, tr("暂时无法确认 ${job.file.name} 的解压结果：${failureReason(err)}", "Extraction result for ${job.file.name} is unconfirmed: ${failureReason(err)}", "${job.file.name} の解凍結果を確認できません：${failureReason(err)}", "${job.file.name}의 압축 해제 결과를 확인할 수 없습니다: ${failureReason(err)}"), outcome = ArchiveCompletion.UNCONFIRMED)
+                    finish(job, tr("无法确认 ${job.file.name} 的解压结果：${failureReason(err)}", "Unable to confirm extraction result for ${job.file.name}: ${failureReason(err)}", "${job.file.name} の解凍結果を確認できません：${failureReason(err)}", "${job.file.name}의 압축 해제 결과를 확인할 수 없습니다: ${failureReason(err)}", "無法確認 ${job.file.name} 的解壓縮結果：${failureReason(err)}"), outcome = ArchiveCompletion.UNCONFIRMED)
                     return
                 }
                 delay(queryRetryDelay)
@@ -258,9 +258,15 @@ class ArchiveExtractSession(
             failures = 0
             when (progress.phase) {
                 TaskPhase.COMPLETE -> {
-                    finish(job, tr("已解压 ${job.file.name}", "Extracted ${job.file.name}", "${job.file.name} を解凍しました", "${job.file.name} 압축 해제 완료"), succeeded = true)
-                    // 解压出的文件夹落在压缩包旁边
-                    driveRepository.applyChange(DriveChange.ContentsChanged(setOf(job.file.parentId)))
+                    finish(job, tr("已解压 ${job.file.name}", "Extracted ${job.file.name}", "${job.file.name} を解凍しました", "${job.file.name} 압축 해제 완료", "已解壓縮 ${job.file.name}"), succeeded = true)
+                    // 从压缩包内部发起解压时占位 FileStat 的 parentId 可能为空；优先用产出根或原压缩包详情核实真实父目录
+                    val outputDetail = progress.fileId.takeIf { it.isNotBlank() }?.let { driveRepository.getFileDetail(it).getOrNull() }
+                    val actualParentId = outputDetail?.parentId
+                        ?: job.file.parentId.takeIf { it.isNotEmpty() }
+                        ?: driveRepository.knownParentOf(job.file.id)
+                        ?: driveRepository.getFileDetail(job.file.id).getOrNull()?.parentId
+                        ?: job.file.parentId
+                    driveRepository.applyChange(DriveChange.ContentsChanged(setOf(actualParentId)))
                     return
                 }
                 TaskPhase.ERROR -> {
@@ -270,10 +276,10 @@ class ArchiveExtractSession(
                         PikoLog.i(TAG, "解压任务 $taskId 因密码失败，等用户输入：${logFile(job.file.id, job.file.name)}")
                         update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
                     } else if (cause == ArchiveRepository.INVALID_FORMAT) {
-                        finish(job, tr("${job.file.name} 解压失败：$INVALID_FORMAT_REASON", "Failed to extract ${job.file.name}: $INVALID_FORMAT_REASON", "${job.file.name} の解凍に失敗しました：$INVALID_FORMAT_REASON", "${job.file.name} 압축 해제 실패: $INVALID_FORMAT_REASON"))
+                        finish(job, tr("${job.file.name} 解压失败：$INVALID_FORMAT_REASON", "Failed to extract ${job.file.name}: $INVALID_FORMAT_REASON", "${job.file.name} の解凍に失敗しました：$INVALID_FORMAT_REASON", "${job.file.name} 압축 해제 실패: $INVALID_FORMAT_REASON", "${job.file.name} 解壓縮失敗：$INVALID_FORMAT_REASON"))
                     } else {
                         val reason = dev.piko.shared.notice.PikoErrorMapper.archiveReason(cause, progress.errorDescription)
-                        finish(job, tr("${job.file.name} 解压失败：$reason", "Failed to extract ${job.file.name}: $reason", "${job.file.name} の解凍に失敗しました：$reason", "${job.file.name} 압축 해제 실패: $reason"))
+                        finish(job, tr("${job.file.name} 解压失败：$reason", "Failed to extract ${job.file.name}: $reason", "${job.file.name} の解凍に失敗しました：$reason", "${job.file.name} 압축 해제 실패: $reason", "${job.file.name} 解壓縮失敗：$reason"))
                     }
                     return
                 }
@@ -311,7 +317,7 @@ class ArchiveExtractSession(
     private companion object {
         const val TAG = "Archive"
         const val MAX_POLL_FAILURES = 5
-        val VOLUME_UNSUPPORTED: String get() = tr("PikPak 不支持解压分卷压缩包", "PikPak does not support multi-volume archives", "PikPakは分割アーカイブの解凍に対応していません", "PikPak은 분할 압축 해제를 지원하지 않습니다")
+        val VOLUME_UNSUPPORTED: String get() = tr("PikPak 不支持解压分卷压缩包", "PikPak does not support extracting multi-volume archives", "PikPakは分割圧縮ファイルの解凍に対応していません", "PikPak은 분할 압축 파일 해제를 지원하지 않습니다", "PikPak 不支援解壓縮分割壓縮檔")
     }
 }
 

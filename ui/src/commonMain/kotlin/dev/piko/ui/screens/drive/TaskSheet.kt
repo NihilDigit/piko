@@ -38,6 +38,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.saveable.LocalSaveableStateRegistry
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -102,28 +103,45 @@ internal fun TaskSheetScaffold(model: TaskSheetModel?, content: @Composable () -
     val latestModel by rememberUpdatedState(model)
 
     val wantExpanded = model?.expanded == true
+    var settling by remember { mutableStateOf(false) }
     LaunchedEffect(model?.key, wantExpanded) {
-        if (model == null) return@LaunchedEffect
-        // 刚出现时内容还没量过，没有那一档可去
-        if (wantExpanded) {
-            snapshotFlow { sheetState.hasExpandedState }.first { it }
-            sheetState.expand()
-        } else {
-            snapshotFlow { sheetState.hasPartiallyExpandedState }.first { it }
-            sheetState.partialExpand()
+        if (model == null) {
+            settling = false
+            return@LaunchedEffect
+        }
+        settling = true
+        try {
+            // 刚出现时内容还没量过，没有那一档可去
+            if (wantExpanded) {
+                snapshotFlow { sheetState.hasExpandedState }.first { it }
+                sheetState.expand()
+            } else {
+                snapshotFlow { sheetState.hasPartiallyExpandedState }.first { it }
+                sheetState.partialExpand()
+            }
+        } finally {
+            settling = false
         }
     }
-    // 人拖动或点拖动条换了一档，记回去。头一个值、换了一件事、从没有 sheet（Hidden）里出来，都是布局在定档，不是人换的：
-    // 当成人换的会把刚打开的添加链接记成收起，而什么都没粘过的收起就是结束
+    // 人拖动或点拖动条换了一档，记回去。头一个值、换了一件事、从没有 sheet（Hidden）里出来、
+    // 展开锚点尚未量出或程序正在定档期间，都是布局在定档，不是人换的：
+    // 当成人换的会把冷启动刚打开的添加链接误记成收起
     LaunchedEffect(sheetState) {
         var previous: Pair<Any?, SheetValue>? = null
-        snapshotFlow { latestModel?.key to sheetState.currentValue }.collect { now ->
+        snapshotFlow {
+            Triple(
+                latestModel?.key,
+                sheetState.currentValue,
+                settling || !sheetState.hasExpandedState || !sheetState.hasPartiallyExpandedState,
+            )
+        }.collect { (key, value, layoutSettling) ->
             val before = previous
-            previous = now
+            previous = key to value
             val current = latestModel ?: return@collect
-            if (before == null || before.first != now.first) return@collect
-            if (before.second == SheetValue.Hidden || now.second == SheetValue.Hidden) return@collect
-            val expanded = now.second == SheetValue.Expanded
+            if (layoutSettling) return@collect
+            if (before == null || before.first != key) return@collect
+            if (before.second == SheetValue.Hidden || value == SheetValue.Hidden) return@collect
+            val expanded = value == SheetValue.Expanded
             if (expanded != current.expanded) current.onExpandedChange(expanded)
         }
     }
@@ -144,7 +162,7 @@ internal fun TaskSheetScaffold(model: TaskSheetModel?, content: @Composable () -
                     Box(
                         Modifier
                             .onSizeChanged { headerHeight = it.height }
-                            .then(if (model.expanded) Modifier else Modifier.clickable(onClickLabel = tr("展开", "Expand", "展開", "펼치기")) { model.onExpandedChange(true) }),
+                            .then(if (model.expanded) Modifier else Modifier.clickable(onClickLabel = tr("展开", "Expand", "展開", "펼치기", "展開")) { model.onExpandedChange(true) }),
                     ) {
                         model.header()
                     }

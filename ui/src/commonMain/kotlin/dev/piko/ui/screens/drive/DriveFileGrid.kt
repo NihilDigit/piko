@@ -540,7 +540,7 @@ private fun SectionHeaderRow(header: DriveListItem.SectionHeader, inset: Dp, onC
             }
             Icon(
                 imageVector = if (header.expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                contentDescription = if (header.expanded) tr("收起", "Collapse", "折りたたむ", "접기") else tr("展开", "Expand", "展開", "펼치기"),
+                contentDescription = if (header.expanded) tr("收起", "Collapse", "折りたたむ", "접기", "收合") else tr("展开", "Expand", "展開", "펼치기", "展開"),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -675,7 +675,7 @@ private fun DriveCell(
 private fun SortDirectionIcon(order: FileSortOrder, modifier: Modifier = Modifier) {
     Icon(
         imageVector = if (order.isAscending) Icons.Outlined.ArrowUpward else Icons.Outlined.ArrowDownward,
-        contentDescription = if (order.isAscending) tr("升序", "Ascending", "昇順", "오름차순") else tr("降序", "Descending", "降順", "내림차순"),
+        contentDescription = if (order.isAscending) tr("升序", "Ascending", "昇順", "오름차순", "遞增") else tr("降序", "Descending", "降順", "내림차순", "遞減"),
         modifier = modifier,
     )
 }
@@ -755,11 +755,11 @@ internal fun sortOverflowActions(
 ): List<SheetAction> = buildList {
     PikoSortField.entries.forEach { field ->
         val current = field.owns(sortOrder)
-        val direction = if (sortOrder.isAscending) tr("升序", "Ascending", "昇順", "오름차순") else tr("降序", "Descending", "降順", "내림차순")
+        val direction = if (sortOrder.isAscending) tr("升序", "Ascending", "昇順", "오름차순", "遞增") else tr("降序", "Descending", "降順", "내림차순", "遞減")
         add(
             SheetAction(
                 Icons.AutoMirrored.Outlined.Sort,
-                if (current) tr("按${field.label}（$direction）", "Sort by ${field.label} ($direction)", "${field.label}順（$direction）", "${field.label} 정렬 ($direction)") else tr("按${field.label}", "Sort by ${field.label}", "${field.label}順", "${field.label} 정렬"),
+                if (current) tr("按${field.label}（$direction）", "Sort by ${field.label} ($direction)", "${field.label}順（$direction）", "${field.label} 정렬 ($direction)", "依${field.label}排序（$direction）") else tr("按${field.label}", "Sort by ${field.label}", "${field.label}順", "${field.label} 정렬", "依${field.label}排序"),
                 { onSortChange(field.selectFrom(sortOrder)) },
                 group = ActionGroup.Sort,
                 checked = current,
@@ -770,7 +770,7 @@ internal fun sortOverflowActions(
         add(
             SheetAction(
                 Icons.AutoMirrored.Outlined.Sort,
-                tr("各文件夹独立排序", "Sort each folder separately", "フォルダーごとに並べ替え", "폴더별 정렬"),
+                tr("各文件夹独立排序", "Sort each folder separately", "フォルダーごとに並べ替え", "폴더별 정렬", "各資料夾獨立排序"),
                 { onPerFolderSortChange(!perFolderSort) },
                 group = ActionGroup.Sort,
                 checked = perFolderSort,
@@ -784,7 +784,7 @@ internal fun typeFilterOverflowActions(
     availableTypes: List<Pair<FileCategory, Int>>,
     onTypeFilterChange: (FileCategory?) -> Unit,
 ): List<SheetAction> =
-    listOf(SheetAction(Icons.Outlined.FilterList, tr("全部类型", "All types", "すべての種類", "모든 유형"), { onTypeFilterChange(null) }, group = ActionGroup.Filter, checked = typeFilter == null)) +
+    listOf(SheetAction(Icons.Outlined.FilterList, tr("全部类型", "All types", "すべての種類", "모든 유형", "所有類型"), { onTypeFilterChange(null) }, group = ActionGroup.Filter, checked = typeFilter == null)) +
         availableTypes.map { (category, count) ->
             SheetAction(category.icon(), "${category.label}（$count）", { onTypeFilterChange(category) }, group = ActionGroup.Filter, checked = category == typeFilter)
         }
@@ -810,7 +810,7 @@ internal fun SortButton(
         TextButton(onClick = { showMenu = true }) {
             Icon(Icons.AutoMirrored.Outlined.Sort, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(6.dp))
-            Text(tr("按${sortOrder.field.label}", "Sort by ${sortOrder.field.label}", "${sortOrder.field.label}順", "${sortOrder.field.label} 정렬"))
+            Text(tr("按${sortOrder.field.label}", "Sort by ${sortOrder.field.label}", "${sortOrder.field.label}順", "${sortOrder.field.label} 정렬", "依${sortOrder.field.label}排序"))
             Spacer(modifier = Modifier.width(2.dp))
             SortDirectionIcon(sortOrder, modifier = Modifier.size(16.dp))
         }
@@ -865,7 +865,7 @@ internal fun TypeFilterButton(
         TextButton(onClick = { showMenu = true }) {
             Icon(Icons.Outlined.FilterList, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(6.dp))
-            Text(typeFilter?.label ?: tr("全部类型", "All types", "すべての種類", "모든 유형"))
+            Text(typeFilter?.label ?: tr("全部类型", "All types", "すべての種類", "모든 유형", "所有類型"))
         }
         PikoDropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
             val options = listOf<Pair<FileCategory?, Int?>>(null to null) + availableTypes
@@ -877,7 +877,7 @@ internal fun TypeFilterButton(
                     },
                     text = {
                         Text(
-                            text = category?.label ?: tr("全部类型", "All types", "すべての種類", "모든 유형"),
+                            text = category?.label ?: tr("全部类型", "All types", "すべての種類", "모든 유형", "所有類型"),
                             color = if (category == typeFilter) MaterialTheme.colorScheme.primary else Color.Unspecified,
                         )
                     },
@@ -898,8 +898,8 @@ internal fun DriveViewMode.icon(selected: Boolean = false) = when (this) {
 
 internal val DriveViewMode.label
     get() = when (this) {
-        DriveViewMode.LIST -> tr("列表", "List", "リスト", "목록")
-        DriveViewMode.POSTER -> tr("网格", "Grid", "グリッド", "격자")
+        DriveViewMode.LIST -> tr("列表", "List", "リスト", "목록", "清單")
+        DriveViewMode.POSTER -> tr("网格", "Grid", "グリッド", "격자", "網格")
     }
 
 /**
@@ -925,7 +925,7 @@ internal fun ViewModeToggle(
                     shapes = connectedToggleShapes(index, modes.size),
                     contentPadding = ViewToggleContentPadding,
                 ) {
-                    Icon(mode.icon(selected = mode == viewMode), contentDescription = tr("${mode.label}视图", "${mode.label} view", "${mode.label}表示", "${mode.label} 보기"), modifier = Modifier.size(20.dp))
+                    Icon(mode.icon(selected = mode == viewMode), contentDescription = tr("${mode.label}视图", "${mode.label} view", "${mode.label}表示", "${mode.label} 보기", "${mode.label}檢視"), modifier = Modifier.size(20.dp))
                 }
             }
         }
@@ -960,13 +960,13 @@ internal fun FoldBanner(
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = if (isFolded) tr("已折叠 $hiddenCount 个次要项", "$hiddenCount extras collapsed", "$hiddenCount 個の付属項目を折りたたみ中", "부가 항목 ${hiddenCount}개 접힘") else tr("已显示全部，含 $hiddenCount 个次要项", "Showing all, including $hiddenCount extras", "付属項目 $hiddenCount 個を含めすべて表示", "부가 항목 ${hiddenCount}개를 포함하여 모두 표시"),
+                text = if (isFolded) tr("已折叠 $hiddenCount 个次要项", "$hiddenCount extras collapsed", "$hiddenCount 個の付属項目を折りたたみ中", "부가 항목 ${hiddenCount}개 접힘", "已摺疊 $hiddenCount 個次要項目") else tr("已显示全部，含 $hiddenCount 个次要项", "Showing all, including $hiddenCount extras", "付属項目 $hiddenCount 個を含めすべて表示", "부가 항목 ${hiddenCount}개를 포함하여 모두 표시", "已顯示全部，包含 $hiddenCount 個次要項目"),
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (isFolded) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
             TextButton(onClick = onToggle) {
-                Text(if (isFolded) tr("显示全部", "Show all", "すべて表示", "모두 표시") else tr("恢复折叠", "Reset folding", "折りたたみをリセット", "접기 상태 초기화"))
+                Text(if (isFolded) tr("显示全部", "Show all", "すべて表示", "모두 표시", "顯示全部") else tr("恢复折叠", "Reset folding", "折りたたみをリセット", "접기 상태 초기화", "還原摺疊"))
             }
         }
     }

@@ -124,14 +124,14 @@ class FolderVaultSessionTest {
         assertEquals(drive.changes.single().id, record.undoChangeId)
     }
     @Test
-    fun `directory confirmation stays within eight slots and cancellation leaves originals intact`() = smoke { scope ->
+    fun `directory confirmation stays within twelve slots and cancellation leaves originals intact`() = smoke { scope ->
         val drive = Drive().apply { stalledWrites = true; sampleDelayMs = 1 }
         drive.directories["Dramas"] = (0..31).map { folder("dir-$it") }
         (0..31).forEach { drive.directories["dir-$it"] = listOf(file("file-$it")) }
         val session = FolderVaultSession(drive, scope)
         session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true)
-        awaitUntil("八个目录等待确认") { drive.writes.get() == 8 }
-        assertEquals(8, drive.maximumWrites.get())
+        awaitUntil("十二个目录等待确认") { drive.writes.get() == 12 }
+        assertEquals(12, drive.maximumWrites.get())
         assertTrue(drive.removed.isEmpty())
         session.cancel()
         awaitUntil("目录写入已取消") { drive.writes.get() == 0 }
@@ -149,7 +149,7 @@ class FolderVaultSessionTest {
         awaitUntil("开始写清单") { drive.writes.get() > 0 }
         session.stop()
         awaitUntil("停止后收口") { drive.changes.isNotEmpty() }
-        assertTrue(drive.manifests.size in 1..16, "停止后不再开始新的目录：${drive.manifests.size}")
+        assertTrue(drive.manifests.size in 1..24, "停止后不再开始新的目录：${drive.manifests.size}")
         // 写成清单的目录都处置完原文件，不留下条目与原文件并存
         assertEquals(drive.manifests.keys.map { it.removePrefix("dir-") }.toSet(), drive.removed.flatten().map { it.removePrefix("file-") }.toSet())
         assertEquals(drive.manifests.size, drive.changes.single().untrashOnRevert.size)
@@ -341,7 +341,7 @@ class FolderVaultSessionTest {
             removed += ids
         }
         override fun record(change: DriveChangeJournal.Change.Vault) { changes += change }
-        override fun refresh() { refreshed = true }
+        override fun refresh(affectedFolders: Set<String>) { refreshed = true }
         override fun knownParents() = parents
         override fun rememberTree(members: Map<String, Set<String>>) { tree = members }
         override fun rememberFullyVaulted(folderIds: Set<String>) {
@@ -377,7 +377,7 @@ class FolderVaultSessionTest {
         awaitUntil("归档完成") { drive.changes.isNotEmpty() }
         println("15 个文件模拟取样及清单确认：${(System.nanoTime() - started) / 1_000_000} ms；最大取样并发 ${drive.maximum.get()}，目录并发 ${drive.maximumWrites.get()}")
         assertTrue(drive.maximum.get() in 5..16)
-        assertTrue(drive.maximumWrites.get() in 1..8)
+        assertTrue(drive.maximumWrites.get() in 1..12)
         assertEquals(15, drive.samples.size)
         assertEquals(3, drive.removed.size, "每个目录一次批量处置")
         assertEquals(setOf("one", "two", "three"), drive.manifests.keys)
@@ -439,5 +439,89 @@ class FolderVaultSessionTest {
         assertEquals(2, drive.manifests.getValue("Dramas").size)
         assertEquals(2, drive.changes.single().recreateOnRevert.getValue("Dramas").size)
         assertNull(session.progress)
+    }
+
+    @Test
+    fun `one failing subfolder does not cancel healthy sibling subfolders`() = smoke { scope ->
+        val drive = Drive(true).apply {
+            failFolder = "bad"
+            directories["Dramas"] = listOf(folder("good1"), folder("bad"), folder("good2"))
+            directories["good1"] = listOf(file("g1"))
+            directories["bad"] = listOf(file("b1"))
+            directories["good2"] = listOf(file("g2"))
+        }
+        val session = FolderVaultSession(drive, scope)
+        session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true, moveToTrash = false)
+        awaitUntil("兄弟目录完成收口") { session.records.isNotEmpty() }
+        val record = session.records.single()
+        assertEquals(FolderVaultSession.Completion.PARTIAL, record.completion)
+        assertEquals(setOf("good1", "good2"), drive.manifests.keys)
+        assertEquals(setOf("g1", "g2"), drive.removed.flatten().toSet())
+        assertTrue(record.message.contains("2/3"), record.message)
+    }
+
+    @Test
+    fun `uncertain trash removal still records untrash intent and entry mapping before remove throws`() = smoke { scope ->
+        val drive = Drive(permanentlyDelete = false).apply {
+            failRemove = true
+            directories["Dramas"] = listOf(file("one"), file("two"))
+        }
+        val session = FolderVaultSession(drive, scope)
+        session.archive(PikoPathBreadcrumb("Dramas", "Dramas"), true, moveToTrash = true)
+        awaitUntil("不确定移入回收站仍记录恢复依据") { drive.changes.isNotEmpty() && session.records.isNotEmpty() }
+        val change = drive.changes.single()
+        assertEquals(setOf("one", "two"), change.untrashOnRevert.toSet())
+        assertEquals(setOf("one", "two"), change.untrashByFolder.getValue("Dramas").values.map { it.id }.toSet())
+    }
+
+    @Test
+    fun `in place existing file restores with zero remaining quota and undo never trashes existing file`() = smoke { scope ->
+        val archivedEntry = VaultEntry.create("ep01.mkv", 100, "GCID-EP01", "magnet:?xt=urn:btih:ep01", 0)
+        val existingReal = FileStat(id = "user-existing-id", parentId = "folder", name = "ep01.mkv", hash = "GCID-EP01", size = "100", phase = TaskPhase.COMPLETE)
+        val recordedChanges = CopyOnWriteArrayList<DriveChangeJournal.Change.Vault>()
+        var recreates = 0
+        val operations = object : FolderVaultOperations by Drive() {
+            override suspend fun archived(folderId: String) = ArchivedLevel(emptyList(), listOf(archivedEntry))
+            override suspend fun presentRealFiles(folderId: String) = listOf(existingReal)
+            override suspend fun trash(): List<FileStat> = emptyList()
+            override suspend fun remainingBytes(): Long = 0L
+            override suspend fun recreate(entry: VaultEntry, folderId: String): String {
+                recreates++
+                return "should-not-create"
+            }
+            override suspend fun markRestored(folderId: String, files: Map<String, FileStat>) =
+                dev.piko.shared.data.VaultWrite(listOf(archivedEntry), listOf(archivedEntry.copy(restoredFileId = existingReal.id)))
+            override fun record(change: DriveChangeJournal.Change.Vault) { recordedChanges += change }
+            override fun refresh(affectedFolders: Set<String>) {}
+        }
+        val session = FolderVaultSession(operations, scope)
+        session.restoreFolder(PikoPathBreadcrumb("folder", "folder"))
+        awaitUntil("零配额原位关联恢复完成") { session.records.size == 1 }
+        assertEquals(FolderVaultSession.Completion.SUCCEEDED, session.records.single().completion)
+        assertEquals(0, recreates, "原位已有同内容文件时不得重复秒传")
+        val undoChange = recordedChanges.single()
+        assertTrue("folder" in undoChange.reverts, "撤销需还原归档清单关联")
+        assertTrue(undoChange.trashOnRevert.isEmpty() && undoChange.trashByFolder.isEmpty(), "撤销绝不能将用户原本存在的真实文件移入回收站")
+    }
+
+    @Test
+    fun `presentRealFiles query failure aborts restore instead of duplicating via instant create`() = smoke { scope ->
+        val archivedEntry = VaultEntry.create("ep01.mkv", 100, "GCID-EP01", null, 0)
+        var recreates = 0
+        val operations = object : FolderVaultOperations by Drive() {
+            override suspend fun archived(folderId: String) = ArchivedLevel(emptyList(), listOf(archivedEntry))
+            override suspend fun presentRealFiles(folderId: String): List<FileStat> = throw IOException("listing failed")
+            override suspend fun trash(): List<FileStat> = emptyList()
+            override suspend fun remainingBytes(): Long? = null
+            override suspend fun recreate(entry: VaultEntry, folderId: String): String {
+                recreates++
+                return "dup-id"
+            }
+        }
+        val session = FolderVaultSession(operations, scope)
+        session.restoreFolder(PikoPathBreadcrumb("folder", "folder"))
+        awaitUntil("核对失败中止恢复") { session.records.size == 1 }
+        assertEquals(FolderVaultSession.Completion.FAILED, session.records.single().completion)
+        assertEquals(0, recreates, "原位核对失败时严禁盲目秒传出重复副本")
     }
 }

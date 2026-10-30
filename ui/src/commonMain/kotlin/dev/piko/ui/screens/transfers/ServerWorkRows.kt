@@ -54,16 +54,16 @@ internal fun extractTransferActions(
     onInputPassword: (() -> Unit)? = null,
 ): List<SheetAction> = buildList {
     if (item.job.status is ArchiveJobStatus.NeedsPassword && onInputPassword != null) {
-        add(SheetAction(Icons.Outlined.Key, tr("输入解压密码", "Enter archive password", "解凍パスワードを入力", "압축 해제 비밀번호 입력"), onInputPassword))
+        add(SheetAction(Icons.Outlined.Key, tr("输入解压密码", "Enter archive password", "解凍パスワードを入力", "압축 해제 비밀번호 입력", "輸入解壓縮密碼"), onInputPassword))
     }
-    add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onShowInDrive))
-    if (item.job.status is ArchiveJobStatus.NeedsPassword) add(SheetAction(Icons.Outlined.Close, tr("放弃解压", "Abandon extraction", "解凍を中止", "압축 해제 취소"), onSkip, destructive = true))
+    add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), onShowInDrive))
+    if (item.job.status is ArchiveJobStatus.NeedsPassword) add(SheetAction(Icons.Outlined.Close, tr("放弃解压", "Abandon extraction", "解凍を中止", "압축 해제 취소", "放棄解壓縮"), onSkip, destructive = true))
     val finished = item.job.status as? ArchiveJobStatus.Finished
     if (finished != null) {
         if (finished.outcome == ArchiveCompletion.UNCONFIRMED && item.job.remoteTaskId != null) {
-            add(SheetAction(Icons.Outlined.Refresh, tr("重新查询结果", "Check results again", "結果を再確認", "결과 다시 확인"), onRecheck))
+            add(SheetAction(Icons.Outlined.Refresh, tr("重新查询结果", "Check results again", "結果を再確認", "결과 다시 확인", "重新查詢結果"), onRecheck))
         }
-        add(SheetAction(Icons.Outlined.Close, tr("移除记录", "Remove record", "記録を削除", "기록 삭제"), onSkip))
+        add(SheetAction(Icons.Outlined.Close, tr("移除记录", "Remove record", "記録を削除", "기록 삭제", "移除記錄"), onSkip))
     }
 }
 
@@ -74,15 +74,15 @@ internal fun ExtractTransferDetails(item: TransferItem.Extract, actions: List<Sh
         title = item.job.file.name,
         headerIcon = { ListLeadingIcon(Icons.Outlined.Unarchive) },
         actions = actions,
-        metaParts = listOf(tr("解压", "Extract", "解凍", "압축 해제"), work.status),
+        metaParts = listOf(tr("解压", "Extract", "解凍", "압축 해제", "解壓縮"), work.status),
         // 提交前后都可能停在这里，说清解到哪里、为什么不能取消
         extraLines = { WorkDetails(work, if ((item.job.status as? ArchiveJobStatus.Finished)?.outcome == ArchiveCompletion.UNCONFIRMED) {
-            tr("服务端仍可能继续解压。重新查询不会再次提交；没有任务标识时，请先检查压缩包所在目录。", "The server may still be extracting. Checking again will not resubmit. If no task ID exists, inspect the archive’s folder first.", "サーバーで解凍が続いている可能性があります。再確認で再送信はしません。タスクIDがない場合は、先にアーカイブの保存先を確認してください。", "서버에서 압축 해제가 계속될 수 있습니다. 다시 확인해도 재제출하지 않습니다. 작업 식별자가 없으면 압축 파일의 폴더를 먼저 확인하세요.")
-        } else tr("解压到压缩包所在的文件夹。已提交的解压由服务端完成，无法中途取消。", "Extract into the archive’s folder. Submitted extractions run on the server and cannot be cancelled midway.", "アーカイブと同じフォルダーに解凍します。送信後の解凍はサーバーで行われ、途中で取り消せません。", "압축 파일이 있는 폴더에 해제합니다. 제출된 압축 해제는 서버에서 수행되며 중간에 취소할 수 없습니다.")) },
+            tr("服务端仍可能继续解压。重新查询不会再次提交；没有任务标识时，请先检查压缩包所在目录。", "The server may still be extracting. Checking again will not resubmit. If no task ID exists, inspect the archive’s folder first.", "サーバーで解凍が続いている可能性があります。再確認で再送信はしません。タスクIDがない場合は、先に圧縮ファイルの保存先を確認してください。", "서버에서 압축 해제가 계속될 수 있습니다. 다시 확인해도 재제출하지 않습니다. 작업 식별자가 없으면 압축 파일의 폴더를 먼저 확인하세요.", "伺服器仍可能繼續解壓縮。重新查詢不會再次提交；沒有任務識別碼時，請先檢查壓縮檔所在資料夾。")
+        } else tr("解压到压缩包所在的文件夹。已提交的解压由服务端完成，无法中途取消。", "Extract into the archive’s folder. Submitted extractions run on the server and cannot be cancelled midway.", "圧縮ファイルと同じフォルダーに解凍します。送信後の解凍はサーバーで行われ、途中で取り消せません。", "압축 파일이 있는 폴더에 해제합니다. 제출된 압축 해제는 서버에서 수행되며 중간에 취소할 수 없습니다.", "解壓縮至壓縮檔所在的資料夾。已提交的解壓縮由伺服器完成，無法中途取消。")) },
     )
 }
 
-private fun TransferItem.Vault.kindLabel(): String = if (restoring) tr("取消归档", "Undo archive", "アーカイブを元に戻す", "보관 취소") else tr("归档", "Archive", "アーカイブ", "보관")
+private fun TransferItem.Vault.kindLabel(): String = if (restoring) tr("取消归档", "Undo archive", "アーカイブを解除", "보관 취소", "取消歸檔") else tr("归档", "Archive", "アーカイブ", "보관", "歸檔")
 
 private fun TransferItem.Vault.icon() = if (restoring) Icons.Outlined.Unarchive else Icons.Outlined.Inventory2
 
@@ -98,12 +98,12 @@ internal fun vaultTransferActions(
     onCreateImport: (String) -> Unit,
 ): List<SheetAction> = buildList {
     val sources = item.record?.missingSources.orEmpty()
-    if (sources.isNotEmpty()) add(SheetAction(Icons.Outlined.Link, tr("解析来源链接", "Resolve source link", "ソースリンクを解析", "출처 링크 분석"), { onCreateImport(sources.joinToString("\n")) }))
+    if (sources.isNotEmpty()) add(SheetAction(Icons.Outlined.Link, tr("解析来源链接", "Resolve source link", "ソースリンクを解析", "출처 링크 분석", "解析來源連結"), { onCreateImport(sources.joinToString("\n")) }))
     if (item.record == null) {
-        if (!stopping) add(SheetAction(Icons.Outlined.Stop, if (item.restoring) tr("停止恢复", "Stop restore", "復元を停止", "복원 중지") else tr("停止归档", "Stop archiving", "アーカイブを停止", "보관 중지"), onStop, role = SheetActionRole.Stop))
+        if (!stopping) add(SheetAction(Icons.Outlined.Stop, if (item.restoring) tr("停止恢复", "Stop restore", "復元を停止", "복원 중지", "停止還原") else tr("停止归档", "Stop archiving", "アーカイブを停止", "보관 중지", "停止歸檔"), onStop, role = SheetActionRole.Stop))
     } else if (undo?.status != DriveChangeJournal.UndoStatus.RUNNING) {
-        if (canUndo) add(SheetAction(Icons.Outlined.Refresh, if (undo?.status == DriveChangeJournal.UndoStatus.FAILED) tr("重试撤销", "Retry undo", "元に戻す操作を再試行", "실행 취소 다시 시도") else tr("撤销本次处理", "Undo this operation", "今回の処理を元に戻す", "이번 작업 실행 취소"), onUndo))
-        add(SheetAction(Icons.Outlined.Close, tr("移除记录", "Remove record", "記録を削除", "기록 삭제"), onRemoveRecord))
+        if (canUndo) add(SheetAction(Icons.Outlined.Refresh, if (undo?.status == DriveChangeJournal.UndoStatus.FAILED) tr("重试撤销", "Retry undo", "元に戻す操作を再試行", "실행 취소 다시 시도", "重試復原") else tr("撤销本次处理", "Undo this operation", "今回の処理を元に戻す", "이번 작업 실행 취소", "復原本次處理"), onUndo))
+        add(SheetAction(Icons.Outlined.Close, tr("移除记录", "Remove record", "記録を削除", "기록 삭제", "移除記錄"), onRemoveRecord))
     }
 }
 
@@ -121,7 +121,7 @@ internal fun VaultTransferDetails(
         metaParts = listOfNotNull(item.kindLabel(), work?.status),
         extraLines = {
             // 停止不回滚：进行中的文件夹处理完才停，已写成的引用保留
-            val note = if (item.record != null) tr("移除记录只清除此处的显示，不改变已处理的文件。", "Removing the record only hides it here; processed files are unchanged.", "記録を削除しても、この画面の表示だけが消え、処理済みファイルは変わりません。", "기록을 삭제하면 이 화면의 표시만 지우며 처리된 파일은 변경하지 않습니다.") else tr("停止后，已处理完的文件夹保持现状。", "Completed folders remain unchanged after stopping.", "停止しても処理済みのフォルダーはそのまま保持します。", "중지 후에도 처리가 끝난 폴더는 현재 상태로 유지됩니다.")
+            val note = if (item.record != null) tr("移除记录只清除此处的显示，不改变已处理的文件。", "Removing the record only hides it here; processed files are unchanged.", "記録を削除しても、この画面の表示だけが消え、処理済みファイルは変わりません。", "기록을 삭제하면 이 화면의 표시만 지우며 처리된 파일은 변경하지 않습니다.", "移除記錄只會清除此處的顯示，不會變更已處理的檔案。") else tr("停止后，已处理完的文件夹保持现状。", "Completed folders remain unchanged after stopping.", "停止しても処理済みのフォルダーはそのまま保持します。", "중지 후에도 처리가 끝난 폴더는 현재 상태로 유지됩니다.", "停止後，已處理完成的資料夾會保持現狀。")
             if (work != null) WorkDetails(work, note) else Text(note, color = MaterialTheme.colorScheme.onSurfaceVariant)
         },
     )

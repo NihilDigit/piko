@@ -24,7 +24,7 @@ internal val InstantSaveRecord.canPlayVideo: Boolean
 
 internal fun InstantSaveRecord.details(): List<String> = buildList {
     // 一个视频连同字幕时文件数大于 1，只存一个文件时不必再说「1 个文件」
-    if (fileCount > 1) add(tr("$fileCount 个文件", "${enCount(fileCount, "file", "files")}", "$fileCount ファイル", "파일 ${fileCount}개"))
+    if (fileCount > 1) add(tr("$fileCount 个文件", "${enCount(fileCount, "file", "files")}", "$fileCount ファイル", "파일 ${fileCount}개", "$fileCount 個檔案"))
     add(totalBytes.toReadableSize())
 }
 
@@ -39,9 +39,9 @@ internal fun InstantTransferDetails(record: InstantSaveRecord, actions: List<She
             else TaskFileTypeIcon(record.name, Icons.Outlined.Bolt)
         },
         actions = actions,
-        metaParts = listOf(tr("秒传", "Instant save", "インスタント保存", "즉시 저장"), tr("已保存", "Saved", "保存しました", "저장했습니다")) + record.details(),
+        metaParts = listOf(tr("秒传", "Instant save", "インスタント保存", "즉시 저장", "秒傳"), tr("已保存", "Saved", "保存しました", "저장했습니다", "已儲存")) + record.details(),
         extraLines = {
-            Text(text = tr("保存到 ${record.targetName}", "Saved to ${record.targetName}", "保存先 ${record.targetName}", "저장 위치 ${record.targetName}"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(text = tr("保存到 ${record.targetName}", "Saved to ${record.targetName}", "保存先 ${record.targetName}", "저장 위치 ${record.targetName}", "儲存至 ${record.targetName}"), color = MaterialTheme.colorScheme.onSurfaceVariant)
         },
     )
 }
@@ -54,10 +54,10 @@ internal fun instantTransferActions(
     onRemove: () -> Unit,
 ): List<SheetAction> = buildList {
     if (record.canPlayVideo && onPlay != null) {
-        add(SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생"), onPlay))
+        add(SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생", "播放"), onPlay))
     }
     if (record.locateId.isNotEmpty()) {
-        add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onOpen))
+        add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), onOpen))
     }
-    add(SheetAction(Icons.Outlined.Delete, tr("移除记录", "Remove record", "記録を削除", "기록 삭제"), onRemove, destructive = true))
+    add(SheetAction(Icons.Outlined.Delete, tr("移除记录", "Remove record", "記録を削除", "기록 삭제", "移除記錄"), onRemove, destructive = true))
 }

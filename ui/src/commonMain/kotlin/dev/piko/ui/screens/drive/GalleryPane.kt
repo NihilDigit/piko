@@ -135,7 +135,7 @@ internal fun GalleryPane(
                     }
                 } else if (files.isEmpty() && complete && failureCount == 0) {
                     PikoEmptyState(
-                        title = tr("此范围内没有可浏览的视频", "No videos to browse in this scope", "この範囲に閲覧できる動画はありません", "이 범위에 볼 수 있는 동영상이 없습니다"),
+                        title = tr("此范围内没有可浏览的视频", "No videos to browse in this scope", "この範囲に閲覧できる動画はありません", "이 범위에 볼 수 있는 동영상이 없습니다", "此範圍內沒有可瀏覽的影片"),
                         icon = Icons.Outlined.PhotoLibrary,
                         modifier = Modifier.align(Alignment.Center),
                     )

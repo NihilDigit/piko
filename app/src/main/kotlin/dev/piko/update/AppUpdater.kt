@@ -89,7 +89,7 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
             .onSuccess { status = UpdateStatus.Installing(update) }
             .onFailure {
                 PikoLog.w(TAG, "提交安装会话失败", it)
-                status = UpdateStatus.Failed(tr("无法启动安装", "Unable to start installation", "インストールを開始できません", "설치를 시작할 수 없습니다"), update)
+                status = UpdateStatus.Failed(tr("无法启动安装", "Unable to start installation", "インストールを開始できません", "설치를 시작할 수 없습니다", "無法啟動安裝"), update)
             }
     }
 
@@ -139,7 +139,7 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
     internal fun onInstallFailed(message: String) {
         PikoLog.w(TAG, "系统安装未完成：$message")
         val update = (status as? UpdateStatus.Installing)?.update
-        status = UpdateStatus.Failed(tr("安装未完成", "Installation incomplete", "インストールが未完了です", "설치 미완료"), update)
+        status = UpdateStatus.Failed(tr("安装未完成", "Installation incomplete", "インストールが未完了です", "설치 미완료", "安裝未完成"), update)
         mutableMessages.tryEmit(message)
     }
 

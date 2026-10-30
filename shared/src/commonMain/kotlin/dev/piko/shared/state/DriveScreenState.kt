@@ -56,6 +56,7 @@ import dev.piko.shared.search.cjkFuzzyScore
 import dev.piko.shared.search.cjkMatches
 import dev.piko.shared.search.normalizeCjk
 import io.github.nihildigit.pikpak.FileStat
+import io.github.nihildigit.pikpak.FileTag
 import io.github.nihildigit.pikpak.SearchHit
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -114,7 +115,7 @@ private val HIGHLIGHT_RETRY_DELAYS = listOf(300L, 600L, 800L, 1000L)
 private const val TAG = "Drive"
 
 /** 对归档条目做只有网盘文件才能做的事时的提示。 */
-private val VAULTED_NEEDS_RESTORE: String get() = tr("已归档的条目需先恢复到网盘", "Restore archived items to the drive first", "アーカイブ済みの項目を先にドライブに復元してください", "보관된 항목을 먼저 드라이브로 복원해 주세요")
+private val VAULTED_NEEDS_RESTORE: String get() = tr("已归档项目需先恢复至网盘", "Restore archived items to the drive first", "アーカイブ済みの項目は先にドライブへ復元してください", "보관된 항목은 먼저 드라이브로 복원해 주세요", "已歸檔項目需先還原至雲端硬碟")
 
 data class TrashProgress(val completed: Int, val total: Int)
 
@@ -755,6 +756,9 @@ class DriveScreenState(
             // 连着来的改动（批量重命名一项一条）不各重列一次：正在重列时来的合成一次，等这次列完再列
             val reloads = Channel<Unit>(Channel.CONFLATED)
             launch { driveRepo.folderChanges.collect { change ->
+                if (change is DriveChange.Starred) {
+                    libraryListings.remove(DriveLibrary.STARRED)
+                }
                 if (change is DriveChange.Renamed && change.parentId == activeFolderId && libraryView == null && archiveView == null && !isSearching) {
                     val folderId = activeFolderId
                     val previous = files
@@ -767,6 +771,30 @@ class DriveScreenState(
                             files = nextFiles
                             analysis = FolderAnalysis(folderId, nextFiles, structure)
                         } else reloads.trySend(Unit)
+                    }
+                } else if (change is DriveChange.Starred && libraryView == null && archiveView == null) {
+                    val targetIds = change.ids.toSet()
+                    if (remoteFiles.any { it.id in targetIds } || files.any { it.id in targetIds }) {
+                        fun patchStar(item: FileStat): FileStat {
+                            if (item.id !in targetIds) return item
+                            val withoutStar = item.tags.filterNot { it.name.equals("STAR", ignoreCase = true) }
+                            val nextTags = if (change.starred) withoutStar + FileTag(id = "STAR", name = "STAR") else withoutStar
+                            return item.copy(tags = nextTags)
+                        }
+                        Snapshot.withMutableSnapshot {
+                            remoteFiles = remoteFiles.map(::patchStar)
+                            files = files.map(::patchStar)
+                        }
+                    }
+                    if (isGlobalSearchActive && globalSearchHits.any { it.file.id in targetIds }) {
+                        for (i in globalSearchHits.indices) {
+                            val hit = globalSearchHits[i]
+                            if (hit.file.id in targetIds) {
+                                val withoutStar = hit.file.tags.filterNot { it.name.equals("STAR", ignoreCase = true) }
+                                val nextTags = if (change.starred) withoutStar + FileTag(id = "STAR", name = "STAR") else withoutStar
+                                globalSearchHits[i] = hit.copy(file = hit.file.copy(tags = nextTags))
+                            }
+                        }
                     }
                 } else if (isAffectedBy(change)) reloads.trySend(Unit)
             } }
@@ -885,7 +913,10 @@ class DriveScreenState(
 
     private fun withImportPreviews(folderId: String, realFiles: List<FileStat>): List<FileStat> {
         val virtuals = importPreviewFilesFor(folderId)
-        return if (virtuals.isEmpty()) realFiles else virtuals + realFiles
+        if (virtuals.isEmpty()) return realFiles
+        val (virtualFolders, virtualFiles) = virtuals.partition(FileStat::isFolder)
+        val (realFolders, realFilesOnly) = realFiles.partition(FileStat::isFolder)
+        return virtualFolders + realFolders + virtualFiles + realFilesOnly
     }
 
     /** [useCache] 与 [showRefreshing] 都为 false 是静默重列：不用缓存，也不出任何加载指示，见 [catchUpWithHighlight]。 */
@@ -952,7 +983,7 @@ class DriveScreenState(
                 PikoLog.i(TAG, "文件夹 $folderId 已不存在，返回上一级")
                 isLoading = false
                 isRefreshing = false
-                if (navigateUp()) _messages.tryEmit(tr("文件夹已不存在，已返回上一级", "Folder no longer exists; returned to parent", "フォルダーが存在しないため、上の階層に戻りました", "폴더가 없어 상위 폴더로 돌아갔습니다"))
+                if (navigateUp()) _messages.tryEmit(tr("文件夹已不存在，已返回上一级", "Folder no longer exists; returned to parent", "フォルダーが存在しないため、上の階層に戻りました", "폴더가 없어 상위 폴더로 돌아갔습니다", "資料夾已不存在，已返回上一層"))
                 return@launch
             }
             listing
@@ -976,8 +1007,8 @@ class DriveScreenState(
                 .onFailure {
                     // 消息是一次性的，弹完就没了；而列表此刻显示的是上一次的内容，
                     // 界面需要一个持续的标记才能说明「这是陈旧数据」
-                    loadError = it.message ?: tr("读取网盘失败", "Failed to load drive", "ドライブを読み込めませんでした", "드라이브를 불러오지 못했습니다")
-                    _messages.tryEmit(tr("加载失败", "Failed to load", "読み込みに失敗しました", "불러오지 못했습니다"))
+                    loadError = it.message ?: tr("读取网盘失败", "Failed to load drive", "ドライブを読み込めませんでした", "드라이브를 불러오지 못했습니다", "讀取雲端硬碟失敗")
+                    _messages.tryEmit(tr("加载失败", "Failed to load", "読み込みに失敗しました", "불러오지 못했습니다", "載入失敗"))
                 }
             isLoading = false
             isRefreshing = false
@@ -1027,10 +1058,10 @@ class DriveScreenState(
                     showLibrary(library, listing)
                     loadError = null
                 }
-                .logFailure(TAG, tr("读取${library.title}失败", "Failed to load ${library.title}", "${library.title}を読み込めませんでした", "${library.title} 불러오기 실패"))
+                .logFailure(TAG, tr("读取${library.title}失败", "Failed to load ${library.title}", "${library.title}を読み込めませんでした", "${library.title} 불러오기 실패", "讀取${library.title}失敗"))
                 .onFailure {
-                    loadError = it.message ?: tr("读取${library.title}失败", "Failed to load ${library.title}", "${library.title}を読み込めませんでした", "${library.title} 불러오기 실패")
-                    _messages.tryEmit(tr("加载失败", "Failed to load", "読み込みに失敗しました", "불러오지 못했습니다"))
+                    loadError = it.message ?: tr("读取${library.title}失败", "Failed to load ${library.title}", "${library.title}を読み込めませんでした", "${library.title} 불러오기 실패", "讀取${library.title}失敗")
+                    _messages.tryEmit(tr("加载失败", "Failed to load", "読み込みに失敗しました", "불러오지 못했습니다", "載入失敗"))
                 }
             isLoading = false
             isRefreshing = false
@@ -1059,14 +1090,14 @@ class DriveScreenState(
     fun openArchive(file: FileStat) {
         if (archives == null) return
         if (file.hash.isEmpty()) {
-            _messages.tryEmit(if (file.isImportPreview) tr("未收录的压缩包需先离线保存到网盘才能打开", "Download this archive to the cloud drive before opening it", "未収録のアーカイブは、先にクラウドダウンロードでドライブに保存してください", "등록되지 않은 압축 파일은 클라우드 다운로드로 드라이브에 저장한 후 열 수 있습니다") else tr("文件尚未完成校验，稍后再试", "File verification is in progress. Try again later", "ファイルを検証中です。しばらくしてからお試しください", "파일을 확인 중입니다. 잠시 후 다시 시도해 주세요"))
+            _messages.tryEmit(if (file.isImportPreview) tr("未收录的压缩包需先通过离线下载保存至网盘", "Save this unindexed archive via cloud download before opening", "未収録の圧縮ファイルは、先にクラウドダウンロードでドライブに保存してください", "미등록 압축 파일은 먼저 클라우드 다운로드로 드라이브에 저장해 주세요", "未收錄的壓縮檔需先透過離線下載儲存至雲端硬碟") else tr("文件正在校验，请稍后重试", "File verification in progress. Try again later", "ファイルを検証中です。しばらくしてから再試行してください", "파일을 확인 중입니다. 잠시 후 다시 시도해 주세요", "檔案正在驗證，請稍後重試"))
             return
         }
         if (ImportPreviewEntryId.isEntry(file.id)) {
             val resolved = ImportPreviewEntryId.resolvedFileOf(file.id)
             val draft = instantSession?.state
             if (resolved == null || draft == null) {
-                _messages.tryEmit(tr("未收录的压缩包需先离线保存到网盘才能打开", "Download this archive to the cloud drive before opening it", "未収録のアーカイブは、先にクラウドダウンロードでドライブに保存してください", "등록되지 않은 압축 파일은 클라우드 다운로드로 드라이브에 저장한 후 열 수 있습니다"))
+                _messages.tryEmit(tr("未收录的压缩包需先通过离线下载保存至网盘", "Save this unindexed archive via cloud download before opening", "未収録の圧縮ファイルは、先にクラウドダウンロードでドライブに保存してください", "미등록 압축 파일은 먼저 클라우드 다운로드로 드라이브에 저장해 주세요", "未收錄的壓縮檔需先透過離線下載儲存至雲端硬碟"))
                 return
             }
             if (preparingEntryId != null) return
@@ -1081,7 +1112,7 @@ class DriveScreenState(
                                 openFolder(ArchiveLocation(leasedFileId, file.hash, "").id, file.name)
                             }
                         }
-                        .onFailure { _messages.tryEmit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("打开压缩包", "Open archive", "アーカイブを開く", "압축 파일 열기"), it)) }
+                        .onFailure { _messages.tryEmit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("打开压缩包", "Open archive", "圧縮ファイルを開く", "압축 파일 열기", "開啟壓縮檔"), it)) }
                 } finally {
                     preparingEntryId = null
                 }
@@ -1120,7 +1151,7 @@ class DriveScreenState(
                         loadedFolderId = location.id
                         archivePasswordRequest = ArchivePasswordRequest(archiveName(), incorrect = password != null)
                     } else {
-                        PikoLog.w(TAG, tr("读取压缩包失败", "Failed to read archive", "アーカイブを読み込めませんでした", "압축 파일을 읽지 못했습니다"), error)
+                        PikoLog.w(TAG, tr("读取压缩包失败", "Failed to read archive", "アーカイブを読み込めませんでした", "압축 파일을 읽지 못했습니다", "讀取壓縮檔失敗"), error)
                         // 没列出来过的一层，眼前还是上一个目录的内容，不能当成包里的
                         if (cached == null) {
                             files = emptyList()
@@ -1164,8 +1195,8 @@ class DriveScreenState(
                     // 引导解压之后这一层重列过，各项都有了 gcid，换上新的一份，播放列表里的下一集也借得出来
                     if (location != null && archiveView == location) browser.cached(location)?.let { files = it }
                 }
-                .logFailure(TAG, tr("准备压缩包里的文件失败", "Failed to prepare files in archive", "アーカイブ内のファイルを準備できませんでした", "압축 파일 내 파일을 준비하지 못했습니다"))
-                .onFailure { _messages.tryEmit(tr("无法打开：${archiveFailure(it)}", "Unable to open: ${archiveFailure(it)}", "開けません：${archiveFailure(it)}", "열 수 없습니다: ${archiveFailure(it)}")) }
+                .logFailure(TAG, tr("准备压缩包里的文件失败", "Failed to prepare files in archive", "アーカイブ内のファイルを準備できませんでした", "압축 파일 내 파일을 준비하지 못했습니다", "準備壓縮檔內的檔案失敗"))
+                .onFailure { _messages.tryEmit(tr("无法打开：${archiveFailure(it)}", "Unable to open: ${archiveFailure(it)}", "開けません：${archiveFailure(it)}", "열 수 없습니다: ${archiveFailure(it)}", "無法開啟：${archiveFailure(it)}")) }
                 .getOrNull()
         } finally {
             preparingEntryId = null
@@ -1190,7 +1221,7 @@ class DriveScreenState(
     private fun archiveName(): String {
         val stack = navigation.folderStackFlow.value
         val firstArchive = stack.indexOfFirst { ArchiveLocation.of(it.id) != null }
-        return if (firstArchive >= 0) stack[firstArchive].name else tr("压缩包", "Archive", "アーカイブ", "압축 파일")
+        return if (firstArchive >= 0) stack[firstArchive].name else tr("压缩包", "Archive", "圧縮ファイル", "압축 파일", "壓縮檔")
     }
 
     private fun archiveFailure(error: Throwable): String = dev.piko.shared.notice.PikoErrorMapper.archive(error)
@@ -1212,7 +1243,7 @@ class DriveScreenState(
         DriveLibrary.STARRED -> driveRepo.starredFiles().map { LibraryListing(it, emptyMap()) }
         DriveLibrary.TRASH -> driveRepo.trashFiles().map { files ->
             if (driveRepo.reconcileTrashListing(files)) {
-                _messages.tryEmit(tr("内容较多，服务端正在后台清理，空间会自行释放", "The server is cleaning up in the background. Space will be freed automatically", "項目が多いため、サーバーがバックグラウンドで削除しています。空き容量は自動的に増えます", "항목이 많아 서버에서 정리 중입니다. 공간은 자동으로 확보됩니다"))
+                _messages.tryEmit(tr("项目较多，服务端正在后台清理，存储空间将稍后释放", "The server is cleaning up in the background. Storage space will be freed shortly", "項目数が多いため、サーバーがバックグラウンドで削除しています。空き容量は順次反映されます", "항목이 많아 서버에서 백그라운드로 정리 중입니다. 저장 공간이 곧 확보됩니다", "項目較多，伺服器正在背景清理，儲存空間將稍後釋放"))
             }
             LibraryListing(files, emptyMap())
         }
@@ -1293,7 +1324,7 @@ class DriveScreenState(
                         highlight(setOf(file.id))
                     }
                 }
-                .onFailure { _messages.tryEmit(tr("找不到它所在的文件夹", "Containing folder not found", "保存先のフォルダーが見つかりません", "파일이 있는 폴더를 찾을 수 없습니다")) }
+                .onFailure { _messages.tryEmit(tr("未找到所在文件夹", "Containing folder not found", "保存先フォルダーが見つかりません", "상위 폴더를 찾을 수 없습니다", "找不到所在資料夾")) }
         }
     }
 
@@ -1424,7 +1455,7 @@ class DriveScreenState(
             },
             onFailure = { error ->
                 _messages.emit(
-                    if (error is PikoDriveRepository.FolderNotFoundException) error.message!! else tr("打不开这个路径，请检查网络后重试", "Unable to open this path. Check your connection and retry", "このパスを開けません。接続を確認して再試行してください", "이 경로를 열 수 없습니다. 네트워크를 확인한 후 다시 시도해 주세요"),
+                    if (error is PikoDriveRepository.FolderNotFoundException) error.message!! else tr("无法打开此路径，请检查网络连接后重试", "Unable to open this path. Check your network connection and retry", "このパスを開けません。ネットワーク接続を確認して再試行してください", "이 경로를 열 수 없습니다. 네트워크 연결을 확인한 후 다시 시도해 주세요", "無法開啟此路徑，請檢查網路連線後重試"),
                 )
                 false
             },
@@ -1469,7 +1500,7 @@ class DriveScreenState(
         if (ArchiveLocation.of(folderId) == null) return driveRepo.subfolders(folderId).map { previewFolders + it }
         return when (val level = folderMapLevel(folderId)) {
             is FolderMapLevel.Loaded -> Result.success(level.nodes.filter { it.expandable }.map { it.crumb })
-            FolderMapLevel.NeedsPassword -> Result.failure(IllegalStateException(tr("需要密码", "Password required", "パスワードが必要です", "비밀번호가 필요합니다")))
+            FolderMapLevel.NeedsPassword -> Result.failure(IllegalStateException(tr("需要密码", "Password required", "パスワードが必要です", "비밀번호가 필요합니다", "需要密碼")))
             is FolderMapLevel.Failed -> Result.failure(IllegalStateException(level.message))
         }
     }
@@ -1513,7 +1544,7 @@ class DriveScreenState(
                     }
                 })
             },
-            onFailure = { FolderMapLevel.Failed(tr("列不出这个文件夹，请检查网络", "Unable to list this folder. Check your connection", "フォルダーの内容を表示できません。接続を確認してください", "폴더 내용을 표시할 수 없습니다. 네트워크를 확인해 주세요")) },
+            onFailure = { FolderMapLevel.Failed(tr("无法加载此文件夹，请检查网络连接", "Unable to load this folder. Check your network connection", "このフォルダーを読み込めません。ネットワーク接続を確認して再試行してください", "이 폴더를 불러올 수 없습니다. 네트워크 연결을 확인해 주세요", "無法載入此資料夾，請檢查網路連線")) },
         )
     }
 
@@ -1523,7 +1554,7 @@ class DriveScreenState(
             driveRepo.locateFolder(folder.id)
                 .logFailure(TAG, "地址栏定位固定的文件夹失败")
                 .onSuccess { parents -> navigation.updateFolderStack(parents + folder) }
-                .onFailure { _messages.emit(tr("找不到这个文件夹，它可能已被删除", "Folder not found; it may have been deleted", "フォルダーが見つかりません。削除された可能性があります", "폴더를 찾을 수 없습니다. 삭제되었을 수 있습니다")) }
+                .onFailure { _messages.emit(tr("未找到此文件夹，可能已被删除", "Folder not found. It may have been deleted", "フォルダーが見つかりません。削除された可能性があります", "폴더를 찾을 수 없습니다. 삭제되었을 수 있습니다", "找不到此資料夾，可能已被刪除")) }
         }
     }
 
@@ -1574,13 +1605,29 @@ class DriveScreenState(
         isGlobalSearchActive = true
         isGlobalSearching = true
         globalSearchJob = scope.launch {
+            val buffer = ArrayList<SearchHit>(64)
+            var lastFlush = TimeSource.Monotonic.markNow()
+            fun flushBuffer() {
+                if (buffer.isNotEmpty()) {
+                    globalSearchHits.addAll(buffer)
+                    buffer.clear()
+                    lastFlush = TimeSource.Monotonic.markNow()
+                }
+            }
             try {
-                driveRepo.searchRecursive(keyword).collect { globalSearchHits.add(it) }
+                driveRepo.searchRecursive(keyword).collect { hit ->
+                    buffer.add(hit)
+                    if (buffer.size >= 64 || lastFlush.elapsedNow().inWholeMilliseconds >= 60L) {
+                        flushBuffer()
+                    }
+                }
+                flushBuffer()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                flushBuffer()
                 PikoLog.w(TAG, "全盘搜索失败，已找到 ${globalSearchHits.size} 项", e)
-                _messages.tryEmit(tr("全盘搜索失败", "Drive search failed", "ドライブ全体の検索に失敗しました", "드라이브 전체 검색에 실패했습니다"))
+                _messages.tryEmit(tr("全盘搜索失败", "Drive search failed", "ドライブ全体の検索に失敗しました", "드라이브 전체 검색에 실패했습니다", "全碟搜尋失敗"))
             } finally {
                 isGlobalSearching = false
             }
@@ -1787,19 +1834,19 @@ class DriveScreenState(
      */
     private fun refusedInArchive(ids: Collection<String>): Boolean {
         if (ids.none { ArchiveEntryId.isEntry(it) || ArchiveLocation.of(it) != null }) return false
-        _messages.tryEmit(tr("压缩包里的文件只能打开或解压", "Files inside archives can only be opened or extracted", "アーカイブ内のファイルは、開くか解凍する操作のみ可能です", "압축 파일 내 파일은 열거나 압축 해제만 할 수 있습니다"))
+        _messages.tryEmit(tr("压缩包内的文件仅支持打开或解压", "Files inside an archive can only be opened or extracted", "圧縮ファイル内の項目は、開くか解凍のみ可能です", "압축 파일 내 항목은 열거나 압축 해제만 할 수 있습니다", "壓縮檔內的檔案僅支援開啟或解壓縮"))
         return true
     }
 
     fun rename(fileId: String, newName: String) {
         if (newName.isBlank() || refusedInArchive(listOf(fileId))) return
         if (ImportPreviewEntryId.isEntry(fileId) || ImportPreviewLocation.of(fileId) != null) {
-            _messages.tryEmit(tr("待保存的链接条目请在右侧面板修改名称", "Rename unsaved link items in the side panel", "未保存のリンク項目はサイドパネルで名前を変更してください", "저장 전 링크 항목은 측면 패널에서 이름을 변경해 주세요"))
+            _messages.tryEmit(tr("请在右侧面板中重命名待保存项目", "Rename unsaved items in the side panel", "保存前の項目はサイドパネルで名前を変更してください", "저장 전 항목은 측면 패널에서 이름을 변경해 주세요", "請在右側面板中重新命名待儲存項目"))
             return
         }
         val trimmed = newName.trimStart().trimEnd { it.isWhitespace() || it == '.' }
         if (trimmed.isEmpty() || dev.piko.shared.data.DriveNames.clean(trimmed) != trimmed) {
-            _messages.tryEmit(tr("文件名含有无效字符或为空", "File name is empty or contains invalid characters", "ファイル名が空か、使用できない文字が含まれています", "파일 이름이 비어 있거나 잘못된 문자가 포함되어 있습니다"))
+            _messages.tryEmit(tr("文件名含有无效字符或为空", "File name is empty or contains invalid characters", "ファイル名が空か、使用できない文字が含まれています", "파일 이름이 비어 있거나 잘못된 문자가 포함되어 있습니다", "檔案名稱含有無效字元或為空"))
             return
         }
         if (VaultEntry.isVaulted(fileId)) {
@@ -1809,18 +1856,36 @@ class DriveScreenState(
         submitFileAction(FileWriteCommand.Rename(fileId, trimmed, knownFile(fileId)?.let { FileBefore(it.name, it.parentId) }), clearSelection = false)
     }
 
-    /** 加或去星标。星标只体现在列表条目的 tags 里，这一项所在的那一层由仓库通知重列。 */
-    fun setStarred(file: FileStat, starred: Boolean) {
-        if (refusedInArchive(listOf(file.id))) return
-        if (file.isImportPreview) {
-            _messages.tryEmit(tr("待保存的链接条目需要先保存到网盘", "Save link items to the drive first", "リンク項目を先にドライブに保存してください", "링크 항목을 먼저 드라이브에 저장해 주세요"))
-            return
+    /** 加或去星标：真实文件交给服务端，归档条目由 Piko 的 [VaultStars] 自管。支持混合多选批量设置。 */
+    fun setStarred(file: FileStat, starred: Boolean) = setStarred(listOf(file), starred)
+
+    fun setStarred(targets: List<FileStat>, starred: Boolean) {
+        if (!canAcceptAction || targets.isEmpty()) return
+        val ids = targets.map { it.id }
+        if (refusedInArchive(ids)) return
+        val nonPreview = targets.filterNot { it.isImportPreview }
+        if (nonPreview.size < targets.size) {
+            _messages.tryEmit(tr("请先将链接项目保存至网盘", "Save link items to the drive first", "リンク項目を先にドライブへ保存してください", "링크 항목을 먼저 드라이브에 저장해 주세요", "請先將連結項目儲存至雲端硬碟"))
+            if (nonPreview.isEmpty()) return
         }
-        if (file.isVaulted) {
-            _messages.tryEmit(VAULTED_NEEDS_RESTORE)
-            return
+        val (vaulted, real) = nonPreview.partition { it.isVaulted }
+        if (vaulted.isNotEmpty()) {
+            val withResolvedParent = vaulted.map { item ->
+                if (item.parentId.isNotEmpty()) item
+                else {
+                    val knownParent = knownFile(item.id)?.parentId?.takeIf(String::isNotEmpty)
+                        ?: activeFolderId.takeIf { isDriveFolderId(it) }.orEmpty()
+                    if (knownParent.isNotEmpty()) item.copy(parentId = knownParent) else item
+                }
+            }
+            driveRepo.setVaultStarred(withResolvedParent, starred)
+            if (real.isEmpty()) {
+                _messages.tryEmit(if (starred) tr("已添加星标", "Starred", "スターを付けました", "별표를 추가했습니다", "已新增星號") else tr("已取消星标", "Unstarred", "スターを外しました", "별표를 해제했습니다", "已取消星號"))
+            }
         }
-        submitFileAction(FileWriteCommand.Star(listOf(file.id), starred), clearSelection = false)
+        if (real.isNotEmpty()) {
+            submitFileAction(FileWriteCommand.Star(real.map { it.id }, starred), clearSelection = false)
+        }
     }
 
     val trashProgress get() = trashSession.progress
@@ -1917,8 +1982,8 @@ class DriveScreenState(
         val origin = activeFolderStack.takeIf { isDriveFolderId(activeFolderId) }.orEmpty()
         clipboard.put(DriveClipboard(ids.associateWith { knownFile(it)?.parentId ?: activeFolderId }, cut, origin.toList()))
         exitSelection()
-        val verb = if (cut) tr("剪切", "Cut", "切り取り", "잘라내기") else tr("复制", "Copy", "コピー", "복사")
-        _messages.tryEmit(if (ids.size == 1) tr("已$verb，到目标文件夹粘贴", "$verb: paste in the destination folder", "$verb：保存先フォルダーで貼り付けてください", "$verb 완료. 대상 폴더에 붙여넣으세요") else tr("已$verb ${ids.size} 项，到目标文件夹粘贴", "$verb ${enCount(ids.size, "item", "items")}: paste in the destination folder", "${ids.size} 項目を$verb：保存先フォルダーで貼り付けてください", "${ids.size}개 항목 $verb 완료. 대상 폴더에 붙여넣으세요"))
+        val verb = if (cut) tr("剪切", "Cut", "切り取り", "잘라내기", "剪下") else tr("复制", "Copy", "コピー", "복사", "複製")
+        _messages.tryEmit(if (ids.size == 1) tr("已$verb，请在目标文件夹中粘贴", "$verb. Paste in the destination folder", "$verb しました。移動先フォルダーで貼り付けてください", "$verb 완료. 대상 폴더에 붙여넣으세요", "已$verb，請至目標資料夾貼上") else tr("已$verb ${ids.size} 项，请在目标文件夹中粘贴", "$verb ${enCount(ids.size, "item", "items")}. Paste in the destination folder", "${ids.size} 項目を$verb しました。移動先フォルダーで貼り付けてください", "${ids.size}개 항목 $verb 완료. 대상 폴더에 붙여넣으세요", "已$verb ${ids.size} 項，請至目標資料夾貼上"))
     }
 
     /** 粘贴到眼前的文件夹：剪切的移过来（剪贴板随即清空，与资源管理器相同），复制的复制一份过来。 */
@@ -1932,9 +1997,9 @@ class DriveScreenState(
         } else ids.size
         val onSuccess = {
             if (clip.originStack.isNotEmpty() && clip.originStack.last().id != target.id) {
-                val verb = if (clip.cut) tr("移动", "Move", "移動", "이동") else tr("复制", "Copy", "コピー", "복사")
+                val verb = if (clip.cut) tr("移动", "Move", "移動", "이동", "移動") else tr("复制", "Copy", "コピー", "복사", "複製")
                 val targetLabel = target.localizedName
-                _pasteNotices.tryEmit(PasteReturnNotice(tr("已将 $movingCount 项${verb}到「$targetLabel」", "$verb ${enCount(movingCount, "item", "items")} to “$targetLabel”", "$movingCount 項目を「$targetLabel」に${verb}しました", "${movingCount}개 항목을 “$targetLabel”(으)로 ${verb}했습니다"), clip.originStack))
+                _pasteNotices.tryEmit(PasteReturnNotice(tr("已将 $movingCount 项${verb}到「$targetLabel」", "$verb ${enCount(movingCount, "item", "items")} to “$targetLabel”", "$movingCount 項目を「$targetLabel」に${verb}しました", "${movingCount}개 항목을 “$targetLabel”(으)로 ${verb}했습니다", "已將 $movingCount 項${verb}至「$targetLabel」"), clip.originStack))
             }
             Unit
         }
@@ -1960,7 +2025,7 @@ class DriveScreenState(
     private fun withoutVaulted(ids: List<String>): List<String> {
         if (refusedInArchive(ids)) return emptyList()
         val nonPreview = ids.filterNot { ImportPreviewEntryId.isEntry(it) || ImportPreviewLocation.of(it) != null }
-        if (nonPreview.size < ids.size) _messages.tryEmit(tr("待保存的链接条目需要先保存到网盘", "Save link items to the drive first", "リンク項目を先にドライブに保存してください", "링크 항목을 먼저 드라이브에 저장해 주세요"))
+        if (nonPreview.size < ids.size) _messages.tryEmit(tr("请先将链接项目保存至网盘", "Save link items to the drive first", "リンク項目を先にドライブへ保存してください", "링크 항목을 먼저 드라이브에 저장해 주세요", "請先將連結項目儲存至雲端硬碟"))
         val real = nonPreview.filterNot(VaultEntry::isVaulted)
         if (real.size < nonPreview.size) _messages.tryEmit(VAULTED_NEEDS_RESTORE)
         return real
@@ -2052,7 +2117,7 @@ fun addressPathNames(text: String, current: List<PikoPathBreadcrumb>): List<Stri
     return names
 }
 
-private val ROOT_PATH_ALIASES = setOf("网盘", "My drive", "マイドライブ", "내 드라이브")
+private val ROOT_PATH_ALIASES = setOf("网盘", "雲端硬碟", "我的雲端硬碟", "網盤", "我的網盤", "My drive", "マイドライブ", "내 드라이브")
 
 /** 名字含 [partial] 的（支持 CJK 归一与模糊匹配），开头相同的在前，各自保持原来的顺序；[partial] 为空时全部。 */
 private fun rankByName(folders: List<PikoPathBreadcrumb>, partial: String): List<PikoPathBreadcrumb> {

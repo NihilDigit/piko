@@ -81,7 +81,7 @@ internal fun ColumnScope.ShareSaveSection(
                 )
                 info.owner.nickname.takeIf { it.isNotBlank() }?.let { owner ->
                     Text(
-                        text = tr("分享者 $owner", "Shared by $owner", "共有者 $owner", "공유자 $owner"),
+                        text = tr("分享者 $owner", "Shared by $owner", "共有者 $owner", "공유자 $owner", "分享者 $owner"),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -95,7 +95,7 @@ internal fun ColumnScope.ShareSaveSection(
         }
     }
 
-    if (state.isLoading) ResolvingRow(text = tr("正在读取分享", "Loading share", "共有を読み込み中", "공유 불러오는 중"))
+    if (state.isLoading) ResolvingRow(text = tr("正在读取分享", "Loading share", "共有を読み込み中", "공유 불러오는 중", "正在讀取分享"))
     state.errorMessage?.let { ErrorBanner(message = it, onRetry = null) }
 }
 
@@ -115,9 +115,12 @@ internal fun ShareSaveFooter(state: ShareSaveState, target: PathBreadcrumb?, can
         val targetBlocked = target?.let { state.targetBlockReason(it.id) }
         TargetRow(target = target, notice = null, enabled = state.canEdit, onClick = onPickTarget)
         targetBlocked?.let { ErrorBanner(it, onRetry = null) }
-        val size = state.selectedBytes.takeIf { it > 0 }?.let { "（${it.toReadableSize()}）" }.orEmpty()
+        val size = state.selectedBytes.takeIf { it > 0 }?.let { bytes ->
+            val readable = bytes.toReadableSize()
+            tr("（$readable）", " ($readable)", "（$readable）", " ($readable)", "（$readable）")
+        }.orEmpty()
         SaveButton(
-            label = if (state.hasPendingResult) tr("请先核对转存结果", "Check share save results first", "先に共有の保存結果を確認してください", "먼저 공유 저장 결과를 확인하세요") else if (state.selectedIds.isEmpty()) tr("勾选要转存的内容", "Select items to save", "保存する項目を選択", "저장할 항목 선택") else tr("转存 ${state.selectedIds.size} 项$size", "Save ${enCount(state.selectedIds.size, "item", "items")}$size", "${state.selectedIds.size} 項目を保存$size", "${state.selectedIds.size}개 항목 저장$size"),
+            label = if (state.hasPendingResult) tr("请先核对转存结果", "Check share save results first", "先に共有の保存結果を確認してください", "먼저 공유 저장 결과를 확인하세요", "請先核對轉存結果") else if (state.selectedIds.isEmpty()) tr("勾选要转存的内容", "Select items to save", "保存する項目を選択", "저장할 항목 선택", "勾選要轉存的內容") else tr("转存 ${state.selectedIds.size} 项$size", "Save ${enCount(state.selectedIds.size, "item", "items")}$size", "${state.selectedIds.size} 項目を保存$size", "${state.selectedIds.size}개 항목 저장$size", "轉存 ${state.selectedIds.size} 項$size"),
             enabled = target != null && targetBlocked == null && state.selectedIds.isNotEmpty() && state.canEdit,
             isSaving = state.isSaving,
             onClick = { target?.let { state.save(PikoPathBreadcrumb(it.id, it.name), canonicalNames) } },
@@ -160,13 +163,13 @@ private fun ShareBrowser(
             ) {
                 if (state.path.isNotEmpty()) {
                     IconButton(onClick = { state.goTo(state.path.size - 1) }, enabled = state.canEdit) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = tr("上一层", "Parent level", "上の階層", "상위 폴더"))
+                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = tr("上一层", "Parent level", "上の階層", "상위 폴더", "上一層"))
                     }
                 } else {
                     Spacer(Modifier.width(12.dp))
                 }
                 Text(
-                    text = state.path.lastOrNull()?.localizedName ?: tr("分享内容", "Shared content", "共有内容", "공유 내용"),
+                    text = state.path.lastOrNull()?.localizedName ?: tr("分享内容", "Shared content", "共有内容", "공유 내용", "分享內容"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -175,7 +178,7 @@ private fun ShareBrowser(
                 )
                 if (state.entries.isNotEmpty()) {
                     TextButton(onClick = state::toggleAll, enabled = state.canEdit) {
-                        Text(if (state.selectedIds.size == state.entries.size) tr("全不选", "Deselect all", "すべての選択を解除", "모두 선택 해제") else tr("全选", "Select all", "すべて選択", "모두 선택"))
+                        Text(if (state.selectedIds.size == state.entries.size) tr("取消全选", "Deselect all", "すべて選択解除", "모두 선택 해제", "取消全選") else tr("全选", "Select all", "すべて選択", "모두 선택", "全選"))
                     }
                 }
             }

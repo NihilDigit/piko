@@ -7,12 +7,12 @@ import dev.piko.shared.data.FolderIndex
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.library
 
-private val ROOT_BREADCRUMB_NAMES = setOf("", "我的网盘", "My drive", "マイドライブ", "내 드라이브")
+private val ROOT_BREADCRUMB_NAMES = setOf("", "我的网盘", "我的雲端硬碟", "我的網盤", "My drive", "マイドライブ", "내 드라이브")
 
 /** Localize synthetic locations while preserving actual folder names and navigation identity. */
 val PikoPathBreadcrumb.localizedName: String
     get() = DriveLibrary.of(id)?.title ?: if (id.isEmpty() && name in ROOT_BREADCRUMB_NAMES) {
-        tr("我的网盘", "My drive", "マイドライブ", "내 드라이브")
+        tr("我的网盘", "My drive", "マイドライブ", "내 드라이브", "我的雲端硬碟")
     } else name
 
 data class NavigationEntryToken(

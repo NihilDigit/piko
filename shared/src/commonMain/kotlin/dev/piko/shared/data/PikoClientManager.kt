@@ -1,5 +1,6 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.PikPakClient
@@ -24,7 +25,7 @@ import kotlin.time.TimeSource
  * 没有保存密码、而 SDK 需要重新用密码登录时抛出。refresh token 失效后 SDK 会自行回落到
  * 密码登录，这时只能让用户回登录页重新输入，不能拿空密码去试。
  */
-class PasswordRequiredException : IllegalStateException("登录已失效，请重新登录")
+class PasswordRequiredException : IllegalStateException(tr("登录已过期，请重新登录", "Session expired. Please sign in again", "セッションの有効期限が切れました。再ログインしてください", "세션이 만료되었습니다. 다시 로그인해 주세요", "登入已過期，請重新登入"))
 
 /**
  * 登录态与已保存的账号。同一时刻只有一个账号在用（[currentClient]），其余登录过、没退出的记在 [accounts] 里，
@@ -406,8 +407,9 @@ class PikoClientManager(
             httpClient = httpClient,
             connectionBudget = CONNECTION_BUDGET,
             accountConnectionBudget = ACCOUNT_CONNECTION_BUDGET,
-            // 每个账号共用请求预算，批量工作和交互请求合计保持每秒 16 次；实测依据见 development/archive.md。
-            rateLimiter = io.github.nihildigit.pikpak.RateLimiter(capacity = 16, refillPerSecond = 16.0),
+            // 解除 OkHttp 单主机 5 并发枷锁后，实测 HTTP/2 下 80~115 req/s 均 0 次 429 与 0 次验证码（2026-10-30 ApiRateWallProbeTest）；
+            // 取 64 突发 / 60 req/s 留足近一倍安全余量，批量重命名、引用保存与归档直接跑满多路并发
+            rateLimiter = io.github.nihildigit.pikpak.RateLimiter(capacity = 64, refillPerSecond = 60.0),
         )
     }
 

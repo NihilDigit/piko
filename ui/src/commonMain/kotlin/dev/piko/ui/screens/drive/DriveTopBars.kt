@@ -114,15 +114,15 @@ internal fun DriveSelectionTopBar(
 ) {
     PikoTopBar(
         scrollBehavior = scrollBehavior,
-        title = tr("已选择 $selectedCount 项", "${enCount(selectedCount, "item", "items")} selected", "$selectedCount 項目を選択中", "${selectedCount}개 선택됨"),
+        title = tr("已选择 $selectedCount 项", "${enCount(selectedCount, "item", "items")} selected", "$selectedCount 項目を選択中", "${selectedCount}개 선택됨", "已選取 $selectedCount 項"),
         persistentActions = { dev.piko.ui.workbench.WorkspaceControls() },
         navigationIcon = {
-            TooltipIconButton(Icons.Outlined.Close, tr("退出多选", "Exit selection", "選択モードを終了", "선택 모드 종료"), onExit, shortcut = "Esc")
+            TooltipIconButton(Icons.Outlined.Close, tr("退出多选", "Exit selection", "選択モードを終了", "선택 모드 종료", "結束多選"), onExit, shortcut = "Esc")
         },
         actions = buildList {
             val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
-            if (onSelectAll != null) add(iconBarItem(Icons.Outlined.SelectAll, tr("全选", "Select all", "すべて選択", "모두 선택"), onSelectAll, priority = 10, shortcut = shortcutModifier.label("A")))
-            add(iconBarItem(Icons.Outlined.MoreVert, tr("操作", "Actions", "操作", "작업"), onActions, priority = 30, enabled = selectedCount > 0))
+            if (onSelectAll != null) add(iconBarItem(Icons.Outlined.SelectAll, tr("全选", "Select all", "すべて選択", "모두 선택", "全選"), onSelectAll, priority = 10, shortcut = shortcutModifier.label("A")))
+            add(iconBarItem(Icons.Outlined.MoreVert, tr("操作", "Actions", "操作", "작업", "操作"), onActions, priority = 30, enabled = selectedCount > 0))
         },
     )
 }
@@ -155,7 +155,7 @@ internal fun DriveSearchTopBar(
         modifier = Modifier.releasesFocusOnOutsidePress().then(caption.modifier),
         navigationIcon = {
             IconButton(onClick = onClose) {
-                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = tr("关闭搜索", "Close search", "検索を閉じる", "검색 닫기"))
+                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = tr("关闭搜索", "Close search", "検索を閉じる", "검색 닫기", "關閉搜尋"))
             }
         },
         title = {
@@ -210,7 +210,7 @@ internal fun DriveSearchTopBar(
             // 右端一直有个取消：有字时清掉搜索词，没字时收起搜索。只在有字时才出现的话，刚点开搜索时右边空着，
             // 要找退路得回到左上角的返回，拇指够不着
             IconButton(onClick = { if (query.isNotEmpty()) onQueryChange("") else onClose() }) {
-                Icon(Icons.Outlined.Close, contentDescription = if (query.isNotEmpty()) tr("清除搜索词", "Clear search", "検索語を消去", "검색어 지우기") else tr("关闭搜索", "Close search", "検索を閉じる", "검색 닫기"))
+                Icon(Icons.Outlined.Close, contentDescription = if (query.isNotEmpty()) tr("清除搜索词", "Clear search", "検索語を消去", "검색어 지우기", "清除搜尋詞") else tr("关闭搜索", "Close search", "検索を閉じる", "검색 닫기", "關閉搜尋"))
             }
             dev.piko.ui.workbench.WorkspaceControls(compact = true)
             caption.buttons?.invoke()
@@ -301,13 +301,13 @@ internal fun FeedToggle(
     if (iconOnly) {
         TooltipBox(
             positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
-            tooltip = { PlainTooltip { Text(if (shown) tr("关闭信息流", "Close feed", "フィードを閉じる", "피드 닫기") else tr("信息流", "Feed", "フィード", "피드")) } },
+            tooltip = { PlainTooltip { Text(if (shown) tr("关闭信息流", "Close feed", "フィードを閉じる", "피드 닫기", "關閉資訊流") else tr("信息流", "Feed", "フィード", "피드", "資訊流")) } },
             state = rememberTooltipState(),
         ) {
             FilledTonalIconToggleButton(checked = shown, onCheckedChange = onShownChange) {
                 Icon(
                     imageVector = if (shown) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
-                    contentDescription = tr("信息流", "Feed", "フィード", "피드"),
+                    contentDescription = tr("信息流", "Feed", "フィード", "피드", "資訊流"),
                 )
             }
         }
@@ -388,7 +388,7 @@ internal fun ExploreToggleGroup(
                         sizes.forEachIndexed { sizeIndex, size ->
                             val current = tileSize == size
                             DropdownMenuItem(
-                                text = { Text(tr("${size.label}尺寸", "${size.label} size", "${size.label}サイズ", "${size.label} 크기"), color = if (current) MaterialTheme.colorScheme.primary else androidx.compose.ui.graphics.Color.Unspecified) },
+                                text = { Text(tr("${size.label}尺寸", "${size.label} size", "${size.label}サイズ", "${size.label} 크기", "${size.label}尺寸"), color = if (current) MaterialTheme.colorScheme.primary else androidx.compose.ui.graphics.Color.Unspecified) },
                                 trailingIcon = if (current) ({
                                     Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                                 }) else null,
@@ -447,7 +447,7 @@ internal fun SectionJumper(currentSection: String?, sections: List<String>, onSe
         Row(
             modifier = Modifier
                 .clip(MaterialTheme.shapes.small)
-                .clickable(onClickLabel = tr("跳转到分区", "Jump to section", "区分に移動", "분류로 이동")) { showMenu = true },
+                .clickable(onClickLabel = tr("跳转到分区", "Jump to section", "区分に移動", "분류로 이동", "跳至分區")) { showMenu = true },
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(

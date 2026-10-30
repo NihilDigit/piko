@@ -33,8 +33,8 @@ internal fun Rates(state: TransfersState, modifier: Modifier = Modifier, compact
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Rate(Icons.Outlined.ArrowDownward, tr("下行", "Download", "下り", "다운로드"), state.downloadSpeed, compact)
-        Rate(Icons.Outlined.ArrowUpward, tr("上行", "Upload", "上り", "업로드"), state.uploadSpeed, compact)
+        Rate(Icons.Outlined.ArrowDownward, tr("下行", "Download", "下り", "다운로드", "下行"), state.downloadSpeed, compact)
+        Rate(Icons.Outlined.ArrowUpward, tr("上行", "Upload", "上り", "업로드", "上行"), state.uploadSpeed, compact)
     }
 }
 /** 排队中的下载还要多久，没有在下的不显示。 */
@@ -42,7 +42,7 @@ internal fun Rates(state: TransfersState, modifier: Modifier = Modifier, compact
 internal fun DownloadEta(state: TransfersState) {
     val seconds = state.downloadEtaSeconds ?: return
     Text(
-        tr("下载剩余${formatRemaining(seconds)}", "Download: ${formatRemaining(seconds)} remaining", "ダウンロード残り ${formatRemaining(seconds)}", "다운로드 남은 시간 ${formatRemaining(seconds)}"),
+        tr("下载剩余${formatRemaining(seconds)}", "Download: ${formatRemaining(seconds)} remaining", "ダウンロード残り ${formatRemaining(seconds)}", "다운로드 남은 시간 ${formatRemaining(seconds)}", "下載剩餘${formatRemaining(seconds)}"),
         style = MaterialTheme.typography.labelLarge,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         maxLines = 1,
@@ -93,10 +93,10 @@ private val RateMinWidth = 92.dp
 
 /** 「约 12 分钟」「约 1 小时 20 分」；不到一分钟的不写秒数，底栏的读数不必跳那么快。 */
 private fun formatRemaining(seconds: Long): String = when {
-    seconds < 60 -> tr("不到 1 分钟", "Less than a minute", "1分未満", "1분 미만")
-    seconds < 3600 -> tr("约 ${seconds / 60} 分钟", "About ${enCount(seconds / 60, "minute", "minutes")}", "約 ${seconds / 60} 分", "약 ${seconds / 60}분")
+    seconds < 60 -> tr("不到 1 分钟", "Less than a minute", "1分未満", "1분 미만", "不到 1 分鐘")
+    seconds < 3600 -> tr("约 ${seconds / 60} 分钟", "About ${enCount(seconds / 60, "minute", "minutes")}", "約 ${seconds / 60} 分", "약 ${seconds / 60}분", "約 ${seconds / 60} 分鐘")
     else -> {
         val minutes = (seconds % 3600) / 60
-        if (minutes == 0L) tr("约 ${seconds / 3600} 小时", "About ${enCount(seconds / 3600, "hour", "hours")}", "約 ${seconds / 3600} 時間", "약 ${seconds / 3600}시간") else tr("约 ${seconds / 3600} 小时 $minutes 分", "About ${seconds / 3600} hr $minutes min", "約 ${seconds / 3600} 時間 $minutes 分", "약 ${seconds / 3600}시간 ${minutes}분")
+        if (minutes == 0L) tr("约 ${seconds / 3600} 小时", "About ${enCount(seconds / 3600, "hour", "hours")}", "約 ${seconds / 3600} 時間", "약 ${seconds / 3600}시간", "約 ${seconds / 3600} 小時") else tr("约 ${seconds / 3600} 小时 $minutes 分", "About ${seconds / 3600} hr $minutes min", "約 ${seconds / 3600} 時間 $minutes 分", "약 ${seconds / 3600}시간 ${minutes}분", "約 ${seconds / 3600} 小時 $minutes 分")
     }
 }

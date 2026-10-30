@@ -105,22 +105,22 @@ fun WebDavScreen(
 
     fun copy(label: String, text: String) {
         platform.copyToClipboard(label, text)
-        scope.launch { snackbarHostState.showSnackbar(tr("已复制$label", "Copied $label", "$label をコピーしました", "$label 복사 완료"), withDismissAction = true) }
+        scope.launch { snackbarHostState.showSnackbar(tr("已复制$label", "Copied $label", "$label をコピーしました", "$label 복사 완료", "已複製$label"), withDismissAction = true) }
     }
 
     val framed = LocalFramed.current
     val loaded = state.settings != null
-    val addAction = SheetAction(Icons.Outlined.Add, tr("添加应用", "Add app", "アプリを追加", "앱 추가"), onClick = { adding = true })
+    val addAction = SheetAction(Icons.Outlined.Add, tr("添加应用", "Add app", "アプリを追加", "앱 추가", "新增應用程式"), onClick = { adding = true })
 
     PikoScaffold(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         island = IslandPage(header = {
             // 设置的下一级，侧边栏上亮的仍是设置，回到设置只能经这里
-            TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, tr("返回", "Back", "戻る", "뒤로"), onBackClick)
+            TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, tr("返回", "Back", "戻る", "뒤로", "返回"), onBackClick)
             IslandTitle("WebDAV", Modifier.padding(start = 4.dp))
             IslandHeaderSpace()
-            TooltipIconButton(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침"), { state.load(refresh = true) }, enabled = !state.isRefreshing)
+            TooltipIconButton(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침", "重新整理"), { state.load(refresh = true) }, enabled = !state.isRefreshing)
             if (loaded) PrimaryActionButton(addAction, Modifier.padding(horizontal = 6.dp))
         }),
         topBar = {
@@ -128,7 +128,7 @@ fun WebDavScreen(
                 title = "WebDAV",
                 onBackClick = onBackClick,
                 actions = listOf(
-                    iconBarItem(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침"), { state.load(refresh = true) }, priority = PinnedPriority, enabled = !state.isRefreshing),
+                    iconBarItem(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침", "重新整理"), { state.load(refresh = true) }, priority = PinnedPriority, enabled = !state.isRefreshing),
                 ),
             )
         },
@@ -159,15 +159,15 @@ fun WebDavScreen(
                     SettingsSwitchRow(
                         icon = Icons.Outlined.Lan,
                         title = "WebDAV",
-                        supporting = tr("关闭后各应用均无法连接", "Disabling prevents all apps from connecting", "無効にすると各アプリから接続できなくなります", "끄면 모든 앱에서 연결할 수 없습니다"),
+                        supporting = tr("关闭后各应用均无法连接", "Disabling prevents all apps from connecting", "無効にすると各アプリから接続できなくなります", "끄면 모든 앱에서 연결할 수 없습니다", "關閉後所有應用程式皆無法連線"),
                         checked = settings.enabled,
                         onCheckedChange = state::setEnabled,
                         enabled = !state.isToggling,
                     )
-                    AddressRow(tr("服务器地址", "Server address", "サーバーアドレス", "서버 주소"), WebDav.ENDPOINT, onCopy = { copy(tr("服务器地址", "Server address", "サーバーアドレス", "서버 주소"), WebDav.ENDPOINT) })
-                    AddressRow(tr("备用地址", "Alternative address", "代替アドレス", "대체 주소"), WebDav.ALTERNATIVE_ENDPOINT, onCopy = { copy(tr("备用地址", "Alternative address", "代替アドレス", "대체 주소"), WebDav.ALTERNATIVE_ENDPOINT) })
+                    AddressRow(tr("服务器地址", "Server address", "サーバーアドレス", "서버 주소", "伺服器位址"), WebDav.ENDPOINT, onCopy = { copy(tr("服务器地址", "Server address", "サーバーアドレス", "서버 주소", "伺服器位址"), WebDav.ENDPOINT) })
+                    AddressRow(tr("备用地址", "Alternative address", "代替アドレス", "대체 주소", "備用位址"), WebDav.ALTERNATIVE_ENDPOINT, onCopy = { copy(tr("备用地址", "Alternative address", "代替アドレス", "대체 주소", "備用位址"), WebDav.ALTERNATIVE_ENDPOINT) })
                 }
-                SettingsGroup(tr("应用", "Apps", "アプリ", "앱")) {
+                SettingsGroup(tr("应用", "Apps", "アプリ", "앱", "應用程式")) {
                     val clients = state.webDavClients
                     if (clients.isEmpty()) {
                         Text(
@@ -194,8 +194,8 @@ fun WebDavScreen(
 
     if (adding) {
         WebDavClientDialog(
-            title = tr("添加应用", "Add app", "アプリを追加", "앱 추가"),
-            confirmLabel = tr("添加", "Add", "追加", "추가"),
+            title = tr("添加应用", "Add app", "アプリを追加", "앱 추가", "新增應用程式"),
+            confirmLabel = tr("添加", "Add", "追加", "추가", "新增"),
             initialName = "",
             onConfirm = { name ->
                 adding = false
@@ -207,8 +207,8 @@ fun WebDavScreen(
 
     editing?.let { client ->
         WebDavClientDialog(
-            title = tr("重命名", "Rename", "名前を変更", "이름 변경"),
-            confirmLabel = tr("保存", "Save", "保存", "저장"),
+            title = tr("重命名", "Rename", "名前を変更", "이름 변경", "重新命名"),
+            confirmLabel = tr("保存", "Save", "保存", "저장", "儲存"),
             initialName = client.name,
             onConfirm = { name ->
                 editing = null
@@ -223,9 +223,9 @@ fun WebDavScreen(
             onDismissRequest = { confirmRenew = null },
             icon = { Icon(Icons.Outlined.LockReset, contentDescription = null) },
             title = { Text(stringResource(Res.string.text_reset_password)) },
-            text = { Text(tr("「${client.name}」的旧密码随即失效，使用它的应用需填入新密码。", "The old password for “${client.name}” will stop working. Update it in connected apps.", "「${client.name}」の古いパスワードは無効になります。利用中のアプリに新しいパスワードを入力してください。", "“${client.name}”의 이전 비밀번호는 즉시 무효화됩니다. 연결된 앱에서 새 비밀번호를 입력해야 합니다.")) },
+            text = { Text(tr("「${client.name}」的旧密码随即失效，使用它的应用需填入新密码。", "The old password for “${client.name}” will stop working. Update it in connected apps.", "「${client.name}」の古いパスワードは無効になります。利用中のアプリに新しいパスワードを入力してください。", "“${client.name}”의 이전 비밀번호는 즉시 무효화됩니다. 연결된 앱에서 새 비밀번호를 입력해야 합니다.", "「${client.name}」的舊密碼將立即失效，使用此密碼的應用程式需填入新密碼。")) },
             confirmButton = {
-                PikoDialogConfirm(tr("重置", "Reset", "リセット", "재설정"), onClick = {
+                PikoDialogConfirm(tr("重置", "Reset", "リセット", "재설정", "重設"), onClick = {
                     confirmRenew = null
                     state.renewPassword(client)
                 })
@@ -239,9 +239,9 @@ fun WebDavScreen(
             onDismissRequest = { confirmDelete = null },
             icon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
             title = { Text(stringResource(Res.string.text_delete_app)) },
-            text = { Text(tr("以「${client.name}」的凭据登录的应用将无法再连接。", "Apps using “${client.name}” credentials will no longer connect.", "「${client.name}」の認証情報を使うアプリは接続できなくなります。", "“${client.name}”의 인증 정보를 사용하는 앱은 더 이상 연결할 수 없습니다.")) },
+            text = { Text(tr("以「${client.name}」的凭据登录的应用将无法再连接。", "Apps using “${client.name}” credentials will no longer connect.", "「${client.name}」の認証情報を使うアプリは接続できなくなります。", "“${client.name}”의 인증 정보를 사용하는 앱은 더 이상 연결할 수 없습니다.", "使用「${client.name}」憑證登入的應用程式將無法再連線。")) },
             confirmButton = {
-                PikoDialogConfirm(tr("删除", "Delete", "削除", "삭제"), destructive = true, onClick = {
+                PikoDialogConfirm(tr("删除", "Delete", "削除", "삭제", "刪除"), destructive = true, onClick = {
                     confirmDelete = null
                     state.delete(client)
                 })
@@ -266,7 +266,7 @@ private fun AddressRow(title: String, url: String, onCopy: () -> Unit) {
         icon = Icons.Outlined.Link,
         supporting = url,
         onClick = onCopy,
-        trailing = { Icon(Icons.Outlined.ContentCopy, contentDescription = tr("复制", "Copy", "コピー", "복사")) },
+        trailing = { Icon(Icons.Outlined.ContentCopy, contentDescription = tr("复制", "Copy", "コピー", "복사", "複製")) },
     )
 }
 
@@ -295,20 +295,20 @@ private fun WebDavClientCard(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                TooltipIconButton(Icons.Outlined.Edit, tr("重命名", "Rename", "名前を変更", "이름 변경"), onEdit, enabled = !busy)
-                TooltipIconButton(Icons.Outlined.LockReset, tr("重置密码", "Reset password", "パスワードをリセット", "비밀번호 재설정"), onRenew, enabled = !busy)
-                TooltipIconButton(Icons.Outlined.Delete, tr("删除", "Delete", "削除", "삭제"), onDelete, enabled = !busy, tint = MaterialTheme.colorScheme.error)
+                TooltipIconButton(Icons.Outlined.Edit, tr("重命名", "Rename", "名前を変更", "이름 변경", "重新命名"), onEdit, enabled = !busy)
+                TooltipIconButton(Icons.Outlined.LockReset, tr("重置密码", "Reset password", "パスワードをリセット", "비밀번호 재설정", "重設密碼"), onRenew, enabled = !busy)
+                TooltipIconButton(Icons.Outlined.Delete, tr("删除", "Delete", "削除", "삭제", "刪除"), onDelete, enabled = !busy, tint = MaterialTheme.colorScheme.error)
             }
-            CredentialLine(tr("用户名", "Username", "ユーザー名", "사용자 이름"), client.username) {
-                TooltipIconButton(Icons.Outlined.ContentCopy, tr("复制用户名", "Copy username", "ユーザー名をコピー", "사용자 이름 복사"), { onCopy(tr("用户名", "Username", "ユーザー名", "사용자 이름"), client.username) })
+            CredentialLine(tr("用户名", "Username", "ユーザー名", "사용자 이름", "使用者名稱"), client.username) {
+                TooltipIconButton(Icons.Outlined.ContentCopy, tr("复制用户名", "Copy username", "ユーザー名をコピー", "사용자 이름 복사", "複製使用者名稱"), { onCopy(tr("用户名", "Username", "ユーザー名", "사용자 이름", "使用者名稱"), client.username) })
             }
-            CredentialLine(tr("密码", "Password", "パスワード", "비밀번호"), if (revealed) client.password else PasswordMask) {
+            CredentialLine(tr("密码", "Password", "パスワード", "비밀번호", "密碼"), if (revealed) client.password else PasswordMask) {
                 TooltipIconButton(
                     if (revealed) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                    if (revealed) tr("隐藏密码", "Hide password", "パスワードを隠す", "비밀번호 숨기기") else tr("显示密码", "Show password", "パスワードを表示", "비밀번호 표시"),
+                    if (revealed) tr("隐藏密码", "Hide password", "パスワードを隠す", "비밀번호 숨기기", "隱藏密碼") else tr("显示密码", "Show password", "パスワードを表示", "비밀번호 표시", "顯示密碼"),
                     { revealed = !revealed },
                 )
-                TooltipIconButton(Icons.Outlined.ContentCopy, tr("复制密码", "Copy password", "パスワードをコピー", "비밀번호 복사"), { onCopy(tr("密码", "Password", "パスワード", "비밀번호"), client.password) })
+                TooltipIconButton(Icons.Outlined.ContentCopy, tr("复制密码", "Copy password", "パスワードをコピー", "비밀번호 복사", "複製密碼"), { onCopy(tr("密码", "Password", "パスワード", "비밀번호", "密碼"), client.password) })
             }
         }
     }
@@ -353,8 +353,8 @@ private fun WebDavClientDialog(
             PikoTextField(
                 value = name,
                 onValueChange = { name = it },
-                label = tr("名称", "Name", "名前", "이름"),
-                placeholder = tr("例如 Infuse", "For example, Infuse", "例：Infuse", "예: Infuse"),
+                label = tr("名称", "Name", "名前", "이름", "名稱"),
+                placeholder = tr("例如 Infuse", "For example, Infuse", "例：Infuse", "예: Infuse", "例如 Infuse"),
             )
         },
         confirmButton = {
@@ -375,17 +375,17 @@ private fun IssuedCredentialsDialog(
     PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(if (issued.renewed) Icons.Outlined.LockReset else Icons.Outlined.Lan, contentDescription = null) },
-        title = { Text(if (issued.renewed) tr("已重置「${client.name}」的密码", "Password reset for “${client.name}”", "「${client.name}」のパスワードをリセットしました", "“${client.name}” 비밀번호 재설정 완료") else tr("已添加「${client.name}」", "Added “${client.name}”", "「${client.name}」を追加しました", "“${client.name}” 추가 완료")) },
+        title = { Text(if (issued.renewed) tr("已重置「${client.name}」的密码", "Password reset for “${client.name}”", "「${client.name}」のパスワードをリセットしました", "“${client.name}” 비밀번호 재설정 완료", "已重設「${client.name}」的密碼") else tr("已添加「${client.name}」", "Added “${client.name}”", "「${client.name}」を追加しました", "“${client.name}” 추가 완료", "已新增「${client.name}」")) },
         text = {
             Column {
-                CredentialLine(tr("地址", "Address", "アドレス", "주소"), WebDav.ENDPOINT) {
-                    TooltipIconButton(Icons.Outlined.ContentCopy, tr("复制地址", "Copy address", "アドレスをコピー", "주소 복사"), { onCopy(tr("服务器地址", "Server address", "サーバーアドレス", "서버 주소"), WebDav.ENDPOINT) })
+                CredentialLine(tr("地址", "Address", "アドレス", "주소", "位址"), WebDav.ENDPOINT) {
+                    TooltipIconButton(Icons.Outlined.ContentCopy, tr("复制地址", "Copy address", "アドレスをコピー", "주소 복사", "複製位址"), { onCopy(tr("服务器地址", "Server address", "サーバーアドレス", "서버 주소", "伺服器位址"), WebDav.ENDPOINT) })
                 }
-                CredentialLine(tr("用户名", "Username", "ユーザー名", "사용자 이름"), client.username) {
-                    TooltipIconButton(Icons.Outlined.ContentCopy, tr("复制用户名", "Copy username", "ユーザー名をコピー", "사용자 이름 복사"), { onCopy(tr("用户名", "Username", "ユーザー名", "사용자 이름"), client.username) })
+                CredentialLine(tr("用户名", "Username", "ユーザー名", "사용자 이름", "使用者名稱"), client.username) {
+                    TooltipIconButton(Icons.Outlined.ContentCopy, tr("复制用户名", "Copy username", "ユーザー名をコピー", "사용자 이름 복사", "複製使用者名稱"), { onCopy(tr("用户名", "Username", "ユーザー名", "사용자 이름", "使用者名稱"), client.username) })
                 }
-                CredentialLine(tr("密码", "Password", "パスワード", "비밀번호"), client.password) {
-                    TooltipIconButton(Icons.Outlined.ContentCopy, tr("复制密码", "Copy password", "パスワードをコピー", "비밀번호 복사"), { onCopy(tr("密码", "Password", "パスワード", "비밀번호"), client.password) })
+                CredentialLine(tr("密码", "Password", "パスワード", "비밀번호", "密碼"), client.password) {
+                    TooltipIconButton(Icons.Outlined.ContentCopy, tr("复制密码", "Copy password", "パスワードをコピー", "비밀번호 복사", "複製密碼"), { onCopy(tr("密码", "Password", "パスワード", "비밀번호", "密碼"), client.password) })
                 }
                 Spacer(Modifier.height(8.dp))
                 Text(

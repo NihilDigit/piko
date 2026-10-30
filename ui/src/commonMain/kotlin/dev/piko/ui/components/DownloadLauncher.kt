@@ -65,7 +65,7 @@ internal fun keptDefaultMaxHeight(choice: DownloadChoice, keep: Boolean): Int? =
 }
 
 /** 勾选存下默认画质后，入队时给用户的提示：此后不再弹框，要告诉他去哪里改回。 */
-internal val DEFAULT_QUALITY_SAVED_NOTICE: String get() = tr("已设为默认下载画质，可在设置中更改", "Default download quality saved. Change it in Settings", "既定のダウンロード画質に設定しました。設定画面で変更できます", "기본 다운로드 화질로 설정했습니다. 설정에서 변경할 수 있습니다")
+internal val DEFAULT_QUALITY_SAVED_NOTICE: String get() = tr("已设为默认下载画质，可在设置中更改", "Default download quality saved. Change it in Settings", "既定のダウンロード画質に設定しました。設定画面で変更できます", "기본 다운로드 화질로 설정했습니다. 설정에서 변경할 수 있습니다", "已設為預設下載畫質，可在設定中變更")
 
 /**
  * 「下载」的唯一入口，网盘页（面板、右键菜单、命令栏、多选栏）与播放器都经它，画质问不问、怎么问只在这里定。

@@ -46,7 +46,7 @@ suspend fun showChangeNotices(
         val change = event.change
         val result = host.showSnackbar(
             message = event.message,
-            actionLabel = if (change != null) tr("撤销", "Undo", "元に戻す", "실행 취소") else null,
+            actionLabel = if (change != null) tr("撤销", "Undo", "元に戻す", "실행 취소", "復原") else null,
             withDismissAction = true,
             duration = if (change != null) SnackbarDuration.Indefinite else SnackbarDuration.Short,
         )

@@ -30,10 +30,10 @@ sealed interface VaultEntryEditCommand {
     val title: String
     data class Rename(val folderId: String, val entryId: String, val name: String) : VaultEntryEditCommand {
         override val entries get() = mapOf(folderId to setOf(entryId))
-        override val title get() = tr("归档条目重命名为「$name」", "Rename archive item to “$name”", "アーカイブ項目の名前を「$name」に変更", "보관 항목 이름을 “$name”(으)로 변경")
+        override val title get() = tr("将归档条目重命名为「$name」", "Rename archive item to “$name”", "アーカイブ項目の名前を「$name」に変更", "보관 항목 이름을 “$name”(으)로 변경", "將歸檔項目重新命名為「$name」")
     }
     data class Remove(override val entries: Map<String, Set<String>>) : VaultEntryEditCommand {
-        override val title get() = tr("移除 ${entries.values.sumOf { it.size }} 项归档条目", "Remove ${entries.values.sumOf { it.size }} archive items", "${entries.values.sumOf { it.size }} 項目をアーカイブから削除", "보관 항목 ${entries.values.sumOf { it.size }}개 삭제")
+        override val title get() = tr("从归档移除 ${entries.values.sumOf { it.size }} 项", "Remove ${entries.values.sumOf { it.size }} archive items", "${entries.values.sumOf { it.size }} 項目をアーカイブから削除", "보관 항목 ${entries.values.sumOf { it.size }}개 삭제", "從歸檔移除 ${entries.values.sumOf { it.size }} 項")
     }
 }
 
@@ -117,7 +117,7 @@ class VaultEntryEditSession(private val repository: PikoDriveRepository, private
                     is VaultEntryEditCommand.Rename -> touched.firstOrNull()?.takeIf { it.name != command.name }?.let { VaultEdits.rename(it.id, it.name) }
                 }
                 if (revert != null && active(work)) {
-                    val change = DriveChangeJournal.Change.Vault(mapOf(folder to revert), tr("已处理归档条目", "Archive items processed", "アーカイブ項目を処理しました", "보관 항목을 처리했습니다"))
+                    val change = DriveChangeJournal.Change.Vault(mapOf(folder to revert), tr("已处理归档条目", "Archive items processed", "アーカイブ項目を処理しました", "보관 항목을 처리했습니다", "已處理歸檔項目"))
                     repository.changes.record(change)
                     inverses += change.id
                 }
@@ -132,6 +132,12 @@ class VaultEntryEditSession(private val repository: PikoDriveRepository, private
                 } - already
                 if (fresh.isNotEmpty()) {
                     confirmed[folder] = already + fresh
+                    when (val command = work.command) {
+                        is VaultEntryEditCommand.Remove -> repository.vaultStars.unstarByEntryIds(fresh)
+                        is VaultEntryEditCommand.Rename -> if (command.entryId in fresh) {
+                            repository.vaultStars.renameEntry(command.entryId, command.name)
+                        }
+                    }
                     record(folder, fresh, work.before[folder].orEmpty())
                 }
                 val pending = ids - confirmed[folder].orEmpty()
@@ -157,7 +163,7 @@ class VaultEntryEditSession(private val repository: PikoDriveRepository, private
                         check()
                         if (before == null) break
                         if (work.command is VaultEntryEditCommand.Rename && before.none { it.id == (work.command as VaultEntryEditCommand.Rename).entryId }) {
-                            failureMessage = tr("归档条目已不存在，尚未提交改名", "Archive item no longer exists; rename not submitted", "アーカイブ項目が存在しないため、改名は未送信です", "보관 항목이 없어 이름 변경을 제출하지 않았습니다")
+                            failureMessage = tr("归档条目已不存在，未提交重命名", "Archive item no longer exists; rename not submitted", "アーカイブ項目が存在しないため、名前変更は送信されませんでした", "보관 항목이 존재하지 않아 이름 변경을 제출하지 않았습니다", "歸檔項目已不存在，未提交重新命名")
                             break
                         }
                         work = work.copy(before = work.before + (folder to before.filter { it.id in ids })); publish()
@@ -178,7 +184,7 @@ class VaultEntryEditSession(private val repository: PikoDriveRepository, private
                             if (attempted == null) {
                                 unknown.remove(folder)
                                 remaining[folder] = ids
-                                failureMessage = tr("未能提交归档清单编辑", "Failed to submit manifest edit", "アーカイブ一覧の編集を送信できませんでした", "보관 목록 편집을 제출하지 못했습니다")
+                                failureMessage = tr("未能提交归档清单修改", "Failed to submit archive manifest changes", "アーカイブ一覧の変更を送信できませんでした", "보관 목록 변경을 제출하지 못했습니다", "未能提交歸檔清單修改")
                                 break
                             }
                             work = work.copy(before = work.before + (folder to attempted.before.filter { it.id in ids }))
@@ -195,10 +201,10 @@ class VaultEntryEditSession(private val repository: PikoDriveRepository, private
                     else -> VaultEntryEditCompletion.SUCCEEDED
                 }
                 val message = when (completion) {
-                    VaultEntryEditCompletion.SUCCEEDED -> tr("已完成归档条目编辑", "Archive item edits completed", "アーカイブ項目の編集が完了しました", "보관 항목 편집 완료")
-                    VaultEntryEditCompletion.PARTIAL -> tr("已确认 ${confirmed.values.sumOf { it.size }} 项，${unknown.values.sumOf { it.size }} 项待确认，${remaining.values.sumOf { it.size }} 项未执行", "${confirmed.values.sumOf { it.size }} confirmed, ${unknown.values.sumOf { it.size }} unconfirmed, ${remaining.values.sumOf { it.size }} not attempted", "${confirmed.values.sumOf { it.size }} 項目確認済み、${unknown.values.sumOf { it.size }} 項目未確認、${remaining.values.sumOf { it.size }} 項目未実行", "${confirmed.values.sumOf { it.size }}개 확인 완료, ${unknown.values.sumOf { it.size }}개 미확인, ${remaining.values.sumOf { it.size }}개 미실행")
-                    VaultEntryEditCompletion.FAILED -> failureMessage ?: tr("未能读取可信清单，尚未提交编辑", "Unable to read a verified manifest; edit not submitted", "信頼できる一覧を読み込めないため、編集は未送信です", "검증된 목록을 읽을 수 없어 편집을 제출하지 않았습니다")
-                    VaultEntryEditCompletion.UNCONFIRMED -> tr("清单编辑结果尚未确认，重新查询不会再次写入", "Manifest edit is unconfirmed; checking again will not write again", "一覧の編集結果は未確認です。再確認で再書き込みは行いません", "목록 편집 결과가 미확인입니다. 다시 확인해도 재기록하지 않습니다")
+                    VaultEntryEditCompletion.SUCCEEDED -> tr("已完成归档条目编辑", "Archive item edits completed", "アーカイブ項目の編集が完了しました", "보관 항목 편집 완료", "已完成歸檔項目編輯")
+                    VaultEntryEditCompletion.PARTIAL -> tr("已确认 ${confirmed.values.sumOf { it.size }} 项，${unknown.values.sumOf { it.size }} 项待确认，${remaining.values.sumOf { it.size }} 项未执行", "${confirmed.values.sumOf { it.size }} confirmed, ${unknown.values.sumOf { it.size }} unconfirmed, ${remaining.values.sumOf { it.size }} not attempted", "${confirmed.values.sumOf { it.size }} 項目確認済み、${unknown.values.sumOf { it.size }} 項目未確認、${remaining.values.sumOf { it.size }} 項目未実行", "${confirmed.values.sumOf { it.size }}개 확인 완료, ${unknown.values.sumOf { it.size }}개 미확인, ${remaining.values.sumOf { it.size }}개 미실행", "已確認 ${confirmed.values.sumOf { it.size }} 項，${unknown.values.sumOf { it.size }} 項待確認，${remaining.values.sumOf { it.size }} 項未執行")
+                    VaultEntryEditCompletion.FAILED -> failureMessage ?: tr("无法读取有效归档清单，未提交修改", "Unable to read a valid archive manifest; changes not submitted", "有効なアーカイブ一覧を読み込めないため、変更は送信されませんでした", "유효한 보관 목록을 읽을 수 없어 변경을 제출하지 않았습니다", "無法讀取有效歸檔清單，未提交修改")
+                    VaultEntryEditCompletion.UNCONFIRMED -> tr("归档清单修改结果待确认，可在任务页重新查询", "Archive manifest changes unconfirmed; check results again in Tasks", "アーカイブ一覧の変更結果が未確認です。タスク画面で再確認できます", "보관 목록 변경 결과가 미확인 상태입니다. 작업 페이지에서 다시 확인할 수 있습니다", "歸檔清單修改結果待確認，可至任務頁重新查詢")
                 }
                 val result = VaultEntryEditResult(completion, message, confirmed.toMap(), unknown.toMap(), remaining.toMap(), inverses.toList(), now())
                 work = work.copy(result = result, before = work.before.mapValues { (folder, entries) -> entries.filter { it.id in unknown[folder].orEmpty() } }.filterValues { it.isNotEmpty() })

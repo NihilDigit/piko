@@ -16,8 +16,12 @@ import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.VaultEdit
 import dev.piko.shared.data.VaultEdits
 import dev.piko.shared.data.VaultEntry
+import dev.piko.shared.data.VaultEntryDraft
+import dev.piko.shared.data.VaultIngest
+import dev.piko.shared.data.VaultMediaMeta
 import dev.piko.shared.data.VaultStore
 import dev.piko.shared.data.VaultWrite
+import dev.piko.shared.data.VaultWriteUnconfirmed
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.log.PikoLog
@@ -90,7 +94,7 @@ data class MissingVaultEntry(val folderId: String, val entry: VaultEntry)
 class FolderVaultSession internal constructor(
     private val operations: FolderVaultOperations,
     private val scope: CoroutineScope,
-    private val cidTimeoutMillis: Long = 5_000,
+    private val cidTimeoutMillis: Long = 2_500,
 ) {
     constructor(driveRepo: PikoDriveRepository, scope: CoroutineScope) : this(DriveFolderVaultOperations(driveRepo), scope)
 
@@ -113,7 +117,7 @@ class FolderVaultSession internal constructor(
     var activeTargets by mutableStateOf<VaultWorkTargets?>(null)
         private set
     var conflictReason: (VaultWorkTargets) -> String? = { null }
-    fun unavailableReason(targets: VaultWorkTargets): String? = if (isRunning) tr("已有归档或恢复正在进行", "An archive or restore operation is already running", "アーカイブまたは復元を実行中です", "보관 또는 복원 작업이 이미 진행 중입니다") else conflictReason(targets)
+    fun unavailableReason(targets: VaultWorkTargets): String? = if (isRunning) tr("已有归档或恢复任务正在进行", "An archive or restore task is already running", "アーカイブまたは復元タスクを実行中です", "보관 또는 복원 작업이 이미 진행 중입니다", "已有歸檔或還原任務正在進行") else conflictReason(targets)
 
     private fun refused(targets: VaultWorkTargets): Boolean {
         val reason = unavailableReason(targets) ?: return false
@@ -146,7 +150,7 @@ class FolderVaultSession internal constructor(
     /** 恢复到网盘的进度。[total] 为 null 时还在扫描。 */
     data class RestoreProgress(
         val folderName: String,
-        val stage: String = tr("正在扫描归档条目", "Scanning archive items", "アーカイブ項目を検索中", "보관 항목 검색 중"),
+        val stage: String = tr("正在扫描归档条目", "Scanning archive items", "アーカイブ項目をスキャン中", "보관 항목 스캔 중", "正在掃描歸檔項目"),
         val scannedFolders: Int = 0,
         val done: Int = 0,
         val total: Int? = null,
@@ -196,8 +200,10 @@ class FolderVaultSession internal constructor(
             stopping = false
             return false
         }
-        val running = progress?.let { "「${it.folderName}」归档中" } ?: restoreProgress?.let { "「${it.folderName}」恢复中" } ?: tr("归档处理中", "Processing archive", "アーカイブを処理中", "보관 처리 중")
-        _messages.tryEmit(tr("$running，请稍后再试", "$running. Please try again later", "$running。しばらくしてからお試しください", "$running. 잠시 후 다시 시도해 주세요"))
+        val running = progress?.let { tr("正在归档「${it.folderName}」", "Archiving “${it.folderName}”", "「${it.folderName}」をアーカイブ中", "“${it.folderName}” 보관 중", "正在歸檔「${it.folderName}」") }
+            ?: restoreProgress?.let { tr("正在恢复「${it.folderName}」", "Restoring “${it.folderName}”", "「${it.folderName}」を復元中", "“${it.folderName}” 복원 중", "正在還原「${it.folderName}」") }
+            ?: tr("正在处理归档", "Processing archive", "アーカイブを処理中", "보관 처리 중", "正在處理歸檔")
+        _messages.tryEmit(tr("$running，请稍后再试", "$running. Please try again later", "$running。しばらくしてからお試しください", "$running. 잠시 후 다시 시도해 주세요", "$running，請稍後再試"))
         return true
     }
 
@@ -223,7 +229,7 @@ class FolderVaultSession internal constructor(
 
     private suspend fun ensureCurrent(work: Work) {
         currentCoroutineContext().ensureActive()
-        if (activeWork !== work) throw CancellationException(tr("归档会话已结束", "Archive session ended", "アーカイブのセッションは終了しました", "보관 세션이 종료되었습니다"))
+        if (activeWork !== work) throw CancellationException(tr("归档会话已结束", "Archive session ended", "アーカイブのセッションは終了しました", "보관 세션이 종료되었습니다", "歸檔工作階段已結束"))
     }
 
     private fun publish(work: Work, completion: Completion, title: String, message: String, change: DriveChangeJournal.Change.Vault? = null, missingEntries: List<MissingVaultEntry> = emptyList()) {
@@ -244,7 +250,8 @@ class FolderVaultSession internal constructor(
 
     /** 清点 [target] 里能归档的文件。 */
     suspend fun survey(target: VaultScope): Result<Survey> = runSuspendCatching {
-        val files = levelsOf(target).flatMap { it.second }
+        val ops = bindOperations()
+        val files = levelsOf(ops, target).flatMap { it.second }
         val unsourced = files.filter { it.sourceUrl.isNullOrBlank() }
         val large = files.filter { it.sizeBytes >= LARGE_FILE_MIN_BYTES }
         val largeUnsourced = large.filter { it.sourceUrl.isNullOrBlank() }
@@ -260,18 +267,27 @@ class FolderVaultSession internal constructor(
     fun archive(target: VaultScope, includeUnsourced: Boolean, onlyLargeFiles: Boolean = false, moveToTrash: Boolean = true) {
         if (busy() || refused(target.targets)) return
         launchWork(target.name, restoring = false, target.targets) { work ->
-            val reverts = mutableMapOf<String, VaultEdit>()
+            val ops = runCatching { bindOperations() }.getOrElse { err ->
+                val message = dev.piko.shared.notice.PikoErrorMapper.failure(tr("归档", "Archive", "アーカイブ", "보관", "歸檔"), err)
+                _messages.tryEmit(message)
+                publish(work, Completion.FAILED, tr("归档失败", "Archiving failed", "アーカイブに失敗しました", "보관 실패", "歸檔失敗"), scopedSummary(target.name, message))
+                return@launchWork
+            }
+            val untrashByFolder = mutableMapOf<String, Map<String, FileStat>>()
             val trashed = mutableListOf<String>()
             val deleted = mutableMapOf<String, List<VaultEntry>>()
-            val parents = operations.knownParents().toMutableMap()
+            val parents = ops.knownParents().toMutableMap()
             val scannedFolders = mutableSetOf<String>()
             val started = TimeSource.Monotonic.markNow()
             // CID 取样失败或超时的文件数，条目照样写，只是少一份体检资料
             var noCid = 0
             var skippedFiles = false
+            var archivedFiles = 0
+            var plannedTotal = 0
+            val folderErrors = mutableListOf<Throwable>()
             val result = runSuspendCatching {
                 val delete = !moveToTrash
-                val scannedLevels = levelsOf(target, until = { stopping }, parents = parents, scannedFolders = scannedFolders)
+                val scannedLevels = levelsOf(ops, target, until = { stopping }, parents = parents, scannedFolders = scannedFolders)
                 val levels = scannedLevels.map { (folderId, files) ->
                     folderId to files.filter {
                         (includeUnsourced || !it.sourceUrl.isNullOrBlank()) && (!onlyLargeFiles || it.sizeBytes >= LARGE_FILE_MIN_BYTES)
@@ -280,6 +296,7 @@ class FolderVaultSession internal constructor(
                 skippedFiles = levels.sumOf { it.second.size } != scannedLevels.sumOf { it.second.size }
                 ensureCurrent(work)
                 val total = levels.sumOf { it.second.size }
+                plannedTotal = total
                 val targets = requireNotNull(activeTargets)
                 activeTargets = targets.copy(
                     manifests = targets.manifests + levels.map { it.first },
@@ -290,79 +307,144 @@ class FolderVaultSession internal constructor(
                 var done = 0
                 var prepared = 0
                 val progressLock = Mutex()
+                val levelMap = levels.toMap()
                 progress = Progress(target.name, 0, total, 0)
-                coroutineScope {
-                    val sampler = VaultCidSampler(this, operations::sampleCid, cidTimeoutMillis)
-                    val folders = Semaphore(8)
-                    levels.map { (folderId, files) -> async {
-                        folders.withPermit {
-                            if (stopping) return@withPermit
-                            val addedAt = Clock.System.now().toEpochMilliseconds()
-                            val entries = files.map { file -> async {
-                                val cid = file.params["piko_vault_cid"] ?: sampler.sample(file)
-                                progressLock.withLock {
-                                    prepared++
-                                    if (activeWork === work) progress = Progress(target.name, done, total, prepared)
-                                }
-                                if (cid == null) progressLock.withLock { noCid++ }
-                                VaultEntry.create(file.name, file.sizeBytes, file.hash, file.sourceUrl, addedAt, cid,
-                                    duration = file.params["duration"], width = file.params["width"],
-                                    height = file.params["height"], mimeType = file.mimeType.takeIf { it.isNotBlank() })
-                            } }.awaitAll()
-                            ensureCurrent(work)
-                            operations.write(folderId, entries)
-                            ensureCurrent(work)
-                            // 删除请求的返回状态可能不明确，先记录恢复依据；撤销时跳过仍在原位的文件。
-                            progressLock.withLock {
-                                if (delete) deleted[folderId] = entries
-                                else reverts[folderId] = VaultEdits.restore(entries.zip(files).associate { (entry, file) -> entry.id to file })
+                val outcomes = coroutineScope {
+                    val sampler = VaultCidSampler(this, ops::sampleCid, cidTimeoutMillis)
+                    val folders = Semaphore(12)
+                    VaultIngest.ingestFolders(
+                        folderIds = levels.map { it.first },
+                        folderPermits = folders,
+                        shouldStop = { stopping },
+                        prepareDrafts = { folderId ->
+                            val files = levelMap.getValue(folderId)
+                            coroutineScope {
+                                files.map { file ->
+                                    async {
+                                        val cid = file.params["piko_vault_cid"]
+                                            ?: ops.knownCid(file.hash, file.sizeBytes)
+                                            ?: sampler.sample(file)
+                                        progressLock.withLock {
+                                            prepared++
+                                            if (activeWork === work) progress = Progress(target.name, done, total, prepared)
+                                            if (cid == null) noCid++
+                                        }
+                                        VaultEntryDraft(
+                                            name = file.name,
+                                            size = file.sizeBytes,
+                                            gcid = file.hash,
+                                            source = file.sourceUrl,
+                                            sourcePath = file.name,
+                                            meta = VaultMediaMeta.fromFileStat(file, sampledCid = cid),
+                                            originFile = file,
+                                        )
+                                    }
+                                }.awaitAll()
                             }
-                            operations.remove(files.map { it.id }, delete)
+                        },
+                        knownMetaLookup = ops::knownMeta,
+                        beforeFolderWrite = { _, _, _ -> ensureCurrent(work) },
+                        writeFolder = { folderId, entries, _ ->
+                            runSuspendCatching { ops.write(folderId, entries, requireRemoteComplete = delete) }
+                        },
+                        onFolderCommitted = { folderId, drafts, entries ->
+                            val files = drafts.map { requireNotNull(it.originFile) }
+                            val fileIds = files.map { it.id }
+                            val starredEntries = entries.zip(files).mapNotNull { (entry, file) ->
+                                entry.takeIf { file.tags.any { tag -> tag.name.equals("STAR", ignoreCase = true) } }
+                            }
+                            if (starredEntries.isNotEmpty()) {
+                                ops.rememberStarred(folderId, starredEntries)
+                            }
+                            ensureCurrent(work)
+                            // 处置请求的返回状态可能不明确，请求发出前完整记录原文件映射与待恢复 ID；撤销时逐项核对真实文件回到原位后才将条目标为已取回。
                             progressLock.withLock {
-                                if (!delete) trashed += files.map { it.id }
+                                if (delete) {
+                                    deleted[folderId] = entries
+                                } else {
+                                    untrashByFolder[folderId] = entries.zip(files).associate { (entry, file) -> entry.id to file }
+                                    trashed += fileIds
+                                }
+                            }
+                            ops.remove(fileIds, delete)
+                            progressLock.withLock {
                                 done += files.size
+                                archivedFiles = done
                                 if (activeWork === work) progress = Progress(target.name, done, total, prepared)
                             }
-                        }
-                    } }.awaitAll()
+                        },
+                    )
                 }
+                val committedDrafts = ArrayList<VaultEntryDraft>()
+                for (outcome in outcomes) {
+                    if (outcome.writeResult.isSuccess) {
+                        committedDrafts += outcome.drafts
+                    }
+                    outcome.failure?.let { err ->
+                        ensureCurrent(work)
+                        folderErrors += err
+                    }
+                }
+                if (committedDrafts.isNotEmpty()) {
+                    val sourceRecords = VaultIngest.sourceRecordsOf(committedDrafts)
+                    if (sourceRecords.isNotEmpty()) ops.rememberSources(sourceRecords)
+                }
+                if (folderErrors.isNotEmpty()) throw folderErrors.first()
                 done
             }
             ensureCurrent(work)
             progress = null
             val stopped = stopping
+            val writtenFolderIds = untrashByFolder.keys + deleted.keys
             PikoLog.i(TAG, "归档${if (result.isFailure) "中途失败" else if (stopped) "已停止" else "完成"}：${target.logScope}，" +
-                "写成清单 ${reverts.size + deleted.size} 个文件夹，归档 ${result.getOrNull() ?: "?"} 个文件，CID 未取到 $noCid 个，" +
+                "写成清单 ${writtenFolderIds.size} 个文件夹，归档 $archivedFiles/$plannedTotal 个文件，失败文件夹 ${folderErrors.size} 个，CID 未取到 $noCid 个，" +
                 "历时 ${started.elapsedNow().inWholeMilliseconds} ms")
             // 文件夹范围只记到所选根；单独归档的文件沿已知父级补上祖先标记。
-            operations.rememberTree(vaultTree(target.folders.mapTo(HashSet()) { it.id }, reverts.keys + deleted.keys, parents))
+            ops.rememberTree(vaultTree(target.folders.mapTo(HashSet()) { it.id }, writtenFolderIds, parents))
             // 做完的几层记成一条改动，哪怕后面失败了：撤销得回已经归档的那些
-            if (reverts.isNotEmpty() || deleted.isNotEmpty()) {
-                val count = result.getOrNull()?.let { if (stopped) tr("已停止，已归档 $it 个文件", "Stopped; archived ${enCount(it, "file", "files")}", "停止しました。$it ファイルをアーカイブ済み", "중지됨. 파일 ${it}개 보관 완료") else tr("已归档 $it 个文件", "Archived ${enCount(it, "file", "files")}", "$it ファイルをアーカイブしました", "파일 ${it}개 보관 완료") }
-                val report = if (count == null) tr("部分归档记录已写入，原文件处理未全部完成", "Some archive records saved; original file processing incomplete", "一部のアーカイブ記録を保存しましたが、元ファイルの処理が未完了です", "일부 보관 기록을 저장했지만 원본 파일 처리는 완료되지 않았습니다")
-                    else if (deleted.isNotEmpty()) tr("$count，原文件已删除", "$count; original files deleted", "$count、元ファイルを削除しました", "$count, 원본 파일 삭제 완료") else tr("$count，原文件已移入回收站", "$count; original files moved to trash", "$count、元ファイルをゴミ箱に移動しました", "$count, 원본 파일을 휴지통으로 이동했습니다")
+            if (untrashByFolder.isNotEmpty() || deleted.isNotEmpty()) {
+                val count = when {
+                    result.isFailure && archivedFiles > 0 -> tr(
+                        "已归档 $archivedFiles/$plannedTotal 个文件（${folderErrors.size} 个文件夹未完成）",
+                        "Archived $archivedFiles of $plannedTotal files (${enCount(folderErrors.size, "folder", "folders")} incomplete)",
+                        "$archivedFiles/$plannedTotal ファイルをアーカイブ済み（${folderErrors.size} フォルダー未完了）",
+                        "파일 $archivedFiles/${plannedTotal}개 보관 완료 (${folderErrors.size}개 폴더 미완료)",
+                        "已歸檔 $archivedFiles/$plannedTotal 個檔案（${folderErrors.size} 個資料夾未完成）",
+                    )
+                    result.isFailure -> null
+                    stopped -> tr("已停止，已归档 $archivedFiles 个文件", "Stopped; archived ${enCount(archivedFiles, "file", "files")}", "停止しました。$archivedFiles ファイルをアーカイブ済み", "중지됨. 파일 ${archivedFiles}개 보관 완료", "已停止，已歸檔 $archivedFiles 個檔案")
+                    else -> tr("已归档 $archivedFiles 个文件", "Archived ${enCount(archivedFiles, "file", "files")}", "$archivedFiles ファイルをアーカイブしました", "파일 ${archivedFiles}개 보관 완료", "已歸檔 $archivedFiles 個檔案")
+                }
+                val report = if (count == null) tr("部分归档记录已写入，原文件处理未全部完成", "Some archive records saved; original file processing incomplete", "一部のアーカイブ記録を保存しましたが、元ファイルの処理が未完了です", "일부 보관 기록을 저장했지만 원본 파일 처리는 완료되지 않았습니다", "部分歸檔記錄已寫入，原始檔案處理尚未全部完成")
+                    else if (deleted.isNotEmpty()) tr("$count，原文件已删除", "$count; original files deleted", "$count、元ファイルを削除しました", "$count, 원본 파일 삭제 완료", "$count，原始檔案已刪除") else tr("$count，原文件已移入回收站", "$count; original files moved to trash", "$count、元ファイルをゴミ箱に移動しました", "$count, 원본 파일을 휴지통으로 이동했습니다", "$count，原始檔案已移至資源回收筒")
                 // 带上名字：这条提示常在别的页、几分钟后才弹出，不写明是哪个文件夹就认不出
-                val summary = "「${target.name}」：$report"
-                val change = DriveChangeJournal.Change.Vault(reverts, summary, untrashOnRevert = trashed, recreateOnRevert = deleted)
-                operations.record(change)
+                val summary = scopedSummary(target.name, report)
+                val change = DriveChangeJournal.Change.Vault(
+                    reverts = emptyMap(),
+                    summary = summary,
+                    untrashOnRevert = trashed,
+                    recreateOnRevert = deleted,
+                    untrashByFolder = untrashByFolder,
+                )
+                ops.record(change)
                 val title = when {
-                    result.isFailure -> tr("归档未全部完成", "Archive partially completed", "一部の項目をアーカイブできませんでした", "일부 항목을 보관하지 못했습니다")
-                    stopped -> tr("归档已停止", "Archiving stopped", "アーカイブを停止しました", "보관을 중지했습니다")
-                    else -> tr("归档完成", "Archiving complete", "アーカイブ完了", "보관 완료")
+                    result.isFailure -> tr("归档未全部完成", "Archive partially completed", "一部の項目をアーカイブできませんでした", "일부 항목을 보관하지 못했습니다", "歸檔未全部完成")
+                    stopped -> tr("归档已停止", "Archiving stopped", "アーカイブを停止しました", "보관을 중지했습니다", "歸檔已停止")
+                    else -> tr("归档完成", "Archiving complete", "アーカイブ完了", "보관 완료", "歸檔完成")
                 }
                 publish(work, when { result.isFailure -> Completion.PARTIAL; stopped -> Completion.STOPPED; else -> Completion.SUCCEEDED }, title, summary, change)
             } else if (result.getOrNull() == 0) {
-                val message = if (stopped) tr("已停止归档", "Archiving stopped", "アーカイブを停止しました", "보관을 중지했습니다") else tr("无可归档的文件", "No files to archive", "アーカイブできるファイルがありません", "보관할 파일이 없습니다")
+                val message = if (stopped) tr("已停止归档", "Archiving stopped", "アーカイブを停止しました", "보관을 중지했습니다", "已停止歸檔") else tr("无可归档的文件", "No files to archive", "アーカイブできるファイルがありません", "보관할 파일이 없습니다", "無可歸檔的檔案")
                 _messages.tryEmit(message)
-                publish(work, if (stopped) Completion.STOPPED else Completion.SUCCEEDED, message, "「${target.name}」：$message")
+                publish(work, if (stopped) Completion.STOPPED else Completion.SUCCEEDED, message, scopedSummary(target.name, message))
             }
-            result.reportFailure(TAG, tr("归档", "Archive", "アーカイブ", "보관")) { message ->
+            result.reportFailure(TAG, tr("归档", "Archive", "アーカイブ", "보관", "歸檔")) { message ->
                 _messages.tryEmit(message)
-                if (reverts.isEmpty() && deleted.isEmpty()) publish(work, Completion.FAILED, tr("归档失败", "Archiving failed", "アーカイブに失敗しました", "보관 실패"), "「${target.name}」：$message")
+                if (untrashByFolder.isEmpty() && deleted.isEmpty()) publish(work, Completion.FAILED, tr("归档失败", "Archiving failed", "アーカイブに失敗しました", "보관 실패", "歸檔失敗"), scopedSummary(target.name, message))
             }
-            operations.refresh()
+            ops.refresh(scannedFolders + writtenFolderIds + target.folders.map { it.id } + target.files.map { it.parentId })
             if (result.isSuccess && !stopping && !target.filesOnly && !skippedFiles) {
-                operations.rememberFullyVaulted(scannedFolders + target.folders.map { it.id })
+                ops.rememberFullyVaulted(scannedFolders + target.folders.map { it.id })
             }
         }
     }
@@ -387,17 +469,18 @@ class FolderVaultSession internal constructor(
         val requested = files.filter { it.isVaulted }.groupBy { it.parentId }
             .mapValues { (_, rows) -> rows.mapNotNullTo(HashSet()) { VaultEntry.entryIdOf(it.id) } }
         if (requested.isEmpty() || busy() || refused(VaultWorkTargets(manifests = requested.keys))) return
-        launchWork(tr("所选文件", "Selected files", "選択したファイル", "선택한 파일"), restoring = true, VaultWorkTargets(manifests = requested.keys)) { work ->
+        launchWork(tr("所选文件", "Selected files", "選択したファイル", "선택한 파일", "所選檔案"), restoring = true, VaultWorkTargets(manifests = requested.keys)) { work ->
             runSuspendCatching {
+                val ops = bindOperations()
                 // 现读清单，不用列表里的行：别的设备可能已恢复或移除了其中几条
                 val byFolder = coroutineScope {
                     requested.map { (folderId, ids) ->
-                        async { folderId to operations.archived(folderId).entries.filter { it.id in ids } }
+                        async { folderId to ops.archived(folderId).entries.filter { it.id in ids } }
                     }.awaitAll()
                 }.filter { it.second.isNotEmpty() }.toMap()
                 ensureCurrent(work)
-                restoreEntries(work, byFolder)
-            }.reportFailure(TAG, tr("恢复归档", "Restore archive", "アーカイブを復元", "보관 항목 복원")) { restoreFailed(work, it) }
+                restoreEntries(work, ops, byFolder)
+            }.reportFailure(TAG, tr("恢复归档", "Restore archive", "アーカイブを復元", "보관 항목 복원", "還原歸檔")) { restoreFailed(work, it) }
         }
     }
 
@@ -410,8 +493,9 @@ class FolderVaultSession internal constructor(
     }
 
     suspend fun surveyRestore(folder: PikoPathBreadcrumb): Result<RestoreSurvey> = runSuspendCatching {
-        val byFolder = scanArchived(folder.id)
-        val plan = planRestore(byFolder)
+        val ops = bindOperations()
+        val byFolder = scanArchived(ops, folder.id)
+        val plan = planRestore(ops, byFolder)
         val entries = byFolder.values.flatten()
         RestoreSurvey(entries.size, entries.sumOf { it.size }, plan.originals.size, plan.neededBytes, plan.remainingBytes)
     }
@@ -421,27 +505,29 @@ class FolderVaultSession internal constructor(
         if (busy() || refused(VaultWorkTargets(roots = setOf(folder.id)))) return
         launchWork(folder.name, restoring = true, VaultWorkTargets(roots = setOf(folder.id))) { work ->
             runSuspendCatching {
+                val ops = bindOperations()
                 // 确认框里清点过一次，这里重扫：确认前后别的设备可能已改了清单，照旧的恢复会多秒传一份
-                val byFolder = scanArchived(folder.id, until = { stopping }) { scanned ->
+                val byFolder = scanArchived(ops, folder.id, until = { stopping }) { scanned ->
                     if (activeWork === work) restoreProgress = restoreProgress?.copy(scannedFolders = scanned)
                 }
                 ensureCurrent(work)
                 when {
-                    stopping -> publish(work, Completion.STOPPED, tr("恢复已停止", "Restore stopped", "復元を停止しました", "복원을 중지했습니다"), "「${folder.name}」：已停止恢复")
-                    byFolder.isEmpty() -> publish(work, Completion.SUCCEEDED, tr("恢复完成", "Restore complete", "復元完了", "복원 완료"), "「${folder.name}」：没有归档条目")
-                    else -> restoreEntries(work, byFolder)
+                    stopping -> publish(work, Completion.STOPPED, tr("恢复已停止", "Restore stopped", "復元を停止しました", "복원을 중지했습니다", "還原已停止"), tr("「${folder.name}」：已停止恢复", "“${folder.name}”: restore stopped", "「${folder.name}」：復元を停止しました", "“${folder.name}”: 복원 중지됨", "「${folder.name}」：已停止還原"))
+                    byFolder.isEmpty() -> publish(work, Completion.SUCCEEDED, tr("恢复完成", "Restore complete", "復元完了", "복원 완료", "還原完成"), tr("「${folder.name}」：无归档条目", "“${folder.name}”: no archived items", "「${folder.name}」：アーカイブ項目はありません", "“${folder.name}”: 보관 항목 없음", "「${folder.name}」：無歸檔項目"))
+                    else -> restoreEntries(work, ops, byFolder)
                 }
-            }.reportFailure(TAG, tr("取消文件夹归档", "Undo folder archiving", "フォルダーのアーカイブを元に戻す", "폴더 보관 취소")) { restoreFailed(work, it) }
+            }.reportFailure(TAG, tr("取消文件夹归档", "Undo folder archiving", "フォルダーのアーカイブを解除", "폴더 보관 해제", "取消資料夾歸檔")) { restoreFailed(work, it) }
         }
     }
 
     private fun restoreFailed(work: Work, message: String) {
         if (activeWork !== work) return
         _messages.tryEmit(message)
-        publish(work, Completion.FAILED, tr("恢复失败", "Restore failed", "復元に失敗しました", "복원 실패"), "「${work.name}」：$message")
+        publish(work, Completion.FAILED, tr("恢复失败", "Restore failed", "復元に失敗しました", "복원 실패", "還原失敗"), scopedSummary(work.name, message))
     }
 
     private suspend fun scanArchived(
+        ops: FolderVaultOperations,
         rootId: String,
         until: () -> Boolean = { false },
         onScanned: (Int) -> Unit = {},
@@ -453,7 +539,7 @@ class FolderVaultSession internal constructor(
         while (queue.isNotEmpty() && !until()) {
             val next = mutableListOf<String>()
             for (chunk in queue.chunked(8)) {
-                val levels = coroutineScope { chunk.map { id -> async { operations.archived(id) } }.awaitAll() }
+                val levels = coroutineScope { chunk.map { id -> async { ops.archived(id) } }.awaitAll() }
                 chunk.zip(levels).forEach { (folderId, level) ->
                     if (level.entries.isNotEmpty()) found[folderId] = level.entries
                     level.subfolders.forEach { if (visited.add(it.id)) next += it.id }
@@ -466,130 +552,204 @@ class FolderVaultSession internal constructor(
         return found
     }
 
-    private class RestorePlan(val originals: Map<String, FileStat>, val neededBytes: Long, val remainingBytes: Long?)
+    private enum class RestoreOrigin { ALREADY_PRESENT, UNTRASHED, CREATED }
 
-    private suspend fun planRestore(byFolder: Map<String, List<VaultEntry>>): RestorePlan {
-        val trash = runSuspendCatching { operations.trash() }.logFailure(TAG, tr("读取回收站失败", "Failed to load trash", "ゴミ箱を読み込めませんでした", "휴지통을 불러오지 못했습니다")).getOrDefault(emptyList())
-        val originals = trashOriginals(byFolder, trash)
-        val needed = byFolder.values.flatten().filter { it.id !in originals }.sumOf { it.size }
-        return RestorePlan(originals, needed, operations.remainingBytes())
+    private class RestorePlan(
+        val alreadyPresent: Map<String, FileStat>,
+        val originals: Map<String, FileStat>,
+        val neededBytes: Long,
+        val remainingBytes: Long?,
+    )
+
+    private suspend fun planRestore(ops: FolderVaultOperations, byFolder: Map<String, List<VaultEntry>>): RestorePlan = coroutineScope {
+        // 原位真实文件核对失败时必须上抛失败，严禁降级为空集合导致重复秒传与重复扣减额度
+        val presentDeferred = async {
+            val slots = Semaphore(12)
+            byFolder.keys.map { folderId ->
+                async {
+                    slots.withPermit { folderId to ops.presentRealFiles(folderId) }
+                }
+            }.awaitAll().toMap()
+        }
+        val trashDeferred = async {
+            runSuspendCatching { ops.trash() }
+                .logFailure(TAG, tr("读取回收站失败", "Failed to load trash", "ゴミ箱を読み込めませんでした", "휴지통을 불러오지 못했습니다", "讀取資源回收筒失敗"))
+                .getOrDefault(emptyList())
+        }
+        val remainingDeferred = async { ops.remainingBytes() }
+        val presentByFolder = presentDeferred.await()
+        val alreadyPresent = LinkedHashMap<String, FileStat>()
+        for ((folderId, entries) in byFolder) {
+            val candidates = presentByFolder[folderId].orEmpty()
+            if (candidates.isEmpty()) continue
+            val used = HashSet<String>()
+            for (entry in entries) {
+                val existing = candidates.firstOrNull { it.id !in used && entry.matches(it) } ?: continue
+                used += existing.id
+                alreadyPresent[entry.id] = existing
+            }
+        }
+        val unresolvedByFolder = byFolder.mapValues { (_, entries) ->
+            entries.filter { it.id !in alreadyPresent }
+        }.filterValues { it.isNotEmpty() }
+        val trash = trashDeferred.await()
+        val originals = trashOriginals(unresolvedByFolder, trash)
+        val needed = byFolder.values.flatten().filter { it.id !in alreadyPresent && it.id !in originals }.sumOf { it.size }
+        RestorePlan(alreadyPresent, originals, needed, remainingDeferred.await())
     }
 
     /**
-     * 回收站里还在的原文件优先，免占新空间；其余按 gcid 秒传，先比一次剩余空间。云端已不存的秒传不出来，
-     * 也不扣额度，留在清单里。目录并发与归档相同，秒传全局十六个。
+     * 原位既有真实文件优先直接关联（零新增空间、撤销时不删除用户既有文件）；其次从回收站恢复原文件；
+     * 其余按 gcid 秒传，先比一次剩余空间。云端已不存的秒传不出来，也不扣额度，留在清单里。
      */
-    private suspend fun restoreEntries(work: Work, byFolder: Map<String, List<VaultEntry>>) {
+    private suspend fun restoreEntries(work: Work, ops: FolderVaultOperations, byFolder: Map<String, List<VaultEntry>>) {
         val total = byFolder.values.sumOf { it.size }
         if (total == 0) {
-            publish(work, Completion.SUCCEEDED, tr("恢复完成", "Restore complete", "復元完了", "복원 완료"), "「${work.name}」：所选条目已不在归档中")
+            publish(work, Completion.SUCCEEDED, tr("恢复完成", "Restore complete", "復元完了", "복원 완료", "還原完成"), tr("「${work.name}」：所选项目已不在归档中", "“${work.name}”: selected items are no longer archived", "「${work.name}」：選択した項目は既にアーカイブにありません", "“${work.name}”: 선택한 항목이 더 이상 보관 상태가 아닙니다", "「${work.name}」：所選項目已不在歸檔中"))
             return
         }
-        restoreProgress = restoreProgress?.copy(stage = tr("正在检查恢复空间", "Checking space for restore", "復元に必要な空き容量を確認中", "복원 공간 확인 중"), total = total)
-        val plan = planRestore(byFolder)
+        restoreProgress = restoreProgress?.copy(stage = tr("正在检查恢复空间", "Checking space for restore", "復元に必要な空き容量を確認中", "복원 공간 확인 중", "正在檢查還原所需空間"), total = total)
+        val plan = planRestore(ops, byFolder)
         ensureCurrent(work)
+        val alreadyPresent = plan.alreadyPresent
         val originals = plan.originals
         val targets = requireNotNull(activeTargets)
         activeTargets = targets.copy(
             manifests = targets.manifests + byFolder.keys,
-            files = targets.files + originals.values.map { it.id },
+            files = targets.files + originals.values.map { it.id } + alreadyPresent.values.map { it.id },
         )
-        PikoLog.i(TAG, "恢复归档：${byFolder.size} 个文件夹 $total 项，回收站里有原文件 ${originals.size} 项，" +
+        PikoLog.i(TAG, "恢复归档：${byFolder.size} 个文件夹 $total 项，原位已有 ${alreadyPresent.size} 项，回收站里有原文件 ${originals.size} 项，" +
             "需秒传 ${plan.neededBytes} 字节，剩余空间 ${plan.remainingBytes ?: "不限或未知"}")
         if (plan.remainingBytes != null && plan.neededBytes > plan.remainingBytes) {
-            restoreFailed(work, tr("网盘空间不足，放不下这 $total 项", "Not enough cloud storage for ${enCount(total, "item", "items")}", "$total 項目を保存する空き容量がありません", "${total}개 항목을 저장할 클라우드 공간이 부족합니다"))
+            restoreFailed(work, tr("网盘空间不足，无法恢复所选的 $total 项", "Insufficient cloud storage to restore ${enCount(total, "item", "items")}", "ドライブの空き容量が不足しているため、$total 項目を復元できません", "드라이브 저장 공간이 부족하여 ${total}개 항목을 복원할 수 없습니다", "雲端硬碟空間不足，無法還原所選的 $total 項"))
             return
         }
         val started = TimeSource.Monotonic.markNow()
-        restoreProgress = restoreProgress?.copy(stage = tr("正在恢复到网盘", "Restoring to drive", "ドライブに復元中", "드라이브로 복원 중"))
+        restoreProgress = restoreProgress?.copy(stage = tr("正在恢复到网盘", "Restoring to drive", "ドライブに復元中", "드라이브로 복원 중", "正在還原至雲端硬碟"))
         val lock = Mutex()
         val missingEntries = mutableListOf<MissingVaultEntry>()
         var manifestFailures = 0
-        val created = mutableListOf<String>()
-        val reverts = mutableMapOf<String, VaultEdit>()
+        var restoredTotal = 0
+        val trashByFolder = LinkedHashMap<String, List<String>>()
+        val reverts = LinkedHashMap<String, VaultEdit>()
         coroutineScope {
             val folders = Semaphore(8)
             val recreates = Semaphore(16)
             byFolder.map { (folderId, entries) -> async {
                 folders.withPermit {
                     if (stopping) return@withPermit
-                    val restored = mutableMapOf<String, FileStat>()
-                    suspend fun finish(entry: VaultEntry, fileId: String?) = lock.withLock {
-                        if (fileId != null) {
+                    val restored = LinkedHashMap<String, FileStat>()
+                    val folderUndoTrashIds = ArrayList<String>()
+                    suspend fun finish(entry: VaultEntry, fileId: String?, origin: RestoreOrigin?) = lock.withLock {
+                        if (fileId != null && origin != null) {
                             restored[entry.id] = FileStat(id = fileId, name = entry.name, hash = entry.gcid, size = entry.size.toString())
-                            created += fileId
+                            restoredTotal++
+                            if (origin != RestoreOrigin.ALREADY_PRESENT) {
+                                folderUndoTrashIds += fileId
+                            }
                         }
                         if (activeWork === work) restoreProgress = restoreProgress?.let { it.copy(done = it.done + 1) }
                     }
-                    val (fromTrash, fromCloud) = entries.partition { it.id in originals }
+                    val (inPlace, notInPlace) = entries.partition { it.id in alreadyPresent }
+                    for (entry in inPlace) {
+                        finish(entry, alreadyPresent.getValue(entry.id).id, RestoreOrigin.ALREADY_PRESENT)
+                    }
+                    val (fromTrash, fromCloud) = notInPlace.partition { it.id in originals }
                     if (fromTrash.isNotEmpty()) {
                         ensureCurrent(work)
-                        val untrashed = runSuspendCatching { operations.untrash(fromTrash.map { originals.getValue(it.id).id }) }
+                        val untrashed = runSuspendCatching { ops.untrash(fromTrash.map { originals.getValue(it.id).id }) }
                             .logFailure(TAG, "从回收站恢复原文件失败").isSuccess
                         for (entry in fromTrash) {
                             val original = originals.getValue(entry.id)
                             // 条目归档后改过名时，原文件跟着改；改不成也算恢复了，只是名字是旧的
                             if (untrashed && original.name != entry.name) {
-                                runSuspendCatching { operations.rename(original.id, entry.name) }.logFailure(TAG, "恢复后改名失败")
+                                runSuspendCatching { ops.rename(original.id, entry.name) }.logFailure(TAG, "恢复后改名失败")
                             }
-                            finish(entry, original.id.takeIf { untrashed })
+                            finish(entry, original.id.takeIf { untrashed }, RestoreOrigin.UNTRASHED.takeIf { untrashed })
                         }
                     }
                     fromCloud.map { entry -> async {
                         recreates.withPermit {
                             if (stopping) return@withPermit
                             ensureCurrent(work)
-                            val id = runSuspendCatching { operations.recreate(entry, folderId) }
+                            val id = runSuspendCatching { ops.recreate(entry, folderId) }
                                 .onFailure { if (it is InstantContentUnavailableException) lock.withLock { missingEntries += MissingVaultEntry(folderId, entry) } }
                                 .logFailure(TAG, "恢复归档条目失败")
                                 .getOrNull()
-                            finish(entry, id)
+                            finish(entry, id, RestoreOrigin.CREATED.takeIf { id != null })
                         }
                     } }.awaitAll()
                     if (restored.isEmpty()) return@withPermit
                     ensureCurrent(work)
-                    // 清单没改成的话，文件已恢复、条目还在，列表里会重复一行，不丢东西
-                    runSuspendCatching { operations.markRestored(folderId, restored) }
-                        .onSuccess { write -> lock.withLock { reverts[folderId] = VaultEdits.add(write.before.filter { it.id in restored }) } }
-                        .onFailure { lock.withLock { manifestFailures++ } }
+                    // 清单确认或未决时均同步绑定该目录的反向恢复条目与待回收副本，确保撤销必先写回归档条目再移走实体文件
+                    runSuspendCatching { ops.markRestored(folderId, restored) }
+                        .onSuccess { write ->
+                            lock.withLock {
+                                reverts[folderId] = VaultEdits.add(write.before.filter { it.id in restored })
+                                if (folderUndoTrashIds.isNotEmpty()) {
+                                    trashByFolder[folderId] = folderUndoTrashIds.toList()
+                                }
+                            }
+                        }
+                        .onFailure { err ->
+                            lock.withLock {
+                                manifestFailures++
+                                val attemptedBefore = (err as? VaultWriteUnconfirmed)?.attempted?.before
+                                val fallbackEntries = (attemptedBefore ?: entries).filter { it.id in restored }
+                                if (folderUndoTrashIds.isNotEmpty() || attemptedBefore != null) {
+                                    reverts[folderId] = VaultEdits.add(fallbackEntries)
+                                }
+                                if (folderUndoTrashIds.isNotEmpty()) {
+                                    trashByFolder[folderId] = folderUndoTrashIds.toList()
+                                }
+                            }
+                        }
                         .logFailure(TAG, "恢复后改写归档清单失败")
                 }
             } }.awaitAll()
         }
         ensureCurrent(work)
-        val failed = total - created.size
+        val failed = total - restoredTotal
         val missing = missingEntries.size
-        PikoLog.i(TAG, "恢复归档${if (stopping) "已停止" else "结束"}：恢复 ${created.size}/$total 项，云端已无内容 $missing 项，" +
-            "其他失败 ${failed - missing} 项，改写清单 ${reverts.size}/${byFolder.size} 个文件夹，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
+        PikoLog.i(TAG, "恢复归档${if (stopping) "已停止" else "结束"}：恢复 $restoredTotal/$total 项，云端未收录 $missing 项，" +
+            "其他失败 ${failed - missing} 项，改写清单 ${reverts.size - manifestFailures.coerceAtMost(reverts.size)}/${byFolder.size} 个文件夹，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
         val summary = when {
-            stopping -> if (created.isEmpty()) tr("已停止恢复", "Restore stopped", "復元を停止しました", "복원을 중지했습니다") else tr("已停止，已恢复 ${created.size} 项", "Stopped; restored ${enCount(created.size, "item", "items")}", "停止しました。${created.size} 項目を復元済み", "중지됨. ${created.size}개 항목 복원 완료")
-            failed == 0 && manifestFailures > 0 -> tr("已恢复 $total 项，$manifestFailures 个文件夹的归档清单未更新，列表可能重复显示", "Restored ${enCount(total, "item", "items")}; $manifestFailures folder manifests were not updated and may show duplicates", "$total 項目を復元しました。$manifestFailures フォルダーの一覧を更新できず、重複表示する可能性があります", "${total}개 항목 복원 완료. ${manifestFailures}개 폴더의 보관 목록이 갱신되지 않아 중복 표시될 수 있습니다")
-            failed == 0 -> if (total == 1) tr("已恢复到网盘", "Restored to drive", "ドライブに復元しました", "드라이브로 복원했습니다") else tr("已恢复 $total 项", "Restored ${enCount(total, "item", "items")}", "$total 項目を復元しました", "${total}개 항목 복원 완료")
-            missing == failed -> tr("已恢复 ${created.size} 项，$missing 项云端已无内容", "Restored ${enCount(created.size, "item", "items")}; $missing unavailable in cloud", "${created.size} 項目を復元しました。$missing 項目はクラウドにありません", "${created.size}개 항목 복원 완료, ${missing}개는 클라우드에 없음")
-            else -> tr("已恢复 ${created.size} 项，$failed 项失败", "Restored ${enCount(created.size, "item", "items")}; $failed failed", "${created.size} 項目を復元しました。$failed 項目は失敗しました", "${created.size}개 항목 복원 완료, ${failed}개 실패")
+            stopping -> if (restoredTotal == 0) tr("已停止恢复", "Restore stopped", "復元を停止しました", "복원을 중지했습니다", "已停止還原") else tr("已停止，已恢复 $restoredTotal 项", "Stopped; restored ${enCount(restoredTotal, "item", "items")}", "停止しました。$restoredTotal 項目を復元済み", "중지됨. ${restoredTotal}개 항목 복원 완료", "已停止，已還原 $restoredTotal 項")
+            failed == 0 && manifestFailures > 0 -> tr("已恢复 $total 项，$manifestFailures 个文件夹的归档清单未更新，列表可能重复显示", "Restored ${enCount(total, "item", "items")}; $manifestFailures folder manifests were not updated and may show duplicates", "$total 項目を復元しました。$manifestFailures フォルダーの一覧を更新できず、重複表示する可能性があります", "${total}개 항목 복원 완료. ${manifestFailures}개 폴더의 보관 목록이 갱신되지 않아 중복 표시될 수 있습니다", "已還原 $total 項，$manifestFailures 個資料夾的歸檔清單未更新，列表可能重複顯示")
+            failed == 0 -> if (total == 1) tr("已恢复到网盘", "Restored to drive", "ドライブに復元しました", "드라이브로 복원했습니다", "已還原至雲端硬碟") else tr("已恢复 $total 项", "Restored ${enCount(total, "item", "items")}", "$total 項目を復元しました", "${total}개 항목 복원 완료", "已還原 $total 項")
+            missing == failed -> tr("已恢复 $restoredTotal 项，$missing 项在云端不可用", "Restored ${enCount(restoredTotal, "item", "items")}; $missing unavailable in the cloud", "$restoredTotal 項目を復元しました（$missing 項目はクラウドで利用不可）", "${restoredTotal}개 항목 복원 완료, ${missing}개는 클라우드에서 사용 불가", "已還原 $restoredTotal 項，$missing 項在雲端無法使用")
+            else -> tr("已恢复 $restoredTotal 项，$failed 项失败", "Restored ${enCount(restoredTotal, "item", "items")}; $failed failed", "$restoredTotal 項目を復元しました。$failed 項目は失敗しました", "${restoredTotal}개 항목 복원 완료, ${failed}개 실패", "已還原 $restoredTotal 項，$failed 項失敗")
         }
-        val manifestNote = if (manifestFailures > 0 && (failed > 0 || stopping)) tr("，$manifestFailures 个文件夹的归档清单未更新，列表可能重复显示", "; $manifestFailures folder manifests were not updated and may show duplicates", "。$manifestFailures フォルダーの一覧を更新できず、重複表示する可能性があります", ". ${manifestFailures}개 폴더의 보관 목록이 갱신되지 않아 중복 표시될 수 있습니다") else ""
-        val named = "「${work.name}」：$summary$manifestNote"
-        val undoable = created.isNotEmpty()
-        val change = if (undoable) DriveChangeJournal.Change.Vault(reverts, named, trashOnRevert = created) else null
+        val manifestNote = if (manifestFailures > 0 && (failed > 0 || stopping)) tr("，$manifestFailures 个文件夹的归档清单未更新，列表可能重复显示", "; $manifestFailures folder manifests were not updated and may show duplicates", "。$manifestFailures フォルダーの一覧を更新できず、重複表示する可能性があります", ". ${manifestFailures}개 폴더의 보관 목록이 갱신되지 않아 중복 표시될 수 있습니다", "，$manifestFailures 個資料夾的歸檔清單未更新，列表可能重複顯示") else ""
+        val named = scopedSummary(work.name, "$summary$manifestNote")
+        val undoTrashFlat = trashByFolder.values.flatten()
+        val undoable = reverts.isNotEmpty()
+        val change = if (undoable) {
+            DriveChangeJournal.Change.Vault(
+                reverts = reverts,
+                summary = named,
+                trashOnRevert = undoTrashFlat,
+                trashByFolder = trashByFolder,
+            )
+        } else null
         if (undoable) {
-            operations.record(requireNotNull(change))
+            ops.record(requireNotNull(change))
         } else {
             _messages.tryEmit(summary)
         }
         val title = when {
-            stopping -> tr("恢复已停止", "Restore stopped", "復元を停止しました", "복원을 중지했습니다")
-            failed == 0 && manifestFailures == 0 -> tr("恢复完成", "Restore complete", "復元完了", "복원 완료")
-            created.isEmpty() -> tr("恢复失败", "Restore failed", "復元に失敗しました", "복원 실패")
-            else -> tr("恢复未全部完成", "Restore partially completed", "一部の項目を復元できませんでした", "일부 항목을 복원하지 못했습니다")
+            stopping -> tr("恢复已停止", "Restore stopped", "復元を停止しました", "복원을 중지했습니다", "還原已停止")
+            failed == 0 && manifestFailures == 0 -> tr("恢复完成", "Restore complete", "復元完了", "복원 완료", "還原完成")
+            restoredTotal == 0 -> tr("恢复失败", "Restore failed", "復元に失敗しました", "복원 실패", "還原失敗")
+            else -> tr("恢复未全部完成", "Restore partially completed", "一部の項目を復元できませんでした", "일부 항목을 복원하지 못했습니다", "還原未全部完成")
         }
         publish(work, when {
             stopping -> Completion.STOPPED
             failed == 0 && manifestFailures == 0 -> Completion.SUCCEEDED
-            created.isEmpty() -> Completion.FAILED
+            restoredTotal == 0 -> Completion.FAILED
             else -> Completion.PARTIAL
         }, title, named, change, missingEntries.toList())
-        operations.refresh()
+        ops.refresh(byFolder.keys)
     }
 
     /**
@@ -618,6 +778,7 @@ class FolderVaultSession internal constructor(
      * 单独的文件现读所在文件夹再取：列表里的行可能已被别的设备移走、删掉，来源也以仓库按账本补上的为准。
      */
     private suspend fun levelsOf(
+        ops: FolderVaultOperations,
         target: VaultScope,
         until: () -> Boolean = { false },
         parents: MutableMap<String, String>? = null,
@@ -629,15 +790,15 @@ class FolderVaultSession internal constructor(
         }
         for (folder in target.folders) {
             if (until()) break
-            walk(folder.id, until, parents).forEach { (folderId, files) ->
+            walk(ops, folder.id, until, parents).forEach { (folderId, files) ->
                 scannedFolders?.add(folderId)
                 add(folderId, files)
             }
         }
         val requested = target.files.groupBy({ it.parentId }, { it.id })
-        for (chunk in requested.entries.chunked(4)) {
+        for (chunk in requested.entries.chunked(12)) {
             if (until()) break
-            val listings = coroutineScope { chunk.map { (folderId, _) -> async { operations.list(folderId) } }.awaitAll() }
+            val listings = coroutineScope { chunk.map { (folderId, _) -> async { ops.list(folderId) } }.awaitAll() }
             chunk.zip(listings).forEach { (request, listing) ->
                 val ids = request.value.toSet()
                 add(request.key, listing.filter { it.id in ids && archivable(it) })
@@ -651,6 +812,7 @@ class FolderVaultSession internal constructor(
      * 没有 gcid 的都不算；Piko-Temp 与同步设置的 .piko 不进去。
      */
     private suspend fun walk(
+        ops: FolderVaultOperations,
         rootId: String,
         until: () -> Boolean = { false },
         /** 填上子文件夹 → 上一层，归档后据此记下从选的那一层到各写了清单的文件夹之间的路径。 */
@@ -661,8 +823,8 @@ class FolderVaultSession internal constructor(
         val visited = mutableSetOf(rootId)
         while (queue.isNotEmpty() && !until()) {
             val next = mutableListOf<String>()
-            for (chunk in queue.chunked(4)) {
-                val listings = coroutineScope { chunk.map { id -> async { operations.list(id) } }.awaitAll() }
+            for (chunk in queue.chunked(12)) {
+                val listings = coroutineScope { chunk.map { id -> async { ops.list(id) } }.awaitAll() }
                 chunk.zip(listings).forEach { (folderId, listing) ->
                     listing.filter { it.isFolder && it.name !in SKIPPED_FOLDERS && !it.trashed }
                         .forEach {
@@ -678,6 +840,12 @@ class FolderVaultSession internal constructor(
         }
         return levels
     }
+
+    private fun scopedSummary(name: String, detail: String): String =
+        tr("「$name」：$detail", "“$name”: $detail", "「$name」：$detail", "“$name”: $detail", "「$name」：$detail")
+
+    private fun bindOperations(): FolderVaultOperations =
+        if (operations is DriveFolderVaultOperations) operations.bindAccount() else operations
 
     private fun archivable(file: FileStat): Boolean =
         !file.isFolder && !file.trashed && !file.isVaulted && !VaultStore.looksLikeManifest(file) && !VaultStore.isRecoveryFile(file) &&
@@ -715,17 +883,23 @@ internal fun vaultTree(roots: Set<String>, written: Set<String>, parents: Map<St
 
 internal interface FolderVaultOperations {
     suspend fun list(folderId: String): List<FileStat>
+    fun knownCid(gcid: String, size: Long): String? = null
+    fun knownMeta(gcid: String, size: Long): VaultMediaMeta? = knownCid(gcid, size)?.let { VaultMediaMeta(cid = it) }
     suspend fun sampleCid(file: FileStat): String?
+    suspend fun write(folderId: String, entries: List<VaultEntry>, requireRemoteComplete: Boolean) = write(folderId, entries)
     suspend fun write(folderId: String, entries: List<VaultEntry>)
     suspend fun remove(ids: List<String>, permanently: Boolean)
     fun record(change: DriveChangeJournal.Change.Vault)
-    fun refresh()
+    fun refresh(affectedFolders: Set<String> = emptySet())
     fun rememberTree(members: Map<String, Set<String>>) {}
+    fun rememberStarred(folderId: String, entries: List<VaultEntry>) {}
+    fun rememberSources(sources: Map<String, List<ResolvedFile>>) {}
     fun knownParents(): Map<String, String> = emptyMap()
     fun rememberFullyVaulted(folderIds: Set<String>) {}
 
     /** [folderId] 的子文件夹与仍归档着的条目。清单读不出来就失败：当作没有条目会漏掉恢复。 */
     suspend fun archived(folderId: String): ArchivedLevel
+    suspend fun presentRealFiles(folderId: String): List<FileStat> = emptyList()
     suspend fun trash(): List<FileStat>
     /** 剩余空间，不限量或查不到时为 null。 */
     suspend fun remainingBytes(): Long?
@@ -739,38 +913,116 @@ internal interface FolderVaultOperations {
 internal class ArchivedLevel(val subfolders: List<FileStat>, val entries: List<VaultEntry>)
 
 private class DriveFolderVaultOperations(private val drive: PikoDriveRepository) : FolderVaultOperations {
-    override suspend fun list(folderId: String) = drive.listBrowsable(folderId, dev.piko.shared.data.PikoFileSortOrder.TIME_DESC).getOrThrow()
-    override suspend fun sampleCid(file: FileStat) = drive.sampleCid(file.id).getOrNull()
-    override suspend fun write(folderId: String, entries: List<VaultEntry>) {
-        drive.vault.update(folderId, VaultEdits.add(entries)).getOrThrow()
+    fun bindAccount(): FolderVaultOperations {
+        val access = drive.currentAccount?.let(drive::writeAccess)
+            ?: error(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入"))
+        return BoundDriveFolderVaultOperations(access)
     }
-    override suspend fun remove(ids: List<String>, permanently: Boolean) {
-        if (permanently) drive.delete(ids).getOrThrow() else drive.trash(ids).getOrThrow()
-    }
+
+    override suspend fun list(folderId: String): List<FileStat> = bindAccount().list(folderId)
+    override fun knownCid(gcid: String, size: Long): String? = drive.vault.knownCidOf(gcid, size)
+    override fun knownMeta(gcid: String, size: Long): VaultMediaMeta? = drive.knownVaultMetaOf(gcid, size)
+    override suspend fun sampleCid(file: FileStat) = bindAccount().sampleCid(file)
+    override suspend fun write(folderId: String, entries: List<VaultEntry>, requireRemoteComplete: Boolean) =
+        bindAccount().write(folderId, entries, requireRemoteComplete)
+    override suspend fun write(folderId: String, entries: List<VaultEntry>) = bindAccount().write(folderId, entries, false)
+    override suspend fun remove(ids: List<String>, permanently: Boolean) = bindAccount().remove(ids, permanently)
     override fun record(change: DriveChangeJournal.Change.Vault) = drive.changes.record(change)
-    // 归档与恢复动的是整棵树里的各层，哪几层不逐一记，按说不清处理
-    override fun refresh() = drive.applyChange(DriveChange.ContentsChanged(null))
-    override fun rememberTree(members: Map<String, Set<String>>) {
-        drive.vaultTrees.merge(members)
+    override fun refresh(affectedFolders: Set<String>) {
+        if (affectedFolders.isNotEmpty()) drive.notifyFoldersRefreshed(affectedFolders)
+    }
+    override fun rememberTree(members: Map<String, Set<String>>) { drive.vaultTrees.merge(members) }
+    override fun rememberStarred(folderId: String, entries: List<VaultEntry>) { drive.vaultStars.starEntries(folderId, entries, starred = true) }
+    override fun rememberSources(sources: Map<String, List<ResolvedFile>>) {
+        sources.forEach { (source, files) -> drive.sourceLedger.record(source, files) }
     }
     override fun knownParents() = drive.knownVaultParents()
     override fun rememberFullyVaulted(folderIds: Set<String>) = drive.rememberFullyVaulted(folderIds)
+    override suspend fun archived(folderId: String): ArchivedLevel = bindAccount().archived(folderId)
+    override suspend fun presentRealFiles(folderId: String): List<FileStat> = bindAccount().presentRealFiles(folderId)
+    override suspend fun trash() = bindAccount().trash()
+    override suspend fun remainingBytes() = bindAccount().remainingBytes()
+    override suspend fun untrash(ids: List<String>) = bindAccount().untrash(ids)
+    override suspend fun rename(id: String, name: String) = bindAccount().rename(id, name)
+    override suspend fun recreate(entry: VaultEntry, folderId: String) = bindAccount().recreate(entry, folderId)
+    override suspend fun markRestored(folderId: String, files: Map<String, FileStat>): VaultWrite = bindAccount().markRestored(folderId, files)
+}
+
+private class BoundDriveFolderVaultOperations(
+    private val access: dev.piko.shared.data.DriveWriteAccess,
+) : FolderVaultOperations {
+    override suspend fun list(folderId: String): List<FileStat> = access.browsableList(folderId).getOrThrow()
+    override fun knownCid(gcid: String, size: Long): String? = access.vault.knownCidOf(gcid, size)
+    override fun knownMeta(gcid: String, size: Long): VaultMediaMeta? = access.knownVaultMetaOf(gcid, size)
+    override suspend fun sampleCid(file: FileStat): String? = access.sampleCid(file.id).getOrNull()
+    override suspend fun write(folderId: String, entries: List<VaultEntry>, requireRemoteComplete: Boolean) {
+        access.vault.update(folderId, VaultEdits.add(entries), requireRemoteComplete = requireRemoteComplete).getOrThrow()
+    }
+    override suspend fun write(folderId: String, entries: List<VaultEntry>) = write(folderId, entries, false)
+    override suspend fun remove(ids: List<String>, permanently: Boolean) {
+        if (permanently) {
+            access.delete(ids).onSuccess { access.publish(DriveChange.Deleted(ids, emptySet())) }.getOrThrow()
+        } else {
+            access.trash(ids).onSuccess { access.publish(DriveChange.Trashed(ids, null)) }.getOrThrow()
+        }
+    }
+    override fun record(change: DriveChangeJournal.Change.Vault) = access.recordChange(change)
+    override fun refresh(affectedFolders: Set<String>) = access.notifyFoldersRefreshed(affectedFolders)
+    override fun rememberTree(members: Map<String, Set<String>>) = access.rememberTree(members)
+    override fun rememberStarred(folderId: String, entries: List<VaultEntry>) = access.starVaultEntries(folderId, entries)
+    override fun rememberSources(sources: Map<String, List<ResolvedFile>>) = access.recordSources(sources)
+    override fun knownParents(): Map<String, String> = access.knownVaultParents()
+    override fun rememberFullyVaulted(folderIds: Set<String>) = access.rememberFullyVaulted(folderIds)
 
     override suspend fun archived(folderId: String): ArchivedLevel {
-        val listing = drive.listAllFiles(folderId).getOrThrow()
-        val entries = drive.vault.read(folderId, listing).getOrThrow().filter { it.isArchived }
+        val cleanChildren = access.localCleanChildren(folderId)
+        if (cleanChildren != null) {
+            val cachedEntries = access.vault.cached(folderId, cleanChildren)
+            if (cachedEntries != null) {
+                val subfolders = cleanChildren.filter { it.isFolder && !it.trashed && it.name !in SKIPPED_FOLDERS }
+                return ArchivedLevel(subfolders, cachedEntries.filter { it.isArchived })
+            }
+        }
+        val listing = access.listFolder(folderId).getOrThrow()
+        val entries = access.vault.read(folderId, listing).getOrThrow().filter { it.isArchived }
         val subfolders = listing.filter { it.isFolder && !it.trashed && it.name !in SKIPPED_FOLDERS }
         return ArchivedLevel(subfolders, entries)
     }
-    override suspend fun trash() = drive.trashFiles().getOrThrow()
-    override suspend fun remainingBytes() =
-        drive.getQuota().logFailure("Vault", "查询剩余空间失败，按不限处理").getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.remainingBytes
-    override suspend fun untrash(ids: List<String>) = drive.restore(ids).getOrThrow()
-    override suspend fun rename(id: String, name: String) = drive.rename(id, name).getOrThrow()
-    override suspend fun recreate(entry: VaultEntry, folderId: String) =
-        drive.instantCreate(ResolvedFile(path = entry.name, size = entry.size, gcid = entry.gcid), folderId, entry.source).getOrThrow()
-    override suspend fun markRestored(folderId: String, files: Map<String, FileStat>) =
-        drive.vault.update(folderId, VaultEdits.restore(files)).getOrThrow()
+
+    override suspend fun presentRealFiles(folderId: String): List<FileStat> =
+        access.presentRealChildren(folderId).getOrThrow()
+
+    override suspend fun trash(): List<FileStat> = access.trashFiles(fresh = false).getOrThrow()
+
+    override suspend fun remainingBytes(): Long? =
+        access.remainingQuotaBytes().logFailure("Vault", "查询剩余空间失败，按不限处理").getOrNull()
+
+    override suspend fun untrash(ids: List<String>) {
+        access.restore(ids).onSuccess { access.publish(DriveChange.Restored(ids)) }.getOrThrow()
+    }
+
+    override suspend fun rename(id: String, name: String) {
+        access.rename(id, name).onSuccess { access.publish(DriveChange.Renamed(id, name, null)) }.getOrThrow()
+    }
+
+    override suspend fun recreate(entry: VaultEntry, folderId: String): String =
+        access.instantCreate(
+            file = ResolvedFile(path = entry.name, size = entry.size, gcid = entry.gcid),
+            parentId = folderId,
+            source = entry.source,
+            notifyChange = false,
+        ).getOrThrow()
+
+    override suspend fun markRestored(folderId: String, files: Map<String, FileStat>): VaultWrite {
+        val starredEntries = files.filterKeys(access::isVaultEntryStarred)
+        return access.vault.update(folderId, VaultEdits.restore(files)).getOrThrow().also {
+            if (starredEntries.isNotEmpty()) {
+                access.star(starredEntries.values.map { it.id }, value = true).onSuccess {
+                    access.unstarVaultEntries(starredEntries.keys)
+                }
+            }
+        }
+    }
 }
 
 /** CID 是可选的体检资料；取样并发受限，同内容只取一次，慢节点超时不阻塞归档。 */

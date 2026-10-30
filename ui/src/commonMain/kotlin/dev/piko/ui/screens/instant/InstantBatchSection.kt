@@ -75,7 +75,7 @@ internal fun ColumnScope.BatchList(
                 )
             }
             Text(
-                text = tr("${batch.rows.size} 条链接，点开可勾选文件", "${enCount(batch.rows.size, "link", "links")}; open to select files", "${batch.rows.size} 件のリンク。開くとファイルを選択できます", "링크 ${batch.rows.size}개. 열어서 파일을 선택하세요"),
+                text = tr("共 ${batch.rows.size} 条链接，展开后可选择文件", "${enCount(batch.rows.size, "link", "links")}; open to select files", "全 ${batch.rows.size} 件のリンク。開いてファイルを選択できます", "링크 총 ${batch.rows.size}개. 열어서 파일을 선택할 수 있습니다", "共 ${batch.rows.size} 條連結，展開後可選取檔案"),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -108,26 +108,26 @@ internal fun ColumnScope.BatchList(
 
     if (batch.lacksSpace) {
         ErrorBanner(
-            message = tr("网盘空间不足：需要 ${batch.neededBytes.toReadableSize()}，", "Insufficient cloud space: ${batch.neededBytes.toReadableSize()} required, ", "空き容量不足：${batch.neededBytes.toReadableSize()} 必要、", "클라우드 공간 부족: ${batch.neededBytes.toReadableSize()} 필요, ") +
-                tr("剩余 ${(batch.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}", "${(batch.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()} available", "空き容量 ${(batch.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}", "남은 공간 ${(batch.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}"),
+            message = tr("网盘空间不足：需要 ${batch.neededBytes.toReadableSize()}，", "Insufficient cloud space: ${batch.neededBytes.toReadableSize()} required, ", "空き容量不足：${batch.neededBytes.toReadableSize()} 必要、", "클라우드 공간 부족: ${batch.neededBytes.toReadableSize()} 필요, ", "雲端硬碟空間不足：需要 ${batch.neededBytes.toReadableSize()}，") +
+                tr("剩余 ${(batch.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}", "${(batch.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()} available", "空き容量 ${(batch.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}", "남은 공간 ${(batch.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}", "剩餘 ${(batch.remainingBytes ?: 0L).coerceAtLeast(0L).toReadableSize()}"),
             onRetry = null,
         )
     } else if (batch.lacksOfflineCount) {
-        ErrorBanner(message = tr("需要 ${batch.offlineCount} 次离线，今日还剩 ${batch.offlineLeft} 次", "Requires ${batch.offlineCount} cloud downloads; ${batch.offlineLeft} left today", "${batch.offlineCount} 回のクラウドダウンロードが必要。本日の残り ${batch.offlineLeft} 回", "클라우드 다운로드 ${batch.offlineCount}회 필요, 오늘 ${batch.offlineLeft}회 남음"), onRetry = null)
+        ErrorBanner(message = tr("需使用 ${batch.offlineCount} 次离线下载额度，今日剩余 ${batch.offlineLeft} 次", "Requires ${batch.offlineCount} cloud downloads; ${batch.offlineLeft} remaining today", "${batch.offlineCount} 回のクラウドダウンロード枠が必要です（本日の残り ${batch.offlineLeft} 回）", "클라우드 다운로드 할당량 ${batch.offlineCount}회 필요 (오늘 ${batch.offlineLeft}회 남음)", "需使用 ${batch.offlineCount} 次離線下載額度，今日剩餘 ${batch.offlineLeft} 次"), onRetry = null)
     }
     saveSettings()
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         SaveButton(
-            label = tr("全部保存", "Save all", "すべて保存", "모두 저장"),
+            label = tr("全部保存", "Save all", "すべて保存", "모두 저장", "全部儲存"),
             enabled = batch.canSaveAll,
             isSaving = batch.isSaving,
             onClick = batch::saveAll,
         )
         val skipped = batch.rows.count { it.status == InstantBatchRowStatus.NOTHING_SELECTED }
         // 批量时不逐条确认离线，只在这里写明要用几次，想换成秒传的点开那一行改
-        val offline = tr("其中 ${batch.offlineCount} 项需离线", "${batch.offlineCount} require cloud downloads", "うち ${batch.offlineCount} 件はクラウドダウンロードが必要", "그중 ${batch.offlineCount}개는 클라우드 다운로드 필요").takeIf { batch.confirmsOffline && batch.offlineCount > 0 }
+        val offline = tr("其中 ${batch.offlineCount} 项需离线下载", "${batch.offlineCount} require cloud download", "うち ${batch.offlineCount} 件はクラウドダウンロードが必要", "그중 ${batch.offlineCount}개는 클라우드 다운로드 필요", "其中 ${batch.offlineCount} 項需離線下載").takeIf { batch.confirmsOffline && batch.offlineCount > 0 }
         val caption = batch.blockedReason
-            ?: listOfNotNull(tr("$skipped 项未勾选文件，将跳过", "${enCount(skipped, "item", "items")} have no selected files and will be skipped", "$skipped 件はファイルが未選択のためスキップ", "${skipped}개 항목에 선택한 파일이 없어 건너뜁니다").takeIf { skipped > 0 }, offline).joinToString("，").ifEmpty { null }
+            ?: listOfNotNull(tr("$skipped 项未勾选文件，将跳过", "${enCount(skipped, "item", "items")} have no selected files and will be skipped", "$skipped 件はファイルが未選択のためスキップ", "${skipped}개 항목에 선택한 파일이 없어 건너뜁니다", "$skipped 項未勾選檔案，將略過").takeIf { skipped > 0 }, offline).joinToString(tr("；", "; ", "、", ", ", "；")).ifEmpty { null }
         caption?.let { SaveCaption(it) }
     }
 }
@@ -145,7 +145,7 @@ private fun BatchRowItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClickLabel = tr("查看文件", "View files", "ファイルを表示", "파일 보기"), onClick = onOpen)
+            .clickable(onClickLabel = tr("查看文件", "View files", "ファイルを表示", "파일 보기", "檢視檔案"), onClick = onOpen)
             .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -162,9 +162,9 @@ private fun BatchRowItem(
                 overflow = TextOverflow.Ellipsis,
             )
             val error = saveError ?: when (status) {
-                InstantBatchRowStatus.FAILED -> sheet.errorMessage ?: tr("解析失败", "Failed to resolve", "解析に失敗しました", "분석 실패")
-                InstantBatchRowStatus.NEEDS_NAME -> tr("文件夹名为空", "Folder name is empty", "フォルダー名が空です", "폴더 이름이 비어 있습니다")
-                InstantBatchRowStatus.NEEDS_REVIEW -> sheet.saveBlockReason ?: sheet.saveIssue?.message ?: tr("保存结果需要核对", "Save results need inspection", "保存結果の確認が必要です", "저장 결과 확인 필요")
+                InstantBatchRowStatus.FAILED -> sheet.errorMessage ?: tr("解析失败", "Failed to resolve", "解析に失敗しました", "분석 실패", "解析失敗")
+                InstantBatchRowStatus.NEEDS_NAME -> tr("文件夹名为空", "Folder name is empty", "フォルダー名が空です", "폴더 이름이 비어 있습니다", "資料夾名稱為空")
+                InstantBatchRowStatus.NEEDS_REVIEW -> sheet.saveBlockReason ?: sheet.saveIssue?.message ?: tr("保存结果需要核对", "Save results need inspection", "保存結果の確認が必要です", "저장 결과 확인 필요", "儲存結果需要核對")
                 else -> null
             }
             if (error != null) {
@@ -177,7 +177,7 @@ private fun BatchRowItem(
                 )
             } else if (status == InstantBatchRowStatus.READY) {
                 MetaRow(
-                    parts = listOf(tr("已选 ${sheet.selectedEntryCount} / ${sheet.entryCount}", "Selected ${sheet.selectedEntryCount} / ${sheet.entryCount}", "選択済み ${sheet.selectedEntryCount} / ${sheet.entryCount}", "${sheet.selectedEntryCount} / ${sheet.entryCount}개 선택됨"), row.selectedBytes.toReadableSize()),
+                    parts = listOf(tr("已选 ${sheet.selectedEntryCount} / ${sheet.entryCount}", "Selected ${sheet.selectedEntryCount} / ${sheet.entryCount}", "選択済み ${sheet.selectedEntryCount} / ${sheet.entryCount}", "${sheet.selectedEntryCount} / ${sheet.entryCount}개 선택됨", "已選 ${sheet.selectedEntryCount} / ${sheet.entryCount}"), row.selectedBytes.toReadableSize()),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -185,7 +185,7 @@ private fun BatchRowItem(
                 val unindexed = sheet.unindexedEntryCount
                 if (unindexed > 0) {
                     Text(
-                        text = tr("$unindexed 项$UNINDEXED_HINT", "${enCount(unindexed, "item", "items")}: $UNINDEXED_HINT", "$unindexed 項目：$UNINDEXED_HINT", "${unindexed}개 항목: $UNINDEXED_HINT"),
+                        text = tr("$unindexed 项$UNINDEXED_HINT", "${enCount(unindexed, "item", "items")}: $UNINDEXED_HINT", "$unindexed 項目：$UNINDEXED_HINT", "${unindexed}개 항목: $UNINDEXED_HINT", "$unindexed 項$UNINDEXED_HINT"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.tertiary,
                         maxLines = 1,
@@ -196,9 +196,9 @@ private fun BatchRowItem(
                 Text(
                     text = when (status) {
                         InstantBatchRowStatus.RESOLVING -> resolvingText(sheet)
-                        InstantBatchRowStatus.NOTHING_SELECTED -> tr("未勾选文件，不保存", "No files selected; nothing to save", "未選択のため保存しません", "선택한 파일이 없어 저장하지 않습니다")
+                        InstantBatchRowStatus.NOTHING_SELECTED -> tr("未选择文件，将跳过", "No files selected; will skip", "ファイル未選択（スキップ）", "선택한 파일 없음 (건너뜀)", "未選取檔案，將略過")
                         InstantBatchRowStatus.WHOLE_OFFLINE ->
-                            if (row.link.isMagnet) tr("未收录，整条离线下载", "Not indexed; download entire link to cloud", "未収録のためリンク全体をクラウドダウンロード", "미등록. 전체 링크 클라우드 다운로드") else tr("整条离线下载", "Download entire link to cloud", "リンク全体をクラウドダウンロード", "전체 링크 클라우드 다운로드")
+                            if (row.link.isMagnet) tr("未收录，整条链接离线下载", "Not indexed; download entire link to cloud", "未収録のためリンク全体をクラウドダウンロード", "미등록. 전체 링크 클라우드 다운로드", "未收錄，整條連結離線下載") else tr("整条链接离线下载", "Download entire link to cloud", "リンク全体をクラウドダウンロード", "전체 링크 클라우드 다운로드", "整條連結離線下載")
                         else -> ""
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -211,7 +211,7 @@ private fun BatchRowItem(
         }
         TooltipIconButton(
             icon = Icons.Outlined.Close,
-            label = tr("移除", "Remove", "削除", "제거"),
+            label = tr("移除", "Remove", "削除", "제거", "移除"),
             onClick = onRemove,
             enabled = enabled,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -257,14 +257,14 @@ internal fun ColumnScope.BatchRowDetail(batch: InstantBatchState, row: InstantBa
     Row(verticalAlignment = Alignment.CenterVertically) {
         TooltipIconButton(
             icon = Icons.AutoMirrored.Outlined.ArrowBack,
-            label = tr("返回列表", "Back to list", "一覧に戻る", "목록으로 돌아가기"),
+            label = tr("返回列表", "Back to list", "一覧に戻る", "목록으로 돌아가기", "返回清單"),
             onClick = batch::closeRow,
             shortcut = "Esc",
             // 图标贴齐内容左缘，触控区不变
             modifier = Modifier.offset(x = (-12).dp),
         )
         Text(
-            text = tr("第 $position 项，共 ${batch.rows.size} 项", "Item $position of ${batch.rows.size}", "$position / ${batch.rows.size} 項目", "$position / ${batch.rows.size}번째 항목"),
+            text = tr("第 $position 项，共 ${batch.rows.size} 项", "Item $position of ${batch.rows.size}", "$position / ${batch.rows.size} 項目", "$position / ${batch.rows.size}번째 항목", "第 $position 項，共 ${batch.rows.size} 項"),
             style = MaterialTheme.typography.titleLarge,
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.offset(x = (-8).dp),

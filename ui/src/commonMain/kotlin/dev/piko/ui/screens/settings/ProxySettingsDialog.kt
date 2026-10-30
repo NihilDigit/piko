@@ -40,17 +40,17 @@ fun ProxySettingsDialog(
     // 选了方式还要填地址才算数，所以是填写类的「取消」「保存」，不是点选即生效
     SettingsInputDialog(
         icon = Icons.Outlined.Public,
-        title = tr("网络代理", "Network proxy", "ネットワークプロキシ", "네트워크 프록시"),
+        title = tr("网络代理", "Network proxy", "ネットワークプロキシ", "네트워크 프록시", "網路代理"),
         // 已建立的连接沿用原来的路线，空闲一阵后关闭，之后才换
-        footer = tr("对新建连接生效。视频直链与转码流不经代理。", "Applies to new connections. Direct video and transcoded streams bypass the proxy.", "新しい接続に適用します。動画の直リンクと変換ストリームはプロキシを経由しません。", "새 연결에 적용됩니다. 동영상 직접 링크와 변환 스트림은 프록시를 거치지 않습니다."),
+        footer = tr("对新建连接生效。视频直链与转码流不经代理。", "Applies to new connections. Direct video and transcoded streams bypass the proxy.", "新しい接続に適用します。動画の直リンクと変換ストリームはプロキシを経由しません。", "새 연결에 적용됩니다. 동영상 직접 링크와 변환 스트림은 프록시를 거치지 않습니다.", "對新建立的連線生效。影片直連與轉碼串流不經代理。"),
         onSave = { onSave(draft) },
         saveEnabled = canSave,
         onDismiss = onDismiss,
     ) {
         Column(Modifier.selectableGroup()) {
-            SettingsChoiceOption(tr("跟随系统", "System", "システムに従う", "시스템 설정 따르기"), mode == ProxyMode.SYSTEM, { mode = ProxyMode.SYSTEM }, supporting = tr("使用系统设置中的代理", "Use system proxy settings", "システムのプロキシ設定を使用", "시스템 프록시 설정 사용"))
-            SettingsChoiceOption(tr("不使用代理", "No proxy", "プロキシを使用しない", "프록시 사용 안 함"), mode == ProxyMode.NONE, { mode = ProxyMode.NONE }, supporting = tr("始终直接连接", "Always connect directly", "常に直接接続", "항상 직접 연결"))
-            SettingsChoiceOption(tr("手动", "Manual", "手動", "수동"), mode == ProxyMode.MANUAL, { mode = ProxyMode.MANUAL }, supporting = tr("指定 HTTP 或 SOCKS5 代理", "Specify an HTTP or SOCKS5 proxy", "HTTPまたはSOCKS5プロキシを指定", "HTTP 또는 SOCKS5 프록시 지정"))
+            SettingsChoiceOption(tr("跟随系统", "System", "システムに従う", "시스템 설정 따르기", "依照系統"), mode == ProxyMode.SYSTEM, { mode = ProxyMode.SYSTEM }, supporting = tr("使用系统设置中的代理", "Use system proxy settings", "システムのプロキシ設定を使用", "시스템 프록시 설정 사용", "使用系統設定中的代理"))
+            SettingsChoiceOption(tr("不使用代理", "No proxy", "プロキシを使用しない", "프록시 사용 안 함", "不使用代理"), mode == ProxyMode.NONE, { mode = ProxyMode.NONE }, supporting = tr("始终直接连接", "Always connect directly", "常に直接接続", "항상 직접 연결", "一律直接連線"))
+            SettingsChoiceOption(tr("手动", "Manual", "手動", "수동", "手動"), mode == ProxyMode.MANUAL, { mode = ProxyMode.MANUAL }, supporting = tr("指定 HTTP 或 SOCKS5 代理", "Specify an HTTP or SOCKS5 proxy", "HTTPまたはSOCKS5プロキシを指定", "HTTP 또는 SOCKS5 프록시 지정", "指定 HTTP 或 SOCKS5 代理"))
         }
         if (mode == ProxyMode.MANUAL) {
             SettingsSegmentedChoice(
@@ -63,17 +63,17 @@ fun ProxySettingsDialog(
             PikoTextField(
                 value = host,
                 onValueChange = { host = it },
-                label = tr("地址", "Address", "アドレス", "주소"),
+                label = tr("地址", "Address", "アドレス", "주소", "位址"),
                 placeholder = "127.0.0.1",
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
             )
             PikoTextField(
                 value = port,
                 onValueChange = { value -> port = value.filter(Char::isDigit).take(5) },
-                label = tr("端口", "Port", "ポート", "포트"),
+                label = tr("端口", "Port", "ポート", "포트", "連接埠"),
                 placeholder = "7890",
                 isError = portInvalid,
-                supportingText = tr("1 至 65535", "1 to 65535", "1 ～ 65535", "1~65535"),
+                supportingText = tr("1 至 65535", "1 to 65535", "1 ～ 65535", "1~65535", "1 至 65535"),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             )
         }

@@ -38,7 +38,7 @@ class DuplicateDirectoryListing(
         if (item.file.isFolder) return item
         val view = item.view
         val kept = item.file.id in finder.keptIds
-        val tags = listOfNotNull(tr("建议保留", "Keep", "保持推奨", "유지 권장").takeIf { kept }) + view?.tags.orEmpty()
+        val tags = listOfNotNull(tr("建议保留", "Keep", "保持推奨", "유지 권장", "建議保留").takeIf { kept }) + view?.tags.orEmpty()
         return DriveListItem.File(item.file, DriveFileView(
             title = view?.title ?: item.file.name,
             tags = tags.distinct(),
@@ -54,13 +54,13 @@ enum class DuplicateKeepRule {
     RECOMMENDED, NEWEST, OLDEST, LARGEST, SMALLEST, SHORTEST_PATH, SHORTEST_NAME;
 
     val label: String get() = when (this) {
-        RECOMMENDED -> tr("智能推荐", "Recommended", "おすすめ", "추천")
-        NEWEST -> tr("保留最新", "Keep newest", "最新を保持", "최신 항목 유지")
-        OLDEST -> tr("保留最旧", "Keep oldest", "最も古いものを保持", "가장 오래된 항목 유지")
-        LARGEST -> tr("保留最大", "Keep largest", "最大を保持", "가장 큰 항목 유지")
-        SMALLEST -> tr("保留最小", "Keep smallest", "最小を保持", "가장 작은 항목 유지")
-        SHORTEST_PATH -> tr("保留最浅路径", "Keep shortest path", "最も浅いパスを保持", "가장 짧은 경로 유지")
-        SHORTEST_NAME -> tr("保留最短文件名", "Keep shortest name", "最も短い名前を保持", "가장 짧은 이름 유지")
+        RECOMMENDED -> tr("智能推荐", "Recommended", "おすすめ", "추천", "智慧推薦")
+        NEWEST -> tr("保留最新", "Keep newest", "最新を保持", "최신 항목 유지", "保留最新")
+        OLDEST -> tr("保留最旧", "Keep oldest", "最も古いものを保持", "가장 오래된 항목 유지", "保留最舊")
+        LARGEST -> tr("保留最大", "Keep largest", "最大を保持", "가장 큰 항목 유지", "保留最大")
+        SMALLEST -> tr("保留最小", "Keep smallest", "最小を保持", "가장 작은 항목 유지", "保留最小")
+        SHORTEST_PATH -> tr("保留最浅路径", "Keep shortest path", "最も浅いパスを保持", "가장 짧은 경로 유지", "保留最淺路徑")
+        SHORTEST_NAME -> tr("保留最短文件名", "Keep shortest name", "最も短い名前を保持", "가장 짧은 이름 유지", "保留最短檔名")
     }
 }
 
@@ -122,25 +122,27 @@ class DuplicateListing(
 
     private fun label(group: DuplicateGroup): String = when (group.kind) {
         DuplicateKind.IDENTICAL -> tr(
-            "${group.title}：${group.rows.size} 份相同，可腾出 ${readableSize(group.reclaimableBytes)}",
+            "${group.title}：${group.rows.size} 份相同文件，可释放 ${readableSize(group.reclaimableBytes)}",
             "${group.title}: ${enCount(group.rows.size, "identical copy", "identical copies")}, ${readableSize(group.reclaimableBytes)} reclaimable",
             "${group.title}：同一ファイル ${group.rows.size} 件、${readableSize(group.reclaimableBytes)} 解放可能",
             "${group.title}: 동일한 파일 ${group.rows.size}개, ${readableSize(group.reclaimableBytes)} 확보 가능",
+            "${group.title}：${group.rows.size} 份相同檔案，可釋出 ${readableSize(group.reclaimableBytes)}",
         )
         DuplicateKind.VERSIONS -> tr(
             "${group.title}：${group.rows.size} 个版本，共 ${readableSize(group.totalBytes)}",
             "${group.title}: ${enCount(group.rows.size, "version", "versions")}, ${readableSize(group.totalBytes)} total",
             "${group.title}：${group.rows.size} バージョン、合計 ${readableSize(group.totalBytes)}",
             "${group.title}: ${group.rows.size}개 버전, 총 ${readableSize(group.totalBytes)}",
+            "${group.title}：${group.rows.size} 個版本，共 ${readableSize(group.totalBytes)}",
         )
     }
 
     // 标签写这一份与同组其余几份的区别：字幕组、分辨率这些，以及默认留哪一份
     private fun view(file: FileStat, row: DuplicateRow, isKept: Boolean): DriveFileView {
         val tags = buildList {
-            if (isKept) add(tr("建议保留", "Keep", "保持推奨", "유지 권장"))
+            if (isKept) add(tr("建议保留", "Keep", "保持推奨", "유지 권장", "建議保留"))
             addAll(row.details)
-            if (row.sameCopies > 0) add(tr("另有 ${row.sameCopies} 份相同", "${enCount(row.sameCopies, "more identical copy", "more identical copies")}", "ほか同一ファイル ${row.sameCopies} 件", "동일한 사본 ${row.sameCopies}개 더 있음"))
+            if (row.sameCopies > 0) add(tr("另有 ${row.sameCopies} 份相同", "${enCount(row.sameCopies, "more identical copy", "more identical copies")}", "ほか同一ファイル ${row.sameCopies} 件", "동일한 사본 ${row.sameCopies}개 더 있음", "另有 ${row.sameCopies} 份相同"))
         }
         return DriveFileView(title = file.name, tags = tags, heading = file.name, fields = emptyList())
     }

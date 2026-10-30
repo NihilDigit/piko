@@ -109,15 +109,15 @@ internal fun VaultDialog(
         title = {
             Text(
                 when {
-                    target.filesOnly -> tr("归档文件", "Archive files", "ファイルをアーカイブ", "파일 보관")
-                    target.files.isEmpty() -> tr("归档文件夹", "Archive folders", "フォルダーをアーカイブ", "폴더 보관")
-                    else -> tr("归档", "Archive", "アーカイブ", "보관")
+                    target.filesOnly -> tr("归档文件", "Archive files", "ファイルをアーカイブ", "파일 보관", "歸檔檔案")
+                    target.files.isEmpty() -> tr("归档文件夹", "Archive folders", "フォルダーをアーカイブ", "폴더 보관", "歸檔資料夾")
+                    else -> tr("归档", "Archive", "アーカイブ", "보관", "歸檔")
                 },
             )
         },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                VaultDialogHeading(target.name, survey, counted?.files, files, bytes, emptyText = tr("无可归档的文件", "No files to archive", "アーカイブできるファイルがありません", "보관할 파일이 없습니다"))
+                VaultDialogHeading(target.name, survey, counted?.files, files, bytes, emptyText = tr("无可归档的文件", "No files to archive", "アーカイブできるファイルがありません", "보관할 파일이 없습니다", "沒有可歸檔的檔案"))
                 blocked?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (current != null) {
                     // 是偏好而不是这一次的参数：一改就存，取消归档也记住，与设置页的开关相同
@@ -130,16 +130,16 @@ internal fun VaultDialog(
                         VaultCheckboxOption(
                             checked = current.sourcedOnly,
                             onCheckedChange = { update(current.copy(sourcedOnly = it)) },
-                            label = tr("仅归档有来源记录的文件", "Only archive files with recorded sources", "ソースの記録があるファイルのみアーカイブ", "출처 기록이 있는 파일만 보관"),
+                            label = tr("仅归档有来源记录的文件", "Only archive files with recorded sources", "ソースの記録があるファイルのみアーカイブ", "출처 기록이 있는 파일만 보관", "僅歸檔有來源記錄的檔案"),
                             supporting = when {
-                                !current.sourcedOnly -> tr("自己上传或秒传的文件失效后无法重新添加", "Your uploads or instant saves cannot be added again if unavailable", "自分でアップロードまたはインスタント保存したファイルは、利用不可になると再追加できません", "직접 업로드하거나 즉시 저장한 파일은 사용 불가 상태가 되면 다시 추가할 수 없습니다")
-                                unsourced > 0 -> tr("$unsourced 个无来源记录的文件留在网盘", "${enCount(unsourced, "file", "files")} without sources stay in drive", "ソースの記録がない $unsourced ファイルをドライブに保持", "출처 기록 없는 파일 ${unsourced}개를 드라이브에 유지")
-                                else -> tr("无来源记录的文件留在网盘", "Keep files without source records in drive", "ソースの記録がないファイルはドライブに保持", "출처 기록 없는 파일은 드라이브에 유지")
+                                !current.sourcedOnly -> tr("自行上传或秒传的文件若在云端失效，将无法重新获取", "Uploaded or instantly saved files without sources cannot be recovered if unavailable", "アップロードまたはインスタント保存したファイルは、クラウドで利用不可になると再取得できません", "직접 업로드하거나 즉시 저장한 파일은 클라우드에서 사용 불가 상태가 되면 다시 가져올 수 없습니다", "自行上傳或秒傳的檔案若在雲端失效，將無法重新取得")
+                                unsourced > 0 -> tr("$unsourced 个无来源记录的文件保留在网盘中", "${enCount(unsourced, "file", "files")} without sources stay in drive", "ソースの記録がない $unsourced ファイルをドライブに保持", "출처 기록 없는 파일 ${unsourced}개를 드라이브에 유지", "$unsourced 個無來源記錄的檔案保留在雲端硬碟")
+                                else -> tr("无来源记录的文件保留在网盘中", "Keep files without source records in drive", "ソースの記録がないファイルはドライブに保持", "출처 기록 없는 파일은 드라이브에 유지", "無來源記錄的檔案保留在雲端硬碟")
                             },
                         )
                     } else if (counted != null && counted.files > 0 && counted.unsourcedFiles == counted.files) {
                         Text(
-                            if (counted.files == 1) tr("此文件无来源记录，失效后无法重新添加", "This file has no source record and cannot be re-added if unavailable", "このファイルはソースの記録がなく、利用不可になると再追加できません", "이 파일은 출처 기록이 없어 사용 불가 상태가 되면 다시 추가할 수 없습니다") else tr("这些文件均无来源记录，失效后无法重新添加", "These files have no source records and cannot be re-added if unavailable", "これらのファイルはソースの記録がなく、利用不可になると再追加できません", "이 파일들은 출처 기록이 없어 사용 불가 상태가 되면 다시 추가할 수 없습니다"),
+                            if (counted.files == 1) tr("此文件无来源记录，失效后无法重新添加", "This file has no source record and cannot be re-added if unavailable", "このファイルはソースの記録がなく、利用不可になると再追加できません", "이 파일은 출처 기록이 없어 사용 불가 상태가 되면 다시 추가할 수 없습니다", "此檔案無來源記錄，失效後無法重新新增") else tr("这些文件均无来源记录，失效后无法重新添加", "These files have no source records and cannot be re-added if unavailable", "これらのファイルはソースの記録がなく、利用不可になると再追加できません", "이 파일들은 출처 기록이 없어 사용 불가 상태가 되면 다시 추가할 수 없습니다", "這些檔案均無來源記錄，失效後無法重新新增"),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
@@ -147,15 +147,15 @@ internal fun VaultDialog(
                     VaultCheckboxOption(
                         checked = current.toTrash,
                         onCheckedChange = { update(current.copy(toTrash = it)) },
-                        label = tr("原文件放入回收站", "Move originals to trash", "元ファイルをゴミ箱に移動", "원본 파일을 휴지통으로 이동"),
-                        supporting = if (current.toTrash) tr("清空回收站前仍可找回原文件", "Originals can be recovered before emptying trash", "ゴミ箱を空にするまでは元ファイルを復元できます", "휴지통을 비우기 전에는 원본을 복구할 수 있습니다") else tr("原文件将永久删除", "Original files will be permanently deleted", "元ファイルは完全に削除されます", "원본 파일이 영구 삭제됩니다"),
+                        label = tr("将原文件移入回收站", "Move original files to trash", "元ファイルをゴミ箱に移動", "원본 파일을 휴지통으로 이동", "將原始檔案移至資源回收筒"),
+                        supporting = if (current.toTrash) tr("清空回收站前仍可找回原文件", "Originals can be recovered before emptying trash", "ゴミ箱を空にするまでは元ファイルを復元できます", "휴지통을 비우기 전에는 원본을 복구할 수 있습니다", "清空資源回收筒前仍可找回原始檔案") else tr("原文件将永久删除", "Original files will be permanently deleted", "元ファイルは完全に削除されます", "원본 파일이 영구 삭제됩니다", "原始檔案將永久刪除"),
                     )
                     if (offersSizeChoice) {
                         VaultCheckboxOption(
                             checked = current.skipSmallFiles,
                             onCheckedChange = { update(current.copy(skipSmallFiles = it)) },
-                            label = tr("不归档小文件", "Skip small files", "小さいファイルはアーカイブしない", "작은 파일 보관 안 함"),
-                            supporting = tr("50 MiB 以下的文件留在网盘", "Keep files under 50 MiB in drive", "50 MiB未満のファイルはドライブに保持", "50 MiB 미만의 파일은 드라이브에 유지"),
+                            label = tr("跳过小文件", "Skip small files", "小さいファイルをスキップ", "작은 파일 건너뛰기", "略過小型檔案"),
+                            supporting = tr("将小于 50 MiB 的文件保留在网盘中", "Keep files under 50 MiB in drive", "50 MiB未満のファイルをドライブに保持", "50 MiB 미만의 파일은 드라이브에 유지", "將小於 50 MiB 的檔案保留在雲端硬碟中"),
                         )
                     }
                 }
@@ -165,7 +165,7 @@ internal fun VaultDialog(
             // 永久删除原文件时按钮换成错误色。复选框下的说明不染红：M3 的错误色只给校验出错，取消勾选不是错；
             // 在警告框里另加一行红字也试过，像补丁
             PikoDialogConfirm(
-                label = tr("归档", "Archive", "アーカイブ", "보관"),
+                label = tr("归档", "Archive", "アーカイブ", "보관", "歸檔"),
                 destructive = !chosen.toTrash,
                 enabled = files > 0 && options != null && blocked == null,
                 onClick = {
@@ -192,7 +192,7 @@ private fun VaultDialogHeading(name: String, survey: Result<*>?, total: Int?, fi
             }
             survey.isFailure -> Text(stringResource(Res.string.text_calculation_failed_retry), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
             total == 0 -> Text(emptyText, style = MaterialTheme.typography.titleMedium)
-            else -> Text(tr("$files 个文件，${bytes.toReadableSize()}", "${enCount(files, "file", "files")}, ${bytes.toReadableSize()}", "$files ファイル、${bytes.toReadableSize()}", "파일 ${files}개, ${bytes.toReadableSize()}"), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+            else -> Text(tr("$files 个文件，${bytes.toReadableSize()}", "${enCount(files, "file", "files")}, ${bytes.toReadableSize()}", "$files ファイル、${bytes.toReadableSize()}", "파일 ${files}개, ${bytes.toReadableSize()}", "$files 個檔案，${bytes.toReadableSize()}"), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
         }
     }
 }
@@ -215,13 +215,13 @@ internal fun RestoreVaultFolderDialog(
         title = { Text(stringResource(Res.string.text_undo_archive)) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                VaultDialogHeading(folder.localizedName, survey, counted?.entries, counted?.entries ?: 0, counted?.bytes ?: 0L, emptyText = tr("没有归档的文件", "No archived files", "アーカイブ済みファイルはありません", "보관된 파일이 없습니다"))
+                VaultDialogHeading(folder.localizedName, survey, counted?.entries, counted?.entries ?: 0, counted?.bytes ?: 0L, emptyText = tr("没有归档的文件", "No archived files", "アーカイブ済みファイルはありません", "보관된 파일이 없습니다", "沒有已歸檔的檔案"))
                 blocked?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (counted != null && counted.entries > 0) {
                     val parts = buildList {
-                        if (counted.fromTrash > 0) add(tr("${counted.fromTrash} 个从回收站取回", "${counted.fromTrash} recovered from trash", "${counted.fromTrash} 件をゴミ箱から復元", "${counted.fromTrash}개 휴지통에서 복구"))
+                        if (counted.fromTrash > 0) add(tr("${counted.fromTrash} 个从回收站取回", "${counted.fromTrash} recovered from trash", "${counted.fromTrash} 件をゴミ箱から復元", "${counted.fromTrash}개 휴지통에서 복구", "${counted.fromTrash} 個從資源回收筒取回"))
                         if (counted.neededBytes > 0) {
-                            add(tr("需占用 ${counted.neededBytes.toReadableSize()}", "Requires ${counted.neededBytes.toReadableSize()}", "必要な容量 ${counted.neededBytes.toReadableSize()}", "필요 공간 ${counted.neededBytes.toReadableSize()}") + counted.remainingBytes?.let { tr("，剩余 ${it.toReadableSize()}", ", ${it.toReadableSize()} available", "、空き容量 ${it.toReadableSize()}", ", 남은 공간 ${it.toReadableSize()}") }.orEmpty())
+                            add(tr("需占用 ${counted.neededBytes.toReadableSize()}", "Requires ${counted.neededBytes.toReadableSize()}", "必要な容量 ${counted.neededBytes.toReadableSize()}", "필요 공간 ${counted.neededBytes.toReadableSize()}", "需占用 ${counted.neededBytes.toReadableSize()}") + counted.remainingBytes?.let { tr("，剩余 ${it.toReadableSize()}", ", ${it.toReadableSize()} available", "、空き容量 ${it.toReadableSize()}", ", 남은 공간 ${it.toReadableSize()}", "，剩餘 ${it.toReadableSize()}") }.orEmpty())
                         }
                     }
                     if (parts.isNotEmpty()) {
@@ -237,7 +237,7 @@ internal fun RestoreVaultFolderDialog(
         },
         confirmButton = {
             PikoDialogConfirm(
-                label = tr("恢复到网盘", "Restore to drive", "ドライブに復元", "드라이브로 복원"),
+                label = tr("恢复到网盘", "Restore to drive", "ドライブに復元", "드라이브로 복원", "還原至雲端硬碟"),
                 enabled = counted != null && counted.entries > 0 && counted.fits && blocked == null,
                 onClick = {
                     session.restoreFolder(folder)
@@ -310,7 +310,7 @@ internal fun VaultRiskWarningDialog(
         },
         confirmButton = {
             PikoDialogConfirm(
-                label = tr("我已知晓风险，继续", "I understand the risks. Continue", "リスクを理解して続行", "위험을 이해했으며 계속"),
+                label = tr("已知晓风险，继续", "Acknowledge and continue", "理解して続行", "이해했으며 계속", "已瞭解風險，繼續"),
                 destructive = true,
                 onClick = onAcknowledge,
             )

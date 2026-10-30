@@ -192,7 +192,7 @@ fun CommandPalette(items: List<PaletteItem>, onDismiss: () -> Unit) {
                         // 与搜索框同一条规矩：右端一直有个取消，有字时清空，没字时关掉面板。触屏上没有 Esc
                         TooltipIconButton(
                             icon = Icons.Outlined.Close,
-                            label = if (query.isNotEmpty()) tr("清除", "Clear", "消去", "지우기") else tr("关闭", "Close", "閉じる", "닫기"),
+                            label = if (query.isNotEmpty()) tr("清除", "Clear", "消去", "지우기", "清除") else tr("关闭", "Close", "閉じる", "닫기", "關閉"),
                             onClick = { if (query.isNotEmpty()) query = "" else onDismiss() },
                             shortcut = if (query.isNotEmpty()) null else "Esc",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,

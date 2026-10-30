@@ -14,9 +14,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 enum class SharePassCodeMode(private val labelText: () -> String) {
-    None({ tr("无", "None", "なし", "없음") }),
-    Random({ tr("随机", "Random", "ランダム", "무작위") }),
-    Custom({ tr("自定义", "Custom", "カスタム", "사용자 지정") });
+    None({ tr("无", "None", "なし", "없음", "無") }),
+    Random({ tr("随机", "Random", "ランダム", "무작위", "隨機") }),
+    Custom({ tr("自定义", "Custom", "カスタム", "사용자 지정", "自訂") });
 
     val label: String get() = labelText()
 }
@@ -54,7 +54,7 @@ class ShareCreateState(
 
     /** 服务端把第一项的名字作为分享标题，多项时这里补上总数。 */
     val title: String
-        get() = files.first().name + if (files.size > 1) tr(" 等 ${files.size} 项", " and ${files.size - 1} more", " ほか全 ${files.size} 項目", " 외 총 ${files.size}개 항목") else ""
+        get() = files.first().name + if (files.size > 1) tr(" 等 ${files.size} 项", " and ${files.size - 1} more", " ほか全 ${files.size} 項目", " 외 총 ${files.size}개 항목", " 等 ${files.size} 項") else ""
 
     /** 复制出去的整段文字。 */
     val shareText: String?
@@ -79,7 +79,7 @@ class ShareCreateState(
                     PikoLog.i(TAG, "已创建分享：$summary")
                     created = it
                 }
-                .onFailure { error = tr("创建失败，请重试", "Failed to create share. Please try again", "共有の作成に失敗しました。もう一度お試しください", "공유 생성 실패. 다시 시도해 주세요") }
+                .onFailure { error = tr("创建失败，请重试", "Failed to create share. Please try again", "共有の作成に失敗しました。もう一度お試しください", "공유 생성 실패. 다시 시도해 주세요", "建立失敗，請重試") }
             isCreating = false
         }
     }

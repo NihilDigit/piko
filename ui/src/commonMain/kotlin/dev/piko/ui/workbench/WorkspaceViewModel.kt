@@ -70,7 +70,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         if (services.addLink.ownerTabId in ids &&
             services.addLink.replacementAvailability is dev.piko.shared.presentation.ActionAvailability.Blocked
         ) {
-            blockedCloseMessage = tr("当前标签页中的链接正在保存，请等待保存完成后再关闭标签页。", "Links in this tab are being saved. Wait before closing it.", "このタブのリンクを保存中です。完了してからタブを閉じてください。", "이 탭의 링크를 저장 중입니다. 완료 후 탭을 닫으세요.")
+            blockedCloseMessage = tr("当前标签页中的链接正在保存，请等待保存完成后再关闭标签页。", "Links in this tab are being saved. Wait before closing it.", "このタブのリンクを保存中です。完了してからタブを閉じてください。", "이 탭의 링크를 저장 중입니다. 완료 후 탭을 닫으세요.", "目前分頁中的連結正在儲存，請等待儲存完成後再關閉分頁。")
             return true
         }
         return false

@@ -41,9 +41,9 @@ internal fun RowScope.TaskIslandHeader(
     inlineFilter: Boolean = true,
 ) {
     if (selectedCount > 0) {
-        TooltipIconButton(Icons.Outlined.Close, tr("取消选择", "Deselect", "選択を解除", "선택 해제"), state::clearSelection)
+        TooltipIconButton(Icons.Outlined.Close, tr("取消选择", "Deselect", "選択を解除", "선택 해제", "取消選取"), state::clearSelection)
     }
-    IslandTitle(if (selectedCount > 0) tr("已选 $selectedCount 项", "${enCount(selectedCount, "item", "items")} selected", "$selectedCount 項目を選択中", "${selectedCount}개 선택됨") else tr("任务", "Tasks", "タスク", "작업"))
+    IslandTitle(if (selectedCount > 0) tr("已选 $selectedCount 项", "${enCount(selectedCount, "item", "items")} selected", "$selectedCount 項目を選択中", "${selectedCount}개 선택됨", "已選 $selectedCount 項") else tr("任务", "Tasks", "タスク", "작업", "任務"))
     if (inlineFilter) {
         Spacer(Modifier.width(8.dp))
         TaskKindFilter(state)

@@ -33,6 +33,156 @@ class VaultStoreTest {
         assertEquals(1, drive.files.size)
     }
 
+    @Test
+    fun `an uploaded manifest transiently pending transitions to complete without false-conflict deletion`() = runBlocking {
+        val drive = MemoryFolder().apply { pendingListingsAfterUpload = 2 }
+        val store = VaultStore(drive, confirmDelay = Duration.ZERO)
+        val first = entry("E01")
+        val second = entry("E02")
+        assertEquals(listOf(first), store.update("f", VaultEdits.add(listOf(first))).getOrThrow().after)
+        assertEquals(1, drive.uploads, "自身清单短暂处于 PENDING 后转为 COMPLETE 时不应误判冲突重传")
+        assertEquals(listOf(first, second), store.update("f", VaultEdits.add(listOf(second))).getOrThrow().after)
+        assertEquals(setOf("E01", "E02"), store.committed("f").getOrThrow().map { it.name }.toSet())
+    }
+
+    @Test
+    fun `own uploaded manifest visible as pending succeeds immediately preserves old baseline for other devices and chains next edits`() = runBlocking {
+        val drive = MemoryFolder().apply { forbidPendingReads = true }
+        val store = VaultStore(drive, confirmDelay = Duration.ZERO)
+        val first = entry("E01")
+        store.update("f", VaultEdits.add(listOf(first))).getOrThrow()
+        assertEquals(1, drive.files.size)
+
+        // 模拟服务端异步转正窗口（PENDING 且无直链）：本机凭已缓存清单直接确认成功，且暂留旧 v1 供其他设备兜底读取
+        drive.defaultUploadPhase = TaskPhase.PENDING
+        val second = entry("E02")
+        assertEquals(listOf(first, second), store.update("f", VaultEdits.add(listOf(second))).getOrThrow().after)
+        assertEquals(2, drive.uploads)
+        assertEquals(2, drive.files.size, "v2 仍处 PENDING 时暂留旧 COMPLETE 清单供他端兜底读取")
+
+        val otherDevice = VaultStore(drive, confirmDelay = Duration.ZERO)
+        assertEquals(listOf("E01"), otherDevice.committed("f").getOrThrow().map { it.name })
+
+        // 本机在 PENDING 窗口内继续追加 E03，无需下载直链即可基于 v2 继续演进
+        val third = entry("E03")
+        assertEquals(listOf(first, second, third), store.update("f", VaultEdits.add(listOf(third))).getOrThrow().after)
+
+        // 服务端随后翻转为 COMPLETE：他端读到完整最新集合，下次更新顺手清理旧版清单
+        drive.defaultUploadPhase = TaskPhase.COMPLETE
+        drive.markAllComplete()
+        assertEquals(setOf("E01", "E02", "E03"), otherDevice.committed("f").getOrThrow().map { it.name }.toSet())
+        store.update("f", VaultEdits.add(listOf(entry("E04")))).getOrThrow()
+        assertEquals(1, drive.files.size, "转正后更新顺手清掉全部旧版本清单")
+    }
+
+    @Test
+    fun `an uploaded manifest that never appears in folder listing fails as unconfirmed without self-deletion`() = runBlocking {
+        val drive = MemoryFolder().apply { listingLag = 99 }
+        val store = VaultStore(drive, confirmDelay = Duration.ZERO)
+        val outcome = store.update("f", VaultEdits.add(listOf(entry("E01"))))
+        assertTrue(outcome.exceptionOrNull() is VaultWriteUnconfirmed, "目录列表中不可见的上传不可谎报确认成功")
+        assertEquals(1, drive.uploads)
+        assertEquals(1, drive.files.size)
+    }
+
+    @Test
+    fun `other device cannot overwrite a pending manifest from older baseline even with smaller token`() = runBlocking {
+        val drive = MemoryFolder().apply { forbidPendingReads = true }
+        val deviceA = VaultStore(drive, confirmDelay = Duration.ZERO, newToken = { "bb" })
+        val deviceB = VaultStore(drive, confirmDelay = Duration.ZERO, newToken = { "aa" })
+
+        val e1 = entry("E01")
+        deviceA.update("f", VaultEdits.add(listOf(e1))).getOrThrow()
+
+        // 设备 A 写入 v2-bb 处于 PENDING
+        drive.defaultUploadPhase = TaskPhase.PENDING
+        val e2 = entry("E02")
+        deviceA.update("f", VaultEdits.add(listOf(e2))).getOrThrow()
+        val uploadsAfterA = drive.uploads
+
+        // 设备 B 即使拥有更小的随机串 "aa"，遇到更高版本未决陌生 PENDING 也必须停止，绝不从 v1 写出 v2-aa 覆盖 E02
+        val bWhilePending = deviceB.update("f", VaultEdits.add(listOf(entry("E03"))))
+        assertTrue(bWhilePending.isFailure, "存在他端未决新版 PENDING 清单时必须拒绝从旧基线盲写")
+        assertEquals(uploadsAfterA, drive.uploads, "写前屏障拦住时不得发起破坏性同版本上传")
+
+        // v2-bb 转正为 COMPLETE 后，设备 B 正常继承 E01+E02 写出 v3-aa
+        drive.defaultUploadPhase = TaskPhase.COMPLETE
+        drive.markAllComplete()
+        deviceB.update("f", VaultEdits.add(listOf(entry("E03")))).getOrThrow()
+        assertEquals(setOf("E01", "E02", "E03"), deviceB.committed("f").getOrThrow().map { it.name }.toSet())
+    }
+
+    @Test
+    fun `fast write followed by empty laggy listing or async restart cache load never regresses to empty baseline`() = runBlocking {
+        val drive = MemoryFolder().apply {
+            defaultUploadPhase = TaskPhase.PENDING
+            forbidPendingReads = true
+        }
+        val persisted = HashMap<String, String>()
+        val slowCache = object : PikoCacheStore {
+            override suspend fun read(key: String): String? {
+                kotlinx.coroutines.delay(50)
+                return synchronized(persisted) { persisted[key] }
+            }
+            override suspend fun write(key: String, value: String) {
+                synchronized(persisted) { persisted[key] = value }
+            }
+        }
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+        try {
+            val store = VaultStore(drive, confirmDelay = Duration.ZERO, cacheStore = slowCache, account = "acc", scope = scope)
+            val e1 = entry("E01")
+            store.update("fresh", VaultEdits.add(listOf(e1)), freshlyCreatedFolder = true).getOrThrow()
+
+            // H1 场景 1：紧接着追加时服务端列表因可见性延迟返回全空，必须拒绝回退到空基线
+            drive.hideCurrentFiles(99)
+            val laggyAppend = store.update("fresh", VaultEdits.add(listOf(entry("E02"))))
+            assertTrue(laggyAppend.isFailure, "已提交清单在列表中完全不可见时严禁从空基线重写 v1")
+
+            // H1 场景 2：进程重启后即使目录列表暂时全空，凭借持久化的目录级已提交基线证据仍必须拒绝从空基线覆盖
+            val restartedWhileEmpty = VaultStore(drive, confirmDelay = Duration.ZERO, cacheStore = slowCache, account = "acc", scope = scope)
+            assertTrue(
+                restartedWhileEmpty.update("fresh", VaultEdits.add(listOf(entry("E02")))).isFailure,
+                "重启后若目录列表尚未刷出已提交清单，仍必须拒绝从空基线覆盖",
+            )
+
+            // H1 场景 3：列表恢复可见（仍为 PENDING），重启实例在异步缓存加载后基于 E01 追加 E02
+            drive.hideCurrentFiles(0)
+            val restarted = VaultStore(drive, confirmDelay = Duration.ZERO, cacheStore = slowCache, account = "acc", scope = scope)
+            restarted.update("fresh", VaultEdits.add(listOf(entry("E02")))).getOrThrow()
+            assertEquals(setOf("E01", "E02"), restarted.committed("fresh").getOrThrow().map { it.name }.toSet())
+        } finally {
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        }
+    }
+
+    @Test
+    fun `old timestamped pending stranger still blocks overwrite regardless of clock skew`() = runBlocking {
+        val drive = MemoryFolder().apply { forbidPendingReads = true }
+        val store = VaultStore(drive, confirmDelay = Duration.ZERO, newToken = { "aa" })
+        store.update("f", VaultEdits.add(listOf(entry("E01")))).getOrThrow()
+
+        // 模拟另一台设备上传了 v2-bb（PENDING），即使其时间戳远早于本机时钟（如时钟快 1 小时），也不允许跳过写 v3 覆盖
+        drive.upload("f", ".piko-vault-v2-bb.json", ByteArray(10), phase = TaskPhase.PENDING)
+        val outcome = store.update("f", VaultEdits.add(listOf(entry("E03"))))
+        assertTrue(outcome.isFailure, "不论客户端时钟偏差多久，存在未决更高版本陌生 PENDING 清单时均禁止覆盖")
+    }
+
+    @Test
+    fun `fast new-folder path emits incremental files instead of replacing existing subfolders`() = runBlocking {
+        val drive = MemoryFolder().apply { pendingListingsAfterUpload = 1 }
+        var lastSnapshot: VaultCommitSnapshot? = null
+        val store = VaultStore(drive, confirmDelay = Duration.ZERO, onCommitted = { _, _, snapshot -> lastSnapshot = snapshot })
+        val first = entry("E01")
+        store.update("fresh", VaultEdits.add(listOf(first)), freshlyCreatedFolder = true).getOrThrow()
+        assertTrue(lastSnapshot is VaultCommitSnapshot.IncrementalFiles, "快速通道只提交增量文件，不得覆盖同级已建子目录")
+
+        // 紧接着同一进程对该目录执行常规追加（第一份清单刚翻转 COMPLETE），基线不得丢失 E01
+        val second = entry("E02")
+        store.update("fresh", VaultEdits.add(listOf(second)), freshlyCreatedFolder = false).getOrThrow()
+        assertEquals(setOf("E01", "E02"), store.committed("fresh").getOrThrow().map { it.name }.toSet())
+    }
+
     private fun entry(name: String) = VaultEntry.create(name, 100, "G-$name", source = null, addedAt = 0)
 
     @Test
@@ -88,7 +238,7 @@ class VaultStoreTest {
     }
 
     @Test
-    fun `portable links are exported once and restored metadata follows renames`() = runBlocking {
+    fun `sources are stored in single manifest without sidecar files and restored metadata follows renames`() = runBlocking {
         val drive = MemoryFolder()
         val store = VaultStore(drive, Duration.ZERO)
         val magnet = "magnet:?xt=urn:btih:" + "a".repeat(40)
@@ -97,8 +247,8 @@ class VaultStoreTest {
         val two = entry("E02").copy(source = magnet)
         val three = entry("E03").copy(source = share)
         store.update("f", VaultEdits.add(listOf(one, two, three))).getOrThrow()
-        assertEquals(1, drive.files.values.count { it.first.endsWith(".magnet") })
-        assertTrue(drive.files.values.any { it.first.endsWith(".txt") && it.second.decodeToString() == share + "\n" })
+        assertEquals(1, drive.files.size, "每次归档仅写唯一一份清单文件，不另写 .magnet/.txt 旁路文件")
+        assertEquals(0, drive.files.values.count { it.first.endsWith(".magnet") || it.first.endsWith(".txt") })
         val restored = one.toFileStat("f").copy(id = "real-id")
         store.update("f", VaultEdits.restore(mapOf(one.id to restored))).getOrThrow()
         val reader = VaultStore(drive, Duration.ZERO)
@@ -107,20 +257,7 @@ class VaultStoreTest {
         val renamed = restored.copy(name = "renamed.mkv", params = emptyMap())
         assertEquals(magnet, saved.enrich(renamed).sourceUrl)
         assertEquals("CID", saved.enrich(renamed).params["piko_vault_cid"])
-        assertEquals(1, drive.files.values.count { it.first.endsWith(".magnet") })
-    }
-
-    @Test
-    fun `a changed portable source file prevents committing another archive`() = runBlocking {
-        val drive = MemoryFolder()
-        val store = VaultStore(drive, Duration.ZERO)
-        val source = "magnet:?xt=urn:btih:" + "a".repeat(40)
-        val one = entry("E01").copy(source = source)
-        store.update("f", VaultEdits.add(listOf(one))).getOrThrow()
-        val sourceFile = drive.files.entries.single { it.value.first.endsWith(".magnet") }
-        drive.files[sourceFile.key] = sourceFile.value.first to "different source".encodeToByteArray()
-        assertTrue(store.update("f", VaultEdits.add(listOf(entry("E02").copy(source = source)))).isFailure)
-        assertEquals(listOf(one), store.read("f", drive.list("f")).getOrThrow())
+        assertEquals(1, drive.files.size)
     }
 
     /** 一个目录，列出时按插入顺序。 */
@@ -130,8 +267,12 @@ class VaultStoreTest {
         private var nextId = 0
         private var lists = 0
         var listingLag = 0
+        var pendingListingsAfterUpload = 0
         var uploads = 0
+        var defaultUploadPhase = TaskPhase.COMPLETE
+        var forbidPendingReads = false
         private val visibleAt = HashMap<String, Int>()
+        private val completeAt = HashMap<String, Int>()
         private val hooks = HashMap<Int, suspend () -> Unit>()
 
         /** 第 [nth] 次列目录之前先做 [action]，模拟另一台设备恰好在这时写入。 */
@@ -141,22 +282,40 @@ class VaultStoreTest {
 
         fun hideCurrentFiles(lag: Int) { files.keys.forEach { visibleAt[it] = lists + lag } }
 
+        fun markAllComplete() {
+            phases.keys.forEach { phases[it] = TaskPhase.COMPLETE }
+            completeAt.clear()
+        }
+
         override suspend fun list(folderId: String): List<FileStat> {
             hooks.remove(++lists)?.invoke()
             return files.filterKeys { lists >= (visibleAt[it] ?: 0) }.map { (id, file) ->
-                FileStat(kind = FileKind.FILE, id = id, name = file.first, phase = phases[id] ?: TaskPhase.COMPLETE)
+                val phase = when {
+                    phases[id] != TaskPhase.COMPLETE -> phases[id] ?: TaskPhase.PENDING
+                    lists < (completeAt[id] ?: 0) -> TaskPhase.PENDING
+                    else -> TaskPhase.COMPLETE
+                }
+                FileStat(kind = FileKind.FILE, id = id, name = file.first, phase = phase)
             }
         }
 
-        override suspend fun read(fileId: String): ByteArray = files.getValue(fileId).second
+        override suspend fun read(fileId: String): ByteArray {
+            if (forbidPendingReads && phases[fileId] != TaskPhase.COMPLETE) {
+                error("Download link unavailable")
+            }
+            return files.getValue(fileId).second
+        }
 
-        override suspend fun upload(folderId: String, name: String, bytes: ByteArray): String = upload(folderId, name, bytes, TaskPhase.COMPLETE)
+        override suspend fun upload(folderId: String, name: String, bytes: ByteArray): String = upload(folderId, name, bytes, defaultUploadPhase)
 
         fun upload(folderId: String, name: String, bytes: ByteArray, phase: String): String {
             val id = "id${nextId++}"
             files[id] = name to bytes
             phases[id] = phase
             visibleAt[id] = lists + listingLag
+            if (pendingListingsAfterUpload > 0) {
+                completeAt[id] = lists + pendingListingsAfterUpload + 1
+            }
             uploads++
             return id
         }

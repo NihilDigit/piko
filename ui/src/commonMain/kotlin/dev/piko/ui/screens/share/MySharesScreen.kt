@@ -149,23 +149,23 @@ fun MySharesScreen(
     // 有提取码时一并复制，按钮统一叫「复制链接」：链接不带提取码发出去对方打不开，没有只要链接的时候。
     // 提取码另起一行而不拼进链接：SDK 与现有代码里都没有见到服务端认链接上的提取码参数
     fun copy(share: ShareSummary) {
-        platform.copyToClipboard(tr("分享链接", "Share link", "共有リンク", "공유 링크"), ShareCreateState.shareText(share.title, share.shareUrl, share.passCode))
-        scope.launch { snackbarHostState.showSnackbar(tr("已复制分享链接", "Share link copied", "共有リンクをコピーしました", "공유 링크를 복사했습니다"),withDismissAction = true) }
+        platform.copyToClipboard(tr("分享链接", "Share link", "共有リンク", "공유 링크", "分享連結"), ShareCreateState.shareText(share.title, share.shareUrl, share.passCode))
+        scope.launch { snackbarHostState.showSnackbar(tr("已复制分享链接", "Share link copied", "共有リンクをコピーしました", "공유 링크를 복사했습니다", "已複製分享連結"),withDismissAction = true) }
     }
 
     fun locate(share: ShareSummary) {
         val id = state.sourceId(share)
         scope.launch {
-            if (id == null || !onLocate(id)) snackbarHostState.showSnackbar(tr("找不到源文件，可能已被移动或删除", "Source file not found; it may have moved or been deleted", "元のファイルが見つかりません。移動または削除された可能性があります", "원본 파일을 찾을 수 없습니다. 이동되거나 삭제되었을 수 있습니다"), withDismissAction = true)
+            if (id == null || !onLocate(id)) snackbarHostState.showSnackbar(tr("找不到源文件，可能已被移动或删除", "Source file not found; it may have moved or been deleted", "元のファイルが見つかりません。移動または削除された可能性があります", "원본 파일을 찾을 수 없습니다. 이동되거나 삭제되었을 수 있습니다", "找不到來源檔案，可能已被移動或刪除"), withDismissAction = true)
         }
     }
 
     // 一项的全部操作，卡片与右键菜单共用
     fun actionsFor(share: ShareSummary): List<SheetAction> = listOf(
-        SheetAction(Icons.Outlined.FolderOpen, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onClick = { locate(share) }),
-        SheetAction(Icons.Outlined.Link, tr("复制链接", "Copy link", "リンクをコピー", "링크 복사"), onClick = { copy(share) }),
-        SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在浏览器中打开", "Open in browser", "ブラウザーで開く", "브라우저에서 열기"), onClick = { platform.openUrl(share.shareUrl) }),
-        SheetAction(Icons.Outlined.LinkOff, tr("取消分享", "Revoke share", "共有を解除", "공유 취소"), onClick = { confirmCancel = share }, destructive = true),
+        SheetAction(Icons.Outlined.FolderOpen, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), onClick = { locate(share) }),
+        SheetAction(Icons.Outlined.Link, tr("复制链接", "Copy link", "リンクをコピー", "링크 복사", "複製連結"), onClick = { copy(share) }),
+        SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在浏览器中打开", "Open in browser", "ブラウザーで開く", "브라우저에서 열기", "在瀏覽器中開啟"), onClick = { platform.openUrl(share.shareUrl) }),
+        SheetAction(Icons.Outlined.LinkOff, tr("取消分享", "Revoke share", "共有を解除", "공유 취소", "取消分享"), onClick = { confirmCancel = share }, destructive = true),
     )
 
     val selecting = state.selectedIds.isNotEmpty()
@@ -183,20 +183,20 @@ fun MySharesScreen(
         island = IslandPage(
             header = {
                 if (selecting) {
-                    IslandTitle(tr("已选 ${state.selectedIds.size} 项", "${enCount(state.selectedIds.size, "item", "items")} selected", "${state.selectedIds.size} 項目を選択中", "${state.selectedIds.size}개 선택됨"))
+                    IslandTitle(tr("已选 ${state.selectedIds.size} 项", "${enCount(state.selectedIds.size, "item", "items")} selected", "${state.selectedIds.size} 項目を選択中", "${state.selectedIds.size}개 선택됨", "已選 ${state.selectedIds.size} 項"))
                     IslandHeaderSpace()
                     TooltipIconButton(
                         icon = Icons.Outlined.LinkOff,
-                        label = tr("取消所选分享", "Revoke selected shares", "選択した共有を解除", "선택한 공유 취소"),
+                        label = tr("取消所选分享", "Revoke selected shares", "選択した共有を解除", "선택한 공유 취소", "取消所選分享"),
                         onClick = { confirmCancelSelected = true },
                         tint = MaterialTheme.colorScheme.error,
                     )
-                    TooltipIconButton(Icons.Outlined.Close, tr("取消选择", "Deselect", "選択を解除", "선택 해제"), state::clearSelection, shortcut = "Esc")
+                    TooltipIconButton(Icons.Outlined.Close, tr("取消选择", "Deselect", "選択を解除", "선택 해제", "取消選取"), state::clearSelection, shortcut = "Esc")
                 } else {
-                    IslandTitle(tr("我的分享", "My shares", "自分の共有", "내 공유"))
+                    IslandTitle(tr("我的分享", "My shares", "自分の共有", "내 공유", "我的分享"))
                     if (state.shares.isNotEmpty()) {
                         Text(
-                            tr("${state.shares.size} 个", "${enCount(state.shares.size, "share", "shares")}", "${state.shares.size} 件", "공유 ${state.shares.size}개"),
+                            tr("${state.shares.size} 个", "${enCount(state.shares.size, "share", "shares")}", "${state.shares.size} 件", "공유 ${state.shares.size}개", "${state.shares.size} 個"),
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(start = 8.dp),
@@ -205,7 +205,7 @@ fun MySharesScreen(
                     IslandHeaderSpace()
                     TooltipIconButton(
                         icon = Icons.Outlined.Refresh,
-                        label = tr("刷新", "Refresh", "更新", "새로고침"),
+                        label = tr("刷新", "Refresh", "更新", "새로고침", "重新整理"),
                         onClick = { state.load(refresh = true) },
                         enabled = !state.isRefreshing,
                     )
@@ -216,21 +216,21 @@ fun MySharesScreen(
             PikoTopBar(
                 scrollBehavior = topBarScrollBehavior,
                 // 框选或点选了几个分享时页头换成批量操作，照网盘页的多选
-                title = if (selecting) tr("已选 ${state.selectedIds.size} 项", "${enCount(state.selectedIds.size, "item", "items")} selected", "${state.selectedIds.size} 項目を選択中", "${state.selectedIds.size}개 선택됨") else tr("我的分享", "My shares", "自分の共有", "내 공유"),
+                title = if (selecting) tr("已选 ${state.selectedIds.size} 项", "${enCount(state.selectedIds.size, "item", "items")} selected", "${state.selectedIds.size} 項目を選択中", "${state.selectedIds.size}개 선택됨", "已選 ${state.selectedIds.size} 項") else tr("我的分享", "My shares", "自分の共有", "내 공유", "我的分享"),
                 navigationIcon = {
                     if (selecting) {
-                        TooltipIconButton(Icons.Outlined.Close, tr("退出多选", "Exit selection", "選択モードを終了", "선택 모드 종료"), state::clearSelection, shortcut = "Esc")
+                        TooltipIconButton(Icons.Outlined.Close, tr("退出多选", "Exit selection", "選択モードを終了", "선택 모드 종료", "結束多選"), state::clearSelection, shortcut = "Esc")
                     } else if (onBackClick != null) {
                         IconButton(onClick = onBackClick) {
-                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = tr("返回", "Back", "戻る", "뒤로"))
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = tr("返回", "Back", "戻る", "뒤로", "返回"))
                         }
                     }
                 },
                 actions = listOf(
                     if (selecting) {
-                        iconBarItem(Icons.Outlined.LinkOff, tr("取消所选分享", "Revoke selected shares", "選択した共有を解除", "선택한 공유 취소"), { confirmCancelSelected = true }, priority = PinnedPriority, destructive = true)
+                        iconBarItem(Icons.Outlined.LinkOff, tr("取消所选分享", "Revoke selected shares", "選択した共有を解除", "선택한 공유 취소", "取消所選分享"), { confirmCancelSelected = true }, priority = PinnedPriority, destructive = true)
                     } else {
-                        iconBarItem(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침"), { state.load(refresh = true) }, priority = PinnedPriority, enabled = !state.isRefreshing)
+                        iconBarItem(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침", "重新整理"), { state.load(refresh = true) }, priority = PinnedPriority, enabled = !state.isRefreshing)
                     },
                 ),
             )
@@ -256,7 +256,7 @@ fun MySharesScreen(
                 ) {
                     if (state.shares.isEmpty()) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            PikoEmptyState(title = tr("暂无分享", "No shares", "共有はありません", "공유가 없습니다"), description = tr("在文件菜单中选择「分享」后显示于此", "Choose Share from the file menu to see links here", "ファイルメニューから共有すると、ここに表示します", "파일 메뉴에서 공유하면 여기에 표시됩니다"))
+                            PikoEmptyState(title = tr("暂无分享", "No shares", "共有はありません", "공유가 없습니다", "暫無分享"), description = tr("在文件菜单中选择「分享」后显示于此", "Choose Share from the file menu to see links here", "ファイルメニューから共有すると、ここに表示します", "파일 메뉴에서 공유하면 여기에 표시됩니다", "在檔案選單中選擇「分享」後顯示於此"))
                         }
                     } else {
                         val shareIds = remember(state.shares) { state.shares.mapTo(HashSet()) { it.shareId } }
@@ -331,11 +331,11 @@ fun MySharesScreen(
         PikoDialog(
             onDismissRequest = { confirmCancelSelected = false },
             icon = { Icon(Icons.Outlined.LinkOff, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text(tr("取消所选的 $count 个分享", "Revoke $count selected shares", "選択した $count 件の共有を解除", "선택한 공유 ${count}개 취소")) },
+            title = { Text(tr("取消所选的 $count 个分享", "Revoke $count selected shares", "選択した $count 件の共有を解除", "선택한 공유 ${count}개 취소", "取消所選的 $count 個分享")) },
             text = { Text(stringResource(Res.string.text_these_links_will_stop_working_immediately_and_cannot_be_restored_drive_files)) },
             confirmButton = {
                 PikoDialogConfirm(
-                    label = tr("取消分享", "Revoke share", "共有を解除", "공유 취소"),
+                    label = tr("取消分享", "Revoke share", "共有を解除", "공유 취소", "取消分享"),
                     destructive = true,
                     onClick = {
                         confirmCancelSelected = false
@@ -355,7 +355,7 @@ fun MySharesScreen(
             text = { Text(stringResource(Res.string.text_the_link_will_stop_working_immediately_and_cannot_be_restored_drive_files_ar)) },
             confirmButton = {
                 PikoDialogConfirm(
-                    label = tr("取消分享", "Revoke share", "共有を解除", "공유 취소"),
+                    label = tr("取消分享", "Revoke share", "共有を解除", "공유 취소", "取消分享"),
                     destructive = true,
                     onClick = {
                         confirmCancel = null
@@ -444,19 +444,19 @@ private fun ShareCard(
             Spacer(Modifier.height(12.dp))
             // 卡片最窄 360dp，四项一行放不下时折到下一行
             FlowRow(horizontalArrangement = Arrangement.spacedBy(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                ShareStat(tr("浏览", "Browse", "閲覧", "둘러보기"), share.viewCount)
-                ShareStat(tr("转存", "Save share", "共有を保存", "공유 저장"), share.restoreCount)
-                ShareStat(tr("有效期", "Expiration", "有効期限", "유효 기간"), share.expirationLabel() ?: tr("未知", "Unknown", "不明", "알 수 없음"))
-                share.createdLabel()?.let { ShareStat(tr("创建", "Create", "作成", "만들기"), it) }
+                ShareStat(tr("浏览", "Browse", "閲覧", "둘러보기", "瀏覽"), share.viewCount)
+                ShareStat(tr("转存", "Save share", "共有を保存", "공유 저장", "轉存"), share.restoreCount)
+                ShareStat(tr("有效期", "Expiration", "有効期限", "유효 기간", "有效期"), share.expirationLabel() ?: tr("未知", "Unknown", "不明", "알 수 없음", "未知"))
+                share.createdLabel()?.let { ShareStat(tr("创建", "Create", "作成", "만들기", "建立"), it) }
             }
             Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onCancel, colors = ButtonDefaults.textButtonColors(contentColor = colors.error)) {
-                    Text(if (share.isOk) tr("取消分享", "Revoke share", "共有を解除", "공유 취소") else tr("删除记录", "Delete record", "記録を削除", "기록 삭제"))
+                    Text(if (share.isOk) tr("取消分享", "Revoke share", "共有を解除", "공유 취소", "取消分享") else tr("删除记录", "Delete record", "記録を削除", "기록 삭제", "刪除紀錄"))
                 }
                 if (share.isOk) {
-                    TooltipIconButton(Icons.Outlined.FolderOpen, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기"), onLocate)
-                    TooltipIconButton(Icons.AutoMirrored.Outlined.OpenInNew, tr("在浏览器中打开", "Open in browser", "ブラウザーで開く", "브라우저에서 열기"), onOpen)
+                    TooltipIconButton(Icons.Outlined.FolderOpen, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), onLocate)
+                    TooltipIconButton(Icons.AutoMirrored.Outlined.OpenInNew, tr("在浏览器中打开", "Open in browser", "ブラウザーで開く", "브라우저에서 열기", "在瀏覽器中開啟"), onOpen)
                     Spacer(Modifier.width(4.dp))
                     FilledTonalButton(onClick = onCopy) {
                         Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -482,27 +482,27 @@ private fun ShareSummary.contentLabel(): String {
     val count = fileNum.toIntOrNull() ?: 1
     val size = fileSize.toLongOrNull() ?: 0L
     return when {
-        count > 1 -> tr("$count 项", "${enCount(count, "item", "items")}", "$count 項目", "${count}개 항목")
+        count > 1 -> tr("$count 项", "${enCount(count, "item", "items")}", "$count 項目", "${count}개 항목", "$count 項")
         size > 0 -> size.toReadableSize()
-        else -> tr("1 项", "1 item", "1 項目", "1개 항목")
+        else -> tr("1 项", "1 item", "1 項目", "1개 항목", "1 項")
     }
 }
 
 private fun ShareSummary.createdLabel(): String? = runCatching {
-    OffsetDateTime.parse(createTime).format(DateTimeFormatter.ofPattern(tr("M 月 d 日", "MMM d", "M月d日", "M월 d일")))
+    OffsetDateTime.parse(createTime).format(DateTimeFormatter.ofPattern(tr("M 月 d 日", "MMM d", "M月d日", "M월 d일", "M 月 d 日")))
 }.getOrNull()
 
 private fun ShareSummary.statusLabel(): String = when (shareStatus) {
-    ShareStatus.DELETED -> tr("已失效", "Invalid", "無効", "무효")
-    ShareStatus.EXPIRED -> tr("已过期", "Expired", "期限切れ", "만료됨")
-    ShareStatus.AUDITING -> tr("审核中", "Under review", "審査中", "검토 중")
-    ShareStatus.SENSITIVE_RESOURCE, ShareStatus.SENSITIVE_WORD, ShareStatus.PROHIBITED -> tr("已被屏蔽", "Blocked", "ブロック済み", "차단됨")
-    else -> shareStatusText.ifBlank { tr("不可用", "Unavailable", "利用不可", "사용 불가") }
+    ShareStatus.DELETED -> tr("已失效", "Invalid", "無効", "무효", "已失效")
+    ShareStatus.EXPIRED -> tr("已过期", "Expired", "期限切れ", "만료됨", "已過期")
+    ShareStatus.AUDITING -> tr("审核中", "Under review", "審査中", "검토 중", "審核中")
+    ShareStatus.SENSITIVE_RESOURCE, ShareStatus.SENSITIVE_WORD, ShareStatus.PROHIBITED -> tr("已被屏蔽", "Blocked", "ブロック済み", "차단됨", "已遭封鎖")
+    else -> shareStatusText.ifBlank { tr("不可用", "Unavailable", "利用不可", "사용 불가", "無法使用") }
 }
 
 private fun ShareSummary.expirationLabel(): String? {
-    if (expirationAt == "-1" || expirationDays == "-1") return tr("永久", "Never expires", "無期限", "영구")
+    if (expirationAt == "-1" || expirationDays == "-1") return tr("永久", "Never expires", "無期限", "영구", "永久")
     return runCatching {
-        OffsetDateTime.parse(expirationAt).format(DateTimeFormatter.ofPattern(tr("至 M 月 d 日", "'Until' MMM d", "M月d日まで", "M월 d일까지")))
+        OffsetDateTime.parse(expirationAt).format(DateTimeFormatter.ofPattern(tr("至 M 月 d 日", "'Until' MMM d", "M月d日まで", "M월 d일까지", "至 M 月 d 日")))
     }.getOrNull()
 }

@@ -34,7 +34,7 @@ class GallerySession(
         private set
     var selectedVideoCount by mutableStateOf<Int?>(null)
         private set
-    val scopeLabel: String get() = selectedVideoCount?.let { tr("已选 $it 个视频", "Selected ${enCount(it, "video", "videos")}", "$it 件の動画を選択", "동영상 ${it}개 선택됨") } ?: root?.localizedName.orEmpty()
+    val scopeLabel: String get() = selectedVideoCount?.let { tr("已选 $it 个视频", "Selected ${enCount(it, "video", "videos")}", "$it 件の動画を選択", "동영상 ${it}개 선택됨", "已選 $it 部影片") } ?: root?.localizedName.orEmpty()
     var account by mutableStateOf<String?>(null)
         private set
     var files by mutableStateOf<List<FileStat>>(emptyList())
@@ -144,11 +144,17 @@ class GallerySession(
                 var listed = 0
                 while (traversal.hasPending && listed < FOLDERS_PER_REQUEST) {
                     // 先看几个来源，再排这一批；后续有足够的已发现候选时无需继续扫描。
-                    if (folderVideos.values.asSequence().flatten().map { it.clipContentKey() }.distinct().count { it !in emitted } >= FILES_PER_REQUEST &&
-                        (files.isNotEmpty() || listed >= OPENING_FOLDERS)) break
-                    val batch = traversal.next() ?: break
-                    listed++
-                    rememberBatch(batch)
+                    val uniquePending = folderVideos.values.asSequence().flatten().map { it.clipContentKey() }.distinct().count { it !in emitted }
+                    if (uniquePending >= FILES_PER_REQUEST && (files.isNotEmpty() || listed >= OPENING_FOLDERS)) break
+                    val budget = if (files.isEmpty() && listed < OPENING_FOLDERS) {
+                        (OPENING_FOLDERS - listed).coerceAtMost(DISCOVERY_CONCURRENCY)
+                    } else {
+                        (FOLDERS_PER_REQUEST - listed).coerceAtMost(DISCOVERY_CONCURRENCY)
+                    }
+                    val batches = traversal.nextBatch(budget, DISCOVERY_CONCURRENCY)
+                    if (batches.isEmpty()) break
+                    listed += batches.size
+                    batches.forEach(::rememberBatch)
                 }
                 if (discovery !== traversal || request != generation) return@launch
                 rebuildCandidates()
@@ -361,7 +367,8 @@ class GallerySession(
     private companion object {
         const val FILES_PER_REQUEST = 48
         const val FOLDERS_PER_REQUEST = 16
-        const val OPENING_FOLDERS = 4
+        const val OPENING_FOLDERS = 6
+        const val DISCOVERY_CONCURRENCY = 6
         const val LOAD_AHEAD_FILES = 24
     }
 }

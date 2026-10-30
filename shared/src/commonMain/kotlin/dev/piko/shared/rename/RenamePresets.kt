@@ -21,30 +21,30 @@ class RenamePreset(
 
 val RenamePresets: List<RenamePreset> get() = listOf(
     RenamePreset(
-        label = tr("添加前缀", "Add prefix", "接頭辞を追加", "접두사 추가"),
+        label = tr("添加前缀", "Add prefix", "接頭辞を追加", "접두사 추가", "新增前綴"),
         find = listOf(FindBlock.Start),
         replace = emptyList(),
         focusReplace = true,
-        example = BlockGuideExample(listOf(FindBlock.Start), listOf(ReplaceBlock.Text(tr("合集 ", "Collection ", "コレクション ", "모음 "))), tr("名字 - 01", "Name - 01", "名前 - 01", "이름 - 01"), tr("合集 名字 - 01", "Collection Name - 01", "コレクション 名前 - 01", "모음 이름 - 01")),
+        example = BlockGuideExample(listOf(FindBlock.Start), listOf(ReplaceBlock.Text(tr("合集 ", "Collection ", "コレクション ", "모음 ", "合集 "))), tr("名字 - 01", "Name - 01", "名前 - 01", "이름 - 01", "名字 - 01"), tr("合集 名字 - 01", "Collection Name - 01", "コレクション 名前 - 01", "모음 이름 - 01", "合集 名字 - 01")),
     ),
     RenamePreset(
-        label = tr("添加后缀", "Add suffix", "接尾辞を追加", "접미사 추가"),
+        label = tr("添加后缀", "Add suffix", "接尾辞を追加", "접미사 추가", "新增後綴"),
         // 范围默认只含扩展名之前的部分，结尾即扩展名之前
         find = listOf(FindBlock.End),
         replace = emptyList(),
         focusReplace = true,
-        example = BlockGuideExample(listOf(FindBlock.End), listOf(ReplaceBlock.Text(tr(" 完", " Complete", " 完", " 완결"))), tr("名字 - 01", "Name - 01", "名前 - 01", "이름 - 01"), tr("名字 - 01 完", "Name - 01 Complete", "名前 - 01 完", "이름 - 01 완결")),
+        example = BlockGuideExample(listOf(FindBlock.End), listOf(ReplaceBlock.Text(tr(" 完", " Complete", " 完", " 완결", " 完"))), tr("名字 - 01", "Name - 01", "名前 - 01", "이름 - 01", "名字 - 01"), tr("名字 - 01 完", "Name - 01 Complete", "名前 - 01 完", "이름 - 01 완결", "名字 - 01 完")),
     ),
     RenamePreset(
-        label = tr("改为序号", "Replace with numbers", "連番に変更", "번호로 변경"),
+        label = tr("改为序号", "Replace with numbers", "連番に変更", "번호로 변경", "改為序號"),
         find = listOf(FindBlock.Start, FindBlock.AnyText(), FindBlock.End),
         replace = listOf(ReplaceBlock.Counter(start = 1, padding = 2)),
         focusReplace = true,
         example = BlockGuideExample(
             listOf(FindBlock.Start, FindBlock.AnyText(), FindBlock.End),
-            listOf(ReplaceBlock.Text(tr("第", "Episode ", "第", "")), ReplaceBlock.Counter(start = 1, padding = 2), ReplaceBlock.Text(tr("集", "", "話", "화"))),
-            tr("[字幕组] 名字 - 01 [1080p]", "[Group] Name - 01 [1080p]", "[字幕グループ] 名前 - 01 [1080p]", "[자막 그룹] 이름 - 01 [1080p]"),
-            tr("第01集", "Episode 01", "第01話", "01화"),
+            listOf(ReplaceBlock.Text(tr("第", "Episode ", "第", "", "第")), ReplaceBlock.Counter(start = 1, padding = 2), ReplaceBlock.Text(tr("集", "", "話", "화", "集"))),
+            tr("[字幕组] 名字 - 01 [1080p]", "[Group] Name - 01 [1080p]", "[字幕グループ] 名前 - 01 [1080p]", "[자막 그룹] 이름 - 01 [1080p]", "[字幕組] 名字 - 01 [1080p]"),
+            tr("第01集", "Episode 01", "第01話", "01화", "第01集"),
         ),
     ),
 )

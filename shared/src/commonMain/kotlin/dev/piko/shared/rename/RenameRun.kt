@@ -45,7 +45,7 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
         val completedIds = mutableSetOf<String>()
         val occupied = mutableSetOf<Pair<String, String>>()
         val currentNames = plan.rows.associate { it.source.id to (it.source.parentId to it.source.name) }.toMutableMap()
-        val limit = Semaphore(4)
+        val limit = Semaphore(16)
         try {
             for (wave in plan.waves) {
                 // Workers report progress immediately; results commit in plan order, including on cancellation.
@@ -109,7 +109,12 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
             }
         } finally {
             if (access == null && renamed.isNotEmpty()) {
-                driveRepo.applyChange(DriveChange.ContentsChanged(plan.rows.mapTo(HashSet()) { it.source.parentId }))
+                val touched = plan.rows.mapTo(HashSet()) { it.source.parentId }
+                if (unconfirmed.isEmpty() && failures.isEmpty()) {
+                    driveRepo.notifyFoldersRefreshed(touched)
+                } else {
+                    driveRepo.applyChange(DriveChange.ContentsChanged(touched))
+                }
             }
         }
     }

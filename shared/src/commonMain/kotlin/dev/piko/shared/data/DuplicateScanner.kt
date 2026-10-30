@@ -55,7 +55,7 @@ class DuplicateScanner(
     private val maxFolders: Int = 5_000,
     private val maxFiles: Int = 200_000,
     private val timeout: Duration = 5.minutes,
-    private val concurrency: Int = 4,
+    private val concurrency: Int = 12,
 ) {
     constructor(clients: PikoClientProvider) : this(
         listFolder = { folderId ->
@@ -66,10 +66,8 @@ class DuplicateScanner(
 
     constructor(clients: PikoClientProvider, driveRepo: PikoDriveRepository) : this(
         listFolder = { folderId ->
-            driveRepo.localRealChildrenIfClean(folderId) ?: run {
-                val client = clients.currentClient.value ?: error("Not logged in")
-                client.listFiles(folderId)
-            }
+            val client = clients.currentClient.value ?: error("Not logged in")
+            driveRepo.scanRealChildren(folderId, client)
         },
     )
 

@@ -155,7 +155,7 @@ fun FileListItem(
             if (isSelectionMode || (hover.mouseHovered && onStartSelection != null)) {
                 FileItemSelectionControl(FileItemSelection(
                     if (isSelected) androidx.compose.ui.state.ToggleableState.On else androidx.compose.ui.state.ToggleableState.Off,
-                    { if (isSelectionMode) onSelectToggle(!isSelected) else onStartSelection?.invoke() }, label = tr("选择 $headline", "Select $headline", "$headline を選択", "$headline 선택")),
+                    { if (isSelectionMode) onSelectToggle(!isSelected) else onStartSelection?.invoke() }, label = tr("选择 $headline", "Select $headline", "$headline を選択", "$headline 선택", "選取 $headline")),
                     modifier = Modifier.ownsClicks(), interactive = !isSelectionMode)
             } else leading()
         }
@@ -191,7 +191,7 @@ fun FileListItem(
         trailingContent = { if (isSelectionMode) Spacer(Modifier.width(48.dp)) else Box(slotModifier) { trailing() } },
         supportingContent = supportingSlot,
         onLongClick = longClick,
-        onLongClickLabel = if (longClick != null) tr("操作", "Actions", "操作", "작업") else null,
+        onLongClickLabel = if (longClick != null) tr("操作", "Actions", "操作", "작업", "操作") else null,
         colors = colors,
         shapes = shapes,
         contentPadding = RowContentPadding,
@@ -206,7 +206,7 @@ fun FileListItem(
 @Composable
 fun ListMoreButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     IconButton(onClick = onClick, modifier = modifier) {
-        Icon(imageVector = Icons.Outlined.MoreVert, contentDescription = tr("更多操作", "More actions", "その他の操作", "추가 작업"))
+        Icon(imageVector = Icons.Outlined.MoreVert, contentDescription = tr("更多操作", "More actions", "その他の操作", "추가 작업", "更多操作"))
     }
 }
 
@@ -366,7 +366,7 @@ fun ListLeadingIcon(icon: ImageVector, modifier: Modifier = Modifier) {
 fun StarMark(modifier: Modifier = Modifier) {
     Icon(
         imageVector = Icons.Filled.Star,
-        contentDescription = tr("已加星标", "Starred", "スター付き", "별표 있음"),
+        contentDescription = tr("已加星标", "Starred", "スター付き", "별표 있음", "已加星號"),
         tint = MaterialTheme.colorScheme.tertiary,
         modifier = modifier.size(StarMarkSize),
     )
@@ -382,7 +382,7 @@ private val StarMarkSize = 16.dp
 fun VaultMark(inFolder: Boolean, modifier: Modifier = Modifier) {
     Icon(
         imageVector = Icons.Filled.Inventory2,
-        contentDescription = if (inFolder) tr("含归档条目", "Includes archived items", "アーカイブ項目を含む", "보관 항목 포함") else tr("已归档", "Archived", "アーカイブ済み", "보관됨"),
+        contentDescription = if (inFolder) tr("含归档条目", "Includes archived items", "アーカイブ項目を含む", "보관 항목 포함", "含歸檔項目") else tr("已归档", "Archived", "アーカイブ済み", "보관됨", "已歸檔"),
         tint = MaterialTheme.colorScheme.secondary,
         modifier = modifier.size(StarMarkSize),
     )

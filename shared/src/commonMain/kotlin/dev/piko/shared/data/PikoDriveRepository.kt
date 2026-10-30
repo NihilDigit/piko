@@ -1,5 +1,7 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.i18n.tr
+
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
@@ -22,6 +24,7 @@ import io.github.nihildigit.pikpak.FileFilter
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.PikPakClient
 import io.github.nihildigit.pikpak.FileStat
+import io.github.nihildigit.pikpak.FileTag
 import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.QuotaResponse
 import io.github.nihildigit.pikpak.LeaseBudget
@@ -144,9 +147,11 @@ open class PikoDriveRepository(
     // 带上取的是哪个账号：取回来之前可能已经换了号，按 quotaFlow 的当下值记会记到新账号头上
     private val _quotaUpdates = MutableSharedFlow<Pair<String, QuotaResponse>>(extraBufferCapacity = 4)
     val quotaUpdates: SharedFlow<Pair<String, QuotaResponse>> = _quotaUpdates.asSharedFlow()
-    // 不落盘：与存储配额不同，官方也没有把它算进「上次已知值」这类离线展示的必要
     private val _transferQuotaFlow = MutableStateFlow<TransferQuota?>(null)
     val transferQuotaFlow: StateFlow<TransferQuota?> = _transferQuotaFlow.asStateFlow()
+    private val quotaRequest = MutableStateFlow<Pair<PikPakClient, Deferred<QuotaResponse>>?>(null)
+    private val transferQuotaRequest = MutableStateFlow<Pair<PikPakClient, Deferred<TransferQuota>>?>(null)
+    private val folderTitleCache = MutableStateFlow<Map<String, Pair<List<ChildFile>, String?>>>(emptyMap())
 
     /**
      * 当前账号是不是免费账号，未取到时为 null。取自流量额度的 vip_status，登录与换号时各取一次。
@@ -156,7 +161,9 @@ open class PikoDriveRepository(
         _transferQuotaFlow.map { it?.account?.isPremium?.not() }.stateIn(backgroundScope, SharingStarted.Eagerly, null)
     /** 文件夹的名字与上级，见 [FolderIndex]。下面的路径栈、标签、历史与最近去过都随它改正。 */
     internal val folderIndex = FolderIndex()
-    internal val driveTreeIndex = DriveTreeIndex()
+    internal val driveTreeIndex = DriveTreeIndex(
+        locallyCachedManifestIds = { vaultBinding.value?.store?.parsedFlow?.value?.keys.orEmpty() },
+    )
     private val treeStateLock = Any()
     private val treeSyncJob = MutableStateFlow<Pair<PikPakClient, Deferred<Unit>>?>(null)
     private var pendingTreeSave: kotlinx.coroutines.Job? = null
@@ -180,15 +187,19 @@ open class PikoDriveRepository(
     val clientRevision: StateFlow<Long> = _clientRevision.asStateFlow()
 
     fun writeAccess(expectedAccount: String): DriveWriteAccess? = clientManager.currentClient.value
-        ?.takeIf { it.account == expectedAccount }?.let { DriveWriteAccess(it.account, it, this) }
+        ?.takeIf { it.account == expectedAccount }?.let { asked ->
+            DriveWriteAccess(asked.account, asked, this, vaultForClient(asked))
+        }
+
+    internal fun isCurrentClient(asked: PikPakClient): Boolean = clientManager.currentClient.value === asked
 
     fun historyAccess(expectedAccount: String): HistoryWriteAccess? = clientManager.currentClient.value
         ?.takeIf { it.account == expectedAccount }?.let(::HistoryWriteAccess)
 
-    internal fun applyWriteChange(account: String, change: DriveChange) {
+    internal fun applyWriteChange(account: String, change: DriveChange, notifyChange: Boolean = true) {
         if (currentAccount != account) return
         if (change is DriveChange.Renamed) pinnedFolders.renamed(change.id, change.name)
-        applyChange(change)
+        applyChange(change, notifyChange)
     }
 
     private val references = MutableStateFlow<Set<FolderReferenceSource>>(emptySet())
@@ -197,6 +208,18 @@ open class PikoDriveRepository(
 
     private val dataAccount = MutableStateFlow<String?>(null)
     private val pendingServerDeletes = MutableStateFlow<Set<String>>(emptySet())
+    private data class CachedTrashListing(
+        val client: PikPakClient,
+        val files: List<FileStat>,
+        val listedAt: TimeSource.Monotonic.ValueTimeMark,
+    )
+    private val cachedTrashListing = MutableStateFlow<CachedTrashListing?>(null)
+    private val trashListingRequest = MutableStateFlow<Pair<PikPakClient, Deferred<List<FileStat>>>?>(null)
+
+    private fun invalidateTrashCache() {
+        cachedTrashListing.value = null
+        trashListingRequest.value = null
+    }
 
     fun enterAccount(account: String?) {
         vaultBinding.value?.takeIf { it.client.account != account }?.store?.flushPendingSave()
@@ -206,6 +229,7 @@ open class PikoDriveRepository(
             if (previous == account) return
             if (!dataAccount.compareAndSet(previous, account)) continue
             pendingServerDeletes.value = emptySet()
+            invalidateTrashCache()
             if (previous == null) return
             flushPendingTreeSnapshotSave(previous)
             break
@@ -224,6 +248,7 @@ open class PikoDriveRepository(
             folderIndex.clear()
             driveTreeIndex.clear()
             folderMeaninglessCacheFlow.value = emptyMap()
+            folderTitleCache.value = emptyMap()
             _folderEmptiness.value = emptyMap()
         }
         changes.clear()
@@ -258,6 +283,13 @@ open class PikoDriveRepository(
 
     private fun applyChange(change: DriveChange, notifyChange: Boolean) {
         if (change is DriveChange.Deleted) pendingServerDeletes.update { it + change.ids }
+        if (change is DriveChange.Trashed ||
+            change is DriveChange.Restored ||
+            change is DriveChange.Deleted ||
+            (change is DriveChange.ContentsChanged && change.folders == null)
+        ) {
+            invalidateTrashCache()
+        }
         val indexChanged = synchronized(treeStateLock) {
             val knownParentsBeforeChange: Set<String> = when (change) {
                 is DriveChange.Renamed -> setOfNotNull(change.parentId ?: knownParentOf(change.id) ?: driveTreeIndex.file(change.id)?.parentId)
@@ -273,7 +305,7 @@ open class PikoDriveRepository(
                 is DriveChange.Trashed -> folderIndex.removed(change.ids, referencedNodeIds())
                 is DriveChange.Deleted -> folderIndex.removed(change.ids, referencedNodeIds())
                 is DriveChange.Restored -> folderIndex.restored(change.ids)
-                is DriveChange.Copied, is DriveChange.ContentsChanged -> false
+                is DriveChange.Copied, is DriveChange.Starred, is DriveChange.ContentsChanged -> false
             }
             val folders = change.folders
             childContents.invalidate(folders)
@@ -298,6 +330,21 @@ open class PikoDriveRepository(
                         listing.files.map { file -> if (file.id == change.id) file.copy(name = change.name) else file },
                         listing.listedAt, listing.stale,
                     )
+                    change is DriveChange.Starred && notifyChange -> {
+                        val targetIds = change.ids.toSet()
+                        if (listing.files.none { it.id in targetIds }) listing
+                        else Listing(
+                            listing.files.map { file ->
+                                if (file.id !in targetIds) file
+                                else {
+                                    val withoutStar = file.tags.filterNot { it.name.equals("STAR", ignoreCase = true) }
+                                    val nextTags = if (change.starred) withoutStar + FileTag(id = "STAR", name = "STAR") else withoutStar
+                                    file.copy(tags = nextTags)
+                                }
+                            },
+                            listing.listedAt, listing.stale,
+                        )
+                    }
                     folders == null || id in folders -> listing.expired()
                     else -> listing
                 }
@@ -320,7 +367,7 @@ open class PikoDriveRepository(
             val vaultEntryId = VaultEntry.entryIdOf(fileId)
             if (vaultEntryId != null) {
                 val store = vault
-                var parentId = store.folderOfEntry(vaultEntryId)
+                var parentId = store.folderOfEntry(vaultEntryId) ?: vaultStars.folderOf(vaultEntryId)
                 if (parentId == null) {
                     val candidates = buildList {
                         add("")
@@ -350,7 +397,7 @@ open class PikoDriveRepository(
                         }
                     }
                 }
-                val resolvedParent = parentId ?: error("找不到归档条目所在的文件夹")
+                val resolvedParent = parentId ?: error(tr("未找到归档条目所在的文件夹", "Containing folder of archived item not found", "アーカイブ項目の保存先フォルダーが見つかりません", "보관 항목의 상위 폴더를 찾을 수 없습니다", "找不到歸檔項目所在的資料夾"))
                 if (resolvedParent.isEmpty()) return@runSuspendCatching listOf(ROOT_BREADCRUMB)
                 val folder = folderIndex.node(resolvedParent)?.takeUnless { it.provisional }
                 if (folder != null) {
@@ -376,7 +423,7 @@ open class PikoDriveRepository(
                     parentId = folder.parentId
                 }
             }
-            error("目录层级过深")
+            error(tr("文件夹层级过深", "Folder hierarchy is too deep", "フォルダーの階層が深すぎます", "폴더 계층이 너무 깊습니다", "資料夾層級過深"))
         }
     }
 
@@ -442,7 +489,7 @@ open class PikoDriveRepository(
         folders.firstOrNull { it.name == name } ?: folders.firstOrNull { it.name.equals(name, ignoreCase = true) }
 
     /** [resolveFolderPath] 在某一层找不到 [name]。 */
-    class FolderNotFoundException(val name: String) : Exception("找不到文件夹「$name」")
+    class FolderNotFoundException(val name: String) : Exception(tr("未找到文件夹「$name」", "Folder “$name” not found", "フォルダー「$name」が見つかりません", "“$name” 폴더를 찾을 수 없습니다", "找不到資料夾「$name」"))
 
     /**
      * [folderId] 下的文件夹，按名字自然排序，根目录下不含 `.piko`。地址栏的 › 与补全用，与目录图、网盘页读同一份列表缓存，
@@ -675,16 +722,28 @@ open class PikoDriveRepository(
     private data class VaultBinding(val client: PikPakClient, val store: VaultStore)
     private val vaultBinding = MutableStateFlow<VaultBinding?>(null)
     private val loggedOutVault = VaultStore(object : VaultFolderIo {
-        override suspend fun list(folderId: String): List<FileStat> = error("未登录")
-        override suspend fun read(fileId: String): ByteArray = error("未登录")
-        override suspend fun upload(folderId: String, name: String, bytes: ByteArray): String = error("未登录")
-        override suspend fun delete(ids: List<String>): Unit = error("未登录")
+        override suspend fun list(folderId: String): List<FileStat> = error(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入"))
+        override suspend fun read(fileId: String): ByteArray = error(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入"))
+        override suspend fun upload(folderId: String, name: String, bytes: ByteArray): String = error(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入"))
+        override suspend fun delete(ids: List<String>): Unit = error(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入"))
     })
 
     /** 缓存和待写投影随 client 分开；旧事务的所有 IO 始终使用它开始时的 client。 */
     open val vault: VaultStore get() {
+        val asked = clientManager.currentClient.value ?: return loggedOutVault
+        return storeForClient(asked)
+    }
+
+    internal fun vaultForClient(asked: PikPakClient): VaultStore {
+        val store = vault
+        val binding = vaultBinding.value?.takeIf { it.store === store }
+        if (binding == null) return store
+        if (binding.client === asked) return store
+        return storeForClient(asked)
+    }
+
+    private fun storeForClient(asked: PikPakClient): VaultStore {
         while (true) {
-            val asked = clientManager.currentClient.value ?: return loggedOutVault
             val current = vaultBinding.value
             if (current?.client === asked) return current.store
             val store = VaultStore(
@@ -695,16 +754,23 @@ open class PikoDriveRepository(
                     override suspend fun delete(ids: List<String>) = withContext(Dispatchers.Default) { asked.batchDelete(ids) }
                 },
                 onChanged = { folder ->
-                    if (currentAccount == asked.account) applyChange(DriveChange.ContentsChanged(setOf(folder)))
+                    if (clientManager.currentClient.value === asked) applyChange(DriveChange.ContentsChanged(setOf(folder)))
                 },
                 onWritten = { folder, entries ->
                     if (clientManager.currentClient.value === asked) vaultEntriesKnown(folder, entries)
                 },
+                onCommitted = { folder, entries, snapshot ->
+                    if (clientManager.currentClient.value === asked) {
+                        commitVaultListing(asked, folder, entries, snapshot)
+                    }
+                },
+                currentFolderSerial = { synchronized(treeStateLock) { changeMarks.value.serial } },
                 cacheStore = cacheStore,
                 account = asked.account,
                 scope = backgroundScope,
             )
-            if (vaultBinding.compareAndSet(current, VaultBinding(asked, store)) && clientManager.currentClient.value === asked) return store
+            if (clientManager.currentClient.value !== asked) return store
+            if (vaultBinding.compareAndSet(current, VaultBinding(asked, store))) return store
         }
     }
 
@@ -720,17 +786,24 @@ open class PikoDriveRepository(
      * 只少了归档的那几行，不让整个目录打不开。
      */
     suspend fun listBrowsable(parentId: String, sortOrder: PikoFileSortOrder): Result<List<FileStat>> {
-        val asked = clientManager.currentClient.value ?: return Result.failure(IllegalStateException("未登录"))
+        val asked = clientManager.currentClient.value ?: return Result.failure(IllegalStateException(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入")))
         return listBrowsable(parentId, sortOrder, asked, vault)
     }
 
     /** 遍历在打开时固定 client 和归档仓库；换号后不能继续拿新账号列旧目录。 */
     internal fun browsableReader(expectedAccount: String): (suspend (String) -> Result<List<FileStat>>)? {
         val asked = clientManager.currentClient.value?.takeIf { it.account == expectedAccount } ?: return null
-        val store = vault
+        val store = vaultForClient(asked)
         if (clientManager.currentClient.value !== asked) return null
-        return reader@{ folderId ->
-            if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+        return browsableReaderForClient(asked, store, requireActiveClient = true)
+    }
+
+    internal fun browsableReaderForClient(
+        asked: PikPakClient,
+        store: VaultStore,
+        requireActiveClient: Boolean = false,
+    ): suspend (String) -> Result<List<FileStat>> = reader@{ folderId ->
+        if (clientManager.currentClient.value === asked) {
             val state = driveTreeIndex.flow.value
             if (state.complete && folderId !in state.dirtyFolders && (folderId.isEmpty() || folderId in state.entries)) {
                 val real = driveTreeIndex.realChildren(folderId).files
@@ -742,16 +815,53 @@ open class PikoDriveRepository(
                     return@reader Result.success(withVaulted(folderId, real, entries, PikoFileSortOrder.TIME_DESC))
                 }
             }
-            listBrowsable(folderId, PikoFileSortOrder.TIME_DESC, asked, store)
+            return@reader listBrowsable(folderId, PikoFileSortOrder.TIME_DESC, asked, store)
+        }
+        if (requireActiveClient) throw CancellationException("Account changed")
+        withContext(Dispatchers.Default) {
+            runSuspendCatching {
+                val raw = asked.listFiles(folderId)
+                val entries = store.read(folderId, raw).getOrDefault(emptyList())
+                sortFiles(
+                    raw.filterNot { isPikoInternalFolder(it, folderId) || VaultStore.isRecoveryFile(it) || VaultStore.looksLikeManifest(it) } +
+                        entries.filter { it.isArchived }.map { it.toFileStat(folderId) },
+                    PikoFileSortOrder.TIME_DESC,
+                    folderId,
+                )
+            }
         }
     }
 
-    /** 供查重等纯真实文件扫描器在本地树就绪且目录未脏时直接切片，避免发起网络请求。 */
+    /** 供查重、规范命名等真实文件扫描器在本地树或单目录已就绪且未脏时直接切片，避免发起网络请求。 */
     internal fun localRealChildrenIfClean(folderId: String): List<FileStat>? {
         val state = driveTreeIndex.flow.value
-        if (!state.complete || folderId in state.dirtyFolders) return null
+        if (folderId in state.dirtyFolders) return null
+        val children = driveTreeIndex.realChildren(folderId)
+        if (children.coverage == DriveTreeIndex.FolderCoverage.COMPLETE) return children.files
+        if (!state.complete) return null
         if (folderId.isNotEmpty() && folderId !in state.entries) return null
-        return driveTreeIndex.realChildren(folderId).files
+        return children.files
+    }
+
+    /**
+     * 扫描专用真实子项读取：命中干净本地树时零网络直出；遇到未同步或脏目录时拉取远端并回填 [DriveTreeIndex]（修复脏态），
+     * 同时不写入有容量上限的 [childContents] 免得全盘扫描冲刷目录摘要缓存。
+     */
+    internal suspend fun scanRealChildren(folderId: String, asked: PikPakClient = client): List<FileStat> {
+        localRealChildrenIfClean(folderId)?.let { return it }
+        val serial = synchronized(treeStateLock) { changeMarks.value.serial }
+        val raw = asked.listFiles(folderId)
+        val enriched = sourceLedger.enrich(raw)
+        var indexUpdated = false
+        synchronized(treeStateLock) {
+            if (clientManager.currentClient.value === asked && unchangedSince(folderId, serial)) {
+                val reparented = driveTreeIndex.putFolderListing(folderId, enriched, complete = true)
+                markFolderListed(folderId, reparented)
+                indexUpdated = folderIndex.listed(folderId, enriched, complete = true)
+            }
+        }
+        if (indexUpdated) normalizeLocations()
+        return enriched
     }
 
     private suspend fun listBrowsable(
@@ -820,10 +930,14 @@ open class PikoDriveRepository(
                     matchByName != null -> matchByName.second
                     else -> null
                 }
-                matched?.enrich(file) ?: file
+                matched?.enrich(file, preserveStar = vaultStars.isStarred(matched.id)) ?: file
             }
         }
-        return sortFiles(enriched + entries.filter { it.isArchived }.map { it.toFileStat(folderId) }, sortOrder, folderId)
+        return sortFiles(
+            enriched + entries.filter { it.isArchived }.map { it.toFileStat(folderId, starred = vaultStars.isStarred(it.id)) },
+            sortOrder,
+            folderId,
+        )
     }
 
     /**
@@ -893,6 +1007,9 @@ open class PikoDriveRepository(
     /** 整棵归档过的文件夹，见 [VaultTrees]。跨设备的同步在 VaultTreeSync。 */
     val vaultTrees = VaultTrees(cacheStore, backgroundScope)
 
+    /** Piko 自管的归档条目星标账本，见 [VaultStars]。跨设备的同步在 VaultStarSync。 */
+    val vaultStars = VaultStars(cacheStore, backgroundScope)
+
     /** 秒传文件的来源，列出的文件经它补上 sourceUrl，见 [SourceLedger]。跨设备的同步在 SourceLedgerSync。 */
     val sourceLedger = SourceLedger(cacheStore, backgroundScope)
 
@@ -914,7 +1031,13 @@ open class PikoDriveRepository(
             clientManager.currentClient.collect {
                 childContents.switchAccount(it?.account)
                 vaultTrees.switchAccount(it?.account)
+                vaultStars.switchAccount(it?.account)
                 sourceLedger.switchAccount(it?.account)
+            }
+        }
+        backgroundScope.launch {
+            vaultStars.changedFolders.collect { folders ->
+                if (folders.isNotEmpty()) notifyFoldersRefreshed(folders)
             }
         }
         // 账本从磁盘载入或从别的设备合并进来时，已缓存的列表是按旧账本补的，含有这些内容的那几层重列一次
@@ -938,28 +1061,44 @@ open class PikoDriveRepository(
                     // 退出到登录页不算换号：同一账号登回来时位置还在，别的账号登进来时再换
                     if (client != null) enterAccount(client.account)
                 }
-                if (client != null && _transferQuotaFlow.value == null) {
-                    getTransferQuota().logFailure(TAG, "取账号类型失败")
-                }
-                // 所有账号打开归档条目都受剩余空间约束，同时借出的总量不能超过剩余，
-                // 否则信息流一批并行核对时后面的秒传直接失败。留一成余量给清单这类小文件
-                if (client != null && client.leaseBudget == null) {
-                    getQuota().logFailure(TAG, "取剩余空间失败，借出归档条目暂不设上限").getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.let { quota ->
-                        client.leaseBudget = LeaseBudget(quota.remainingBytes.coerceAtLeast(0) * 9 / 10)
-                        PikoLog.d(TAG, "借出额度：剩余 ${quota.remainingBytes} 字节的九成")
+                if (client == null) return@collectLatest
+                // 优先从本机缓存零网络恢复云盘流量与完整文件树快照，不阻塞在任何网络请求之后
+                if (cacheStore != null) {
+                    if (_transferQuotaFlow.value == null) {
+                        val cachedTq = runCatching {
+                            cacheStore.read(transferQuotaCacheKey(client.account))
+                                ?.let { QUOTA_JSON.decodeFromString(TransferQuota.serializer(), it) }
+                        }.getOrNull()
+                        if (cachedTq != null && clientManager.currentClient.value === client && _transferQuotaFlow.value == null) {
+                            _transferQuotaFlow.value = cachedTq
+                        }
+                    }
+                    if (!driveTreeIndex.isComplete) {
+                        launch {
+                            val restored = restoreTreeFromCache(client)
+                            if (clientManager.currentClient.value !== client) return@launch
+                            delay(TREE_WARMUP_DELAY)
+                            if (clientManager.currentClient.value !== client) return@launch
+                            if (restored) {
+                                probeRemoteChanges(client).logFailure(TAG, "后台哨兵探针对账失败")
+                            } else if (!driveTreeIndex.isComplete) {
+                                runSuspendCatching { ensureTreeSync(client).await() }
+                                    .logFailure(TAG, "后台建立本地文件树索引失败")
+                            }
+                        }
                     }
                 }
-                if (client != null && cacheStore != null && !driveTreeIndex.isComplete) {
+                // 并行单飞刷新云盘流量与存储配额，避免两项网络请求串行排队
+                launch {
+                    getTransferQuota().logFailure(TAG, "取账号类型失败")
+                }
+                if (client.leaseBudget == null) {
                     launch {
-                        val restored = restoreTreeFromCache(client)
-                        if (clientManager.currentClient.value !== client) return@launch
-                        delay(TREE_WARMUP_DELAY)
-                        if (clientManager.currentClient.value !== client) return@launch
-                        if (restored) {
-                            probeRemoteChanges(client).logFailure(TAG, "后台哨兵探针对账失败")
-                        } else if (!driveTreeIndex.isComplete) {
-                            runSuspendCatching { ensureTreeSync(client).await() }
-                                .logFailure(TAG, "后台建立本地文件树索引失败")
+                        getQuota().logFailure(TAG, "取剩余空间失败，借出归档条目暂不设上限").getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.let { quota ->
+                            if (client.leaseBudget == null) {
+                                client.leaseBudget = LeaseBudget(quota.remainingBytes.coerceAtLeast(0) * 9 / 10)
+                                PikoLog.d(TAG, "借出额度：剩余 ${quota.remainingBytes} 字节的九成")
+                            }
                         }
                     }
                 }
@@ -994,6 +1133,33 @@ open class PikoDriveRepository(
     internal fun knownVaultParents(): Map<String, String> = folderIndex.flow.value.nodes
         .filterValues { !it.provisional }.mapNotNull { (id, node) -> node.parentId?.let { id to it } }.toMap()
 
+    /**
+     * 按内容哈希与字节数零网络汇总本机已知的归档条目与本地目录树真实文件元数据（CID、时长、分辨率、MIME），
+     * 供「以引用保存」与「归档」共用补齐条目信息。
+     */
+    internal fun knownVaultMetaOf(gcid: String, size: Long): VaultMediaMeta? {
+        if (gcid.isBlank()) return null
+        val fromVault = vaultBinding.value?.store?.knownMetaOf(gcid, size)
+        if (fromVault != null && fromVault.cid != null && fromVault.duration != null &&
+            fromVault.width != null && fromVault.height != null && fromVault.mimeType != null
+        ) {
+            return fromVault
+        }
+        val state = driveTreeIndex.flow.value
+        var merged = fromVault ?: VaultMediaMeta()
+        for (stat in state.entries.values) {
+            if (!stat.isFolder && !stat.trashed && stat.sizeBytes == size && stat.hash.equals(gcid, ignoreCase = true)) {
+                merged = merged.mergeWith(VaultMediaMeta.fromFileStat(stat))
+                if (merged.cid != null && merged.duration != null && merged.width != null &&
+                    merged.height != null && merged.mimeType != null
+                ) {
+                    break
+                }
+            }
+        }
+        return merged.takeUnless { it.isEmpty }
+    }
+
     internal fun rememberFullyVaulted(folderIds: Set<String>) {
         childContents.markFullyVaulted(folderIds, knownVaultParents())
     }
@@ -1010,16 +1176,149 @@ open class PikoDriveRepository(
             .stateIn(backgroundScope, SharingStarted.Eagerly, emptySet())
     }
 
-    /** 清单读到或写成之后，按其中还有没有条目更新文件夹的标记。 */
+    /**
+     * 清单读到或写成之后，按其中还有没有条目更新文件夹的标记。
+     * 必须先通过清单身份校验才执行星标对账，且乐观待确认投影（[reconcileStars] 为假）严禁写取消星标墓碑。
+     */
     internal fun vaultEntriesKnown(
         folderId: String,
         entries: List<VaultEntry>,
         expectedManifestId: String? = null,
         requireMatch: Boolean = false,
+        reconcileStars: Boolean = true,
     ) {
-        if (!driveTreeIndex.putVaultEntries(folderId, entries, expectedManifestId, requireMatch)) return
+        val starredIds = vaultStars.flow.value.values.asSequence().filter { it.starred }.mapTo(HashSet()) { it.entryId }
+        if (!driveTreeIndex.putVaultEntries(folderId, entries, expectedManifestId, requireMatch, starredIds)) return
+        if (reconcileStars) {
+            vaultStars.reconcileFolder(folderId, entries, expectedAccount = currentAccount)
+        }
         childContents.markVaulted(folderId, entries.any { it.isArchived })
         childContents.rememberCover(folderId, entries.coverGcid().orEmpty())
+    }
+
+    internal fun knownDescendantFolders(rootFolderId: String): Set<String> =
+        if (rootFolderId.isEmpty()) emptySet() else driveTreeIndex.descendantFolders(rootFolderId)
+
+    /**
+     * 清单提交确认后，按证据类型更新本地文件树、列表缓存与目录摘要：
+     * - [VaultCommitSnapshot.FullListing]：校验列目录发起时的变更序号，期间未发生并发文件改动时才完整写回，否则仅更新归档条目并标脏；
+     * - [VaultCommitSnapshot.IncrementalFiles]：新目录快速通道仅原地追加新建的来源文件与清单，保留同目录已创建的嵌套子目录；
+     * - null：回退为局部目录失效。
+     */
+    private fun commitVaultListing(
+        asked: PikPakClient,
+        folderId: String,
+        entries: List<VaultEntry>,
+        snapshot: VaultCommitSnapshot?,
+    ) {
+        when (snapshot) {
+            null -> {
+                if (currentAccount == asked.account) applyChange(DriveChange.ContentsChanged(setOf(folderId)))
+            }
+            is VaultCommitSnapshot.IncrementalFiles -> {
+                val enrichedAdded = sourceLedger.enrich(snapshot.added)
+                val applied = synchronized(treeStateLock) {
+                    if (clientManager.currentClient.value !== asked) return@synchronized false
+                    for (added in enrichedAdded) {
+                        driveTreeIndex.applyChange(
+                            DriveChange.Created(parentId = folderId, id = added.id, name = added.name, isFolder = added.isFolder, stat = added),
+                        )
+                    }
+                    vaultEntriesKnown(folderId, entries)
+                    listingRequests.update { it - folderId }
+                    listings.update { cache ->
+                        cache.mapValues { (id, listing) -> if (id == folderId) listing.expired() else listing }
+                    }
+                    _folderEmptiness.update { it + (folderId to false) }
+                    true
+                }
+                if (!applied) return
+                if (driveTreeIndex.isComplete) scheduleTreeSnapshotSave()
+                _folderChanges.tryEmit(DriveChange.ContentsChanged(setOf(folderId)))
+            }
+            is VaultCommitSnapshot.FullListing -> {
+                val enriched = sourceLedger.enrich(snapshot.listing)
+                var indexUpdated = false
+                var reparented: Set<String> = emptySet()
+                var staleConcurrentMutation = false
+                val applied = synchronized(treeStateLock) {
+                    if (clientManager.currentClient.value !== asked) return@synchronized false
+                    val serialOk = snapshot.listedAtSerial == null || unchangedSince(folderId, snapshot.listedAtSerial)
+                    if (!serialOk) {
+                        // 挂起清理旧清单期间同目录发生了其他文件变更：只提交归档条目事实，拒绝用旧快照覆盖最新文件节点
+                        vaultEntriesKnown(folderId, entries)
+                        staleConcurrentMutation = true
+                        return@synchronized true
+                    }
+                    reparented = driveTreeIndex.putFolderListing(folderId, enriched, complete = true)
+                    markFolderListed(folderId, reparented)
+                    listingRequests.update { it - folderId }
+                    rememberListing(folderId, enriched)
+                    rememberChildContents(folderId, enriched, complete = true)
+                    indexUpdated = folderIndex.listed(folderId, enriched, complete = true)
+                    vaultEntriesKnown(folderId, entries)
+                    true
+                }
+                if (!applied) return
+                if (staleConcurrentMutation) {
+                    applyChange(DriveChange.ContentsChanged(setOf(folderId)))
+                    return
+                }
+                if (indexUpdated) normalizeLocations()
+                if (driveTreeIndex.isComplete) scheduleTreeSnapshotSave()
+                _folderChanges.tryEmit(DriveChange.ContentsChanged(setOf(folderId) + reparented))
+            }
+        }
+    }
+
+    /**
+     * 仅通知视图与旧列表缓存刷新指定目录，对已在 [DriveTreeIndex] 同步干净的目录不标脏，且绝不传 null 作废整棵树。
+     */
+    internal fun notifyFoldersRefreshed(folders: Set<String>) {
+        if (folders.isEmpty()) return
+        val state = driveTreeIndex.flow.value
+        val needsDirty = folders.filterTo(HashSet()) { folderId ->
+            !(state.complete && folderId in state.listedFolders && folderId !in state.dirtyFolders)
+        }
+        if (needsDirty.isNotEmpty()) {
+            applyChange(DriveChange.ContentsChanged(needsDirty))
+        }
+        val cleanOnly = folders - needsDirty
+        if (cleanOnly.isNotEmpty()) {
+            synchronized(treeStateLock) {
+                listings.update { cache ->
+                    cache.mapValues { (id, listing) -> if (id in cleanOnly) listing.expired() else listing }
+                }
+            }
+            _folderChanges.tryEmit(DriveChange.ContentsChanged(cleanOnly))
+        }
+    }
+
+    /**
+     * 从已就绪且未脏的本地文件树中按相对路径列表（如 ["Season 1", "Season 1/SPs"]）零网络解析已存在的子目录 ID。
+     */
+    internal fun resolveExistingSubfoldersInTree(
+        rootParentId: String,
+        relativeDirectories: List<String>,
+    ): Map<String, String> {
+        if (relativeDirectories.isEmpty()) return emptyMap()
+        val state = driveTreeIndex.flow.value
+        val resolved = LinkedHashMap<String, String>()
+        resolved[""] = rootParentId
+        for (dir in relativeDirectories.sortedBy { it.count { c -> c == '/' } }) {
+            val parentPath = dir.substringBeforeLast('/', "")
+            val parentId = resolved[parentPath] ?: continue
+            if (parentId in state.dirtyFolders || (!state.complete && parentId !in state.listedFolders)) continue
+            val name = dir.substringAfterLast('/')
+            val match = state.childrenByParent[parentId].orEmpty().asSequence()
+                .mapNotNull { state.entries[it] }
+                .firstOrNull { it.isFolder && !it.trashed && it.name == name }
+            if (match != null) {
+                resolved[dir] = match.id
+            }
+        }
+        resolved.remove("")
+        return resolved
     }
 
     private suspend fun readAndRecordVaultEntries(
@@ -1031,7 +1330,7 @@ open class PikoDriveRepository(
         logTagSuffix: String = "",
     ): List<VaultEntry> {
         val startedFromPending = store.hasPending(folderId)
-        val expectedManifestId = VaultStore.winnerOf(listing)?.id
+        val expectedManifestId = store.winnerOf(listing)?.id
         val result = store.read(folderId, listing).let {
             if (logFailure) it.logFailure(TAG, "读取归档清单失败$logTagSuffix") else it
         }
@@ -1040,10 +1339,10 @@ open class PikoDriveRepository(
         val currentlyPending = store.hasPending(folderId)
         if (startedFromPending) {
             if (currentlyPending) {
-                vaultEntriesKnown(folderId, entries)
+                vaultEntriesKnown(folderId, entries, reconcileStars = false)
             }
         } else if (!currentlyPending) {
-            vaultEntriesKnown(folderId, entries, expectedManifestId = expectedManifestId, requireMatch = true)
+            vaultEntriesKnown(folderId, entries, expectedManifestId = expectedManifestId, requireMatch = true, reconcileStars = true)
         }
         return entries
     }
@@ -1210,14 +1509,32 @@ open class PikoDriveRepository(
     suspend fun getQuota(): Result<QuotaResponse> = withContext(Dispatchers.Default) {
         runSuspendCatching {
             val asked = client
-            asked.getQuota().also {
-                _quotaFlow.value = it
-                _quotaUpdates.tryEmit(asked.account to it)
-                if (driveTreeIndex.isComplete && driveTreeIndex.lastUsageBytes == null) {
-                    driveTreeIndex.setLastUsageBytes(it.quota.usageBytes)
-                    scheduleTreeSnapshotSave()
+            val existing = quotaRequest.value?.takeIf { it.first === asked && it.second.isActive }?.second
+            val deferred = existing ?: backgroundScope.async(start = CoroutineStart.LAZY) {
+                asked.getQuota().also {
+                    if (clientManager.currentClient.value === asked) {
+                        _quotaFlow.value = it
+                        _quotaUpdates.tryEmit(asked.account to it)
+                        if (driveTreeIndex.isComplete && driveTreeIndex.lastUsageBytes == null) {
+                            driveTreeIndex.setLastUsageBytes(it.quota.usageBytes)
+                            scheduleTreeSnapshotSave()
+                        }
+                    }
+                }
+            }.also { created ->
+                var winner = created
+                quotaRequest.update { cur ->
+                    if (cur != null && cur.first === asked && cur.second.isActive) {
+                        winner = cur.second
+                        cur
+                    } else asked to created
+                }
+                if (winner !== created) created.cancel() else {
+                    created.invokeOnCompletion { quotaRequest.update { cur -> if (cur?.second === created) null else cur } }
+                    created.start()
                 }
             }
+            (quotaRequest.value?.takeIf { it.first === asked }?.second ?: deferred).await()
         }
     }
 
@@ -1225,9 +1542,37 @@ open class PikoDriveRepository(
     suspend fun isFreeAccount(): Boolean? =
         isFreeAccountFlow.value ?: getTransferQuota().getOrNull()?.account?.isPremium?.not()
 
-    /** 离线下载、下载、上传三项月度流量额度，见 [TransferQuota] 上的计费实测结论。 */
+    /** 离线下载、下载、上传三项月度流量额度：单飞合并并发请求，并缓存上次已知快照供打开页面瞬时渲染。 */
     suspend fun getTransferQuota(): Result<TransferQuota> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.getTransferQuota().also { _transferQuotaFlow.value = it } }
+        runSuspendCatching {
+            val asked = client
+            val existing = transferQuotaRequest.value?.takeIf { it.first === asked && it.second.isActive }?.second
+            val deferred = existing ?: backgroundScope.async(start = CoroutineStart.LAZY) {
+                asked.getTransferQuota().also { tq ->
+                    if (clientManager.currentClient.value === asked) {
+                        _transferQuotaFlow.value = tq
+                        cacheStore?.let { store ->
+                            backgroundScope.launch {
+                                runCatching { store.write(transferQuotaCacheKey(asked.account), QUOTA_JSON.encodeToString(TransferQuota.serializer(), tq)) }
+                            }
+                        }
+                    }
+                }
+            }.also { created ->
+                var winner = created
+                transferQuotaRequest.update { cur ->
+                    if (cur != null && cur.first === asked && cur.second.isActive) {
+                        winner = cur.second
+                        cur
+                    } else asked to created
+                }
+                if (winner !== created) created.cancel() else {
+                    created.invokeOnCompletion { transferQuotaRequest.update { cur -> if (cur?.second === created) null else cur } }
+                    created.start()
+                }
+            }
+            (transferQuotaRequest.value?.takeIf { it.first === asked }?.second ?: deferred).await()
+        }
     }
 
     /**
@@ -1267,6 +1612,7 @@ open class PikoDriveRepository(
                             Buffer().apply { write(bytes, startOffset, bytes.size) }
                         },
                         onProgress = {},
+                        freshSession = attempt == 0,
                     )
                     return session.fileId
                 } catch (e: CancellationException) {
@@ -1277,7 +1623,7 @@ open class PikoDriveRepository(
                     delay(LINK_RETRY_DELAYS.getOrElse(attempt) { 1.seconds })
                 }
             }
-            throw lastError ?: error("上传失败")
+            throw lastError ?: error(tr("上传失败", "Upload failed", "アップロードに失敗しました", "업로드 실패", "上傳失敗"))
         } catch (e: Throwable) {
             withContext(NonCancellable) { runCatching { asked.cancelUpload(session) } }
             throw e
@@ -1301,8 +1647,8 @@ open class PikoDriveRepository(
             delay(wait)
             detail = asked.getFile(fileId)
         }
-        val url = detail.downloadUrl ?: error("没有下载链接")
-        val size = detail.size.toLongOrNull() ?: error("大小未知")
+        val url = detail.downloadUrl ?: error(tr("未获取到下载链接", "Download link unavailable", "ダウンロードリンクを取得できません", "다운로드 링크를 가져올 수 없습니다", "無法取得下載連結"))
+        val size = detail.size.toLongOrNull() ?: error(tr("文件大小未知", "Unknown file size", "ファイルサイズが不明です", "파일 크기를 알 수 없습니다", "檔案大小未知"))
         if (size == 0L) return ByteArray(0)
         return asked.streamRangeFromUrl(url, start = 0L, length = size, {}) { stream -> stream.channel.toByteArray() }
     }
@@ -1322,11 +1668,17 @@ open class PikoDriveRepository(
     /**
      * 按 gcid 秒传出一个文件，恢复归档条目用。[source] 是条目记着的来源，记进来源账本：取回的文件被复制、
      * 移出原文件夹后，清单里的取回记录就对不上了，账本按内容记，仍补得上。
+     * [notifyChange] 为假时仍立即更新本地树与来源账本，但不在批量恢复中途逐文件广播列表重排。
      */
-    suspend fun instantCreate(file: ResolvedFile, parentId: String, source: String? = null): Result<String> = withContext(Dispatchers.Default) {
+    suspend fun instantCreate(
+        file: ResolvedFile,
+        parentId: String,
+        source: String? = null,
+        notifyChange: Boolean = true,
+    ): Result<String> = withContext(Dispatchers.Default) {
         runSuspendCatching { client.instantCreate(file, parentId) }.onSuccess { id ->
             source?.let { sourceLedger.record(it, listOf(file)) }
-            applyChange(DriveChange.Created(parentId, id, file.path.substringAfterLast('/'), isFolder = false))
+            applyChange(DriveChange.Created(parentId, id, file.path.substringAfterLast('/'), isFolder = false), notifyChange)
         }
     }
 
@@ -1716,6 +2068,7 @@ open class PikoDriveRepository(
                     }
 
                     val vaultByFolder = LinkedHashMap<String, List<VaultEntry>>()
+                    val uncachedManifestFolders = ArrayList<Pair<String, List<FileStat>>>()
                     for ((folderId, manifests) in manifestByFolder) {
                         if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
                         val winnerId = VaultStore.winnerOf(manifests)?.id
@@ -1725,13 +2078,26 @@ open class PikoDriveRepository(
                             if (!isShadowRebuild) {
                                 vaultEntriesKnown(folderId, cachedManifest, expectedManifestId = winnerId, requireMatch = !store.hasPending(folderId))
                             }
-                            continue
+                        } else {
+                            uncachedManifestFolders += folderId to manifests
                         }
-                        runSuspendCatching {
-                            val entries = readAndRecordVaultEntries(folderId, manifests, store, asked)
-                            if (clientManager.currentClient.value === asked && entries.isNotEmpty()) {
-                                vaultByFolder[folderId] = entries
-                            }
+                    }
+                    if (uncachedManifestFolders.isNotEmpty()) {
+                        val manifestPermits = Semaphore(MANIFEST_WARMUP_CONCURRENCY)
+                        val loaded = coroutineScope {
+                            uncachedManifestFolders.map { (folderId, manifests) ->
+                                async {
+                                    manifestPermits.withPermit {
+                                        if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
+                                        val entries = runSuspendCatching { readAndRecordVaultEntries(folderId, manifests, store, asked) }
+                                            .getOrDefault(emptyList())
+                                        folderId to entries
+                                    }
+                                }
+                            }.awaitAll()
+                        }
+                        for ((folderId, entries) in loaded) {
+                            if (entries.isNotEmpty()) vaultByFolder[folderId] = entries
                         }
                     }
 
@@ -1828,29 +2194,40 @@ open class PikoDriveRepository(
         val asked = client
         val store = vault
         val emittedIds = HashSet<String>()
+        val checkedMissIds = HashSet<String>()
 
-        fun extraFolderTitle(folder: FileStat): String? =
-            childContents.get(folder.id)?.let { children ->
-                describeFolder(folder.name, children.map { MediaFileInput(it.name, 0, it.category?.toFileKind()) }).title
+        fun extraFolderTitle(folder: FileStat): String? {
+            val children = childContents.get(folder.id) ?: return null
+            val cached = folderTitleCache.value[folder.id]
+            if (cached != null && cached.first == children) return cached.second
+            val computed = describeFolder(folder.name, children.map { MediaFileInput(it.name, 0, it.category?.toFileKind()) }).title
+            folderTitleCache.update { cache ->
+                if (cache.size >= 4096) mapOf(folder.id to (children to computed))
+                else cache + (folder.id to (children to computed))
             }
+            return computed
+        }
 
         fun enrichFile(file: FileStat): FileStat =
             if (file.isFolder) withVaultCovers(listOf(file)).first() else sourceLedger.enrich(file)
 
-        suspend fun emitNewMatches() {
+        suspend fun emitNewMatches(incrementalSkip: MutableSet<String>? = null, excludeDirty: Boolean = false) {
+            val dirtyNow = if (excludeDirty) driveTreeIndex.dirtyFolders else emptySet()
             val hits = driveTreeIndex.searchLocal(
                 query = cleanQuery,
                 parentId = parentId,
                 folderIndex = folderIndex,
                 extraFolderTitle = ::extraFolderTitle,
                 transformFile = ::enrichFile,
+                skipIds = if (dirtyNow.isEmpty()) incrementalSkip else null,
             )
             for (hit in hits) {
+                if (dirtyNow.isNotEmpty() && (hit.file.parentId in dirtyNow || hit.file.id in dirtyNow)) continue
                 if (emittedIds.add(hit.file.id)) emit(hit)
             }
         }
 
-        emitNewMatches()
+        emitNewMatches(checkedMissIds, excludeDirty = true)
 
         if (driveTreeIndex.isComplete) {
             val dirty = driveTreeIndex.dirtyFolders
@@ -1868,19 +2245,54 @@ open class PikoDriveRepository(
         val sync = ensureTreeSync(asked)
         var lastSeenRev = driveTreeIndex.flow.value.revision
         while (sync.isActive) {
-            delay(50)
+            delay(250)
             val currentRev = driveTreeIndex.flow.value.revision
             if (currentRev != lastSeenRev) {
                 lastSeenRev = currentRev
-                emitNewMatches()
+                emitNewMatches(checkedMissIds)
             }
         }
         sync.await()
         emitNewMatches()
     }.flowOn(Dispatchers.Default)
 
-    suspend fun trashFiles(): Result<List<FileStat>> = withContext(Dispatchers.Default) {
-        runSuspendCatching { client.listTrash() }
+    suspend fun trashFiles(fresh: Boolean = true): Result<List<FileStat>> = trashFilesForClient(client, fresh)
+
+    internal suspend fun trashFilesForClient(asked: PikPakClient, fresh: Boolean = true): Result<List<FileStat>> = withContext(Dispatchers.Default) {
+        runSuspendCatching {
+            if (!fresh) {
+                cachedTrashListing.value
+                    ?.takeIf { it.client === asked && it.listedAt.elapsedNow() < TRASH_CACHE_FRESH }
+                    ?.let { return@runSuspendCatching it.files }
+            }
+            var winner: Deferred<List<FileStat>>? = null
+            val created = backgroundScope.async(start = CoroutineStart.LAZY) {
+                val listed = asked.listTrash()
+                if (clientManager.currentClient.value === asked) {
+                    cachedTrashListing.value = CachedTrashListing(asked, listed, TimeSource.Monotonic.markNow())
+                }
+                listed
+            }
+            trashListingRequest.update { existing ->
+                if (!fresh && existing != null && existing.first === asked && existing.second.isActive) {
+                    winner = existing.second
+                    existing
+                } else {
+                    winner = created
+                    asked to created
+                }
+            }
+            val active = winner ?: created
+            if (active !== created) {
+                created.cancel()
+            } else {
+                created.invokeOnCompletion {
+                    trashListingRequest.update { cur -> if (cur?.second === created) null else cur }
+                }
+                created.start()
+            }
+            active.await()
+        }
     }
 
     /** 删除请求成功后，服务端仍可能在后台清理；只用成功取得的完整回收站列表核对。 */
@@ -1897,11 +2309,31 @@ open class PikoDriveRepository(
         runSuspendCatching { client.getShareInfo(shareId, passCode) }
     }
 
-    /** 分享里某个文件夹的内容。子目录只能经它打开，GET /share 不认 parent_id。 */
-    suspend fun shareFolder(shareId: String, passCodeToken: String, parentId: String): Result<List<FileStat>> =
-        withContext(Dispatchers.Default) {
-            runSuspendCatching { client.listShareFiles(shareId, passCodeToken, parentId = parentId).files }
+    /** 分享里某个文件夹的全部内容（自动翻页，超过 [maxPages] 页时返回截断标记）。子目录只能经它打开，GET /share 不认 parent_id。 */
+    suspend fun shareFolderFull(
+        shareId: String,
+        passCodeToken: String,
+        parentId: String,
+        maxPages: Int = 20,
+    ): Result<Pair<List<FileStat>, Boolean>> = withContext(Dispatchers.Default) {
+        runSuspendCatching {
+            val asked = client
+            val all = ArrayList<FileStat>()
+            var token = ""
+            var pages = 0
+            while (pages < maxPages) {
+                val page = asked.listShareFiles(shareId, passCodeToken, parentId = parentId, pageToken = token)
+                all += page.files
+                token = page.nextPageToken
+                pages++
+                if (token.isEmpty()) break
+            }
+            all to token.isNotEmpty()
         }
+    }
+
+    suspend fun shareFolder(shareId: String, passCodeToken: String, parentId: String): Result<List<FileStat>> =
+        shareFolderFull(shareId, passCodeToken, parentId).map { it.first }
 
     /**
      * 把分享里的条目转存到 [toParentId]，等任务结束才返回。[ancestorIds] 是条目所在的各级分享目录，
@@ -1922,10 +2354,10 @@ open class PikoDriveRepository(
             repeat(RESTORE_POLL_LIMIT) {
                 val task = boundClient.getTask(restore.restoreTaskId)
                 if (task.phase == TaskPhase.COMPLETE) return@runSuspendCatching
-                if (task.phase == TaskPhase.ERROR) error(task.message.ifBlank { "转存失败" })
+                if (task.phase == TaskPhase.ERROR) error(task.message.ifBlank { tr("转存失败", "Failed to save share", "共有の保存に失敗しました", "공유 저장 실패", "轉存失敗") })
                 delay(RESTORE_POLL_INTERVAL_MILLIS)
             }
-            error("转存超时")
+            error(tr("转存超时", "Share save timed out", "共有の保存がタイムアウトしました", "공유 저장 시간이 초과되었습니다", "轉存逾時"))
         }.onSuccess { if (clientManager.currentClient.value === boundClient) applyChange(DriveChange.ContentsChanged(setOf(toParentId))) }
     }
 
@@ -1955,16 +2387,74 @@ open class PikoDriveRepository(
         runSuspendCatching { client.deleteShares(shareIds) }
     }
 
-    /** 全盘的星标文件与文件夹。服务端按 parent_id=* 一次返回全部，不分页。 */
+    /** 全盘的星标文件与文件夹（含服务端真实星标与 Piko 自管的归档条目星标）。 */
     suspend fun starredFiles(): Result<List<FileStat>> = withContext(Dispatchers.Default) {
-        runSuspendCatching { sourceLedger.enrich(client.listStarred()) }
+        runSuspendCatching {
+            val remote = sourceLedger.enrich(client.listStarred())
+            val vaulted = sourceLedger.enrich(vaultStars.starredFileStats())
+            if (vaulted.isEmpty()) remote else {
+                val combined = (remote + vaulted).distinctBy { it.id }
+                sortFiles(combined, PikoFileSortOrder.TIME_DESC, "")
+            }
+        }
     }
 
-    suspend fun setStarred(ids: List<String>, starred: Boolean): Result<Unit> = withContext(Dispatchers.Default) {
-        // 星标只体现在列表条目的 tags 里，所在的那一层要重列才看得到
-        val folders = knownParentsOf(ids)
-        runSuspendCatching { if (starred) client.starFiles(ids) else client.unstarFiles(ids) }
-            .onSuccess { applyChange(DriveChange.ContentsChanged(folders)) }
+    private fun resolveVaultedStat(virtualId: String, knownStats: Map<String, FileStat> = emptyMap()): FileStat? {
+        knownStats[virtualId]?.let { return it }
+        driveTreeIndex.file(virtualId)?.let { return it }
+        val entryId = VaultEntry.entryIdOf(virtualId)
+        if (entryId != null) {
+            vaultStars.flow.value[entryId]?.toFileStat()?.let { return it }
+            val folderId = vault.folderOfEntry(entryId).orEmpty()
+            val resolved = VaultEntry.resolvedFileOf(virtualId)
+            if (resolved != null && !resolved.gcid.isNullOrBlank()) {
+                return FileStat(
+                    kind = FileKind.FILE,
+                    id = virtualId,
+                    parentId = folderId,
+                    name = resolved.path,
+                    size = resolved.size.toString(),
+                    hash = resolved.gcid!!,
+                )
+            }
+        }
+        return null
+    }
+
+    /** 立即更新 Piko 自管的归档条目星标并原地刷新树与列表缓存。 */
+    fun setVaultStarred(stats: Collection<FileStat>, starred: Boolean) {
+        val affected = vaultStars.setStarredFromStats(stats, starred)
+        if (affected.isNotEmpty()) {
+            val resolvedParents = stats.map { stat ->
+                stat.parentId.takeIf { it.isNotEmpty() || stat.id in listings.value[""]?.files.orEmpty().map(FileStat::id) }
+                    ?: VaultEntry.entryIdOf(stat.id)?.let { vaultStars.folderOf(it) ?: vault.folderOfEntry(it) }
+                    ?: stat.parentId
+            }
+            val folders: Set<String>? = if (resolvedParents.isEmpty()) null else resolvedParents.toHashSet()
+            if (folders != null) {
+                for (folderId in folders) {
+                    val existing = driveTreeIndex.flow.value.vaultEntriesByFolder[folderId]
+                    if (existing != null) vaultEntriesKnown(folderId, existing)
+                }
+            }
+            applyChange(DriveChange.Starred(affected, starred, folders))
+        }
+    }
+
+    suspend fun setStarred(
+        ids: List<String>,
+        starred: Boolean,
+        knownStats: Map<String, FileStat> = emptyMap(),
+    ): Result<Unit> = withContext(Dispatchers.Default) {
+        val (vaultedIds, realIds) = ids.distinct().partition(VaultEntry::isVaulted)
+        if (vaultedIds.isNotEmpty()) {
+            val stats = vaultedIds.mapNotNull { resolveVaultedStat(it, knownStats) }
+            setVaultStarred(stats, starred)
+        }
+        if (realIds.isEmpty()) return@withContext Result.success(Unit)
+        val parents = knownParentsOf(realIds)
+        runSuspendCatching { if (starred) client.starFiles(realIds) else client.unstarFiles(realIds) }
+            .onSuccess { applyChange(DriveChange.Starred(realIds, starred, parents)) }
     }
 
     /** 播放历史的一页，按最近播放倒序，与官方客户端共用同一份。 */
@@ -2009,7 +2499,7 @@ open class PikoDriveRepository(
         listAllFiles().map { files -> files.firstOrNull { it.isMyPacksFolder() }?.let { PikoPathBreadcrumb(it.id, it.name) } }
 
     suspend fun getOrCreateMyPacksFolder(): Result<PikoPathBreadcrumb> {
-        val access = currentAccount?.let(::writeAccess) ?: return Result.failure(IllegalStateException("未登录"))
+        val access = currentAccount?.let(::writeAccess) ?: return Result.failure(IllegalStateException(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入")))
         return getOrCreateMyPacksFolder(access)
     }
 
@@ -2088,12 +2578,17 @@ open class PikoDriveRepository(
 
         // 批量操作的日志里列出的 ID 个数：够在网盘里对上是哪几项，几百项的移动不至于占满一屏
         private const val LOGGED_IDS = 5
-        private val LINK_RETRY_DELAYS = listOf(500.milliseconds, 1.seconds, 2.seconds)
+        private val LINK_RETRY_DELAYS = listOf(500.milliseconds, 1.seconds, 2.seconds, 3.seconds)
         private const val UPLOAD_BYTES_ATTEMPTS = 3
         private const val MAX_LOCATE_DEPTH = 64
         private const val CHILD_NAME_PAGE = 20
         private const val CHILD_NAME_CONCURRENCY = 2
+        private const val MANIFEST_WARMUP_CONCURRENCY = 16
         private const val MAX_REMEMBERED_CHILD_NAMES = 200
+        private val QUOTA_JSON = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+        private fun transferQuotaCacheKey(account: String) =
+            "transfer-quota-" + account.replace(Regex("[^A-Za-z0-9._@-]"), "_") + ".json"
 
         // 外层文件夹的封面只要一张，其下文件夹多半都有视频，读几个就够；读不到的不必为一张封面列遍整棵树
         private const val COVER_PROBE_MEMBERS = 3
@@ -2103,12 +2598,13 @@ open class PikoDriveRepository(
 
         // 目录图、›、补全直接用最近列过的而不重取的期限。网盘页不看它：网盘页总是先显示缓存、随即刷新
         private val RECENT_LISTING_FRESH = 60.seconds
+        private val TRASH_CACHE_FRESH = 300.seconds
 
         // 登录后让首屏列根目录与会话恢复先行，再在后台拉齐整棵本地文件树
         private val TREE_WARMUP_DELAY = 1500.milliseconds
         private val CANARY_PROBE_COOLDOWN = 60.seconds
         private const val CANARY_WINDOW_SIZE = 100
-        private const val MAX_PAGINATED_CANARY_AGE_MILLIS = 15 * 60 * 1_000L
+        private const val MAX_PAGINATED_CANARY_AGE_MILLIS = 24L * 60 * 60 * 1_000L
         private const val TREE_SNAPSHOT_SAVE_DELAY = 2_000L
 
         private const val MY_PACKS_FOLDER_NAME = "My Packs"

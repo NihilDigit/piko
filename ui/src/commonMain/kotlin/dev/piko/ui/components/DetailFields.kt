@@ -165,7 +165,7 @@ internal fun DetailActionIconButton(action: DetailAction, modifier: Modifier = M
             copied = false
         }
     }
-    val label = if (copied) tr("已复制", "Copied", "コピーしました", "복사했습니다") else action.label
+    val label = if (copied) tr("已复制", "Copied", "コピーしました", "복사했습니다", "已複製") else action.label
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
         tooltip = { PlainTooltip { Text(label) } },

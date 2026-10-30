@@ -97,8 +97,7 @@ class VaultFolderRestoreTest {
         val real = restarted.listBrowsable(folder.id, PikoFileSortOrder.NAME_ASC).getOrThrow().single { it.id == restoredId }
         assertEquals(source, real.sourceUrl)
         assertEquals("OLD-CID", real.params["piko_vault_cid"])
-        assertEquals(1, server.children(folder.id).count { it.name.endsWith(".magnet") })
-        assertEquals(source + "\n", server.children(folder.id).single { it.name.endsWith(".magnet") }.content.decodeToString())
+        assertEquals(0, server.children(folder.id).count { it.name.endsWith(".magnet") })
         val session = FolderVaultSession(restarted, scope)
         assertEquals(0, session.survey(PikoPathBreadcrumb(folder.id, folder.name)).getOrThrow().unsourcedFiles)
         session.archive(PikoPathBreadcrumb(folder.id, folder.name), includeUnsourced = false, moveToTrash = false)
@@ -107,7 +106,7 @@ class VaultFolderRestoreTest {
         assertTrue(archived.isArchived)
         assertEquals(source, archived.source)
         assertEquals("OLD-CID", archived.cid)
-        assertEquals(1, server.children(folder.id).count { it.name.endsWith(".magnet") })
+        assertEquals(0, server.children(folder.id).count { it.name.endsWith(".magnet") })
         restarted.changes.undo(assertNotNull(restarted.changes.latest.value))
         // latest 在撤销开始时就已清空，不能拿它当撤销完成的信号，直接等清单
         suspend fun current() = restarted.vault.read(folder.id, restarted.listAllFiles(folder.id).getOrThrow()).getOrThrow().single()

@@ -68,7 +68,7 @@ internal fun SidebarAccountRow(selected: Boolean, onOpenSettings: () -> Unit, co
     val shortcut = LocalPikoPlatform.current.shortcutModifier.label(",")
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-        tooltip = { PlainTooltip { Text(availableUpdate?.let { tr("账号与设置（发现新版本 ${it.version}）", "Account and settings (update ${it.version} available)", "アカウントと設定（新バージョン ${it.version}）", "계정 및 설정 (새 버전 ${it.version})") } ?: tr("账号与设置 ($shortcut)", "Account and settings ($shortcut)", "アカウントと設定 ($shortcut)", "계정 및 설정 ($shortcut)")) } },
+        tooltip = { PlainTooltip { Text(availableUpdate?.let { tr("账号与设置（发现新版本 ${it.version}）", "Account and settings (update ${it.version} available)", "アカウントと設定（新バージョン ${it.version}）", "계정 및 설정 (새 버전 ${it.version})", "帳號與設定（發現新版本 ${it.version}）") } ?: tr("账号与设置 ($shortcut)", "Account and settings ($shortcut)", "アカウントと設定 ($shortcut)", "계정 및 설정 ($shortcut)", "帳號與設定 ($shortcut)")) } },
         state = rememberTooltipState(),
     ) {
         // 收起成窄轨时只剩头像，名字、用量与齿轮都在悬停提示与设置里；有新版本时头像上挂一个点
@@ -80,7 +80,7 @@ internal fun SidebarAccountRow(selected: Boolean, onOpenSettings: () -> Unit, co
                     .padding(horizontal = 12.dp, vertical = 4.dp)
                     .clip(MaterialTheme.shapes.large)
                     .background(if (selected) colors.secondaryContainer else Color.Transparent)
-                    .clickable(onClickLabel = tr("账号与设置", "Account and settings", "アカウントと設定", "계정 및 설정"), onClick = onOpenSettings),
+                    .clickable(onClickLabel = tr("账号与设置", "Account and settings", "アカウントと設定", "계정 및 설정", "帳號與設定"), onClick = onOpenSettings),
                 contentAlignment = Alignment.Center,
             ) {
                 BadgedBox(badge = { if (availableUpdate != null) Badge() }) {
@@ -97,7 +97,7 @@ internal fun SidebarAccountRow(selected: Boolean, onOpenSettings: () -> Unit, co
                 .padding(horizontal = 12.dp, vertical = 4.dp)
                 .clip(MaterialTheme.shapes.large)
                 .background(if (selected) colors.secondaryContainer else Color.Transparent)
-                .clickable(onClickLabel = tr("账号与设置", "Account and settings", "アカウントと設定", "계정 및 설정"), onClick = onOpenSettings)
+                .clickable(onClickLabel = tr("账号与设置", "Account and settings", "アカウントと設定", "계정 및 설정", "帳號與設定"), onClick = onOpenSettings)
                 .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -105,7 +105,7 @@ internal fun SidebarAccountRow(selected: Boolean, onOpenSettings: () -> Unit, co
             Avatar(saved?.displayName, saved?.avatarUrl, size = 32.dp)
             Column(Modifier.weight(1f)) {
                 Text(
-                    saved?.displayName ?: tr("PikPak 用户", "PikPak user", "PikPakユーザー", "PikPak 사용자"),
+                    saved?.displayName ?: tr("PikPak 用户", "PikPak user", "PikPakユーザー", "PikPak 사용자", "PikPak 使用者"),
                     style = MaterialTheme.typography.labelLarge,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,

@@ -3,6 +3,7 @@ package dev.piko.shared.state
 import dev.piko.data.repository.fileCategory
 import dev.piko.shared.data.ChildFile
 import dev.piko.shared.i18n.enCount
+import dev.piko.shared.data.isImportPreview
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.naming.AttachmentKind
 import dev.piko.shared.naming.EntryFile
@@ -194,8 +195,8 @@ private fun attachmentBlocks(batch: MediaBatch, files: List<FileStat>): List<Dri
         .flatMap { it.sections }.flatMap { it.entries }.flatMap { it.files }.flatMap { it.attachments }
         .groupBy({ it.kind }, { it.index })
     return listOfNotNull(
-        byKind[AttachmentKind.SUBTITLE]?.let { attachmentBlock("${ATTACHMENT_BLOCK_PREFIX}subtitle", tr("外挂字幕", "External subtitles", "外部字幕", "외부 자막"), it, files) },
-        byKind[AttachmentKind.AUDIO_TRACK]?.let { attachmentBlock("${ATTACHMENT_BLOCK_PREFIX}audio", tr("外挂音轨", "External audio tracks", "外部音声トラック", "외부 오디오 트랙"), it, files) },
+        byKind[AttachmentKind.SUBTITLE]?.let { attachmentBlock("${ATTACHMENT_BLOCK_PREFIX}subtitle", tr("外挂字幕", "External subtitles", "外部字幕", "외부 자막", "外掛字幕"), it, files) },
+        byKind[AttachmentKind.AUDIO_TRACK]?.let { attachmentBlock("${ATTACHMENT_BLOCK_PREFIX}audio", tr("外挂音轨", "External audio tracks", "外部音声トラック", "외부 오디오 트랙", "外掛音軌"), it, files) },
     )
 }
 
@@ -234,7 +235,7 @@ private fun buildBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlo
     // 番号一部一作品，逐部起作品头会让一屏全是标题；合成一块，行标题本身就是番号
     val av = batch.works.filter { it.kind == WorkKind.AV }
     if (av.isNotEmpty()) {
-        val avLabel = tr("番号", "Codes", "作品番号", "품번")
+        val avLabel = tr("番号", "Codes", "作品番号", "품번", "番號")
         blocks += DriveBlock(
             id = "av", label = avLabel, menuLabel = avLabel, defaultExpanded = true,
             workKey = null, workTitle = null, workTags = emptyList(),
@@ -250,7 +251,7 @@ private fun buildBlocks(batch: MediaBatch, files: List<FileStat>): List<DriveBlo
         // 只剩文档、压缩包一类时默认收起：动画发布里认不出的零散文件多是说明与字体。
         // 有图片、视频或音频就展开，个人目录里的照片本身就是内容
         val hasMedia = others.any { batch.parsed[it].fileKind in CONTENT_KINDS }
-        val otherFilesLabel = tr("其他文件", "Other files", "その他のファイル", "기타 파일")
+        val otherFilesLabel = tr("其他文件", "Other files", "その他のファイル", "기타 파일", "其他檔案")
         blocks += DriveBlock(
             id = OTHERS_BLOCK_ID, label = otherFilesLabel, menuLabel = otherFilesLabel, defaultExpanded = standalone.isNotEmpty() || hasMedia,
             workKey = null, workTitle = null, workTags = emptyList(),
@@ -334,7 +335,7 @@ private fun fileView(work: MediaWork, section: Section, entry: MediaEntry, file:
     val ownTags = rowTags(work, file)
     val languages = attachmentTags(file)
     val versionCount = if (file == entry.primary) entry.versionsOfPrimary().size + 1 else 1
-    val versions = listOfNotNull(tr("$versionCount 版本", "${enCount(versionCount, "version", "versions")}", "$versionCount バージョン", "${versionCount}개 버전").takeIf { versionCount > 1 })
+    val versions = listOfNotNull(tr("$versionCount 版本", "${enCount(versionCount, "version", "versions")}", "$versionCount バージョン", "${versionCount}개 버전", "$versionCount 個版本").takeIf { versionCount > 1 })
     val tags = (ownTags.map(MediaTag::text) + languages + versions).distinct()
     val heading = if (work.kind == WorkKind.SERIES && work.title != null && entry.label != null && entry.label != work.title) {
         "${work.title} $title"
@@ -351,8 +352,8 @@ private fun fileView(work: MediaWork, section: Section, entry: MediaEntry, file:
 /** 外挂字幕与音轨化作宿主行上的标签：「简日」「繁日」，没有语言后缀的记作「字幕」。 */
 private fun attachmentTags(file: EntryFile): List<String> = file.attachments.mapNotNull { attachment ->
     when (attachment.kind) {
-        AttachmentKind.SUBTITLE -> attachment.language ?: tr("字幕", "Subtitles", "字幕", "자막")
-        AttachmentKind.AUDIO_TRACK -> attachment.language?.let { tr("${it}音轨", "$it audio", "${it}音声", "$it 오디오") } ?: tr("音轨", "Audio track", "音声トラック", "오디오 트랙")
+        AttachmentKind.SUBTITLE -> attachment.language ?: tr("字幕", "Subtitles", "字幕", "자막", "字幕")
+        AttachmentKind.AUDIO_TRACK -> attachment.language?.let { tr("${it}音轨", "$it audio", "${it}音声", "$it 오디오", "${it}音軌") } ?: tr("音轨", "Audio track", "音声トラック", "오디오 트랙", "音軌")
         AttachmentKind.COVER, AttachmentKind.DISC_FILE -> null
     }
 }.distinct()
@@ -368,15 +369,15 @@ private fun parsedFields(work: MediaWork, section: Section, entry: MediaEntry, f
     val all = (name.tags + work.commonTags).distinct().sortedBy { it.kind.ordinal }
     val subtitles = (all.filter { it.kind == TagKind.SUBTITLES }.map(MediaTag::text) + attachedLanguages).distinct()
     return listOfNotNull(
-        work.title?.let { DriveParsedField(if (work.kind == WorkKind.AV) tr("番号", "Code", "作品番号", "품번") else tr("作品", "Work", "作品", "작품"), it) },
+        work.title?.let { DriveParsedField(if (work.kind == WorkKind.AV) tr("番号", "Code", "作品番号", "품번", "番號") else tr("作品", "Work", "作品", "작품", "作品"), it) },
         // 行里的片名会被截断，详情里给全文
-        name.av?.title?.let { DriveParsedField(tr("片名", "Title", "タイトル", "제목"), it) },
-        DriveParsedField(tr("分区", "Section", "セクション", "섹션"), section.label).takeIf { work.kind == WorkKind.SERIES },
-        episode?.let { DriveParsedField(tr("集号", "Episode", "話数", "화수"), it.shortText) },
-        entry.av?.part?.let { DriveParsedField(tr("分段", "Part", "パート", "파트"), it) },
-        episode?.version?.let { DriveParsedField(tr("版本", "Version", "バージョン", "버전"), it) },
-        subtitles.takeIf { it.isNotEmpty() }?.let { DriveParsedField(tr("字幕语言", "Subtitle languages", "字幕言語", "자막 언어"), it.joinToString(" ")) },
-        all.filter { it.kind in TECH_KINDS }.takeIf { it.isNotEmpty() }?.let { tags -> DriveParsedField(tr("技术标签", "Technical tags", "技術タグ", "기술 태그"), tags.joinToString(" ") { it.text }) },
+        name.av?.title?.let { DriveParsedField(tr("片名", "Title", "タイトル", "제목", "片名"), it) },
+        DriveParsedField(tr("分区", "Section", "セクション", "섹션", "分區"), section.label).takeIf { work.kind == WorkKind.SERIES },
+        episode?.let { DriveParsedField(tr("集号", "Episode", "話数", "화수", "集號"), it.shortText) },
+        entry.av?.part?.let { DriveParsedField(tr("分段", "Part", "パート", "파트", "分段"), it) },
+        episode?.version?.let { DriveParsedField(tr("版本", "Version", "バージョン", "버전", "版本"), it) },
+        subtitles.takeIf { it.isNotEmpty() }?.let { DriveParsedField(tr("字幕语言", "Subtitle languages", "字幕言語", "자막 언어", "字幕語言"), it.joinToString(" ")) },
+        all.filter { it.kind in TECH_KINDS }.takeIf { it.isNotEmpty() }?.let { tags -> DriveParsedField(tr("技术标签", "Technical tags", "技術タグ", "기술 태그", "技術標籤"), tags.joinToString(" ") { it.text }) },
     )
 }
 
@@ -402,10 +403,16 @@ fun buildDriveItems(
     isExpanded: (DriveBlock) -> Boolean,
 ): List<DriveListItem> {
     val byId = files.associateBy { it.id }
-    val folders = files.filter { it.isFolder && !(hideFolded && it.id in structure.foldedIds) }
-    val secondaryBlock = if (!hideFolded && structure.secondaryIds.isNotEmpty()) {
-        val secondaryLabel = tr("次要文件", "Secondary files", "補助ファイル", "보조 파일")
-        DriveBlock(SECONDARY_BLOCK_ID, secondaryLabel, secondaryLabel, true, null, null, emptyList(), structure.secondaryIds)
+    val hasPreviewFiles = files.any { !it.isFolder && it.isImportPreview }
+    val folders = files.filter { it.isFolder && (it.isImportPreview || !(hideFolded && it.id in structure.foldedIds)) }
+    val (previewSecondaryIds, existingSecondaryIds) = if (hasPreviewFiles) {
+        structure.secondaryIds.partition { byId[it]?.isImportPreview == true }
+    } else {
+        emptyList<String>() to structure.secondaryIds
+    }
+    val secondaryBlock = if (!hideFolded && existingSecondaryIds.isNotEmpty()) {
+        val secondaryLabel = tr("次要文件", "Secondary files", "補助ファイル", "보조 파일", "次要檔案")
+        DriveBlock(SECONDARY_BLOCK_ID, secondaryLabel, secondaryLabel, true, null, null, emptyList(), existingSecondaryIds)
     } else {
         null
     }
@@ -424,41 +431,93 @@ fun buildDriveItems(
     files.forEachIndexed { index, file -> positionById.putIfAbsent(file.id, index) }
     val flatIds = flat.flatMap { it.fileIds }.sortedBy { id -> positionById[id] ?: -1 }
     val flatWorks = flat.filter { it.id != OTHERS_BLOCK_ID }.flatMap { it.fileIds }.toSet()
-    val blocks = grouped + listOfNotNull(secondaryBlock)
+    val rawBlocks = grouped + listOfNotNull(secondaryBlock)
+    val (rawPreviewFlatIds, existingFlatIds) = if (hasPreviewFiles) {
+        flatIds.partition { byId[it]?.isImportPreview == true }
+    } else {
+        emptyList<String>() to flatIds
+    }
+    val previewFlatIds = if (previewSecondaryIds.isEmpty()) {
+        rawPreviewFlatIds
+    } else {
+        (rawPreviewFlatIds + previewSecondaryIds).distinct().sortedBy { id -> positionById[id] ?: -1 }
+    }
+    val blocks = if (!hasPreviewFiles) {
+        rawBlocks
+    } else {
+        val workHasPreview = rawBlocks.filter { it.workKey != null }
+            .groupBy { it.workKey }
+            .mapValues { (_, list) -> list.any { b -> b.fileIds.any { id -> byId[id]?.isImportPreview == true } } }
+        fun blockHasPreview(block: DriveBlock): Boolean =
+            if (block.workKey != null) workHasPreview[block.workKey] == true
+            else block.fileIds.any { byId[it]?.isImportPreview == true }
+        val (previewBlocks, existingBlocks) = rawBlocks.partition(::blockHasPreview)
+        val prioritizedPreviewBlocks = previewBlocks.map { block ->
+            if (block.fileIds.any { byId[it]?.isImportPreview == true } && block.fileIds.any { byId[it]?.isImportPreview != true }) {
+                val (pIds, eIds) = block.fileIds.partition { byId[it]?.isImportPreview == true }
+                block.copy(fileIds = pIds + eIds)
+            } else block
+        }
+        prioritizedPreviewBlocks + existingBlocks
+    }
     val withHeaders = blocks.size > 1 || (blocks.isNotEmpty() && flatIds.isNotEmpty())
     val blocksPerWork = blocks.groupingBy { it.workKey }.eachCount()
+    fun MutableList<DriveListItem>.emitBlock(block: DriveBlock, previousWork: String?): String? {
+        val soleSectionOfWork = withHeaders && block.workKey != null && blocksPerWork[block.workKey] == 1
+        val hasWorkInfo = block.workTitle != null || block.workTags.isNotEmpty()
+        if (block.workKey != null && block.workKey != previousWork && hasWorkInfo && !soleSectionOfWork) {
+            add(DriveListItem.WorkHeader("work:${block.workKey}", block.workTitle, block.workTags))
+        }
+        val nextWork = block.workKey
+        val expanded = !withHeaders || isExpanded(block)
+        if (soleSectionOfWork) {
+            // 正片不必点明；只有 PV 或剧场版的作品要写出来，否则收起时看不出里面是什么
+            val workLabel = listOfNotNull(block.workTitle, block.label.takeIf { it != Section.MAIN.label }).joinToString(" ")
+            add(
+                DriveListItem.SectionHeader(
+                    key = "section:${block.id}", blockId = block.id,
+                    label = workLabel.ifEmpty { block.label },
+                    menuLabel = workLabel.ifEmpty { block.menuLabel },
+                    expanded = expanded, isWork = true, tags = block.workTags,
+                ),
+            )
+        } else if (withHeaders) {
+            add(DriveListItem.SectionHeader("section:${block.id}", block.id, block.label, block.menuLabel, expanded))
+        }
+        if (expanded) {
+            block.fileIds.forEach { id -> byId[id]?.let { add(DriveListItem.File(it, structure.views[id])) } }
+        }
+        return nextWork
+    }
     return buildList {
         folders.forEach { add(DriveListItem.File(it, null)) }
-        flatIds.forEach { id ->
-            val view = structure.views[id]?.let { if (id in flatWorks) it.withTitle(it.heading) else it }
-            byId[id]?.let { add(DriveListItem.File(it, view)) }
-        }
-        var previousWork: String? = null
-        blocks.forEach { block ->
-            val soleSectionOfWork = withHeaders && block.workKey != null && blocksPerWork[block.workKey] == 1
-            val hasWorkInfo = block.workTitle != null || block.workTags.isNotEmpty()
-            if (block.workKey != null && block.workKey != previousWork && hasWorkInfo && !soleSectionOfWork) {
-                add(DriveListItem.WorkHeader("work:${block.workKey}", block.workTitle, block.workTags))
+        if (!hasPreviewFiles) {
+            existingFlatIds.forEach { id ->
+                val view = structure.views[id]?.let { if (id in flatWorks) it.withTitle(it.heading) else it }
+                byId[id]?.let { add(DriveListItem.File(it, view)) }
             }
-            previousWork = block.workKey
-            val expanded = !withHeaders || isExpanded(block)
-            if (soleSectionOfWork) {
-                // 正片不必点明；只有 PV 或剧场版的作品要写出来，否则收起时看不出里面是什么
-                val workLabel = listOfNotNull(block.workTitle, block.label.takeIf { it != Section.MAIN.label }).joinToString(" ")
-                add(
-                    DriveListItem.SectionHeader(
-                        key = "section:${block.id}", blockId = block.id,
-                        label = workLabel.ifEmpty { block.label },
-                        menuLabel = workLabel.ifEmpty { block.menuLabel },
-                        expanded = expanded, isWork = true, tags = block.workTags,
-                    ),
-                )
-            } else if (withHeaders) {
-                add(DriveListItem.SectionHeader("section:${block.id}", block.id, block.label, block.menuLabel, expanded))
+            var previousWork: String? = null
+            blocks.forEach { block -> previousWork = emitBlock(block, previousWork) }
+        } else {
+            val workHasPreview = blocks.filter { it.workKey != null }
+                .groupBy { it.workKey }
+                .mapValues { (_, list) -> list.any { b -> b.fileIds.any { id -> byId[id]?.isImportPreview == true } } }
+            val (previewBlocks, existingBlocks) = blocks.partition { block ->
+                if (block.workKey != null) workHasPreview[block.workKey] == true
+                else block.fileIds.any { byId[it]?.isImportPreview == true }
             }
-            if (expanded) {
-                block.fileIds.forEach { id -> byId[id]?.let { add(DriveListItem.File(it, structure.views[id])) } }
+            previewFlatIds.forEach { id ->
+                val view = structure.views[id]?.let { if (id in flatWorks) it.withTitle(it.heading) else it }
+                byId[id]?.let { add(DriveListItem.File(it, view)) }
             }
+            var previousWork: String? = null
+            previewBlocks.forEach { block -> previousWork = emitBlock(block, previousWork) }
+            existingFlatIds.forEach { id ->
+                val view = structure.views[id]?.let { if (id in flatWorks) it.withTitle(it.heading) else it }
+                byId[id]?.let { add(DriveListItem.File(it, view)) }
+            }
+            previousWork = null
+            existingBlocks.forEach { block -> previousWork = emitBlock(block, previousWork) }
         }
     }
 }
