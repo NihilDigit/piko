@@ -1,5 +1,6 @@
 package dev.piko.shared.notice
 
+import io.github.nihildigit.pikpak.FileReactivatingException
 import io.github.nihildigit.pikpak.InstantContentUnavailableException
 import dev.piko.shared.i18n.tr
 import io.github.nihildigit.pikpak.PikPakException
@@ -26,7 +27,19 @@ object PikoErrorMapper {
         else -> null
     }
 
+    private fun isReactivating(error: Throwable): Boolean =
+        generateSequence(error) { it.cause }.take(6).any { it is FileReactivatingException }
+
+    private val reactivatingMessage: String get() = tr(
+        "文件长期未访问，云端正在唤醒恢复，请稍后重试",
+        "File has not been accessed for a long time and is being reactivated in the cloud. Try again shortly",
+        "長期間アクセスされていないため、クラウドでファイルを復元しています。しばらくしてから再試行してください",
+        "오랫동안 접근하지 않아 클라우드에서 파일을 복구하는 중입니다. 잠시 후 다시 시도해 주세요",
+        "檔案長期未存取，雲端正在喚醒還原，請稍後重試",
+    )
+
     fun message(error: Throwable): String = when {
+        isReactivating(error) -> reactivatingMessage
         error is InstantContentUnavailableException -> tr("云端未收录此文件，请使用离线下载", "File not indexed in the cloud. Use cloud download", "クラウドに未収録のファイルです。クラウドダウンロードを利用してください", "클라우드에 등록되지 않은 파일입니다. 클라우드 다운로드를 이용해 주세요", "雲端未收錄此檔案，請使用離線下載")
         error is PikPakException -> reason(error.errorMessage) ?: tr("操作失败，请重试", "Operation failed. Please try again", "操作に失敗しました。もう一度お試しください", "작업에 실패했습니다. 다시 시도해 주세요", "操作失敗，請重試")
         error is IOException -> tr("网络异常", "Network error", "ネットワークエラー", "네트워크 오류", "網路異常")
@@ -48,6 +61,7 @@ object PikoErrorMapper {
     )
 
     fun failure(action: String, error: Throwable): String {
+        if (isReactivating(error)) return reactivatingMessage
         if (error is InstantContentUnavailableException) return message(error)
         val reason = (error as? PikPakException)?.let { reason(it.errorMessage) }
         return when {
