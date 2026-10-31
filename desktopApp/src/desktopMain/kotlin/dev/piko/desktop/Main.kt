@@ -118,6 +118,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 private const val AOT_TRAINING_PROPERTY = "compose.aot.training-run"
 private const val AOT_TRAINING_MILLIS = 12_000L
 private const val CLOSE_BEHAVIOR_ASKED_KEY = "window.closeToTrayAsked"
+private const val BACKGROUND_HINT_SHOWN_KEY = "window.backgroundHintShown"
 
 fun main(args: Array<String>) {
     PikoLocale.bindSystemLocale(Locale.getDefault().toLanguageTag())
@@ -284,31 +285,48 @@ fun main(args: Array<String>) {
         }
 
         if (isInBackground) {
-            Tray(
-                icon = appIcon ?: BitmapPainter(ImageBitmap(16, 16)),
-                tooltip = if (hasActiveTransfers) backgroundTooltip(downloads.values, uploads.values.filter { it.account == account }) else "Piko",
-                onAction = { isInBackground = false },
-                menu = {
-                    Item(tr("显示 Piko", "Show Piko", "Pikoを表示", "Piko 표시", "顯示 Piko"), onClick = { isInBackground = false })
-                    Item(tr("立即退出", "Quit now", "今すぐ終了", "지금 종료", "立即結束"), onClick = ::exitApplication)
-                },
-            )
+            val trayTooltip = if (hasActiveTransfers) backgroundTooltip(downloads.values, uploads.values.filter { it.account == account }) else "Piko"
+            val showLabel = tr("显示 Piko", "Show Piko", "Pikoを表示", "Piko 표시", "顯示 Piko")
+            val quitLabel = tr("立即退出", "Quit now", "今すぐ終了", "지금 종료", "立即結束")
+            if (WinRTSupport.isWindows && java.awt.SystemTray.isSupported()) {
+                dev.piko.desktop.winrt.WindowsSystemTray(
+                    tooltip = trayTooltip,
+                    darkTheme = appearance.isDark(),
+                    showLabel = showLabel,
+                    quitLabel = quitLabel,
+                    onShow = { isInBackground = false },
+                    onQuit = ::exitApplication,
+                )
+            } else {
+                Tray(
+                    icon = appIcon ?: BitmapPainter(ImageBitmap(16, 16)),
+                    tooltip = trayTooltip,
+                    onAction = { isInBackground = false },
+                    menu = {
+                        Item(showLabel, onClick = { isInBackground = false })
+                        Item(quitLabel, onClick = ::exitApplication)
+                    },
+                )
+            }
         }
 
         val hideToTray: (manual: Boolean) -> Unit = { manual ->
             manualTraySession = manual
             isInBackground = true
-            // Toast 同步等系统结果，不能压在界面线程上
-            Thread {
-                val reopenHint = when {
-                    isMacOs -> tr("可从菜单栏图标重新打开", "Reopen from the menu bar icon", "メニューバーのアイコンから開けます", "메뉴 막대 아이콘에서 다시 열 수 있습니다", "可從選單列圖示重新開啟")
-                    isLinux -> LinuxDesktop.backgroundHint()
-                    else -> tr("可从通知区域图标重新打开", "Reopen from the notification area icon", "通知領域のアイコンから開けます", "알림 영역 아이콘에서 다시 열 수 있습니다", "可從通知區域圖示重新開啟")
-                }
-                if (closeToTray || manual) showSystemNotification(tr("Piko 已最小化到系统托盘", "Piko minimized to tray", "Pikoをシステムトレイに最小化しました", "Piko를 시스템 트레이로 최소화했습니다", "Piko 已最小化至系統匣"), tr("$reopenHint；可从托盘菜单退出程序。", "$reopenHint. Quit from the tray menu.", "$reopenHint。トレイメニューから終了できます。", "$reopenHint. 트레이 메뉴에서 종료할 수 있습니다.", "$reopenHint；可從系統匣選單結束程式。"))
-                else if (services.hasBackgroundWork()) showSystemNotification(tr("Piko 在后台继续处理", "Piko is working in the background", "Pikoはバックグラウンドで処理中です", "Piko가 백그라운드에서 작업 중입니다", "Piko 在背景繼續處理"), tr("任务完成后将自动退出；待确认的结果会保留，$reopenHint。", "Quits automatically when tasks finish. Results requiring attention are kept. $reopenHint.", "タスク完了後に自動終了します。確認が必要な結果は保持されます。$reopenHint。", "작업 완료 후 자동 종료됩니다. 확인이 필요한 결과는 유지됩니다. $reopenHint.", "任務完成後將自動結束；待確認的結果會保留，$reopenHint。"))
-                else showSystemNotification(tr("Piko 已保留待处理工作", "Piko kept your pending work", "Pikoは未処理の作業を保持しています", "Piko가 대기 중인 작업을 유지했습니다", "Piko 已保留待處理工作"), tr("重新打开窗口可继续处理，$reopenHint。", "Reopen the window to continue. $reopenHint.", "ウィンドウを開き直すと続行できます。$reopenHint。", "창을 다시 열어 계속할 수 있습니다. $reopenHint.", "重新開啟視窗即可繼續處理，$reopenHint。"))
-            }.start()
+            // 用户已主动开启「最小化到托盘」或在询问框中点击该选项时，不再每次关窗都弹通知打扰；
+            // 仅当用户未开启常驻托盘、因后台仍有未完任务而首次自动转入后台时提示一次。
+            if (!closeToTray && !manual && settings.get(BACKGROUND_HINT_SHOWN_KEY) != "true") {
+                settings.set(BACKGROUND_HINT_SHOWN_KEY, "true")
+                Thread {
+                    val reopenHint = when {
+                        isMacOs -> tr("可从菜单栏图标重新打开", "Reopen from the menu bar icon", "メニューバーのアイコンから開けます", "메뉴 막대 아이콘에서 다시 열 수 있습니다", "可從選單列圖示重新開啟")
+                        isLinux -> LinuxDesktop.backgroundHint()
+                        else -> tr("可从通知区域图标重新打开", "Reopen from the notification area icon", "通知領域のアイコンから開けます", "알림 영역 아이콘에서 다시 열 수 있습니다", "可從通知區域圖示重新開啟")
+                    }
+                    if (services.hasBackgroundWork()) showSystemNotification(tr("Piko 在后台继续处理", "Piko is working in the background", "Pikoはバックグラウンドで処理中です", "Piko가 백그라운드에서 작업 중입니다", "Piko 在背景繼續處理"), tr("任务完成后将自动退出；待确认的结果会保留，$reopenHint。", "Quits automatically when tasks finish. Results requiring attention are kept. $reopenHint.", "タスク完了後に自動終了します。確認が必要な結果は保持されます。$reopenHint。", "작업 완료 후 자동 종료됩니다. 확인이 필요한 결과는 유지됩니다. $reopenHint.", "任務完成後將自動結束；待確認的結果會保留，$reopenHint。"))
+                    else showSystemNotification(tr("Piko 已保留待处理工作", "Piko kept your pending work", "Pikoは未処理の作業を保持しています", "Piko가 대기 중인 작업을 유지했습니다", "Piko 已保留待處理工作"), tr("重新打开窗口可继续处理，$reopenHint。", "Reopen the window to continue. $reopenHint.", "ウィンドウを開き直すと続行できます。$reopenHint。", "창을 다시 열어 계속할 수 있습니다. $reopenHint.", "重新開啟視窗即可繼續處理，$reopenHint。"))
+                }.start()
+            }
         }
 
         val closeMainWindow = {

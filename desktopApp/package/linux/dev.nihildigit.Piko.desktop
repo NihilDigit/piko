@@ -13,4 +13,3 @@ Keywords=PikPak;cloud;magnet;torrent;
 Keywords[zh_CN]=PikPak;网盘;磁力;种子;
 MimeType=x-scheme-handler/magnet;application/x-bittorrent;
 StartupWMClass=dev.nihildigit.Piko
-SingleMainWindow=true
