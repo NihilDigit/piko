@@ -20,8 +20,10 @@ import dev.piko.shared.media.transcodeName
 import dev.piko.shared.media.proxy.ProxyStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -31,6 +33,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
@@ -249,6 +252,22 @@ class PlayerScreenState(
             // 排在它们之后，拖动那一下不必与自己的缓冲读排队。拖动单独记：桌面端后端拖动时不报缓冲，
             // 只看缓冲的话开关从没打开过，那几次拖动都在与缓冲读排队（2026-09-28，一次等了 6.7 秒）
             snapshotFlow { isPreparing || backend.isBuffering || seeking }.collect { waiting -> prepared?.urgent = waiting }
+        }
+        scope.launch {
+            // 把播放器的实时缓冲余量与当前变体估算字节速率同步给 SDK，供播放头停滞时按期限发起救援。
+            // 只读纯内存 Compose State，不在 UI 线程同步跨界读取 mpv JNI 属性
+            snapshotFlow {
+                Triple(
+                    prepared,
+                    backend.positionMillis to backend.bufferedPositionMillis,
+                    startedThisAttempt,
+                )
+            }.collect { (active, posAndBuf, started) ->
+                if (active == null || isLocalPlayback || !usingProxy || isImage || !started) return@collect
+                val (posMs, bufPosMs) = posAndBuf
+                val bufferedMs = (bufPosMs - posMs).coerceAtLeast(0L)
+                active.reportPlaybackBuffer(bufferedMs.milliseconds, active.estimatedBytesPerSecond)
+            }
         }
         scope.launch {
             // 外挂字幕在文件加载之后才挂上，列表会分几次变长，每次都重新套用
@@ -496,10 +515,25 @@ class PlayerScreenState(
 
     /** 释放代理会话。后端由创建它的一方释放，续播位置由作用域取消时补写。 */
     fun release() {
+        if (released) return
         released = true
         prepareJob?.cancel()
         recoveryJob?.cancel()
-        closePrepared()
+        backend.stop()
+        val oldStreams = detachPrepared()
+        if (oldStreams.isEmpty()) return
+        if (!backend.requiresAsyncStopDrain) {
+            oldStreams.forEach { runCatching { it.close() } }
+        } else {
+            retireScope.launch {
+                try {
+                    withTimeoutOrNull(STOP_DRAIN_TIMEOUT_MILLIS) { backend.stopAndAwaitIdle() }
+                } catch (_: Throwable) {
+                } finally {
+                    oldStreams.forEach { runCatching { it.close() } }
+                }
+            }
+        }
     }
 
     private fun currentPosition(): Long =
@@ -525,8 +559,18 @@ class PlayerScreenState(
         startedThisAttempt = false
         resumeTipJob?.cancel()
         resumedFromMillis = null
-        backend.stop()
-        closePrepared()
+        val oldStreams = detachPrepared()
+        if (oldStreams.isNotEmpty()) {
+            try {
+                withTimeoutOrNull(STOP_DRAIN_TIMEOUT_MILLIS) { backend.stopAndAwaitIdle() }
+            } finally {
+                withContext(NonCancellable) {
+                    oldStreams.forEach { runCatching { it.close() } }
+                }
+            }
+        } else {
+            backend.stop()
+        }
         try {
             val pending = pendingStartMillis
             pendingStartMillis = null
@@ -739,11 +783,15 @@ class PlayerScreenState(
         }
     }
 
-    private fun closePrepared() {
-        prepared?.close()
+    private fun detachPrepared(): List<AutoCloseable> {
+        val active = prepared
         prepared = null
-        subtitleStreams.forEach { it.close() }
+        val subs = subtitleStreams
         subtitleStreams = emptyList()
+        return buildList {
+            if (active != null) add(active)
+            addAll(subs)
+        }
     }
 
     /**
@@ -809,7 +857,9 @@ class PlayerScreenState(
         const val PERSIST_INTERVAL_MILLIS = 5_000L
         const val RESUME_TIP_MILLIS = 5_000L
         const val STABLE_PLAYBACK_MILLIS = 15_000L
+        const val STOP_DRAIN_TIMEOUT_MILLIS = 350L
         val RECOVERY_DELAYS_MILLIS = longArrayOf(500L, 1_500L, 4_000L)
+        val retireScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 }
 

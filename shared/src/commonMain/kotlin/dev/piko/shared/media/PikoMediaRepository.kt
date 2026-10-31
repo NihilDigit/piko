@@ -49,6 +49,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -105,6 +106,8 @@ private val MediaVariant.qualityName: String?
 class PreparedPlayback internal constructor(
     val info: PlayableMediaInfo,
     private val stream: ProxyStream?,
+    /** 当前变体（原画或转码流）按其实际流长度或编码码率估算的平均字节消耗率（字节/秒）。 */
+    val estimatedBytesPerSecond: Long? = null,
 ) : AutoCloseable {
     /** 本机代理的地址。handle 建不起来（例如没有 gcid）时为 null，只能读直链。 */
     val proxyUrl: String? get() = stream?.url
@@ -115,6 +118,11 @@ class PreparedPlayback internal constructor(
         set(value) {
             stream?.urgent = value
         }
+
+    /** 向代理会话与底层 SDK 流读取器反馈当前播放器的缓冲时长与媒体平均字节速率。 */
+    fun reportPlaybackBuffer(bufferedDuration: Duration, mediaBytesPerSecond: Long? = null) {
+        stream?.reportPlaybackBuffer(bufferedDuration, mediaBytesPerSecond)
+    }
 
     override fun close() {
         stream?.close()
@@ -258,7 +266,13 @@ class PikoMediaRepository(
                 val info = playableMediaInfo(detail, resolved, fileId)
                 val leased = LeasedFile.isLeased(fileId)
                 val stream = if (info.kind == PlayableMediaKind.Video) openProxyStream(client, detail, resolved, leased = leased) else null
-                PreparedPlayback(info, stream)
+                val actualStreamBytes = stream?.size ?: resolved.sizeBytes ?: detail.sizeBytes.takeIf { resolved.isOrigin } ?: 0L
+                val estimatedRate = estimatedMediaBytesPerSecond(
+                    streamSize = actualStreamBytes,
+                    durationSeconds = resolved.video?.duration ?: (durationMsOf(detail) / 1000L),
+                    bitRateBitsPerSecond = resolved.video?.bitRate,
+                )
+                PreparedPlayback(info, stream, estimatedRate)
             }
         }
 
@@ -827,12 +841,20 @@ class PikoMediaRepository(
     private suspend fun transcodeSource(client: PikPakClient, fileId: String, mediaId: String, retainedBy: String?): PikPakByteSource {
         val detail = detailOf(client, fileId)
         if (detail.hash.isBlank()) error(tr("文件缺少内容哈希，无法读取", "File is missing content hash and cannot be read", "ファイルにハッシュ情報がないため読み込めません", "파일에 콘텐츠 해시가 없어 읽을 수 없습니다", "檔案缺少內容雜湊值，無法讀取"))
-        if (detail.medias.none { it.mediaId == mediaId && it.link.url.isNotBlank() }) error(TRANSCODE_GONE_MESSAGE)
+        val variant = detail.medias.firstOrNull { it.mediaId == mediaId && it.link.url.isNotBlank() }
+            ?: error(TRANSCODE_GONE_MESSAGE)
         val streamSize = streamSizeOf(client, detail, mediaId)
+        val mediaRate = estimatedMediaBytesPerSecond(
+            streamSize = streamSize,
+            durationSeconds = variant.video?.duration ?: (durationMsOf(detail) / 1000L),
+            bitRateBitsPerSecond = variant.video?.bitRate,
+        )
         val pool = fileCachePool ?: run {
             val handle = client.fileHandle(detail, mediaId = mediaId, streamSize = streamSize, onRangeAttempt = ::logRangeAttempt)
             return try {
-                PikPakByteSource(handle, handle.openCache(coroutineContext = proxy.readerContext))
+                val cache = handle.openCache(coroutineContext = proxy.readerContext)
+                if (mediaRate != null) cache.updateMediaBytesPerSecond(mediaRate)
+                PikPakByteSource(handle, cache)
             } catch (e: Throwable) {
                 handle.close()
                 throw e
@@ -840,7 +862,8 @@ class PikoMediaRepository(
         }
         val lease = pool.acquire(client, detail.id, detail.hash, detail.sizeBytes, detail.name,
             parentId = detail.parentId, leased = LeasedFile.isLeased(fileId), detail = detail,
-            retained = retainedBy != null, owner = retainedBy ?: detail.id, mediaId = mediaId, streamSize = streamSize)
+            retained = retainedBy != null, owner = retainedBy ?: detail.id, mediaId = mediaId,
+            streamSize = streamSize, mediaBytesPerSecond = mediaRate)
         return PikPakByteSource(lease.entry.handle, lease.entry.cache, lease::close)
     }
 
@@ -849,6 +872,16 @@ class PikoMediaRepository(
 
     private fun durationMsOf(detail: FileDetail): Long =
         detail.params["duration"]?.toDoubleOrNull()?.let { (it * 1000).toLong() } ?: 0L
+
+    private fun estimatedMediaBytesPerSecond(
+        streamSize: Long,
+        durationSeconds: Long,
+        bitRateBitsPerSecond: Long? = null,
+    ): Long? {
+        val bySize = if (streamSize > 0L && durationSeconds > 0L) streamSize / durationSeconds else null
+        val byBitRate = bitRateBitsPerSecond?.takeIf { it > 0L }?.let { it / 8L }
+        return maxOf(bySize ?: 0L, byBitRate ?: 0L).takeIf { it > 0L }
+    }
 
     /**
      * 建 handle 与字节来源。handle 的内容哈希、文件对象与第一条直链都取自 [detail]，第一次读不必再查。
@@ -865,11 +898,17 @@ class PikoMediaRepository(
     ): PikPakByteSource? {
         // handle 在直链被拒时按 gcid 重建文件对象，没有 gcid 就失去了它存在的意义
         if (detail.hash.isBlank()) return null
+        val mediaRate = estimatedMediaBytesPerSecond(
+            streamSize = resolved.sizeBytes ?: detail.sizeBytes.takeIf { resolved.isOrigin } ?: 0L,
+            durationSeconds = resolved.video?.duration ?: (durationMsOf(detail) / 1000L),
+            bitRateBitsPerSecond = resolved.video?.bitRate,
+        )
         if (resolved.isOrigin && blockStore == null) {
             fileCachePool?.let { pool ->
                 val lease = pool.acquire(client, detail.id, detail.hash, detail.sizeBytes, detail.name,
                     parentId = detail.parentId, leased = leased, detail = detail,
-                    retained = retainedBy != null, owner = retainedBy ?: detail.id)
+                    retained = retainedBy != null, owner = retainedBy ?: detail.id,
+                    mediaBytesPerSecond = mediaRate)
                 return PikPakByteSource(lease.entry.handle, lease.entry.cache, lease::close)
             }
         }
@@ -883,7 +922,9 @@ class PikoMediaRepository(
         )
         return try {
             // 原画的大小已知；转码流没有，本进程头一回会发一次 1 字节探测
-            PikPakByteSource(handle, handle.openCache(blockStore, proxy.readerContext))
+            val cache = handle.openCache(blockStore, proxy.readerContext)
+            if (mediaRate != null) cache.updateMediaBytesPerSecond(mediaRate)
+            PikPakByteSource(handle, cache)
         } catch (e: CancellationException) {
             handle.close()
             throw e

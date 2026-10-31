@@ -563,7 +563,12 @@ internal fun bringToFront(window: java.awt.Frame) {
 private fun createServices(settings: DesktopSettingsStore, preferences: DesktopPikoPreferences): PikoServices {
     // 进程级作用域，与 Android 的 appScope 对应：下载与会话刷新不随某个窗口的组合结束
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val clientManager = PikoClientManager(desktopSessionStore(), appScope)
+    val desktopTransportBudget = (Runtime.getRuntime().maxMemory() / 8L).coerceIn(128L * 1024 * 1024, 512L * 1024 * 1024)
+    val clientManager = PikoClientManager(
+        sessionStore = desktopSessionStore(),
+        scope = appScope,
+        transportMemoryBudgetBytes = desktopTransportBudget,
+    )
     val mediaRepository = PikoMediaRepository(
         clientManager,
         preferences,

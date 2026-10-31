@@ -22,10 +22,11 @@ fun logRangeAttempt(attempt: RangeAttempt) {
     val firstByte = attempt.timeToFirstByte
     val slow = firstByte == null || firstByte >= SLOW_FIRST_BYTE
     if (attempt.outcome == RangeAttempt.Outcome.Complete && !slow) return
+    val sinkWaitText = attempt.sinkWait.inWholeMilliseconds.takeIf { it >= 50L }?.let { "，背压等待 $it ms" }.orEmpty()
     PikoLog.d(
         "Transport",
         "${attempt.host ?: "?"} ${attempt.outcome}，优先级 ${attempt.priority}：首字节 ${firstByte?.inWholeMilliseconds?.let { "$it ms" } ?: "无"}，" +
-            "送出 ${attempt.delivered / 1024} KiB，历时 ${attempt.duration.inWholeMilliseconds} ms",
+            "送出 ${attempt.delivered / 1024} KiB，历时 ${attempt.duration.inWholeMilliseconds} ms$sinkWaitText",
     )
 }
 
@@ -55,7 +56,7 @@ private object TransportSummary {
             bytes = bytes + attempt.delivered,
             firstByteMsSum = firstByteMsSum + (attempt.timeToFirstByte?.inWholeMilliseconds ?: 0),
             firstByteCount = firstByteCount + if (attempt.timeToFirstByte != null) 1 else 0,
-            durationMsSum = durationMsSum + attempt.duration.inWholeMilliseconds,
+            durationMsSum = durationMsSum + attempt.networkDuration.inWholeMilliseconds,
             maxActive = maxOf(maxActive, attempt.activeReads),
             byPriority = byPriority + (attempt.priority to (byPriority[attempt.priority] ?: 0) + 1),
         )

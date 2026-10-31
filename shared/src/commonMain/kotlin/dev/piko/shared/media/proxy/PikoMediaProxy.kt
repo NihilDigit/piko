@@ -29,6 +29,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
+import kotlin.time.Duration
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
@@ -225,6 +226,11 @@ class ProxyStream internal constructor(
         set(value) {
             session.urgent = value
         }
+
+    /** 上报播放器实时缓冲余量与媒体字节速率，供底层流读取器按期限救援停滞的播放头请求。 */
+    fun reportPlaybackBuffer(bufferedDuration: Duration, mediaBytesPerSecond: Long? = null) {
+        session.reportPlaybackBuffer(bufferedDuration, mediaBytesPerSecond)
+    }
 
     /**
      * 先把 [ranges] 取进这个会话的缓存，播放器之后读到时直接命中，不再等 CDN。

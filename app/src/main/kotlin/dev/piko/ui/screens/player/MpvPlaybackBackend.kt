@@ -27,6 +27,8 @@ import dev.piko.shared.media.player.mpvSubtitleAddCommands
 import dev.piko.shared.media.player.mpvSubtitleSelectCommand
 import dev.piko.shared.media.player.readMpvTracks
 import kotlin.math.ln
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -109,7 +111,8 @@ internal class MpvPlaybackBackend(
     private var attachedSurface: Surface? = null
     private var videoOutputDisabled = false
     private var pendingLoad: Array<String>? = null
-    private var released = false
+    @Volatile private var released = false
+    private val destroyCompleted = CompletableDeferred<Unit>()
     private var observing = false
 
     private val redrawGate = SurfaceRedrawGate(dropCount = { voDropCount() }, arm = ::armRedrawGate)
@@ -257,6 +260,38 @@ internal class MpvPlaybackBackend(
         supersededLoads = issuedLoads
         onMpv { mpv.command(arrayOf("stop")) }
         isLoadingFile = false
+    }
+
+    override val requiresAsyncStopDrain: Boolean get() = true
+
+    private suspend fun <T> callOnMpv(block: () -> T?): T? {
+        if (released) return null
+        val done = CompletableDeferred<T?>()
+        calls.execute {
+            val result = if (destroyed) null else runCatching(block).getOrNull()
+            done.complete(result)
+        }
+        return done.await()
+    }
+
+    override suspend fun stopAndAwaitIdle() {
+        if (released) {
+            destroyCompleted.await()
+            return
+        }
+        pendingLoad = null
+        supersededLoads = issuedLoads
+        isLoadingFile = false
+        callOnMpv { mpv.command(arrayOf("stop")) }
+        repeat(16) {
+            if (released) {
+                destroyCompleted.await()
+                return
+            }
+            val idle = callOnMpv { mpv.getPropertyString("idle-active") }
+            if (idle == null || idle == "yes") return
+            delay(15L)
+        }
     }
 
     override fun play() {
@@ -501,8 +536,12 @@ internal class MpvPlaybackBackend(
         mpv.removeLogObserver(this)
         // 排在已投递的调用之后：它们还要用这个句柄
         calls.execute {
-            destroyed = true
-            mpv.destroy()
+            try {
+                destroyed = true
+                mpv.destroy()
+            } finally {
+                destroyCompleted.complete(Unit)
+            }
         }
     }
 

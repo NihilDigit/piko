@@ -97,6 +97,8 @@ class PikoFileCachePool(
         mediaId: String? = null,
         /** 要读的那一档的长度，即暂存的大小。原画就是 [size]。 */
         streamSize: Long = size,
+        /** 已知的媒体平均字节消耗率（字节/秒），用于自适应播放缓冲余量与前后台并发调度。 */
+        mediaBytesPerSecond: Long? = null,
     ): Lease {
         val key = identity(client.account, gcid, streamSize, mediaId)
         return lock.withLock {
@@ -121,12 +123,16 @@ class PikoFileCachePool(
                     Entry(key, client, handle, client.fileCache(
                         source = handle, size = streamSize, storeKey = handle.contentKey,
                         blockStore = store, connectionBudget = concurrency, coroutineContext = scope.coroutineContext + Dispatchers.IO,
+                        mediaBytesPerSecond = mediaBytesPerSecond,
                     ), store).also { entries[key] = it }
                 } catch (e: Throwable) {
                     handle.close()
                     withContext(NonCancellable) { store.close() }
                     throw e
                 }
+            }
+            if (old != null && mediaBytesPerSecond != null && mediaBytesPerSecond > 0L) {
+                entry.cache.updateMediaBytesPerSecond(mediaBytesPerSecond)
             }
             entry.references++
             entry.retained = entry.retained || retained || key in paths.value

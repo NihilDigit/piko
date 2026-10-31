@@ -102,6 +102,18 @@ interface PlaybackBackend {
 
     fun stop()
 
+    /**
+     * [stop] 是否在独立播放线程上异步卸载输入（如 libmpv）。
+     * 为 true 时，非挂起的释放路径需在后台等待 [stopAndAwaitIdle] 排空后再关闭本机代理会话，
+     * 防止 demuxer 尚未收到 stop 就读到代理断流并触发 1ms 后的重连 404。
+     */
+    val requiresAsyncStopDrain: Boolean get() = false
+
+    /** 停止当前播放并等待后端释放正在读取的输入流。 */
+    suspend fun stopAndAwaitIdle() {
+        stop()
+    }
+
     fun play()
 
     fun pause()

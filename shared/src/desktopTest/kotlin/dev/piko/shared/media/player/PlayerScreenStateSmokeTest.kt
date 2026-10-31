@@ -160,6 +160,87 @@ class PlayerScreenStateSmokeTest {
         assertEquals(4, backend.opens.size)
     }
 
+    @Test
+    fun releaseDrainsAsyncBackendStopBeforeClosingProxyStream() = runBlocking {
+        backend.requiresAsyncStopDrain = true
+        val drainGate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val drainEntered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        backend.onStopDrain = {
+            drainEntered.complete(Unit)
+            drainGate.await()
+        }
+        val state = newState()
+        val proxyUrl = assertNotNull(backend.awaitOpens(1).single().urlOrNull())
+
+        withContext(stateThread) { state.release() }
+        drainEntered.await()
+        assertTrue(backend.stopCalls > 0, "release() 应当先停止后端")
+
+        // 后端异步卸载输入期间（例如 libmpv demuxer 正在退出），本机回环代理会话必须保持可读而非提前 404
+        val statusDuringDrain = java.net.URI(proxyUrl).toURL().openConnection().let { conn ->
+            (conn as java.net.HttpURLConnection).apply {
+                requestMethod = "HEAD"
+                connectTimeout = 2_000
+                readTimeout = 2_000
+            }.useCode()
+        }
+        assertEquals(200, statusDuringDrain, "后端尚未完成停止排空前代理会话不应提前关闭")
+
+        drainGate.complete(Unit)
+        eventually("后端排空完成后代理会话关闭并返回 404") {
+            val code = java.net.URI(proxyUrl).toURL().openConnection().let { conn ->
+                (conn as java.net.HttpURLConnection).apply {
+                    requestMethod = "HEAD"
+                    connectTimeout = 2_000
+                    readTimeout = 2_000
+                }.useCode()
+            }
+            code == 404
+        }
+    }
+
+    @Test
+    fun cancellingReloadDuringStopDrainNeverLeaksDetachedProxyStream() = runBlocking<Unit> {
+        backend.requiresAsyncStopDrain = true
+        val drainEntered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val drainBlock = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var blockNextStop = false
+        backend.onStopDrain = {
+            if (blockNextStop) {
+                drainEntered.complete(Unit)
+                drainBlock.await()
+            }
+        }
+        val state = newState()
+        val firstProxyUrl = assertNotNull(backend.awaitOpens(1).single().urlOrNull())
+
+        blockNextStop = true
+        withContext(stateThread) { state.retry() }
+        drainEntered.await()
+
+        // 排空尚未结束时立即触发下一次 reload（取消上一轮 prepareJob），旧代理流必须在 finally 中安全关闭，绝不泄漏
+        blockNextStop = false
+        withContext(stateThread) { state.retry() }
+        eventually("取消排空后旧代理会话仍被可靠关闭并返回 404") {
+            val code = java.net.URI(firstProxyUrl).toURL().openConnection().let { conn ->
+                (conn as java.net.HttpURLConnection).apply {
+                    requestMethod = "HEAD"
+                    connectTimeout = 2_000
+                    readTimeout = 2_000
+                }.useCode()
+            }
+            code == 404
+        }
+        drainBlock.complete(Unit)
+        backend.awaitOpens(2)
+    }
+
+    private fun java.net.HttpURLConnection.useCode(): Int = try {
+        responseCode
+    } finally {
+        disconnect()
+    }
+
     private suspend fun eventually(what: String, timeoutMillis: Long = 10_000, condition: () -> Boolean) =
         dev.piko.shared.smoke.awaitUntil(what, timeoutMillis, condition)
 
@@ -185,6 +266,9 @@ class PlayerScreenStateSmokeTest {
 
         val opens = CopyOnWriteArrayList<Opened>()
         var onOpen: suspend FakeBackend.() -> Unit = {}
+        override var requiresAsyncStopDrain: Boolean = false
+        @Volatile var stopCalls: Int = 0
+        var onStopDrain: suspend () -> Unit = {}
 
         fun emit(event: PlaybackBackendEvent) {
             check(_events.tryEmit(event))
@@ -216,7 +300,13 @@ class PlayerScreenStateSmokeTest {
             onOpen()
         }
 
-        override fun stop() = Unit
+        override fun stop() {
+            stopCalls += 1
+        }
+        override suspend fun stopAndAwaitIdle() {
+            stop()
+            onStopDrain()
+        }
         override fun play() = Unit
         override fun pause() = Unit
         override fun seekTo(positionMillis: Long) {

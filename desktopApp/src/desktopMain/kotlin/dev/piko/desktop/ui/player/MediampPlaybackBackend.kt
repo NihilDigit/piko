@@ -23,6 +23,7 @@ import dev.piko.shared.media.player.mpvSubtitleAddCommands
 import dev.piko.shared.media.player.mpvSubtitleSelectCommand
 import dev.piko.shared.media.player.readMpvTracks
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.openani.mediamp.MediampPlayer
 import org.openani.mediamp.PlaybackEvent
 import org.openani.mediamp.features.AspectRatioMode
@@ -314,6 +316,20 @@ internal class MediampPlaybackBackend(
         manualSeeking = false
         manualSeekGen++
         player.stopPlayback()
+    }
+
+    override val requiresAsyncStopDrain: Boolean get() = true
+
+    override suspend fun stopAndAwaitIdle() = withContext(scope.coroutineContext.minusKey(Job)) {
+        stop()
+        val handle = mpv
+        repeat(16) {
+            val state = player.state.value
+            val mpvIdle = handle == null || runCatching { handle.getPropertyString("idle-active") }.getOrNull() == "yes"
+            if (!state.isMediaLoaded && !state.isLoadingOrBuffering && mpvIdle) return@withContext
+            if (mpvIdle && it >= 1) return@withContext
+            delay(15L)
+        }
     }
 
     override fun play() = player.resume()

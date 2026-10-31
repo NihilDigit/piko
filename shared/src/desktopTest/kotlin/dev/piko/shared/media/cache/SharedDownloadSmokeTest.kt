@@ -78,6 +78,7 @@ class SharedDownloadSmokeTest {
         coordinator.startDownload("f1")
         awaitUntil("播放后仍可继续下载", 20_000) { coordinator.tasks.value["f1"]?.status == DownloadStatus.COMPLETED }
         assertContentEquals(payload, root.resolve("movie.mkv").readBytes())
-        assertTrue(cloud.deliveredCdnBytes.get() <= payload.size + 4L * 1024 * 1024)
+        val delivered = cloud.deliveredCdnBytes.get()
+        assertTrue(delivered <= payload.size + 4L * 1024 * 1024, "delivered=$delivered, payload=${payload.size}, requests=${cloud.cdnRequests.get()}")
     }
 }

@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.concurrent.Volatile
 import kotlin.time.TimeSource
 
 /**
@@ -38,7 +39,28 @@ class PikoClientManager(
     private val sessionStore: PikoSessionStore,
     private val scope: CoroutineScope,
     private val httpClient: HttpClient? = null,
+    transportMemoryBudgetBytes: Long = PikPakClient.DEFAULT_TRANSPORT_MEMORY_BUDGET_BYTES,
 ) : PikoClientProvider {
+    private val budgetLock = Any()
+
+    @Volatile
+    private var currentTransportBudgetBytes: Long = transportMemoryBudgetBytes.coerceAtLeast(MIN_TRANSPORT_BUDGET_BYTES)
+
+    /** 动态调整 SDK 传输层共享内存预算（如 Android 收到 onTrimMemory 或回到前台恢复）。 */
+    fun setTransportMemoryBudgetBytes(bytes: Long) {
+        val clamped = bytes.coerceAtLeast(MIN_TRANSPORT_BUDGET_BYTES)
+        synchronized(budgetLock) {
+            currentTransportBudgetBytes = clamped
+            _currentClient.value?.setTransportMemoryBudgetBytes(clamped)
+        }
+    }
+
+    private fun publishCurrentClient(client: PikPakClient): PikPakClient? = synchronized(budgetLock) {
+        client.setTransportMemoryBudgetBytes(currentTransportBudgetBytes)
+        val previous = _currentClient.value
+        _currentClient.value = client
+        previous
+    }
     private val _currentClient = MutableStateFlow<PikPakClient?>(null)
     override val currentClient: StateFlow<PikPakClient?> = _currentClient.asStateFlow()
 
@@ -104,10 +126,10 @@ class PikoClientManager(
             PikoLog.i(TAG, "启动：恢复上次的账号，${credentialState(account, credentials?.password != null)}，已保存 ${saved.accounts.size} 个账号")
             val client = clientFor(account, credentials?.password)
             when (val failure = tryLogin(client, "恢复会话")) {
-                null -> _currentClient.value = client
+                null -> publishCurrentClient(client)?.takeIf { it !== client }?.close()
                 is LoginFailure.Transient -> {
                     PikoLog.i(TAG, "先以离线状态进主界面，后台等网络恢复")
-                    _currentClient.value = client
+                    publishCurrentClient(client)?.takeIf { it !== client }?.close()
                     scheduleReconnect(client)
                 }
                 // 刷新令牌失效时 SDK 已在改用密码登录之前把会话从存储里清掉，这里不必再清。
@@ -295,8 +317,7 @@ class PikoClientManager(
 
     private fun replaceClient(client: PikPakClient) {
         reconnectJob?.cancel()
-        val previous = _currentClient.value
-        _currentClient.value = client
+        val previous = publishCurrentClient(client)
         if (previous != null && previous !== client) previous.close()
     }
 
@@ -410,6 +431,7 @@ class PikoClientManager(
             // 解除 OkHttp 单主机 5 并发枷锁后，实测 HTTP/2 下 80~115 req/s 均 0 次 429 与 0 次验证码（2026-10-30 ApiRateWallProbeTest）；
             // 取 64 突发 / 60 req/s 留足近一倍安全余量，批量重命名、引用保存与归档直接跑满多路并发
             rateLimiter = io.github.nihildigit.pikpak.RateLimiter(capacity = 64, refillPerSecond = 60.0),
+            transportMemoryBudgetBytes = currentTransportBudgetBytes,
         )
     }
 
@@ -419,6 +441,7 @@ class PikoClientManager(
         const val TAG = "Auth"
         const val CONNECTION_BUDGET = 8
         const val ACCOUNT_CONNECTION_BUDGET = 16
+        const val MIN_TRANSPORT_BUDGET_BYTES = 16L * 1024 * 1024
         const val RECONNECT_INITIAL_DELAY_MS = 2_000L
         const val RECONNECT_MAX_DELAY_MS = 60_000L
     }

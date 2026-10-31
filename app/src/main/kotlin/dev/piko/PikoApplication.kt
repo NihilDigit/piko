@@ -72,6 +72,37 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
     /** 首次用到时才建：开屏检查要等界面第一次组合，不必在 onCreate 里就先建一个 HTTP 客户端。 */
     val appUpdater by lazy { AppUpdater(this) }
 
+    private val baseTransportBudgetBytes: Long by lazy {
+        (Runtime.getRuntime().maxMemory() / 6L).coerceIn(24L * 1024 * 1024, 96L * 1024 * 1024)
+    }
+
+    fun restoreTransportMemoryBudget() {
+        if (::services.isInitialized) {
+            services.clientManager.setTransportMemoryBudgetBytes(baseTransportBudgetBytes)
+        }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (!::services.isInitialized) return
+        @Suppress("DEPRECATION")
+        val target = when {
+            level >= TRIM_MEMORY_BACKGROUND || level == TRIM_MEMORY_RUNNING_CRITICAL ->
+                (baseTransportBudgetBytes / 2L).coerceAtLeast(16L * 1024 * 1024)
+            level == TRIM_MEMORY_UI_HIDDEN || level == TRIM_MEMORY_RUNNING_LOW || level == TRIM_MEMORY_RUNNING_MODERATE ->
+                (baseTransportBudgetBytes * 3L / 4L).coerceAtLeast(16L * 1024 * 1024)
+            else -> return
+        }
+        services.clientManager.setTransportMemoryBudgetBytes(target)
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        if (::services.isInitialized) {
+            services.clientManager.setTransportMemoryBudgetBytes(16L * 1024 * 1024)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -83,7 +114,11 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
         PikoLocale.bindSystemLocale(systemLocale.toLanguageTag())
         PikoLocale.apply(runBlocking { sessionManager.appLanguageFlow.first() })
         installProxy()
-        val clientManager = PikoClientManager(AndroidPikoSessionStore(this), appScope)
+        val clientManager = PikoClientManager(
+            sessionStore = AndroidPikoSessionStore(this),
+            scope = appScope,
+            transportMemoryBudgetBytes = baseTransportBudgetBytes,
+        )
         val mediaRepository = PikoMediaRepository(
             clientManager,
             sessionManager,

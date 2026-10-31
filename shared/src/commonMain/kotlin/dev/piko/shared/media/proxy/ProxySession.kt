@@ -11,6 +11,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlin.concurrent.Volatile
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -79,6 +80,24 @@ internal class ProxySession(
             snapshotReaders().forEach { it.urgent = value }
         }
 
+    @Volatile
+    private var latestBufferedDuration: Duration? = null
+
+    @Volatile
+    private var latestMediaBytesPerSecond: Long? = null
+
+    /** 向底层缓存及活动游标同步播放器当前缓冲时长与估算字节速率，供播放头停滞时按期限发起救援。 */
+    fun reportPlaybackBuffer(bufferedDuration: Duration, mediaBytesPerSecond: Long? = null) {
+        val safeBuffered = if (bufferedDuration.isNegative()) Duration.ZERO else bufferedDuration
+        latestBufferedDuration = safeBuffered
+        if (mediaBytesPerSecond != null && mediaBytesPerSecond > 0L) {
+            latestMediaBytesPerSecond = mediaBytesPerSecond
+            source.updateMediaBytesPerSecond(mediaBytesPerSecond)
+        }
+        val rate = latestMediaBytesPerSecond
+        snapshotReaders().forEach { it.reportPlaybackBuffer(safeBuffered, rate) }
+    }
+
     /**
      * 把 [ranges] 取进缓存，等全部到手才返回；[role] 缺省为会话的角色。没有缓存可填的来源立即返回。
      * 等的一方被取消（超时、翻走）时一并撤回这次预取：SDK 的预取不随等待者取消，留着它会以更早的
@@ -109,6 +128,9 @@ internal class ProxySession(
             }
             val currentUrgent = urgent
             if (reader.urgent != currentUrgent) reader.urgent = currentUrgent
+            latestBufferedDuration?.let { buffered ->
+                reader.reportPlaybackBuffer(buffered, latestMediaBytesPerSecond)
+            }
             if (reader.position != start) {
                 reader.seekTo(start)
             }

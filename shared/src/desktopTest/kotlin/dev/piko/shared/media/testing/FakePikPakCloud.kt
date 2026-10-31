@@ -14,10 +14,20 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.availableForRead
+import io.ktor.utils.io.close
+import io.ktor.utils.io.writeFully
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -57,6 +67,7 @@ internal class FakePikPakCloud(
     private var generation = 1
     private var servedInGeneration = 0
     private val inFlightByUrl = ConcurrentHashMap<String, AtomicInteger>()
+    private val streamScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val provider: PikoClientProvider by lazy {
         val client = newClient()
@@ -143,23 +154,47 @@ internal class FakePikPakCloud(
             overBudgetResponses.incrementAndGet()
             return respond("", HttpStatusCode.ServiceUnavailable)
         }
+        var streaming = false
         try {
             if (blockDelayMillis > 0) delay(blockDelayMillis)
             beforeCdnResponse?.invoke()
+            currentCoroutineContext().ensureActive()
             val (start, endInclusive) = parseRange(request.headers[HttpHeaders.Range], body.size.toLong())
-            val slice = body.copyOfRange(start.toInt(), endInclusive.toInt() + 1)
-            deliveredCdnBytes.addAndGet(slice.size.toLong())
+            val length = (endInclusive - start + 1).toInt()
+            val channel = ByteChannel(autoFlush = true)
+            streaming = true
+            streamScope.launch {
+                try {
+                    var offset = start.toInt()
+                    val endExclusive = endInclusive.toInt() + 1
+                    while (offset < endExclusive && !channel.isClosedForWrite) {
+                        while (channel.availableForRead > 0 && !channel.isClosedForWrite) {
+                            kotlinx.coroutines.yield()
+                        }
+                        if (channel.isClosedForWrite) break
+                        val chunk = minOf(16 * 1024, endExclusive - offset)
+                        channel.writeFully(body, offset, offset + chunk)
+                        deliveredCdnBytes.addAndGet(chunk.toLong())
+                        offset += chunk
+                    }
+                    channel.close()
+                } catch (t: Throwable) {
+                    channel.close(t)
+                } finally {
+                    inFlight.decrementAndGet()
+                }
+            }
             return respond(
-                content = ByteReadChannel(slice),
+                content = channel,
                 status = HttpStatusCode.PartialContent,
                 headers = headersOf(
                     HttpHeaders.ContentRange to listOf("bytes $start-$endInclusive/${body.size}"),
-                    HttpHeaders.ContentLength to listOf(slice.size.toString()),
+                    HttpHeaders.ContentLength to listOf(length.toString()),
                     HttpHeaders.ContentType to listOf("application/octet-stream"),
                 ),
             )
         } finally {
-            inFlight.decrementAndGet()
+            if (!streaming) inFlight.decrementAndGet()
         }
     }
 

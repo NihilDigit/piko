@@ -2,6 +2,7 @@ package dev.piko.shared.media.proxy
 
 import io.github.nihildigit.pikpak.StreamRole
 import kotlinx.coroutines.Deferred
+import kotlin.time.Duration
 
 /**
  * 把 [inner] 的 [offset] 起 [size] 个字节当作一个完整的文件。播放器看到的第 0 字节是 inner 的 offset 处。
@@ -25,6 +26,10 @@ internal class SlicedByteSource(
     override suspend fun prefetch(ranges: List<LongRange>, role: StreamRole, priority: Int?): Deferred<Unit>? =
         inner.prefetch(ranges.map { it.first.coerceAtLeast(0) + offset..it.last.coerceAtMost(size - 1) + offset }, role, priority)
 
+    override fun updateMediaBytesPerSecond(bytesPerSecond: Long?) {
+        inner.updateMediaBytesPerSecond(bytesPerSecond)
+    }
+
     override fun close() = inner.close()
 
     private inner class SlicedReader(private val reader: ProxyReader) : ProxyReader {
@@ -45,6 +50,10 @@ internal class SlicedByteSource(
             set(value) {
                 reader.urgent = value
             }
+
+        override fun reportPlaybackBuffer(bufferedDuration: Duration, mediaBytesPerSecond: Long?) {
+            reader.reportPlaybackBuffer(bufferedDuration, mediaBytesPerSecond)
+        }
 
         override val position: Long get() = reader.position - offset
 

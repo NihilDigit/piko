@@ -134,6 +134,11 @@ class MainActivity : ComponentActivity() {
         applicationContext.resources.updateConfiguration(configuration, applicationContext.resources.displayMetrics)
     }
 
+    override fun onResume() {
+        super.onResume()
+        PikoApplication.instance.restoreTransportMemoryBudget()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
