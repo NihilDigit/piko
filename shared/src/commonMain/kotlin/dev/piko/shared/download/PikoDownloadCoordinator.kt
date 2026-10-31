@@ -741,10 +741,11 @@ class PikoDownloadCoordinator(
                 downloadedBytes = lease?.entry?.store?.heldBytes?.value ?: it.downloadedBytes, errorMessage = e.message,
                 converting = false, progressFraction = null) }
         } finally {
+            val currentLease = lease
+            currentLease?.release()
             withContext(NonCancellable) {
-                runCatching { lease?.entry?.store?.flush() }
+                runCatching { currentLease?.entry?.store?.flush() }
             }
-            lease?.release()
         }
     }
 
