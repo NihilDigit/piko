@@ -669,6 +669,10 @@ class PikoDownloadCoordinator(
                     if (missingAll.isEmpty()) break
                     if (limiter.bytesPerSecond == null) {
                         val download = entry.cache.download(missingAll, StreamRole.BACKGROUND)
+                        // download 挂在共享缓存作用域上而非当前任务子 Job；注册同步取消回调，使 pauseDownload 在下达同一刻撤回下载需求，不必等双核调度器恢复 finally
+                        val cancelHandle = currentCoroutineContext()[Job]?.invokeOnCompletion {
+                            if (it != null) download.cancel()
+                        }
                         val throttleWatcher = launch {
                             preferences.snailModeFlow.first { it.enabled }
                             download.cancel()
@@ -679,6 +683,7 @@ class PikoDownloadCoordinator(
                         } catch (e: CancellationException) {
                             currentCoroutineContext().ensureActive()
                         } finally {
+                            cancelHandle?.dispose()
                             throttleWatcher.cancel()
                             download.cancel()
                         }
@@ -698,7 +703,13 @@ class PikoDownloadCoordinator(
                                 if (needed > 0) {
                                     limiter.acquire(needed)
                                     val download = entry.cache.download(missing, StreamRole.BACKGROUND)
-                                    try { download.await() } finally { download.cancel() }
+                                    val cancelHandle = currentCoroutineContext()[Job]?.invokeOnCompletion {
+                                        if (it != null) download.cancel()
+                                    }
+                                    try { download.await() } finally {
+                                        cancelHandle?.dispose()
+                                        download.cancel()
+                                    }
                                 }
                                 offset = end + 1
                             }

@@ -9,9 +9,12 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import dev.piko.data.auth.AppLanguage
+import dev.piko.shared.i18n.PikoLocale
 import dev.piko.shared.media.player.PlayerAspectRatio
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,6 +31,12 @@ class MobilePlayerControlsTest {
     private val seeks = mutableListOf<Long>()
     private val speeds = mutableListOf<Float>()
     private var playPauseCount = 0
+
+    @Before
+    fun setUpLocale() {
+        // PikoApplication.onCreate 会按模拟器系统语言（CI 上为 en-US）初始化全局语言，固定为简中以匹配下方语义断言
+        PikoLocale.apply(AppLanguage.ZH_CN)
+    }
 
     private fun setControls(speed: Float = 1f) {
         rule.setContent {

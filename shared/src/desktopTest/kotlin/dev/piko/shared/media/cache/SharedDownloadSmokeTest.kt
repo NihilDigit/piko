@@ -61,6 +61,7 @@ class SharedDownloadSmokeTest {
             coordinator.tasks.value["f1"]?.let { it.downloadedBytes > 0 && it.downloadedBytes < payload.size } == true
         }
         coordinator.pauseDownload("f1")
+        awaitUntil("下载已转为暂停态") { coordinator.tasks.value["f1"]?.status == DownloadStatus.PAUSED }
         remainingBlocks.complete(Unit)
         val task = coordinator.tasks.value.getValue("f1")
         val path = root.resolve(".piko-cache/${fileCacheName(PikoFileCachePool.identity(task.account, task.gcid, task.totalBytes))}.data").path
