@@ -770,20 +770,38 @@ fun DriveScreen(
         }
     }
 
-    // 没有浮动卡片的窗口里，解压与归档的进度只在传输页。开始时提示一次并给出去处；不像离线那样直接跳过去：
-    // 解压多在几秒内完成，跳走反而打断人手上的事
-    LaunchedEffect(twoPane) {
-        if (twoPane) return@LaunchedEffect
-        fun announce(message: String) = launch {
-            val result = snackbarHostState.showSnackbar(message, actionLabel = tr("查看", "View", "表示", "보기", "檢視"), withDismissAction = true)
-            if (result == SnackbarResult.ActionPerformed) openTransfers()
+    // 解压与归档的进度在任务页展示，开始时在当前活动页即时提示并给出去处；任务提前完成时自动让位给结果/撤销提示
+    val latestAcceptsNavigation by rememberUpdatedState(acceptsNavigation)
+    LaunchedEffect(Unit) {
+        fun announce(message: String, stillRunning: () -> Boolean) {
+            val shownJob = launch {
+                val result = snackbarHostState.showSnackbar(message, actionLabel = tr("查看", "View", "表示", "보기", "檢視"), withDismissAction = true)
+                if (result == SnackbarResult.ActionPerformed) openTransfers()
+            }
+            launch {
+                snapshotFlow { stillRunning() }.first { !it }
+                shownJob.cancel()
+            }
         }
         // 只认从无到有：进页时已经在跑的之前提示过，队列里追加压缩包也不再提示
         var wasExtracting = archiveSession.jobs.isNotEmpty()
         var wasVaulting = vaultSession.isRunning
         snapshotFlow { archiveSession.jobs.isNotEmpty() to vaultSession.isRunning }.collect { (extracting, vaulting) ->
-            if (extracting && !wasExtracting) announce(tr("已开始解压", "Extraction started", "解凍を開始しました", "압축 해제 시작됨", "已開始解壓縮"))
-            if (vaulting && !wasVaulting) announce(if (vaultSession.restoreProgress != null) tr("已开始取消归档", "Unarchiving started", "アーカイブの解除を開始しました", "보관 해제 시작됨", "已開始取消歸檔") else tr("已开始归档", "Archiving started", "アーカイブを開始しました", "보관 시작됨", "已開始歸檔"))
+            if (latestAcceptsNavigation) {
+                if (extracting && !wasExtracting) {
+                    announce(tr("已开始解压", "Extraction started", "解凍を開始しました", "압축 해제 시작됨", "已開始解壓縮")) {
+                        archiveSession.jobs.isNotEmpty()
+                    }
+                }
+                if (vaulting && !wasVaulting) {
+                    val label = if (vaultSession.restoreProgress != null) {
+                        tr("已开始取消归档", "Unarchiving started", "アーカイブの解除を開始しました", "보관 해제 시작됨", "已開始取消歸檔")
+                    } else {
+                        tr("已开始归档", "Archiving started", "アーカイブを開始しました", "보관 시작됨", "已開始歸檔")
+                    }
+                    announce(label) { vaultSession.isRunning }
+                }
+            }
             wasExtracting = extracting
             wasVaulting = vaulting
         }
