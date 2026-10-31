@@ -57,6 +57,7 @@ fun UpdateDialog(
     /** 为 null 时不给「忽略此版本」，改给「在浏览器中查看」。 */
     onIgnore: (() -> Unit)? = null,
 ) {
+    val language by dev.piko.shared.i18n.PikoLocale.effectiveLanguageState
     val platform = LocalPikoPlatform.current
     val downloadManager = LocalPikoServices.current.downloadManager
     val scope = rememberCoroutineScope()
@@ -103,7 +104,7 @@ fun UpdateDialog(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     ReleaseNotes(
-                        markdown = update.notes.ifBlank { tr("此版本没有更新说明", "No release notes for this version", "このバージョンの更新情報はありません", "이 버전의 업데이트 정보가 없습니다", "此版本沒有更新說明") },
+                        markdown = update.notesFor(language).ifBlank { tr("此版本没有更新说明", "No release notes for this version", "このバージョンの更新情報はありません", "이 버전의 업데이트 정보가 없습니다", "此版本沒有更新說明") },
                         modifier = Modifier
                             .heightIn(max = 320.dp)
                             .verticalScroll(rememberScrollState())

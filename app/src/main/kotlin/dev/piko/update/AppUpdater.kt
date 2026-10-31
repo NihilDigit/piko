@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import dev.piko.BuildConfig
+import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.update.ChecksumMismatchException
@@ -29,6 +30,7 @@ data class AndroidUpdate(
     override val pageUrl: String,
     override val canInstallInApp: Boolean,
     val apk: ReleaseAsset,
+    override val localizedNotes: Map<AppLanguage, String> = emptyMap(),
 ) : AvailableUpdate {
     override val downloadSize: Long get() = apk.size
 }
@@ -54,6 +56,7 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
         return AndroidUpdate(
             version = release.version,
             notes = release.notes,
+            localizedNotes = release.localizedNotes,
             pageUrl = release.pageUrl,
             canInstallInApp = !BuildConfig.DEBUG,
             apk = apk,

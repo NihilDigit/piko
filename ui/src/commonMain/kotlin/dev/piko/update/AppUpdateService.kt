@@ -1,5 +1,6 @@
 package dev.piko.update
 
+import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.i18n.tr
 
 import androidx.compose.runtime.getValue
@@ -20,6 +21,12 @@ import kotlinx.coroutines.flow.asSharedFlow
 interface AvailableUpdate {
     val version: String
     val notes: String
+    val localizedNotes: Map<AppLanguage, String> get() = emptyMap()
+    fun notesFor(language: AppLanguage): String =
+        localizedNotes[language]?.takeIf { it.isNotBlank() }
+            ?: localizedNotes[AppLanguage.ZH_CN]?.takeIf { it.isNotBlank() }
+            ?: notes
+
     val pageUrl: String
 
     /** 这次实际要下载的字节数。桌面端增量更新时远小于整个安装包。 */
