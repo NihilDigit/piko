@@ -1,4 +1,4 @@
-<p align="right"><a href="README.md">简体中文</a> | <b>English</b></p>
+<p align="right"><a href="README.md">简体中文</a> | <a href="README.zh-Hant.md">繁體中文</a> | <a href="README.ko.md">한국어</a> | <a href="README.ja.md">日本語</a> | <b>English</b></p>
 
 <p align="center"><img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/icon.png" alt="Piko" width="96"></p>
 
@@ -23,7 +23,10 @@
 
 ## Adaptive layout
 
-Built for mouse and keyboard on the desktop, clean and simple on the phone.
+Built for mouse and keyboard on the desktop, clean and simple on the phone. Supports multi-tab
+workspaces, video and photo browsing in Gallery, and mounting local folders read-only directly inside
+the current cloud folder. The interface is available in Simplified Chinese, Traditional Chinese,
+Korean, Japanese, and English.
 
 <p align="center">
 <picture>
@@ -34,7 +37,8 @@ Built for mouse and keyboard on the desktop, clean and simple on the phone.
 
 ## Feed
 
-Plays random clips from the videos in the current folder. Swipe up or down to switch.
+Plays random clips from the current folder or selected videos. Swipe up or down to switch, with
+optional auto-extend and auto-advance.
 
 <p align="center">
 <picture>
@@ -47,8 +51,9 @@ Plays random clips from the videos in the current folder. Swipe up or down to sw
 
 ## Link and file name parsing
 
-Parses magnet links, torrents, download URLs and share links, with a full preview and per-file
-selection before saving. Files are grouped by work and episode, with samples and extras folded away.
+Parses magnet links, torrents, download URLs, and share links, with a full preview and per-file
+selection before saving, or saving as zero-quota references. Files are grouped by work and episode,
+with samples and extras folded away.
 
 <p align="center">
 <picture>
@@ -59,8 +64,8 @@ selection before saving. Files are grouped by work and episode, with samples and
 
 ## Transfers
 
-Parallel connections that route around slow or unresponsive nodes, for a better experience on poor
-networks. Snail mode caps the speed without affecting playback.
+Parallel connections that route around slow or unresponsive nodes for smooth playback and downloads
+over high-latency or poor networks. Snail mode caps transfer speed without affecting playback.
 
 <p align="center">
 <picture>
@@ -71,7 +76,8 @@ networks. Snail mode caps the speed without affecting playback.
 
 ## File tools
 
-Cut video clips and find duplicate files.
+Instant drive-wide fuzzy search backed by a local directory tree, zero-quota archiving, video clip
+extraction, batch renaming, and cross-folder duplicate detection.
 
 <p align="center">
 <picture>
