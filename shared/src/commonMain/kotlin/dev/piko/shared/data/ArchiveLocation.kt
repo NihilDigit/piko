@@ -37,7 +37,7 @@ fun List<PikoPathBreadcrumb>.outsideArchives(): List<PikoPathBreadcrumb> {
 
 /** 能放进东西、能列出网盘内容的真实文件夹，库、压缩包与待保存虚拟目录都不是。 */
 fun isDriveFolderId(id: String): Boolean =
-    DriveLibrary.of(id) == null && ArchiveLocation.of(id) == null &&
+    !LocalLocation.isLocal(id) && DriveLibrary.of(id) == null && ArchiveLocation.of(id) == null &&
         ImportPreviewLocation.of(id) == null && !id.startsWith("import-dir:")
 
 /**

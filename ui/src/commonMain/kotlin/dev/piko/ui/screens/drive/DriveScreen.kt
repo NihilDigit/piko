@@ -212,6 +212,16 @@ import dev.piko.shared.data.ImportPreviewLocation
 import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.isExtractableArchive
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.LinkOff
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Storage
+import dev.piko.shared.data.formatLocalPathForDisplay
+import dev.piko.shared.data.isLocal
+import dev.piko.shared.data.isLocalMountRoot
+import dev.piko.shared.data.LocalLocation
+import dev.piko.ui.components.previewImageCoverUrl
 import dev.piko.shared.data.isImportPreview
 import dev.piko.ui.screens.archive.ArchiveBrowsePasswordDialog
 import dev.piko.ui.components.BreadcrumbBar
@@ -342,11 +352,19 @@ fun DriveScreen(
     // 防窥遮蔽开关是渲染选择，不进共享状态
     val sessionManager = LocalPikoServices.current.preferences
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
+    val initialGalleryShowImages = remember { runBlocking { sessionManager.galleryShowImagesFlow.first() } }
+    val galleryShowImages by sessionManager.galleryShowImagesFlow.collectAsStateWithLifecycle(initialGalleryShowImages)
+    fun setGalleryShowImages(show: Boolean) {
+        scope.launch { sessionManager.setGalleryShowImages(show) }
+    }
 
     val archiveBrowser = LocalPikoServices.current.archiveBrowser
     val duplicateReport = browserSession?.duplicateReport ?: remember { dev.piko.shared.presentation.DuplicateReportViewModel() }
     val gallery = browserSession?.gallery ?: remember(driveRepo) {
         dev.piko.shared.state.GallerySession(driveRepo, scope)
+    }
+    LaunchedEffect(gallery, galleryShowImages) {
+        gallery.updateIncludeImages(galleryShowImages)
     }
     val state = browserSession?.state ?: remember {
         DriveScreenState(driveRepo, sessionManager, scope, sessionListing = { place ->
@@ -472,10 +490,13 @@ fun DriveScreen(
         }
     }
     fun openSelectedGallery(files: List<FileStat>) {
-        val videos = files.filter { it.isPlayableVideo() && !it.isUploading && !it.isImportPreview }
-        if (videos.isEmpty()) return
+        val media = files.filter {
+            (it.isPlayableVideo() || (galleryShowImages && it.isPreviewableImage())) &&
+                !it.isUploading && !it.isImportPreview
+        }
+        if (media.isEmpty()) return
         state.exitSelection()
-        gallery.open(folderStack, videos)
+        gallery.open(folderStack, media, showImages = galleryShowImages)
     }
     LaunchedEffect(state) { state.updateThumbnailsOnly(false) }
     // 各视图与瀑布流各记一份卡片大小，初值同步读，免得先闪一帧中档
@@ -635,7 +656,8 @@ fun DriveScreen(
     // 操作面板开了就不是右键菜单：之前那次右键按下的位置不再作数，面板里点「属性」时卡片贴着条目
     LaunchedEffect(actionTargetFile) { if (actionTargetFile != null) propertiesAnchors.forgetPress() }
     // 「位置」一行：搜索结果与库里取行下面那一栏，平常的目录里是眼前的路径
-    fun locationOf(file: FileStat): String = rowNotes[file.id] ?: folderStack.joinToString(" › ") { it.localizedName }
+    fun locationOf(file: FileStat): String =
+        file.params["local_path"]?.let(::formatLocalPathForDisplay) ?: rowNotes[file.id] ?: folderStack.joinToString(" › ") { it.localizedName }
     fun showProperties(files: List<FileStat>, anchor: PanelAnchor) {
         val single = files.singleOrNull()
         val target = if (single != null) {
@@ -654,7 +676,11 @@ fun DriveScreen(
     }
     // 当前目录不对着哪一项
     fun showFolderProperties() {
-        val parent = folderStack.dropLast(1).joinToString(" › ") { it.localizedName }
+        val parent = if (state.isLocalPlace) {
+            val local = LocalLocation.of(activeFolder.id)
+            driveRepo.localMounts.findCached(activeFolder.id)?.localRootUriOrPath.orEmpty() +
+                local?.segments.orEmpty().joinToString("/", prefix = if (local?.segments?.isNotEmpty() == true) "/" else "")
+        } else folderStack.dropLast(1).joinToString(" › ") { it.localizedName }
         propertyDetails.show(PropertiesTarget.Folder(activeFolder.localizedName, state.displayedFiles, parent.ifEmpty { null }, activeFolder.id))
     }
     // 记住的回调（右键菜单）里取最新的一份：局部函数抓着的是头一次组合时的路径与防窥开关
@@ -829,10 +855,12 @@ fun DriveScreen(
     var isFabMenuExpanded by rememberSaveable { mutableStateOf(false) }
     BackHandler(enabled = acceptsNavigation && isFabMenuExpanded) { isFabMenuExpanded = false }
 
-    val displayedFiles by remember(galleryActive, galleryRecursive, gallery, state) {
+    val displayedFiles by remember(galleryActive, galleryRecursive, gallery, galleryShowImages, state) {
         derivedStateOf {
             if (galleryActive) {
-                (if (galleryRecursive) gallery.files else state.displayedFiles).filter { it.isPlayableVideo() && !it.isUploading }
+                (if (galleryRecursive) gallery.files else state.displayedFiles).filter {
+                    (it.isPlayableVideo() || (galleryShowImages && it.isPreviewableImage())) && !it.isUploading
+                }
             } else state.displayedFiles
         }
     }
@@ -877,6 +905,25 @@ fun DriveScreen(
             if (state.isSelectionMode) commandTargets.filter { it.isPlayableVideo() && !it.isUploading && !it.isImportPreview } else emptyList()
         }
     }
+    val selectedGalleryMedia by remember(state, galleryShowImages) {
+        derivedStateOf {
+            if (state.isSelectionMode) {
+                commandTargets.filter {
+                    (it.isPlayableVideo() || (galleryShowImages && it.isPreviewableImage())) &&
+                        !it.isUploading && !it.isImportPreview
+                }
+            } else emptyList()
+        }
+    }
+    fun selectedGalleryLabel(files: List<FileStat>): String {
+        val hasVideo = files.any { it.isPlayableVideo() }
+        val hasImage = galleryShowImages && files.any { !it.isPlayableVideo() && it.isPreviewableImage() }
+        return when {
+            hasVideo && hasImage -> tr("以瀑布流浏览所选媒体", "Browse selected media in gallery", "選択したメディアをギャラリーで表示", "선택한 미디어를 갤러리에서 보기", "以瀑布流瀏覽所選媒體")
+            hasImage -> tr("以瀑布流浏览所选图片", "Browse selected images in gallery", "選択した画像をギャラリーで表示", "선택한 이미지를 갤러리에서 보기", "以瀑布流瀏覽所選圖片")
+            else -> tr("以瀑布流浏览所选视频", "Browse selected videos in gallery", "選択した動画をギャラリーで表示", "선택한 동영상을 갤러리에서 보기", "以瀑布流瀏覽所選影片")
+        }
+    }
     fun openSelectedFeed(files: List<FileStat>) {
         if (feedBlockedReason != null) return
         val videos = files.filter { it.isPlayableVideo() && !it.isUploading && !it.isImportPreview }
@@ -885,9 +932,9 @@ fun DriveScreen(
     val changeGalleryShown: (Boolean) -> Unit = { shown ->
         if (shown) {
             if (state.isSelectionMode) {
-                openSelectedGallery(selectedFeedVideos)
+                openSelectedGallery(selectedGalleryMedia)
             } else {
-                gallery.open(folderStack)
+                gallery.open(folderStack, showImages = galleryShowImages)
             }
         } else {
             closeGallery()
@@ -898,6 +945,7 @@ fun DriveScreen(
             if (shown && state.isSelectionMode) openSelectedFeed(selectedFeedVideos) else change(shown)
         }
     }
+    val latestChangeFeedShown by rememberUpdatedState(changeFeedShown)
     val clipboard by state.clipboardFlow.collectAsStateWithLifecycle()
 
     // 渐隐单独一个 effect：并进滚动定位那个的话，视图模式到位会把 8 秒重新计一遍。
@@ -961,6 +1009,40 @@ fun DriveScreen(
     }
     val pickFiles = platform.uploadPicker.rememberFilesLauncher { upload(UploadSelection(files = it)) }
     val pickFolder = platform.uploadPicker.rememberFolderLauncher { upload(UploadSelection(folders = listOf(it))) }
+    fun launchLocalAction(action: suspend () -> Unit) {
+        scope.launch {
+            try { action() } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                dev.piko.shared.log.PikoLog.w("LocalMount", "本地文件夹操作失败")
+                snackbarHostState.showSnackbar(tr("本地文件夹操作失败", "Local folder action failed", "ローカルフォルダーの操作に失敗しました", "로컬 폴더 작업에 실패했습니다", "本機資料夾操作失敗"))
+            }
+        }
+    }
+    var mountDestination by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val pickLocalFolder = platform.rememberLocalFolderLauncher { path, name ->
+        val destination = mountDestination
+        mountDestination = null
+        if (destination != null) launchLocalAction {
+            if (destination.first == driveRepo.currentAccount) {
+                val outcome = driveRepo.localMounts.mountOrExisting(destination.second, path, name)
+                state.highlight(setOf(outcome.mount.location.id))
+                if (outcome.alreadyMounted) {
+                    snackbarHostState.showSnackbar(
+                        tr("此文件夹已挂载在当前目录", "This folder is already mounted here", "このフォルダーは既にここにマウントされています", "이 폴더는 이미 현재 위치에 마운트되어 있습니다", "此資料夾已掛載於目前目錄"),
+                        withDismissAction = true,
+                    )
+                }
+            }
+        }
+    }
+    val mountAction = pickLocalFolder?.let { launch ->
+        SheetAction(Icons.Outlined.Storage, tr("挂载本地文件夹", "Mount local folder", "ローカルフォルダーをマウント", "로컬 폴더 마운트", "掛載本機資料夾"), {
+            if (isDriveFolderId(activeFolderId)) {
+                driveRepo.currentAccount?.let { mountDestination = it to activeFolderId; launch() }
+            }
+        }, group = ActionGroup.Create)
+    }
 
     // 下载的成品只在传输页里看得到，与上传、离线一样提交后切过去。文件夹各成一批，在后台列出其中的文件。
     // 普通下载与显式指定画质共用这条提交路径。
@@ -1082,6 +1164,7 @@ fun DriveScreen(
 
     // 眼前在哪，命令栏与条目的菜单都按它定做不做得了。记住的回调里也调它，所以只读 state 与仓库上的当下值
     fun commandPlace(stackDepth: Int = navigation.folderStackFlow.value.size): CommandPlace = when {
+        state.isLocalPlace -> CommandPlace.LOCAL
         state.importPreviewView != null -> CommandPlace.IMPORT_PREVIEW
         state.archiveView != null -> CommandPlace.ARCHIVE
         state.libraryView == DriveLibrary.TRASH -> CommandPlace.TRASH
@@ -1134,8 +1217,14 @@ fun DriveScreen(
                 ).takeIf { !inTrash && state.archiveView == null && settled.isNotEmpty() },
             ),
         )
+        val galleryCandidates = files.filter {
+            (it.isPlayableVideo() || (galleryShowImages && it.isPreviewableImage())) &&
+                !it.isUploading && !it.isImportPreview
+        }
+        if (!inTrash && state.archiveView == null && galleryCandidates.isNotEmpty()) {
+            add(SheetAction(Icons.Outlined.PhotoLibrary, selectedGalleryLabel(galleryCandidates), { openSelectedGallery(files) }, group = ActionGroup.Open))
+        }
         if (!inTrash && state.archiveView == null && files.any { it.isPlayableVideo() && !it.isUploading && !it.isImportPreview }) {
-            add(SheetAction(Icons.Outlined.PhotoLibrary, tr("以瀑布流浏览所选视频", "Browse selected in gallery", "選択した動画をギャラリーで表示", "선택한 동영상을 갤러리에서 보기", "以瀑布流瀏覽所選影片"), { openSelectedGallery(files) }, group = ActionGroup.Open))
             if (onOpenSelectedFeed != null && feedBlockedReason == null && platform.videoPreview != null) {
                 add(SheetAction(Icons.Outlined.SwipeVertical, tr("以信息流浏览所选视频", "Browse selected in feed", "選択した動画をフィードで表示", "선택한 동영상을 피드에서 보기", "以資訊流瀏覽所選影片"), { openSelectedFeed(files) }, group = ActionGroup.Open))
             }
@@ -1220,6 +1309,79 @@ fun DriveScreen(
         val library = state.libraryView
         if (library == DriveLibrary.DUPLICATES && file.isFolder) {
             return listOf(DriveActions.revealInDrive { onRevealInDrive?.invoke(file) ?: state.revealInDrive(file) })
+        }
+        if (targets.any { it.isLocal }) return buildList {
+            if (targets.size == 1 && latestGalleryActive && file.parentId != activeFolderId) {
+                add(
+                    SheetAction(
+                        Icons.Outlined.FolderOpen,
+                        tr("在所在文件夹中显示", "Show in containing folder", "保存先フォルダーで表示", "포함된 폴더에서 보기", "在所在資料夾中顯示"),
+                        {
+                            val path = gallery.pathTo(file.parentId)
+                            gallery.close()
+                            if (path != null) {
+                                navigation.updateFolderStack(path)
+                                state.highlight(setOf(file.id))
+                            }
+                        },
+                        group = ActionGroup.Open,
+                    ),
+                )
+            }
+            if (targets.size > 1) {
+                val galleryItems = targets.filter { it.isPlayableVideo() || (galleryShowImages && it.isPreviewableImage()) }
+                if (galleryItems.isNotEmpty()) {
+                    add(SheetAction(Icons.Outlined.PhotoLibrary, selectedGalleryLabel(galleryItems), { openSelectedGallery(galleryItems) }, group = ActionGroup.Open))
+                }
+                val videos = targets.filter { it.isPlayableVideo() }
+                if (videos.isNotEmpty() && changeFeedShown != null && feedBlockedReason == null && platform.videoPreview != null) {
+                    add(SheetAction(Icons.Outlined.SwipeVertical, tr("以信息流浏览所选视频", "Browse selected videos in feed", "選択した動画をフィードで表示", "선택한 동영상을 피드에서 보기", "以資訊流瀏覽所選影片"), { openSelectedFeed(videos) }, group = ActionGroup.Open))
+                }
+            } else if (file.isLocal) {
+                if (file.isPlayableVideo()) {
+                    add(SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생", "播放"), {
+                        navigateToPlayer(file, latestDisplayedFiles.filter { it.isPlayableVideo() })
+                    }, group = ActionGroup.Open))
+                }
+                if (file.isPreviewableImage() && file.previewImageCoverUrl().isNotBlank()) {
+                    add(SheetAction(Icons.Outlined.Image, tr("查看图片", "View image", "画像を表示", "이미지 보기", "檢視圖片"), { previewImage = file }, group = ActionGroup.Open))
+                }
+                if (file.isFolder) {
+                    add(SheetAction(Icons.Outlined.FolderOpen, tr("打开", "Open", "開く", "열기", "開啟"), { state.openFolder(file.id, file.name) }, group = ActionGroup.Open))
+                    latestOpenInNewTab?.let { open -> add(DriveActions.openInNewTab { open(file) }) }
+                    add(SheetAction(Icons.Outlined.PhotoLibrary, tr("以瀑布流浏览", "Browse in gallery", "ギャラリーで表示", "갤러리에서 보기", "以瀑布流瀏覽"), {
+                        val path = folderStack + PathBreadcrumb(file.id, file.name)
+                        state.openFolder(file.id, file.name)
+                        gallery.open(path, showImages = galleryShowImages)
+                    }, group = ActionGroup.Open))
+                    if (changeFeedShown != null && feedBlockedReason == null && platform.videoPreview != null) {
+                        add(SheetAction(Icons.Outlined.SwipeVertical, tr("以信息流浏览", "Browse in feed", "フィードで表示", "피드에서 보기", "以資訊流瀏覽"), {
+                            state.openFolder(file.id, file.name)
+                            scope.launch {
+                                androidx.compose.runtime.withFrameNanos { }
+                                latestChangeFeedShown?.invoke(true)
+                            }
+                        }, group = ActionGroup.Open))
+                    }
+                    latestTogglePin?.takeIf { file.isLocalMountRoot }?.let { pin ->
+                        add(DriveActions.pin(pinned = latestPinnedFolders.any { it.id == file.id }, onClick = { pin(file) }))
+                    }
+                }
+                val rawLocalPath = file.params["local_path"].orEmpty()
+                if (!rawLocalPath.startsWith("content://")) {
+                    add(SheetAction(Icons.Outlined.FolderOpen, tr("在文件管理器中显示", "Show in file manager", "ファイルマネージャーで表示", "파일 관리자에서 표시", "在檔案管理員中顯示"), {
+                        launchLocalAction { driveRepo.localMounts.resolve(file.id)?.takeUnless { it.startsWith("content://") }?.let(platform.localFiles::openContainingFolder) }
+                    }, group = ActionGroup.Open))
+                }
+                if (!file.isFolder && isSpoilerBlurEnabled && file.previewImageCoverUrl().isNotEmpty()) {
+                    add(DriveActions.previewVisibility(hidden = file.id !in state.revealedFileIds, onClick = { state.toggleSpoiler(file.id) }))
+                }
+                if (file.isLocalMountRoot) {
+                    add(SheetAction(Icons.Outlined.LinkOff, tr("取消挂载", "Unmount", "マウント解除", "마운트 해제", "取消掛載"), {
+                        launchLocalAction { driveRepo.localMounts.unmount(file.id) }
+                    }, destructive = true))
+                }
+            }
         }
         if (targets.all { it.isImportPreview }) return importPreviewActions(targets)
         val commands = itemCommands(commandPlace(), targets, fullyVaultedFolders)
@@ -1329,8 +1491,9 @@ fun DriveScreen(
                 scope.launch { snackbarHostState.showSnackbar(tr("未收录的链接项目需先通过离线下载保存至网盘", "Save unindexed link items via cloud download before opening", "未収録のリンク項目は、先にクラウドダウンロードでドライブに保存してください", "미등록 링크 항목은 먼저 클라우드 다운로드로 드라이브에 저장해 주세요", "未收錄的連結項目需先透過離線下載儲存至雲端硬碟"), withDismissAction = true) }
             }
             file.isPlayableVideo() -> navigateToPlayer(file, latestDisplayedFiles.filter { it.isPlayableVideo() && (!it.isImportPreview || it.hash.isNotBlank()) })
-            file.isPreviewableImage() && file.thumbnailLink.isNotBlank() -> previewImage = file
+            file.isPreviewableImage() && file.previewImageCoverUrl().isNotBlank() -> previewImage = file
             // 其余类型没有应用内的打开方式，单击等同于下载
+            file.isLocal -> platform.localFiles.openExternally(file.params["local_path"].orEmpty(), false)
             else -> enqueueDownload(file)
         }
     }
@@ -1354,14 +1517,14 @@ fun DriveScreen(
                     file.isUploading -> scope.launch { snackbarHostState.showSnackbar(tr("文件仍在上传", "File is still uploading", "ファイルはアップロード中です", "파일 업로드 중입니다", "檔案仍在上傳"), withDismissAction = true) }
                     // 压缩包当文件夹进去看，见 ArchiveLocation。分卷读不了、归档条目不在网盘里，照旧往下走
                     // 信息流的临时浏览里再压一层压缩包，继续刷就说不清回到哪，先确认结束信息流
-                    file.isExtractableArchive && !file.isVaulted && !ArchiveEntryId.isEntry(file.id) ->
+                    file.isExtractableArchive && !file.isLocal && !file.isVaulted && !ArchiveEntryId.isEntry(file.id) ->
                         taskSlot.claim(tr("打开压缩包", "Open archive", "圧縮ファイルを開く", "압축 파일 열기", "開啟壓縮檔"), tr("打开压缩包", "Open archive", "圧縮ファイルを開く", "압축 파일 열기", "開啟壓縮檔"), task = null, conflictsWith = setOf(TaskSlot.Task.FEED)) { state.openArchive(file) }
                     // 包里的文件先借得出来才能打开，从没解压过的包第一次要等几秒
                     ArchiveEntryId.isEntry(file.id) -> scope.launch { state.prepareArchiveEntry(file)?.let(latestOpenFile) }
                     else -> latestOpenFile(file)
                 }
             },
-            onRename = { file -> if (!file.isUploading && !file.isImportPreview && state.libraryView != DriveLibrary.TRASH) startRename(file) },
+            onRename = { file -> if (!file.isLocal && !file.isUploading && !file.isImportPreview && state.libraryView != DriveLibrary.TRASH) startRename(file) },
             onMore = ::openItemActions,
             onProperties = { latestShowProperties(targetsOf(it), propertiesAnchors.beside(it.id)) },
             onPlaced = { file, coordinates -> propertiesAnchors.placed(file.id, coordinates) },
@@ -1414,7 +1577,7 @@ fun DriveScreen(
                     latestDisplayedFiles.filter { it.id in state.selectedFileIds }
                 } else {
                     listOf(file)
-                }.filterNot { it.isUploading || it.isVaulted || it.isImportPreview }
+                }.filterNot { it.isLocal || it.isUploading || it.isVaulted || it.isImportPreview }
                 if (batch.isEmpty()) {
                     null
                 } else {
@@ -1529,7 +1692,7 @@ fun DriveScreen(
             )
         }
         val place = commandPlace(folderStack.size)
-        if (place == CommandPlace.ROOT || place == CommandPlace.FOLDER || galleryActive) {
+        if (place == CommandPlace.ROOT || place == CommandPlace.FOLDER || place == CommandPlace.LOCAL || galleryActive) {
             add(
                 SheetAction(
                     if (galleryActive) Icons.Filled.PhotoLibrary else Icons.Outlined.PhotoLibrary,
@@ -1539,6 +1702,17 @@ fun DriveScreen(
                     checked = galleryActive,
                 ),
             )
+            if (galleryActive) {
+                add(
+                    SheetAction(
+                        Icons.Outlined.Image,
+                        tr("显示图片", "Show images", "画像を表示", "이미지 표시", "顯示圖片"),
+                        { setGalleryShowImages(!galleryShowImages) },
+                        group = ActionGroup.View,
+                        checked = galleryShowImages,
+                    ),
+                )
+            }
         }
         // 照资源管理器「查看」里的「文件扩展名」，勾上即显示
         add(
@@ -1557,6 +1731,7 @@ fun DriveScreen(
                 newFolderName = ""
                 showNewFolderDialog = true
             }, group = ActionGroup.Create))
+            mountAction?.let(::add)
             add(SheetAction(Icons.Outlined.UploadFile, tr("上传文件", "Upload files", "ファイルをアップロード", "파일 업로드", "上傳檔案"), { pickFiles() }, group = ActionGroup.Create))
             add(SheetAction(Icons.Outlined.DriveFolderUpload, tr("上传文件夹", "Upload folder", "フォルダーをアップロード", "폴더 업로드", "上傳資料夾"), { pickFolder() }, group = ActionGroup.Create))
             add(SheetAction(Icons.Outlined.Bolt, tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結"), ::openAddLink, group = ActionGroup.Create))
@@ -1602,11 +1777,11 @@ fun DriveScreen(
         }
         if (focused != null && !state.isSelectionMode) {
             when {
-                event.key == Key.Delete || (primary && event.key == Key.Backspace) -> {
+                (event.key == Key.Delete || (primary && event.key == Key.Backspace)) && !focused.isLocal -> {
                     delete(listOf(focused.id))
                     return true
                 }
-                event.key == Key.F2 && !focused.isUploading && !focused.isImportPreview && !inTrash -> {
+                event.key == Key.F2 && !focused.isLocal && !focused.isUploading && !focused.isImportPreview && !inTrash -> {
                     startRename(focused)
                     return true
                 }
@@ -1652,10 +1827,11 @@ fun DriveScreen(
             primary && event.key == Key.A -> selectAllDisplayed()
             // 撤销最近一次移动、移入回收站或重命名；没有可撤销的就不吃掉这个键
             primary && event.key == Key.Z && !event.isShiftPressed -> if (!state.acceptsActions || !taskSlot.requestUndoLast(services.driveRepository.changes, state.fileActions)) return false
-            trashKey && state.isSelectionMode && state.selectedFileIds.isNotEmpty() -> delete(state.selectedFileIds.toList())
+            trashKey && state.isSelectionMode && state.selectedFileIds.any { !LocalLocation.isLocal(it) } ->
+                delete(state.selectedFileIds.filterNot(LocalLocation::isLocal))
             // 文件管理器的惯例：选中一项是改名，几项是批量重命名（批量重命名只针对网盘真实文件，排除虚拟归档条目）
             event.key == Key.F2 && state.isSelectionMode && state.selectedFileIds.isNotEmpty() && !inTrash -> {
-                val targets = latestDisplayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading && !it.isImportPreview }
+                val targets = latestDisplayedFiles.filter { it.id in state.selectedFileIds && !it.isLocal && !it.isUploading && !it.isImportPreview }
                 when {
                     targets.size == 1 -> startRename(targets.single())
                     targets.size > 1 -> {
@@ -1715,6 +1891,7 @@ fun DriveScreen(
             feedSupported = platform.videoPreview != null && onFeedShownChange != null,
             nameParsing = state.isNameParsing,
             selectedVideoCount = if (onOpenSelectedFeed != null) selectedFeedVideos.size else 0,
+            selectedGalleryCount = selectedGalleryMedia.size,
         ),
     ).let { if (isWorkspaceBrowser) it else it.copy(findDuplicates = false) }
         .let { if (galleryActive) it.copy(sort = false, filter = false) else it }
@@ -1797,6 +1974,7 @@ fun DriveScreen(
                     newFolderName = ""
                     showNewFolderDialog = true
                 }),
+                *listOfNotNull(mountAction).toTypedArray(),
                 SheetAction(Icons.Outlined.UploadFile, tr("上传文件", "Upload files", "ファイルをアップロード", "파일 업로드", "上傳檔案"), { pickFiles() }),
                 SheetAction(Icons.Outlined.DriveFolderUpload, tr("上传文件夹", "Upload folder", "フォルダーをアップロード", "폴더 업로드", "上傳資料夾"), { pickFolder() }),
             ),
@@ -1835,6 +2013,8 @@ fun DriveScreen(
                     feedBlockedReason = feedBlockedReason,
                     galleryShown = galleryActive && !state.isSelectionMode,
                     onGalleryShownChange = changeGalleryShown.takeIf { commands.gallery || galleryActive },
+                    galleryShowImages = galleryShowImages,
+                    onGalleryShowImagesChange = ::setGalleryShowImages,
                 )
             },
             primaryAction = placePrimaryAction ?: if (feedStashed && onResumeFeed != null) {
@@ -1889,6 +2069,9 @@ fun DriveScreen(
         buildList {
             if (!state.isVirtualPlace && isWorkspaceBrowser) {
                 add(PaletteItem(tr("新建文件夹", "New folder", "新規フォルダー", "새 폴더", "新增資料夾"), Icons.Outlined.CreateNewFolder, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), keywords = "new folder mkdir") { showNewFolderDialog = true })
+                mountAction?.let { action ->
+                    add(PaletteItem(action.label, action.icon, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), keywords = "mount local folder 挂载 本地 文件夹", run = action.onClick))
+                }
                 add(PaletteItem(tr("上传文件", "Upload files", "ファイルをアップロード", "파일 업로드", "上傳檔案"), Icons.Outlined.UploadFile, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), keywords = "upload") { pickFiles() })
                 add(PaletteItem(tr("上传文件夹", "Upload folder", "フォルダーをアップロード", "폴더 업로드", "上傳資料夾"), Icons.Outlined.DriveFolderUpload, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), keywords = "upload folder") { pickFolder() })
             }
@@ -2231,6 +2414,8 @@ fun DriveScreen(
                                                 onFeedShownChange = changeFeedShown.takeIf { commands.feed && !feedStashed },
                                                 tileSize = tileSize,
                                                 onTileSizeChange = ::selectTileSize,
+                                                galleryShowImages = galleryShowImages,
+                                                onGalleryShowImagesChange = ::setGalleryShowImages,
                                             )
                                         })
                                     }
@@ -2337,6 +2522,13 @@ fun DriveScreen(
                                     icon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
                                     text = { Text(stringResource(Res.string.text_new_folder)) },
                                 )
+                                mountAction?.let { action ->
+                                    FloatingActionButtonMenuItem(
+                                        onClick = { isFabMenuExpanded = false; action.onClick() },
+                                        icon = { Icon(action.icon, contentDescription = null) },
+                                        text = { Text(action.label) },
+                                    )
+                                }
                                 FloatingActionButtonMenuItem(
                                     onClick = {
                                         isFabMenuExpanded = false
@@ -2432,6 +2624,8 @@ fun DriveScreen(
                                     callbacks = callbacks,
                                     folderName = { gallery.folderName(it) },
                                     rootKey = listOf(activeFolderId, libraryView, isSearchOpen, state.searchQuery, state.isGlobalSearchActive),
+                                    showImages = galleryShowImages,
+                                    onShowImagesChange = ::setGalleryShowImages,
                                     modifier = Modifier.weight(1f),
                                 )
                             }
@@ -2803,7 +2997,7 @@ fun DriveScreen(
         // 查看器里左右翻页的范围是当前列表里能看的图，搜索与折叠筛过之后的那一份，
         // 和用户眼前看到的顺序一致。
         val previewables = remember(displayedFiles) {
-            displayedFiles.filter { it.isPreviewableImage() && it.thumbnailLink.isNotBlank() }
+            displayedFiles.filter { it.isPreviewableImage() && it.previewImageCoverUrl().isNotBlank() }
         }
         val startIndex = previewables.indexOfFirst { it.id == image.id }
         if (startIndex < 0) {

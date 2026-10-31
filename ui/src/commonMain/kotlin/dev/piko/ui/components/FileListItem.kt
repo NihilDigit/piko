@@ -6,6 +6,7 @@ import dev.piko.ui.i18n.stringResource
 import dev.piko.shared.i18n.tr
 
 import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -244,6 +245,7 @@ fun FileListItem(
     folderHasVault: Boolean = false,
 ) {
     val item = file.filePresentation(title, original, tags, code, folderHasVault = folderHasVault)
+    val listMarks = item.marks - FileItemMark.LocalMount
     FileListItem(
         headline = item.name.title,
         headlineMaxLines = if (title != null) 1 else 2,
@@ -253,7 +255,7 @@ fun FileListItem(
         onMoreClick = onMoreClick,
         trailing = { if (moreButton) ListMoreButton(onClick = onMoreClick, modifier = Modifier.ownsClicks()) },
         modifier = modifier,
-        badge = if (item.marks.isEmpty()) null else ({ FileItemMarks(item.marks) }),
+        badge = if (listMarks.isEmpty()) null else ({ FileItemMarks(listMarks) }),
         supporting = {
             Column {
                 FileItemInformation(item, showMetadata = tags.isEmpty() || !file.isFolder)
@@ -383,6 +385,16 @@ fun VaultMark(inFolder: Boolean, modifier: Modifier = Modifier) {
     Icon(
         imageVector = Icons.Filled.Inventory2,
         contentDescription = if (inFolder) tr("含归档条目", "Includes archived items", "アーカイブ項目を含む", "보관 항목 포함", "含歸檔項目") else tr("已归档", "Archived", "アーカイブ済み", "보관됨", "已歸檔"),
+        tint = MaterialTheme.colorScheme.secondary,
+        modifier = modifier.size(StarMarkSize),
+    )
+}
+
+@Composable
+fun LocalMountMark(modifier: Modifier = Modifier) {
+    Icon(
+        imageVector = Icons.Filled.Storage,
+        contentDescription = tr("本机挂载文件夹", "Mounted local folder", "マウントされたローカルフォルダー", "마운트된 로컬 폴더", "本機掛載資料夾"),
         tint = MaterialTheme.colorScheme.secondary,
         modifier = modifier.size(StarMarkSize),
     )

@@ -307,7 +307,8 @@ class DriveScreenState(
     /**
      * 眼前不是网盘里的文件夹：库、压缩包或添加链接的虚拟子目录。这里不能新建、上传、粘贴或接住拖放。
      */
-    val isVirtualPlace: Boolean by derivedStateOf { libraryView != null || archiveView != null || importPreviewView != null }
+    val isLocalPlace: Boolean by derivedStateOf { dev.piko.shared.data.LocalLocation.isLocal(activeFolderId) }
+    val isVirtualPlace: Boolean by derivedStateOf { isLocalPlace || libraryView != null || archiveView != null || importPreviewView != null }
 
     /**
      * 最近添加与播放历史里每个文件对应的那条记录，按文件 ID。列表的副文本（何时添加、看到哪里）
@@ -328,7 +329,7 @@ class DriveScreenState(
             it.source === files || (it.folderId != null && it.folderId == loadedFolderId && it.folderId == activeFolderId)
         }?.structure
     }
-    val isDisplayStructureReady: Boolean by derivedStateOf { isSearching || (isVirtualPlace && !usesFolderStructure) || currentAnalysis != null }
+    val isDisplayStructureReady: Boolean by derivedStateOf { isSearching || (isVirtualPlace && !isLocalPlace && !usesFolderStructure) || currentAnalysis != null }
 
     /** 列过的文件夹空不空，见 PikoDriveRepository.folderEmptiness。 */
     val folderEmptiness get() = driveRepo.folderEmptiness
@@ -346,7 +347,7 @@ class DriveScreenState(
     // 整层都是次要项时不折叠（原盘的 CLIPINF/ 全是结构文件）：折光了列表为空，连折叠横幅也没处放
     private val isFoldingActive: Boolean by derivedStateOf {
         val folded = currentAnalysis?.foldedIds ?: return@derivedStateOf false
-        isHeuristicFilterEnabled && isNameParsing && !isVirtualPlace && folded.size < files.size && isFoldingScope(files)
+        isHeuristicFilterEnabled && isNameParsing && (!isVirtualPlace || isLocalPlace) && folded.size < files.size && isFoldingScope(files)
     }
 
     val potentialHiddenCount: Int by derivedStateOf {
@@ -411,7 +412,7 @@ class DriveScreenState(
             libraryView?.isSession == true -> sessionItems { blockId -> isSessionGroupExpanded(blockId) }
             // 库里的条目散在全盘各处，按作品与分区归拢的是一个目录里的东西，这里照原来的先后平铺；
             // 压缩包里的也平铺、不折叠：在包里多半是挑要解压的几项，折起来的次要文件正是要挑的一部分
-            structure == null || (isVirtualPlace && importPreviewView == null) -> files.map { DriveListItem.File(it, null) }
+            structure == null || (isVirtualPlace && !isLocalPlace && importPreviewView == null) -> files.map { DriveListItem.File(it, null) }
             !isNameParsing || structure.blocks.isEmpty() || sortOrder == PikoFileSortOrder.DURATION_DESC || sortOrder == PikoFileSortOrder.DURATION_ASC ->
                 filterDriveFiles(files, structure.foldedIds, enabled = hideFolded, revealAll = false).map { DriveListItem.File(it, structure.views[it.id]) }
             else -> buildDriveItems(files, structure, hideFolded) { block -> isBlockExpanded(block) }
@@ -421,7 +422,7 @@ class DriveScreenState(
     /** 眼前按作品与分区排：不在搜索、不在库或压缩包里、解析开着、未按时长排序且认出了作品。 */
     private val isStructured: Boolean by derivedStateOf {
         val structure = currentAnalysis
-        !isSearching && (!isVirtualPlace || importPreviewView != null) && isNameParsing &&
+        !isSearching && (!isVirtualPlace || isLocalPlace || importPreviewView != null) && isNameParsing &&
             sortOrder != PikoFileSortOrder.DURATION_DESC && sortOrder != PikoFileSortOrder.DURATION_ASC &&
             structure != null && structure.blocks.isNotEmpty()
     }
@@ -974,13 +975,13 @@ class DriveScreenState(
             val started = TimeSource.Monotonic.markNow()
             val listing = driveRepo.listBrowsable(parentId = folderId, sortOrder = sortOrder)
             val elapsed = started.elapsedNow().inWholeMilliseconds
-            listing.onSuccess { PikoLog.d(TAG, "列出文件夹 ${folderId.ifEmpty { "根目录" }}：${it.size} 项，$elapsed ms${if (cached != null) "，先显示了缓存" else ""}") }
+            listing.onSuccess { PikoLog.d(TAG, "列出${logFile(folderId, "")}：${it.size} 项，$elapsed ms${if (cached != null) "，先显示了缓存" else ""}") }
             // 空列表可能是目录已经不在了：上次退出时停在的目录后来被删，或在别的客户端进了回收站。
             // 这时退回上一级，而不是把一个不存在的目录画成「此文件夹为空」。上一级也不在的话，
             // 它的加载会再退一级。只在列表为空时才多查一次详情，平常的目录不多花请求
             val empty = listing.getOrNull()?.isEmpty() == true
             if (empty && folderId.isNotEmpty() && driveRepo.isFolderGone(folderId)) {
-                PikoLog.i(TAG, "文件夹 $folderId 已不存在，返回上一级")
+                PikoLog.i(TAG, "${logFile(folderId, "")} 已不存在，返回上一级")
                 isLoading = false
                 isRefreshing = false
                 if (navigateUp()) _messages.tryEmit(tr("文件夹已不存在，已返回上一级", "Folder no longer exists; returned to parent", "フォルダーが存在しないため、上の階層に戻りました", "폴더가 없어 상위 폴더로 돌아갔습니다", "資料夾已不存在，已返回上一層"))
@@ -1003,7 +1004,7 @@ class DriveScreenState(
                         loadError = null
                     }
                 }
-                .logFailure(TAG, "读取目录失败：文件夹 ${folderId.ifEmpty { "根目录" }}，$elapsed ms，${if (files.isEmpty()) "无旧内容" else "保留旧内容 ${files.size} 项"}")
+                .logFailure(TAG, "读取目录失败：${logFile(folderId, "")}，$elapsed ms，${if (files.isEmpty()) "无旧内容" else "保留旧内容 ${files.size} 项"}")
                 .onFailure {
                     // 消息是一次性的，弹完就没了；而列表此刻显示的是上一次的内容，
                     // 界面需要一个持续的标记才能说明「这是陈旧数据」
@@ -2023,6 +2024,10 @@ class DriveScreenState(
      * 在这里拦而不是在各个按钮上：键盘、拖放与命令栏都走到这几个入口。
      */
     private fun withoutVaulted(ids: List<String>): List<String> {
+        if (ids.any(dev.piko.shared.data.LocalLocation::isLocal)) {
+            _messages.tryEmit(tr("本地文件夹为只读", "Local folders are read-only", "ローカルフォルダーは読み取り専用です", "로컬 폴더는 읽기 전용입니다", "本機資料夾為唯讀"))
+            return emptyList()
+        }
         if (refusedInArchive(ids)) return emptyList()
         val nonPreview = ids.filterNot { ImportPreviewEntryId.isEntry(it) || ImportPreviewLocation.of(it) != null }
         if (nonPreview.size < ids.size) _messages.tryEmit(tr("请先将链接项目保存至网盘", "Save link items to the drive first", "リンク項目を先にドライブへ保存してください", "링크 항목을 먼저 드라이브에 저장해 주세요", "請先將連結項目儲存至雲端硬碟"))

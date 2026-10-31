@@ -14,6 +14,17 @@ import kotlin.test.assertFalse
 class DesktopPikoPreferencesTest {
 
     @Test
+    fun localMountTablePersistsOnlyInDeviceSettings() = runBlocking {
+        val file = File(Files.createTempDirectory(File("build/local-mount-tests").apply { mkdirs() }.toPath(), "prefs-" ).toFile(), "settings.properties")
+        val preferences = DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }
+        val serialized = """[{"mountId":"mount-1","account":"account-a","parentFolderId":"host","localRootUriOrPath":"D:/Local","fallbackName":"Local","createdAtMs":1}]"""
+        preferences.saveLocalMounts(serialized)
+        assertEquals(serialized, preferences.localMountsFlow.first())
+        assertEquals(serialized, DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }.localMountsFlow.first())
+        assertEquals(serialized, DesktopSettingsStore(file).get("drive.localMounts"))
+    }
+
+    @Test
     fun appLanguagePersistsLocallyAndUpdatesItsFlow() = runBlocking {
         val file = tempFile()
         val preferences = DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }

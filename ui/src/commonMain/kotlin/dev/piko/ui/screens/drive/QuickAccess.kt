@@ -9,10 +9,13 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.runtime.LaunchedEffect
+import dev.piko.shared.data.LocalLocation
 import dev.piko.shared.data.PikoDriveRepository
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.SwipeVertical
@@ -108,6 +111,7 @@ internal fun ColumnScope.QuickAccessSection(
     }
     // 固定过 My Pack 的，它已常驻在上面，不再列一次
     for (folder in pinned.filterNot { it.id == myPacks?.id }) {
+        val isLocal = LocalLocation.isLocal(folder.id)
         // 右键与网盘里的文件夹同一种说法，再加这一栏自己的「取消固定」
         ContextMenuArea(actions = {
             listOf(
@@ -116,10 +120,10 @@ internal fun ColumnScope.QuickAccessSection(
             )
         }) {
             SidebarItem(
-                icon = Icons.Outlined.Folder,
-                selectedIcon = Icons.Filled.Folder,
+                icon = if (isLocal) Icons.Outlined.Storage else Icons.Outlined.Folder,
+                selectedIcon = if (isLocal) Icons.Filled.Storage else Icons.Filled.Folder,
                 label = folder.localizedName,
-                modifier = Modifier.fileDropTarget("pinned:${folder.id}", folder),
+                modifier = if (isLocal) Modifier else Modifier.fileDropTarget("pinned:${folder.id}", folder),
                 selected = folder.id == currentId,
                 onClick = { state.locate(folder, onOpen) },
                 onMiddleClick = { state.openInNewTab(folder) },

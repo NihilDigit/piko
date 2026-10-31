@@ -68,7 +68,7 @@ class FileCommands(
         fun blocked(reason: String) = ActionAvailability.Blocked(reason)
         if (!acceptsActions() || account == null || repository.currentAccount != account) return blocked(tr("当前浏览会话已结束，请重新打开", "This browsing session ended. Open it again", "閲覧セッションが終了しました。開き直してください", "탐색 세션이 종료되었습니다. 다시 열어 주세요", "目前的瀏覽工作階段已結束，請重新開啟"))
         if (command.ids.any {
-                it.isBlank() || VaultEntry.isVaulted(it) || ArchiveEntryId.isEntry(it) ||
+                dev.piko.shared.data.LocalLocation.isLocal(it) || it.isBlank() || VaultEntry.isVaulted(it) || ArchiveEntryId.isEntry(it) ||
                     ArchiveLocation.of(it) != null || ImportPreviewEntryId.isEntry(it) || ImportPreviewLocation.of(it) != null
             }) {
             return blocked(tr("此操作只适用于网盘中的真实文件", "This action requires files stored in the drive", "この操作はドライブ内の実ファイルにのみ適用できます", "이 작업은 드라이브에 저장된 실제 파일에만 사용할 수 있습니다", "此操作僅適用於雲端硬碟中的實體檔案"))

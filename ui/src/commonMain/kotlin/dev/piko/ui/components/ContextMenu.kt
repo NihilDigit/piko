@@ -336,8 +336,8 @@ private fun MenuItemIcon(icon: ImageVector, tint: Color = LocalContentColor.curr
     Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(MenuIconSize))
 }
 
-// 放得下顶部四个带字快捷磁贴与最长的菜单项
-private val ActionMenuWidth = 252.dp
+// 放得下顶部四个带字快捷磁贴与英/韩/日各语言最长的单行菜单项
+private val ActionMenuWidth = 284.dp
 
 /**
  * 行高 40dp（[MenuItemHeight]），图标与字号用组件库的默认值。M3 menus 的 48dp 是按手指定的，整份菜单十来行时
@@ -352,7 +352,7 @@ private fun ActionMenuItem(action: SheetAction, shape: Shape, onDismiss: () -> U
         else -> colors.onSurfaceVariant
     }
     DropdownMenuItem(
-        text = { Text(action.label) },
+        text = { Text(action.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         shape = shape,
         modifier = modifier.height(MenuItemHeight).prepareOnPointer(action),
         contentPadding = MenuItemPadding,

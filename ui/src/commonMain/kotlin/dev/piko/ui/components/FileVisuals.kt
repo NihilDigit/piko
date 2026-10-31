@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.FolderZip
@@ -51,11 +52,14 @@ import dev.piko.data.repository.fileCategory
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.isImportPreview
+import dev.piko.shared.data.isLocalMountRoot
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.upload.isUploading
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.platform.resolveCoilModel
 import dev.piko.ui.theme.LocalFixedColors
 import io.github.nihildigit.pikpak.FileStat
+import io.github.nihildigit.pikpak.imageThumbnailUrlOf
 
 
 /**
@@ -91,12 +95,17 @@ val LocalShowExtensions = compositionLocalOf { false }
 fun FileStat.displayTitle(): String =
     if (!LocalShowExtensions.current && extensionLabel() != null) name.substringBeforeLast('.') else name
 
+/** 图片在列表、画廊与查看器垫底用的缩略图地址：优先自带直链，其次按 GCID 走免鉴权图片缩略图。 */
+fun FileStat.previewImageCoverUrl(): String =
+    thumbnailLink.ifBlank { if (!isFolder && hash.isNotBlank()) imageThumbnailUrlOf(hash) else "" }
+
 /** 副标题的各段：文件为类型、大小、日期，文件夹为「文件夹」、日期。由 [MetaRow] 排成一行。 */
 fun FileStat.metaParts(includeDate: Boolean = true): List<String> = buildList {
     if (isUploading) add(tr("上传中", "Uploading", "アップロード中", "업로드 중", "上傳中"))
     if (isImportPreview) add(tr("待保存", "Unsaved", "未保存", "저장 대기", "待儲存"))
     // 网盘里没有它的文件，打开时才临时造出来；与「上传中」同处，一眼能分出哪些不占空间
     if (isVaulted) add(tr("已归档", "Archived", "アーカイブ済み", "보관됨", "已歸檔"))
+    if (isLocalMountRoot) add(tr("本机挂载", "Local mount", "ローカルマウント", "로컬 마운트", "本機掛載"))
     if (isFolder) {
         add(tr("文件夹", "Folder", "フォルダー", "폴더", "資料夾"))
     } else {
@@ -172,7 +181,8 @@ private fun FileKind.icon(): ImageVector = when (this) {
 
 fun FileStat.typeIcon(): ImageVector = fileVisual().typeIcon()
 
-internal fun FileVisual.typeIcon(): ImageVector = kind().icon()
+internal fun FileVisual.typeIcon(): ImageVector =
+    if (isFolder && isLocalMount) Icons.Filled.Storage else kind().icon()
 
 /** 只有文件名时的类型图标，如磁力解析结果。 */
 fun fileNameTypeIcon(name: String): ImageVector = fileNameKind(name).icon()
@@ -311,9 +321,11 @@ fun SpoilerThumbnail(
     onAspectRatio: ((Float) -> Unit)? = null,
     onError: (() -> Unit)? = null,
 ) {
+    val platform = LocalPikoPlatform.current
+    val resolvedModel = remember(platform, model) { platform.resolveCoilModel(model) }
     if (!isBlurred) {
         AsyncImage(
-            model = model,
+            model = resolvedModel,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = modifier,
@@ -327,7 +339,7 @@ fun SpoilerThumbnail(
     }
 
     val fixedColors = LocalFixedColors.current
-    val supportsRenderEffect = LocalPikoPlatform.current.supportsBlur
+    val supportsRenderEffect = platform.supportsBlur
     Box(
         modifier = modifier
             .clipToBounds()
@@ -335,7 +347,7 @@ fun SpoilerThumbnail(
         contentAlignment = Alignment.Center,
     ) {
         if (supportsRenderEffect) {
-            BlurredThumbnail(model = model, blur = blur, modifier = Modifier.fillMaxSize(), onAspectRatio = onAspectRatio, onError = onError)
+            BlurredThumbnail(model = resolvedModel, cacheKeyId = model, blur = blur, modifier = Modifier.fillMaxSize(), onAspectRatio = onAspectRatio, onError = onError)
             // 遮罩压低色块对比度，并给图标一个在任何底色上都成立的衬底
             Box(
                 modifier = Modifier
@@ -362,14 +374,14 @@ fun SpoilerThumbnail(
  * clip 把卷积溢出的部分裁在图层边界内。
  */
 @Composable
-private fun BlurredThumbnail(model: Any, blur: SpoilerBlur, modifier: Modifier, onAspectRatio: ((Float) -> Unit)? = null, onError: (() -> Unit)? = null) {
+private fun BlurredThumbnail(model: Any, cacheKeyId: Any, blur: SpoilerBlur, modifier: Modifier, onAspectRatio: ((Float) -> Unit)? = null, onError: (() -> Unit)? = null) {
     val context = LocalPlatformContext.current
-    val request = remember(model, blur.decodePx) {
+    val request = remember(model, cacheKeyId, blur.decodePx) {
         ImageRequest.Builder(context)
             .data(model)
             .size(blur.decodePx)
             .precision(Precision.EXACT)
-            .memoryCacheKey("spoiler:${blur.decodePx}:$model")
+            .memoryCacheKey("spoiler:${blur.decodePx}:$cacheKeyId")
             .build()
     }
     AsyncImage(

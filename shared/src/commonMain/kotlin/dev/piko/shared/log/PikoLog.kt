@@ -99,7 +99,8 @@ object PikoLog {
      * 路径只留扩展名，播放与解压走哪条路要看它。
      */
     internal fun redact(text: String): String =
-        text.replace(REMOTE_URL) { "${it.groupValues[1]}/<略>" }
+        text.replace(LOCAL_LOCATION) { dev.piko.shared.data.LocalLocation.logIdentity(it.value) ?: "本地 ?" }
+            .replace(REMOTE_URL) { "${it.groupValues[1]}/<略>" }
             .replace(EMAIL, "<邮箱>")
             .replace(PHONE, "<手机号>")
             .replace(LOCAL_PATH) { match ->
@@ -110,6 +111,7 @@ object PikoLog {
     // 网络异常的信息里常带着请求地址。直链的签名参数在有效期内就是下载凭据，路径里还可能有文件名，
     // 只留协议与域名，排查时知道是哪台服务器就够了。本机回环代理的地址不含这些，照原样留着
     private val REMOTE_URL = Regex("""(https?://(?!127\.0\.0\.1|localhost)[^/\s"'<>]+)/[^\s"'<>]*""")
+    private val LOCAL_LOCATION = Regex("""piko-local-[a-z-]+:[A-Za-z0-9_:/%+=.\\-]*""")
     private val EMAIL = Regex("""[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}""")
     private val PHONE = Regex("""(?<![0-9])1[3-9][0-9]{9}(?![0-9])""")
 
@@ -266,7 +268,7 @@ internal class LogWriter(directory: Path, private val zone: TimeZone) {
 fun logFile(id: String?, name: String): String {
     val extension = name.substringAfterLast('.', "").takeIf { it.isNotEmpty() && it.length <= 8 }
     // 归档条目的 ID 里带着 gcid、大小与文件名，只留条目自己的 ID
-    val shown = id?.let { VaultEntry.entryIdOf(it)?.let { entryId -> "归档 $entryId" } ?: it } ?: "?"
+    val shown = id?.let { dev.piko.shared.data.LocalLocation.logIdentity(it) ?: VaultEntry.entryIdOf(it)?.let { entryId -> "归档 $entryId" } ?: it } ?: "?"
     return "文件 $shown" + (extension?.let { "（.${it.lowercase()}）" } ?: "")
 }
 

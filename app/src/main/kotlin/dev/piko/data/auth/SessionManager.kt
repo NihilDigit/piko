@@ -137,6 +137,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val PINNED_FOLDERS = stringPreferencesKey("pinned_folders")
         val PER_FOLDER_SORT_ENABLED = booleanPreferencesKey("per_folder_sort_enabled")
         val FOLDER_SORT_ORDERS = stringPreferencesKey("folder_sort_orders")
+        val LOCAL_MOUNTS = stringPreferencesKey("local_mounts")
+        val GALLERY_SHOW_IMAGES = booleanPreferencesKey("gallery_show_images")
         val BATCH_RENAME = stringPreferencesKey("batch_rename")
         val VAULT_ARCHIVE_OPTIONS = stringPreferencesKey("vault_archive_options")
         val RENAME_REGEX_TEXT_MODE = booleanPreferencesKey("rename_regex_text_mode")
@@ -264,6 +266,15 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setClipAutoExtend(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.CLIP_AUTO_EXTEND] = enabled
+        }
+    }
+
+    override val galleryShowImagesFlow: Flow<Boolean> =
+        preference { it[PreferencesKeys.GALLERY_SHOW_IMAGES] ?: true }
+
+    override suspend fun setGalleryShowImages(show: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.GALLERY_SHOW_IMAGES] = show
         }
     }
 
@@ -548,6 +559,11 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.FOLDER_SORT_ORDERS] = serialized
         }
+    }
+
+    override val localMountsFlow: Flow<String> = preference { it[PreferencesKeys.LOCAL_MOUNTS].orEmpty() }
+    override suspend fun saveLocalMounts(serialized: String) {
+        context.dataStore.edit { it[PreferencesKeys.LOCAL_MOUNTS] = serialized }
     }
 
     override val batchRenameFlow: Flow<String> = preference { it[PreferencesKeys.BATCH_RENAME].orEmpty() }

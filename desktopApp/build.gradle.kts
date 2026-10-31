@@ -622,7 +622,9 @@ tasks.register<UpdateArtifactsTask>("packageReleaseUpdate") {
 // compose 的 run 任务在 afterEvaluate 里重写 jvmArgs，会盖掉上面的配置，
 // 这里后注册、后执行，把 flag 补回去（注册顺序：插件先、脚本后）。
 val devHomeDir: File = File(System.getProperty("user.home"), ".piko-dev")
+val keepDevInstance = providers.gradleProperty("piko.keepDevInstance").orNull == "true"
 fun stopRunningDevInstance() {
+    if (keepDevInstance) return
     val root = devHomeDir.toPath().toAbsolutePath().normalize()
     val lockPath = root.resolve("instance.lock")
     if (!lockPath.toFile().exists()) return

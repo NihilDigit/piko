@@ -57,7 +57,7 @@ internal object DriveActions {
         onClick,
         group = ActionGroup.Open,
         tier = ActionTier.Quick,
-        shortLabel = tr("下载", "Downloads", "ダウンロード", "다운로드", "下載"),
+        shortLabel = tr("下载", "Download", "ダウンロード", "다운로드", "下載"),
     )
 
     fun downloadAtQuality(onPrepare: (() -> Unit)? = null, onClick: () -> Unit) = SheetAction(
@@ -87,7 +87,7 @@ internal object DriveActions {
         onClick = onClick,
         group = ActionGroup.Organize,
         tier = tier,
-        shortLabel = if (starred) tr("已星标", "Starred", "スター付き", "별표 있음", "已加星號") else tr("星标", "Starred", "スター付き", "별표", "星號"),
+        shortLabel = if (starred) tr("已星标", "Starred", "スター付き", "별표 있음", "已加星號") else tr("星标", "Star", "スター", "별표", "星號"),
     )
 
     // 剪切与复制只放进应用内剪贴板，粘贴在命令栏与空白处的右键菜单里，与 Ctrl+X、Ctrl+C 同一处（DriveScreenState.putOnClipboard）
@@ -161,9 +161,9 @@ internal object DriveActions {
     fun findDuplicates(onClick: () -> Unit) =
         SheetAction(Icons.Outlined.FileCopy, tr("查重", "Duplicates", "重複検索", "중복 검색", "查重"), onClick, group = ActionGroup.Manage)
 
-    fun vault(onClick: () -> Unit) = SheetAction(Icons.Outlined.Inventory2, tr("归档", "Archive", "アーカイブ", "보관", "歸檔"), onClick, group = ActionGroup.Open)
+    fun vault(onClick: () -> Unit) = SheetAction(Icons.Outlined.Inventory2, tr("归档", "Archive", "アーカイブ", "보관", "歸檔"), onClick, group = ActionGroup.Manage)
 
-    fun unvault(onClick: () -> Unit) = SheetAction(Icons.Outlined.Unarchive, tr("取消归档", "Undo archive", "アーカイブを解除", "보관 취소", "取消歸檔"), onClick, group = ActionGroup.Open)
+    fun unvault(onClick: () -> Unit) = SheetAction(Icons.Outlined.Unarchive, tr("取消归档", "Undo archive", "アーカイブを解除", "보관 취소", "取消歸檔"), onClick, group = ActionGroup.Manage)
 
     fun previewVisibility(hidden: Boolean, onClick: () -> Unit) = SheetAction(
         icon = if (hidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,

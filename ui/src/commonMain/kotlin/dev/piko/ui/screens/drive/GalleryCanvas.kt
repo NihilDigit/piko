@@ -22,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.runtime.Composable
@@ -95,10 +96,14 @@ import dev.piko.ui.components.selectionClicks
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.components.watermarkIcon
 import dev.piko.ui.components.zoomOnWheel
+import dev.piko.data.repository.isPlayableVideo
+import dev.piko.data.repository.isPreviewableImage
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.ShortcutModifier
+import dev.piko.ui.platform.resolveCoilModel
 import io.github.nihildigit.pikpak.FileStat
-import io.github.nihildigit.pikpak.thumbnailUrlOf
+import io.github.nihildigit.pikpak.imageThumbnailUrlOf
+import io.github.nihildigit.pikpak.videoThumbnailUrlOf
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -108,7 +113,13 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 private fun FileStat.galleryCoverUrl(): String =
-    thumbnailLink.ifBlank { if (hash.isNotBlank()) thumbnailUrlOf(hash) else "" }
+    thumbnailLink.ifBlank {
+        when {
+            hash.isBlank() || isFolder -> ""
+            isPreviewableImage() && !isPlayableVideo() -> imageThumbnailUrlOf(hash)
+            else -> videoThumbnailUrlOf(hash)
+        }
+    }
 
 /** Keep this state at the browsing entry, so opening and closing playback retains the band. */
 internal class GalleryCanvasState internal constructor(anchor: GalleryAnchor? = null) {
@@ -170,6 +181,7 @@ internal fun GalleryCanvas(
     val prefetchScope = rememberCoroutineScope()
     val prefetchLimit = remember(state) { Semaphore(COVER_PREFETCH_CONCURRENCY) }
     val platformContext = LocalPlatformContext.current
+    val platform = LocalPikoPlatform.current
     val coverFiles = files
     val byId by remember(coverFiles) {
         derivedStateOf { coverFiles.associateBy { it.id } }
@@ -211,14 +223,14 @@ internal fun GalleryCanvas(
         if (targets.isEmpty()) return@LaunchedEffect
         val loader = SingletonImageLoader.get(platformContext)
         targets.forEach { file ->
-            val coverUrl = file.galleryCoverUrl()
+            val coverModel = platform.resolveCoilModel(file.galleryCoverUrl())
             val shapeKnown = aspectRatio(file) != null || file.id in learnedShapes
             prefetchScope.launch {
                 try {
                     prefetchLimit.withPermit {
                         @OptIn(coil3.annotation.ExperimentalCoilApi::class)
                         val request = ImageRequest.Builder(platformContext)
-                            .data(coverUrl)
+                            .data(coverModel)
                             .apply {
                                 if (shapeKnown) {
                                     // 已有内存缓存时直接命中短路；未缓存时经 BlackholeDecoder 仅写入磁盘缓存，跳过位图 CPU 解码
@@ -331,12 +343,14 @@ private fun GalleryCanvasCover(
     val ownClicks = remember { OwnClicks() }
     val hover = fileItemHover()
     val shape = MaterialTheme.shapes.medium
-    val duration = file.params["duration"]?.toLongOrNull()?.takeIf { it > 0 }
-    val badgeLabel = duration?.let { seconds ->
-        val minutes = (seconds % 3600 / 60).toString().padStart(2, '0')
-        val remainder = (seconds % 60).toString().padStart(2, '0')
-        if (seconds >= 3600) "${seconds / 3600}:$minutes:$remainder" else "$minutes:$remainder"
-    } ?: file.sizeBytes.takeIf { it > 0 }?.toReadableSize()
+    val isVideo = file.isPlayableVideo()
+    val durationLabel = if (isVideo) {
+        file.params["duration"]?.toDoubleOrNull()?.toLong()?.takeIf { it > 0 }?.let { seconds ->
+            val minutes = (seconds % 3600 / 60).toString().padStart(2, '0')
+            val remainder = (seconds % 60).toString().padStart(2, '0')
+            if (seconds >= 3600) "${seconds / 3600}:$minutes:$remainder" else "$minutes:$remainder"
+        }
+    } else null
     val isMac = LocalPikoPlatform.current.shortcutModifier == ShortcutModifier.Command
     val coverUrl = file.galleryCoverUrl()
     var coverFailed by remember(coverUrl) { mutableStateOf(false) }
@@ -441,17 +455,31 @@ private fun GalleryCanvasCover(
                         interactive = !isSelectionMode,
                     )
                 }
-                if (badgeLabel != null) {
-                    Text(
-                        badgeLabel,
+                // 照片右上角不挂任何角标，将完整构图留给缩略图本身；仅视频保留紧凑的微型播放三角与时长胶囊
+                if (isVideo) {
+                    Row(
                         modifier = Modifier.align(Alignment.TopEnd)
                             .padding(8.dp)
                             .background(Color.Black.copy(alpha = 0.6f), MaterialTheme.shapes.extraSmall)
-                            .padding(horizontal = 6.dp, vertical = 3.dp),
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1,
-                    )
+                            .padding(horizontal = if (durationLabel != null) 6.dp else 5.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(11.dp),
+                        )
+                        if (durationLabel != null) {
+                            Text(
+                                durationLabel,
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                            )
+                        }
+                    }
                 }
             }
         }

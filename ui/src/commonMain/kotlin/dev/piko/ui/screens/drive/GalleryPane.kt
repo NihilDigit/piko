@@ -59,6 +59,8 @@ internal fun GalleryPane(
     callbacks: DriveItemCallbacks,
     folderName: (String) -> String?,
     rootKey: Any,
+    showImages: Boolean = true,
+    onShowImagesChange: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val latestFiles by rememberUpdatedState(files)
@@ -97,7 +99,17 @@ internal fun GalleryPane(
                 } else {
                     Spacer(Modifier.weight(1f))
                 }
-                if (showViewSwitcher) ViewSwitcher(viewMode, onViewModeChange, tileSize, onTileSizeChange, false, null, galleryShown = true)
+                if (showViewSwitcher) ViewSwitcher(
+                    viewMode = viewMode,
+                    onViewModeChange = onViewModeChange,
+                    tileSize = tileSize,
+                    onTileSizeChange = onTileSizeChange,
+                    feedShown = false,
+                    onFeedShownChange = null,
+                    galleryShown = true,
+                    galleryShowImages = showImages,
+                    onGalleryShowImagesChange = onShowImagesChange,
+                )
             }
         }
         key(rootKey) {
@@ -135,7 +147,11 @@ internal fun GalleryPane(
                     }
                 } else if (files.isEmpty() && complete && failureCount == 0) {
                     PikoEmptyState(
-                        title = tr("此范围内没有可浏览的视频", "No videos to browse in this scope", "この範囲に閲覧できる動画はありません", "이 범위에 볼 수 있는 동영상이 없습니다", "此範圍內沒有可瀏覽的影片"),
+                        title = if (showImages) {
+                            tr("此范围内没有可浏览的视频或图片", "No videos or images to browse in this scope", "この範囲に閲覧できる動画や画像はありません", "이 범위에 볼 수 있는 동영상이나 이미지가 없습니다", "此範圍內沒有可瀏覽的影片或圖片")
+                        } else {
+                            tr("此范围内没有可浏览的视频", "No videos to browse in this scope", "この範囲に閲覧できる動画はありません", "이 범위에 볼 수 있는 동영상이 없습니다", "此範圍內沒有可瀏覽的影片")
+                        },
                         icon = Icons.Outlined.PhotoLibrary,
                         modifier = Modifier.align(Alignment.Center),
                     )

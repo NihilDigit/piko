@@ -66,6 +66,7 @@ class PikoServices(
     syncCipher: SyncCipher? = null,
     /** 用户自己部署的 MetaTube，两端传入；为 null 时设置里没有刮削一组（截图环境）。 */
     val metaTube: MetaTubeService? = null,
+    localFileAccess: (((String) -> Unit) -> dev.piko.shared.data.LocalFileAccess)? = null,
 ) {
     private val appNoticesChannel = Channel<String>(Channel.BUFFERED)
     val appNotices: Flow<String> = appNoticesChannel.receiveAsFlow()
@@ -80,7 +81,13 @@ class PikoServices(
     val preferences: PikoUserPreferences =
         cacheStore?.let { AccountScopedPreferences(platformPreferences, clientManager, it) } ?: platformPreferences
 
-    val driveRepository: DriveRepository = DriveRepository(clientManager, preferences, cacheStore)
+    val driveRepository: DriveRepository = DriveRepository(clientManager, preferences, cacheStore).also {
+        val repository = it
+        it.localMounts.access = localFileAccess?.invoke { folder ->
+            repository.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(setOf(folder)))
+        }
+        mediaRepository.localMounts = it.localMounts
+    }
     internal val presentationStores = dev.piko.ui.workbench.AccountPresentationStores()
     val fileExecutionScopes = dev.piko.shared.state.AccountExecutionScopes(
         driveRepository, CoroutineScope(backgroundScope.coroutineContext + Dispatchers.Main.immediate),
@@ -271,6 +278,7 @@ class PikoServices(
             instantSaveRecords.clearAttempts(left)
             shareSaves.clear(left)
             instantMagnetRepository.offlineSubmissions.clear(left)
+            driveRepository.localMounts.access?.cancelPending()
             driveRepository.enterAccount(clientManager.currentClient.value?.account)
             _fileHighlightRequested.value?.takeIf { it.account == left }?.let(::consumeFileHighlight)
             instantSession.clear()

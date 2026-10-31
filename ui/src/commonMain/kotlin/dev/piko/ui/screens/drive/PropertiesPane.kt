@@ -3,6 +3,7 @@ package dev.piko.ui.screens.drive
 import dev.piko.shared.i18n.enCount
 
 import dev.piko.shared.i18n.tr
+import dev.piko.shared.data.formatLocalPathForDisplay
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -210,7 +211,11 @@ private fun SingleDetails(
     DetailSection(
         buildList {
             if (file.isFolder) {
-                val typeField = DetailField(tr("类型", "Type", "種類", "유형", "類型"), tr("文件夹", "Folder", "フォルダー", "폴더", "資料夾"))
+                val typeField = DetailField(
+                    label = tr("类型", "Type", "種類", "유형", "類型"),
+                    value = if (dev.piko.shared.data.LocalLocation.of(file.id)?.segments?.isEmpty() == true) tr("本机挂载文件夹", "Mounted local folder", "ローカルマウントフォルダー", "로컬 마운트 폴더", "本機掛載資料夾") else tr("文件夹", "Folder", "フォルダー", "폴더", "資料夾"),
+                    supportingText = if (dev.piko.shared.data.LocalLocation.isLocal(file.id)) tr("本机只读挂载，未上传至云端", "Read-only local mount; not uploaded to cloud", "ローカル読み取り専用マウント。クラウドには未アップロード", "로컬 읽기 전용 마운트. 클라우드에 업로드되지 않음", "本機唯讀掛載，未上傳至雲端") else null,
+                )
                 val usageField = usage.takeIf { it.isNotEmpty() }?.let { DetailField(tr("内容", "Contents", "内容", "내용", "內容"), it) }
                 if (usageField != null) add(DetailRow.PairRow(typeField, usageField)) else add(DetailRow.Single(typeField))
                 when (file.id) {
@@ -226,7 +231,7 @@ private fun SingleDetails(
                     supportingText = if (file.isVaulted) tr("已归档引用，不占网盘空间", "Archived reference; uses no cloud storage", "アーカイブ参照。ドライブ容量を使用しません", "보관 참조. 클라우드 공간을 사용하지 않습니다", "已歸檔引用，不占雲端硬碟空間") else null,
                 )
                 add(DetailRow.PairRow(typeField, sizeField))
-                if (file.isPlayableVideo()) {
+                if (file.isPlayableVideo() || file.params["local_path"] != null) {
                     val duration = file.params["duration"]?.toDoubleOrNull()?.let { DetailField(tr("时长", "Duration", "再生時間", "재생 시간", "時長"), formatDuration(it.toLong())) }
                     val width = file.params["width"]
                     val height = file.params["height"]
@@ -254,7 +259,8 @@ private fun SingleDetails(
 
     DetailSection(
         buildList {
-            target.location?.takeIf { it.isNotEmpty() }?.let { loc ->
+            (file.params["local_path"]?.let(::formatLocalPathForDisplay) ?: target.location)?.takeIf { it.isNotEmpty() }?.let { loc ->
+                val isLocalFile = dev.piko.shared.data.LocalLocation.isLocal(file.id)
                 add(
                     DetailRow.Single(
                         DetailField(
@@ -262,7 +268,7 @@ private fun SingleDetails(
                             value = loc,
                             actions = buildList {
                                 if (onLocate != null) {
-                                    add(DetailAction(Icons.Outlined.FolderOpen, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { onLocate(file) }))
+                                    add(DetailAction(Icons.Outlined.FolderOpen, if (isLocalFile) tr("在所在文件夹中显示", "Show in containing folder", "保存先フォルダーで表示", "포함된 폴더에서 보기", "在所在資料夾中顯示") else tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { onLocate(file) }))
                                 }
                                 add(
                                     DetailAction(
@@ -379,15 +385,16 @@ private fun FolderDetails(target: PropertiesTarget.Folder) {
                 add(DetailRow.Single(DetailField(tr("包含内容", "Includes", "含まれる内容", "포함 내용", "包含內容"), recursiveUsage)))
             }
             if (target.id.isNotEmpty()) {
-                when (target.id) {
-                    in fullyVaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태", "歸檔狀態"), tr("完全归档（仅保留引用，不占网盘空间）", "Fully archived (references only; no cloud storage used)", "完全アーカイブ（参照のみ、ドライブ容量を使用しません）", "전체 보관 (참조만 유지, 클라우드 공간 사용 안 함)", "完全歸檔（僅保留引用，不占雲端硬碟空間）"))))
-                    in vaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태", "歸檔狀態"), tr("部分归档（包含归档引用）", "Partially archived (includes archive references)", "一部アーカイブ（アーカイブ参照を含む）", "일부 보관 (보관 참조 포함)", "部分歸檔（包含歸檔引用）"))))
+                when {
+                    dev.piko.shared.data.LocalLocation.isLocal(target.id) -> add(DetailRow.Single(DetailField(tr("挂载状态", "Mount status", "マウント状態", "마운트 상태", "掛載狀態"), tr("本机只读挂载，未上传至云端", "Read-only local mount; not uploaded to cloud", "ローカル読み取り専用マウント。クラウドには未アップロード", "로컬 읽기 전용 마운트. 클라우드에 업로드되지 않음", "本機唯讀掛載，未上傳至雲端"))))
+                    target.id in fullyVaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태", "歸檔狀態"), tr("完全归档（仅保留引用，不占网盘空间）", "Fully archived (references only; no cloud storage used)", "完全アーカイブ（参照のみ、ドライブ容量を使用しません）", "전체 보관 (참조만 유지, 클라우드 공간 사용 안 함)", "完全歸檔（僅保留引用，不占雲端硬碟空間）"))))
+                    target.id in vaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태", "歸檔狀態"), tr("部分归档（包含归档引用）", "Partially archived (includes archive references)", "一部アーカイブ（アーカイブ参照を含む）", "일부 보관 (보관 참조 포함)", "部分歸檔（包含歸檔引用）"))))
                 }
             }
         },
     )
 
-    target.location?.takeIf { it.isNotEmpty() }?.let { loc ->
+    target.location?.let(::formatLocalPathForDisplay)?.takeIf { it.isNotEmpty() }?.let { loc ->
         DetailSection(
             listOf(
                 DetailRow.Single(

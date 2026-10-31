@@ -312,6 +312,18 @@ class PlayerScreenState(
     fun addDriveSubtitle(subtitleFileId: String, name: String) {
         val videoFileId = fileId
         scope.launch {
+            val localSubtitle = try {
+                repository.localPath(subtitleFileId, subtitle = true)
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                _messages.tryEmit(tr("无法打开字幕文件", "Unable to open subtitle file", "字幕ファイルを開けません", "자막 파일을 열 수 없습니다", "無法開啟字幕檔案"))
+                return@launch
+            }
+            localSubtitle?.let { path ->
+                addLocalSubtitle(videoFileId, path, name)
+                return@launch
+            }
             val stream = repository.prepareSubtitle(subtitleFileId)
             if (stream == null) {
                 _messages.tryEmit(tr("无法打开字幕文件", "Unable to open subtitle file", "字幕ファイルを開けません", "자막 파일을 열 수 없습니다", "無法開啟字幕檔案"))
@@ -587,7 +599,7 @@ class PlayerScreenState(
             }
 
             tracksChosenThisFile = false
-            val localPath = resolveLocalPath(fileId, localPathHint)
+            val localPath = resolveLocalPath(fileId, repository.localPath(fileId) ?: localPathHint)
             if (localPath != null) {
                 isLocalPlayback = true
                 usingProxy = false
@@ -667,7 +679,8 @@ class PlayerScreenState(
 
     private fun onPlaybackError(detail: String?) {
         stableJob?.cancel()
-        val message = detail?.takeIf { it.isNotBlank() }?.let { tr("播放失败：$it", "Playback failed: $it", "再生に失敗しました：$it", "재생 실패: $it", "播放失敗：$it") } ?: tr("播放中断", "Playback interrupted", "再生が中断されました", "재생이 중단되었습니다", "播放中斷")
+        val safeDetail = detail?.takeUnless { dev.piko.shared.data.LocalLocation.isLocal(fileId) }
+        val message = safeDetail?.takeIf { it.isNotBlank() }?.let { tr("播放失败：$it", "Playback failed: $it", "再生に失敗しました：$it", "재생 실패: $it", "播放失敗：$it") } ?: tr("播放中断", "Playback interrupted", "再生が中断されました", "재생이 중단되었습니다", "播放中斷")
         PikoLog.w(
             TAG,
             "$message（${if (isLocalPlayback) "本地" else if (usingProxy) "代理" else "直链"}，" +
@@ -812,6 +825,9 @@ class PlayerScreenState(
             return stream.url
         }
         val subtitles = refs.mapNotNull { ref ->
+            repository.localPath(ref.fileId, subtitle = true)?.let { path ->
+                return@mapNotNull ExternalSubtitle(path, ref.language ?: "外挂字幕", ref.language?.let(::subtitleLanguageCode))
+            }
             val stream = repository.prepareSubtitle(ref.fileId) ?: return@mapNotNull null
             ExternalSubtitle(url = register(stream), title = ref.language ?: tr("外挂字幕", "External subtitles", "外部字幕", "외부 자막", "外掛字幕"), language = ref.language?.let(::subtitleLanguageCode))
         }

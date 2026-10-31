@@ -31,7 +31,7 @@ import kotlinx.coroutines.launch
  */
 @Composable
 fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessage: (String) -> Unit): List<SheetAction> {
-    if (fileId.isEmpty()) return emptyList()
+    if (fileId.isEmpty() || dev.piko.shared.data.LocalLocation.isLocal(fileId)) return emptyList()
     val services = LocalPikoServices.current
     val platform = LocalPikoPlatform.current
     val scope = rememberCoroutineScope()

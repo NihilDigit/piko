@@ -183,11 +183,9 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
             star = DriveActions.star(file.isStarred, on.toggleStar),
         ),
     )
-    if (video) add(DriveActions.downloadSegment(on.downloadSegment, on.prepareQualities))
-    if (commands.vault) add(DriveActions.vault(on.vault))
-    if (commands.unvault) on.unvault?.let { add(DriveActions.unvault(it)) }
     if (commands.extract) add(DriveActions.extract(on.extract))
     if (commands.downloadAtQuality) add(DriveActions.downloadAtQuality(on.prepareQualities.takeIf { video }, on.downloadAtQuality))
+    if (video) add(DriveActions.downloadSegment(on.downloadSegment, on.prepareQualities))
     if (!file.isFolder && commands.download) on.copyDownloadLink?.let { add(DriveActions.copyDownloadLink(it)) }
     if (video) on.openInExternalPlayer?.let { add(DriveActions.openInExternalPlayer(it)) }
     if (file.isFolder) on.openInNewTab?.let { add(DriveActions.openInNewTab(it)) }
@@ -200,6 +198,8 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
         on.findDuplicates?.let { add(DriveActions.findDuplicates(it)) }
         on.togglePin?.let { add(DriveActions.pin(on.isPinned, it)) }
     }
+    if (commands.vault) add(DriveActions.vault(on.vault))
+    if (commands.unvault) on.unvault?.let { add(DriveActions.unvault(it)) }
     on.previewHidden?.let { add(DriveActions.previewVisibility(it, on.togglePreview)) }
     if (on.copySource != null && on.openSource != null) addAll(DriveActions.sourceActions(file.source, on.copySource, on.openSource))
     if (putOnClipboard != null) {

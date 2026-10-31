@@ -73,6 +73,14 @@ enum class AppLanguage(val tag: String, val nativeLabel: String) {
 }
 
 interface PikoUserPreferences {
+    /** 本设备的只读文件夹挂载表，内含账号，不参与云端同步。 */
+    val localMountsFlow: Flow<String> get() = flowOf("")
+    suspend fun saveLocalMounts(serialized: String) {}
+
+    /** 瀑布流是否一并展示图片，默认开启。 */
+    val galleryShowImagesFlow: Flow<Boolean> get() = flowOf(true)
+    suspend fun setGalleryShowImages(show: Boolean) {}
+
     val appLanguageFlow: Flow<AppLanguage> get() = flowOf(AppLanguage.SYSTEM)
     suspend fun setAppLanguage(language: AppLanguage) {}
 

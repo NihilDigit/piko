@@ -179,6 +179,8 @@ class PikoMediaRepository(
      * 媒体仓库在各端入口建出来时，Piko-Temp 还不存在。
      */
     var leaseFolder: (suspend (PikPakClient) -> String)? = null
+    var localMounts: dev.piko.shared.data.LocalMounts? = null
+    suspend fun localPath(fileId: String, subtitle: Boolean = false): String? = localMounts?.resolve(fileId, subtitle)
 
     /** 下载调度器提供；原画播放与完整下载共用缓存，转码片段仍用 ClipCache。 */
     var fileCachePool: PikoFileCachePool? = null
@@ -295,6 +297,11 @@ class PikoMediaRepository(
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 val client = client
+                if (dev.piko.shared.data.LocalLocation.isLocal(fileId)) {
+                    val path = requireNotNull(localPath(fileId)) { "本机文件夹不可访问" }
+                    return@runSuspendCatching PreparedClip(null, path, false, startMs, 0.0,
+                        maxWindowMs = dev.piko.shared.state.localClipMaxWindowMs(startMs, videoDurationMs), localPath = path)
+                }
                 val key = clipKey(client.account, fileId, startMs)
                 val leased = LeasedFile.isLeased(fileId)
                 clipCache?.record(key)?.let { record ->
@@ -388,6 +395,10 @@ class PikoMediaRepository(
     suspend fun clipProbe(fileId: String): ClipProbe =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
+                if (dev.piko.shared.data.LocalLocation.isLocal(fileId)) {
+                    val file = localMounts?.probe(fileId)
+                    return@runSuspendCatching ClipProbe(false, file?.params?.get("duration")?.toDoubleOrNull()?.let { (it * 1000).toLong() })
+                }
                 val owner = client
                 val detail = detailOf(owner, fileId)
                 freshDetailsLock.withLock {
@@ -412,6 +423,7 @@ class PikoMediaRepository(
      * 读这份详情建 handle 时要带 leased，直链过期后重建出的对象才会同样删掉。
      */
     private suspend fun detailOf(client: PikPakClient, fileId: String): FileDetail {
+        require(!dev.piko.shared.data.LocalLocation.isLocal(fileId)) { "本地文件不支持云端操作" }
         val leased = LeasedFile.resolvedFileOf(fileId) ?: return client.getFile(fileId)
         val folder = leaseFolder ?: error(tr("无法打开归档条目", "Unable to open archived item", "アーカイブ項目を開けません", "보관 항목을 열 수 없습니다", "無法開啟歸檔項目"))
         return client.leaseDetail(leased, parentId = folder(client))
@@ -574,7 +586,7 @@ class PikoMediaRepository(
      */
     suspend fun reportPlay(fileId: String, positionMillis: Long, durationMillis: Long) {
         // 归档条目与压缩包里的文件在网盘里没有常驻的文件，播放历史记不上；续播位置照样记在本机
-        if (fileId.isBlank() || LeasedFile.isLeased(fileId) || positionMillis <= 0L || durationMillis <= 0L) return
+        if (dev.piko.shared.data.LocalLocation.isLocal(fileId) || fileId.isBlank() || LeasedFile.isLeased(fileId) || positionMillis <= 0L || durationMillis <= 0L) return
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 if (isPlayHistorySynced()) client.reportPlay(fileId, positionMillis / 1000, durationMillis / 1000)
@@ -587,7 +599,7 @@ class PikoMediaRepository(
      * 服务端不能按文件查，只看第一页（最近播放的 100 条）：从历史里点进来的一定在里面，更早的就算了。
      */
     suspend fun cloudPlaybackPosition(fileId: String): Long? {
-        if (fileId.isBlank() || LeasedFile.isLeased(fileId)) return null
+        if (dev.piko.shared.data.LocalLocation.isLocal(fileId) || fileId.isBlank() || LeasedFile.isLeased(fileId)) return null
         // 读偏好也包在里面：这只是续播的参考，任何一步失败都不该挡住开播
         return withContext(Dispatchers.Default) {
             runSuspendCatching {

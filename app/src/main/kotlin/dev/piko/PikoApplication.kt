@@ -138,6 +138,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
                 mediaRepository = mediaRepository,
             ),
             uploadSources = AndroidPikoUploadSources(this),
+            localFileAccess = { changed -> dev.piko.platform.AndroidLocalFileAccess(this, appScope, changed) },
             cacheStore = cacheStore,
             syncCipher = JvmSyncCipher(),
             metaTube = MetaTubeService(sessionManager, cacheStore = cacheStore, scope = appScope) {

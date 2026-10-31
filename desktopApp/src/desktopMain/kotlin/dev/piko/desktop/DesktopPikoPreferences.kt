@@ -90,6 +90,20 @@ class DesktopPikoPreferences(
     private val pinnedFolders = MutableStateFlow(settings.get(KEY_PINNED_FOLDERS))
     private val perFolderSort = MutableStateFlow(settings.get(KEY_PER_FOLDER_SORT) == "true")
     private val folderSortOrders = MutableStateFlow(settings.get(KEY_FOLDER_SORT_ORDERS))
+    private val localMounts = MutableStateFlow(settings.get("drive.localMounts"))
+    override val localMountsFlow: Flow<String> = localMounts.asStateFlow()
+    override suspend fun saveLocalMounts(serialized: String) {
+        settings.set("drive.localMounts", serialized)
+        localMounts.value = serialized
+    }
+
+    private val galleryShowImages = MutableStateFlow(settings.get("drive.galleryShowImages", "true").toBoolean())
+    override val galleryShowImagesFlow: Flow<Boolean> = galleryShowImages.asStateFlow()
+    override suspend fun setGalleryShowImages(show: Boolean) {
+        settings.set("drive.galleryShowImages", show.toString())
+        galleryShowImages.value = show
+    }
+
     private val batchRename = MutableStateFlow(settings.get(KEY_BATCH_RENAME))
     private val vaultArchiveOptions = MutableStateFlow(settings.get(KEY_VAULT_ARCHIVE_OPTIONS))
     private val renameRegexTextMode = MutableStateFlow(settings.get(KEY_RENAME_REGEX_TEXT_MODE) == "true")

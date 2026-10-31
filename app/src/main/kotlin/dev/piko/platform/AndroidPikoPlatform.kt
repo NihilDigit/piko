@@ -26,6 +26,8 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -123,6 +125,29 @@ class AndroidPikoPlatform(
     override val downloadLocation: DownloadLocationPicker = AndroidDownloadLocation()
 
     override val uploadPicker: UploadPicker = AndroidUploadPicker()
+
+    @Composable
+    override fun rememberLocalFolderLauncher(onPicked: (String, String) -> Unit): () -> Unit {
+        val scope = rememberCoroutineScope()
+        val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri != null) {
+                scope.launch {
+                    val picked = withContext(Dispatchers.IO) {
+                        runCatching {
+                            context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            val document = android.provider.DocumentsContract.buildDocumentUriUsingTree(uri, android.provider.DocumentsContract.getTreeDocumentId(uri))
+                            val name = context.contentResolver.query(document, arrayOf(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use {
+                                if (it.moveToFirst()) it.getString(0) else null
+                            } ?: "本地文件夹"
+                            uri.toString() to name
+                        }.getOrNull()
+                    }
+                    picked?.let { onPicked(it.first, it.second) }
+                }
+            }
+        }
+        return { launcher.launch(null) }
+    }
 
     override val videoPreview: VideoPreviewSupport = MpvPreviewSupport()
 
@@ -276,6 +301,7 @@ class AndroidPikoPlatform(
     private inner class AndroidLocalFiles : LocalFileActions {
         override fun thumbnailModel(path: String): Any? = when {
             path.startsWith("content:") -> path
+            path.startsWith("file:", ignoreCase = true) -> runCatching { File(java.net.URI(path)) }.getOrNull()?.takeIf { it.exists() }
             File(path).exists() -> File(path)
             else -> null
         }

@@ -6,6 +6,7 @@ import dev.piko.ui.resources.*
 import dev.piko.ui.i18n.stringResource
 
 import dev.piko.shared.i18n.tr
+import androidx.compose.material.icons.outlined.Image
 
 import dev.piko.ui.components.fileDropTarget
 import dev.piko.ui.components.releasesFocusOnOutsidePress
@@ -341,6 +342,8 @@ internal fun ExploreToggleGroup(
     onFeedShownChange: ((Boolean) -> Unit)?,
     tileSize: TileSize? = null,
     onTileSizeChange: ((TileSize) -> Unit)? = null,
+    galleryShowImages: Boolean = true,
+    onGalleryShowImagesChange: ((Boolean) -> Unit)? = null,
 ) {
     val count = (if (onGalleryShownChange != null) 1 else 0) + (if (onFeedShownChange != null) 1 else 0)
     if (count == 0) return
@@ -384,7 +387,6 @@ internal fun ExploreToggleGroup(
                 if (tileSize != null && onTileSizeChange != null) {
                     PikoDropdownMenu(expanded = sizeMenuOpen, onDismissRequest = { sizeMenuOpen = false }) {
                         val sizes = TileSize.entries
-                        val totalItems = sizes.size + 1
                         sizes.forEachIndexed { sizeIndex, size ->
                             val current = tileSize == size
                             DropdownMenuItem(
@@ -392,10 +394,37 @@ internal fun ExploreToggleGroup(
                                 trailingIcon = if (current) ({
                                     Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                                 }) else null,
-                                shape = menuItemShape(sizeIndex, totalItems),
+                                shape = menuItemShape(sizeIndex, sizes.size),
                                 onClick = {
                                     sizeMenuOpen = false
                                     onTileSizeChange(size)
+                                },
+                            )
+                        }
+                        if (onGalleryShowImagesChange != null) {
+                            Spacer(Modifier.height(6.dp))
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        tr("显示图片", "Show images", "画像を表示", "이미지 표시", "顯示圖片"),
+                                        color = if (galleryShowImages) MaterialTheme.colorScheme.primary else androidx.compose.ui.graphics.Color.Unspecified,
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        androidx.compose.material.icons.Icons.Outlined.Image,
+                                        contentDescription = null,
+                                        tint = if (galleryShowImages) MaterialTheme.colorScheme.primary else androidx.compose.material3.LocalContentColor.current,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                },
+                                trailingIcon = if (galleryShowImages) ({
+                                    Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                }) else null,
+                                shape = menuItemShape(0, 1),
+                                onClick = {
+                                    sizeMenuOpen = false
+                                    onGalleryShowImagesChange(!galleryShowImages)
                                 },
                             )
                         }
@@ -403,7 +432,7 @@ internal fun ExploreToggleGroup(
                         DropdownMenuItem(
                             text = { Text(stringResource(Res.string.text_close_gallery_alt)) },
                             leadingIcon = { Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                            shape = menuItemShape(sizes.size, totalItems),
+                            shape = menuItemShape(0, 1),
                             onClick = {
                                 sizeMenuOpen = false
                                 onGalleryShownChange(false)

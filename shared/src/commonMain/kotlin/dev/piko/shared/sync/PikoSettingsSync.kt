@@ -74,6 +74,7 @@ val SyncedSettings: List<SyncedSetting> = listOf(
         { prefs, value -> value.toFloatOrNull()?.let { prefs.setPlayerBoostSpeed(it) } },
     ),
     bool("clipAutoExtend", { it.clipAutoExtendFlow }) { setClipAutoExtend(it) },
+    bool("galleryShowImages", { it.galleryShowImagesFlow }) { setGalleryShowImages(it) },
 )
 
 /**

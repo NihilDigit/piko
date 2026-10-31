@@ -6,6 +6,7 @@ import dev.piko.ui.i18n.pluralStringResource
 import dev.piko.ui.i18n.stringResource
 
 import dev.piko.shared.i18n.tr
+import androidx.compose.material.icons.outlined.Image
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -431,6 +432,8 @@ internal fun ViewSwitcher(
     feedBlockedReason: String? = null,
     galleryShown: Boolean = false,
     onGalleryShownChange: ((Boolean) -> Unit)? = null,
+    galleryShowImages: Boolean = true,
+    onGalleryShowImagesChange: ((Boolean) -> Unit)? = null,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val count = 1 + (if (onGalleryShownChange != null) 1 else 0) + (if (onFeedShownChange != null) 1 else 0)
@@ -497,6 +500,33 @@ internal fun ViewSwitcher(
                         onClick = {
                             menuOpen = false
                             onTileSizeChange(size)
+                        },
+                    )
+                }
+                if (galleryShown && onGalleryShowImagesChange != null) {
+                    Spacer(Modifier.height(6.dp))
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                tr("显示图片", "Show images", "画像を表示", "이미지 표시", "顯示圖片"),
+                                color = if (galleryShowImages) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                androidx.compose.material.icons.Icons.Outlined.Image,
+                                contentDescription = null,
+                                tint = if (galleryShowImages) MaterialTheme.colorScheme.primary else LocalContentColor.current,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        },
+                        trailingIcon = if (galleryShowImages) ({
+                            Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        }) else null,
+                        shape = menuItemShape(0, 1),
+                        onClick = {
+                            menuOpen = false
+                            onGalleryShowImagesChange(!galleryShowImages)
                         },
                     )
                 }

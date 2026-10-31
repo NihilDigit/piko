@@ -606,6 +606,7 @@ private fun createServices(settings: DesktopSettingsStore, preferences: DesktopP
             mediaRepository = mediaRepository,
         ),
         uploadSources = DesktopPikoUploadSources(),
+        localFileAccess = { changed -> DesktopLocalFileAccess(appScope, changed) },
         cacheStore = cacheStore,
         syncCipher = JvmSyncCipher(),
         metaTube = MetaTubeService(preferences, cacheStore = cacheStore, scope = appScope) {

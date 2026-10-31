@@ -160,7 +160,7 @@ class ClipFeedSession(
     }
 
     /** [folderId] 的名字；还没遍历到的为 null。 */
-    fun folderName(folderId: String): String? = folders.nodes[folderId]?.name ?: root?.takeIf { it.id == folderId }?.name
+    fun folderName(folderId: String): String? = driveRepo.knownLocalPath(folderId)?.lastOrNull()?.name ?: folders.nodes[folderId]?.name ?: root?.takeIf { it.id == folderId }?.name
 
     // 打开时网盘页的整条路径，栈顶是 [root]
     private var rootPath: List<PikoPathBreadcrumb> = emptyList()
@@ -171,6 +171,7 @@ class ClipFeedSession(
      * 存盘恢复的段所在的目录这一轮还没列到、旧存盘又没有上级时为 null，由调用方向服务端查。
      */
     fun pathTo(folderId: String): List<PikoPathBreadcrumb>? {
+        driveRepo.knownLocalPath(folderId)?.let { return it }
         val rootId = root?.id ?: return null
         val nodes = folders.nodes
         val chain = ArrayDeque<PikoPathBreadcrumb>()
@@ -583,7 +584,7 @@ class ClipFeedSession(
         val probe = media.clipProbe(file.id)
         if (request != generation) throw CancellationException("Feed scope changed")
         probe.durationMs?.let { learnDuration(file.id, it) }
-        return if (probe.hasTranscode) Transcode.Yes else Transcode.JustFoundMissing
+        return if (probe.hasTranscode) Transcode.Yes else if (dev.piko.shared.data.LocalLocation.isLocal(file.id)) Transcode.KnownMissing else Transcode.JustFoundMissing
     }
 
     /** 记进候选池，随队列存下：下次打开不必再借一次对象去量。 */
@@ -753,7 +754,7 @@ class ClipFeedSession(
      * 归档条目例外：它们存自磁力解析，本来就没有时长，挑中后查转码时从借出的详情里量，见 [transcodeOf]。
      */
     private fun FileStat.isClipCandidate(): Boolean =
-        isPlayableVideo() && !isUploading && (isVaulted || durationMs() >= MIN_DURATION_MS)
+        isPlayableVideo() && !isUploading && (dev.piko.shared.data.LocalLocation.isLocal(id) || isVaulted || durationMs() >= MIN_DURATION_MS)
 
     private fun FileStat.durationMs(): Long =
         ((params["duration"]?.toDoubleOrNull() ?: 0.0) * 1000).toLong()

@@ -424,12 +424,12 @@ private fun ClipPager(
     }
 
     fun maxPlayableLength(slot: Int, clip: Clip, videoStart: Long = clipStartMs[slot]): Long {
-        val videoRemaining = (clip.videoDurationMs - videoStart).coerceAtLeast(1_000L)
+        val videoRemaining = if (clip.videoDurationMs > 0L) (clip.videoDurationMs - videoStart).coerceAtLeast(1_000L) else null
         val cap = maxWindowLengths[slot]?.takeIf { it > 0L }
         val playerDur = if (rendered[slot] == clip) {
             (players[slot].durationMillis - startOnPlayer[slot]).takeIf { it > 0L }
         } else null
-        var bound = videoRemaining
+        var bound = videoRemaining ?: Long.MAX_VALUE
         if (cap != null) bound = minOf(bound, cap)
         if (playerDur != null) bound = minOf(bound, playerDur)
         return bound.coerceAtLeast(1_000L)
@@ -479,7 +479,7 @@ private fun ClipPager(
                 // 新装的段先压着，真看起来才升档，见 LaunchedEffect(current)
                 players[slot].setBufferAhead(HOLD_BUFFER_SECONDS)
                 players[slot].open(
-                    PlaybackTarget.Url(url),
+                    prepared.localPath?.let { PlaybackTarget.LocalFile(it) } ?: PlaybackTarget.Url(url),
                     startMillis = prepared.startOnPlayer + resumeOffset,
                     playWhenReady = false,
                 )
@@ -772,8 +772,10 @@ private fun ClipPager(
         // 开启自动连刷时，播完当前片段自动翻到下一条；未开启自动连刷时，按「信息流自动续播」设置顺延 30 秒或单段循环重播
         snapshotFlow {
             val length = clipLengths[slot]
-            val currentEnd = start + length
-            val reachedWindowEnd = rendered[slot] == current && currentPlayer.positionMillis in currentEnd..currentEnd + STALE_POSITION_SLACK_MS
+            val reachedWindowEnd = rendered[slot] == current && dev.piko.shared.state.clipWindowEnded(
+                currentPlayer.positionMillis, start, length,
+                dev.piko.shared.data.LocalLocation.isLocal(current.fileId), STALE_POSITION_SLACK_MS,
+            )
             Triple(reachedWindowEnd, length, clipStartMs[slot])
         }.collect { (reachedWindowEnd, length, videoStart) ->
             if (!reachedWindowEnd) {

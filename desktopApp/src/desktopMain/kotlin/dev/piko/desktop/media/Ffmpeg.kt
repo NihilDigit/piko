@@ -15,14 +15,14 @@ import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.invoke.MethodHandle
 
 /**
- * mpv 运行库里随带的 FFmpeg（libavutil、libavcodec、libavformat），经 FFM 直调，只用于流复制的转封装。
+ * mpv 运行库里随带的 FFmpeg，经 FFM 直调做流复制转封装，以及本地媒体探测和缩略图解码。
  *
  * 结构体字段按偏移读写（[FfmpegLayout]），偏移取自 FFmpeg 8.0.1 的头文件。FFmpeg 只在主版本号变化时改动公开结构体
  * 已有字段的位置，所以载入时核对三个库的主版本，对不上就拒绝，而不是读错内存。mpv 运行库升级时按 desktopApp/CLAUDE.md 核对。
  *
  * 不用 JavaCV 一类的现成绑定：它们自带一份 FFmpeg，安装包要再多几十 MB，mpv 运行库里已有一份完整的。
  */
-internal class Ffmpeg private constructor(avutil: SymbolLookup, avcodec: SymbolLookup, avformat: SymbolLookup) {
+internal class Ffmpeg private constructor(avutil: SymbolLookup, avcodec: SymbolLookup, avformat: SymbolLookup, swscale: SymbolLookup) {
     private val linker = Linker.nativeLinker()
 
     private fun SymbolLookup.function(name: String, descriptor: FunctionDescriptor): MethodHandle =
@@ -30,6 +30,7 @@ internal class Ffmpeg private constructor(avutil: SymbolLookup, avcodec: SymbolL
 
     val avutilVersion = avutil.function("avutil_version", FunctionDescriptor.of(JAVA_INT))
     val avcodecVersion = avcodec.function("avcodec_version", FunctionDescriptor.of(JAVA_INT))
+    val decoderFind = avcodec.function("avcodec_find_decoder", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     val avformatVersion = avformat.function("avformat_version", FunctionDescriptor.of(JAVA_INT))
 
     val malloc = avutil.function("av_malloc", FunctionDescriptor.of(ADDRESS, JAVA_LONG))
@@ -39,6 +40,21 @@ internal class Ffmpeg private constructor(avutil: SymbolLookup, avcodec: SymbolL
     val dictCopy = avutil.function("av_dict_copy", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT))
     val dictFree = avutil.function("av_dict_free", FunctionDescriptor.ofVoid(ADDRESS))
     val rescaleRnd = avutil.function("av_rescale_rnd", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT))
+
+    val swscaleVersion = swscale.function("swscale_version", FunctionDescriptor.of(JAVA_INT))
+    val scaleContext = swscale.function("sws_getContext", FunctionDescriptor.of(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS, ADDRESS))
+    val scaleFrame = swscale.function("sws_scale", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS))
+    val scaleFree = swscale.function("sws_freeContext", FunctionDescriptor.ofVoid(ADDRESS))
+    val displayRotation = avutil.function("av_display_rotation_get", FunctionDescriptor.of(java.lang.foreign.ValueLayout.JAVA_DOUBLE, ADDRESS))
+    val sideDataGet = avcodec.function("av_packet_side_data_get", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT))
+    val frameAlloc = avutil.function("av_frame_alloc", FunctionDescriptor.of(ADDRESS))
+    val frameFree = avutil.function("av_frame_free", FunctionDescriptor.ofVoid(ADDRESS))
+    val decoderAlloc = avcodec.function("avcodec_alloc_context3", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    val decoderFree = avcodec.function("avcodec_free_context", FunctionDescriptor.ofVoid(ADDRESS))
+    val parametersToContext = avcodec.function("avcodec_parameters_to_context", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    val decoderOpen = avcodec.function("avcodec_open2", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS))
+    val sendPacket = avcodec.function("avcodec_send_packet", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    val receiveFrame = avcodec.function("avcodec_receive_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
 
     val packetAlloc = avcodec.function("av_packet_alloc", FunctionDescriptor.of(ADDRESS))
     val packetFree = avcodec.function("av_packet_free", FunctionDescriptor.ofVoid(ADDRESS))
@@ -78,6 +94,7 @@ internal class Ffmpeg private constructor(avutil: SymbolLookup, avcodec: SymbolL
             Triple("avutil", avutilVersion, AVUTIL_MAJOR),
             Triple("avcodec", avcodecVersion, AVCODEC_MAJOR),
             Triple("avformat", avformatVersion, AVFORMAT_MAJOR),
+            Triple("swscale", swscaleVersion, 9),
         )
         for ((name, version, expected) in versions) {
             val major = (version.invokeWithArguments() as Int) ushr 16
@@ -112,16 +129,16 @@ internal class Ffmpeg private constructor(avutil: SymbolLookup, avcodec: SymbolL
         fun load(directory: File): Ffmpeg {
             val os = System.getProperty("os.name").orEmpty()
             val names = when {
-                os.startsWith("Windows") -> listOf("avutil-$AVUTIL_MAJOR.dll", "avcodec-$AVCODEC_MAJOR.dll", "avformat-$AVFORMAT_MAJOR.dll")
-                os.startsWith("Mac") -> listOf("libavutil.$AVUTIL_MAJOR.dylib", "libavcodec.$AVCODEC_MAJOR.dylib", "libavformat.$AVFORMAT_MAJOR.dylib")
-                else -> listOf("libavutil.so.$AVUTIL_MAJOR", "libavcodec.so.$AVCODEC_MAJOR", "libavformat.so.$AVFORMAT_MAJOR")
+                os.startsWith("Windows") -> listOf("avutil-$AVUTIL_MAJOR.dll", "avcodec-$AVCODEC_MAJOR.dll", "avformat-$AVFORMAT_MAJOR.dll", "swscale-9.dll")
+                os.startsWith("Mac") -> listOf("libavutil.$AVUTIL_MAJOR.dylib", "libavcodec.$AVCODEC_MAJOR.dylib", "libavformat.$AVFORMAT_MAJOR.dylib", "libswscale.9.dylib")
+                else -> listOf("libavutil.so.$AVUTIL_MAJOR", "libavcodec.so.$AVCODEC_MAJOR", "libavformat.so.$AVFORMAT_MAJOR", "libswscale.so.9")
             }
             val files = names.map { name ->
                 directory.resolve(name).takeIf { it.isFile } ?: throw FfmpegException("找不到 FFmpeg 库 $name")
             }
             if (os.startsWith("Windows")) files.forEach(WindowsDllLoader::load)
-            val (avutil, avcodec, avformat) = files.map { SymbolLookup.libraryLookup(it.toPath(), Arena.global()) }
-            return Ffmpeg(avutil, avcodec, avformat)
+            val (avutil, avcodec, avformat, swscale) = files.map { SymbolLookup.libraryLookup(it.toPath(), Arena.global()) }
+            return Ffmpeg(avutil, avcodec, avformat, swscale)
         }
 
         private val bundledResult: Result<Ffmpeg> by lazy {
@@ -175,6 +192,7 @@ internal object FfmpegLayout {
     const val FORMAT_NB_STREAMS = 44L
     const val FORMAT_STREAMS = 48L
     const val FORMAT_START_TIME = 96L
+    const val FORMAT_DURATION = 104L
     const val FORMAT_SIZE = 112L
 
     // AVStream
@@ -188,7 +206,27 @@ internal object FfmpegLayout {
     const val PAR_CODEC_TYPE = 0L
     const val PAR_CODEC_ID = 4L
     const val PAR_CODEC_TAG = 8L
+    const val PAR_SIDE_DATA = 32L
+    const val PAR_NB_SIDE_DATA = 40L
+    const val PAR_WIDTH = 72L
+    const val PAR_HEIGHT = 76L
     const val PAR_SIZE = 12L
+    const val PAR_VIDEO_PREFIX_SIZE = 80L
+
+    // AVFrame：只映射解码帧的公开前缀，不自行分配结构体。
+    const val FRAME_LINESIZE = 64L
+    const val FRAME_WIDTH = 104L
+    const val FRAME_HEIGHT = 108L
+    const val FRAME_FORMAT = 116L
+    const val FRAME_PREFIX_SIZE = 120L
+
+    // AVPacketSideData
+    const val SIDE_DATA_BYTES = 0L
+    const val SIDE_DATA_SIZE = 8L
+    const val SIDE_DATA_PREFIX_SIZE = 16L
+    const val AV_PKT_DATA_DISPLAYMATRIX = 5
+    const val AV_PIX_FMT_RGB24 = 2
+    const val SWS_BILINEAR = 2
 
     // AVPacket
     const val PACKET_PTS = 8L

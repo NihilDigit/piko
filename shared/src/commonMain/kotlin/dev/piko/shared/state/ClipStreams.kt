@@ -114,6 +114,7 @@ class ClipStreams internal constructor(
     }
 
     private suspend fun fetchOnce(clip: Clip, prepared: PreparedClip): Boolean {
+        if (prepared.localPath != null) return true
         var started = TimeSource.Monotonic.markNow()
         val fetched = try {
             prefetching.withPermit {

@@ -170,7 +170,14 @@ class DesktopPikoPlatform(
     }
 
     override val localFiles: LocalFileActions = object : LocalFileActions {
-        override fun thumbnailModel(path: String): Any? = File(path).takeIf { it.exists() }
+        override fun thumbnailModel(path: String): Any? {
+            val file = if (path.startsWith("file:", ignoreCase = true)) {
+                runCatching { File(java.net.URI(path)) }.getOrNull()
+            } else {
+                File(path)
+            }
+            return file?.takeIf { it.exists() }
+        }
 
         override fun exists(path: String): Boolean = File(path).exists()
 
@@ -218,6 +225,19 @@ class DesktopPikoPlatform(
                 val owner = activeWindow()
                 scope.launch {
                     pickFolder(owner, settings.downloadDirectory, tr("选择下载位置", "Choose download location", "ダウンロード先を選択", "다운로드 위치 선택", "選擇下載位置"))?.let { onPicked(it.absolutePath) }
+                }
+            }
+        }
+    }
+
+    @Composable
+    override fun rememberLocalFolderLauncher(onPicked: (String, String) -> Unit): () -> Unit {
+        val scope = rememberCoroutineScope()
+        return {
+            val owner = activeWindow()
+            scope.launch {
+                pickFolder(owner, null, tr("挂载本地文件夹", "Mount local folder", "ローカルフォルダーをマウント", "로컬 폴더 마운트", "掛載本機資料夾"))?.let {
+                    onPicked(it.absolutePath, it.name)
                 }
             }
         }

@@ -35,6 +35,7 @@ import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.fileCategory
 import dev.piko.shared.data.isImportPreview
+import dev.piko.shared.data.isLocalMountRoot
 import dev.piko.shared.data.isVaulted
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
@@ -49,10 +50,11 @@ internal data class FileVisual(
     val thumbnail: Any? = null,
     val isVideo: Boolean = false,
     val isEmptyFolder: Boolean = false,
+    val isLocalMount: Boolean = false,
     val category: FileCategory = name.fileCategory(),
 )
 
-internal enum class FileItemMark { Starred, Vaulted, ContainsVault, ImportPreview }
+internal enum class FileItemMark { Starred, Vaulted, ContainsVault, ImportPreview, LocalMount }
 internal data class FileItemStatus(val text: String, val needsAttention: Boolean = false)
 
 /** Presentation only: a source entry does not need a remote file id or an executable drive command. */
@@ -79,7 +81,7 @@ internal fun FileStat.fileVisual(emptyFolder: Boolean = false): FileVisual {
         }
     }
     return FileVisual(
-        name, isFolder, cover.takeIf { it.isNotEmpty() }, isVideo, emptyFolder, fileCategory(),
+        name, isFolder, cover.takeIf { it.isNotEmpty() }, isVideo, emptyFolder, isLocalMountRoot, fileCategory(),
     )
 }
 
@@ -100,6 +102,7 @@ internal fun FileStat.filePresentation(
 }
 
 internal fun FileStat.fileItemMarks(folderHasVault: Boolean): Set<FileItemMark> = buildSet {
+    if (isLocalMountRoot) add(FileItemMark.LocalMount)
     if (isImportPreview) add(FileItemMark.ImportPreview)
     if (isStarred) add(FileItemMark.Starred)
     if (isVaulted || (isFolder && folderHasVault)) add(if (isFolder) FileItemMark.ContainsVault else FileItemMark.Vaulted)
@@ -146,6 +149,7 @@ internal fun FileItemInformation(
 @Composable
 internal fun FileItemMarks(marks: Set<FileItemMark>) {
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (FileItemMark.LocalMount in marks) LocalMountMark()
         if (FileItemMark.ImportPreview in marks) ImportPreviewMark()
         if (FileItemMark.Starred in marks) StarMark()
         if (FileItemMark.Vaulted in marks || FileItemMark.ContainsVault in marks) VaultMark(FileItemMark.ContainsVault in marks)

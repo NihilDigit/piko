@@ -61,6 +61,7 @@ internal class ClipActions(
 
     /** [value] 为 null 时切换。双击画面只加不减，与短视频应用的点赞一致。真实文件与归档条目均支持星标。 */
     fun setStarred(clip: Clip, value: Boolean? = null) {
+        if (dev.piko.shared.data.LocalLocation.isLocal(clip.fileId)) return
         val before = isStarred(clip)
         val target = value ?: !before
         if (target == before) return

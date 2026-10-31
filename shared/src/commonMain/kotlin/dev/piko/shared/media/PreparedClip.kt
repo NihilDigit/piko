@@ -26,6 +26,8 @@ class PreparedClip internal constructor(
     maxWindowMs: Long? = null,
     /** 按磁盘上的记录重建，没查详情；开头与末尾多半也在盘上，见 ClipCache。 */
     val fromDisk: Boolean = false,
+    /** 本地原文件直通，不创建代理或 TS 切片。 */
+    val localPath: String? = null,
     /**
      * 读切片开头的时间戳，得出它实际从全片哪一刻开始。切片按平均码率算起点字节，码率不均时
      * 与原定的起点差出十几秒，看完整就接不上眼前的画面。null 是起点已经准了（原画、盘上记着的）。
