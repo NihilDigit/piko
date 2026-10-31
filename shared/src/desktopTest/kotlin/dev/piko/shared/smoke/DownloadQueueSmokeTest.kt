@@ -39,7 +39,9 @@ class DownloadQueueSmokeTest {
         val files = drive.listAllFiles().getOrThrow()
         coordinator.enqueueFiles(files.filter { !it.isFolder })
         coordinator.enqueueFolders(files.filter { it.isFolder }, DriveDownloadFolderSource(drive))
-        awaitUntil("所有文件进入同一队列") { coordinator.tasks.value.size == 12 && coordinator.listings.value.isEmpty() }
+        awaitUntil("所有文件进入同一队列") {
+            coordinator.tasks.value.size == 12 && coordinator.listings.value.isEmpty() && maximum.get() >= 1
+        }
         coordinator.pauseAll()
         awaitUntil("全部暂停") { coordinator.tasks.value.values.all { it.status == DownloadStatus.PAUSED } }
         delay(500)
