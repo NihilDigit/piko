@@ -347,6 +347,7 @@ fun main(args: Array<String>) {
         val mainWindowState = rememberRememberedWindowState(settings, "main", DpSize(1120.dp, 760.dp))
         PikoWindow(
             onCloseRequest = closeMainWindow,
+            onFatalClose = ::exitApplication,
             visible = !isInBackground,
             title = "Piko",
             icon = appIcon,
@@ -651,6 +652,12 @@ private fun installLog() {
     Thread.setDefaultUncaughtExceptionHandler { thread, error ->
         PikoLog.e("Crash", "线程 ${thread.name} 未捕获的异常", error)
         runBlocking { withTimeoutOrNull(1_000) { PikoLog.flush() } }
+        if (javax.swing.SwingUtilities.isEventDispatchThread() || thread.name.startsWith("AWT-EventQueue")) {
+            // 绕过窗口处理器时无法可靠定位出事窗口；重建全部窗口，持续失败则真正退出，不留托盘僵尸窗口。
+            desktopWindowFaultCoordinator.report(error, isUiThread = true, onFatalClose = {
+                showWindowFault(null) { exitProcess(1) }
+            })
+        }
         previous?.uncaughtException(thread, error) ?: error.printStackTrace()
     }
     PikoLog.i(

@@ -124,6 +124,39 @@ fun ContextMenuArea(
     }
 }
 
+/** 虚拟化画布的菜单宿主必须位于测量期子组合之外，锚点使用窗口坐标。 */
+@Composable
+fun WindowAnchoredActionMenu(
+    pointerInWindow: IntOffset,
+    actions: List<SheetAction>,
+    onSelect: (() -> Unit)? = null,
+    onDismiss: () -> Unit,
+) {
+    val provider = remember(pointerInWindow) {
+        object : DropdownMenuPopupPositionProvider {
+            override var transformOrigin by mutableStateOf(TransformOrigin(0f, 0f))
+                private set
+
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize,
+            ): IntOffset {
+                val position = pointerMenuPosition(pointerInWindow, popupContentSize, windowSize)
+                transformOrigin = TransformOrigin(
+                    if (position.x < pointerInWindow.x) 1f else 0f,
+                    if (position.y < pointerInWindow.y) 1f else 0f,
+                )
+                return position
+            }
+        }
+    }
+    MenuMotion {
+        ActionMenu(withSelectAction(actions, onSelect), provider, onDismiss)
+    }
+}
+
 /** 「选择」单独一组，排在属性与危险项之前，见 [layoutActions]。 */
 internal fun withSelectAction(actions: List<SheetAction>, onSelect: (() -> Unit)?): List<SheetAction> =
     if (onSelect == null) actions else actions + SheetAction(Icons.Outlined.CheckBox, tr("选择", "Select", "選択", "선택", "選取"), onSelect, group = ActionGroup.Select)

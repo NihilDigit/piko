@@ -22,6 +22,7 @@ import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.SaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.semantics
@@ -44,6 +45,34 @@ import dev.piko.ui.screens.instant.InstantSheetContent
 import dev.piko.ui.screens.instant.summary
 import io.github.nihildigit.pikpak.FileStat
 
+/** 租约先于子 provider 进入组合，遗忘时则在子 provider 释放之后让出占用。 */
+private class WorkspaceStateLease(val holder: SaveableStateHolder, val key: Long) : RememberObserver {
+    init { synchronized(workspaceStateLeases) { workspaceStateLeases.add(this) } }
+
+    override fun onRemembered() = Unit
+    override fun onForgotten() = release()
+    override fun onAbandoned() = release()
+
+    private fun release() {
+        val removed = synchronized(workspaceStateLeases) { workspaceStateLeases.remove(this) }
+        if (removed) workspaceStateLeaseVersion++
+    }
+}
+
+// 占用立即生效，不随可放弃的组合快照回滚；释放时通知等待槽位重组。
+// 仅保留仍在组合中的槽位，引用匹配避免不同账号或 holder 之间共享占用。
+private val workspaceStateLeases = mutableListOf<WorkspaceStateLease>()
+private var workspaceStateLeaseVersion by mutableIntStateOf(0)
+
+@Composable
+private fun WorkspaceStateProvider(holder: SaveableStateHolder, key: Long, content: @Composable () -> Unit) {
+    val lease = remember(holder, key) { WorkspaceStateLease(holder, key) }
+    val owner = remember(holder, key, workspaceStateLeaseVersion) {
+        synchronized(workspaceStateLeases) { workspaceStateLeases.firstOrNull { it.holder === holder && it.key == key } }
+    }
+    if (owner === lease) holder.SaveableStateProvider(key, content) else content()
+}
+
 @Composable
 internal fun WorkspaceContextHost(
     model: WorkspaceViewModel,
@@ -57,9 +86,10 @@ internal fun WorkspaceContextHost(
     val wide = dev.piko.ui.adaptive.isDesktopLayout()
     val contexts by model.contexts.contextsFlow.collectAsStateWithLifecycle()
     val active by model.contexts.activeContextId.collectAsStateWithLifecycle()
-    val states = retainedStates ?: rememberSaveableStateHolder()
-    val retained = remember { mutableSetOf<Long>() }
-    LaunchedEffect(contexts.map { it.id }) {
+    val localStates = rememberSaveableStateHolder()
+    val states = retainedStates ?: localStates
+    val retained = remember(states) { mutableSetOf<Long>() }
+    LaunchedEffect(states, contexts.map { it.id }) {
         val live = contexts.mapTo(mutableSetOf()) { it.id }
         (retained - live).forEach(states::removeState)
         retained.clear()
@@ -70,7 +100,7 @@ internal fun WorkspaceContextHost(
     @Composable
     fun ContextContent(context: WorkspaceContext) {
         key(context.id) {
-            states.SaveableStateProvider(context.id) {
+            WorkspaceStateProvider(states, context.id) {
                 WorkspacePageSnapshot(context.id, enabled = !wide, onSnapshot = { model.retainPageSnapshot(context.id, it) }) {
                     when (context) {
                         is WorkspaceContext.File -> fileContent()

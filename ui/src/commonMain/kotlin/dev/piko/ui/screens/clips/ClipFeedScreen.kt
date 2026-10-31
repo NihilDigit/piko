@@ -317,7 +317,8 @@ private fun ClipPager(
     val seekStepMillis = seekStepSeconds * 1000L
     // 末尾多一页等待页：下一段还没取好时翻得过去看它转圈，再往后翻不动；候补一取好，这一页就原地变成那一段
     val pageCount = clips.size + if (upcoming.isNotEmpty()) 1 else 0
-    val pagerState = rememberPagerState(initialPage = session.currentIndex) { pageCount }
+    val safeInitialPage = session.currentIndex.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+    val pagerState = rememberPagerState(initialPage = safeInitialPage) { pageCount }
     val players = List(POOL_SIZE) { videoPreview.rememberPreviewBackend(keyframeStart = true) }
     // 在协程里读列表的最新值；参数本身是组合时的快照
     val latestClips by rememberUpdatedState(clips)
@@ -371,7 +372,7 @@ private fun ClipPager(
     // 等 settledPage 的话，手机上页面看着已经到位，吸附还要收尾一阵，这期间进度条不出、也不开播，
     // 翻到预渲染好的一段也要顿 0.3 到 0.4 秒；桌面用滚轮与按键翻页，收尾短，看不出来（2026-09-28）
     val dragging by pagerState.interactionSource.collectIsDraggedAsState()
-    val settled = (if (dragging) pagerState.settledPage else pagerState.targetPage).coerceIn(0, pageCount - 1)
+    val settled = (if (dragging) pagerState.settledPage else pagerState.targetPage).coerceIn(0, (pageCount - 1).coerceAtLeast(0))
     val latestSettled by rememberUpdatedState(settled)
     // 停在等待页上时为 null
     val current = clips.getOrNull(settled)
@@ -380,7 +381,7 @@ private fun ClipPager(
 
     fun go(delta: Int) {
         // 手动能翻到等待页为止；自动翻页等下一段取好才翻，见 autoStep
-        val target = (pagerState.currentPage + delta).coerceIn(0, pagerState.pageCount - 1)
+        val target = (pagerState.currentPage + delta).coerceIn(0, (pagerState.pageCount - 1).coerceAtLeast(0))
         if (target != pagerState.currentPage) scope.launch { pagerState.animateScrollToPage(target) }
     }
 

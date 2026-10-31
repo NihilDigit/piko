@@ -98,6 +98,7 @@ import dev.piko.ui.components.connectedToggleShapes
 import dev.piko.ui.components.SpoilerThumbnail
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.components.wheelStaysInSheet
+import dev.piko.ui.screens.drive.withoutSavedState
 import kotlin.math.abs
 import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.ui.components.SheetAction
@@ -137,7 +138,7 @@ internal fun PlayerSheetHost(
     } else if (sheet != null) {
         ModalBottomSheet(
             onDismissRequest = onDismiss,
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            sheetState = withoutSavedState { rememberModalBottomSheetState(skipPartiallyExpanded = true) },
         ) {
             // 选集与网盘字幕固定占七成高：按内容定高时几十项会顶满全屏，几项时又只露一条，
             // 字幕目录里进出一层面板还会跟着跳。其余面板内容少，按内容定高
@@ -421,6 +422,15 @@ private fun EpisodeVersionList(
             }
         }
     }
+    val rowKeys = remember(rows) {
+        val occurrences = mutableMapOf<String, Int>()
+        rows.map { row ->
+            val occurrence = occurrences[row.key] ?: 0
+            occurrences[row.key] = occurrence + 1
+            // 所有键都带次序，原始 ID 自带 # 后缀时也不会与生成键碰撞。
+            "${row.key}#$occurrence"
+        }
+    }
     val currentRow = rows.indexOfFirst { row ->
         when (row) {
             is EpisodeListRow.Episode -> row.group.any { it.fileId == currentFileId }
@@ -434,7 +444,7 @@ private fun EpisodeVersionList(
         verticalArrangement = Arrangement.spacedBy(SEGMENT_GAP),
         modifier = modifier.fillMaxWidth(),
     ) {
-        items(rows.size, key = { rows[it].key }) { index ->
+        items(rows.size, key = { rowKeys[it] }) { index ->
             when (val row = rows[index]) {
                 is EpisodeListRow.Episode -> {
                     val shown = preferredVersion(row.group, currentVersion)

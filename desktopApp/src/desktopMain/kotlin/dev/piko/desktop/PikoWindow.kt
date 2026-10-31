@@ -4,11 +4,13 @@ import dev.piko.shared.i18n.tr
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import dev.piko.shared.log.PikoLog
 import kotlinx.coroutines.delay
@@ -20,11 +22,11 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowExceptionHandler
 import androidx.compose.ui.window.WindowExceptionHandlerFactory
 import androidx.compose.ui.window.WindowState
-import java.awt.event.WindowEvent
+import java.lang.ref.WeakReference
 import javax.swing.JOptionPane
 import javax.swing.SwingUtilities
 
-/** Compose 的 [Window]，界面出错时换成 Piko 自己的提示，见 [PikoWindowExceptionHandlerFactory]。 */
+/** Compose 的 [Window]，界面出错时按单窗口隔离自愈或销毁，见 [DesktopWindowFaultCoordinator]。 */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun PikoWindow(
@@ -33,16 +35,25 @@ fun PikoWindow(
     title: String,
     icon: Painter?,
     visible: Boolean = true,
+    onFatalClose: () -> Unit = onCloseRequest,
     content: @Composable FrameWindowScope.() -> Unit,
 ) {
-    // 这一个窗口自己的重建次数，见 PikoWindowExceptionHandlerFactory
-    var rebuilds by remember { mutableIntStateOf(0) }
-    val handlerFactory = remember { PikoWindowExceptionHandlerFactory(onDisposedLayer = { rebuilds++ }) }
+    val currentFatalClose by rememberUpdatedState(onFatalClose)
+    val windowScope = remember { desktopWindowFaultCoordinator.newWindowScope() }
+    DisposableEffect(windowScope) {
+        onDispose { windowScope.markClosed() }
+    }
+    val handlerFactory = remember(windowScope) {
+        PikoWindowExceptionHandlerFactory(
+            scope = windowScope,
+            onFatalClose = { currentFatalClose() },
+        )
+    }
     // Window 每次重组都从这个 CompositionLocal 重新取处理器，只能在它外面提供
     CompositionLocalProvider(LocalWindowExceptionHandlerFactory provides handlerFactory) {
-        // 显卡设备失效后整个窗口丢掉重建，新窗口建新设备，见 GpuDeviceWatch。窗口里 remember 的状态随之重置，
-        // 位置与大小在 state 里，不受影响
-        key(GpuDeviceWatch.generation, rebuilds) {
+        // 显卡设备失效或未归属 EDT 异常走全局代次；已知所属窗口的故障仅递增该窗口自己的 windowScope.generation，
+        // 避免主窗口异常把正在连播的独立播放器窗口重置回初始集，反之亦然。
+        key(GpuDeviceWatch.generation, desktopWindowFaultCoordinator.generation, windowScope.generation) {
             Window(onCloseRequest = onCloseRequest, state = state, visible = visible, title = title, icon = icon) {
                 LaunchedEffect(window) {
                     while (true) {
@@ -60,34 +71,155 @@ fun PikoWindow(
 private const val DEVICE_CHECK_INTERVAL_MS = 1_000L
 
 /**
- * 与 Compose 默认的处理相同：关掉出错的窗口，异常照旧抛出，由进程的崩溃处理写进日志。只把提示换掉：
- * 默认的对话框只有一行英文类名，用户既看不懂，也不知道该做什么。
- *
- * 不留着窗口继续用：异常可能出在组合或布局中途，界面状态已经不可信。
- *
- * 唯一的例外是弹层在测量途中被销毁（[isDisposedLayerRace]），改为重建这个窗口（[onDisposedLayer]）。
+ * 单个窗口（或全局未归属通道）的故障恢复与终止状态机：
+ * - 同一代次最多排队一次恢复，防止同帧连发多条异常重复消耗恢复配额；
+ * - 一旦进入 [Phase.CLOSING] 终态（或正常关闭进入 [Phase.CLOSED]），后续异常、模态提示框嵌套事件循环期间的新异常、
+ *   以及此前排在队列中的旧恢复回调全部失效，确保错误框与 `onFatalClose` 至多执行一次。
  */
+internal class WindowFaultScope internal constructor(
+    private val coordinator: DesktopWindowFaultCoordinator,
+) {
+    private enum class Phase { ACTIVE, CLOSING, CLOSED }
+
+    var generation by mutableIntStateOf(0)
+        private set
+    private var phase = Phase.ACTIVE
+    private var queuedGeneration = -1
+    private val recoveries = ArrayDeque<Long>()
+
+    internal fun reset() {
+        phase = Phase.ACTIVE
+        queuedGeneration = -1
+        recoveries.clear()
+    }
+
+    fun markClosed() = coordinator.withLock {
+        phase = Phase.CLOSED
+        queuedGeneration = -1
+    }
+
+    internal fun handleLocked(
+        throwable: Throwable,
+        now: Long,
+        onFatalClose: () -> Unit,
+    ) {
+        if (phase != Phase.ACTIVE) return
+        while (recoveries.isNotEmpty() && now - recoveries.first() >= 15_000L) recoveries.removeFirst()
+        val unrecoverable = generateSequence(throwable) { it.cause }.take(32)
+            .any { it is VirtualMachineError || it is LinkageError }
+        val currentGen = generation
+        if (!unrecoverable && throwable.isDisposedLayerRace()) {
+            coordinator.log(throwable)
+            if (queuedGeneration == currentGen) return
+            queuedGeneration = currentGen
+            coordinator.dispatch {
+                coordinator.withLock {
+                    if (phase == Phase.ACTIVE && generation == currentGen) {
+                        queuedGeneration = -1
+                        generation++
+                    }
+                }
+            }
+        } else if (!unrecoverable && throwable is RuntimeException && (queuedGeneration == currentGen || recoveries.size < 2)) {
+            coordinator.log(throwable)
+            if (queuedGeneration == currentGen) return
+            recoveries.addLast(now)
+            queuedGeneration = currentGen
+            coordinator.dispatch {
+                coordinator.withLock {
+                    if (phase == Phase.ACTIVE && generation == currentGen) {
+                        queuedGeneration = -1
+                        generation++
+                    }
+                }
+            }
+        } else {
+            phase = Phase.CLOSING
+            queuedGeneration = -1
+            PikoLog.e("Window", "界面故障无法自动恢复，关闭故障窗口", throwable)
+            coordinator.dispatch {
+                val shouldRun = coordinator.withLock {
+                    if (phase == Phase.CLOSED) false
+                    else {
+                        phase = Phase.CLOSED
+                        true
+                    }
+                }
+                if (shouldRun) onFatalClose()
+            }
+        }
+    }
+}
+
+/** 双入口共享异常引用去重；单窗口故障按 [WindowFaultScope] 独立限流，未归属 EDT 故障走兜底全局作用域。 */
+internal class DesktopWindowFaultCoordinator(
+    private val nowMillis: () -> Long = { System.nanoTime() / 1_000_000L },
+    internal val dispatch: (() -> Unit) -> Unit = { SwingUtilities.invokeLater(it) },
+    internal val log: (Throwable) -> Unit = {
+        PikoLog.e("Window", "界面渲染或事件异常，自动重建窗口恢复出帧", it)
+    },
+) {
+    private val handled = ArrayDeque<WeakReference<Throwable>>()
+    private val globalScope = WindowFaultScope(this)
+
+    val generation: Int get() = globalScope.generation
+
+    fun newWindowScope(): WindowFaultScope = WindowFaultScope(this)
+
+    @Synchronized
+    internal fun <T> withLock(block: () -> T): T = block()
+
+    @Synchronized
+    internal fun resetForTest() {
+        handled.clear()
+        globalScope.reset()
+    }
+
+    @Synchronized
+    fun report(
+        throwable: Throwable,
+        isUiThread: Boolean,
+        onFatalClose: () -> Unit,
+        scope: WindowFaultScope = globalScope,
+    ): Boolean {
+        if (!isUiThread && !throwable.isDisposedLayerRace()) return false
+        if (handled.any { it.get() === throwable }) return true
+        handled.addLast(WeakReference(throwable))
+        while (handled.size > 64) handled.removeFirst()
+        scope.handleLocked(throwable, nowMillis(), onFatalClose)
+        return true
+    }
+}
+
+internal val desktopWindowFaultCoordinator = DesktopWindowFaultCoordinator()
+
+/** 不再投递 WINDOW_CLOSING，避免主窗口关闭策略把故障窗口隐藏至托盘。 */
 @OptIn(ExperimentalComposeUiApi::class)
 private class PikoWindowExceptionHandlerFactory(
-    private val onDisposedLayer: () -> Unit,
+    private val scope: WindowFaultScope,
+    private val onFatalClose: () -> Unit,
 ) : WindowExceptionHandlerFactory {
     override fun exceptionHandler(window: java.awt.Window) = WindowExceptionHandler { throwable ->
-        if (throwable.isDisposedLayerRace()) {
-            PikoLog.w("Window", "弹层在测量途中被销毁，重建窗口", throwable)
-            SwingUtilities.invokeLater(onDisposedLayer)
-            return@WindowExceptionHandler
-        }
-        // 与默认实现一样推迟到下一轮事件：对话框是阻塞的，不能在出错的这次分发里弹
-        SwingUtilities.invokeLater {
+        desktopWindowFaultCoordinator.report(
+            throwable,
+            isUiThread = true,
+            scope = scope,
+            onFatalClose = { showWindowFault(window, onFatalClose) },
+        )
+    }
+}
+
+internal fun showWindowFault(window: java.awt.Window?, onFatalClose: () -> Unit) {
+    try {
             JOptionPane.showMessageDialog(
-                window.takeIf { it.isDisplayable },
+                window?.takeIf { it.isDisplayable },
                 tr("Piko 发生错误，当前窗口即将关闭。\n反馈问题时，可在「设置」→「关于」→「导出日志」中导出日志并附上。", "Piko encountered an error and this window must close.\nWhen reporting the issue, attach logs exported from Settings → About → Export logs.", "エラーが発生したため、このウィンドウを閉じます。\n問題を報告する際は、「設定」→「このアプリについて」→「ログをエクスポート」からログを添付してください。", "Piko에 오류가 발생하여 이 창을 닫아야 합니다.\n문제를 제보할 때 '설정' → '정보' → '로그 내보내기'에서 내보낸 로그를 첨부해 주세요.", "Piko 發生錯誤，目前視窗即將關閉。\n回報問題時，可於「設定」→「關於」→「匯出日誌」中匯出日誌並一併附上。"),
                 "Piko",
                 JOptionPane.ERROR_MESSAGE,
             )
-            window.dispatchEvent(WindowEvent(window, WindowEvent.WINDOW_CLOSING))
-        }
-        throw throwable
+    } finally {
+        // 即使原生提示框失败也不能保留停止出帧的窗口。
+        try { window?.dispose() } finally { onFatalClose() }
     }
 }
 

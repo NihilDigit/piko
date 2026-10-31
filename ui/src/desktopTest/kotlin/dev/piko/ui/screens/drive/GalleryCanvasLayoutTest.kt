@@ -36,6 +36,29 @@ class GalleryCanvasLayoutTest {
     }
 
     @Test
+    fun `near max hash plus large row does not overflow ratio index`() {
+        val row = 10_000
+        // Construct an ID whose seeded fold is exactly Int.MAX_VALUE in column zero.
+        var seed = row * 31
+        repeat(7) { seed *= 31 }
+        var remainder = (Int.MAX_VALUE.toLong() - seed.toLong()).mod(1L shl 32)
+        val chars = CharArray(7)
+        for (i in chars.indices.reversed()) {
+            chars[i] = (remainder % 31).toInt().toChar()
+            remainder /= 31
+        }
+        val id = chars.concatToString()
+        assertEquals(Int.MAX_VALUE, id.fold(row * 31) { acc, ch -> acc * 31 + ch.code })
+        val pool = items(row) + GalleryLayoutItem(id, GalleryShape.Landscape)
+        val layout = GalleryCanvasLayout()
+        frame(layout, pool, columns = 1)
+        layout.scrollBy(1e12)
+        val last = frame(layout, pool, columns = 1).last()
+        assertEquals(id, last.fileId)
+        assertTrue(last.height > 0 && last.height.isFinite())
+    }
+
+    @Test
     fun `shape follows nearest aspect including wide cinema and invalid dimensions`() {
         assertEquals(GalleryShape.Landscape, GalleryShape.nearest(21.0 / 9.0))
         assertEquals(GalleryShape.Portrait, GalleryShape.nearest(9.0 / 16.0))

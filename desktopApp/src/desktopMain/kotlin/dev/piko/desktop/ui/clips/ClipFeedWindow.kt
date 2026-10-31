@@ -55,6 +55,7 @@ fun ClipFeedWindow(
     val windowState = rememberRememberedWindowState(settings, "clips", DpSize(1000.dp, 620.dp))
     PikoWindow(
         onCloseRequest = links.dock,
+        onFatalClose = links.close,
         title = tr("信息流 - Piko", "Feed - Piko", "フィード - Piko", "피드 - Piko", "資訊流 - Piko"),
         icon = icon,
         state = windowState,

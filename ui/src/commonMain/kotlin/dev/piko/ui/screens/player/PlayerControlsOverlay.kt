@@ -1191,26 +1191,26 @@ private fun CropRegionEditorOverlay(
                                     val minSpan = 0.12f
                                     region = when (requireNotNull(activeHandle)) {
                                         CropDragHandle.TopLeft -> region.copy(
-                                            left = (region.left + dx).coerceIn(0f, region.right - minSpan),
-                                            top = (region.top + dy).coerceIn(0f, region.bottom - minSpan),
+                                            left = (region.left + dx).coerceIn(0f, (region.right - minSpan).coerceAtLeast(0f)),
+                                            top = (region.top + dy).coerceIn(0f, (region.bottom - minSpan).coerceAtLeast(0f)),
                                         )
                                         CropDragHandle.TopRight -> region.copy(
-                                            right = (region.right + dx).coerceIn(region.left + minSpan, 1f),
-                                            top = (region.top + dy).coerceIn(0f, region.bottom - minSpan),
+                                            right = (region.right + dx).coerceIn((region.left + minSpan).coerceAtMost(1f), 1f),
+                                            top = (region.top + dy).coerceIn(0f, (region.bottom - minSpan).coerceAtLeast(0f)),
                                         )
                                         CropDragHandle.BottomLeft -> region.copy(
-                                            left = (region.left + dx).coerceIn(0f, region.right - minSpan),
-                                            bottom = (region.bottom + dy).coerceIn(region.top + minSpan, 1f),
+                                            left = (region.left + dx).coerceIn(0f, (region.right - minSpan).coerceAtLeast(0f)),
+                                            bottom = (region.bottom + dy).coerceIn((region.top + minSpan).coerceAtMost(1f), 1f),
                                         )
                                         CropDragHandle.BottomRight -> region.copy(
-                                            right = (region.right + dx).coerceIn(region.left + minSpan, 1f),
-                                            bottom = (region.bottom + dy).coerceIn(region.top + minSpan, 1f),
+                                            right = (region.right + dx).coerceIn((region.left + minSpan).coerceAtMost(1f), 1f),
+                                            bottom = (region.bottom + dy).coerceIn((region.top + minSpan).coerceAtMost(1f), 1f),
                                         )
                                         CropDragHandle.Inside -> {
                                             val w = region.width
                                             val h = region.height
-                                            val newLeft = (region.left + dx).coerceIn(0f, 1f - w)
-                                            val newTop = (region.top + dy).coerceIn(0f, 1f - h)
+                                            val newLeft = (region.left + dx).coerceIn(0f, (1f - w).coerceAtLeast(0f))
+                                            val newTop = (region.top + dy).coerceIn(0f, (1f - h).coerceAtLeast(0f))
                                             region.copy(left = newLeft, top = newTop, right = newLeft + w, bottom = newTop + h)
                                         }
                                     }

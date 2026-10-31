@@ -47,6 +47,7 @@ import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.screens.drive.withoutSavedState
 
 /** [PikoSheet] 内容所在的作用域。 */
 interface PikoSheetScope : ColumnScope {
@@ -107,7 +108,9 @@ fun PikoSheet(
         ModalSideSheet(onDismissRequest, sideSheetTitle, sideSheetButtons, content)
         return
     }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = skipPartiallyExpanded)
+    val sheetState = withoutSavedState {
+        rememberModalBottomSheetState(skipPartiallyExpanded = skipPartiallyExpanded)
+    }
     val latestDismiss by rememberUpdatedState(onDismissRequest)
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,

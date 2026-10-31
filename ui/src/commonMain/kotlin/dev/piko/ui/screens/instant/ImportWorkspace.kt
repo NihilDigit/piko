@@ -226,7 +226,7 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = config)
         }
         items(visible, key = { "source:${it.key}" }) { entry ->
-            val source = sourceByKey.getValue(entry.sourceKey)
+            val source = sourceByKey[entry.sourceKey] ?: return@items
             val state = source.state
             val editable = source.enabled && state.canEdit
             val node = entry.node
@@ -237,7 +237,7 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
             val item = if (index == null) FilePresentation(
                 node.key, FileItemName(node.name), FileVisual(node.name, isFolder = true),
                 metadata = listOf(tr("${node.indices.size} 个文件", "${enCount(node.indices.size, "file", "files")}", "${node.indices.size} ファイル", "파일 ${node.indices.size}개", "${node.indices.size} 個檔案")),
-            ) else state.items[index].file.filePresentation(node.key)
+            ) else (state.items.getOrNull(index) ?: return@items).file.filePresentation(node.key)
             val open = { if (node.isFolder) toggle() else if (editable) state.setSourceSelected(node.indices, selected == 0) }
             ContextMenuArea(actions = { sourceActions(source) }) {
                 WorkspaceTreeRow(node.name, node.depth, item.visual.typeIcon(),
@@ -328,19 +328,20 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
     fun open(file: FileStat) {
         if(file.isFolder) { path = file.id; query = ""; selected = emptyList() }
         else entryById[file.id]?.let { entry ->
-            val state = sourceByKey.getValue(entry.sourceKey).state
+            val state = sourceByKey[entry.sourceKey]?.state ?: return@let
             val index = entry.sourceIndex
             if (index != null && state.canPreview(index)) state.preview(index)
         }
     }
     fun actions(file: FileStat): List<SheetAction> = buildList {
-        val entry = entryById.getValue(file.id)
-        val state = sourceByKey.getValue(entry.sourceKey).state
+        val entry = entryById[file.id] ?: return@buildList
+        val state = sourceByKey[entry.sourceKey]?.state ?: return@buildList
         val index = entry.sourceIndex
         if (file.isFolder) add(SheetAction(Icons.Outlined.FolderOpen, tr("打开", "Open", "開く", "열기", "開啟"), { open(file) }))
         if (index != null && state.canPreview(index)) add(SheetAction(Icons.Outlined.PlayCircle, tr("预览", "Preview", "プレビュー", "미리 보기", "預覽"), { state.preview(index) }))
-        if (index != null && state.items[index].isInstantReady) add(SheetAction(Icons.Outlined.CloudDownload, tr("下载", "Downloads", "ダウンロード", "다운로드", "下載"), {
-            downloads.enqueueResolved(listOf(state.items[index].file.copy(path = file.name)), state.target?.id.orEmpty())
+        if (index != null && state.items.getOrNull(index)?.isInstantReady == true) add(SheetAction(Icons.Outlined.CloudDownload, tr("下载", "Downloads", "ダウンロード", "다운로드", "下載"), download@{
+            val item = state.items.getOrNull(index)?.takeIf { it.isInstantReady } ?: return@download
+            downloads.enqueueResolved(listOf(item.file.copy(path = file.name)), state.target?.id.orEmpty())
             onDownloaded()
         }))
         add(SheetAction(Icons.Outlined.Info, tr("属性", "Properties", "プロパティ", "속성", "屬性"), { properties(file) }, group = ActionGroup.Properties))

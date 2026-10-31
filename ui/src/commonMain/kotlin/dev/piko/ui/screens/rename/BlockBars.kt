@@ -658,20 +658,22 @@ private fun ReplaceBlockEditor(block: ReplaceBlock, captureCount: Int, onChange:
 
 @Composable
 private fun EditorField(label: String, value: String, placeholder: String? = null, singleLine: Boolean = true, onValueChange: (String) -> Unit) {
-    // 输入框自己持有文字：积木只收合法的值（如候选至少两条），不能让输入框跟着积木回弹
-    var text by remember { mutableStateOf(value) }
-    OutlinedTextField(
-        value = text,
-        onValueChange = {
-            text = it
-            onValueChange(it)
-        },
-        label = { Text(label) },
-        placeholder = placeholder?.let { { Text(it) } },
-        singleLine = singleLine,
-        minLines = if (singleLine) 1 else 3,
-        modifier = Modifier.fillMaxWidth(),
-    )
+    androidx.compose.runtime.key(singleLine) {
+        // 输入框自己持有文字：积木只收合法的值（如候选至少两条），不能让输入框跟着积木回弹
+        var text by remember { mutableStateOf(value) }
+        OutlinedTextField(
+            value = text,
+            onValueChange = {
+                text = it
+                onValueChange(it)
+            },
+            label = { Text(label) },
+            placeholder = placeholder?.let { { Text(it) } },
+            singleLine = singleLine,
+            minLines = if (singleLine) 1 else 3,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
 }
 
 @Composable

@@ -517,6 +517,8 @@ private fun TransferSection(allowances: TransferAllowances?, cloudDownload: Coun
 @Composable
 private fun UsageSection(title: String, usages: List<Usage>, resetLabel: () -> String, error: String?) {
     var expanded by rememberSaveable(title) { mutableStateOf(false) }
+    var displayedUsages by remember { mutableStateOf(usages) }
+    if (usages.isNotEmpty()) displayedUsages = usages
     val tightest = usages.maxByOrNull { usedFraction(it.usedBytes, it.limitBytes) }
     Column {
         Row(
@@ -563,7 +565,7 @@ private fun UsageSection(title: String, usages: List<Usage>, resetLabel: () -> S
         AnimatedVisibility(visible = expanded && usages.isNotEmpty()) {
             Column {
                 Spacer(modifier = Modifier.height(4.dp))
-                UsageGrid(usages)
+                UsageGrid(displayedUsages)
             }
         }
     }
@@ -612,6 +614,7 @@ private fun SectionLabel(text: String, modifier: Modifier = Modifier) {
  */
 @Composable
 private fun UsageGrid(usages: List<Usage>) {
+    if (usages.isEmpty()) return
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val spacing = 8.dp
         val maxColumns = ((maxWidth + spacing) / (USAGE_TILE_MIN_WIDTH + spacing)).toInt().coerceIn(1, usages.size)

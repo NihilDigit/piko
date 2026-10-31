@@ -161,7 +161,7 @@ internal class GalleryCanvasLayout(private var restoredAnchor: GalleryAnchor? = 
             return FIRST_ROW_LANDSCAPE_RATIOS[column % FIRST_ROW_LANDSCAPE_RATIOS.size]
         }
         val hash = item.id.fold(index * 31 + column * 17) { acc, ch -> acc * 31 + ch.code } and 0x7fffffff
-        return LANDSCAPE_MASONRY_RATIOS[(hash + rowInColumn) % LANDSCAPE_MASONRY_RATIOS.size]
+        return LANDSCAPE_MASONRY_RATIOS[(hash.toLong() + rowInColumn.toLong()).mod(LANDSCAPE_MASONRY_RATIOS.size)]
     }
 
     private data class Configuration(val columns: Int, val width: Double, val height: Double, val gap: Double) {

@@ -988,7 +988,8 @@ fun PikoMainScaffold(
                             onReveal = { file -> coroutineScope.launch { revealInDrive(file.id) } },
                             onTransfers = ::openTransfers,
                             onMinimize = { workspaceModel.minimizeContext(workspaceModel.contexts.activeContextId.value) },
-                            retainedStates = workspaceUiStates,
+                            // 退场分支使用自身 holder，不与正在进入的文件分支争用保存键。
+                            retainedStates = workspaceUiStates.takeIf { tab == currentTab },
                         ) {
                         key(fileBrowser) {
                                 FilesScreen(

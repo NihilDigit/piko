@@ -89,6 +89,58 @@ internal enum class Handle {
 // 片段至少这么长：再短抽出来只剩关键帧前后的零头
 private const val MIN_CLIP_MS = 500L
 
+internal data class NormalizedSegmentRange(val startMs: Long, val endMs: Long, val canAdjust: Boolean)
+
+internal fun normalizeSegmentRange(
+    totalDurationMs: Long,
+    startMs: Long,
+    endMs: Long,
+    minSpanMs: Long = MIN_CLIP_MS,
+): NormalizedSegmentRange? {
+    require(minSpanMs > 0L)
+    if (totalDurationMs <= 0L) return null
+    if (totalDurationMs <= minSpanMs) return NormalizedSegmentRange(0L, totalDurationMs, false)
+    val start = startMs.coerceIn(0L, totalDurationMs - minSpanMs)
+    return NormalizedSegmentRange(start, endMs.coerceIn(start + minSpanMs, totalDurationMs), true)
+}
+
+internal fun nudgeSegmentRange(
+    totalDurationMs: Long,
+    startMs: Long,
+    endMs: Long,
+    editingStart: Boolean,
+    deltaMs: Long,
+    minSpanMs: Long = MIN_CLIP_MS,
+): NormalizedSegmentRange? {
+    val range = normalizeSegmentRange(totalDurationMs, startMs, endMs, minSpanMs) ?: return null
+    if (!range.canAdjust) return range
+    // Saturate before addition, including callers passing Long.MIN_VALUE/MAX_VALUE.
+    val position = if (editingStart) range.startMs else range.endMs
+    val moved = position + deltaMs.coerceIn(-position, totalDurationMs - position)
+    return if (editingStart) range.copy(startMs = moved.coerceIn(0L, range.endMs - minSpanMs))
+    else range.copy(endMs = moved.coerceIn(range.startMs + minSpanMs, totalDurationMs))
+}
+
+internal fun dragSegmentRange(
+    totalDurationMs: Long,
+    startMs: Long,
+    endMs: Long,
+    previousStartMs: Long? = null,
+    previousEndMs: Long? = null,
+    minSpanMs: Long = MIN_CLIP_MS,
+): NormalizedSegmentRange? {
+    val base = normalizeSegmentRange(totalDurationMs, startMs, endMs, minSpanMs) ?: return null
+    if (!base.canAdjust || previousStartMs == null || previousEndMs == null) return base
+    val prev = normalizeSegmentRange(totalDurationMs, previousStartMs, previousEndMs, minSpanMs) ?: return base
+    val startMoved = startMs != prev.startMs
+    val endMoved = endMs != prev.endMs
+    return when {
+        startMoved && !endMoved -> prev.copy(startMs = startMs.coerceIn(0L, prev.endMs - minSpanMs))
+        endMoved && !startMoved -> prev.copy(endMs = endMs.coerceIn(prev.startMs + minSpanMs, totalDurationMs))
+        else -> base
+    }
+}
+
 /**
  * 一次下载片段，挂在 PikoServices 上，网盘页被压栈页盖住、离开组合时也不丢。面板关掉就是放弃，下载了也结束。
  * 曾经关掉只是收起、选好的区间留着，窄窗口底部留把手、宽窗口收进命令栏右端的菜单：选一段通常几十秒就完，
@@ -193,8 +245,9 @@ fun SegmentDownloadSheet(
             if (duration > 0) {
                 val initialRange = session.initialRange
                 session.totalDurationMs = duration
-                session.startPosMs = initialRange?.first?.coerceIn(0L, duration - MIN_CLIP_MS) ?: 0L
-                session.endPosMs = initialRange?.last?.coerceIn(session.startPosMs + MIN_CLIP_MS, duration) ?: minOf(duration, 60_000L)
+                val range = normalizeSegmentRange(duration, initialRange?.first ?: 0L, initialRange?.last ?: minOf(duration, 60_000L))!!
+                session.startPosMs = range.startMs
+                session.endPosMs = range.endMs
                 session.defaultRange = session.startPosMs to session.endPosMs
             }
         }
@@ -208,13 +261,15 @@ fun SegmentDownloadSheet(
     val mediaInfo = session.mediaInfo
     val isLoading = !session.loaded
 
-    val editingPosition = if (editing == Handle.START) startPosMs else endPosMs
-    fun nudge(deltaMs: Long) {
-        when (editing) {
-            Handle.START -> startPosMs = (startPosMs + deltaMs).coerceIn(0L, endPosMs - MIN_CLIP_MS)
-            Handle.END -> endPosMs = (endPosMs + deltaMs).coerceIn(startPosMs + MIN_CLIP_MS, totalDurationMs)
-        }
+    val normalized = normalizeSegmentRange(totalDurationMs, startPosMs, endPosMs)
+    val editingPosition = if (editing == Handle.START) normalized?.startMs ?: 0L else normalized?.endMs ?: 0L
+    fun applyRange(range: NormalizedSegmentRange?) {
+        if (range == null) return
+        startPosMs = range.startMs
+        endPosMs = range.endMs
     }
+    fun nudged(deltaMs: Long) = nudgeSegmentRange(totalDurationMs, startPosMs, endPosMs, editing == Handle.START, deltaMs)
+    fun nudge(deltaMs: Long) = applyRange(nudged(deltaMs))
 
     // 划走、点遮罩、返回都是放弃，调过区间的先确认，见 SegmentSession
     var confirmDiscard by remember { mutableStateOf(false) }
@@ -261,7 +316,10 @@ fun SegmentDownloadSheet(
                     onDurationKnown = { duration ->
                         if (totalDurationMs <= 0 && duration > 0) {
                             totalDurationMs = duration
-                            if (endPosMs == 0L) endPosMs = minOf(duration, 60_000L)
+                            val initial = session.initialRange
+                            applyRange(normalizeSegmentRange(duration, initial?.first ?: startPosMs,
+                                initial?.last ?: endPosMs.takeIf { it > 0L } ?: minOf(duration, 60_000L)))
+                            session.defaultRange = startPosMs to endPosMs
                         }
                     },
                 )
@@ -288,22 +346,32 @@ fun SegmentDownloadSheet(
                 Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
                     OutlinedButton(
                         onClick = { nudge(-1000L) },
+                        enabled = normalized?.canAdjust == true && nudged(-1000L) != normalized,
                         shape = ButtonGroupDefaults.connectedLeadingButtonShape,
                     ) { Text("−1") }
                     OutlinedButton(
                         onClick = { nudge(1000L) },
+                        enabled = normalized?.canAdjust == true && nudged(1000L) != normalized,
                         shape = ButtonGroupDefaults.connectedTrailingButtonShape,
                     ) { Text("+1") }
                 }
             }
 
-            if (totalDurationMs > 0) {
+            if (normalized != null) {
                 Column {
                     RangeSlider(
-                        value = startPosMs.toFloat()..endPosMs.toFloat(),
+                        value = normalized.startMs.toFloat()..normalized.endMs.toFloat(),
+                        enabled = normalized.canAdjust,
                         onValueChange = { range ->
-                            val newStart = range.start.toLong().coerceIn(0L, totalDurationMs)
-                            val newEnd = range.endInclusive.toLong().coerceIn(newStart + MIN_CLIP_MS, totalDurationMs)
+                            val next = dragSegmentRange(
+                                totalDurationMs = totalDurationMs,
+                                startMs = range.start.toLong(),
+                                endMs = range.endInclusive.toLong(),
+                                previousStartMs = normalized.startMs,
+                                previousEndMs = normalized.endMs,
+                            ) ?: return@RangeSlider
+                            val newStart = next.startMs
+                            val newEnd = next.endMs
                             // 预览跟随被拖动的那一端
                             if (newStart != startPosMs) editing = Handle.START
                             else if (newEnd != endPosMs) editing = Handle.END
@@ -369,16 +437,19 @@ fun SegmentDownloadSheet(
 
             Button(
                 onClick = {
-                    val startRatio = if (totalDurationMs > 0) startPosMs.toDouble() / totalDurationMs else 0.0
-                    val endRatio = if (totalDurationMs > 0) endPosMs.toDouble() / totalDurationMs else 1.0
+                    val range = normalizeSegmentRange(totalDurationMs, startPosMs, endPosMs) ?: return@Button
+                    applyRange(range)
+                    val startRatio = range.startMs.toDouble() / totalDurationMs
+                    val endRatio = range.endMs.toDouble() / totalDurationMs
                     val startByte = (startRatio * file.sizeBytes).toLong().coerceIn(0L, file.sizeBytes)
                     val endByte = (endRatio * file.sizeBytes).toLong().coerceIn(startByte, file.sizeBytes)
-                    val lengthBytes = (endByte - startByte).coerceAtLeast(1024L)
+                    val remainingBytes = (file.sizeBytes - startByte).coerceAtLeast(0L)
+                    val lengthBytes = if (remainingBytes in 1L..1023L) remainingBytes else (endByte - startByte).coerceAtLeast(1024L)
                     val label = "${formatTimeMs(startPosMs)}_${formatTimeMs(endPosMs)}"
                     onConfirmDownload(startByte, lengthBytes, label, startPosMs, endPosMs, mediaInfo?.currentUrl, selectedQuality)
                 },
                 // 选中的档读不出时没有可下的档：放行的话 null 会被当成「按设置挑」，悄悄换了画质
-                enabled = totalDurationMs > 0 && !pickedUnreadable,
+                enabled = normalized != null && !pickedUnreadable,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),

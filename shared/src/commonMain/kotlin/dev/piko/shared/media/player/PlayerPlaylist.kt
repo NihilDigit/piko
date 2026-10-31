@@ -118,7 +118,8 @@ fun buildPlaylist(files: List<PlaylistEntry>, subtitles: List<SubtitleRef> = emp
  */
 fun preferredVersion(group: List<PlaylistEntry>, currentVersionLabel: String?): PlaylistEntry =
     group.firstOrNull { !currentVersionLabel.isNullOrEmpty() && it.versionLabel == currentVersionLabel }
-        ?: group.first { it.primary }
+        ?: group.firstOrNull { it.primary }
+        ?: group.first()
 
 /**
  * 同组各版本的名字：各自标签里别人没有的那几个（「SDR」「HDR10」「DoVi」，「1080p」「720p」）。

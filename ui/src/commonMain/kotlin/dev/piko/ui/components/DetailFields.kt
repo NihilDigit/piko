@@ -212,7 +212,7 @@ internal fun FitDetailWidthColumn(modifier: Modifier = Modifier, content: @Compo
         measurables.forEachIndexed { index, measurable ->
             if (measurable.layoutId != DetailFollowsWidth) placeables[index] = measurable.measure(loose)
         }
-        val width = maxOf(constraints.minWidth, placeables.maxOf { it?.width ?: 0 })
+        val width = maxOf(constraints.minWidth, (placeables.maxOfOrNull { it?.width ?: 0 } ?: 0))
         measurables.forEachIndexed { index, measurable ->
             if (measurable.layoutId == DetailFollowsWidth) {
                 placeables[index] = measurable.measure(Constraints(minWidth = width, maxWidth = width))

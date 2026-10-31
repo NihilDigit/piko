@@ -129,6 +129,10 @@ internal fun ImageViewer(
     initialIndex: Int,
     onDismiss: () -> Unit,
 ) {
+    if (images.isEmpty()) {
+        LaunchedEffect(Unit) { onDismiss() }
+        return
+    }
     var isChromeVisible by remember { mutableStateOf(true) }
     LocalPikoPlatform.current.FullscreenDialog(
         onDismiss = onDismiss,
@@ -136,7 +140,9 @@ internal fun ImageViewer(
         systemBarsVisible = isChromeVisible,
     ) {
         val pointers = LocalPointerSource.current
-        val pagerState = rememberPagerState(initialPage = initialIndex) { images.size }
+        val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(0, images.lastIndex)) { images.size }
+        val currentPage = pagerState.currentPage.coerceIn(0, images.lastIndex)
+        val currentImage = images.getOrNull(currentPage)
         // 下滑关闭的进度，0 到 1。背景跟着变透明，让下面的列表透出来，表明这是退出而不是切图。
         var dismissProgress by remember { mutableFloatStateOf(0f) }
         val scope = rememberCoroutineScope()
@@ -155,6 +161,7 @@ internal fun ImageViewer(
         }
 
         fun goTo(page: Int) {
+            if (images.isEmpty()) return
             val target = page.coerceIn(0, images.lastIndex)
             if (target != pagerState.currentPage) scope.launch { pagerState.animateScrollToPage(target) }
         }
@@ -195,7 +202,7 @@ internal fun ImageViewer(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
             ) { page ->
-                val file = images[page]
+                val file = images.getOrNull(page) ?: return@HorizontalPager
                 val zoom = remember(file.id) { ZoomState() }
                 DisposableEffect(page, zoom) {
                     zoomStates[page] = zoom
@@ -221,8 +228,8 @@ internal fun ImageViewer(
                     .graphicsLayer { alpha = 1f - dismissProgress },
             ) {
                 ViewerTopBar(
-                    title = images[pagerState.currentPage].name,
-                    position = if (images.size > 1) "${pagerState.currentPage + 1} / ${images.size}" else null,
+                    title = currentImage?.name.orEmpty(),
+                    position = if (images.size > 1) "${currentPage + 1} / ${images.size}" else null,
                     onClose = onDismiss,
                 )
             }

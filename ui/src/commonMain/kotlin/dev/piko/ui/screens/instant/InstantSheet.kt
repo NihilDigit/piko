@@ -523,26 +523,45 @@ private fun ColumnScope.InstantBody(
 
 
 @Composable
-private fun LinkInput(state: InstantSheetState) {
+internal fun LinkInput(state: InstantSheetState) {
     val platform = LocalPikoPlatform.current
-    val result = state.resolution
-    var inputFocused by remember { mutableStateOf(false) }
-    val inputCompact = result != null && !inputFocused
-    OutlinedTextField(
+    LinkInputField(
         value = state.input,
+        hasResolution = state.resolution != null,
+        enabled = state.canEdit,
         onValueChange = state::updateInput,
+        onPaste = {
+            val clip = platform.readClipboardText()
+            if (!clip.isNullOrBlank()) state.updateInput(clip.trim())
+        },
+    )
+}
+
+@Composable
+fun LinkInputField(
+    value: String,
+    hasResolution: Boolean,
+    enabled: Boolean,
+    onValueChange: (String) -> Unit,
+    onPaste: () -> Unit,
+) {
+    var inputFocused by remember { mutableStateOf(false) }
+    val inputCompact = hasResolution && !inputFocused
+    // 始终保持 singleLine = false（纵向滚动器），仅通过 maxLines 在 1 行与 3 行间折叠：
+    // CoreTextField 内部用不带 orientation 键的 rememberSaveable 缓存 TextFieldScrollerPosition，
+    // 动态切换 singleLine 会在聚焦展开为 3 行时触发 Mismatching scroller orientation 炸毁 Skiko 帧循环。
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
         label = { Text(stringResource(Res.string.text_magnet_download_or_share_link)) },
         placeholder = { Text("magnet:?xt=urn:btih:…") },
         modifier = Modifier.fillMaxWidth().onFocusChanged { inputFocused = it.isFocused },
         shape = MaterialTheme.shapes.largeIncreased,
-        singleLine = inputCompact,
+        singleLine = false,
         maxLines = if (inputCompact) 1 else 3,
-        enabled = state.canEdit,
+        enabled = enabled,
         trailingIcon = {
-            IconButton(onClick = {
-                val clip = platform.readClipboardText()
-                if (!clip.isNullOrBlank()) state.updateInput(clip.trim())
-            }) {
+            IconButton(onClick = onPaste) {
                 Icon(Icons.Outlined.ContentPaste, contentDescription = tr("从剪贴板粘贴", "Paste from clipboard", "クリップボードから貼り付け", "클립보드에서 붙여넣기", "從剪貼簿貼上"))
             }
         },

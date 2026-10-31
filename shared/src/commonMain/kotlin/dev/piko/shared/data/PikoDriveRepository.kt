@@ -19,6 +19,9 @@ import dev.piko.shared.data.isPikoInternalFolder
 import dev.piko.data.auth.PikoUserPreferences
 import io.github.nihildigit.pikpak.EventPage
 import io.github.nihildigit.pikpak.EventType
+import io.github.nihildigit.pikpak.FileReactivatingException
+import io.github.nihildigit.pikpak.UrlExpiredException
+import kotlinx.io.IOException
 import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.FileFilter
 import io.github.nihildigit.pikpak.FileKind
@@ -1682,7 +1685,7 @@ open class PikoDriveRepository(
      * 读出一个小文件的全部内容，与 [uploadBytes] 配对。
      *
      * 刚传完的文件查详情有时还没有直链，稍后再查就有（设置同步与归档清单都撞到过，SDK 的 instantCreate 也记着同样的现象），
-     * 所以没有直链时隔一会儿再查，几次都没有才算失败。
+     * 没有直链、冷存储唤醒或传输暂时失败时退避重查详情，避免重复使用已经过期的签名。
      */
     suspend fun readBytes(fileId: String): Result<ByteArray> = withContext(Dispatchers.Default) {
         runSuspendCatching { readBytes(client, fileId) }
@@ -1690,16 +1693,7 @@ open class PikoDriveRepository(
 
     private suspend fun readBytes(asked: PikPakClient, fileId: String): ByteArray {
         requireCloudIds(listOf(fileId))
-        var detail = asked.getFile(fileId)
-        for (wait in LINK_RETRY_DELAYS) {
-            if (detail.downloadUrl != null) break
-            delay(wait)
-            detail = asked.getFile(fileId)
-        }
-        val url = detail.downloadUrl ?: error(tr("未获取到下载链接", "Download link unavailable", "ダウンロードリンクを取得できません", "다운로드 링크를 가져올 수 없습니다", "無法取得下載連結"))
-        val size = detail.size.toLongOrNull() ?: error(tr("文件大小未知", "Unknown file size", "ファイルサイズが不明です", "파일 크기를 알 수 없습니다", "檔案大小未知"))
-        if (size == 0L) return ByteArray(0)
-        return asked.streamRangeFromUrl(url, start = 0L, length = size, {}) { stream -> stream.channel.toByteArray() }
+        return readSmallFileBytes(asked, fileId)
     }
 
     /** [parentId] 下名为 [name] 的文件夹，没有就新建。返回它的 ID。 */
@@ -2632,7 +2626,61 @@ open class PikoDriveRepository(
 
         // 批量操作的日志里列出的 ID 个数：够在网盘里对上是哪几项，几百项的移动不至于占满一屏
         private const val LOGGED_IDS = 5
-        private val LINK_RETRY_DELAYS = listOf(500.milliseconds, 1.seconds, 2.seconds, 3.seconds)
+        private val LINK_RETRY_DELAYS = listOf(500.milliseconds, 1.seconds, 2.seconds, 3.seconds, 5.seconds)
+
+        /** 每轮都重取详情；注入等待函数供测试验证退避而不实际睡眠。 */
+        internal suspend fun readSmallFileBytes(
+            asked: PikPakClient,
+            fileId: String,
+            wait: suspend (Duration) -> Unit = { delay(it) },
+        ): ByteArray {
+            var detail: FileDetail? = null
+            var lastError: Throwable? = null
+            fun diagnostic(attempts: Int): String =
+                "id=$fileId, phase=${detail?.phase}, size=${detail?.size}, links=${detail?.links?.keys}, " +
+                    "hasWebLink=${detail?.webContentLink?.isNotBlank() == true}, attempts=$attempts"
+
+            for (attempt in 0..LINK_RETRY_DELAYS.size) {
+                lastError = null
+                try {
+                    val current = asked.getFile(fileId)
+                    detail = current
+                    val url = current.downloadUrl
+                        ?: current.links.values.firstOrNull { it.url.isNotBlank() }?.url
+                        ?: current.webContentLink.takeIf { it.isNotBlank() }
+                    if (url != null) {
+                        val size = current.size.toLongOrNull() ?: error(tr("文件大小未知", "Unknown file size", "ファイルサイズが不明です", "파일 크기를 알 수 없습니다", "檔案大小未知"))
+                        if (size == 0L) return ByteArray(0)
+                        return asked.streamRangeFromUrl(url, start = 0L, length = size, {}) { stream -> stream.channel.toByteArray() }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastError = e
+                    if (!isRetryableSmallFileFailure(e)) {
+                        PikoLog.w(TAG, "读取小文件失败：${diagnostic(attempt + 1)}, error=${e::class.simpleName}")
+                        throw e
+                    }
+                }
+                if (attempt == LINK_RETRY_DELAYS.size) {
+                    PikoLog.w(TAG, "读取小文件失败：${diagnostic(attempt + 1)}, error=${lastError?.let { it::class.simpleName }}")
+                    throw lastError ?: IllegalStateException(tr("未获取到下载链接", "Download link unavailable", "ダウンロードリンクを取得できません", "다운로드 링크를 가져올 수 없습니다", "無法取得下載連結"))
+                }
+                PikoLog.d(TAG, "重试读取小文件：${diagnostic(attempt + 1)}, error=${lastError?.let { it::class.simpleName }}")
+                wait(LINK_RETRY_DELAYS[attempt])
+            }
+            error("Unreachable")
+        }
+
+        private fun isRetryableSmallFileFailure(error: Exception): Boolean = when (error) {
+            is PikPakException -> when {
+                error.errorMessage == "file_in_recycle_bin" || error.errorMessage == "file_not_found" || error.httpStatus == 404 -> false
+                error is FileReactivatingException || error is UrlExpiredException -> true
+                else -> error.httpStatus == 403 || error.httpStatus == 429 || error.httpStatus in 500..599
+            }
+            is IOException -> true
+            else -> false
+        }
         private const val UPLOAD_BYTES_ATTEMPTS = 3
         private const val MAX_LOCATE_DEPTH = 64
         private const val CHILD_NAME_PAGE = 20

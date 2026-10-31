@@ -59,8 +59,10 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.graphics.Brush
@@ -72,14 +74,16 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.round
 import coil3.SingletonImageLoader
 import coil3.compose.LocalPlatformContext
 import coil3.decode.BlackholeDecoder
 import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 import dev.piko.ui.adaptive.currentWidthClass
-import dev.piko.ui.components.ContextMenuArea
+import dev.piko.ui.components.WindowAnchoredActionMenu
 import dev.piko.ui.components.FileItemSelection
 import dev.piko.ui.components.FileOverlaySelectionControl
 import dev.piko.ui.components.PikoBrandIcons
@@ -264,65 +268,77 @@ internal fun GalleryCanvas(
         }
     }
     val scroll = rememberScrollableState(state::scrollBy)
-    SubcomposeLayout(
-        modifier = modifier
-            .fillMaxSize()
-            .clipToBounds()
-            .zoomOnWheel(onZoom)
-            .scrollable(scroll, Orientation.Vertical)
-            .onKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
-                val delta = when (event.key) {
-                    Key.PageUp -> state.layout.viewportHeight.toFloat() * 0.9f
-                    Key.PageDown -> -state.layout.viewportHeight.toFloat() * 0.9f
-                    else -> return@onKeyEvent false
+    var menuTarget by remember { mutableStateOf<Pair<String, IntOffset>?>(null) }
+    Box(modifier.fillMaxSize()) {
+        SubcomposeLayout(
+            modifier = Modifier
+                .fillMaxSize()
+                .clipToBounds()
+                .zoomOnWheel(onZoom)
+                .scrollable(scroll, Orientation.Vertical)
+                .onKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                    val delta = when (event.key) {
+                        Key.PageUp -> state.layout.viewportHeight.toFloat() * 0.9f
+                        Key.PageDown -> -state.layout.viewportHeight.toFloat() * 0.9f
+                        else -> return@onKeyEvent false
+                    }
+                    state.scrollBy(delta)
+                    true
                 }
-                state.scrollBy(delta)
-                true
-            }
-            .focusable()
-            .semantics {
-                collectionInfo = CollectionInfo(rowCount = -1, columnCount = columns)
-                scrollBy { _, y -> state.scrollBy(-y); true }
-            },
-    ) { constraints ->
-        state.revision
-        val gap = 8.dp.toPx().toDouble()
-        val inset = 12.dp.toPx().toDouble()
-        val width = constraints.maxWidth
-        val height = constraints.maxHeight
-        if (width == 0 || height == 0) return@SubcomposeLayout layout(width, height) {}
-        val availableWidth = (width - inset * 2).coerceAtLeast(1.0)
-        val count = max(columns, ceil((availableWidth + gap) / (maximumWidth.toPx() + gap)).toInt())
-        val placements = state.layout.frame(descriptors, count, availableWidth, height.toDouble(), gap)
-        val nextVisible = placements.filter { it.top < height && it.top + it.height > 0 }.mapNotNullTo(HashSet()) { it.fileId }
-        if (nextVisible != state.visibleFileIds) state.visibleFileIds = nextVisible
-        val measured = placements.map { placement ->
-            val file = placement.fileId?.let(byId::get)
-            val placeable = subcompose(placement.key) {
-                if (file == null) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Icon(
-                            PikoBrandIcons.Glyph,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.08f),
-                            modifier = Modifier.size(32.dp),
+                .focusable()
+                .semantics {
+                    collectionInfo = CollectionInfo(rowCount = -1, columnCount = columns)
+                    scrollBy { _, y -> state.scrollBy(-y); true }
+                },
+        ) { constraints ->
+            state.revision
+            val gap = 8.dp.toPx().toDouble()
+            val inset = 12.dp.toPx().toDouble()
+            val width = constraints.maxWidth
+            val height = constraints.maxHeight
+            if (width == 0 || height == 0) return@SubcomposeLayout layout(width, height) {}
+            val availableWidth = (width - inset * 2).coerceAtLeast(1.0)
+            val count = max(columns, ceil((availableWidth + gap) / (maximumWidth.toPx() + gap)).toInt())
+            val placements = state.layout.frame(descriptors, count, availableWidth, height.toDouble(), gap)
+            val nextVisible = placements.filter { it.top < height && it.top + it.height > 0 }.mapNotNullTo(HashSet()) { it.fileId }
+            if (nextVisible != state.visibleFileIds) state.visibleFileIds = nextVisible
+            val measured = placements.map { placement ->
+                val file = placement.fileId?.let(byId::get)
+                val placeable = subcompose(placement.key) {
+                    if (file == null) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Icon(
+                                PikoBrandIcons.Glyph,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.08f),
+                                modifier = Modifier.size(32.dp),
+                            )
+                        }
+                    } else {
+                        GalleryCanvasCover(
+                            file, isSelectionMode, file.id in selectedIds, file.id in highlightedIds,
+                            isBlurred(file), callbacks,
+                            locationLabel = locationLabel(file),
+                            onAspectRatio = { ratio -> recordDecodedRatio(file, ratio) },
+                            onCoverFailed = { failedCovers.add(file.id) },
+                            onContextMenu = { menuTarget = file.id to it },
                         )
                     }
-                } else {
-                    GalleryCanvasCover(
-                        file, isSelectionMode, file.id in selectedIds, file.id in highlightedIds,
-                        isBlurred(file), callbacks,
-                        locationLabel = locationLabel(file),
-                        onAspectRatio = { ratio -> recordDecodedRatio(file, ratio) },
-                        onCoverFailed = { failedCovers.add(file.id) },
-                    )
-                }
-            }.single().measure(Constraints.fixed(placement.width.roundToInt().coerceAtLeast(1), placement.height.roundToInt().coerceAtLeast(1)))
-            placement to placeable
+                }.single().measure(Constraints.fixed(placement.width.roundToInt().coerceAtLeast(1), placement.height.roundToInt().coerceAtLeast(1)))
+                placement to placeable
+            }
+            layout(width, height) {
+                measured.forEach { (placement, placeable) -> placeable.place((placement.left + inset).roundToInt(), placement.top.roundToInt()) }
+            }
         }
-        layout(width, height) {
-            measured.forEach { (placement, placeable) -> placeable.place((placement.left + inset).roundToInt(), placement.top.roundToInt()) }
+        menuTarget?.let { (targetId, pointer) ->
+            val target = byId[targetId]
+            if (target == null) {
+                LaunchedEffect(targetId) { menuTarget = null }
+            } else {
+                WindowAnchoredActionMenu(pointer, callbacks.contextActions(target), onDismiss = { menuTarget = null })
+            }
         }
     }
 }
@@ -338,6 +354,7 @@ private fun GalleryCanvasCover(
     locationLabel: String?,
     onAspectRatio: (Float) -> Unit,
     onCoverFailed: () -> Unit,
+    onContextMenu: (IntOffset) -> Unit,
 ) {
     val focus = remember { FocusRequester() }
     val ownClicks = remember { OwnClicks() }
@@ -354,15 +371,16 @@ private fun GalleryCanvasCover(
     val isMac = LocalPikoPlatform.current.shortcutModifier == ShortcutModifier.Command
     val coverUrl = file.galleryCoverUrl()
     var coverFailed by remember(coverUrl) { mutableStateOf(false) }
+    var coordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    val currentOnContextMenu by rememberUpdatedState(onContextMenu)
     CompositionLocalProvider(LocalOwnClicks provides ownClicks) {
-        ContextMenuArea(
-            actions = { callbacks.contextActions(file) },
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .then(hover.modifier)
                 .focusRequester(focus)
                 .onFocusChanged { callbacks.onFocusChanged(file, it.hasFocus) }
-                .onPlaced { callbacks.onPlaced(file, it) }
+                .onPlaced { coordinates = it; callbacks.onPlaced(file, it) }
                 .selectionClicks(
                     onToggle = { callbacks.onToggleSelect(file.id) },
                     onExtend = { callbacks.onExtendSelect(file.id) },
@@ -374,6 +392,13 @@ private fun GalleryCanvasCover(
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
+                            val change = event.changes.first()
+                            if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed && !change.isConsumed) {
+                                coordinates?.takeIf { it.isAttached }?.let { coords ->
+                                    currentOnContextMenu(coords.localToWindow(change.position).round())
+                                    change.consume()
+                                }
+                            }
                             if (event.type == PointerEventType.Press && event.buttons.isTertiaryPressed) callbacks.onMiddleClick(file)
                         }
                     }
