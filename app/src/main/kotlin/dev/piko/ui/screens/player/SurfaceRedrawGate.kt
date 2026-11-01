@@ -33,12 +33,13 @@ internal class SurfaceRedrawGate(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val waiters = mutableListOf<Waiter>()
 
-    /** 主线程调用：等到之后在主线程调用 [onShown]。 */
+    /** 主线程调用：等到之后在主线程调用 [onShown]。兜底设最大遮盖上限，绝不允许黑盖板因异常状态永久卡死在屏幕上。 */
     fun await(onShown: () -> Unit) {
         val waiter = Waiter(onShown)
         synchronized(waiters) { waiters += waiter }
         arm(waiter)
         scheduleRearm(waiter)
+        mainHandler.postDelayed({ finish(waiter) }, MAX_COVER_MILLIS)
     }
 
     private fun scheduleRearm(waiter: Waiter) {
@@ -126,6 +127,7 @@ internal class SurfaceRedrawGate(
     private companion object {
         // 正常转屏播放中约两三帧、暂停时一次 seek 就等到了，这个间隔只为中途暂停、缓冲这类信号不再来的情况
         const val REARM_MILLIS = 400L
+        const val MAX_COVER_MILLIS = 1_200L
         const val FRAMES_TO_FIRST_SWAP = 3
     }
 }

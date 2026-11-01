@@ -88,7 +88,10 @@ import java.awt.image.BufferedImage
 import java.io.File
 import org.openani.mediamp.ExperimentalMediampApi
 import org.openani.mediamp.compose.MediampPlayerSurface
-import org.openani.mediamp.compose.rememberMediampPlayer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import org.openani.mediamp.MediampPlayer
 
 /**
  * 独立的视频播放窗口。取流、续播与重连在共用的 [PlayerScreenState]，控件是与 Android 共用的
@@ -121,11 +124,28 @@ fun VideoPlayerWindow(
         isBorderlessFullscreen = { isFullscreen },
         sizeToSave = { size -> if (windowTurned) DpSize(size.height, size.width) else size },
     )
+    val closeScope = rememberCoroutineScope()
+    var closeRequested by remember { mutableStateOf(false) }
+    val requestClose: () -> Unit = {
+        if (!closeRequested) {
+            closeRequested = true
+            if (isMacOs && windowState.placement == WindowPlacement.Fullscreen) {
+                // 先退出 AppKit 原生全屏空间，再移除窗口组合。
+                windowState.placement = WindowPlacement.Floating
+                closeScope.launch {
+                    delay(220)
+                    onClose()
+                }
+            } else {
+                onClose()
+            }
+        }
+    }
     // 换集后标题跟着当前这集走
     var title by remember { mutableStateOf(request.fileName) }
 
     PikoWindow(
-        onCloseRequest = onClose,
+        onCloseRequest = requestClose,
         title = tr("$title - Piko 播放器", "$title - Piko Player", "$title - Pikoプレーヤー", "$title - Piko 플레이어", "$title - Piko 播放器"),
         icon = icon,
         state = windowState,
@@ -153,7 +173,7 @@ fun VideoPlayerWindow(
                     colors = PlayerTitleBarColors,
                     showTitleBar = !inFullscreen,
                     // 播放器顶栏已有标题，Windows 上不再叠一条标题栏，关窗按钮放进顶栏
-                    onCloseInContent = onClose,
+                    onCloseInContent = requestClose,
                 ) {
                     VideoPlayerContent(
                         request = request,
@@ -180,7 +200,7 @@ fun VideoPlayerWindow(
                         onQuarterTurn = {
                             if (!inFullscreen && turnWindow(window, windowState)) windowTurned = !windowTurned
                         },
-                        onClose = onClose,
+                        onClose = requestClose,
                         modifier = Modifier.trackPointerSource(pointerSource),
                     )
                 }
@@ -237,11 +257,14 @@ private fun VideoPlayerContent(
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
-    val player = rememberMediampPlayer()
+    // 不使用 rememberMediampPlayer：其 RememberObserver 会在 EDT 同步销毁原生播放器。
+    val playerJob = remember { SupervisorJob() }
+    val playerScope = remember(playerJob) { CoroutineScope(Dispatchers.Main.immediate + playerJob) }
+    val player = remember(playerScope) { MediampPlayer(Unit, playerScope.coroutineContext) }
     // 偏好是 StateFlow，first() 当场返回
     val hardwareDecoding = remember { runBlocking { services.preferences.hardwareDecodingFlow.first() } }
     val backend = remember(player) {
-        MediampPlaybackBackend(player, scope, hardwareDecoding = hardwareDecoding).also { created ->
+        MediampPlaybackBackend(player, playerScope, hardwareDecoding = hardwareDecoding).also { created ->
             // mpv 的音量在换文件时保留，只需在开窗时设一次
             settings.get(KEY_PLAYER_VOLUME).toFloatOrNull()?.let(created::setVolume)
         }
@@ -325,11 +348,15 @@ private fun VideoPlayerContent(
         onDispose { displayLease?.close() }
     }
 
-    DisposableEffect(state) {
-        onDispose { state.release() }
-    }
-    DisposableEffect(player) {
-        onDispose { player.close() }
+    DisposableEffect(state, backend, player) {
+        onDispose {
+            // release 的回调在 retireScope 的 IO 线程执行，代理流已全部关闭。
+            state.release {
+                backend.markClosing()
+                playerJob.cancel()
+                runCatching { player.close() }
+            }
+        }
     }
 
     Box(modifier.fillMaxSize().background(Color.Black)) {

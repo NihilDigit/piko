@@ -64,10 +64,13 @@ private class SurfaceBridge(private val backend: MpvPlaybackBackend, private val
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         surface = holder.surface
-        // 新建的 Surface 里没有旧画面，第一次 surfaceChanged 不必盖
+        // 新建的 Surface 里没有旧画面，确保防拉伸黑盖板复位为隐藏
         width = 0
         height = 0
-        backend.attachSurface(holder.surface)
+        resizes++
+        cover.visibility = View.INVISIBLE
+        val frame = holder.surfaceFrame
+        backend.attachSurface(holder.surface, frame.width(), frame.height())
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
@@ -75,13 +78,18 @@ private class SurfaceBridge(private val backend: MpvPlaybackBackend, private val
         this.width = width
         this.height = height
         backend.setSurfaceSize(width, height)
-        if (!resized) return
+        if (!resized || !backend.fileLoaded) {
+            cover.visibility = View.INVISIBLE
+            return
+        }
         val resize = ++resizes
         cover.visibility = View.VISIBLE
         backend.awaitFrameAtNewSize { if (resize == resizes) cover.visibility = View.INVISIBLE }
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
+        resizes++
+        cover.visibility = View.INVISIBLE
         surface?.let { backend.detachSurface(it) }
         surface = null
     }
@@ -93,7 +101,7 @@ private class TextureBridge(private val backend: MpvPlaybackBackend) : TextureVi
     override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
         val created = Surface(texture)
         surface = created
-        backend.attachSurface(created)
+        backend.attachSurface(created, width, height)
         backend.setSurfaceSize(width, height)
     }
 

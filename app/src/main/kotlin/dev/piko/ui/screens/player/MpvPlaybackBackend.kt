@@ -97,7 +97,8 @@ internal class MpvPlaybackBackend(
     @Volatile private var pendingSubtitles: List<ExternalSubtitle> = emptyList()
 
     // 最近一次 loadfile 已到 FILE_LOADED。手动挂的字幕据此决定立即 sub-add 还是排进上面那一批
-    @Volatile private var fileLoaded = false
+    @Volatile var fileLoaded = false
+        private set
 
     private var isLoadingFile by mutableStateOf(false)
     private var isSeeking by mutableStateOf(false)
@@ -111,6 +112,9 @@ internal class MpvPlaybackBackend(
     private var attachedSurface: Surface? = null
     private var videoOutputDisabled = false
     private var pendingLoad: Array<String>? = null
+    // 以下两个字段只在单线程 mpv-calls 上读写：记录切后台解绑前的视频轨并在新 Surface 尺寸就位后补绘暂停帧
+    private var vidBeforeDetach: String = "auto"
+    private var needsPausedRedrawOnResize = false
     @Volatile private var released = false
     private val destroyCompleted = CompletableDeferred<Unit>()
     private var observing = false
@@ -127,8 +131,9 @@ internal class MpvPlaybackBackend(
     @Volatile private var lastErrorLog: String? = null
     @Volatile private var readySent = false
 
-    // 每个播放器只记一次实际用上的音频输出与硬解，核对 ao 的设定生效没有
     @Volatile private var loggedAudioOutput = false
+    @Volatile private var lastLoggedDecoderKey: String? = null
+    @Volatile private var surfaceGeneration = 0
     @Volatile private var rotateDegrees = 0L
     @Volatile private var rawAspect: Double? = null
 
@@ -156,6 +161,13 @@ internal class MpvPlaybackBackend(
         mpv.setOptionString("save-position-on-quit", "no")
         mpv.setOptionString("sub-font-provider", "fontconfig")
         mpv.setOptionString("slang", MPV_SUBTITLE_LANGUAGES)
+        // 纯文本字幕（SRT/VTT）默认 sub-scale-with-window=yes 会按整个 SurfaceView 窗口高度缩放：
+        // 手机竖屏（如 1080x2400）播放 16:9 视频（1080x607）时字号会被窗口高度放大近 4 倍并掉进底部黑边；
+        // 统一改为按实际视频画面尺寸缩放、贴合画面下沿，并将基准字号对齐现代 mpv 0.38+ 的 38（720p 基准）
+        mpv.setOptionString("sub-scale-with-window", "no")
+        mpv.setOptionString("sub-use-margins", "no")
+        mpv.setOptionString("sub-font-size", "38")
+        mpv.setOptionString("sub-border-size", "2")
         mpv.setOptionString("network-timeout", "30")
         // 仅向 JNI 与 logcat 输出警告及错误，阻断 C 层每秒上千条 verbose 字符串跨界回调拖慢主线程与 GC
         mpv.setOptionString("msg-level", "all=warn")
@@ -209,6 +221,7 @@ internal class MpvPlaybackBackend(
             mpv.observeProperty("track-list/count", MpvFormat.MPV_FORMAT_INT64)
             mpv.observeProperty("aid", MpvFormat.MPV_FORMAT_STRING)
             mpv.observeProperty("sid", MpvFormat.MPV_FORMAT_STRING)
+            mpv.observeProperty("hwdec-current", MpvFormat.MPV_FORMAT_STRING)
         }
     }
 
@@ -428,16 +441,28 @@ internal class MpvPlaybackBackend(
         mpvSubtitleAddCommands(subtitles, hasSelected).forEach { mpv.command(it) }
     }
 
-    fun attachSurface(surface: Surface) {
+    fun attachSurface(surface: Surface, initialWidth: Int = 0, initialHeight: Int = 0) {
         if (released) return
         attachedSurface = surface
         val restoreVideoOutput = videoOutputDisabled
         surfaceAttached = true
         videoOutputDisabled = false
+        surfaceGeneration += 1
         onMpv {
             mpv.attachSurface(surface)
+            if (initialWidth > 0 && initialHeight > 0) {
+                mpv.setPropertyString("android-surface-size", "${initialWidth}x$initialHeight")
+            }
             mpv.setOptionString("force-window", "yes")
-            if (restoreVideoOutput) mpv.setPropertyString("vo", VIDEO_OUTPUT)
+            if (restoreVideoOutput && !headless) {
+                mpv.setPropertyString("vo", VIDEO_OUTPUT)
+                if (hardwareDecoding) {
+                    mpv.setPropertyString("hwdec", "mediacodec,mediacodec-copy")
+                }
+                val targetVid = vidBeforeDetach.ifBlank { "auto" }
+                mpv.setPropertyString("vid", targetVid)
+                needsPausedRedrawOnResize = true
+            }
         }
         pendingLoad?.let {
             pendingLoad = null
@@ -447,12 +472,21 @@ internal class MpvPlaybackBackend(
 
     fun setSurfaceSize(width: Int, height: Int) {
         if (released || !surfaceAttached) return
-        onMpv { mpv.setPropertyString("android-surface-size", "${width}x$height") }
+        onMpv {
+            mpv.setPropertyString("android-surface-size", "${width}x$height")
+            if (needsPausedRedrawOnResize) {
+                needsPausedRedrawOnResize = false
+                // 切后台时 ON_STOP 会把播放器暂停，新建的 Surface 尚未收到任何渲染帧；尺寸设好后主动原位重绘一帧，消除切回黑屏
+                if (fileLoaded && mpv.getPropertyBoolean("pause") == true) {
+                    mpv.command(arrayOf("seek", "0", "relative+exact"))
+                }
+            }
+        }
     }
 
     /** 在 [setSurfaceSize] 之后调用：等 mpv 按新尺寸交出一帧，再在主线程调用 [onShown]。见 [SurfaceRedrawGate]。 */
     fun awaitFrameAtNewSize(onShown: () -> Unit) {
-        if (released || !surfaceAttached) {
+        if (released || !surfaceAttached || !fileLoaded) {
             onShown()
             return
         }
@@ -461,7 +495,11 @@ internal class MpvPlaybackBackend(
 
     // 排在 setSurfaceSize 投递的设置之后：执行到这里时 vo 已经换成新尺寸，起点从这里取。
     // 重设时状态没变就不动，免得慢帧率的片子永远数不满，或暂停时 seek 未完又发一次
-    private fun armRedrawGate(waiter: SurfaceRedrawGate.Waiter) = onMpv {
+    private fun armRedrawGate(waiter: SurfaceRedrawGate.Waiter): Unit = onMpv {
+        if (!fileLoaded) {
+            redrawGate.releaseAll()
+            return@onMpv
+        }
         val paused = mpv.getPropertyBoolean("pause") == true
         if (paused && !waiter.awaitingRestart) {
             waiter.awaitRestart()
@@ -496,7 +534,13 @@ internal class MpvPlaybackBackend(
         videoOutputDisabled = true
         val detach = Runnable {
             if (!destroyed) {
-                // 换成 null 让 mpv 先放手，声音不受影响
+                needsPausedRedrawOnResize = false
+                val currentVid = mpv.getPropertyString("vid")?.takeIf { it.isNotBlank() && it != "no" }
+                if (currentVid != null) {
+                    vidBeforeDetach = currentVid
+                }
+                // 先关闭视频轨让 MediaCodec 在 Surface 释放前干净停机，避免 Both surface and native_window are NULL 导致解码器卡死黑屏
+                mpv.setPropertyString("vid", "no")
                 mpv.setPropertyString("vo", "null")
                 mpv.setOptionString("force-window", "no")
                 mpv.detachSurface()
@@ -559,7 +603,16 @@ internal class MpvPlaybackBackend(
         readySent = false
         lastErrorLog = null
         isLoadingFile = true
-        onMpv { mpv.command(command) }
+        val hasSurfaceNow = surfaceAttached || headless
+        onMpv {
+            vidBeforeDetach = "auto"
+            needsPausedRedrawOnResize = false
+            if (hasSurfaceNow && !videoOutputDisabled) {
+                val curVid = mpv.getPropertyString("vid")
+                if (curVid == "no") mpv.setPropertyString("vid", "auto")
+            }
+            mpv.command(command)
+        }
     }
 
     override fun eventProperty(property: String) {
@@ -619,6 +672,30 @@ internal class MpvPlaybackBackend(
 
     override fun eventProperty(property: String, value: String) {
         if (property == "aid" || property == "sid") refreshTracks()
+        else if (property == "hwdec-current" && fileLoaded) logDecoderState("hwdec-change")
+    }
+
+    private fun logDecoderState(trigger: String) {
+        if (released || destroyed) return
+        val hwdec = mpv.getPropertyString("hwdec-current").orEmpty().ifEmpty { "no" }
+        val vo = mpv.getPropertyString("current-vo").orEmpty()
+        val codec = mpv.getPropertyString("video-codec").orEmpty()
+        val w = runCatching { mpv.getPropertyInt("video-params/w") }.getOrNull() ?: 0
+        val h = runCatching { mpv.getPropertyInt("video-params/h") }.getOrNull() ?: 0
+        val key = "$issuedLoads|$surfaceGeneration|$hwdec|$vo|$codec|${w}x$h"
+        if (key == lastLoggedDecoderKey) return
+        lastLoggedDecoderKey = key
+        if (!loggedAudioOutput) {
+            loggedAudioOutput = true
+            PikoLog.d("Player", "mpv 音频输出：${mpv.getPropertyString("current-ao")}，硬解：$hwdec")
+        }
+        val summary = "mpv 解码状态（preview=$preview, load=#$issuedLoads, surface=#$surfaceGeneration, $trigger）：" +
+            "codec=${codec.ifEmpty { "unknown" }}, ${w}x$h, vo=${vo.ifEmpty { "none" }}, 硬解：$hwdec"
+        if (hardwareDecoding && !headless && (hwdec == "no" || hwdec == "none") && codec.isNotEmpty()) {
+            PikoLog.w("Player", summary)
+        } else {
+            PikoLog.d("Player", summary)
+        }
     }
 
     override fun event(eventId: Int) {
@@ -636,11 +713,8 @@ internal class MpvPlaybackBackend(
                 if (!readySent) {
                     readySent = true
                     _events.tryEmit(PlaybackBackendEvent.Ready)
-                    if (!loggedAudioOutput) {
-                        loggedAudioOutput = true
-                        PikoLog.d("Player", "mpv 音频输出：${mpv.getPropertyString("current-ao")}，硬解：${mpv.getPropertyString("hwdec-current")}")
-                    }
                 }
+                if (fileLoaded) logDecoderState("restart")
             }
 
             MpvEvent.MPV_EVENT_END_FILE -> {

@@ -121,7 +121,16 @@ internal class MediampPlaybackBackend(
     private val _events = MutableSharedFlow<PlaybackBackendEvent>(extraBufferCapacity = 16)
     override val events: Flow<PlaybackBackendEvent> = _events.asSharedFlow()
 
-    // 只在 scope 的调度器（Compose 主线程）上读写
+    @Volatile
+    private var closing = false
+
+    fun markClosing() {
+        closing = true
+        awaitingReady = false
+        manualSeeking = false
+    }
+
+    // 正常播放时在 scope 的调度器（Compose 主线程）上读写，关闭时由后台清理回调复位。
     private var awaitingReady = false
 
     init {
@@ -130,6 +139,11 @@ internal class MediampPlaybackBackend(
         // 繁体字在里面有，「这」「们」这类简体字没有，回退失败后落到 sub-font。默认的 sans-serif 也不含中文，
         // 简体字幕就缺字。换成雅黑，简繁都全，Windows 各语言版都自带
         mpv?.setPropertyString("sub-font", SUBTITLE_FALLBACK_FONT)
+        // 纯文本字幕（SRT/VTT）按实际视频画面高度缩放而非整个窗口高度，避免竖窄窗口下字幕暴涨并落入上下大黑边
+        mpv?.setPropertyString("sub-scale-with-window", "no")
+        mpv?.setPropertyString("sub-use-margins", "no")
+        mpv?.setPropertyString("sub-font-size", "38")
+        mpv?.setPropertyString("sub-border-size", "2")
         if (preview) {
             // MediaMP 让 mpv 往后囤 64 MiB，暂停时也照读不误。随机片段同时开着三个预览播放器，
             // 各自以前台身份往后读几百 MB，把账号的连接占满，其余请求首字节要等十几秒
@@ -178,6 +192,7 @@ internal class MediampPlaybackBackend(
         }
         scope.launch {
             player.state.collect { state ->
+                if (closing) return@collect
                 isPlaying = state.playWhenReady
                 playerBuffering = state.isLoadingOrBuffering
                 if (awaitingReady && state.isMediaLoaded && !state.isLoadingOrBuffering) {
@@ -224,6 +239,7 @@ internal class MediampPlaybackBackend(
         playWhenReady: Boolean,
         subtitles: List<ExternalSubtitle>,
     ) {
+        if (closing) return
         val uri = when (target) {
             // 经 Path 取 URI：File.toURI 给的是 file:/home/…，mpv 只认带 // 的 file://，否则当成文件名，打开即失败
             is PlaybackTarget.LocalFile -> File(target.path).toPath().toUri().toString()
@@ -245,6 +261,7 @@ internal class MediampPlaybackBackend(
     }
 
     override fun selectAudioTrack(id: String) {
+        if (closing) return
         val handle = mpv
         if (handle != null) {
             handle.setPropertyString("aid", id)
@@ -255,6 +272,7 @@ internal class MediampPlaybackBackend(
     }
 
     override fun selectSubtitleTrack(id: String?) {
+        if (closing) return
         val handle = mpv
         if (handle != null) {
             handle.setPropertyString("sid", id ?: "no")
@@ -275,6 +293,7 @@ internal class MediampPlaybackBackend(
      * 还在打开时排进 Ready 那一批。
      */
     override fun addSubtitle(subtitle: ExternalSubtitle) {
+        if (closing) return
         val handle = mpv ?: return
         if (awaitingReady) {
             pendingSubtitles = pendingSubtitles + subtitle
@@ -290,10 +309,12 @@ internal class MediampPlaybackBackend(
      * 已按叠加后的旋转交换过宽高，[videoAspect] 于是跟着变，不必自己换算。
      */
     override fun setRotation(degrees: Int) {
+        if (closing) return
         mpv?.setPropertyString("video-rotate", "$degrees")
     }
 
     private fun refreshTracks(feature: MediaMetadata) {
+        if (closing) return
         val snapshot = mpv?.let { handle -> readMpvTracks { handle.getPropertyString(it) } }
             ?: snapshotOf(feature, audioCandidates, subtitleCandidates)
         audioTracks = snapshot.audio
@@ -303,6 +324,7 @@ internal class MediampPlaybackBackend(
     }
 
     private fun attachPendingSubtitles() {
+        if (closing) return
         val subtitles = pendingSubtitles
         pendingSubtitles = emptyList()
         val handle = mpv ?: return
@@ -312,6 +334,7 @@ internal class MediampPlaybackBackend(
     }
 
     override fun stop() {
+        if (closing) return
         awaitingReady = false
         manualSeeking = false
         manualSeekGen++
@@ -321,9 +344,11 @@ internal class MediampPlaybackBackend(
     override val requiresAsyncStopDrain: Boolean get() = true
 
     override suspend fun stopAndAwaitIdle() = withContext(scope.coroutineContext.minusKey(Job)) {
+        if (closing) return@withContext
         stop()
         val handle = mpv
         repeat(16) {
+            if (closing) return@withContext
             val state = player.state.value
             val mpvIdle = handle == null || runCatching { handle.getPropertyString("idle-active") }.getOrNull() == "yes"
             if (!state.isMediaLoaded && !state.isLoadingOrBuffering && mpvIdle) return@withContext
@@ -332,11 +357,18 @@ internal class MediampPlaybackBackend(
         }
     }
 
-    override fun play() = player.resume()
+    override fun play() {
+        if (closing) return
+        player.resume()
+    }
 
-    override fun pause() = player.pause()
+    override fun pause() {
+        if (closing) return
+        player.pause()
+    }
 
     override fun seekTo(positionMillis: Long) {
+        if (closing) return
         val target = positionMillis.coerceAtLeast(0L)
         // 1. 信息流预览（keyframeStart = true）启用了 hr-seek=no 与 8 MiB 小队列，
         //    而 MediaMP 的 player.seekTo 硬编码下发 "absolute+exact" 会强行覆盖 hr-seek=no，
@@ -358,10 +390,12 @@ internal class MediampPlaybackBackend(
     }
 
     override fun setSpeed(speed: Float) {
+        if (closing) return
         speedFeature?.set(speed)
     }
 
     override fun setVolume(volume: Float) {
+        if (closing) return
         val feature = audioFeature ?: return
         val clamped = volume.coerceIn(0f, 1f)
         feature.setVolume(clamped)
@@ -373,17 +407,25 @@ internal class MediampPlaybackBackend(
 
     /** 见 PreviewBackend.setBufferAhead。mpv 的缓存选项改了下一轮读即生效，不必重开文件。 */
     fun setBufferAhead(seconds: Int) {
+        if (closing) return
         mpv?.setPropertyString("cache-secs", "$seconds")
     }
 
     // 读不到时 MPVHandle 可能抛错而不是返回 null（属性在当前文件上不存在），统一当作读不到
-    override fun mpvProperty(name: String): String? = mpv?.let { handle -> runCatching { handle.getPropertyString(name) }.getOrNull() }
+    override fun mpvProperty(name: String): String? {
+        if (closing) return null
+        return mpv?.let { handle -> runCatching { handle.getPropertyString(name) }.getOrNull() }
+    }
 
-    fun bufferReport(): String? = mpv?.let { handle ->
-        "cache-secs=${handle.getPropertyString("cache-secs")}，缓存 ${handle.getPropertyString("demuxer-cache-duration")} 秒"
+    fun bufferReport(): String? {
+        if (closing) return null
+        return mpv?.let { handle ->
+            "cache-secs=${handle.getPropertyString("cache-secs")}，缓存 ${handle.getPropertyString("demuxer-cache-duration")} 秒"
+        }
     }
 
     override fun setAspectRatio(mode: PlayerAspectRatio) {
+        if (closing) return
         currentAspectRatio = mode
         when (mode) {
             PlayerAspectRatio.Fit -> {
@@ -405,6 +447,7 @@ internal class MediampPlaybackBackend(
     }
 
     override fun setCropRegion(region: VideoCropRegion?) {
+        if (closing) return
         currentCropRegion = region
         if (region != null) {
             currentAspectRatio = PlayerAspectRatio.RegionCrop
@@ -417,6 +460,7 @@ internal class MediampPlaybackBackend(
     }
 
     private fun applyMpvCropRegion(region: VideoCropRegion) {
+        if (closing) return
         aspectRatioFeature?.setMode(AspectRatioMode.FIT)
         val handle = mpv ?: return
         val vAspect = videoAspect?.takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
@@ -435,6 +479,7 @@ internal class MediampPlaybackBackend(
     }
 
     private fun resetMpvCropZoom() {
+        if (closing) return
         val handle = mpv ?: return
         handle.setPropertyString("video-zoom", "0.0")
         handle.setPropertyString("video-pan-x", "0.0")

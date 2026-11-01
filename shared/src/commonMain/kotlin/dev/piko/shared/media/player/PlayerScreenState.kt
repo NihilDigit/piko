@@ -525,24 +525,30 @@ class PlayerScreenState(
         reload()
     }
 
-    /** 释放代理会话。后端由创建它的一方释放，续播位置由作用域取消时补写。 */
-    fun release() {
+    /**
+     * 释放代理会话。后端由创建它的一方释放，续播位置由作用域取消时补写。
+     * [afterClosed] 在全部代理流关闭后由 IO 作用域调用，包括没有代理流的本地播放。
+     */
+    fun release(afterClosed: (() -> Unit)? = null) {
         if (released) return
         released = true
         prepareJob?.cancel()
         recoveryJob?.cancel()
         backend.stop()
         val oldStreams = detachPrepared()
-        if (oldStreams.isEmpty()) return
-        if (!backend.requiresAsyncStopDrain) {
+        if (!backend.requiresAsyncStopDrain && afterClosed == null) {
             oldStreams.forEach { runCatching { it.close() } }
         } else {
             retireScope.launch {
                 try {
-                    withTimeoutOrNull(STOP_DRAIN_TIMEOUT_MILLIS) { backend.stopAndAwaitIdle() }
+                    if (oldStreams.isNotEmpty() && backend.requiresAsyncStopDrain) {
+                        withTimeoutOrNull(STOP_DRAIN_TIMEOUT_MILLIS) { backend.stopAndAwaitIdle() }
+                    }
                 } catch (_: Throwable) {
                 } finally {
+                    // 先断开回环连接，唤醒输入线程，再销毁后端的原生句柄。
                     oldStreams.forEach { runCatching { it.close() } }
+                    afterClosed?.invoke()
                 }
             }
         }

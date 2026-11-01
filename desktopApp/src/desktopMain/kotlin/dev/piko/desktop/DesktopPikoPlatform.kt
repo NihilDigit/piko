@@ -12,12 +12,26 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.i18n.PikoLocale
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asComposeImageBitmap
+import coil3.BitmapImage
+import coil3.PlatformContext
+import coil3.SingletonImageLoader
+import coil3.request.CachePolicy
+import coil3.request.ImageRequest
+import coil3.size.Precision
+import dev.piko.ui.screens.clips.BackdropBlurKernel
+import org.jetbrains.skia.Bitmap
+import org.jetbrains.skia.ColorAlphaType
+import org.jetbrains.skia.ColorType
 import org.jetbrains.skia.FontMgr
+import org.jetbrains.skia.ImageInfo
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -62,7 +76,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.openani.mediamp.compose.MediampPlayerSurface
-import org.openani.mediamp.compose.rememberMediampPlayer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import org.openani.mediamp.MediampPlayer
 
 /** 存在 settings.properties 里的一个开关，每台设备各自的。 */
 private class StoredToggle(private val settings: DesktopSettingsStore, private val key: String, default: Boolean) : PlatformToggle {
@@ -159,7 +175,68 @@ class DesktopPikoPlatform(
     override fun openUrl(url: String) = if (isLinux) LinuxDesktop.open(url) else WinRTSupport.openUrl(url)
 
     @Composable
+    override fun ProvideLocalizedEnvironment(
+        language: AppLanguage,
+        content: @Composable () -> Unit,
+    ) {
+        val locale = remember(language) { java.util.Locale.forLanguageTag(language.tag) }
+        if (java.util.Locale.getDefault() != locale) {
+            java.util.Locale.setDefault(locale)
+        }
+        key(language) {
+            content()
+        }
+    }
+
+    @Composable
     override fun isImeVisible(): Boolean = false
+
+    override suspend fun loadPreblurredBackdrop(
+        model: Any,
+        containerWidthPx: Int,
+        containerHeightPx: Int,
+        targetBlurPx: Float,
+    ): ImageBitmap? = withContext(Dispatchers.Default) {
+        runCatching {
+            val request = ImageRequest.Builder(PlatformContext.INSTANCE)
+                .data(model)
+                .size(BackdropBlurKernel.DECODE_MAX_SIDE_PX)
+                .precision(Precision.INEXACT)
+                .memoryCachePolicy(CachePolicy.DISABLED)
+                .build()
+            val skiaBitmap = (SingletonImageLoader.get(PlatformContext.INSTANCE).execute(request).image as? BitmapImage)?.bitmap
+                ?: return@runCatching null
+            val w = skiaBitmap.width
+            val h = skiaBitmap.height
+            if (w <= 0 || h <= 0) return@runCatching null
+            val info = ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.UNPREMUL)
+            val rawBytes = skiaBitmap.readPixels(info, w * 4, 0, 0) ?: return@runCatching null
+            val argb = IntArray(w * h) { idx ->
+                val o = idx * 4
+                val b = rawBytes[o].toInt() and 0xFF
+                val g = rawBytes[o + 1].toInt() and 0xFF
+                val r = rawBytes[o + 2].toInt() and 0xFF
+                val a = rawBytes[o + 3].toInt() and 0xFF
+                (a shl 24) or (r shl 16) or (g shl 8) or b
+            }
+            val radius = BackdropBlurKernel.equivalentRadiusPx(w, h, containerWidthPx, containerHeightPx, targetBlurPx)
+            val blurred = BackdropBlurKernel.blurArgb(argb, w, h, radius)
+            val outBytes = ByteArray(w * h * 4)
+            for (idx in blurred.indices) {
+                val c = blurred[idx]
+                val o = idx * 4
+                outBytes[o] = (c and 0xFF).toByte()
+                outBytes[o + 1] = ((c ushr 8) and 0xFF).toByte()
+                outBytes[o + 2] = ((c ushr 16) and 0xFF).toByte()
+                outBytes[o + 3] = ((c ushr 24) and 0xFF).toByte()
+            }
+            val outBitmap = Bitmap()
+            outBitmap.allocPixels(info)
+            outBitmap.installPixels(info, outBytes, w * 4)
+            outBitmap.setImmutable()
+            outBitmap.asComposeImageBitmap()
+        }.getOrNull()
+    }
 
     override fun readClipboardText(): String? = runCatching {
         Toolkit.getDefaultToolkit().systemClipboard.getData(DataFlavor.stringFlavor) as? String
@@ -291,16 +368,24 @@ class DesktopPikoPlatform(
     override val videoPreview: VideoPreviewSupport = object : VideoPreviewSupport {
         @Composable
         override fun rememberPreviewBackend(keyframeStart: Boolean): PreviewBackend {
-            val scope = rememberCoroutineScope()
             BundledMpvRuntime.ensure()
-            val player = rememberMediampPlayer()
+            val playerJob = remember { SupervisorJob() }
+            val playerScope = remember(playerJob) { CoroutineScope(Dispatchers.Main.immediate + playerJob) }
+            val player = remember(playerScope) { MediampPlayer(Unit, playerScope.coroutineContext) }
             val preferences = LocalPikoServices.current.preferences
             val backend = remember(player) {
                 // 偏好是 StateFlow，first() 当场返回
                 val hardwareDecoding = runBlocking { preferences.hardwareDecodingFlow.first() }
-                MediampPreviewBackend(MediampPlaybackBackend(player, scope, preview = true, keyframeStart = keyframeStart, hardwareDecoding = hardwareDecoding))
+                MediampPreviewBackend(MediampPlaybackBackend(player, playerScope, preview = true, keyframeStart = keyframeStart, hardwareDecoding = hardwareDecoding))
             }
-            DisposableEffect(player) { onDispose { player.close() } }
+            DisposableEffect(backend, player) {
+                onDispose {
+                    backend.inner.stop()
+                    backend.inner.markClosing()
+                    playerJob.cancel()
+                    CoroutineScope(Dispatchers.IO).launch { runCatching { player.close() } }
+                }
+            }
             return backend
         }
 

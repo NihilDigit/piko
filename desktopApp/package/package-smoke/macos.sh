@@ -13,6 +13,7 @@
 #   1. 从 DMG 全新安装，启动后存活，没有新版时不动
 #   1b. 设为 magnet 与 .torrent 的默认打开方式（NSWorkspace）：系统真把磁力链接交给 Piko（openURI，拉起），
 #       再把种子交给开着的 Piko（openFiles）。macOS 不做取消关联，见 LinkAssociation.canUnregister
+#   1d. 经本机回环 HTTP 依次播放两个窗口，确认首窗关闭清理完成后第二窗仍能播放
 #   2. 应用内更新：Info.plist 的版本变成 Next，签名仍完好（codesign --verify），新版本被重新打开，
 #      旁边不留临时的包，用户自己放在旁边的同名备份原样留着
 #
@@ -112,6 +113,12 @@ echo '::endgroup::'
 echo '::group::1c. external player lookup'
 # 只查视频的默认应用，不打开播放器
 self_test external-player
+echo '::endgroup::'
+
+echo '::group::1d. two-window sequential playback'
+sample_media="$here/../../../testdata/media/keyframes-h264-aac.mkv"
+[ -f "$sample_media" ] || fail "missing sample media at $sample_media"
+PIKO_SELFTEST_PATH="$sample_media" self_test play
 echo '::endgroup::'
 
 echo '::group::2. in-app update'
