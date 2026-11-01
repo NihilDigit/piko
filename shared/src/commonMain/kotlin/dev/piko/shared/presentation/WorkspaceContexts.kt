@@ -25,7 +25,10 @@ class WorkspaceContexts(initialFileId: Long = 1L) {
     var primaryFileId: Long = initialFileId
         private set
 
+    var isPinned: (Long) -> Boolean = { false }
+
     fun canClose(id: Long): Boolean {
+        if (isPinned(id)) return false
         val current = _contextsFlow.value
         val target = current.firstOrNull { it.id == id } ?: return false
         return if (target is WorkspaceContext.File) {
@@ -58,7 +61,8 @@ class WorkspaceContexts(initialFileId: Long = 1L) {
         val current = _contextsFlow.value
         val after = current.indexOfFirst { it.id == afterId }
         require(after >= 0)
-        _contextsFlow.value = current.toMutableList().apply { add(after + 1, context) }
+        val pinnedCount = current.count { isPinned(it.id) }
+        _contextsFlow.value = current.toMutableList().apply { add((after + 1).coerceAtLeast(pinnedCount), context) }
         if (activate) activate(context.id)
         onCreated?.invoke(context)
         return context.id

@@ -62,6 +62,7 @@ import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.Image
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -77,16 +78,20 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
@@ -98,6 +103,7 @@ import dev.piko.shared.state.Clip
 import dev.piko.ui.components.formatTimeMs
 import dev.piko.ui.platform.LocalFramelessWindow
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.platform.resolveCoilModel
 import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.screens.player.PlayerSeekBar
@@ -506,28 +512,66 @@ internal fun ClipProgressBar(
 @Composable
 internal fun ClipBackdrop(thumbnail: String?, modifier: Modifier = Modifier) {
     val base = MaterialTheme.colorScheme.surfaceContainerHigh
-    Box(modifier.clipToBounds().background(Brush.verticalGradient(listOf(base, Color.Black)))) {
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+    Box(
+        modifier
+            .onSizeChanged { containerSize = it }
+            .clipToBounds()
+            .background(Brush.verticalGradient(listOf(base, Color.Black))),
+    ) {
         if (!thumbnail.isNullOrEmpty()) {
-            val context = LocalPlatformContext.current
-            val request = remember(thumbnail) {
-                ImageRequest.Builder(context)
-                    .data(thumbnail)
-                    .size(BACKDROP_DECODE_PX)
-                    .precision(Precision.EXACT)
-                    .memoryCacheKey("clip-backdrop:$thumbnail")
-                    .build()
+            val platform = LocalPikoPlatform.current
+            val resolvedModel = remember(platform, thumbnail) { platform.resolveCoilModel(thumbnail) }
+            val targetBlurPx = with(LocalDensity.current) { BackdropBlur.toPx() }
+            val cw = containerSize.width.takeIf { it > 0 } ?: 1080
+            val ch = containerSize.height.takeIf { it > 0 } ?: 1920
+            val cacheKey = remember(resolvedModel, cw, ch, targetBlurPx) {
+                PreblurredBackdropCache.keyOf(resolvedModel, cw, ch, targetBlurPx)
             }
-            val blurred = if (LocalPikoPlatform.current.supportsBlur) {
-                Modifier.blur(BackdropBlur, edgeTreatment = BlurredEdgeTreatment.Rectangle)
-            } else {
-                Modifier
+            var preblurred by remember(cacheKey) { mutableStateOf(PreblurredBackdropCache.get(cacheKey)) }
+            var fallbackToRealtimeBlur by remember(cacheKey) { mutableStateOf(false) }
+
+            LaunchedEffect(cacheKey) {
+                if (preblurred != null) return@LaunchedEffect
+                val loaded = platform.loadPreblurredBackdrop(resolvedModel, cw, ch, targetBlurPx)
+                if (loaded != null) {
+                    PreblurredBackdropCache.put(cacheKey, loaded)
+                    preblurred = loaded
+                } else {
+                    fallbackToRealtimeBlur = true
+                }
             }
-            AsyncImage(
-                model = request,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize().then(blurred),
-            )
+
+            val readyBitmap = preblurred
+            if (readyBitmap != null) {
+                Image(
+                    bitmap = readyBitmap,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else if (fallbackToRealtimeBlur) {
+                val context = LocalPlatformContext.current
+                val request = remember(resolvedModel) {
+                    ImageRequest.Builder(context)
+                        .data(resolvedModel)
+                        .size(BACKDROP_DECODE_PX)
+                        .precision(Precision.EXACT)
+                        .memoryCacheKey("clip-backdrop:$thumbnail")
+                        .build()
+                }
+                val blurred = if (platform.supportsBlur) {
+                    Modifier.blur(BackdropBlur, edgeTreatment = BlurredEdgeTreatment.Rectangle)
+                } else {
+                    Modifier
+                }
+                AsyncImage(
+                    model = request,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize().then(blurred),
+                )
+            }
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = BACKDROP_DIM)))
         }
     }

@@ -24,9 +24,9 @@
 
 ### 180 秒有界 TS 切片与磁盘缓存（`PreparedClip`、`TsTimestamps`、`FileClipCache`）
 
-- **有界紧致切片窗口（`CLIP_SLICE_MS = 180 秒`）**：PikPak 的 `720P` 转码流为无头部索引表的 MPEG-TS（包长 `188` 字节整数倍；非 TS 流自动回退原画），若将整条数百 MB 残余流直接暴露给播放器，FFmpeg 打开或定位时会在未缓存公网区间发起十余次串行二分跳读（实测耗时 `4~18 秒`），且片尾存在 PTS 跳变时会导致 `av_seek_frame` 失败。`PikoMediaRepository.prepareClip` 按平均码率估算起点后，通过 `findKeyframe` 扫描首个带 `random_access_indicator` 的视频关键帧，并**自动向前对齐紧邻的 `PAT` 节目表包**（`TsTimestamps`，`MAX_PAT_LEAD_BYTES = 32 * 188`，使解复用器首包即建立节目表与流参数，避免丢弃首个关键帧及其 VPS/SPS/PPS），截取一段约 `180 秒` 的有界 `SlicedByteSource` 作为从 `0` 时刻顺序起播的独立短流交给回环代理。
+- **有界紧致切片窗口（`CLIP_SLICE_MS = 180 秒`）**：PikPak 的 `720P` 转码流为无头部索引表的 MPEG-TS（包长 `188` 字节整数倍；非 TS 流自动回退原画），若将整条数百 MB 残余流直接暴露给播放器，FFmpeg 打开或定位时会在未缓存公网区间发起十余次串行二分跳读（实测耗时 `4~18 秒`），且片尾存在 PTS 跳变时会导致 `av_seek_frame` 失败。`PikoMediaRepository.prepareClip` 按平均码率估算起点后，通过跨分块保持解析状态的 `TsTimestamps.VerifiedSliceScanner` 定位首个同时具备**完整前导 `PAT + PMT`、无连续性断层的带内参数集（HEVC 为 `VPS + SPS + PPS`，H.264 为 `SPS + PPS`，校验宽高大于 0 且引用链匹配）与独立关键帧**的安全接入点并回退至该 `PAT` 包边界（严禁在未找到安全接入点时按估算偏移半路裸切，否则会因缺参数集导致 Android `MediaCodec` 初始化失败并静默回退 CPU 软解发热；未找到安全接入点时回退完整流），截取一段约 `180 秒` 的有界 `SlicedByteSource` 作为从 `0` 时刻顺序起播的独立短流交给回环代理。
 - **首尾预取与 PTS 时长实测校准**：`PreparedClip.prefetch` 对 TS 切片仅预取**开头 `5 秒`**（至少 `512 KiB`）与**切片流尾 `512 KiB`** 两截（`sliceRanges`），随后在前台优先级下读取整条转码流首包 PTS 与切片关键帧 PTS 计算该段对应全片的精确毫秒起点（`resolveStart` 修正 `clipStartMs`，使点击「观看完整视频」时画面帧级无缝衔接），并读取切片流尾最后一个视频 PES 的 PTS 校准该切片实际覆盖的可播放时长（`resolveWindowDuration` 修正 `maxWindowMs`，防止高码率段落实际不足 180 秒却向界面承诺 180 秒）。
-- **磁盘切片缓存（`FileClipCache`，`FORMAT = 3`）**：通过 `RangeLimitedStore` 仅将切片开头与流尾两截块写入磁盘（默认上限 `300 MiB`，超限时按文件修改时间 LRU 一次性淘汰至 `80%` 水位以避免逐块全目录扫描锁竞争；记录上限 `4096` 条），并在预热完成后持久化包含实测 `sliceStartMs` 与 `sliceDurationMs` 的 `ClipRecord`（键名带 `_v3`）。同一片段再次命中（如重开文件夹队列或往回翻出内存保留窗口后重装）时直接从磁盘重建句柄并秒开首帧，无需再次请求文件详情。
+- **磁盘切片缓存（`FileClipCache`，`FORMAT = 4`）**：通过 `RangeLimitedStore` 仅将切片开头与流尾两截块写入磁盘（默认上限 `300 MiB`，超限时按文件修改时间 LRU 一次性淘汰至 `80%` 水位以避免逐块全目录扫描锁竞争；记录上限 `4096` 条），并在预热完成后持久化包含实测 `sliceStartMs` 与 `sliceDurationMs` 的 `ClipRecord`（键名带 `_v4`）。同一片段再次命中（如重开文件夹队列或往回翻出内存保留窗口后重装）时直接从磁盘重建句柄并秒开首帧，无需再次请求文件详情。
 
 ### 并发车道、缓冲压制与定位最高优先级（`ClipStreams`）
 
@@ -37,7 +37,7 @@
 
 - **三层解耦渲染架构**：
   1. **底层常驻画面层**：`POOL_SIZE = 3` 个 `PreviewBackend` 实例按 `page % 3` 轮换分配给上一段、当前段与下一段（当前段画面走起来或至多等待 `800ms` 后再装入下一段与上一段并停在首帧，避免手机端起步解码争抢耗时），三个视频渲染表面常驻在 `VerticalPager` 下方，滑动中仅在绘制阶段通过 `graphicsLayer` 硬件层 `translationY` 跟随页偏移矩阵平移（完全移出视口时置 `alpha = 0f` 消除三层全屏纹理混合 Overdraw），绝不随翻页销毁重建 `Surface`；同时对容器尺寸变化施加 `250ms` 防抖（`SURFACE_RESIZE_SETTLE`），规避 MediaMP 0.5.0 D3D11 `MpvSurfaceRing` 连续改尺寸时的渲染锁死。
-  2. **中层透明翻页器（`VerticalPager`）**：按整数下标作 key（末尾存在未就绪候补时多出一页加载等待页，候补就绪后原地无缝变为视频页而不触发页面跳动），仅绘制未出首帧前的模糊封面遮罩（`ClipBackdrop`）、超过 `300ms` 的缓冲指示器、暂停图标与双击点赞星爆动效。
+  2. **中层透明翻页器（`VerticalPager`）**：按整数下标作 key（末尾存在未就绪候补时多出一页加载等待页，候补就绪后原地无缝变为视频页而不触发页面跳动），仅绘制未出首帧前或留边时的预模糊封面背景（`ClipBackdrop`，小缩略图在后台按 `Crop` 倍率做一次性边缘钳位盒式预模糊并有界缓存，避免播放期常驻全屏实时 `Modifier.blur` 离屏渲染目标）、超过 `300ms` 的缓冲指示器、暂停图标与双击点赞星爆动效。
   3. **顶层固定控件层**：顶栏、左下角文件与目录说明、右侧动作栏及底边独立重组隔离的进度条（`ActiveClipProgressBar`）固定在翻页器上方，不随页面上下滑走，换段时以 `Crossfade` 就地切换，拖动进度条时说明与动作栏自动淡出让出画面。
 - **回滑进度记忆、自动续播与自动连刷**：
   - **回滑记忆（`rememberedPositions` 与 `rememberedLengths`）**：切出槽位前及播放途中持续记录每个 `Clip` 已扩展的窗口长度与当前相对进度（距全片可用末尾不足 `5 秒` 或已播完则归零）；往回翻过多个槽位重新装入时，自动放开代理预读并直接定位至上次离开的进度与窗口长度，首帧未出前进度条亦保持该读数不闪回 `0`。

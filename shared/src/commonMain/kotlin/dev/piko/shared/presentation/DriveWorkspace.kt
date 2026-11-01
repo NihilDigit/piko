@@ -6,6 +6,12 @@ import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.RecentFolders
+import dev.piko.shared.data.PinnedTabs
+import dev.piko.shared.data.PinnedTabCrumb
+import dev.piko.shared.data.PinnedTabRecord
+import dev.piko.shared.data.ImportPreviewLocation
+import dev.piko.shared.data.LocalLocation
+import kotlin.uuid.Uuid
 import dev.piko.shared.data.ScrollAnchor
 import dev.piko.shared.data.archive
 import dev.piko.shared.data.isDriveFolderId
@@ -40,6 +46,9 @@ class DriveWorkspace(
     private val job = SupervisorJob(backgroundScope.coroutineContext[Job])
     private val workScope = CoroutineScope(backgroundScope.coroutineContext + job)
     override val clipboard = DriveClipboardState()
+    val pinnedTabs = PinnedTabs(cacheStore, workScope)
+    private var reconcilingPins = false
+    private var canRestoreSavedTabs = true
     private val folderIndex get() = repository.folderIndex
     private class EntrySnapshot(
         val tabId: Long,
@@ -81,13 +90,103 @@ class DriveWorkspace(
     }
     val contextsFlow: StateFlow<List<WorkspaceContext>> get() = contexts.contextsFlow
     val activeContextId: StateFlow<Long> get() = contexts.activeContextId
-    val primaryTabId: Long get() = contexts.primaryFileId
+    val primaryTabId: Long get() = _tabs.value.firstOrNull { !it.isPinned }?.id ?: contexts.primaryFileId
     fun canCloseContext(id: Long): Boolean = contexts.canClose(id)
 
+    fun isTabPinned(id: Long): Boolean = _tabs.value.any { it.id == id && it.isPinned }
+
+    fun canPinTab(id: Long): Boolean = tabSnapshot(id)?.let { tab ->
+        tab.session == null && tab.stack.isNotEmpty() && tab.stack.none { ImportPreviewLocation.of(it.id) != null }
+    } == true
+
+    fun togglePinTab(id: Long): Boolean {
+        if (!canPinTab(id)) return false
+        canRestoreSavedTabs = false
+        val tab = tabSnapshot(id) ?: return false
+        val pinId = tab.pinId ?: Uuid.random().toString()
+        val pin = !tab.isPinned
+        _tabs.update { tabs ->
+            val rest = tabs.filterNot { it.id == id }
+            rest.toMutableList().apply {
+                add(rest.count { it.isPinned }, tab.copy(pinId = pinId.takeIf { pin }))
+            }
+        }
+        if (!pin) pinnedTabs.unpin(pinId, expectedAccount = navigationAccount.value)
+        else if (tab.stack.none { LocalLocation.isLocal(it.id) }) {
+            pinnedTabs.upsert(pinId, tab.stack.outsideArchives().map { PinnedTabCrumb(it.id, it.name) },
+                _tabs.value.indexOfFirst { it.id == id }, expectedAccount = navigationAccount.value)
+        }
+        normalizePinnedOrder()
+        // An unpinned tab goes immediately after the fixed section, not to its old position.
+        contexts.move(id, _tabs.value.indexOfFirst { it.id == id })
+        pinnedTabs.reorder(_tabs.value.mapNotNull { it.pinId }, expectedAccount = navigationAccount.value)
+        publishTabs()
+        saveTabs(immediate = true)
+        return true
+    }
+
+    private fun normalizePinnedOrder() {
+        _tabs.update { tabs -> tabs.sortedBy { !it.isPinned } }
+        _tabs.value.filter { it.isPinned }.forEachIndexed { index, tab -> contexts.move(tab.id, index) }
+    }
+
+    private val resolvingPins = mutableMapOf<String, Long>()
+    private var reconciledPinRecords: Map<String, PinnedTabRecord> = emptyMap()
+
+    /** Remote changes update retained tabs without activating them or creating navigation history. */
+    private fun reconcilePinnedTabs(records: Map<String, PinnedTabRecord>) {
+        val account = navigationAccount.value ?: return
+        if (account != repository.currentAccount) return
+        reconcilingPins = true
+        try {
+            _tabs.update { tabs -> tabs.map { tab ->
+                if (tab.pinId?.let { records[it]?.pinned } == false) tab.copy(pinId = null) else tab
+            } }
+            val activeRecords = records.values.filter { it.pinned }.sortedWith(compareBy({ it.order }, { it.pinId }))
+            for (record in activeRecords) {
+                val stack = record.crumbs.map { PikoPathBreadcrumb(it.id, it.name) }
+                if (stack.isEmpty() || stack.library?.isSession == true || stack.any {
+                    LocalLocation.isLocal(it.id) || ImportPreviewLocation.of(it.id) != null
+                }) continue
+                val existing = _tabs.value.firstOrNull { it.pinId == record.pinId }
+                    ?: _tabs.value.firstOrNull { tabSnapshot(it.id)?.stack?.lastOrNull()?.id == stack.last().id }
+                val id = existing?.id ?: openTab(stack, activate = false)
+                val currentStack = tabSnapshot(id)?.stack
+                val next = if (existing != null && (reconciledPinRecords[record.pinId] == record ||
+                        currentStack?.outsideArchives()?.map { PinnedTabCrumb(it.id, it.name) } == record.crumbs)) {
+                    currentStack ?: stack
+                } else folderIndex.resolve(stack)
+                _tabs.update { tabs -> tabs.map { if (it.id == id) it.copy(pinId = record.pinId, stack = next) else it } }
+                if (_activeTabId.value == id) _folderStackFlow.value = next
+                if (next.last().id.isNotEmpty() && isDriveFolderId(next.last().id)) {
+                    if (resolvingPins.put(record.pinId, record.updatedAt) != record.updatedAt) workScope.launch {
+                        val leaf = next.last()
+                        val parentStack = repository.locateFolder(leaf.id).getOrNull() ?: return@launch
+                        val resolved = folderIndex.resolve(parentStack + leaf)
+                        if (navigationAccount.value != account || repository.currentAccount != account) return@launch
+                        val current = pinnedTabs.awaitAccountReady(account)?.get(record.pinId)
+                        if (current != record || !isTabPinned(id) || tabSnapshot(id)?.stack?.lastOrNull()?.id != leaf.id) return@launch
+                        if (resolved.isNotEmpty() && resolved != next) {
+                            updateTabStack(id, resolved, restoring = true)
+                        }
+                    }
+                }
+            }
+            val order = activeRecords.mapIndexed { index, record -> record.pinId to index }.toMap()
+            _tabs.update { tabs -> tabs.sortedWith(compareBy<DriveTab>({ !it.isPinned }, { if (it.isPinned) order[it.pinId] ?: Int.MAX_VALUE else 0 })) }
+            normalizePinnedOrder()
+            reconciledPinRecords = records
+            publishTabs()
+        } finally {
+            reconcilingPins = false
+        }
+    }
+
     fun activatePrimaryFileBrowser(): Long {
-        switchTab(primaryTabId)
-        contexts.activate(primaryTabId)
-        return primaryTabId
+        val id = _tabs.value.firstOrNull { !it.isPinned }?.id ?: openTab(listOf(ROOT_BREADCRUMB))
+        switchTab(id)
+        contexts.activate(id)
+        return id
     }
 
     fun enterPrimaryWithToken(stack: List<PikoPathBreadcrumb>): NavigationEntryToken {
@@ -97,7 +196,7 @@ class DriveWorkspace(
 
     /** Reuse an entry only when the caller is already displaying the file browser's home page. */
     fun pushLibrary(library: DriveLibrary, reuseCurrentEntry: Boolean = true): NavigationEntryToken? {
-        if (reuseCurrentEntry && activeContextId.value == primaryTabId && _folderStackFlow.value.firstOrNull()?.id == library.id) {
+        if (reuseCurrentEntry && !isTabPinned(_activeTabId.value) && activeContextId.value == primaryTabId && _folderStackFlow.value.firstOrNull()?.id == library.id) {
             if (_folderStackFlow.value.size > 1) updateFolderStack(listOf(library.crumb))
             return null
         }
@@ -145,6 +244,12 @@ class DriveWorkspace(
         // 文件夹索引每变一次都会来这里对一遍，没变的不重写存盘
         if (tabs == _tabsFlow.value) return
         _tabsFlow.value = tabs
+        if (!reconcilingPins) tabs.forEachIndexed { index, tab ->
+            val pinId = tab.pinId ?: return@forEachIndexed
+            if (tab.stack.none { LocalLocation.isLocal(it.id) }) {
+                pinnedTabs.upsert(pinId, tab.stack.outsideArchives().map { PinnedTabCrumb(it.id, it.name) }, index, expectedAccount = navigationAccount.value)
+            }
+        }
         navigations.value.forEach { navigation -> tabs.firstOrNull { it.id == navigation.tabId }?.let(navigation::update) }
         saveTabs()
     }
@@ -192,7 +297,7 @@ class DriveWorkspace(
     // 标签按账号存进缓存目录，重启后接着用。只存各自停在哪、哪个是活动的，历史不存
     private var tabsSave: Job? = null
 
-    private fun saveTabs() {
+    private fun saveTabs(immediate: Boolean = false) {
         val store = cacheStore ?: return
         val account = navigationAccount.value ?: return
         if (account != repository.currentAccount) return
@@ -201,10 +306,11 @@ class DriveWorkspace(
             tabs = tabs.map { tab -> tab.stack.outsideArchives().map { SavedCrumb(it.id, it.name) } },
             active = tabs.indexOfFirst { it.id == _activeTabId.value }.coerceAtLeast(0),
             ids = tabs.map { it.id },
+            pinIds = tabs.map { it.pinId },
         )
         tabsSave?.cancel()
         tabsSave = workScope.launch {
-            delay(TABS_SAVE_DELAY_MS)
+            if (!immediate) delay(TABS_SAVE_DELAY_MS)
             runCatching { store.write(tabsKey(account), tabsJson.encodeToString(SavedTabs.serializer(), saved)) }
         }
     }
@@ -217,14 +323,13 @@ class DriveWorkspace(
         val store = cacheStore ?: return false
         val account = repository.currentAccount ?: return false
         enterAccount(account)
-        if (_tabs.value.size != 1 || _folderStackFlow.value.singleOrNull()?.id != ROOT_BREADCRUMB.id) return false
-        val initialTabs = _tabsFlow.value
+        if (!canRestoreSavedTabs || _tabs.value.any { !it.isPinned && tabSnapshot(it.id)?.stack?.singleOrNull()?.id != ROOT_BREADCRUMB.id }) return false
         val initialHighlightRevision = highlightRequests.value
         if (pendingByTab.value.values.any { it.isNotEmpty() }) return false
         val saved = runCatching { store.read(tabsKey(account))?.let { tabsJson.decodeFromString(SavedTabs.serializer(), it) } }.getOrNull()
             ?: return false
         // 读取缓存期间可能已经导航或换号，旧的恢复结果不能覆盖用户刚打开的位置。
-        if (_tabsFlow.value !== initialTabs || highlightRequests.value != initialHighlightRevision || repository.currentAccount != account) return false
+        if (!canRestoreSavedTabs || highlightRequests.value != initialHighlightRevision || repository.currentAccount != account) return false
         // Older releases saved duplicate report positions as tabs. Their task state was never saved,
         // so only actual file positions can be restored into this workspace.
         repository.localMounts.all()
@@ -239,17 +344,29 @@ class DriveWorkspace(
         val tabs = stacks.map { (savedIndex, stack) ->
             val id = savedIds?.get(savedIndex) ?: newTabId(allocated)
             allocated += id
-            DriveTab(id, stack)
+            DriveTab(id, stack, pinId = saved.pinIds.getOrNull(savedIndex))
         }
         val activeIndex = stacks.indexOfFirst { it.first >= saved.active }.takeIf { it >= 0 } ?: tabs.lastIndex
         val active = tabs[activeIndex]
-        _tabs.value = tabs
+        _tabs.value = tabs.sortedBy { !it.isPinned }
         _activeTabId.value = active.id
         _historyFlow.value = FolderHistory()
         _folderStackFlow.value = active.stack
 
-        contexts.restoreFilesPreservingAux(tabs.map { it.id }, active.id)
+        canRestoreSavedTabs = false
+        contexts.restoreFilesPreservingAux(_tabs.value.map { it.id }, active.id)
         forgetFoldersOutsideStack()
+        // A remote tombstone is authoritative over an older local tab snapshot.
+        val records = pinnedTabs.awaitAccountReady(account) ?: return false
+        if (navigationAccount.value != account || repository.currentAccount != account) return false
+        reconciledPinRecords = emptyMap()
+        reconcilePinnedTabs(records)
+        _tabs.value.forEachIndexed { index, tab ->
+            val pinId = tab.pinId ?: return@forEachIndexed
+            if (pinId !in records && tab.stack.none { LocalLocation.isLocal(it.id) }) {
+                pinnedTabs.upsert(pinId, tab.stack.outsideArchives().map { PinnedTabCrumb(it.id, it.name) }, index, expectedAccount = account)
+            }
+        }
         publishTabs()
         return true
     }
@@ -264,11 +381,15 @@ class DriveWorkspace(
      */
     fun enterAccount(account: String?) {
         repository.enterAccount(account)
+        pinnedTabs.switchAccount(account)
         while (true) {
             val previous = navigationAccount.value
             if (previous == account) return
             if (!navigationAccount.compareAndSet(previous, account)) continue
             entrySnapshots.value = emptyMap()
+            reconciledPinRecords = emptyMap()
+            resolvingPins.clear()
+            canRestoreSavedTabs = true
             if (previous == null) return
             break
         }
@@ -292,18 +413,23 @@ class DriveWorkspace(
 
     /** 在活动标签后面开一个新标签，停在 [stack]。[activate] 为 false 是在后台开（中键点文件夹）。 */
     fun openTab(stack: List<PikoPathBreadcrumb>, activate: Boolean = true): Long {
+        if (!reconcilingPins) canRestoreSavedTabs = false
         val tab = DriveTab(newTabId(), stack.ifEmpty { listOf(ROOT_BREADCRUMB) })
         _tabs.update { tabs ->
             val at = tabs.indexOfFirst { it.id == _activeTabId.value }
-            tabs.toMutableList().apply { add(at + 1, tab) }
+            tabs.toMutableList().apply { add((at + 1).coerceAtLeast(tabs.count { it.isPinned }), tab) }
         }
         val afterId = _activeTabId.value.takeIf { id -> contextsFlow.value.any { it.id == id } } ?: contexts.activeContextId.value
         contexts.openFile(tab.id, activate = false, afterId = afterId)
+        normalizePinnedOrder()
         if (activate) switchFileTab(tab.id, activateContext = true) else publishTabs()
         return tab.id
     }
 
-    fun switchTab(id: Long) = switchFileTab(id, activateContext = true)
+    fun switchTab(id: Long) {
+        if (!reconcilingPins && id != _activeTabId.value) canRestoreSavedTabs = false
+        switchFileTab(id, activateContext = true)
+    }
 
     private fun switchFileTab(id: Long, activateContext: Boolean) {
         val active = _activeTabId.value
@@ -355,9 +481,12 @@ class DriveWorkspace(
     }
 
     fun moveContext(id: Long, targetIndex: Int): Boolean {
-        if (!contexts.move(id, targetIndex)) return false
+        val pinnedCount = _tabs.value.count { it.isPinned }
+        val range = if (isTabPinned(id)) 0 until pinnedCount else pinnedCount until contextsFlow.value.size
+        if (range.isEmpty() || !contexts.move(id, targetIndex.coerceIn(range.first, range.last))) return false
         val positions = contextsFlow.value.mapIndexed { index, context -> context.id to index }.toMap()
         _tabs.update { tabs -> tabs.sortedBy { positions[it.id] ?: Int.MAX_VALUE } }
+        if (isTabPinned(id)) pinnedTabs.reorder(_tabs.value.mapNotNull { it.pinId }, expectedAccount = navigationAccount.value)
         publishTabs()
         return true
     }
@@ -488,6 +617,7 @@ class DriveWorkspace(
         val next = folderIndex.resolve(requested)
         val previous = _folderStackFlow.value
         if (next == previous) return
+        canRestoreSavedTabs = false
         if (!leaveAllowed(next) { moveTo(requested) }) return
         val session = previous.library?.takeIf { it.isSession }
         if (session != null && next.library != session && sessionTabHeld(session)) {
@@ -663,6 +793,7 @@ class DriveWorkspace(
         stack.lastOrNull { isDriveFolderId(it.id) } ?: ROOT_BREADCRUMB
 
     init {
+        contexts.isPinned = ::isTabPinned
         repository.registerFolderReferences(this)
         job.invokeOnCompletion { repository.unregisterFolderReferences(this) }
         workScope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -673,8 +804,16 @@ class DriveWorkspace(
                     pendingByTab.value = emptyMap()
                     navigations.value.forEach { it.updateHighlights(emptySet()) }
                 }
+                pinnedTabs.switchAccount(account)
                 repository.localMounts.all()
                 recentFolders.switchAccount(account)
+            }
+        }
+        workScope.launch {
+            pinnedTabs.flow.collect {
+                val account = navigationAccount.value ?: return@collect
+                val records = pinnedTabs.awaitAccountReady(account) ?: return@collect
+                if (account == repository.currentAccount) reconcilePinnedTabs(records)
             }
         }
         workScope.launch {
@@ -705,6 +844,6 @@ class DriveWorkspace(
 private class SavedCrumb(val id: String, val name: String)
 
 @Serializable
-private class SavedTabs(val tabs: List<List<SavedCrumb>>, val active: Int, val ids: List<Long> = emptyList())
+private class SavedTabs(val tabs: List<List<SavedCrumb>>, val active: Int, val ids: List<Long> = emptyList(), val pinIds: List<String?> = emptyList())
 
 private val tabsJson = Json { ignoreUnknownKeys = true }

@@ -32,6 +32,12 @@ sealed interface Screen : NavKey {
     data object MyShares : Screen
 
     @Serializable
+    data class SpaceMap(
+        val rootFolderId: String = "",
+        val rootFolderName: String = "",
+    ) : Screen
+
+    @Serializable
     data class Library(val libraryId: String) : Screen
 
     @Serializable

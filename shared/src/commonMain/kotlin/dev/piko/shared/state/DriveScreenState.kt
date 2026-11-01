@@ -164,7 +164,8 @@ class DriveScreenState(
     private val supplementalFiles: () -> List<FileStat> = { emptyList() },
 ) {
     private val browserAccount = driveRepo.currentAccount
-    private val canAcceptAction: Boolean get() = scope.isActive && driveRepo.currentAccount == browserAccount
+    private val browserGeneration = driveRepo.accountGeneration
+    private val canAcceptAction: Boolean get() = scope.isActive && driveRepo.currentAccount == browserAccount && driveRepo.accountGeneration == browserGeneration
     val acceptsActions: Boolean get() = canAcceptAction
     val fileActions = dev.piko.shared.presentation.FileCommands(driveRepo, fileWriteSession, browserAccount, trashSession, folderVault, vaultEditSession, shareSaves, receiving) { canAcceptAction }
     val vaultActions = dev.piko.shared.presentation.VaultEntryCommands(driveRepo, vaultEditSession, fileActions, browserAccount) { canAcceptAction }
@@ -214,6 +215,8 @@ class DriveScreenState(
     var sortOrder by mutableStateOf(initialSortOrder)
         private set
     var perFolderSort by mutableStateOf(false)
+        private set
+    var foldersFirst by mutableStateOf(true)
         private set
     private var globalSortOrder = initialSortOrder
     private val folderSortOrders = LinkedHashMap<String, PikoFileSortOrder>()
@@ -413,8 +416,13 @@ class DriveScreenState(
             // 库里的条目散在全盘各处，按作品与分区归拢的是一个目录里的东西，这里照原来的先后平铺；
             // 压缩包里的也平铺、不折叠：在包里多半是挑要解压的几项，折起来的次要文件正是要挑的一部分
             structure == null || (isVirtualPlace && !isLocalPlace && importPreviewView == null) -> files.map { DriveListItem.File(it, null) }
-            !isNameParsing || structure.blocks.isEmpty() || sortOrder == PikoFileSortOrder.DURATION_DESC || sortOrder == PikoFileSortOrder.DURATION_ASC ->
-                filterDriveFiles(files, structure.foldedIds, enabled = hideFolded, revealAll = false).map { DriveListItem.File(it, structure.views[it.id]) }
+            !isNameParsing || !foldersFirst || structure.blocks.isEmpty() || sortOrder == PikoFileSortOrder.DURATION_DESC || sortOrder == PikoFileSortOrder.DURATION_ASC ->
+                filterDriveFiles(files, structure.foldedIds, enabled = hideFolded, revealAll = false).map { file ->
+                    val view = if (isNameParsing) structure.views[file.id]?.let { view ->
+                        if (view.heading.isNotBlank()) view.withTitle(view.heading) else view
+                    } else null
+                    DriveListItem.File(file, view)
+                }
             else -> buildDriveItems(files, structure, hideFolded) { block -> isBlockExpanded(block) }
         }
     }
@@ -422,7 +430,7 @@ class DriveScreenState(
     /** 眼前按作品与分区排：不在搜索、不在库或压缩包里、解析开着、未按时长排序且认出了作品。 */
     private val isStructured: Boolean by derivedStateOf {
         val structure = currentAnalysis
-        !isSearching && (!isVirtualPlace || isLocalPlace || importPreviewView != null) && isNameParsing &&
+        !isSearching && (!isVirtualPlace || isLocalPlace || importPreviewView != null) && isNameParsing && foldersFirst &&
             sortOrder != PikoFileSortOrder.DURATION_DESC && sortOrder != PikoFileSortOrder.DURATION_ASC &&
             structure != null && structure.blocks.isNotEmpty()
     }
@@ -532,7 +540,7 @@ class DriveScreenState(
      */
     val hitLocations: Map<String, String> by derivedStateOf {
         if (isGlobalSearchActive) {
-            globalSearchHits.associate { it.file.id to it.parentPath.ifEmpty { PikoDriveRepository.ROOT_BREADCRUMB.name } }
+            globalSearchHits.associate { it.file.id to it.parentPath.ifEmpty { PikoDriveRepository.ROOT_BREADCRUMB.localizedName } }
         } else {
             emptyMap()
         }
@@ -555,13 +563,16 @@ class DriveScreenState(
             preferences.nameParsingFlow.collect { isNameParsing = it }
         }
         scope.launch {
+            preferences.foldersFirstFlow.collect { enabled -> applyFoldersFirst(enabled) }
+        }
+        scope.launch {
             preferences.perFolderSortFlow.collect { enabled ->
                 if (perFolderSort == enabled) return@collect
                 perFolderSort = enabled
                 val desired = effectiveSortOrderFor(activeFolderId)
                 if (sortOrder != desired) {
                     sortOrder = desired
-                    load()
+                    if (loadedFolderId != activeFolderId) load()
                 }
             }
         }
@@ -576,7 +587,7 @@ class DriveScreenState(
                     val desired = effectiveSortOrderFor(activeFolderId)
                     if (sortOrder != desired) {
                         sortOrder = desired
-                        load()
+                        if (loadedFolderId != activeFolderId) load()
                     }
                 }
             }
@@ -617,12 +628,43 @@ class DriveScreenState(
                 revealHighlightedItems(structure, ids)
             }
         }
+        // 聚合和媒体详情仅更新本地投影，不重列远端，也不修改选择和滚动锚点。
+        scope.launch {
+            combine(driveRepo.observeSortRevision(), snapshotFlow {
+                LocalSortInput(activeFolderId, loadedFolderId, files, remoteFiles, sortOrder, foldersFirst, globalSearchHits.toList())
+            }) { _, input -> input }.collectLatest { input ->
+                if (!canAcceptAction || archiveView != null || libraryView?.isSession == true) return@collectLatest
+                val generation = driveRepo.accountGeneration
+                val (context, sorted) = withContext(Dispatchers.Default) {
+                    val context = driveRepo.sortContextFor(input.files + input.remote + input.hits.map { it.file }, input.order)
+                    context to Triple(
+                        driveRepo.sortFiles(input.files, input.order, input.folderId, context, foldersFirst = input.foldersFirst),
+                        driveRepo.sortFiles(input.remote, input.order, input.folderId, context, foldersFirst = input.foldersFirst),
+                        driveRepo.sortFiles(input.hits.map { it.file }, input.order, "", context, foldersFirst = input.foldersFirst),
+                    )
+                }
+                Snapshot.withMutableSnapshot {
+                    if (canAcceptAction && driveRepo.accountGeneration == generation && driveRepo.sortContextRevision == context.revision &&
+                        activeFolderId == input.folderId && loadedFolderId == input.loadedFolderId &&
+                        files === input.files && remoteFiles === input.remote && sortOrder == input.order && foldersFirst == input.foldersFirst && globalSearchHits.toList() == input.hits) {
+                        if (files != sorted.first) files = sorted.first
+                        if (remoteFiles != sorted.second) remoteFiles = sorted.second
+                        val hitsById = input.hits.associateBy { it.file.id }
+                        val hits = sorted.third.mapNotNull { hitsById[it.id] }
+                        if (globalSearchHits.toList() != hits) {
+                            globalSearchHits.clear()
+                            globalSearchHits.addAll(hits)
+                        }
+                    }
+                }
+            }
+        }
         // 解析放到后台：上千个文件的目录要算几秒。按内容缓存，重组、刷新与返回上级都不重算
         scope.launch {
             snapshotFlow { Triple(loadedFolderId, files, dev.piko.shared.i18n.PikoLocale.effectiveLanguage) }.collectLatest { (folderId, list, language) ->
                 val structure = DriveAnalysisCache.analyze(list)
                 Snapshot.withMutableSnapshot {
-                    if (files === list && loadedFolderId == folderId && dev.piko.shared.i18n.PikoLocale.effectiveLanguage == language) {
+                    if (canAcceptAction && files === list && loadedFolderId == folderId && dev.piko.shared.i18n.PikoLocale.effectiveLanguage == language) {
                         revealHighlightedItems(structure, highlightedFileIds)
                         analysis = FolderAnalysis(folderId, list, structure)
                     }
@@ -763,9 +805,19 @@ class DriveScreenState(
                 if (change is DriveChange.Renamed && change.parentId == activeFolderId && libraryView == null && archiveView == null && !isSearching) {
                     val folderId = activeFolderId
                     val previous = files
-                    val nextRemote = driveRepo.sortFiles(remoteFiles.map { if (it.id == change.id) it.copy(name = change.name) else it }, sortOrder, folderId)
-                    val nextFiles = withImportPreviews(folderId, nextRemote)
-                    val structure = DriveAnalysisCache.analyze(nextFiles)
+                    val currentRemote = remoteFiles
+                    val currentOrder = sortOrder
+                    val currentFoldersFirst = foldersFirst
+                    val (nextRemote, nextFiles, structure) = withContext(Dispatchers.Default) {
+                        val sortedRemote = driveRepo.sortFiles(
+                            currentRemote.map { if (it.id == change.id) it.copy(name = change.name) else it },
+                            currentOrder,
+                            folderId,
+                            foldersFirst = currentFoldersFirst,
+                        )
+                        val merged = withImportPreviews(folderId, sortedRemote)
+                        Triple(sortedRemote, merged, DriveAnalysisCache.analyze(merged))
+                    }
                     Snapshot.withMutableSnapshot {
                         if (files === previous && activeFolderId == folderId) {
                             remoteFiles = nextRemote
@@ -834,6 +886,11 @@ class DriveScreenState(
         navigation.restoreFolderStack(stack)
         if (unchanged) onFolderChanged()
     }
+
+    private data class LocalSortInput(
+        val folderId: String, val loadedFolderId: String?, val files: List<FileStat>, val remote: List<FileStat>,
+        val order: PikoFileSortOrder, val foldersFirst: Boolean, val hits: List<SearchHit>,
+    )
 
     private var loadJob: Job? = null
 
@@ -909,7 +966,7 @@ class DriveScreenState(
                 thumbnailLink = if (coverGcid != null) thumbnailUrlOf(coverGcid) else "",
             )
         }
-        return driveRepo.sortFiles(folderStats + directFiles, sortOrder, folderId)
+        return driveRepo.sortFilesFast(folderStats + directFiles, sortOrder, folderId, foldersFirst = foldersFirst)
     }
 
     private fun withImportPreviews(folderId: String, realFiles: List<FileStat>): List<FileStat> {
@@ -917,7 +974,8 @@ class DriveScreenState(
         if (virtuals.isEmpty()) return realFiles
         val (virtualFolders, virtualFiles) = virtuals.partition(FileStat::isFolder)
         val (realFolders, realFilesOnly) = realFiles.partition(FileStat::isFolder)
-        return virtualFolders + realFolders + virtualFiles + realFilesOnly
+        val combined = virtualFolders + realFolders + virtualFiles + realFilesOnly
+        return if (foldersFirst) combined else driveRepo.sortFilesFast(combined, sortOrder, folderId, foldersFirst = false)
     }
 
     /** [useCache] 与 [showRefreshing] 都为 false 是静默重列：不用缓存，也不出任何加载指示，见 [catchUpWithHighlight]。 */
@@ -949,21 +1007,33 @@ class DriveScreenState(
             return
         }
         if (showRefreshing && folderId.isEmpty()) {
-            driveRepo.requestTreeRebuild()
+            driveRepo.onRootPullRefresh()
         }
-        val cached = if (useCache) driveRepo.cachedBrowsable(folderId, sortOrder) else null
-        when {
-            cached != null -> Unit // 缓存也先在后台分析，再一起提交列表与结构。
-            showRefreshing -> isRefreshing = true
-            useCache -> isLoading = true
+        if (showRefreshing) {
+            isRefreshing = true
         }
         loadJob?.cancel()
         loadJob = scope.launch {
-            if (cached != null) {
-                val rawFiles = withoutInternalFolders(folderId, cached)
-                val nextFiles = withImportPreviews(folderId, rawFiles)
-                val structure = DriveAnalysisCache.analyze(nextFiles)
+            val currentInitialOrder = sortOrder
+            // cachedBrowsable 在冷启动或未命中内存 LRU 时会查询 SQLite 树索引并解码条目，放到后台调度器避免阻塞 UI 主线程首帧
+            val cached = if (useCache) withContext(Dispatchers.Default) {
+                driveRepo.cachedBrowsable(folderId, currentInitialOrder)
+            } else null
+            if (cached == null && useCache && !showRefreshing && activeFolderId == folderId) {
+                isLoading = true
+            }
+            var paintedCache = cached != null
+            suspend fun paintCachedList(list: List<FileStat>) {
+                val currentOrder = sortOrder
+                val currentFoldersFirst = foldersFirst
+                val (rawFiles, nextFiles, structure) = withContext(Dispatchers.Default) {
+                    val sorted = driveRepo.sortFiles(withoutInternalFolders(folderId, list), currentOrder, folderId, foldersFirst = currentFoldersFirst)
+                    val merged = withImportPreviews(folderId, sorted)
+                    Triple(sorted, merged, DriveAnalysisCache.analyze(merged))
+                }
+                if (activeFolderId != folderId) return
                 Snapshot.withMutableSnapshot {
+                    if (activeFolderId != folderId) return@withMutableSnapshot
                     remoteFiles = rawFiles
                     files = nextFiles
                     loadedFolderId = folderId
@@ -972,10 +1042,33 @@ class DriveScreenState(
                     isLoading = false
                 }
             }
+            if (cached != null) {
+                paintCachedList(cached)
+            }
+            // 冷启动首帧时后台 SQLite 可能尚在打开途中（几十毫秒）；一旦持久树绑定就绪且网络请求尚未返回，立即先涂上本地缓存撤掉骨架屏
+            val lateCacheWatcher = if (useCache && cached == null) {
+                launch {
+                    driveRepo.observeTreeCacheReady().collect {
+                        if (paintedCache || !isLoading) return@collect
+                        val orderSnapshot = sortOrder
+                        val lateCached = withContext(Dispatchers.Default) {
+                            driveRepo.cachedBrowsable(folderId, orderSnapshot)
+                        } ?: return@collect
+                        paintedCache = true
+                        paintCachedList(lateCached)
+                    }
+                }
+            } else {
+                null
+            }
             val started = TimeSource.Monotonic.markNow()
-            val listing = driveRepo.listBrowsable(parentId = folderId, sortOrder = sortOrder)
+            val listing = try {
+                driveRepo.listBrowsable(parentId = folderId, sortOrder = sortOrder)
+            } finally {
+                lateCacheWatcher?.cancel()
+            }
             val elapsed = started.elapsedNow().inWholeMilliseconds
-            listing.onSuccess { PikoLog.d(TAG, "列出${logFile(folderId, "")}：${it.size} 项，$elapsed ms${if (cached != null) "，先显示了缓存" else ""}") }
+            listing.onSuccess { PikoLog.d(TAG, "列出${logFile(folderId, "")}：${it.size} 项，$elapsed ms${if (paintedCache) "，先显示了缓存" else ""}") }
             // 空列表可能是目录已经不在了：上次退出时停在的目录后来被删，或在别的客户端进了回收站。
             // 这时退回上一级，而不是把一个不存在的目录画成「此文件夹为空」。上一级也不在的话，
             // 它的加载会再退一级。只在列表为空时才多查一次详情，平常的目录不多花请求
@@ -988,14 +1081,23 @@ class DriveScreenState(
                 return@launch
             }
             listing
-                .onSuccess {
-                    val rawFiles = withoutInternalFolders(folderId, it)
-                    if (cached != null && rawFiles == remoteFiles && loadedFolderId == folderId && loadError == null) {
-                        return@onSuccess
+                .onSuccess { listed ->
+                    val currentOrder = sortOrder
+                    val currentFoldersFirst = foldersFirst
+                    val previousRemote = remoteFiles
+                    val prepared = withContext(Dispatchers.Default) {
+                        val sorted = driveRepo.sortFiles(withoutInternalFolders(folderId, listed), currentOrder, folderId, foldersFirst = currentFoldersFirst)
+                        if (paintedCache && sorted == previousRemote && loadedFolderId == folderId && loadError == null) {
+                            null
+                        } else {
+                            val merged = withImportPreviews(folderId, sorted)
+                            Triple(sorted, merged, DriveAnalysisCache.analyze(merged))
+                        }
                     }
-                    val nextFiles = withImportPreviews(folderId, rawFiles)
-                    val structure = DriveAnalysisCache.analyze(nextFiles)
+                    if (prepared == null || activeFolderId != folderId) return@onSuccess
+                    val (rawFiles, nextFiles, structure) = prepared
                     Snapshot.withMutableSnapshot {
+                        if (activeFolderId != folderId) return@withMutableSnapshot
                         remoteFiles = rawFiles
                         files = nextFiles
                         loadedFolderId = folderId
@@ -1277,12 +1379,18 @@ class DriveScreenState(
     private fun isSessionGroupExpanded(blockId: String): Boolean = expandedSections[expandKey(blockId)] ?: true
 
     private fun sessionItems(isExpanded: (blockId: String) -> Boolean): List<DriveListItem> =
-        libraryView?.let(sessionListing)?.items(isExpanded).orEmpty()
+        libraryView?.let(sessionListing)?.items(isExpanded).orEmpty().map { item ->
+            if (!isNameParsing && item is DriveListItem.File) DriveListItem.File(item.file, null, item.key) else item
+        }
 
     private fun folderSessionItems(isExpanded: (DriveBlock) -> Boolean): List<DriveListItem> {
         val listing = libraryView?.let(sessionListing) ?: return emptyList()
         val structure = currentAnalysis
-        if (!isNameParsing || structure == null || structure.blocks.isEmpty()) return files.map { listing.decorate(DriveListItem.File(it, null)) }
+        if (!isNameParsing) return files.map { DriveListItem.File(it, null) }
+        if (!foldersFirst || structure == null || structure.blocks.isEmpty()) return files.map { file ->
+            val view = structure?.views?.get(file.id)?.let { if (it.heading.isNotBlank()) it.withTitle(it.heading) else it }
+            listing.decorate(DriveListItem.File(file, view))
+        }
         val items = buildDriveItems(files, structure, hideFolded = false, isExpanded)
         // 普通目录把同集的其他版本挂在主文件下面；查重筛选必须让每个命中文件都能被独立选择。
         val rows = items.filterIsInstance<DriveListItem.File>().mapTo(HashSet()) { it.file.id }
@@ -1389,14 +1497,31 @@ class DriveScreenState(
         if (order == sortOrder && !isGlobalSearchActive) return
         sortOrder = order
         if (isGlobalSearchActive) {
-            val sortedFiles = driveRepo.sortFiles(globalSearchHits.map { it.file }, order, "")
+            val sortedFiles = driveRepo.sortFilesFast(globalSearchHits.map { it.file }, order, "", foldersFirst = foldersFirst)
             val byId = globalSearchHits.associateBy { it.file.id }
             val reordered = sortedFiles.mapNotNull { byId[it.id] }
             globalSearchHits.clear()
             globalSearchHits.addAll(reordered)
-        } else {
+        } else if (loadedFolderId != activeFolderId || archiveView != null || libraryView?.isSession == true) {
             load()
         }
+    }
+
+    fun updateFoldersFirst(enabled: Boolean) {
+        applyFoldersFirst(enabled)
+        scope.launch { preferences.setFoldersFirst(enabled) }
+    }
+
+    private fun applyFoldersFirst(enabled: Boolean) {
+        if (foldersFirst == enabled) return
+        foldersFirst = enabled
+        if (archiveView != null || libraryView?.isSession == true) return
+        files = driveRepo.sortFilesFast(files, sortOrder, activeFolderId, foldersFirst = enabled)
+        remoteFiles = driveRepo.sortFilesFast(remoteFiles, sortOrder, activeFolderId, foldersFirst = enabled)
+        val byId = globalSearchHits.associateBy { it.file.id }
+        val sortedHits = driveRepo.sortFilesFast(globalSearchHits.map { it.file }, sortOrder, "", foldersFirst = enabled)
+        globalSearchHits.clear()
+        globalSearchHits.addAll(sortedHits.mapNotNull { byId[it.id] })
     }
 
     fun setPerFolderSortEnabled(enabled: Boolean) {
@@ -1659,12 +1784,13 @@ class DriveScreenState(
     private suspend fun folderView(folder: FileStat, content: List<ChildFile>?): DriveFolderView {
         while (true) {
             val revision = dev.piko.shared.i18n.PikoLocale.revision
+            val cacheGeneration = DriveAnalysisCache.generation
             val language = dev.piko.shared.i18n.PikoLocale.effectiveLanguage
             val key = DriveAnalysisCache.folderKey(folder, content, language)
             DriveAnalysisCache.folderView(key)?.let { return it }
             val computed = withContext(Dispatchers.Default) { describeDriveFolder(folder.name, content) }
             if (dev.piko.shared.i18n.PikoLocale.revision == revision && dev.piko.shared.i18n.PikoLocale.effectiveLanguage == language) {
-                DriveAnalysisCache.putFolderView(key, computed)
+                DriveAnalysisCache.putFolderView(key, computed, cacheGeneration)
                 return computed
             }
         }
@@ -1787,8 +1913,11 @@ class DriveScreenState(
 
     private fun canSelect(id: String): Boolean = !usesFolderStructure || files.none { it.id == id && it.isFolder }
 
+    private var highlightSatisfiedFolderId: String? = null
+
     fun highlight(ids: Set<String>) {
         Snapshot.withMutableSnapshot {
+            highlightSatisfiedFolderId = null
             currentAnalysis?.let { revealHighlightedItems(it, ids) }
             highlightedFileIds = ids
             highlightRevision++
@@ -1802,6 +1931,7 @@ class DriveScreenState(
     }
 
     fun clearHighlight() {
+        highlightSatisfiedFolderId = null
         highlightedFileIds = emptySet()
     }
 
@@ -1814,13 +1944,38 @@ class DriveScreenState(
      * 条目在子目录里（保留目录结构的秒传）时永远等不齐，重试有上限，只多花几次请求。
      */
     private suspend fun catchUpWithHighlight(ids: Set<String>, folderId: String) {
+        val satisfiedIn = highlightSatisfiedFolderId
+        if (satisfiedIn != null && satisfiedIn != folderId) {
+            // 先前已在原目录命中过的高亮，切到新目录后不再跨目录盲目重刷远端列表
+            clearHighlight()
+            return
+        }
+        var unchangedUncachedCount = 0
         for (wait in HIGHLIGHT_RETRY_DELAYS) {
             loadJob?.join()
             if (activeFolderId != folderId) return
             val present = files.mapTo(HashSet()) { it.id }
+            if (ids.any { it in present }) {
+                highlightSatisfiedFolderId = folderId
+            }
             if (ids.all { it in present }) return
+            val snapshotBefore = remoteFiles.map { it.id to it.modifiedTime }
             delay(wait)
             load(useCache = false, showRefreshing = false)
+            loadJob?.join()
+            if (activeFolderId != folderId) return
+            val afterPresent = files.mapTo(HashSet()) { it.id }
+            if (ids.any { it in afterPresent }) {
+                highlightSatisfiedFolderId = folderId
+            }
+            if (ids.all { it in afterPresent }) return
+            val snapshotAfter = remoteFiles.map { it.id to it.modifiedTime }
+            if (snapshotAfter == snapshotBefore) {
+                unchangedUncachedCount++
+                if (unchangedUncachedCount >= 2) return
+            } else {
+                unchangedUncachedCount = 0
+            }
         }
     }
 

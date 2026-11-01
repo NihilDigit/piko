@@ -1222,11 +1222,11 @@ private val BOOST_CHECK_AFTER = 3.seconds
 // 一段就够：翻页器里只有取好的，后面没取好翻不过去，第一段放着的三十秒里后面的自然取好了
 private const val WARM_UP_CLIPS = 1
 
-/** 翻页器里当前段之后要有这么多段取好；不到就从候补里取。每段一两 MB，连着一秒一段地翻也供得上。 */
-private const val READY_AHEAD = 8
+/** 翻页器里当前段之后要有这么多段取好；不到就从候补里取。控制在 4 段兼顾秒切与移动端内存/GC 开销。 */
+private const val READY_AHEAD = 4
 
-/** 往前备好会话的段数，比取的多：备会话只查详情、探长度，不费流量，却是取好一段里最慢的一步。 */
-private const val PREPARE_AHEAD = 12
+/** 往前备好会话的段数，比取的多：控制在 6 段避免 12 路后台并发探流与 TS 切片触发高频 GC 抢占解码帧率。 */
+private const val PREPARE_AHEAD = 6
 
 /** 预热等这么久还没攒够就先开播，网络再差也不至于停在缓存画面上。 */
 private val WARM_UP_TIMEOUT = 20.seconds

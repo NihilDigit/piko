@@ -21,7 +21,8 @@ data class NavigationEntryToken(
     val enteredStack: List<PikoPathBreadcrumb>,
 )
 
-data class DriveTab(val id: Long, val stack: List<PikoPathBreadcrumb>, val history: FolderHistory = FolderHistory()) {
+data class DriveTab(val id: Long, val stack: List<PikoPathBreadcrumb>, val history: FolderHistory = FolderHistory(), val pinId: String? = null) {
+    val isPinned: Boolean get() = pinId != null
     val title: String get() = stack.lastOrNull()?.localizedName.orEmpty()
     val session: DriveLibrary? get() = stack.library?.takeIf { it.isSession }
 }

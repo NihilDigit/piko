@@ -14,6 +14,7 @@ import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.data.ChildFile
 import dev.piko.shared.i18n.PikoLocale
 import io.github.nihildigit.pikpak.FileStat
+import dev.piko.shared.memory.cacheBudget
 
 /**
  * 进程内复用纯计算结果，浏览上下文自己的展开与揭示状态不进入缓存。
@@ -21,10 +22,39 @@ import io.github.nihildigit.pikpak.FileStat
  */
 internal object DriveAnalysisCache {
     private val structureLock = Mutex()
-    private val folderLock = Mutex()
+    private val folderLock = structureLock
+    private val generationState = kotlinx.coroutines.flow.MutableStateFlow(0L)
+    val generation: Long get() = generationState.value
+    private var structureBudget = 4L * 1024 * 1024
+    private var folderBudget = 2L * 1024 * 1024
     private val structures = LinkedHashMap<String, DriveStructure>()
     private val structureRequests = mutableMapOf<String, CompletableDeferred<DriveStructure>>()
     private val folderViews = LinkedHashMap<String, DriveFolderView>()
+
+    init {
+        dev.piko.shared.memory.PikoMemoryGovernor.Shared.register(object : dev.piko.shared.memory.MemoryParticipant {
+            override val id = "drive-analysis"
+            override suspend fun applyPolicy(policy: dev.piko.shared.memory.MemoryPolicy) {
+                structureLock.withLock {
+                    structureBudget = policy.cacheBudget(4L * 1024 * 1024)
+                    folderBudget = policy.cacheBudget(2L * 1024 * 1024)
+                    if (policy != dev.piko.shared.memory.MemoryPolicy.Normal) {
+                        generationState.value++
+                        structures.clear()
+                        folderViews.clear()
+                        structureRequests.clear()
+                    }
+                }
+            }
+        })
+    }
+
+    suspend fun clear() = structureLock.withLock {
+        generationState.value++
+        structures.clear()
+        folderViews.clear()
+        structureRequests.clear()
+    }
 
     /**
      * 按内容而不是目录 id 缓存：同一目录刷新后内容没变就直接命中，改名或增删则自然失效。
@@ -58,7 +88,9 @@ internal object DriveAnalysisCache {
             val language = PikoLocale.effectiveLanguage
             val key = fingerprint(files, language)
             val pending = CompletableDeferred<DriveStructure>()
+            var startedGeneration = 0L
             val request = structureLock.withLock {
+                startedGeneration = generation
                 structures.remove(key)?.let {
                     structures[key] = it
                     return it
@@ -78,8 +110,8 @@ internal object DriveAnalysisCache {
                 currentCoroutineContext().ensureActive()
                 val sameLanguage = PikoLocale.revision == revision && PikoLocale.effectiveLanguage == language
                 structureLock.withLock {
-                    if (sameLanguage) putBounded(structures, key, value, MAX_STRUCTURES)
-                    structureRequests.remove(key)
+                    if (sameLanguage && startedGeneration == generation) putBounded(structures, key, value, MAX_STRUCTURES, structureBudget, ::structureWeight)
+                    if (structureRequests[key] === pending) structureRequests.remove(key)
                 }
                 if (!sameLanguage) {
                     pending.cancel()
@@ -90,7 +122,7 @@ internal object DriveAnalysisCache {
             } catch (error: Throwable) {
                 // 先移除失败请求，再唤醒等待者，让仍有效的调用者接手计算。
                 withContext(NonCancellable) {
-                    structureLock.withLock { structureRequests.remove(key) }
+                    structureLock.withLock { if (structureRequests[key] === pending) structureRequests.remove(key) }
                 }
                 pending.completeExceptionally(error)
                 throw error
@@ -102,8 +134,8 @@ internal object DriveAnalysisCache {
         structures.remove(key)?.also { structures[key] = it }
     }
 
-    suspend fun putStructure(key: String, value: DriveStructure) = structureLock.withLock {
-        putBounded(structures, key, value, MAX_STRUCTURES)
+    suspend fun putStructure(key: String, value: DriveStructure, expectedGeneration: Long = generation) = structureLock.withLock {
+        if (expectedGeneration == generation) putBounded(structures, key, value, MAX_STRUCTURES, structureBudget, ::structureWeight)
     }
 
     /** 名称或类型变化就重新描述，项数相同也不能复用旧结果。 */
@@ -114,16 +146,32 @@ internal object DriveAnalysisCache {
         folderViews.remove(key)?.also { folderViews[key] = it }
     }
 
-    suspend fun putFolderView(key: String, value: DriveFolderView) = folderLock.withLock {
-        putBounded(folderViews, key, value, MAX_FOLDER_VIEWS)
+    suspend fun putFolderView(key: String, value: DriveFolderView, expectedGeneration: Long = generation) = folderLock.withLock {
+        if (expectedGeneration == generation) putBounded(folderViews, key, value, MAX_FOLDER_VIEWS, folderBudget, ::folderWeight)
     }
 
     // commonMain 的 LinkedHashMap 没有按访问排序的构造参数，命中时先删再插，最早插入的即最久未用
-    private fun <V> putBounded(map: LinkedHashMap<String, V>, key: String, value: V, limit: Int) {
+    private fun <V> putBounded(map: LinkedHashMap<String, V>, key: String, value: V, limit: Int, budget: Long, weigh: (V) -> Long) {
         map.remove(key)
+        if (weigh(value) + key.length * 2L > budget) return
         map[key] = value
-        while (map.size > limit) map.remove(map.keys.first())
+        var weight = map.entries.sumOf { it.key.length * 2L + weigh(it.value) }
+        while (map.size > limit || weight > budget) {
+            val oldest = map.entries.first()
+            weight -= oldest.key.length * 2L + weigh(oldest.value)
+            map.remove(oldest.key)
+        }
     }
+
+    private fun stringsWeight(values: Iterable<String>): Long = values.sumOf { 40L + it.length * 2L }
+    private fun fieldsWeight(fields: List<DriveParsedField>): Long = fields.sumOf { 48L + (it.label.length + it.value.length) * 2L }
+    private fun folderWeight(view: DriveFolderView): Long = 128L +
+        stringsWeight(listOfNotNull(view.title, view.code, view.resolution) + view.tags) + fieldsWeight(view.fields)
+    private fun structureWeight(value: DriveStructure): Long = 128L +
+        stringsWeight(value.secondaryIds) + stringsWeight(value.foldedIds) +
+        stringsWeight(value.attachedTo.keys) + stringsWeight(value.attachedTo.values) +
+        value.blocks.sumOf { 128L + stringsWeight(listOfNotNull(it.id, it.label, it.menuLabel, it.workKey, it.workTitle) + it.workTags + it.fileIds) } +
+        value.views.entries.sumOf { (id, view) -> 128L + stringsWeight(listOfNotNull(id, view.title, view.code, view.resolution, view.heading) + view.tags) + fieldsWeight(view.fields) }
 
     private const val MAX_STRUCTURES = 24
     private const val MAX_FOLDER_VIEWS = 4_000
