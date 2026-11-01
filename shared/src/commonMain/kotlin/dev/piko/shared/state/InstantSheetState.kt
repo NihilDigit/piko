@@ -98,6 +98,9 @@ data class InstantPreviewRequest(val fileId: String, val fileName: String)
 
 /** 一次会话里各条链接共用的部分。批量时每条链接各有一个 [InstantSheetState]，共用这一份。 */
 internal class InstantSharedContext {
+    val saveAsReference = mutableStateOf(false)
+    @Volatile var saveAsReferenceTouched = false
+
     /** 保存目标对全部链接生效，在任一处更换都改这一份。 */
     val target = mutableStateOf<PikoPathBreadcrumb?>(null)
     val targetNotice = mutableStateOf<String?>(null)
@@ -310,9 +313,17 @@ class InstantSheetState private constructor(
 
     // region 按番号规范命名
 
-    var saveAsReference by mutableStateOf(false)
+    var saveAsReference: Boolean by shared.saveAsReference
         private set
-    fun updateSaveAsReference(value: Boolean) { if (canEdit && instantRetry == null && saveIssue == null) saveAsReference = value }
+    val supportsReferenceSave: Boolean by derivedStateOf { normalizedMagnet != null || findShareLink(input) != null }
+    val effectiveSaveAsReference: Boolean by derivedStateOf { saveAsReference && supportsReferenceSave }
+
+    fun updateSaveAsReference(value: Boolean) {
+        if (!canEdit || instantRetry != null || saveIssue != null) return
+        shared.saveAsReferenceTouched = true
+        saveAsReference = value
+        if (isRoot) scope.launch { preferences.setSaveAsReference(value) }
+    }
 
     /** 保存时是否按番号规范命名,见 [InstantSharedContext.canonicalNames]。 */
     var useCanonicalNames: Boolean by shared.canonicalNames
@@ -459,7 +470,7 @@ class InstantSheetState private constructor(
                 row.state.projectedSaveEntries.map { (idx, file) -> (rowIndex * BATCH_INDEX_STRIDE + idx) to file }
             }
         } else {
-            sourceSelectedIndices.sorted().filter { !saveAsReference || items[it].file.gcid != null }.map { index ->
+            sourceSelectedIndices.sorted().filter { !effectiveSaveAsReference || items[it].file.gcid != null }.map { index ->
                 val item = items[index]
                 val name = nameToSave(index)
                 val relative = if (willCreateFolder) item.file.path.substringBeforeLast('/', "").let { dir ->
@@ -477,7 +488,7 @@ class InstantSheetState private constructor(
     val willCreateFolder: Boolean by derivedStateOf { resolution != null && selectedEntryCount > 1 }
 
     val canSaveSelection: Boolean by derivedStateOf {
-        !isSaving && selectedItems.isNotEmpty() && (!saveAsReference || referenceItemsToSave.isNotEmpty()) && target != null && saveBlockReason == null &&
+        !isSaving && selectedItems.isNotEmpty() && (!effectiveSaveAsReference || referenceItemsToSave.isNotEmpty()) && target != null && saveBlockReason == null &&
             !(willCreateFolder && folderNameToSave.isBlank())
     }
 
@@ -496,7 +507,7 @@ class InstantSheetState private constructor(
 
     /** 路线与代价，见 [planSave]。没勾任何一项时为 null。 */
     val savePlan: SavePlan? by derivedStateOf {
-        if (saveAsReference && selectedItems.isNotEmpty()) SavePlan(SaveRoute.INSTANT, referenceItemsToSave.size, skippedCount = missingReferenceCount)
+        if (effectiveSaveAsReference && selectedItems.isNotEmpty()) SavePlan(SaveRoute.INSTANT, referenceItemsToSave.size, skippedCount = missingReferenceCount)
         else if (findShareLink(input) != null && itemsToSave.isNotEmpty() && itemsToSave.all { it.file.gcid != null })
             planSave(items, selectedIndices, selectedEntryCount, remainingBytes, shared.account.value.copy(free = true))
         else planSave(items, selectedIndices, selectedEntryCount, remainingBytes, shared.account.value,
@@ -579,7 +590,7 @@ class InstantSheetState private constructor(
                 val plan = savePlan
                 InstantPrimaryAction(
                     kind = when {
-                        !saveAsReference && normalizedMagnet == null && findShareLink(input) == null -> InstantActionKind.SUBMIT_OFFLINE
+                        !effectiveSaveAsReference && normalizedMagnet == null && findShareLink(input) == null -> InstantActionKind.SUBMIT_OFFLINE
                         plan?.route == SaveRoute.OFFLINE_PACK -> InstantActionKind.OFFLINE_PACK
                         else -> InstantActionKind.INSTANT_SAVE
                     },
@@ -631,6 +642,10 @@ class InstantSheetState private constructor(
         scope.launch { instantRepo.offlineSubmissions.works.collect { offlineWorks = it } }
         scope.launch { saveTargetContext.actionChanges.collect { targetRulesVersion++ } }
         if (isRoot) {
+            scope.launch {
+                val remembered = preferences.saveAsReferenceFlow.first()
+                if (!shared.saveAsReferenceTouched) shared.saveAsReference.value = remembered
+            }
             val previews = previewFolder.session()
             shared.previewLease = previews
             // 明确结束业务会话后清理自己的预览；收起面板不会取消这个作用域。
@@ -735,6 +750,7 @@ class InstantSheetState private constructor(
             emitOutcome = { _outcomes.emit(it) },
             emitMessage = { _messages.emit(it) },
             onEmpty = ::leaveBatch,
+            onSaveAsReferenceChanged = { value -> scope.launch { preferences.setSaveAsReference(value) } },
         )
         return true
     }
@@ -885,8 +901,8 @@ class InstantSheetState private constructor(
 
     /** 按 [savePlan] 的路线保存当前勾选。 */
     fun saveSelection() {
-        if (saveAsReference && itemsToSave.isNotEmpty() && referenceItemsToSave.isEmpty()) { errorMessage = tr("所选项目均缺少引用，无法以引用保存", "Selected items lack references and cannot be saved as references", "選択した項目に参照情報がないため、参照として保存できません", "선택한 항목에 참조가 없어 참조로 저장할 수 없습니다", "所選項目均缺少引用，無法以引用儲存"); return }
-        if (!saveAsReference && normalizedMagnet == null && findShareLink(input) == null) { submitOfflineTask(); return }
+        if (effectiveSaveAsReference && itemsToSave.isNotEmpty() && referenceItemsToSave.isEmpty()) { errorMessage = tr("所选项目均缺少引用，无法以引用保存", "Selected items lack references and cannot be saved as references", "選択した項目に参照情報がないため、参照として保存できません", "선택한 항목에 참조가 없어 참조로 저장할 수 없습니다", "所選項目均缺少引用，無法以引用儲存"); return }
+        if (!effectiveSaveAsReference && normalizedMagnet == null && findShareLink(input) == null) { submitOfflineTask(); return }
         if (!scope.isActive || isSaving) return
         saveBlockReason?.let { errorMessage = it; return }
         if (instantRetry != null) {
@@ -903,7 +919,7 @@ class InstantSheetState private constructor(
         if (saveIssue?.requiresInspection == true) return
         val plan = savePlan ?: return
         if (isSaving || plan.blocked) return
-        val toSave = if (saveAsReference) referenceItemsToSave else itemsToSave
+        val toSave = if (effectiveSaveAsReference) referenceItemsToSave else itemsToSave
         isSaving = true
         saveScope.launch {
             try {
@@ -1030,15 +1046,15 @@ class InstantSheetState private constructor(
      */
     internal suspend fun submitForBatch(target: PikoPathBreadcrumb): Result<List<String>?> {
         val plan = savePlan
-        val toSave = if (saveAsReference) referenceItemsToSave else itemsToSave
+        val toSave = if (effectiveSaveAsReference) referenceItemsToSave else itemsToSave
         isSaving = true
         try {
             return when {
                 instantRetry != null -> resumeInstant().map { it }
                 saveBlockReason != null -> Result.failure(IllegalStateException(saveBlockReason))
                 saveIssue?.requiresInspection == true -> Result.failure(IllegalStateException(tr("本次保存结果待确认，请先在任务页核对", "This save result is unconfirmed. Check Tasks first", "今回の保存結果は未確認です。先にタスク画面で確認してください", "이번 저장 결과가 미확인입니다. 먼저 작업 페이지에서 확인해 주세요", "本次儲存結果待確認，請先在任務頁核對")))
-                saveAsReference && toSave.isEmpty() -> Result.failure(IllegalStateException(tr("所选项目均缺少引用，无法以引用保存", "Selected items lack references and cannot be saved as references", "選択した項目に参照情報がないため、参照として保存できません", "선택한 항목에 참조가 없어 참조로 저장할 수 없습니다", "所選項目均缺少引用，無法以引用儲存")))
-                resolution == null || (!saveAsReference && normalizedMagnet == null && findShareLink(input) == null) -> submitWhole(target).map { null }
+                effectiveSaveAsReference && toSave.isEmpty() -> Result.failure(IllegalStateException(tr("所选项目均缺少引用，无法以引用保存", "Selected items lack references and cannot be saved as references", "選択した項目に参照情報がないため、参照として保存できません", "선택한 항목에 참조가 없어 참조로 저장할 수 없습니다", "所選項目均缺少引用，無法以引用儲存")))
+                resolution == null || (!effectiveSaveAsReference && normalizedMagnet == null && findShareLink(input) == null) -> submitWhole(target).map { null }
                 plan == null -> Result.failure(IllegalStateException(tr("未勾选文件", "No files selected", "ファイルが選択されていません", "선택한 파일이 없습니다", "未勾選檔案")))
                 plan.route == SaveRoute.INSTANT && willCreateFolder -> saveIntoNewFolder(target, toSave).map { it.createdIds }
                 plan.route == SaveRoute.INSTANT -> saveInstantOrOffline(target, toSave)
@@ -1086,6 +1102,7 @@ class InstantSheetState private constructor(
                 shared.resolvePermits.withPermit {
                     when {
                         findShareLink(magnet) != null -> resolveShare(magnet)
+                        magnet.startsWith("ed2k://", true) -> Result.success(dev.piko.shared.data.ed2kResource(magnet))
                         magnet.startsWith("http", true) -> instantRepo.probeHttpResource(magnet)
                         normalizeMagnet(magnet) != null -> instantRepo.resolve(magnet)
                         else -> Result.success(null)
@@ -1222,7 +1239,7 @@ class InstantSheetState private constructor(
             return false
         }
         instantAttemptId = saveRecords.beginAttempt(account, title, target, files.map { it.file }, instantAttemptId,
-            containerName = containerName, names = names, keepStructure = keepStructure, reference = saveAsReference)
+            containerName = containerName, names = names, keepStructure = keepStructure, reference = effectiveSaveAsReference)
         if (instantAttemptId != null) shared.targetHeld.value = true
         return instantAttemptId != null
     }
@@ -1249,7 +1266,7 @@ class InstantSheetState private constructor(
                 driveRepo.applyChange(dev.piko.shared.data.DriveChange.Created(parentId, id, name, isFolder = true))
             }
         }
-        val result = if (saveAsReference) {
+        val result = if (effectiveSaveAsReference) {
             val vault = driveRepo.vaultAccess(requireNotNull(saveAccount)) ?: throw kotlinx.coroutines.CancellationException(tr("账号会话已结束", "Account session ended", "アカウントのセッションが終了しました", "계정 세션이 종료되었습니다", "帳號工作階段已結束"))
             instantRepo.saveReferences(
                 items = submitted.filter { it.file.gcid != null },
@@ -1293,12 +1310,12 @@ class InstantSheetState private constructor(
             unconfirmedFolder = plan.receipt.unconfirmedFolder ?: current.unconfirmedFolder,
             folders = plan.receipt.folders + current.folders)
         val touchedFolders = receipt.folders.values.toSet() + plan.target.id + listOfNotNull(saveParent?.id)
-        if (saveAsReference && result.isSuccess) {
+        if (effectiveSaveAsReference && result.isSuccess) {
             driveRepo.notifyFoldersRefreshed(touchedFolders)
         } else {
             driveRepo.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(touchedFolders))
         }
-        if (!saveAsReference) submitted.filter { it.file.path in current.confirmed }.forEach { item -> item.file.gcid?.let(previewedIds::remove) }
+        if (!effectiveSaveAsReference) submitted.filter { it.file.path in current.confirmed }.forEach { item -> item.file.gcid?.let(previewedIds::remove) }
         (normalizedMagnet ?: findShareLink(input))?.let { source ->
             driveRepo.sourceLedger.record(source, submitted.filter { it.file.path in current.confirmed }.map { it.file })
         }

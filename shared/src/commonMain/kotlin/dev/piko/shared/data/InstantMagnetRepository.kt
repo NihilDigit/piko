@@ -68,6 +68,27 @@ internal fun httpResource(url: String, status: Int, headers: io.ktor.http.Header
     return MagnetResolutionResult(MagnetResource(name, listOf(file)), listOf(InstantFileItem(file, false)), 0, 1)
 }
 
+/**
+ * 从 `ed2k://|file|<文件名>|<字节数>|<MD4>|/` 本地零网络提取 URL 解码后的文件名与精确字节大小。
+ *
+ * 2026-11-01 实测 PikPak `POST /drive/v1/resource/list`：对 ed2k 链接一律返回 `resolver = "DIRECT"` 且无 `meta.hash`（GCID），
+ * 仅在提交离线下载任务（`createUrlFile`）后由服务端离线引擎按 MD4 命中云端缓存或拉取，因此直接本地解析展示条目并走离线提交。
+ */
+internal fun ed2kResource(uri: String): MagnetResolutionResult? {
+    val normalized = dev.piko.shared.state.normalizeEd2kUri(uri)
+    if (!normalized.startsWith("ed2k://|", ignoreCase = true)) return null
+    val parts = normalized.substring("ed2k://|".length).split('|')
+    if (parts.size < 4 || !parts[0].equals("file", ignoreCase = true)) return null
+    val rawName = parts[1]
+    val size = parts[2].toLongOrNull()?.coerceAtLeast(0L) ?: return null
+    val md4 = parts[3]
+    if (md4.length != 32 || !md4.all { it in '0'..'9' || it.lowercaseChar() in 'a'..'f' }) return null
+    val decodedName = runCatching { rawName.decodeURLPart() }.getOrDefault(rawName)
+        .substringAfterLast('/').substringAfterLast('\\').trim().ifBlank { "ed2k-$md4" }
+    val file = ResolvedFile(decodedName, size, null)
+    return MagnetResolutionResult(MagnetResource(decodedName, listOf(file)), listOf(InstantFileItem(file, false)), 0, 1)
+}
+
 internal class OfflinePruneBlocked(message: String) : IllegalStateException(message)
 
 class InstantMagnetRepository(private val clientManager: PikoClientProvider) {

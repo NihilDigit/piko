@@ -73,6 +73,10 @@ enum class AppLanguage(val tag: String, val nativeLabel: String) {
 }
 
 interface PikoUserPreferences {
+    /** 当前设备记住的引用保存选择，不参与跨设备设置同步。 */
+    val saveAsReferenceFlow: Flow<Boolean> get() = kotlinx.coroutines.flow.flowOf(false)
+    suspend fun setSaveAsReference(enabled: Boolean) {}
+
     /** 本设备的只读文件夹挂载表，内含账号，不参与云端同步。 */
     val localMountsFlow: Flow<String> get() = flowOf("")
     suspend fun saveLocalMounts(serialized: String) {}
@@ -211,6 +215,10 @@ interface PikoUserPreferences {
     val pinnedFoldersFlow: Flow<String>
     suspend fun savePinnedFolders(serialized: String)
 
+    /** 文件夹优先显示，关闭后与文件按同一排序混排，默认开。 */
+    val foldersFirstFlow: Flow<Boolean> get() = flowOf(true)
+    suspend fun setFoldersFirst(enabled: Boolean) {}
+
     /** 每个文件夹独立记住自己的排序方式，默认关（所有文件夹共用同一排序）。 */
     val perFolderSortFlow: Flow<Boolean> get() = flowOf(false)
     suspend fun setPerFolderSort(enabled: Boolean) {}
@@ -301,12 +309,12 @@ interface PikoUserPreferences {
 
     /**
      * 用户自己部署的 MetaTube 服务地址，如「http://192.168.1.2:8080」。空串表示不用刮削，界面上不出现任何刮削入口。
-     * 每台设备各自的，不进设置同步：局域网地址换一台设备未必连得上。
+     * 跨设备经 MetaTubeSync 加密同步，不进入普通设置同步文件。
      */
     val metaTubeUrlFlow: Flow<String>
     suspend fun setMetaTubeUrl(url: String)
 
-    /** MetaTube 的访问令牌（服务端的 TOKEN）。机密，由平台加密存放，不进设置同步。空串表示没填。 */
+    /** MetaTube 的访问令牌（服务端的 TOKEN）。机密，由平台加密存放，跨设备仅经 MetaTubeSync 加密同步。空串表示没填。 */
     val metaTubeTokenFlow: Flow<String>
     suspend fun setMetaTubeToken(token: String)
 }

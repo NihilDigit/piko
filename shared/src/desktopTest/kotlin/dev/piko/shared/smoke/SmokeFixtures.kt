@@ -22,6 +22,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 /** 内存偏好。只有被测路径读写的几项有真实行为，其余给固定值。 */
 class MemoryPreferences : PikoUserPreferences {
+    override val saveAsReferenceFlow = MutableStateFlow(false)
+    override suspend fun setSaveAsReference(enabled: Boolean) { saveAsReferenceFlow.value = enabled }
+
     private val positions = ConcurrentHashMap<String, Long>()
 
     override suspend fun savePlaybackPosition(fileId: String, positionMs: Long) {

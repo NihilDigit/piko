@@ -108,5 +108,61 @@ fun matchAvFolder(name: String): AvInfo? = matchAv(name.trim(), allowLanguageSuf
 /** 文件名能否给出番号。界面据此决定要不要给「按番号规范命名」的入口。 */
 fun hasAvCode(fileName: String): Boolean = parseMediaName(fileName).av != null
 
+/** 解析单个文件或文件夹名称中的番号信息，供重命名对话框读取或快捷切换 -U / -C 旗标。 */
+fun parseAvForRename(name: String, isFolder: Boolean): AvInfo? =
+    if (isFolder) matchAvFolder(name) else parseMediaName(name).av
+
+/**
+ * 切换文件名或文件夹名中紧跟番号的 `-U`（无码）与 `-C`（中字）旗标（同时开启时规范写为 `-UC`）。
+ *
+ * - 若当前名字已以规范番号开头（如 `ABC-123 某片名.mp4`、`ABC-123-C-CD1.mp4`），直接原地替换番号后的旗标段，
+ *   完整保留用户手改的片名、备注与扩展名；
+ * - 若原地替换后尾部仍残留旧标签词（如 `[中文字幕]`、`无码破解`、`流出`）导致再解析出的旗标与目标不一致，
+ *   或原名尚未以规范番号开头（如 `xxx.com@abc00123_4k.mp4`），则回退至按目标旗标生成规范名。
+ */
+fun withAvFlags(
+    name: String,
+    isFolder: Boolean,
+    uncensored: Boolean,
+    chineseSubtitles: Boolean,
+): String? {
+    val trimmed = name.trimStart()
+    val parsed = if (isFolder) null else parseMediaName(trimmed)
+    val info = (if (isFolder) matchAvFolder(trimmed) else parsed?.av) ?: return null
+    val updatedInfo = info.copy(uncensored = uncensored, chineseSubtitles = chineseSubtitles)
+    val newCodeHead = updatedInfo.flaggedCode()
+
+    val prefixPattern = Regex(
+        "^" + Regex.escape(info.code) + "(?:[-_](?:UC|CU|U|C))?(?=$|[ ._-])",
+        RegexOption.IGNORE_CASE,
+    )
+    val prefixMatch = prefixPattern.find(trimmed)
+    if (prefixMatch != null) {
+        val remainder = trimmed.substring(prefixMatch.range.last + 1)
+        val surgical = newCodeHead + remainder
+        val reparsed = parseAvForRename(surgical, isFolder)
+        if (reparsed != null &&
+            reparsed.code == info.code &&
+            reparsed.uncensored == uncensored &&
+            reparsed.chineseSubtitles == chineseSubtitles
+        ) {
+            return surgical
+        }
+    }
+
+    val cleanedTitle = if (!uncensored && info.title?.contains("流出") == true && !info.title.contains("未流出")) {
+        info.title.replace("流出", "").trim().ifEmpty { null }
+    } else {
+        info.title
+    }
+    return canonicalAvName(
+        fileName = trimmed,
+        info = updatedInfo,
+        title = cleanedTitle,
+        isFolder = isFolder,
+        languageCode = parsed?.languageCode,
+    )
+}
+
 /** 视频与原盘镜像是条目的主文件，规范名以它们为准；字幕跟着它们走。 */
 internal val FileKind.isAvContent: Boolean get() = this == FileKind.VIDEO || this == FileKind.DISC_IMAGE

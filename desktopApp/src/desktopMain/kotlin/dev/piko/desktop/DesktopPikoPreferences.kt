@@ -88,6 +88,7 @@ class DesktopPikoPreferences(
     private val connections = MutableStateFlow(settings.get(KEY_CONNECTIONS, "8").toIntOrNull() ?: 8)
     private val recentMoveTargets = MutableStateFlow(settings.get(KEY_RECENT_MOVE_TARGETS))
     private val pinnedFolders = MutableStateFlow(settings.get(KEY_PINNED_FOLDERS))
+    private val foldersFirst = MutableStateFlow(settings.get(KEY_FOLDERS_FIRST, "true").toBoolean())
     private val perFolderSort = MutableStateFlow(settings.get(KEY_PER_FOLDER_SORT) == "true")
     private val folderSortOrders = MutableStateFlow(settings.get(KEY_FOLDER_SORT_ORDERS))
     private val localMounts = MutableStateFlow(settings.get("drive.localMounts"))
@@ -379,6 +380,12 @@ class DesktopPikoPreferences(
         pinnedFolders.value = serialized
     }
 
+    override val foldersFirstFlow: Flow<Boolean> = foldersFirst.asStateFlow()
+    override suspend fun setFoldersFirst(enabled: Boolean) {
+        settings.set(KEY_FOLDERS_FIRST, enabled.toString())
+        foldersFirst.value = enabled
+    }
+
     override val perFolderSortFlow: Flow<Boolean> = perFolderSort.asStateFlow()
     override suspend fun setPerFolderSort(enabled: Boolean) {
         settings.set(KEY_PER_FOLDER_SORT, enabled.toString())
@@ -421,6 +428,13 @@ class DesktopPikoPreferences(
         settings.set(KEY_IGNORED_UPDATE, version)
     }
 
+    private val saveAsReference = MutableStateFlow(settings.get(KEY_SAVE_AS_REFERENCE, "false").toBoolean())
+    override val saveAsReferenceFlow: Flow<Boolean> = saveAsReference.asStateFlow()
+    override suspend fun setSaveAsReference(enabled: Boolean) {
+        saveAsReference.value = enabled
+        settings.set(KEY_SAVE_AS_REFERENCE, enabled.toString())
+    }
+
     private val metaTubeUrl = MutableStateFlow(settings.get(KEY_METATUBE_URL))
     override val metaTubeUrlFlow: Flow<String> = metaTubeUrl.asStateFlow()
     override suspend fun setMetaTubeUrl(url: String) {
@@ -447,6 +461,7 @@ class DesktopPikoPreferences(
     private companion object {
         const val TAG = "credentials"
         const val SECRET_METATUBE_TOKEN = "metatube-token"
+        const val KEY_SAVE_AS_REFERENCE = "instant.saveAsReference"
         const val KEY_METATUBE_URL = "scrape.metaTubeUrl"
 
         fun uploadCredentialsKey(taskId: String) = "upload-$taskId"
@@ -459,6 +474,7 @@ class DesktopPikoPreferences(
         const val KEY_ARCHIVE_PASSWORDS = "drive.archivePasswords"
         const val KEY_RECENT_MOVE_TARGETS = "drive.recentMoveTargets"
         const val KEY_PINNED_FOLDERS = "drive.pinnedFolders"
+        const val KEY_FOLDERS_FIRST = "drive.foldersFirst"
         const val KEY_PER_FOLDER_SORT = "drive.perFolderSort"
         const val KEY_FOLDER_SORT_ORDERS = "drive.folderSortOrders"
         const val KEY_BATCH_RENAME = "drive.batchRename"

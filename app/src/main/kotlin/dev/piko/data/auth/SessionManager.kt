@@ -96,6 +96,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     }
 
     private object PreferencesKeys {
+        val SAVE_AS_REFERENCE = booleanPreferencesKey("save_as_reference")
         val CONCURRENT_ACCELERATION = booleanPreferencesKey("concurrent_acceleration")
         val DOWNLOAD_DIR_PATH = stringPreferencesKey("download_dir_path")
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
@@ -135,6 +136,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val LAST_FOLDER_STACK_SERIALIZED = stringPreferencesKey("last_folder_stack")
         val RECENT_MOVE_TARGETS = stringPreferencesKey("recent_move_targets")
         val PINNED_FOLDERS = stringPreferencesKey("pinned_folders")
+        val FOLDERS_FIRST = booleanPreferencesKey("folders_first")
         val PER_FOLDER_SORT_ENABLED = booleanPreferencesKey("per_folder_sort_enabled")
         val FOLDER_SORT_ORDERS = stringPreferencesKey("folder_sort_orders")
         val LOCAL_MOUNTS = stringPreferencesKey("local_mounts")
@@ -545,6 +547,12 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
+    override val foldersFirstFlow: Flow<Boolean> = preference { it[PreferencesKeys.FOLDERS_FIRST] ?: true }
+
+    override suspend fun setFoldersFirst(enabled: Boolean) {
+        context.dataStore.edit { preferences -> preferences[PreferencesKeys.FOLDERS_FIRST] = enabled }
+    }
+
     override val perFolderSortFlow: Flow<Boolean> = preference { it[PreferencesKeys.PER_FOLDER_SORT_ENABLED] ?: false }
 
     override suspend fun setPerFolderSort(enabled: Boolean) {
@@ -606,6 +614,11 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.IGNORED_UPDATE_VERSION] = version
         }
+    }
+
+    override val saveAsReferenceFlow: Flow<Boolean> = preference { it[PreferencesKeys.SAVE_AS_REFERENCE] ?: false }
+    override suspend fun setSaveAsReference(enabled: Boolean) {
+        context.dataStore.edit { it[PreferencesKeys.SAVE_AS_REFERENCE] = enabled }
     }
 
     override val metaTubeUrlFlow: Flow<String> = preference { it[PreferencesKeys.METATUBE_URL].orEmpty() }

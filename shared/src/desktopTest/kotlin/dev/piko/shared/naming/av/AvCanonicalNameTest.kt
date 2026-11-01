@@ -82,4 +82,46 @@ class AvCanonicalNameTest {
             names,
         )
     }
+
+    @Test
+    fun `withAvFlags toggles -U and -C cleanly across files parts folders and raw names`() {
+        // 标准文件：空 -> -C -> -UC -> -U -> 空，保留用户自定义文本
+        val base = "ABC-123 某片名 [个人备注].mp4"
+        val withC = withAvFlags(base, isFolder = false, uncensored = false, chineseSubtitles = true)
+        assertEquals("ABC-123-C 某片名 [个人备注].mp4", withC)
+        val withUC = withAvFlags(withC!!, isFolder = false, uncensored = true, chineseSubtitles = true)
+        assertEquals("ABC-123-UC 某片名 [个人备注].mp4", withUC)
+        val withU = withAvFlags(withUC!!, isFolder = false, uncensored = true, chineseSubtitles = false)
+        assertEquals("ABC-123-U 某片名 [个人备注].mp4", withU)
+        val cleared = withAvFlags(withU!!, isFolder = false, uncensored = false, chineseSubtitles = false)
+        assertEquals("ABC-123 某片名 [个人备注].mp4", cleared)
+
+        // 无片名分段文件：不误吃 -CD1 的 -C
+        assertEquals(
+            "ABC-123-C-CD1.mp4",
+            withAvFlags("ABC-123-CD1.mp4", isFolder = false, uncensored = false, chineseSubtitles = true),
+        )
+        assertEquals(
+            "ABC-123-UC-CD1.mp4",
+            withAvFlags("ABC-123-C-CD1.mp4", isFolder = false, uncensored = true, chineseSubtitles = true),
+        )
+        assertEquals(
+            "ABC-123-CD1.mp4",
+            withAvFlags("ABC-123-C-CD1.mp4", isFolder = false, uncensored = false, chineseSubtitles = false),
+        )
+
+        // 文件夹与尚未规范化的原始文件名
+        assertEquals(
+            "FC2-PPV-1234567-U 标题",
+            withAvFlags("FC2-PPV-1234567 标题", isFolder = true, uncensored = true, chineseSubtitles = false),
+        )
+        assertEquals(
+            "ABC-123-UC.mp4",
+            withAvFlags("xxx.com@abc00123-c_4k.mp4", isFolder = false, uncensored = true, chineseSubtitles = true),
+        )
+        assertEquals(
+            "ABC-123 片名.mp4",
+            withAvFlags("[中文字幕] ABC-123 片名.mp4", isFolder = false, uncensored = false, chineseSubtitles = false),
+        )
+    }
 }

@@ -8,7 +8,7 @@ package dev.piko.shared.naming.av
 // caribbeancompr 的厂牌名。这里只取规则的思路，正则按本文件的约定重写。
 
 /** 规则表的版本。识别结果有变（番号字符串、分段写法、旗标）时加一。 */
-const val AV_RULES_VERSION = 3
+const val AV_RULES_VERSION = 5
 
 // 番号只在文件名开头找：站点前缀（xxx.com@、kcf9.com-、[site.net]、123456_site_）与标签方括号
 // （[中文字幕]、[HD]）剥掉之后，番号必须是第一个记号。在全文里找会把动画文件名里的
@@ -46,14 +46,21 @@ internal val HEYDOUGA = Regex("""^(?:しろハメ[\s_-]*(?:hey(?:douga)?)?|hey(?
 // 否则「202401-001」这类编号也会被当成番号
 internal val BARE_DATED = Regex("""^((?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01])[0-9]{2})([-_])([0-9]{3})(?![0-9])""")
 
-// 字母段里夹一位数字（MCB3DBD-47），或数字段前带一个字母（MKBD-S94）。只收全大写，
-// 与「Show-S01」这类季号写法区分
-internal val DIGIT_IN_PREFIX = Regex("""^([A-Z]{2,5}[0-9][A-Z]{2,5})-([0-9]{2,4})(?![0-9])""")
+// 字母段里夹数字（MCB3DBD-47、AB3C2DEF-12、A2B-123、A2BCD-123），或数字段前带一个字母（MKBD-S94）。
+// 要求前缀全大写或全小写，与「Show-S01」这类季号写法区分
+internal val DIGIT_IN_PREFIX = Regex("""^([A-Za-z]{1,5}[0-9][A-Za-z0-9]{0,4}[A-Za-z])[-_]([0-9]{2,4})(?![0-9])""")
 internal val LETTER_IN_NUMBER = Regex("""^([A-Z]{2,6})-([A-Z][0-9]{2,4})(?![0-9]|E[0-9])""")
 
 // 以一位数字开头的厂牌：3DSVR-0123。泛化成「数字加字母」会吃进「2nd_001」这类序数词，所以逐个列出。
 // 编号照 DMM 的写法保留四位
 internal val DIGIT_LEADING_LABEL = Regex("""^(3DSVR)[-_]?([0-9]{4})(?![0-9])""", RegexOption.IGNORE_CASE)
+
+// 以数字结尾的厂牌：T28-123（含 T-28-123 与 DMM 连写 t2800123 / 55t2800123）、T38、R18。
+// 显式列出厂牌而不泛化成「单字母加两位数字」，避免把 S01-01（季集号）、H265-10 等误判为番号
+internal val DIGIT_ENDING_LABEL = Regex(
+    """^(?:55)?(T-?28|T-?38|R18)(?:[-_]([0-9]{2,5})|(00[0-9]{3}))(?![0-9])""",
+    RegexOption.IGNORE_CASE,
+)
 
 // 四位补零的连写：xss0057
 internal val GLUED_PADDED = Regex("""^([A-Za-z]{2,6})(0[0-9]{3})(?![0-9])""")
@@ -71,11 +78,19 @@ internal val HEYZO = Regex("""^HEYZO[\s_-]*(?:HD[\s_-]*)?([0-9]{3,5})(?![0-9])""
 // 普通单词不是番号
 internal val SEPARATED = Regex("""^([A-Za-z]{2,6})[-_]([0-9]{2,5})(?![0-9])""")
 
-// 连写：abcd00123pl、ABCD123C、abcd123c。没有分隔符时与普通单词更难区分，只接受 DMM 式的五位补零，
-// 或数字后紧跟已知后缀（C 中字、pl/ps 封面）的写法。补零须是两个：三位编号补成五位才是 DMM 的写法，
-// 「clhlh06822」这种账号名只是恰好以 0 开头
+// 连写：XYZ123、xyz123、abcd00123pl、ABCD123C、ABCD1234。
+// 通过三重约束与普通文件名、哈希串、相机文件名、年份区分：
+// 1. 字母段须全大写或全小写（过滤 Area88、Gundam0083 等首字母大写作品名）且不在 NOT_A_PREFIX（过滤 DBZ153、IMG123、VID001 等）；
+// 2. 数字段仅接受 DMM 五位双零补齐（00123）、四位单零补齐（0057）、三位数字（123），或 3~6 位全大写字母接非年份四位数（ABCD1234，排除 1950~2049 年份与 clhlh06822 这类五位随机号）；
+// 3. 数字段后须紧接结尾、分隔符或已知番号后缀（U/C/UC/pl/ps/hhb），拒绝 abc123def 这类十六进制哈希。
 internal val GLUED_DMM = Regex("""^([A-Za-z]{2,6})(00[0-9]{3})(?![0-9])""")
-internal val GLUED_SUFFIXED = Regex("""^([A-Za-z]{2,6})([0-9]{3})([Cc]|pl|ps)$""")
+internal val GLUED_THREE_DIGIT = Regex(
+    """^([A-Za-z]{2,6})([0-9]{3})(?=$|[\s_.\-\[(【]|(?:[CcUu]|[Uu][Cc]|pl|ps|hhb[0-9]?)(?=$|[\s_.\-\[(【]))""",
+)
+internal val GLUED_UPPER_FOUR_DIGIT = Regex(
+    """^([A-Z]{3,6})([1-9][0-9]{3})(?=$|[\s_.\-\[(【]|(?:[CcUu]|[Uu][Cc]|pl|ps|hhb[0-9]?)(?=$|[\s_.\-\[(【]))""",
+)
+internal val YEAR_FOUR_DIGIT = Regex("""^(?:19[5-9][0-9]|20[0-4][0-9])$""")
 
 // 开头的画质前缀：「HD-ABC-123」「FHD-ABC-123」。只在剥掉之后认得出番号时才剥
 internal val QUALITY_PREFIX = Regex("""^(?:f?hd|sd|4k)[-_]""", RegexOption.IGNORE_CASE)
@@ -89,6 +104,8 @@ internal val NOT_A_PREFIX = setOf(
     "HI", "MAIN", "BIT", "FPS", "BS", "AT", "NHK", "TVK", "BSP", "CR", "NF", "TV", "TS", "OST", "VER", "VTS",
     "VIDEO", "AUDIO", "SEASON", "EPISODE", "MPEG", "MENU", "SCAN", "IMG", "DSC", "BOX", "SET", "CH", "MOVIE",
     "ENDING", "OPENING", "TRACK", "CAM", "DB", "DBZ", "DBS", "DBGT", "AT-X",
+    "DSCF", "DSCN", "MVI", "MOV", "VID", "PIC", "SAM", "PXL", "CIMG", "GOPR", "DJI",
+    "WIN", "MAC", "IOS", "APK", "ISO", "HDR", "SDR", "RGB", "YUV", "PCM", "WAV", "RAW", "MKV", "AVI", "WMV",
 )
 
 internal val LOOSE = Regex("""^([A-Za-z]{2,6})\s?([0-9]{2,5})(?![0-9])""")

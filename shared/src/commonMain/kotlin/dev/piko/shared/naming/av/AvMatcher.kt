@@ -117,10 +117,19 @@ private fun matchCode(text: String, strict: Boolean): CodeMatch? {
     DIGIT_LEADING_LABEL.find(text)?.let {
         return CodeMatch(it.groupValues[1].uppercase(), it.groupValues[2], AvKind.STANDARD, it.range.last + 1)
     }
+    DIGIT_ENDING_LABEL.find(text)?.let { match ->
+        val prefix = match.groupValues[1].replace("-", "").uppercase()
+        val rawDigits = match.groupValues[2].ifEmpty { match.groupValues[3] }
+        return CodeMatch(prefix, standardNumber(rawDigits), AvKind.STANDARD, match.range.last + 1)
+    }
     BARE_DATED.find(text)?.let {
         return CodeMatch("", "${it.groupValues[1]}${it.groupValues[2]}${it.groupValues[3]}", AvKind.UNCENSORED_LABEL, it.range.last + 1)
     }
-    DIGIT_IN_PREFIX.find(text)?.let { return CodeMatch(it.groupValues[1], it.groupValues[2], AvKind.STANDARD, it.range.last + 1) }
+    DIGIT_IN_PREFIX.find(text)?.let { match ->
+        if (acceptablePrefix(match.groupValues[1])) {
+            return CodeMatch(match.groupValues[1].uppercase(), match.groupValues[2], AvKind.STANDARD, match.range.last + 1)
+        }
+    }
     LETTER_IN_NUMBER.find(text)?.let { match ->
         if (acceptablePrefix(match.groupValues[1])) return CodeMatch(match.groupValues[1], match.groupValues[2], AvKind.STANDARD, match.range.last + 1)
     }
@@ -132,15 +141,18 @@ private fun matchCode(text: String, strict: Boolean): CodeMatch? {
             return CodeMatch(letters.uppercase(), standardNumber(match.groupValues[2]), AvKind.STANDARD, match.range.last + 1)
         }
     }
-    for (glued in listOf(GLUED_DMM, GLUED_PADDED)) {
+    for (glued in listOf(GLUED_DMM, GLUED_PADDED, GLUED_THREE_DIGIT)) {
         val match = glued.find(text) ?: continue
-        val letters = match.groupValues[1]
-        if (acceptablePrefix(letters)) return CodeMatch(letters.uppercase(), standardNumber(match.groupValues[2]), AvKind.STANDARD, match.range.last + 1)
-    }
-    GLUED_SUFFIXED.find(text)?.let { match ->
         val letters = match.groupValues[1]
         if (acceptablePrefix(letters)) {
             return CodeMatch(letters.uppercase(), standardNumber(match.groupValues[2]), AvKind.STANDARD, match.groups[2]!!.range.last + 1)
+        }
+    }
+    GLUED_UPPER_FOUR_DIGIT.find(text)?.let { match ->
+        val letters = match.groupValues[1]
+        val digits = match.groupValues[2]
+        if (acceptablePrefix(letters) && !YEAR_FOUR_DIGIT.matches(digits)) {
+            return CodeMatch(letters, standardNumber(digits), AvKind.STANDARD, match.groups[2]!!.range.last + 1)
         }
     }
     if (!strict) {

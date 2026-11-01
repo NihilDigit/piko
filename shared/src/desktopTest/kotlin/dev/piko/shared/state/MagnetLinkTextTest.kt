@@ -64,9 +64,32 @@ class MagnetLinkTextTest {
     }
 
     @Test
-    fun `ed2k names may contain spaces`() {
+    fun `ed2k names may contain spaces and percent encoded pipes`() {
         val ed2k = "ed2k://|file|Some Movie 1080p.mkv|123456|0123456789ABCDEF0123456789ABCDEF|/"
         assertEquals(listOf(ed2k), extractLinks("下载 $ed2k 谢谢").map { it.uri })
+
+        val encoded = "ed2k://%7Cfile%7C%E7%94%B5%E5%BD%B1%2001.mkv%7C987654321%7C7683295B023BD0D52F8FC24FA381AA53%7Ch=65543252C2F0F1C2A653D3270296A476%7C/"
+        val extracted = extractLinks("复制自浏览器：$encoded").single()
+        assertEquals(
+            "ed2k://|file|%E7%94%B5%E5%BD%B1%2001.mkv|987654321|7683295B023BD0D52F8FC24FA381AA53|h=65543252C2F0F1C2A653D3270296A476|/",
+            extracted.uri,
+        )
+        val resolved = dev.piko.shared.data.ed2kResource(extracted.uri)!!
+        assertEquals("电影 01.mkv", resolved.resource.name)
+        assertEquals(987654321L, resolved.items.single().file.size)
+    }
+
+    @Test
+    fun `thunder links unwrap into underlying magnet or ed2k`() {
+        val rawEd2k = "ed2k://|file|Ep01.mkv|4096|0123456789ABCDEF0123456789ABCDEF|/"
+        val thunderEd2k = "thunder://" + java.util.Base64.getEncoder().encodeToString("AA${rawEd2k}ZZ".toByteArray())
+        assertEquals(listOf(rawEd2k), extractLinks(thunderEd2k).map { it.uri })
+
+        val rawMagnet = "magnet:?xt=urn:btih:$hex"
+        val thunderMagnet = "thunder://" + java.util.Base64.getEncoder().encodeToString("AA${rawMagnet}ZZ".toByteArray())
+        val unwrapped = extractLinks(thunderMagnet).single()
+        assertEquals(hex, unwrapped.infoHash)
+        assertEquals(rawMagnet, unwrapped.uri)
     }
 
     @Test

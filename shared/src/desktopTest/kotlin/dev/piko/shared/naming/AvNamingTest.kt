@@ -43,6 +43,22 @@ class AvNamingTest {
         assertEquals("072815-931", code("072815-931 片名.mp4"))
         assertNull(code("202401-001.mp4"), "月日不合法的六位数不是日期番号")
         assertEquals("ABC3DEF-47", code("ABC3DEF-47 片名.mp4"))
+        assertEquals("AB3C2DEF-47", code("AB3C2DEF-47 片名.mp4"))
+        assertEquals("A2B-123", code("a2b-123.mp4"))
+        assertEquals("A2BCD-123", code("A2BCD-123.mp4"))
+        listOf("T28-123.mp4", "t28_123.mp4", "T-28-123.mp4", "t2800123.mp4", "55t2800123.mp4")
+            .forEach { assertEquals("T28-123", code(it), it) }
+        assertNull(code("S01-01.mkv"), "季集号不是数字结尾番号")
+        assertNull(code("H265-10.mkv"), "编码参数不是数字结尾番号")
+        listOf("XYZ123.mp4", "xyz123.mp4", "XYZ123 片名.mp4", "XYZ123U.mp4").forEach {
+            assertEquals("XYZ-123", code(it), it)
+        }
+        assertTrue(parseMediaName("XYZ123U.mp4").av!!.uncensored)
+        assertEquals("ABCD-1234", code("ABCD1234.mp4"))
+        assertNull(code("Area88.mkv"), "首字母大写的两位数字作品名不是连写番号")
+        assertNull(code("clhlh06822.mp4"), "五位非双零补齐账号名不是连写番号")
+        assertNull(code("LIVE2024.mp4"), "年份后缀不是四位连写番号")
+        assertNull(code("abc123def.mp4"), "哈希串不是连写番号")
         assertEquals("ABCD-S94", code("ABCD-S94 片名.mkv"))
         assertNull(code("Show-S01.mkv"), "首字母大写的是季号写法")
         assertEquals("XYZ-057", code("xyz0057_02.wmv"))
