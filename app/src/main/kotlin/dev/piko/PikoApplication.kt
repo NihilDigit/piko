@@ -6,6 +6,7 @@ import android.util.Log
 import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
+import coil3.memory.MemoryCache
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import dev.piko.data.auth.AndroidPikoSessionStore
 import dev.piko.data.auth.SessionManager
@@ -16,6 +17,8 @@ import dev.piko.download.WorkResultNotifier
 import dev.piko.platform.AndroidPikoPlatform
 import dev.piko.platform.followSystemAnimatorScale
 import dev.piko.shared.data.FilePikoCacheStore
+import dev.piko.shared.data.streamingCodec
+import kotlinx.serialization.json.Json
 import dev.piko.shared.sync.JvmSyncCipher
 import dev.piko.shared.scrape.MetaTubeService
 import io.ktor.client.HttpClient
@@ -29,6 +32,10 @@ import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.FileClipCache
 import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.memory.MemoryPolicy
+import dev.piko.shared.memory.MemoryTrim
+import dev.piko.shared.memory.PikoMemoryGovernor
+import dev.piko.shared.memory.cacheBudget
 import dev.piko.shared.net.PikoProxySelector
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.upload.PikoUploadCoordinator
@@ -40,6 +47,8 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -73,33 +82,49 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
     val appUpdater by lazy { AppUpdater(this) }
 
     private val baseTransportBudgetBytes: Long by lazy {
-        (Runtime.getRuntime().maxMemory() / 6L).coerceIn(24L * 1024 * 1024, 96L * 1024 * 1024)
+        (Runtime.getRuntime().maxMemory() / 8L).coerceAtMost(48L * 1024 * 1024)
     }
+
+    private val imageMemoryCacheMaxBytes: Long by lazy {
+        (Runtime.getRuntime().maxMemory() / 10L).coerceAtMost(32L * 1024 * 1024)
+    }
+
+    @Volatile
+    private var initializedImageLoader: ImageLoader? = null
 
     fun restoreTransportMemoryBudget() {
-        if (::services.isInitialized) {
-            services.clientManager.setTransportMemoryBudgetBytes(baseTransportBudgetBytes)
-        }
+        // Activity resume changes visibility, not the pressure recovery state.
+        PikoMemoryGovernor.Shared.onVisibilityChanged(true)
     }
 
+    @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (!::services.isInitialized) return
-        @Suppress("DEPRECATION")
-        val target = when {
-            level >= TRIM_MEMORY_BACKGROUND || level == TRIM_MEMORY_RUNNING_CRITICAL ->
-                (baseTransportBudgetBytes / 2L).coerceAtLeast(16L * 1024 * 1024)
-            level == TRIM_MEMORY_UI_HIDDEN || level == TRIM_MEMORY_RUNNING_LOW || level == TRIM_MEMORY_RUNNING_MODERATE ->
-                (baseTransportBudgetBytes * 3L / 4L).coerceAtLeast(16L * 1024 * 1024)
-            else -> return
+        val governor = PikoMemoryGovernor.Shared
+        // Android 14 still delivers these signals. Keep independent checks: BACKGROUND also hides UI.
+        if (level >= TRIM_MEMORY_UI_HIDDEN) governor.onVisibilityChanged(false)
+        if (level >= TRIM_MEMORY_BACKGROUND) governor.onPlatformTrim(MemoryTrim.Background)
+        if (level < TRIM_MEMORY_UI_HIDDEN) {
+            when (level) {
+                TRIM_MEMORY_RUNNING_CRITICAL -> governor.onPlatformTrim(MemoryTrim.Critical)
+                TRIM_MEMORY_RUNNING_LOW -> governor.onPlatformTrim(MemoryTrim.Low)
+                TRIM_MEMORY_RUNNING_MODERATE -> governor.onPlatformTrim(MemoryTrim.Moderate)
+            }
         }
-        services.clientManager.setTransportMemoryBudgetBytes(target)
     }
 
     override fun onLowMemory() {
         super.onLowMemory()
+        PikoMemoryGovernor.Shared.onPlatformTrim(MemoryTrim.Critical)
+    }
+
+    private fun applyMemoryPolicy(policy: MemoryPolicy) {
         if (::services.isInitialized) {
-            services.clientManager.setTransportMemoryBudgetBytes(16L * 1024 * 1024)
+            services.clientManager.setTransportMemoryBudgetBytes(policy.cacheBudget(baseTransportBudgetBytes))
+        }
+        initializedImageLoader?.memoryCache?.let { cache ->
+            cache.maxSize = policy.cacheBudget(imageMemoryCacheMaxBytes)
+            cache.trimToSize(cache.maxSize)
         }
     }
 
@@ -124,7 +149,10 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
             sessionManager,
             clipCache = FileClipCache(File(cacheDir, "piko/clip-cache")),
         )
-        val cacheStore = FilePikoCacheStore(File(cacheDir, "piko").path)
+        val cacheStore = FilePikoCacheStore(
+            File(cacheDir, "piko").path,
+            jsonCodec = Json { ignoreUnknownKeys = true }.streamingCodec(),
+        )
         services = PikoServices(
             platformPreferences = sessionManager,
             clientManager = clientManager,
@@ -136,10 +164,12 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
                 scope = appScope,
                 segmentDownloader = AndroidPikoSegmentDownloader(this),
                 mediaRepository = mediaRepository,
+                cacheStore = cacheStore,
             ),
             uploadSources = AndroidPikoUploadSources(this),
             localFileAccess = { changed -> dev.piko.platform.AndroidLocalFileAccess(this, appScope, changed) },
             cacheStore = cacheStore,
+            treeDatabaseFactory = dev.piko.shared.data.AndroidPikoTreeDatabaseFactory(File(cacheDir, "piko/trees")),
             syncCipher = JvmSyncCipher(),
             metaTube = MetaTubeService(sessionManager, cacheStore = cacheStore, scope = appScope) {
                 HttpClient(OkHttp) {
@@ -154,6 +184,16 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
                 }
             },
         )
+        appScope.launch {
+            PikoMemoryGovernor.Shared.policy.collect(::applyMemoryPolicy)
+        }
+        appScope.launch {
+            val runtime = Runtime.getRuntime()
+            while (isActive) {
+                PikoMemoryGovernor.Shared.onHeapSample(runtime.totalMemory() - runtime.freeMemory(), runtime.maxMemory())
+                delay(5_000)
+            }
+        }
         val motionScale = PikoMotionScale().apply { followSystemAnimatorScale(this@PikoApplication) }
         appScope.launch { sessionManager.reduceMotionFlow.collect { motionScale.appReduced = it } }
         platform = AndroidPikoPlatform(this, { appUpdater }, motionScale)
@@ -219,10 +259,19 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
             .build()
 
         return ImageLoader.Builder(context)
+            .memoryCache {
+                MemoryCache.Builder()
+                    .maxSizeBytes(PikoMemoryGovernor.Shared.policy.value.cacheBudget(imageMemoryCacheMaxBytes))
+                    .build()
+            }
             .components {
                 add(OkHttpNetworkFetcherFactory(callFactory = { okHttpClient }))
             }
             .build()
+            .also {
+                initializedImageLoader = it
+                applyMemoryPolicy(PikoMemoryGovernor.Shared.policy.value)
+            }
     }
 
     companion object {

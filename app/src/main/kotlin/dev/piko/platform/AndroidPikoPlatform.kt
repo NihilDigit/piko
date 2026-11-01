@@ -8,6 +8,7 @@ import android.content.pm.ActivityInfo
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -24,12 +25,15 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.window.Dialog
@@ -41,8 +45,10 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.documentfile.provider.DocumentFile
 import dev.piko.BuildConfig
+import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.platform.BackgroundTransferAccess
 import dev.piko.ui.platform.DownloadLocationPicker
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -62,6 +68,16 @@ import dev.piko.ui.screens.player.MpvVideoSurface
 import dev.piko.ui.screens.player.findActivity
 import dev.piko.update.AppUpdateService
 import java.io.File
+import android.graphics.Bitmap
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import coil3.BitmapImage
+import coil3.SingletonImageLoader
+import coil3.request.CachePolicy
+import coil3.request.ImageRequest
+import coil3.request.allowHardware
+import coil3.size.Precision
+import dev.piko.ui.screens.clips.BackdropBlurKernel
 import android.os.StatFs
 import dev.piko.ui.platform.DiskSpace
 import kotlinx.coroutines.Dispatchers
@@ -154,6 +170,26 @@ class AndroidPikoPlatform(
     // 清单里的 intent-filter 已让 Piko 出现在磁力链接与种子文件的选择器里，默认由用户在选择器里点「始终」。
     // 应用没有接口替用户设定：RoleManager 只管浏览器、电话、短信这类角色，「默认打开」页只管验证过的 http 链接
     override val linkAssociation: LinkAssociation? = null
+
+    override val backgroundTransferAccess: BackgroundTransferAccess = object : BackgroundTransferAccess {
+        override fun isUnrestricted(): Boolean {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager ?: return true
+            return pm.isIgnoringBatteryOptimizations(context.packageName)
+        }
+
+        override fun requestUnrestricted() {
+            val packageUri = Uri.parse("package:${context.packageName}")
+            val requested = runCatching {
+                context.startActivity(
+                    Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, packageUri)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }.isSuccess
+            if (!requested) {
+                startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            }
+        }
+    }
 
     override val openAppLinkSettings: (() -> Unit) = {
         val packageUri = Uri.parse("package:${context.packageName}")
@@ -269,10 +305,72 @@ class AndroidPikoPlatform(
     }
 
     @Composable
+    override fun ProvideLocalizedEnvironment(
+        language: AppLanguage,
+        content: @Composable () -> Unit,
+    ) {
+        val locale = remember(language) { java.util.Locale.forLanguageTag(language.tag) }
+        if (java.util.Locale.getDefault() != locale) {
+            java.util.Locale.setDefault(locale)
+        }
+        val baseConfig = LocalConfiguration.current
+        val localizedConfig = remember(baseConfig, locale) {
+            Configuration(baseConfig).apply { setLocale(locale) }
+        }
+        val currentContext = LocalContext.current
+        @Suppress("DEPRECATION")
+        if (currentContext.resources.configuration.locales.get(0) != locale) {
+            currentContext.resources.updateConfiguration(localizedConfig, currentContext.resources.displayMetrics)
+            currentContext.applicationContext.resources.updateConfiguration(
+                localizedConfig,
+                currentContext.applicationContext.resources.displayMetrics,
+            )
+        }
+        CompositionLocalProvider(LocalConfiguration provides localizedConfig) {
+            key(language) {
+                content()
+            }
+        }
+    }
+
+    @Composable
     override fun ListScrollbar(state: LazyListState, modifier: Modifier) = Unit
 
     @Composable
     override fun ListScrollbar(state: LazyGridState, modifier: Modifier) = Unit
+
+    override suspend fun loadPreblurredBackdrop(
+        model: Any,
+        containerWidthPx: Int,
+        containerHeightPx: Int,
+        targetBlurPx: Float,
+    ): ImageBitmap? = withContext(Dispatchers.Default) {
+        runCatching {
+            val request = ImageRequest.Builder(context)
+                .data(model)
+                .size(BackdropBlurKernel.DECODE_MAX_SIDE_PX)
+                .precision(Precision.INEXACT)
+                .allowHardware(false)
+                .memoryCachePolicy(CachePolicy.DISABLED)
+                .build()
+            val rawBitmap = (SingletonImageLoader.get(context).execute(request).image as? BitmapImage)?.bitmap
+                ?: return@runCatching null
+            val readable = if (rawBitmap.config == Bitmap.Config.ARGB_8888) {
+                rawBitmap
+            } else {
+                rawBitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return@runCatching null
+            }
+            val w = readable.width
+            val h = readable.height
+            if (w <= 0 || h <= 0) return@runCatching null
+            val pixels = IntArray(w * h)
+            readable.getPixels(pixels, 0, w, 0, 0, w, h)
+            if (readable !== rawBitmap) readable.recycle()
+            val radius = BackdropBlurKernel.equivalentRadiusPx(w, h, containerWidthPx, containerHeightPx, targetBlurPx)
+            val blurred = BackdropBlurKernel.blurArgb(pixels, w, h, radius)
+            Bitmap.createBitmap(blurred, w, h, Bitmap.Config.ARGB_8888).asImageBitmap()
+        }.getOrNull()
+    }
 
     override val deviceSummary: String =
         "Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}），${Build.MANUFACTURER} ${Build.MODEL}，${Build.SUPPORTED_ABIS.firstOrNull()}"

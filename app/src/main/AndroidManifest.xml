@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- 后台持续下载与上传：引导用户将 Piko 加入系统电池优化白名单，避免定制系统在切后台几分钟后冻结网络连接 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- 应用内更新：经 PackageInstaller 安装从 GitHub Releases 下载的新版本 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
@@ -16,6 +18,7 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:enableOnBackInvokedCallback="true"
         android:hardwareAccelerated="true"
+        android:largeHeap="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher"
@@ -32,12 +35,14 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- 注册为磁力链接协议处理器 (magnet:) -->
+            <!-- 注册为磁力、eD2k 与迅雷链接协议处理器 -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="magnet" />
+                <data android:scheme="ed2k" />
+                <data android:scheme="thunder" />
             </intent-filter>
             <!-- 打开 .torrent 文件：在本地换算成磁力链接交给添加链接面板。文件管理器与浏览器下载
                  多按扩展名给出这个类型；报成 application/octet-stream 的认不出来，只能经分享上传 -->

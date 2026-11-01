@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Piko-debug Material You 单色主题图标层（与正式版描边轮廓反相：实心猫脸 + 镂空双眼与微笑）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:pivotX="24"
+        android:pivotY="24.5"
+        android:scaleX="1.24"
+        android:scaleY="1.24"
+        android:translateX="30"
+        android:translateY="29.5">
+
+        <path
+            android:fillColor="#000000"
+            android:pathData="M10.5,16.8 C10.5,14.0 12.2,11.0 13.5,9.8 C14.2,9.0 15.5,9.2 16.0,10.2 L20.8,15.2 Z" />
+
+        <path
+            android:fillColor="#000000"
+            android:pathData="M37.5,16.8 C37.5,14.0 35.8,11.0 34.5,9.8 C33.8,9.0 32.5,9.2 32.0,10.2 L27.2,15.2 Z" />
+
+        <path
+            android:fillColor="#000000"
+            android:fillType="evenOdd"
+            android:pathData="M15,15 H33 A7.5,7.5 0 0 1 40.5,22.5 V32.5 A7.5,7.5 0 0 1 33,40 H15 A7.5,7.5 0 0 1 7.5,32.5 V22.5 A7.5,7.5 0 0 1 15,15 Z M17.5,22.5 A1.7,1.7 0 0 1 19.2,24.2 V27.0 A1.7,1.7 0 0 1 17.5,28.7 A1.7,1.7 0 0 1 15.8,27.0 V24.2 A1.7,1.7 0 0 1 17.5,22.5 Z M30.5,22.5 A1.7,1.7 0 0 1 32.2,24.2 V27.0 A1.7,1.7 0 0 1 30.5,28.7 A1.7,1.7 0 0 1 28.8,27.0 V24.2 A1.7,1.7 0 0 1 30.5,22.5 Z M19.9,31.1 Q24,34.4 28.1,31.1 A1.1,1.1 0 0 1 29.5,32.8 Q24,37.2 18.5,32.8 A1.1,1.1 0 0 1 19.9,31.1 Z" />
+    </group>
+
+</vector>

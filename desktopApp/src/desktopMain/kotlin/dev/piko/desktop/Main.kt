@@ -63,6 +63,8 @@ import dev.piko.desktop.winrt.WindowsLinkAssociation
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.data.FilePikoCacheStore
+import dev.piko.shared.data.streamingCodec
+import kotlinx.serialization.json.Json
 import dev.piko.shared.sync.JvmSyncCipher
 import dev.piko.shared.scrape.MetaTubeService
 import io.ktor.client.HttpClient
@@ -76,6 +78,8 @@ import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.FileClipCache
 import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.memory.PikoMemoryGovernor
+import dev.piko.shared.memory.cacheBudget
 import dev.piko.shared.net.PikoProxySelector
 import dev.piko.shared.upload.UploadTask
 import dev.piko.ui.PikoApp
@@ -104,6 +108,8 @@ import kotlin.system.exitProcess
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -273,29 +279,60 @@ fun main(args: Array<String>) {
         WorkNotifications(services) { isInBackground || !isMainWindowFocused }
 
         val closeToTray = platform.closeToTray?.enabled?.collectAsState()?.value == true
+        val isTraySupported = remember { runCatching { java.awt.SystemTray.isSupported() }.getOrDefault(false) }
+        val quitNow = remember(services) {
+            {
+                runBlocking {
+                    withTimeoutOrNull(800) {
+                        services.downloadManager.flushPersistence()
+                        services.uploadManager.flushPersistence()
+                    }
+                }
+                exitApplication()
+            }
+        }
+        val hasDetachedWindows = players.isNotEmpty() || clipFeed != null
         LaunchedEffect(isInBackground) {
             if (!isInBackground) manualTraySession = false
         }
-        LaunchedEffect(isInBackground, manualTraySession, keepSessionAlive, closeToTray) {
-            if (isInBackground && !manualTraySession && !closeToTray && !keepSessionAlive && !services.hasBackgroundWork() && !services.hasDesktopResumeContext()) exitApplication()
+        LaunchedEffect(isInBackground, manualTraySession, keepSessionAlive, closeToTray, hasDetachedWindows) {
+            if (isInBackground && !manualTraySession && !(closeToTray && isTraySupported) && !keepSessionAlive && !hasDetachedWindows && !services.hasBackgroundWork() && !services.hasDesktopResumeContext()) quitNow()
         }
         // 更新脚本等本进程退出后才替换文件。下载会被中断，更新对话框已先征得用户同意
         LaunchedEffect(Unit) {
-            platform.updater?.exitRequests?.collect { exitApplication() }
+            platform.updater?.exitRequests?.collect { quitNow() }
         }
 
-        if (isInBackground) {
+        if (isInBackground && isTraySupported) {
             val trayTooltip = if (hasActiveTransfers) backgroundTooltip(downloads.values, uploads.values.filter { it.account == account }) else "Piko"
             val showLabel = tr("显示 Piko", "Show Piko", "Pikoを表示", "Piko 표시", "顯示 Piko")
+            val transfersLabel = tr("打开任务页", "Open tasks", "タスクを開く", "작업 열기", "開啟任務頁")
+            val pauseAllLabel = tr("全部暂停", "Pause all", "すべて一時停止", "모두 일시 중지", "全部暫停").takeIf {
+                downloads.values.any { it.status.isActive } || uploads.values.any { it.account == account && it.status.isActive }
+            }
             val quitLabel = tr("立即退出", "Quit now", "今すぐ終了", "지금 종료", "立即結束")
-            if (WinRTSupport.isWindows && java.awt.SystemTray.isSupported()) {
+            val openTransfersFromTray = {
+                services.requestOpenTransfers()
+                isInBackground = false
+                mainWindow?.let(::bringToFront)
+                Unit
+            }
+            val pauseAllFromTray = {
+                services.downloadManager.pauseAll()
+                services.uploadManager.pauseAll()
+            }
+            if (WinRTSupport.isWindows) {
                 dev.piko.desktop.winrt.WindowsSystemTray(
                     tooltip = trayTooltip,
                     darkTheme = appearance.isDark(),
                     showLabel = showLabel,
                     quitLabel = quitLabel,
                     onShow = { isInBackground = false },
-                    onQuit = ::exitApplication,
+                    onQuit = quitNow,
+                    transfersLabel = transfersLabel,
+                    onOpenTransfers = openTransfersFromTray,
+                    pauseAllLabel = pauseAllLabel,
+                    onPauseAll = pauseAllFromTray.takeIf { pauseAllLabel != null },
                 )
             } else {
                 Tray(
@@ -304,18 +341,22 @@ fun main(args: Array<String>) {
                     onAction = { isInBackground = false },
                     menu = {
                         Item(showLabel, onClick = { isInBackground = false })
-                        Item(quitLabel, onClick = ::exitApplication)
+                        Item(transfersLabel, onClick = openTransfersFromTray)
+                        if (pauseAllLabel != null) {
+                            Item(pauseAllLabel, onClick = pauseAllFromTray)
+                        }
+                        Item(quitLabel, onClick = quitNow)
                     },
                 )
             }
         }
 
         val hideToTray: (manual: Boolean) -> Unit = { manual ->
-            manualTraySession = manual
+            manualTraySession = manual && isTraySupported
             isInBackground = true
             // 用户已主动开启「最小化到托盘」或在询问框中点击该选项时，不再每次关窗都弹通知打扰；
             // 仅当用户未开启常驻托盘、因后台仍有未完任务而首次自动转入后台时提示一次。
-            if (!closeToTray && !manual && settings.get(BACKGROUND_HINT_SHOWN_KEY) != "true") {
+            if (!(closeToTray && isTraySupported) && !(manual && isTraySupported) && settings.get(BACKGROUND_HINT_SHOWN_KEY) != "true") {
                 settings.set(BACKGROUND_HINT_SHOWN_KEY, "true")
                 Thread {
                     val reopenHint = when {
@@ -330,21 +371,26 @@ fun main(args: Array<String>) {
         }
 
         val closeMainWindow = {
-            if (services.hasBackgroundWork() || services.hasDesktopResumeContext() || closeToTray) {
-                hideToTray(closeToTray)
-            } else if (platform.closeToTray != null && settings.get(CLOSE_BEHAVIOR_ASKED_KEY) != "true") {
+            if (services.hasBackgroundWork() || services.hasDesktopResumeContext() || hasDetachedWindows || (closeToTray && isTraySupported)) {
+                hideToTray(closeToTray && isTraySupported)
+            } else if (isTraySupported && platform.closeToTray != null && settings.get(CLOSE_BEHAVIOR_ASKED_KEY) != "true") {
                 askCloseBehavior = true
             } else {
-                exitApplication()
+                quitNow()
             }
         }
         val currentCloseMainWindow by rememberUpdatedState(closeMainWindow)
         // macOS 的 Cmd+Q：窗口还开着时同关窗；已经藏进后台再退出，是明确要结束传输
         LaunchedEffect(Unit) {
-            quitRequests.collect { if (isInBackground) exitApplication() else currentCloseMainWindow() }
+            quitRequests.collect { if (isInBackground) quitNow() else currentCloseMainWindow() }
         }
 
         val mainWindowState = rememberRememberedWindowState(settings, "main", DpSize(1120.dp, 760.dp))
+        // Detached playback/feed windows keep the process visible even when the main window is hidden.
+        val memoryVisible = (!isInBackground && !mainWindowState.isMinimized) || players.isNotEmpty() || clipFeed != null
+        LaunchedEffect(memoryVisible) {
+            PikoMemoryGovernor.Shared.onVisibilityChanged(memoryVisible)
+        }
         PikoWindow(
             onCloseRequest = closeMainWindow,
             onFatalClose = ::exitApplication,
@@ -359,6 +405,9 @@ fun main(args: Array<String>) {
                 mainWindow = window
             }
             val focused = LocalWindowInfo.current.isWindowFocused
+            LaunchedEffect(focused) {
+                if (focused) services.onAppForegrounded()
+            }
             SideEffect { isMainWindowFocused = focused }
             TitleBarThemeEffect(window, appearance.isDark())
             PixelAlignedContentEffect(window)
@@ -451,7 +500,7 @@ fun main(args: Array<String>) {
                                             settings.set(CLOSE_BEHAVIOR_ASKED_KEY, "true")
                                             platform.closeToTray?.set(false)
                                         }
-                                        exitApplication()
+                                        quitNow()
                                     },
                                 ) {
                                     Text(stringResource(Res.string.text_quit))
@@ -582,18 +631,33 @@ internal fun bringToFront(window: java.awt.Frame) {
 private fun createServices(settings: DesktopSettingsStore, preferences: DesktopPikoPreferences): PikoServices {
     // 进程级作用域，与 Android 的 appScope 对应：下载与会话刷新不随某个窗口的组合结束
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val desktopTransportBudget = (Runtime.getRuntime().maxMemory() / 8L).coerceIn(128L * 1024 * 1024, 512L * 1024 * 1024)
+    val desktopTransportBudget = (Runtime.getRuntime().maxMemory() / 8L).coerceAtMost(512L * 1024 * 1024)
     val clientManager = PikoClientManager(
         sessionStore = desktopSessionStore(),
         scope = appScope,
-        transportMemoryBudgetBytes = desktopTransportBudget,
+        transportMemoryBudgetBytes = PikoMemoryGovernor.Shared.policy.value.cacheBudget(desktopTransportBudget),
     )
+    appScope.launch {
+        PikoMemoryGovernor.Shared.policy.collect { policy ->
+            clientManager.setTransportMemoryBudgetBytes(policy.cacheBudget(desktopTransportBudget))
+        }
+    }
+    appScope.launch {
+        val runtime = Runtime.getRuntime()
+        while (isActive) {
+            PikoMemoryGovernor.Shared.onHeapSample(runtime.totalMemory() - runtime.freeMemory(), runtime.maxMemory())
+            delay(5_000)
+        }
+    }
     val mediaRepository = PikoMediaRepository(
         clientManager,
         preferences,
         clipCache = FileClipCache(PikoHome.root.resolve("cache/clip-cache").toFile()),
     )
-    val cacheStore = FilePikoCacheStore(PikoHome.root.resolve("cache").toString())
+    val cacheStore = FilePikoCacheStore(
+        PikoHome.root.resolve("cache").toString(),
+        jsonCodec = Json { ignoreUnknownKeys = true }.streamingCodec(),
+    )
     return PikoServices(
         platformPreferences = preferences,
         clientManager = clientManager,
@@ -605,10 +669,12 @@ private fun createServices(settings: DesktopSettingsStore, preferences: DesktopP
             appScope,
             segmentDownloader = DesktopPikoSegmentDownloader(),
             mediaRepository = mediaRepository,
+            cacheStore = cacheStore,
         ),
         uploadSources = DesktopPikoUploadSources(),
         localFileAccess = { changed -> DesktopLocalFileAccess(appScope, changed) },
         cacheStore = cacheStore,
+        treeDatabaseFactory = dev.piko.shared.data.DesktopPikoTreeDatabaseFactory(),
         syncCipher = JvmSyncCipher(),
         metaTube = MetaTubeService(preferences, cacheStore = cacheStore, scope = appScope) {
             HttpClient(OkHttp) {

@@ -238,7 +238,7 @@ class MainActivity : ComponentActivity() {
         val allowAnyDownloadLink = intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE
         return sharedTexts(intent)
             .flatMap { extractLinks(it) }
-            .filter { allowAnyDownloadLink || it.isMagnet }
+            .filter { allowAnyDownloadLink || it.isMagnet || it.uri.startsWith("ed2k://", ignoreCase = true) }
             .distinctBy { it.key }
             .takeIf { it.isNotEmpty() }
             ?.joinToString("\n") { it.uri }

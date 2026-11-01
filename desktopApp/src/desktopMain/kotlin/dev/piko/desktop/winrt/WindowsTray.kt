@@ -43,12 +43,20 @@ internal fun WindowsSystemTray(
     quitLabel: String,
     onShow: () -> Unit,
     onQuit: () -> Unit,
+    transfersLabel: String? = null,
+    onOpenTransfers: (() -> Unit)? = null,
+    pauseAllLabel: String? = null,
+    onPauseAll: (() -> Unit)? = null,
 ) {
     val currentShowLabel by rememberUpdatedState(showLabel)
     val currentQuitLabel by rememberUpdatedState(quitLabel)
     val currentDarkTheme by rememberUpdatedState(darkTheme)
     val currentOnShow by rememberUpdatedState(onShow)
     val currentOnQuit by rememberUpdatedState(onQuit)
+    val currentTransfersLabel by rememberUpdatedState(transfersLabel)
+    val currentOnOpenTransfers by rememberUpdatedState(onOpenTransfers)
+    val currentPauseAllLabel by rememberUpdatedState(pauseAllLabel)
+    val currentOnPauseAll by rememberUpdatedState(onPauseAll)
 
     val awtImage: Image = remember {
         runCatching {
@@ -72,11 +80,15 @@ internal fun WindowsSystemTray(
                         val showText = currentShowLabel
                         val quitText = currentQuitLabel
                         val dark = currentDarkTheme
+                        val transfersText = currentTransfersLabel.takeIf { currentOnOpenTransfers != null }
+                        val pauseText = currentPauseAllLabel.takeIf { currentOnPauseAll != null }
                         Thread({
                             try {
-                                when (Win32PopupMenu.show(showText, quitText, dark)) {
+                                when (Win32PopupMenu.show(showText, quitText, dark, transfersText, pauseText)) {
                                     ID_SHOW -> SwingUtilities.invokeLater { currentOnShow() }
                                     ID_QUIT -> SwingUtilities.invokeLater { currentOnQuit() }
+                                    ID_TRANSFERS -> SwingUtilities.invokeLater { currentOnOpenTransfers?.invoke() }
+                                    ID_PAUSE_ALL -> SwingUtilities.invokeLater { currentOnPauseAll?.invoke() }
                                 }
                             } finally {
                                 menuShowing.set(false)
@@ -110,6 +122,8 @@ internal fun WindowsSystemTray(
 
 private const val ID_SHOW = 1001
 private const val ID_QUIT = 1002
+private const val ID_TRANSFERS = 1003
+private const val ID_PAUSE_ALL = 1004
 
 private object Win32PopupMenu {
     private const val WS_POPUP = 0x80000000.toInt()
@@ -198,7 +212,7 @@ private object Win32PopupMenu {
         }.getOrNull()
     }
 
-    fun show(showLabel: String, quitLabel: String, darkTheme: Boolean): Int = runCatching {
+    fun show(showLabel: String, quitLabel: String, darkTheme: Boolean, transfersLabel: String?, pauseAllLabel: String?): Int = runCatching {
         runCatching {
             val mode = if (darkTheme) PREFERRED_APP_MODE_FORCE_DARK else PREFERRED_APP_MODE_FORCE_LIGHT
             setPreferredAppMode?.invokeWithArguments(mode)
@@ -223,6 +237,8 @@ private object Win32PopupMenu {
                 if (hMenu == MemorySegment.NULL) return 0
                 try {
                     appendMenuW.invokeWithArguments(hMenu, MF_STRING, ID_SHOW.toLong(), arena.utf16Z(showLabel))
+                    transfersLabel?.let { appendMenuW.invokeWithArguments(hMenu, MF_STRING, ID_TRANSFERS.toLong(), arena.utf16Z(it)) }
+                    pauseAllLabel?.let { appendMenuW.invokeWithArguments(hMenu, MF_STRING, ID_PAUSE_ALL.toLong(), arena.utf16Z(it)) }
                     appendMenuW.invokeWithArguments(hMenu, MF_SEPARATOR, 0L, MemorySegment.NULL)
                     appendMenuW.invokeWithArguments(hMenu, MF_STRING, ID_QUIT.toLong(), arena.utf16Z(quitLabel))
                     setMenuDefaultItem.invokeWithArguments(hMenu, ID_SHOW, 0)

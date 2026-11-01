@@ -7,6 +7,7 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.download.PikoDownloadStorage
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -24,6 +25,7 @@ class AndroidPikoDownloadStorage(
     private var configuredDirectory: String = ""
 
     private val folderLock = Mutex()
+    private val directoryLoaded = CompletableDeferred<Unit>()
 
     private val appDirectory: File
         get() = (context.getExternalFilesDir(null) ?: context.filesDir).resolve("Piko")
@@ -35,7 +37,10 @@ class AndroidPikoDownloadStorage(
 
     init {
         scope.launch {
-            preferences.downloadDirPathFlow.collect { configuredDirectory = it }
+            preferences.downloadDirPathFlow.collect {
+                configuredDirectory = it
+                directoryLoaded.complete(Unit)
+            }
         }
     }
 
@@ -52,6 +57,7 @@ class AndroidPikoDownloadStorage(
     }
 
     override suspend fun existingLengths(fileNames: List<String>): Map<String, Long> = withContext(Dispatchers.IO) {
+        directoryLoaded.await()
         val tree = treeUri ?: return@withContext fileNames.associateWith { File(resolveDirectory(), it).length() }
         val root = DocumentFile.fromTreeUri(context, tree) ?: return@withContext emptyMap()
         buildMap {
@@ -68,12 +74,14 @@ class AndroidPikoDownloadStorage(
 
     // 暂存区与私有目录里照搬相对路径建子文件夹，与最终位置一一对应，续传时凭同一个 fileName 找回半截文件
     override suspend fun downloadTarget(fileName: String): String = withContext(Dispatchers.IO) {
+        directoryLoaded.await()
         val target = if (treeUri != null) File(stagingDirectory, fileName) else File(resolveDirectory(), fileName)
         target.parentFile?.mkdirs()
         target.absolutePath
     }
 
     override suspend fun commit(fileName: String, downloadedPath: String): String = withContext(Dispatchers.IO) {
+        directoryLoaded.await()
         val tree = treeUri ?: return@withContext downloadedPath
         val staged = File(downloadedPath)
         val root = DocumentFile.fromTreeUri(context, tree) ?: error(tr("无法访问下载目录", "Cannot access download folder", "ダウンロード先にアクセスできません", "다운로드 폴더에 접근할 수 없습니다", "無法存取下載資料夾"))
@@ -92,6 +100,7 @@ class AndroidPikoDownloadStorage(
     }
 
     override suspend fun existingLength(fileName: String): Long = withContext(Dispatchers.IO) {
+        directoryLoaded.await()
         val tree = treeUri
         if (tree != null) {
             // 暂存区里有半截文件说明还没交付，以它为准；否则看目录里有没有已交付的完整文件
@@ -104,6 +113,7 @@ class AndroidPikoDownloadStorage(
     }
 
     override suspend fun exists(fileName: String): Boolean = withContext(Dispatchers.IO) {
+        directoryLoaded.await()
         val tree = treeUri
         if (tree != null) {
             findInTree(tree, fileName)?.exists() == true
@@ -113,6 +123,7 @@ class AndroidPikoDownloadStorage(
     }
 
     override suspend fun locate(fileName: String): String? = withContext(Dispatchers.IO) {
+        directoryLoaded.await()
         val tree = treeUri
         if (tree != null) {
             findInTree(tree, fileName)?.uri?.toString()
@@ -122,6 +133,7 @@ class AndroidPikoDownloadStorage(
     }
 
     override suspend fun pruneEmptyFolders(folder: String) = withContext(Dispatchers.IO) {
+        directoryLoaded.await()
         val tree = treeUri
         if (tree != null) {
             findInTree(tree, folder)?.takeIf { it.isDirectory }?.let(::pruneDocument)
@@ -167,6 +179,7 @@ class AndroidPikoDownloadStorage(
     }
 
     override suspend fun delete(path: String): Boolean = withContext(Dispatchers.IO) {
+        directoryLoaded.await()
         if (path.startsWith("content:")) {
             // 下载目录本身也是 content: URI，误传进来就会删掉用户选的整个目录
             if (path == configuredDirectory) return@withContext false

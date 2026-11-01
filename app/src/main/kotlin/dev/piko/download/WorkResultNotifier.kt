@@ -42,6 +42,26 @@ internal class WorkResultNotifier(
 
     fun start() {
         createChannel()
+        scope.launch {
+            AppVisibility.visible.collect { visible ->
+                if (!visible) {
+                    services.downloadManager.flushPersistence()
+                    services.uploadManager.flushPersistence()
+                } else {
+                    // 等待冷启动任务表完成恢复，再判断暂停状态。
+                    services.downloadManager.flushPersistence()
+                    services.uploadManager.flushPersistence()
+                    services.onAppForegrounded()
+                    val (downloads, uploads) = PikoDownloadService.consumeTimedOutTransfers()
+                    downloads.forEach { id ->
+                        if (services.downloadManager.tasks.value[id]?.status == DownloadStatus.PAUSED) services.downloadManager.startDownload(id)
+                    }
+                    uploads.forEach { id ->
+                        if (services.uploadManager.tasks.value[id]?.status == dev.piko.shared.upload.UploadStatus.PAUSED) services.uploadManager.resume(id)
+                    }
+                }
+            }
+        }
         // workNotices 与下面的判断都读 Compose 状态，在主线程上收
         scope.launch(Dispatchers.Main) {
             services.workNotices().collect { notice -> if (!AppVisibility.isVisible) post(notice) }
@@ -93,9 +113,18 @@ internal class WorkResultNotifier(
         app.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private companion object {
-        const val CHANNEL_ID = "piko_work_results"
+    companion object {
+        fun postTimeout(app: Application) {
+            val notifier = WorkResultNotifier(app, dev.piko.PikoApplication.instance.services, dev.piko.PikoApplication.instance.appScope)
+            notifier.createChannel()
+            notifier.post(WorkNotice(
+                tr("后台传输已暂停", "Background transfers paused", "バックグラウンド転送を一時停止しました", "백그라운드 전송 일시 중지", "背景傳輸已暫停"),
+                tr("已达系统单次后台时长上限，打开 Piko 将自动继续。", "The system background time limit was reached. Open Piko to resume automatically.", "システムのバックグラウンド実行時間の上限に達しました。Piko を開くと自動的に再開します。", "시스템 백그라운드 실행 시간 한도에 도달했습니다. Piko를 열면 자동으로 계속됩니다.", "已達系統單次背景時長上限，開啟 Piko 將自動繼續。"),
+            ))
+        }
+
+        private const val CHANNEL_ID = "piko_work_results"
         // 与传输进度的常驻通知（9527）错开
-        const val FIRST_NOTIFICATION_ID = 20_000
+        private const val FIRST_NOTIFICATION_ID = 20_000
     }
 }

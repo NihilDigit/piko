@@ -2,6 +2,10 @@ package dev.piko.download
 
 import dev.piko.shared.i18n.tr
 
+import android.app.AlarmManager
+import android.os.SystemClock
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -59,6 +63,11 @@ class PikoDownloadService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_PAUSE_ALL) {
+            pauseAndFlush()
+            stepDown()
+            return START_NOT_STICKY
+        }
         // 第一条就写眼下在做的事：观察循环的第一次更新之前工作可能已经结束（小目录的查找重复只要几秒），
         // 写死成「传输」的话，查找重复时看到的就一直是它
         val initialNotification = buildNotification(currentContent())
@@ -89,10 +98,43 @@ class PikoDownloadService : Service() {
      */
     override fun onTimeout(startId: Int, fgsType: Int) {
         PikoLog.w(TAG, "前台服务到达系统时长上限，暂停全部传输")
-        PikoApplication.instance.downloadManager.pauseAll()
-        PikoApplication.instance.uploadManager.pauseAll()
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        val services = PikoApplication.instance.services
+        synchronized(timeoutLock) {
+            timedOutDownloads += services.downloadManager.tasks.value.values.filter { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING }.map { it.taskId }
+            timedOutUploads += services.uploadManager.tasks.value.values.filter { it.status.isActive }.map { it.taskId }
+        }
+        pauseAndFlush()
+        WorkResultNotifier.postTimeout(PikoApplication.instance)
+        stepDown()
+    }
+
+    private fun pauseAndFlush() {
+        val app = PikoApplication.instance
+        app.downloadManager.pauseAll()
+        app.uploadManager.pauseAll()
+        app.appScope.launch {
+            app.downloadManager.flushPersistence()
+            app.uploadManager.flushPersistence()
+        }
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        val services = PikoApplication.instance.services
+        runBlocking {
+            withTimeoutOrNull(800) {
+                services.downloadManager.flushPersistence()
+                services.uploadManager.flushPersistence()
+            }
+        }
+        if (services.hasBackgroundWork()) {
+            runCatching {
+                val pending = PendingIntent.getService(this, RESTART_REQUEST_CODE,
+                    Intent(this, PikoDownloadService::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                getSystemService(AlarmManager::class.java).set(AlarmManager.ELAPSED_REALTIME, SystemClock.elapsedRealtime() + 1000L, pending)
+            }.onFailure { PikoLog.w(TAG, "注册后台传输恢复失败", it) }
+        }
+        super.onTaskRemoved(rootIntent)
     }
 
     private fun startObservingDownloadsIfNeeded() {
@@ -165,6 +207,16 @@ class PikoDownloadService : Service() {
         if (content.lines.isNotEmpty()) {
             builder.setStyle(NotificationCompat.InboxStyle().also { style -> content.lines.forEach(style::addLine) })
         }
+        val services = PikoApplication.instance.services
+        val account = services.clientManager.currentClient.value?.account
+        val canPause = services.downloadManager.tasks.value.values.any { it.status == DownloadStatus.PENDING || it.status == DownloadStatus.DOWNLOADING } ||
+            services.uploadManager.tasks.value.values.any { it.account == account && it.status.isActive }
+        if (canPause) {
+            val pause = PendingIntent.getService(this, PAUSE_REQUEST_CODE,
+                Intent(this, PikoDownloadService::class.java).setAction(ACTION_PAUSE_ALL),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            builder.addAction(0, tr("全部暂停", "Pause all", "すべて一時停止", "모두 일시 중지", "全部暫停"), pause)
+        }
         return builder
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -199,6 +251,20 @@ class PikoDownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        const val ACTION_PAUSE_ALL = "dev.piko.download.action.PAUSE_ALL"
+        private val timeoutLock = Any()
+        private val timedOutDownloads = mutableSetOf<String>()
+        private val timedOutUploads = mutableSetOf<String>()
+
+        fun consumeTimedOutTransfers(): Pair<Set<String>, Set<String>> = synchronized(timeoutLock) {
+            (timedOutDownloads.toSet() to timedOutUploads.toSet()).also {
+                timedOutDownloads.clear()
+                timedOutUploads.clear()
+            }
+        }
+
+        private const val PAUSE_REQUEST_CODE = 2
+        private const val RESTART_REQUEST_CODE = 3
         private const val TAG = "DownloadService"
         private const val NOTIFICATION_ID = 9527
         private const val OPEN_TRANSFERS_REQUEST_CODE = 1

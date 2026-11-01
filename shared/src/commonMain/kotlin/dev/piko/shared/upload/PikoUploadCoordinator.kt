@@ -29,6 +29,7 @@ import io.github.nihildigit.pikpak.continueUpload
 import io.github.nihildigit.pikpak.createFolder
 import io.github.nihildigit.pikpak.gcidByCid
 import io.github.nihildigit.pikpak.startUpload
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -115,6 +116,8 @@ class PikoUploadCoordinator(
     val preparations = _preparations.asStateFlow()
     private val _isRestoring = MutableStateFlow(true)
     val isRestoring = _isRestoring.asStateFlow()
+    private val restoreCompleted = CompletableDeferred<Unit>()
+    private val persistLock = Mutex()
     private val sourceLock = Mutex()
     private val preparationLock = Mutex()
     private val preparationJobs = mutableMapOf<String, Job>()
@@ -154,7 +157,10 @@ class PikoUploadCoordinator(
 
     init {
         scope.launch {
-            try { restore() } finally { _isRestoring.value = false }
+            try { restore() } finally {
+                _isRestoring.value = false
+                restoreCompleted.complete(Unit)
+            }
             launch { persistOnStructuralChange() }
             runQueue()
         }
@@ -499,12 +505,20 @@ class PikoUploadCoordinator(
     private suspend fun persistOnStructuralChange() {
         _tasks
             .distinctUntilChangedBy { tasks -> tasks.mapValues { Triple(it.value.status, it.value.gcid, it.value.session?.uploadId) } }
-            .collect { tasks ->
+            .collect { flushPersistence() }
+    }
+
+    suspend fun flushPersistence() {
+        restoreCompleted.await()
+        withContext(Dispatchers.IO) {
+            persistLock.withLock {
+                val tasks = _tasks.value
                 saveCredentials(tasks)
                 val withoutCredentials = tasks.values.map { task -> task.copy(session = task.session?.withCredentials(null)) }
                 val serialized = json.encodeToString(taskListSerializer, withoutCredentials)
                 runSuspendCatching { preferences.saveUploadTasks(serialized) }.logFailure(TAG, "保存上传任务表失败")
             }
+        }
     }
 
     /**
