@@ -43,6 +43,11 @@ kotlin {
             // 本机回环代理的服务端：只需 GET/HEAD 加 Range，原始 socket 足够
             implementation(libs.ktor.network)
         }
+        val desktopMain by getting {
+            dependencies {
+                implementation(libs.sqlite.jdbc)
+            }
+        }
         commonTest.dependencies {
             implementation(kotlin("test"))
         }
@@ -55,5 +60,12 @@ kotlin {
                 implementation(libs.ktor.client.okhttp)
             }
         }
+    }
+}
+
+if (providers.gradleProperty("pikoTestLowHeap").isPresent) {
+    tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+        maxHeapSize = "256m"
+        systemProperty("piko.test.lowheap", "true")
     }
 }

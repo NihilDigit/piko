@@ -366,6 +366,49 @@ class DriveTreeIndexTest {
     }
 
     @Test
+    fun paginatedDrivePatchesNewFoldersAndSyncFileRotationsWithoutFullRebuild() = dev.piko.shared.smoke.smoke {
+        val server = dev.piko.shared.smoke.FakePikPakServer()
+        val pikoDir = server.addFolder(".piko")
+        val oldSync = server.addFile("settings-100.json", pikoDir.id, content = ByteArray(400), hash = "SYNC1")
+        val archiveDir = server.addFolder("Show")
+        val bigVideo = server.addFile("E01.mkv", archiveDir.id, content = ByteArray(2_000), hash = "VID1")
+        val bulkDir = server.addFolder("Bulk")
+        // 超过单页 500 条使 listFilesPaged("*", 500) 进入分页模式（fullSnapshotVisible == false）
+        repeat(520) { idx ->
+            server.addFile("item-$idx.bin", bulkDir.id, content = ByteArray(10), hash = "B$idx")
+        }
+        server.quotaUsage = 400L + 2_000L + 520L * 10L
+
+        val provider = server.provider()
+        val writerRepo = PikoDriveRepository(provider)
+        val readerRepo = PikoDriveRepository(provider, cacheStore = dev.piko.shared.smoke.MemoryCacheStore())
+        readerRepo.getQuota().getOrThrow()
+        readerRepo.warmDriveTree().getOrThrow()
+        assertTrue(readerRepo.driveTreeIndex.isComplete)
+
+        // 另一台设备：1) 新建 3 个文件夹；2) 轮换 .piko 同步文件（删旧 400B、写新 180B）；3) 归档 Show/E01.mkv（删 2000B 原文件、写 120B 清单）
+        val newFolders = (1..3).map { server.addFolder("NewFolder-$it") }
+        writerRepo.delete(listOf(oldSync.id)).getOrThrow()
+        val newSync = server.addFile("settings-200.json", pikoDir.id, content = ByteArray(180), hash = "SYNC2")
+        writerRepo.delete(listOf(bigVideo.id)).getOrThrow()
+        val newManifest = server.addFile(".piko-vault-v1-abcd.json", archiveDir.id, content = ByteArray(120), hash = "MAN1")
+        // 总物理容量从 7600 下降至 5500（usageBytes < prevUsage）
+        server.quotaUsage = 180L + 120L + 520L * 10L
+
+        assertEquals(
+            PikoDriveRepository.CanaryProbeResult.INCREMENTAL_PATCH,
+            readerRepo.probeRemoteChanges(force = true).getOrThrow(),
+        )
+        newFolders.forEach { folder ->
+            assertTrue(folder.id in readerRepo.driveTreeIndex.flow.value.entries, "新增文件夹应直接增量入树")
+        }
+        assertNull(readerRepo.driveTreeIndex.file(oldSync.id))
+        assertEquals(newSync.id, readerRepo.driveTreeIndex.file(newSync.id)?.id)
+        assertNull(readerRepo.driveTreeIndex.file(bigVideo.id))
+        assertEquals(newManifest.id, readerRepo.driveTreeIndex.flow.value.manifestsByFolder[archiveDir.id]?.id)
+    }
+
+    @Test
     fun shadowSwapHealsPreExistingDirtyAndPreservesConcurrentMutationsAndManifestInvalidation() {
         val index = DriveTreeIndex()
         val m1 = FileStat(
@@ -515,5 +558,50 @@ class DriveTreeIndexTest {
 
         index.applyChange(DriveChange.Deleted(listOf("f1", "f2"), setOf("dirA")))
         assertEquals(120L, index.lastUsageBytes)
+    }
+
+    @Test
+    fun unchangedSqliteFolderListingAndSelfSyncUploadKeepRevisionAndCanaryClean() = dev.piko.shared.smoke.smoke {
+        val dir = java.nio.file.Files.createTempDirectory("piko-sqlite-perf").toFile()
+        try {
+            val server = dev.piko.shared.smoke.FakePikPakServer()
+            val pikoDir = server.addFolder(".piko")
+            val oldSync = server.addFile("settings-100.json", pikoDir.id, content = ByteArray(240), hash = "S100")
+            val mediaDir = server.addFolder("Media")
+            val ep1 = server.addFile("E01.mp4", mediaDir.id, content = ByteArray(1000), hash = "E1")
+            val ep2 = server.addFile("E02.mp4", mediaDir.id, content = ByteArray(1500), hash = "E2")
+            server.quotaUsage = 240L + 1000L + 1500L
+
+            val factory = DesktopPikoTreeDatabaseFactory(dir)
+            val repo = PikoDriveRepository(server.provider(), treeDatabaseFactory = factory)
+            try {
+                repo.getQuota().getOrThrow()
+                repo.warmDriveTree().getOrThrow()
+                assertTrue(repo.driveTreeIndex.isComplete)
+
+                // 首次完整列举 Media 后，再次用相同内容列举应不推进 revision（零多余重排与聚合重写）
+                val listing = repo.listBrowsable(mediaDir.id, PikoFileSortOrder.TIME_DESC).getOrThrow()
+                assertEquals(setOf(ep1.id, ep2.id), listing.map { it.id }.toSet())
+                val revAfterFirst = repo.driveTreeIndex.flow.value.revision
+                repo.driveTreeIndex.putFolderListing(mediaDir.id, listing, complete = true)
+                assertEquals(revAfterFirst, repo.driveTreeIndex.flow.value.revision, "内容未变的完整列举不应触发 SQLite 重写与 revision 广播")
+
+                // 本机自身执行 .piko/ 同步轮换（uploadBytes 新文件 + delete 旧文件），usageBytes 应精确对齐且不触发 FULL_REBUILD
+                val newPayload = ByteArray(310) { 0x41 }
+                repo.uploadBytes(pikoDir.id, "settings-200.json", newPayload).getOrThrow()
+                repo.delete(listOf(oldSync.id)).getOrThrow()
+                server.quotaUsage = 310L + 1000L + 1500L
+
+                val probeResult = repo.probeRemoteChanges(force = true).getOrThrow()
+                assertTrue(
+                    probeResult != PikoDriveRepository.CanaryProbeResult.FULL_REBUILD,
+                    "本机 .piko 同步轮换不应击穿哨兵探针导致全盘重扫，实际结果：$probeResult",
+                )
+            } finally {
+                repo.enterAccount(null)
+            }
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 }

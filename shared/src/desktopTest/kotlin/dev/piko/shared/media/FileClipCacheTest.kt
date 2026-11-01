@@ -53,4 +53,29 @@ class FileClipCacheTest {
             directory.deleteRecursively()
         }
     }
+
+    @Test
+    fun `legacy format 3 slice record is rejected so historical raw-cut offsets are never reused`() = runBlocking {
+        val directory = Files.createTempDirectory("clip-cache-v3").toFile()
+        try {
+            val legacyFile = java.io.File(directory, "records/legacy_key").apply { parentFile.mkdirs() }
+            java.io.DataOutputStream(legacyFile.outputStream().buffered()).use { out ->
+                out.writeInt(3) // 旧 FORMAT = 3
+                out.writeUTF("f1")
+                out.writeUTF("GCID")
+                out.writeUTF("ep1.mkv")
+                out.writeUTF("p1")
+                out.writeLong(1_000_000L)
+                out.writeUTF("m1")
+                out.writeLong(500_000L)
+                out.writeLong(188_000L)
+                out.writeLong(188_000L)
+                out.writeLong(30_000L)
+                out.writeLong(180_000L)
+            }
+            assertNull(FileClipCache(directory).record("legacy_key"))
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
 }

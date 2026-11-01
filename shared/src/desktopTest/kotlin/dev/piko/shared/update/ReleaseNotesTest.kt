@@ -85,10 +85,13 @@ class ReleaseNotesTest {
         verify: (String, kotlinx.serialization.json.JsonObject) -> Unit,
     ) {
         val script = File("../.github/scripts/render-changelog.py").canonicalFile
-        val python = listOf("python3", "python").firstOrNull { command ->
+        val isWindows = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
+        val candidates = if (isWindows) listOf("python", "python3") else listOf("python3", "python")
+        val python = candidates.firstOrNull { command ->
             runCatching { ProcessBuilder(command, "--version").redirectErrorStream(true).start().let { process ->
+                process.outputStream.close()
                 val output = process.inputStream.bufferedReader().readText()
-                process.waitFor() == 0 && output.startsWith("Python 3.")
+                process.waitFor(15, java.util.concurrent.TimeUnit.SECONDS) && process.exitValue() == 0 && output.startsWith("Python 3.")
             } }.getOrDefault(false)
         } ?: error("Python 3 is required to test the release renderer")
         val dir = Files.createTempDirectory("piko-changelog-test").toFile()
@@ -99,8 +102,10 @@ class ReleaseNotesTest {
                 "--template", "template.md", "--out-release-notes", "release-notes.md",
                 "--out-notes-json", "notes.json") + if (requireAll) listOf("--require-all") else emptyList()
             val process = ProcessBuilder(command).directory(dir).redirectErrorStream(true).start()
+            process.outputStream.close()
             val output = process.inputStream.bufferedReader().readText()
-            assertEquals(expectedExit, process.waitFor(), output)
+            assertTrue(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS), "render-changelog.py timed out")
+            assertEquals(expectedExit, process.exitValue(), output)
             if (changelog == null) assertTrue(output.contains("::warning::Missing changelog"), output)
             if (expectedExit != 0) {
                 assertTrue(output.contains("::error::") && output.contains("ko"), output)

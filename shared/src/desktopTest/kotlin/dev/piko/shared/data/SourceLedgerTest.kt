@@ -6,11 +6,13 @@ import dev.piko.shared.sync.SourceLedgerSync
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -46,6 +48,43 @@ class SourceLedgerTest {
         hash = hash,
         params = url?.let { mapOf("url" to it) }.orEmpty(),
     )
+
+    @Test
+    fun `account handoff drains an in flight write before returning to the same key`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val files = mutableMapOf<String, String>()
+        var first = true
+        val store = object : PikoCacheStore {
+            override suspend fun read(key: String) = files[key]
+            override suspend fun write(key: String, value: String) {
+                if (first) {
+                    first = false
+                    started.complete(Unit)
+                    release.await()
+                }
+                files[key] = value
+            }
+        }
+        try {
+            withTimeout(5_000) {
+                val ledger = SourceLedger(store, scope, saveDelayMillis = 0)
+                ledger.switchAccount("alice")
+                ledger.record(magnetA, listOf(ResolvedFile("one", 1, "G1")))
+                started.await()
+                ledger.record(magnetA, listOf(ResolvedFile("two", 2, "G2")))
+                ledger.switchAccount("bob")
+                ledger.switchAccount("alice")
+                release.complete(Unit)
+                val restored = ledger.flow.first { it.size == 2 }
+                assertEquals(setOf("G1:1", "G2:2"), restored.keys)
+                assertEquals(restored, SourceLedger.decode(files.getValue("sources-alice.json")))
+            }
+        } finally {
+            scope.cancel()
+        }
+    }
 
     @Test
     fun `a file renamed or copied keeps its source, other sizes and server sources are left alone`() = runBlocking {

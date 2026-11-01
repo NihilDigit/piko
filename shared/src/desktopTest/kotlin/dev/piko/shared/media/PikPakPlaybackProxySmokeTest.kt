@@ -76,8 +76,19 @@ class PikPakPlaybackProxySmokeTest {
     @Test
     fun clipSliceServesBoundedMultiExtendWindowAndPrefetchesHeadAndTail() = runBlocking {
         val origin = FakePikPakCloud.payload(4 * 1024 * 1024)
-        // TS 流长度是 188 的整数倍：188 * 20_000 = 3_760_000 字节，在 600 秒时长下每 30 秒约 188_000 字节
+        // TS 流长度是 188 的整数倍：188 * 20_000 = 3_760_000 字节，在 600 秒时长下每 30 秒约 188_000 字节；
+        // 在起点处嵌入真实带完整 PAT + PMT + HEVC VPS/SPS/PPS + IDR 的安全接入点，验证立即命中且不整条拉取。
         val transcode = FakePikPakCloud.payload(188 * 20_000)
+        val realSample = generateSequence(java.io.File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+            .map { it.resolve("testdata/media/transcode-hevc-aac.ts") }
+            .first { it.isFile }
+            .readBytes()
+        val expectedOffset = (transcode.size.toDouble() / 600_000.0 * 120_000L).toLong() / 188L * 188L
+        val sampleHeadBytes = minOf(realSample.size / 188 * 188, 188 * 120)
+        realSample.copyInto(transcode, destinationOffset = 0, startIndex = 0, endIndex = sampleHeadBytes)
+        realSample.copyInto(transcode, destinationOffset = expectedOffset.toInt(), startIndex = 0, endIndex = sampleHeadBytes)
+        val verifiedInSample = assertNotNull(dev.piko.shared.media.TsTimestamps.firstVerifiedVideoSlice(realSample))
+        val actualSliceOffset = expectedOffset + verifiedInSample.byteOffset
         val cloud = FakePikPakCloud(origin = origin, transcode = transcode, transcodeName = "720P")
         val repository = PikoMediaRepository(cloud.provider)
 
@@ -86,19 +97,35 @@ class PikPakPlaybackProxySmokeTest {
             assertTrue(clip.sliced)
             val url = assertNotNull(clip.url)
             clip.prefetch(io.github.nihildigit.pikpak.StreamRole.FOREGROUND)
-            // 预取只取有界切片窗口的开头 5s 与末尾 512 KB，不应把整条 3.76 MB 转码流全部拉下来
-            assertTrue(cloud.deliveredCdnBytes.get() < 2_000_000L, "delivered=${cloud.deliveredCdnBytes.get()}")
+            // 预取只取流首 PTS 校准块（512 KiB）+ 有界切片开头（768 KiB）+ 切片末尾（768 KiB）共约 2 MiB，不拉取整条流
+            assertTrue(cloud.deliveredCdnBytes.get() <= 2_200_000L, "delivered=${cloud.deliveredCdnBytes.get()}")
             // 有界窗口覆盖 180s 多轮续播，且小于整条剩余转码流，避免暴露长流尾部引发无索引 TS 二分查找失败
-            val expectedOffset = (transcode.size.toDouble() / 600_000.0 * 120_000L).toLong() / 188L * 188L
-            val fullRemaining = transcode.size - expectedOffset
+            val fullRemaining = transcode.size - actualSliceOffset
             val sliceBytes = assertNotNull(clip.streamBytes)
             assertTrue(sliceBytes in 1_000_000L until fullRemaining, "sliceBytes=$sliceBytes, fullRemaining=$fullRemaining")
             val tailRead = withTimeout(30_000) { request(url, range = "bytes=${sliceBytes - 1024}-") }
             assertEquals(206, tailRead.status)
             assertContentEquals(
-                transcode.copyOfRange((expectedOffset + sliceBytes - 1024).toInt(), (expectedOffset + sliceBytes).toInt()),
+                transcode.copyOfRange((actualSliceOffset + sliceBytes - 1024).toInt(), (actualSliceOffset + sliceBytes).toInt()),
                 tailRead.body,
             )
+        } finally {
+            clip.close()
+        }
+    }
+
+    @Test
+    fun parameterlessTsStreamRefusesRawCutAndFallsBackToFullStream() = runBlocking {
+        val origin = FakePikPakCloud.payload(4 * 1024 * 1024)
+        // 长度虽为 188 整数倍，但不含任何合法 PAT/PMT 与视频参数集：严禁在估算偏移半路裸切导致硬解崩溃回退软解
+        val parameterlessTs = FakePikPakCloud.payload(188 * 6_000)
+        val cloud = FakePikPakCloud(origin = origin, transcode = parameterlessTs, transcodeName = "720P")
+        val repository = PikoMediaRepository(cloud.provider)
+
+        val clip = repository.prepareClip("f1", startMs = 120_000L, videoDurationMs = 600_000L, role = io.github.nihildigit.pikpak.StreamRole.FOREGROUND).getOrThrow()
+        try {
+            assertEquals(false, clip.sliced)
+            assertEquals(120_000L, clip.startOnPlayer)
         } finally {
             clip.close()
         }

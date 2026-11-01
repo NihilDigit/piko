@@ -12,7 +12,8 @@ class DriveRepository(
     clientManager: PikoClientProvider,
     preferences: dev.piko.data.auth.PikoUserPreferences? = null,
     cacheStore: dev.piko.shared.data.PikoCacheStore? = null,
-) : PikoDriveRepository(clientManager, preferences, cacheStore) {
+    treeDatabaseFactory: dev.piko.shared.data.PikoTreeDatabaseFactory? = null,
+) : PikoDriveRepository(clientManager, preferences, cacheStore, treeDatabaseFactory) {
     fun getFolderMeaningless(folderId: String): Boolean? = folderMeaningless(folderId)
     fun getAllCachedFolderMeaningless(): Map<String, Boolean> = folderMeaninglessCache.toMap()
 

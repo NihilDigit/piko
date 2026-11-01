@@ -1,6 +1,7 @@
 package dev.piko.shared.net
 
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.DomainProbe
@@ -17,6 +18,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * PikPak 的 API 有四个根域名（mypikpak.com、mypikpak.net、pikpak.me、pikpakdrive.com），指向同一组服务器，令牌通用，
@@ -32,6 +35,7 @@ class PikPakDomainSelector(
     private val clients: PikoClientManager,
     private val preferences: PikoUserPreferences,
     private val scope: CoroutineScope,
+    private val cacheStore: PikoCacheStore? = null,
 ) {
     private val _probes = MutableStateFlow<Map<PikPakDomain, DomainProbe>>(emptyMap())
 
@@ -47,6 +51,10 @@ class PikPakDomainSelector(
     val active: StateFlow<PikPakDomain?> = _active.asStateFlow()
 
     private val reprobes = MutableStateFlow(0)
+    @Volatile
+    private var lastWorkingAutoDomain: PikPakDomain? = null
+    private var loadedCachedDomain = false
+    private val switchMutex = Mutex()
 
     fun start() {
         // 测试注入的是 MockEngine，测不出东西，也不该往外发请求
@@ -69,18 +77,68 @@ class PikPakDomainSelector(
     }
 
     private suspend fun apply(client: PikPakClient, fixed: PikPakDomain?) {
-        // 用户固定的先换过去再测，测速只为显示；不等测完，免得换了之后几秒内还走旧的
-        if (fixed != null) client.domain = fixed
+        // 用户固定的先换过去；自动模式下优先先切到上次实测可用的根域名，随后照常重测全部四个域名，
+        // 避免默认 mypikpak.com 不通时启动初期请求卡满 60 秒超时
+        if (fixed != null) {
+            client.domain = fixed
+        } else {
+            if (!loadedCachedDomain) {
+                loadedCachedDomain = true
+                val savedRoot = runCatching { cacheStore?.read(LAST_DOMAIN_CACHE_KEY)?.trim() }.getOrNull()
+                lastWorkingAutoDomain = PikPakDomain.entries.firstOrNull { it.root == savedRoot }
+            }
+            lastWorkingAutoDomain?.let { cached ->
+                if (client.domain != cached) client.domain = cached
+            }
+        }
+        val initialDomain = client.domain
         _active.value = client.domain
         _probing.value = true
+        var emergencySwitched = false
         val results = try {
-            coroutineScope { PikPakDomain.entries.map { domain -> async { client.probeDomain(domain) } }.awaitAll() }
+            coroutineScope {
+                var initialFailed = false
+                var fastestLiveSoFar: DomainProbe? = null
+                PikPakDomain.entries.map { domain ->
+                    async {
+                        client.probeDomain(domain).also { probe ->
+                            if (fixed == null) {
+                                switchMutex.withLock {
+                                    if (probe.domain == initialDomain && !probe.usable) {
+                                        initialFailed = true
+                                    }
+                                    if (probe.usable && probe.warmRequest != null) {
+                                        val prev = fastestLiveSoFar
+                                        if (prev == null || probe.warmRequest!! < prev.warmRequest!!) {
+                                            fastestLiveSoFar = probe
+                                        }
+                                    }
+                                    val candidate = fastestLiveSoFar
+                                    if (initialFailed && candidate != null && client.domain == initialDomain && candidate.domain != initialDomain) {
+                                        client.domain = candidate.domain
+                                        _active.value = client.domain
+                                        lastWorkingAutoDomain = candidate.domain
+                                        emergencySwitched = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
         } finally {
             _probing.value = false
         }
         _probes.value = results.associateBy { it.domain }
-        val switched = fixed == null && switchToFastest(client, results)
+        val switched = fixed == null && (switchToFastest(client, results) || emergencySwitched)
         _active.value = client.domain
+        if (fixed == null && results.any { it.domain == client.domain && it.usable }) {
+            lastWorkingAutoDomain = client.domain
+            val savedRoot = client.domain.root
+            cacheStore?.let { store ->
+                scope.launch { runCatching { store.write(LAST_DOMAIN_CACHE_KEY, savedRoot) } }
+            }
+        }
         val summary = results.joinToString("，") { "${it.domain.root} ${it.latencyText()}" }
         val how = when {
             fixed != null -> "固定用"
@@ -106,5 +164,6 @@ class PikPakDomainSelector(
     private companion object {
         const val TAG = "Domain"
         const val SWITCH_RATIO = 0.8
+        const val LAST_DOMAIN_CACHE_KEY = "pikpak-last-working-domain"
     }
 }

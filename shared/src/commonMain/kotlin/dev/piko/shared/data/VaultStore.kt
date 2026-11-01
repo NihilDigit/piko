@@ -13,16 +13,29 @@ import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.io.readString
+import kotlinx.io.writeString
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.descriptors.*
+import kotlinx.serialization.encoding.*
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -61,6 +74,8 @@ data class VaultEntry(
     val width: String? = null,
     val height: String? = null,
     val mimeType: String? = null,
+    /** 原文件实例的最初存入时间；旧清单回退到 addedAt。 */
+    val createdAt: Long? = null,
 ) {
     val isArchived: Boolean get() = restoredFileId == null
 
@@ -71,6 +86,7 @@ data class VaultEntry(
     fun enrich(file: FileStat, preserveStar: Boolean = false): FileStat {
         if (!matches(file)) return file
         val metadata = buildMap {
+            if (file.id == restoredFileId) put("piko_original_created_at", (createdAt ?: addedAt).toString())
             if (!source.isNullOrBlank() && file.sourceUrl.isNullOrBlank()) put("url", source)
             if (cid != null) put("piko_vault_cid", cid)
             if (file.params["duration"].isNullOrBlank() && duration != null) put("duration", duration)
@@ -97,10 +113,10 @@ data class VaultEntry(
 
     /**
      * 列表里的一行。网盘页的解析、分组、排序与图标都照真实文件走；来源放进 params 的 url，与离线、转存的文件同处。
-     * 时间用记进清单的时刻；[starred] 为真时由 Piko 补上 STAR 标签。
+     * 时间用原文件存入时刻，旧清单回退到记入时刻；[starred] 为真时由 Piko 补上 STAR 标签。
      */
     fun toFileStat(folderId: String, starred: Boolean = false): FileStat {
-        val time = Instant.fromEpochMilliseconds(addedAt).toString()
+        val time = Instant.fromEpochMilliseconds(createdAt ?: addedAt).toString()
         val row = FileStat(
             kind = FileKind.FILE,
             id = virtualId,
@@ -136,8 +152,9 @@ data class VaultEntry(
         fun create(
             name: String, size: Long, gcid: String, source: String?, addedAt: Long, cid: String? = null,
             duration: String? = null, width: String? = null, height: String? = null, mimeType: String? = null,
+            createdAt: Long? = null,
         ) = VaultEntry(randomToken(), name, size, gcid, cid, source, addedAt,
-            duration = duration, width = width, height = height, mimeType = mimeType)
+            duration = duration, width = width, height = height, mimeType = mimeType, createdAt = createdAt)
 
         fun isVaulted(fileId: String): Boolean = fileId.startsWith(VIRTUAL_ID_PREFIX)
 
@@ -248,6 +265,8 @@ class VaultStore(
     private val scope: CoroutineScope? = null,
     private val saveDelayMillis: Long = 2_000L,
     initialParsed: Map<String, List<VaultEntry>> = emptyMap(),
+    /** Same-key predecessor's close result. Join its termination, independently of commit success. */
+    private val predecessor: Job? = null,
 ) {
     // 各文件夹最近一次读到或写成的条目
     private val known = MutableStateFlow<Map<String, List<VaultEntry>>>(emptyMap())
@@ -257,82 +276,132 @@ class VaultStore(
     private val pending = MutableStateFlow<Map<String, List<VaultEntry>>>(emptyMap())
 
     // 同一进程里对同一目录的改动排队：各自读到同一版本再去撞，只会多重试一轮
-    private val locks = HashMap<String, Mutex>()
-    private val locksGuard = Mutex()
+    private val locks = Array(64) { Mutex() }
 
     // 清单文件 ID 到其中的条目。一份清单写成后不再改动，改动总是另写一份，所以按 ID 缓存不会过时
     private val parsed = MutableStateFlow(initialParsed)
+    private val trustedPendingIds = MutableStateFlow(initialParsed.keys.toSet())
     val parsedFlow: StateFlow<Map<String, List<VaultEntry>>> = parsed.asStateFlow()
     // 本实例各目录最后一次已确认写成的清单（id 与版本号），防止服务端列表可见性滞后时回退到空/旧基线
     private val lastCommittedByFolder = MutableStateFlow<Map<String, Pair<String, Int>>>(emptyMap())
     private val cacheLoaded = CompletableDeferred<Unit>()
-    private var pendingSave: Job? = null
+    private val cacheRevision = MutableStateFlow(0L)
+    private val reading = MutableStateFlow<Map<String, Int>>(emptyMap())
+    private val retired = MutableStateFlow<Set<String>>(emptySet())
+    private data class Lifetime(val closing: Boolean = false, val operations: Int = 0)
+    private val lifetime = MutableStateFlow(Lifetime())
+    private val closeResult = CompletableDeferred<Unit>()
+    private val storeJob = SupervisorJob(scope?.coroutineContext?.get(Job))
+    private val storeScope = CoroutineScope((scope?.coroutineContext ?: Dispatchers.Default) + storeJob)
+    private val cacheWriter = if (cacheStore != null && !account.isNullOrEmpty() && scope != null) {
+        SnapshotWriter(
+            scope = storeScope,
+            accountGeneration = 0,
+            source = SnapshotSource {
+                VersionedSnapshot(PersistVersion(0, cacheRevision.value), CacheSnapshot(parsed.value, lastCommittedByFolder.value))
+            },
+            debounceMillis = saveDelayMillis,
+        ) { snapshot ->
+            cacheStore.writeStream(cacheKeyOf(account)) { sink ->
+                cacheStore.jsonCodec?.encode(CacheSerializer(), snapshot, sink)
+                    ?: sink.writeString(JSON.encodeToString(CacheSerializer(), snapshot))
+            }
+        }
+    } else null
 
     init {
         if (cacheStore != null && !account.isNullOrEmpty() && scope != null) {
-            scope.launch {
+            val loading = storeScope.launch {
                 try {
-                    val storedParsed = cacheStore.read(cacheKeyOf(account))?.let(::decodeParsed)
+                    predecessor?.join()
+                    val stored = runSuspendCatching {
+                        cacheStore.readStream(cacheKeyOf(account)) {
+                            cacheStore.jsonCodec?.decode(CacheSerializer(), it)
+                                ?: JSON.decodeFromString(CacheSerializer(), it.readString())
+                        }
+                    }.getOrNull()
+                    var migratedLegacyFormat = false
+                    val storedParsed = stored?.parsed ?: runSuspendCatching {
+                        cacheStore.readStream(cacheKeyOf(account)) { cacheStore.jsonCodec?.decode(PARSED_SERIALIZER, it)
+                            ?: JSON.decodeFromString(PARSED_SERIALIZER, it.readString()) }
+                    }.getOrNull()?.also { if (it.isNotEmpty()) migratedLegacyFormat = true }
                     if (!storedParsed.isNullOrEmpty()) {
                         parsed.update { storedParsed + it }
+                        trustedPendingIds.update { it + storedParsed.keys }
                     }
-                    val storedCommitted = cacheStore.read(committedCacheKeyOf(account))?.let(::decodeCommitted)
-                    if (!storedCommitted.isNullOrEmpty()) {
-                        lastCommittedByFolder.update { storedCommitted + it }
-                    }
+                    val storedCommitted = stored?.committed ?: runSuspendCatching {
+                        cacheStore.readStream(committedCacheKeyOf(account)) {
+                            (cacheStore.jsonCodec?.decode(COMMITTED_PAIRS, it)
+                                ?: JSON.decodeFromString(COMMITTED_PAIRS, it.readString()))
+                        }
+                    }.getOrNull()?.also { if (it.isNotEmpty()) migratedLegacyFormat = true }
+                    if (!storedCommitted.isNullOrEmpty()) lastCommittedByFolder.update { storedCommitted + it }
+                    // 旧版 v1 缓存首次回退读取成功后排期升级为 v2 单文件格式，避免后续每次冷启动先试读失败再二次解析
+                    if (migratedLegacyFormat) scheduleSave()
                 } finally {
                     cacheLoaded.complete(Unit)
                 }
             }
+            // A cancelled parent can prevent the launch body from ever entering its finally.
+            loading.invokeOnCompletion { cacheLoaded.complete(Unit) }
         } else {
             cacheLoaded.complete(Unit)
         }
     }
 
+    /** 唯一缓存加载入口；调用方等待后复用 parsedFlow，不能重复解码。 */
+    suspend fun awaitLoaded() = cacheLoaded.await()
+
+    /**
+     * Synchronously reject new operations, drain accepted work, flush, then terminate owned jobs.
+     * Pass the returned Deferred as the next same-key store's predecessor. Failure is observable
+     * by await(), while join() remains a termination barrier. Closing is idempotent.
+     */
+    fun close(): Deferred<Unit> {
+        while (true) {
+            val before = lifetime.value
+            if (before.closing) return closeResult
+            if (lifetime.compareAndSet(before, before.copy(closing = true))) break
+        }
+        CoroutineScope(storeScope.coroutineContext + NonCancellable).launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                lifetime.first { it.operations == 0 }
+                awaitLoaded()
+                cacheWriter?.close(PersistVersion(0, cacheRevision.value))
+            } catch (failure: Throwable) {
+                storeJob.cancel()
+                storeJob.join()
+                closeResult.completeExceptionally(failure)
+                return@launch
+            }
+            storeJob.cancel()
+            storeJob.join()
+            closeResult.complete(Unit)
+        }
+        return closeResult
+    }
+
+    private suspend fun <T> operation(block: suspend () -> T): T {
+        while (true) {
+            val before = lifetime.value
+            check(!before.closing) { "Vault store is closed" }
+            if (lifetime.compareAndSet(before, before.copy(operations = before.operations + 1))) break
+        }
+        return try { block() } finally { lifetime.update { it.copy(operations = it.operations - 1) } }
+    }
+
     internal fun hasPending(folderId: String): Boolean = folderId in pending.value
 
-    internal fun restoreParsed(cached: Map<String, List<VaultEntry>>) {
-        if (cached.isEmpty()) return
-        parsed.update { cached + it }
-    }
-
-    internal fun flushPendingSave() {
-        val job = pendingSave ?: return
-        pendingSave = null
-        if (!job.isActive) return
-        job.cancel()
-        val store = cacheStore ?: return
-        val owner = account?.takeIf { it.isNotEmpty() } ?: return
-        val targetScope = scope ?: return
-        val snapshot = parsed.value
-        targetScope.launch { store.write(cacheKeyOf(owner), encodeParsed(snapshot)) }
-    }
-
-    private fun scheduleSave() {
-        val store = cacheStore ?: return
-        val owner = account?.takeIf { it.isNotEmpty() } ?: return
-        val targetScope = scope ?: return
-        if (pendingSave?.isActive == true) return
-        pendingSave = targetScope.launch {
-            delay(saveDelayMillis)
-            val snapshot = parsed.value
-            store.write(cacheKeyOf(owner), encodeParsed(snapshot))
-        }
+    private fun scheduleSave(): PersistVersion {
+        val revision = cacheRevision.updateAndGet { it + 1 }
+        return PersistVersion(0, revision).also { cacheWriter?.markDirty(it) }
     }
 
     private suspend fun rememberParsed(id: String, entries: List<VaultEntry>, awaitPersist: Boolean = false) {
         parsed.update { current -> current + (id to entries) }
-        if (awaitPersist) {
-            pendingSave?.cancel()
-            pendingSave = null
-            val store = cacheStore
-            val owner = account?.takeIf { it.isNotEmpty() }
-            if (store != null && owner != null) {
-                store.write(cacheKeyOf(owner), encodeParsed(parsed.value))
-                return
-            }
-        }
-        scheduleSave()
+        val version = scheduleSave()
+        if (awaitPersist) cacheWriter?.flushThrough(version)
+        trustedPendingIds.update { it + id }
     }
 
     private suspend fun recordCommittedBaseline(folderId: String, manifestId: String, version: Int) {
@@ -340,16 +409,12 @@ class VaultStore(
             val prev = current[folderId]
             if (prev != null && prev.second > version) current else current + (folderId to (manifestId to version))
         }
-        val store = cacheStore
-        val owner = account?.takeIf { it.isNotEmpty() }
-        if (store != null && owner != null) {
-            store.write(committedCacheKeyOf(owner), encodeCommitted(lastCommittedByFolder.value))
-        }
+        cacheWriter?.flushThrough(scheduleSave())
     }
 
     private fun lookupParsed(file: FileStat): List<VaultEntry>? = parsed.value[file.id]
 
-    private fun activeWinner(listing: Collection<FileStat>): Candidate? = winner(listing, parsed.value.keys)
+    private fun activeWinner(listing: Collection<FileStat>): Candidate? = winner(listing, trustedPendingIds.value)
 
     /** 挑出目录列表中对本实例生效的归档清单文件（含本机已完整上传并缓存条目的在途转正清单）。 */
     fun winnerOf(listing: Collection<FileStat>): FileStat? = activeWinner(listing)?.file
@@ -358,18 +423,28 @@ class VaultStore(
      * [folderId] 的条目，[listing] 是它的目录列表。有正在写的改动时是改动之后的样子。
      * 读不出来就失败，不当作空。
      */
-    suspend fun read(folderId: String, listing: List<FileStat>): Result<List<VaultEntry>> = runSuspendCatching {
-        cacheLoaded.await()
-        pending.value[folderId]?.let { return@runSuspendCatching it }
-        val entries = activeWinner(listing)?.let { entriesOf(it.file) }.orEmpty()
-        known.update { it + (folderId to entries) }
-        entries
+    suspend fun read(folderId: String, listing: List<FileStat>): Result<List<VaultEntry>> = operation {
+        runSuspendCatching {
+            pending.value[folderId]?.let { return@runSuspendCatching it }
+            // 目录中既无在途乐观改动也无任何 .piko-vault-* 清单文件时，胜出清单必为空，无需阻塞首屏等待全账号缓存加载完毕
+            if (listing.none(::looksLikeManifest)) {
+                known.update { it + (folderId to emptyList()) }
+                return@runSuspendCatching emptyList()
+            }
+            cacheLoaded.await()
+            pending.value[folderId]?.let { return@runSuspendCatching it }
+            val entries = activeWinner(listing)?.let { entriesOf(it.file) }.orEmpty()
+            known.update { it + (folderId to entries) }
+            entries
+        }
     }
 
     /** 核对业务结果时只读当前胜出的清单，不把其他待写操作的乐观投影当作已提交结果。 */
-    suspend fun committed(folderId: String): Result<List<VaultEntry>> = runSuspendCatching {
-        cacheLoaded.await()
-        activeWinner(io.list(folderId))?.let { entriesOf(it.file) }.orEmpty()
+    suspend fun committed(folderId: String): Result<List<VaultEntry>> = operation {
+        runSuspendCatching {
+            cacheLoaded.await()
+            activeWinner(io.list(folderId))?.let { entriesOf(it.file) }.orEmpty()
+        }
     }
 
     /** 只用缓存的 [read]：算数的那份没读过时返回 null。 */
@@ -382,6 +457,14 @@ class VaultStore(
     fun cachedCommitted(listing: Collection<FileStat>): List<VaultEntry>? {
         val file = activeWinner(listing)?.file ?: return emptyList()
         return lookupParsed(file)
+    }
+
+    /** 建索引流水线预热单份清单文件：已缓存则立即返回，未缓存则拉取解析并写入缓存。 */
+    suspend fun prefetchManifest(file: FileStat): Result<List<VaultEntry>> = operation {
+        runSuspendCatching {
+            cacheLoaded.await()
+            lookupParsed(file) ?: entriesOf(file)
+        }
     }
 
     /** 查找已知清单中含 [entryId] 的文件夹 ID。 */
@@ -430,7 +513,7 @@ class VaultStore(
         edit: VaultEdit,
         freshlyCreatedFolder: Boolean = false,
         requireRemoteComplete: Boolean = false,
-    ): Result<VaultWrite> {
+    ): Result<VaultWrite> = operation {
         cacheLoaded.await()
         // 前一个改动还没写完时接着它的样子画，免得第二下把第一下暂时盖回去
         (pending.value[folderId] ?: known.value[folderId])?.let { before ->
@@ -438,7 +521,7 @@ class VaultStore(
             onChanged(folderId)
         }
         var committed = false
-        return try {
+        try {
             var attempted: VaultWrite? = null
             var committedSnapshot: VaultCommitSnapshot? = null
             val result = write(
@@ -458,6 +541,7 @@ class VaultStore(
                 committed = true
                 onCommitted(folderId, write.after, committedSnapshot)
                 onWritten(folderId, write.after)
+                evictRetired()
             }
         } finally {
             val hadPending = folderId in pending.value
@@ -509,7 +593,7 @@ class VaultStore(
                             return true
                         }
                         fun baselineReady(files: Collection<FileStat>): Boolean {
-                            val cachedIds = if (requireRemoteComplete) emptySet() else parsed.value.keys
+                            val cachedIds = if (requireRemoteComplete) emptySet() else trustedPendingIds.value
                             val cand = winner(files, cachedIds)
                             val baseVer = cand?.version ?: 0
                             if (!satisfiesCommittedLineage(cand)) return false
@@ -525,7 +609,7 @@ class VaultStore(
                                 baseSerial = serial
                                 if (baselineReady(listing)) break
                             }
-                            val cachedIds = if (requireRemoteComplete) emptySet() else parsed.value.keys
+                            val cachedIds = if (requireRemoteComplete) emptySet() else trustedPendingIds.value
                             val cand = winner(listing, cachedIds)
                             val baseVer = cand?.version ?: 0
                             if (!satisfiesCommittedLineage(cand)) {
@@ -583,7 +667,9 @@ class VaultStore(
                             // 新清单尚处服务端异步转正窗口（PENDING）时，暂留旧版 COMPLETE 清单供其他设备兜底读取
                             val stale = if (ownComplete) {
                                 confirmedListing.filter { file ->
-                                    looksLikeManifest(file) && file.id != id && (versionOf(file)?.let { it.first < version } ?: true)
+                                    looksLikeManifest(file) && file.phase == TaskPhase.COMPLETE &&
+                                        file.id != id && file.id !in reading.value &&
+                                        (versionOf(file)?.let { it.first < version } ?: false)
                                 }
                             } else emptyList()
                             val staleIds = stale.mapTo(HashSet()) { it.id }
@@ -592,6 +678,7 @@ class VaultStore(
                                 stale.size
                             }.logFailure(TAG, "清单已可信写成，旧版本清理留待下次更新").getOrNull()
                             val finalListing = if (cleaned != null && staleIds.isNotEmpty()) {
+                                retired.update { it + staleIds }
                                 confirmedListing.filterNot { it.id in staleIds }
                             } else confirmedListing
                             onListingConfirmed(VaultCommitSnapshot.FullListing(finalListing, secondCheck.listedAtSerial))
@@ -636,7 +723,7 @@ class VaultStore(
         requireRemoteComplete: Boolean,
     ): ConfirmOutcome {
         if (afterDelay && confirmDelay > Duration.ZERO) delay(confirmDelay)
-        val cachedIds = if (requireRemoteComplete) emptySet() else parsed.value.keys
+        val cachedIds = if (requireRemoteComplete) emptySet() else trustedPendingIds.value
         // 任何同版本或更高版本的陌生非 COMPLETE 清单一律视为未决跨端竞争者（不凭本机时钟或年龄跳过），必须等其转正裁决，禁止提前判赢
         fun hasCompetingPendingStranger(files: Collection<FileStat>): Boolean =
             files.any { file ->
@@ -673,19 +760,183 @@ class VaultStore(
     }
 
     private suspend fun entriesOf(file: FileStat): List<VaultEntry> {
-        lookupParsed(file)?.let { return it }
-        val entries = JSON.decodeFromString(Manifest.serializer(), io.read(file.id).decodeToString()).entries
-        rememberParsed(file.id, entries)
-        return entries
+        reading.update { it + (file.id to ((it[file.id] ?: 0) + 1)) }
+        try {
+            lookupParsed(file)?.let { return it }
+            val entries = JSON.decodeFromString(Manifest.serializer(), io.read(file.id).decodeToString()).entries
+            rememberParsed(file.id, entries)
+            return entries
+        } finally {
+            reading.update { current ->
+                val remaining = (current[file.id] ?: 1) - 1
+                if (remaining == 0) current - file.id else current + (file.id to remaining)
+            }
+        }
     }
 
-    private suspend fun lockOf(folderId: String): Mutex = locksGuard.withLock { locks.getOrPut(folderId) { Mutex() } }
+    // 只回收已被本次已确认 COMPLETE 胜者替代且已从远端清掉的历史清单。
+    // 未转正自产清单、当前 committed 基线与正在读取的清单永远不按容量淘汰。
+    private fun evictRetired() {
+        val protected = lastCommittedByFolder.value.values.mapTo(HashSet()) { it.first } + reading.value.keys
+        val removable = retired.value - protected
+        if (removable.isEmpty()) return
+        parsed.update { it - removable }
+        trustedPendingIds.update { it - removable }
+        retired.update { it - removable }
+        scheduleSave()
+    }
+
+    private fun lockOf(folderId: String): Mutex = locks[folderId.hashCode() and 63]
 
     @Serializable
     private class Manifest(val entries: List<VaultEntry>)
 
     @Serializable
     private data class StoredCommitted(val id: String, val version: Int)
+
+    private class CacheSnapshot(
+        val parsed: Map<String, List<VaultEntry>>,
+        val committed: Map<String, Pair<String, Int>> = emptyMap(),
+    )
+
+    /** Only the unique source table is auxiliary; maps/lists decoded here are the final cache. */
+    private class CacheSerializer : KSerializer<CacheSnapshot> {
+        private val strings = ListSerializer(String.serializer())
+        override val descriptor = buildClassSerialDescriptor("VaultCache") {
+            element<Int>("version")
+            element("sources", strings.descriptor)
+            element("manifests", PARSED_SERIALIZER.descriptor)
+            element("committed", COMMITTED_SERIALIZER.descriptor, isOptional = true)
+        }
+
+        override fun serialize(encoder: Encoder, value: CacheSnapshot) {
+            val refs = LinkedHashMap<String, Int>()
+            for (entries in value.parsed.values) for (entry in entries) {
+                entry.source?.let { refs.getOrPut(it) { refs.size } }
+            }
+            encoder.encodeStructure(descriptor) {
+                encodeIntElement(descriptor, 0, 2)
+                encodeSerializableElement(descriptor, 1, strings, refs.keys.toList())
+                encodeSerializableElement(descriptor, 2,
+                    MapSerializer(String.serializer(), ListSerializer(RowSerializer(refs = refs))), value.parsed)
+                encodeSerializableElement(descriptor, 3, COMMITTED_PAIRS, value.committed)
+            }
+        }
+
+        override fun deserialize(decoder: Decoder): CacheSnapshot {
+            var version = -1
+            var sources: List<String>? = null
+            var unresolved = false
+            val row = RowSerializer(resolve = { ref ->
+                val table = sources
+                if (table == null) {
+                    unresolved = true
+                    // A temporary reference lives in the final entry slot, never a parallel DTO graph.
+                    "\u0000$ref"
+                } else {
+                    require(ref in table.indices) { "Invalid vault source reference" }
+                    table[ref]
+                }
+            })
+            val entries = object : KSerializer<MutableList<VaultEntry>> {
+                override val descriptor = ListSerializer(row).descriptor
+                override fun serialize(encoder: Encoder, value: MutableList<VaultEntry>) =
+                    ListSerializer(row).serialize(encoder, value)
+                override fun deserialize(decoder: Decoder): MutableList<VaultEntry> {
+                    val result = ArrayList<VaultEntry>()
+                    decoder.decodeStructure(descriptor) {
+                        while (true) {
+                            val index = decodeElementIndex(descriptor)
+                            if (index == CompositeDecoder.DECODE_DONE) break
+                            require(index == result.size)
+                            result.add(decodeSerializableElement(descriptor, index, row))
+                        }
+                    }
+                    return result
+                }
+            }
+            var manifests: Map<String, MutableList<VaultEntry>>? = null
+            var committed: Map<String, Pair<String, Int>> = emptyMap()
+            decoder.decodeStructure(descriptor) {
+                while (true) when (val index = decodeElementIndex(descriptor)) {
+                    CompositeDecoder.DECODE_DONE -> break
+                    0 -> version = decodeIntElement(descriptor, index)
+                    1 -> sources = decodeSerializableElement(descriptor, index, strings)
+                    2 -> manifests = decodeSerializableElement(descriptor, index, MapSerializer(String.serializer(), entries))
+                    3 -> committed = decodeSerializableElement(descriptor, index, COMMITTED_PAIRS)
+                    else -> error("Unknown vault cache field")
+                }
+            }
+            require(version == 2) { "Unsupported vault cache schema" }
+            val table = requireNotNull(sources) { "Missing vault source table" }
+            val parsed = requireNotNull(manifests) { "Missing vault manifests" }
+            if (unresolved) for (list in parsed.values) for (index in list.indices) {
+                val entry = list[index]
+                val source = entry.source ?: continue
+                if (!source.startsWith('\u0000')) continue
+                val ref = source.substring(1).toInt()
+                require(ref in table.indices) { "Invalid vault source reference" }
+                list[index] = entry.copy(source = table[ref])
+            }
+            return CacheSnapshot(parsed, committed)
+        }
+    }
+
+    /** A row exists only on the encoder/decoder stack, not in a stored row collection. */
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    private class RowSerializer(
+        private val refs: Map<String, Int> = emptyMap(),
+        private val resolve: (Int) -> String = { error("No source resolver") },
+    ) : KSerializer<VaultEntry> {
+        override val descriptor = buildClassSerialDescriptor("VaultCacheRow") {
+            element("entry", VaultEntry.serializer().descriptor)
+            element<Int>("source", isOptional = true)
+        }
+        override fun serialize(encoder: Encoder, value: VaultEntry) = encoder.encodeStructure(descriptor) {
+            encodeSerializableElement(descriptor, 0, EntryWithoutSourceSerializer, value)
+            value.source?.let { encodeIntElement(descriptor, 1, refs.getValue(it)) }
+        }
+        override fun deserialize(decoder: Decoder): VaultEntry {
+            var entry: VaultEntry? = null
+            var ref: Int? = null
+            decoder.decodeStructure(descriptor) {
+                while (true) when (val index = decodeElementIndex(descriptor)) {
+                    CompositeDecoder.DECODE_DONE -> break
+                    0 -> entry = decodeSerializableElement(descriptor, index, VaultEntry.serializer())
+                    1 -> ref = decodeNullableSerializableElement(descriptor, index, Int.serializer())
+                    else -> error("Unknown vault cache row field")
+                }
+            }
+            val result = requireNotNull(entry) { "Missing vault entry" }
+            return ref?.let { result.copy(source = resolve(it)) } ?: result
+        }
+    }
+
+    /** Stream the original entry while its source is encoded only as the row's table reference. */
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    private object EntryWithoutSourceSerializer : KSerializer<VaultEntry> by VaultEntry.serializer() {
+        private val sourceIndex = descriptor.getElementIndex("source")
+
+        override fun serialize(encoder: Encoder, value: VaultEntry) {
+            VaultEntry.serializer().serialize(object : Encoder by encoder {
+                override fun beginStructure(descriptor: SerialDescriptor): CompositeEncoder {
+                    val composite = encoder.beginStructure(descriptor)
+                    return object : CompositeEncoder by composite {
+                        override fun <T : Any> encodeNullableSerializableElement(
+                            descriptor: SerialDescriptor,
+                            index: Int,
+                            serializer: kotlinx.serialization.SerializationStrategy<T>,
+                            value: T?,
+                        ) {
+                            if (index != sourceIndex) {
+                                composite.encodeNullableSerializableElement(descriptor, index, serializer, value)
+                            }
+                        }
+                    }
+                }
+            }, value)
+        }
+    }
 
     private class Candidate(val file: FileStat, val version: Int, val token: String)
 
@@ -701,6 +952,13 @@ class VaultStore(
         private val UNSAFE_KEY_CHARS = Regex("""[^A-Za-z0-9._@-]""")
         private val PARSED_SERIALIZER = MapSerializer(String.serializer(), ListSerializer(VaultEntry.serializer()))
         private val COMMITTED_SERIALIZER = MapSerializer(String.serializer(), StoredCommitted.serializer())
+        private val COMMITTED_PAIRS = MapSerializer(String.serializer(), object : KSerializer<Pair<String, Int>> {
+            override val descriptor = StoredCommitted.serializer().descriptor
+            override fun serialize(encoder: Encoder, value: Pair<String, Int>) =
+                StoredCommitted.serializer().serialize(encoder, StoredCommitted(value.first, value.second))
+            override fun deserialize(decoder: Decoder): Pair<String, Int> =
+                StoredCommitted.serializer().deserialize(decoder).let { it.id to it.version }
+        })
 
         // 版本大的在前，同版本随机串小的在前：排第一的算数
         private val ORDER = compareByDescending<Candidate> { it.version }.thenBy { it.token }
@@ -723,18 +981,11 @@ class VaultStore(
             "vault-committed-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
 
         fun encodeParsed(parsed: Map<String, List<VaultEntry>>): String =
-            JSON.encodeToString(PARSED_SERIALIZER, parsed)
+            JSON.encodeToString(CacheSerializer(), CacheSnapshot(parsed))
 
         fun decodeParsed(text: String): Map<String, List<VaultEntry>>? =
-            runCatching { JSON.decodeFromString(PARSED_SERIALIZER, text) }.getOrNull()
-
-        private fun encodeCommitted(committed: Map<String, Pair<String, Int>>): String =
-            JSON.encodeToString(COMMITTED_SERIALIZER, committed.mapValues { StoredCommitted(it.value.first, it.value.second) })
-
-        private fun decodeCommitted(text: String): Map<String, Pair<String, Int>>? =
-            runCatching {
-                JSON.decodeFromString(COMMITTED_SERIALIZER, text).mapValues { it.value.id to it.value.version }
-            }.getOrNull()
+            runCatching { JSON.decodeFromString(CacheSerializer(), text).parsed }.getOrNull()
+                ?: runCatching { JSON.decodeFromString(PARSED_SERIALIZER, text) }.getOrNull()
 
         private val SOURCE_NAME = Regex("""归档来源-[0-9a-f]{16}\.(magnet|txt)""")
         /** 历史版本曾写入同目录的来源旁路文件，现已不再生成，列表里仍过滤隐藏。 */

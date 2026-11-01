@@ -24,8 +24,9 @@ class CanonicalFolderRenameSmokeTest {
         val server = FakePikPakServer()
         val root = build(server)
         val prefs = MemoryPreferences()
-        val repository = PikoDriveRepository(server.provider(), prefs)
-        val scan = CanonicalTreeScan(server.provider(), repository, scope, PikoPathBreadcrumb(root.id, root.name))
+        val clients = server.provider()
+        val repository = PikoDriveRepository(clients, prefs)
+        val scan = CanonicalTreeScan(clients, repository, scope, PikoPathBreadcrumb(root.id, root.name))
         awaitUntil("扫完") { scan.phase == CanonicalTreeScan.Phase.DONE }
         fun listings() = server.calls.count { it.startsWith("GET") && it.endsWith("/drive/v1/files") }
         val before = listings()

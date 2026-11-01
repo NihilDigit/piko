@@ -93,8 +93,13 @@ class PreviewTempFolder(
             runSuspendCatching {
                 folderIds.remove(owner.account)
                 val ids = findFolders(owner)
-                if (ids.isNotEmpty()) owner.batchDelete(ids)
-                if (clients.currentClient.value === owner) driveRepo.applyChange(DriveChange.ContentsChanged(null))
+                if (ids.isNotEmpty()) {
+                    owner.batchDelete(ids)
+                    // 仅按根目录下已删的 Piko-Temp 局部更新，严禁发 ContentsChanged(null) 作废整棵持久 SQLite 本地树索引
+                    if (clients.currentClient.value === owner) {
+                        driveRepo.applyChange(DriveChange.Deleted(ids, setOf("")))
+                    }
+                }
                 PikoLog.d(TAG, "已清理 Piko-Temp（${ids.size} 个同名目录）")
             }
         }

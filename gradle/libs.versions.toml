@@ -17,6 +17,8 @@ datastore = "1.2.1"
 ktor = "3.5.2"
 serialization = "1.11.0"
 coil = "3.6.3"
+zoomimage = "1.7.0"
+sqliteJdbc = "3.54.1.0"
 kotlinxCoroutines = "1.11.0"
 kotlinxDatetime = "0.7.1"
 # 与 pikpak-kotlin 0.9.0 所依赖的版本一致。SDK 的 downloadTo 以 kotlinx.io.files.Path 为参数，
@@ -117,6 +119,8 @@ kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutine
 # Coil 3
 coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
 coil-network-okhttp = { module = "io.coil-kt.coil3:coil-network-okhttp", version.ref = "coil" }
+zoomimage-compose-coil3 = { module = "io.github.panpf.zoomimage:zoomimage-compose-coil3", version.ref = "zoomimage" }
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqliteJdbc" }
 
 junit = { module = "junit:junit", version.ref = "junit" }
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }

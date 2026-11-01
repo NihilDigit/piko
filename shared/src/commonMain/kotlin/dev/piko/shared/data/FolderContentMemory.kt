@@ -3,10 +3,15 @@ package dev.piko.shared.data
 import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.fileCategory
 import io.github.nihildigit.pikpak.FileStat
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.InternalCoroutinesApi
-import kotlinx.coroutines.delay
+import kotlinx.io.readString
+import kotlinx.io.writeString
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.FlowCollector
@@ -73,7 +78,37 @@ internal class FolderContentMemory(
     // 换号在仓库的后台协程里，记下内容在列目录的线程上，两边都读
     @Volatile
     private var account: String? = null
-    private var pendingSave: Job? = null
+    private var generation = 0L
+    private var saving: SaveSession? = null
+    private var previousFlush: Deferred<Result<Unit>>? = null
+    // 保留失败交接的完整快照，原账号再次进入时接管并重试。
+    private val failedSnapshots = MutableStateFlow<Map<String, FolderSnapshot>>(emptyMap())
+
+    private data class FolderSnapshot(
+        val memory: MemoryState,
+        val vaulted: Set<String>,
+        val covers: Map<String, String>,
+    )
+
+    private inner class SaveSession(val owner: String, val generation: Long, initial: FolderSnapshot) {
+        val job = Job(scope.coroutineContext[Job])
+        val loaded = CompletableDeferred<Unit>()
+        val snapshot = MutableStateFlow(VersionedSnapshot(PersistVersion(generation, 0), initial))
+        val writer = SnapshotWriter(
+            scope = CoroutineScope(scope.coroutineContext + job),
+            accountGeneration = generation,
+            source = SnapshotSource { snapshot.value },
+            debounceMillis = saveDelayMillis,
+        ) { value ->
+            val folders = value.memory.contents.map { (id, files) ->
+                StoredFolder(id, files.map { StoredFile(it.name, it.category) })
+            }
+            store?.writeStream(keyOf(owner)) { store?.jsonCodec?.encode(serializer, folders, it) ?: it.writeString(json.encodeToString(serializer, folders)) }
+            store?.writeStream(vaultKeyOf(owner)) { store?.jsonCodec?.encode(vaultSerializer, value.vaulted.toList(), it)
+                ?: it.writeString(json.encodeToString(vaultSerializer, value.vaulted.toList())) }
+            store?.writeStream(coverKeyOf(owner)) { store?.jsonCodec?.encode(coverSerializer, value.covers, it) ?: it.writeString(json.encodeToString(coverSerializer, value.covers)) }
+        }
+    }
 
     fun get(folderId: String): List<ChildFile>? {
         while (true) {
@@ -88,7 +123,7 @@ internal class FolderContentMemory(
     }
 
     fun put(folderId: String, files: List<ChildFile>) {
-        memory.update { it.copy(contents = touched(it.contents, folderId, files.toList()), revision = it.revision + 1) }
+        memory.update { it.copy(contents = touched(it.contents, folderId, files.take(SAVED_FILES_PER_FOLDER)), revision = it.revision + 1) }
         scheduleSave()
     }
 
@@ -99,9 +134,13 @@ internal class FolderContentMemory(
         }
         invalidateCompleteness(folderIds)
         memory.update { current ->
+            val epochs = current.epochs + folderIds.associateWith { (current.epochs[it] ?: 0L) + 1 }
+            val overflow = epochs.size > MAX_SAVED_FOLDERS
             current.copy(
                 contents = current.contents - folderIds,
-                epochs = current.epochs + folderIds.associateWith { (current.epochs[it] ?: 0L) + 1 },
+                // 墓碑溢出时放弃整批旧快照回填，不遗忘单个失效记录后误恢复。
+                epochs = if (overflow) emptyMap() else epochs,
+                clearEpoch = current.clearEpoch + if (overflow) 1 else 0,
                 revision = current.revision + 1,
             )
         }
@@ -117,7 +156,7 @@ internal class FolderContentMemory(
     private fun touched(current: Map<String, List<ChildFile>>, folderId: String, files: List<ChildFile>): Map<String, List<ChildFile>> =
         bounded(LinkedHashMap(current).apply { remove(folderId); put(folderId, files) })
 
-    private fun bounded(value: Map<String, List<ChildFile>>): Map<String, List<ChildFile>> =
+    private fun <T> bounded(value: Map<String, T>): Map<String, T> =
         if (value.size <= MAX_SAVED_FOLDERS) value else value.entries.toList().takeLast(MAX_SAVED_FOLDERS).associate { it.toPair() }
 
     // 完全归档只信本次会话完整列表或成功的全量归档，不从跨进程的抽样文件名推断。
@@ -135,14 +174,18 @@ internal class FolderContentMemory(
     }
 
     fun rememberCompleteness(folderId: String, hasRealFiles: Boolean, children: Set<String>, complete: Boolean) {
-        if (complete) completeness.update { it + (folderId to Completeness(hasRealFiles, children)) }
+        if (complete && children.size <= MAX_SAVED_FOLDERS) completeness.update {
+            bounded(it - folderId + (folderId to Completeness(hasRealFiles, children.toSet())))
+        }
         else if (hasRealFiles || children.isNotEmpty()) invalidateCompleteness(setOf(folderId))
     }
 
     fun markFullyVaulted(folderIds: Set<String>, parents: Map<String, String>) {
-        completeness.update { current -> current + folderIds.associateWith { id ->
-            Completeness(false, folderIds.filterTo(mutableSetOf()) { parents[it] == id })
-        } }
+        completeness.update { current -> bounded(current + folderIds.takeLastBounded().associateWith { id ->
+            val children = folderIds.filterTo(mutableSetOf()) { parents[it] == id }
+            // 不能截断子目录后错误宣称整个目录已归档。
+            Completeness(children.size > MAX_SAVED_FOLDERS, children.take(MAX_SAVED_FOLDERS).toSet())
+        }) }
     }
 
     private fun invalidateCompleteness(folderIds: Set<String>) {
@@ -169,7 +212,7 @@ internal class FolderContentMemory(
 
     fun markVaulted(folderId: String, has: Boolean) {
         if ((folderId in vaulted.value) == has) return
-        vaulted.update { if (has) it + folderId else it - folderId }
+        vaulted.update { if (has) (it - folderId + folderId).takeLastBounded() else it - folderId }
         scheduleSave()
     }
 
@@ -185,7 +228,7 @@ internal class FolderContentMemory(
 
     fun rememberCover(folderId: String, gcid: String) {
         if (covers.value[folderId] == gcid) return
-        covers.update { it + (folderId to gcid) }
+        covers.update { bounded(it - folderId + (folderId to gcid)) }
         scheduleSave()
     }
 
@@ -195,50 +238,116 @@ internal class FolderContentMemory(
     /** 换账号或退出登录。退出时只清内存，磁盘上的留给下次登录同一账号。 */
     fun switchAccount(newAccount: String?) {
         if (newAccount == account) return
-        pendingSave?.cancel()
+        flushPendingSave()
         account = newAccount
+        val token = ++generation
         val loadedAt = memory.updateAndGet { MemoryState(clearEpoch = it.clearEpoch + 1, revision = it.revision + 1) }
         completeness.value = emptyMap()
         vaulted.value = emptySet()
         covers.value = emptyMap()
         val cacheStore = store ?: return
         if (newAccount == null) return
+        val session = SaveSession(newAccount, token, FolderSnapshot(loadedAt, emptySet(), emptyMap()))
+        saving = session
+        val barrier = previousFlush
         scope.launch {
-            val stored = cacheStore.read(keyOf(newAccount))?.let { text -> runCatching { json.decodeFromString(serializer, text) }.getOrNull() }
-            val storedVaulted = cacheStore.read(vaultKeyOf(newAccount))?.let { text -> runCatching { json.decodeFromString(vaultSerializer, text) }.getOrNull() }
-            val storedCovers = cacheStore.read(coverKeyOf(newAccount))?.let { text -> runCatching { json.decodeFromString(coverSerializer, text) }.getOrNull() }
-            if (account != newAccount) return@launch
-            // 载入期间本会话记下的更新，留着它们。本会话里去掉的标记会被磁盘上的旧值加回来，下次列到那个目录再去掉
-            if (storedVaulted != null) vaulted.update { current -> current + storedVaulted }
-            if (storedCovers != null) covers.update { current -> storedCovers + current }
-            if (stored == null) return@launch
-            val loaded = stored.associate { folder -> folder.id to folder.files.map { ChildFile(it.name, it.category) } }
-            memory.update { current ->
-                if (current.clearEpoch != loadedAt.clearEpoch) current else {
-                    val valid = loaded.filterKeys { id -> current.epochs[id] == loadedAt.epochs[id] }
-                    current.copy(
-                        contents = bounded(LinkedHashMap(valid - current.contents.keys + current.contents)),
-                        revision = current.revision + 1,
+            try {
+                barrier?.join()
+                val recovered = failedSnapshots.value[newAccount]
+                val stored = recovered?.memory?.contents?.map { (id, files) ->
+                    StoredFolder(id, files.map { StoredFile(it.name, it.category) })
+                } ?: runSuspendCatching {
+                    cacheStore.readStream(keyOf(newAccount)) {
+                        cacheStore.jsonCodec?.decode(serializer, it) ?: json.decodeFromString(serializer, it.readString())
+                    }
+                }.getOrNull()
+                val storedVaulted = recovered?.vaulted?.toList() ?: runSuspendCatching {
+                    cacheStore.readStream(vaultKeyOf(newAccount)) {
+                        cacheStore.jsonCodec?.decode(vaultSerializer, it) ?: json.decodeFromString(vaultSerializer, it.readString())
+                    }
+                }.getOrNull()
+                val storedCovers = recovered?.covers ?: runSuspendCatching {
+                    cacheStore.readStream(coverKeyOf(newAccount)) {
+                        cacheStore.jsonCodec?.decode(coverSerializer, it) ?: json.decodeFromString(coverSerializer, it.readString())
+                    }
+                }.getOrNull()
+                val loaded = stored.orEmpty().takeLast(MAX_SAVED_FOLDERS).associate { folder ->
+                    folder.id to folder.files.take(SAVED_FILES_PER_FOLDER).map { ChildFile(it.name, it.category) }
+                }
+                session.snapshot.update { snapshot ->
+                    val current = snapshot.value
+                    snapshot.copy(
+                        version = snapshot.version.copy(revision = snapshot.version.revision + if (recovered != null) 1 else 0),
+                        value = current.copy(
+                            memory = if (current.memory.clearEpoch != loadedAt.clearEpoch) current.memory else current.memory.copy(
+                                contents = bounded(loaded.filterKeys { current.memory.epochs[it] == loadedAt.epochs[it] } -
+                                    current.memory.contents.keys + current.memory.contents),
+                            ),
+                            vaulted = (storedVaulted.orEmpty().toSet() + current.vaulted).takeLastBounded(),
+                            covers = bounded(storedCovers.orEmpty() + current.covers),
+                        ),
                     )
+                }
+                if (recovered != null) failedSnapshots.update { it - newAccount }
+                if (generation != token) return@launch
+                // 载入期间本会话记下的更新优先；旧标记在下次真实列举时重新校验。
+                if (storedVaulted != null) vaulted.update { current -> (storedVaulted.toSet() + current).takeLastBounded() }
+                if (storedCovers != null) covers.update { current -> bounded(storedCovers + current) }
+                if (stored == null) return@launch
+                memory.update { current ->
+                    if (current.clearEpoch != loadedAt.clearEpoch) current else {
+                        val valid = loaded.filterKeys { id -> current.epochs[id] == loadedAt.epochs[id] }
+                        current.copy(
+                            contents = bounded(LinkedHashMap(valid - current.contents.keys + current.contents)),
+                            revision = current.revision + 1,
+                        )
+                    }
+                }
+            } catch (failure: Throwable) {
+                session.loaded.completeExceptionally(failure)
+                throw failure
+            } finally {
+                if (session.loaded.complete(Unit)) {
+                    val version = session.snapshot.value.version
+                    if (version.revision > 0 && session.job.isActive) session.writer.markDirty(version)
                 }
             }
         }
     }
 
     private fun scheduleSave() {
-        val cacheStore = store ?: return
-        val owner = account ?: return
-        if (pendingSave?.isActive == true) return
-        pendingSave = scope.launch {
-            delay(saveDelayMillis)
-            val snapshot = memory.value.contents.entries.toList().takeLast(MAX_SAVED_FOLDERS).map { (id, files) ->
-                StoredFolder(id, files.take(SAVED_FILES_PER_FOLDER).map { StoredFile(it.name, it.category) })
+        val session = saving ?: return
+        val version = session.snapshot.updateAndGet {
+            VersionedSnapshot(PersistVersion(session.generation, it.version.revision + 1), FolderSnapshot(memory.value, vaulted.value, covers.value))
+        }.version
+        if (session.loaded.isCompleted && !session.loaded.isCancelled) session.writer.markDirty(version)
+    }
+
+    private fun flushPendingSave() {
+        val session = saving ?: return
+        saving = null
+        val predecessor = previousFlush
+        previousFlush = scope.async {
+            try {
+                // 前代失败只影响它自己的提交，不能阻断其他账号加载。
+                predecessor?.join()
+                session.loaded.await()
+                if (session.snapshot.value.version.revision > 0) session.writer.flushThrough(session.snapshot.value.version)
+                Result.success(Unit)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                failedSnapshots.update { it + (session.owner to session.snapshot.value.value) }
+                dev.piko.shared.log.PikoLog.w("FolderContentMemory", "保存旧账号目录缓存失败", failure)
+                Result.failure(failure)
+            } finally {
+                session.job.cancel()
             }
-            cacheStore.write(keyOf(owner), json.encodeToString(serializer, snapshot))
-            cacheStore.write(vaultKeyOf(owner), json.encodeToString(vaultSerializer, vaulted.value.toList()))
-            cacheStore.write(coverKeyOf(owner), json.encodeToString(coverSerializer, covers.value))
         }
     }
+
+    private fun Set<String>.takeLastBounded(): Set<String> =
+        if (size <= MAX_SAVED_FOLDERS) this else toList().takeLast(MAX_SAVED_FOLDERS).toSet()
 
     private fun keyOf(account: String) = "folder-contents-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
 

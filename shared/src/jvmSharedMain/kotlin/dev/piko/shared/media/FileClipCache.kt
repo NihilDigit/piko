@@ -146,8 +146,8 @@ class FileClipCache(
 
     private companion object {
         const val TAG = "Clips"
-        // 3 起记录带切片的实际起点与首尾 PTS 实测时长；旧记录当作没有，再来一次自动补上
-        const val FORMAT = 3
+        // 4 起要求切点同时携带完整的 PAT + PMT + 视频参数集（VPS/SPS/PPS）与匹配关键帧，淘汰历史裸切旧记录
+        const val FORMAT = 4
         const val DEFAULT_CAP_BYTES = 300L * 1024 * 1024
         const val MAX_RECORDS = 4096
         const val EVICT_TO = 0.8

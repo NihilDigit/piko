@@ -58,7 +58,7 @@ class FakePikPakServer(
         val hash: String = "",
         val content: ByteArray = ByteArray(0),
         val size: Long = content.size.toLong(),
-        val createdAtMs: Long = System.currentTimeMillis(),
+        val createdAt: kotlin.time.TimeMark = kotlin.time.TimeSource.Monotonic.markNow(),
         /** 视频的时长（秒）。列目录与详情都带着它，与线上抽过元数据的视频一致。 */
         val durationSeconds: Double? = null,
         /** 详情里有没有 720P 转码。 */
@@ -510,13 +510,13 @@ class FakePikPakServer(
         val wantsTrash = filters.replace(" ", "").contains("\"trashed\":{\"eq\":true}")
         val parentId = request.url.parameters["parent_id"].orEmpty()
         val wantsStarred = filters.contains("STAR")
-        val visibleBefore = System.currentTimeMillis() - listingLagMs
+        val lagMs = listingLagMs
         val listed = synchronized(lock) {
             if (wantsTrash) {
                 nodes.values.filter { it.trashed }
             } else {
                 nodes.values.filter { (parentId == "*" || it.parentId == parentId) && !it.trashed &&
-                    (!wantsStarred || it.starred) && it.createdAtMs <= visibleBefore }
+                    (!wantsStarred || it.starred) && (lagMs <= 0L || it.createdAt.elapsedNow().inWholeMilliseconds >= lagMs) }
             }
         }
         val body = buildJsonObject {

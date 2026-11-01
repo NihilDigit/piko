@@ -27,11 +27,12 @@ class DuplicatesLocationSmokeTest {
         val copy = server.addFile("Title.S01E03.1080p (1).mkv", content = ByteArray(96), hash = "EP03")
         val version = server.addFile("Title.S01E03.720p.mkv", content = ByteArray(40), hash = "OTHER")
         val prefs = MemoryPreferences()
-        val repository = PikoDriveRepository(server.provider(), prefs)
+        val clients = server.provider()
+        val repository = PikoDriveRepository(clients, prefs)
         val repositoryWorkspace = dev.piko.shared.presentation.DriveWorkspace(repository, backgroundScope = scope)
         val session = DuplicateSession(
             newScope = { scope },
-            newState = { child, root -> DuplicateFinderState(server.provider(), repository, child, root) },
+            newState = { child, root -> DuplicateFinderState(clients, repository, child, root) },
         )
         val view = dev.piko.shared.presentation.DuplicateReportViewModel()
         val drive = DriveScreenState(repository, prefs, scope, { library ->
@@ -64,11 +65,12 @@ class DuplicatesLocationSmokeTest {
         val copy = server.addFile("a (1).mkv", content = content, hash = "GCID")
         val nested = server.addFile("a.mkv", parentId = server.addFolder("sub").id, content = content, hash = "GCID")
         val prefs = MemoryPreferences()
-        val repository = PikoDriveRepository(server.provider(), prefs)
+        val clients = server.provider()
+        val repository = PikoDriveRepository(clients, prefs)
         val repositoryWorkspace = dev.piko.shared.presentation.DriveWorkspace(repository, backgroundScope = scope)
         val session = DuplicateSession(
             newScope = { scope },
-            newState = { sessionScope, root -> DuplicateFinderState(server.provider(), repository, sessionScope, root) },
+            newState = { sessionScope, root -> DuplicateFinderState(clients, repository, sessionScope, root) },
         )
         val view = dev.piko.shared.presentation.DuplicateReportViewModel()
         val drive = DriveScreenState(repository, prefs, scope, listingOf(session), navigation = repositoryWorkspace)
@@ -109,11 +111,12 @@ class DuplicatesLocationSmokeTest {
         val copy = server.addFile("[Group] Title - 03 [1080p] (1).mkv", parentId = server.addFolder("backup").id, content = episode, hash = "EP03")
         val scene = server.addFile("Title.S01E03.720p.mkv", parentId = server.addFolder("tv").id, content = ByteArray(40) { 5 }, hash = "SCENE")
         val prefs = MemoryPreferences()
-        val repository = PikoDriveRepository(server.provider(), prefs)
+        val clients = server.provider()
+        val repository = PikoDriveRepository(clients, prefs)
         val repositoryWorkspace = dev.piko.shared.presentation.DriveWorkspace(repository, backgroundScope = scope)
         val session = DuplicateSession(
             newScope = { scope },
-            newState = { sessionScope, root -> DuplicateFinderState(server.provider(), repository, sessionScope, root) },
+            newState = { sessionScope, root -> DuplicateFinderState(clients, repository, sessionScope, root) },
         )
         val view = dev.piko.shared.presentation.DuplicateReportViewModel()
         val drive = DriveScreenState(repository, prefs, scope, listingOf(session), navigation = repositoryWorkspace)

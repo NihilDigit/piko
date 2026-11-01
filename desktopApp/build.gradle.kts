@@ -270,9 +270,9 @@ compose.desktop {
         }
         nativeDistributions {
             appResourcesRootDir = layout.buildDirectory.dir("appResources")
-            // Compose 默认的 jlink 模块集之外只补 jdk.unsupported（sun.misc.Unsafe）。
+            // Compose 默认的 jlink 模块集之外补 jdk.unsupported（sun.misc.Unsafe）与 java.sql（桌面端 sqlite-jdbc）。
             // suggestRuntimeModules 还列了 java.instrument 与 java.management，只有协程调试代理用到
-            modules("jdk.unsupported")
+            modules("jdk.unsupported", "java.sql")
             // MSI 安装器：开始菜单快捷方式、按用户安装（magnet 协议与 Toast 的 AUMID 都登记在 HKCU），
             // 并自带 JDK 25 运行时（FFM 原生调用与 AOT 缓存都要求）。
             // packageVersion 与 release tag（vMAJOR.MINOR.PATCH）对齐，CI 打包时可覆写：

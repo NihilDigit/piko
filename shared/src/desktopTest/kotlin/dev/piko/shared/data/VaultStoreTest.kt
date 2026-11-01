@@ -15,6 +15,25 @@ import kotlin.time.Duration
  */
 class VaultStoreTest {
     @Test
+    fun `failed cache commit never grants pending trust`() = runBlocking {
+        val drive = MemoryFolder().apply { defaultUploadPhase = TaskPhase.PENDING }
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
+        val cache = object : PikoCacheStore {
+            override suspend fun read(key: String): String? = null
+            override suspend fun write(key: String, value: String) { error("disk full") }
+        }
+        try {
+            val store = VaultStore(drive, Duration.ZERO, cacheStore = cache, account = "a", scope = scope, saveDelayMillis = 0)
+            store.awaitLoaded()
+            assertTrue(store.update("f", VaultEdits.add(listOf(entry("one"))), freshlyCreatedFolder = true).isFailure)
+            assertEquals(null, store.winnerOf(drive.list("f")))
+            assertEquals(1, drive.files.size, "未确认上传保留在远端，不重传或删除")
+        } finally {
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        }
+    }
+
+    @Test
     fun `a stale confirmation listing does not trigger a redundant upload`() = runBlocking {
         val drive = MemoryFolder()
         drive.beforeList(3) { drive.hideCurrentFiles(2) }
@@ -59,6 +78,7 @@ class VaultStoreTest {
         assertEquals(listOf(first, second), store.update("f", VaultEdits.add(listOf(second))).getOrThrow().after)
         assertEquals(2, drive.uploads)
         assertEquals(2, drive.files.size, "v2 仍处 PENDING 时暂留旧 COMPLETE 清单供他端兜底读取")
+        assertEquals(2, store.parsedFlow.value.size, "PENDING 与兜底内容均不得淘汰")
 
         val otherDevice = VaultStore(drive, confirmDelay = Duration.ZERO)
         assertEquals(listOf("E01"), otherDevice.committed("f").getOrThrow().map { it.name })
@@ -73,6 +93,7 @@ class VaultStoreTest {
         assertEquals(setOf("E01", "E02", "E03"), otherDevice.committed("f").getOrThrow().map { it.name }.toSet())
         store.update("f", VaultEdits.add(listOf(entry("E04")))).getOrThrow()
         assertEquals(1, drive.files.size, "转正后更新顺手清掉全部旧版本清单")
+        assertEquals(1, store.parsedFlow.value.size, "已确认被替代且删除的历史内容不继续驻留")
     }
 
     @Test

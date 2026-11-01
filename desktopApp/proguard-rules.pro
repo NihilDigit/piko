@@ -56,6 +56,10 @@
     *** sendPointerEvent-UGFwazM(...);
 }
 
+# sqlite-jdbc：JDBC Driver 经 ServiceLoader 装载，NativeDB 与进度/函数回调由原生 sqlite3 经 JNI 按签名反射查找
+-keep class org.sqlite.** { *; }
+-dontwarn org.sqlite.**
+
 # ServiceLoader 装载的实现类。ProGuard 不像 R8 那样自动保留 META-INF/services 里列出的类
 -keep class coil3.network.okhttp.internal.OkHttpNetworkFetcherServiceLoaderTarget { *; }
 -keep class io.ktor.client.engine.okhttp.OkHttpEngineContainer { *; }

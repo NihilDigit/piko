@@ -180,6 +180,7 @@ class PikoMediaRepository(
      */
     var leaseFolder: (suspend (PikPakClient) -> String)? = null
     var localMounts: dev.piko.shared.data.LocalMounts? = null
+    var metadataSink: dev.piko.shared.data.DriveMetadataSink? = null
     suspend fun localPath(fileId: String, subtitle: Boolean = false): String? = localMounts?.resolve(fileId, subtitle)
 
     /** 下载调度器提供；原画播放与完整下载共用缓存，转码片段仍用 ClipCache。 */
@@ -382,7 +383,7 @@ class PikoMediaRepository(
     // 归档条目的 ID 带着文件名，拼进磁盘上的文件名会超长，只用条目自己的 ID
     private fun clipKey(account: String, fileId: String, startMs: Long): String {
         val id = VaultEntry.entryIdOf(fileId)?.let { "vault-$it" } ?: fileId
-        return "${account}_${id}_${startMs}_${CLIP_RESOLUTION}_v3"
+        return "${account}_${id}_${startMs}_${CLIP_RESOLUTION}_v4"
     }
 
     /**
@@ -424,9 +425,16 @@ class PikoMediaRepository(
      */
     private suspend fun detailOf(client: PikPakClient, fileId: String): FileDetail {
         require(!dev.piko.shared.data.LocalLocation.isLocal(fileId)) { "本地文件不支持云端操作" }
-        val leased = LeasedFile.resolvedFileOf(fileId) ?: return client.getFile(fileId)
-        val folder = leaseFolder ?: error(tr("无法打开归档条目", "Unable to open archived item", "アーカイブ項目を開けません", "보관 항목을 열 수 없습니다", "無法開啟歸檔項目"))
-        return client.leaseDetail(leased, parentId = folder(client))
+        val observer = metadataSink?.capture(client)
+        val leased = LeasedFile.resolvedFileOf(fileId)
+        val detail = if (leased == null) {
+            client.getFile(fileId)
+        } else {
+            val folder = leaseFolder ?: error(tr("无法打开归档条目", "Unable to open archived item", "アーカイブ項目を開けません", "보관 항목을 열 수 없습니다", "無法開啟歸檔項目"))
+            client.leaseDetail(leased, parentId = folder(client))
+        }
+        observer?.observe(fileId, detail)
+        return detail
     }
 
     /** [clipProbe] 刚查过的详情，还新鲜就拿走，省一次查询。 */
@@ -449,7 +457,7 @@ class PikoMediaRepository(
         val store = clipCache?.let { RangeLimitedStore(it.blocks) }
         val source = openByteSource(client, detail, transcode, blockStore = store, leased = leased) ?: return null
         val bytesPerMs: Double
-        val keyframe: TsTimestamps.VideoPes?
+        val verified: TsTimestamps.VerifiedSlice
         val offset: Long
         val sliceLength: Long
         val slice = try {
@@ -468,10 +476,21 @@ class PikoMediaRepository(
             val length = (wanted / TS_PACKET_BYTES + 1) * TS_PACKET_BYTES
             fun windowLengthAt(pos: Long) = length.coerceAtMost(source.size - pos)
             store?.keepSlice(estimated, windowLengthAt(estimated), bytesPerMs)
-            // 切片从第一个关键帧（含紧邻的 PAT/PMT 包）起
-            val keyframeWindow = (bytesPerMs * PreparedClip.KEYFRAME_INTERVAL_MS * PreparedClip.BITRATE_MARGIN).toLong()
-            keyframe = source.findKeyframe(estimated, keyframeWindow, role)
-            offset = if (keyframe != null) estimated + keyframe.byteOffset else estimated
+            // 切片必须从同时携带完整 PAT + PMT + 带内参数集（VPS/SPS/PPS）与匹配关键帧的安全接入点起；
+            // 严禁在未找到安全接入点时按估算偏移裸切（半路裸切会丢失参数集，导致 Android MediaCodec 因 width=0,height=0 失败并静默回退 CPU 软解）。
+            val primaryWindow = maxOf(
+                (bytesPerMs * VERIFIED_KEYFRAME_WINDOW_MS * PreparedClip.BITRATE_MARGIN).toLong(),
+                MIN_VERIFIED_KEYFRAME_SCAN_BYTES,
+            )
+            val maxWindow = maxOf(primaryWindow * 2L, MAX_VERIFIED_KEYFRAME_SCAN_BYTES)
+            val found = source.findVerifiedSlice(estimated, primaryWindow, maxWindow, role)
+            if (found == null) {
+                PikoLog.d(TAG, "转码流未找到带完整参数集的关键帧切点，片段退回完整流：${logFile(detail.id, detail.name)}")
+                source.close()
+                return null
+            }
+            verified = found
+            offset = verified.sliceStartOffset
             sliceLength = windowLengthAt(offset)
             store?.keepSlice(offset, sliceLength, bytesPerMs)
             SlicedByteSource(source, offset, sliceLength)
@@ -501,22 +520,19 @@ class PikoMediaRepository(
             clipStartMs = startMs,
             bytesPerMs = bytesPerMs,
             maxWindowMs = CLIP_SLICE_MS,
-            resolveStart = keyframe?.let { sliceStart ->
-                {
-                    // 前台读：这一步在开头预取之后、算作取好之前，与预取一样急。以后台身份读，预取一结束这个文件
-                    // 就没有前台需求，被限到两路、排在所有段的预取之后，取好一段要等别段取完一段（2026-09-28）
-                    TsTimestamps.firstVideoPtsMs(source.readAt(0, STREAM_HEAD_BYTES, StreamRole.FOREGROUND))
-                        ?.let { streamStart -> TsTimestamps.elapsedMs(streamStart, sliceStart.ptsMs) }
-                }
+            resolveStart = {
+                // 前台读：这一步在开头预取之后、算作取好之前，与预取一样急。以后台身份读，预取一结束这个文件
+                // 就没有前台需求，被限到两路、排在所有段的预取之后，取好一段要等别段取完一段（2026-09-28）
+                TsTimestamps.firstVideoPtsMs(source.readAt(0, STREAM_HEAD_BYTES, StreamRole.FOREGROUND))
+                    ?.let { streamStart -> TsTimestamps.elapsedMs(streamStart, verified.ptsMs) }
             },
             resolveWindowDuration = {
-                val headPts = keyframe?.ptsMs
-                    ?: TsTimestamps.firstVideoPtsMs(slice.readAt(0, STREAM_HEAD_BYTES, StreamRole.FOREGROUND))
+                val headPts = verified.ptsMs
                 val tailReadOffset = (sliceLength - PreparedClip.SLICE_TAIL_BYTES).coerceAtLeast(0L)
                 val tailPts = TsTimestamps.lastVideoPtsMs(
                     slice.readAt(tailReadOffset, PreparedClip.SLICE_TAIL_BYTES.toInt(), StreamRole.FOREGROUND),
                 )
-                if (headPts != null && tailPts != null) {
+                if (tailPts != null) {
                     TsTimestamps.elapsedMs(headPts, tailPts).takeIf { it in 1_000L..(CLIP_SLICE_MS * 4) }
                 } else null
             },
@@ -526,18 +542,38 @@ class PikoMediaRepository(
     }
 
     /**
-     * [offset] 起 [window] 字节内第一个视频关键帧，偏移相对 [offset]。按块读，找到就停：
-     * 关键帧平均在半个间隔处，一次读满整个窗口要多下一倍。块长是 188 的倍数，TS 包不会跨块。
+     * 从 [offset] 起跨分块保持状态地扫描首个带完整 `PAT + PMT + 参数集 + 独立关键帧` 的安全切点。
+     * 常规窗口 [primaryWindow] 未命中时继续沿同一扫描器扩展至 [maxWindow]（不重读已扫块）；仍无合法切点则返回 null 拒绝裸切。
      */
-    private suspend fun ProxyByteSource.findKeyframe(offset: Long, window: Long, role: StreamRole): TsTimestamps.VideoPes? {
-        var scanned = 0L
-        val overlap = 8 * TS_PACKET_BYTES.toInt()
-        while (scanned < window && offset + scanned < size) {
-            val chunk = readAt(offset + scanned, KEYFRAME_SCAN_CHUNK, role)
-            if (chunk.isEmpty()) return null
-            TsTimestamps.firstVideoKeyframe(chunk)?.let { return TsTimestamps.VideoPes(scanned.toInt() + it.byteOffset, it.ptsMs) }
-            if (chunk.size <= overlap) break
-            scanned += chunk.size - overlap
+    private suspend fun ProxyByteSource.findVerifiedSlice(
+        offset: Long,
+        primaryWindow: Long,
+        maxWindow: Long,
+        role: StreamRole,
+    ): TsTimestamps.VerifiedSlice? {
+        suspend fun scanFrom(startOffset: Long, limitBytes: Long): TsTimestamps.VerifiedSlice? {
+            val scanner = TsTimestamps.VerifiedSliceScanner()
+            var scanned = 0L
+            while (scanned < limitBytes && startOffset + scanned < size) {
+                val remaining = minOf(KEYFRAME_SCAN_CHUNK.toLong(), limitBytes - scanned)
+                    .coerceAtMost(size - (startOffset + scanned))
+                    .toInt()
+                if (remaining <= 0) break
+                val chunk = readAt(startOffset + scanned, remaining, role)
+                if (chunk.isEmpty()) break
+                scanner.feed(chunk, startOffset + scanned)?.let { return it }
+                scanned += chunk.size
+            }
+            return scanner.finish()
+        }
+
+        scanFrom(offset, maxWindow)?.let { return it }
+        // 估算位置过于靠近片尾、剩余字节不足一个完整 GOP 时，向前退一个常规窗口再尝试一次
+        if (offset > 0L && size - offset < primaryWindow) {
+            val rewindStart = ((offset - primaryWindow).coerceAtLeast(0L) / TS_PACKET_BYTES) * TS_PACKET_BYTES
+            if (rewindStart < offset) {
+                return scanFrom(rewindStart, offset - rewindStart)
+            }
         }
         return null
     }
@@ -991,6 +1027,11 @@ private const val STREAM_HEAD_BYTES = 64 * 1024
 
 // 188 的倍数，约 256 KiB，与 SDK 的块一样大
 private const val KEYFRAME_SCAN_CHUNK = 188 * 1394
+
+// 关键帧扫描窗口覆盖 15 秒峰值码率（保底 2 MiB、上限扩展至 6 MiB），足以跨过 10s+ 长 GOP 高码率动作段
+private const val VERIFIED_KEYFRAME_WINDOW_MS = 15_000L
+private const val MIN_VERIFIED_KEYFRAME_SCAN_BYTES = 2L * 1024 * 1024
+private const val MAX_VERIFIED_KEYFRAME_SCAN_BYTES = 6L * 1024 * 1024
 
 /** 切片按 180 秒有界窗口截取（含码率余量），覆盖多轮 30 秒续播且保证头尾 PTS 紧致可插值 seek。 */
 private const val CLIP_SLICE_MS = 180_000L

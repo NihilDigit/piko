@@ -3,6 +3,13 @@ package dev.piko.desktop
 import coil3.ImageLoader
 import coil3.SingletonImageLoader
 import coil3.disk.DiskCache
+import coil3.memory.MemoryCache
+import dev.piko.shared.memory.PikoMemoryGovernor
+import dev.piko.shared.memory.cacheBudget
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import dev.piko.shared.PikoHome
 import java.util.concurrent.TimeUnit
@@ -18,6 +25,7 @@ import okio.Path.Companion.toOkioPath
  * 显式调高 OkHttp 单主机并发上限（默认仅 5），避免高 RTT 线路下瀑布流与海报墙几十张同域缩略图串行排队。
  */
 internal fun installImageLoader() {
+    val baseMemoryBytes = (Runtime.getRuntime().maxMemory() / 10L).coerceAtMost(128L * 1024 * 1024)
     SingletonImageLoader.setSafe { context ->
         // 延迟到 PikoProxySelector.install 之后再实例化 OkHttpClient，确保缩略图与海报请求跟随应用代理设置
         val okHttpClient = OkHttpClient.Builder()
@@ -29,7 +37,17 @@ internal fun installImageLoader() {
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .build()
+        val memoryCache = MemoryCache.Builder()
+            .maxSizeBytes(PikoMemoryGovernor.Shared.policy.value.cacheBudget(baseMemoryBytes))
+            .build()
+        CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
+            PikoMemoryGovernor.Shared.policy.collect { policy ->
+                memoryCache.maxSize = policy.cacheBudget(baseMemoryBytes)
+                memoryCache.trimToSize(memoryCache.maxSize)
+            }
+        }
         ImageLoader.Builder(context)
+            .memoryCache { memoryCache }
             .components {
                 add(OkHttpNetworkFetcherFactory(callFactory = { okHttpClient }))
             }

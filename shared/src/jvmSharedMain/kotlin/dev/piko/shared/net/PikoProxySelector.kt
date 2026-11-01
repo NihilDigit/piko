@@ -60,6 +60,7 @@ object PikoProxySelector : ProxySelector() {
         // 也会把 Socket closed / Canceled / unexpected end of stream 回调到这里；它们并非代理不可达。
         val msg = error.message.orEmpty()
         val benignAbort = msg.contains("Socket closed", ignoreCase = true) ||
+            msg.contains("Socket is closed", ignoreCase = true) ||
             msg.contains("Canceled", ignoreCase = true) ||
             msg.contains("unexpected end of stream", ignoreCase = true) ||
             msg.contains("StreamResetException", ignoreCase = true)

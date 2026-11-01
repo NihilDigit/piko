@@ -8,6 +8,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlin.time.Clock
+import kotlin.time.Instant
 
 /**
  * 归档条目的可选媒体与校验元数据。
@@ -109,6 +110,10 @@ internal object VaultIngest {
             gcid = draft.gcid,
             source = draft.source,
             addedAt = addedAtMillis,
+            createdAt = draft.originFile?.let { file ->
+                file.params["piko_original_created_at"]?.toLongOrNull()
+                    ?: runCatching { Instant.parse(file.createdTime).toEpochMilliseconds() }.getOrNull()
+            } ?: addedAtMillis,
             cid = resolved.cid,
             duration = resolved.duration,
             width = resolved.width,
