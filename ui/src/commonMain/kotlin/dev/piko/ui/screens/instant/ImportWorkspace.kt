@@ -150,7 +150,7 @@ internal fun ImportResolutionStatus(state: InstantSheetState, notice: PanelNotic
     val missing = state.sourceSelectedIndices.count { !state.items[it].isInstantReady }
     val error = state.saveBlockReason ?: state.errorMessage ?: when {
         state.willCreateFolder && state.folderNameToSave.isBlank() -> tr("保存文件夹名称不能为空", "Save folder name cannot be empty", "保存先フォルダー名を入力してください", "저장 폴더 이름을 입력해 주세요", "儲存資料夾名稱不能為空")
-        state.saveAsReference && state.missingReferenceCount > 0 && state.referenceItemsToSave.isEmpty() -> tr("所选项目均缺少引用，无法以引用保存", "Selected items lack references and cannot be saved as references", "選択した項目に参照情報がないため、参照として保存できません", "선택한 항목에 참조가 없어 참조로 저장할 수 없습니다", "所選項目均缺少引用，無法以引用儲存")
+        state.effectiveSaveAsReference && state.missingReferenceCount > 0 && state.referenceItemsToSave.isEmpty() -> tr("所选项目均缺少引用，无法以引用保存", "Selected items lack references and cannot be saved as references", "選択した項目に参照情報がないため、参照として保存できません", "선택한 항목에 참조가 없어 참조로 저장할 수 없습니다", "所選項目均缺少引用，無法以引用儲存")
         plan?.lacksSpace == true -> tr("网盘空间不足，请减少选择或更换保存位置", "Not enough cloud space. Select fewer files or change destination", "空き容量が不足しています。選択を減らすか保存先を変更してください", "클라우드 공간이 부족합니다. 선택을 줄이거나 저장 위치를 변경하세요", "雲端硬碟空間不足，請減少選取項目或更換儲存位置")
         plan?.lacksOfflineCount == true -> tr("今日离线次数已用完", "Daily cloud download limit reached", "本日のクラウドダウンロード回数を使い切りました", "오늘의 클라우드 다운로드 횟수를 모두 사용했습니다", "今日離線次數已用完")
         else -> null
@@ -158,7 +158,7 @@ internal fun ImportResolutionStatus(state: InstantSheetState, notice: PanelNotic
     val message = error ?: notice?.text ?: when {
         state.isResolving -> tr("正在解析链接", "Resolving link", "リンクを解析中", "링크 분석 중", "正在解析連結")
         state.resolution?.resource?.truncated == true -> tr("清单不完整，自动裁剪已停用", "Incomplete file list; automatic trimming disabled", "ファイル一覧が不完全なため、自動整理を無効にしました", "파일 목록이 불완전하여 자동 정리를 껐습니다", "清單不完整，已停用自動裁剪")
-        state.saveAsReference && state.missingReferenceCount > 0 -> tr("已选文件中有 ${state.missingReferenceCount} 项缺少引用，保存时将跳过", "${state.missingReferenceCount} selected items lack references and will be skipped", "選択した ${state.missingReferenceCount} 項目に参照がなく、保存時にスキップします", "선택한 ${state.missingReferenceCount}개 항목에 참조가 없어 저장 시 건너뜁니다", "已選檔案中有 ${state.missingReferenceCount} 項缺少引用，儲存時將略過")
+        state.effectiveSaveAsReference && state.missingReferenceCount > 0 -> tr("已选文件中有 ${state.missingReferenceCount} 项缺少引用，保存时将跳过", "${state.missingReferenceCount} selected items lack references and will be skipped", "選択した ${state.missingReferenceCount} 項目に参照がなく、保存時にスキップします", "선택한 ${state.missingReferenceCount}개 항목에 참조가 없어 저장 시 건너뜁니다", "已選檔案中有 ${state.missingReferenceCount} 項缺少引用，儲存時將略過")
         missing > 0 -> tr("已选文件中有 ${missing} 项未收录", "${missing} selected items are not indexed", "選択した ${missing} 項目は未収録です", "선택한 ${missing}개 항목이 미등록입니다", "已選檔案中有 ${missing} 項未收錄")
         else -> null
     }
@@ -169,7 +169,7 @@ internal fun ImportResolutionStatus(state: InstantSheetState, notice: PanelNotic
         val color = if (error != null || notice?.isError == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
         Icon(Icons.Outlined.Info, null, Modifier.size(18.dp), tint = color)
         Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = color)
-        if (state.saveAsReference && state.missingReferenceCount > 0 && state.referenceItemsToSave.isNotEmpty()) {
+        if (state.effectiveSaveAsReference && state.missingReferenceCount > 0 && state.referenceItemsToSave.isNotEmpty()) {
             TextButton(onClick = state::deselectUnindexed, enabled = state.canEdit) { Text(stringResource(Res.string.text_uncheck)) }
         }
         if (state.resolution?.resource?.truncated == true) TooltipIconButton(

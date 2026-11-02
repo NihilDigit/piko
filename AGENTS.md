@@ -81,7 +81,7 @@ Windows 触摸与手写笔接入 Compose Desktop 的桥接库独立发布于 `de
 
 所有平台共用同一套自适应工作区模型（详见 `docs/development/adaptive-frontend-framework.md`、`docs/development/interaction-refactor.md` 与 `ui/AGENTS.md`）：
 
-- **工作区与上下文集合**：`PikoDriveRepository` 不持有导航栈或剪贴板。所有平台共享 `shared/presentation/DriveWorkspace` 维护文件标签的位置、历史、最近访问文件夹（`recentFoldersFlow`）与文件剪贴板；`WorkspaceContexts` 在同一有序集合中按稳定 ID 管理文件标签、查重报告与独立导入草稿。`WorkspaceViewModel` 由账号级 `AccountPresentationStores` 持有，不随主界面重组或宽窄布局切换而销毁。宽窗口（至少 `840×480dp`）在顶部常驻显示标签栏（`DriveTabBar`），窄窗口或低高度窗口通过顶栏数字入口打开双列页面缩略图总览切换同一组工作上下文。
+- **工作区与上下文集合**：`PikoDriveRepository` 不持有导航栈或剪贴板。所有平台共享 `shared/presentation/DriveWorkspace` 维护文件标签的位置、历史、固定状态（`DriveTab.pinId`）、最近访问文件夹（`recentFoldersFlow`）与文件剪贴板；`WorkspaceContexts` 在同一有序集合中按稳定 ID 管理文件标签、查重报告与独立导入草稿。已固定的文件标签始终排在上下文集合前部且禁止直接关闭（需先取消固定），侧边栏与外部定位跳转优先复用未固定标签或自动新建标签，不覆盖固定标签；固定标签目录按账号经 `PinnedTabs`（带 90 天取消固定墓碑的 LWW 账本）与 `PinnedTabSync` 跨设备同步至 `.piko/pinned-tabs-<时间戳>.json`。`WorkspaceViewModel` 由账号级 `AccountPresentationStores` 持有，不随主界面重组或宽窄布局切换而销毁。宽窗口（至少 `840×480dp`）在顶部常驻显示标签栏（`DriveTabBar`），窄窗口或低高度窗口通过顶栏数字入口打开双列页面缩略图总览切换同一组工作上下文。
 - **作用域分离与保存目标**：查询展示订阅使用浏览会话子作用域，已接受的文件写操作使用账号级 `AccountExecutionScopes`。外部上传的默认目录经账号工作区的 `SaveTargetBinding` 注入 `SaveTargetContext`；新建导入草稿在打开那一刻从 `SaveTargetContext` 取得当前主文件目录并固定为该草稿的默认保存目标，此后浏览其他目录不会篡改该草稿的目标目录。资料库页（`Screen.Library`）、临时定位浏览页与目录选择器浮层（`FolderPickerState`）均维护各自独立的路径栈，严禁从仓库读取所谓「当前目录」或直接改动主工作区路径栈。
 - **界面入口与状态约定**：`ui/src/commonMain` 入口为 `PikoApp`，由 Android `MainActivity` 与桌面 `Main.kt` 分别组装进程级 `PikoServices` 与平台接口 `PikoPlatform`，界面内统一经 `LocalPikoServices` 与 `LocalPikoPlatform` 获取，禁止引用 `PikoApplication.instance`。`DriveScreenState` 作为网盘列表核心接缝，负责文件列表投影、排序、搜索、多选、启发式折叠、防窥揭示与动作分发；普通文件写入经 `FileCommands` 委托 `FileWriteSession`，历史事件删除经 `HistoryCommands` 委托 `HistoryEditSession`，归档清单编辑经 `VaultEntryCommands` 委托 `VaultEntryEditSession`。遵循以下准则：
   - Compose 页面投影暴露只读 `State`，业务层与跨层订阅暴露只读 `StateFlow`，严禁将可变状态直接交给视图修改。
@@ -101,10 +101,12 @@ Windows 触摸与手写笔接入 Compose Desktop 的桥接库独立发布于 `de
 
 **新增偏好设置项须同步修改三处**：`PikoUserPreferences` 接口、`SessionManager`（Android DataStore 实现）与 `DesktopPikoPreferences`（桌面 `DesktopSettingsStore` 实现）。若该设置需跨设备同步，再将其加入 `shared/.../shared/sync/PikoSettingsSync.kt` 的 `SyncedSettings`；窗口尺寸、下载目录、网络代理、减少动画、蜗牛模式等设备本地属性不得加入同步。设置同步文件位于网盘根目录 `.piko/settings-<时间戳>.json`（`DriveSettingsStore`，`.piko` 目录在网盘浏览列表中隐藏），按字段记录修改时间戳执行逐项合并，当前设备从未修改过的项视为最旧。机密数据严禁放入普通设置同步（1.1.0 曾明文同步压缩包密码，已停用并清理）；压缩包密码使用账号密码派生的密钥加密后独立存放于 `.piko/archive-passwords-<时间戳>.json`（`ArchivePasswordSync`），新增其他跨设备机密同步须沿用此加密方案。
 
+MetaTube 地址与访问令牌经 `MetaTubeSync` 使用账号密码派生的密钥加密后同步至 `.piko/metatube-<时间戳>.json`，逐字段按修改时刻合并，本机同步账本只存 SHA-256 摘要。「以引用保存」勾选由 `saveAsReferenceFlow` 仅在当前设备记忆，不加入 `SyncedSettings`。
+
 ### 索引、目录树与变更收口
 
 - **文件夹索引（`FolderIndex`）**：文件夹名称与父级关系在仓库的 `FolderIndex` 中维护唯一权威副本，列目录、查详情及客户端自身写操作均实时写入。路径栈、文件标签、浏览历史、最近访问与快速访问均自动跟随索引修正名称与父级（目录重命名时即时更新显示名，移动时更新上级，删除时自动回退至有效祖先）；持久化的 `PikoPathBreadcrumb.name` 仅在索引尚未收录该节点时作为回退值。按文件夹 ID 反查完整路径统一调用 `locateFolder`（优先查本地索引，缺口再向服务端逐级补齐）；资料库虚拟根与压缩包内部层级不进入索引（`isDriveFolderId`），压缩包本身按其文件 ID 记录。
-- **本地全盘树快照（`DriveTreeIndex`）**：按账号维护文件夹、真实文件与已读取归档虚拟条目的内存与本地持久化快照。日常列目录、读取归档清单及哨兵探针增量补丁（`applyCanaryPatch`）实时更新树节点；首次全盘拉取完成后标记为 `isComplete`，后续全盘搜索、按番号子树重命名扫描与跨目录查重均可直接在内存中毫秒级完成 CJK 模糊匹配与子树遍历。
+- **本地全盘树索引（`DriveTreeIndex` 与 SQLite WAL）**：按账号独立维护带 SHA-256 后缀与 `owner_account` 双重校验的原生 SQLite WAL 库（Android 使用系统 `SQLiteDatabase`，Desktop 使用 `sqlite-jdbc`，原生解压定向至 `PikoHome/cache/natives`；无歧义旧版 `drive-tree-*.json` 首次启动流式迁入并清理）。Java 堆仅常驻文件夹骨架与物化子树聚合表（`SubtreeStats`，分别维护物理配额与归档虚拟体量/时长，驱动文件夹按递归大小与时长精确排序及 `Screen.SpaceMap` 空间分布图），不再将全盘数万至数十万文件对象常驻堆内；物理远端事实、文件实例原始存入时间（含归档取回后跨目录移动保留）与按 `GCID + size` 共享的内容媒体元数据三层分离，全盘拉取按分页候选代流式写库，全盘搜索经预归一化 `norm_name` 轻量游标完成 CJK 模糊匹配。重型流式落盘与内存水位统一受 `PikoMemoryGovernor` 协调。
 - **变更统一收口**：一切修改网盘目录结构或文件状态的入口必须调用 `driveRepository.applyChange(DriveChange)`，统一完成 `FolderIndex` 与 `DriveTreeIndex` 原地更新、列表缓存失效及 `folderChanges` 广播；禁止各业务处自行清理缓存或单独通知视图。`DriveScreenState` 与目录图已订阅 `folderChanges` 并仅重列受影响层级，视图层无需重复订阅。
 
 ### 账号隔离与凭据管理
@@ -113,8 +115,8 @@ Windows 触摸与手写笔接入 Compose Desktop 的桥接库独立发布于 `de
 
 - **仓库与工作区切换**：`PikoDriveRepository.enterAccount` 切换文件索引、列表缓存、本地树快照与撤销日志；`AccountPresentationStores` 与 `AccountExecutionScopes` 按账号隔离工作区 ViewModel、导入草稿、查重会话与执行作用域，旧工作区释放时不得覆盖新账号的 `SaveTargetBinding`。根目录清单缓存与在途写事务固定绑定发起时的 `PikPakClient` 实例。
 - **进程级会话与窗口清理**：服务端解压、片段截取、归档等进程级会话以及桌面端独立播放器窗口、独立信息流窗口统一通过 `launchOnAccountLeave` 在主线程终止（`PikoServices` 与桌面 `Main.kt`）。后台下载任务携带 `account` 字段，切离账号时自动暂停该账号任务；任务页与任务入口徽标/速率仅统计当前账号的下载、上传与离线任务（`TransfersState`、`TransferActivity`），切回原账号后原任务仍可见并可继续。
-- **主界面重建与缓存键隔离**：切换账号时 `PikoApp` 根状态整体重建，挂起的信息流、临时定位标签、浮窗位置等界面态随之重置；是否按设备开关自动重开信息流由 `ClipFeedSession.reopensFor` 判定，切换至另一账号时不自动打开。缓存目录中所有按账号落盘的文件键名必须包含账号标识：文件标签、列表缓存、最近访问、来源账本（`sources-`）、归档目录表（`vault-trees-`）、归档星标表（`vault-stars-`）、本地文件树快照及信息流队列（`clip-feed-<账号>-<文件夹>`，因各账号根目录 ID 均为空串，仅凭文件夹 ID 会导致跨账号串数据）。待延迟写盘的数据在切号时立即向原账号落盘，不丢弃。记忆网盘文件夹 ID 的进程级对象（如 `PreviewTempFolder` 的 `Piko-Temp`）与偏好（`AccountScopedPreferences` 中的快速访问、最近移动目标，旧平台偏好值原样保留并记录接管账号以防同机旧版将空值同步回云端）均按账号隔离。
-- **`.piko/` 同步校验与机密保管**：`DriveSettingsStore` 执行设置、归档目录表、归档星标表、来源账本与压缩包密码同步时，每一步读写前均核对当前活动账号仍为发起同步的账号，若已切号则立即中止本轮同步。压缩包密码经进程唯一的 `ArchivePasswordVault`（`PikoServices.archivePasswords`）按账号读写（1.1.0 单账号时期的全局明文表由升级后首个登录账号迁入并删除，开发期设备级密文不迁移）。账号会话与密码合并后交由平台机密存储保管（桌面端细节见 `shared/src/desktopMain/kotlin/dev/piko/shared/auth/AGENTS.md`）；退出登录仅注销当前账号并切换至最近使用的另一账号，系统钥匙串暂时锁定无法读取密码时按无保存密码处理，不视为已退出登录。
+- **主界面重建与缓存键隔离**：切换账号时 `PikoApp` 根状态整体重建，挂起的信息流、临时定位标签、浮窗位置等界面态随之重置；是否按设备开关自动重开信息流由 `ClipFeedSession.reopensFor` 判定，切换至另一账号时不自动打开。缓存目录中所有按账号落盘的文件键名必须包含账号标识：文件标签、固定标签账本（`pinned-tabs-`）、列表缓存、最近访问、来源账本（`sources-`）、归档目录表（`vault-trees-`）、归档星标表（`vault-stars-`）、本地文件树快照及信息流队列（`clip-feed-<账号>-<文件夹>`，因各账号根目录 ID 均为空串，仅凭文件夹 ID 会导致跨账号串数据）。待延迟写盘的数据在切号时立即向原账号落盘，不丢弃。记忆网盘文件夹 ID 的进程级对象（如 `PreviewTempFolder` 的 `Piko-Temp`）与偏好（`AccountScopedPreferences` 中的快速访问、最近移动目标，旧平台偏好值原样保留并记录接管账号以防同机旧版将空值同步回云端）均按账号隔离。
+- **`.piko/` 同步校验与机密保管**：`DriveSettingsStore` 执行设置、固定标签账本、归档目录表、归档星标表、来源账本与压缩包密码同步时，每一步读写前均核对当前活动账号仍为发起同步的账号，若已切号则立即中止本轮同步。压缩包密码经进程唯一的 `ArchivePasswordVault`（`PikoServices.archivePasswords`）按账号读写（1.1.0 单账号时期的全局明文表由升级后首个登录账号迁入并删除，开发期设备级密文不迁移）。账号会话与密码合并后交由平台机密存储保管（桌面端细节见 `shared/src/desktopMain/kotlin/dev/piko/shared/auth/AGENTS.md`）；退出登录仅注销当前账号并切换至最近使用的另一账号，系统钥匙串暂时锁定无法读取密码时按无保存密码处理，不视为已退出登录。
 
 ### 归档（Vault）、引用写入内核与来源账本
 

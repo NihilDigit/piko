@@ -3,6 +3,8 @@ package dev.piko.ui.workbench
 import dev.piko.shared.i18n.tr
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewModelScope
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
@@ -87,6 +89,41 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     val importModels = mutableStateMapOf<Long, AddLinkViewModel>()
     private val importViews = mutableMapOf<Long, dev.piko.ui.screens.instant.ImportWorkspaceViewState>()
     fun importView(id: Long) = importViews.getOrPut(id) { dev.piko.ui.screens.instant.ImportWorkspaceViewState() }
+    private val tabViewModelStores = mutableMapOf<Long, ViewModelStore>()
+    fun tabViewModelOwner(tabId: Long): ViewModelStoreOwner {
+        val store = tabViewModelStores.getOrPut(tabId) { ViewModelStore() }
+        return object : ViewModelStoreOwner {
+            override val viewModelStore: ViewModelStore = store
+        }
+    }
+    var ongoingWorkShown by mutableStateOf(false)
+    var askingCloseFeed by mutableStateOf(false)
+    var shortcutsOpen by mutableStateOf(false)
+    var paletteOpen by mutableStateOf(false)
+    var pathLookup by mutableStateOf<Deferred<Result<List<PikoPathBreadcrumb>>>?>(null)
+        private set
+
+    suspend fun awaitPathLookup(fileId: String): Result<List<PikoPathBreadcrumb>>? {
+        val lookup = lookupPath(fileId)
+        pathLookup = lookup
+        return try {
+            lookup.await()
+        } catch (_: CancellationException) {
+            kotlinx.coroutines.currentCoroutineContext().let { ctx ->
+                if (ctx[Job]?.isActive == false) throw CancellationException("调用方已取消")
+            }
+            null
+        } finally {
+            lookup.cancel()
+            if (pathLookup === lookup) pathLookup = null
+        }
+    }
+
+    fun cancelPathLookup() {
+        pathLookup?.cancel()
+        pathLookup = null
+    }
+
     private val duplicateBrowsers = mutableMapOf<Long, DriveBrowserSession>()
     private val contextOrigins = mutableMapOf<Long, ExternalOrigin>()
     private val fileOrigins = mutableStateMapOf<Long, ExternalOrigin>()
@@ -166,6 +203,9 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
 
     fun activatePrimaryFileBrowser(): Long = driveWorkspace.activatePrimaryFileBrowser()
     fun canCloseContext(id: Long): Boolean = driveWorkspace.canCloseContext(id)
+    fun canPinContext(id: Long): Boolean = available && driveWorkspace.canPinTab(id)
+    fun isContextPinned(id: Long): Boolean = driveWorkspace.isTabPinned(id)
+    fun togglePinContext(id: Long): Boolean = available && driveWorkspace.togglePinTab(id)
 
     fun pushLibrary(library: DriveLibrary, tab: MainTab = lastMainTab, screens: List<Screen> = lastNavigation) {
         if (!available) return
@@ -270,6 +310,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
 
     private fun releaseContext(id: Long) {
         if (services.addLink.ownerTabId == id) services.addLink.forceDiscard()
+        tabViewModelStores.remove(id)?.clear()
         detailPanels.forgetWhere { it is dev.piko.shared.presentation.TabNavigation && it.tabId == id }
         pageSnapshots.remove(id)
         contextOrigins.remove(id)
@@ -395,6 +436,9 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         contexts.contextsFlow.value.filter { it !is WorkspaceContext.File }.toList().forEach { closeContext(it.id) }
         driveWorkspace.onContextClosed = {}
         releaseSaveTarget()
+        cancelPathLookup()
+        tabViewModelStores.values.forEach(ViewModelStore::clear)
+        tabViewModelStores.clear()
         tabs.close()
         detailPanels.clear()
         importViews.clear()

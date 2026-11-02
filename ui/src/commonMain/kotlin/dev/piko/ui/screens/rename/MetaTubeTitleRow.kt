@@ -22,19 +22,26 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.naming.av.canonicalAvName
 import dev.piko.shared.naming.av.canonicalAvNameOf
+import dev.piko.shared.naming.av.parseAvForRename
 import dev.piko.shared.naming.parseMediaName
 import dev.piko.shared.scrape.MetaTubeService
 import dev.piko.ui.components.InlineLoadingIndicator
 import kotlinx.coroutines.launch
 
 /**
- * 单个文件按番号规范命名时，对话框里取片名的一行：点一下从 MetaTube 查，查到就把输入框换成带这个片名的规范名。
+ * 单个条目按番号规范命名时，对话框里取片名的一行：点一下从 MetaTube 查，查到就把输入框换成带这个片名的规范名。
  * 不在打开对话框时自动查：多数时候原名里的片名就够用，查询要等外部站点，几秒到十几秒。
  * 状态文字常驻这一行，查询前后对话框高度不变（对话框里不做尺寸变化，见 ui/CLAUDE.md）。
  */
 @Composable
-internal fun MetaTubeTitleRow(fileName: String, service: MetaTubeService, onNameFound: (String) -> Unit) {
+internal fun MetaTubeTitleRow(
+    fileName: String,
+    service: MetaTubeService,
+    isFolder: Boolean = false,
+    onNameFound: (String) -> Unit,
+) {
     val scope = rememberCoroutineScope()
     var querying by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
@@ -43,7 +50,7 @@ internal fun MetaTubeTitleRow(fileName: String, service: MetaTubeService, onName
         TextButton(
             enabled = !querying,
             onClick = {
-                val info = parseMediaName(fileName).av ?: return@TextButton
+                val info = parseAvForRename(fileName, isFolder) ?: return@TextButton
                 querying = true
                 status = tr("正在查询", "Checking", "照会中", "조회 중", "正在查詢")
                 failed = false
@@ -54,7 +61,12 @@ internal fun MetaTubeTitleRow(fileName: String, service: MetaTubeService, onName
                     failed = result.failed > 0
                     status = when {
                         title != null -> {
-                            canonicalAvNameOf(fileName, title)?.let(onNameFound)
+                            val formatted = if (isFolder) {
+                                canonicalAvName(fileName, info, title = title, isFolder = true)
+                            } else {
+                                canonicalAvNameOf(fileName, title)
+                            }
+                            formatted?.let(onNameFound)
                             tr("已填入查到的片名", "Retrieved title inserted", "取得した作品名を入力しました", "조회한 제목을 입력했습니다", "已填入查到的片名")
                         }
                         failed -> tr("查询失败", "Query failed", "照会に失敗しました", "조회 실패", "查詢失敗")

@@ -2,9 +2,11 @@ package dev.piko.ui
 
 import dev.piko.shared.sync.ArchivePasswordSync
 import dev.piko.shared.sync.PikoSettingsSync
+import dev.piko.shared.sync.PinnedTabSync
 import dev.piko.shared.sync.SyncCipher
 import dev.piko.shared.sync.SourceLedgerSync
 import dev.piko.shared.sync.VaultTreeSync
+import dev.piko.shared.download.DriveDownloadFolderSource
 import dev.piko.ui.components.SegmentSession
 import androidx.compose.runtime.staticCompositionLocalOf
 import dev.piko.data.auth.PikoUserPreferences
@@ -16,6 +18,7 @@ import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.MoveHistory
 import dev.piko.shared.data.OfflinePackTracker
 import dev.piko.shared.data.PikoCacheStore
+import dev.piko.shared.data.PikoTreeDatabaseFactory
 import dev.piko.shared.data.PikoAccountRepository
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.data.PreviewTempFolder
@@ -67,7 +70,10 @@ class PikoServices(
     /** 用户自己部署的 MetaTube，两端传入；为 null 时设置里没有刮削一组（截图环境）。 */
     val metaTube: MetaTubeService? = null,
     localFileAccess: (((String) -> Unit) -> dev.piko.shared.data.LocalFileAccess)? = null,
+    treeDatabaseFactory: PikoTreeDatabaseFactory? = null,
 ) {
+    val memoryGovernor = dev.piko.shared.memory.PikoMemoryGovernor.Shared
+
     private val appNoticesChannel = Channel<String>(Channel.BUFFERED)
     val appNotices: Flow<String> = appNoticesChannel.receiveAsFlow()
     fun postAppNotice(message: String) {
@@ -81,12 +87,13 @@ class PikoServices(
     val preferences: PikoUserPreferences =
         cacheStore?.let { AccountScopedPreferences(platformPreferences, clientManager, it) } ?: platformPreferences
 
-    val driveRepository: DriveRepository = DriveRepository(clientManager, preferences, cacheStore).also {
+    val driveRepository: DriveRepository = DriveRepository(clientManager, preferences, cacheStore, treeDatabaseFactory = treeDatabaseFactory).also {
         val repository = it
         it.localMounts.access = localFileAccess?.invoke { folder ->
             repository.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(setOf(folder)))
         }
         mediaRepository.localMounts = it.localMounts
+        mediaRepository.metadataSink = it.metadataSink
     }
     internal val presentationStores = dev.piko.ui.workbench.AccountPresentationStores()
     val fileExecutionScopes = dev.piko.shared.state.AccountExecutionScopes(
@@ -110,7 +117,8 @@ class PikoServices(
     val openDriveRequested: StateFlow<Boolean> = _openDriveRequested.asStateFlow()
     fun requestOpenDrive() {
         _openDriveRequested.value = true
-        driveRepository.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(null))
+        driveRepository.refreshActiveListings()
+        onAppForegrounded()
     }
     fun consumeOpenDriveRequest() { _openDriveRequested.value = false }
     class FileHighlightRequest internal constructor(val account: String, val ids: Set<String>)
@@ -130,6 +138,8 @@ class PikoServices(
     init {
         // 打开归档条目时借的对象放进 Piko-Temp：取到直链就删，偶有删不掉的也随 Piko-Temp 一起清走
         mediaRepository.leaseFolder = { owner -> previewTempFolder.folderId(owner).getOrThrow() }
+        // 绑定默认文件夹下载源，使在递归列目录（Listing）阶段退出的文件夹下载可在下次冷启动后自动接续展开
+        downloadManager.bindDefaultFolderSource(DriveDownloadFolderSource(driveRepository))
     }
 
     val vaultStore: VaultStore get() = driveRepository.vault
@@ -147,6 +157,39 @@ class PikoServices(
         .also { it.start() }
     private val sourceLedgerSync = SourceLedgerSync(clientManager, driveRepository, backgroundScope, preferences.settingsSyncFlow)
         .also { it.start() }
+    val pinnedTabSync = PinnedTabSync(clientManager, driveRepository, driveWorkspace.pinnedTabs, backgroundScope, preferences.settingsSyncFlow)
+        .also { it.start() }
+
+    // 进程刚启动时各 Sync.start() 已经发起了首轮同步，初始化为当前时刻可避免开屏窗口首次获得焦点时立刻重复跑第二轮同步
+    @Volatile
+    private var lastForegroundSyncMs = System.currentTimeMillis()
+
+    /** 设置页「立即同步」：一并拉取与推送偏好设置、固定标签、归档树、归档星标与来源账本。 */
+    suspend fun syncAllNow() {
+        kotlinx.coroutines.coroutineScope {
+            launch { settingsSync.syncNow() }
+            launch { pinnedTabSync.syncNow() }
+            launch { vaultTreeSync.syncNow() }
+            launch { vaultStarSync.syncNow() }
+            launch { sourceLedgerSync.syncNow() }
+            launch { archivePasswordSync?.syncNow() }
+            launch { metaTubeSync?.syncNow() }
+        }
+    }
+
+    /** 窗口重新获得焦点或应用回到前台时轻量增量拉取固定标签与设置（10 秒冷却防抖），无需重启应用即可跨端实时同步。 */
+    fun onAppForegrounded() {
+        val now = System.currentTimeMillis()
+        if (now - lastForegroundSyncMs < 10_000L) return
+        lastForegroundSyncMs = now
+        backgroundScope.launch {
+            if (clientManager.currentClient.value != null) {
+                pinnedTabSync.syncNow()
+                settingsSync.syncNow()
+                metaTubeSync?.syncNow()
+            }
+        }
+    }
     /** 当前账号存过的压缩包密码，解压、浏览压缩包与设置页共用这一个，见 ArchivePasswordVault。 */
     val archivePasswords = ArchivePasswordVault(clientManager, clientManager.archivePasswordStore, preferences)
         .also { it.start(backgroundScope) }
@@ -155,8 +198,13 @@ class PikoServices(
         ArchivePasswordSync(clientManager, driveRepository, archivePasswords, it, backgroundScope, preferences.settingsSyncFlow).also { sync -> sync.start() }
     }
 
-    /** API 走哪个根域名：用户固定的，或登录后测速自动挑的，见 PikPakDomainSelector。 */
-    val domainSelector = PikPakDomainSelector(clientManager, preferences, backgroundScope).also { it.start() }
+    private val metaTubeSync = syncCipher?.let {
+        dev.piko.shared.sync.MetaTubeSync(clientManager, driveRepository, preferences, cacheStore, it, backgroundScope, preferences.settingsSyncFlow)
+            .also { sync -> sync.start() }
+    }
+
+    /** API 走哪个根域名：用户固定的，或登录后测速自动挑的（冷启动先沿用上次测通的域名），见 PikPakDomainSelector。 */
+    val domainSelector = PikPakDomainSelector(clientManager, preferences, backgroundScope, cacheStore).also { it.start() }
 
     val uploadManager = PikoUploadCoordinator(clientManager, preferences, uploadSources, driveRepository, backgroundScope)
 

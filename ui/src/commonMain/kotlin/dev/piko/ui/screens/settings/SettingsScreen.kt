@@ -157,6 +157,7 @@ fun SettingsScreen(
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
     val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsStateWithLifecycle(initialValue = true)
     val isNameParsingEnabled by sessionManager.nameParsingFlow.collectAsStateWithLifecycle(initialValue = true)
+    val foldersFirst by sessionManager.foldersFirstFlow.collectAsStateWithLifecycle(initialValue = true)
     val isPerFolderSortEnabled by sessionManager.perFolderSortFlow.collectAsStateWithLifecycle(initialValue = false)
     val isBundleSubtitlesEnabled by sessionManager.bundleSubtitlesFlow.collectAsStateWithLifecycle(initialValue = true)
     val isAutoCleanNamesEnabled by sessionManager.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
@@ -220,11 +221,20 @@ fun SettingsScreen(
 
     val linkAssociation = platform.linkAssociation
     var linkAssociationState by remember { mutableStateOf(LinkAssociationState.Unavailable) }
+    val isWindowFocused = LocalWindowInfo.current.isWindowFocused
     if (linkAssociation != null) {
         // 默认应用在系统设置里改，改完切回来窗口重新获得焦点，借此刷新
-        val isWindowFocused = LocalWindowInfo.current.isWindowFocused
         LaunchedEffect(linkAssociation, isWindowFocused) {
             if (isWindowFocused) linkAssociationState = linkAssociation.state()
+        }
+    }
+    val backgroundTransferAccess = platform.backgroundTransferAccess
+    var isBackgroundUnrestricted by remember(backgroundTransferAccess) {
+        mutableStateOf(backgroundTransferAccess?.isUnrestricted() ?: true)
+    }
+    if (backgroundTransferAccess != null) {
+        LaunchedEffect(backgroundTransferAccess, isWindowFocused) {
+            if (isWindowFocused) isBackgroundUnrestricted = backgroundTransferAccess.isUnrestricted()
         }
     }
 
@@ -429,6 +439,13 @@ fun SettingsScreen(
                             )
                             SettingsSwitchRow(
                                 icon = Icons.AutoMirrored.Outlined.Sort,
+                                title = tr("文件夹置顶", "Folders on top", "フォルダーを上部に固定", "폴더 상단 고정", "資料夾置頂"),
+                                supporting = tr("关闭后文件夹与文件按所选顺序混合排列", "Turn off to mix folders and files together in sort order", "オフにするとフォルダーとファイルを混在して並べ替えます", "끄면 폴더와 파일을 선택한 정렬 순서대로 함께 배열합니다", "關閉後資料夾與檔案依所選順序混合排列"),
+                                checked = foldersFirst,
+                                onCheckedChange = { scope.launch { sessionManager.setFoldersFirst(it) } },
+                            )
+                            SettingsSwitchRow(
+                                icon = Icons.AutoMirrored.Outlined.Sort,
                                 title = tr("各文件夹独立排序", "Sort each folder separately", "フォルダーごとに並べ替え", "폴더별 정렬", "各資料夾獨立排序"),
                                 supporting = tr("为每个文件夹分别保存排序方式", "Save sort order independently for each folder", "フォルダーごとに並び順を個別に保存します", "폴더마다 정렬 방식을 개별적으로 저장합니다", "為每個資料夾分別儲存排序方式"),
                                 checked = isPerFolderSortEnabled,
@@ -539,6 +556,19 @@ fun SettingsScreen(
                                 checked = isConcurrentAccelerationEnabled,
                                 onCheckedChange = { scope.launch { sessionManager.setConcurrentAccelerationEnabled(it) } },
                             )
+                            if (backgroundTransferAccess != null) {
+                                SettingsNavigationRow(
+                                    icon = Icons.Outlined.PowerSettingsNew,
+                                    title = tr("后台持续传输", "Unrestricted background transfers", "バックグラウンド継続転送", "백그라운드 지속 전송", "背景持續傳輸"),
+                                    supporting = if (isBackgroundUnrestricted) {
+                                        tr("已允许在后台不受省电限制持续下载与上传", "Allowed to transfer in the background without battery restrictions", "省電力制限なしでバックグラウンド転送が許可されています", "배터리 제한 없이 백그라운드 전송이 허용됨", "已允許在背景不受省電限制持續下載與上傳")
+                                    } else {
+                                        tr("受系统电池优化限制，切到后台可能被暂停，点击前往允许", "Restricted by system battery optimization; tap to allow background transfers", "システムのバッテリー最適化により制限されています。タップして許可", "시스템 배터리 최적화로 제한됨. 탭하여 백그라운드 전송 허용", "受系統電池最佳化限制，切至背景可能被暫停，點擊前往允許")
+                                    },
+                                    onClick = { backgroundTransferAccess.requestUnrestricted() },
+                                    trailingIcon = if (isBackgroundUnrestricted) Icons.Outlined.Check else null,
+                                )
+                            }
                         }
                         SettingsGroup(tr("限速", "Speed limits", "速度制限", "속도 제한", "限速")) {
                             SettingsSwitchRow(
@@ -586,7 +616,7 @@ fun SettingsScreen(
                                 enabled = isSettingsSyncEnabled,
                                 status = syncStatusText(syncStatus, lastSynced),
                                 onEnabledChange = { scope.launch { sessionManager.setSettingsSyncEnabled(it) } },
-                                onSyncNow = { scope.launch { settingsSync.syncNow() } },
+                                onSyncNow = { scope.launch { services.syncAllNow() } },
                             )
                             SettingsSwitchRow(
                                 icon = Icons.Outlined.History,

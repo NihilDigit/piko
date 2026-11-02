@@ -243,7 +243,7 @@ internal fun InstantSheetContent(
     BackHandler(enabled = isTreeMaximized) { isTreeMaximized = false }
     @Composable
     fun SaveSettings() {
-        if (state.resolution != null || batch != null) {
+        if ((state.resolution != null && state.supportsReferenceSave) || (batch != null && batch.rows.any { it.state.supportsReferenceSave })) {
             val referenceEnabled = state.canEdit && !state.hasRetainedInstantAttempt && batch?.rows?.any { !it.state.canEdit || it.state.hasRetainedInstantAttempt } != true
             val reference = batch?.saveAsReference ?: state.saveAsReference
             val rawUpdateReference: (Boolean) -> Unit = if (batch != null) batch::updateSaveAsReference else state::updateSaveAsReference
@@ -260,7 +260,7 @@ internal fun InstantSheetContent(
                 Checkbox(reference, null, Modifier.size(48.dp).clearAndSetSemantics {}, enabled = referenceEnabled)
                 Text(stringResource(Res.string.text_save_as_references), style = MaterialTheme.typography.bodyMedium)
             }
-            val referenceStates = batch?.rows?.map { it.state } ?: listOf(state)
+            val referenceStates = (batch?.rows?.map { it.state } ?: listOf(state)).filter { it.supportsReferenceSave }
             val missing = referenceStates.sumOf { it.missingReferenceCount }
             if (reference && missing > 0) {
                 val allMissing = referenceStates.all { it.referenceItemsToSave.isEmpty() }

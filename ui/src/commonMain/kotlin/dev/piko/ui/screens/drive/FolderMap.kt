@@ -408,7 +408,9 @@ private fun filtered(state: FolderMapState, root: List<PikoPathBreadcrumb>, quer
         val level = state.levels[parent.last().id] as? FolderMapLevel.Loaded ?: return
         level.nodes.forEach { node ->
             val stack = parent + node.crumb
-            if (node.crumb.name.contains(query, ignoreCase = true)) out += MapRow("node:${node.crumb.id}", stack, 0, node = node)
+            if (node.crumb.localizedName.contains(query, ignoreCase = true) || node.crumb.name.contains(query, ignoreCase = true)) {
+                out += MapRow("node:${node.crumb.id}", stack, 0, node = node)
+            }
             walk(stack)
         }
     }

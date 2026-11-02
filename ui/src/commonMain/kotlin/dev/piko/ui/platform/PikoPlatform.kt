@@ -4,9 +4,11 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
+import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.ui.adaptive.FormFactor
 import dev.piko.ui.theme.MotionStyle
@@ -115,6 +117,9 @@ interface PikoPlatform {
     /** 跳转系统「默认打开 -> 添加链接」设置页（Android 12+），不支持的平台为 null。 */
     val openAppLinkSettings: (() -> Unit)? get() = null
 
+    /** 后台不受限运行（Android 电池优化白名单），桌面端为 null。 */
+    val backgroundTransferAccess: BackgroundTransferAccess? get() = null
+
     /** 当前是否尚未在系统「默认打开」中添加 PikPak 分享与跳转域名，用于「我的」页提醒卡片。 */
     suspend fun needsAppLinkPrompt(): Boolean = false
 
@@ -157,6 +162,29 @@ interface PikoPlatform {
 
     @Composable
     fun ListScrollbar(state: LazyGridState, modifier: Modifier)
+
+    /**
+     * 将当前有效语言同步注入平台的资源环境（Android 的 LocalConfiguration、JVM 的 Locale.getDefault），
+     * 确保 Compose Multiplatform 的 stringResource 与内存 tr() 在同一帧内完全一致，不出现双语混排。
+     */
+    @Composable
+    fun ProvideLocalizedEnvironment(
+        language: AppLanguage,
+        content: @Composable () -> Unit,
+    ) {
+        content()
+    }
+
+    /**
+     * 在后台解码小尺寸缩略图并按目标容器放大倍率执行一次性边缘钳位预模糊，返回可直接静态绘制的 [ImageBitmap]。
+     * 返回 null 时由界面回退常规图片加载。
+     */
+    suspend fun loadPreblurredBackdrop(
+        model: Any,
+        containerWidthPx: Int,
+        containerHeightPx: Int,
+        targetBlurPx: Float,
+    ): ImageBitmap? = null
 }
 
 /** 已下载到本机的文件的外部动作。路径可能是普通路径，也可能是 Android SAF 的 content: URI。 */
@@ -243,6 +271,11 @@ interface LandscapeLock {
 
     /** 恢复 [lock] 之前的方向；没锁着时什么也不做。 */
     fun release()
+}
+
+interface BackgroundTransferAccess {
+    fun isUnrestricted(): Boolean
+    fun requestUnrestricted()
 }
 
 fun interface ExternalVideoPlayer {

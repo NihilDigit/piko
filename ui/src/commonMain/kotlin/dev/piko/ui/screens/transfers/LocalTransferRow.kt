@@ -7,10 +7,11 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.Pause
-import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Visibility
@@ -136,12 +137,11 @@ internal fun localPrimaryAction(
     onStart: () -> Unit,
     onPause: () -> Unit,
 ): (() -> Unit)? {
-    if (task.canPlayNow()) return onPlay
     val isMedia = task.isMedia()
     return when (task.status) {
-        DownloadStatus.COMPLETED -> LocalFileIntents(files, task, isMedia)::openExternal
+        DownloadStatus.COMPLETED -> if (isMedia) onPlay else LocalFileIntents(files, task, isMedia)::openExternal
         DownloadStatus.PAUSED, DownloadStatus.FAILED -> onStart
-        DownloadStatus.DOWNLOADING -> onPause
+        DownloadStatus.DOWNLOADING -> if (task.canPlayWhileDownloading()) onPlay else onPause
         DownloadStatus.PENDING -> null
     }
 }
@@ -164,7 +164,7 @@ internal fun localTransferActions(
     return buildList {
         // 边下边播只认原画的暂存；转码档的暂存是转封装前的 TS，播放走不到它
         if (task.canPlayWhileDownloading()) {
-            add(SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생", "播放"), onPlay))
+            add(SheetAction(Icons.Outlined.PlayCircle, tr("播放", "Play", "再生", "재생", "播放"), onPlay))
         }
         if (previewHidden != null) {
             add(
@@ -177,7 +177,7 @@ internal fun localTransferActions(
         }
         when (task.status) {
             DownloadStatus.COMPLETED -> {
-                if (isMedia) add(SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생", "播放"), onPlay))
+                if (isMedia) add(SheetAction(Icons.Outlined.PlayCircle, tr("播放", "Play", "再生", "재생", "播放"), onPlay))
                 add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("用其他应用打开", "Open with another app", "ほかのアプリで開く", "다른 앱으로 열기", "使用其他應用程式開啟"), intents::openExternal))
                 add(SheetAction(Icons.Outlined.FolderOpen, tr("打开所在文件夹", "Open containing folder", "保存先フォルダーを開く", "파일 위치 열기", "開啟所在資料夾"), intents::openContainingFolder))
                 if (files.canShare) add(SheetAction(Icons.Outlined.Share, tr("分享", "Share", "共有", "공유", "分享"), intents::share))
@@ -189,7 +189,7 @@ internal fun localTransferActions(
                 }
             }
             DownloadStatus.PAUSED, DownloadStatus.PENDING -> {
-                add(SheetAction(Icons.Outlined.PlayArrow, tr("继续下载", "Resume download", "ダウンロードを再開", "다운로드 계속", "繼續下載"), onStart))
+                add(SheetAction(Icons.Outlined.Download, tr("继续下载", "Resume download", "ダウンロードを再開", "다운로드 계속", "繼續下載"), onStart))
                 if (task.destinationPath.isNotEmpty() && task.downloadedBytes > 0) {
                     add(SheetAction(Icons.Outlined.FolderOpen, tr("打开所在文件夹", "Open containing folder", "保存先フォルダーを開く", "파일 위치 열기", "開啟所在資料夾"), intents::openContainingFolder))
                 }

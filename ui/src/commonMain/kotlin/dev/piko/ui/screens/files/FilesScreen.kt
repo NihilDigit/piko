@@ -36,6 +36,7 @@ fun FilesScreen(
     canLeaveOrigin: Boolean = false,
     browserSession: dev.piko.shared.state.DriveBrowserSession? = null,
     onRevealInDrive: ((FileStat) -> Unit)? = null,
+    onOpenSpaceMap: ((folderId: String, folderName: String) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     DriveScreen(
@@ -44,6 +45,7 @@ fun FilesScreen(
         canLeaveOrigin = canLeaveOrigin,
         browserSession = browserSession,
         onRevealInDrive = onRevealInDrive,
+        onOpenSpaceMap = onOpenSpaceMap,
         contentFrame = feedFrame,
         onNavigateToFolder = onNavigateToFolder,
         onNavigateToVideoPlayer = onNavigateToVideoPlayer,

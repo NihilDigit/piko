@@ -135,6 +135,7 @@ internal class FileActionHandlers(
      */
     val findDuplicates: (() -> Unit)?,
     val canonicalNameFolder: (() -> Unit)?,
+    val viewSpaceMap: (() -> Unit)? = null,
     val downloadSegment: () -> Unit,
     /** 视频的「下载指定画质」「下载指定段落」上按下或悬停时提前查各档。普通下载不探测。 */
     val prepareQualities: () -> Unit,
@@ -196,6 +197,7 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
     if (file.isFolder) {
         if (commands.rename) on.canonicalNameFolder?.let { add(DriveActions.canonicalName(it)) }
         on.findDuplicates?.let { add(DriveActions.findDuplicates(it)) }
+        if (commands.viewSpaceMap) on.viewSpaceMap?.let { add(DriveActions.viewSpaceMap(it)) }
         on.togglePin?.let { add(DriveActions.pin(on.isPinned, it)) }
     }
     if (commands.vault) add(DriveActions.vault(on.vault))

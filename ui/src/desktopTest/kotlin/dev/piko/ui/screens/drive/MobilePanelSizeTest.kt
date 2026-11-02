@@ -27,6 +27,7 @@ class MobilePanelSizeTest {
         trash = {}, extract = {},
         findDuplicates = {},
         canonicalNameFolder = if (inLibrary) null else ({}),
+        viewSpaceMap = {},
         downloadSegment = {}, prepareQualities = {},
         copySource = {}, openSource = {},
         openInExternalPlayer = {},
@@ -70,7 +71,7 @@ class MobilePanelSizeTest {
     fun `folder panels retain subtree actions tabs pins and clipboard`() {
         val actions = panel(folder, CommandPlace.FOLDER, vaultMarked = true)
         val labels = actions.map { it.label }
-        for (label in listOf("查重", "规范命名", "在新标签页打开", "固定到快速访问", "剪切", "复制")) {
+        for (label in listOf("查重", "查看空间分布", "规范命名", "在新标签页打开", "固定到快速访问", "剪切", "复制")) {
             assertTrue(label in labels, "缺少 $label：$labels")
         }
         assertTrue(panel(folder, CommandPlace.LIBRARY).any { it.label == "复制到…" })

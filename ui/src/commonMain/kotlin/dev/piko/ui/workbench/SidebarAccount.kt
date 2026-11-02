@@ -139,11 +139,14 @@ internal fun SidebarAccountRow(selected: Boolean, onOpenSettings: () -> Unit, co
  * SubcomposeLayout，被问固有尺寸会直接抛异常。
  */
 @Composable
-internal fun ColumnScope.AccountSettings(onLogout: () -> Unit) {
+internal fun ColumnScope.AccountSettings(
+    onLogout: () -> Unit,
+    onOpenSpaceMap: (() -> Unit)? = null,
+) {
     // 与下面各组之间留同样的缝
     Spacer(Modifier.height(12.dp))
     // 宽窗口没有下拉刷新，另给按钮
-    AccountCard(rememberAccountSummary(), showRefresh = true)
+    AccountCard(rememberAccountSummary(), showRefresh = true, onOpenSpaceMap = onOpenSpaceMap)
     // 退出与切换、添加同是对账号的操作，并成一组的末行，不再单独一个整行宽的描边按钮
     AccountSwitcher(onLoggedOut = onLogout)
 }

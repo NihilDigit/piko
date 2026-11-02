@@ -1,6 +1,8 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.data.ArchiveEntryId
 import dev.piko.shared.data.isArchiveVolume
+import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.isExtractableArchive
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.data.isImportPreview
@@ -111,6 +113,8 @@ internal class ItemCommands(
     val vault: Boolean,
     /** 网盘上下文中的文件夹可取消归档，具体标记由条目提供。 */
     val unvault: Boolean,
+    /** 单个真实云端文件夹（排除本地挂载、回收站、压缩包、导入预览）可查看子树空间分布。 */
+    val viewSpaceMap: Boolean = false,
 )
 
 internal fun itemCommands(place: CommandPlace, targets: List<FileStat>, fullyVaultedFolders: Set<String> = emptySet()): ItemCommands {
@@ -141,6 +145,12 @@ internal fun itemCommands(place: CommandPlace, targets: List<FileStat>, fullyVau
         // 不给：移动端面板在最近添加里已满 8 行，见 MobilePanelSizeTest。搜索结果的条目仍在各自的文件夹里，清单按所在文件夹写，照常给
         vault = vaultContext && targets.any { !it.isFolder || it.id !in fullyVaultedFolders },
         unvault = vaultContext,
+        viewSpaceMap = targets.size == 1 && !local && !inTrash && !inArchive &&
+            place != CommandPlace.IMPORT_PREVIEW &&
+            targets.single().let {
+                it.isFolder && !it.trashed && !it.isUploading && !it.isVaulted && !it.isImportPreview &&
+                    !ArchiveEntryId.isEntry(it.id) && isDriveFolderId(it.id)
+            },
     )
 }
 

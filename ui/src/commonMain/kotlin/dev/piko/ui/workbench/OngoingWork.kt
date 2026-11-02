@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -151,13 +152,14 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                 items(contexts, key = { it.id }) { context ->
                     val isActive = context.id == active
                     val file = files.firstOrNull { it.id == context.id }
+                    val pinned = file?.isPinned == true
                     val title = file?.stack?.lastOrNull()?.localizedName ?: workspaceTitle(model, context)
                     val icon = when (context) {
                         is WorkspaceContext.File -> Icons.Outlined.Folder
                         is WorkspaceContext.Duplicate -> Icons.Outlined.FileCopy
                         is WorkspaceContext.ImportDraft -> Icons.Outlined.Link
                     }
-                    val canClose = model.canCloseContext(context.id)
+                    val canClose = !pinned && model.canCloseContext(context.id)
                     val cardContent: @Composable () -> Unit = {
                         Surface(
                             onClick = { model.activateContext(context.id); onDismiss() },
@@ -185,10 +187,17 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
+                                    if (model.canPinContext(context.id)) {
+                                        TooltipIconButton(
+                                            if (pinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                                            if (pinned) tr("取消固定标签页", "Unpin tab", "タブの固定を解除", "탭 고정 해제", "取消固定分頁")
+                                            else tr("固定标签页", "Pin tab", "タブを固定", "탭 고정", "固定分頁"),
+                                            { model.togglePinContext(context.id) },
+                                            tint = if (pinned) colors.primary else colors.onSurfaceVariant,
+                                        )
+                                    }
                                     if (canClose) {
                                         TooltipIconButton(Icons.Outlined.Close, tr("关闭 $title", "Close $title", "$title を閉じる", "$title 닫기", "關閉 $title"), { model.requestCloseContext(context.id) })
-                                    } else {
-                                        Spacer(Modifier.width(40.dp))
                                     }
                                 }
                                 val snapshot = model.pageSnapshots[context.id]

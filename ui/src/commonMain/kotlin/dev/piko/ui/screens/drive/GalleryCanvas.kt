@@ -25,6 +25,9 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Movie
+import androidx.compose.runtime.collectAsState
+import dev.piko.ui.LocalPikoServices
+import dev.piko.shared.memory.MemoryPolicy
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -35,7 +38,6 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -178,11 +180,10 @@ internal fun GalleryCanvas(
     val widthClass = currentWidthClass()
     val columns = galleryTileColumns(tileSize, widthClass)
     val maximumWidth = galleryTileMaxWidth(tileSize)
-    val learnedShapes = remember(state) { mutableStateMapOf<String, GalleryShape>() }
-    val failedCovers = remember(state) { mutableStateSetOf<String>() }
-    val prefetched = remember(state) { hashSetOf<String>() }
-    val inFlight = remember(state) { hashSetOf<String>() }
-    val prefetchScope = rememberCoroutineScope()
+    val learnedShapes = remember(state, files) { mutableStateMapOf<String, GalleryShape>() }
+    val failedCovers = remember(state, files) { mutableStateSetOf<String>() }
+    val prefetched = remember(state, files) { hashSetOf<String>() }
+    val memoryPolicy by LocalPikoServices.current.memoryGovernor.policy.collectAsState()
     val prefetchLimit = remember(state) { Semaphore(COVER_PREFETCH_CONCURRENCY) }
     val platformContext = LocalPlatformContext.current
     val platform = LocalPikoPlatform.current
@@ -194,7 +195,7 @@ internal fun GalleryCanvas(
         if (aspectRatio(file) != null) return
         val decodedShape = GalleryShape.nearest(ratio.toDouble())
         val currentShape = learnedShapes[file.id] ?: GalleryShape.nearest(null)
-        if (decodedShape != currentShape) {
+        if (decodedShape != currentShape && (file.id in learnedShapes || learnedShapes.size < COVER_METADATA_LIMIT)) {
             learnedShapes[file.id] = decodedShape
         }
     }
@@ -217,20 +218,25 @@ internal fun GalleryCanvas(
     }
     // 封面预取：轻微防抖并跳过屏幕上已由 AsyncImage 高优加载的可见项，避免在高延迟线路上与首屏争抢连接；
     // 已知宽高比的封面仅预热磁盘缓存（零 CPU 解码），未知宽高比的仅按小尺寸探测比例。
-    LaunchedEffect(coverFiles, state.visibleFileIds) {
+    // All children belong to this window: a scroll, dataset change or pressure transition
+    // cancels both active requests and semaphore waiters before another window is launched.
+    LaunchedEffect(coverFiles, state.visibleFileIds, memoryPolicy) {
+        if (memoryPolicy != MemoryPolicy.Normal) return@LaunchedEffect
         val visible = state.visibleFileIds
         if (visible.isNotEmpty()) delay(COVER_PREFETCH_DEBOUNCE_MS)
         val anchorIndex = if (visible.isEmpty()) 0 else coverFiles.indexOfLast { it.id in visible }.coerceAtLeast(0)
-        val targets = coverFiles.drop((anchorIndex - COVER_PREFETCH_BEHIND).coerceAtLeast(0))
-            .take(COVER_PREFETCH_AHEAD + COVER_PREFETCH_BEHIND)
-            .filter { it.id !in visible && it.galleryCoverUrl().isNotEmpty() && it.id !in prefetched && inFlight.add(it.id) }
+        val window = galleryPrefetchWindow(coverFiles.size, anchorIndex).map { coverFiles[it] }
+        val windowIds = window.mapTo(HashSet()) { it.id }
+        prefetched.retainAll(windowIds)
+        failedCovers.retainAll(windowIds)
+        val targets = window.distinctBy { it.id }
+            .filter { it.id !in visible && it.galleryCoverUrl().isNotEmpty() && it.id !in prefetched && it.id !in failedCovers }
         if (targets.isEmpty()) return@LaunchedEffect
         val loader = SingletonImageLoader.get(platformContext)
         targets.forEach { file ->
             val coverModel = platform.resolveCoilModel(file.galleryCoverUrl())
             val shapeKnown = aspectRatio(file) != null || file.id in learnedShapes
-            prefetchScope.launch {
-                try {
+            launch {
                     prefetchLimit.withPermit {
                         @OptIn(coil3.annotation.ExperimentalCoilApi::class)
                         val request = ImageRequest.Builder(platformContext)
@@ -258,12 +264,9 @@ internal fun GalleryCanvas(
                             result.throwable !is kotlinx.coroutines.CancellationException &&
                             result.throwable.cause !is kotlinx.coroutines.CancellationException
                         ) {
-                            failedCovers.add(file.id)
+                            if (failedCovers.size < COVER_METADATA_LIMIT) failedCovers.add(file.id)
                         }
                     }
-                } finally {
-                    inFlight.remove(file.id)
-                }
             }
         }
     }
@@ -321,7 +324,7 @@ internal fun GalleryCanvas(
                             isBlurred(file), callbacks,
                             locationLabel = locationLabel(file),
                             onAspectRatio = { ratio -> recordDecodedRatio(file, ratio) },
-                            onCoverFailed = { failedCovers.add(file.id) },
+                            onCoverFailed = { if (failedCovers.size < COVER_METADATA_LIMIT) failedCovers.add(file.id) },
                             onContextMenu = { menuTarget = file.id to it },
                         )
                     }
@@ -511,6 +514,15 @@ private fun GalleryCanvasCover(
     }
 }
 
+/** Inclusive, bounded by the actual dataset even when an old scroll anchor outlives it. */
+internal fun galleryPrefetchWindow(count: Int, anchor: Int): IntRange {
+    if (count <= 0) return IntRange.EMPTY
+    val center = anchor.coerceIn(0, count - 1)
+    return (center - COVER_PREFETCH_BEHIND).coerceAtLeast(0)..
+        (center.toLong() + COVER_PREFETCH_AHEAD).coerceAtMost(count.toLong() - 1).toInt()
+}
+
+private const val COVER_METADATA_LIMIT = 2048
 private const val COVER_PREFETCH_AHEAD = 64
 private const val COVER_PREFETCH_BEHIND = 12
 private const val COVER_PREFETCH_CONCURRENCY = 8

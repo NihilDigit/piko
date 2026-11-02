@@ -1,9 +1,16 @@
 package dev.piko.ui.screens.drive
 
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.data.ArchiveEntryId
+import dev.piko.shared.data.ImportPreviewLocation
+import dev.piko.shared.data.LocalLocation
 import dev.piko.ui.adaptive.WidthClass
+import io.github.nihildigit.pikpak.FileKind
+import io.github.nihildigit.pikpak.FileStat
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class DriveCommandsTest {
     @Test
@@ -106,6 +113,30 @@ class DriveCommandsTest {
                 assertEquals(false, commands.emptyPlace, "$place")
             }
         }
+    }
+
+    @Test
+    fun `viewSpaceMap is enabled only for a single real cloud folder`() {
+        val cloudFolder = FileStat(kind = FileKind.FOLDER, id = "cloud-folder-1", name = "Movies")
+        val cloudFile = FileStat(kind = FileKind.FILE, id = "cloud-file-1", name = "movie.mkv")
+        val localFolder = FileStat(kind = FileKind.FOLDER, id = LocalLocation("mount-1").id, name = "Local")
+        val archiveFolder = FileStat(kind = FileKind.FOLDER, id = ArchiveEntryId.of("arc", "", 0, "sub"), name = "Sub")
+        val importFolder = FileStat(kind = FileKind.FOLDER, id = ImportPreviewLocation("root", "sub").id, name = "Preview")
+
+        assertTrue(itemCommands(CommandPlace.ROOT, listOf(cloudFolder)).viewSpaceMap)
+        assertTrue(itemCommands(CommandPlace.FOLDER, listOf(cloudFolder)).viewSpaceMap)
+        assertTrue(itemCommands(CommandPlace.SEARCH, listOf(cloudFolder)).viewSpaceMap)
+        assertTrue(itemCommands(CommandPlace.LIBRARY, listOf(cloudFolder)).viewSpaceMap)
+
+        assertFalse(itemCommands(CommandPlace.FOLDER, listOf(cloudFile)).viewSpaceMap)
+        assertFalse(itemCommands(CommandPlace.FOLDER, listOf(cloudFolder, cloudFile)).viewSpaceMap)
+        assertFalse(itemCommands(CommandPlace.TRASH, listOf(cloudFolder)).viewSpaceMap)
+        assertFalse(itemCommands(CommandPlace.ARCHIVE, listOf(cloudFolder)).viewSpaceMap)
+        assertFalse(itemCommands(CommandPlace.ARCHIVE, listOf(archiveFolder)).viewSpaceMap)
+        assertFalse(itemCommands(CommandPlace.LOCAL, listOf(localFolder)).viewSpaceMap)
+        assertFalse(itemCommands(CommandPlace.FOLDER, listOf(localFolder)).viewSpaceMap)
+        assertFalse(itemCommands(CommandPlace.IMPORT_PREVIEW, listOf(importFolder)).viewSpaceMap)
+        assertFalse(itemCommands(CommandPlace.FOLDER, listOf(importFolder)).viewSpaceMap)
     }
 
 }

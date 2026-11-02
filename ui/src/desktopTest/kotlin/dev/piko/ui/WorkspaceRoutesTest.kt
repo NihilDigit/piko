@@ -13,7 +13,7 @@ class WorkspaceRoutesTest {
         assertEquals(false, isWorkspaceSurface(Screen.Home, MainTab.TRANSFERS))
         assertEquals(false, isWorkspaceSurface(Screen.Home, MainTab.SETTINGS))
         for (tab in MainTab.entries) {
-            for (screen in listOf(null, Screen.Settings, Screen.MyShares, Screen.WebDav, Screen.VideoPlayer("file", "video"))) {
+            for (screen in listOf(null, Screen.Settings, Screen.MyShares, Screen.SpaceMap(), Screen.WebDav, Screen.VideoPlayer("file", "video"))) {
                 assertEquals(false, isWorkspaceSurface(screen, tab))
             }
         }

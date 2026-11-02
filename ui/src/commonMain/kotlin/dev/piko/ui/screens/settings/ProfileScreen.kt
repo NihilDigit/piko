@@ -31,10 +31,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.Logout
+import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.PieChart
 import androidx.compose.material.icons.outlined.Refresh
 import dev.piko.ui.components.TooltipIconButton
 import kotlinx.coroutines.coroutineScope
@@ -187,7 +190,7 @@ fun ProfileScreen(
                 .padding(top = 8.dp, bottom = 24.dp)
                 .readableWidth(),
         ) {
-            AccountCard(account)
+            AccountCard(account, onOpenSpaceMap = { onOpenPane(Screen.SpaceMap()) })
 
             AccountSwitcher()
 
@@ -224,6 +227,14 @@ fun ProfileScreen(
                     supporting = tr("复制或取消已创建的分享链接", "Copy or revoke your share links", "作成した共有リンクをコピーまたは解除", "만든 공유 링크 복사 또는 취소", "複製或取消已建立的分享連結"),
                     onClick = { onOpenPane(Screen.MyShares) },
                     selected = selectedPane == Screen.MyShares,
+                )
+                SettingsNavigationRow(
+                    icon = Icons.Outlined.PieChart,
+                    selectedIcon = Icons.Filled.PieChart,
+                    title = tr("空间分布", "Space usage", "ストレージ内訳", "공간 분포", "空間分佈"),
+                    supporting = tr("按文件夹与文件大小查看空间占用", "View space usage by folders and files", "フォルダーとファイル別の容量内訳を確認", "폴더 및 파일별 공간 사용량 확인", "依資料夾與檔案大小檢視空間佔用"),
+                    onClick = { onOpenPane(Screen.SpaceMap()) },
+                    selected = selectedPane is Screen.SpaceMap,
                 )
                 SettingsNavigationRow(
                     icon = DriveLibrary.TRASH.icon,
@@ -358,7 +369,11 @@ internal fun LogoutDialog(next: SavedAccount?, onDismiss: () -> Unit, onLoggedOu
  * 是 Surface 不是 Card：M3 的 card 是可以点进去的单一主题入口，这一块不可点，只是个容器。
  */
 @Composable
-internal fun AccountCard(account: AccountSummary, showRefresh: Boolean = false) {
+internal fun AccountCard(
+    account: AccountSummary,
+    showRefresh: Boolean = false,
+    onOpenSpaceMap: (() -> Unit)? = null,
+) {
     val username = account.saved?.displayName
     val avatarUrl = account.saved?.avatarUrl
     val quota = account.quota
@@ -381,15 +396,15 @@ internal fun AccountCard(account: AccountSummary, showRefresh: Boolean = false) 
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Avatar(username = username, avatarUrl = avatarUrl)
-                Spacer(modifier = Modifier.width(16.dp))
+                Spacer(modifier = Modifier.width(if (onOpenSpaceMap != null && quota != null) 10.dp else 16.dp))
                 if (quota != null) {
-                    StorageSection(quota, tier, Modifier.weight(1f))
+                    StorageSection(quota, tier, Modifier.weight(1f), onClick = onOpenSpaceMap)
                 } else if (tier != null) {
                     TierChip(tier)
                 }
                 if (showRefresh) {
                     if (quota == null) Spacer(modifier = Modifier.weight(1f))
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
                     TooltipIconButton(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침", "重新整理"), account.refresh, enabled = !account.refreshing)
                 }
             }
@@ -453,14 +468,40 @@ private fun TierChip(tier: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun StorageSection(quota: QuotaSnapshot, tier: String?, modifier: Modifier = Modifier) {
+private fun StorageSection(
+    quota: QuotaSnapshot,
+    tier: String?,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+) {
     val fraction = usedFraction(quota.usageBytes, quota.limitBytes)
     val nearlyFull = fraction >= NEARLY_FULL_FRACTION
     val accent = if (nearlyFull) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-    Column(modifier = modifier) {
+    val interactiveModifier = if (onClick != null) {
+        modifier
+            .clip(MaterialTheme.shapes.small)
+            .clickable(
+                role = Role.Button,
+                onClickLabel = tr("查看空间分布", "View space usage", "ストレージ内訳を表示", "공간 분포 보기", "檢視空間分佈"),
+                onClick = onClick,
+            )
+            .padding(horizontal = 6.dp, vertical = 4.dp)
+    } else {
+        modifier
+    }
+    Column(modifier = interactiveModifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             SectionLabel(tr("网盘空间", "Cloud storage", "ドライブ容量", "클라우드 공간", "雲端硬碟空間"), Modifier.weight(1f))
             if (tier != null) TierChip(tier)
+            if (onClick != null) {
+                Spacer(modifier = Modifier.width(4.dp))
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
         Spacer(modifier = Modifier.height(2.dp))
         Row(modifier = Modifier.fillMaxWidth()) {

@@ -22,6 +22,7 @@ import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.OndemandVideo
+import androidx.compose.material.icons.outlined.PieChart
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.RemoveCircleOutline
 import androidx.compose.material.icons.outlined.RestoreFromTrash
@@ -160,6 +161,9 @@ internal object DriveActions {
 
     fun findDuplicates(onClick: () -> Unit) =
         SheetAction(Icons.Outlined.FileCopy, tr("查重", "Duplicates", "重複検索", "중복 검색", "查重"), onClick, group = ActionGroup.Manage)
+
+    fun viewSpaceMap(onClick: () -> Unit) =
+        SheetAction(Icons.Outlined.PieChart, tr("查看空间分布", "View space usage", "ストレージ内訳を表示", "공간 분포 보기", "檢視空間分佈"), onClick, group = ActionGroup.Manage)
 
     fun vault(onClick: () -> Unit) = SheetAction(Icons.Outlined.Inventory2, tr("归档", "Archive", "アーカイブ", "보관", "歸檔"), onClick, group = ActionGroup.Manage)
 
