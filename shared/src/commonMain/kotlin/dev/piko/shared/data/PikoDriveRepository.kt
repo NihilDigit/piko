@@ -2301,13 +2301,17 @@ open class PikoDriveRepository(
                 val changedItems = (rawChangedRecent + changedFoldersFromScan).distinctBy { it.id }
                 val hasReconcilableDeletions = fullSnapshotVisible && candidateReconcileParents.isNotEmpty() &&
                     driveTreeIndex.hasPhysicalMissingFrom(recent.mapTo(HashSet()) { it.id })
-                if (!hasMissingLocalEntries && !hasReconcilableDeletions && changedItems.isEmpty() && (prevUsage == null || usageBytes == null || usageBytes == prevUsage)) {
+                val localPhysicalMatchesQuota = !fullSnapshotVisible && usageBytes != null && prevUsage != null &&
+                    usageBytes != prevUsage && driveTreeIndex.totalPhysicalBytes() == usageBytes
+                if (!hasMissingLocalEntries && !hasReconcilableDeletions && changedItems.isEmpty() &&
+                    (prevUsage == null || usageBytes == null || usageBytes == prevUsage || localPhysicalMatchesQuota)
+                ) {
                     val publishedUnchanged = synchronized(treeStateLock) {
                         ensureGeneration()
                         if (changeMarks.value.serial != probeStartSerial || driveTreeIndex.currentMutationSeq != probeStartSeq) {
                             false
                         } else {
-                            if (prevUsage == null && usageBytes != null) {
+                            if ((prevUsage == null || localPhysicalMatchesQuota) && usageBytes != null) {
                                 driveTreeIndex.setLastUsageBytes(usageBytes)
                             }
                             true
@@ -2317,7 +2321,7 @@ open class PikoDriveRepository(
                         shouldFullRebuild = false
                         continue
                     }
-                    if (prevUsage == null && usageBytes != null) {
+                    if ((prevUsage == null || localPhysicalMatchesQuota) && usageBytes != null) {
                         scheduleTreeSnapshotSave()
                     }
                     return@runSuspendCatching CanaryProbeResult.UNCHANGED

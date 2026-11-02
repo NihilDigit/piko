@@ -112,11 +112,12 @@ internal fun spaceFolderSnapshot(
     }
 
     val previewIds = items.asSequence().filter { it.isFolder }.take(24).map { it.id }.toSet()
+    val batchedTopFiles = if (previewIds.isEmpty()) emptyMap() else index.topSpacePreviewFilesByParent(previewIds, includeVaulted, 24)
     val withPreviews = items.map { item ->
         if (item.id !in previewIds) {
             item
         } else {
-            val fastTopFiles = index.topSpacePreviewFiles(item.id, includeVaulted, 16)
+            val fastTopFiles = if (batchedTopFiles != null) batchedTopFiles[item.id].orEmpty() else index.topSpacePreviewFiles(item.id, includeVaulted, 24)
             val previewBlocks = if (fastTopFiles != null) {
                 val candidates = ArrayList<SpacePreviewBlock>(state.childrenByParent[item.id].orEmpty().size + fastTopFiles.size)
                 for (subId in state.childrenByParent[item.id].orEmpty()) {
@@ -137,7 +138,7 @@ internal fun spaceFolderSnapshot(
                     }
                 }
                 candidates += fastTopFiles
-                candidates.sortedWith(previewOrder).take(16)
+                candidates.sortedWith(previewOrder).take(24)
             } else {
                 val previewFiles = index.children(item.id).files
                 previewFiles.asSequence()

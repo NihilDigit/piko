@@ -227,6 +227,9 @@ internal class SqliteTreeStore(
         return out
     }
 
+    fun totalPhysicalBytes(): Long =
+        if (closed) 0L else scalar("SELECT COALESCE(SUM(bytes),0) FROM tree_direct_usage")?.toLongOrNull() ?: 0L
+
     fun topSpacePreviewFiles(parentId: String, includeVaulted: Boolean, limit: Int): List<dev.piko.shared.space.SpacePreviewBlock> {
         if (closed || limit <= 0) return emptyList()
         val out = ArrayList<dev.piko.shared.space.SpacePreviewBlock>(limit)
@@ -250,6 +253,44 @@ internal class SqliteTreeStore(
             )
         }
         return out
+    }
+
+    fun topSpacePreviewFilesByParent(
+        parentIds: Collection<String>,
+        includeVaulted: Boolean,
+        limitPerParent: Int,
+    ): Map<String, List<dev.piko.shared.space.SpacePreviewBlock>> {
+        if (closed || limitPerParent <= 0 || parentIds.isEmpty()) return emptyMap()
+        val distinct = parentIds.distinct()
+        val result = HashMap<String, ArrayList<dev.piko.shared.space.SpacePreviewBlock>>(distinct.size)
+        val virtualClause = if (includeVaulted) "" else " AND virtual=0"
+        for (chunk in distinct.chunked(200)) {
+            val placeholders = chunk.joinToString(",") { "?" }
+            val sql = """
+                SELECT parent,id,virtual,name,bytes FROM (
+                    SELECT parent,id,virtual,name,bytes,
+                           ROW_NUMBER() OVER (PARTITION BY parent ORDER BY bytes DESC) AS rn
+                    FROM tree_nodes
+                    WHERE generation=0 AND parent IN ($placeholders) AND folder=0 AND excluded=0$virtualClause AND bytes>0
+                ) WHERE rn <= ?
+            """.trimIndent()
+            rows(sql, chunk + limitPerParent) { c ->
+                val parent = c.string(0)!!
+                val vaulted = c.long(2) == 1L
+                val bytes = (c.long(4) ?: 0L).coerceAtLeast(0L)
+                result.getOrPut(parent) { ArrayList(limitPerParent) } += dev.piko.shared.space.SpacePreviewBlock(
+                    id = c.string(1)!!,
+                    name = c.string(3)!!,
+                    isFolder = false,
+                    isVaulted = vaulted,
+                    bytes = bytes,
+                    physicalBytes = if (vaulted) 0L else bytes,
+                    vaultedBytes = if (vaulted) bytes else 0L,
+                    fileCount = 1L,
+                )
+            }
+        }
+        return result
     }
 
     private fun ensureFolderProjection(): Pair<Map<String, FileStat>, Map<String, Set<String>>> {

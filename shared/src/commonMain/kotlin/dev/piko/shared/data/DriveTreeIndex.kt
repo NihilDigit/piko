@@ -319,6 +319,18 @@ internal class DriveTreeIndex(
     internal fun topSpacePreviewFiles(folderId: String, includeVaulted: Boolean, limit: Int): List<dev.piko.shared.space.SpacePreviewBlock>? =
         synchronized(lock) { disk?.topSpacePreviewFiles(folderId, includeVaulted, limit) }
 
+    internal fun topSpacePreviewFilesByParent(
+        folderIds: Collection<String>,
+        includeVaulted: Boolean,
+        limitPerParent: Int,
+    ): Map<String, List<dev.piko.shared.space.SpacePreviewBlock>>? =
+        synchronized(lock) { disk?.topSpacePreviewFilesByParent(folderIds, includeVaulted, limitPerParent) }
+
+    internal fun totalPhysicalBytes(): Long? = synchronized(lock) {
+        if (disk != null) disk.totalPhysicalBytes()
+        else state.value.entries.values.sumOf { if (it.isFolder || VaultEntry.isVaulted(it.id)) 0L else it.sizeBytes.coerceAtLeast(0L) }
+    }
+
     private fun children(folderId: String, realOnly: Boolean): FolderChildren {
         synchronized(lock) { disk?.let { return it.children(folderId, realOnly) } }
         val current = flow.value

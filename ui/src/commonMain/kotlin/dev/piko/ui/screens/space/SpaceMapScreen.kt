@@ -1,5 +1,6 @@
 package dev.piko.ui.screens.space
 
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -802,9 +803,20 @@ private fun SpaceTreemapContent(
         }
     }
     val isCalculating = snapshot?.isTreeBuilding == true || treeBuildProgress.isBuilding
+    val phaseKey = when {
+        snapshot == null -> "loading"
+        displayEntries.isEmpty() -> "empty:${snapshot.folderId}:$isCalculating:$includeVaulted"
+        else -> "content:${snapshot.folderId}"
+    }
 
-    if (displayEntries.isEmpty()) {
-        Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    Crossfade(
+        targetState = phaseKey,
+        animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+        modifier = modifier.fillMaxSize(),
+        label = "space_treemap_phase",
+    ) { currentPhase ->
+    if (currentPhase == "loading" || displayEntries.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             when {
                 isCalculating -> {
                     Column(
@@ -841,7 +853,20 @@ private fun SpaceTreemapContent(
                         )
                     }
                 }
-                snapshot == null || snapshot.syncError != null -> Unit
+                snapshot == null -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        InlineLoadingIndicator()
+                        Text(
+                            text = tr("读取统计…", "Loading statistics…", "統計を読み込み中…", "통계 불러오는 중…", "讀取統計…"),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                snapshot.syncError != null -> Unit
                 !includeVaulted && (snapshot.vaultedBytes > 0L) -> {
                     val archivedSize = snapshot.vaultedBytes.toReadableSize()
                     PikoEmptyState(
@@ -910,7 +935,7 @@ private fun SpaceTreemapContent(
                 }
             }
         }
-        return
+        return@Crossfade
     }
 
     val density = LocalDensity.current
@@ -1035,7 +1060,7 @@ private fun SpaceTreemapContent(
     }
 
     Box(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxSize()
             .onSizeChanged { canvasSize = it }
             .pointerInput(Unit) {
@@ -1146,6 +1171,7 @@ private fun SpaceTreemapContent(
                 onLocate = { itemId -> onLocate(itemId, null, null) },
             )
         }
+    }
     }
 }
 
@@ -1460,6 +1486,7 @@ private fun SpaceTreemapOuterTile(
 
 private sealed interface NestedSlot {
     data class Child(val block: SpacePreviewBlock, val hueIndex: Int) : NestedSlot
+    data class Remainder(val bytes: Long) : NestedSlot
     data object LoadingArea : NestedSlot
 }
 
@@ -1467,7 +1494,7 @@ private sealed interface NestedSlot {
  * 含嵌套子块的大文件夹组：
  * - 顶部 36dp 标题头栏代表父文件夹自身（悬停/点击操作父文件夹）；
  * - 内部每个子块均为独立可交互节点，鼠标悬停直接高亮并展示该子块详情，单击直接一步下钻进入该子块；
- * - 若超过首屏 16 项预览或子树仍在统计，后台自动异步补全子块，未加载出的余量空白区不画「其余条目」色块，仅居中展示轻量加载指示器。
+ * - 过小的长尾子项自动折叠为单个「其余项目」块，避免单屏实例化上千个微观节点造成主线程卡顿。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1490,7 +1517,6 @@ private fun NestedGroupTile(
     onPrimaryClick: (SpaceInteractiveTarget) -> Unit,
     onContextMenu: (target: SpaceInteractiveTarget, windowPos: IntOffset?, fromTouch: Boolean) -> Unit,
 ) {
-    val driveRepo = LocalPikoServices.current.driveRepository
     val density = LocalDensity.current
     val colors = MaterialTheme.colorScheme
     val haptic = LocalHapticFeedback.current
@@ -1498,37 +1524,28 @@ private fun NestedGroupTile(
     val outerShape = RoundedCornerShape(10.dp)
     val isHeaderHovered = activeHoverKey == outerTarget.targetKey
 
-    var expandedChildren by remember(parentItem.id, includeVaulted) {
-        mutableStateOf<List<SpacePreviewBlock>?>(null)
-    }
-    var isFetchingExpanded by remember(parentItem.id, includeVaulted) {
-        mutableStateOf(false)
-    }
-    val initialSum = remember(previewChildren) { previewChildren.sumOf { it.bytes.coerceAtLeast(0L) } }
-    val needsExpandedFetch = outerBytes > initialSum && previewChildren.size >= 16
-
-    LaunchedEffect(parentItem.id, includeVaulted, outerBytes, parentItem.isComplete, needsExpandedFetch) {
-        if (!needsExpandedFetch && expandedChildren == null) return@LaunchedEffect
-        isFetchingExpanded = true
-        try {
-            val full = driveRepo.loadSpaceFolderPreview(parentItem.id, includeVaulted, limit = 160)
-                .filter { it.bytes > 0L }
-            if (full.isNotEmpty()) {
-                expandedChildren = full
-            }
-        } finally {
-            isFetchingExpanded = false
-        }
-    }
-
-    val activeChildren = expandedChildren ?: previewChildren
+    val activeChildren = previewChildren
     val activeSum = remember(activeChildren) { activeChildren.sumOf { it.bytes.coerceAtLeast(0L) } }
-    val isPendingMore = isFetchingExpanded || (needsExpandedFetch && expandedChildren == null) || !parentItem.isComplete || isTreeBuilding
+    val isPendingMore = !parentItem.isComplete || isTreeBuilding
 
     val childGapHalfPx = with(density) { 2.dp.toPx().toDouble() }
+    val minNestedTileWidthPx = with(density) { 36.dp.toPx().toDouble() }
+    val minNestedTileHeightPx = with(density) { 26.dp.toPx().toDouble() }
+    val nestedSliverSidePx = with(density) { 10.dp.toPx().toDouble() }
     val innerWidthPx = previewArea.width
     val innerHeightPx = previewArea.height
-    val nestedTiles = remember(outerBytes, activeChildren, activeSum, isPendingMore, innerWidthPx, innerHeightPx, parentHueIndex) {
+    val nestedTiles = remember(
+        outerBytes,
+        activeChildren,
+        activeSum,
+        isPendingMore,
+        innerWidthPx,
+        innerHeightPx,
+        parentHueIndex,
+        minNestedTileWidthPx,
+        minNestedTileHeightPx,
+        nestedSliverSidePx,
+    ) {
         val localArea = TreemapRect(0.0, 0.0, innerWidthPx, innerHeightPx)
         val inputs = buildList {
             activeChildren.forEachIndexed { idx, block ->
@@ -1538,11 +1555,19 @@ private fun NestedGroupTile(
                 add(TreemapInput(id = block.id, bytes = block.bytes, payload = NestedSlot.Child(block, childHue)))
             }
             val remainder = outerBytes - activeSum
-            if (isPendingMore && remainder > 0L) {
-                add(TreemapInput(id = "__nested_loading__:${parentItem.id}", bytes = remainder, payload = NestedSlot.LoadingArea))
+            if (remainder > 0L) {
+                val slot = if (isPendingMore) NestedSlot.LoadingArea else NestedSlot.Remainder(remainder)
+                add(TreemapInput(id = "__nested_tail__:${parentItem.id}", bytes = remainder, payload = slot))
             }
         }
-        layoutTreemap(inputs = inputs, container = localArea, enableGrouping = false)
+        layoutTreemap(
+            inputs = inputs,
+            container = localArea,
+            minTileWidth = minNestedTileWidthPx,
+            minTileHeight = minNestedTileHeightPx,
+            sliverSide = nestedSliverSidePx,
+            enableGrouping = true,
+        )
     }
 
     val nestedRects = remember(nestedTiles, childGapHalfPx) {
@@ -1665,8 +1690,9 @@ private fun NestedGroupTile(
                         val subHeightDp = with(density) { subRect.height.toFloat().toDp() }
                         val subRank = if (nestedTiles.size <= 1) 0f else idx.toFloat() / (nestedTiles.size - 1).toFloat()
                         val slot = (subTile.content as? TreemapTileContent.Single)?.item?.payload
-                        when (slot) {
-                            is NestedSlot.Child -> {
+                        val isGroupedOther = subTile.content is TreemapTileContent.OtherGroup
+                        when {
+                            slot is NestedSlot.Child -> {
                                 val block = slot.block
                                 val subTarget = remember(block, parentItem.id, parentItem.name) {
                                     SpaceInteractiveTarget.Node(
@@ -1716,7 +1742,26 @@ private fun NestedGroupTile(
                                     onContextMenu = onContextMenu,
                                 )
                             }
-                            NestedSlot.LoadingArea -> {
+                            isGroupedOther || slot is NestedSlot.Remainder -> {
+                                LeafInteractiveBlock(
+                                    target = outerTarget,
+                                    title = tr("其余项目", "Other items", "その他の項目", "기타 항목", "其餘項目"),
+                                    bytes = subTile.bytes,
+                                    totalDisplayedBytes = totalDisplayedBytes,
+                                    fileCount = null,
+                                    leadingIcon = Icons.Outlined.MoreHoriz,
+                                    widthDp = subWidthDp,
+                                    heightDp = subHeightDp,
+                                    palette = otherGroupPalette(colors),
+                                    isHovered = activeHoverKey == outerTarget.targetKey,
+                                    clickable = true,
+                                    onHoverTarget = onHoverTarget,
+                                    onLeaveTarget = onLeaveTarget,
+                                    onPrimaryClick = onPrimaryClick,
+                                    onContextMenu = onContextMenu,
+                                )
+                            }
+                            slot == NestedSlot.LoadingArea -> {
                                 // 余量加载区不绘制色块背景与边框，直接在留出的底框空位正中呈现加载指示器
                                 Box(
                                     modifier = Modifier.fillMaxSize(),
@@ -1727,7 +1772,7 @@ private fun NestedGroupTile(
                                     }
                                 }
                             }
-                            null -> Box(Modifier)
+                            else -> Box(Modifier)
                         }
                     }
                 },
