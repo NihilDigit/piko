@@ -340,6 +340,11 @@ class PikoServices(
             folderVaultSession.cancel()
         }
         backgroundScope.launch {
+            preferences.concurrentAccelerationFlow.collect { enabled ->
+                clientManager.setConcurrentAcceleration(enabled)
+            }
+        }
+        backgroundScope.launch {
             val cleanedAccounts = mutableSetOf<String>()
             clientManager.currentClient.collectLatest { client ->
                 if (client == null) return@collectLatest
