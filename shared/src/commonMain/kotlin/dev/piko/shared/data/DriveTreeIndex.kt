@@ -1,5 +1,8 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.util.PikoLock
+import dev.piko.shared.util.withPikoLock
+
 import dev.piko.data.repository.NaturalOrder
 import dev.piko.shared.search.cjkFuzzyScore
 import io.github.nihildigit.pikpak.FileKind
@@ -40,7 +43,7 @@ internal class DriveTreeIndex(
         val revision: Long = 0L,
     )
 
-    private val lock = Any()
+    private val lock = PikoLock()
     private val state = MutableStateFlow(State())
     val flow: StateFlow<State> = state.asStateFlow()
 
@@ -57,14 +60,14 @@ internal class DriveTreeIndex(
     var lastFullSyncAtMillis: Long = 0L
         private set
 
-    val currentMutationSeq: Long get() = synchronized(lock) { mutationSeq }
+    val currentMutationSeq: Long get() = withPikoLock(lock) { mutationSeq }
 
     enum class FolderCoverage { UNKNOWN, PARTIAL, COMPLETE, DIRTY }
 
     data class FolderChildren(val files: List<FileStat>, val coverage: FolderCoverage)
 
     private inline fun update(transform: (State) -> State) {
-        synchronized(lock) {
+        withPikoLock(lock) {
             val current = state.value
             val next = transform(current).copy(revision = current.revision)
             if (next != current) {
@@ -84,7 +87,7 @@ internal class DriveTreeIndex(
     }
 
     fun clear() {
-        synchronized(lock) {
+        withPikoLock(lock) {
             mutationSeq = 0L
             treeInvalidatedAtSeq = 0L
             usagePatchedAtSeq = 0L

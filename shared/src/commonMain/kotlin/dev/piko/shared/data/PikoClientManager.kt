@@ -1,5 +1,8 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.util.PikoLock
+import dev.piko.shared.util.withPikoLock
+
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
@@ -41,7 +44,7 @@ class PikoClientManager(
     private val httpClient: HttpClient? = null,
     transportMemoryBudgetBytes: Long = PikPakClient.DEFAULT_TRANSPORT_MEMORY_BUDGET_BYTES,
 ) : PikoClientProvider {
-    private val budgetLock = Any()
+    private val budgetLock = PikoLock()
 
     @Volatile
     private var currentTransportBudgetBytes: Long = transportMemoryBudgetBytes.coerceAtLeast(MIN_TRANSPORT_BUDGET_BYTES)
@@ -49,13 +52,13 @@ class PikoClientManager(
     /** 动态调整 SDK 传输层共享内存预算（如 Android 收到 onTrimMemory 或回到前台恢复）。 */
     fun setTransportMemoryBudgetBytes(bytes: Long) {
         val clamped = bytes.coerceAtLeast(MIN_TRANSPORT_BUDGET_BYTES)
-        synchronized(budgetLock) {
+        withPikoLock(budgetLock) {
             currentTransportBudgetBytes = clamped
             _currentClient.value?.setTransportMemoryBudgetBytes(clamped)
         }
     }
 
-    private fun publishCurrentClient(client: PikPakClient): PikPakClient? = synchronized(budgetLock) {
+    private fun publishCurrentClient(client: PikPakClient): PikPakClient? = withPikoLock(budgetLock) {
         client.setTransportMemoryBudgetBytes(currentTransportBudgetBytes)
         val previous = _currentClient.value
         _currentClient.value = client

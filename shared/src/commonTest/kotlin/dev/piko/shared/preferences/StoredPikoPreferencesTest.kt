@@ -1,5 +1,6 @@
 package dev.piko.shared.preferences
 
+import dev.piko.data.auth.AppLanguage
 import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.data.auth.SnailMode
@@ -85,6 +86,29 @@ class StoredPikoPreferencesTest {
         assertEquals("2.0", reopened.getIgnoredUpdateVersion())
         assertEquals("true", settings.get("ui.autoDetectClipboardLinks"))
         assertEquals("30", settings.get("player.seekStepSeconds"))
+    }
+
+    @Test
+    fun release14SettingsPersistAcrossReopen() = runBlocking {
+        val settings = FakeSettings()
+        val prefs = preferences(settings)
+        assertEquals(AppLanguage.SYSTEM, prefs.appLanguageFlow.first())
+        assertTrue(prefs.clipAutoExtendFlow.first())
+        assertTrue(prefs.galleryShowImagesFlow.first())
+        assertFalse(prefs.perFolderSortFlow.first())
+        prefs.setAppLanguage(AppLanguage.JA)
+        prefs.setClipAutoExtend(false)
+        prefs.setGalleryShowImages(false)
+        prefs.setPerFolderSort(true)
+        prefs.saveFolderSortOrders("sort-map")
+        prefs.saveLocalMounts("mounts")
+        val reopened = preferences(settings.reopen())
+        assertEquals(AppLanguage.JA, reopened.appLanguageFlow.first())
+        assertFalse(reopened.clipAutoExtendFlow.first())
+        assertFalse(reopened.galleryShowImagesFlow.first())
+        assertTrue(reopened.perFolderSortFlow.first())
+        assertEquals("sort-map", reopened.folderSortOrdersFlow.first())
+        assertEquals("mounts", reopened.localMountsFlow.first())
     }
 
     @Test

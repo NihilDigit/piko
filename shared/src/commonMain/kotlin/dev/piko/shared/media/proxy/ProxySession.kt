@@ -1,5 +1,8 @@
 package dev.piko.shared.media.proxy
 
+import dev.piko.shared.util.PikoLock
+import dev.piko.shared.util.withPikoLock
+
 import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.PikPakStreamReader
 import io.github.nihildigit.pikpak.StreamRole
@@ -39,14 +42,14 @@ internal class ProxySession(
         var idleJob: Job? = null,
     )
 
-    private val poolLock = Any()
+    private val poolLock = PikoLock()
     private val pool = ArrayList<PooledReader>(MAX_POOLED_READERS)
     private var useSeq = 0L
 
     @Volatile
     private var tailRequested = false
 
-    private fun snapshotReaders(): List<ProxyReader> = synchronized(poolLock) {
+    private fun snapshotReaders(): List<ProxyReader> = withPikoLock(poolLock) {
         pool.map { it.reader }
     }
 
@@ -151,7 +154,7 @@ internal class ProxySession(
 
     private suspend fun acquireReader(start: Long): PooledReader {
         var reused: PooledReader? = null
-        synchronized(poolLock) {
+        withPikoLock(poolLock) {
             if (isClosed) throw CancellationException("会话已关闭")
             val idle = pool.filter { !it.inUse }
             // 1. 优先接续位置紧邻的闲置游标（连续分段 Range 或同一音/视频轨的下一帧，position == start 时零 seek）
@@ -179,7 +182,7 @@ internal class ProxySession(
 
         val fresh = source.openReader(role)
         var closeImmediately = false
-        val created = synchronized(poolLock) {
+        val created = withPikoLock(poolLock) {
             if (isClosed) {
                 closeImmediately = true
                 PooledReader(fresh, inUse = false)
@@ -196,7 +199,7 @@ internal class ProxySession(
 
     private fun releaseReader(entry: PooledReader, broken: Boolean) {
         var toClose: List<ProxyReader> = emptyList()
-        synchronized(poolLock) {
+        withPikoLock(poolLock) {
             entry.idleJob?.cancel()
             entry.idleJob = null
             if (isClosed || broken) {
@@ -220,7 +223,7 @@ internal class ProxySession(
                 if (entry in pool && scope != null) {
                     entry.idleJob = scope.launch {
                         delay(IDLE_READER_KEEP_ALIVE)
-                        val expired = synchronized(poolLock) {
+                        val expired = withPikoLock(poolLock) {
                             if (!entry.inUse && pool.remove(entry)) {
                                 entry.idleJob = null
                                 entry.reader
@@ -267,7 +270,7 @@ internal class ProxySession(
 
     override fun close() {
         val toClose: List<ProxyReader>
-        synchronized(poolLock) {
+        withPikoLock(poolLock) {
             if (isClosed) return
             isClosed = true
             pool.forEach { it.idleJob?.cancel(); it.idleJob = null }

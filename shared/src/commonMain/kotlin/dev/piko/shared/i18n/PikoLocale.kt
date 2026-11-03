@@ -3,6 +3,7 @@ package dev.piko.shared.i18n
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import dev.piko.data.auth.AppLanguage
+import kotlin.concurrent.Volatile
 
 /** Only platform entrypoints bind the system locale, before changing the process locale. */
 object PikoLocale {

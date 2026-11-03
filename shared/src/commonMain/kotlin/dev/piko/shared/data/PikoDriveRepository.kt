@@ -1,5 +1,8 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.util.PikoLock
+import dev.piko.shared.util.withPikoLock
+
 import dev.piko.shared.i18n.tr
 
 import kotlinx.coroutines.Job
@@ -171,7 +174,7 @@ open class PikoDriveRepository(
     internal val driveTreeIndex = DriveTreeIndex(
         locallyCachedManifestIds = { vaultBinding.value?.store?.parsedFlow?.value?.keys.orEmpty() },
     )
-    private val treeStateLock = Any()
+    private val treeStateLock = PikoLock()
     private val treeSyncJob = MutableStateFlow<Pair<PikPakClient, Deferred<Unit>>?>(null)
     private var pendingTreeSave: kotlinx.coroutines.Job? = null
     private var lastCanaryProbeAt: TimeSource.Monotonic.ValueTimeMark? = null
@@ -242,7 +245,7 @@ open class PikoDriveRepository(
             break
         }
         // 还在路上的列目录属于上一个账号，回来的结果不能记到新账号名下
-        synchronized(treeStateLock) {
+        withPikoLock(treeStateLock) {
             resetChangeMarksForAccountSwitch()
             lastCanaryProbeAt = null
             _treeBuildProgressFlow.value = TreeBuildProgress()
@@ -308,7 +311,7 @@ open class PikoDriveRepository(
         ) {
             invalidateTrashCache()
         }
-        val indexChanged = synchronized(treeStateLock) {
+        val indexChanged = withPikoLock(treeStateLock) {
             val knownParentsBeforeChange: Set<String> = when (change) {
                 is DriveChange.Renamed -> setOfNotNull(change.parentId ?: knownParentOf(change.id) ?: driveTreeIndex.file(change.id)?.parentId)
                 is DriveChange.Moved -> change.folders.orEmpty() + change.ids.mapNotNullTo(HashSet()) { knownParentOf(it) ?: driveTreeIndex.file(it)?.parentId } + change.to
@@ -707,7 +710,7 @@ open class PikoDriveRepository(
     private suspend fun fetchListing(parentId: String, asked: PikPakClient = client): List<FileStat> {
         require(!LocalLocation.isLocal(parentId)) { "本地目录不支持云端操作" }
         val request = backgroundScope.async(start = CoroutineStart.LAZY) {
-            val serial = synchronized(treeStateLock) { changeMarks.value.serial }
+            val serial = withPikoLock(treeStateLock) { changeMarks.value.serial }
             // 补来源放在这里：列表缓存、目录图、地址栏与网盘页读的都是这一份
             val listed = asked.listFiles(parentId)
             if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
@@ -715,7 +718,7 @@ open class PikoDriveRepository(
             var indexUpdated = false
             var reparentedFrom = emptySet<String>()
             var shouldSaveSnapshot = false
-            synchronized(treeStateLock) {
+            withPikoLock(treeStateLock) {
                 if (clientManager.currentClient.value === asked && unchangedSince(parentId, serial)) {
                     rememberListing(parentId, files)
                     rememberChildContents(parentId, files)
@@ -803,7 +806,7 @@ open class PikoDriveRepository(
                         commitVaultListing(asked, folder, entries, snapshot)
                     }
                 },
-                currentFolderSerial = { synchronized(treeStateLock) { changeMarks.value.serial } },
+                currentFolderSerial = { withPikoLock(treeStateLock) { changeMarks.value.serial } },
                 cacheStore = cacheStore,
                 account = asked.account,
                 scope = backgroundScope,
@@ -893,11 +896,11 @@ open class PikoDriveRepository(
     internal suspend fun scanRealChildren(folderId: String, asked: PikPakClient = client): List<FileStat> {
         requireCloudIds(listOf(folderId))
         localRealChildrenIfClean(folderId)?.let { return it }
-        val serial = synchronized(treeStateLock) { changeMarks.value.serial }
+        val serial = withPikoLock(treeStateLock) { changeMarks.value.serial }
         val raw = asked.listFiles(folderId)
         val enriched = sourceLedger.enrich(raw)
         var indexUpdated = false
-        synchronized(treeStateLock) {
+        withPikoLock(treeStateLock) {
             if (clientManager.currentClient.value === asked && unchangedSince(folderId, serial)) {
                 val reparented = driveTreeIndex.putFolderListing(folderId, enriched, complete = true)
                 markFolderListed(folderId, reparented)
@@ -1261,8 +1264,8 @@ open class PikoDriveRepository(
             }
             is VaultCommitSnapshot.IncrementalFiles -> {
                 val enrichedAdded = sourceLedger.enrich(snapshot.added)
-                val applied = synchronized(treeStateLock) {
-                    if (clientManager.currentClient.value !== asked) return@synchronized false
+                val applied = withPikoLock(treeStateLock) {
+                    if (clientManager.currentClient.value !== asked) return@withPikoLock false
                     for (added in enrichedAdded) {
                         driveTreeIndex.applyChange(
                             DriveChange.Created(parentId = folderId, id = added.id, name = added.name, isFolder = added.isFolder, stat = added),
@@ -1285,14 +1288,14 @@ open class PikoDriveRepository(
                 var indexUpdated = false
                 var reparented: Set<String> = emptySet()
                 var staleConcurrentMutation = false
-                val applied = synchronized(treeStateLock) {
-                    if (clientManager.currentClient.value !== asked) return@synchronized false
+                val applied = withPikoLock(treeStateLock) {
+                    if (clientManager.currentClient.value !== asked) return@withPikoLock false
                     val serialOk = snapshot.listedAtSerial == null || unchangedSince(folderId, snapshot.listedAtSerial)
                     if (!serialOk) {
                         // 挂起清理旧清单期间同目录发生了其他文件变更：只提交归档条目事实，拒绝用旧快照覆盖最新文件节点
                         vaultEntriesKnown(folderId, entries)
                         staleConcurrentMutation = true
-                        return@synchronized true
+                        return@withPikoLock true
                     }
                     reparented = driveTreeIndex.putFolderListing(folderId, enriched, complete = true)
                     markFolderListed(folderId, reparented)
@@ -1329,7 +1332,7 @@ open class PikoDriveRepository(
         }
         val cleanOnly = folders - needsDirty
         if (cleanOnly.isNotEmpty()) {
-            synchronized(treeStateLock) {
+            withPikoLock(treeStateLock) {
                 listings.update { cache ->
                     cache.mapValues { (id, listing) -> if (id in cleanOnly) listing.expired() else listing }
                 }
@@ -1438,11 +1441,11 @@ open class PikoDriveRepository(
             // 排队期间可能已有同一目录的请求完成
             childContents.get(folderId)?.let { return@withPermit it }
             val asked = client
-            val serial = synchronized(treeStateLock) { changeMarks.value.serial }
+            val serial = withPikoLock(treeStateLock) { changeMarks.value.serial }
             val files = runSuspendCatching { asked.listFilesPaged(parentId = folderId, pageSize = CHILD_NAME_PAGE).files }
                 .getOrNull() ?: return@withPermit null
             val complete = files.size < CHILD_NAME_PAGE
-            val indexUpdated = synchronized(treeStateLock) {
+            val indexUpdated = withPikoLock(treeStateLock) {
                 if (clientManager.currentClient.value !== asked || !unchangedSince(folderId, serial)) {
                     return@withPermit null
                 }
@@ -1847,7 +1850,7 @@ open class PikoDriveRepository(
                     ensureTreeSync(asked).await()
                     return@runSuspendCatching CanaryProbeResult.FULL_REBUILD
                 }
-                val (probeStartSerial, probeStartSeq, state) = synchronized(treeStateLock) {
+                val (probeStartSerial, probeStartSeq, state) = withPikoLock(treeStateLock) {
                     Triple(changeMarks.value.serial, driveTreeIndex.currentMutationSeq, driveTreeIndex.flow.value)
                 }
                 val quota = getQuota().getOrNull()?.quota
@@ -1888,7 +1891,7 @@ open class PikoDriveRepository(
 
                 val changedItems = recent.filterNot(::matchesLocal)
                 if (!hasMissingLocalEntries && changedItems.isEmpty() && (prevUsage == null || usageBytes == null || usageBytes == prevUsage)) {
-                    val publishedUnchanged = synchronized(treeStateLock) {
+                    val publishedUnchanged = withPikoLock(treeStateLock) {
                         if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
                         if (changeMarks.value.serial != probeStartSerial || driveTreeIndex.currentMutationSeq != probeStartSeq) {
                             false
@@ -1916,10 +1919,10 @@ open class PikoDriveRepository(
                         val affectedParents = HashSet<String>()
                         val manifestFolders = HashSet<String>()
                         var indexUpdated = false
-                        val publishedPatch = synchronized(treeStateLock) {
+                        val publishedPatch = withPikoLock(treeStateLock) {
                             if (clientManager.currentClient.value !== asked) throw CancellationException("Account changed")
                             if (changeMarks.value.serial != probeStartSerial || driveTreeIndex.currentMutationSeq != probeStartSeq) {
-                                return@synchronized false
+                                return@withPikoLock false
                             }
                             val currentState = driveTreeIndex.flow.value
                             var learned = false
@@ -1977,10 +1980,10 @@ open class PikoDriveRepository(
         val manifestText = store.read(VaultStore.cacheKeyOf(account))
         val cachedManifests = manifestText?.let(VaultStore::decodeParsed).orEmpty()
         var indexUpdated = false
-        val restored = synchronized(treeStateLock) {
-            if (clientManager.currentClient.value !== asked) return@synchronized false
+        val restored = withPikoLock(treeStateLock) {
+            if (clientManager.currentClient.value !== asked) return@withPikoLock false
             vault.restoreParsed(cachedManifests)
-            if (!driveTreeIndex.restoreSnapshot(snapshot, cachedManifests)) return@synchronized false
+            if (!driveTreeIndex.restoreSnapshot(snapshot, cachedManifests)) return@withPikoLock false
             indexUpdated = populateDerivedFromTreeLocked()
             true
         }
@@ -2070,7 +2073,7 @@ open class PikoDriveRepository(
             val isShadowRebuild = driveTreeIndex.isComplete
             val job = backgroundScope.async(start = CoroutineStart.LAZY) {
                 val started = TimeSource.Monotonic.markNow()
-                val (serial, rebuildStartSeq) = synchronized(treeStateLock) {
+                val (serial, rebuildStartSeq) = withPikoLock(treeStateLock) {
                     changeMarks.value.serial to driveTreeIndex.currentMutationSeq
                 }
                 _treeBuildProgressFlow.value = TreeBuildProgress(
@@ -2085,7 +2088,7 @@ open class PikoDriveRepository(
                     _treeBuildProgressFlow.update { it.copy(foldersRead = folders.size) }
                     if (!isShadowRebuild) {
                         var indexUpdated = false
-                        synchronized(treeStateLock) {
+                        withPikoLock(treeStateLock) {
                             if (clientManager.currentClient.value === asked && changeMarks.value.accountResetAt <= serial) {
                                 driveTreeIndex.putFolders(folders)
                                 for (folder in folders) {
@@ -2108,7 +2111,7 @@ open class PikoDriveRepository(
                         val enriched = sourceLedger.enrich(page)
                         allFiles.addAll(enriched)
                         if (!isShadowRebuild) {
-                            synchronized(treeStateLock) {
+                            withPikoLock(treeStateLock) {
                                 if (clientManager.currentClient.value === asked && changeMarks.value.accountResetAt <= serial) {
                                     driveTreeIndex.putFiles(enriched)
                                 }
@@ -2159,7 +2162,7 @@ open class PikoDriveRepository(
                     var indexUpdated = false
                     var changedFolders = emptySet<String>()
                     var committed = false
-                    synchronized(treeStateLock) {
+                    withPikoLock(treeStateLock) {
                         val marks = changeMarks.value
                         if (clientManager.currentClient.value === asked && marks.accountResetAt <= serial) {
                             if (marks.treeInvalidatedAt > serial) {

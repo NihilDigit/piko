@@ -1,5 +1,8 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.util.PikoLock
+import dev.piko.shared.util.withPikoLock
+
 import dev.piko.shared.i18n.enCount
 import dev.piko.shared.presentation.localizedName
 
@@ -217,6 +220,7 @@ class DriveScreenState(
         private set
     private var globalSortOrder = initialSortOrder
     private val folderSortOrders = LinkedHashMap<String, PikoFileSortOrder>()
+    private val folderSortLock = PikoLock()
 
     var searchQuery by mutableStateOf("")
         private set
@@ -568,7 +572,7 @@ class DriveScreenState(
         scope.launch {
             preferences.folderSortOrdersFlow.collect { serialized ->
                 val parsed = decodeFolderSortOrders(serialized)
-                synchronized(folderSortOrders) {
+                withPikoLock(folderSortLock) {
                     folderSortOrders.clear()
                     folderSortOrders.putAll(parsed)
                 }
@@ -1365,7 +1369,7 @@ class DriveScreenState(
 
     private fun effectiveSortOrderFor(folderId: String): PikoFileSortOrder =
         if (perFolderSort && isDriveFolderId(folderId) && libraryView == null && archiveView == null) {
-            synchronized(folderSortOrders) { folderSortOrders[folderId] } ?: globalSortOrder
+            withPikoLock(folderSortLock) { folderSortOrders[folderId] } ?: globalSortOrder
         } else {
             globalSortOrder
         }
@@ -1373,7 +1377,7 @@ class DriveScreenState(
     fun changeSortOrder(order: PikoFileSortOrder) {
         if (usesPerFolderSort()) {
             val folderId = activeFolderId
-            val serialized = synchronized(folderSortOrders) {
+            val serialized = withPikoLock(folderSortLock) {
                 folderSortOrders.remove(folderId)
                 folderSortOrders[folderId] = order
                 while (folderSortOrders.size > MAX_FOLDER_SORT_ENTRIES) {
@@ -1404,7 +1408,7 @@ class DriveScreenState(
         perFolderSort = enabled
         if (enabled && isDriveFolderId(activeFolderId) && libraryView == null && archiveView == null) {
             val folderId = activeFolderId
-            val serialized = synchronized(folderSortOrders) {
+            val serialized = withPikoLock(folderSortLock) {
                 if (folderId !in folderSortOrders) {
                     folderSortOrders[folderId] = sortOrder
                     encodeFolderSortOrders(folderSortOrders)
