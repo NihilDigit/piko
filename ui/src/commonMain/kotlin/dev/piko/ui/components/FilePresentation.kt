@@ -1,5 +1,7 @@
 package dev.piko.ui.components
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.selection.triStateToggleable
@@ -33,10 +35,12 @@ import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.fileCategory
 import dev.piko.shared.data.isImportPreview
+import dev.piko.shared.data.isLocalMountRoot
 import dev.piko.shared.data.isVaulted
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
-import io.github.nihildigit.pikpak.thumbnailUrlOf
+import io.github.nihildigit.pikpak.videoThumbnailUrlOf
+import io.github.nihildigit.pikpak.imageThumbnailUrlOf
 
 internal data class FileItemName(val title: String, val original: String? = null, val fullName: String = title)
 
@@ -46,10 +50,11 @@ internal data class FileVisual(
     val thumbnail: Any? = null,
     val isVideo: Boolean = false,
     val isEmptyFolder: Boolean = false,
+    val isLocalMount: Boolean = false,
     val category: FileCategory = name.fileCategory(),
 )
 
-internal enum class FileItemMark { Starred, Vaulted, ContainsVault, ImportPreview }
+internal enum class FileItemMark { Starred, Vaulted, ContainsVault, ImportPreview, LocalMount }
 internal data class FileItemStatus(val text: String, val needsAttention: Boolean = false)
 
 /** Presentation only: a source entry does not need a remote file id or an executable drive command. */
@@ -67,9 +72,16 @@ internal data class FilePresentation(
 
 internal fun FileStat.fileVisual(emptyFolder: Boolean = false): FileVisual {
     val isVideo = !isFolder && isPlayableVideo()
-    val cover = thumbnailLink.ifBlank { if (isVideo && hash.isNotBlank()) thumbnailUrlOf(hash) else "" }
+    val cover = thumbnailLink.ifBlank {
+        when {
+            hash.isBlank() || isFolder -> ""
+            isVideo -> videoThumbnailUrlOf(hash)
+            fileCategory() == FileCategory.IMAGE -> imageThumbnailUrlOf(hash)
+            else -> ""
+        }
+    }
     return FileVisual(
-        name, isFolder, cover.takeIf { it.isNotEmpty() }, isVideo, emptyFolder, fileCategory(),
+        name, isFolder, cover.takeIf { it.isNotEmpty() }, isVideo, emptyFolder, isLocalMountRoot, fileCategory(),
     )
 }
 
@@ -90,6 +102,7 @@ internal fun FileStat.filePresentation(
 }
 
 internal fun FileStat.fileItemMarks(folderHasVault: Boolean): Set<FileItemMark> = buildSet {
+    if (isLocalMountRoot) add(FileItemMark.LocalMount)
     if (isImportPreview) add(FileItemMark.ImportPreview)
     if (isStarred) add(FileItemMark.Starred)
     if (isVaulted || (isFolder && folderHasVault)) add(if (isFolder) FileItemMark.ContainsVault else FileItemMark.Vaulted)
@@ -98,7 +111,7 @@ internal fun FileStat.fileItemMarks(folderHasVault: Boolean): Set<FileItemMark> 
 internal fun ResolvedFile.filePresentation(key: String): FilePresentation = FilePresentation(
     key, FileItemName(name), FileVisual(name, isVideo = name.isPlayableVideo()),
     metadata = listOf(size.toReadableSize()),
-    status = if (gcid == null) FileItemStatus("未收录", needsAttention = true) else null,
+    status = if (gcid == null) FileItemStatus(tr("未收录", "Not indexed", "未収録", "미등록", "未收錄"), needsAttention = true) else null,
 )
 
 @Composable
@@ -136,6 +149,7 @@ internal fun FileItemInformation(
 @Composable
 internal fun FileItemMarks(marks: Set<FileItemMark>) {
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (FileItemMark.LocalMount in marks) LocalMountMark()
         if (FileItemMark.ImportPreview in marks) ImportPreviewMark()
         if (FileItemMark.Starred in marks) StarMark()
         if (FileItemMark.Vaulted in marks || FileItemMark.ContainsVault in marks) VaultMark(FileItemMark.ContainsVault in marks)

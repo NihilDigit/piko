@@ -4,8 +4,12 @@ import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.intl.Locale
+import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.sp
+import dev.piko.data.auth.AppLanguage
+import dev.piko.shared.i18n.PikoLocale
 
 private val cjkLineHeightStyle = LineHeightStyle(
     alignment = LineHeightStyle.Alignment.Center,
@@ -14,18 +18,41 @@ private val cjkLineHeightStyle = LineHeightStyle(
 
 private fun cjkTextStyle(
     fontFamily: FontFamily,
+    localeList: LocaleList?,
     size: Int,
     lineHeight: Int,
     weight: FontWeight,
     tracking: Double = 0.0,
 ) = TextStyle(
     fontFamily = fontFamily,
+    localeList = localeList,
     fontWeight = weight,
     fontSize = size.sp,
     lineHeight = lineHeight.sp,
     letterSpacing = tracking.sp,
     lineHeightStyle = cjkLineHeightStyle,
 )
+
+/**
+ * 显式绑定随应用语言变化的 [LocaleList]：
+ * 1. 让日文、韩文在系统缺字回退时确定性落到简中字库而非宋体或旧韩汉字体；
+ * 2. 让静态文本组件在运行时切换语言后随 [TextStyle] 失效立即重排，杜绝新旧回退字形同屏混杂。
+ */
+fun pikoLocaleList(
+    effectiveLanguage: AppLanguage,
+    systemLanguage: AppLanguage = PikoLocale.systemLanguage,
+): LocaleList = when (effectiveLanguage) {
+    AppLanguage.ZH_CN -> LocaleList(Locale("zh-CN"))
+    AppLanguage.ZH_HANT -> LocaleList(Locale("zh-TW"))
+    AppLanguage.JA -> LocaleList(Locale("ja-JP"), Locale("zh-CN"))
+    AppLanguage.KO -> LocaleList(Locale("ko-KR"), Locale("zh-CN"))
+    AppLanguage.EN, AppLanguage.SYSTEM -> when (systemLanguage) {
+        AppLanguage.ZH_HANT -> LocaleList(Locale("en-US"), Locale("zh-TW"))
+        AppLanguage.JA -> LocaleList(Locale("en-US"), Locale("ja-JP"), Locale("zh-CN"))
+        AppLanguage.KO -> LocaleList(Locale("en-US"), Locale("ko-KR"), Locale("zh-CN"))
+        else -> LocaleList(Locale("en-US"), Locale("zh-CN"))
+    }
+}
 
 /**
  * Piko 排版规范：15 档基线 + 15 档 Emphasized 变体。
@@ -35,9 +62,9 @@ private fun cjkTextStyle(
  * - Material 3 Typography Scale: `m3-material-mirror/pages/styles/typography.md`
  * - Android Material 3 Typography: `android-docs-mirror/pages/develop/ui/compose/designsystems/material3.md`
  */
-fun pikoTypography(fontFamily: FontFamily): Typography {
+fun pikoTypography(fontFamily: FontFamily, localeList: LocaleList? = null): Typography {
     fun cjkStyle(size: Int, lineHeight: Int, weight: FontWeight, tracking: Double = 0.0) =
-        cjkTextStyle(fontFamily, size, lineHeight, weight, tracking)
+        cjkTextStyle(fontFamily, localeList, size, lineHeight, weight, tracking)
     return Typography(
         displayLarge = cjkStyle(57, 64, FontWeight.Normal, -0.25),
         displayMedium = cjkStyle(45, 52, FontWeight.Normal),

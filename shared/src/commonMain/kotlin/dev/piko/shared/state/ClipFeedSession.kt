@@ -11,6 +11,9 @@ import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.i18n.enCount
+import dev.piko.shared.i18n.tr
+import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
@@ -79,7 +82,7 @@ class ClipFeedSession(
     var selectedVideoCount by mutableStateOf<Int?>(null)
         private set
 
-    val scopeLabel: String get() = selectedVideoCount?.let { "已选 $it 个视频" } ?: root?.name.orEmpty()
+    val scopeLabel: String get() = selectedVideoCount?.let { tr("已选 $it 个视频", "Selected ${enCount(it, "video", "videos")}", "$it 件の動画を選択", "동영상 ${it}개 선택됨", "已選 $it 部影片") } ?: root?.localizedName.orEmpty()
 
     private var selectedIds: Set<String>? = null
     private var generation by mutableStateOf(0L)
@@ -132,6 +135,9 @@ class ClipFeedSession(
     /** 请求了横屏（Android）。看完整回来要重新锁上，所以同样放在会话上，关掉信息流时清零。 */
     var landscape by mutableStateOf(false)
 
+    /** 自动连刷模式：开启后不自动顺延续播当前片段，播完当前片段自动翻到下一条视频。关掉信息流时清零。 */
+    var autoAdvance by mutableStateOf(false)
+
     /** 各段的代理会话与预取，同样不随页面走，见 [ClipStreams]。换文件夹或关掉信息流时清空。 */
     val streams = ClipStreams(media, onReady = ::promote, onDead = ::drop)
 
@@ -154,7 +160,7 @@ class ClipFeedSession(
     }
 
     /** [folderId] 的名字；还没遍历到的为 null。 */
-    fun folderName(folderId: String): String? = folders.nodes[folderId]?.name ?: root?.takeIf { it.id == folderId }?.name
+    fun folderName(folderId: String): String? = driveRepo.knownLocalPath(folderId)?.lastOrNull()?.name ?: folders.nodes[folderId]?.name ?: root?.takeIf { it.id == folderId }?.name
 
     // 打开时网盘页的整条路径，栈顶是 [root]
     private var rootPath: List<PikoPathBreadcrumb> = emptyList()
@@ -165,6 +171,7 @@ class ClipFeedSession(
      * 存盘恢复的段所在的目录这一轮还没列到、旧存盘又没有上级时为 null，由调用方向服务端查。
      */
     fun pathTo(folderId: String): List<PikoPathBreadcrumb>? {
+        driveRepo.knownLocalPath(folderId)?.let { return it }
         val rootId = root?.id ?: return null
         val nodes = folders.nodes
         val chain = ArrayDeque<PikoPathBreadcrumb>()
@@ -319,6 +326,7 @@ class ClipFeedSession(
         isCollecting = false
         immersive = false
         landscape = false
+        autoAdvance = false
     }
 
     /**
@@ -576,7 +584,7 @@ class ClipFeedSession(
         val probe = media.clipProbe(file.id)
         if (request != generation) throw CancellationException("Feed scope changed")
         probe.durationMs?.let { learnDuration(file.id, it) }
-        return if (probe.hasTranscode) Transcode.Yes else Transcode.JustFoundMissing
+        return if (probe.hasTranscode) Transcode.Yes else if (dev.piko.shared.data.LocalLocation.isLocal(file.id)) Transcode.KnownMissing else Transcode.JustFoundMissing
     }
 
     /** 记进候选池，随队列存下：下次打开不必再借一次对象去量。 */
@@ -749,7 +757,7 @@ class ClipFeedSession(
      * 归档条目例外：它们存自磁力解析，本来就没有时长，挑中后查转码时从借出的详情里量，见 [transcodeOf]。
      */
     private fun FileStat.isClipCandidate(): Boolean =
-        isPlayableVideo() && !isUploading && (isVaulted || durationMs() >= MIN_DURATION_MS)
+        isPlayableVideo() && !isUploading && (dev.piko.shared.data.LocalLocation.isLocal(id) || isVaulted || durationMs() >= MIN_DURATION_MS)
 
     private fun FileStat.durationMs(): Long =
         ((params["duration"]?.toDoubleOrNull() ?: 0.0) * 1000).toLong()

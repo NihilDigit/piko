@@ -56,7 +56,16 @@ object PikoProxySelector : ProxySelector() {
     }
 
     override fun connectFailed(uri: URI, address: SocketAddress, error: IOException) {
-        PikoLog.w("Proxy", "经代理 $address 连接 ${uri.host} 失败", error)
+        // OkHttp 在走代理读取响应体中途被调用方主动取消（如播放器 Seek 或死线切断）时，
+        // 也会把 Socket closed / Canceled / unexpected end of stream 回调到这里；它们并非代理不可达。
+        val msg = error.message.orEmpty()
+        val benignAbort = msg.contains("Socket closed", ignoreCase = true) ||
+            msg.contains("Canceled", ignoreCase = true) ||
+            msg.contains("unexpected end of stream", ignoreCase = true) ||
+            msg.contains("StreamResetException", ignoreCase = true)
+        if (!benignAbort) {
+            PikoLog.w("Proxy", "经代理 $address 连接 ${uri.host} 失败", error)
+        }
         if (setting.mode == ProxyMode.SYSTEM) system?.connectFailed(uri, address, error)
     }
 

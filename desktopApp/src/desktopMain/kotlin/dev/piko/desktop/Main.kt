@@ -1,5 +1,15 @@
 package dev.piko.desktop
 
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
+import java.util.Locale
+import dev.piko.shared.i18n.PikoLocale
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -108,8 +118,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 private const val AOT_TRAINING_PROPERTY = "compose.aot.training-run"
 private const val AOT_TRAINING_MILLIS = 12_000L
 private const val CLOSE_BEHAVIOR_ASKED_KEY = "window.closeToTrayAsked"
+private const val BACKGROUND_HINT_SHOWN_KEY = "window.backgroundHintShown"
 
 fun main(args: Array<String>) {
+    PikoLocale.bindSystemLocale(Locale.getDefault().toLanguageTag())
     // 最先做：之后任何一处碰到 JNA 都会让它按当时的属性初始化
     useBundledJnaDispatch()
     // 走系统代理：JVM 默认只认 http.proxyHost 一类属性，不看 Windows 与 macOS 设置里的代理，
@@ -149,13 +161,16 @@ fun main(args: Array<String>) {
     }
 
     BundledMpvRuntime.prepareInBackground()
-    installImageLoader()
 
     val settings = DesktopSettingsStore()
     val preferences = DesktopPikoPreferences(settings, ::desktopPreferenceSecrets)
-    // 赶在任何 OkHttpClient 建出来之前，理由见 PikoProxySelector
+    val initialLanguage = runBlocking { preferences.appLanguageFlow.first() }
+    Locale.setDefault(Locale.forLanguageTag(PikoLocale.resolve(initialLanguage).tag))
+    PikoLocale.apply(initialLanguage)
+    // 赶在任何 OkHttpClient（含图片加载器与 SDK）建出来之前，理由见 PikoProxySelector
     PikoProxySelector.install(runBlocking { preferences.proxySettingFlow.first() })
     CoroutineScope(Dispatchers.Default).launch { preferences.proxySettingFlow.collect(PikoProxySelector::apply) }
+    installImageLoader()
     val motionScale = PikoMotionScale()
     SystemReducedMotion.follow(motionScale)
     motionScale.appReduced = runBlocking { preferences.reduceMotionFlow.first() }
@@ -270,31 +285,48 @@ fun main(args: Array<String>) {
         }
 
         if (isInBackground) {
-            Tray(
-                icon = appIcon ?: BitmapPainter(ImageBitmap(16, 16)),
-                tooltip = if (hasActiveTransfers) backgroundTooltip(downloads.values, uploads.values.filter { it.account == account }) else "Piko",
-                onAction = { isInBackground = false },
-                menu = {
-                    Item("显示 Piko", onClick = { isInBackground = false })
-                    Item("立即退出", onClick = ::exitApplication)
-                },
-            )
+            val trayTooltip = if (hasActiveTransfers) backgroundTooltip(downloads.values, uploads.values.filter { it.account == account }) else "Piko"
+            val showLabel = tr("显示 Piko", "Show Piko", "Pikoを表示", "Piko 표시", "顯示 Piko")
+            val quitLabel = tr("立即退出", "Quit now", "今すぐ終了", "지금 종료", "立即結束")
+            if (WinRTSupport.isWindows && java.awt.SystemTray.isSupported()) {
+                dev.piko.desktop.winrt.WindowsSystemTray(
+                    tooltip = trayTooltip,
+                    darkTheme = appearance.isDark(),
+                    showLabel = showLabel,
+                    quitLabel = quitLabel,
+                    onShow = { isInBackground = false },
+                    onQuit = ::exitApplication,
+                )
+            } else {
+                Tray(
+                    icon = appIcon ?: BitmapPainter(ImageBitmap(16, 16)),
+                    tooltip = trayTooltip,
+                    onAction = { isInBackground = false },
+                    menu = {
+                        Item(showLabel, onClick = { isInBackground = false })
+                        Item(quitLabel, onClick = ::exitApplication)
+                    },
+                )
+            }
         }
 
         val hideToTray: (manual: Boolean) -> Unit = { manual ->
             manualTraySession = manual
             isInBackground = true
-            // Toast 同步等系统结果，不能压在界面线程上
-            Thread {
-                val reopenHint = when {
-                    isMacOs -> "可从菜单栏图标重新打开"
-                    isLinux -> LinuxDesktop.backgroundHint()
-                    else -> "可从通知区域图标重新打开"
-                }
-                if (closeToTray || manual) showSystemNotification("Piko 已最小化到系统托盘", "$reopenHint；可从托盘菜单退出程序。")
-                else if (services.hasBackgroundWork()) showSystemNotification("Piko 在后台继续处理", "工作完成后自动退出；需你处理的结果会保留，$reopenHint。")
-                else showSystemNotification("Piko 已保留待处理工作", "重新打开窗口可继续处理，$reopenHint。")
-            }.start()
+            // 用户已主动开启「最小化到托盘」或在询问框中点击该选项时，不再每次关窗都弹通知打扰；
+            // 仅当用户未开启常驻托盘、因后台仍有未完任务而首次自动转入后台时提示一次。
+            if (!closeToTray && !manual && settings.get(BACKGROUND_HINT_SHOWN_KEY) != "true") {
+                settings.set(BACKGROUND_HINT_SHOWN_KEY, "true")
+                Thread {
+                    val reopenHint = when {
+                        isMacOs -> tr("可从菜单栏图标重新打开", "Reopen from the menu bar icon", "メニューバーのアイコンから開けます", "메뉴 막대 아이콘에서 다시 열 수 있습니다", "可從選單列圖示重新開啟")
+                        isLinux -> LinuxDesktop.backgroundHint()
+                        else -> tr("可从通知区域图标重新打开", "Reopen from the notification area icon", "通知領域のアイコンから開けます", "알림 영역 아이콘에서 다시 열 수 있습니다", "可從通知區域圖示重新開啟")
+                    }
+                    if (services.hasBackgroundWork()) showSystemNotification(tr("Piko 在后台继续处理", "Piko is working in the background", "Pikoはバックグラウンドで処理中です", "Piko가 백그라운드에서 작업 중입니다", "Piko 在背景繼續處理"), tr("任务完成后将自动退出；待确认的结果会保留，$reopenHint。", "Quits automatically when tasks finish. Results requiring attention are kept. $reopenHint.", "タスク完了後に自動終了します。確認が必要な結果は保持されます。$reopenHint。", "작업 완료 후 자동 종료됩니다. 확인이 필요한 결과는 유지됩니다. $reopenHint.", "任務完成後將自動結束；待確認的結果會保留，$reopenHint。"))
+                    else showSystemNotification(tr("Piko 已保留待处理工作", "Piko kept your pending work", "Pikoは未処理の作業を保持しています", "Piko가 대기 중인 작업을 유지했습니다", "Piko 已保留待處理工作"), tr("重新打开窗口可继续处理，$reopenHint。", "Reopen the window to continue. $reopenHint.", "ウィンドウを開き直すと続行できます。$reopenHint。", "창을 다시 열어 계속할 수 있습니다. $reopenHint.", "重新開啟視窗即可繼續處理，$reopenHint。"))
+                }.start()
+            }
         }
 
         val closeMainWindow = {
@@ -364,6 +396,7 @@ fun main(args: Array<String>) {
                             onUpload = services.uploadManager::request,
                         ) {
                             PikoApp(
+                                onLanguageChanged = { Locale.setDefault(Locale.forLanguageTag(it.tag)) },
                                 services = services,
                                 platform = platform,
                                 appearance = appearance,
@@ -375,10 +408,10 @@ fun main(args: Array<String>) {
                         var rememberCloseChoice by remember { mutableStateOf(true) }
                         PikoDialog(
                             onDismissRequest = { askCloseBehavior = false },
-                            title = { Text("关闭主窗口") },
+                            title = { Text(stringResource(Res.string.text_close_main_window)) },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    Text("选择点击关闭按钮时的操作，之后可在设置「外观」中随时更改。")
+                                    Text(stringResource(Res.string.text_choose_what_the_close_button_does_change_this_anytime_in_appearance_settings))
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -392,13 +425,13 @@ fun main(args: Array<String>) {
                                     ) {
                                         Checkbox(checked = rememberCloseChoice, onCheckedChange = null)
                                         Spacer(Modifier.width(8.dp))
-                                        Text("记住我的选择，不再询问", style = MaterialTheme.typography.bodyMedium)
+                                        Text(stringResource(Res.string.text_remember_my_choice), style = MaterialTheme.typography.bodyMedium)
                                     }
                                 }
                             },
                             confirmButton = {
                                 PikoDialogConfirm(
-                                    label = "最小化到托盘",
+                                    label = tr("最小化到托盘", "Minimize to tray", "トレイに最小化", "트레이로 최소화", "最小化至系統匣"),
                                     onClick = {
                                         askCloseBehavior = false
                                         if (rememberCloseChoice) {
@@ -420,7 +453,7 @@ fun main(args: Array<String>) {
                                         exitApplication()
                                     },
                                 ) {
-                                    Text("直接退出")
+                                    Text(stringResource(Res.string.text_quit))
                                 }
                             },
                         )
@@ -521,16 +554,16 @@ private fun backgroundTooltip(downloads: Collection<DownloadTask>, uploads: Coll
     val activeDownloads = downloads.filter { it.status.isActive }
     val activeUploads = uploads.filter { it.status.isActive }
     val parts = listOfNotNull(
-        transferSummary("下载", activeDownloads.size, activeDownloads.sumOf { it.downloadedBytes }, activeDownloads.sumOf { it.totalBytes }),
-        transferSummary("上传", activeUploads.size, activeUploads.sumOf { it.processedBytes }, activeUploads.sumOf { it.size }),
+        transferSummary(tr("下载", "Downloads", "ダウンロード", "다운로드", "下載"), activeDownloads.size, activeDownloads.sumOf { it.downloadedBytes }, activeDownloads.sumOf { it.totalBytes }),
+        transferSummary(tr("上传", "Uploads", "アップロード", "업로드", "上傳"), activeUploads.size, activeUploads.sumOf { it.processedBytes }, activeUploads.sumOf { it.size }),
     )
-    return "Piko：" + parts.joinToString("；").ifEmpty { "正在后台处理" }
+    return "Piko：" + parts.joinToString("；").ifEmpty { tr("正在后台处理", "Working in background", "バックグラウンドで処理中", "백그라운드 작업 중", "正在背景處理") }
 }
 
 private fun transferSummary(verb: String, count: Int, doneBytes: Long, totalBytes: Long): String? = when {
     count == 0 -> null
-    totalBytes <= 0 -> "正在${verb} $count 个文件"
-    else -> "正在${verb} $count 个文件，${doneBytes * 100 / totalBytes}%"
+    totalBytes <= 0 -> tr("正在${verb} $count 个文件", "$verb ${enCount(count, "file", "files")}", "$count ファイルを${verb}中", "파일 ${count}개 $verb 중", "正在${verb} $count 個檔案")
+    else -> tr("正在${verb} $count 个文件，${doneBytes * 100 / totalBytes}%", "$verb ${enCount(count, "file", "files")}, ${doneBytes * 100 / totalBytes}%", "$count ファイルを${verb}中、${doneBytes * 100 / totalBytes}%", "파일 ${count}개 $verb 중, ${doneBytes * 100 / totalBytes}%", "正在${verb} $count 個檔案，${doneBytes * 100 / totalBytes}%")
 }
 
 /**
@@ -548,12 +581,18 @@ internal fun bringToFront(window: java.awt.Frame) {
 private fun createServices(settings: DesktopSettingsStore, preferences: DesktopPikoPreferences): PikoServices {
     // 进程级作用域，与 Android 的 appScope 对应：下载与会话刷新不随某个窗口的组合结束
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val clientManager = PikoClientManager(desktopSessionStore(), appScope)
+    val desktopTransportBudget = (Runtime.getRuntime().maxMemory() / 8L).coerceIn(128L * 1024 * 1024, 512L * 1024 * 1024)
+    val clientManager = PikoClientManager(
+        sessionStore = desktopSessionStore(),
+        scope = appScope,
+        transportMemoryBudgetBytes = desktopTransportBudget,
+    )
     val mediaRepository = PikoMediaRepository(
         clientManager,
         preferences,
         clipCache = FileClipCache(PikoHome.root.resolve("cache/clip-cache").toFile()),
     )
+    val cacheStore = FilePikoCacheStore(PikoHome.root.resolve("cache").toString())
     return PikoServices(
         platformPreferences = preferences,
         clientManager = clientManager,
@@ -567,9 +606,21 @@ private fun createServices(settings: DesktopSettingsStore, preferences: DesktopP
             mediaRepository = mediaRepository,
         ),
         uploadSources = DesktopPikoUploadSources(),
-        cacheStore = FilePikoCacheStore(PikoHome.root.resolve("cache").toString()),
+        localFileAccess = { changed -> DesktopLocalFileAccess(appScope, changed) },
+        cacheStore = cacheStore,
         syncCipher = JvmSyncCipher(),
-        metaTube = MetaTubeService(preferences) { HttpClient(OkHttp) },
+        metaTube = MetaTubeService(preferences, cacheStore = cacheStore, scope = appScope) {
+            HttpClient(OkHttp) {
+                engine {
+                    config {
+                        dispatcher(okhttp3.Dispatcher().apply {
+                            maxRequests = 64
+                            maxRequestsPerHost = 16
+                        })
+                    }
+                }
+            }
+        },
     )
 }
 

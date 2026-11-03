@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
@@ -90,8 +92,10 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.previewImageCoverUrl
 import dev.piko.ui.components.trackPointerSource
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.platform.resolveCoilModel
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.math.abs
 import kotlinx.coroutines.launch
@@ -228,7 +232,7 @@ internal fun ImageViewer(
                 PageButton(
                     visible = isChromeVisible && pagerState.currentPage > 0,
                     icon = Icons.AutoMirrored.Outlined.KeyboardArrowLeft,
-                    description = "上一张",
+                    description = tr("上一张", "Previous image", "前の画像", "이전 이미지", "上一張"),
                     shortcut = "←",
                     onClick = { goTo(pagerState.currentPage - 1) },
                     modifier = Modifier.align(Alignment.CenterStart),
@@ -236,7 +240,7 @@ internal fun ImageViewer(
                 PageButton(
                     visible = isChromeVisible && pagerState.currentPage < images.lastIndex,
                     icon = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                    description = "下一张",
+                    description = tr("下一张", "Next image", "次の画像", "다음 이미지", "下一張"),
                     shortcut = "→",
                     onClick = { goTo(pagerState.currentPage + 1) },
                     modifier = Modifier.align(Alignment.CenterEnd),
@@ -294,7 +298,7 @@ private fun ViewerTopBar(title: String, position: String?, onClose: () -> Unit) 
                 .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "关闭", onClose, shortcut = "Esc", tint = Color.White)
+            TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, tr("关闭", "Close", "閉じる", "닫기", "關閉"), onClose, shortcut = "Esc", tint = Color.White)
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleMedium,
@@ -401,17 +405,24 @@ private fun ZoomableImagePage(
     onDismiss: () -> Unit,
     onDismissProgress: (Float) -> Unit,
 ) {
+    val driveRepo = LocalPikoServices.current.driveRepository
     val mediaRepo = LocalPikoServices.current.mediaRepository
     val scope = rememberCoroutineScope()
     val platformContext = LocalPlatformContext.current
+    val platform = LocalPikoPlatform.current
 
     var fullUrl by remember(file.id) { mutableStateOf<String?>(null) }
     var isFullReady by remember(file.id) { mutableStateOf(false) }
+    var fallbackTried by remember(file.id) { mutableStateOf(false) }
     // 全屏查看器里不再受防窥遮蔽拦一道：点进来本身就是「我要看这张」，
     // 再要求点一次「显示图片」只是多一步。遮蔽仍然作用在列表和海报墙的缩略图上。
     LaunchedEffect(file.id) {
         if (fullUrl == null) {
-            val url = mediaRepo.fetchDownloadUrl(file.id).getOrNull()
+            val url = if (dev.piko.shared.data.LocalLocation.isLocal(file.id)) {
+                file.thumbnailLink.takeIf { it.isNotBlank() }
+            } else {
+                driveRepo.originalImageUrl(file.id) ?: mediaRepo.fetchDownloadUrl(file.id).getOrNull()
+            }
             if (url != null) {
                 fullUrl = url
             } else {
@@ -528,16 +539,19 @@ private fun ZoomableImagePage(
             contentAlignment = Alignment.Center,
         ) {
             // 缩略图垫底：它多半还在 Coil 的内存缓存里，原图到位前不会先闪一片白
+            val previewCover = file.previewImageCoverUrl()
+            val resolvedPreviewCover = remember(platform, previewCover) { platform.resolveCoilModel(previewCover) }
             AsyncImage(
-                model = file.thumbnailLink,
+                model = resolvedPreviewCover,
                 contentDescription = file.name,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.fillMaxSize(),
             )
             fullUrl?.let { url ->
-                val request = remember(url, platformContext) {
+                val resolvedFull = remember(platform, url) { platform.resolveCoilModel(url) }
+                val request = remember(resolvedFull, platformContext) {
                     ImageRequest.Builder(platformContext)
-                        .data(url)
+                        .data(resolvedFull)
                         .size(FULL_IMAGE_MAX_SIDE)
                         // 显式给了尺寸时默认按精确尺寸解码，小图会被放大到 4096；INEXACT 只缩不放
                         .precision(Precision.INEXACT)
@@ -549,7 +563,17 @@ private fun ZoomableImagePage(
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),
                     onSuccess = { isFullReady = true },
-                    onError = { isFullReady = true },
+                    onError = {
+                        if (!fallbackTried && dev.piko.shared.data.LeasedFile.isLeased(file.id)) {
+                            fallbackTried = true
+                            scope.launch {
+                                val leasedUrl = mediaRepo.fetchDownloadUrl(file.id).getOrNull()
+                                if (leasedUrl != null && leasedUrl != url) fullUrl = leasedUrl else isFullReady = true
+                            }
+                        } else {
+                            isFullReady = true
+                        }
+                    },
                 )
             }
         }

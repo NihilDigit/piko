@@ -1,5 +1,6 @@
 package dev.piko.shared.media
 
+import dev.piko.shared.i18n.tr
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.log.PikoLog
@@ -48,6 +49,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -104,6 +106,8 @@ private val MediaVariant.qualityName: String?
 class PreparedPlayback internal constructor(
     val info: PlayableMediaInfo,
     private val stream: ProxyStream?,
+    /** 当前变体（原画或转码流）按其实际流长度或编码码率估算的平均字节消耗率（字节/秒）。 */
+    val estimatedBytesPerSecond: Long? = null,
 ) : AutoCloseable {
     /** 本机代理的地址。handle 建不起来（例如没有 gcid）时为 null，只能读直链。 */
     val proxyUrl: String? get() = stream?.url
@@ -114,6 +118,11 @@ class PreparedPlayback internal constructor(
         set(value) {
             stream?.urgent = value
         }
+
+    /** 向代理会话与底层 SDK 流读取器反馈当前播放器的缓冲时长与媒体平均字节速率。 */
+    fun reportPlaybackBuffer(bufferedDuration: Duration, mediaBytesPerSecond: Long? = null) {
+        stream?.reportPlaybackBuffer(bufferedDuration, mediaBytesPerSecond)
+    }
 
     override fun close() {
         stream?.close()
@@ -143,10 +152,19 @@ data class DownloadQuality(
  * 这一档转码在服务端读不出字节，见 [PikoMediaRepository.downloadQualities]。消息直接给用户看，点明是 PikPak：
  * 只写「无法读取」时用户会当成网络或 Piko 的毛病，反复重试。
  */
-class UnreadableTranscodeException(cause: Throwable? = null) : IllegalStateException("PikPak 的转码文件暂不可读，请改选其他画质", cause)
+class UnreadableTranscodeException(cause: Throwable? = null) : IllegalStateException(
+    tr(
+        "PikPak 云端转码流不可用，请选择其他画质",
+        "PikPak cloud transcode is unavailable. Choose another quality",
+        "PikPak クラウドの変換ストリームを利用できません。別の画質を選択してください",
+        "PikPak 클라우드 변환 스트림을 사용할 수 없습니다. 다른 화질을 선택해 주세요",
+        "PikPak 雲端轉碼串流無法使用，請選擇其他畫質",
+    ),
+    cause,
+)
 
 /** 选定的转码档在详情里已经没有了，给用户看的失败原因。 */
-const val TRANSCODE_GONE_MESSAGE = "PikPak 已不提供所选画质"
+val TRANSCODE_GONE_MESSAGE: String get() = tr("所选画质已不可用", "Selected quality is no longer available", "選択した画質は利用できなくなりました", "선택한 화질을 더 이상 사용할 수 없습니다", "所選畫質已無法使用")
 
 class PikoMediaRepository(
     private val clientManager: PikoClientProvider,
@@ -161,6 +179,8 @@ class PikoMediaRepository(
      * 媒体仓库在各端入口建出来时，Piko-Temp 还不存在。
      */
     var leaseFolder: (suspend (PikPakClient) -> String)? = null
+    var localMounts: dev.piko.shared.data.LocalMounts? = null
+    suspend fun localPath(fileId: String, subtitle: Boolean = false): String? = localMounts?.resolve(fileId, subtitle)
 
     /** 下载调度器提供；原画播放与完整下载共用缓存，转码片段仍用 ClipCache。 */
     var fileCachePool: PikoFileCachePool? = null
@@ -207,7 +227,7 @@ class PikoMediaRepository(
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 val detail = detailOf(client, fileId)
-                detail.downloadUrl?.takeIf { it.isNotBlank() } ?: error("没有下载链接")
+                detail.downloadUrl?.takeIf { it.isNotBlank() } ?: error(tr("未获取到下载链接", "Download link unavailable", "ダウンロードリンクを取得できません", "다운로드 링크를 가져올 수 없습니다", "無法取得下載連結"))
             }
         }
 
@@ -237,7 +257,7 @@ class PikoMediaRepository(
                             currentUrl = "", durationSeconds = 0, availableVariants = emptyList(),
                             currentResolution = ORIGINAL_QUALITY, sizeBytes = task.totalBytes)
                         val stream = registerProxy(source, task.fileName.substringAfterLast('/'), StreamRole.FOREGROUND)
-                            ?: error("无法创建本地播放会话")
+                            ?: error(tr("无法创建本地播放会话", "Unable to create local playback session", "ローカル再生セッションを作成できません", "로컬 재생 세션을 만들 수 없습니다", "無法建立本機播放工作階段"))
                         return@runSuspendCatching PreparedPlayback(info, stream)
                     }
                 }
@@ -248,7 +268,13 @@ class PikoMediaRepository(
                 val info = playableMediaInfo(detail, resolved, fileId)
                 val leased = LeasedFile.isLeased(fileId)
                 val stream = if (info.kind == PlayableMediaKind.Video) openProxyStream(client, detail, resolved, leased = leased) else null
-                PreparedPlayback(info, stream)
+                val actualStreamBytes = stream?.size ?: resolved.sizeBytes ?: detail.sizeBytes.takeIf { resolved.isOrigin } ?: 0L
+                val estimatedRate = estimatedMediaBytesPerSecond(
+                    streamSize = actualStreamBytes,
+                    durationSeconds = resolved.video?.duration ?: (durationMsOf(detail) / 1000L),
+                    bitRateBitsPerSecond = resolved.video?.bitRate,
+                )
+                PreparedPlayback(info, stream, estimatedRate)
             }
         }
 
@@ -271,6 +297,11 @@ class PikoMediaRepository(
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 val client = client
+                if (dev.piko.shared.data.LocalLocation.isLocal(fileId)) {
+                    val path = requireNotNull(localPath(fileId)) { "本机文件夹不可访问" }
+                    return@runSuspendCatching PreparedClip(null, path, false, startMs, 0.0,
+                        maxWindowMs = dev.piko.shared.state.localClipMaxWindowMs(startMs, videoDurationMs), localPath = path)
+                }
                 val key = clipKey(client.account, fileId, startMs)
                 val leased = LeasedFile.isLeased(fileId)
                 clipCache?.record(key)?.let { record ->
@@ -315,9 +346,10 @@ class PikoMediaRepository(
             onRangeAttempt = ::logRangeAttempt,
             streamSize = record.streamBytes,
         )
+        val boundedLength = record.sliceLength.coerceIn(TS_PACKET_BYTES, (record.streamBytes - record.sliceOffset).coerceAtLeast(TS_PACKET_BYTES))
         val cache = try {
             handle.openCache(
-                blockStore = sliceStore(record.sliceOffset, record.sliceLength, bytesPerMs),
+                blockStore = sliceStore(record.sliceOffset, boundedLength, bytesPerMs),
                 coroutineContext = proxy.readerContext,
             )
         } catch (e: Throwable) {
@@ -325,8 +357,7 @@ class PikoMediaRepository(
             throw e
         }
         backgroundScope.launch { runCatching { handle.prewarm() } }
-        val fullRemaining = (record.streamBytes - record.sliceOffset).coerceAtLeast(record.sliceLength)
-        val source = SlicedByteSource(PikPakByteSource(handle, cache), record.sliceOffset, fullRemaining)
+        val source = SlicedByteSource(PikPakByteSource(handle, cache), record.sliceOffset, boundedLength)
         val stream = registerProxy(source, fileName = "clip.ts", role = role) ?: return null
         return PreparedClip(
             stream,
@@ -334,7 +365,7 @@ class PikoMediaRepository(
             sliced = true,
             clipStartMs = record.sliceStartMs,
             bytesPerMs = bytesPerMs,
-            prefetchBytes = record.sliceLength,
+            maxWindowMs = record.sliceDurationMs.takeIf { it > 0L }?.let { minOf(CLIP_SLICE_MS, it) } ?: CLIP_SLICE_MS,
             fromDisk = true,
         )
     }
@@ -351,7 +382,7 @@ class PikoMediaRepository(
     // 归档条目的 ID 带着文件名，拼进磁盘上的文件名会超长，只用条目自己的 ID
     private fun clipKey(account: String, fileId: String, startMs: Long): String {
         val id = VaultEntry.entryIdOf(fileId)?.let { "vault-$it" } ?: fileId
-        return "${account}_${id}_${startMs}_$CLIP_RESOLUTION"
+        return "${account}_${id}_${startMs}_${CLIP_RESOLUTION}_v3"
     }
 
     /**
@@ -364,6 +395,10 @@ class PikoMediaRepository(
     suspend fun clipProbe(fileId: String): ClipProbe =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
+                if (dev.piko.shared.data.LocalLocation.isLocal(fileId)) {
+                    val file = localMounts?.probe(fileId)
+                    return@runSuspendCatching ClipProbe(false, file?.params?.get("duration")?.toDoubleOrNull()?.let { (it * 1000).toLong() })
+                }
                 val owner = client
                 val detail = detailOf(owner, fileId)
                 freshDetailsLock.withLock {
@@ -388,8 +423,9 @@ class PikoMediaRepository(
      * 读这份详情建 handle 时要带 leased，直链过期后重建出的对象才会同样删掉。
      */
     private suspend fun detailOf(client: PikPakClient, fileId: String): FileDetail {
+        require(!dev.piko.shared.data.LocalLocation.isLocal(fileId)) { "本地文件不支持云端操作" }
         val leased = LeasedFile.resolvedFileOf(fileId) ?: return client.getFile(fileId)
-        val folder = leaseFolder ?: error("归档条目无法打开")
+        val folder = leaseFolder ?: error(tr("无法打开归档条目", "Unable to open archived item", "アーカイブ項目を開けません", "보관 항목을 열 수 없습니다", "無法開啟歸檔項目"))
         return client.leaseDetail(leased, parentId = folder(client))
     }
 
@@ -416,7 +452,6 @@ class PikoMediaRepository(
         val keyframe: TsTimestamps.VideoPes?
         val offset: Long
         val sliceLength: Long
-        val initialWindowBytes: Long
         val slice = try {
             // 长度是 188 的整数倍是 TS 的样子；不是 TS 截出来就放不了，退回原画
             if (source.size % TS_PACKET_BYTES != 0L) {
@@ -426,29 +461,26 @@ class PikoMediaRepository(
             }
             bytesPerMs = source.size.toDouble() / videoDurationMs
             val estimated = ((bytesPerMs * startMs).toLong() / TS_PACKET_BYTES * TS_PACKET_BYTES).coerceIn(0, source.size - TS_PACKET_BYTES)
-            // 初始预取与落盘窗口按 30s 片段计算；SlicedByteSource 本身放开到流尾（source.size - offset），
-            // 这样自动续播（extend）超过初始窗口时播放器可以一直顺畅读到全片末尾，不会撞上人为 EOF
+            // 切片取有界紧致窗口（CLIP_SLICE_MS = 180s，足以支撑多轮 30s 自动续播）：
+            // MPEG-TS 没有头部索引表，暴露几百 MB 整条残余流会让 FFmpeg 在未缓存区间做十余次串行公网二分查找，
+            // 一旦后半段或片尾存在 PTS 跳变即导致 av_seek_frame 失败；有界窗口首尾 PTS 均已预取入库且紧致连续，FFmpeg 插值一步直达。
             val wanted = (bytesPerMs * (CLIP_SLICE_MS + PreparedClip.KEYFRAME_INTERVAL_MS) * SLICE_BITRATE_MARGIN).toLong()
             val length = (wanted / TS_PACKET_BYTES + 1) * TS_PACKET_BYTES
             fun windowLengthAt(pos: Long) = length.coerceAtMost(source.size - pos)
-            // 找关键帧读到的块也要落盘：它们多半就是切片开头，存储在这之前设好范围，否则这些块只进内存缓存，
-            // 之后预取从内存读到，不再经过存储，盘上就缺了开头
             store?.keepSlice(estimated, windowLengthAt(estimated), bytesPerMs)
-            // 切片从第一个关键帧起：从估的位置截，解码器要先丢掉一堆缺参数集的包，HEVC 逐包报错，
-            // 一段刷几百行日志，还白下了那一截。估的位置之后五秒内（转码每 5 秒一个关键帧）必有一个
+            // 切片从第一个关键帧（含紧邻的 PAT/PMT 包）起
             val keyframeWindow = (bytesPerMs * PreparedClip.KEYFRAME_INTERVAL_MS * PreparedClip.BITRATE_MARGIN).toLong()
             keyframe = source.findKeyframe(estimated, keyframeWindow, role)
             offset = if (keyframe != null) estimated + keyframe.byteOffset else estimated
-            initialWindowBytes = windowLengthAt(offset)
-            sliceLength = (source.size - offset).coerceAtLeast(initialWindowBytes)
-            store?.keepSlice(offset, initialWindowBytes, bytesPerMs)
+            sliceLength = windowLengthAt(offset)
+            store?.keepSlice(offset, sliceLength, bytesPerMs)
             SlicedByteSource(source, offset, sliceLength)
         } catch (t: Throwable) {
             source.close()
             throw t
         }
         val stream = registerProxy(slice, fileName = "clip.ts", role = role) ?: return null
-        fun record(sliceStartMs: Long) = ClipRecord(
+        fun record(sliceStartMs: Long, sliceDurationMs: Long) = ClipRecord(
             fileId = detail.id,
             gcid = detail.hash,
             name = detail.name,
@@ -457,8 +489,9 @@ class PikoMediaRepository(
             mediaId = mediaId,
             streamBytes = source.size,
             sliceOffset = offset,
-            sliceLength = initialWindowBytes,
+            sliceLength = sliceLength,
             sliceStartMs = sliceStartMs,
+            sliceDurationMs = sliceDurationMs,
         )
         // 切片起点的时间戳已在找关键帧时读到；流开头的几十 KB 要另取一次，放到预取之后，不拖慢出会话
         return PreparedClip(
@@ -467,7 +500,7 @@ class PikoMediaRepository(
             sliced = true,
             clipStartMs = startMs,
             bytesPerMs = bytesPerMs,
-            prefetchBytes = initialWindowBytes,
+            maxWindowMs = CLIP_SLICE_MS,
             resolveStart = keyframe?.let { sliceStart ->
                 {
                     // 前台读：这一步在开头预取之后、算作取好之前，与预取一样急。以后台身份读，预取一结束这个文件
@@ -476,8 +509,19 @@ class PikoMediaRepository(
                         ?.let { streamStart -> TsTimestamps.elapsedMs(streamStart, sliceStart.ptsMs) }
                 }
             },
+            resolveWindowDuration = {
+                val headPts = keyframe?.ptsMs
+                    ?: TsTimestamps.firstVideoPtsMs(slice.readAt(0, STREAM_HEAD_BYTES, StreamRole.FOREGROUND))
+                val tailReadOffset = (sliceLength - PreparedClip.SLICE_TAIL_BYTES).coerceAtLeast(0L)
+                val tailPts = TsTimestamps.lastVideoPtsMs(
+                    slice.readAt(tailReadOffset, PreparedClip.SLICE_TAIL_BYTES.toInt(), StreamRole.FOREGROUND),
+                )
+                if (headPts != null && tailPts != null) {
+                    TsTimestamps.elapsedMs(headPts, tailPts).takeIf { it in 1_000L..(CLIP_SLICE_MS * 4) }
+                } else null
+            },
             // 开头与末尾都在盘上了才记，记录在就当它们在
-            onWarmed = { actualStartMs -> clipCache?.remember(key, record(actualStartMs)) },
+            onWarmed = { actualStartMs, actualWindowMs -> clipCache?.remember(key, record(actualStartMs, actualWindowMs)) },
         )
     }
 
@@ -487,11 +531,13 @@ class PikoMediaRepository(
      */
     private suspend fun ProxyByteSource.findKeyframe(offset: Long, window: Long, role: StreamRole): TsTimestamps.VideoPes? {
         var scanned = 0L
+        val overlap = 8 * TS_PACKET_BYTES.toInt()
         while (scanned < window && offset + scanned < size) {
             val chunk = readAt(offset + scanned, KEYFRAME_SCAN_CHUNK, role)
             if (chunk.isEmpty()) return null
             TsTimestamps.firstVideoKeyframe(chunk)?.let { return TsTimestamps.VideoPes(scanned.toInt() + it.byteOffset, it.ptsMs) }
-            scanned += chunk.size
+            if (chunk.size <= overlap) break
+            scanned += chunk.size - overlap
         }
         return null
     }
@@ -540,7 +586,7 @@ class PikoMediaRepository(
      */
     suspend fun reportPlay(fileId: String, positionMillis: Long, durationMillis: Long) {
         // 归档条目与压缩包里的文件在网盘里没有常驻的文件，播放历史记不上；续播位置照样记在本机
-        if (fileId.isBlank() || LeasedFile.isLeased(fileId) || positionMillis <= 0L || durationMillis <= 0L) return
+        if (dev.piko.shared.data.LocalLocation.isLocal(fileId) || fileId.isBlank() || LeasedFile.isLeased(fileId) || positionMillis <= 0L || durationMillis <= 0L) return
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 if (isPlayHistorySynced()) client.reportPlay(fileId, positionMillis / 1000, durationMillis / 1000)
@@ -553,7 +599,7 @@ class PikoMediaRepository(
      * 服务端不能按文件查，只看第一页（最近播放的 100 条）：从历史里点进来的一定在里面，更早的就算了。
      */
     suspend fun cloudPlaybackPosition(fileId: String): Long? {
-        if (fileId.isBlank() || LeasedFile.isLeased(fileId)) return null
+        if (dev.piko.shared.data.LocalLocation.isLocal(fileId) || fileId.isBlank() || LeasedFile.isLeased(fileId)) return null
         // 读偏好也包在里面：这只是续播的参考，任何一步失败都不该挡住开播
         return withContext(Dispatchers.Default) {
             runSuspendCatching {
@@ -617,7 +663,7 @@ class PikoMediaRepository(
                 val detail = detailOf(client, fileId)
                 val resolved = detail.resolveVariant(VariantPreference.Original)
                 val source = openByteSource(client, detail, resolved, leased = LeasedFile.isLeased(fileId), retainedBy = retainedBy)
-                    ?: error("文件缺少内容哈希，无法读取")
+                    ?: error(tr("文件缺少内容哈希，无法读取", "File is missing content hash and cannot be read", "ファイルにハッシュ情報がないため読み込めません", "파일에 콘텐츠 해시가 없어 읽을 수 없습니다", "檔案缺少內容雜湊值，無法讀取"))
                 ReaderRandomAccessSource(source)
             }
         }
@@ -793,7 +839,7 @@ class PikoMediaRepository(
      */
     private suspend fun probeTranscode(client: PikPakClient, media: MediaVariant): Long =
         client.streamRangeFromUrl(media.link.url, start = 0L, length = 1L) { stream ->
-            val size = stream.totalSize?.takeIf { it > 0 } ?: error("PikPak 未给出转码文件的长度")
+            val size = stream.totalSize?.takeIf { it > 0 } ?: error(tr("服务端未返回转码文件大小", "Server did not return transcoded file size", "サーバーから変換ファイルのサイズが返されませんでした", "서버에서 변환 파일 크기를 반환하지 않았습니다", "伺服器未傳回轉碼檔案大小"))
             // 正文提前断开在 Ktor 里是异常，不是读到 -1，两种都算读不出
             val read = runSuspendCatching { stream.channel.readAvailable(ByteArray(1), 0, 1) }
             if ((read.getOrNull() ?: -1) < 1) throw UnreadableTranscodeException(read.exceptionOrNull())
@@ -806,13 +852,21 @@ class PikoMediaRepository(
      */
     private suspend fun transcodeSource(client: PikPakClient, fileId: String, mediaId: String, retainedBy: String?): PikPakByteSource {
         val detail = detailOf(client, fileId)
-        if (detail.hash.isBlank()) error("文件缺少内容哈希，无法读取")
-        if (detail.medias.none { it.mediaId == mediaId && it.link.url.isNotBlank() }) error(TRANSCODE_GONE_MESSAGE)
+        if (detail.hash.isBlank()) error(tr("文件缺少内容哈希，无法读取", "File is missing content hash and cannot be read", "ファイルにハッシュ情報がないため読み込めません", "파일에 콘텐츠 해시가 없어 읽을 수 없습니다", "檔案缺少內容雜湊值，無法讀取"))
+        val variant = detail.medias.firstOrNull { it.mediaId == mediaId && it.link.url.isNotBlank() }
+            ?: error(TRANSCODE_GONE_MESSAGE)
         val streamSize = streamSizeOf(client, detail, mediaId)
+        val mediaRate = estimatedMediaBytesPerSecond(
+            streamSize = streamSize,
+            durationSeconds = variant.video?.duration ?: (durationMsOf(detail) / 1000L),
+            bitRateBitsPerSecond = variant.video?.bitRate,
+        )
         val pool = fileCachePool ?: run {
             val handle = client.fileHandle(detail, mediaId = mediaId, streamSize = streamSize, onRangeAttempt = ::logRangeAttempt)
             return try {
-                PikPakByteSource(handle, handle.openCache(coroutineContext = proxy.readerContext))
+                val cache = handle.openCache(coroutineContext = proxy.readerContext)
+                if (mediaRate != null) cache.updateMediaBytesPerSecond(mediaRate)
+                PikPakByteSource(handle, cache)
             } catch (e: Throwable) {
                 handle.close()
                 throw e
@@ -820,7 +874,8 @@ class PikoMediaRepository(
         }
         val lease = pool.acquire(client, detail.id, detail.hash, detail.sizeBytes, detail.name,
             parentId = detail.parentId, leased = LeasedFile.isLeased(fileId), detail = detail,
-            retained = retainedBy != null, owner = retainedBy ?: detail.id, mediaId = mediaId, streamSize = streamSize)
+            retained = retainedBy != null, owner = retainedBy ?: detail.id, mediaId = mediaId,
+            streamSize = streamSize, mediaBytesPerSecond = mediaRate)
         return PikPakByteSource(lease.entry.handle, lease.entry.cache, lease::close)
     }
 
@@ -829,6 +884,16 @@ class PikoMediaRepository(
 
     private fun durationMsOf(detail: FileDetail): Long =
         detail.params["duration"]?.toDoubleOrNull()?.let { (it * 1000).toLong() } ?: 0L
+
+    private fun estimatedMediaBytesPerSecond(
+        streamSize: Long,
+        durationSeconds: Long,
+        bitRateBitsPerSecond: Long? = null,
+    ): Long? {
+        val bySize = if (streamSize > 0L && durationSeconds > 0L) streamSize / durationSeconds else null
+        val byBitRate = bitRateBitsPerSecond?.takeIf { it > 0L }?.let { it / 8L }
+        return maxOf(bySize ?: 0L, byBitRate ?: 0L).takeIf { it > 0L }
+    }
 
     /**
      * 建 handle 与字节来源。handle 的内容哈希、文件对象与第一条直链都取自 [detail]，第一次读不必再查。
@@ -845,11 +910,17 @@ class PikoMediaRepository(
     ): PikPakByteSource? {
         // handle 在直链被拒时按 gcid 重建文件对象，没有 gcid 就失去了它存在的意义
         if (detail.hash.isBlank()) return null
+        val mediaRate = estimatedMediaBytesPerSecond(
+            streamSize = resolved.sizeBytes ?: detail.sizeBytes.takeIf { resolved.isOrigin } ?: 0L,
+            durationSeconds = resolved.video?.duration ?: (durationMsOf(detail) / 1000L),
+            bitRateBitsPerSecond = resolved.video?.bitRate,
+        )
         if (resolved.isOrigin && blockStore == null) {
             fileCachePool?.let { pool ->
                 val lease = pool.acquire(client, detail.id, detail.hash, detail.sizeBytes, detail.name,
                     parentId = detail.parentId, leased = leased, detail = detail,
-                    retained = retainedBy != null, owner = retainedBy ?: detail.id)
+                    retained = retainedBy != null, owner = retainedBy ?: detail.id,
+                    mediaBytesPerSecond = mediaRate)
                 return PikPakByteSource(lease.entry.handle, lease.entry.cache, lease::close)
             }
         }
@@ -863,7 +934,9 @@ class PikoMediaRepository(
         )
         return try {
             // 原画的大小已知；转码流没有，本进程头一回会发一次 1 字节探测
-            PikPakByteSource(handle, handle.openCache(blockStore, proxy.readerContext))
+            val cache = handle.openCache(blockStore, proxy.readerContext)
+            if (mediaRate != null) cache.updateMediaBytesPerSecond(mediaRate)
+            PikPakByteSource(handle, cache)
         } catch (e: CancellationException) {
             handle.close()
             throw e
@@ -919,10 +992,10 @@ private const val STREAM_HEAD_BYTES = 64 * 1024
 // 188 的倍数，约 256 KiB，与 SDK 的块一样大
 private const val KEYFRAME_SCAN_CHUNK = 188 * 1394
 
-/** 切片按这么长截，远超一段的 30 秒，见 openClipSlice。 */
-private const val CLIP_SLICE_MS = 90_000L
+/** 切片按 180 秒有界窗口截取（含码率余量），覆盖多轮 30 秒续播且保证头尾 PTS 紧致可插值 seek。 */
+private const val CLIP_SLICE_MS = 180_000L
 
-private const val SLICE_BITRATE_MARGIN = 2.0
+private const val SLICE_BITRATE_MARGIN = 1.5
 
 private val FRESH_DETAIL_FOR = 5.minutes
 

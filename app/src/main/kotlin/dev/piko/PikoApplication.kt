@@ -24,6 +24,7 @@ import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.PikoClientManager
 import java.io.File
 import dev.piko.shared.download.PikoDownloadCoordinator
+import dev.piko.shared.i18n.PikoLocale
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.FileClipCache
@@ -71,19 +72,59 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
     /** 首次用到时才建：开屏检查要等界面第一次组合，不必在 onCreate 里就先建一个 HTTP 客户端。 */
     val appUpdater by lazy { AppUpdater(this) }
 
+    private val baseTransportBudgetBytes: Long by lazy {
+        (Runtime.getRuntime().maxMemory() / 6L).coerceIn(24L * 1024 * 1024, 96L * 1024 * 1024)
+    }
+
+    fun restoreTransportMemoryBudget() {
+        if (::services.isInitialized) {
+            services.clientManager.setTransportMemoryBudgetBytes(baseTransportBudgetBytes)
+        }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (!::services.isInitialized) return
+        @Suppress("DEPRECATION")
+        val target = when {
+            level >= TRIM_MEMORY_BACKGROUND || level == TRIM_MEMORY_RUNNING_CRITICAL ->
+                (baseTransportBudgetBytes / 2L).coerceAtLeast(16L * 1024 * 1024)
+            level == TRIM_MEMORY_UI_HIDDEN || level == TRIM_MEMORY_RUNNING_LOW || level == TRIM_MEMORY_RUNNING_MODERATE ->
+                (baseTransportBudgetBytes * 3L / 4L).coerceAtLeast(16L * 1024 * 1024)
+            else -> return
+        }
+        services.clientManager.setTransportMemoryBudgetBytes(target)
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        if (::services.isInitialized) {
+            services.clientManager.setTransportMemoryBudgetBytes(16L * 1024 * 1024)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
         installLog()
 
         sessionManager = SessionManager(this)
+        // 先于进程级服务与系统通知渠道初始化语言绑定，确保无 Activity 唤起或冷启动时通知渠道按用户语言注册
+        val systemLocale = android.content.res.Resources.getSystem().configuration.locales.get(0) ?: java.util.Locale.getDefault()
+        PikoLocale.bindSystemLocale(systemLocale.toLanguageTag())
+        PikoLocale.apply(runBlocking { sessionManager.appLanguageFlow.first() })
         installProxy()
-        val clientManager = PikoClientManager(AndroidPikoSessionStore(this), appScope)
+        val clientManager = PikoClientManager(
+            sessionStore = AndroidPikoSessionStore(this),
+            scope = appScope,
+            transportMemoryBudgetBytes = baseTransportBudgetBytes,
+        )
         val mediaRepository = PikoMediaRepository(
             clientManager,
             sessionManager,
             clipCache = FileClipCache(File(cacheDir, "piko/clip-cache")),
         )
+        val cacheStore = FilePikoCacheStore(File(cacheDir, "piko").path)
         services = PikoServices(
             platformPreferences = sessionManager,
             clientManager = clientManager,
@@ -97,14 +138,32 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
                 mediaRepository = mediaRepository,
             ),
             uploadSources = AndroidPikoUploadSources(this),
-            cacheStore = FilePikoCacheStore(File(cacheDir, "piko").path),
+            localFileAccess = { changed -> dev.piko.platform.AndroidLocalFileAccess(this, appScope, changed) },
+            cacheStore = cacheStore,
             syncCipher = JvmSyncCipher(),
-            metaTube = MetaTubeService(sessionManager) { HttpClient(OkHttp) },
+            metaTube = MetaTubeService(sessionManager, cacheStore = cacheStore, scope = appScope) {
+                HttpClient(OkHttp) {
+                    engine {
+                        config {
+                            dispatcher(okhttp3.Dispatcher().apply {
+                                maxRequests = 64
+                                maxRequestsPerHost = 16
+                            })
+                        }
+                    }
+                }
+            },
         )
         val motionScale = PikoMotionScale().apply { followSystemAnimatorScale(this@PikoApplication) }
         appScope.launch { sessionManager.reduceMotionFlow.collect { motionScale.appReduced = it } }
         platform = AndroidPikoPlatform(this, { appUpdater }, motionScale)
-        WorkResultNotifier(this, services, appScope).start()
+        val notifier = WorkResultNotifier(this, services, appScope).also { it.start() }
+        appScope.launch {
+            sessionManager.appLanguageFlow.collect { lang ->
+                PikoLocale.apply(lang)
+                notifier.refreshChannel()
+            }
+        }
     }
 
     /**
@@ -150,7 +209,12 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
 
     override fun newImageLoader(context: PlatformContext): ImageLoader {
         val okHttpClient = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
+            .dispatcher(okhttp3.Dispatcher().apply {
+                maxRequests = 96
+                maxRequestsPerHost = 32
+            })
+            .connectionPool(okhttp3.ConnectionPool(32, 2, TimeUnit.MINUTES))
+            .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .build()
 

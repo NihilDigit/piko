@@ -1,5 +1,10 @@
 package dev.piko.ui.components
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -61,11 +66,11 @@ internal fun DownloadQualityDialog(
             onConfirm = { onConfirm(DownloadChoice.Cap(picked), keep) },
             onDismiss = onDismiss,
         ) {
-            Text("每个视频取不高于所选的最高一档，都高于所选时取最低一档。转码档存为 MP4。", style = MaterialTheme.typography.bodyMedium)
+            Text(stringResource(Res.string.text_use_the_highest_quality_within_the_limit_or_the_lowest_if_none_fits_transcod), style = MaterialTheme.typography.bodyMedium)
             Column(modifier = Modifier.selectableGroup()) {
                 PlayerGestureDefaults.MaxHeightChoices.forEach { height ->
                     QualityRow(
-                        label = if (height <= 0) "原画" else "${height}P",
+                        label = if (height <= 0) tr("原画", "Original", "オリジナル", "원본", "原畫") else "${height}P",
                         detail = null,
                         selected = height == picked,
                         enabled = true,
@@ -122,20 +127,20 @@ private fun SingleVideoDialog(
         onDismiss = onDismiss,
     ) {
         when {
-            choices.failed -> Text("无法查询这个视频的画质，请稍后重试。", style = MaterialTheme.typography.bodyMedium)
+            choices.failed -> Text(stringResource(Res.string.text_unable_to_get_video_qualities_try_again_later), style = MaterialTheme.typography.bodyMedium)
             options == null -> QualityListSkeleton()
             else -> {
                 Text(
-                    if (options.size > 1) "转码档下载后存为 MP4。" else "这个视频没有转码档，只能下载原画。",
+                    if (options.size > 1) tr("转码视频将保存为 MP4 格式。", "Transcoded videos are saved as MP4.", "変換動画はMP4形式で保存されます。", "변환 동영상은 MP4 형식으로 저장됩니다.", "轉碼影片將儲存為 MP4 格式。") else tr("此视频无可用转码版本，仅可下载原画。", "No transcoded versions available. Only the original can be downloaded.", "利用可能な変換バージョンがないため、オリジナルのみダウンロードできます。", "사용 가능한 변환 버전이 없어 원본만 다운로드할 수 있습니다.", "此影片無可用轉碼版本，僅可下載原畫。"),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Column(modifier = Modifier.selectableGroup()) {
                     options.forEach { option ->
                         QualityRow(
-                            label = option.name ?: "原画",
+                            label = option.name ?: tr("原画", "Original", "オリジナル", "원본", "原畫"),
                             detail = when {
-                                option.unreadable -> "PikPak 暂不可读"
-                                else -> option.sizeBytes?.toReadableSize() ?: if (choices.probing) "正在查询大小" else "大小未知"
+                                option.unreadable -> tr("转码流暂不可用", "Temporarily unavailable", "一時的に利用不可", "일시적으로 사용 불가", "轉碼串流暫無法使用")
+                                else -> option.sizeBytes?.toReadableSize() ?: if (choices.probing) tr("正在查询大小", "Checking size", "サイズを確認中", "크기 확인 중", "正在查詢大小") else tr("大小未知", "Unknown size", "サイズ不明", "크기 알 수 없음", "大小未知")
                             },
                             selected = option.name == selected?.name,
                             enabled = !option.unreadable,
@@ -144,7 +149,7 @@ private fun SingleVideoDialog(
                 }
                 if (pickedUnreadable) {
                     Text(
-                        "PikPak 的 ${pickedOption?.name} 转码文件暂不可读，请改选其他画质。",
+                        tr("${pickedOption?.name} 转码流暂不可用，请选择其他画质。", "${pickedOption?.name} transcoded stream is unavailable. Choose another quality.", "${pickedOption?.name} の変換ストリームを利用できません。別の画質を選択してください。", "${pickedOption?.name} 변환 스트림을 사용할 수 없습니다. 다른 화질을 선택해 주세요.", "${pickedOption?.name} 轉碼串流暫時無法使用，請選擇其他畫質。"),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error,
                     )
@@ -165,13 +170,13 @@ private fun QualityDialogFrame(
     PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.HighQuality, contentDescription = null) },
-        title = { Text("选择下载画质") },
+        title = { Text(stringResource(Res.string.text_choose_download_quality)) },
         text = { Column(verticalArrangement = Arrangement.spacedBy(16.dp)) { content() } },
         confirmButton = {
-            PikoDialogConfirm(label = "下载", onClick = onConfirm, enabled = confirmEnabled)
+            PikoDialogConfirm(label = tr("下载", "Downloads", "ダウンロード", "다운로드", "下載"), onClick = onConfirm, enabled = confirmEnabled)
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) }
         },
     )
 }
@@ -189,7 +194,7 @@ private fun KeepChoiceRow(checked: Boolean, onCheckedChange: (Boolean) -> Unit) 
             .padding(vertical = 4.dp),
     ) {
         Checkbox(checked = checked, onCheckedChange = null)
-        Text("以后按此画质直接下载", style = MaterialTheme.typography.bodyMedium)
+        Text(stringResource(Res.string.text_use_this_quality_for_future_downloads), style = MaterialTheme.typography.bodyMedium)
     }
 }
 

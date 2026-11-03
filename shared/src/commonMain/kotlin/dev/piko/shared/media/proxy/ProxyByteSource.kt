@@ -5,6 +5,7 @@ import io.github.nihildigit.pikpak.PikPakFileCache
 import io.github.nihildigit.pikpak.PikPakStreamReader
 import io.github.nihildigit.pikpak.StreamRole
 import kotlinx.coroutines.Deferred
+import kotlin.time.Duration
 
 /**
  * 代理会话背后的字节来源。
@@ -24,6 +25,9 @@ interface ProxyByteSource : AutoCloseable {
      * 没有缓存可填的来源返回 null。
      */
     suspend fun prefetch(ranges: List<LongRange>, role: StreamRole, priority: Int? = null): Deferred<Unit>? = null
+
+    /** 更新底层共享缓存的媒体平均字节速率（字节/秒）。 */
+    fun updateMediaBytesPerSecond(bytesPerSecond: Long?) = Unit
 }
 
 /** 单游标的顺序读取器，不支持并发调用。 */
@@ -48,6 +52,9 @@ interface ProxyReader : AutoCloseable {
     var urgent: Boolean
         get() = false
         set(_) {}
+
+    /** 向底层流读取器反馈播放器当前已缓冲的媒体时长与字节消耗速率，用于播放头停滞时的期限救援。 */
+    fun reportPlaybackBuffer(bufferedDuration: Duration, mediaBytesPerSecond: Long? = null) = Unit
 
     val position: Long
 
@@ -74,6 +81,10 @@ internal class PikPakByteSource(
 
     override suspend fun prefetch(ranges: List<LongRange>, role: StreamRole, priority: Int?): Deferred<Unit> =
         cache.prefetch(ranges, role, priority)
+
+    override fun updateMediaBytesPerSecond(bytesPerSecond: Long?) {
+        cache.updateMediaBytesPerSecond(bytesPerSecond)
+    }
 
     override fun close() {
         release?.let { it(); return }
@@ -103,6 +114,10 @@ private class PikPakProxyReader(private val reader: PikPakStreamReader) : ProxyR
         set(value) {
             reader.urgent = value
         }
+
+    override fun reportPlaybackBuffer(bufferedDuration: Duration, mediaBytesPerSecond: Long?) {
+        reader.reportPlaybackBuffer(bufferedDuration, mediaBytesPerSecond)
+    }
 
     override val position: Long get() = reader.position
 

@@ -10,7 +10,9 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.withLock
+import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.data.ChildFile
+import dev.piko.shared.i18n.PikoLocale
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -28,7 +30,7 @@ internal object DriveAnalysisCache {
      * 按内容而不是目录 id 缓存：同一目录刷新后内容没变就直接命中，改名或增删则自然失效。
      * 顺序也进指纹，未识别的文件按用户选的排序排列。
      */
-    fun fingerprint(files: List<FileStat>): String {
+    fun fingerprint(files: List<FileStat>, language: AppLanguage = PikoLocale.effectiveLanguage): String {
         var hash = 17L
         files.forEach { file ->
             hash = hash * 31 + file.id.hashCode()
@@ -37,7 +39,7 @@ internal object DriveAnalysisCache {
             hash = hash * 31 + file.isFolder.hashCode()
             hash = hash * 31 + file.mimeType.hashCode()
         }
-        return "${files.size}:$hash"
+        return "${language.name}:${files.size}:$hash"
     }
 
     suspend fun analyze(
@@ -50,9 +52,11 @@ internal object DriveAnalysisCache {
         files: List<FileStat>,
         compute: suspend (List<FileStat>) -> DriveStructure,
     ): DriveStructure {
-        val key = fingerprint(files)
         while (true) {
             currentCoroutineContext().ensureActive()
+            val revision = PikoLocale.revision
+            val language = PikoLocale.effectiveLanguage
+            val key = fingerprint(files, language)
             val pending = CompletableDeferred<DriveStructure>()
             val request = structureLock.withLock {
                 structures.remove(key)?.let {
@@ -72,9 +76,14 @@ internal object DriveAnalysisCache {
             try {
                 val value = compute(files)
                 currentCoroutineContext().ensureActive()
+                val sameLanguage = PikoLocale.revision == revision && PikoLocale.effectiveLanguage == language
                 structureLock.withLock {
-                    putBounded(structures, key, value, MAX_STRUCTURES)
+                    if (sameLanguage) putBounded(structures, key, value, MAX_STRUCTURES)
                     structureRequests.remove(key)
+                }
+                if (!sameLanguage) {
+                    pending.cancel()
+                    continue
                 }
                 pending.complete(value)
                 return value
@@ -98,7 +107,8 @@ internal object DriveAnalysisCache {
     }
 
     /** 名称或类型变化就重新描述，项数相同也不能复用旧结果。 */
-    fun folderKey(folder: FileStat, content: List<ChildFile>?): String = "${folder.id}|${folder.name}|${content?.hashCode() ?: -1}"
+    fun folderKey(folder: FileStat, content: List<ChildFile>?, language: AppLanguage = PikoLocale.effectiveLanguage): String =
+        "${language.name}|${folder.id}|${folder.name}|${content?.hashCode() ?: -1}"
 
     suspend fun folderView(key: String): DriveFolderView? = folderLock.withLock {
         folderViews.remove(key)?.also { folderViews[key] = it }

@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.ui.input.pointer.isTertiaryPressed
 import dev.piko.ui.components.LocalFileDrag
 import dev.piko.ui.components.AdaptiveBar
@@ -49,10 +54,12 @@ import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -533,7 +540,7 @@ private fun SectionHeaderRow(header: DriveListItem.SectionHeader, inset: Dp, onC
             }
             Icon(
                 imageVector = if (header.expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                contentDescription = if (header.expanded) "收起" else "展开",
+                contentDescription = if (header.expanded) tr("收起", "Collapse", "折りたたむ", "접기", "收合") else tr("展开", "Expand", "展開", "펼치기", "展開"),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -668,7 +675,7 @@ private fun DriveCell(
 private fun SortDirectionIcon(order: FileSortOrder, modifier: Modifier = Modifier) {
     Icon(
         imageVector = if (order.isAscending) Icons.Outlined.ArrowUpward else Icons.Outlined.ArrowDownward,
-        contentDescription = if (order.isAscending) "升序" else "降序",
+        contentDescription = if (order.isAscending) tr("升序", "Ascending", "昇順", "오름차순", "遞增") else tr("降序", "Descending", "降順", "내림차순", "遞減"),
         modifier = modifier,
     )
 }
@@ -696,6 +703,8 @@ internal fun DriveListHeader(
     onViewModeChange: (DriveViewMode) -> Unit,
     tileSize: TileSize,
     onTileSizeChange: (TileSize) -> Unit,
+    perFolderSort: Boolean = false,
+    onPerFolderSortChange: ((Boolean) -> Unit)? = null,
     /** 为 false 时只留搜索结果的说明：宽窗口里这些控件在命令栏上。 */
     showControls: Boolean = true,
 ) {
@@ -721,7 +730,9 @@ internal fun DriveListHeader(
         AdaptiveBar(
             modifier = Modifier.fillMaxWidth().height(48.dp),
             leading = listOfNotNull(
-                BarItem("sort", 30, sortOverflowActions(sortOrder, onSortChange)) { SortButton(sortOrder, onSortChange) },
+                BarItem("sort", 30, sortOverflowActions(sortOrder, onSortChange, perFolderSort, onPerFolderSortChange)) {
+                    SortButton(sortOrder, onSortChange, perFolderSort, onPerFolderSortChange)
+                },
                 BarItem("filter", 20, typeFilterOverflowActions(typeFilter, availableTypes, onTypeFilterChange)) {
                     TypeFilterButton(typeFilter, availableTypes, onTypeFilterChange)
                 }.takeIf { showFilter },
@@ -736,25 +747,44 @@ internal fun DriveListHeader(
 }
 
 /** 排序收进「更多」时摊成几项，当前的一项打勾并写出方向，再点它是翻转，与排序按钮的菜单相同。 */
-internal fun sortOverflowActions(sortOrder: FileSortOrder, onSortChange: (FileSortOrder) -> Unit): List<SheetAction> =
-    PikoSortField.entries.map { field ->
+internal fun sortOverflowActions(
+    sortOrder: FileSortOrder,
+    onSortChange: (FileSortOrder) -> Unit,
+    perFolderSort: Boolean = false,
+    onPerFolderSortChange: ((Boolean) -> Unit)? = null,
+): List<SheetAction> = buildList {
+    PikoSortField.entries.forEach { field ->
         val current = field.owns(sortOrder)
-        val direction = if (sortOrder.isAscending) "升序" else "降序"
-        SheetAction(
-            Icons.AutoMirrored.Outlined.Sort,
-            if (current) "按${field.label}（$direction）" else "按${field.label}",
-            { onSortChange(field.selectFrom(sortOrder)) },
-            group = ActionGroup.Sort,
-            checked = current,
+        val direction = if (sortOrder.isAscending) tr("升序", "Ascending", "昇順", "오름차순", "遞增") else tr("降序", "Descending", "降順", "내림차순", "遞減")
+        add(
+            SheetAction(
+                Icons.AutoMirrored.Outlined.Sort,
+                if (current) tr("按${field.label}（$direction）", "Sort by ${field.label} ($direction)", "${field.label}順（$direction）", "${field.label} 정렬 ($direction)", "依${field.label}排序（$direction）") else tr("按${field.label}", "Sort by ${field.label}", "${field.label}順", "${field.label} 정렬", "依${field.label}排序"),
+                { onSortChange(field.selectFrom(sortOrder)) },
+                group = ActionGroup.Sort,
+                checked = current,
+            ),
         )
     }
+    if (onPerFolderSortChange != null) {
+        add(
+            SheetAction(
+                Icons.AutoMirrored.Outlined.Sort,
+                tr("各文件夹独立排序", "Sort each folder separately", "フォルダーごとに並べ替え", "폴더별 정렬", "各資料夾獨立排序"),
+                { onPerFolderSortChange(!perFolderSort) },
+                group = ActionGroup.Sort,
+                checked = perFolderSort,
+            ),
+        )
+    }
+}
 
 internal fun typeFilterOverflowActions(
     typeFilter: FileCategory?,
     availableTypes: List<Pair<FileCategory, Int>>,
     onTypeFilterChange: (FileCategory?) -> Unit,
 ): List<SheetAction> =
-    listOf(SheetAction(Icons.Outlined.FilterList, "全部类型", { onTypeFilterChange(null) }, group = ActionGroup.Filter, checked = typeFilter == null)) +
+    listOf(SheetAction(Icons.Outlined.FilterList, tr("全部类型", "All types", "すべての種類", "모든 유형", "所有類型"), { onTypeFilterChange(null) }, group = ActionGroup.Filter, checked = typeFilter == null)) +
         availableTypes.map { (category, count) ->
             SheetAction(category.icon(), "${category.label}（$count）", { onTypeFilterChange(category) }, group = ActionGroup.Filter, checked = category == typeFilter)
         }
@@ -769,13 +799,18 @@ internal fun viewModeOverflowActions(viewMode: DriveViewMode, onViewModeChange: 
  * 不必为六种组合各列一项。列表页眉与宽窗口的命令栏共用。
  */
 @Composable
-internal fun SortButton(sortOrder: FileSortOrder, onSortChange: (FileSortOrder) -> Unit) {
+internal fun SortButton(
+    sortOrder: FileSortOrder,
+    onSortChange: (FileSortOrder) -> Unit,
+    perFolderSort: Boolean = false,
+    onPerFolderSortChange: ((Boolean) -> Unit)? = null,
+) {
     var showMenu by remember { mutableStateOf(false) }
     Box {
         TextButton(onClick = { showMenu = true }) {
             Icon(Icons.AutoMirrored.Outlined.Sort, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(6.dp))
-            Text("按${sortOrder.field.label}")
+            Text(tr("按${sortOrder.field.label}", "Sort by ${sortOrder.field.label}", "${sortOrder.field.label}順", "${sortOrder.field.label} 정렬", "依${sortOrder.field.label}排序"))
             Spacer(modifier = Modifier.width(2.dp))
             SortDirectionIcon(sortOrder, modifier = Modifier.size(16.dp))
         }
@@ -791,6 +826,23 @@ internal fun SortButton(sortOrder: FileSortOrder, onSortChange: (FileSortOrder) 
                     text = { Text(field.label) },
                     shape = menuItemShape(index, fields.size),
                     trailingIcon = { if (isCurrent) SortDirectionIcon(sortOrder) },
+                )
+            }
+            if (onPerFolderSortChange != null) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+                DropdownMenuItem(
+                    onClick = {
+                        showMenu = false
+                        onPerFolderSortChange(!perFolderSort)
+                    },
+                    text = { Text(stringResource(Res.string.text_sort_each_folder_separately)) },
+                    shape = menuItemShape(0, 1),
+                    trailingIcon = {
+                        if (perFolderSort) Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                    },
                 )
             }
         }
@@ -813,7 +865,7 @@ internal fun TypeFilterButton(
         TextButton(onClick = { showMenu = true }) {
             Icon(Icons.Outlined.FilterList, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(6.dp))
-            Text(typeFilter?.label ?: "全部类型")
+            Text(typeFilter?.label ?: tr("全部类型", "All types", "すべての種類", "모든 유형", "所有類型"))
         }
         PikoDropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
             val options = listOf<Pair<FileCategory?, Int?>>(null to null) + availableTypes
@@ -825,7 +877,7 @@ internal fun TypeFilterButton(
                     },
                     text = {
                         Text(
-                            text = category?.label ?: "全部类型",
+                            text = category?.label ?: tr("全部类型", "All types", "すべての種類", "모든 유형", "所有類型"),
                             color = if (category == typeFilter) MaterialTheme.colorScheme.primary else Color.Unspecified,
                         )
                     },
@@ -846,8 +898,8 @@ internal fun DriveViewMode.icon(selected: Boolean = false) = when (this) {
 
 internal val DriveViewMode.label
     get() = when (this) {
-        DriveViewMode.LIST -> "列表"
-        DriveViewMode.POSTER -> "网格"
+        DriveViewMode.LIST -> tr("列表", "List", "リスト", "목록", "清單")
+        DriveViewMode.POSTER -> tr("网格", "Grid", "グリッド", "격자", "網格")
     }
 
 /**
@@ -873,7 +925,7 @@ internal fun ViewModeToggle(
                     shapes = connectedToggleShapes(index, modes.size),
                     contentPadding = ViewToggleContentPadding,
                 ) {
-                    Icon(mode.icon(selected = mode == viewMode), contentDescription = "${mode.label}视图", modifier = Modifier.size(20.dp))
+                    Icon(mode.icon(selected = mode == viewMode), contentDescription = tr("${mode.label}视图", "${mode.label} view", "${mode.label}表示", "${mode.label} 보기", "${mode.label}檢視"), modifier = Modifier.size(20.dp))
                 }
             }
         }
@@ -908,13 +960,13 @@ internal fun FoldBanner(
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = if (isFolded) "已折叠 $hiddenCount 个次要项" else "已显示全部，含 $hiddenCount 个次要项",
+                text = if (isFolded) tr("已折叠 $hiddenCount 个次要项", "$hiddenCount extras collapsed", "$hiddenCount 個の付属項目を折りたたみ中", "부가 항목 ${hiddenCount}개 접힘", "已摺疊 $hiddenCount 個次要項目") else tr("已显示全部，含 $hiddenCount 个次要项", "Showing all, including $hiddenCount extras", "付属項目 $hiddenCount 個を含めすべて表示", "부가 항목 ${hiddenCount}개를 포함하여 모두 표시", "已顯示全部，包含 $hiddenCount 個次要項目"),
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (isFolded) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
             TextButton(onClick = onToggle) {
-                Text(if (isFolded) "显示全部" else "恢复折叠")
+                Text(if (isFolded) tr("显示全部", "Show all", "すべて表示", "모두 표시", "顯示全部") else tr("恢复折叠", "Reset folding", "折りたたみをリセット", "접기 상태 초기화", "還原摺疊"))
             }
         }
     }

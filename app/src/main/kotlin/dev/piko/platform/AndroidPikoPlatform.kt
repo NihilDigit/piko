@@ -1,5 +1,7 @@
 package dev.piko.platform
 
+import dev.piko.shared.i18n.tr
+
 import android.app.Activity
 import android.content.ClipData
 import android.content.pm.ActivityInfo
@@ -24,6 +26,8 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -122,6 +126,29 @@ class AndroidPikoPlatform(
 
     override val uploadPicker: UploadPicker = AndroidUploadPicker()
 
+    @Composable
+    override fun rememberLocalFolderLauncher(onPicked: (String, String) -> Unit): () -> Unit {
+        val scope = rememberCoroutineScope()
+        val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri != null) {
+                scope.launch {
+                    val picked = withContext(Dispatchers.IO) {
+                        runCatching {
+                            context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            val document = android.provider.DocumentsContract.buildDocumentUriUsingTree(uri, android.provider.DocumentsContract.getTreeDocumentId(uri))
+                            val name = context.contentResolver.query(document, arrayOf(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use {
+                                if (it.moveToFirst()) it.getString(0) else null
+                            } ?: "本地文件夹"
+                            uri.toString() to name
+                        }.getOrNull()
+                    }
+                    picked?.let { onPicked(it.first, it.second) }
+                }
+            }
+        }
+        return { launcher.launch(null) }
+    }
+
     override val videoPreview: VideoPreviewSupport = MpvPreviewSupport()
 
     // 清单里的 intent-filter 已让 Piko 出现在磁力链接与种子文件的选择器里，默认由用户在选择器里点「始终」。
@@ -184,7 +211,7 @@ class AndroidPikoPlatform(
             .putExtra(Intent.EXTRA_TITLE, fileName)
             .putExtra("title", fileName)
         runCatching {
-            context.startActivity(Intent.createChooser(view, "选择播放器").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            context.startActivity(Intent.createChooser(view, tr("选择播放器", "Choose player", "プレーヤーを選択", "플레이어 선택", "選擇播放器")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }.isSuccess
     }
 
@@ -263,7 +290,7 @@ class AndroidPikoPlatform(
             clipData = ClipData.newRawUri(fileName, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(send, "导出日志").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        context.startActivity(Intent.createChooser(send, tr("导出日志", "Export logs", "ログをエクスポート", "로그 내보내기", "匯出日誌")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         true
     }.getOrDefault(false)
 
@@ -274,6 +301,7 @@ class AndroidPikoPlatform(
     private inner class AndroidLocalFiles : LocalFileActions {
         override fun thumbnailModel(path: String): Any? = when {
             path.startsWith("content:") -> path
+            path.startsWith("file:", ignoreCase = true) -> runCatching { File(java.net.URI(path)) }.getOrNull()?.takeIf { it.exists() }
             File(path).exists() -> File(path)
             else -> null
         }
@@ -300,7 +328,7 @@ class AndroidPikoPlatform(
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            startActivity(Intent.createChooser(send, "分享文件"))
+            startActivity(Intent.createChooser(send, tr("分享文件", "Share file", "ファイルを共有", "파일 공유", "分享檔案")))
         }
 
         override fun openContainingFolder(path: String) {
@@ -357,11 +385,12 @@ class AndroidPikoPlatform(
 
     /** 下载位置是 SAF 目录树，选中后持久化授权，偏好里存 content: URI。 */
     private inner class AndroidDownloadLocation : DownloadLocationPicker {
-        override val description = "默认保存到应用私有目录。选择公共目录后，文件保存到你授权的文件夹。"
+        override val description: String
+            get() = tr("默认保存至应用私有目录。选择公共目录后，文件将保存至已授权的文件夹。", "Saved to app-private storage by default. Choose a public folder to save to an authorized location.", "既定ではアプリ専用領域に保存されます。共有フォルダーを選択すると、許可した場所に保存されます。", "기본적으로 앱 전용 폴더에 저장됩니다. 공용 폴더를 선택하면 권한을 허용한 폴더에 저장됩니다.", "預設儲存至應用程式專用目錄。選擇共用目錄後，檔案將儲存至已授權的資料夾。")
 
         override fun displayName(storedPath: String): String {
             if (storedPath.startsWith("content:")) {
-                return DocumentFile.fromTreeUri(context, Uri.parse(storedPath))?.name ?: "已选择的文件夹"
+                return DocumentFile.fromTreeUri(context, Uri.parse(storedPath))?.name ?: tr("已选择的文件夹", "Selected folder", "選択したフォルダー", "선택한 폴더", "已選擇的資料夾")
             }
             return storedPath.ifBlank {
                 context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.absolutePath

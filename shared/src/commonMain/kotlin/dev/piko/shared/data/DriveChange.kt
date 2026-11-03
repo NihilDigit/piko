@@ -1,5 +1,7 @@
 package dev.piko.shared.data
 
+import io.github.nihildigit.pikpak.FileStat
+
 /**
  * 网盘里的一次改动。凡是改了网盘的都经 [PikoDriveRepository.applyChange] 收口：文件夹索引、列表缓存、
  * 各处存着的路径与订阅者（网盘页、目录图）都从这一处得知，不再各自清各自的缓存。
@@ -11,7 +13,13 @@ sealed interface DriveChange {
 
     fun affects(folderId: String): Boolean = folders?.contains(folderId) ?: true
 
-    class Created(val parentId: String, val id: String, val name: String, val isFolder: Boolean) : DriveChange {
+    class Created(
+        val parentId: String,
+        val id: String,
+        val name: String,
+        val isFolder: Boolean,
+        val stat: FileStat? = null,
+    ) : DriveChange {
         override val folders: Set<String> = setOf(parentId)
     }
 
@@ -38,6 +46,9 @@ sealed interface DriveChange {
     class Copied(val ids: List<String>, val to: String) : DriveChange {
         override val folders: Set<String> = setOf(to)
     }
+
+    /** 星标状态变更。只更新对应节点的标签与受影响目录视图，不废除整棵本地文件树。 */
+    class Starred(val ids: List<String>, val starred: Boolean, override val folders: Set<String>?) : DriveChange
 
     /** 文件夹里多了或少了东西、条目的属性变了，具体是哪几项不重要：上传、解压、转存、归档、星标。 */
     class ContentsChanged(override val folders: Set<String>?) : DriveChange

@@ -23,6 +23,20 @@ import kotlin.test.assertTrue
  */
 class WorkProgressTest {
     @Test
+    fun englishTransferCountersUseSingularAndPluralForms() {
+        try {
+            dev.piko.shared.i18n.PikoLocale.apply(dev.piko.data.auth.AppLanguage.EN)
+            val work = transferProgress(
+                listOf(download("a.mp4", DownloadStatus.DOWNLOADING)),
+                listOf(upload("b.mkv", UploadStatus.UPLOADING), upload("c.mkv", UploadStatus.QUEUED)),
+            )!!
+            assertEquals("Download 1 file, Upload 2 files", work.title)
+        } finally {
+            dev.piko.shared.i18n.PikoLocale.apply(dev.piko.data.auth.AppLanguage.ZH_CN)
+        }
+    }
+
+    @Test
     fun closedDraftSavesKeepProgressWithoutDuplicatingOfflineSubmissions() {
         val executions = listOf(
             InstantSaveExecution(1, trackedOffline = false, trackedInstantAttempt = true),

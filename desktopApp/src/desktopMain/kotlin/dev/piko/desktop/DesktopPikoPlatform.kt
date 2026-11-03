@@ -1,5 +1,7 @@
 package dev.piko.desktop
 
+import dev.piko.shared.i18n.tr
+
 import dev.piko.desktop.winrt.WindowsLaunchAtStartup
 import dev.piko.ui.platform.LaunchAtStartup
 
@@ -13,7 +15,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.ExperimentalTextApi
+import dev.piko.data.auth.AppLanguage
+import dev.piko.shared.i18n.PikoLocale
+import org.jetbrains.skia.FontMgr
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -81,7 +85,7 @@ class DesktopPikoPlatform(
     override val motionStyle: MotionStyle = MotionStyle.Standard
 
     // jpackage 启动器写进 -Djpackage.app-version；gradle run 时没有，显示为开发版
-    override val appVersion: String = System.getProperty("jpackage.app-version") ?: "开发版"
+    override val appVersion: String = System.getProperty("jpackage.app-version") ?: "dev"
 
     // Flatpak 里为 null：更新归 flatpak 管，自己也写不进 /app，界面据此不给检查更新的入口
     override val updater: DesktopAppUpdater? = DesktopAppUpdater.create()
@@ -102,7 +106,7 @@ class DesktopPikoPlatform(
 
     @Composable
     override fun dynamicColorScheme(dark: Boolean): ColorScheme =
-        error("桌面端不支持系统取色，外观会落到内置主题上")
+        error(tr("桌面端不支持系统取色，已回退至内置主题", "System colors are unavailable on desktop; falling back to built-in theme", "デスクトップ版はシステムカラーに非対応のため、内蔵テーマを使用します", "데스크톱에서는 시스템 색상을 지원하지 않아 내장 테마를 사용합니다", "桌面版不支援系統取色，已回退至內建主題"))
 
     override val supportsBlur: Boolean = true
 
@@ -111,16 +115,25 @@ class DesktopPikoPlatform(
         System.getProperty("piko.release-build") != "true" && System.getProperty("piko.debug.folder-map") == "true"
 
 
-    // 中文 Windows 自己的界面字体，西文部分取自 Segoe UI。默认字体族在 Windows 上只有 Segoe UI 与
-    // Arial，汉字全靠系统后备，英文系统按英文 locale 挑，常用字落到日文字体、简体字落到雅黑，
-    // 一个词里两种字体。Compose 1.12 不把 TextStyle 的 localeList 交给 Skia，标注语言也改不了后备的选择。
-    // macOS 的后备同样按系统语言挑，指定系统自带的苹方；Linux 挑一个装了的简体中文字体，见 LinuxDesktop.cjkFontFamily
-    @OptIn(ExperimentalTextApi::class)
-    override val fontFamily: FontFamily = when {
-        isMacOs -> FontFamily("PingFang SC")
-        isLinux -> LinuxDesktop.cjkFontFamily?.let { FontFamily(it) } ?: FontFamily.Default
-        else -> FontFamily("Microsoft YaHei UI")
-    }
+    /**
+     * 按当前有效语言选取单个真正生效的系统主字体（禁止使用多个 FontFamily(name).fonts flatMap 拼接，
+     * Compose Desktop 的 FontListFontFamily 按字重只取第一个匹配的 SystemFont，后续字体会被全部丢弃）。
+     */
+    @OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
+    override val fontFamily: FontFamily
+        get() {
+            val candidates = desktopPrimaryFontCandidates(
+                isMacOs = isMacOs,
+                isLinux = isLinux,
+                effectiveLanguage = PikoLocale.effectiveLanguage,
+                systemLanguage = PikoLocale.systemLanguage,
+            )
+            val picked = runCatching {
+                val fontMgr = FontMgr.default
+                candidates.firstOrNull { name -> fontMgr.matchFamily(name).use { it.count() > 0 } }
+            }.getOrNull()
+            return if (picked == null) FontFamily.Default else FontFamily(picked)
+        }
 
     override val shortcutModifier: ShortcutModifier = if (isMacOs) ShortcutModifier.Command else ShortcutModifier.Ctrl
 
@@ -134,11 +147,11 @@ class DesktopPikoPlatform(
     override suspend fun exportLog(fileName: String, content: String): Boolean {
         val owner = activeWindow()
         val target = when (
-            val picked = SaveFilePicker.pickSaveFile(owner, settings.downloadDirectory, fileName, "导出日志", "文本文件", "*.txt")
+            val picked = SaveFilePicker.pickSaveFile(owner, settings.downloadDirectory, fileName, tr("导出日志", "Export logs", "ログをエクスポート", "로그 내보내기", "匯出日誌"), tr("文本文件", "Text files", "テキストファイル", "텍스트 파일", "文字檔案"), "*.txt")
         ) {
             is FolderPickResult.Picked -> picked.folder
             FolderPickResult.Cancelled -> return false
-            FolderPickResult.Unavailable -> AwtDialogs.chooseSaveFile(owner, "导出日志", settings.downloadDirectory, fileName) ?: return false
+            FolderPickResult.Unavailable -> AwtDialogs.chooseSaveFile(owner, tr("导出日志", "Export logs", "ログをエクスポート", "로그 내보내기", "匯出日誌"), settings.downloadDirectory, fileName) ?: return false
         }
         return withContext(Dispatchers.IO) { runCatching { target.writeText(content) }.isSuccess }
     }
@@ -157,7 +170,14 @@ class DesktopPikoPlatform(
     }
 
     override val localFiles: LocalFileActions = object : LocalFileActions {
-        override fun thumbnailModel(path: String): Any? = File(path).takeIf { it.exists() }
+        override fun thumbnailModel(path: String): Any? {
+            val file = if (path.startsWith("file:", ignoreCase = true)) {
+                runCatching { File(java.net.URI(path)) }.getOrNull()
+            } else {
+                File(path)
+            }
+            return file?.takeIf { it.exists() }
+        }
 
         override fun exists(path: String): Boolean = File(path).exists()
 
@@ -186,7 +206,8 @@ class DesktopPikoPlatform(
     }
 
     override val downloadLocation: DownloadLocationPicker = object : DownloadLocationPicker {
-        override val description = "下载的文件保存到这个文件夹。"
+        override val description: String
+            get() = tr("下载的文件将保存至此文件夹。", "Downloaded files will be saved to this folder.", "ダウンロードしたファイルはこのフォルダーに保存されます。", "다운로드한 파일은 이 폴더에 저장됩니다.", "下載的檔案將儲存至此資料夾。")
 
         override fun displayName(storedPath: String): String =
             storedPath.ifBlank { settings.downloadDirectory.absolutePath }
@@ -203,7 +224,20 @@ class DesktopPikoPlatform(
             return {
                 val owner = activeWindow()
                 scope.launch {
-                    pickFolder(owner, settings.downloadDirectory, "选择下载位置")?.let { onPicked(it.absolutePath) }
+                    pickFolder(owner, settings.downloadDirectory, tr("选择下载位置", "Choose download location", "ダウンロード先を選択", "다운로드 위치 선택", "選擇下載位置"))?.let { onPicked(it.absolutePath) }
+                }
+            }
+        }
+    }
+
+    @Composable
+    override fun rememberLocalFolderLauncher(onPicked: (String, String) -> Unit): () -> Unit {
+        val scope = rememberCoroutineScope()
+        return {
+            val owner = activeWindow()
+            scope.launch {
+                pickFolder(owner, null, tr("挂载本地文件夹", "Mount local folder", "ローカルフォルダーをマウント", "로컬 폴더 마운트", "掛載本機資料夾"))?.let {
+                    onPicked(it.absolutePath, it.name)
                 }
             }
         }
@@ -216,7 +250,7 @@ class DesktopPikoPlatform(
             return {
                 val owner = activeWindow()
                 scope.launch {
-                    val files = AwtDialogs.chooseFiles(owner, "选择要上传的文件")
+                    val files = AwtDialogs.chooseFiles(owner, tr("选择要上传的文件", "Choose files to upload", "アップロードするファイルを選択", "업로드할 파일 선택", "選擇要上傳的檔案"))
                     if (files.isNotEmpty()) onPicked(files.map { it.absolutePath })
                 }
             }
@@ -228,7 +262,7 @@ class DesktopPikoPlatform(
             return {
                 val owner = activeWindow()
                 scope.launch {
-                    pickFolder(owner, null, "选择要上传的文件夹")?.let { onPicked(it.absolutePath) }
+                    pickFolder(owner, null, tr("选择要上传的文件夹", "Choose folder to upload", "アップロードするフォルダーを選択", "업로드할 폴더 선택", "選擇要上傳的資料夾"))?.let { onPicked(it.absolutePath) }
                 }
             }
         }
@@ -316,5 +350,39 @@ private suspend fun pickFolder(owner: Window?, initial: File?, title: String): F
         is FolderPickResult.Picked -> result.folder
         FolderPickResult.Cancelled -> null
         FolderPickResult.Unavailable -> AwtDialogs.chooseDirectory(owner, initial, title)
+    }
+}
+
+internal fun desktopPrimaryFontCandidates(
+    isMacOs: Boolean,
+    isLinux: Boolean,
+    effectiveLanguage: AppLanguage,
+    systemLanguage: AppLanguage,
+): List<String> = when {
+    isLinux -> LinuxDesktop.cjkFontCandidatesFor(effectiveLanguage, systemLanguage)
+    isMacOs -> when (effectiveLanguage) {
+        AppLanguage.ZH_HANT -> listOf("PingFang TC", "PingFang HK", "PingFang SC")
+        AppLanguage.JA -> listOf("Hiragino Sans", "PingFang SC")
+        AppLanguage.KO -> listOf("Apple SD Gothic Neo", "PingFang SC")
+        AppLanguage.EN, AppLanguage.SYSTEM -> when (systemLanguage) {
+            AppLanguage.ZH_HANT -> listOf("PingFang TC", "PingFang HK", "PingFang SC")
+            AppLanguage.JA -> listOf("Hiragino Sans", "PingFang SC")
+            AppLanguage.KO -> listOf("Apple SD Gothic Neo", "PingFang SC")
+            else -> listOf("PingFang SC")
+        }
+        AppLanguage.ZH_CN -> listOf("PingFang SC")
+    }
+    // Windows：雅黑与正黑的 ASCII 0x5C 本就是标准 '\'，直接作为主字体可保证汉字 100% 统一不混排；
+    // 英文下跟随系统原始简繁偏好（非繁中默认雅黑），既保持 Segoe UI 西文度量又避免中文文件名退化成 SimSun 宋体；
+    // 日文与韩文用 Segoe UI 防止 Yu Gothic UI / Malgun Gothic 把 0x5C 画成 ¥ / ₩，结合显式 LocaleList 确定性回退。
+    else -> when (effectiveLanguage) {
+        AppLanguage.ZH_CN -> listOf("Microsoft YaHei UI", "Microsoft YaHei")
+        AppLanguage.ZH_HANT -> listOf("Microsoft JhengHei UI", "Microsoft JhengHei", "Microsoft YaHei UI")
+        AppLanguage.JA, AppLanguage.KO -> listOf("Segoe UI")
+        AppLanguage.EN, AppLanguage.SYSTEM -> if (systemLanguage == AppLanguage.ZH_HANT) {
+            listOf("Microsoft JhengHei UI", "Microsoft JhengHei", "Microsoft YaHei UI", "Microsoft YaHei")
+        } else {
+            listOf("Microsoft YaHei UI", "Microsoft YaHei")
+        }
     }
 }

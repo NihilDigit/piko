@@ -22,6 +22,8 @@ class ClipRecord(
     val sliceLength: Long,
     /** 切片实际从全片哪一刻开始，读自切片里的时间戳，见 PreparedClip。 */
     val sliceStartMs: Long,
+    /** 切片按首尾 PTS 实测的可播放时长（毫秒），小于等于 0 时按未知处理。 */
+    val sliceDurationMs: Long = 0L,
 )
 
 /**

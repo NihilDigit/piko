@@ -1,5 +1,6 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.upload.isUploading
@@ -31,7 +32,7 @@ class ArchiveSubmissionUnconfirmed(cause: Throwable) : RuntimeException(cause.me
 /** 服务端解压。压缩包的解析与写入都在 PikPak 那边完成，本机不下载任何内容。 */
 class ArchiveRepository(private val clientManager: PikoClientProvider) {
     // 消息会原样显示在失败的那一行上
-    private val client get() = clientManager.currentClient.value ?: error("未登录")
+    private val client get() = clientManager.currentClient.value ?: error(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入"))
 
     /**
      * 把 [file] 解压到它旁边的新文件夹里，文件夹名取压缩包去掉扩展名。[paths] 只解压包里的这几项（包内路径），
@@ -42,7 +43,7 @@ class ArchiveRepository(private val clientManager: PikoClientProvider) {
             val current = client
             // 接口要求 gcid。列表里的文件通常带着，刚上传完的可能还没算出来，此时取一次详情
             val gcid = file.hash.ifEmpty { current.getFile(file.id).hash }
-            check(gcid.isNotEmpty()) { "文件尚未完成校验，稍后再试" }
+            check(gcid.isNotEmpty()) { tr("文件正在校验，请稍后重试", "File verification in progress. Try again later", "ファイルを検証中です。しばらくしてから再試行してください", "파일을 확인 중입니다. 잠시 후 다시 시도해 주세요", "檔案正在驗證，請稍後重試") }
             // 先列一层再提交。解压接口对从没解析过的加密包照单全收，要等任务失败才知道缺密码
             // （2026-09-25 实测，新传的 ZipCrypto 包连提交两次都是如此）；列目录则当场报缺密码或密码错误
             current.listArchive(file.id, gcid, password = password)
@@ -91,7 +92,7 @@ class ArchiveRepository(private val clientManager: PikoClientProvider) {
                         }
                     }
                 }
-                error("服务端未能读取压缩包内的文件")
+                error(tr("服务端无法读取压缩包内容", "Server could not read archive contents", "サーバーで圧縮ファイルの内容を読み取れませんでした", "서버에서 압축 파일 내용을 읽지 못했습니다", "伺服器無法讀取壓縮檔內容"))
             }.logFailure(TAG, "为压缩包 ${location.archiveId} 建包内文件树失败，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
         }
 
@@ -100,11 +101,11 @@ class ArchiveRepository(private val clientManager: PikoClientProvider) {
             val progress = owner.getDecompressProgress(taskId)
             when (progress.phase) {
                 TaskPhase.COMPLETE -> return progress.fileId
-                TaskPhase.ERROR -> error(progress.errorDescription.ifEmpty { "解压失败" })
+                TaskPhase.ERROR -> error(progress.errorDescription.ifEmpty { tr("解压失败", "Extraction failed", "解凍に失敗しました", "압축 해제 실패", "解壓縮失敗") })
             }
             delay(PRIME_POLL_INTERVAL)
         }
-        error("解压超时")
+        error(tr("解压超时", "Extraction timed out", "解凍がタイムアウトしました", "압축 해제 시간이 초과되었습니다", "解壓縮逾時"))
     }
 
     // 实测树在解压完成后 170 到 420ms 出现；三秒还没有的，再等一分多钟也没有

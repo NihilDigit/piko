@@ -1,5 +1,7 @@
 package dev.piko.desktop.ui.clips
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -17,7 +19,9 @@ import dev.piko.desktop.TitleBarThemeEffect
 import dev.piko.desktop.WindowFrame
 import dev.piko.desktop.bringToFront
 import dev.piko.desktop.rememberRememberedWindowState
+import dev.piko.shared.i18n.PikoLocale
 import dev.piko.ui.ClipFeedLinks
+import dev.piko.ui.LocalAppLanguage
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.PikoServices
 import dev.piko.ui.components.LocalPointerSource
@@ -51,7 +55,7 @@ fun ClipFeedWindow(
     val windowState = rememberRememberedWindowState(settings, "clips", DpSize(1000.dp, 620.dp))
     PikoWindow(
         onCloseRequest = links.dock,
-        title = "信息流 - Piko",
+        title = tr("信息流 - Piko", "Feed - Piko", "フィード - Piko", "피드 - Piko", "資訊流 - Piko"),
         icon = icon,
         state = windowState,
     ) {
@@ -60,14 +64,16 @@ fun ClipFeedWindow(
         LaunchedEffect(raise) { bringToFront(window) }
         // 独立的组合树，主窗口根部的输入来源追踪管不到这里
         val pointerSource = remember { PointerSource() }
+        val effectiveLanguage = PikoLocale.effectiveLanguageState.value
         CompositionLocalProvider(
+            LocalAppLanguage provides effectiveLanguage,
             LocalPikoServices provides services,
             LocalPikoPlatform provides platform,
             LocalPointerSource provides pointerSource,
         ) {
             PikoTheme(appearance = appearance) {
                 WindowFrame(
-                    title = "信息流 - Piko",
+                    title = tr("信息流 - Piko", "Feed - Piko", "フィード - Piko", "피드 - Piko", "資訊流 - Piko"),
                     icon = icon,
                     colors = ClipTitleBarColors,
                     onCloseInContent = links.dock,

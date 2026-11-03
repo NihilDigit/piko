@@ -35,9 +35,10 @@ class VaultTrees internal constructor(
     private var pendingSave: Job? = null
 
     /** 记下一次归档或合并进别处的：键是选的那一层与中间各层，值是其下写了清单的文件夹。有新内容时返回 true。 */
-    fun merge(members: Map<String, Set<String>>): Boolean {
+    fun merge(members: Map<String, Set<String>>, expectedAccount: String? = null): Boolean {
         var changed = false
         trees.update { current ->
+            if (expectedAccount != null && account != expectedAccount) return@update current
             union(current, members).also { changed = it != current }
         }
         if (changed) scheduleSave()

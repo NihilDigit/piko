@@ -180,4 +180,14 @@ class ClipFeedSessionTest {
         assertEquals(shortVideo.id, session.upcoming.first().fileId)
         assertFalse(session.isEmpty)
     }
+
+    @Test fun autoAdvancePersistsWithinActiveSessionAndResetsOnClose() = runSession { server, _, session, _ ->
+        server.addVideo("ep1.mp4", durationSeconds = 120.0)
+        session.open(path)
+        assertFalse(session.autoAdvance)
+        session.autoAdvance = true
+        assertTrue(session.autoAdvance)
+        session.close()
+        assertFalse(session.autoAdvance)
+    }
 }

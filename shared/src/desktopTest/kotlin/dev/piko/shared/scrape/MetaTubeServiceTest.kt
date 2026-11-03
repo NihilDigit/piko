@@ -1,5 +1,6 @@
 package dev.piko.shared.scrape
 
+import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.naming.parseMediaName
 import dev.piko.shared.smoke.MemoryPreferences
 import io.ktor.client.HttpClient
@@ -8,10 +9,14 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -93,5 +98,58 @@ class MetaTubeServiceTest {
         }
         val result = MetaTubeClient(HttpClient(slow), "http://metatube.test", "", timeoutMillis = 100).search("ABC-123")
         assertIs<MetaTubeTimeoutException>(result.exceptionOrNull())
+    }
+
+    @Test
+    fun `in-flight requests coalesce across callers survive first caller cancellation and persist found titles only`() = runBlocking<Unit> {
+        val store = object : PikoCacheStore {
+            val map = HashMap<String, String>()
+            override suspend fun read(key: String): String? = synchronized(map) { map[key] }
+            override suspend fun write(key: String, content: String) = synchronized(map) { map[key] = content }
+            override suspend fun delete(key: String) { synchronized(map) { map.remove(key) } }
+        }
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val searchCalls = AtomicInteger()
+        val gatedEngine = MockEngine { request ->
+            when (request.url.parameters["q"]) {
+                "ABC-123" -> {
+                    searchCalls.incrementAndGet()
+                    entered.complete(Unit)
+                    release.await()
+                    respond("""{"data":[{"id":"a1","number":"ABC-123","title":"持久化片名","provider":"A"}]}""", headers = json)
+                }
+                else -> respond("""{"error":{"code":404,"message":"info not found"}}""", HttpStatusCode.NotFound, json)
+            }
+        }
+        val prefs = MemoryPreferences().apply {
+            metaTubeUrlFlow.value = "http://metatube.test"
+            metaTubeTokenFlow.value = "secret"
+        }
+        val firstService = MetaTubeService(prefs, cacheStore = store, saveDelayMillis = 10L) { HttpClient(gatedEngine) }
+        val caller1 = async { firstService.titles(listOf(av("ABC-123.mp4"))) }
+        entered.await()
+        val caller2 = async { firstService.titles(listOf(av("ABC-123.mp4"), av("NONE-001.mp4"))) }
+        delay(20)
+        caller1.cancel()
+        release.complete(Unit)
+
+        val secondResult = caller2.await()
+        assertEquals(mapOf("ABC-123" to "持久化片名"), secondResult.titles)
+        assertEquals(1, searchCalls.get(), "并发查同一番号应单飞合并，且首个调用方取消不中断共享请求")
+        firstService.flushPendingSave()
+
+        // 新进程重建服务：已查到的非空片名直接从磁盘命中（0 网络请求），未查到的 NONE-001 未落盘会重新查询
+        val secondCalls = AtomicInteger()
+        val secondService = MetaTubeService(prefs, cacheStore = store) {
+            HttpClient(MockEngine { req ->
+                secondCalls.incrementAndGet()
+                respond("""{"error":{"code":404,"message":"info not found"}}""", HttpStatusCode.NotFound, json)
+            })
+        }
+        assertEquals(mapOf("ABC-123" to "持久化片名"), secondService.titles(listOf(av("ABC-123.mp4"))).titles)
+        assertEquals(0, secondCalls.get(), "持久化过的非空片名跨进程零网络命中")
+        val storedJson = store.read(MetaTubeService.CACHE_FILE_KEY).orEmpty()
+        assertFalse("NONE-001" in storedJson, "未查到的番号不得写入磁盘缓存")
     }
 }

@@ -1,5 +1,8 @@
 package dev.piko.update
 
+import dev.piko.data.auth.AppLanguage
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -18,6 +21,12 @@ import kotlinx.coroutines.flow.asSharedFlow
 interface AvailableUpdate {
     val version: String
     val notes: String
+    val localizedNotes: Map<AppLanguage, String> get() = emptyMap()
+    fun notesFor(language: AppLanguage): String =
+        localizedNotes[language]?.takeIf { it.isNotBlank() }
+            ?: localizedNotes[AppLanguage.ZH_CN]?.takeIf { it.isNotBlank() }
+            ?: notes
+
     val pageUrl: String
 
     /** 这次实际要下载的字节数。桌面端增量更新时远小于整个安装包。 */
@@ -114,7 +123,7 @@ abstract class GithubUpdateService<U : AvailableUpdate>(
                 is ReleaseCheck.Newer -> try {
                     val update = resolve(check.release)
                     PikoLog.i(TAG, "检查更新：$currentVersion → ${check.release.version}" +
-                        (update?.let { "，附件 ${it.downloadSize} 字节${if (it.canInstallInApp) "" else "，不能应用内安装"}" } ?: "，本平台附件尚未上传"))
+                        (update?.let { "，附件 ${it.downloadSize} 字节${if (it.canInstallInApp) "" else "，不能应用内安装"}" } ?: tr("，本平台附件尚未上传", "; download for this platform is not available yet", "。このプラットフォーム用のファイルは未公開です", ". 이 플랫폼의 파일이 아직 업로드되지 않았습니다", "，本平台附件尚未上傳")))
                     update?.let { UpdateStatus.Available(it) } ?: UpdateStatus.UpToDate
                 } catch (e: CancellationException) {
                     throw e
@@ -144,7 +153,7 @@ abstract class GithubUpdateService<U : AvailableUpdate>(
             val update = (status as? UpdateStatus.Available)?.update ?: return
             // 上次装这一版没成功：照样弹出，忽略过也不算数，用户点过更新，说明并没有打算跳过它
             if (takePreviousFailure(update.version)) {
-                status = UpdateStatus.Failed("上次更新未完成，当前版本未受影响", update)
+                status = UpdateStatus.Failed(tr("上次更新未完成，当前版本未受影响", "Previous update was incomplete; current version is unchanged", "前回の更新は未完了ですが、現在のバージョンは影響を受けていません", "이전 업데이트가 완료되지 않았으며 현재 버전은 영향이 없습니다", "上次更新未完成，目前版本未受影響"), update)
                 startupUpdate = update
             } else if (!isIgnored(update.version)) {
                 startupUpdate = update
@@ -170,17 +179,17 @@ abstract class GithubUpdateService<U : AvailableUpdate>(
      * UnknownHostException 之类的原文用户读不懂也用不上。
      */
     private fun failure(cause: Throwable): UpdateStatus.Failed {
-        log("检查更新失败", cause)
-        return UpdateStatus.Failed(if (cause.isNetworkFailure()) "网络不通，检查网络后重试" else "检查更新未完成，稍后重试")
+        log(tr("检查更新失败", "Update check failed", "更新の確認に失敗しました", "업데이트 확인 실패", "檢查更新失敗"), cause)
+        return UpdateStatus.Failed(if (cause.isNetworkFailure()) tr("无法连接网络，请检查网络设置后重试", "Unable to connect. Check your network settings and retry", "接続できません。ネットワーク設定を確認して再試行してください", "연결할 수 없습니다. 네트워크 설정을 확인한 후 다시 시도해 주세요", "無法連線網路，請檢查網路設定後重試") else tr("检查更新失败，请稍后重试", "Update check failed. Try again later", "更新を確認できませんでした。しばらくしてから再試行してください", "업데이트를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요", "檢查更新失敗，請稍後重試"))
     }
 
     /** 下载与校验失败，措辞同上。校验不符单独说：重试多半还是同一个结果，该去下载页。 */
     protected fun downloadFailed(cause: Throwable, update: AvailableUpdate): UpdateStatus.Failed {
-        log("下载更新失败", cause)
+        log(tr("下载更新失败", "Update download failed", "更新のダウンロードに失敗しました", "업데이트 다운로드 실패", "下載更新失敗"), cause)
         val message = when {
-            cause is ChecksumMismatchException -> "安装包校验未通过，请从下载页获取"
-            cause.isNetworkFailure() -> "网络不通，检查网络后重试"
-            else -> "下载未完成，稍后重试"
+            cause is ChecksumMismatchException -> tr("安装包校验未通过，请从下载页获取", "Package verification failed. Use the download page", "パッケージの検証に失敗しました。ダウンロードページから取得してください", "설치 패키지 검증에 실패했습니다. 다운로드 페이지에서 받으세요", "安裝套件驗證未通過，請從下載頁取得")
+            cause.isNetworkFailure() -> tr("无法连接网络，请检查网络设置后重试", "Unable to connect. Check your network settings and retry", "接続できません。ネットワーク設定を確認して再試行してください", "연결할 수 없습니다. 네트워크 설정을 확인한 후 다시 시도해 주세요", "無法連線網路，請檢查網路設定後重試")
+            else -> tr("下载未完成，请稍后重试", "Download incomplete. Try again later", "ダウンロードが完了しませんでした。しばらくしてから再試行してください", "다운로드가 완료되지 않았습니다. 잠시 후 다시 시도해 주세요", "下載未完成，請稍後重試")
         }
         return UpdateStatus.Failed(message, update)
     }

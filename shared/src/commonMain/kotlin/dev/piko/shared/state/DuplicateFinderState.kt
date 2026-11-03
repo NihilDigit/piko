@@ -1,5 +1,6 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.tr
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -137,7 +138,7 @@ class DuplicateFinderState(
 
     fun rescan() {
         scanJob?.cancel()
-        val scanner = DuplicateScanner(clients).also { scanner = it }
+        val scanner = DuplicateScanner(clients, driveRepo).also { scanner = it }
         phase = Phase.SCANNING
         scannedFolders = 0
         scannedFiles = 0
@@ -173,7 +174,7 @@ class DuplicateFinderState(
                 throw e
             } catch (e: Throwable) {
                 PikoLog.w("Duplicates", "查找重复失败", e)
-                errorMessage = e.message ?: "未知错误"
+                errorMessage = e.message ?: tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류", "未知錯誤")
                 phase = Phase.FAILED
             }
         }

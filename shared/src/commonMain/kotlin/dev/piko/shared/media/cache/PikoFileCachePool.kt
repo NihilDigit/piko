@@ -1,5 +1,6 @@
 package dev.piko.shared.media.cache
 
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.logRangeAttempt
 import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.PikPakClient
@@ -97,13 +98,15 @@ class PikoFileCachePool(
         mediaId: String? = null,
         /** 要读的那一档的长度，即暂存的大小。原画就是 [size]。 */
         streamSize: Long = size,
+        /** 已知的媒体平均字节消耗率（字节/秒），用于自适应播放缓冲余量与前后台并发调度。 */
+        mediaBytesPerSecond: Long? = null,
     ): Lease {
         val key = identity(client.account, gcid, streamSize, mediaId)
         return lock.withLock {
             val old = entries[key]
             // 换号后的旧客户端不能用于新请求；旧读者会随账号切换结束。
             if (old != null && old.client !== client) {
-                check(old.references == 0) { "账号会话正在切换，请稍后重试" }
+                check(old.references == 0) { tr("正在切换账号，请稍后重试", "Switching account. Try again shortly", "アカウントを切り替え中です。しばらくしてから再試行してください", "계정을 전환 중입니다. 잠시 후 다시 시도해 주세요", "正在切換帳號，請稍後重試") }
             }
             val entry = old ?: run {
                 val store = persistentFileStore(pathOf(key), key, streamSize, scope)
@@ -121,12 +124,16 @@ class PikoFileCachePool(
                     Entry(key, client, handle, client.fileCache(
                         source = handle, size = streamSize, storeKey = handle.contentKey,
                         blockStore = store, connectionBudget = concurrency, coroutineContext = scope.coroutineContext + Dispatchers.IO,
+                        mediaBytesPerSecond = mediaBytesPerSecond,
                     ), store).also { entries[key] = it }
                 } catch (e: Throwable) {
                     handle.close()
                     withContext(NonCancellable) { store.close() }
                     throw e
                 }
+            }
+            if (old != null && mediaBytesPerSecond != null && mediaBytesPerSecond > 0L) {
+                entry.cache.updateMediaBytesPerSecond(mediaBytesPerSecond)
             }
             entry.references++
             entry.retained = entry.retained || retained || key in paths.value

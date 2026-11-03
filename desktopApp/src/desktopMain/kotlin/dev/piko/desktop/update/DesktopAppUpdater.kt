@@ -1,5 +1,6 @@
 package dev.piko.desktop.update
 
+import dev.piko.data.auth.AppLanguage
 import dev.piko.desktop.LinuxDesktop
 import dev.piko.desktop.isLinux
 import dev.piko.desktop.isMacOs
@@ -32,6 +33,7 @@ data class DesktopUpdate(
     override val notes: String,
     override val pageUrl: String,
     val plan: DesktopUpdatePlan,
+    override val localizedNotes: Map<AppLanguage, String> = emptyMap(),
 ) : AvailableUpdate {
     override val downloadSize: Long
         get() = when (plan) {
@@ -139,14 +141,14 @@ class DesktopAppUpdater private constructor(
             val dmg = release.asset("piko-macos-$ARCH-${release.version}.dmg") ?: return null
             val bundle = installation?.let { replaceableBundle(it.exe) }
             val plan = if (bundle != null) DesktopUpdatePlan.MacBundle(dmg, bundle) else DesktopUpdatePlan.Manual(dmg)
-            return DesktopUpdate(release.version, release.notes, release.pageUrl, plan)
+            return DesktopUpdate(release.version, release.notes, release.pageUrl, plan, localizedNotes = release.localizedNotes)
         }
         val prefix = "piko-windows-$ARCH-${release.version}"
         // 三个附件由另一条流水线陆续挂上，缺一个都按还没有新版本处理
         val manifestAsset = release.asset("$prefix-files.json") ?: return null
         val zip = release.asset("$prefix-app.zip") ?: return null
         val msi = release.asset("$prefix.msi") ?: return null
-        fun update(plan: DesktopUpdatePlan) = DesktopUpdate(release.version, release.notes, release.pageUrl, plan)
+        fun update(plan: DesktopUpdatePlan) = DesktopUpdate(release.version, release.notes, release.pageUrl, plan, localizedNotes = release.localizedNotes)
 
         // 写不进的（便携版解压在 Program Files 下）换不了文件，脚本要到退出之后才失败，每次启动又提示同一个新版
         val installation = installation?.takeIf { isWritableDir(it.dir) && isWritableDir(it.dir.resolve("app")) }
@@ -176,7 +178,7 @@ class DesktopAppUpdater private constructor(
     private suspend fun resolveAppImage(release: LatestRelease): DesktopUpdate? {
         val name = "piko-linux-$ARCH-${release.version}.AppImage"
         val appImage = release.asset(name) ?: return null
-        fun update(plan: DesktopUpdatePlan) = DesktopUpdate(release.version, release.notes, release.pageUrl, plan)
+        fun update(plan: DesktopUpdatePlan) = DesktopUpdate(release.version, release.notes, release.pageUrl, plan, localizedNotes = release.localizedNotes)
         val target = installation?.exe?.takeIf { replaceableAppImage(it) } ?: return update(DesktopUpdatePlan.Manual(appImage))
         val delta = release.asset("$name.zsync")?.let { control ->
             runCatching {

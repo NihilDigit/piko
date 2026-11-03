@@ -1,5 +1,15 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.i18n.enCount
+import dev.piko.shared.presentation.localizedName
+
+import dev.piko.ui.resources.*
+import dev.piko.ui.i18n.stringResource
+
+import dev.piko.shared.i18n.tr
+
+import dev.piko.ui.ObserveMessages
+
 import dev.piko.ui.components.DetailHost
 import dev.piko.ui.components.DetailPanelState
 import dev.piko.ui.components.DetailPanelSpec
@@ -202,6 +212,16 @@ import dev.piko.shared.data.ImportPreviewLocation
 import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.isExtractableArchive
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.LinkOff
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Storage
+import dev.piko.shared.data.formatLocalPathForDisplay
+import dev.piko.shared.data.isLocal
+import dev.piko.shared.data.isLocalMountRoot
+import dev.piko.shared.data.LocalLocation
+import dev.piko.ui.components.previewImageCoverUrl
 import dev.piko.shared.data.isImportPreview
 import dev.piko.ui.screens.archive.ArchiveBrowsePasswordDialog
 import dev.piko.ui.components.BreadcrumbBar
@@ -262,7 +282,7 @@ private const val MapOpenTimeoutMs = 10_000L
 @Composable
 fun DriveScreen(
     currentFolderId: String = "",
-    currentFolderName: String = "我的网盘",
+    currentFolderName: String = tr("我的网盘", "My drive", "マイドライブ", "내 드라이브", "我的雲端硬碟"),
     onNavigateToFolder: (folderId: String, folderName: String) -> Unit,
     /** playlist 是当前列表里可播的视频，顺序与眼前看到的一致。 */
     onNavigateToVideoPlayer: (file: FileStat, playlist: List<FileStat>) -> Unit,
@@ -332,11 +352,19 @@ fun DriveScreen(
     // 防窥遮蔽开关是渲染选择，不进共享状态
     val sessionManager = LocalPikoServices.current.preferences
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
+    val initialGalleryShowImages = remember { runBlocking { sessionManager.galleryShowImagesFlow.first() } }
+    val galleryShowImages by sessionManager.galleryShowImagesFlow.collectAsStateWithLifecycle(initialGalleryShowImages)
+    fun setGalleryShowImages(show: Boolean) {
+        scope.launch { sessionManager.setGalleryShowImages(show) }
+    }
 
     val archiveBrowser = LocalPikoServices.current.archiveBrowser
     val duplicateReport = browserSession?.duplicateReport ?: remember { dev.piko.shared.presentation.DuplicateReportViewModel() }
     val gallery = browserSession?.gallery ?: remember(driveRepo) {
         dev.piko.shared.state.GallerySession(driveRepo, scope)
+    }
+    LaunchedEffect(gallery, galleryShowImages) {
+        gallery.updateIncludeImages(galleryShowImages)
     }
     val state = browserSession?.state ?: remember {
         DriveScreenState(driveRepo, sessionManager, scope, sessionListing = { place ->
@@ -368,26 +396,20 @@ fun DriveScreen(
     }
     LaunchedEffect(folderMap) { driveRepo.folderChanges.collect(folderMap::onChange) }
 
-    LaunchedEffect(state) {
-        state.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
-    }
+    ObserveMessages(state.messages, snackbarHostState)
 
     LaunchedEffect(state) {
         state.pasteNotices.collect { notice ->
-            val result = snackbarHostState.showSnackbar(notice.message, actionLabel = "返回原目录", withDismissAction = true)
+            val result = snackbarHostState.showSnackbar(notice.message, actionLabel = tr("返回原文件夹", "Return to source folder", "元のフォルダーに戻る", "원래 폴더로 돌아가기", "返回原資料夾"), withDismissAction = true)
             if (result == SnackbarResult.ActionPerformed && state.acceptsActions) navigation.updateFolderStack(notice.originStack)
         }
     }
 
     val archiveSession = LocalPikoServices.current.archiveExtractSession
-    LaunchedEffect(archiveSession) {
-        archiveSession.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
-    }
+    ObserveMessages(archiveSession.messages, snackbarHostState)
     // 归档文件夹：成功经改动日志由主界面带「撤销」提示（showChangeNotices），失败与没有可归档的在这里提示
     val vaultSession = LocalPikoServices.current.folderVaultSession
-    LaunchedEffect(vaultSession) {
-        vaultSession.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
-    }
+    ObserveMessages(vaultSession.messages, snackbarHostState)
     var vaultTarget by remember { mutableStateOf<VaultScope?>(null) }
     var restoreVaultTarget by remember { mutableStateOf<FileStat?>(null) }
 
@@ -441,10 +463,10 @@ fun DriveScreen(
                 askingCloseGallery = false
                 pendingViewModeAfterGallery = null
             },
-            title = { Text("关闭瀑布流？") },
-            text = { Text("关闭后将退出瀑布流画廊并清空当前浏览进度。") },
+            title = { Text(stringResource(Res.string.text_close_gallery)) },
+            text = { Text(stringResource(Res.string.text_closing_exits_the_gallery_and_clears_browsing_progress)) },
             confirmButton = {
-                PikoDialogConfirm("关闭", destructive = true, onClick = {
+                PikoDialogConfirm(tr("关闭", "Close", "閉じる", "닫기", "關閉"), destructive = true, onClick = {
                     askingCloseGallery = false
                     closeGalleryNow()
                 })
@@ -453,7 +475,7 @@ fun DriveScreen(
                 TextButton(onClick = {
                     askingCloseGallery = false
                     pendingViewModeAfterGallery = null
-                }) { Text("取消") }
+                }) { Text(stringResource(Res.string.common_cancel)) }
             },
         )
     }
@@ -468,10 +490,13 @@ fun DriveScreen(
         }
     }
     fun openSelectedGallery(files: List<FileStat>) {
-        val videos = files.filter { it.isPlayableVideo() && !it.isUploading && !it.isImportPreview }
-        if (videos.isEmpty()) return
+        val media = files.filter {
+            (it.isPlayableVideo() || (galleryShowImages && it.isPreviewableImage())) &&
+                !it.isUploading && !it.isImportPreview
+        }
+        if (media.isEmpty()) return
         state.exitSelection()
-        gallery.open(folderStack, videos)
+        gallery.open(folderStack, media, showImages = galleryShowImages)
     }
     LaunchedEffect(state) { state.updateThumbnailsOnly(false) }
     // 各视图与瀑布流各记一份卡片大小，初值同步读，免得先闪一帧中档
@@ -631,7 +656,8 @@ fun DriveScreen(
     // 操作面板开了就不是右键菜单：之前那次右键按下的位置不再作数，面板里点「属性」时卡片贴着条目
     LaunchedEffect(actionTargetFile) { if (actionTargetFile != null) propertiesAnchors.forgetPress() }
     // 「位置」一行：搜索结果与库里取行下面那一栏，平常的目录里是眼前的路径
-    fun locationOf(file: FileStat): String = rowNotes[file.id] ?: folderStack.joinToString(" › ") { it.name }
+    fun locationOf(file: FileStat): String =
+        file.params["local_path"]?.let(::formatLocalPathForDisplay) ?: rowNotes[file.id] ?: folderStack.joinToString(" › ") { it.localizedName }
     fun showProperties(files: List<FileStat>, anchor: PanelAnchor) {
         val single = files.singleOrNull()
         val target = if (single != null) {
@@ -644,14 +670,18 @@ fun DriveScreen(
                 isBlurred = isSpoilerBlurEnabled && single.id !in state.revealedFileIds,
             )
         } else {
-            PropertiesTarget.Selection(files, files.map(::locationOf).distinct().singleOrNull() ?: "多个位置")
+            PropertiesTarget.Selection(files, files.map(::locationOf).distinct().singleOrNull() ?: tr("多个位置", "Multiple locations", "複数の場所", "여러 위치", "多個位置"))
         }
         propertyDetails.show(target, anchor)
     }
     // 当前目录不对着哪一项
     fun showFolderProperties() {
-        val parent = folderStack.dropLast(1).joinToString(" › ") { it.name }
-        propertyDetails.show(PropertiesTarget.Folder(activeFolder.name, state.displayedFiles, parent.ifEmpty { null }, activeFolder.id))
+        val parent = if (state.isLocalPlace) {
+            val local = LocalLocation.of(activeFolder.id)
+            driveRepo.localMounts.findCached(activeFolder.id)?.localRootUriOrPath.orEmpty() +
+                local?.segments.orEmpty().joinToString("/", prefix = if (local?.segments?.isNotEmpty() == true) "/" else "")
+        } else folderStack.dropLast(1).joinToString(" › ") { it.localizedName }
+        propertyDetails.show(PropertiesTarget.Folder(activeFolder.localizedName, state.displayedFiles, parent.ifEmpty { null }, activeFolder.id))
     }
     // 记住的回调（右键菜单）里取最新的一份：局部函数抓着的是头一次组合时的路径与防窥开关
     val latestShowProperties by rememberUpdatedState<(List<FileStat>, PanelAnchor) -> Unit> { files, anchor -> showProperties(files, anchor) }
@@ -682,8 +712,8 @@ fun DriveScreen(
         }
         val current = duplicateSession.state
         taskSlot.claim(
-            action = "查找「${root.name}」中的重复文件",
-            confirmLabel = "查找重复",
+            action = tr("查找「${root.localizedName}」中的重复文件", "Find duplicate files in “${root.localizedName}”", "「${root.localizedName}」の重複ファイルを検索", "“${root.localizedName}”에서 중복 파일 찾기", "尋找「${root.localizedName}」中的重複檔案"),
+            confirmLabel = tr("查找重复", "Find duplicates", "重複を検索", "중복 찾기", "尋找重複檔案"),
             task = TaskSlot.Task.DUPLICATES,
             replacesSame = current != null && current.root.id != root.id,
         ) {
@@ -692,7 +722,7 @@ fun DriveScreen(
             duplicateSession.open(root)
             if (sameRoot && duplicateSession.state?.isScanning == false) openDuplicates(root)
             else scope.launch {
-                val result = snackbarHostState.showSnackbar("正在查找「${root.name}」中的重复文件", actionLabel = "查看任务", withDismissAction = true)
+                val result = snackbarHostState.showSnackbar(tr("正在查找「${root.localizedName}」中的重复文件", "Finding duplicates in “${root.localizedName}”", "「${root.localizedName}」の重複ファイルを検索中", "“${root.localizedName}”에서 중복 파일 검색 중", "正在尋找「${root.localizedName}」中的重複檔案"), actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기", "檢視任務"), withDismissAction = true)
                 if (result == SnackbarResult.ActionPerformed) onOpenTransfers()
             }
         }
@@ -718,12 +748,18 @@ fun DriveScreen(
     var previewImage by remember { mutableStateOf<FileStat?>(null) }
     val currentTabId = (navigation as? dev.piko.shared.presentation.TabNavigation)?.tabId
         ?: (workspace as? dev.piko.shared.presentation.DriveWorkspace)?.let { val id by it.activeTabId.collectAsStateWithLifecycle(); id }
-    val addLinkOwnedHere = addLink.ownerTabId == null || currentTabId == null || addLink.ownerTabId == currentTabId
+    val workspaceTabs = (workspace as? dev.piko.shared.presentation.DriveWorkspace)?.let {
+        val list by it.tabsFlow.collectAsStateWithLifecycle()
+        list
+    }.orEmpty()
+    val ownerTabStillExists = workspaceTabs.isEmpty() || addLink.ownerTabId == null || workspaceTabs.any { it.id == addLink.ownerTabId }
+    val addLinkOwnedHere = addLink.ownerTabId == null || currentTabId == null || addLink.ownerTabId == currentTabId ||
+        (!ownerTabStillExists && (workspace as? dev.piko.shared.presentation.DriveWorkspace)?.activeTabId?.value == currentTabId)
     fun openLink(link: String) {
         val replacing = addLink.state?.isBlank == false
         taskSlot.claim(
-            action = if (replacing) "打开新链接" else "添加链接",
-            confirmLabel = if (replacing) "打开新链接" else "添加链接",
+            action = if (replacing) tr("打开新链接", "Open new link", "新しいリンクを開く", "새 링크 열기", "開啟新連結") else tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結"),
+            confirmLabel = if (replacing) tr("打开新链接", "Open new link", "新しいリンクを開く", "새 링크 열기", "開啟新連結") else tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結"),
             task = TaskSlot.Task.ADD_LINK,
             replacesSame = replacing,
             conflictsWith = setOf(TaskSlot.Task.ADD_LINK, TaskSlot.Task.FEED),
@@ -744,35 +780,54 @@ fun DriveScreen(
     val instantState = addLink.state.takeIf { addLinkOwnedHere }
     fun openAddLink() {
         taskSlot.claim(
-            action = "添加链接",
-            confirmLabel = "添加链接",
+            action = tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結"),
+            confirmLabel = tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結"),
             task = TaskSlot.Task.ADD_LINK,
             conflictsWith = setOf(TaskSlot.Task.ADD_LINK, TaskSlot.Task.FEED),
         ) {
-            if (addLink.state != null && addLink.ownerTabId != null && currentTabId != null && addLink.ownerTabId != currentTabId) {
+            if (addLink.state != null && addLink.ownerTabId != null && ownerTabStillExists && currentTabId != null && addLink.ownerTabId != currentTabId) {
                 contexts?.activateContext(addLink.ownerTabId!!)
                     ?: (workspace as? dev.piko.shared.presentation.DriveWorkspace)?.switchTab(addLink.ownerTabId!!)
                 addLink.resume()
             } else {
+                if (!ownerTabStillExists) addLink.rebindTabIfMissing(workspaceTabs.mapTo(HashSet()) { it.id }, currentTabId)
                 addLink.resume(tabId = currentTabId)
             }
         }
     }
 
-    // 没有浮动卡片的窗口里，解压与归档的进度只在传输页。开始时提示一次并给出去处；不像离线那样直接跳过去：
-    // 解压多在几秒内完成，跳走反而打断人手上的事
-    LaunchedEffect(twoPane) {
-        if (twoPane) return@LaunchedEffect
-        fun announce(message: String) = launch {
-            val result = snackbarHostState.showSnackbar(message, actionLabel = "查看", withDismissAction = true)
-            if (result == SnackbarResult.ActionPerformed) openTransfers()
+    // 解压与归档的进度在任务页展示，开始时在当前活动页即时提示并给出去处；任务提前完成时自动让位给结果/撤销提示
+    val latestAcceptsNavigation by rememberUpdatedState(acceptsNavigation)
+    LaunchedEffect(Unit) {
+        fun announce(message: String, stillRunning: () -> Boolean) {
+            val shownJob = launch {
+                val result = snackbarHostState.showSnackbar(message, actionLabel = tr("查看", "View", "表示", "보기", "檢視"), withDismissAction = true)
+                if (result == SnackbarResult.ActionPerformed) openTransfers()
+            }
+            launch {
+                snapshotFlow { stillRunning() }.first { !it }
+                shownJob.cancel()
+            }
         }
         // 只认从无到有：进页时已经在跑的之前提示过，队列里追加压缩包也不再提示
         var wasExtracting = archiveSession.jobs.isNotEmpty()
         var wasVaulting = vaultSession.isRunning
         snapshotFlow { archiveSession.jobs.isNotEmpty() to vaultSession.isRunning }.collect { (extracting, vaulting) ->
-            if (extracting && !wasExtracting) announce("已开始解压")
-            if (vaulting && !wasVaulting) announce(if (vaultSession.restoreProgress != null) "已开始取消归档" else "已开始归档")
+            if (latestAcceptsNavigation) {
+                if (extracting && !wasExtracting) {
+                    announce(tr("已开始解压", "Extraction started", "解凍を開始しました", "압축 해제 시작됨", "已開始解壓縮")) {
+                        archiveSession.jobs.isNotEmpty()
+                    }
+                }
+                if (vaulting && !wasVaulting) {
+                    val label = if (vaultSession.restoreProgress != null) {
+                        tr("已开始取消归档", "Unarchiving started", "アーカイブの解除を開始しました", "보관 해제 시작됨", "已開始取消歸檔")
+                    } else {
+                        tr("已开始归档", "Archiving started", "アーカイブを開始しました", "보관 시작됨", "已開始歸檔")
+                    }
+                    announce(label) { vaultSession.isRunning }
+                }
+            }
             wasExtracting = extracting
             wasVaulting = vaulting
         }
@@ -800,10 +855,12 @@ fun DriveScreen(
     var isFabMenuExpanded by rememberSaveable { mutableStateOf(false) }
     BackHandler(enabled = acceptsNavigation && isFabMenuExpanded) { isFabMenuExpanded = false }
 
-    val displayedFiles by remember(galleryActive, galleryRecursive, gallery, state) {
+    val displayedFiles by remember(galleryActive, galleryRecursive, gallery, galleryShowImages, state) {
         derivedStateOf {
             if (galleryActive) {
-                (if (galleryRecursive) gallery.files else state.displayedFiles).filter { it.isPlayableVideo() && !it.isUploading }
+                (if (galleryRecursive) gallery.files else state.displayedFiles).filter {
+                    (it.isPlayableVideo() || (galleryShowImages && it.isPreviewableImage())) && !it.isUploading
+                }
             } else state.displayedFiles
         }
     }
@@ -848,6 +905,25 @@ fun DriveScreen(
             if (state.isSelectionMode) commandTargets.filter { it.isPlayableVideo() && !it.isUploading && !it.isImportPreview } else emptyList()
         }
     }
+    val selectedGalleryMedia by remember(state, galleryShowImages) {
+        derivedStateOf {
+            if (state.isSelectionMode) {
+                commandTargets.filter {
+                    (it.isPlayableVideo() || (galleryShowImages && it.isPreviewableImage())) &&
+                        !it.isUploading && !it.isImportPreview
+                }
+            } else emptyList()
+        }
+    }
+    fun selectedGalleryLabel(files: List<FileStat>): String {
+        val hasVideo = files.any { it.isPlayableVideo() }
+        val hasImage = galleryShowImages && files.any { !it.isPlayableVideo() && it.isPreviewableImage() }
+        return when {
+            hasVideo && hasImage -> tr("以瀑布流浏览所选媒体", "Browse selected media in gallery", "選択したメディアをギャラリーで表示", "선택한 미디어를 갤러리에서 보기", "以瀑布流瀏覽所選媒體")
+            hasImage -> tr("以瀑布流浏览所选图片", "Browse selected images in gallery", "選択した画像をギャラリーで表示", "선택한 이미지를 갤러리에서 보기", "以瀑布流瀏覽所選圖片")
+            else -> tr("以瀑布流浏览所选视频", "Browse selected videos in gallery", "選択した動画をギャラリーで表示", "선택한 동영상을 갤러리에서 보기", "以瀑布流瀏覽所選影片")
+        }
+    }
     fun openSelectedFeed(files: List<FileStat>) {
         if (feedBlockedReason != null) return
         val videos = files.filter { it.isPlayableVideo() && !it.isUploading && !it.isImportPreview }
@@ -856,9 +932,9 @@ fun DriveScreen(
     val changeGalleryShown: (Boolean) -> Unit = { shown ->
         if (shown) {
             if (state.isSelectionMode) {
-                openSelectedGallery(selectedFeedVideos)
+                openSelectedGallery(selectedGalleryMedia)
             } else {
-                gallery.open(folderStack)
+                gallery.open(folderStack, showImages = galleryShowImages)
             }
         } else {
             closeGallery()
@@ -869,6 +945,7 @@ fun DriveScreen(
             if (shown && state.isSelectionMode) openSelectedFeed(selectedFeedVideos) else change(shown)
         }
     }
+    val latestChangeFeedShown by rememberUpdatedState(changeFeedShown)
     val clipboard by state.clipboardFlow.collectAsStateWithLifecycle()
 
     // 渐隐单独一个 effect：并进滚动定位那个的话，视图模式到位会把 8 秒重新计一遍。
@@ -893,8 +970,8 @@ fun DriveScreen(
     // 磁力链接与分享链接都只复制；复制完给个回执，剪贴板本身看不见
     fun copySource(file: FileStat) {
         val url = file.sourceUrl ?: return
-        platform.copyToClipboard("来源链接", url)
-        scope.launch { snackbarHostState.showSnackbar(if (url.startsWith("magnet:", true)) "已复制磁力链接" else "已复制分享链接", withDismissAction = true) }
+        platform.copyToClipboard(tr("来源链接", "Source link", "ソースリンク", "출처 링크", "來源連結"), url)
+        scope.launch { snackbarHostState.showSnackbar(if (url.startsWith("magnet:", true)) tr("已复制磁力链接", "Magnet link copied", "マグネットリンクをコピーしました", "마그넷 링크를 복사했습니다", "已複製磁力連結") else tr("已复制分享链接", "Share link copied", "共有リンクをコピーしました", "공유 링크를 복사했습니다", "已複製分享連結"), withDismissAction = true) }
     }
 
     val mediaRepository = LocalPikoServices.current.mediaRepository
@@ -903,10 +980,10 @@ fun DriveScreen(
         scope.launch {
             val url = mediaRepository.fetchDownloadUrl(file.id).logFailure("Drive", "查文件下载链接失败").getOrNull()
             if (!url.isNullOrBlank()) {
-                platform.copyToClipboard("下载链接", url)
-                snackbarHostState.showSnackbar("已复制下载链接", withDismissAction = true)
+                platform.copyToClipboard(tr("下载链接", "Download link", "ダウンロードリンク", "다운로드 링크", "下載連結"), url)
+                snackbarHostState.showSnackbar(tr("已复制下载链接", "Download link copied", "ダウンロードリンクをコピーしました", "다운로드 링크를 복사했습니다", "已複製下載連結"), withDismissAction = true)
             } else {
-                snackbarHostState.showSnackbar("未能获取下载链接", withDismissAction = true)
+                snackbarHostState.showSnackbar(tr("未能获取下载链接", "Failed to get download link", "ダウンロードリンクを取得できませんでした", "다운로드 링크를 가져오지 못했습니다", "無法取得下載連結"), withDismissAction = true)
             }
         }
     }
@@ -914,18 +991,16 @@ fun DriveScreen(
     fun openInExternalPlayer(file: FileStat) {
         val player = platform.externalPlayer ?: return
         scope.launch {
-            val url = mediaRepository.openForExternalPlayer(file.id).logFailure("Drive", "外部播放器取不到代理地址").getOrNull()
+            val url = mediaRepository.openForExternalPlayer(file.id).logFailure("Drive", tr("外部播放器取不到代理地址", "Proxy address unavailable for external player", "外部プレーヤー用のプロキシアドレスを取得できません", "외부 플레이어의 프록시 주소를 가져올 수 없습니다", "外部播放器無法取得代理位址")).getOrNull()
             val opened = url != null && player.open(url, file.name)
-            if (!opened) snackbarHostState.showSnackbar("无法用外部播放器打开", withDismissAction = true)
+            if (!opened) snackbarHostState.showSnackbar(tr("无法用外部播放器打开", "Unable to open in external player", "外部プレーヤーで開けません", "외부 플레이어에서 열 수 없습니다", "無法使用外部播放器開啟"), withDismissAction = true)
         }
     }
 
     // 从网盘页发起的上传就传到眼前这个目录，不再问目标；应用外进来的由 UploadRequestHost 问。
     // 排进队列后切到传输页由主界面订阅调度器完成，这里只提交
     val uploadManager = LocalPikoServices.current.uploadManager
-    LaunchedEffect(uploadManager) {
-        uploadManager.messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
-    }
+    ObserveMessages(uploadManager.messages, snackbarHostState)
     fun upload(selection: UploadSelection) {
         if (state.isVirtualPlace || !state.acceptsActions) return
         val unavailable = state.fileActions.receivingAvailability(activeFolderId) as? dev.piko.shared.presentation.ActionAvailability.Blocked
@@ -934,6 +1009,40 @@ fun DriveScreen(
     }
     val pickFiles = platform.uploadPicker.rememberFilesLauncher { upload(UploadSelection(files = it)) }
     val pickFolder = platform.uploadPicker.rememberFolderLauncher { upload(UploadSelection(folders = listOf(it))) }
+    fun launchLocalAction(action: suspend () -> Unit) {
+        scope.launch {
+            try { action() } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                dev.piko.shared.log.PikoLog.w("LocalMount", "本地文件夹操作失败")
+                snackbarHostState.showSnackbar(tr("本地文件夹操作失败", "Local folder action failed", "ローカルフォルダーの操作に失敗しました", "로컬 폴더 작업에 실패했습니다", "本機資料夾操作失敗"))
+            }
+        }
+    }
+    var mountDestination by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val pickLocalFolder = platform.rememberLocalFolderLauncher { path, name ->
+        val destination = mountDestination
+        mountDestination = null
+        if (destination != null) launchLocalAction {
+            if (destination.first == driveRepo.currentAccount) {
+                val outcome = driveRepo.localMounts.mountOrExisting(destination.second, path, name)
+                state.highlight(setOf(outcome.mount.location.id))
+                if (outcome.alreadyMounted) {
+                    snackbarHostState.showSnackbar(
+                        tr("此文件夹已挂载在当前目录", "This folder is already mounted here", "このフォルダーは既にここにマウントされています", "이 폴더는 이미 현재 위치에 마운트되어 있습니다", "此資料夾已掛載於目前目錄"),
+                        withDismissAction = true,
+                    )
+                }
+            }
+        }
+    }
+    val mountAction = pickLocalFolder?.let { launch ->
+        SheetAction(Icons.Outlined.Storage, tr("挂载本地文件夹", "Mount local folder", "ローカルフォルダーをマウント", "로컬 폴더 마운트", "掛載本機資料夾"), {
+            if (isDriveFolderId(activeFolderId)) {
+                driveRepo.currentAccount?.let { mountDestination = it to activeFolderId; launch() }
+            }
+        }, group = ActionGroup.Create)
+    }
 
     // 下载的成品只在传输页里看得到，与上传、离线一样提交后切过去。文件夹各成一批，在后台列出其中的文件。
     // 普通下载与显式指定画质共用这条提交路径。
@@ -941,24 +1050,20 @@ fun DriveScreen(
         val importPreviewItems = files.filter { it.isImportPreview }
         if (importPreviewItems.isNotEmpty()) {
             val draft = services.instantSession.state
-            if (draft != null) {
-                val resolvedList = mutableListOf<io.github.nihildigit.pikpak.ResolvedFile>()
-                importPreviewItems.forEach { item ->
-                    ImportPreviewEntryId.resolvedFileOf(item.id)?.let { resolvedList += it }
-                    ImportPreviewLocation.of(item.id)?.let { loc ->
-                        val prefix = "${loc.path.trim('/')}/"
-                        draft.projectedSaveEntries.forEach { (_, resolved) ->
-                            val clean = resolved.path.trim('/')
-                            if ((clean == loc.path.trim('/') || clean.startsWith(prefix)) && resolved.gcid != null) {
-                                resolvedList += resolved
+            val resolvedList = importPreviewItems.flatMap { item ->
+                ImportPreviewEntryId.resolvedFileOf(item.id)?.let { listOf(it) }
+                    ?: draft?.let { d ->
+                        ImportPreviewLocation.of(item.id)?.let { location ->
+                            val path = location.path.trim('/')
+                            d.projectedSaveEntries.filter { (_, file) ->
+                                path.isEmpty() || file.path.trim('/') == path || file.path.trim('/').startsWith("$path/")
                             }
                         }
-                    }
-                }
-                if (resolvedList.isNotEmpty()) {
-                    downloadManager.enqueueResolved(resolvedList, draft.target?.id.orEmpty())
-                    openTransfers()
-                }
+                    }?.map { it.second }.orEmpty()
+            }.filter { it.gcid != null }.distinct()
+            if (resolvedList.isNotEmpty()) {
+                downloadManager.enqueueResolved(resolvedList, draft?.target?.id ?: activeFolderId)
+                openTransfers()
             }
             val rest = files.filterNot { it.isImportPreview }
             if (rest.isEmpty()) return
@@ -992,7 +1097,7 @@ fun DriveScreen(
         if (!state.acceptsActions) return
         val availability = archiveCommands.startAvailability(archives)
         if (availability is dev.piko.shared.presentation.ActionAvailability.Blocked) {
-            taskSlot.showBlocked("开始解压", availability.reason) { openTransfers() }
+            taskSlot.showBlocked(tr("开始解压", "Start extraction", "解凍を開始", "압축 해제 시작", "開始解壓縮"), availability.reason) { openTransfers() }
         } else start()
     }
     fun extractArchives(archives: List<FileStat>) = requestExtraction(archives) {
@@ -1007,7 +1112,7 @@ fun DriveScreen(
             owner != archive.id
         }
         if (mismatched) {
-            taskSlot.showBlocked("开始解压", "所在压缩包已变化，请从当前列表重新选择。")
+            taskSlot.showBlocked(tr("开始解压", "Start extraction", "解凍を開始", "압축 해제 시작", "開始解壓縮"), tr("所在压缩包已变更，请从当前列表重新选择。", "The archive has changed. Select again from the current list.", "圧縮ファイルの内容が変更されました。現在の一覧から選択し直してください。", "압축 파일이 변경되었습니다. 현재 목록에서 다시 선택해 주세요.", "所在壓縮檔已變更，請從目前清單重新選取。"))
             return
         }
         requestExtraction(listOf(archive)) {
@@ -1059,6 +1164,7 @@ fun DriveScreen(
 
     // 眼前在哪，命令栏与条目的菜单都按它定做不做得了。记住的回调里也调它，所以只读 state 与仓库上的当下值
     fun commandPlace(stackDepth: Int = navigation.folderStackFlow.value.size): CommandPlace = when {
+        state.isLocalPlace -> CommandPlace.LOCAL
         state.importPreviewView != null -> CommandPlace.IMPORT_PREVIEW
         state.archiveView != null -> CommandPlace.ARCHIVE
         state.libraryView == DriveLibrary.TRASH -> CommandPlace.TRASH
@@ -1083,7 +1189,7 @@ fun DriveScreen(
     // 混选时一并归档：文件夹各取整棵树，文件按所在文件夹写清单，同一次确认、同一条撤销
     fun vaultScopeOf(files: List<FileStat>): VaultScope {
         val (folders, singles) = files.partition { it.isFolder }
-        val name = files.singleOrNull()?.let { state.itemName(it).headingText } ?: "所选 ${files.size} 项"
+        val name = files.singleOrNull()?.let { state.itemName(it).headingText } ?: tr("所选 ${files.size} 项", "${files.size} selected items", "選択した ${files.size} 項目", "선택한 ${files.size}개 항목", "所選 ${files.size} 個項目")
         return VaultScope(name, folders.map { PathBreadcrumb(it.id, state.itemName(it).headingText) }, singles)
     }
 
@@ -1101,13 +1207,26 @@ fun DriveScreen(
                 // 按列表顺序：服务端取第一项的名字作分享标题
                 share = DriveActions.share { shareTargets = settled }.takeIf { commands.share },
                 rename = DriveActions.batchRename { batchRenameTargets = state.withAttachedFiles(settled) }.takeIf { commands.rename },
-                star = null,
+                star = DriveActions.star(
+                    starred = settled.all { it.isStarred },
+                    onClick = {
+                        val nextStarred = !settled.all { it.isStarred }
+                        state.setStarred(settled, nextStarred)
+                        state.exitSelection()
+                    },
+                ).takeIf { !inTrash && state.archiveView == null && settled.isNotEmpty() },
             ),
         )
+        val galleryCandidates = files.filter {
+            (it.isPlayableVideo() || (galleryShowImages && it.isPreviewableImage())) &&
+                !it.isUploading && !it.isImportPreview
+        }
+        if (!inTrash && state.archiveView == null && galleryCandidates.isNotEmpty()) {
+            add(SheetAction(Icons.Outlined.PhotoLibrary, selectedGalleryLabel(galleryCandidates), { openSelectedGallery(files) }, group = ActionGroup.Open))
+        }
         if (!inTrash && state.archiveView == null && files.any { it.isPlayableVideo() && !it.isUploading && !it.isImportPreview }) {
-            add(SheetAction(Icons.Outlined.PhotoLibrary, "所选视频的瀑布流", { openSelectedGallery(files) }, group = ActionGroup.Open))
             if (onOpenSelectedFeed != null && feedBlockedReason == null && platform.videoPreview != null) {
-                add(SheetAction(Icons.Outlined.SwipeVertical, "所选视频的信息流", { openSelectedFeed(files) }, group = ActionGroup.Open))
+                add(SheetAction(Icons.Outlined.SwipeVertical, tr("以信息流浏览所选视频", "Browse selected in feed", "選択した動画をフィードで表示", "선택한 동영상을 피드에서 보기", "以資訊流瀏覽所選影片"), { openSelectedFeed(files) }, group = ActionGroup.Open))
             }
         }
         files.filter { it.isVaulted }.takeIf { it.isNotEmpty() }?.let { vaulted ->
@@ -1139,13 +1258,26 @@ fun DriveScreen(
         if (commands.moveToTrash) add(DriveActions.moveToTrash { state.moveToTrash(ids) })
     }
 
-    // 归档条目只是清单里的一行：能做的是打开、下载、复制直链、改名、复制来源，以及恢复成网盘文件或从清单里去掉。
+    // 归档条目只是清单里的一行：能做的是打开、星标（由 Piko 自管）、下载、复制直链、改名、复制来源，以及恢复成网盘文件或从清单里去掉。
     // 改名改的是清单里的名字，不受「网盘里没有文件就不能改名」那条规则限制
-    fun vaultActions(file: FileStat): List<SheetAction> = buildList {
+    fun vaultActions(file: FileStat, revealAction: SheetAction? = null): List<SheetAction> = buildList {
+        if (revealAction != null) add(revealAction)
+        addAll(
+            DriveActions.quickRow(
+                desktop = desktop,
+                cut = null,
+                copy = null,
+                download = DriveActions.download { enqueueDownload(file) },
+                share = null,
+                rename = DriveActions.rename { startRename(file) },
+                star = DriveActions.star(
+                    starred = file.isStarred,
+                    onClick = { state.setStarred(file, !file.isStarred) },
+                ),
+            ),
+        )
         add(DriveActions.restoreFromVault { vaultSession.restore(listOf(file)) })
-        add(DriveActions.download { enqueueDownload(file) })
         if (!file.isFolder) add(DriveActions.copyDownloadLink { copyDownloadLink(file) })
-        add(DriveActions.rename { startRename(file) })
         addAll(DriveActions.sourceActions(file.source, onCopy = { copySource(file) }, onOpen = { file.sourceUrl?.let(platform::openUrl) }))
         add(DriveActions.removeFromVault { state.removeFromVault(listOf(file.id)) })
     }
@@ -1163,10 +1295,10 @@ fun DriveScreen(
         add(
             SheetAction(
                 Icons.Outlined.Delete,
-                if (targets.size > 1) "不保存所选 ${targets.size} 项" else "不保存此项",
+                if (targets.size > 1) tr("不保存所选 ${targets.size} 项", "Do not save ${targets.size} selected items", "選択した ${targets.size} 項目を保存しない", "선택한 ${targets.size}개 항목 저장 안 함", "不儲存所選 ${targets.size} 個項目") else tr("不保存此项", "Do not save this item", "この項目を保存しない", "이 항목 저장 안 함", "不儲存此項目"),
                 { state.removeFromImportPreview(ids) },
                 destructive = true,
-                shortLabel = "不保存",
+                shortLabel = tr("不保存", "Do not save", "保存しない", "저장 안 함", "不儲存"),
             ),
         )
     }
@@ -1177,6 +1309,79 @@ fun DriveScreen(
         val library = state.libraryView
         if (library == DriveLibrary.DUPLICATES && file.isFolder) {
             return listOf(DriveActions.revealInDrive { onRevealInDrive?.invoke(file) ?: state.revealInDrive(file) })
+        }
+        if (targets.any { it.isLocal }) return buildList {
+            if (targets.size == 1 && latestGalleryActive && file.parentId != activeFolderId) {
+                add(
+                    SheetAction(
+                        Icons.Outlined.FolderOpen,
+                        tr("在所在文件夹中显示", "Show in containing folder", "保存先フォルダーで表示", "포함된 폴더에서 보기", "在所在資料夾中顯示"),
+                        {
+                            val path = gallery.pathTo(file.parentId)
+                            gallery.close()
+                            if (path != null) {
+                                navigation.updateFolderStack(path)
+                                state.highlight(setOf(file.id))
+                            }
+                        },
+                        group = ActionGroup.Open,
+                    ),
+                )
+            }
+            if (targets.size > 1) {
+                val galleryItems = targets.filter { it.isPlayableVideo() || (galleryShowImages && it.isPreviewableImage()) }
+                if (galleryItems.isNotEmpty()) {
+                    add(SheetAction(Icons.Outlined.PhotoLibrary, selectedGalleryLabel(galleryItems), { openSelectedGallery(galleryItems) }, group = ActionGroup.Open))
+                }
+                val videos = targets.filter { it.isPlayableVideo() }
+                if (videos.isNotEmpty() && changeFeedShown != null && feedBlockedReason == null && platform.videoPreview != null) {
+                    add(SheetAction(Icons.Outlined.SwipeVertical, tr("以信息流浏览所选视频", "Browse selected videos in feed", "選択した動画をフィードで表示", "선택한 동영상을 피드에서 보기", "以資訊流瀏覽所選影片"), { openSelectedFeed(videos) }, group = ActionGroup.Open))
+                }
+            } else if (file.isLocal) {
+                if (file.isPlayableVideo()) {
+                    add(SheetAction(Icons.Outlined.PlayArrow, tr("播放", "Play", "再生", "재생", "播放"), {
+                        navigateToPlayer(file, latestDisplayedFiles.filter { it.isPlayableVideo() })
+                    }, group = ActionGroup.Open))
+                }
+                if (file.isPreviewableImage() && file.previewImageCoverUrl().isNotBlank()) {
+                    add(SheetAction(Icons.Outlined.Image, tr("查看图片", "View image", "画像を表示", "이미지 보기", "檢視圖片"), { previewImage = file }, group = ActionGroup.Open))
+                }
+                if (file.isFolder) {
+                    add(SheetAction(Icons.Outlined.FolderOpen, tr("打开", "Open", "開く", "열기", "開啟"), { state.openFolder(file.id, file.name) }, group = ActionGroup.Open))
+                    latestOpenInNewTab?.let { open -> add(DriveActions.openInNewTab { open(file) }) }
+                    add(SheetAction(Icons.Outlined.PhotoLibrary, tr("以瀑布流浏览", "Browse in gallery", "ギャラリーで表示", "갤러리에서 보기", "以瀑布流瀏覽"), {
+                        val path = folderStack + PathBreadcrumb(file.id, file.name)
+                        state.openFolder(file.id, file.name)
+                        gallery.open(path, showImages = galleryShowImages)
+                    }, group = ActionGroup.Open))
+                    if (changeFeedShown != null && feedBlockedReason == null && platform.videoPreview != null) {
+                        add(SheetAction(Icons.Outlined.SwipeVertical, tr("以信息流浏览", "Browse in feed", "フィードで表示", "피드에서 보기", "以資訊流瀏覽"), {
+                            state.openFolder(file.id, file.name)
+                            scope.launch {
+                                androidx.compose.runtime.withFrameNanos { }
+                                latestChangeFeedShown?.invoke(true)
+                            }
+                        }, group = ActionGroup.Open))
+                    }
+                    latestTogglePin?.takeIf { file.isLocalMountRoot }?.let { pin ->
+                        add(DriveActions.pin(pinned = latestPinnedFolders.any { it.id == file.id }, onClick = { pin(file) }))
+                    }
+                }
+                val rawLocalPath = file.params["local_path"].orEmpty()
+                if (!rawLocalPath.startsWith("content://")) {
+                    add(SheetAction(Icons.Outlined.FolderOpen, tr("在文件管理器中显示", "Show in file manager", "ファイルマネージャーで表示", "파일 관리자에서 표시", "在檔案管理員中顯示"), {
+                        launchLocalAction { driveRepo.localMounts.resolve(file.id)?.takeUnless { it.startsWith("content://") }?.let(platform.localFiles::openContainingFolder) }
+                    }, group = ActionGroup.Open))
+                }
+                if (!file.isFolder && isSpoilerBlurEnabled && file.previewImageCoverUrl().isNotEmpty()) {
+                    add(DriveActions.previewVisibility(hidden = file.id !in state.revealedFileIds, onClick = { state.toggleSpoiler(file.id) }))
+                }
+                if (file.isLocalMountRoot) {
+                    add(SheetAction(Icons.Outlined.LinkOff, tr("取消挂载", "Unmount", "マウント解除", "마운트 해제", "取消掛載"), {
+                        launchLocalAction { driveRepo.localMounts.unmount(file.id) }
+                    }, destructive = true))
+                }
+            }
         }
         if (targets.all { it.isImportPreview }) return importPreviewActions(targets)
         val commands = itemCommands(commandPlace(), targets, fullyVaultedFolders)
@@ -1189,25 +1394,24 @@ fun DriveScreen(
         }
         if (state.archiveView != null) return archiveEntryActions(targets, commands)
         if (targets.size > 1) return selectionActions(targets, commands)
-        if (file.isVaulted) return vaultActions(file)
         // 库里的条目或瀑布流中跨子目录的视频多一个在网盘中显示，置首；移除记录由 itemCommands 给
         val showReveal = library != null || (latestGalleryActive && file.parentId != activeFolderId)
-        val reveal = listOfNotNull(
-            if (!showReveal) null else DriveActions.revealInDrive {
-                if (latestGalleryActive) {
-                    val path = gallery.pathTo(file.parentId)
-                    gallery.close()
-                    if (path != null) {
-                        navigation.updateFolderStack(path)
-                        state.highlight(setOf(file.id))
-                    } else {
-                        onRevealInDrive?.invoke(file) ?: state.revealInDrive(file)
-                    }
+        val revealAction = if (!showReveal) null else DriveActions.revealInDrive {
+            if (latestGalleryActive) {
+                val path = gallery.pathTo(file.parentId)
+                gallery.close()
+                if (path != null) {
+                    navigation.updateFolderStack(path)
+                    state.highlight(setOf(file.id))
                 } else {
                     onRevealInDrive?.invoke(file) ?: state.revealInDrive(file)
                 }
-            },
-        )
+            } else {
+                onRevealInDrive?.invoke(file) ?: state.revealInDrive(file)
+            }
+        }
+        if (file.isVaulted) return vaultActions(file, revealAction)
+        val reveal = listOfNotNull(revealAction)
         val removeRecord = listOfNotNull(DriveActions.removeRecord { state.removeFromLibrary(setOf(file.id)) }.takeIf { commands.removeRecord })
         val handlers = FileActionHandlers(
             toggleStar = { state.setStarred(file, starred = !file.isStarred) },
@@ -1266,7 +1470,7 @@ fun DriveScreen(
     LaunchedEffect(state.preparingEntryId) {
         if (state.preparingEntryId == null) return@LaunchedEffect
         delay(400)
-        snackbarHostState.showSnackbar("正在读取压缩包里的文件…", duration = SnackbarDuration.Indefinite)
+        snackbarHostState.showSnackbar(tr("正在读取压缩包内容…", "Reading archive contents…", "圧縮ファイルの内容を読み込み中…", "압축 파일 내용 읽는 중…", "正在讀取壓縮檔內容…"), duration = SnackbarDuration.Indefinite)
     }
     LaunchedEffect(instantState) {
         if (instantState == null) return@LaunchedEffect
@@ -1284,17 +1488,17 @@ fun DriveScreen(
     val openFile: (FileStat) -> Unit = { file ->
         when {
             file.isImportPreview && file.hash.isBlank() -> {
-                scope.launch { snackbarHostState.showSnackbar("未收录的链接条目需先离线保存到网盘才能打开", withDismissAction = true) }
-            }
-            file.isImportPreview && file.isPlayableVideo() -> {
-                ImportPreviewEntryId.sourceIndexOf(file.id)?.let { sourceIndex -> instantState?.preview(sourceIndex) }
+                scope.launch { snackbarHostState.showSnackbar(tr("未收录的链接项目需先通过离线下载保存至网盘", "Save unindexed link items via cloud download before opening", "未収録のリンク項目は、先にクラウドダウンロードでドライブに保存してください", "미등록 링크 항목은 먼저 클라우드 다운로드로 드라이브에 저장해 주세요", "未收錄的連結項目需先透過離線下載儲存至雲端硬碟"), withDismissAction = true) }
             }
             file.isPlayableVideo() -> navigateToPlayer(file, latestDisplayedFiles.filter { it.isPlayableVideo() && (!it.isImportPreview || it.hash.isNotBlank()) })
-            file.isPreviewableImage() && file.thumbnailLink.isNotBlank() -> previewImage = file
+            file.isPreviewableImage() && file.previewImageCoverUrl().isNotBlank() -> previewImage = file
             // 其余类型没有应用内的打开方式，单击等同于下载
+            file.isLocal -> platform.localFiles.openExternally(file.params["local_path"].orEmpty(), false)
             else -> enqueueDownload(file)
         }
     }
+    val latestOpenFile by rememberUpdatedState(openFile)
+    val latestItemActions by rememberUpdatedState<(FileStat, List<FileStat>, Boolean) -> List<SheetAction>>(::itemActions)
     fun openItemActions(file: FileStat) {
         if (state.isSelectionMode && file.id in state.selectedFileIds) {
             openSelectionActions()
@@ -1310,17 +1514,17 @@ fun DriveScreen(
                     // 回收站里的条目打不开，点开的是它的操作面板：恢复与彻底删除都在里面，单击不直接执行其中任何一项
                     state.libraryView == DriveLibrary.TRASH -> actionTargetFile = file
                     file.isFolder -> state.openFolder(file.id, file.name)
-                    file.isUploading -> scope.launch { snackbarHostState.showSnackbar("文件仍在上传", withDismissAction = true) }
+                    file.isUploading -> scope.launch { snackbarHostState.showSnackbar(tr("文件仍在上传", "File is still uploading", "ファイルはアップロード中です", "파일 업로드 중입니다", "檔案仍在上傳"), withDismissAction = true) }
                     // 压缩包当文件夹进去看，见 ArchiveLocation。分卷读不了、归档条目不在网盘里，照旧往下走
                     // 信息流的临时浏览里再压一层压缩包，继续刷就说不清回到哪，先确认结束信息流
-                    file.isExtractableArchive && !file.isVaulted && !ArchiveEntryId.isEntry(file.id) ->
-                        taskSlot.claim("打开压缩包", "打开压缩包", task = null, conflictsWith = setOf(TaskSlot.Task.FEED)) { state.openArchive(file) }
+                    file.isExtractableArchive && !file.isLocal && !file.isVaulted && !ArchiveEntryId.isEntry(file.id) ->
+                        taskSlot.claim(tr("打开压缩包", "Open archive", "圧縮ファイルを開く", "압축 파일 열기", "開啟壓縮檔"), tr("打开压缩包", "Open archive", "圧縮ファイルを開く", "압축 파일 열기", "開啟壓縮檔"), task = null, conflictsWith = setOf(TaskSlot.Task.FEED)) { state.openArchive(file) }
                     // 包里的文件先借得出来才能打开，从没解压过的包第一次要等几秒
-                    ArchiveEntryId.isEntry(file.id) -> scope.launch { state.prepareArchiveEntry(file)?.let(openFile) }
-                    else -> openFile(file)
+                    ArchiveEntryId.isEntry(file.id) -> scope.launch { state.prepareArchiveEntry(file)?.let(latestOpenFile) }
+                    else -> latestOpenFile(file)
                 }
             },
-            onRename = { file -> if (!file.isUploading && !file.isImportPreview && state.libraryView != DriveLibrary.TRASH) startRename(file) },
+            onRename = { file -> if (!file.isLocal && !file.isUploading && !file.isImportPreview && state.libraryView != DriveLibrary.TRASH) startRename(file) },
             onMore = ::openItemActions,
             onProperties = { latestShowProperties(targetsOf(it), propertiesAnchors.beside(it.id)) },
             onPlaced = { file, coordinates -> propertiesAnchors.placed(file.id, coordinates) },
@@ -1373,14 +1577,14 @@ fun DriveScreen(
                     latestDisplayedFiles.filter { it.id in state.selectedFileIds }
                 } else {
                     listOf(file)
-                }.filterNot { it.isUploading || it.isVaulted || it.isImportPreview }
+                }.filterNot { it.isLocal || it.isUploading || it.isVaulted || it.isImportPreview }
                 if (batch.isEmpty()) {
                     null
                 } else {
                     FileDragPayload(
                         ids = batch.map { it.id },
                         parentIds = batch.mapTo(HashSet()) { it.parentId },
-                        label = batch.singleOrNull()?.let { state.itemName(it).headingText } ?: "${batch.size} 项",
+                        label = batch.singleOrNull()?.let { state.itemName(it).headingText } ?: tr("${batch.size} 项", "${enCount(batch.size, "item", "items")}", "${batch.size} 項目", "${batch.size}개 항목", "${batch.size} 個項目"),
                         perform = { target, copy ->
                             val ids = batch.map { it.id }
                             if (copy) state.copy(ids, target.id, target.name) else state.move(ids, target.id, target.name)
@@ -1404,7 +1608,7 @@ fun DriveScreen(
                     focusedFile = null
                 }
             },
-            contextActions = { file -> itemActions(file, targetsOf(file), fromMenu = true) },
+            contextActions = { file -> latestItemActions(file, targetsOf(file), true) },
             onToggleSection = state::toggleSection,
             onFolderVisible = state::onFolderVisible,
         )
@@ -1421,7 +1625,7 @@ fun DriveScreen(
                     .first { it != null }
             }
             if (listed == null) {
-                snackbarHostState.showSnackbar("没能在所在文件夹里找到这个文件", withDismissAction = true)
+                snackbarHostState.showSnackbar(tr("在所在文件夹中未找到此文件", "File not found in its containing folder", "保存先フォルダー内にファイルが見つかりません", "해당 폴더에서 파일을 찾을 수 없습니다", "在所在資料夾中找不到此檔案"), withDismissAction = true)
                 return@launch
             }
             state.highlight(setOf(listed.id))
@@ -1488,39 +1692,51 @@ fun DriveScreen(
             )
         }
         val place = commandPlace(folderStack.size)
-        if (place == CommandPlace.ROOT || place == CommandPlace.FOLDER || galleryActive) {
+        if (place == CommandPlace.ROOT || place == CommandPlace.FOLDER || place == CommandPlace.LOCAL || galleryActive) {
             add(
                 SheetAction(
                     if (galleryActive) Icons.Filled.PhotoLibrary else Icons.Outlined.PhotoLibrary,
-                    "瀑布流",
+                    tr("瀑布流", "Gallery", "ギャラリー", "갤러리", "瀑布流"),
                     { changeGalleryShown(!galleryActive) },
                     group = ActionGroup.View,
                     checked = galleryActive,
                 ),
             )
+            if (galleryActive) {
+                add(
+                    SheetAction(
+                        Icons.Outlined.Image,
+                        tr("显示图片", "Show images", "画像を表示", "이미지 표시", "顯示圖片"),
+                        { setGalleryShowImages(!galleryShowImages) },
+                        group = ActionGroup.View,
+                        checked = galleryShowImages,
+                    ),
+                )
+            }
         }
         // 照资源管理器「查看」里的「文件扩展名」，勾上即显示
         add(
             SheetAction(
                 Icons.Outlined.TextFields,
-                "文件扩展名",
+                tr("文件扩展名", "File extension", "拡張子", "파일 확장자", "副檔名"),
                 { scope.launch { sessionManager.setShowExtensions(!showExtensions) } },
                 group = ActionGroup.View,
                 checked = showExtensions,
             ),
         )
-        add(SheetAction(Icons.Outlined.Refresh, "刷新", { refreshFiles() }, group = ActionGroup.Refresh))
+        add(SheetAction(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침", "重新整理"), { refreshFiles() }, group = ActionGroup.Refresh))
         if (!state.isVirtualPlace) {
-            if (clipboard != null) add(SheetAction(Icons.Outlined.ContentPaste, "粘贴", { state.paste() }, group = ActionGroup.Refresh))
-            add(SheetAction(Icons.Outlined.CreateNewFolder, "新建文件夹", {
+            if (clipboard != null) add(SheetAction(Icons.Outlined.ContentPaste, tr("粘贴", "Paste", "貼り付け", "붙여넣기", "貼上"), { state.paste() }, group = ActionGroup.Refresh))
+            add(SheetAction(Icons.Outlined.CreateNewFolder, tr("新建文件夹", "New folder", "新規フォルダー", "새 폴더", "新增資料夾"), {
                 newFolderName = ""
                 showNewFolderDialog = true
             }, group = ActionGroup.Create))
-            add(SheetAction(Icons.Outlined.UploadFile, "上传文件", { pickFiles() }, group = ActionGroup.Create))
-            add(SheetAction(Icons.Outlined.DriveFolderUpload, "上传文件夹", { pickFolder() }, group = ActionGroup.Create))
-            add(SheetAction(Icons.Outlined.Bolt, "添加链接", ::openAddLink, group = ActionGroup.Create))
+            mountAction?.let(::add)
+            add(SheetAction(Icons.Outlined.UploadFile, tr("上传文件", "Upload files", "ファイルをアップロード", "파일 업로드", "上傳檔案"), { pickFiles() }, group = ActionGroup.Create))
+            add(SheetAction(Icons.Outlined.DriveFolderUpload, tr("上传文件夹", "Upload folder", "フォルダーをアップロード", "폴더 업로드", "上傳資料夾"), { pickFolder() }, group = ActionGroup.Create))
+            add(SheetAction(Icons.Outlined.Bolt, tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結"), ::openAddLink, group = ActionGroup.Create))
         }
-        add(SheetAction(Icons.Outlined.SelectAll, "全选", { selectAllDisplayed() }, group = ActionGroup.Select))
+        add(SheetAction(Icons.Outlined.SelectAll, tr("全选", "Select all", "すべて選択", "모두 선택", "全選"), { selectAllDisplayed() }, group = ActionGroup.Select))
         addAll(libraryPageActions(libraryView, state.files.isEmpty(), { libraryConfirm = it }, { state.files.map { it.id } }))
         add(DriveActions.properties(::showFolderProperties))
     }
@@ -1561,11 +1777,11 @@ fun DriveScreen(
         }
         if (focused != null && !state.isSelectionMode) {
             when {
-                event.key == Key.Delete || (primary && event.key == Key.Backspace) -> {
+                (event.key == Key.Delete || (primary && event.key == Key.Backspace)) && !focused.isLocal -> {
                     delete(listOf(focused.id))
                     return true
                 }
-                event.key == Key.F2 && !focused.isUploading && !focused.isImportPreview && !inTrash -> {
+                event.key == Key.F2 && !focused.isLocal && !focused.isUploading && !focused.isImportPreview && !inTrash -> {
                     startRename(focused)
                     return true
                 }
@@ -1611,13 +1827,18 @@ fun DriveScreen(
             primary && event.key == Key.A -> selectAllDisplayed()
             // 撤销最近一次移动、移入回收站或重命名；没有可撤销的就不吃掉这个键
             primary && event.key == Key.Z && !event.isShiftPressed -> if (!state.acceptsActions || !taskSlot.requestUndoLast(services.driveRepository.changes, state.fileActions)) return false
-            trashKey && state.isSelectionMode && state.selectedFileIds.isNotEmpty() -> delete(state.selectedFileIds.toList())
-            // 文件管理器的惯例：选中一项是改名，几项是批量重命名
+            trashKey && state.isSelectionMode && state.selectedFileIds.any { !LocalLocation.isLocal(it) } ->
+                delete(state.selectedFileIds.filterNot(LocalLocation::isLocal))
+            // 文件管理器的惯例：选中一项是改名，几项是批量重命名（批量重命名只针对网盘真实文件，排除虚拟归档条目）
             event.key == Key.F2 && state.isSelectionMode && state.selectedFileIds.isNotEmpty() && !inTrash -> {
-                val targets = latestDisplayedFiles.filter { it.id in state.selectedFileIds && !it.isUploading && !it.isImportPreview }
+                val targets = latestDisplayedFiles.filter { it.id in state.selectedFileIds && !it.isLocal && !it.isUploading && !it.isImportPreview }
                 when {
                     targets.size == 1 -> startRename(targets.single())
-                    targets.size > 1 -> batchRenameTargets = state.withAttachedFiles(targets)
+                    targets.size > 1 -> {
+                        val realTargets = targets.filterNot { it.isVaulted }
+                        if (realTargets.size == 1) startRename(realTargets.single())
+                        else if (realTargets.size > 1) batchRenameTargets = state.withAttachedFiles(realTargets)
+                    }
                 }
             }
             // 后退与前进走浏览历史：资源管理器是 Alt+←/→ 与退格，Finder 是 ⌘[ 与 ⌘]。
@@ -1670,6 +1891,7 @@ fun DriveScreen(
             feedSupported = platform.videoPreview != null && onFeedShownChange != null,
             nameParsing = state.isNameParsing,
             selectedVideoCount = if (onOpenSelectedFeed != null) selectedFeedVideos.size else 0,
+            selectedGalleryCount = selectedGalleryMedia.size,
         ),
     ).let { if (isWorkspaceBrowser) it else it.copy(findDuplicates = false) }
         .let { if (galleryActive) it.copy(sort = false, filter = false) else it }
@@ -1683,10 +1905,10 @@ fun DriveScreen(
         }?.let { finder -> duplicateReport.smartSelectIds(finder) }
             ?.intersect(displayedFiles.filterNot { it.isFolder }.mapTo(HashSet()) { it.id })
             ?.takeIf { it.isNotEmpty() }?.let { suggested ->
-            SheetAction(Icons.Outlined.Checklist, "选中建议移走的 ${suggested.size} 项", { state.selectOnly(suggested) })
+            SheetAction(Icons.Outlined.Checklist, tr("选择建议清理的 ${suggested.size} 项", "Select ${suggested.size} suggested items to clean up", "整理推奨の ${suggested.size} 項目を選択", "정리 권장 ${suggested.size}개 항목 선택", "選取建議清理的 ${suggested.size} 個項目"), { state.selectOnly(suggested) })
         }
         state.archiveView != null && displayedFiles.isNotEmpty() && !state.isArchiveInImportPreview ->
-            SheetAction(Icons.Outlined.Unarchive, "全部解压", { extractFromArchive(emptyList()) })
+            SheetAction(Icons.Outlined.Unarchive, tr("全部解压", "Extract all", "すべて解凍", "모두 압축 해제", "全部解壓縮"), { extractFromArchive(emptyList()) })
         commands.emptyPlace -> libraryPageActions(libraryView, state.files.isEmpty(), { libraryConfirm = it }, { state.files.map { it.id } }).firstOrNull()
         else -> null
     }
@@ -1734,7 +1956,7 @@ fun DriveScreen(
                 ExplorerSearchField(
                     query = state.searchQuery,
                     onQueryChange = { state.updateSearchQuery(it) },
-                    placeholder = "搜索 ${activeFolder.name}",
+                    placeholder = tr("搜索 ${activeFolder.name}", "Search ${activeFolder.name}", "${activeFolder.name} を検索", "${activeFolder.name} 검색", "搜尋 ${activeFolder.name}"),
                     shortcut = platform.shortcutModifier.label("F"),
                     isGlobalSearching = state.isGlobalSearching,
                     isGlobalSearchActive = state.isGlobalSearchActive,
@@ -1748,12 +1970,13 @@ fun DriveScreen(
             shortcuts = platform.shortcutModifier,
             commands = commands,
             newActions = listOf(
-                SheetAction(Icons.Outlined.CreateNewFolder, "新建文件夹", {
+                SheetAction(Icons.Outlined.CreateNewFolder, tr("新建文件夹", "New folder", "新規フォルダー", "새 폴더", "新增資料夾"), {
                     newFolderName = ""
                     showNewFolderDialog = true
                 }),
-                SheetAction(Icons.Outlined.UploadFile, "上传文件", { pickFiles() }),
-                SheetAction(Icons.Outlined.DriveFolderUpload, "上传文件夹", { pickFolder() }),
+                *listOfNotNull(mountAction).toTypedArray(),
+                SheetAction(Icons.Outlined.UploadFile, tr("上传文件", "Upload files", "ファイルをアップロード", "파일 업로드", "上傳檔案"), { pickFiles() }),
+                SheetAction(Icons.Outlined.DriveFolderUpload, tr("上传文件夹", "Upload folder", "フォルダーをアップロード", "폴더 업로드", "上傳資料夾"), { pickFolder() }),
             ),
             selectedCount = if (state.isSelectionMode) state.selectedFileIds.size else 0,
             // 文件夹的大小列表接口不给，只合计文件
@@ -1765,6 +1988,8 @@ fun DriveScreen(
             onCanonicalNaming = { canonicalRoot = activeFolder },
             sortOrder = state.sortOrder,
             onSortChange = { state.changeSortOrder(it) },
+            perFolderSort = state.perFolderSort,
+            onPerFolderSortChange = state::setPerFolderSortEnabled,
             typeFilter = state.typeFilter,
             availableTypes = state.availableTypes,
             onTypeFilterChange = state::updateTypeFilter,
@@ -1788,12 +2013,14 @@ fun DriveScreen(
                     feedBlockedReason = feedBlockedReason,
                     galleryShown = galleryActive && !state.isSelectionMode,
                     onGalleryShownChange = changeGalleryShown.takeIf { commands.gallery || galleryActive },
+                    galleryShowImages = galleryShowImages,
+                    onGalleryShowImagesChange = ::setGalleryShowImages,
                 )
             },
             primaryAction = placePrimaryAction ?: if (feedStashed && onResumeFeed != null) {
-                SheetAction(Icons.Outlined.SwipeVertical, "继续刷", onResumeFeed, group = ActionGroup.Refresh)
+                SheetAction(Icons.Outlined.SwipeVertical, tr("继续浏览", "Resume", "再開", "계속 보기", "繼續瀏覽"), onResumeFeed, group = ActionGroup.Refresh)
             } else if (commands.addLink) {
-                SheetAction(Icons.Outlined.Bolt, "添加链接", ::openAddLink, group = ActionGroup.Refresh, pending = addLink.hasCollapsedWork)
+                SheetAction(Icons.Outlined.Bolt, tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結"), ::openAddLink, group = ActionGroup.Refresh, pending = addLink.hasCollapsedWork)
             } else {
                 null
             },
@@ -1841,51 +2068,54 @@ fun DriveScreen(
         val label = platform.shortcutModifier::label
         buildList {
             if (!state.isVirtualPlace && isWorkspaceBrowser) {
-                add(PaletteItem("新建文件夹", Icons.Outlined.CreateNewFolder, "网盘", keywords = "new folder mkdir") { showNewFolderDialog = true })
-                add(PaletteItem("上传文件", Icons.Outlined.UploadFile, "网盘", keywords = "upload") { pickFiles() })
-                add(PaletteItem("上传文件夹", Icons.Outlined.DriveFolderUpload, "网盘", keywords = "upload folder") { pickFolder() })
+                add(PaletteItem(tr("新建文件夹", "New folder", "新規フォルダー", "새 폴더", "新增資料夾"), Icons.Outlined.CreateNewFolder, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), keywords = "new folder mkdir") { showNewFolderDialog = true })
+                mountAction?.let { action ->
+                    add(PaletteItem(action.label, action.icon, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), keywords = "mount local folder 挂载 本地 文件夹", run = action.onClick))
+                }
+                add(PaletteItem(tr("上传文件", "Upload files", "ファイルをアップロード", "파일 업로드", "上傳檔案"), Icons.Outlined.UploadFile, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), keywords = "upload") { pickFiles() })
+                add(PaletteItem(tr("上传文件夹", "Upload folder", "フォルダーをアップロード", "폴더 업로드", "上傳資料夾"), Icons.Outlined.DriveFolderUpload, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), keywords = "upload folder") { pickFolder() })
             }
-            add(PaletteItem(folderMap.toggleLabel, Icons.Outlined.AccountTree, "网盘",
+            add(PaletteItem(folderMap.toggleLabel, Icons.Outlined.AccountTree, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"),
                     detail = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘⇧E" else "Ctrl+Shift+E", keywords = "folder tree map 树") {
                     folderMap.toggle()
                 })
-            add(PaletteItem("转到路径", Icons.Outlined.FolderOpen, "网盘", detail = label("L"), keywords = "path address 路径") { editAddress() })
-            add(PaletteItem("搜索文件", Icons.Outlined.Search, "网盘", detail = label("F"), keywords = "search find") {
+            add(PaletteItem(tr("转到路径", "Go to path", "パスへ移動", "경로로 이동", "前往路徑"), Icons.Outlined.FolderOpen, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), detail = label("L"), keywords = "path address 路径") { editAddress() })
+            add(PaletteItem(tr("搜索文件", "Search files", "ファイルを検索", "파일 검색", "搜尋檔案"), Icons.Outlined.Search, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), detail = label("F"), keywords = "search find") {
                 if (pathInTopBar) searchFocusRequests++ else state.openSearch()
             })
-            add(PaletteItem("属性", Icons.Outlined.Info, "网盘", detail = label("I"), keywords = "properties info details") {
+            add(PaletteItem(tr("属性", "Properties", "プロパティ", "속성", "屬性"), Icons.Outlined.Info, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), detail = label("I"), keywords = "properties info details") {
                 if (commandTargets.isNotEmpty()) showProperties(commandTargets, PanelAnchor.Centered) else showFolderProperties()
             })
             DriveViewMode.entries.filter { it != viewMode }.forEach { mode ->
-                add(PaletteItem("切换到${mode.paletteLabel}", mode.icon(), "网盘", keywords = "视图 view ${mode.name.lowercase()}") {
+                add(PaletteItem(tr("切换到${mode.paletteLabel}", "Switch to ${mode.paletteLabel}", "${mode.paletteLabel}に切り替え", "${mode.paletteLabel}(으)로 전환", "切換至${mode.paletteLabel}"), mode.icon(), tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), keywords = "视图 view ${mode.name.lowercase()}") {
                     selectViewMode(mode)
                 })
             }
-            add(PaletteItem("全选", Icons.Outlined.SelectAll, "网盘", detail = label("A"), keywords = "select all") { selectAllDisplayed() })
-            add(PaletteItem("刷新", Icons.Outlined.Refresh, "网盘", detail = "F5", keywords = "refresh reload") { refreshFiles() })
-            if (folderStack.size > 1) add(PaletteItem("上一级", Icons.Outlined.ArrowUpward, "网盘", detail = "Backspace", keywords = "up parent") { state.navigateUp() })
+            add(PaletteItem(tr("全选", "Select all", "すべて選択", "모두 선택", "全選"), Icons.Outlined.SelectAll, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), detail = label("A"), keywords = "select all") { selectAllDisplayed() })
+            add(PaletteItem(tr("刷新", "Refresh", "更新", "새로고침", "重新整理"), Icons.Outlined.Refresh, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), detail = "F5", keywords = "refresh reload") { refreshFiles() })
+            if (folderStack.size > 1) add(PaletteItem(tr("上一级", "Parent folder", "上の階層", "상위 폴더", "上一層"), Icons.Outlined.ArrowUpward, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), detail = "Backspace", keywords = "up parent") { state.navigateUp() })
             if (tabsAvailable) {
-                add(PaletteItem("新建标签页", Icons.Outlined.Add, "标签", detail = label("T"), keywords = "new tab", run = ::newRootTab))
+                add(PaletteItem(tr("新建标签页", "New tab", "新しいタブ", "새 탭", "新增分頁"), Icons.Outlined.Add, tr("标签", "Tabs", "タブ", "탭", "分頁"), detail = label("T"), keywords = "new tab", run = ::newRootTab))
                 if (tabs.size > 1) {
-                    add(PaletteItem("关闭标签页", Icons.Outlined.Close, "标签", detail = label("W"), keywords = "close tab") { closeTab(activeTabId) })
+                    add(PaletteItem(tr("关闭标签页", "Close tab", "タブを閉じる", "탭 닫기", "關閉分頁"), Icons.Outlined.Close, tr("标签", "Tabs", "タブ", "탭", "分頁"), detail = label("W"), keywords = "close tab") { closeTab(activeTabId) })
                     tabs.filter { it.id != activeTabId }.forEach { tab ->
-                        add(PaletteItem(tab.title, Icons.Outlined.Tab, "标签", detail = tab.stack.joinToString(" › ") { it.name }, keywords = "tab") {
+                        add(PaletteItem(tab.title, Icons.Outlined.Tab, tr("标签", "Tabs", "タブ", "탭", "分頁"), detail = tab.stack.joinToString(" › ") { it.localizedName }, keywords = "tab") {
                             selectTab(tab.id)
                         })
                     }
                 }
             }
             if (!state.isVirtualPlace) {
-                add(PaletteItem("在当前文件夹查找重复", Icons.Outlined.FileCopy, "网盘", keywords = "duplicate dedupe") { findDuplicates(activeFolder) })
+                add(PaletteItem(tr("在当前文件夹查找重复", "Find duplicates in current folder", "現在のフォルダーの重複を検索", "현재 폴더에서 중복 찾기", "在目前資料夾尋找重複檔案"), Icons.Outlined.FileCopy, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), keywords = "duplicate dedupe") { findDuplicates(activeFolder) })
             }
             // 选中了就作用于选中的（一个文件是对话框，几项是批量重命名，一个文件夹是整理它的子树）；没选中时整理当前文件夹
             val nameTargets = commandTargets.filterNot { it.isUploading }
             when {
                 nameTargets.isNotEmpty() -> if (targetCommands.rename && nameTargets.any { it.isFolder || hasAvCode(it.name) }) {
-                    add(PaletteItem("按番号规范命名", Icons.Outlined.DriveFileRenameOutline, "网盘", keywords = "rename av code 番号 重命名") { nameByCode(nameTargets) })
+                    add(PaletteItem(tr("按番号规范命名", "Normalize names by catalog code", "作品番号で名前を整理", "품번으로 이름 정리", "依番號規範命名"), Icons.Outlined.DriveFileRenameOutline, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), keywords = "rename av code 番号 重命名") { nameByCode(nameTargets) })
                 }
                 !state.isVirtualPlace -> add(
-                    PaletteItem("按番号规范命名当前文件夹", Icons.Outlined.DriveFileRenameOutline, "网盘", keywords = "rename av code 番号 重命名 整理") {
+                    PaletteItem(tr("按番号规范命名当前文件夹", "Normalize this folder by catalog code", "現在のフォルダーを作品番号で命名", "현재 폴더를 품번으로 이름 정리", "依番號規範命名目前資料夾"), Icons.Outlined.DriveFileRenameOutline, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), keywords = "rename av code 番号 重命名 整理") {
                         canonicalRoot = activeFolder
                     },
                 )
@@ -2108,16 +2338,16 @@ fun DriveScreen(
                                 moreActions = emptyList(),
                                 navigationIcon = when {
                                     inDuplicates && onCloseContext != null && folderStack.size <= navigation.rootDepth -> {
-                                        { TooltipIconButton(Icons.Outlined.Close, "结束查重", onCloseContext) }
+                                        { TooltipIconButton(Icons.Outlined.Close, tr("结束查重", "End duplicate search", "重複検索を終了", "중복 검색 종료", "結束重複檔案搜尋"), onCloseContext) }
                                     }
                                     atOriginBoundary -> {
-                                        { TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "返回", ::leaveLibrary) }
+                                        { TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, tr("返回", "Back", "戻る", "뒤로", "返回"), ::leaveLibrary) }
                                     }
                                     folderStack.size > navigation.rootDepth -> {
                                         {
                                             TooltipIconButton(
                                                 icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                                                label = "返回上一级",
+                                                label = tr("返回上一级", "Go to parent", "上の階層へ戻る", "상위 폴더로 이동", "返回上一層"),
                                                 onClick = { state.navigateUp() },
                                                 shortcut = if (platform.shortcutModifier == ShortcutModifier.Command) "⌘↑" else "Alt+↑",
                                             )
@@ -2126,7 +2356,7 @@ fun DriveScreen(
                                     else -> null
                                 },
                                 actions = listOf(
-                                    iconBarItem(Icons.Outlined.Search, "搜索", { state.openSearch() }, priority = 30, shortcut = platform.shortcutModifier.label("F")),
+                                    iconBarItem(Icons.Outlined.Search, tr("搜索", "Search", "検索", "검색", "搜尋"), { state.openSearch() }, priority = 30, shortcut = platform.shortcutModifier.label("F")),
                                 ),
                             )
                         }
@@ -2151,8 +2381,8 @@ fun DriveScreen(
                                     )
                                 } else buildList {
                                     if (commands.paste) {
-                                        add(BarItem("paste", 80, listOf(SheetAction(Icons.Outlined.ContentPaste, "粘贴", { state.paste() }, group = ActionGroup.Edit))) {
-                                            BarTextButton(Icons.Outlined.ContentPaste, "粘贴", { state.paste() })
+                                        add(BarItem("paste", 80, listOf(SheetAction(Icons.Outlined.ContentPaste, tr("粘贴", "Paste", "貼り付け", "붙여넣기", "貼上"), { state.paste() }, group = ActionGroup.Edit))) {
+                                            BarTextButton(Icons.Outlined.ContentPaste, tr("粘贴", "Paste", "貼り付け", "붙여넣기", "貼上"), { state.paste() })
                                         })
                                     }
                                     if (commands.findDuplicates) {
@@ -2170,8 +2400,8 @@ fun DriveScreen(
                                 },
                                 moreActions = if (inDuplicates && duplicateState != null) {
                                     listOf(
-                                        SheetAction(Icons.Outlined.Refresh, "重新扫描", { duplicateState.rescan() }, group = ActionGroup.Refresh),
-                                        SheetAction(Icons.Outlined.Close, "结束查重", onCloseContext ?: duplicateSession::end, group = ActionGroup.Refresh),
+                                        SheetAction(Icons.Outlined.Refresh, tr("重新扫描", "Scan again", "再検索", "다시 검색", "重新掃描"), { duplicateState.rescan() }, group = ActionGroup.Refresh),
+                                        SheetAction(Icons.Outlined.Close, tr("结束查重", "End duplicate search", "重複検索を終了", "중복 검색 종료", "結束重複檔案搜尋"), onCloseContext ?: duplicateSession::end, group = ActionGroup.Refresh),
                                     )
                                 } else emptyList(),
                                 trailing = buildList {
@@ -2184,6 +2414,8 @@ fun DriveScreen(
                                                 onFeedShownChange = changeFeedShown.takeIf { commands.feed && !feedStashed },
                                                 tileSize = tileSize,
                                                 onTileSizeChange = ::selectTileSize,
+                                                galleryShowImages = galleryShowImages,
+                                                onGalleryShowImagesChange = ::setGalleryShowImages,
                                             )
                                         })
                                     }
@@ -2215,7 +2447,7 @@ fun DriveScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 if (commandTargets.isNotEmpty()) {
-                                    (coreActions + SheetAction(Icons.Outlined.MoreHoriz, "更多", ::openSelectionActions)).forEach { action ->
+                                    (coreActions + SheetAction(Icons.Outlined.MoreHoriz, tr("更多", "More", "その他", "더 보기", "更多"), ::openSelectionActions)).forEach { action ->
                                         TextButton(
                                             onClick = action.onClick,
                                             modifier = Modifier.weight(1f).height(56.dp),
@@ -2254,7 +2486,7 @@ fun DriveScreen(
                                     val icon by remember { derivedStateOf { if (checkedProgress > 0.5f) Icons.Filled.Close else Icons.Filled.Add } }
                                     Icon(
                                         imageVector = icon,
-                                        contentDescription = if (isFabMenuExpanded) "收起" else "快捷操作",
+                                        contentDescription = if (isFabMenuExpanded) tr("收起", "Collapse", "折りたたむ", "접기", "收合") else tr("快捷操作", "Quick actions", "クイック操作", "빠른 작업", "快速操作"),
                                         modifier = Modifier.animateIcon({ checkedProgress }),
                                     )
                                 }
@@ -2267,7 +2499,7 @@ fun DriveScreen(
                                         state.paste()
                                     },
                                     icon = { Icon(Icons.Outlined.ContentPaste, contentDescription = null) },
-                                    text = { Text("粘贴") },
+                                    text = { Text(stringResource(Res.string.text_paste)) },
                                 )
                             }
                             if (commands.addLink) {
@@ -2277,7 +2509,7 @@ fun DriveScreen(
                                         openAddLink()
                                     },
                                     icon = { PendingBadge(shown = addLink.hasCollapsedWork) { Icon(Icons.Outlined.Bolt, contentDescription = null) } },
-                                    text = { Text(if (instantState != null) "继续添加链接" else "添加链接") },
+                                    text = { Text(if (instantState != null) tr("继续添加链接", "Add more links", "リンクを追加する", "링크 계속 추가", "繼續新增連結") else tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結")) },
                                 )
                             }
                             if (commands.create) {
@@ -2288,15 +2520,22 @@ fun DriveScreen(
                                         showNewFolderDialog = true
                                     },
                                     icon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
-                                    text = { Text("新建文件夹") },
+                                    text = { Text(stringResource(Res.string.text_new_folder)) },
                                 )
+                                mountAction?.let { action ->
+                                    FloatingActionButtonMenuItem(
+                                        onClick = { isFabMenuExpanded = false; action.onClick() },
+                                        icon = { Icon(action.icon, contentDescription = null) },
+                                        text = { Text(action.label) },
+                                    )
+                                }
                                 FloatingActionButtonMenuItem(
                                     onClick = {
                                         isFabMenuExpanded = false
                                         pickFiles()
                                     },
                                     icon = { Icon(Icons.Outlined.UploadFile, contentDescription = null) },
-                                    text = { Text("上传文件") },
+                                    text = { Text(stringResource(Res.string.text_upload_files)) },
                                 )
                             }
                         }
@@ -2385,6 +2624,8 @@ fun DriveScreen(
                                     callbacks = callbacks,
                                     folderName = { gallery.folderName(it) },
                                     rootKey = listOf(activeFolderId, libraryView, isSearchOpen, state.searchQuery, state.isGlobalSearchActive),
+                                    showImages = galleryShowImages,
+                                    onShowImagesChange = ::setGalleryShowImages,
                                     modifier = Modifier.weight(1f),
                                 )
                             }
@@ -2501,6 +2742,8 @@ fun DriveScreen(
                                                         onViewModeChange = ::selectViewMode,
                                                         tileSize = tileSize,
                                                         onTileSizeChange = ::selectTileSize,
+                                                        perFolderSort = state.perFolderSort,
+                                                        onPerFolderSortChange = state::setPerFolderSortEnabled,
                                                         // 宽窗口的排序、筛选与视图在命令栏上，页眉只剩搜索结果的说明
                                                         showControls = !pathInTopBar && !inDuplicates,
                                                     )
@@ -2532,7 +2775,7 @@ fun DriveScreen(
     }
 
     if (selectionActionTargets.isNotEmpty()) {
-        val target = PropertiesTarget.Selection(selectionActionTargets, selectionActionTargets.map(::locationOf).distinct().singleOrNull() ?: "多个位置")
+        val target = PropertiesTarget.Selection(selectionActionTargets, selectionActionTargets.map(::locationOf).distinct().singleOrNull() ?: tr("多个位置", "Multiple locations", "複数の場所", "여러 위치", "多個位置"))
         FileActionsSheet(
             target = target,
             actions = selectionSheetActions(selectionActionTargets),
@@ -2557,14 +2800,14 @@ fun DriveScreen(
     }
 
     if (!pathInTopBar && addressPanelOpen) {
-        PikoSheet(onDismissRequest = { addressPanelOpen = false }, sideSheetTitle = "转到路径") {
+        PikoSheet(onDismissRequest = { addressPanelOpen = false }, sideSheetTitle = tr("转到路径", "Go to path", "パスへ移動", "경로로 이동", "前往路徑")) {
             Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("转到路径", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                    TextButton(onClick = { addressPanelOpen = false }) { Text("关闭") }
+                    Text(stringResource(Res.string.text_go_to_path), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                    TextButton(onClick = { addressPanelOpen = false }) { Text(stringResource(Res.string.common_close)) }
                 }
                 addressBar()
-                Text("点击地址栏可输入路径，也可选择最近访问或固定的文件夹。", style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(Res.string.text_enter_a_path_in_the_address_bar_or_choose_a_recent_or_pinned_folder), style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -2617,7 +2860,7 @@ fun DriveScreen(
             onDismiss = { shareTargets = emptyList() },
             onCopied = {
                 if (state.isSelectionMode) state.exitSelection()
-                scope.launch { snackbarHostState.showSnackbar("已复制分享链接", withDismissAction = true) }
+                scope.launch { snackbarHostState.showSnackbar(tr("已复制分享链接", "Share link copied", "共有リンクをコピーしました", "공유 링크를 복사했습니다", "已複製分享連結"), withDismissAction = true) }
             },
         )
     }
@@ -2636,11 +2879,11 @@ fun DriveScreen(
 
     if (showNewFolderDialog) {
         NameInputDialog(
-            title = "新建文件夹",
-            label = "文件夹名称",
+            title = tr("新建文件夹", "New folder", "新規フォルダー", "새 폴더", "新增資料夾"),
+            label = tr("文件夹名称", "Folder name", "フォルダー名", "폴더 이름", "資料夾名稱"),
             value = newFolderName,
             onValueChange = { newFolderName = it },
-            confirmLabel = "创建",
+            confirmLabel = tr("创建", "Create", "作成", "만들기", "建立"),
             confirmEnabled = newFolderName.isNotBlank(),
             onDismiss = { showNewFolderDialog = false },
             onConfirm = { name ->
@@ -2656,11 +2899,11 @@ fun DriveScreen(
             if (target.isFolder || target.isVaulted) null else canonicalAvNameOf(target.name)
         }
         NameInputDialog(
-            title = "重命名",
-            label = "新名称",
+            title = tr("重命名", "Rename", "名前を変更", "이름 변경", "重新命名"),
+            label = tr("新名称", "New name", "新しい名前", "새 이름", "新名稱"),
             value = renameNewName,
             onValueChange = { renameNewName = it },
-            confirmLabel = "确定",
+            confirmLabel = tr("确定", "Confirm", "確認", "확인", "確定"),
             confirmEnabled = renameNewName.isNotBlank() && renameNewName != target.name,
             // 照资源管理器只选主名：改名多半不动扩展名。文件夹没有扩展名，整个选中
             initialSelection = TextRange(0, if (target.isFolder) target.name.length else target.name.lastIndexOf('.').takeIf { it > 0 } ?: target.name.length),
@@ -2684,7 +2927,7 @@ fun DriveScreen(
                                 renameNewName = canonicalName
                                 canonicalRename = true
                             },
-                        ) { Text("按番号规范命名") }
+                        ) { Text(stringResource(Res.string.text_normalize_names_by_catalog_code)) }
                     }
                 }
             },
@@ -2754,7 +2997,7 @@ fun DriveScreen(
         // 查看器里左右翻页的范围是当前列表里能看的图，搜索与折叠筛过之后的那一份，
         // 和用户眼前看到的顺序一致。
         val previewables = remember(displayedFiles) {
-            displayedFiles.filter { it.isPreviewableImage() && it.thumbnailLink.isNotBlank() }
+            displayedFiles.filter { it.isPreviewableImage() && it.previewImageCoverUrl().isNotBlank() }
         }
         val startIndex = previewables.indexOfFirst { it.id == image.id }
         if (startIndex < 0) {
@@ -2792,8 +3035,8 @@ private val FabClearance = 88.dp
  */
 private fun searchSummary(state: DriveScreenState, files: List<FileStat>): String? = when {
     state.isGlobalSearchActive ->
-        if (state.isGlobalSearching) "全盘搜索中，已找到 ${files.size} 项" else "全盘找到 ${files.size} 项"
-    state.searchQuery.isNotBlank() -> "当前文件夹找到 ${files.size} 项"
+        if (state.isGlobalSearching) tr("全盘搜索中，已找到 ${files.size} 项", "Searching drive: ${enCount(files.size, "item", "items")} found", "ドライブ全体を検索中、${files.size} 項目発見", "드라이브 검색 중, ${files.size}개 항목 찾음", "正在搜尋整個雲端硬碟，已找到 ${files.size} 個項目") else tr("全盘找到 ${files.size} 项", "${enCount(files.size, "item", "items")} found in drive", "ドライブ全体で ${files.size} 項目発見", "전체 드라이브에서 ${files.size}개 항목 찾음", "在整個雲端硬碟找到 ${files.size} 個項目")
+    state.searchQuery.isNotBlank() -> tr("当前文件夹找到 ${files.size} 项", "${enCount(files.size, "item", "items")} found in folder", "現在のフォルダーで ${files.size} 項目発見", "현재 폴더에서 ${files.size}개 항목 찾음", "在目前資料夾找到 ${files.size} 個項目")
     else -> null
 }
 
@@ -2835,14 +3078,14 @@ private fun StaleDataBanner(reason: String, onRetry: () -> Unit) {
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = "内容可能不是最新的：$reason",
+                text = tr("内容可能不是最新的：$reason", "Contents may be out of date: $reason", "内容が最新でない可能性があります：$reason", "최신 내용이 아닐 수 있습니다: $reason", "內容可能不是最新的：$reason"),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onErrorContainer,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = onRetry) { Text("重试") }
+            TextButton(onClick = onRetry) { Text(stringResource(Res.string.common_retry)) }
         }
     }
 }
@@ -2868,11 +3111,11 @@ private fun DriveEmptyState(state: DriveScreenState, modifier: Modifier = Modifi
             ) {
                 if (state.searchQuery.isNotBlank()) {
                     PikoEmptyState(
-                        title = if (state.isGlobalSearching) "正在遍历网盘" else "无匹配结果",
+                        title = if (state.isGlobalSearching) tr("正在搜索全盘", "Searching entire drive", "ドライブ全体を検索中", "전체 드라이브 검색 중", "正在搜尋整個雲端硬碟") else tr("无匹配结果", "No matches", "一致する項目はありません", "일치하는 항목이 없습니다", "沒有相符結果"),
                         description = when {
-                            state.isGlobalSearching -> "全盘搜索逐层遍历目录，结果会陆续出现"
-                            state.isGlobalSearchActive -> "全盘没有名称包含「${state.searchQuery}」的文件"
-                            else -> "当前文件夹没有名称包含「${state.searchQuery}」的文件，可点顶栏右侧「全盘」搜索整个网盘"
+                            state.isGlobalSearching -> tr("正在逐层扫描文件夹，匹配结果将实时显示", "Scanning folders; matches appear as they are found", "フォルダーを順にスキャンし、見つかった項目から表示します", "폴더를 차례로 스캔하며 찾은 항목을 실시간으로 표시합니다", "正在逐層掃描資料夾，相符結果將即時顯示")
+                            state.isGlobalSearchActive -> tr("全盘没有名称包含「${state.searchQuery}」的文件", "No drive files with “${state.searchQuery}” in their name", "ドライブ内に「${state.searchQuery}」を含む名前のファイルはありません", "전체 드라이브에 이름에 “${state.searchQuery}”이(가) 포함된 파일이 없습니다", "整個雲端硬碟沒有名稱包含「${state.searchQuery}」的檔案")
+                            else -> tr("当前文件夹中无名称包含「${state.searchQuery}」的项目，可点击顶部「全盘」搜索整个网盘", "No items matching “${state.searchQuery}” in this folder. Click Entire drive to search everywhere", "このフォルダーに「${state.searchQuery}」を含む項目はありません。上部の「ドライブ全体」から全体を検索できます", "현재 폴더에 “${state.searchQuery}”이(가) 포함된 항목이 없습니다. 상단의 '전체 드라이브'로 전체를 검색할 수 있습니다", "目前資料夾中無名稱包含「${state.searchQuery}」的項目，可點選頂部「全碟」搜尋整個雲端硬碟")
                         },
                         icon = Icons.Outlined.SearchOff,
                     )
@@ -2883,19 +3126,19 @@ private fun DriveEmptyState(state: DriveScreenState, modifier: Modifier = Modifi
                     // 要密码时密码框盖在上面，取消就退出了，这里只管读不出来与真的空着两种
                     val error = state.loadError
                     PikoEmptyState(
-                        title = if (error != null) "无法读取压缩包" else "此文件夹为空",
-                        description = error ?: "压缩包里的这一层没有内容",
+                        title = if (error != null) tr("无法读取压缩包", "Unable to read archive", "圧縮ファイルを読み込めません", "압축 파일을 읽을 수 없습니다", "無法讀取壓縮檔") else tr("此文件夹为空", "This folder is empty", "このフォルダーは空です", "이 폴더는 비어 있습니다", "此資料夾為空"),
+                        description = error ?: tr("此压缩包目录为空", "This archive folder is empty", "圧縮ファイル内のこのフォルダーは空です", "압축 파일의 이 폴더는 비어 있습니다", "此壓縮檔目錄為空"),
                         icon = if (error != null) Icons.Outlined.ErrorOutline else Icons.Outlined.FolderOpen,
                     )
                 } else if (state.importPreviewView != null) {
                     PikoEmptyState(
-                        title = "此待保存文件夹为空",
+                        title = tr("此待保存文件夹为空", "This unsaved folder is empty", "この未保存フォルダーは空です", "저장 대기 폴더가 비어 있습니다", "此待儲存資料夾為空"),
                         description = "",
                         icon = Icons.Outlined.FolderOpen,
                     )
                 } else {
                     PikoEmptyState(
-                        title = "此文件夹为空",
+                        title = tr("此文件夹为空", "This folder is empty", "このフォルダーは空です", "이 폴더는 비어 있습니다", "此資料夾為空"),
                         description = "",
                         icon = Icons.Outlined.FolderOpen,
                     )
@@ -2950,7 +3193,7 @@ private fun NameInputDialog(
             PikoDialogConfirm(confirmLabel, onClick = ::confirm, enabled = canConfirm)
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) }
         },
     )
     pendingName?.let { name ->
@@ -2968,6 +3211,6 @@ private fun NameInputDialog(
 
 private val DriveViewMode.paletteLabel: String
     get() = when (this) {
-        DriveViewMode.LIST -> "列表视图"
-        DriveViewMode.POSTER -> "网格视图"
+        DriveViewMode.LIST -> tr("列表视图", "List view", "リスト表示", "목록 보기", "清單檢視")
+        DriveViewMode.POSTER -> tr("网格视图", "Grid view", "グリッド表示", "격자 보기", "網格檢視")
     }

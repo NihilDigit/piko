@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.clips
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -57,27 +59,27 @@ internal class ClipActions(
     fun isStarred(clip: Clip): Boolean =
         starred[clip.fileId] ?: if (starsLoaded) false else (session.listedFile(clip.fileId)?.isStarred ?: false)
 
-    /** [value] 为 null 时切换。双击画面只加不减，与短视频应用的点赞一致。 */
+    /** [value] 为 null 时切换。双击画面只加不减，与短视频应用的点赞一致。真实文件与归档条目均支持星标。 */
     fun setStarred(clip: Clip, value: Boolean? = null) {
-        if (dev.piko.shared.data.VaultEntry.isVaulted(clip.fileId)) {
-            onMessage("归档文件需要先恢复到网盘才能添加星标")
-            return
-        }
+        if (dev.piko.shared.data.LocalLocation.isLocal(clip.fileId)) return
         val before = isStarred(clip)
         val target = value ?: !before
         if (target == before) return
         // 先改界面再请求，按钮跟手；失败了改回去
         starred[clip.fileId] = target
         pending += clip.fileId
+        val knownStat = (session.listedFile(clip.fileId) ?: clip.file).let { stat ->
+            if (stat.parentId.isNotEmpty()) stat else stat.copy(parentId = clip.parentId)
+        }
         scope.launch {
             try {
-                driveRepo.setStarred(listOf(clip.fileId), target)
+                driveRepo.setStarred(listOf(clip.fileId), target, mapOf(clip.fileId to knownStat))
                     // 网盘页可能就在旁边，列表里的星标由仓库通知它重列
-                    .onSuccess { onMessage(if (target) "已添加星标" else "已取消星标") }
+                    .onSuccess { onMessage(if (target) tr("已添加星标", "Starred", "スターを付けました", "별표를 추가했습니다", "已新增星號") else tr("已取消星标", "Unstarred", "スターを外しました", "별표를 해제했습니다", "已取消星號")) }
                     .logFailure(TAG, "信息流修改星标失败")
                     .onFailure {
                         starred[clip.fileId] = before
-                        onMessage(if (target) "添加星标失败" else "取消星标失败")
+                        onMessage(if (target) tr("添加星标失败", "Failed to add star", "スターを付けられませんでした", "별표를 추가하지 못했습니다", "新增星號失敗") else tr("取消星标失败", "Failed to remove star", "スターを外せませんでした", "별표를 해제하지 못했습니다", "取消星號失敗"))
                     }
             } finally {
                 pending -= clip.fileId

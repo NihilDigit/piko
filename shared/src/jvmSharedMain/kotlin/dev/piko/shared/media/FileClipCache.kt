@@ -70,6 +70,7 @@ class FileClipCache(
                     sliceOffset = input.readLong(),
                     sliceLength = input.readLong(),
                     sliceStartMs = input.readLong(),
+                    sliceDurationMs = input.readLong(),
                 )
             }
         }.getOrNull()?.also { file.setLastModified(System.currentTimeMillis()) }
@@ -90,6 +91,7 @@ class FileClipCache(
                     output.writeLong(record.sliceOffset)
                     output.writeLong(record.sliceLength)
                     output.writeLong(record.sliceStartMs)
+                    output.writeLong(record.sliceDurationMs)
                 }
                 val records = recordDirectory.listFiles { it.isFile && !it.name.endsWith(".tmp") } ?: return@runCatching
                 val excess = records.size - MAX_RECORDS
@@ -144,8 +146,8 @@ class FileClipCache(
 
     private companion object {
         const val TAG = "Clips"
-        // 2 起记录带切片的实际起点；1 的记录读不出来，当作没有，再来一次就补上
-        const val FORMAT = 2
+        // 3 起记录带切片的实际起点与首尾 PTS 实测时长；旧记录当作没有，再来一次自动补上
+        const val FORMAT = 3
         const val DEFAULT_CAP_BYTES = 300L * 1024 * 1024
         const val MAX_RECORDS = 4096
         const val EVICT_TO = 0.8

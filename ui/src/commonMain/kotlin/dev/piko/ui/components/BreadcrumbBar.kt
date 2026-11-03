@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.PathBreadcrumb
+import dev.piko.shared.presentation.localizedName
 
 // 单级目录名的宽度上限。不设上限时一个超长的目录名会独占整行，
 // 其余层级全被挤到滚动区外，面包屑失去「一眼看到路径」的作用。
@@ -75,7 +76,7 @@ fun BreadcrumbBar(
                 modifier = Modifier.size(18.dp),
             )
             Spacer(modifier = Modifier.width(4.dp))
-            Text(text = first.name, style = MaterialTheme.typography.labelLarge)
+            Text(text = first.localizedName, style = MaterialTheme.typography.labelLarge)
         }
 
         breadcrumbs.drop(1).forEachIndexed { offset, crumb ->
@@ -95,7 +96,7 @@ fun BreadcrumbBar(
                 modifier = Modifier.heightIn(min = 48.dp),
             ) {
                 Text(
-                    text = crumb.name,
+                    text = crumb.localizedName,
                     style = MaterialTheme.typography.labelLarge,
                     // 当前层不可点，禁用态默认的 38% 透明度会让它看起来比上级更弱，
                     // 这里显式用 onSurface 表明「你在这里」

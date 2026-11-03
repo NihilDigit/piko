@@ -1,5 +1,7 @@
 package dev.piko.desktop
 
+import dev.piko.shared.i18n.tr
+
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.auth.SecretVault
 import dev.piko.shared.preferences.PreferenceSettings

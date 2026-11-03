@@ -37,7 +37,7 @@ fun List<PikoPathBreadcrumb>.outsideArchives(): List<PikoPathBreadcrumb> {
 
 /** 能放进东西、能列出网盘内容的真实文件夹，库、压缩包与待保存虚拟目录都不是。 */
 fun isDriveFolderId(id: String): Boolean =
-    DriveLibrary.of(id) == null && ArchiveLocation.of(id) == null &&
+    !LocalLocation.isLocal(id) && DriveLibrary.of(id) == null && ArchiveLocation.of(id) == null &&
         ImportPreviewLocation.of(id) == null && !id.startsWith("import-dir:")
 
 /**
@@ -122,9 +122,24 @@ object ArchiveEntryId {
  * 播放、下载与信息流只认这里，不分它从哪来。
  */
 object LeasedFile {
+    private const val CONTENT_PREFIX = "piko-content:"
+
     fun isLeased(fileId: String): Boolean =
-        VaultEntry.isVaulted(fileId) || ArchiveEntryId.isEntry(fileId) || ImportPreviewEntryId.isEntry(fileId)
+        VaultEntry.isVaulted(fileId) || ArchiveEntryId.isEntry(fileId) ||
+            ImportPreviewEntryId.isEntry(fileId) || fileId.startsWith(CONTENT_PREFIX)
 
     fun resolvedFileOf(fileId: String): ResolvedFile? =
-        VaultEntry.resolvedFileOf(fileId) ?: ArchiveEntryId.resolvedFileOf(fileId) ?: ImportPreviewEntryId.resolvedFileOf(fileId)
+        VaultEntry.resolvedFileOf(fileId)
+            ?: ArchiveEntryId.resolvedFileOf(fileId)
+            ?: ImportPreviewEntryId.resolvedFileOf(fileId)
+            ?: contentResolvedFileOf(fileId)
+
+    private fun contentResolvedFileOf(fileId: String): ResolvedFile? {
+        if (!fileId.startsWith(CONTENT_PREFIX)) return null
+        val parts = fileId.removePrefix(CONTENT_PREFIX).split(':', limit = 2)
+        if (parts.size != 2) return null
+        val gcid = parts[0].takeIf { it.isNotBlank() } ?: return null
+        val size = parts[1].toLongOrNull() ?: return null
+        return ResolvedFile(path = gcid, size = size, gcid = gcid)
+    }
 }

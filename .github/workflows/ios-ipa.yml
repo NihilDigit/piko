@@ -27,6 +27,8 @@ on:
         type: string
         default: latest-stable
   push:
+    branches:
+      - "codex/ios-v1.4.0"
     tags:
       - "ios-v*"
 

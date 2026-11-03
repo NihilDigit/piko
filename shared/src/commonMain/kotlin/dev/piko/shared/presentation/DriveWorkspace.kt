@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.map
@@ -114,8 +115,8 @@ class DriveWorkspace(
             }
             if (snapshot != null) {
                 entrySnapshots.update { snapshots -> snapshots.filterValues { it.tabId != primaryTabId } }
-                _folderStackFlow.value = folderIndex.resolve(snapshot.previousStack)
-                _historyFlow.value = snapshot.previousHistory.resolved(folderIndex)
+                _folderStackFlow.value = folderIndex.resolve(repository.localMounts.restoredStack(snapshot.previousStack))
+                _historyFlow.value = snapshot.previousHistory.retainingValid(_folderStackFlow.value, repository.localMounts::isMountedCached).resolved(folderIndex)
                 forgetFoldersOutsideStack()
                 publishTabs()
             } else {
@@ -174,6 +175,7 @@ class DriveWorkspace(
     }
 
     internal fun moveTabHistory(id: Long, backwards: Boolean): Boolean {
+        refreshFolderReferences()
         if (id == _activeTabId.value) return if (backwards) goBack() else goForward()
         val tab = tabSnapshot(id) ?: return false
         val target = (if (backwards) tab.history.back else tab.history.forward).lastOrNull() ?: return false
@@ -225,8 +227,9 @@ class DriveWorkspace(
         if (_tabsFlow.value !== initialTabs || highlightRequests.value != initialHighlightRevision || repository.currentAccount != account) return false
         // Older releases saved duplicate report positions as tabs. Their task state was never saved,
         // so only actual file positions can be restored into this workspace.
+        repository.localMounts.all()
         val stacks = saved.tabs.mapIndexedNotNull { index, crumbs ->
-            folderIndex.resolve(crumbs.map { PikoPathBreadcrumb(it.id, it.name) })
+            folderIndex.resolve(repository.localMounts.restoredStack(crumbs.map { PikoPathBreadcrumb(it.id, it.name) }))
                 .takeIf { it.isNotEmpty() && it.library?.isSession != true }?.let { index to it }
         }
         if (stacks.isEmpty()) return false
@@ -413,8 +416,8 @@ class DriveWorkspace(
         if (!canReturnAcross(token)) return false
         val snapshot = entrySnapshots.getAndUpdate { it - token.id }[token.id] ?: return false
         switchTab(token.tabId)
-        _folderStackFlow.value = folderIndex.resolve(snapshot.previousStack)
-        _historyFlow.value = snapshot.previousHistory.resolved(folderIndex)
+        _folderStackFlow.value = folderIndex.resolve(repository.localMounts.restoredStack(snapshot.previousStack))
+        _historyFlow.value = snapshot.previousHistory.retainingValid(_folderStackFlow.value, repository.localMounts::isMountedCached).resolved(folderIndex)
         forgetFoldersOutsideStack()
         publishTabs()
         return true
@@ -431,8 +434,8 @@ class DriveWorkspace(
         if (location !is DriveLocation || location.owner !== this || location.account != navigationAccount.value || location.account != repository.currentAccount) return
         val tabId = if (_tabs.value.any { it.id == location.tabId }) location.tabId else openTab(location.stack)
         switchTab(tabId)
-        _historyFlow.value = location.history
-        _folderStackFlow.value = location.stack
+        _folderStackFlow.value = folderIndex.resolve(repository.localMounts.restoredStack(location.stack))
+        _historyFlow.value = location.history.retainingValid(_folderStackFlow.value, repository.localMounts::isMountedCached).resolved(folderIndex)
         forgetFoldersOutsideStack()
         publishTabs()
     }
@@ -498,6 +501,7 @@ class DriveWorkspace(
 
     /** 后退了返回 true。被 [leaveGuard] 拦下也返回 true：这一下已经有人接着处理，调用方不要再退到别处。 */
     override fun goBack(): Boolean {
+        refreshFolderReferences()
         val history = _historyFlow.value
         val target = history.back.lastOrNull() ?: return false
         if (!leaveAllowed(target) { goBack() }) return true
@@ -508,6 +512,7 @@ class DriveWorkspace(
     }
 
     override fun goForward(): Boolean {
+        refreshFolderReferences()
         val history = _historyFlow.value
         val target = history.forward.lastOrNull() ?: return false
         if (!leaveAllowed(target) { goForward() }) return true
@@ -557,11 +562,16 @@ class DriveWorkspace(
     override fun refreshFolderReferences() {
         if (navigationAccount.value != repository.currentAccount) return
         val index = folderIndex
-        _folderStackFlow.update { index.resolve(it) }
-        _historyFlow.update { it.resolved(index) }
-        _tabs.update { tabs -> tabs.map { tab -> tab.copy(stack = index.resolve(tab.stack), history = tab.history.resolved(index)) } }
+        val mounts = repository.localMounts
+        _folderStackFlow.update { index.resolve(mounts.restoredStack(it)) }
+        _historyFlow.update { it.retainingValid(_folderStackFlow.value, mounts::isMountedCached).resolved(index) }
+        _tabs.update { tabs -> tabs.map { tab ->
+            val stack = index.resolve(mounts.restoredStack(tab.stack))
+            tab.copy(stack = stack, history = tab.history.retainingValid(stack, mounts::isMountedCached).resolved(index))
+        } }
         // 截短了的（停在删掉的文件夹里）不留：那个文件夹已经去不了，留着的是它的上级，人并没有专门去过
-        recentFolders.rewrite { stacks -> stacks.mapNotNull { stack -> index.resolve(stack).takeIf { it.last().id == stack.last().id } } }
+        recentFolders.rewrite { stacks -> stacks.filter { stack -> stack.all { mounts.isMountedCached(it.id) } }
+            .mapNotNull { stack -> index.resolve(stack).takeIf { it.lastOrNull()?.id == stack.lastOrNull()?.id } } }
         publishTabs()
     }
 
@@ -611,7 +621,8 @@ class DriveWorkspace(
     /** 启动时恢复上次退出时的位置。不记历史：后退不该退到恢复之前那一瞬的根目录。 */
     override fun restoreFolderStack(stack: List<PikoPathBreadcrumb>) {
         if (stack.isEmpty()) return
-        _folderStackFlow.value = stack
+        _folderStackFlow.value = folderIndex.resolve(repository.localMounts.restoredStack(stack))
+        _historyFlow.update { it.retainingValid(_folderStackFlow.value, repository.localMounts::isMountedCached) }
         stackChanged()
     }
 
@@ -662,7 +673,15 @@ class DriveWorkspace(
                     pendingByTab.value = emptyMap()
                     navigations.value.forEach { it.updateHighlights(emptySet()) }
                 }
+                repository.localMounts.all()
                 recentFolders.switchAccount(account)
+            }
+        }
+        workScope.launch {
+            // 挂载表和最近访问都异步恢复，先读挂载表，避免把尚未载入的有效挂载当成失效位置。
+            repository.localMounts.all()
+            combine(repository.localMounts.flow, recentFolders.flow) { _, _ -> Unit }.collect {
+                refreshFolderReferences()
             }
         }
     }

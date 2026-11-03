@@ -58,7 +58,7 @@ internal class FolderIndex {
 
     /** 查详情得到的一项。只收文件夹与压缩包；回收站里的不收，也不当作删掉：那是别处删的，由列表页自己发现。 */
     fun learned(id: String, name: String, parentId: String, isFolder: Boolean, trashed: Boolean): Boolean {
-        if (trashed || id.isEmpty() || !(isFolder || isExtractableArchive(name))) return false
+        if (LocalLocation.isLocal(id) || trashed || id.isEmpty() || !(isFolder || isExtractableArchive(name))) return false
         return edit { it.copy(nodes = it.nodes + (id to Node(name, parentId)), gone = it.gone - id) }
     }
 
@@ -90,7 +90,7 @@ internal class FolderIndex {
 
     /** 信息流存盘的目录名与上级，见类注释。 */
     fun seed(names: Map<String, String>, parents: Map<String, String>): Boolean = edit { current ->
-        val added = names.filterKeys { it.isNotEmpty() && it !in current.nodes }
+        val added = names.filterKeys { !LocalLocation.isLocal(it) && it.isNotEmpty() && it !in current.nodes }
             .mapValues { (id, name) -> Node(name, parents[id], provisional = true) }
         current.copy(nodes = current.nodes + added)
     }
@@ -166,6 +166,6 @@ internal class FolderIndex {
             return crumbId.takeIf { isDriveFolderId(it) }
         }
 
-        private fun FileStat.isIndexed() = isFolder || isExtractableArchive(name)
+        private fun FileStat.isIndexed() = !LocalLocation.isLocal(id) && (isFolder || isExtractableArchive(name))
     }
 }

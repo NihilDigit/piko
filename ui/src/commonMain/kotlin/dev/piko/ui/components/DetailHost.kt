@@ -27,12 +27,22 @@ import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.adaptive.isHeightCompact
 
-internal data class DetailPanelSpec(
-    val title: String,
-    val closeLabel: String,
+internal class DetailPanelSpec(
+    private val titleText: () -> String,
+    private val closeLabelText: () -> String,
     val minWidth: Dp = 320.dp,
     val maxWidth: Dp = 440.dp,
-)
+) {
+    constructor(
+        title: String,
+        closeLabel: String,
+        minWidth: Dp = 320.dp,
+        maxWidth: Dp = 440.dp,
+    ) : this({ title }, { closeLabel }, minWidth, maxWidth)
+
+    val title: String get() = titleText()
+    val closeLabel: String get() = closeLabelText()
+}
 
 internal class DetailPanelKey<T : Any>(val spec: DetailPanelSpec)
 

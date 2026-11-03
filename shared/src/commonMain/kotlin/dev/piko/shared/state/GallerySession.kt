@@ -7,7 +7,10 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.isVaulted
+import dev.piko.shared.i18n.enCount
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.presentation.localizedName
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -29,9 +32,23 @@ class GallerySession(
         private set
     var shown by mutableStateOf(false)
         private set
+    var includeImages by mutableStateOf(true)
+        private set
     var selectedVideoCount by mutableStateOf<Int?>(null)
         private set
-    val scopeLabel: String get() = selectedVideoCount?.let { "已选 $it 个视频" } ?: root?.name.orEmpty()
+    private var selectedImageCount by mutableStateOf(0)
+    private var selectedMediaTotal by mutableStateOf<Int?>(null)
+    val scopeLabel: String
+        get() {
+            val total = selectedMediaTotal ?: return root?.localizedName.orEmpty()
+            val videos = selectedVideoCount ?: 0
+            val images = selectedImageCount
+            return when {
+                images == 0 -> tr("已选 $videos 个视频", "Selected ${enCount(videos, "video", "videos")}", "$videos 件の動画を選択", "동영상 ${videos}개 선택됨", "已選 $videos 部影片")
+                videos == 0 -> tr("已选 $images 张图片", "Selected ${enCount(images, "image", "images")}", "$images 枚の画像を選択", "이미지 ${images}장 선택됨", "已選 $images 張圖片")
+                else -> tr("已选 $total 项媒体", "Selected ${enCount(total, "media item", "media items")}", "$total 件のメディアを選択", "미디어 ${total}개 선택됨", "已選 $total 項媒體")
+            }
+        }
     var account by mutableStateOf<String?>(null)
         private set
     var files by mutableStateOf<List<FileStat>>(emptyList())
@@ -77,10 +94,28 @@ class GallerySession(
         }
     }
 
-    fun open(path: List<PikoPathBreadcrumb>, selected: List<FileStat>? = null) {
+    fun updateIncludeImages(enabled: Boolean) {
+        if (includeImages == enabled) return
+        includeImages = enabled
+        if (root == null) return
+        rebuildCandidates()
+        val traversal = discovery
+        if (enabled) {
+            appendCandidates(if (selectedIds != null) Int.MAX_VALUE else FILES_PER_REQUEST)
+        }
+        if (traversal != null) {
+            updateProgress(traversal)
+            requestedAtSize = -1
+            onVisibleFilesChanged(visibleIds)
+            if (files.isEmpty() && hasMore && !loading) requestMore()
+        }
+    }
+
+    fun open(path: List<PikoPathBreadcrumb>, selected: List<FileStat>? = null, showImages: Boolean = includeImages) {
+        includeImages = showImages
         val folder = path.lastOrNull() ?: return close()
         val owner = driveRepo.currentAccount ?: return close()
-        val selection = selected?.filter { it.isDiscoverableVideo() && it.hasGalleryCover() }?.distinctBy { it.id }?.toList()
+        val selection = selected?.filter { it.isDiscoverableGalleryMedia(showImages) && it.hasGalleryCover() }?.distinctBy { it.id }?.toList()
         val ids = selection?.mapTo(HashSet()) { it.id }
         if (root?.id == folder.id && account == owner && selectedIds == ids) {
             rootPath = path
@@ -89,13 +124,16 @@ class GallerySession(
             return
         }
         close()
+        includeImages = showImages
         shown = true
         rootPath = path
         root = folder
         account = owner
         selectedIds = ids
         selectedParentIds = selection?.mapTo(LinkedHashSet()) { it.parentId }.orEmpty()
-        selectedVideoCount = selection?.size
+        selectedMediaTotal = selection?.size
+        selectedVideoCount = selection?.count { it.isDiscoverableVideo() }
+        selectedImageCount = selection?.count { !it.isDiscoverableVideo() && it.isDiscoverableImage() } ?: 0
         if (selection != null) {
             discoveredFolders += selectedParentIds
             val request = ++generation
@@ -141,11 +179,19 @@ class GallerySession(
                 var listed = 0
                 while (traversal.hasPending && listed < FOLDERS_PER_REQUEST) {
                     // 先看几个来源，再排这一批；后续有足够的已发现候选时无需继续扫描。
-                    if (folderVideos.values.asSequence().flatten().map { it.clipContentKey() }.distinct().count { it !in emitted } >= FILES_PER_REQUEST &&
-                        (files.isNotEmpty() || listed >= OPENING_FOLDERS)) break
-                    val batch = traversal.next() ?: break
-                    listed++
-                    rememberBatch(batch)
+                    val uniquePending = folderVideos.values.asSequence().flatten()
+                        .filter { it.isDiscoverableGalleryMedia(includeImages) }
+                        .map { it.clipContentKey() }.distinct().count { it !in emitted }
+                    if (uniquePending >= FILES_PER_REQUEST && (files.isNotEmpty() || listed >= OPENING_FOLDERS)) break
+                    val budget = if (files.isEmpty() && listed < OPENING_FOLDERS) {
+                        (OPENING_FOLDERS - listed).coerceAtMost(DISCOVERY_CONCURRENCY)
+                    } else {
+                        (FOLDERS_PER_REQUEST - listed).coerceAtMost(DISCOVERY_CONCURRENCY)
+                    }
+                    val batches = traversal.nextBatch(budget, DISCOVERY_CONCURRENCY)
+                    if (batches.isEmpty()) break
+                    listed += batches.size
+                    batches.forEach(::rememberBatch)
                 }
                 if (discovery !== traversal || request != generation) return@launch
                 rebuildCandidates()
@@ -184,9 +230,10 @@ class GallerySession(
     }
 
     fun folderName(folderId: String): String? =
-        folders.nodes[folderId]?.name ?: root?.takeIf { it.id == folderId }?.name
+        driveRepo.knownLocalPath(folderId)?.lastOrNull()?.name ?: folders.nodes[folderId]?.name ?: root?.takeIf { it.id == folderId }?.name
 
     fun pathTo(folderId: String): List<PikoPathBreadcrumb>? {
+        driveRepo.knownLocalPath(folderId)?.let { return it }
         val rootId = root?.id ?: return null
         val chain = ArrayDeque<PikoPathBreadcrumb>()
         val visited = hashSetOf<String>()
@@ -210,6 +257,8 @@ class GallerySession(
         selectedIds = null
         selectedParentIds = emptySet()
         selectedVideoCount = null
+        selectedImageCount = 0
+        selectedMediaTotal = null
         account = null
         rootPath = emptyList()
         files = emptyList()
@@ -256,12 +305,14 @@ class GallerySession(
         }
         discoveredFolders += batch.files.filter { it.isFolder }.map { it.id }
         folderVideos[batch.folderId].orEmpty().forEach { workOf.remove(it.id) }
-        folderVideos[batch.folderId] = batch.files.filter { it.isDiscoverableVideo() && it.hasGalleryCover() }
+        folderVideos[batch.folderId] = batch.files.filter { it.isDiscoverableGalleryMedia(includeImages = true) && it.hasGalleryCover() }
         workOf.putAll(batch.workOf)
     }
 
     private fun rebuildCandidates() {
-        val byContent = folderVideos.values.asSequence().flatten().distinctBy { it.id }.groupBy { it.clipContentKey() }
+        val byContent = folderVideos.values.asSequence().flatten()
+            .filter { it.isDiscoverableGalleryMedia(includeImages) && it.hasGalleryCover() }
+            .distinctBy { it.id }.groupBy { it.clipContentKey() }
         val updated = linkedMapOf<String, FileStat>()
         for ((content, copies) in byContent) {
             updated[content] = copies.firstOrNull { it.id == pool[content]?.id }
@@ -297,13 +348,13 @@ class GallerySession(
                         val listing = driveRepo.listBrowsable(parentId, PikoFileSortOrder.NAME_ASC)
                         if (request != generation) return@launch
                         listing.onSuccess { latest ->
-                            val videos = latest.filter {
-                                it.id in selectedVideoIds && it.isDiscoverableVideo()
+                            val media = latest.filter {
+                                it.id in selectedVideoIds && it.isDiscoverableGalleryMedia(includeImages = true) && it.hasGalleryCover()
                             }
-                            val batch = analyzeVideoFolder(parentId, videos)
+                            val batch = analyzeVideoFolder(parentId, media)
                             if (request != generation) return@launch
                             folderVideos[parentId].orEmpty().forEach { workOf.remove(it.id) }
-                            folderVideos[parentId] = videos
+                            folderVideos[parentId] = media
                             workOf.putAll(batch.workOf)
                             failedFolders = failedFolders - parentId
                         }.logFailure("GallerySession", "画廊列目录失败，可重试")
@@ -358,7 +409,8 @@ class GallerySession(
     private companion object {
         const val FILES_PER_REQUEST = 48
         const val FOLDERS_PER_REQUEST = 16
-        const val OPENING_FOLDERS = 4
+        const val OPENING_FOLDERS = 6
+        const val DISCOVERY_CONCURRENCY = 6
         const val LOAD_AHEAD_FILES = 24
     }
 }

@@ -12,6 +12,22 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+/** 失效位置整帧丢弃，不将其截短成从未访问过的云端父目录。 */
+fun FolderHistory.retainingValid(
+    currentStack: List<PikoPathBreadcrumb> = emptyList(),
+    isValid: (String) -> Boolean,
+): FolderHistory {
+    fun retain(frames: List<List<PikoPathBreadcrumb>>): List<List<PikoPathBreadcrumb>> {
+        val kept = mutableListOf<List<PikoPathBreadcrumb>>()
+        for (frame in frames) {
+            if (frame.isNotEmpty() && frame.all { isValid(it.id) } && kept.lastOrNull() != frame) kept += frame
+        }
+        if (kept.lastOrNull() == currentStack) kept.removeAt(kept.lastIndex)
+        return kept
+    }
+    return FolderHistory(retain(back), retain(forward))
+}
+
 /** 每个浏览页面自己的位置、历史与滚动记忆，文件数据和改动仍由仓库共享。 */
 interface DriveNavigation {
     val rootDepth: Int get() = 1
@@ -64,8 +80,9 @@ class LibraryNavigation(
     }
     internal fun restoreLocation(stack: List<PikoPathBreadcrumb>, history: FolderHistory) {
         if (stack.isEmpty()) return
-        this.stack.value = repository.folderIndex.resolve(stack)
-        this.history.value = history.resolved(repository.folderIndex)
+        this.stack.value = repository.folderIndex.resolve(repository.localMounts.restoredStack(stack))
+        this.history.value = history.retainingValid(this.stack.value, repository.localMounts::isMountedCached)
+            .resolved(repository.folderIndex)
     }
     override fun updateFolderStack(stack: List<PikoPathBreadcrumb>) {
         if (stack.isEmpty()) return
@@ -94,6 +111,7 @@ class LibraryNavigation(
         else listOf(PikoDriveRepository.ROOT_BREADCRUMB, breadcrumb),
     )
     override fun goBack(): Boolean {
+        refreshFolderReferences()
         val history = historyFlow.value
         val target = history.back.lastOrNull() ?: return false
         this.history.value = FolderHistory(history.back.dropLast(1), history.forward + listOf(folderStackFlow.value))
@@ -101,6 +119,7 @@ class LibraryNavigation(
         return true
     }
     override fun goForward(): Boolean {
+        refreshFolderReferences()
         val history = historyFlow.value
         val target = history.forward.lastOrNull() ?: return false
         this.history.value = FolderHistory(history.back + listOf(folderStackFlow.value), history.forward.dropLast(1))
@@ -114,8 +133,9 @@ class LibraryNavigation(
 
     override fun refreshFolderReferences() {
         if (account != repository.currentAccount) return
-        stack.value = repository.folderIndex.resolve(stack.value)
-        history.value = history.value.resolved(repository.folderIndex)
+        stack.value = repository.folderIndex.resolve(repository.localMounts.restoredStack(stack.value))
+        history.value = history.value.retainingValid(stack.value, repository.localMounts::isMountedCached)
+            .resolved(repository.folderIndex)
     }
 
     fun close() = repository.unregisterFolderReferences(this)

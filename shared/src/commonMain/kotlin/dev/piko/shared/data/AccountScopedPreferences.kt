@@ -31,12 +31,16 @@ class AccountScopedPreferences(
 ) : PikoUserPreferences by delegate {
     private val pinned = Scoped("pinned-folders") { delegate.pinnedFoldersFlow }
     private val moveTargets = Scoped("recent-move-targets") { delegate.recentMoveTargetsFlow }
+    private val folderSortOrders = Scoped("folder-sort-orders") { delegate.folderSortOrdersFlow }
 
     override val pinnedFoldersFlow: Flow<String> = pinned.flow
     override suspend fun savePinnedFolders(serialized: String) = pinned.save(serialized)
 
     override val recentMoveTargetsFlow: Flow<String> = moveTargets.flow
     override suspend fun saveRecentMoveTargets(serialized: String) = moveTargets.save(serialized)
+
+    override val folderSortOrdersFlow: Flow<String> = folderSortOrders.flow
+    override suspend fun saveFolderSortOrders(serialized: String) = folderSortOrders.save(serialized)
 
     private inner class Scoped(
         private val name: String,

@@ -1,5 +1,6 @@
 package dev.piko.shared.preferences
 
+import dev.piko.data.auth.AppLanguage
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.data.auth.SidePanelPrefs
@@ -29,6 +30,48 @@ class StoredPikoPreferences(
 ) : PikoUserPreferences {
     private val secrets by lazy(openSecrets)
     private val secretsLock = Mutex()
+
+    private val language = MutableStateFlow(AppLanguage.fromStorage(settings.get("ui.language")))
+    override val appLanguageFlow: Flow<AppLanguage> = language.asStateFlow()
+    override suspend fun setAppLanguage(language: AppLanguage) {
+        settings.set("ui.language", language.tag)
+        this.language.value = language
+    }
+
+    private val clipAutoExtend = MutableStateFlow(settings.get("player.clipAutoExtend", "true").toBoolean())
+    override val clipAutoExtendFlow: Flow<Boolean> = clipAutoExtend.asStateFlow()
+    override suspend fun setClipAutoExtend(enabled: Boolean) {
+        settings.set("player.clipAutoExtend", enabled.toString())
+        clipAutoExtend.value = enabled
+    }
+
+    private val perFolderSort = MutableStateFlow(settings.get("drive.perFolderSort") == "true")
+    override val perFolderSortFlow: Flow<Boolean> = perFolderSort.asStateFlow()
+    override suspend fun setPerFolderSort(enabled: Boolean) {
+        settings.set("drive.perFolderSort", enabled.toString())
+        perFolderSort.value = enabled
+    }
+
+    private val folderSortOrders = MutableStateFlow(settings.get("drive.folderSortOrders"))
+    override val folderSortOrdersFlow: Flow<String> = folderSortOrders.asStateFlow()
+    override suspend fun saveFolderSortOrders(serialized: String) {
+        settings.set("drive.folderSortOrders", serialized)
+        folderSortOrders.value = serialized
+    }
+
+    private val galleryShowImages = MutableStateFlow(settings.get("drive.galleryShowImages", "true").toBoolean())
+    override val galleryShowImagesFlow: Flow<Boolean> = galleryShowImages.asStateFlow()
+    override suspend fun setGalleryShowImages(show: Boolean) {
+        settings.set("drive.galleryShowImages", show.toString())
+        galleryShowImages.value = show
+    }
+
+    private val localMounts = MutableStateFlow(settings.get("drive.localMounts"))
+    override val localMountsFlow: Flow<String> = localMounts.asStateFlow()
+    override suspend fun saveLocalMounts(serialized: String) {
+        settings.set("drive.localMounts", serialized)
+        localMounts.value = serialized
+    }
 
     private val spoiler = MutableStateFlow(settings.get(KEY_SPOILER, "true").toBoolean())
     private val autoCheckUpdates = MutableStateFlow(settings.get(KEY_AUTO_CHECK_UPDATES, "true").toBoolean())

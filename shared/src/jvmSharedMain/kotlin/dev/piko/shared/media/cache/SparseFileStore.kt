@@ -16,12 +16,16 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
 import java.io.RandomAccessFile
+import java.nio.ByteBuffer
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
+import java.util.concurrent.locks.ReentrantReadWriteLock
 import java.util.zip.CRC32
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 actual fun fileCacheName(key: String): String = MessageDigest.getInstance("SHA-256")
     .digest(key.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
@@ -82,6 +86,8 @@ internal class SparseFileStore(
     private val file = File(path)
     private val bitmap = File("$path.blocks")
     private val lock = Any()
+    private val flushLock = Any()
+    private val ioLock = ReentrantReadWriteLock()
     private val bits = readBits(file, key, size)
     private var dirty = false
     private var closed = false
@@ -91,33 +97,51 @@ internal class SparseFileStore(
 
     private val persistence = scope.launch(Dispatchers.IO) {
         while (true) {
-            delay(2_000)
+            delay(5_000)
             runCatching { flush() }
         }
     }
 
     override suspend fun read(file: String, offset: Long, length: Int): ByteArray? = withContext(Dispatchers.IO) {
-        synchronized(lock) {
-            val index = indexOf(offset) ?: return@synchronized null
-            if (!bits[index] || length.toLong() != lengthOf(index)) return@synchronized null
-            val input = open()
-            input.seek(offset)
-            ByteArray(length).also { input.readFully(it) }
+        ioLock.read {
+            val input = synchronized(lock) {
+                val index = indexOf(offset) ?: return@withContext null
+                if (!bits[index] || length.toLong() != lengthOf(index)) return@withContext null
+                open()
+            }
+            val out = ByteArray(length)
+            val buf = ByteBuffer.wrap(out)
+            var pos = offset
+            while (buf.hasRemaining()) {
+                val readBytes = input.channel.read(buf, pos)
+                if (readBytes < 0) return@withContext null
+                pos += readBytes
+            }
+            out
         }
     }
 
     override suspend fun write(file: String, offset: Long, bytes: ByteArray) = withContext(Dispatchers.IO) {
-        synchronized(lock) {
-            val index = requireNotNull(indexOf(offset)) { "无效的块偏移：$offset" }
-            require(bytes.size.toLong() == lengthOf(index))
-            check(!closed)
-            if (!bits[index]) {
-                val output = open()
-                output.seek(offset)
-                output.write(bytes)
-                bits[index] = true
-                dirty = true
-                progress.value += bytes.size
+        val index = requireNotNull(indexOf(offset)) { "无效的块偏移：$offset" }
+        require(bytes.size.toLong() == lengthOf(index))
+        ioLock.read {
+            val output = synchronized(lock) {
+                check(!closed)
+                if (bits[index]) return@withContext
+                open()
+            }
+            val buf = ByteBuffer.wrap(bytes)
+            var pos = offset
+            while (buf.hasRemaining()) {
+                pos += output.channel.write(buf, pos)
+            }
+            synchronized(lock) {
+                check(!closed)
+                if (!bits[index]) {
+                    bits[index] = true
+                    dirty = true
+                    progress.value += bytes.size
+                }
             }
         }
     }
@@ -162,51 +186,62 @@ internal class SparseFileStore(
         flush()
     }
 
-    override suspend fun flush() = withContext(Dispatchers.IO) {
-        synchronized(lock) {
-            if (size == 0L && !closed && handle == null) { open(); dirty = true }
-            if (dirty) {
-                syncData(checkNotNull(handle))
-                val payload = ByteArrayOutputStream().also { buffer ->
-                    DataOutputStream(buffer).use { output ->
-                        output.writeInt(MAGIC)
-                        output.writeUTF(key)
-                        output.writeLong(size)
-                        output.writeLong(BLOCK_BYTES)
-                        output.writeInt(bits.size)
-                        for (base in bits.indices step 8) {
-                            var byte = 0
-                            for (bit in 0..7) if (bits.getOrElse(base + bit) { false }) byte = byte or (1 shl bit)
-                            output.writeByte(byte)
-                        }
-                    }
-                }.toByteArray()
-                val temp = File("${bitmap.path}.tmp")
-                try {
-                    DataOutputStream(temp.outputStream()).use {
-                        it.write(payload)
-                        it.writeLong(CRC32().apply { update(payload) }.value)
-                    }
-                    RandomAccessFile(temp, "rw").use { it.channel.force(true) }
-                    try {
-                        Files.move(temp.toPath(), bitmap.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-                    } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-                        Files.move(temp.toPath(), bitmap.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                    }
+    override suspend fun flush(): Unit = withContext(Dispatchers.IO) {
+        synchronized(flushLock) {
+            ioLock.read {
+                val (targetHandle, snapshot) = synchronized(lock) {
+                    if (size == 0L && !closed && handle == null) { open(); dirty = true }
+                    if (!dirty || closed) return@withContext
                     dirty = false
-                } finally {
-                    temp.delete()
+                    checkNotNull(handle) to bits.copyOf()
+                }
+                try {
+                    syncData(targetHandle)
+                    val payload = ByteArrayOutputStream().also { buffer ->
+                        DataOutputStream(buffer).use { output ->
+                            output.writeInt(MAGIC)
+                            output.writeUTF(key)
+                            output.writeLong(size)
+                            output.writeLong(BLOCK_BYTES)
+                            output.writeInt(snapshot.size)
+                            for (base in snapshot.indices step 8) {
+                                var byte = 0
+                                for (bit in 0..7) if (snapshot.getOrElse(base + bit) { false }) byte = byte or (1 shl bit)
+                                output.writeByte(byte)
+                            }
+                        }
+                    }.toByteArray()
+                    val temp = File("${bitmap.path}.tmp")
+                    try {
+                        DataOutputStream(temp.outputStream()).use {
+                            it.write(payload)
+                            it.writeLong(CRC32().apply { update(payload) }.value)
+                        }
+                        RandomAccessFile(temp, "rw").use { it.channel.force(true) }
+                        try {
+                            Files.move(temp.toPath(), bitmap.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                            Files.move(temp.toPath(), bitmap.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                        }
+                    } finally {
+                        temp.delete()
+                    }
+                } catch (e: Throwable) {
+                    synchronized(lock) { dirty = true }
+                    throw e
                 }
             }
         }
     }
 
-    override suspend fun close() = withContext(NonCancellable) {
+    override suspend fun close(): Unit = withContext(NonCancellable) {
         persistence.cancelAndJoin()
         try {
             flush()
         } finally {
-            synchronized(lock) { closed = true; handle?.close(); handle = null }
+            ioLock.write {
+                synchronized(lock) { closed = true; handle?.close(); handle = null }
+            }
         }
     }
 

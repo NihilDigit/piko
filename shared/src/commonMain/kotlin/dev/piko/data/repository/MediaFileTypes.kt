@@ -1,5 +1,7 @@
 package dev.piko.data.repository
 
+import dev.piko.shared.i18n.tr
+
 import io.github.nihildigit.pikpak.FileStat
 
 private val VIDEO_EXTENSIONS = setOf(
@@ -19,12 +21,12 @@ enum class FileCategory { VIDEO, AUDIO, IMAGE, ARCHIVE, SUBTITLE, DOCUMENT }
 /** 按类勾选时的名称，两端共用。 */
 val FileCategory.label: String
     get() = when (this) {
-        FileCategory.VIDEO -> "视频"
-        FileCategory.AUDIO -> "音频"
-        FileCategory.IMAGE -> "图片"
-        FileCategory.ARCHIVE -> "压缩包"
-        FileCategory.SUBTITLE -> "字幕"
-        FileCategory.DOCUMENT -> "其他"
+        FileCategory.VIDEO -> tr("视频", "Video", "動画", "동영상", "影片")
+        FileCategory.AUDIO -> tr("音频", "Audio", "音声", "오디오", "音訊")
+        FileCategory.IMAGE -> tr("图片", "Image", "画像", "이미지", "圖片")
+        FileCategory.ARCHIVE -> tr("压缩包", "Archive", "圧縮ファイル", "압축 파일", "壓縮檔")
+        FileCategory.SUBTITLE -> tr("字幕", "Subtitles", "字幕", "자막", "字幕")
+        FileCategory.DOCUMENT -> tr("其他", "Other", "その他", "기타", "其他")
     }
 
 fun String.fileCategory(): FileCategory {

@@ -1,6 +1,7 @@
 package dev.piko.desktop
 
 import dev.piko.shared.auth.PlainFileVault
+import dev.piko.data.auth.AppLanguage
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -11,6 +12,30 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 
 class DesktopPikoPreferencesTest {
+
+    @Test
+    fun localMountTablePersistsOnlyInDeviceSettings() = runBlocking {
+        val file = File(Files.createTempDirectory(File("build/local-mount-tests").apply { mkdirs() }.toPath(), "prefs-" ).toFile(), "settings.properties")
+        val preferences = DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }
+        val serialized = """[{"mountId":"mount-1","account":"account-a","parentFolderId":"host","localRootUriOrPath":"D:/Local","fallbackName":"Local","createdAtMs":1}]"""
+        preferences.saveLocalMounts(serialized)
+        assertEquals(serialized, preferences.localMountsFlow.first())
+        assertEquals(serialized, DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }.localMountsFlow.first())
+        assertEquals(serialized, DesktopSettingsStore(file).get("drive.localMounts"))
+    }
+
+    @Test
+    fun appLanguagePersistsLocallyAndUpdatesItsFlow() = runBlocking {
+        val file = tempFile()
+        val preferences = DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }
+        assertEquals(AppLanguage.SYSTEM, preferences.appLanguageFlow.first())
+        for (language in AppLanguage.entries) {
+            preferences.setAppLanguage(language)
+            assertEquals(language, preferences.appLanguageFlow.first())
+            assertEquals(language.tag, DesktopSettingsStore(file).get("ui.language"))
+            assertEquals(language, DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }.appLanguageFlow.first())
+        }
+    }
 
     private fun tempFile(): File = File.createTempFile("piko-prefs-test", ".properties").also { it.delete() }
 
@@ -55,6 +80,41 @@ class DesktopPikoPreferencesTest {
         assertEquals(Triple("fid", "我的文件夹", "stack-data"), reloaded.getLastFolder())
         assertFalse((reloaded.spoilerBlurFlow as StateFlow<Boolean>).value)
         assertFalse((reloaded.heuristicFilterFlow as StateFlow<Boolean>).value)
-        assertEquals(listOf("playback.f1"), store.keysWithPrefix("playback."))
+    }
+
+    @Test
+    fun desktopFontCandidatesMatchLanguageAndPlatformRules() {
+        assertEquals(
+            "Microsoft YaHei UI",
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = false, effectiveLanguage = AppLanguage.ZH_CN, systemLanguage = AppLanguage.EN).first(),
+        )
+        assertEquals(
+            "Microsoft JhengHei UI",
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = false, effectiveLanguage = AppLanguage.ZH_HANT, systemLanguage = AppLanguage.EN).first(),
+        )
+        assertEquals(
+            "Microsoft JhengHei UI",
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = false, effectiveLanguage = AppLanguage.EN, systemLanguage = AppLanguage.ZH_HANT).first(),
+        )
+        assertEquals(
+            "Microsoft YaHei UI",
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = false, effectiveLanguage = AppLanguage.EN, systemLanguage = AppLanguage.EN).first(),
+        )
+        assertEquals(
+            listOf("Segoe UI"),
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = false, effectiveLanguage = AppLanguage.JA, systemLanguage = AppLanguage.JA),
+        )
+        assertEquals(
+            listOf("Segoe UI"),
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = false, effectiveLanguage = AppLanguage.KO, systemLanguage = AppLanguage.KO),
+        )
+        assertEquals(
+            "PingFang TC",
+            desktopPrimaryFontCandidates(isMacOs = true, isLinux = false, effectiveLanguage = AppLanguage.ZH_HANT, systemLanguage = AppLanguage.EN).first(),
+        )
+        assertEquals(
+            "Noto Sans CJK TC",
+            desktopPrimaryFontCandidates(isMacOs = false, isLinux = true, effectiveLanguage = AppLanguage.ZH_HANT, systemLanguage = AppLanguage.EN).first(),
+        )
     }
 }

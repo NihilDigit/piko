@@ -115,6 +115,32 @@ class PikoMediaProxyTest {
     }
 
     @Test
+    fun sequentialAndInterleavedShortRangesReusePooledReadersWithoutExtraSeeks() = runBlocking {
+        val source = FakeSource(size = 32 * 1024 * 1024)
+        val url = proxy.register(source, "interleaved.mp4").url
+
+        // 模拟交错不良的 MP4 在视频轨（1 MiB 起）与音轨（16 MiB 起）之间交替发短 Range 请求
+        var videoPos = 1_000_000L
+        var audioPos = 16_000_000L
+        repeat(10) {
+            val vChunk = request(url, range = "bytes=$videoPos-${videoPos + 16_383}")
+            assertEquals(206, vChunk.status)
+            assertContentEquals(source.expected(videoPos, videoPos + 16_384), vChunk.body)
+            videoPos += 16_384
+
+            val aChunk = request(url, range = "bytes=$audioPos-${audioPos + 4_095}")
+            assertEquals(206, aChunk.status)
+            assertContentEquals(source.expected(audioPos, audioPos + 4_096), aChunk.body)
+            audioPos += 4_096
+        }
+
+        // 20 个交替短请求只应建起视频、音频两个游标，且各自仅首次定位一次，后续全部原地零 seek 接续
+        assertEquals(2, source.openedReaders.get(), "openedReaders=${source.openedReaders.get()}")
+        assertEquals(2, source.seekCalls.get(), "seekCalls=${source.seekCalls.get()}")
+        assertEquals(0, source.concurrencyViolations.get())
+    }
+
+    @Test
     fun closedSessionIsGone() = runBlocking {
         val source = FakeSource(size = 1000)
         val stream = proxy.register(source, null)
@@ -131,6 +157,8 @@ class PikoMediaProxyTest {
         private val readDelayMillis: Long = 0,
     ) : ProxyByteSource {
         val concurrencyViolations = AtomicInteger(0)
+        val openedReaders = AtomicInteger(0)
+        val seekCalls = AtomicInteger(0)
 
         /** 所有 reader 上正在进行的读。 */
         val activeReads = AtomicInteger(0)
@@ -141,7 +169,10 @@ class PikoMediaProxyTest {
         fun expected(start: Long, endExclusive: Long) =
             ByteArray((endExclusive - start).toInt()) { byteAt(start + it) }
 
-        override suspend fun openReader(): ProxyReader = FakeReader()
+        override suspend fun openReader(): ProxyReader {
+            openedReaders.incrementAndGet()
+            return FakeReader()
+        }
 
         override fun close() {
             closed = true
@@ -154,6 +185,7 @@ class PikoMediaProxyTest {
                 private set
 
             override suspend fun seekTo(position: Long) {
+                seekCalls.incrementAndGet()
                 this.position = position
             }
 

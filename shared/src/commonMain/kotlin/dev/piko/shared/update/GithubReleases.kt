@@ -1,6 +1,10 @@
 package dev.piko.shared.update
 
+import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.log.PikoLog
+import io.ktor.util.Digest
+import kotlinx.io.Buffer
+import kotlinx.io.readByteArray
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -40,7 +44,13 @@ data class LatestRelease(
     val notes: String,
     val pageUrl: String,
     val assets: List<ReleaseAsset>,
+    val localizedNotes: Map<AppLanguage, String> = emptyMap(),
 ) {
+    fun notesFor(language: AppLanguage): String =
+        localizedNotes[language]?.takeIf { it.isNotBlank() }
+            ?: localizedNotes[AppLanguage.ZH_CN]?.takeIf { it.isNotBlank() }
+            ?: notes
+
     fun asset(name: String): ReleaseAsset? = assets.firstOrNull { it.name == name }
 }
 
@@ -110,19 +120,39 @@ class GithubReleaseClient(
         if (release.draft || release.prerelease) return null
         val version = release.tagName.removePrefix("v")
         check(version.isNotEmpty()) { "Release 没有 tag" }
-        return LatestRelease(
-            version = version,
-            notes = updateNotesOf(release.body.orEmpty()),
-            pageUrl = release.htmlUrl,
-            assets = release.assets.map { asset ->
-                ReleaseAsset(
-                    name = asset.name,
-                    url = asset.downloadUrl,
-                    size = asset.size,
-                    sha256 = asset.digest?.takeIf { it.startsWith(SHA256_PREFIX) }?.removePrefix(SHA256_PREFIX)?.lowercase(),
-                )
-            },
-        )
+        val assets = release.assets.map { asset ->
+            ReleaseAsset(
+                name = asset.name,
+                url = asset.downloadUrl,
+                size = asset.size,
+                sha256 = asset.digest?.takeIf { it.startsWith(SHA256_PREFIX) }?.removePrefix(SHA256_PREFIX)?.lowercase(),
+            )
+        }
+        var notes = updateNotesOf(release.body.orEmpty())
+        val directLocalized = parseLocalizedNotesMap(release.localizedNotes)
+        val manifestAsset = assets.firstOrNull { it.name == RELEASE_MANIFEST && it.sha256 != null }
+        val localized = if (directLocalized.isEmpty() && manifestAsset != null) {
+            try {
+                // download 只负责传输；必须校验 API 提供的摘要后才解析镜像返回的正文。
+                val bytes = Buffer()
+                val digest = Digest("SHA-256")
+                download(manifestAsset, onChunk = { buffer, length ->
+                    bytes.write(buffer, 0, length)
+                    digest += buffer.copyOf(length)
+                }, onProgress = {})
+                val actual = digest.build().toHexString()
+                if (actual != manifestAsset.sha256) throw ChecksumMismatchException("Release manifest checksum mismatch")
+                val manifest = json.decodeFromString(ReleaseDto.serializer(), bytes.readByteArray().decodeToString())
+                if (notes.isBlank()) notes = updateNotesOf(manifest.body.orEmpty())
+                parseLocalizedNotesMap(manifest.localizedNotes)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                PikoLog.d(TAG, "取多语言更新说明失败：${e::class.simpleName}")
+                emptyMap()
+            }
+        } else directLocalized
+        return LatestRelease(version, notes, release.htmlUrl, assets, localized)
     }
 
     /**
@@ -223,8 +253,8 @@ class GithubReleaseClient(
          * 1. GitHub API。附件带 digest，正文里有更新日志。匿名调用按出口 IP 每小时 60 次，走代理的用户
          *    共用出口，常被限流回 403。
          * 2. 最新 Release 的附件 release.json（release.yml 生成，与 API 同一个形状）。经 github.com 的下载地址取，
-         *    不走 API，不限流；releases/latest 只指向已公开的版本，草稿看不到。它在构建时生成，那时更新日志
-         *    还没写，所以这条路拿到的正文是空的，弹窗只给更新页链接。
+         *    不走 API，不限流；releases/latest 只指向已公开的版本，草稿看不到。清单同时带多语言更新说明；
+         *    API 成功时也可按 API 公布的摘要校验并补取这份说明。
          * 版本信息只取自 GitHub 本身，不经镜像：附件的摘要就写在这份信息里，镜像若给一份伪造的版本连同
          * 伪造附件的摘要，下载后的校验照样通过。镜像只用来下附件（[ReleaseAsset.urls]），附件仍按这里
          * 取到的摘要校验，镜像改不了它。
@@ -256,6 +286,45 @@ fun updateNotesOf(body: String): String =
         .trim()
 
 const val DOWNLOAD_SECTION_HEADING = "## 下载"
+
+private fun changelogLanguage(tag: String): AppLanguage? = when (tag.trim().lowercase()) {
+    "zh-hans", "zh-cn", "zh" -> AppLanguage.ZH_CN
+    "zh-hant", "zh-tw", "zh-hk" -> AppLanguage.ZH_HANT
+    "en", "en-us" -> AppLanguage.EN
+    "ja", "ja-jp" -> AppLanguage.JA
+    "ko", "ko-kr" -> AppLanguage.KO
+    else -> null
+}
+
+fun parseLocalizedNotesMap(raw: Map<String, String>): Map<AppLanguage, String> = buildMap {
+    for ((tag, body) in raw) {
+        val language = changelogLanguage(tag) ?: continue
+        val notes = updateNotesOf(body)
+        if (notes.isNotBlank()) put(language, notes)
+    }
+}
+
+/** 一级标题划分语言，二级标题和列表原样留给更新说明排版。 */
+fun parseLocalizedChangelog(markdown: String): Map<AppLanguage, String> {
+    val sections = linkedMapOf<String, String>()
+    var tag: String? = null
+    val body = StringBuilder()
+    fun flush() {
+        tag?.let { sections[it] = body.toString() }
+        body.clear()
+    }
+    val withoutComments = markdown.replace(Regex("<!--[\\s\\S]*?-->"), "")
+    for (line in withoutComments.lineSequence()) {
+        if (line.startsWith("# ")) {
+            flush()
+            tag = line.removePrefix("# ").trim()
+        } else if (tag != null) {
+            body.appendLine(line)
+        }
+    }
+    flush()
+    return parseLocalizedNotesMap(sections)
+}
 
 /** 更新说明的一段。文字里仍保留行内标记（粗体、行内代码、链接），由界面排版。 */
 sealed interface ReleaseNoteBlock {
@@ -327,6 +396,7 @@ private data class ReleaseDto(
     @SerialName("tag_name") val tagName: String = "",
     @SerialName("html_url") val htmlUrl: String = "",
     val body: String? = null,
+    @SerialName("localized_notes") val localizedNotes: Map<String, String> = emptyMap(),
     val draft: Boolean = false,
     val prerelease: Boolean = false,
     val assets: List<AssetDto> = emptyList(),

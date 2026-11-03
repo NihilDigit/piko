@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.player
 
+import dev.piko.shared.i18n.tr
+
 import android.content.Context
 import android.net.Uri
 import android.view.Surface
@@ -25,6 +27,8 @@ import dev.piko.shared.media.player.mpvSubtitleAddCommands
 import dev.piko.shared.media.player.mpvSubtitleSelectCommand
 import dev.piko.shared.media.player.readMpvTracks
 import kotlin.math.ln
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -56,7 +60,7 @@ internal class MpvPlaybackBackend(
     private val hardwareDecoding: Boolean = true,
 ) : PlaybackBackend, MPVLib.EventObserver, MPVLib.LogObserver {
 
-    private val mpv: MPVLib = MPVLib.create(context) ?: error("libmpv 初始化失败")
+    private val mpv: MPVLib = MPVLib.create(context) ?: error(tr("libmpv 初始化失败", "libmpv initialization failed", "libmpvの初期化に失敗しました", "libmpv 초기화 실패", "libmpv 初始化失敗"))
 
     override var positionMillis by mutableLongStateOf(0L)
         private set
@@ -107,7 +111,8 @@ internal class MpvPlaybackBackend(
     private var attachedSurface: Surface? = null
     private var videoOutputDisabled = false
     private var pendingLoad: Array<String>? = null
-    private var released = false
+    @Volatile private var released = false
+    private val destroyCompleted = CompletableDeferred<Unit>()
     private var observing = false
 
     private val redrawGate = SurfaceRedrawGate(dropCount = { voDropCount() }, arm = ::armRedrawGate)
@@ -152,6 +157,8 @@ internal class MpvPlaybackBackend(
         mpv.setOptionString("sub-font-provider", "fontconfig")
         mpv.setOptionString("slang", MPV_SUBTITLE_LANGUAGES)
         mpv.setOptionString("network-timeout", "30")
+        // 仅向 JNI 与 logcat 输出警告及错误，阻断 C 层每秒上千条 verbose 字符串跨界回调拖慢主线程与 GC
+        mpv.setOptionString("msg-level", "all=warn")
         // 代理背后的 SDK reader 已经预读 32 MiB，mpv 这层不必再囤太多
         mpv.setOptionString("cache", "yes")
         if (preview) {
@@ -253,6 +260,38 @@ internal class MpvPlaybackBackend(
         supersededLoads = issuedLoads
         onMpv { mpv.command(arrayOf("stop")) }
         isLoadingFile = false
+    }
+
+    override val requiresAsyncStopDrain: Boolean get() = true
+
+    private suspend fun <T> callOnMpv(block: () -> T?): T? {
+        if (released) return null
+        val done = CompletableDeferred<T?>()
+        calls.execute {
+            val result = if (destroyed) null else runCatching(block).getOrNull()
+            done.complete(result)
+        }
+        return done.await()
+    }
+
+    override suspend fun stopAndAwaitIdle() {
+        if (released) {
+            destroyCompleted.await()
+            return
+        }
+        pendingLoad = null
+        supersededLoads = issuedLoads
+        isLoadingFile = false
+        callOnMpv { mpv.command(arrayOf("stop")) }
+        repeat(16) {
+            if (released) {
+                destroyCompleted.await()
+                return
+            }
+            val idle = callOnMpv { mpv.getPropertyString("idle-active") }
+            if (idle == null || idle == "yes") return
+            delay(15L)
+        }
     }
 
     override fun play() {
@@ -497,8 +536,12 @@ internal class MpvPlaybackBackend(
         mpv.removeLogObserver(this)
         // 排在已投递的调用之后：它们还要用这个句柄
         calls.execute {
-            destroyed = true
-            mpv.destroy()
+            try {
+                destroyed = true
+                mpv.destroy()
+            } finally {
+                destroyCompleted.complete(Unit)
+            }
         }
     }
 
@@ -551,7 +594,12 @@ internal class MpvPlaybackBackend(
             }
 
             "duration" -> durationMillis = (value * 1000).toLong().coerceAtLeast(0L)
-            "demuxer-cache-time" -> bufferedPositionMillis = (value * 1000).toLong().coerceAtLeast(0L)
+            "demuxer-cache-time" -> {
+                val millis = (value * 1000).toLong().coerceAtLeast(0L)
+                if (millis == 0L || abs(millis - bufferedPositionMillis) >= POSITION_GRANULARITY_MILLIS) {
+                    bufferedPositionMillis = millis
+                }
+            }
             "speed" -> currentSpeed = value.toFloat()
             "volume" -> currentVolume = (value / 100).toFloat().coerceIn(0f, 1f)
             "video-params/aspect" -> {

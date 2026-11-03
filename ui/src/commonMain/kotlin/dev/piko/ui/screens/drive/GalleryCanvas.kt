@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.drive
 
+import dev.piko.shared.i18n.tr
+
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
@@ -20,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.runtime.Composable
@@ -72,6 +75,8 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import coil3.SingletonImageLoader
 import coil3.compose.LocalPlatformContext
+import coil3.decode.BlackholeDecoder
+import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.ContextMenuArea
@@ -91,10 +96,15 @@ import dev.piko.ui.components.selectionClicks
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.components.watermarkIcon
 import dev.piko.ui.components.zoomOnWheel
+import dev.piko.data.repository.isPlayableVideo
+import dev.piko.data.repository.isPreviewableImage
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.ShortcutModifier
+import dev.piko.ui.platform.resolveCoilModel
 import io.github.nihildigit.pikpak.FileStat
-import io.github.nihildigit.pikpak.thumbnailUrlOf
+import io.github.nihildigit.pikpak.imageThumbnailUrlOf
+import io.github.nihildigit.pikpak.videoThumbnailUrlOf
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -103,7 +113,13 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 private fun FileStat.galleryCoverUrl(): String =
-    thumbnailLink.ifBlank { if (hash.isNotBlank()) thumbnailUrlOf(hash) else "" }
+    thumbnailLink.ifBlank {
+        when {
+            hash.isBlank() || isFolder -> ""
+            isPreviewableImage() && !isPlayableVideo() -> imageThumbnailUrlOf(hash)
+            else -> videoThumbnailUrlOf(hash)
+        }
+    }
 
 /** Keep this state at the browsing entry, so opening and closing playback retains the band. */
 internal class GalleryCanvasState internal constructor(anchor: GalleryAnchor? = null) {
@@ -158,21 +174,36 @@ internal fun GalleryCanvas(
     val widthClass = currentWidthClass()
     val columns = galleryTileColumns(tileSize, widthClass)
     val maximumWidth = galleryTileMaxWidth(tileSize)
-    val ratios = remember(state) { mutableStateMapOf<String, Float>() }
+    val learnedShapes = remember(state) { mutableStateMapOf<String, GalleryShape>() }
     val failedCovers = remember(state) { mutableStateSetOf<String>() }
     val prefetched = remember(state) { hashSetOf<String>() }
     val inFlight = remember(state) { hashSetOf<String>() }
     val prefetchScope = rememberCoroutineScope()
     val prefetchLimit = remember(state) { Semaphore(COVER_PREFETCH_CONCURRENCY) }
     val platformContext = LocalPlatformContext.current
+    val platform = LocalPikoPlatform.current
     val coverFiles = files
     val byId by remember(coverFiles) {
         derivedStateOf { coverFiles.associateBy { it.id } }
     }
+    fun recordDecodedRatio(file: FileStat, ratio: Float) {
+        if (aspectRatio(file) != null) return
+        val decodedShape = GalleryShape.nearest(ratio.toDouble())
+        val currentShape = learnedShapes[file.id] ?: GalleryShape.nearest(null)
+        if (decodedShape != currentShape) {
+            learnedShapes[file.id] = decodedShape
+        }
+    }
     val descriptors by remember(coverFiles, aspectRatio) {
         derivedStateOf {
             coverFiles.distinctBy { it.id }.map { file ->
-                GalleryLayoutItem(file.id, GalleryShape.nearest((aspectRatio(file) ?: ratios[file.id])?.toDouble()))
+                val knownRatio = aspectRatio(file)
+                val shape = if (knownRatio != null) {
+                    GalleryShape.nearest(knownRatio.toDouble())
+                } else {
+                    learnedShapes[file.id] ?: GalleryShape.nearest(null)
+                }
+                GalleryLayoutItem(file.id, shape)
             }
         }
     }
@@ -180,30 +211,44 @@ internal fun GalleryCanvas(
     LaunchedEffect(state) {
         snapshotFlow { state.visibleFileIds }.collect { onVisible(it) }
     }
-    // 激进封面预取：使用独立于滚动帧重组的常驻作用域，避免滚动时频繁取消在途图片下载
+    // 封面预取：轻微防抖并跳过屏幕上已由 AsyncImage 高优加载的可见项，避免在高延迟线路上与首屏争抢连接；
+    // 已知宽高比的封面仅预热磁盘缓存（零 CPU 解码），未知宽高比的仅按小尺寸探测比例。
     LaunchedEffect(coverFiles, state.visibleFileIds) {
         val visible = state.visibleFileIds
+        if (visible.isNotEmpty()) delay(COVER_PREFETCH_DEBOUNCE_MS)
         val anchorIndex = if (visible.isEmpty()) 0 else coverFiles.indexOfLast { it.id in visible }.coerceAtLeast(0)
         val targets = coverFiles.drop((anchorIndex - COVER_PREFETCH_BEHIND).coerceAtLeast(0))
             .take(COVER_PREFETCH_AHEAD + COVER_PREFETCH_BEHIND)
-            .filter { it.galleryCoverUrl().isNotEmpty() && it.id !in prefetched && inFlight.add(it.id) }
+            .filter { it.id !in visible && it.galleryCoverUrl().isNotEmpty() && it.id !in prefetched && inFlight.add(it.id) }
         if (targets.isEmpty()) return@LaunchedEffect
         val loader = SingletonImageLoader.get(platformContext)
         targets.forEach { file ->
-            val coverUrl = file.galleryCoverUrl()
+            val coverModel = platform.resolveCoilModel(file.galleryCoverUrl())
+            val shapeKnown = aspectRatio(file) != null || file.id in learnedShapes
             prefetchScope.launch {
                 try {
                     prefetchLimit.withPermit {
+                        @OptIn(coil3.annotation.ExperimentalCoilApi::class)
                         val request = ImageRequest.Builder(platformContext)
-                            .data(coverUrl)
+                            .data(coverModel)
+                            .apply {
+                                if (shapeKnown) {
+                                    // 已有内存缓存时直接命中短路；未缓存时经 BlackholeDecoder 仅写入磁盘缓存，跳过位图 CPU 解码
+                                    memoryCachePolicy(CachePolicy.READ_ONLY)
+                                    decoderFactory(BlackholeDecoder.Factory())
+                                } else {
+                                    size(COVER_PROBE_DECODE_PX, COVER_PROBE_DECODE_PX)
+                                }
+                            }
                             .build()
                         val result = loader.execute(request)
                         val image = result.image
-                        if (image != null) {
+                        if (shapeKnown && result !is ErrorResult) {
+                            prefetched.add(file.id)
+                        } else if (image != null) {
                             prefetched.add(file.id)
                             if (image.width > 0 && image.height > 0) {
-                                val ratio = image.width.toFloat() / image.height
-                                if (ratios[file.id] != ratio) ratios[file.id] = ratio
+                                recordDecodedRatio(file, image.width.toFloat() / image.height)
                             }
                         } else if (result is ErrorResult &&
                             result.throwable !is kotlinx.coroutines.CancellationException &&
@@ -250,7 +295,8 @@ internal fun GalleryCanvas(
         val availableWidth = (width - inset * 2).coerceAtLeast(1.0)
         val count = max(columns, ceil((availableWidth + gap) / (maximumWidth.toPx() + gap)).toInt())
         val placements = state.layout.frame(descriptors, count, availableWidth, height.toDouble(), gap)
-        state.visibleFileIds = placements.filter { it.top < height && it.top + it.height > 0 }.mapNotNull { it.fileId }.toSet()
+        val nextVisible = placements.filter { it.top < height && it.top + it.height > 0 }.mapNotNullTo(HashSet()) { it.fileId }
+        if (nextVisible != state.visibleFileIds) state.visibleFileIds = nextVisible
         val measured = placements.map { placement ->
             val file = placement.fileId?.let(byId::get)
             val placeable = subcompose(placement.key) {
@@ -268,7 +314,7 @@ internal fun GalleryCanvas(
                         file, isSelectionMode, file.id in selectedIds, file.id in highlightedIds,
                         isBlurred(file), callbacks,
                         locationLabel = locationLabel(file),
-                        onAspectRatio = { ratio -> if (ratios[file.id] != ratio) ratios[file.id] = ratio },
+                        onAspectRatio = { ratio -> recordDecodedRatio(file, ratio) },
                         onCoverFailed = { failedCovers.add(file.id) },
                     )
                 }
@@ -297,12 +343,14 @@ private fun GalleryCanvasCover(
     val ownClicks = remember { OwnClicks() }
     val hover = fileItemHover()
     val shape = MaterialTheme.shapes.medium
-    val duration = file.params["duration"]?.toLongOrNull()?.takeIf { it > 0 }
-    val badgeLabel = duration?.let { seconds ->
-        val minutes = (seconds % 3600 / 60).toString().padStart(2, '0')
-        val remainder = (seconds % 60).toString().padStart(2, '0')
-        if (seconds >= 3600) "${seconds / 3600}:$minutes:$remainder" else "$minutes:$remainder"
-    } ?: file.sizeBytes.takeIf { it > 0 }?.toReadableSize()
+    val isVideo = file.isPlayableVideo()
+    val durationLabel = if (isVideo) {
+        file.params["duration"]?.toDoubleOrNull()?.toLong()?.takeIf { it > 0 }?.let { seconds ->
+            val minutes = (seconds % 3600 / 60).toString().padStart(2, '0')
+            val remainder = (seconds % 60).toString().padStart(2, '0')
+            if (seconds >= 3600) "${seconds / 3600}:$minutes:$remainder" else "$minutes:$remainder"
+        }
+    } else null
     val isMac = LocalPikoPlatform.current.shortcutModifier == ShortcutModifier.Command
     val coverUrl = file.galleryCoverUrl()
     var coverFailed by remember(coverUrl) { mutableStateOf(false) }
@@ -401,23 +449,37 @@ private fun GalleryCanvasCover(
                         FileItemSelection(
                             if (isSelected) ToggleableState.On else ToggleableState.Off,
                             { if (isSelectionMode) callbacks.onSelect(file, !isSelected) else callbacks.onStartSelection?.invoke(file) },
-                            label = "选择 ${file.name}",
+                            label = tr("选择 ${file.name}", "Select ${file.name}", "${file.name} を選択", "${file.name} 선택", "選取 ${file.name}"),
                         ),
                         modifier = Modifier.align(Alignment.TopStart).padding(6.dp).then(if (!isSelectionMode) Modifier.ownsClicks() else Modifier),
                         interactive = !isSelectionMode,
                     )
                 }
-                if (badgeLabel != null) {
-                    Text(
-                        badgeLabel,
+                // 照片右上角不挂任何角标，将完整构图留给缩略图本身；仅视频保留紧凑的微型播放三角与时长胶囊
+                if (isVideo) {
+                    Row(
                         modifier = Modifier.align(Alignment.TopEnd)
                             .padding(8.dp)
                             .background(Color.Black.copy(alpha = 0.6f), MaterialTheme.shapes.extraSmall)
-                            .padding(horizontal = 6.dp, vertical = 3.dp),
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1,
-                    )
+                            .padding(horizontal = if (durationLabel != null) 6.dp else 5.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(11.dp),
+                        )
+                        if (durationLabel != null) {
+                            Text(
+                                durationLabel,
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -427,3 +489,5 @@ private fun GalleryCanvasCover(
 private const val COVER_PREFETCH_AHEAD = 64
 private const val COVER_PREFETCH_BEHIND = 12
 private const val COVER_PREFETCH_CONCURRENCY = 8
+private const val COVER_PREFETCH_DEBOUNCE_MS = 100L
+private const val COVER_PROBE_DECODE_PX = 240

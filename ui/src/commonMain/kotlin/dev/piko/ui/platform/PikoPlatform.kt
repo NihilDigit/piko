@@ -98,6 +98,10 @@ interface PikoPlatform {
 
     val uploadPicker: UploadPicker
 
+    /** 只读挂载选择器，返回设备路径或持久化 SAF URI 与展示名。 */
+    @Composable
+    fun rememberLocalFolderLauncher(onPicked: (String, String) -> Unit): (() -> Unit)? = null
+
     /** 为 null 表示该平台没法把视频交给其他播放器，「用外部播放器打开」随之隐藏。 */
     val externalPlayer: ExternalVideoPlayer?
 
@@ -319,4 +323,20 @@ interface PreviewBackend : PlaybackBackend {
 
 val LocalPikoPlatform = staticCompositionLocalOf<PikoPlatform> {
     error("PikoPlatform 未提供，入口要用 PikoApp 包一层")
+}
+
+/**
+ * 将字符串缩略图地址转换为 Coil 在当前平台最稳妥的数据模型：
+ * 远程 http(s) 与 Android SAF content: URI 保持字符串，本机路径与 file: URI 转为平台本地文件对象，
+ * 避免 Windows 盘符、单斜杠 `file:/C:/...` 或文件名含 `#`、`?` 时被 URI 解析器截断失败。
+ */
+fun PikoPlatform.resolveCoilModel(model: Any): Any {
+    if (model !is String || model.isEmpty()) return model
+    if (model.startsWith("http://", ignoreCase = true) ||
+        model.startsWith("https://", ignoreCase = true) ||
+        model.startsWith("content:", ignoreCase = true)
+    ) {
+        return model
+    }
+    return localFiles.thumbnailModel(model) ?: model
 }

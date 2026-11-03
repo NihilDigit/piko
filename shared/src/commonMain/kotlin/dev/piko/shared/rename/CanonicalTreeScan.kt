@@ -8,6 +8,7 @@ import dev.piko.shared.data.DuplicateScanner
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.data.ScanStop
 import dev.piko.shared.data.ScannedFile
 import dev.piko.shared.data.VaultStore
@@ -45,7 +46,10 @@ class CanonicalTreeScan(
     val root: PikoPathBreadcrumb,
 ) {
     constructor(clients: PikoClientProvider, driveRepo: PikoDriveRepository, scope: CoroutineScope, root: PikoPathBreadcrumb) : this(
-        listFolder = { folderId -> (clients.currentClient.value ?: error("Not logged in")).listFiles(folderId) },
+        listFolder = { folderId ->
+            val client = clients.currentClient.value ?: error("Not logged in")
+            driveRepo.scanRealChildren(folderId, client)
+        },
         driveRepo = driveRepo,
         scope = scope,
         root = root,
@@ -119,7 +123,7 @@ class CanonicalTreeScan(
                 val included = ordered.mapTo(HashSet()) { it.file.id }
                 files = listOfNotNull(rootEntry) + ordered.map { it.file }
                 tree = RenameTree(
-                    locations = ordered.associate { it.file.id to if (it.folderPath.isEmpty()) root.name else "${root.name}/${it.folderPath}" },
+                    locations = ordered.associate { it.file.id to if (it.folderPath.isEmpty()) root.localizedName else "${root.localizedName}/${it.folderPath}" },
                     siblingNames = listingsLock.withLock {
                         listings.mapValues { (_, entries) -> entries.filter { it.id !in included && !it.trashed }.mapTo(HashSet()) { it.name } }
                     },
@@ -129,7 +133,7 @@ class CanonicalTreeScan(
                 throw e
             } catch (e: Throwable) {
                 PikoLog.w(TAG, "按番号规范命名的扫描失败", e)
-                errorMessage = e.message ?: "未知错误"
+                errorMessage = e.message ?: dev.piko.shared.i18n.tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류", "未知錯誤")
                 phase = Phase.FAILED
             }
         }
@@ -140,9 +144,10 @@ class CanonicalTreeScan(
         scanner?.stop()
     }
 
-    // 网盘根目录没有自己的一项；查不到详情时同样不改树根，其下照常
+    // 网盘根目录没有自己的一项；优先读本地已知节点，查不到时再问详情接口
     private suspend fun loadRoot(): FileStat? {
         if (root.id.isEmpty()) return null
+        driveRepo.knownFile(root.id)?.takeUnless { it.trashed }?.let { return it }
         val detail = driveRepo.getFileDetail(root.id).getOrNull() ?: return null
         return FileStat(kind = detail.kind, id = detail.id, parentId = detail.parentId, name = detail.name)
     }

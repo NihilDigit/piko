@@ -1,5 +1,6 @@
 package dev.piko.shared.media.player
 
+import dev.piko.shared.i18n.tr
 import dev.piko.data.repository.NaturalOrder
 import dev.piko.shared.naming.AttachmentKind
 import dev.piko.shared.naming.EntryFile
@@ -131,7 +132,7 @@ private fun versionLabels(group: List<EntryFile>, files: List<PlaylistEntry>): L
     if (byTags.all { it.isNotEmpty() } && byTags.distinct().size == group.size) return byTags
     val bySize = group.map { formatSize(files[it.index].size) }
     if (bySize.distinct().size == group.size) return bySize
-    return group.indices.map { "版本 ${it + 1}" }
+    return group.indices.map { tr("版本 ${it + 1}", "Version ${it + 1}", "バージョン ${it + 1}", "버전 ${it + 1}", "版本 ${it + 1}") }
 }
 
 private fun formatSize(bytes: Long): String = when {
