@@ -79,8 +79,12 @@ suspend fun importIosUploadFolder(
                     }
                 },
             )
+            // Coordinator failures may prevent the accessor from running at all; retain the
+            // NSError before reporting a missing callback, without exposing the selected path.
+            error.value?.let { err ->
+                throw IOException("Folder coordination failed: ${err.domain} (${err.code})")
+            }
             val result = outcome?.getOrThrow() ?: throw IOException("Folder coordination did not provide a readable folder")
-            if (error.value != null) throw IOException("Folder coordination failed")
             result
         }
     } finally {

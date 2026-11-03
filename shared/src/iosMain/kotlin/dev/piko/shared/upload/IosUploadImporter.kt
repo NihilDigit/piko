@@ -64,8 +64,12 @@ suspend fun importIosUploadDocument(
                     }
                 },
             )
+            // Coordinator failures may prevent the accessor from running at all; retain the
+            // NSError before reporting a missing callback, without exposing the selected path.
+            error.value?.let { err ->
+                throw IOException("Document coordination failed: ${err.domain} (${err.code})")
+            }
             val result = outcome?.getOrThrow() ?: throw IOException("Document coordination did not provide a readable file")
-            if (error.value != null) throw IOException("Document coordination failed")
             result
         }
     } finally {
