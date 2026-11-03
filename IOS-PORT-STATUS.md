@@ -1,3 +1,16 @@
+# iOS 移植状态（Piko v1.4.0）
+
+- 上游基线：[NihilDigit/piko v1.4.0](https://github.com/NihilDigit/piko/releases/tag/v1.4.0)；iOS 移植分支：`codex/ios-v1.4.0`。
+- 下载：[iOS v1.4.0 Release](https://github.com/bluedvst/piko/releases/tag/ios-v1.4.0)。附件为 Debug 构建的未签名 IPA，需使用 LCSign 等工具签名后安装；最低系统版本 iOS 16。
+- 已修复应用图标与 Kotlin/Native 文件名规则初始化闪退；此前修复版已获用户真机运行反馈。
+- iOS 内置播放目前使用应用内系统 AVPlayer 界面，尚未移植桌面的 libmpv 播放器界面；外部播放入口支持 SenPlayer、Rex、VLC、Outplayer 的跳转，ddPlayer 可复制直链。直链会过期，失效后需重新打开。外部播放器的实际跳转和播放需在安装了对应应用的设备上验证。
+- 本次构建：`1fa17e4598167be3513eb21813b3178af8d24606`，包含移植分支代码及仅用于 Debug 构建的工作流调整。[IPA 工作流](https://github.com/bluedvst/piko/actions/runs/41590585703) 和 [iOS 模拟器测试](https://github.com/bluedvst/piko/actions/runs/41590515323) 已通过；[Android 与桌面验证](https://github.com/bluedvst/piko/actions/runs/41590515424) 已通过。
+- IPA SHA-256：`50659cc9f3bd7ee267c03aad6785490c44152242b36779e1e633e66d090ec5c2`。
+
+以下内容为早期移植过程的历史记录，其中“尚未生成 IPA”“尚未连接 host”等状态仅适用于记录时点，不代表当前状态。
+
+---
+
 # iOS IPA 移植进度
 
 ## 交付状态
