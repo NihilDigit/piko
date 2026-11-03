@@ -1,3 +1,8 @@
+> **iOS 移植分支**：本分支基于上游 [Piko v1.4.0](https://github.com/NihilDigit/piko/releases/tag/v1.4.0)，维护 iPhone / iPad 适配与 IPA 打包。
+> [下载 iOS 安装包](https://github.com/bluedvst/piko/releases/tag/ios-v1.4.0) · [移植状态与构建说明](IOS-PORT-STATUS.md)
+>
+> IPA 为 **Debug 未签名包**，支持 iOS 16 及以上；需使用 LCSign 等工具自行签名安装。iOS 内置播放使用系统 AVPlayer；可在视频操作菜单选择外部播放器。外部播放直链有时效，ddPlayer 可通过复制链接使用。
+
 <p align="right"><b>简体中文</b> | <a href="README.en.md">English</a></p>
 
 <p align="center"><img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/icon.png" alt="Piko" width="96"></p>
