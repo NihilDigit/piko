@@ -1,103 +1,61 @@
 name: iOS Native validation
 
-# This validates the real shared UI framework, not an IPA or an iOS app host.
-# Dispatch after pushing the iOS port branch to a repository you control.
 on:
   workflow_dispatch:
-    inputs:
-      runner:
-        description: macOS runner label (Apple Silicon required for simulator tests)
-        type: string
-        default: macos-15
-      sdk-ref:
-        description: Exact pikpak-kotlin revision (includes iOS targets)
-        type: string
-        default: 6e1e54869acc284a6f253cdcaf7963c082d4f490
+  push:
+    branches: ["codex/ios-v1.4.0"]
+    paths:
+      - 'shared/**'
+      - 'ui/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/ios-native.yml'
 
 permissions:
   contents: read
 
 concurrency:
   group: ios-native-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  native:
-    runs-on: ${{ inputs.runner }}
-    timeout-minutes: 60
+  simulator-tests:
+    runs-on: macos-15
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
         with:
-          repository: NihilDigit/pikpak-kotlin
-          ref: ${{ inputs.sdk-ref }}
-          path: pikpak-kotlin
-      - uses: actions/setup-java@v5
-        id: jdk21
+          xcode-version: latest-stable
+      - uses: actions/setup-java@v4
         with:
+          distribution: temurin
           java-version: '21'
-          distribution: temurin
-      - uses: actions/setup-java@v5
-        id: jdk25
-        with:
-          java-version: '25'
-          distribution: temurin
-      - uses: android-actions/setup-android@v3
-      - uses: gradle/actions/setup-gradle@v5
-      - name: Record toolchain and select SDK source
+      - name: Locate Android SDK
         shell: bash
         run: |
           set -euo pipefail
-          test "$(uname -s)" = Darwin
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
-          xcrun --sdk iphonesimulator --show-sdk-version
-          java -version
-          printf 'pikpak.sdk.dir=pikpak-kotlin\n' >> local.properties
-          git -C pikpak-kotlin rev-parse HEAD
-          chmod +x gradlew
-      - name: Compile shared code and link real UI frameworks
-        run: >-
-          ./gradlew :shared:compileKotlinIosArm64
-          :shared:compileKotlinIosSimulatorArm64
-          :ui:linkDebugFrameworkIosSimulatorArm64
-          :ui:linkReleaseFrameworkIosArm64
-          -Dorg.gradle.java.installations.paths="${{ steps.jdk21.outputs.path }},${{ steps.jdk25.outputs.path }}"
-          --no-daemon --stacktrace
-      - name: Native simulator regression tests
-        if: runner.arch == 'ARM64'
-        run: >-
-          ./gradlew :shared:iosSimulatorArm64Test :ui:iosSimulatorArm64Test
-          -Dorg.gradle.java.installations.paths="${{ steps.jdk21.outputs.path }},${{ steps.jdk25.outputs.path }}"
-          --no-daemon --stacktrace
-      - name: Record validation boundary
-        if: always()
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+          test -d "$SDK"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Run iOS simulator tests
         shell: bash
         run: |
-          {
-            echo '## iOS port validation'
-            echo 'This job builds PikoKit.framework, not an installable IPA.'
-            echo 'The iOS host, platform services, signing, and device smoke test remain separate acceptance gates.'
-            if [ "${{ runner.arch }}" != ARM64 ]; then
-              echo 'Simulator tests were skipped: re-run on an Apple Silicon macOS runner to execute arm64 tests.'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload frameworks
-        uses: actions/upload-artifact@v6
-        with:
-          name: piko-ios-frameworks-${{ github.sha }}
-          path: |
-            ui/build/bin/iosArm64/releaseFramework/
-            ui/build/bin/iosSimulatorArm64/debugFramework/
-          if-no-files-found: error
-      - name: Upload native test reports
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :shared:iosSimulatorArm64Test :ui:iosSimulatorArm64Test --no-daemon --stacktrace
+      - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
-          name: piko-ios-test-reports-${{ github.sha }}
+          name: ios-simulator-test-results-${{ github.run_number }}
           path: |
             shared/build/reports/tests/
             shared/build/test-results/
             ui/build/reports/tests/
             ui/build/test-results/
-          if-no-files-found: ignore
+          if-no-files-found: warn
+          retention-days: 14

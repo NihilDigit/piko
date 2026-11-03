@@ -9,6 +9,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.window.ComposeUIViewController
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.i18n.PikoLocale
 import dev.piko.shared.storage.SandboxPaths
 import dev.piko.shared.storage.createIosAppDirectories
 import dev.piko.ui.PikoApp
@@ -21,6 +22,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import platform.Foundation.NSBundle
+import platform.Foundation.NSLocale
 import platform.UIKit.UIViewController
 
 /**
@@ -31,6 +33,7 @@ import platform.UIKit.UIViewController
  * 作用域一致。日志装一次，写进应用私有 support 目录的 logs，`导出日志` 也读这一份。
  */
 fun MainViewController(): UIViewController {
+    PikoLocale.bindSystemLocale(NSLocale.currentLocale.localeIdentifier)
     val directories = createIosAppDirectories()
     val keychainService = NSBundle.mainBundle.bundleIdentifier ?: DEFAULT_KEYCHAIN_SERVICE
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
