@@ -991,7 +991,8 @@ fun DriveScreen(
     fun openInExternalPlayer(file: FileStat) {
         val player = platform.externalPlayer ?: return
         scope.launch {
-            val url = mediaRepository.openForExternalPlayer(file.id).logFailure("Drive", tr("外部播放器取不到代理地址", "Proxy address unavailable for external player", "外部プレーヤー用のプロキシアドレスを取得できません", "외부 플레이어의 프록시 주소를 가져올 수 없습니다", "外部播放器無法取得代理位址")).getOrNull()
+            val source = if (player.requiresDirectUrl) mediaRepository.fetchDownloadUrl(file.id) else mediaRepository.openForExternalPlayer(file.id)
+            val url = source.logFailure("Drive", tr("外部播放器取不到播放地址", "Playback address unavailable for external player", "外部プレーヤー用の再生アドレスを取得できません", "외부 플레이어의 재생 주소를 가져올 수 없습니다", "外部播放器無法取得播放位址")).getOrNull()
             val opened = url != null && player.open(url, file.name)
             if (!opened) snackbarHostState.showSnackbar(tr("无法用外部播放器打开", "Unable to open in external player", "外部プレーヤーで開けません", "외부 플레이어에서 열 수 없습니다", "無法使用外部播放器開啟"), withDismissAction = true)
         }

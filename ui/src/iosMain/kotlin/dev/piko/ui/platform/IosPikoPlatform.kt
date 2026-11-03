@@ -46,7 +46,7 @@ import platform.darwin.NSObject
 
 /**
  * Piko 在 iOS 上的平台能力。只如实声明系统确实能做的事：
- * 没有桌面外壳（标题栏开关、托盘、开机启动），不能把视频交给外部播放器（回环代理只在本进程内），
+ * 没有桌面外壳（标题栏开关、托盘、开机启动），外部播放器使用限时直链而不是后台可能暂停的回环代理，
  * 不能登记磁力链接的打开方式，也没有需要选的外部下载目录（下载固定落在本应用私有目录）。
  *
  * 上传：文件走系统文稿选择器，选中的 URL 用 `importIosUploadDocument` 复制进沙箱后再排进上传队列；
@@ -220,7 +220,7 @@ class IosPikoPlatform(
         }
     }
 
-    override val externalPlayer: ExternalVideoPlayer? = null
+    override val externalPlayer: ExternalVideoPlayer = IosExternalVideoPlayer()
 
     override val videoPreview: VideoPreviewSupport? = null
 
