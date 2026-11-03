@@ -69,9 +69,9 @@ suspend fun importIosUploadDocument(
             val coordinatorError = error.value
             val result = if (coordinatorError != null) {
                 // Some simulator processes cannot contact the file coordination service for their
-                // own temporary files. Only retry a non-scoped, regular file physically inside this
+                // own temporary files. Only retry a regular file physically inside this
                 // process's temporary directory; external provider URLs must stay coordinated.
-                if (outcome == null && !scoped && coordinatorError.domain == NSCocoaErrorDomain &&
+                if (outcome == null && coordinatorError.domain == NSCocoaErrorDomain &&
                     coordinatorError.code == 256L && isPrivateTemporaryFile(url)
                 ) {
                     importReadable(url)

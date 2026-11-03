@@ -24,6 +24,7 @@ import kotlinx.coroutines.runBlocking
 import platform.Foundation.NSBundle
 import platform.Foundation.NSLocale
 import platform.Foundation.currentLocale
+import platform.Foundation.localeIdentifier
 import platform.UIKit.UIViewController
 
 /**
