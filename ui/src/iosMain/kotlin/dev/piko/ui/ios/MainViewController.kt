@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import platform.Foundation.NSBundle
 import platform.Foundation.NSLocale
+import platform.Foundation.currentLocale
 import platform.UIKit.UIViewController
 
 /**

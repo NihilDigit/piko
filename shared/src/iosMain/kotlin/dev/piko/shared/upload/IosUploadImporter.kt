@@ -44,35 +44,56 @@ suspend fun importIosUploadDocument(
             val error = alloc<ObjCObjectVar<NSError?>>()
             error.value = null
             var outcome: Result<String>? = null
+            fun importReadable(readable: NSURL): String {
+                context.ensureActive()
+                require(readable.scheme?.lowercase() == "file") { "Selected document is not a file URL" }
+                val path = readable.path ?: throw IOException("Document path is unavailable")
+                if (SystemFileSystem.metadataOrNull(Path(path))?.isRegularFile != true) {
+                    throw IOException("Selected document is not a regular file")
+                }
+                return importer.importFile(name, maxBytes, checkCancelled = { context.ensureActive() }) {
+                    SystemFileSystem.source(Path(path))
+                }
+            }
             NSFileCoordinator(filePresenter = null).coordinateReadingItemAtURL(
                 url = url,
                 options = 0uL,
                 error = error.ptr,
                 byAccessor = { coordinated ->
-                    // Exceptions must be rethrown on the Kotlin side, never unwind through Obj-C.
+                    // Never unwind a Kotlin exception through the Objective-C callback.
                     outcome = runCatching {
-                        context.ensureActive()
-                        val readable = coordinated ?: throw IOException("Document coordinator returned no URL")
-                        require(readable.scheme?.lowercase() == "file") { "Coordinated document is not a file URL" }
-                        val path = readable.path ?: throw IOException("Document path is unavailable")
-                        if (SystemFileSystem.metadataOrNull(Path(path))?.isRegularFile != true) {
-                            throw IOException("Selected document is not a regular file")
-                        }
-                        importer.importFile(name, maxBytes, checkCancelled = { context.ensureActive() }) {
-                            SystemFileSystem.source(Path(path))
-                        }
+                        importReadable(coordinated ?: throw IOException("Document coordinator returned no URL"))
                     }
                 },
             )
-            // Coordinator failures may prevent the accessor from running at all; retain the
-            // NSError before reporting a missing callback, without exposing the selected path.
-            error.value?.let { err ->
-                throw IOException("Document coordination failed: ${err.domain} (${err.code})")
+            val coordinatorError = error.value
+            val result = if (coordinatorError != null) {
+                // Some simulator processes cannot contact the file coordination service for their
+                // own temporary files. Only retry a non-scoped, regular file physically inside this
+                // process's temporary directory; external provider URLs must stay coordinated.
+                if (outcome == null && !scoped && coordinatorError.domain == NSCocoaErrorDomain &&
+                    coordinatorError.code == 256L && isPrivateTemporaryFile(url)
+                ) {
+                    importReadable(url)
+                } else {
+                    throw IOException("Document coordination failed: ${coordinatorError.domain} (${coordinatorError.code})")
+                }
+            } else {
+                outcome?.getOrThrow() ?: throw IOException("Document coordination did not provide a readable file")
             }
-            val result = outcome?.getOrThrow() ?: throw IOException("Document coordination did not provide a readable file")
             result
         }
     } finally {
         if (scoped) url.stopAccessingSecurityScopedResource()
     }
 }
+
+/** Resolve symbolic links before accepting a fallback; paths outside the private temp root fail closed. */
+private fun isPrivateTemporaryFile(url: NSURL): Boolean = runCatching {
+    val rawPath = url.path ?: return@runCatching false
+    val path = Path(rawPath)
+    if (SystemFileSystem.metadataOrNull(path)?.isRegularFile != true) return@runCatching false
+    val root = SystemFileSystem.resolve(Path(NSTemporaryDirectory())).toString().trimEnd('/')
+    val resolved = SystemFileSystem.resolve(path).toString()
+    root.isNotEmpty() && resolved.startsWith("$root/")
+}.getOrDefault(false)
