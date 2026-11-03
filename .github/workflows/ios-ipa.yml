@@ -41,7 +41,7 @@ concurrency:
 
 jobs:
   ipa:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 120
     env:
       # 团队 + 证书都在才算能签名；缺任一项自动走无签名路径
@@ -55,6 +55,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Release link exceeded the previous 5 GiB heap on v1.4.0. This job uses the
+      # standard 14 GiB Intel runner; leave developer and simulator defaults untouched.
+      - name: Configure native linker memory
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          path = Path("gradle.properties")
+          text = path.read_text()
+          text = text.replace("-Xmx5120m", "-Xmx8192m")
+          text = text.replace("kotlin.native.jvmArgs=-Xmx5g", "kotlin.native.jvmArgs=-Xmx8g")
+          path.write_text(text)
+          PYCODE
 
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
@@ -167,9 +180,9 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
             ~/.konan
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties') }}
+          key: gradle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.gradle.kts', 'gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
-            gradle-${{ runner.os }}-
+            gradle-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Generate Xcode project
         working-directory: iosApp
