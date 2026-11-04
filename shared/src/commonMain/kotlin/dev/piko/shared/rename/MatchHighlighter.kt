@@ -1,5 +1,7 @@
 package dev.piko.shared.rename
 
+import dev.piko.shared.util.matchRange
+
 /**
  * 查找作用于名称的哪一段（在原名里的下标），与 [FindReplaceRule] 的范围与跳过规则一致；这一项不参与时为 null。
  */
@@ -54,7 +56,7 @@ class MatchHighlighter(private val options: FindReplaceOptions, blocks: List<Fin
                 } else {
                     val groups = match.groups
                     groupBlocks.forEachIndexed { group, block ->
-                        val range = groups[group + 1]?.range
+                        val range = groups[group + 1]?.matchRange
                         if (range != null && !range.isEmpty()) result += MatchHighlight(part.first + range.first..part.first + range.last, block)
                     }
                 }

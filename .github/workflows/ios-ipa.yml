@@ -1,0 +1,342 @@
+name: ios-ipa
+
+# 用 GitHub 自带的 macOS runner 出 iOS 包：
+#   - 没配签名密钥：无签名 archive，再手工打 Payload/ 成 .ipa（侧载工具重新签名后能装）
+#   - 配了证书 + 团队：xcodebuild archive + exportArchive，直接得到签过名的 .ipa
+# Kotlin 框架由 Xcode 的 preBuild 脚本调 Gradle 现场编（:ui:embedAndSignAppleFrameworkForXcode），
+# 不在这里另编一份，避免两份产物版本串台。
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: "构建配置"
+        type: choice
+        options: [Release, Debug]
+        default: Release
+      export_method:
+        description: "导出方式（有签名时生效）"
+        type: choice
+        options: [ad-hoc, development, app-store]
+        default: ad-hoc
+      pikpak_ref:
+        description: "可选：用源码构建 pikpak-kotlin（commit 或分支，留空则用 Maven 上的正式版本）"
+        type: string
+        default: ""
+      xcode_version:
+        description: "Xcode 版本（latest-stable 或具体如 16.4）"
+        type: string
+        default: latest-stable
+  push:
+    tags:
+      - "ios-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ipa:
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+    env:
+      # 团队 + 证书都在才算能签名；缺任一项自动走无签名路径
+      PIKO_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      PIKO_BUNDLE_ID: ${{ secrets.APPLE_BUNDLE_ID }}
+      HAS_SIGNING: ${{ secrets.APPLE_TEAM_ID != '' && secrets.APPLE_CERT_P12_BASE64 != '' }}
+      CONFIGURATION_NAME: ${{ github.event.inputs.configuration || 'Release' }}
+      EXPORT_METHOD: ${{ github.event.inputs.export_method || 'ad-hoc' }}
+      PIKO_SKIP_KOTLIN_BUILD: "NO"
+      GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Release link exceeded the previous 5 GiB heap on v1.4.0. This job uses the
+      # standard 14 GiB Intel runner; leave developer and simulator defaults untouched.
+      - name: Configure native linker memory
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          path = Path("gradle.properties")
+          text = path.read_text()
+          overrides = {
+              "org.gradle.jvmargs": "-Xmx8192m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8",
+              "kotlin.daemon.jvmargs": "-Xmx5120m -XX:MaxMetaspaceSize=1024m",
+              "kotlin.native.jvmArgs": "-Xmx8g",
+              "org.gradle.workers.max": "2",
+          }
+          lines = [line for line in text.splitlines() if line.split("=", 1)[0] not in overrides]
+          lines.extend(f"{key}={value}" for key, value in overrides.items())
+          path.write_text("\n".join(lines) + "\n")
+          PYCODE
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ github.event.inputs.xcode_version || 'latest-stable' }}
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # shared/ui 带 android target，AGP 配置期间就需要 Android SDK，否则连 iOS 任务都配置不出来。
+      # macOS runner 镜像已自带 SDK，不再用 android-actions/setup-android：它内部跑
+      # `sdkmanager --licenses` 时在无 tty 环境下退出码 1，会把整个 job 直接打死（首跑就是这样挂的）。
+      - name: Locate Android SDK
+        run: |
+          set -o pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+          if [ ! -d "$SDK" ]; then
+            echo "::error::找不到 Android SDK：$SDK"
+            exit 1
+          fi
+          {
+            echo "ANDROID_SDK_ROOT=$SDK"
+            echo "ANDROID_HOME=$SDK"
+            echo "SDKMANAGER=$SDK/cmdline-tools/latest/bin/sdkmanager"
+          } >> "$GITHUB_ENV"
+          echo "SDK=$SDK"
+          ls "$SDK"
+          ls "$SDK/platforms" 2>/dev/null || echo "no platforms dir yet"
+
+      - name: Accept Android SDK licenses
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          SM="$SDKMANAGER"
+          [ -x "$SM" ] || SM="$(ls -d "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | tail -1)"
+          echo "using $SM"
+          yes | "$SM" --licenses > "$RUNNER_TEMP/licenses.log" 2>&1 || true
+          tail -5 "$RUNNER_TEMP/licenses.log" || true
+
+      - name: Install Android platform for compileSdk 37
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          SM="$SDKMANAGER"
+          [ -x "$SM" ] || SM="$(ls -d "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | tail -1)"
+          "$SM" --install "platforms;android-37" "build-tools;37.0.0" > "$RUNNER_TEMP/sdk-install.log" 2>&1 || {
+            echo "::warning::android-37 装不上，沿用镜像自带平台"
+            tail -20 "$RUNNER_TEMP/sdk-install.log" || true
+          }
+          "$SM" --list_installed 2>/dev/null | sed -n '1,40p' || ls "$ANDROID_SDK_ROOT/platforms"
+
+      - name: Install XcodeGen
+        run: |
+          set -o pipefail
+          brew install xcodegen
+          xcodegen --version
+
+      - name: Show toolchain
+        run: |
+          set -o pipefail
+          xcodebuild -version
+          java -version
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-unset}"
+
+      - name: Import signing identity
+        if: ${{ env.HAS_SIGNING == 'true' }}
+        env:
+          CERT_P12: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          PROFILE: ${{ secrets.APPLE_PROVISION_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$CERT_P12" | openssl base64 -d -A -out "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          if [ -n "${PROFILE:-}" ]; then
+            printf '%s' "$PROFILE" | openssl base64 -d -A -out "$RUNNER_TEMP/profile.mobileprovision"
+            UUID_VALUE="$(security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" | plutil -extract UUID raw -)"
+            mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+            cp "$RUNNER_TEMP/profile.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID_VALUE.mobileprovision"
+            echo "已安装描述文件 $UUID_VALUE"
+          fi
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      # 要跟 SDK 源码联调时把 local.properties 指过去；留空就用 libs.versions.toml 里的正式版本
+      - name: Use pikpak-kotlin from source
+        if: ${{ github.event.inputs.pikpak_ref != '' }}
+        env:
+          PIKPAK_REF: ${{ github.event.inputs.pikpak_ref }}
+        run: |
+          set -o pipefail
+          git clone --filter=blob:none https://github.com/NihilDigit/pikpak-kotlin.git "$RUNNER_TEMP/pikpak-kotlin"
+          git -C "$RUNNER_TEMP/pikpak-kotlin" checkout "$PIKPAK_REF"
+          printf 'pikpak.sdk.dir=%s\n' "$RUNNER_TEMP/pikpak-kotlin" > local.properties
+
+      - name: Cache Gradle and Kotlin/Native
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: gradle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.gradle.kts', 'gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: |
+          set -o pipefail
+          xcodegen generate
+          ls -d Piko.xcodeproj
+
+      # 先把 Kotlin 依赖与 K/N 工具链拉齐：出错时错误集中，不必在 xcodebuild 日志里翻
+      - name: Warm up Gradle
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew --version
+          ./gradlew :ui:compileKotlinIosArm64 --no-daemon --stacktrace
+
+      - name: Archive (signed)
+        id: signed
+        continue-on-error: true
+        if: ${{ env.HAS_SIGNING == 'true' }}
+        working-directory: iosApp
+        run: |
+          set -o pipefail
+          ARGS=(archive
+            -project Piko.xcodeproj
+            -scheme Piko
+            -configuration "$CONFIGURATION_NAME"
+            -destination "generic/platform=iOS"
+            -archivePath "$RUNNER_TEMP/Piko.xcarchive"
+            -allowProvisioningUpdates
+            "PIKO_TEAM_ID=$PIKO_TEAM_ID"
+            "PIKO_BUNDLE_ID=${PIKO_BUNDLE_ID:-dev.piko.pikpak.ios}")
+          xcodebuild "${ARGS[@]}" 2>&1 | tee "$RUNNER_TEMP/archive-signed.log"
+
+      - name: Export signed IPA
+        if: ${{ steps.signed.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>$EXPORT_METHOD</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>stripSwiftSymbols</key><true/>
+            <key>compileBitcode</key><false/>
+            <key>destination</key><string>export</string>
+            <key>teamID</key><string>$PIKO_TEAM_ID</string>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
+          rm -rf "$RUNNER_TEMP/export"
+          EXPORT_ARGS=(-exportArchive
+            -archivePath "$RUNNER_TEMP/Piko.xcarchive"
+            -exportPath "$RUNNER_TEMP/export"
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+            -allowProvisioningUpdates)
+          xcodebuild "${EXPORT_ARGS[@]}" 2>&1 | tee "$RUNNER_TEMP/export.log"
+          ls -l "$RUNNER_TEMP/export"
+
+      - name: Archive (unsigned)
+        if: ${{ env.HAS_SIGNING != 'true' || steps.signed.outcome != 'success' }}
+        working-directory: iosApp
+        run: |
+          set -o pipefail
+          # 没有签名身份也要证明 Kotlin 框架和 Swift 一起编得过：只关签名，不关编译
+          ARGS=(archive
+            -project Piko.xcodeproj
+            -scheme Piko
+            -configuration "$CONFIGURATION_NAME"
+            -destination "generic/platform=iOS"
+            -archivePath "$RUNNER_TEMP/Piko-unsigned.xcarchive"
+            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGN_IDENTITY=
+            "PIKO_BUNDLE_ID=${PIKO_BUNDLE_ID:-dev.piko.pikpak.ios}")
+          xcodebuild "${ARGS[@]}" 2>&1 | tee "$RUNNER_TEMP/archive-unsigned.log"
+
+      - name: Pack unsigned IPA
+        if: ${{ env.HAS_SIGNING != 'true' || steps.signed.outcome != 'success' }}
+        run: |
+          set -o pipefail
+          APP="$RUNNER_TEMP/Piko-unsigned.xcarchive/Products/Applications/Piko.app"
+          test -d "$APP"
+          rm -rf "$RUNNER_TEMP/unsigned"
+          mkdir -p "$RUNNER_TEMP/unsigned/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/unsigned/Payload/"
+          cd "$RUNNER_TEMP/unsigned"
+          zip -qry "$RUNNER_TEMP/Piko-unsigned.ipa" Payload
+          ls -lh "$RUNNER_TEMP/Piko-unsigned.ipa"
+
+      - name: Collect artifacts
+        id: collect
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/out"
+          shopt -s nullglob
+          for f in "$RUNNER_TEMP"/export/*.ipa "$RUNNER_TEMP"/Piko-unsigned.ipa; do
+            cp "$f" "$RUNNER_TEMP/out/"
+          done
+          cp "$RUNNER_TEMP"/*.log "$RUNNER_TEMP/out/" 2>/dev/null || true
+          COUNT=0
+          {
+            echo "## iOS 构建结果"
+            echo ""
+            echo "| 文件 | 大小 | SHA-256 |"
+            echo "| --- | --- | --- |"
+            cd "$RUNNER_TEMP/out"
+            for f in *.ipa; do
+              [ -e "$f" ] || continue
+              COUNT=$((COUNT + 1))
+              echo "| $f | $(du -h "$f" | cut -f1) | $(shasum -a 256 "$f" | cut -d' ' -f1) |"
+            done
+            if [ "$COUNT" = "0" ]; then
+              echo "| — | 没有产出 ipa | — |"
+            fi
+            echo ""
+            if [ "$HAS_SIGNING" = "true" ]; then
+              echo "签名：已使用团队 $PIKO_TEAM_ID 导出（$EXPORT_METHOD）。"
+            else
+              echo "签名：无签名包，装到设备前需用侧载工具（AltStore/Sideloadly 等）重新签名。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          ls -lh "$RUNNER_TEMP/out" || true
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Piko-ipa-${{ github.run_number }}
+          path: ${{ runner.temp }}/out/**
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-logs-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/*.log
+            shared/build/reports/**
+            ui/build/reports/**
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Fail when no IPA was produced
+        if: ${{ steps.collect.outputs.count == '0' }}
+        run: |
+          echo "没有产出 .ipa，去看上面的 archive 日志" >&2
+          exit 1

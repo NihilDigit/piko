@@ -137,7 +137,7 @@ import dev.piko.ui.components.pageFocusTarget
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.ShortcutModifier
-import java.util.Locale
+import dev.piko.ui.format.formatPercentage
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
@@ -1919,7 +1919,7 @@ private fun LeafInteractiveBlock(
             // 超大色块（如主目录或占比 > 10% 的核心分支）：大号粗体标题 + 醒目容量与占比
             widthDp >= 220.dp && heightDp >= 140.dp -> {
                 val sharePct = ((bytes.toDouble() / totalDisplayedBytes) * 100.0).coerceIn(0.0, 100.0)
-                val shareStr = String.format(Locale.US, "%.1f%%", sharePct)
+                val shareStr = formatPercentage(sharePct)
                 Column(
                     modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalArrangement = Arrangement.SpaceBetween,
@@ -1976,7 +1976,7 @@ private fun LeafInteractiveBlock(
             widthDp >= 132.dp && heightDp >= 82.dp -> {
                 val sharePct = ((bytes.toDouble() / totalDisplayedBytes) * 100.0).coerceIn(0.0, 100.0)
                 val sizeStr = if (widthDp >= 170.dp) {
-                    String.format(Locale.US, "%s (%.1f%%)", bytes.toReadableSize(), sharePct)
+                    "${bytes.toReadableSize()} (${formatPercentage(sharePct)})"
                 } else {
                     bytes.toReadableSize()
                 }
@@ -2085,7 +2085,7 @@ private fun SpaceHoverCard(
     val edgeMarginPx = with(density) { 8.dp.roundToPx() }
 
     val sharePercent = ((target.displayBytes.toDouble() / totalBytes) * 100.0).coerceIn(0.0, 100.0)
-    val shareText = String.format(Locale.US, "%.1f%%", sharePercent)
+    val shareText = formatPercentage(sharePercent)
 
     Surface(
         shape = MaterialTheme.shapes.medium,
@@ -2228,7 +2228,7 @@ private fun SpaceHoverCard(
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     val quotaPct = if (target.limitBytes > 0L) {
-                        String.format(Locale.US, "%.1f%%", (target.displayBytes.toDouble() / target.limitBytes.toDouble() * 100.0).coerceIn(0.0, 100.0))
+                        formatPercentage(target.displayBytes.toDouble() / target.limitBytes.toDouble() * 100.0)
                     } else {
                         shareText
                     }

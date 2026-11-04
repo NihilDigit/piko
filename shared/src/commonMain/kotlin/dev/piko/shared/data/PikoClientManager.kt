@@ -1,5 +1,8 @@
 package dev.piko.shared.data
 
+import kotlinx.coroutines.IO
+import dev.piko.shared.util.PikoLock
+import dev.piko.shared.util.withPikoLock
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
@@ -44,7 +47,7 @@ class PikoClientManager(
     /** Android 在创建界面前同步发布本地账号；网络鉴权仍在后台执行。测试与桌面端默认异步恢复。 */
     restoreLocallyImmediately: Boolean = false,
 ) : PikoClientProvider {
-    private val budgetLock = Any()
+    private val budgetLock = PikoLock()
 
     @Volatile
     private var currentTransportBudgetBytes: Long = transportMemoryBudgetBytes.coerceAtLeast(MIN_TRANSPORT_BUDGET_BYTES)
@@ -55,7 +58,7 @@ class PikoClientManager(
     /** 动态调整 SDK 传输层共享内存预算（如 Android 收到 onTrimMemory 或回到前台恢复）。 */
     fun setTransportMemoryBudgetBytes(bytes: Long) {
         val clamped = bytes.coerceAtLeast(MIN_TRANSPORT_BUDGET_BYTES)
-        synchronized(budgetLock) {
+        withPikoLock(budgetLock) {
             currentTransportBudgetBytes = clamped
             _currentClient.value?.setTransportMemoryBudgetBytes(clamped)
         }
@@ -63,13 +66,13 @@ class PikoClientManager(
 
     /** 动态切换多连接并发加速（关闭时在线播放与下载均退回与官方客户端一致的单连接顺序传输）。 */
     fun setConcurrentAcceleration(enabled: Boolean) {
-        synchronized(budgetLock) {
+        withPikoLock(budgetLock) {
             currentConcurrentAcceleration = enabled
             _currentClient.value?.concurrentAcceleration = enabled
         }
     }
 
-    private fun publishCurrentClient(client: PikPakClient): PikPakClient? = synchronized(budgetLock) {
+    private fun publishCurrentClient(client: PikPakClient): PikPakClient? = withPikoLock(budgetLock) {
         client.setTransportMemoryBudgetBytes(currentTransportBudgetBytes)
         client.concurrentAcceleration = currentConcurrentAcceleration
         val previous = _currentClient.value

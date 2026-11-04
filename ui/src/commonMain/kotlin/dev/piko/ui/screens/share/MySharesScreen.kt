@@ -101,8 +101,7 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ShareStatus
 import io.github.nihildigit.pikpak.ShareSummary
-import java.time.OffsetDateTime
-import java.time.format.DateTimeFormatter
+import dev.piko.ui.format.formatOffsetDate
 import kotlinx.coroutines.launch
 
 /**
@@ -488,9 +487,7 @@ private fun ShareSummary.contentLabel(): String {
     }
 }
 
-private fun ShareSummary.createdLabel(): String? = runCatching {
-    OffsetDateTime.parse(createTime).format(DateTimeFormatter.ofPattern(tr("M 月 d 日", "MMM d", "M月d日", "M월 d일", "M 月 d 日")))
-}.getOrNull()
+private fun ShareSummary.createdLabel(): String? = formatOffsetDate(createTime)
 
 private fun ShareSummary.statusLabel(): String = when (shareStatus) {
     ShareStatus.DELETED -> tr("已失效", "Invalid", "無効", "무효", "已失效")
@@ -502,7 +499,5 @@ private fun ShareSummary.statusLabel(): String = when (shareStatus) {
 
 private fun ShareSummary.expirationLabel(): String? {
     if (expirationAt == "-1" || expirationDays == "-1") return tr("永久", "Never expires", "無期限", "영구", "永久")
-    return runCatching {
-        OffsetDateTime.parse(expirationAt).format(DateTimeFormatter.ofPattern(tr("至 M 月 d 日", "'Until' MMM d", "M月d日まで", "M월 d일까지", "至 M 月 d 日")))
-    }.getOrNull()
+    return formatOffsetDate(expirationAt)?.let { tr("至 $it", "Until $it", "${it}まで", "${it}까지", "至 $it") }
 }

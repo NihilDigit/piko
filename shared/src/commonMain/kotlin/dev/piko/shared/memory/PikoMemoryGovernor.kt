@@ -1,5 +1,7 @@
 package dev.piko.shared.memory
 
+import dev.piko.shared.util.PikoLock
+import dev.piko.shared.util.withPikoLock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -29,7 +31,7 @@ interface MemoryParticipant {
 class PikoMemoryGovernor(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
-    private val lock = Any()
+    private val lock = PikoLock()
     private val heavy = Semaphore(1)
     private val mutablePolicy = MutableStateFlow(MemoryPolicy.Normal)
     val policy: StateFlow<MemoryPolicy> = mutablePolicy.asStateFlow()
@@ -39,7 +41,7 @@ class PikoMemoryGovernor(
     private var criticalSamples = 0
     private var availableBytes = Long.MAX_VALUE
 
-    fun onVisibilityChanged(visible: Boolean) = synchronized(lock) {
+    fun onVisibilityChanged(visible: Boolean) = withPikoLock(lock) {
         this.visible = visible
         if (!visible && pressure == MemoryPolicy.Normal) {
             pressure = MemoryPolicy.Constrained
@@ -48,7 +50,7 @@ class PikoMemoryGovernor(
         publish()
     }
 
-    fun onPlatformTrim(trim: MemoryTrim) = synchronized(lock) {
+    fun onPlatformTrim(trim: MemoryTrim) = withPikoLock(lock) {
         lowSamples = 0
         criticalSamples = 0
         when (trim) {
@@ -67,7 +69,7 @@ class PikoMemoryGovernor(
     /** Three low-water samples are required for each recovery step; visibility alone never resets pressure. */
     fun onHeapSample(usedBytes: Long, maxBytes: Long) {
         require(maxBytes > 0 && usedBytes >= 0)
-        synchronized(lock) {
+        withPikoLock(lock) {
             availableBytes = (maxBytes - usedBytes).coerceAtLeast(0)
             val ratio = usedBytes.toDouble() / maxBytes
             when {
@@ -113,7 +115,7 @@ class PikoMemoryGovernor(
     suspend fun acquire(kind: MemoryWorkKind, estimatedPeakBytes: Long): MemoryPermit {
         require(estimatedPeakBytes >= 0) { "Negative peak estimate for $kind" }
         heavy.acquire()
-        synchronized(lock) {
+        withPikoLock(lock) {
             if (estimatedPeakBytes > availableBytes && pressure == MemoryPolicy.Normal) {
                 pressure = MemoryPolicy.Constrained
                 lowSamples = 0
@@ -121,9 +123,10 @@ class PikoMemoryGovernor(
             }
         }
         return object : MemoryPermit {
+            private val releaseLock = PikoLock()
             private var released = false
             override fun release() {
-                val release = synchronized(this) {
+                val release = withPikoLock(releaseLock) {
                     if (released) false else { released = true; true }
                 }
                 if (release) heavy.release()

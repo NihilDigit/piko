@@ -60,22 +60,12 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.VideoPreviewSupport
 import io.github.nihildigit.pikpak.FileStat
-import java.util.Locale
+import dev.piko.ui.format.formatDurationMillis
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 
-fun formatTimeMs(ms: Long): String {
-    val totalSec = (ms / 1000L).coerceAtLeast(0L)
-    val h = totalSec / 3600L
-    val m = (totalSec % 3600L) / 60L
-    val s = totalSec % 60L
-    return if (h > 0) {
-        String.format(Locale.getDefault(), "%02d:%02d:%02d", h, m, s)
-    } else {
-        String.format(Locale.getDefault(), "%02d:%02d", m, s)
-    }
-}
+fun formatTimeMs(ms: Long): String = formatDurationMillis(ms, padHours = true)
 
 internal enum class Handle {
     START, END;

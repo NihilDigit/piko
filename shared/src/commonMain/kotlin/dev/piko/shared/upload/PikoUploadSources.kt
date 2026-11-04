@@ -14,8 +14,9 @@ data class UploadFolder(val name: String, val files: List<UploadTreeEntry>)
 /**
  * 读本机文件的平台边界，上传调度器不接触 java.io.File 或 ContentResolver。
  *
- * uri 由平台自己产生与解释：桌面端是绝对路径，Android 是 content: URI。调度器只把它原样存进
- * 任务表，下次启动再交回来。调用都发生在 IO 线程上，实现可以阻塞。
+ * uri 由平台自己产生与解释：桌面端是绝对路径，Android 是 content: URI，iOS 应用目录来源是
+ * 相对于当前容器的稳定标识。调度器只把它原样存进任务表，下次启动再交回来。
+ * 调用都发生在 IO 线程上，实现可以阻塞。
  */
 interface PikoUploadSources {
     /** 文件已不存在或已无权读取时为 null。 */

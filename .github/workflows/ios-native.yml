@@ -1,0 +1,127 @@
+name: iOS Native validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - 'shared/**'
+      - 'ui/**'
+      - 'iosApp/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/ios-native.yml'
+  pull_request:
+    paths:
+      - 'shared/**'
+      - 'ui/**'
+      - 'iosApp/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/ios-native.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-native-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  simulator-tests:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Locate Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+          test -d "$SDK"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          printf 'sdk.dir=%s\npikpak.sdk.dir=pikpak-kotlin\n' "$SDK" > local.properties
+          printf 'sdk.dir=%s\n' "$SDK" > pikpak-kotlin/local.properties
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Run iOS simulator tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :shared:iosSimulatorArm64Test :ui:iosSimulatorArm64Test --no-daemon --stacktrace
+      - name: Build iOS 15 host
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          cd iosApp
+          xcodegen generate
+          xcodebuild -project Piko.xcodeproj -scheme Piko -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/piko-ios" \
+            CODE_SIGNING_ALLOWED=NO build 2>&1 | tee "$RUNNER_TEMP/piko-ios-build.log"
+          APP="$RUNNER_TEMP/piko-ios/Build/Products/Debug-iphonesimulator/Piko.app"
+          MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")
+          test "$MIN_OS" = '15.0'
+          xcrun vtool -show-build "$APP/Piko" | tee "$RUNNER_TEMP/piko-ios-deployment.txt"
+      - name: Launch simulator host
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess
+          runtimes = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'runtimes', '--json']))['runtimes']
+          devices = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available', '--json']))['devices']
+          choices = []
+          for runtime in runtimes:
+              if not runtime.get('isAvailable') or not runtime['identifier'].startswith('com.apple.CoreSimulator.SimRuntime.iOS-'):
+                  continue
+              for device in devices.get(runtime['identifier'], []):
+                  if device.get('isAvailable') and device['name'].startswith('iPhone'):
+                      choices.append((tuple(map(int, runtime['version'].split('.'))), runtime, device))
+          assert choices, 'No available iPhone simulator'
+          _, runtime, device = min(choices, key=lambda item: item[0])
+          print('Selected simulator runtime:', runtime['version'])
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f"PIKO_SIMULATOR_ID={device['udid']}\n")
+          if device['state'] != 'Booted':
+              subprocess.run(['xcrun', 'simctl', 'boot', device['udid']], check=True)
+          PY
+      - name: Verify simulator launch
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun simctl bootstatus "$PIKO_SIMULATOR_ID" -b
+          xcrun simctl install "$PIKO_SIMULATOR_ID" "$RUNNER_TEMP/piko-ios/Build/Products/Debug-iphonesimulator/Piko.app"
+          xcrun simctl launch --terminate-running-process "$PIKO_SIMULATOR_ID" dev.piko.pikpak.ios
+          sleep 5
+          xcrun simctl spawn "$PIKO_SIMULATOR_ID" launchctl list | \
+            awk '$1 ~ /^[0-9]+$/ && /dev.piko.pikpak.ios/ { found=1 } END { exit !found }'
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-test-results-${{ github.run_number }}
+          path: |
+            shared/build/reports/tests/
+            shared/build/test-results/
+            ui/build/reports/tests/
+            ui/build/test-results/
+            ${{ runner.temp }}/piko-ios-build.log
+            ${{ runner.temp }}/piko-ios-deployment.txt
+          if-no-files-found: warn
+          retention-days: 14

@@ -17,7 +17,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** Executes independent steps concurrently, with a barrier between dependency waves. */
 class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: String, private val access: DriveWriteAccess? = null) {
@@ -51,7 +52,8 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
                 // Workers report progress immediately; results commit in plan order, including on cancellation.
                 val outcomes = arrayOfNulls<StepResult>(wave.steps.size)
                 val waveStartProcessed = processed
-                val inWaveDone = AtomicInteger(0)
+                val progressLock = Mutex()
+                var inWaveDone = 0
                 try {
                     coroutineScope {
                         wave.steps.mapIndexed { index, step -> async {
@@ -63,7 +65,10 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
                                 }
                                 outcomes[index] = outcome
                                 if (outcome != null && (!outcome.success || step.to == targets.getValue(step.source.id).newName)) {
-                                    processed = waveStartProcessed + inWaveDone.incrementAndGet()
+                                    progressLock.withLock {
+                                        inWaveDone++
+                                        processed = waveStartProcessed + inWaveDone
+                                    }
                                 }
                             }
                         } }.awaitAll()

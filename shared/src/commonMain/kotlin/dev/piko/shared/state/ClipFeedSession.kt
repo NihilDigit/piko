@@ -590,7 +590,10 @@ class ClipFeedSession(
     /** 记进候选池，随队列存下：下次打开不必再借一次对象去量。 */
     private fun learnDuration(fileId: String, durationMs: Long) {
         val seconds = (durationMs / 1000.0).toString()
-        pool.replaceAll { if (it.id == fileId) it.copy(params = it.params + ("duration" to seconds)) else it }
+        for (i in pool.indices) {
+            val item = pool[i]
+            if (item.id == fileId) pool[i] = item.copy(params = item.params + ("duration" to seconds))
+        }
     }
 
     private fun pooled(fileId: String): FileStat? = pool.firstOrNull { it.id == fileId }

@@ -1,0 +1,72 @@
+name: Piko
+options:
+  bundleIdPrefix: dev.piko
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+configFiles:
+  Debug: Configuration/Config.xcconfig
+  Release: Configuration/Config.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    # Compose 的 Kotlin 框架是静态库，只在链接期需要，不嵌入 Frameworks 目录
+    ALWAYS_SEARCH_USER_PATHS: NO
+
+targets:
+  Piko:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Piko
+    settings:
+      base:
+        PRODUCT_NAME: Piko
+        # 版本号与 Android 侧的 versionName 同步改；Kotlin 侧读 CFBundleShortVersionString 当 appVersion
+        MARKETING_VERSION: "1.4.0"
+        CURRENT_PROJECT_VERSION: "1"
+        PRODUCT_BUNDLE_IDENTIFIER: "$(PIKO_BUNDLE_ID)"
+        DEVELOPMENT_TEAM: "$(PIKO_TEAM_ID)"
+        CODE_SIGN_STYLE: Automatic
+        INFOPLIST_FILE: Piko/Info.plist
+        # Kotlin 框架由下面的构建脚本产出到这个目录，名字见 ui/build.gradle.kts 的 baseName
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../ui/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)"
+        OTHER_LDFLAGS: "$(inherited) -framework PikoKit"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SWIFT_EMIT_LOC_STRINGS: YES
+    preBuildScripts:
+      - name: Build PikoKit (Kotlin)
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "YES" = "$PIKO_SKIP_KOTLIN_BUILD" ]; then
+            echo "跳过 Kotlin 框架构建（PIKO_SKIP_KOTLIN_BUILD=YES）"
+            exit 0
+          fi
+          cd "$SRCROOT/.."
+          ./gradlew :ui:embedAndSignAppleFrameworkForXcode
+    postBuildScripts:
+      - name: Report missing signing team
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ -z "$PIKO_TEAM_ID" ] || [ "$PIKO_TEAM_ID" = "TEAM_ID" ]; then
+            echo "warning: 没有设置 PIKO_TEAM_ID，真机与归档会失败；模拟器构建不受影响"
+          fi
+
+schemes:
+  Piko:
+    build:
+      targets:
+        Piko: all
+    run:
+      config: Debug
+    archive:
+      config: Release

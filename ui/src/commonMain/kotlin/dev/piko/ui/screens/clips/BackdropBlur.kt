@@ -124,8 +124,8 @@ object BackdropBlurKernel {
 internal object PreblurredBackdropCache {
     private const val VERSION = "v1"
     private const val MAX_ENTRIES = 32
-    private val lock = Any()
-    private val map = LinkedHashMap<String, ImageBitmap>(MAX_ENTRIES, 0.75f, true)
+    private val lock = dev.piko.shared.util.PikoLock()
+    private val map = LinkedHashMap<String, ImageBitmap>(MAX_ENTRIES)
 
     fun keyOf(model: Any, containerWidthPx: Int, containerHeightPx: Int, targetBlurPx: Float): String {
         // 将容器长宽比与模糊比例量化到粗粒度桶，避免窗口拖拽缩放时逐像素生成不同缓存键
@@ -137,9 +137,12 @@ internal object PreblurredBackdropCache {
         return "$VERSION|$landscape|$aspectBucket|$blurRatioBucket|$model"
     }
 
-    fun get(key: String): ImageBitmap? = synchronized(lock) { map[key] }
+    fun get(key: String): ImageBitmap? = dev.piko.shared.util.withPikoLock(lock) {
+        map.remove(key)?.also { map[key] = it }
+    }
 
-    fun put(key: String, bitmap: ImageBitmap) = synchronized(lock) {
+    fun put(key: String, bitmap: ImageBitmap) = dev.piko.shared.util.withPikoLock(lock) {
+        map.remove(key)
         map[key] = bitmap
         while (map.size > MAX_ENTRIES) {
             val eldest = map.entries.iterator()
@@ -150,5 +153,5 @@ internal object PreblurredBackdropCache {
         }
     }
 
-    fun clear() = synchronized(lock) { map.clear() }
+    fun clear() = dev.piko.shared.util.withPikoLock(lock) { map.clear() }
 }

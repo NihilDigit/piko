@@ -468,12 +468,14 @@ internal class DriveViewModel(
         }
     }
 
-    fun openInExternalPlayer(file: FileStat) {
+    fun openInExternalPlayer(file: FileStat, requiresDirectUrl: Boolean = false) {
         viewModelScope.launch {
-            val url = mediaRepository.openForExternalPlayer(file.id)
+            val source = if (requiresDirectUrl) mediaRepository.fetchDownloadUrl(file.id)
+                else mediaRepository.openForExternalPlayer(file.id)
+            val url = source
                 .logFailure(
                     "Drive",
-                    tr("外部播放器取不到代理地址", "Proxy address unavailable for external player", "外部プレーヤー用のプロキシアドレスを取得できません", "외부 플레이어의 프록시 주소를 가져올 수 없습니다", "外部播放器無法取得代理位址"),
+                    tr("外部播放器取不到播放地址", "Playback address unavailable for external player", "外部プレーヤー用の再生アドレスを取得できません", "외부 플레이어의 재생 주소를 가져올 수 없습니다", "外部播放器無法取得播放位址"),
                 )
                 .getOrNull()
             if (url != null) {

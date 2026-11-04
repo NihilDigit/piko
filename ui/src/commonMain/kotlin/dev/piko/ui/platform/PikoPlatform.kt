@@ -279,6 +279,8 @@ interface BackgroundTransferAccess {
 }
 
 fun interface ExternalVideoPlayer {
+    /** A player outside this process cannot rely on a suspended local proxy. */
+    val requiresDirectUrl: Boolean get() = false
     suspend fun open(url: String, fileName: String): Boolean
 }
 

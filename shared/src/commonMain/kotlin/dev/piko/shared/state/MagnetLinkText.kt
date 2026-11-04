@@ -1,5 +1,6 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.util.matchRange
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -72,7 +73,7 @@ private fun linkFromUri(uri: String): PastedLink {
     val raw = btih.groupValues[1]
     val hash = infoHashOf(raw) ?: return PastedLink(uri, null)
     // Base32 写法换成十六进制再交出去，dn、tr 等参数原样保留
-    val normalized = if (raw.length == BASE32_HASH_LENGTH) uri.replaceRange(btih.groups[1]!!.range, hash) else uri
+    val normalized = if (raw.length == BASE32_HASH_LENGTH) uri.replaceRange(btih.groups[1]!!.matchRange, hash) else uri
     return PastedLink(normalized, hash)
 }
 
