@@ -43,6 +43,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -54,7 +55,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.ensureActive
 import io.github.nihildigit.pikpak.StreamRole
 import io.github.nihildigit.pikpak.PikPakStreamReader
 import kotlinx.serialization.builtins.ListSerializer
@@ -102,6 +102,7 @@ class PikoDownloadCoordinator(
 
     val fileCachePool = mediaRepository?.fileCachePool ?: PikoFileCachePool(scope) { storage.cacheTarget(it) }
     private val restoreCompleted = CompletableDeferred<Unit>()
+    private val interruptedTasks = MutableStateFlow<Set<String>>(emptySet())
     private val persistLock = Mutex()
     private var preserveUnreadTasks = false
     private var defaultFolderSource: DownloadFolderSource? = null
@@ -184,9 +185,11 @@ class PikoDownloadCoordinator(
             }
         }
         scope.launch {
-            preferences.snailModeFlow.collect { mode ->
-                limiter.bytesPerSecond = if (mode.enabled) mode.downloadKiBps * 1024L else null
-            }
+            combine(preferences.snailModeFlow, clientProvider.currentClient) { mode, client -> mode to client }
+                .collect { (mode, client) ->
+                    limiter.bytesPerSecond = if (mode.enabled) mode.downloadKiBps * 1024L else null
+                    client?.downloadLimiter?.bytesPerSecond = limiter.bytesPerSecond
+                }
         }
         // 先恢复再开始写回：反过来的话，第一次写入的是构造时的空表，上次的记录就被抹掉了
         scope.launch {
@@ -202,7 +205,8 @@ class PikoDownloadCoordinator(
                 val running = _tasks.value.values.count { task -> task.taskId in jobs.value && !belongsToCurrent(task) }
                 if (running > 0) PikoLog.i(TAG, "换号：暂停另一账号进行中的 $running 个任务")
                 // 文件夹下载的任务先整批停下：逐个暂停时，每停一个就会补上同一批里排着的下一个
-                _tasks.value.values.mapNotNull { task -> task.batch?.id?.takeIf { !belongsToCurrent(task) } }
+                _tasks.value.values.filter { it.status == DownloadStatus.PENDING || it.status == DownloadStatus.DOWNLOADING }
+                    .mapNotNull { task -> task.batch?.id?.takeIf { !belongsToCurrent(task) } }
                     .distinct().forEach(::pauseBatch)
                 _tasks.value.values.filter { task -> task.taskId in jobs.value && !belongsToCurrent(task) }
                     .forEach { task -> pauseDownload(task.taskId) }
@@ -212,14 +216,29 @@ class PikoDownloadCoordinator(
                     updateListing(listing.batch.id) { it.copy(error = LISTING_LEFT_ACCOUNT) }
                 }
                 resumeListings()
+                resumeInterruptedTasks()
             }
         }
+    }
+
+    private fun resumeInterruptedTasks() {
+        val client = clientProvider.currentClient.value ?: return
+        client.downloadLimiter.bytesPerSecond = limiter.bytesPerSecond
+        _tasks.update { tasks -> tasks.mapValues { (id, task) ->
+            if (id in interruptedTasks.value && task.belongsTo(client.account) && task.status == DownloadStatus.PAUSED) {
+                task.copy(status = DownloadStatus.PENDING, errorMessage = null)
+            } else task
+        } }
+        interruptedTasks.update { ids -> ids.filterTo(HashSet()) { id ->
+            _tasks.value[id]?.let { !it.belongsTo(client.account) } == true
+        } }
+        pumpQueue()
     }
 
     /**
      * 读回上次保存的任务表。
      *
-     * 上次进程结束时仍在下载或排队的任务，协程早已不在，一律转为暂停，由用户决定是否继续。
+     * 上次进程结束时仍在下载或排队的任务，先核对暂存，所属账号可用后自动继续；手动暂停的保持暂停。
      * 已完成的任务以磁盘为准核对，文件被删或长度不足的丢弃，免得列表里挂着打不开的条目。
      */
     private suspend fun restore() {
@@ -252,6 +271,9 @@ class PikoDownloadCoordinator(
     // 片段任务的 destinationPath 与按 fileName 在下载目录里解析出的是同一个文件，存储层
     // 只提供按文件名查询，所以两类任务都按 fileName 核对
     private suspend fun restoreTask(task: DownloadTask): DownloadTask? {
+        if (task.status == DownloadStatus.PENDING || task.status == DownloadStatus.DOWNLOADING) {
+            interruptedTasks.update { it + task.taskId }
+        }
         val cachedBytes = if (task.status != DownloadStatus.COMPLETED && !task.isSegment && task.gcid.isNotBlank() && task.cacheSize > 0L) {
             fileCachePool.progress(task.account, task.gcid, task.cacheSize, task.cacheMediaId)
         } else 0L
@@ -319,7 +341,14 @@ class PikoDownloadCoordinator(
                 val tasks = _tasks.value
                 if (!preserveUnreadTasks || tasks.isNotEmpty()) {
                     preserveUnreadTasks = false
-                    runSuspendCatching { preferences.saveDownloadTasks(json.encodeToString(taskListSerializer, tasks.values.toList())) }
+                    runSuspendCatching {
+                        val persisted = tasks.values.map { task ->
+                            if (task.taskId in interruptedTasks.value && task.status == DownloadStatus.PAUSED) {
+                                task.copy(status = DownloadStatus.PENDING)
+                            } else task
+                        }
+                        preferences.saveDownloadTasks(json.encodeToString(taskListSerializer, persisted))
+                    }
                         .logFailure(TAG, "保存下载任务表失败")
                 }
                 val pending = _listings.value.values.mapNotNull { listing ->
@@ -623,6 +652,7 @@ class PikoDownloadCoordinator(
 
     fun pauseBatch(batchId: String) {
         val ids = batchTaskIds(batchId)
+        interruptedTasks.update { it - ids.toSet() }
         // 先把排着的一起转为暂停，再停在下的：停一个会补下一个，补的时候已经没有排着的了
         _tasks.update { tasks ->
             tasks + ids.mapNotNull { id ->
@@ -752,61 +782,18 @@ class PikoDownloadCoordinator(
                 (if (task.leasedSource || LeasedFile.isLeased(task.fileId)) "，借出取流" else "") +
                 (limiter.bytesPerSecond?.let { "，限速 ${it / 1024} KiB/s" } ?: ""))
             coroutineScope {
-                // 不限速时一次性提交整段范围，由 SDK 的全部 worker 连续流水化拉取，避免微窗口同步停等屏障；
-                // 开启蜗牛限速时分批提交并在占用连接前等待限速额度；播放读取不经过限速器。
-                val ranges = downloadOrder(task.totalBytes)
-                while (true) {
-                    val missingAll = entry.store.missing(entry.handle.contentKey, ranges)
-                    if (missingAll.isEmpty()) break
-                    if (limiter.bytesPerSecond == null) {
-                        val download = entry.cache.download(missingAll, StreamRole.BACKGROUND)
-                        // download 挂在共享缓存作用域上而非当前任务子 Job；注册同步取消回调，使 pauseDownload 在下达同一刻撤回下载需求，不必等双核调度器恢复 finally
-                        val cancelHandle = currentCoroutineContext()[Job]?.invokeOnCompletion {
-                            if (it != null) download.cancel()
-                        }
-                        val throttleWatcher = launch {
-                            preferences.snailModeFlow.first { it.enabled }
-                            download.cancel()
-                        }
-                        try {
-                            download.await()
-                            break
-                        } catch (e: CancellationException) {
-                            currentCoroutineContext().ensureActive()
-                        } finally {
-                            cancelHandle?.dispose()
-                            throttleWatcher.cancel()
-                            download.cancel()
-                        }
-                    } else {
-                        for (range in missingAll) {
-                            var offset = range.first
-                            while (offset <= range.last && limiter.bytesPerSecond != null) {
-                                currentCoroutineContext().ensureActive()
-                                val blockSize = PikPakStreamReader.DEFAULT_BLOCK_SIZE
-                                // SDK 下载每次认领 2 个块（512 KiB），窗口至少覆盖所有并发 worker 的双块跨度
-                                val maximum = maxOf(DOWNLOAD_WINDOW_BYTES, concurrency * blockSize * 2)
-                                val window = limiter.bytesPerSecond?.coerceIn(blockSize, maximum)
-                                    ?.let { (it / blockSize) * blockSize } ?: maximum
-                                val end = minOf(range.last, offset + window - 1)
-                                val missing = entry.store.missing(entry.handle.contentKey, listOf(offset..end))
-                                val needed = missing.sumOf { it.last - it.first + 1 }
-                                if (needed > 0) {
-                                    limiter.acquire(needed)
-                                    val download = entry.cache.download(missing, StreamRole.BACKGROUND)
-                                    val cancelHandle = currentCoroutineContext()[Job]?.invokeOnCompletion {
-                                        if (it != null) download.cancel()
-                                    }
-                                    try { download.await() } finally {
-                                        cancelHandle?.dispose()
-                                        download.cancel()
-                                    }
-                                }
-                                offset = end + 1
-                            }
-                            if (limiter.bytesPerSecond == null) break
-                        }
-                    }
+                // SDK 按块限速并响应额度变化，切换蜗牛模式不撤回或重建下载需求。
+                val missingAll = entry.store.missing(entry.handle.contentKey, downloadOrder(task.totalBytes))
+                val download = entry.cache.download(missingAll, StreamRole.BACKGROUND)
+                // 下载属于共享缓存作用域，暂停或取消任务时仍须撤回这个需求。
+                val cancelHandle = currentCoroutineContext()[Job]?.invokeOnCompletion {
+                    if (it != null) download.cancel()
+                }
+                try {
+                    download.await()
+                } finally {
+                    cancelHandle?.dispose()
+                    download.cancel()
                 }
                 check(entry.store.heldBytes.value == task.totalBytes) { "文件仍有未完成的块" }
                 entry.store.flush()
@@ -1042,6 +1029,7 @@ class PikoDownloadCoordinator(
     }
 
     fun pauseDownload(taskId: String) {
+        interruptedTasks.update { it - taskId }
         // 任务 ID 在多账号时带着账号名，日志里只写文件 ID
         _tasks.value[taskId]?.let { PikoLog.d(TAG, "暂停：${logFile(it.fileId, it.fileName)}，${it.downloadedBytes}/${it.totalBytes} 字节") }
         jobs.value[taskId]?.cancel()
@@ -1050,6 +1038,7 @@ class PikoDownloadCoordinator(
 
     /** 把所有进行中的任务转为暂停。前台服务被系统叫停时用，之后可以逐个继续。 */
     fun pauseAll() {
+        interruptedTasks.value = emptySet()
         val ids = _tasks.value.values.filter { it.status == DownloadStatus.PENDING || it.status == DownloadStatus.DOWNLOADING }.map { it.taskId }
         if (ids.isNotEmpty()) PikoLog.i(TAG, "全部暂停：${ids.size} 个任务")
         _tasks.update { tasks -> tasks + ids.mapNotNull { id -> tasks[id]?.let { id to it.copy(status = DownloadStatus.PAUSED, speedBytesPerSec = 0L) } } }
@@ -1058,6 +1047,7 @@ class PikoDownloadCoordinator(
 
     /** 返回删文件的协程，整批取消时等它们删完再收拾空文件夹。 */
     fun cancelDownload(taskId: String): Job? {
+        interruptedTasks.update { it - taskId }
         val job = jobs.value[taskId]
         val task = _tasks.value[taskId]
         _tasks.update { it - taskId }
@@ -1134,7 +1124,6 @@ class PikoDownloadCoordinator(
          */
         const val BATCH_PARALLEL = 3
         const val BATCH_LOG_MIN_BYTES = 64L * 1024 * 1024
-        private const val DOWNLOAD_WINDOW_BYTES = 4L * 1024 * 1024
         val json = Json { ignoreUnknownKeys = true }
         val taskListSerializer = ListSerializer(DownloadTask.serializer())
     }

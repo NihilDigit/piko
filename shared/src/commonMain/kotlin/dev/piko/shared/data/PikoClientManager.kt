@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.concurrent.Volatile
@@ -40,6 +41,8 @@ class PikoClientManager(
     private val scope: CoroutineScope,
     private val httpClient: HttpClient? = null,
     transportMemoryBudgetBytes: Long = PikPakClient.DEFAULT_TRANSPORT_MEMORY_BUDGET_BYTES,
+    /** Android 在创建界面前同步发布本地账号；网络鉴权仍在后台执行。测试与桌面端默认异步恢复。 */
+    restoreLocallyImmediately: Boolean = false,
 ) : PikoClientProvider {
     private val budgetLock = Any()
 
@@ -112,7 +115,12 @@ class PikoClientManager(
     private var reconnectJob: Job? = null
 
     init {
-        scope.launch(Dispatchers.Default) { restore() }
+        if (restoreLocallyImmediately) {
+            val client = runBlocking(Dispatchers.IO) { restoreLocalAccount() }
+            if (client != null) scope.launch { validateRestoredClient(client) }
+        } else {
+            scope.launch { restore() }
+        }
     }
 
     /** 用的是 SDK 自建的网络客户端。注入的是测试的 MockEngine 时为 false，这时测根域名的速度没有意义。 */
@@ -128,32 +136,47 @@ class PikoClientManager(
      */
     suspend fun restore() {
         try {
+            val client = restoreLocalAccount(completeInitialization = false) ?: return
+            validateRestoredClient(client)
+        } finally {
+            _isInitializing.value = false
+        }
+    }
+
+    // 这里只读本地存储，不调用可能刷新令牌的 login，避免冷启动等待网络。
+    private suspend fun restoreLocalAccount(completeInitialization: Boolean = true): PikPakClient? {
+        try {
             val saved = sessionStore.loadAccounts()
             _accounts.value = saved
             val account = saved.current?.takeIf { it.isNotBlank() } ?: run {
                 PikoLog.i(TAG, "启动：没有上次的账号，进登录页，已保存 ${saved.accounts.size} 个账号")
-                return
+                return null
             }
             val credentials = credentialsOf(account)
             PikoLog.i(TAG, "启动：恢复上次的账号，${credentialState(account, credentials?.password != null)}，已保存 ${saved.accounts.size} 个账号")
             val client = clientFor(account, credentials?.password)
-            when (val failure = tryLogin(client, "恢复会话")) {
-                null -> publishCurrentClient(client)?.takeIf { it !== client }?.close()
-                is LoginFailure.Transient -> {
-                    PikoLog.i(TAG, "先以离线状态进主界面，后台等网络恢复")
-                    publishCurrentClient(client)?.takeIf { it !== client }?.close()
-                    scheduleReconnect(client)
-                }
-                // 刷新令牌失效时 SDK 已在改用密码登录之前把会话从存储里清掉，这里不必再清。
-                // 账号留在列表里：登录页预先填上它，重新输入密码即可
+            publishCurrentClient(client)?.takeIf { it !== client }?.close()
+            return client
+        } finally {
+            if (completeInitialization) _isInitializing.value = false
+        }
+    }
+
+    private suspend fun validateRestoredClient(client: PikPakClient) {
+        val failure = tryLogin(client, "恢复会话")
+        switchLock.withLock {
+            // 恢复期间可能已经切号或退出，旧鉴权结果不能影响新账号。
+            if (_currentClient.value !== client) return
+            when (failure) {
+                null -> Unit
+                is LoginFailure.Transient -> scheduleReconnect(client)
                 is LoginFailure.Rejected -> {
+                    _currentClient.value = null
                     client.close()
-                    markExpired(account, returnsToLogin = true)
+                    markExpired(client.account, returnsToLogin = true)
                     editAccounts { it.copy(current = null) }
                 }
             }
-        } finally {
-            _isInitializing.value = false
         }
     }
 

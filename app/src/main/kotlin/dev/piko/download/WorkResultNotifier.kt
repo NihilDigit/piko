@@ -45,6 +45,7 @@ internal class WorkResultNotifier(
         scope.launch {
             AppVisibility.visible.collect { visible ->
                 if (!visible) {
+                    services.driveWorkspace.flushPersistence()
                     services.downloadManager.flushPersistence()
                     services.uploadManager.flushPersistence()
                 } else {

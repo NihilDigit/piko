@@ -41,7 +41,6 @@ import dev.piko.shared.state.HistoryEditCompletion
 import dev.piko.shared.state.TransferItem
 import dev.piko.shared.state.TransferKind
 import dev.piko.shared.state.TransfersState
-import dev.piko.shared.state.children
 import dev.piko.shared.state.isOutputDeleted
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.ui.PikoServices

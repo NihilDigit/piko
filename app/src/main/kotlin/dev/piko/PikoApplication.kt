@@ -143,6 +143,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
             sessionStore = AndroidPikoSessionStore(this),
             scope = appScope,
             transportMemoryBudgetBytes = baseTransportBudgetBytes,
+            restoreLocallyImmediately = true,
         )
         val mediaRepository = PikoMediaRepository(
             clientManager,

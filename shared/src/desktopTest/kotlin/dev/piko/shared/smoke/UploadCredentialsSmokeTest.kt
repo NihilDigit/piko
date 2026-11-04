@@ -1,6 +1,9 @@
 package dev.piko.shared.smoke
 
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.PikoClientProvider
+import io.github.nihildigit.pikpak.PikPakClient
+import kotlinx.coroutines.flow.MutableStateFlow
 import dev.piko.shared.upload.PikoUploadCoordinator
 import dev.piko.shared.upload.PikoUploadSources
 import dev.piko.shared.upload.UploadFolder
@@ -39,6 +42,47 @@ class UploadCredentialsSmokeTest {
         securityToken = "the-token",
         expiration = "2099-01-01T00:00:00.000+08:00",
     )
+
+    @Test
+    fun `restart requeues interrupted uploads but preserves manual pause`() = smoke { scope ->
+        // 账号尚未恢复时检查队列表，避免调度器先消费 QUEUED 状态。
+        val provider = object : PikoClientProvider {
+            override val currentClient = MutableStateFlow<PikPakClient?>(null)
+        }
+        val statuses = listOf(UploadStatus.UPLOADING, UploadStatus.QUEUED, UploadStatus.HASHING, UploadStatus.PAUSED)
+        val saved = statuses.mapIndexed { index, status ->
+            UploadTask("restore-$index", "restore@piko.dev", "file:///source-$index.bin", "source-$index.bin",
+                100L, 0L, "", "Drive", status = status, processedBytes = 50L, speedBytesPerSec = 10L)
+        }
+        val prefs = MemoryPreferences().apply {
+            uploadTasks = Json.encodeToString(ListSerializer(UploadTask.serializer()), saved)
+        }
+        val coordinator = PikoUploadCoordinator(provider, prefs, NoSources, PikoDriveRepository(provider, prefs), scope)
+        coordinator.flushPersistence()
+        val expected = listOf(UploadStatus.QUEUED, UploadStatus.QUEUED, UploadStatus.QUEUED, UploadStatus.PAUSED)
+        assertEquals(expected, saved.map { coordinator.tasks.value.getValue(it.taskId).status })
+        val persisted = Json.decodeFromString(ListSerializer(UploadTask.serializer()), prefs.uploadTasks)
+        assertEquals(expected, persisted.map { it.status })
+        assertTrue(persisted.all { it.processedBytes == 0L && it.speedBytesPerSec == 0L })
+
+        // 账号恢复后，生前活跃的上传自动启动，而手动暂停的任务保持 PAUSED
+        val attempted = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val activeSources = object : PikoUploadSources {
+            override fun describe(uri: String): UploadSourceInfo? {
+                attempted.add(uri)
+                return null
+            }
+            override fun readAt(uri: String, offset: Long, length: Int): ByteArray = ByteArray(length)
+            override fun open(uri: String, offset: Long): RawSource = error("不该读源文件")
+            override fun listFolder(uri: String): UploadFolder? = null
+        }
+        val server = FakePikPakServer()
+        val client = server.client(account = "restore@piko.dev")
+        val resumedCoordinator = PikoUploadCoordinator(server.provider(client), prefs, activeSources, PikoDriveRepository(server.provider(client), prefs), scope)
+        awaitUntil("生前活跃的 3 个上传任务自动启动") { attempted.size == 3 }
+        assertEquals(listOf("file:///source-0.bin", "file:///source-1.bin", "file:///source-2.bin"), attempted.sorted())
+        assertEquals(UploadStatus.PAUSED, resumedCoordinator.tasks.value.getValue("restore-3").status)
+    }
 
     @Test
     fun `legacy plaintext credentials move into the secret store and leave with the task`() = smoke { scope ->

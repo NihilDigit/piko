@@ -38,6 +38,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.joinAll
 
 /**
  * 应用退到后台时让下载、上传、解压、归档与查重继续的前台服务，挂着那条进度通知。
@@ -88,7 +89,7 @@ class PikoDownloadService : Service() {
         }
 
         startObservingDownloadsIfNeeded()
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     /**
@@ -119,12 +120,16 @@ class PikoDownloadService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        val services = PikoApplication.instance.services
+        val app = PikoApplication.instance
+        val services = app.services
+        // 三份快照独立写入；主线程只限时等待，超时后由进程作用域继续完成。
+        val flushes = listOf(
+            app.appScope.launch(Dispatchers.IO) { services.driveWorkspace.flushPersistence() },
+            app.appScope.launch(Dispatchers.IO) { services.downloadManager.flushPersistence() },
+            app.appScope.launch(Dispatchers.IO) { services.uploadManager.flushPersistence() },
+        )
         runBlocking {
-            withTimeoutOrNull(800) {
-                services.downloadManager.flushPersistence()
-                services.uploadManager.flushPersistence()
-            }
+            withTimeoutOrNull(800) { flushes.joinAll() }
         }
         if (services.hasBackgroundWork()) {
             runCatching {

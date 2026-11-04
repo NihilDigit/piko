@@ -35,12 +35,13 @@ import kotlin.time.Duration.Companion.days
 import kotlin.time.Instant
 
 /** 传输列表中的一项：本地下载、上传、云端离线任务或秒传。 */
-sealed interface TransferItem {
+sealed class TransferItem {
     /** 列表 key。两类任务的 id 来自不同命名空间，加前缀防撞。 */
-    val key: String
-    val createdAtMs: Long
+    abstract val key: String
+    abstract val createdAtMs: Long
+    open val children: List<TransferItem> = emptyList()
 
-    data class Local(val task: DownloadTask) : TransferItem {
+    data class Local(val task: DownloadTask) : TransferItem() {
         override val key: String get() = "local:${task.taskId}"
         override val createdAtMs: Long get() = task.createdAtMs
     }
@@ -49,7 +50,10 @@ sealed interface TransferItem {
      * 一次文件夹下载：列出中或等确认时只有 [listing]，之后是任务表里同一批的 [tasks]。
      * 各文件仍是普通任务，展开后各占一行（[Local]）。
      */
-    data class LocalBatch(val batch: DownloadBatch, val tasks: List<DownloadTask>, val listing: FolderListing?) : TransferItem {
+    data class LocalBatch(
+        val batch: DownloadBatch, val tasks: List<DownloadTask>, val listing: FolderListing?,
+        override val children: List<TransferItem> = tasks.map { Local(it) },
+    ) : TransferItem() {
         override val key: String = "batch:${batch.id}"
         override val createdAtMs: Long = listing?.createdAtMs ?: tasks.minOfOrNull { it.createdAtMs } ?: 0L
 
@@ -74,16 +78,16 @@ sealed interface TransferItem {
         }
     }
 
-    data class Upload(val task: UploadTask) : TransferItem {
+    data class Upload(val task: UploadTask) : TransferItem() {
         override val key: String get() = "upload:${task.taskId}"
         override val createdAtMs: Long get() = task.createdAtMs
     }
-    data class UploadPreparing(val work: dev.piko.shared.upload.UploadPreparation) : TransferItem {
+    data class UploadPreparing(val work: dev.piko.shared.upload.UploadPreparation) : TransferItem() {
         override val key: String get() = "upload-prepare:${work.id}"
         override val createdAtMs: Long get() = work.createdAtMs
     }
 
-    data class Cloud(val task: DriveTask) : TransferItem {
+    data class Cloud(val task: DriveTask) : TransferItem() {
         override val key: String get() = "cloud:${task.id}"
         override val createdAtMs: Long get() = parseEpochMillis(task.createdTime) ?: 0L
     }
@@ -91,7 +95,8 @@ sealed interface TransferItem {
     data class UploadBatch(
         val batchId: String, val title: String, val parentId: String, val parentName: String,
         val tasks: List<UploadTask>, val isFolder: Boolean,
-    ) : TransferItem {
+        override val children: List<TransferItem> = tasks.map { Upload(it) },
+    ) : TransferItem() {
         override val key: String = "upload-batch:$batchId"
         override val createdAtMs: Long = tasks.minOfOrNull { it.createdAtMs } ?: 0L
         val completedCount: Int = tasks.count { it.status == UploadStatus.COMPLETED }
@@ -113,7 +118,7 @@ sealed interface TransferItem {
      * 整包离线：一个云端任务加上完成后的清理与改名。[task] 是传输页列表里同一任务的快照，
      * 可见期间它每 4 秒刷新一次，下载进度取它的；跟踪器按退避轮询，不够及时。
      */
-    data class Pack(val job: OfflinePackJob, val task: DriveTask?, val isBusy: Boolean = false) : TransferItem {
+    data class Pack(val job: OfflinePackJob, val task: DriveTask?, val isBusy: Boolean = false) : TransferItem() {
         // 与 Cloud 同一命名空间：同一任务只该出现一次
         override val key: String get() = "cloud:${job.taskId}"
         override val createdAtMs: Long get() = job.createdAtMs
@@ -122,46 +127,46 @@ sealed interface TransferItem {
     }
 
     /** 秒传：当场完成，只出现在「已完成」里。 */
-    data class Instant(val record: InstantSaveRecord) : TransferItem {
+    data class Instant(val record: InstantSaveRecord) : TransferItem() {
         override val key: String get() = "instant:${record.id}"
         override val createdAtMs: Long get() = record.createdAtMs
     }
-    data class InstantAttempt(val work: InstantSaveAttempt) : TransferItem {
+    data class InstantAttempt(val work: InstantSaveAttempt) : TransferItem() {
         override val key: String get() = "instant:${work.id}"
         override val createdAtMs: Long get() = work.finishedAtMs ?: work.createdAtMs
     }
-    data class Share(val work: ShareSaveWork) : TransferItem {
+    data class Share(val work: ShareSaveWork) : TransferItem() {
         override val key: String get() = "share:${work.id}"
         override val createdAtMs: Long get() = work.result?.finishedAtMs ?: work.createdAtMs
     }
-    data class OfflineSubmit(val work: OfflineSubmitWork) : TransferItem {
+    data class OfflineSubmit(val work: OfflineSubmitWork) : TransferItem() {
         override val key: String get() = "offline-submit:${work.id}"
         override val createdAtMs: Long get() = work.finishedAtMs ?: work.createdAtMs
     }
 
     /** 服务端解压与本次运行期的结局，来自 [ArchiveExtractSession]；提示没有订阅者也不丢记录。 */
-    data class Extract(val job: ArchiveJob) : TransferItem {
+    data class Extract(val job: ArchiveJob) : TransferItem() {
         override val key: String get() = "extract:${job.id}"
 
         override val createdAtMs: Long get() = (job.status as? ArchiveJobStatus.Finished)?.finishedAtMs ?: job.createdAtMs
     }
 
     /** 归档或恢复及本次运行期的结果。同一次工作从进度到结局保持身份。 */
-    data class Vault(val work: FolderVaultSession.Work, val record: FolderVaultSession.Record? = null) : TransferItem {
+    data class Vault(val work: FolderVaultSession.Work, val record: FolderVaultSession.Record? = null) : TransferItem() {
         val folderName: String get() = work.name
         val restoring: Boolean get() = work.restoring
         override val key: String get() = "vault:${work.id}"
         override val createdAtMs: Long get() = record?.finishedAtMs ?: work.createdAtMs
     }
-    data class Write(val work: FileWriteWork) : TransferItem {
+    data class Write(val work: FileWriteWork) : TransferItem() {
         override val key: String get() = "write:${work.id}"
         override val createdAtMs: Long get() = work.result?.finishedAtMs ?: work.createdAtMs
     }
-    data class History(val work: HistoryEditWork) : TransferItem {
+    data class History(val work: HistoryEditWork) : TransferItem() {
         override val key: String get() = "history:${work.id}"
         override val createdAtMs: Long get() = work.result?.finishedAtMs ?: work.createdAtMs
     }
-    data class VaultEdit(val work: VaultEntryEditWork) : TransferItem {
+    data class VaultEdit(val work: VaultEntryEditWork) : TransferItem() {
         override val key: String get() = "vault-edit:${work.id}"
         override val createdAtMs: Long get() = work.result?.finishedAtMs ?: work.createdAtMs
     }
@@ -237,6 +242,7 @@ class TransfersState(
     fun cleanupCount(kind: TransferKind): Int = if (hasCleanup && (kind == TransferKind.ALL || kind == TransferKind.FILES)) 1 else 0
 
     private val cloud = OfflineTasksState(taskRepo, scope)
+    private val itemCache = TransferItemCache()
 
     private fun isMine(task: DownloadTask): Boolean = task.belongsTo(account)
 
@@ -775,6 +781,9 @@ class TransfersState(
         }
     }
 
+    private fun localItem(task: DownloadTask) = itemCache.project("local:${task.taskId}", task) { TransferItem.Local(task) }
+    private fun uploadItem(task: UploadTask) = itemCache.project("upload:${task.taskId}", task) { TransferItem.Upload(task) }
+
     private fun allItems(): List<TransferItem> {
         val local = localTasks
         val listing = listings
@@ -783,32 +792,49 @@ class TransfersState(
         val grouped = local.filter { it.batch != null }.groupBy { it.batch!!.id }
         val batches = (grouped.keys + listing.keys).map { id ->
             val tasks = grouped[id].orEmpty().sortedBy { it.fileName }
-            TransferItem.LocalBatch(tasks.firstOrNull()?.batch ?: listing.getValue(id).batch, tasks, listing[id])
+            val batch = tasks.firstOrNull()?.batch ?: listing.getValue(id).batch
+            itemCache.project("batch:$id", Triple(batch, tasks, listing[id])) {
+                TransferItem.LocalBatch(batch, tasks, listing[id], tasks.map(::localItem))
+            }
         }
         val uploadGroups = uploadTasks.filter { it.batchId != null }.groupBy { it.batchId!! }
             .filterValues { it.isNotEmpty() }
-        val uploadItems = uploadTasks.filter { it.batchId !in uploadGroups }.map { TransferItem.Upload(it) } +
+        val uploadItems = uploadTasks.filter { it.batchId !in uploadGroups }.map(::uploadItem) +
             uploadGroups.map { (id, tasks) ->
                 val first = tasks.first()
-                TransferItem.UploadBatch(id, first.batchName ?: first.fileName, first.batchParentId,
-                    first.batchParentName, tasks.sortedBy { it.createdAtMs }, first.batchIsFolder)
+                val sorted = tasks.sortedBy { it.createdAtMs }
+                itemCache.project("upload-batch:$id", sorted) {
+                    TransferItem.UploadBatch(id, first.batchName ?: first.fileName, first.batchParentId,
+                        first.batchParentName, sorted, first.batchIsFolder, sorted.map(::uploadItem))
+                }
             }
         val packIds = packs.mapTo(HashSet()) { it.taskId }
         val tracked = packIds + shareRecords.mapNotNull { it.remoteTaskId } + writeRecords.flatMap { it.copies.map { copy -> copy.id } } +
             (extracts.jobs + extracts.completedJobs).mapNotNull { it.remoteTaskId }
         val tasksById = cloudTasks.associateBy { it.id }
         val serverItems = if (!listsServerWork) emptyList() else {
-            (extracts.jobs + extracts.completedJobs).map { TransferItem.Extract(it) } +
-                listOfNotNull(vault.activeWork?.let { TransferItem.Vault(it) }) + vault.records.map { TransferItem.Vault(it.work, it) } +
-                writeRecords.filter { it.showsInTaskPage }.map { TransferItem.Write(it) } +
-                historyRecords.filter { !it.isRunning && (it.result?.completion == HistoryEditCompletion.PARTIAL || it.result?.completion == HistoryEditCompletion.UNCONFIRMED) }.map { TransferItem.History(it) } +
-                vaultEditRecords.filter { it.showsInTaskPage }.map { TransferItem.VaultEdit(it) }
+            (extracts.jobs + extracts.completedJobs).map { itemCache.project("extract:${it.id}", it) { TransferItem.Extract(it) } } +
+                listOfNotNull(vault.activeWork?.let { itemCache.project("vault:${it.id}", it to null) { TransferItem.Vault(it) } }) +
+                vault.records.map { itemCache.project("vault:${it.work.id}", it.work to it) { TransferItem.Vault(it.work, it) } } +
+                writeRecords.filter { it.showsInTaskPage }.map { itemCache.project("write:${it.id}", it) { TransferItem.Write(it) } } +
+                historyRecords.filter { !it.isRunning && (it.result?.completion == HistoryEditCompletion.PARTIAL || it.result?.completion == HistoryEditCompletion.UNCONFIRMED) }.map { itemCache.project("history:${it.id}", it) { TransferItem.History(it) } } +
+                vaultEditRecords.filter { it.showsInTaskPage }.map { itemCache.project("vault-edit:${it.id}", it) { TransferItem.VaultEdit(it) } }
         }
         // 同一身份的结局优先于在途快照；文件夹里的本机文件只作为批次成员出现。
-        return (serverItems + local.filter { it.batch == null }.map { TransferItem.Local(it) } + batches +
-            uploadItems + uploadPreparations.map { TransferItem.UploadPreparing(it) } + cloudTasks.filter { it.id !in tracked }.map { TransferItem.Cloud(it) } +
-            packs.map { TransferItem.Pack(it, tasksById[it.taskId], dev.piko.shared.data.OfflinePackRef(it.account, it.taskId) in busyPacks) } + instantRecords.map { TransferItem.Instant(it) } + instantAttempts.map { TransferItem.InstantAttempt(it) } + shareRecords.map { TransferItem.Share(it) } + offlineRecords.map { TransferItem.OfflineSubmit(it) })
+        val items = (serverItems + local.filter { it.batch == null }.map(::localItem) + batches +
+            uploadItems + uploadPreparations.map { itemCache.project("upload-prepare:${it.id}", it) { TransferItem.UploadPreparing(it) } } +
+            cloudTasks.filter { it.id !in tracked }.map { itemCache.project("cloud:${it.id}", it) { TransferItem.Cloud(it) } } +
+            packs.map {
+                val task = tasksById[it.taskId]
+                val busy = dev.piko.shared.data.OfflinePackRef(it.account, it.taskId) in busyPacks
+                itemCache.project("cloud:${it.taskId}", Triple(it, task, busy)) { TransferItem.Pack(it, task, busy) }
+            } + instantRecords.map { itemCache.project("instant:${it.id}", it) { TransferItem.Instant(it) } } +
+            instantAttempts.map { itemCache.project("instant:${it.id}", it) { TransferItem.InstantAttempt(it) } } +
+            shareRecords.map { itemCache.project("share:${it.id}", it) { TransferItem.Share(it) } } +
+            offlineRecords.map { itemCache.project("offline-submit:${it.id}", it) { TransferItem.OfflineSubmit(it) } })
             .associateBy { it.key }.values.sortedByDescending { it.createdAtMs }
+        itemCache.retain(items.flatMap { item -> listOf(item.key) + item.children.map { it.key } }.toSet())
+        return items
     }
 
     private enum class Section { PROGRESS, ATTENTION, COMPLETED, DELETED }
@@ -929,9 +955,18 @@ val DriveTask.isOutputDeleted: Boolean
 private fun parseEpochMillis(rfc3339: String?): Long? =
     rfc3339?.let { runCatching { Instant.parse(it).toEpochMilliseconds() }.getOrNull() }
 
-val TransferItem.children: List<TransferItem>
-    get() = when (this) {
-        is TransferItem.LocalBatch -> tasks.map { TransferItem.Local(it) }
-        is TransferItem.UploadBatch -> tasks.map { TransferItem.Upload(it) }
-        else -> emptyList()
+/** 保留未变化的行身份，让 Strong Skipping 按引用跳过；移除的任务不继续占用缓存。 */
+internal class TransferItemCache {
+    private data class Entry(val source: Any?, val item: TransferItem)
+    private val entries = mutableMapOf<String, Entry>()
+
+    fun project(key: String, source: Any?, create: () -> TransferItem): TransferItem {
+        val previous = entries[key]
+        if (previous != null && previous.source == source) return previous.item
+        return create().also { entries[key] = Entry(source, it) }
     }
+
+    fun retain(keys: Set<String>) {
+        entries.keys.retainAll(keys)
+    }
+}

@@ -22,6 +22,13 @@ import dev.piko.shared.state.SaveTargetContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import dev.piko.shared.data.runSuspendCatching
+import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -296,9 +303,11 @@ class DriveWorkspace(
 
     // 标签按账号存进缓存目录，重启后接着用。只存各自停在哪、哪个是活动的，历史不存
     private var tabsSave: Job? = null
+    private val pendingTabs = MutableStateFlow<Map<String, SavedTabs>>(emptyMap())
+    private val tabsPersistLock = Mutex()
 
     private fun saveTabs(immediate: Boolean = false) {
-        val store = cacheStore ?: return
+        if (cacheStore == null) return
         val account = navigationAccount.value ?: return
         if (account != repository.currentAccount) return
         val tabs = _tabsFlow.value
@@ -308,10 +317,34 @@ class DriveWorkspace(
             ids = tabs.map { it.id },
             pinIds = tabs.map { it.pinId },
         )
+        pendingTabs.update { it + (account to saved) }
         tabsSave?.cancel()
         tabsSave = workScope.launch {
             if (!immediate) delay(TABS_SAVE_DELAY_MS)
-            runCatching { store.write(tabsKey(account), tabsJson.encodeToString(SavedTabs.serializer(), saved)) }
+            writePendingTabs()
+        }
+    }
+
+    /** 退到后台或系统移除任务时，不等待标签保存的防抖延迟。 */
+    suspend fun flushPersistence() {
+        tabsSave?.cancel()
+        // 写入属于工作区；调用方可停止等待，而不会取消已接受的落盘或被慢 IO 拖过超时。
+        workScope.launch(Dispatchers.IO) { writePendingTabs() }.join()
+    }
+
+    private suspend fun writePendingTabs() {
+        val store = cacheStore ?: return
+        // 已开始的写入必须完成；换号或新的防抖任务不能留下半份旧账号快照。
+        withContext(Dispatchers.IO + NonCancellable) {
+            tabsPersistLock.withLock {
+                pendingTabs.value.forEach { (account, saved) ->
+                    runSuspendCatching {
+                        store.write(tabsKey(account), tabsJson.encodeToString(SavedTabs.serializer(), saved))
+                    }.onSuccess {
+                        pendingTabs.update { pending -> if (pending[account] === saved) pending - account else pending }
+                    }.logFailure("DriveWorkspace", "保存文件标签失败")
+                }
+            }
         }
     }
 

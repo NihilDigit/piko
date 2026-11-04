@@ -468,8 +468,7 @@ class PikoUploadCoordinator(
     }
 
     /**
-     * 读回上次保存的任务表。进行中与排队的一律转为暂停，与下载一致：上次没传完的由用户决定
-     * 何时继续，免得一开应用就占满上行。
+     * 读回上次保存的任务表。进行中与排队的重新入队，所属账号可用后自动续传；手动暂停的保持暂停。
      */
     private suspend fun restore() {
         val saved = runSuspendCatching {
@@ -487,7 +486,7 @@ class PikoUploadCoordinator(
         val restored = withCredentials.map { task ->
             when {
                 task.status == UploadStatus.COMPLETED -> task.copy(speedBytesPerSec = 0L)
-                task.status.isActive -> task.copy(status = UploadStatus.PAUSED, processedBytes = 0L, speedBytesPerSec = 0L)
+                task.status.isActive -> task.copy(status = UploadStatus.QUEUED, processedBytes = 0L, speedBytesPerSec = 0L)
                 else -> task.copy(processedBytes = 0L, speedBytesPerSec = 0L)
             }
         }
