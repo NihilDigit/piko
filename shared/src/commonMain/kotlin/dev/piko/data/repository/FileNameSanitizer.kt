@@ -24,17 +24,102 @@ object FileNameSanitizer {
         }
         var cleanBase = clean(rawBase)
         if (cleanBase.isBlank()) cleanBase = if (isVideoFileName("file$finalExt")) "unnamed_video" else "unnamed_file"
-        val maxBaseLength = 200 - finalExt.length
-        if (cleanBase.length > maxBaseLength) cleanBase = cleanBase.take(maxBaseLength).trimEnd('.', ' ', '-')
+        val extBytes = finalExt.encodeToByteArray().size
+        val maxBaseChars = (MAX_FILE_CHARS - finalExt.length).coerceAtLeast(16)
+        val maxBaseBytes = (MAX_FILE_UTF8_BYTES - extBytes).coerceAtLeast(32)
+        cleanBase = truncateMiddle(cleanBase, maxBaseChars, maxBaseBytes).trimEnd('.', ' ', '-')
+        if (cleanBase.isBlank()) cleanBase = if (isVideoFileName("file$finalExt")) "unnamed_video" else "unnamed_file"
         return avoidDeviceName(cleanBase + finalExt)
     }
 
     /**
-     * \u6587\u4EF6\u5939\u540D\u3002\u4E0D\u6309\u6269\u5C55\u540D\u62C6\uFF1Asanitize \u4F1A\u628A\u300CShow.S01\u300D\u7684\u300C.S01\u300D\u5F53\u6269\u5C55\u540D\u6539\u6210\u5C0F\u5199\uFF0C
-     * \u540C\u4E00\u90E8\u5267\u7684\u51E0\u5B63\u6587\u4EF6\u5939\u843D\u5230\u672C\u673A\u5C31\u4E0E\u7F51\u76D8\u91CC\u7684\u540D\u5B57\u5BF9\u4E0D\u4E0A\u4E86\u3002
+     * 文件夹名。不按扩展名拆：sanitize 会把「Show.S01」的「.S01」当扩展名改成小写，
+     * 同一部剧的几季文件夹落到本机就与网盘里的名字对不上了。
      */
     fun sanitizeFolderName(rawName: String): String =
-        avoidDeviceName(clean(rawName).take(200).trimEnd('.', ' ', '-').ifBlank { "unnamed_folder" })
+        avoidDeviceName(
+            truncateMiddle(clean(rawName), MAX_FOLDER_CHARS, MAX_FOLDER_UTF8_BYTES)
+                .trimEnd('.', ' ', '-')
+                .ifBlank { "unnamed_folder" },
+        )
+
+    /**
+     * 同时按字符数与 UTF-8 字节数截断。Linux/Android (ext4/f2fs) 与 macOS/iOS (APFS) 的单级文件名上限是
+     * 255 UTF-8 字节（约 85 个汉字），Windows 还受路径总长制约，且下载导出/转封装/重名去重还会追加
+     * `.part`、`.piko-export`、` [1080P]`、` (2)` 等后缀。超长时保留首尾、省略中段，防止长标题末尾的集数被切掉。
+     */
+    internal fun truncateMiddle(text: String, maxChars: Int, maxUtf8Bytes: Int): String {
+        if (text.length <= maxChars && utf8Length(text) <= maxUtf8Bytes) return text
+        val ellipsis = "…"
+        val ellipsisBytes = 3
+        val budgetChars = (maxChars - ellipsis.length).coerceAtLeast(2)
+        val budgetBytes = (maxUtf8Bytes - ellipsisBytes).coerceAtLeast(2)
+        val headChars = (budgetChars * 2 / 3).coerceAtLeast(1)
+        val tailChars = (budgetChars - headChars).coerceAtLeast(1)
+        val headBytes = (budgetBytes * 2 / 3).coerceAtLeast(1)
+        val tailBytes = (budgetBytes - headBytes).coerceAtLeast(1)
+        val head = takePrefix(text, headChars, headBytes).trimEnd('.', ' ', '-')
+        val tail = takeSuffix(text, tailChars, tailBytes).trimStart('.', ' ', '-')
+        return if (tail.isEmpty() || head.length + tail.length >= text.length) {
+            takePrefix(text, maxChars, maxUtf8Bytes)
+        } else {
+            "$head$ellipsis$tail"
+        }
+    }
+
+    private fun takePrefix(text: String, maxChars: Int, maxBytes: Int): String {
+        var chars = 0
+        var bytes = 0
+        while (chars < text.length) {
+            val step = if (text[chars].isHighSurrogate() && chars + 1 < text.length && text[chars + 1].isLowSurrogate()) 2 else 1
+            val cpBytes = if (step == 2) 4 else charUtf8Bytes(text[chars])
+            if (chars + step > maxChars || bytes + cpBytes > maxBytes) break
+            chars += step
+            bytes += cpBytes
+        }
+        return text.substring(0, chars)
+    }
+
+    private fun takeSuffix(text: String, maxChars: Int, maxBytes: Int): String {
+        var index = text.length
+        var chars = 0
+        var bytes = 0
+        while (index > 0) {
+            val step = if (index >= 2 && text[index - 1].isLowSurrogate() && text[index - 2].isHighSurrogate()) 2 else 1
+            val cpBytes = if (step == 2) 4 else charUtf8Bytes(text[index - 1])
+            if (chars + step > maxChars || bytes + cpBytes > maxBytes) break
+            index -= step
+            chars += step
+            bytes += cpBytes
+        }
+        return text.substring(index)
+    }
+
+    private fun utf8Length(text: String): Int {
+        var bytes = 0
+        var i = 0
+        while (i < text.length) {
+            if (text[i].isHighSurrogate() && i + 1 < text.length && text[i + 1].isLowSurrogate()) {
+                bytes += 4
+                i += 2
+            } else {
+                bytes += charUtf8Bytes(text[i])
+                i++
+            }
+        }
+        return bytes
+    }
+
+    private fun charUtf8Bytes(ch: Char): Int = when {
+        ch.code <= 0x7F -> 1
+        ch.code <= 0x7FF -> 2
+        else -> 3
+    }
+
+    private const val MAX_FILE_CHARS = 120
+    private const val MAX_FILE_UTF8_BYTES = 180
+    private const val MAX_FOLDER_CHARS = 80
+    private const val MAX_FOLDER_UTF8_BYTES = 120
 
     /**
      * Windows 的保留设备名，不分大小写，带扩展名也算（NUL.tar.gz 等同 NUL），前面加下划线。

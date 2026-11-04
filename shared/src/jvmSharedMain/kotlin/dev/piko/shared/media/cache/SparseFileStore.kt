@@ -38,7 +38,10 @@ actual suspend fun copyCachedFile(source: String, destination: String) = withCon
     val to = File(destination)
     if (from.canonicalPath != to.canonicalPath) {
         to.parentFile?.mkdirs()
-        val staging = File(to.parentFile, ".${to.name}.piko-export")
+        val rawStagingName = ".${to.name}.piko-export"
+        val stagingName = if (rawStagingName.toByteArray(Charsets.UTF_8).size <= 240) rawStagingName
+            else ".${fileCacheName(to.name).take(24)}.piko-export"
+        val staging = File(to.parentFile, stagingName)
         try {
             from.inputStream().use { input -> staging.outputStream().use { input.copyTo(it) } }
             RandomAccessFile(staging, "rw").use { it.channel.force(true) }
