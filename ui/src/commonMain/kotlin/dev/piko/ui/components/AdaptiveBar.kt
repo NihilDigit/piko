@@ -32,7 +32,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.ui.platform.windowDragArea
 
 /**
- * 横排里的一样东西。[priority] 越大越晚收起，[PinnedPriority] 的一直摆着。
+ * 横排里的一样东西。[priority] 越大越晚收起，[PinnedPriority] 的优先保留，空间不足时仍可收入溢出菜单。
  * [overflow] 是收起后在「更多」里的样子，为空的收起即不显示。
  */
 class BarItem(
@@ -44,6 +44,15 @@ class BarItem(
 )
 
 const val PinnedPriority = Int.MAX_VALUE
+
+/** 普通动作先按优先级折叠，最后才从右向左折叠有替代入口的保留项。 */
+internal fun barItemToEvict(items: List<BarItem>, shown: BooleanArray, allowPinned: Boolean): Int? =
+    if (allowPinned) {
+        items.indices.lastOrNull { shown[it] && !items[it].isDivider && items[it].overflow.isNotEmpty() }
+    } else {
+        items.indices.filter { shown[it] && !items[it].isDivider && items[it].priority != PinnedPriority }
+            .minWithOrNull(compareBy<Int>({ items[it].priority }, { -it }))
+    }
 
 /** 把别处定义好的一项操作摆成图标按钮，名字、图标与是否危险照它，与它在菜单里的样子一致。 */
 fun SheetAction.asBarItem(priority: Int, shortcut: String? = null, enabled: Boolean = true): BarItem =
@@ -148,7 +157,7 @@ fun AdaptiveBar(
         val more = measurables[items.size].measure(loose)
         val middleMeasurable = measurables[items.size + 1]
         val dragMeasurable = measurables[items.size + 2]
-        val endPlaceable = measurables[items.size + 3].measure(loose)
+        val endPlaceable = measurables[items.size + 3].measure(loose.copy(maxWidth = constraints.maxWidth))
         val contentHeight = (placeables + more + endPlaceable).maxOf { it.height }
         val gapPx = gap.roundToPx()
         val reserved = endPlaceable.width + if (reserveMiddle && middle != null) middleMinWidth.roundToPx() else 0
@@ -181,10 +190,12 @@ fun AdaptiveBar(
             return width + gapPx * (count - 1).coerceAtLeast(0) + reserved
         }
         while (totalWidth() > constraints.maxWidth) {
-            val victim = items.indices
-                .filter { shown[it] && !items[it].isDivider && items[it].priority != PinnedPriority }
-                .minWithOrNull(compareBy<Int>({ items[it].priority }, { -it }))
-                ?: break
+            val victim = barItemToEvict(items, shown, allowPinned = false) ?: break
+            shown[victim] = false
+        }
+        // 优先保留项也必须尊重窗口按钮的边界；只能折叠有菜单替代入口的项。
+        while (totalWidth() > constraints.maxWidth) {
+            val victim = barItemToEvict(items, shown, allowPinned = true) ?: break
             shown[victim] = false
         }
         val showMore = needsMore()
@@ -199,10 +210,11 @@ fun AdaptiveBar(
         val leadingWidth = rowWidth(leadingIndices, showMore && moreAfterLeading)
         val leadingEnd = if (leadingWidth > 0) leadingWidth + gapPx else 0
         val trailingWidth = rowWidth(trailingIndices, showMore && !moreAfterLeading)
-        val endStart = constraints.maxWidth - endPlaceable.width
+        val endStart = (constraints.maxWidth - endPlaceable.width).coerceAtLeast(0)
         val trailingStart = (endStart - trailingWidth - if (trailingWidth > 0 && endPlaceable.width > 0) gapPx else 0)
-            .coerceAtLeast(leadingEnd)
-        val room = trailingStart - leadingEnd
+            .coerceIn(0, endStart)
+        val boundedLeadingEnd = leadingEnd.coerceAtMost(trailingStart)
+        val room = trailingStart - boundedLeadingEnd
         val middlePlaceable = when {
             middle == null || room < middleMinWidth.roundToPx() && !reserveMiddle -> null
             fillMiddle -> middleMeasurable.measure(
@@ -214,24 +226,24 @@ fun AdaptiveBar(
             }
         }
         val height = maxOf(contentHeight, middlePlaceable?.height ?: 0).coerceIn(constraints.minHeight, constraints.maxHeight)
-        val dragStart = leadingEnd + (middlePlaceable?.width ?: 0)
+        val dragStart = boundedLeadingEnd + (middlePlaceable?.width ?: 0)
         val dragArea = dragMeasurable.measure(Constraints.fixed((trailingStart - dragStart).coerceAtLeast(0), height))
         layout(constraints.maxWidth, height) {
             fun Placeable.placeAt(x: Int) = place(x, (height - this.height) / 2)
             var x = 0
             for (index in leadingIndices) {
-                placeables[index].placeAt(x)
+                if (x + placeables[index].width <= trailingStart) placeables[index].placeAt(x)
                 x += placeables[index].width + gapPx
             }
-            if (showMore && moreAfterLeading) more.placeAt(x)
-            middlePlaceable?.placeAt(leadingEnd)
+            if (showMore && moreAfterLeading && x + more.width <= trailingStart) more.placeAt(x)
+            middlePlaceable?.placeAt(boundedLeadingEnd)
             dragArea.place(dragStart, 0)
             x = trailingStart
             for (index in trailingIndices) {
-                placeables[index].placeAt(x)
+                if (x + placeables[index].width <= endStart) placeables[index].placeAt(x)
                 x += placeables[index].width + gapPx
             }
-            if (showMore && !moreAfterLeading) more.placeAt(x)
+            if (showMore && !moreAfterLeading && x + more.width <= endStart) more.placeAt(x)
             endPlaceable.placeAt(endStart)
         }
     }

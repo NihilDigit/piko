@@ -65,7 +65,6 @@ internal fun TaskPageHeader(state: TransfersState, selectedCount: Int, actions: 
 
 @Composable
 internal fun TaskRateBar(state: TransfersState) {
-    if (state.downloadSpeed <= 0 && state.uploadSpeed <= 0 && state.downloadEtaSeconds == null) return
     val framed = LocalFramed.current
     Row(
         Modifier
@@ -76,6 +75,6 @@ internal fun TaskRateBar(state: TransfersState) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Rates(state, compact = !framed)
-        if (isDesktopLayout()) DownloadEta(state)
+        if (isDesktopLayout()) DownloadEta(state, Modifier.weight(1f))
     }
 }

@@ -290,6 +290,7 @@ internal fun ExplorerCommandBar(
     viewSwitcher: @Composable () -> Unit,
     /** 这一页的主操作，常驻在右端，见 [PrimaryActionButton]。网盘里是添加链接，库里是清空、查重里是选中建议移走的。 */
     primaryAction: SheetAction?,
+    viewSwitcherOverflow: List<SheetAction> = emptyList(),
     customLeading: List<BarItem> = emptyList(),
 ) {
     val label = shortcuts::label
@@ -314,7 +315,7 @@ internal fun ExplorerCommandBar(
         if (customLeading.isNotEmpty()) {
             addAll(customLeading)
         } else if (selectedCount == 0 && commands.create) {
-            add(BarItem("new", PinnedPriority) { MenuTextButton(Icons.Outlined.Add, tr("新建", "New", "新規", "새로 만들기", "新增"), newActions) })
+            add(BarItem("new", PinnedPriority, newActions) { MenuTextButton(Icons.Outlined.Add, tr("新建", "New", "新規", "새로 만들기", "新增"), newActions) })
         }
         // 左段一律是图标加文字的文字按钮：原先图标按钮与文字按钮混排，两种按钮的内边距不同，字形之间的空隙忽大忽小。
         // 同组之间只隔 BarItemGap，组与组之间多一段 GroupGap
@@ -363,7 +364,7 @@ internal fun ExplorerCommandBar(
             TooltipIconButton(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침", "重新整理"), onRefresh, shortcut = if (mac) "⌘R" else "F5")
         })
         // 属性不放在这里：它看的是某一项，入口在右键菜单与操作面板末尾，以及主修饰键+I、Alt+Enter
-        add(BarItem("view", PinnedPriority) { viewSwitcher() })
+        add(BarItem("view", PinnedPriority, viewSwitcherOverflow) { viewSwitcher() })
         if (primaryAction != null) {
             // 常驻在右端，不收在菜单里；窗口窄到连它也放不下时才进「更多」
             add(BarItem("primary", 90, listOf(primaryAction)) {
@@ -587,6 +588,43 @@ internal fun ViewSwitcher(
                 feedButton()
             }
         }
+    }
+}
+
+/** 与连体视图按钮共享的菜单替代入口，窄窗折叠后仍保留全部能力。 */
+internal fun viewOverflowActions(
+    viewMode: DriveViewMode? = null,
+    onViewModeChange: ((DriveViewMode) -> Unit)? = null,
+    tileSize: TileSize,
+    onTileSizeChange: (TileSize) -> Unit,
+    galleryShown: Boolean,
+    onGalleryShownChange: ((Boolean) -> Unit)?,
+    feedShown: Boolean,
+    onFeedShownChange: ((Boolean) -> Unit)?,
+    galleryShowImages: Boolean,
+    onGalleryShowImagesChange: ((Boolean) -> Unit)?,
+): List<SheetAction> = buildList {
+    if (!galleryShown && onViewModeChange != null) {
+        DriveViewMode.entries.forEach { mode ->
+            add(SheetAction(mode.icon(), mode.label, { onViewModeChange(mode) }, checked = mode == viewMode))
+        }
+    }
+    TileSize.entries.forEach { size ->
+        add(SheetAction(Icons.Outlined.PhotoLibrary,
+            tr("${size.label}尺寸", "${size.label} size", "${size.label}サイズ", "${size.label} 크기", "${size.label}尺寸"),
+            { onTileSizeChange(size) }, checked = size == tileSize))
+    }
+    onGalleryShownChange?.let { change ->
+        add(SheetAction(Icons.Outlined.PhotoLibrary, tr("瀑布流", "Gallery", "ギャラリー", "갤러리", "瀑布流"),
+            { change(!galleryShown) }, checked = galleryShown))
+    }
+    onFeedShownChange?.let { change ->
+        add(SheetAction(Icons.Outlined.SwipeVertical, tr("信息流", "Feed", "フィード", "피드", "資訊流"),
+            { change(!feedShown) }, checked = feedShown))
+    }
+    if (galleryShown && onGalleryShowImagesChange != null) {
+        add(SheetAction(Icons.Outlined.Image, tr("显示图片", "Show images", "画像を表示", "이미지 표시", "顯示圖片"),
+            { onGalleryShowImagesChange(!galleryShowImages) }, checked = galleryShowImages))
     }
 }
 

@@ -9,7 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
@@ -39,11 +39,13 @@ internal fun Rates(state: TransfersState, modifier: Modifier = Modifier, compact
 }
 /** 排队中的下载还要多久，没有在下的不显示。 */
 @Composable
-internal fun DownloadEta(state: TransfersState) {
-    val seconds = state.downloadEtaSeconds ?: return
+internal fun DownloadEta(state: TransfersState, modifier: Modifier = Modifier) {
+    val seconds = state.downloadEtaSeconds
     Text(
-        tr("下载剩余${formatRemaining(seconds)}", "Download: ${formatRemaining(seconds)} remaining", "ダウンロード残り ${formatRemaining(seconds)}", "다운로드 남은 시간 ${formatRemaining(seconds)}", "下載剩餘${formatRemaining(seconds)}"),
-        style = MaterialTheme.typography.labelLarge,
+        if (seconds == null) "" else tr("下载剩余${formatRemaining(seconds)}", "Download: ${formatRemaining(seconds)} remaining", "ダウンロード残り ${formatRemaining(seconds)}", "다운로드 남은 시간 ${formatRemaining(seconds)}", "下載剩餘${formatRemaining(seconds)}"),
+        modifier = modifier.width(240.dp),
+        overflow = TextOverflow.Ellipsis,
+        style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         maxLines = 1,
     )
@@ -61,7 +63,7 @@ private fun Rate(icon: ImageVector, description: String, bytesPerSecond: Long, c
     val readable = bytesPerSecond.toReadableSize()
     val number = readable.substringBeforeLast(' ')
     val unit = readable.substringAfterLast(' ')
-    Row(modifier = Modifier.widthIn(min = if (compact) 72.dp else RateMinWidth), verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier = Modifier.width(if (compact) 86.dp else 96.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(
             icon,
             contentDescription = description,
@@ -86,10 +88,6 @@ private fun Rate(icon: ImageVector, description: String, bytesPerSecond: Long, c
         )
     }
 }
-
-// 放得下常见的「↓ 12.3 MB/s」，速度跳动时后面的东西不跟着晃。按最长的「999.9 MB/s」给的话，
-// 停着时两个「0 B/s」之间空出一大截，读着像两件不相干的事
-private val RateMinWidth = 92.dp
 
 /** 「约 12 分钟」「约 1 小时 20 分」；不到一分钟的不写秒数，底栏的读数不必跳那么快。 */
 private fun formatRemaining(seconds: Long): String = when {

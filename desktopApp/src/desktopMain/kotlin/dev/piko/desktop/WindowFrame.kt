@@ -53,6 +53,9 @@ import dev.piko.ui.platform.FramelessWindow
 import dev.piko.ui.platform.LocalFramelessWindow
 import dev.piko.ui.platform.LocalWindowCaption
 import dev.piko.ui.platform.LocalWindowResizing
+import dev.piko.ui.platform.LocalLiveWindowInfo
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateListOf
 import dev.piko.ui.platform.WindowCaption
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.shape.CircleShape
@@ -141,7 +144,7 @@ fun FrameWindowScope.WindowFrame(
                 Box(Modifier.fillMaxWidth().weight(1f)) {
                     CompositionLocalProvider(LocalWindowCaption provides compact) { SettledWindowInfo(caption) { ProvideTouchViewConfiguration(content) } }
                     // 兜底：声明了却一时没有哪一行贴着右上角来画按钮，就浮在角上画一组，窗口总关得掉
-                    if (hosted && compact.rowsWithButtons == 0) {
+                    if (hosted && !compact.hasActiveButtonBounds) {
                         Box(Modifier.align(Alignment.TopEnd).padding(8.dp)) { compact.ButtonRow(countAsRow = false) }
                     }
                 }
@@ -181,7 +184,11 @@ private fun SettledWindowInfo(caption: WindowsCaption?, content: @Composable () 
             .collect { size -> if (size != null) settled.value = size }
     }
     val info = remember(live) { SettledSizeWindowInfo(live, settled) }
-    CompositionLocalProvider(LocalWindowInfo provides info, LocalWindowResizing provides caption.isSizing) { content() }
+    CompositionLocalProvider(
+        LocalLiveWindowInfo provides live,
+        LocalWindowInfo provides info,
+        LocalWindowResizing provides caption.isSizing,
+    ) { content() }
 }
 
 private class SettledSizeWindowInfo(base: WindowInfo, private val size: State<IntSize>) : WindowInfo by base {
@@ -257,13 +264,20 @@ private class CompactCaption(private val caption: WindowsCaption) : WindowCaptio
     private var hosts by mutableIntStateOf(0)
     val hosted: Boolean get() = hosts > 0
 
-    /** 画着按钮的行数，不算兜底那一组。 */
-    var rowsWithButtons by mutableIntStateOf(0)
-        private set
+    private val activeRows = mutableStateListOf<Any>()
+    val hasActiveButtonBounds: Boolean get() = activeButtonBounds() != null
+
+    // 转场期间可能同时保留两行，始终由最后注册且有完整边界的一行接管，兜底组不能覆盖它。
+    private fun activeButtonBounds(): Map<WindowsCaption.Button, Rect>? =
+        activeRows.asReversed().firstNotNullOfOrNull { key ->
+            buttons[key]?.takeIf { bounds ->
+                WindowsCaption.Button.entries.all { button -> bounds[button]?.isEmpty == false }
+            }
+        }
 
     private val dragAreas = HashMap<Any, Rect>()
     // 按画按钮的那一处分开记：一处离开组合时只撤它自己的，另一处的位置不会跟着丢
-    private val buttons = HashMap<Any, Map<WindowsCaption.Button, Rect>>()
+    private val buttons = mutableStateMapOf<Any, Map<WindowsCaption.Button, Rect>>()
 
     @Composable
     override fun Host() {
@@ -280,9 +294,9 @@ private class CompactCaption(private val caption: WindowsCaption) : WindowCaptio
     fun ButtonRow(countAsRow: Boolean) {
         val key = remember { Any() }
         DisposableEffect(this) {
-            if (countAsRow) rowsWithButtons++
+            if (countAsRow) activeRows.add(key)
             onDispose {
-                if (countAsRow) rowsWithButtons--
+                activeRows.remove(key)
                 buttons.remove(key)
                 publish()
             }
@@ -313,7 +327,9 @@ private class CompactCaption(private val caption: WindowsCaption) : WindowCaptio
 
     fun publish() {
         if (!hosted) return
-        caption.updateLayout(dragAreas.values.toList(), buttons.values.fold(emptyMap()) { all, one -> all + one })
+        val buttonBounds = activeButtonBounds()
+            ?: buttons.entries.firstOrNull { it.key !in activeRows }?.value.orEmpty()
+        caption.updateLayout(dragAreas.values.toList(), buttonBounds.filterValues { !it.isEmpty })
     }
 }
 

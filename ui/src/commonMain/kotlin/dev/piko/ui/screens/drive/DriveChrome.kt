@@ -256,6 +256,18 @@ internal fun DriveDesktopHeader(
                 )
             },
             onRefresh = onRefresh,
+            viewSwitcherOverflow = viewOverflowActions(
+                viewMode = viewMode,
+                onViewModeChange = onViewModeChange,
+                tileSize = tileSize,
+                onTileSizeChange = onTileSizeChange,
+                galleryShown = galleryActive && !state.isSelectionMode,
+                onGalleryShownChange = onGalleryShownChange.takeIf { commands.gallery || galleryActive },
+                feedShown = feedShown && !state.isSelectionMode,
+                onFeedShownChange = onFeedShownChange.takeIf { commands.feed && !feedStashed && feedBlockedReason == null },
+                galleryShowImages = galleryShowImages,
+                onGalleryShowImagesChange = onGalleryShowImagesChange,
+            ),
             viewSwitcher = {
                 ViewSwitcher(
                     viewMode = viewMode,
@@ -456,7 +468,18 @@ internal fun DriveCompactHeader(
                 trailing = buildList {
                     if (commands.gallery || galleryActive || (commands.feed && hasFeedEntry)) {
                         add(
-                            BarItem(key = "explore", priority = PinnedPriority) {
+                            BarItem(key = "explore", priority = PinnedPriority,
+                                overflow = viewOverflowActions(
+                                    tileSize = tileSize,
+                                    onTileSizeChange = onTileSizeChange,
+                                    galleryShown = galleryActive && !state.isSelectionMode,
+                                    onGalleryShownChange = onGalleryShownChange.takeIf { commands.gallery || galleryActive },
+                                    feedShown = feedShown && !state.isSelectionMode,
+                                    onFeedShownChange = onFeedShownChange.takeIf { commands.feed && !feedStashed },
+                                    galleryShowImages = galleryShowImages,
+                                    onGalleryShowImagesChange = onGalleryShowImagesChange,
+                                ),
+                            ) {
                                 ExploreToggleGroup(
                                     galleryShown = galleryActive && !state.isSelectionMode,
                                     onGalleryShownChange = onGalleryShownChange.takeIf { commands.gallery || galleryActive },

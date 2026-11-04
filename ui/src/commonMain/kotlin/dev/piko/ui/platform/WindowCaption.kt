@@ -17,6 +17,8 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.WindowInfo
+import dev.piko.ui.theme.IslandGap
 
 /**
  * 标题栏并进内容时（照 Chrome）由桌面端提供：不再有单独的一条标题栏，窗口按钮由贴着窗口右上角的那一行
@@ -49,6 +51,9 @@ val LocalWindowCaption = compositionLocalOf<WindowCaption?> { null }
  */
 val LocalWindowResizing = compositionLocalOf { false }
 
+/** 未经断点稳定处理的窗口信息，仅供窗口坐标命中测试使用。 */
+val LocalLiveWindowInfo = compositionLocalOf<WindowInfo?> { null }
+
 /**
  * 一行内容是否要画窗口按钮：挂上 [modifier] 的那一行若从窗口顶上开始、右沿贴着窗口右沿，[buttons] 不为 null，
  * 放在这一行的末尾。
@@ -70,15 +75,15 @@ class CaptionSlot(
 @Composable
 fun rememberCaptionSlot(topInset: Dp = 0.dp): CaptionSlot {
     val caption = LocalWindowCaption.current ?: return NoCaptionSlot
-    val windowWidth = LocalWindowInfo.current.containerSize.width
+    val liveWindow = LocalLiveWindowInfo.current ?: LocalWindowInfo.current
     val insetPx = with(LocalDensity.current) { topInset.toPx() }
+    val edgeTolerancePx = with(LocalDensity.current) { (IslandGap + 16.dp).toPx() }
     var touches by remember { mutableStateOf(false) }
     var atTop by remember { mutableStateOf(false) }
     val modifier = Modifier.onGloballyPositioned { coordinates ->
         val bounds = coordinates.boundsInWindow()
-        // 容一个像素：边界按浮点算，贴边的行可能差零点几
         atTop = bounds.top <= insetPx + 1f
-        touches = bounds.right >= windowWidth - insetPx - 1f && atTop
+        touches = bounds.right >= liveWindow.containerSize.width - edgeTolerancePx && atTop
     }
     return CaptionSlot(
         modifier,

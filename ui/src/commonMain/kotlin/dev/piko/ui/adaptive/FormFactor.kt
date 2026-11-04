@@ -9,7 +9,7 @@ enum class FormFactor { Desktop, Mobile }
 
 /** Space for a file header, persistent tabs and useful content below them. */
 internal fun supportsWorkspaceChrome(widthDp: Float, heightDp: Float): Boolean =
-    widthDp >= 840f && heightDp >= 480f
+    widthDp >= 600f && heightDp >= 480f
 
 /** Kept as a source-compatible name for existing adaptive surfaces. */
 @Composable

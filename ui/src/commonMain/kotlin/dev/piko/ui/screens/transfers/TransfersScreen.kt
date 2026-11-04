@@ -83,7 +83,6 @@ import dev.piko.shared.state.TransferItem
 import dev.piko.shared.state.TransferKind
 import dev.piko.shared.state.TransferSections
 import dev.piko.shared.state.TransfersState
-import dev.piko.shared.state.children
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.LocalRootSnackbar
@@ -383,7 +382,10 @@ fun TransfersScreen(
         topBar = { TaskPageHeader(state, bulkSelected.size, headerActions) },
         island = IslandPage(
             header = { TaskIslandHeader(state, bulkSelected.size, headerActions, inlineFilter = inlineIslandFilter) },
-            belowHeader = if (!inlineIslandFilter) ({ TaskIslandSubHeader(state) }) else null,
+            belowHeader = {
+                if (!inlineIslandFilter) TaskIslandSubHeader(state)
+                TaskRateBar(state)
+            },
         ),
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {

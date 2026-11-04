@@ -2,6 +2,8 @@ package dev.piko.ui
 
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
@@ -57,6 +60,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.IntSize
@@ -66,6 +70,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
+import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.NavDisplay
 import androidx.savedstate.serialization.SavedStateConfiguration
 import dev.piko.download.DownloadStatus
@@ -193,7 +198,6 @@ fun PikoMainScaffold(
     modifier: Modifier = Modifier,
 ) {
     val services = LocalPikoServices.current
-    if (services.driveRepository.currentAccount != account) return
     val coroutineScope = rememberCoroutineScope()
     val desktop = isDesktopLayout()
     val localFiles = LocalPikoPlatform.current.localFiles
@@ -210,6 +214,7 @@ fun PikoMainScaffold(
 
     var currentTab by rememberSaveable { mutableStateOf(workspaceModel.lastMainTab) }
     val backStack = rememberNavBackStack(NavKeyConfiguration, *workspaceModel.lastNavigation.toTypedArray())
+    if (services.driveRepository.currentAccount != account) return
     val workspaceUiStates = rememberSaveableStateHolder()
     val workspaceContexts by workspaceModel.contexts.contextsFlow.collectAsStateWithLifecycle()
     val retainedWorkIds = remember { mutableSetOf<Long>() }
@@ -409,7 +414,27 @@ fun PikoMainScaffold(
 
     val contentWidth = with(density) { contentSize.width.toDp() }.takeIf { contentSize != IntSize.Zero }
     val sidebarMode = sidebarWindow && (onHome || isProfilePane(topScreen) || topScreen in SettingsSubpages)
-    val panelAvailableWidth = if (sidebarMode) windowWidth - SidebarRailWidth - IslandGap * 2 else contentWidth
+    val sidebarPushes = windowWidth >= SidebarPushMinWindowWidth
+    val inlineCollapsed = inlineSidebarIsCollapsed(windowWidth.value, sidebarCollapsed)
+    val animatedSidebarWidth by animateDpAsState(
+        if (inlineCollapsed) SidebarRailWidth else SidebarWidth,
+        animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+        label = "sidebarWidth",
+    )
+    val inlineSidebarWidth = if (sidebarPushes) animatedSidebarWidth else SidebarRailWidth
+    var drawerOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(sidebarPushes, sidebarMode) {
+        if (sidebarPushes || !sidebarMode) drawerOpen = false
+    }
+    LaunchedEffect(currentTab, topScreen) { drawerOpen = false }
+    val layoutDirection = LocalLayoutDirection.current
+    val safeDrawing = WindowInsets.safeDrawing
+    val horizontalInsets = with(density) {
+        safeDrawing.getLeft(this, layoutDirection).toDp() + safeDrawing.getRight(this, layoutDirection).toDp()
+    }
+    val panelAvailableWidth = if (sidebarMode) {
+        windowWidth - horizontalInsets - inlineSidebarWidth - IslandGap * 2
+    } else contentWidth
     val panelFits = contentWidth != null && panelAvailableWidth != null && !heightCompact &&
         sidePanelFits(panelAvailableWidth, ClipPanelMinWidth)
 
@@ -448,13 +473,9 @@ fun PikoMainScaffold(
     val feedBlockedReason: String? = null
     val feedInPanel = feedOnFilesTab && panelFits && !workspaceModel.feed.fullscreen && !addLinkDocked
     val feedFullScreen = feedOnFilesTab && (!panelFits || workspaceModel.feed.fullscreen)
-    val sidebarWidth by animateDpAsState(
-        if (sidebarCollapsed) SidebarRailWidth else SidebarWidth,
-        animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
-        label = "sidebarWidth",
-    )
     fun toggleSidebar() {
-        coroutineScope.launch { preferences.setSidebarCollapsed(!sidebarCollapsed) }
+        if (sidebarPushes) coroutineScope.launch { preferences.setSidebarCollapsed(!sidebarCollapsed) }
+        else drawerOpen = !drawerOpen
     }
 
     val folderStack by fileWorkspace.folderStackFlow.collectAsStateWithLifecycle()
@@ -757,6 +778,10 @@ fun PikoMainScaffold(
                 .focusRequester(shortcutFocus)
                 .focusable(!pointerSource.isTouchLike)
                 .onPreviewKeyEvent { event ->
+                    if (drawerOpen && event.type == KeyEventType.KeyDown && event.key == Key.Escape) {
+                        drawerOpen = false
+                        return@onPreviewKeyEvent true
+                    }
                     if (!workspaceSurface || event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) false
                     else when (event.key) {
                         Key.Tab -> { workspaceModel.cycleContext(if (event.isShiftPressed) -1 else 1); true }
@@ -815,8 +840,8 @@ fun PikoMainScaffold(
                                 .background(MaterialTheme.colorScheme.surface),
                         ) {
                             MainSidebarSlot(
-                                width = sidebarWidth,
-                                collapsed = sidebarCollapsed,
+                                width = inlineSidebarWidth,
+                                collapsed = inlineCollapsed,
                                 currentTab = currentTab,
                                 quickAccess = quickAccess,
                                 folderStack = folderStack,
@@ -838,6 +863,7 @@ fun PikoMainScaffold(
                             val motion = LocalPikoMotion.current
                             NavDisplay(
                                 backStack = backStack,
+                                entryDecorators = listOf(rememberSaveableStateHolderNavEntryDecorator()),
                                 onBack = ::popBack,
                                 transitionSpec = {
                                     if (sidebarMode && isDesktopTopLevelContentKey(initialState.entries.lastOrNull()?.contentKey) &&
@@ -1001,6 +1027,30 @@ fun PikoMainScaffold(
                 }
             }
 
+            BackHandler(enabled = drawerOpen) { drawerOpen = false }
+            if (drawerOpen && sidebarMode) {
+                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.32f)).clickable { drawerOpen = false })
+                Box(
+                    Modifier.align(Alignment.TopStart).fillMaxHeight()
+                        .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom + WindowInsetsSides.Start))
+                        .padding(IslandGap).clip(FrameCardShape).background(MaterialTheme.colorScheme.surface),
+                ) {
+                    MainSidebarSlot(
+                        width = SidebarWidth,
+                        collapsed = false,
+                        currentTab = currentTab,
+                        quickAccess = quickAccess,
+                        folderStack = folderStack,
+                        selectedPage = selectedPane,
+                        onTabClick = { tab -> drawerOpen = false; resetToHome(); onTabClick(tab) },
+                        onOpenQuickAccess = { stack -> drawerOpen = false; goToDrive(stack) },
+                        onOpenPage = { screen -> drawerOpen = false; openPage(screen) },
+                        onToggleLibrary = { library -> drawerOpen = false; pushLibrary(library) },
+                        onToggleCollapsed = { drawerOpen = false },
+                    )
+                }
+            }
+
             MainShellOverlays(
                 desktop = desktop,
                 services = services,
@@ -1057,6 +1107,11 @@ private fun EscClosesWhenFocused(onClose: () -> Unit, content: @Composable () ->
     BackHandler(enabled = hasFocus, onBack = onClose)
     Box(Modifier.fillMaxSize().onFocusChanged { hasFocus = it.hasFocus }) { content() }
 }
+
+internal val SidebarPushMinWindowWidth = 1000.dp
+
+internal fun inlineSidebarIsCollapsed(windowWidthDp: Float, persistedCollapsed: Boolean): Boolean =
+    windowWidthDp < SidebarPushMinWindowWidth.value || persistedCollapsed
 
 private val ClipPanelMinWidth = 360.dp
 private val ClipPanelDefaultWidth = 420.dp

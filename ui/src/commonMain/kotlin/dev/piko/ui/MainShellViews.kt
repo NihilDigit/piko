@@ -288,7 +288,11 @@ internal fun MainHomeContent(
             else -> null
         }
         val selectingFiles = currentTab == MainTab.FILES && activeDriveState?.isSelectionMode == true
-        val navigationSuiteType = if (sidebarMode || selectingFiles) NavigationSuiteType.None else NavigationSuiteType.ShortNavigationBarCompact
+        val navigationSuiteType = when {
+            sidebarMode || selectingFiles -> NavigationSuiteType.None
+            heightCompact -> NavigationSuiteType.WideNavigationRailCollapsed
+            else -> NavigationSuiteType.ShortNavigationBarCompact
+        }
 
         NavigationSuiteScaffold(
             containerColor = if (sidebarMode) MaterialTheme.colorScheme.frame else MaterialTheme.colorScheme.background,
@@ -679,7 +683,7 @@ private fun MainTabSwitch(currentTab: MainTab?, onTabClick: (MainTab) -> Unit, a
                 onCheckedChange = { onTabClick(tab) },
                 shapes = connectedToggleShapes(index, tabs.size),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                modifier = Modifier.weight(1f).height(if (activity.hasReadout) 48.dp else 40.dp),
+                modifier = Modifier.weight(1f).height(48.dp),
             ) {
                 val snailed = tab == MainTab.TRANSFERS && snail.enabled && !selected
                 CompositionLocalProvider(LocalContentColor provides if (snailed) MaterialTheme.colorScheme.tertiary else LocalContentColor.current) {
