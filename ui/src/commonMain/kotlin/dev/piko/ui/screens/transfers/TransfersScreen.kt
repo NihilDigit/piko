@@ -113,7 +113,6 @@ import dev.piko.ui.resources.text_clear_completed_alt
 import dev.piko.ui.resources.text_file_deleted
 import dev.piko.ui.serverWorkNotices
 import dev.piko.ui.theme.LocalFramed
-import dev.piko.ui.workbench.CleanupTaskCard
 import dev.piko.ui.workbench.LocalWorkspaceContexts
 import kotlinx.coroutines.launch
 
@@ -256,7 +255,7 @@ fun TransfersScreen(
         ?: (sections.needsAttention.isEmpty() && sections.inProgress.isEmpty())
     val visibleOrder by remember(state, currentSections, deletedExpanded, expandedBatches) {
         derivedStateOf {
-            (currentSections.needsAttention + currentSections.inProgress +
+            (currentSections.paused + currentSections.needsAttention + currentSections.inProgress +
                 (if (completedExpanded(state.filter, currentSections)) currentSections.completed else emptyList()) +
                 if (deletedExpanded) currentSections.outputDeleted else emptyList())
                 .withBatchChildren(expandedBatches)
@@ -355,7 +354,7 @@ fun TransfersScreen(
     BackHandler(enabled = selectionActive) { state.clearSelection() }
 
     val detailsItem = detailsKey?.let { key ->
-        sequenceOf(state.inProgress, state.needsAttention, state.completed, state.outputDeleted)
+        sequenceOf(state.paused, state.inProgress, state.needsAttention, state.completed, state.outputDeleted)
             .flatten()
             .flatMap { item -> sequenceOf(item) + item.children }
             .firstOrNull { it.key == key }
@@ -537,7 +536,7 @@ private fun TransfersList(
     modifier: Modifier = Modifier,
 ) {
     Box(modifier) {
-        if (sections.isEmpty && state.cleanupCount(kind) == 0) {
+        if (sections.isEmpty) {
             PullableCentered {
                 Text(
                     text = tr("没有${kind.label}任务", "No ${enCount(kind.label, "task", "tasks")}", "${kind.label}タスクはありません", "${kind.label} 작업이 없습니다", "沒有${kind.label}任務"),
@@ -549,7 +548,7 @@ private fun TransfersList(
         }
         val expanded = expandedBatches.toSet()
         val selectable = remember(sections, completedExpanded, deletedExpanded, expanded) {
-            (sections.needsAttention + sections.inProgress +
+            (sections.paused + sections.needsAttention + sections.inProgress +
                 (if (completedExpanded) sections.completed else emptyList()) +
                 if (deletedExpanded) sections.outputDeleted else emptyList())
                 .withBatchChildren(expanded)
@@ -568,11 +567,6 @@ private fun TransfersList(
                 movable = { false },
             ),
         ) {
-            if (state.cleanupCount(kind) > 0) {
-                fullLineItem(key = "cleanup") {
-                    CleanupTaskCard(requireNotNull(state.cleanup), Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp))
-                }
-            }
             transferSection(
                 tr("需要处理", "Needs attention", "対応が必要", "처리 필요", "需要處理"),
                 sections.needsAttention,
@@ -582,8 +576,9 @@ private fun TransfersList(
                 onClearCloud = state::clearFailedCloud,
             )
             transferSection(tr("进行中", "In progress", "処理中", "진행 중", "進行中"), sections.inProgress, expanded, renderItem)
+            transferSection(tr("已暂停", "Paused", "一時停止中", "일시 중지됨", "已暫停"), sections.paused, expanded, renderItem)
             transferSection(
-                tr("已完成", "Completed", "完了", "완료", "已完成"),
+                tr("最近完成", "Recently completed", "最近の完了", "최근 완료", "最近完成"),
                 sections.completed,
                 expanded,
                 renderItem,

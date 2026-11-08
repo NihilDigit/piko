@@ -31,90 +31,29 @@ import kotlin.math.roundToInt
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.delay
 
-/** 眼下进行中的传输汇总：各方向的总速度与项数。云端离线任务只算项数，没有速度。 */
-internal class TransferActivity(val downloadSpeed: Long, val uploadSpeed: Long, val count: Int) {
-    /** 有没有可写在「传输」按钮上的读数：有速度，或者有任务在跑。 */
-    val hasReadout: Boolean get() = downloadSpeed > 0 || uploadSpeed > 0 || count > 0
+internal class TransferActivity(val downloadSpeed: Long, val uploadSpeed: Long, val count: Int, val attentionCount: Int = 0) {
+    val hasReadout: Boolean get() = downloadSpeed > 0 || uploadSpeed > 0 || count > 0 || attentionCount > 0
 }
 
 internal fun untrackedImportCount(executions: List<InstantSaveExecution>): Int =
     executions.count { !it.trackedInstantAttempt && !it.trackedOffline }
 
-/**
- * 眼下当前账号进行中的传输：本机的下载与上传、解压与归档，加上云端的离线任务。离线任务不像下载那样有进程级的状态，
- * 要每 [CLOUD_POLL_MS] 取一次第一页，[pollCloud] 为假时不取、不计：手机上只为导航栏的一个数字常驻轮询不值得。
- * 暂停与失败的不算进行中。
- */
 @Composable
 internal fun rememberTransferActivity(
     pollCloud: Boolean = true,
 ): TransferActivity {
     val services = LocalPikoServices.current
-    val downloads by services.downloadManager.tasks.collectAsStateWithLifecycle()
-    val uploads by services.uploadManager.tasks.collectAsStateWithLifecycle()
-    val preparingUploads by services.uploadManager.preparations.collectAsStateWithLifecycle()
-    val fileWrites by services.fileWrites.works.collectAsStateWithLifecycle()
-    val instantAttempts by services.instantSaveRecords.attempts.collectAsStateWithLifecycle()
-    val shares by services.shareSaves.works.collectAsStateWithLifecycle()
-    val offlineSubmits by services.instantMagnetRepository.offlineSubmissions.works.collectAsStateWithLifecycle()
-    val packs by services.offlinePacks.jobs.collectAsStateWithLifecycle()
-    val busyPacks by services.offlinePacks.busy.collectAsStateWithLifecycle()
-    val vaultEdits by services.vaultEntryEdits.works.collectAsStateWithLifecycle()
-    val historyEdits by services.historyEdits.works.collectAsStateWithLifecycle()
-    val listings by services.downloadManager.listings.collectAsStateWithLifecycle()
-    val journal by services.driveRepository.changes.state.collectAsStateWithLifecycle()
-    val cloud by produceState(services.taskRepository.cachedTasks().orEmpty(), services, pollCloud) {
-        while (pollCloud) {
-            services.taskRepository.getTasks().onSuccess { value = it.tasks }
-            delay(CLOUD_POLL_MS)
-        }
-    }
-    // 与传输页一致，只算当前账号的
     val client by services.clientManager.currentClient.collectAsStateWithLifecycle()
-    val account = client?.account.orEmpty()
-    val activeDownloads = downloads.values.filter {
-        it.belongsTo(account) && (it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING)
+    if (client == null) return TransferActivity(0, 0, 0)
+    val state = services.taskCenter
+    androidx.compose.runtime.LaunchedEffect(state, pollCloud) {
+        if (pollCloud) state.whileVisible()
     }
-    val activeUploads = uploads.values.filter { it.account == account && it.status.isActive }
-    val shareTasks = shares.mapNotNullTo(HashSet()) { it.remoteTaskId } + packs.map { it.taskId }
-    val activeCloud = if (pollCloud) cloud.count { it.id !in shareTasks && (it.phase == TaskPhase.RUNNING || it.phase == TaskPhase.PENDING) } else 0
-    // 待输密码的压缩包也算：它停着等人，正该引人去看
-    val serverWork = services.archiveExtractSession.jobs.size +
-        services.archiveExtractSession.completedJobs.count { (it.status as? dev.piko.shared.state.ArchiveJobStatus.Finished)?.outcome != dev.piko.shared.state.ArchiveCompletion.SUCCEEDED } +
-        (if (services.folderVaultSession.isRunning) 1 else 0) +
-        services.folderVaultSession.records.count { record ->
-            val undo = record.undoChangeId?.let { journal.undo[it] }
-            record.needsAttention(undo) || undo?.status == DriveChangeJournal.UndoStatus.RUNNING
-        }
-    val cleanup = services.trashSession
-    val untrackedSaves = untrackedImportCount(services.instantSession.executingSaves)
-    val cleanupCount = if (cleanup.progress != null || cleanup.failure != null || cleanup.isUndoing) 1 else 0
-    return TransferActivity(
-        downloadSpeed = activeDownloads.sumOf { it.speedBytesPerSec },
-        uploadSpeed = activeUploads.sumOf { it.speedBytesPerSec },
-        // 文件夹下载一批算一项，与传输页一致；按文件数的话一个文件夹就是上千项
-        count = activeDownloads.distinctBy { it.batch?.id ?: it.taskId }.size + activeUploads.size + preparingUploads.count { it.account == account } + activeCloud + serverWork + cleanupCount + untrackedSaves +
-            listings.values.count { it.account == account } + fileWrites.count { work ->
-                work.account == account && work.showsInTaskPage && (work.isRunning || work.result?.completion != dev.piko.shared.state.FileWriteCompletion.SUCCEEDED ||
-                    work.result?.undoChangeIds.orEmpty().any { journal.undo[it]?.status in setOf(DriveChangeJournal.UndoStatus.RUNNING, DriveChangeJournal.UndoStatus.FAILED) })
-            } + historyEdits.count { !it.isRunning && it.account == account && (it.result?.completion == dev.piko.shared.state.HistoryEditCompletion.PARTIAL || it.result?.completion == dev.piko.shared.state.HistoryEditCompletion.UNCONFIRMED) } +
-            vaultEdits.count { work -> work.account == account && work.showsInTaskPage && (work.isRunning || work.result?.completion != dev.piko.shared.state.VaultEntryEditCompletion.SUCCEEDED ||
-                work.result?.undoChangeIds.orEmpty().any { journal.undo[it]?.status in setOf(DriveChangeJournal.UndoStatus.RUNNING, DriveChangeJournal.UndoStatus.FAILED) }) } +
-            instantAttempts.count { it.account == account } + packs.count { it.account == account && (it.isActive || it.stage == dev.piko.shared.data.OfflinePackStage.FAILED || dev.piko.shared.data.OfflinePackRef(it.account, it.taskId) in busyPacks) } +
-            offlineSubmits.count { it.account == account && it.status != dev.piko.shared.state.OfflineSubmitStatus.COMPLETE } + shares.count { work ->
-                work.account == account && (work.isRunning || work.result?.completion != dev.piko.shared.state.ShareSaveCompletion.SUCCEEDED ||
-                    work.undoChangeIds.any { journal.undo[it]?.status in setOf(DriveChangeJournal.UndoStatus.RUNNING, DriveChangeJournal.UndoStatus.FAILED) })
-            },
-    )
+    val summary = state.activity
+    return TransferActivity(summary.downloadSpeed, summary.uploadSpeed, summary.active.size, summary.needsAttention.size)
+
 }
 
-/**
- * 侧边栏「任务」入口的辅助读数：上行与下行里快的那一边，「↓ 6.2 MB/s」；没有速度但有任务在排队
- * 或在云端跑时写项数。蜗牛模式开着时用强调色，一眼看得出这个速度是被压着的；按钮选中时底色已是主色，
- * 强调色压在上面读不清，沿用按钮自己的文字色。
- *
- * 取代了原来窗口底部的状态栏与侧边栏的小卡：人找传输的地方就在这个按钮，读数放在它身上，不另占一块。
- */
 @Composable
 internal fun SidebarTransferReadout(activity: TransferActivity, checked: Boolean, compact: Boolean = false) {
     val preferences = LocalPikoServices.current.preferences
@@ -122,16 +61,13 @@ internal fun SidebarTransferReadout(activity: TransferActivity, checked: Boolean
     val color = if (snail.enabled && !checked) MaterialTheme.colorScheme.tertiary else LocalContentColor.current
     val speed = maxOf(activity.downloadSpeed, activity.uploadSpeed)
     val text = when {
+        activity.attentionCount > 0 -> tr("${activity.attentionCount} 项需要处理", "${activity.attentionCount} need attention", "${activity.attentionCount} 件の対応が必要", "${activity.attentionCount}개 조치 필요", "${activity.attentionCount} 項需要處理")
         speed > 0 -> "${if (activity.downloadSpeed >= activity.uploadSpeed) "↓" else "↑"} ${compactRate(speed)}"
         else -> tr("${activity.count} 项", "${enCount(activity.count, "item", "items")}", "${activity.count} 項目", "${activity.count}개 항목", "${activity.count} 項")
     }
     Text(text, color = color, maxLines = 1, style = (if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelLarge).copy(fontFeatureSettings = "tnum"))
 }
 
-/**
- * 按钮里的速度，最多三位数字：「1022.4 KB/s」在侧边栏半个按钮里放不下。满 1000 就进一级单位，
- * 不等到 1024，否则「1022 KB/s」这样的四位数照样出现；十以内留一位小数，不然 1 到 2 MB/s 之间都显示成 1。
- */
 private fun compactRate(bytesPerSecond: Long): String {
     var value = bytesPerSecond.toDouble()
     var unit = 0

@@ -29,6 +29,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.ui.LocalPikoServices
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * 一条容量：标签、细条与读数，外框底栏用（网盘页与传输页）。实色是已用，浅色是 [incomingBytes]，
@@ -79,10 +80,20 @@ fun CapacityRow(label: String, usedBytes: Long, incomingBytes: Long, totalBytes:
 /** 网盘容量那一条。[incomingBytes] 是进行中的离线任务将要占的，网盘页没有这一项时为 0。 */
 @Composable
 fun CloudCapacityRow(incomingBytes: Long = 0L) {
-    val driveRepository = LocalPikoServices.current.driveRepository
+    val services = LocalPikoServices.current
+    val driveRepository = services.driveRepository
+    val client by services.clientManager.currentClient.collectAsStateWithLifecycle()
+    val accounts by services.clientManager.accounts.collectAsStateWithLifecycle()
     val quota by driveRepository.quotaFlow.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) { if (quota == null) driveRepository.getQuota() }
-    val cloud = quota?.quota?.takeIf { it.limitBytes > 0 } ?: return
+    val currentAccount = client?.account
+    LaunchedEffect(currentAccount) {
+        if (currentAccount != null && quota == null) {
+            driveRepository.getQuota(maxAge = 60.seconds)
+        }
+    }
+    val cloud = quota?.quota?.takeIf { it.limitBytes > 0 }
+        ?: currentAccount?.let(accounts::find)?.quota?.quota?.takeIf { it.limitBytes > 0 }
+        ?: return
     CapacityRow(
         label = tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"),
         usedBytes = cloud.usageBytes,

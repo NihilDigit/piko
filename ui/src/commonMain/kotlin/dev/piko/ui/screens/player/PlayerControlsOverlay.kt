@@ -130,6 +130,7 @@ fun MobilePlayerControls(
     longPressSpeed: Float = PlayerGestureDefaults.BOOST_SPEED,
     onLongPressSpeedChange: ((Float) -> Unit)? = null,
     playbackStats: (() -> List<PlaybackStatsSection>)? = null,
+    loadingSpeedText: String? = null,
 ) {
     val windowSize = LocalWindowInfo.current.containerSize
     val compactWidth = with(LocalDensity.current) { windowSize.width.toDp() } < COMPACT_WIDTH
@@ -457,6 +458,7 @@ fun MobilePlayerControls(
                 isPlaying = isPlaying,
                 isLoading = isLoading,
                 indicator = centerIndicator,
+                loadingSpeedText = loadingSpeedText,
                 modifier = Modifier.align(Alignment.Center),
                 onPlayPause = {
                     if (chromeVisible) {

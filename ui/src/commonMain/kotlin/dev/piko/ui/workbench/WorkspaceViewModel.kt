@@ -44,7 +44,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     private var closed = false
     private val repository = services.driveRepository
     private val available: Boolean get() = !closed && repository.currentAccount == account
-    val fileCommands = dev.piko.shared.presentation.FileCommands(repository, services.fileWrites, account, services.trashSession, services.folderVaultSession, services.vaultEntryEdits, services.shareSaves, services.receivingActivity) {
+    val fileCommands = dev.piko.shared.presentation.FileCommands(repository, services.fileWrites, account, services.folderVaultSession, services.shareSaves, services.receivingActivity) {
         !closed && repository.currentAccount == account
     }
     init {
@@ -356,7 +356,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         check(!closed && services.driveRepository.currentAccount == account) { "工作区已释放或账号已改变" }
         return DriveBrowserSession(
             services.driveRepository, services.preferences, duplicates,
-            services.archiveBrowser, services.trashSession, viewModelScope, library, path,
+            services.archiveBrowser, viewModelScope, library, path,
             fileNavigation = navigation,
             clipboard = fileWorkspace.clipboard,
             operationScope = services.fileExecutionScopes.forAccount(account),
@@ -396,21 +396,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
             }
         }
     }
-    val transfers: TransfersState by lazy {
-        check(!closed && services.driveRepository.currentAccount == account)
-        TransfersState(
-            services.downloadManager, services.taskRepository, services.offlinePacks,
-            viewModelScope, services.driveRepository, services.uploadManager,
-            services.instantSaveRecords, account, services.archiveExtractSession,
-            services.folderVaultSession, listsServerWork = true,
-            cleanup = services.trashSession,
-            fileWrites = services.fileWrites,
-            historyEdits = services.historyEdits,
-            vaultEdits = services.vaultEntryEdits,
-            shareSaves = services.shareSaves,
-            receiving = services.receivingActivity,
-        )
-    }
+    val transfers: TransfersState get() = services.taskCenter
     fun rememberContextOrigin(
         id: Long, tab: MainTab, screens: List<Screen>,
         sourceContextId: Long? = contexts.activeContextId.value.takeIf { it != id },

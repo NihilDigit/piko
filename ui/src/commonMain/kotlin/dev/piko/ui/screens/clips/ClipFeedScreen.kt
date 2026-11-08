@@ -157,6 +157,14 @@ fun ClipFeedScreen(
 
     // 挂在会话上，页面离开再回来（看完整、挂起）时取好的段都还在，见 ClipStreams
     val streams = session.streams
+    val workBudget by services.workloadGovernor.budget.collectAsState()
+    val effectivePaused = pausedByHost || !workBudget.allowClipPrefetch
+    LaunchedEffect(streams, effectivePaused) {
+        streams.setSuspended(effectivePaused)
+    }
+    DisposableEffect(streams) {
+        onDispose { streams.setSuspended(true) }
+    }
     // 头一段画面走起来没有。之前只备前 COLD_START_CLIPS 段：冷开时十来段一齐备会话、取开头，
     // 头一段分到的带宽只剩几分之一，实测要等 5 秒多才取好（2026-09-28）。
     // 页面重建（打开、继续刷）都从这一步重来
@@ -196,6 +204,7 @@ fun ClipFeedScreen(
         // 先放开再压栈：播放器在组合时就记下当前方向，退出时恢复它，晚于这一步放开的话它记下的是横屏，
         // 退出后一直锁着。回来时会话里的 landscape 还在，这里重新锁上
         landscapeLock?.release()
+        streams.setSuspended(true)
         onPlayFull(file, startMillis)
     }
 
@@ -260,7 +269,7 @@ fun ClipFeedScreen(
                         actions = actions,
                         snackbarHostState = snackbarHostState,
                         compact = compact,
-                        pausedByHost = pausedByHost,
+                        pausedByHost = effectivePaused,
                         onPlayFull = playFull,
                         onLocate = onLocate,
                         onToggleAutoAdvance = toggleAutoAdvance,
@@ -562,10 +571,20 @@ private fun ClipPager(
         }
     }
 
-    // 停在末尾时后面接上了新取好的段，也装进播放器预渲染，不等翻过去。当前段走起来之后才装，见 neighboursFor
-    LaunchedEffect(settled, clips.size, warmUpDone, neighboursFor) {
+    // 停在末尾时后面接上了新取好的段，也装进播放器预渲染，不等翻过去。当前段走起来之后才装，见 neighboursFor；
+    // 邻居段仅在预渲染出首帧前借用前台角色，出过首帧停稳后即退回后台，避免桌面端与独立播放窗同开时长期挂着三路前台流
+    val renderedSnapshot = rendered.toList()
+    LaunchedEffect(settled, clips.size, warmUpDone, neighboursFor, renderedSnapshot) {
         if (!warmUpDone || current == null) return@LaunchedEffect
-        streams.bringToFront(setOf(current) + NEIGHBOURS.mapNotNull { clips.getOrNull(settled + it) })
+        val prerenderingNeighbours = if (neighboursFor == current) {
+            NEIGHBOURS.mapNotNull { delta ->
+                val page = settled + delta
+                clips.getOrNull(page)?.takeIf { rendered[slotOf(page)] != it }
+            }
+        } else {
+            emptyList()
+        }
+        streams.bringToFront(setOf(current) + prerenderingNeighbours)
         if (neighboursFor != current) return@LaunchedEffect
         NEIGHBOURS.forEach { load(settled + it) }
     }
@@ -591,11 +610,8 @@ private fun ClipPager(
         val visible = latestClips
         val window = visible.subList((settled - KEPT_BEHIND).coerceIn(0, visible.size), visible.size) + latestUpcoming
         streams.sync(window.toSet())
-        // 播放器装上一段、当前段与下一段，前后翻一页都是现成的。原先装当前段与后两段，上一段让出播放器，
-        // 往回翻时从缓存重装，手机上实测每次 430 到 650 ms 看着缩略图等（2026-09-27）；
-        // 换来的只是连着快翻两页时第二页不必现装，而那一页现装也只要三四百毫秒
-        val neighbours = NEIGHBOURS.mapNotNull { clips.getOrNull(settled + it) }
-        streams.bringToFront(setOf(current) + neighbours)
+        // 刚翻到当前段时只将当前段升为前台；前后相邻段等当前段走起来（neighboursFor == current）且尚未出首帧时再临时升为前台预渲染
+        streams.bringToFront(setOf(current))
         // 翻走的那段若升过档，降回来：停在第一帧的段不该再以最高档往后读
         players.forEachIndexed { slot, player ->
             if (slot != slotOf(settled)) {
@@ -804,7 +820,10 @@ private fun ClipPager(
     }
 
     LaunchedEffect(pausedByHost) {
-        if(pausedByHost) { paused = true; currentPlayer.pause() }
+        if (pausedByHost) {
+            paused = true
+            players.forEach(PreviewBackend::pause)
+        }
     }
 
     fun togglePause() {
@@ -1033,7 +1052,7 @@ private fun ClipPager(
                 } else {
                     // 缓冲过一会儿才转圈：开播与换源时缓冲状态会闪一两下，每次都转就像卡了两次
                     var stalled by remember { mutableStateOf(false) }
-                    val waiting = active && (!ready || player.isBuffering)
+                    val waiting = active && (!ready || player.isBuffering || seekPending != 0)
                     LaunchedEffect(waiting) {
                         stalled = false
                         if (waiting) {

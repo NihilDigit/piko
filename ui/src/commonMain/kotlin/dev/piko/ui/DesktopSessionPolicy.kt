@@ -28,12 +28,9 @@ fun PikoServices.hasDesktopResumeContext(): Boolean {
     val journal = driveRepository.changes.state.value
     fun undoFailed(ids: List<Long>) = ids.any { journal.undo[it]?.status == DriveChangeJournal.UndoStatus.FAILED }
     return instantSession.drafts.any { !it.state.isBlank } || duplicateSessions.any { it.state != null } ||
-        trashSession.failure != null || trashSession.completedCount > 0 ||
         (archiveExtractSession.jobs + archiveExtractSession.completedJobs).any { it.status.needsDesktopSession() } ||
         folderVaultSession.records.any { it.needsAttention(it.undoChangeId?.let(journal.undo::get)) } ||
         fileWrites.works.value.any { it.account == account && (it.result?.completion != FileWriteCompletion.SUCCEEDED || undoFailed(it.result?.undoChangeIds.orEmpty())) } ||
-        historyEdits.works.value.any { it.account == account && it.result?.completion != HistoryEditCompletion.SUCCEEDED } ||
-        vaultEntryEdits.works.value.any { it.account == account && (it.result?.completion != VaultEntryEditCompletion.SUCCEEDED || undoFailed(it.result?.undoChangeIds.orEmpty())) } ||
         shareSaves.works.value.any { it.account == account && (it.result?.completion != ShareSaveCompletion.SUCCEEDED || undoFailed(it.undoChangeIds)) } ||
         instantSaveRecords.attempts.value.any { it.account == account } ||
         uploadManager.preparations.value.any { it.account == account && !it.isRunning } ||

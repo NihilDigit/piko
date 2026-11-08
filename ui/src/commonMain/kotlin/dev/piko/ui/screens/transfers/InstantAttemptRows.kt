@@ -21,7 +21,8 @@ import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.workProgress
 
-internal fun instantAttemptActions(work: InstantSaveAttempt, onShow: (() -> Unit)?, onForget: () -> Unit, onRecheck: (() -> Unit)? = null): List<SheetAction> = buildList {
+internal fun instantAttemptActions(work: InstantSaveAttempt, onShow: (() -> Unit)?, onForget: () -> Unit, onRecheck: (() -> Unit)? = null, onRetry: (() -> Unit)? = null): List<SheetAction> = buildList {
+    if (onRetry != null) add(SheetAction(Icons.Outlined.Refresh, tr("重试未完成项", "Retry unfinished items", "未完了の項目を再試行", "미완료 항목 다시 시도", "重試未完成項"), onRetry))
     if (onRecheck != null) add(SheetAction(Icons.Outlined.Refresh, tr("重新查询结果", "Check results again", "結果を再確認", "결과 다시 확인", "重新查詢結果"), onRecheck))
     if (onShow != null) add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), onShow))
     if (!work.isRunning) add(SheetAction(Icons.Outlined.Close, tr("移除记录", "Remove record", "記録を削除", "기록 삭제", "移除記錄"), onForget))

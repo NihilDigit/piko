@@ -160,6 +160,7 @@ sealed interface VideoPlayerHost {
         val openClipFeed: (ClipFeedLinks) -> Unit,
         val isClipFeedOpen: () -> Boolean,
         val closeClipFeed: () -> Unit,
+        val hasActivePlayer: () -> Boolean = { false },
     ) : VideoPlayerHost
 }
 
@@ -448,8 +449,10 @@ fun PikoMainScaffold(
     val feedShown = feedShownState == true
     val detachedHost = videoPlayer as? VideoPlayerHost.Detached
     val feedPoppedOut = detachedHost?.isClipFeedOpen?.invoke() == true
+    val hasDetachedPlayer = detachedHost?.hasActivePlayer?.invoke() == true
     var feedDetour by workspaceModel.feed::returnLocation
     val feedSuspended = feedShown && feedDetour != null
+    val feedPausedByHost = feedSuspended || hasDetachedPlayer
     var feedDetourTab by workspaceModel.feed::detourTab
     val feedOpened by workspaceModel.feed::opened
 
@@ -655,7 +658,7 @@ fun PikoMainScaffold(
                         visible = feedInPanel,
                         feedOpened = feedOpened,
                         onHome = onHome,
-                        feedSuspended = feedSuspended,
+                        feedSuspended = feedPausedByHost,
                         onRequestCloseFeed = ::requestCloseFeed,
                         onPlayFromFeed = ::playFromFeed,
                         onLocateFromFeed = ::locateFromFeed,
@@ -895,6 +898,7 @@ fun PikoMainScaffold(
                                             feedShown = feedShown,
                                             feedOpened = feedOpened,
                                             feedSuspended = feedSuspended,
+                                            feedPausedByHost = feedPausedByHost,
                                             feedFullScreen = feedFullScreen,
                                             feedBlockedReason = feedBlockedReason,
                                             feedDetourTab = feedDetourTab,

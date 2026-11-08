@@ -104,6 +104,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -308,12 +309,14 @@ internal fun PlayerCenterControls(
     indicator: CenterIndicator?,
     onPlayPause: () -> Unit,
     modifier: Modifier = Modifier,
+    loadingSpeedText: String? = null,
 ) {
     PlayPauseButton(
         visible = visible,
         isPlaying = isPlaying,
         isLoading = isLoading,
         indicator = indicator,
+        loadingSpeedText = loadingSpeedText,
         size = PlayContainerSize,
         iconSize = IconButtonDefaults.mediumIconSize,
         squareCorner = 16.dp,
@@ -391,6 +394,7 @@ private fun PlayPauseButton(
     pressedCorner: Dp,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    loadingSpeedText: String? = null,
 ) {
     val motion = MaterialTheme.motionScheme
     val colors = MaterialTheme.colorScheme
@@ -429,15 +433,15 @@ private fun PlayPauseButton(
         isPlaying -> squareCorner
         else -> roundCorner
     }
-    fun containerColorOf(face: CenterFace): Color = when (face) {
-        is CenterFace.Readout -> colors.tertiary
-        CenterFace.Loading -> colors.primaryContainer
-        CenterFace.Icon -> colors.primary
+    fun containerColorOf(face: CenterFace): Color = when {
+        face is CenterFace.Readout -> colors.tertiary
+        face == CenterFace.Loading -> colors.primaryContainer
+        else -> colors.primary
     }
-    fun contentColorOf(face: CenterFace): Color = when (face) {
-        is CenterFace.Readout -> colors.onTertiary
-        CenterFace.Loading -> colors.onPrimaryContainer
-        CenterFace.Icon -> colors.onPrimary
+    fun contentColorOf(face: CenterFace): Color = when {
+        face is CenterFace.Readout -> colors.onTertiary
+        face == CenterFace.Loading -> colors.onPrimaryContainer
+        else -> colors.onPrimary
     }
     // 按钮的标签只说点下去做什么：读数形态下点击照样是播放或暂停，标签换成读数的话，读屏念完读数却不知道这一下做了什么
     val actionLabel = when {
@@ -515,8 +519,30 @@ private fun PlayPauseButton(
                 }
             }
         }
+        if (visible && isLoading && indicator == null && !loadingSpeedText.isNullOrBlank()) {
+            val gapPx = with(density) { 8.dp.roundToPx() }
+            val anchorHeightPx = with(density) { size.height.roundToPx() }
+            Text(
+                text = loadingSpeedText,
+                color = Color.White,
+                style = MaterialTheme.typography.labelLarge.copy(
+                    fontFeatureSettings = "tnum",
+                    shadow = LoadingSpeedShadow,
+                ),
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier.layout { measurable, _ ->
+                    val placeable = measurable.measure(Constraints())
+                    layout(0, 0) {
+                        placeable.place(-placeable.width / 2, anchorHeightPx / 2 + gapPx)
+                    }
+                },
+            )
+        }
     }
 }
+
+private val LoadingSpeedShadow = Shadow(color = Color.Black.copy(alpha = 0.6f), offset = Offset(0f, 1f), blurRadius = 6f)
 
 // 读数胶囊的内部排布：两端留白、图标、间隙、进度条
 private val READOUT_PADDING = 20.dp

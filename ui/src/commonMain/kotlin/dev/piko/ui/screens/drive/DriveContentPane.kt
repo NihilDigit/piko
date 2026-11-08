@@ -420,7 +420,7 @@ internal fun DriveContentBody(
                             selectedKind = duplicateReport.kind,
                             onLeave = onLeaveDuplicates,
                             canLeave = canLeaveDuplicates,
-                            cleaning = state.trashProgress != null,
+                            cleaning = false,
                             modifier = Modifier.weight(1f),
                         )
                     } else if (state.displayItems.isEmpty() && state.typeFilter == null && !state.thumbnailsOnly) {

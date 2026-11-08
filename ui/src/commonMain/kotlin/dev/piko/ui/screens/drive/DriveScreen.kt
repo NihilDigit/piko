@@ -290,7 +290,6 @@ fun DriveScreen(
             },
             archives = services.archiveBrowser,
             navigation = navigation,
-            trashSession = services.trashSession,
             clipboard = workspace.clipboard,
             fileWriteSession = services.fileWrites,
             historyEditSession = services.historyEdits,
@@ -659,9 +658,6 @@ fun DriveScreen(
 
     DriveSystemOverlays(
         state = state,
-        isWorkspaceBrowser = isWorkspaceBrowser,
-        currentAccount = currentAccount,
-        fileWrites = services.fileWrites,
         segmentSession = services.segmentSession,
         downloadManager = services.downloadManager,
         onOpenTransfers = openTransfers,
@@ -975,7 +971,10 @@ private fun DriveScreenContent(
                     withDismissAction = true,
                 )
             }
-            file.isPlayableVideo() -> latestEvents.onNavigateToPlayer(file, currentFiles.filter { it.isPlayableVideo() && (!it.isImportPreview || it.hash.isNotBlank()) })
+            file.isPlayableVideo() -> latestEvents.onNavigateToPlayer(
+                file,
+                if (latestIntents.galleryActive) emptyList() else currentFiles.filter { it.isPlayableVideo() && (!it.isImportPreview || it.hash.isNotBlank()) },
+            )
             file.isPreviewableImage() && file.previewImageCoverUrl().isNotBlank() -> latestEvents.onRequestImagePreview(file)
             file.isLocal -> platform.localFiles.openExternally(file.params["local_path"].orEmpty(), false)
             else -> latestEvents.onRequestDownload(listOf(file), false)

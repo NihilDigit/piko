@@ -17,6 +17,25 @@ import kotlin.test.assertNull
 
 class ChangeNoticesTest {
     @Test
+    fun laterChangesReplaceAnIndefiniteNoticeWithoutBlockingTheProducer() = runBlocking {
+        val events = MutableSharedFlow<DriveChangeJournal.Event>(extraBufferCapacity = 8)
+        val host = SnackbarHostState()
+        val undone = CopyOnWriteArrayList<DriveChangeJournal.Change>()
+        val job = launch { showChangeNotices(events, host, awaitVisible = {}, undo = { undone += it }) }
+        events.subscriptionCount.first { it > 0 }
+        val first = DriveChangeJournal.Change.Trash(listOf("first"), "first")
+        events.emit(DriveChangeJournal.Event(first.summary, first))
+        withTimeout(5_000) { while (host.currentSnackbarData == null) delay(10) }
+        val changes = List(32) { DriveChangeJournal.Change.Trash(listOf("file-$it"), "trash-$it") }
+        withTimeout(5_000) { changes.forEach { events.emit(DriveChangeJournal.Event(it.summary, it)) } }
+        withTimeout(5_000) { while (host.currentSnackbarData?.visuals?.message != changes.last().summary) delay(10) }
+        host.currentSnackbarData!!.performAction()
+        withTimeout(5_000) { while (undone.isEmpty()) delay(10) }
+        assertEquals(listOf<DriveChangeJournal.Change>(changes.last()), undone.toList())
+        job.cancel()
+    }
+
+    @Test
     fun queuedOldAccountNoticeIsSkippedWhenTheAppReturnsToTheForeground() = runBlocking {
         val events = MutableSharedFlow<DriveChangeJournal.Event>(extraBufferCapacity = 8)
         val foreground = MutableStateFlow(false)

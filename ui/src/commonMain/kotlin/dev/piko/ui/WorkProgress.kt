@@ -1,5 +1,6 @@
 package dev.piko.ui
 
+import dev.piko.shared.state.requiresLocalExecution
 import dev.piko.shared.i18n.enCount
 
 import dev.piko.shared.i18n.tr
@@ -17,6 +18,8 @@ import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.upload.UploadTask
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.screens.transfers.remainingTime
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -24,7 +27,6 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.map
 import androidx.compose.runtime.snapshotFlow
 
-/** 后台工作的种类。通知按它挑图标，进度列表按它排序。 */
 enum class WorkKind { VAULT, EXTRACT, FILES, DOWNLOAD, UPLOAD, DUPLICATES }
 
 fun dev.piko.shared.upload.UploadPreparation.workProgress() = WorkProgress(
@@ -87,8 +89,6 @@ fun dev.piko.shared.state.FileWriteWork.workProgress(undo: DriveChangeJournal.Un
         }
     } ?: when (phase) {
         dev.piko.shared.state.FileWritePhase.PREPARING -> tr("正在核对文件", "Checking files", "ファイルを確認中", "파일 확인 중", "正在核對檔案")
-        dev.piko.shared.state.FileWritePhase.WRITING -> tr("正在提交修改", "Submitting changes", "変更を送信中", "변경 사항 제출 중", "正在提交修改")
-        dev.piko.shared.state.FileWritePhase.CHECKING -> tr("正在核对结果", "Checking results", "結果を確認中", "결과 확인 중", "正在核對結果")
         dev.piko.shared.state.FileWritePhase.COPYING -> tr("服务端正在复制", "Server is copying", "サーバーでコピー中", "서버에서 복사 중", "伺服器正在複製")
         dev.piko.shared.state.FileWritePhase.FINISHED -> tr("已结束", "Finished", "終了", "종료", "已結束")
     }
@@ -98,54 +98,24 @@ fun dev.piko.shared.state.FileWriteWork.workProgress(undo: DriveChangeJournal.Un
     )
 }
 
-fun dev.piko.shared.state.HistoryEditWork.workProgress(): WorkProgress = WorkProgress(
-    WorkKind.FILES, command.title, if (isRunning) WorkMeter.Indeterminate else WorkMeter.None,
-    when (result?.completion) {
-        null -> tr("正在处理历史记录", "Updating history", "履歴を更新中", "기록 처리 중", "正在處理歷史記錄")
-        dev.piko.shared.state.HistoryEditCompletion.SUCCEEDED -> tr("已完成", "Completed", "完了", "완료", "已完成")
-        dev.piko.shared.state.HistoryEditCompletion.PARTIAL -> tr("部分完成", "Partially completed", "一部完了", "일부 완료", "部分完成")
-        dev.piko.shared.state.HistoryEditCompletion.FAILED -> tr("未完成", "Incomplete", "未完了", "미완료", "未完成")
-        dev.piko.shared.state.HistoryEditCompletion.UNCONFIRMED -> tr("结果待确认", "Result unconfirmed", "結果未確認", "결과 확인 필요", "結果待確認")
-    }, result?.message,
-)
+enum class WorkUnit { BYTES, ITEMS }
+data class WorkMeasure(val completed: Long, val total: Long?, val unit: WorkUnit)
 
-fun dev.piko.shared.state.VaultEntryEditWork.workProgress(undo: DriveChangeJournal.UndoResult? = null): WorkProgress = WorkProgress(
-    WorkKind.FILES, command.title,
-    if (isRunning || undo?.status == DriveChangeJournal.UndoStatus.RUNNING) WorkMeter.Indeterminate else WorkMeter.None,
-    undo?.message ?: when (result?.completion) {
-        null -> tr("正在编辑归档清单", "Editing archive manifest", "アーカイブ一覧を編集中", "보관 목록 편집 중", "正在編輯歸檔清單")
-        dev.piko.shared.state.VaultEntryEditCompletion.SUCCEEDED -> tr("已完成", "Completed", "完了", "완료", "已完成")
-        dev.piko.shared.state.VaultEntryEditCompletion.PARTIAL -> tr("部分完成", "Partially completed", "一部完了", "일부 완료", "部分完成")
-        dev.piko.shared.state.VaultEntryEditCompletion.FAILED -> tr("未完成", "Incomplete", "未完了", "미완료", "未完成")
-        dev.piko.shared.state.VaultEntryEditCompletion.UNCONFIRMED -> tr("结果待确认", "Result unconfirmed", "結果未確認", "결과 확인 필요", "結果待確認")
-    }, result?.message,
-)
-
-/** 进度条画成什么样。 */
 sealed interface WorkMeter {
     data class Determinate(val fraction: Float) : WorkMeter
 
-    /** 在做，但总量或用时未知。 */
     data object Indeterminate : WorkMeter
 
-    /** 停着等人处理（待输密码），不画进度条。 */
     data object None : WorkMeter
 }
 
-/**
- * 一件后台工作此刻的进度描述。传输页的行与详情面板、桌面的浮动卡片、Android 的进度通知都从这里取文案与进度值，
- * 不各拼一份：曾经通知只写「进行中」、行上写「准备归档 3 / 40」，同一件事两处说法对不上。
- *
- * [title] 是带对象的一句（归档「电影」），通知标题与浮动卡片用；传输页的行另以对象名作标题、前面挂类别标签，不读它。
- */
 data class WorkProgress(
     val kind: WorkKind,
     val title: String,
     val meter: WorkMeter,
-    /** 主状态：「已归档 132 / 480 个文件」。 */
     val status: String,
-    /** 次要说明：当前项、速度、停止中的说明。 */
     val detail: String? = null,
+    val measure: WorkMeasure? = null,
 )
 
 private val STOPPING_STATUS: String get() = tr("正在停止", "Stopping", "停止中", "중지 중", "正在停止")
@@ -154,26 +124,18 @@ private val STOPPING_DETAIL: String get() = tr("当前文件夹处理完成后�
 private fun fraction(done: Int, total: Int?): WorkMeter =
     if (total != null && total > 0) WorkMeter.Determinate((done.toFloat() / total).coerceIn(0f, 1f)) else WorkMeter.Indeterminate
 
-/**
- * 归档的进度。每个文件先取样内容标识（[FolderVaultSession.Progress.prepared]），整个文件夹写成清单、处置原文件后
- * 才计入 done，两段各占进度条的一半：只按 done 算时，取样那几分钟进度条一直停在 0。
- */
 fun vaultArchiveProgress(progress: FolderVaultSession.Progress, stopping: Boolean): WorkProgress {
     val total = progress.total
-    val meter = if (total > 0) {
-        WorkMeter.Determinate(((progress.prepared + progress.done).toFloat() / (total * 2)).coerceIn(0f, 1f))
-    } else {
-        WorkMeter.Indeterminate
-    }
+    val phaseDone = if (progress.prepared < total) progress.prepared else progress.done
+    val meter = fraction(phaseDone, total)
     val status = when {
         stopping -> STOPPING_STATUS
         progress.prepared < total -> tr("准备归档 ${progress.prepared} / $total 个文件", "Preparing to archive ${progress.prepared} / ${enCount(total, "file", "files")}", "アーカイブを準備中 ${progress.prepared} / $total ファイル", "보관 준비 중 ${progress.prepared} / ${total}개 파일", "準備歸檔 ${progress.prepared} / $total 個檔案")
         else -> tr("已归档 ${progress.done} / $total 个文件", "Archived ${progress.done} / ${enCount(total, "file", "files")}", "アーカイブ済み ${progress.done} / $total ファイル", "보관 완료 ${progress.done} / ${total}개 파일", "已歸檔 ${progress.done} / $total 個檔案")
     }
-    return WorkProgress(WorkKind.VAULT, tr("归档「${progress.folderName}」", "Archive “${progress.folderName}”", "「${progress.folderName}」をアーカイブ", "“${progress.folderName}” 보관", "歸檔「${progress.folderName}」"), meter, status, STOPPING_DETAIL.takeIf { stopping })
+    return WorkProgress(WorkKind.VAULT, tr("归档「${progress.folderName}」", "Archive “${progress.folderName}”", "「${progress.folderName}」をアーカイブ", "“${progress.folderName}” 보관", "歸檔「${progress.folderName}」"), meter, status, STOPPING_DETAIL.takeIf { stopping }, WorkMeasure(phaseDone.toLong(), total.toLong().takeIf { it > 0 }, WorkUnit.ITEMS))
 }
 
-/** 取消归档的进度。总数要扫完整棵树才知道，之前是不定进度，报已扫描的文件夹数。 */
 fun vaultRestoreProgress(progress: FolderVaultSession.RestoreProgress, stopping: Boolean): WorkProgress {
     val title = tr("取消归档「${progress.folderName}」", "Undo archiving “${progress.folderName}”", "「${progress.folderName}」のアーカイブを解除", "“${progress.folderName}” 보관 취소", "取消歸檔「${progress.folderName}」")
     val total = progress.total
@@ -192,7 +154,6 @@ fun vaultRestoreProgress(progress: FolderVaultSession.RestoreProgress, stopping:
     )
 }
 
-/** 进程级归档会话眼下的那一件，没有在做时为 null。 */
 fun FolderVaultSession.workProgress(): WorkProgress? =
     progress?.let { vaultArchiveProgress(it, stopping) } ?: restoreProgress?.let { vaultRestoreProgress(it, stopping) }
         ?: activeWork?.let { WorkProgress(WorkKind.VAULT, tr("归档「${it.name}」", "Archive “${it.name}”", "「${it.name}」をアーカイブ", "“${it.name}” 보관", "歸檔「${it.name}」"), WorkMeter.Indeterminate, if (stopping) STOPPING_STATUS else tr("正在清点文件", "Counting files", "ファイル数を確認中", "파일 수 확인 중", "正在清點檔案")) }
@@ -211,7 +172,6 @@ fun FolderVaultSession.Record.workProgress(undo: DriveChangeJournal.UndoResult? 
     if (undo == null) message else "$message\n${undo.message}",
 )
 
-/** 一个压缩包的解压进度。 */
 fun ArchiveJob.workProgress(): WorkProgress {
     val title = tr("解压「${file.name}」", "Extract “${file.name}”", "「${file.name}」を解凍", "“${file.name}” 압축 해제", "解壓縮「${file.name}」")
     return when (val status = status) {
@@ -241,10 +201,6 @@ fun ArchiveJob.workProgress(): WorkProgress {
     }
 }
 
-/**
- * 几个压缩包合成一条，给通知与浮动卡片：进度与状态取眼下在解的那个，待输密码的另计一句。
- * 解压逐个提交，同一时刻只有一个在跑，合计各包的百分比没有意义。
- */
 fun List<ArchiveJob>.extractProgress(): WorkProgress? {
     val current = firstOrNull { it.status !is ArchiveJobStatus.NeedsPassword } ?: firstOrNull() ?: return null
     val single = current.workProgress()
@@ -258,10 +214,6 @@ fun List<ArchiveJob>.extractProgress(): WorkProgress? {
 
 internal fun ArchiveJobStatus.hasExecutingWork(): Boolean = this !is ArchiveJobStatus.NeedsPassword && this !is ArchiveJobStatus.Finished
 
-/**
- * 下载与上传合成一条，给通知：传输页逐个列出，通知里只放得下一份总量。只有一个文件时写它的名字。
- * 片段事先不知道产物大小，字节总数为 0，进度不定。
- */
 fun transferProgress(downloads: List<DownloadTask>, uploads: List<UploadTask>): WorkProgress? {
     val active = downloads.filter { it.status == DownloadStatus.DOWNLOADING }
     val sending = uploads.filter { it.status.isActive }
@@ -287,7 +239,6 @@ fun transferProgress(downloads: List<DownloadTask>, uploads: List<UploadTask>): 
     )
 }
 
-/** 查找重复的扫描。与 sheet 头上的说法相同；总量事先不知道，进度不定。 */
 fun DuplicateFinderState.workProgress(): WorkProgress? {
     if (!isScanning) return null
     val scanned = tr("已扫描 $scannedFolders 个文件夹、$scannedFiles 个文件", "Scanned ${enCount(scannedFolders, "folder", "folders")} and ${enCount(scannedFiles, "file", "files")}", "$scannedFolders フォルダー、$scannedFiles ファイルを検索済み", "폴더 ${scannedFolders}개, 파일 ${scannedFiles}개 검색 완료", "已掃描 $scannedFolders 個資料夾、$scannedFiles 個檔案")
@@ -304,87 +255,40 @@ internal fun importSaveProgress(executions: List<InstantSaveExecution>): List<Wo
         WorkProgress(WorkKind.FILES, tr("保存添加链接", "Save added links", "追加したリンクを保存", "추가한 링크 저장", "儲存新增連結"), WorkMeter.Indeterminate, tr("正在保存", "Saving", "保存中", "저장 중", "正在儲存"))
     }
 
-/**
- * 眼下在后台跑的全部工作，按 [WorkKind] 的次序。读的是 Compose 状态，在 snapshotFlow 或组合里调用才会随之更新。
- * 下载与上传另读 StateFlow 的当前值，调用方要自己订阅它们的变化。
- */
-fun PikoServices.runningWork(): List<WorkProgress> = (listOfNotNull(
-    folderVaultSession.workProgress(),
-    archiveExtractSession.jobs.extractProgress(),
-    transferProgress(downloadManager.tasks.value.values.toList(), currentAccountUploads()),
-    trashSession.progress?.let { progress ->
-        WorkProgress(WorkKind.FILES, tr("移入回收站", "Move to trash", "ゴミ箱に移動", "휴지통으로 이동", "移至資源回收筒"), fraction(progress.completed, progress.total), tr("已处理 ${progress.completed} / ${progress.total} 项", "Processed ${progress.completed} / ${enCount(progress.total, "item", "items")}", "処理済み ${progress.completed} / ${progress.total} 項目", "처리 완료 ${progress.completed} / ${progress.total}개 항목", "已處理 ${progress.completed} / ${progress.total} 項"))
-    },
-) + duplicateSessions.mapNotNull { it.state?.workProgress() } +
-    importSaveProgress(instantSession.executingSaves) +
-    fileWrites.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning && it.showsInTaskPage }.map { it.workProgress() } +
-    vaultEntryEdits.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning && it.showsInTaskPage }.map { it.workProgress() } +
-    shareSaves.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
-    instantMagnetRepository.offlineSubmissions.works.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
-    uploadManager.preparations.value.filter { it.account == driveRepository.currentAccount && it.isRunning }.map { it.workProgress() } +
-    offlinePacks.jobs.value.filter { it.account == driveRepository.currentAccount && dev.piko.shared.data.OfflinePackRef(it.account, it.taskId) in offlinePacks.busy.value }.map {
-        WorkProgress(WorkKind.FILES, it.folderName, WorkMeter.Indeterminate, tr("正在处理云端任务", "Processing cloud task", "クラウドタスクを処理中", "클라우드 작업 처리 중", "正在處理雲端任務"))
-    } +
-    downloadManager.listings.value.values.filter { it.account == driveRepository.currentAccount && it.error == null }.map {
-        WorkProgress(WorkKind.DOWNLOAD, tr("下载「${it.batch.folderName}」", "Download “${it.batch.folderName}”", "「${it.batch.folderName}」をダウンロード", "“${it.batch.folderName}” 다운로드", "下載「${it.batch.folderName}」"),
-            if (it.isListing) WorkMeter.Indeterminate else WorkMeter.None,
-            if (it.isListing) tr("正在列出文件夹", "Listing folder", "フォルダーの内容を取得中", "폴더 목록 불러오는 중", "正在列出資料夾") else tr("等待确认下载额度", "Waiting for download quota confirmation", "ダウンロード枠の確認待ち", "다운로드 할당량 확인 대기 중", "等待確認下載額度"),
-            tr("已找到 ${it.filesFound} 个文件", "Found ${enCount(it.filesFound, "file", "files")}", "${it.filesFound} ファイルが見つかりました", "파일 ${it.filesFound}개 찾음", "已找到 ${it.filesFound} 個檔案"),
-        )
-    } + listOfNotNull(driveRepository.changes.state.value.undo.values.count { it.status == DriveChangeJournal.UndoStatus.RUNNING }.takeIf { it > 0 }?.let {
-        WorkProgress(WorkKind.FILES, tr("撤销文件改动", "Undo file changes", "ファイルの変更を元に戻す", "파일 변경 실행 취소", "復原檔案變更"), WorkMeter.Indeterminate, tr("正在撤销 $it 项改动", "Undoing $it changes", "$it 件の変更を元に戻しています", "변경 ${it}건 실행 취소 중", "正在復原 $it 項變更"))
-    })).sortedBy { it.kind.ordinal }
-
-/** 文件处理、撤销和目录展开用 StateFlow 提供变化信号，平台据此重读后台工作状态。 */
-fun PikoServices.fileWorkChanges(): Flow<Unit> = merge(
-    combine(fileWrites.works, historyEdits.works, vaultEntryEdits.works, driveRepository.changes.state, downloadManager.listings) { _, _, _, _, _ -> Unit },
-    shareSaves.works.map { Unit },
-    instantMagnetRepository.offlineSubmissions.works.map { Unit },
-    offlinePacks.busy.map { Unit },
-    uploadManager.preparations.map { Unit },
-)
-
-/** 上传队列只跑当前账号的，别的账号排着的任务一直是 QUEUED，算进来就永远有活，见 [anyActiveFor]。 */
-private fun PikoServices.currentAccountUploads(): List<UploadTask> {
-    val account = clientManager.currentClient.value?.account
-    return uploadManager.tasks.value.values.filter { it.account == account }
+fun PikoServices.runningWork(): List<WorkProgress> {
+    if (driveRepository.currentAccount == null) return emptyList()
+    val state = taskCenter
+    val presenter = dev.piko.ui.screens.transfers.TaskPresenter(state, folderVaultSession)
+    return state.activity.active.map { item ->
+        val row = presenter.present(item)
+        val kind = when {
+            dev.piko.shared.state.TransferKind.DOWNLOAD.matches(item) -> WorkKind.DOWNLOAD
+            dev.piko.shared.state.TransferKind.UPLOAD.matches(item) -> WorkKind.UPLOAD
+            else -> WorkKind.FILES
+        }
+        WorkProgress(kind, row.title, row.meter, row.status, row.detail)
+    }
 }
 
-/**
- * 有没有要在后台跑下去的工作，Android 据此保持前台服务。比 [runningWork] 宽：排着队、还在查本地长度的下载也算，
- * 否则两个文件之间的空档会让前台服务退下，后台里再拉起会被系统拒绝。
- */
-fun PikoServices.hasBackgroundWork(): Boolean =
-    folderVaultSession.isRunning ||
-        archiveExtractSession.jobs.any { it.status.hasExecutingWork() } ||
-        duplicateSessions.any { it.state?.isScanning == true } ||
-        trashSession.progress != null || trashSession.isUndoing ||
-        instantSession.executingSaves.isNotEmpty() ||
-        fileWrites.works.value.any { it.account == driveRepository.currentAccount && it.isRunning && it.showsInTaskPage } ||
-        vaultEntryEdits.works.value.any { it.account == driveRepository.currentAccount && it.isRunning && it.showsInTaskPage } ||
-        shareSaves.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
-        instantMagnetRepository.offlineSubmissions.works.value.any { it.account == driveRepository.currentAccount && it.isRunning } ||
-        offlinePacks.busy.value.any { it.account == driveRepository.currentAccount } ||
-        driveRepository.changes.state.value.undo.values.any { it.status == DriveChangeJournal.UndoStatus.RUNNING } ||
-        downloadManager.listings.value.values.any { it.account == driveRepository.currentAccount && it.isListing } ||
-        downloadManager.tasks.value.values.any { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING } ||
-        currentAccountUploads().any { it.status.isActive } ||
-        uploadManager.preparations.value.any { it.account == driveRepository.currentAccount && it.isRunning }
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+fun PikoServices.fileWorkChanges(): Flow<Unit> = clientManager.currentClient.flatMapLatest { client ->
+    if (client == null) flowOf(Unit) else snapshotFlow { taskCenter.activity }.map { Unit }
+}
 
-/** 平台共同订阅业务执行状态；等待密码、确认或结果待查不会单独维持后台执行。 */
-fun PikoServices.backgroundWorkChanges(): Flow<Boolean> = combine(
-    snapshotFlow { hasBackgroundWork() }, downloadManager.tasks, uploadManager.tasks, fileWorkChanges(),
-) { _, _, _, _ -> hasBackgroundWork() }.distinctUntilChanged()
+fun PikoServices.hasBackgroundWork(): Boolean = driveRepository.currentAccount != null &&
+    taskCenter.activity.executionRequired
 
-/** 进度通知的内容。只有一件时原样照搬它；几件并行时标题与进度取第一件，展开后逐件一行。 */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+fun PikoServices.backgroundWorkChanges(): Flow<Boolean> = clientManager.currentClient.flatMapLatest { client ->
+    if (client == null) flowOf(false) else snapshotFlow { hasBackgroundWork() }
+}.distinctUntilChanged()
+
 data class WorkNotificationContent(
     val title: String,
     val text: String,
     val subText: String?,
     val meter: WorkMeter,
-    /** 展开后的逐件列表，只有一件时为空。 */
     val lines: List<String>,
-    /** 全是上传，通知图标用上传的箭头。 */
     val uploadOnly: Boolean,
 )
 
@@ -397,7 +301,7 @@ fun workNotificationContent(work: List<WorkProgress>): WorkNotificationContent {
         title = if (others == 0) first.title else tr("${first.title}，另有 $others 项", "${first.title}, plus $others more", "${first.title}、ほか $others 件", "${first.title}, 추가 ${others}건", "${first.title}，另有 $others 項"),
         text = first.status,
         subText = first.detail,
-        meter = first.meter,
+        meter = if (others == 0) first.meter else WorkMeter.None,
         lines = if (others == 0) emptyList() else work.map { "${it.title}：${it.status}" },
         uploadOnly = work.all { it.kind == WorkKind.UPLOAD },
     )

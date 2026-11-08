@@ -101,19 +101,18 @@ internal class TaskPresenter(private val state: TransfersState, private val vaul
             if (item.restoring) tr("恢复归档", "Restore archive", "アーカイブを復元", "보관 항목 복원", "還原歸檔") else tr("归档", "Archive", "アーカイブ", "보관", "歸檔"), Icons.Outlined.Inventory2,
         )
         is TransferItem.Write -> from(item.work.workProgress(state.writeUndoStatus(item.work)), tr("文件处理", "File operations", "ファイル操作", "파일 작업", "檔案處理"))
-        is TransferItem.History -> from(item.work.workProgress(), tr("历史记录", "History", "履歴", "기록", "歷史記錄"))
         is TransferItem.InstantAttempt -> from(item.work.workProgress(), if (item.work.reference) tr("引用保存", "Save references", "参照として保存", "참조로 저장", "引用儲存") else tr("保存", "Save", "保存", "저장", "儲存"), Icons.Outlined.Bolt)
         is TransferItem.Share -> from(item.work.workProgress(state.shareUndoStatus(item.work)), tr("分享转存", "Save share", "共有を保存", "공유 저장", "分享轉存"), Icons.Outlined.Share)
         is TransferItem.OfflineSubmit -> from(item.work.workProgress(), tr("离线下载请求", "Cloud download request", "クラウドダウンロードリクエスト", "클라우드 다운로드 요청", "離線下載請求"), Icons.Outlined.CloudDownload)
         is TransferItem.UploadPreparing -> from(item.work.workProgress(), tr("上传准备", "Upload preparation", "アップロードの準備", "업로드 준비", "上傳準備"), Icons.Outlined.Upload)
-        is TransferItem.VaultEdit -> from(item.work.workProgress(state.vaultEditUndoStatus(item.work)), tr("归档清单", "Archive manifest", "アーカイブ一覧", "보관 목록", "歸檔清單"))
+
     }
 
     private fun from(progress: WorkProgress, kind: String, icon: ImageVector = Icons.Outlined.Description) =
         TaskRowModel(progress.title, kind, progress.status, progress.meter, progress.detail, icon = icon)
 
     private fun downloadMeter(status: DownloadStatus, progress: Float, known: Boolean): WorkMeter = when (status) {
-        DownloadStatus.DOWNLOADING, DownloadStatus.PENDING, DownloadStatus.PAUSED ->
+        DownloadStatus.DOWNLOADING, DownloadStatus.PENDING ->
             if (known) WorkMeter.Determinate(progress.coerceIn(0f, 1f)) else WorkMeter.Indeterminate
         else -> WorkMeter.None
     }

@@ -49,14 +49,7 @@ fun PikoServices.workNotices(): Flow<WorkNotice> = merge(
     },
     fileWrites.outcomes.filter { outcome ->
         outcome.account == driveRepository.currentAccount &&
-            (outcome.result.completion != dev.piko.shared.state.FileWriteCompletion.SUCCEEDED ||
-                fileWrites.works.value.any { it.id == outcome.workId && it.showsInTaskPage })
-    }.map { WorkNotice(it.title, it.result.message) },
-    historyEdits.outcomes.filter { it.account == driveRepository.currentAccount && it.result.completion != dev.piko.shared.state.HistoryEditCompletion.SUCCEEDED }.map { WorkNotice(it.title, it.result.message) },
-    vaultEntryEdits.outcomes.filter { outcome ->
-        outcome.account == driveRepository.currentAccount &&
-            (outcome.result.completion != dev.piko.shared.state.VaultEntryEditCompletion.SUCCEEDED ||
-                vaultEntryEdits.works.value.any { it.id == outcome.id && it.showsInTaskPage })
+            fileWrites.works.value.any { it.id == outcome.workId }
     }.map { WorkNotice(it.title, it.result.message) },
     shareSaves.outcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice(it.title, it.result.message) },
     instantSaveRecords.outcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice(it.title, it.message) },

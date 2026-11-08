@@ -10,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import dev.piko.shared.data.DriveChangeJournal
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collectLatest
 
 @Composable
 fun ObserveMessages(messages: Flow<String>, snackbarHostState: SnackbarHostState) {
@@ -39,10 +40,11 @@ suspend fun showChangeNotices(
     undo: (DriveChangeJournal.Change) -> Unit,
     isCurrent: (DriveChangeJournal.Event) -> Boolean = { true },
 ) {
-    events.collect { event ->
-        if (!isCurrent(event)) return@collect
+    // 新操作的提示替换旧提示，撤销历史仍由日志保存，Ctrl+Z 可继续撤销。
+    events.collectLatest { event ->
+        if (!isCurrent(event)) return@collectLatest
         awaitVisible()
-        if (!isCurrent(event)) return@collect
+        if (!isCurrent(event)) return@collectLatest
         val change = event.change
         val result = host.showSnackbar(
             message = event.message,

@@ -75,6 +75,8 @@ class PikoServices(
     treeDatabaseFactory: PikoTreeDatabaseFactory? = null,
 ) {
     val memoryGovernor = dev.piko.shared.memory.PikoMemoryGovernor.Shared
+    val workloadGovernor = dev.piko.shared.runtime.PikoWorkloadGovernor.Shared
+    val appPresence = dev.piko.shared.runtime.AppPresence()
 
     private val appNoticesChannel = Channel<String>(Channel.BUFFERED)
     val appNotices: Flow<String> = appNoticesChannel.receiveAsFlow()
@@ -104,10 +106,10 @@ class PikoServices(
     val fileWrites = dev.piko.shared.state.FileWriteSession(
         driveRepository, CoroutineScope(backgroundScope.coroutineContext + Dispatchers.Main.immediate),
     )
-    val historyEdits = dev.piko.shared.state.HistoryEditSession(
+    val historyEdits = dev.piko.shared.state.HistoryMutations(
         driveRepository, CoroutineScope(backgroundScope.coroutineContext + Dispatchers.Main.immediate),
     )
-    val vaultEntryEdits = dev.piko.shared.state.VaultEntryEditSession(
+    val vaultEntryEdits = dev.piko.shared.state.VaultEntryMutations(
         driveRepository, CoroutineScope(backgroundScope.coroutineContext + Dispatchers.Main.immediate),
     )
     val shareSaves = dev.piko.shared.state.ShareSaveSession(
@@ -148,6 +150,23 @@ class PikoServices(
 
     val offlinePacks = OfflinePackTracker(instantMagnetRepository, driveRepository, preferences)
 
+    private var taskCenterAccount: String? = null
+    private var taskCenterState: dev.piko.shared.state.TransfersState? = null
+    val taskCenter: dev.piko.shared.state.TransfersState
+        get() {
+            val account = requireNotNull(driveRepository.currentAccount)
+            if (taskCenterAccount != account || taskCenterState == null) {
+                taskCenterAccount = account
+                taskCenterState = dev.piko.shared.state.TransfersState(
+                    downloadManager, taskRepository, offlinePacks, fileExecutionScopes.forAccount(account),
+                    driveRepository, uploadManager, instantSaveRecords, account, archiveExtractSession,
+                    folderVaultSession, listsServerWork = true, fileWrites = fileWrites,
+                    shareSaves = shareSaves, receiving = receivingActivity,
+                )
+            }
+            return requireNotNull(taskCenterState)
+        }
+
     val moveHistory = MoveHistory(preferences, driveRepository, backgroundScope)
 
     /** 部分设置同步到网盘的 .piko 文件夹，登录后自己开始，见 PikoSettingsSync。 */
@@ -179,12 +198,23 @@ class PikoServices(
         }
     }
 
+    fun onWindowFocusChanged(windowId: String, focused: Boolean) {
+        if (appPresence.onWindowFocusChanged(windowId, focused)) {
+            onAppForegrounded()
+        }
+    }
+
+    fun onWindowClosed(windowId: String) {
+        appPresence.onWindowClosed(windowId)
+    }
+
     /** 窗口重新获得焦点或应用回到前台时轻量增量拉取固定标签与设置（10 秒冷却防抖），无需重启应用即可跨端实时同步。 */
     fun onAppForegrounded() {
         val now = Clock.System.now().toEpochMilliseconds()
         if (now - lastForegroundSyncMs < 10_000L) return
         lastForegroundSyncMs = now
         backgroundScope.launch {
+            workloadGovernor.awaitBackgroundSyncAllowed()
             if (clientManager.currentClient.value != null) {
                 pinnedTabSync.syncNow()
                 settingsSync.syncNow()
@@ -245,16 +275,12 @@ class PikoServices(
     /** 下载片段的面板收起后选好的区间还在，见 [SegmentSession]。 */
     val segmentSession: SegmentSession by lazy { SegmentSession() }
 
-    val trashSession by lazy {
-        dev.piko.shared.state.TrashSession(driveRepository, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
-    }
-
     val duplicateSessions = androidx.compose.runtime.mutableStateListOf<DuplicateSession>()
 
     fun newDuplicateSession(): DuplicateSession =
         DuplicateSession(
             newScope = { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) },
-            newState = { scope, root -> DuplicateFinderState(clientManager, driveRepository, scope, root, trashSession) },
+            newState = { scope, root -> DuplicateFinderState(clientManager, driveRepository, scope, root) },
         ).also(duplicateSessions::add)
 
     fun releaseDuplicateSession(session: DuplicateSession) {
@@ -283,7 +309,7 @@ class PikoServices(
     val folderVaultSession: FolderVaultSession by lazy {
         FolderVaultSession(driveRepository, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)).also { session ->
             session.conflictReason = { targets ->
-                val commands = dev.piko.shared.presentation.FileCommands(driveRepository, fileWrites, cleanup = trashSession, vault = session, vaultEdits = vaultEntryEdits, shareSaves = shareSaves, receiving = receivingActivity)
+                val commands = dev.piko.shared.presentation.FileCommands(driveRepository, fileWrites, vault = session, shareSaves = shareSaves, receiving = receivingActivity)
                 (commands.vaultAvailability(targets) as? dev.piko.shared.presentation.ActionAvailability.Blocked)?.reason
             }
         }
@@ -322,6 +348,7 @@ class PikoServices(
         CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launchOnAccountLeave(clientManager) { left ->
             PikoLog.i(TAG, "${if (clientManager.currentClient.value == null) "退出登录" else "换号"}：结束上一账号的进程级会话")
             presentationStores.leave(left)
+            if (taskCenterAccount == left) { taskCenterAccount = null; taskCenterState = null }
             fileWrites.clear(left)
             historyEdits.clear(left)
             vaultEntryEdits.clear(left)
@@ -332,7 +359,6 @@ class PikoServices(
             driveRepository.enterAccount(clientManager.currentClient.value?.account)
             _fileHighlightRequested.value?.takeIf { it.account == left }?.let(::consumeFileHighlight)
             instantSession.clear()
-            trashSession.clear()
             duplicateSessions.toList().forEach { it.end() }
             duplicateSessions.clear()
             archiveExtractSession.clear()
@@ -340,11 +366,6 @@ class PikoServices(
             segmentSession.end()
             clipFeedSession.endAccount(left)
             folderVaultSession.cancel()
-        }
-        backgroundScope.launch {
-            preferences.concurrentAccelerationFlow.collect { enabled ->
-                clientManager.setConcurrentAcceleration(enabled)
-            }
         }
         backgroundScope.launch {
             val cleanedAccounts = mutableSetOf<String>()

@@ -70,9 +70,9 @@ class WorkProgressTest {
     private fun meterOf(work: WorkProgress?) = (work?.meter as WorkMeter.Determinate).fraction
 
     @Test
-    fun unconfirmedFileWriteIsAnActionableResultAndItsInverseHasSeparateProgress() {
+    fun unconfirmedCopyKeepsItsResultWithoutAnimating() {
         val work = dev.piko.shared.state.FileWriteWork(1, "account",
-            dev.piko.shared.state.FileWriteCommand.Rename("file", "new.txt"), 1,
+            dev.piko.shared.state.FileWriteCommand.Copy(listOf("file"), dev.piko.shared.data.PikoPathBreadcrumb("target", "target")), 1,
             result = dev.piko.shared.state.FileWriteResult(dev.piko.shared.state.FileWriteCompletion.UNCONFIRMED,
                 "请检查实际文件", unconfirmed = setOf("file"), finishedAtMs = 2),
         )
@@ -96,14 +96,15 @@ class WorkProgressTest {
     }
 
     @Test
-    fun archivePreparationMovesTheBarBeforeAnyFolderIsDone() {
+    fun archiveProgressMeasuresTheCurrentStage() {
         // 取样内容标识要几分钟，这段时间 done 一直是 0；只按 done 算的话进度条停在起点
         val preparing = vaultArchiveProgress(FolderVaultSession.Progress("电影", done = 0, total = 40, prepared = 20), stopping = false)
-        assertEquals(0.25f, meterOf(preparing))
+        assertEquals(0.5f, meterOf(preparing))
+        assertEquals(WorkMeasure(20, 40, WorkUnit.ITEMS), preparing.measure)
         assertEquals("准备归档 20 / 40 个文件", preparing.status)
 
         val archiving = vaultArchiveProgress(FolderVaultSession.Progress("电影", done = 30, total = 40, prepared = 40), stopping = false)
-        assertEquals(0.875f, meterOf(archiving))
+        assertEquals(0.75f, meterOf(archiving))
         assertEquals("已归档 30 / 40 个文件", archiving.status)
     }
 
@@ -215,7 +216,7 @@ class WorkProgressTest {
 
         val both = workNotificationContent(listOf(vault, extract))
         assertEquals("归档「电影」，另有 1 项", both.title)
-        assertEquals(vault.meter, both.meter)
+        assertEquals(WorkMeter.None, both.meter)
         assertEquals(listOf("归档「电影」：${vault.status}", "解压「b.zip」：${extract.status}"), both.lines)
     }
 }

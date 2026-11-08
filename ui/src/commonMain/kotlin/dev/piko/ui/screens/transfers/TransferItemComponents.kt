@@ -83,12 +83,7 @@ internal class TransferActionContext(
     val onConfirmSingleSideEffectDelete: (String) -> Unit,
 )
 
-private fun locateWriteIdOf(work: FileWriteWork): String? = when (val cmd = work.command) {
-    is FileWriteCommand.Delete -> null
-    is FileWriteCommand.Copy -> cmd.target.id
-    is FileWriteCommand.Move -> work.result?.confirmed?.firstOrNull() ?: cmd.target.id
-    else -> work.result?.createdId ?: work.result?.confirmed?.firstOrNull()
-}
+private fun locateWriteIdOf(work: FileWriteWork): String = work.command.target.id
 
 private fun hasLocalPreview(task: DownloadTask): Boolean =
     task.thumbnailLink.isNotEmpty() || task.destinationPath.isNotEmpty()
@@ -203,6 +198,7 @@ internal fun buildTransferItemActions(
                 if (item.work.receipt?.requiresInspection == true) ctx.onConfirmSingleSideEffectDelete(item.key)
                 else state.remove(item)
             },
+            onRetry = if (services.instantSession.canRetryAttempt(item.work.id)) ({ services.instantSession.retryAttempt(item.work.id); Unit }) else null,
             onRecheck = if (services.instantSaveRecords.canRecheck(item.work.id)) ({ services.instantSaveRecords.recheck(item.work.id, services.driveRepository); Unit }) else null,
         )
         is TransferItem.Share -> shareTransferActions(
@@ -260,35 +256,9 @@ internal fun buildTransferItemActions(
                 locateWriteIdOf(work)?.let { id -> { ctx.onOpenCloudFileById(id, work.command.title) } },
             )
         }
-        is TransferItem.VaultEdit -> vaultEditActions(
-            item.work,
-            state.vaultEditUndoStatus(item.work),
-            state.canUndoVaultEdit(item.work),
-            services.vaultEntryEdits.canRecheck(item.work.id),
-            { state.undoVaultEdit(item.work) },
-            { services.vaultEntryEdits.recheck(item.work.id) },
-            {
-                if (item.work.result?.unconfirmed?.isNotEmpty() == true) ctx.onConfirmSingleSideEffectDelete(item.key)
-                else state.remove(item)
-            },
-        )
-        is TransferItem.History -> historyTransferActions(
-            item.work,
-            services.historyEdits.canRecheck(item.work.id),
-            { services.historyEdits.recheck(item.work.id) },
-            {
-                if (item.work.result?.completion in setOf(HistoryEditCompletion.PARTIAL, HistoryEditCompletion.UNCONFIRMED)) {
-                    ctx.onConfirmSingleSideEffectDelete(item.key)
-                } else state.remove(item)
-            },
-        )
     }
-    return base + SheetAction(
-        Icons.Outlined.Info,
-        tr("详情", "Details", "詳細", "세부 정보", "詳細資料"),
-        { ctx.onShowDetails(item.key) },
-        group = ActionGroup.Properties,
-    )
+    return base + SheetAction(Icons.Outlined.Info, tr("详情", "Details", "詳細", "세부 정보", "詳細資料"),
+        { ctx.onShowDetails(item.key) }, group = ActionGroup.Properties)
 }
 
 internal fun buildTransferPrimaryAction(
@@ -297,7 +267,7 @@ internal fun buildTransferPrimaryAction(
 ): (() -> Unit)? {
     val state = ctx.state
     return when (item) {
-        is TransferItem.UploadPreparing -> ({ ctx.onOpenCloudFileById(item.work.parentId, item.work.parentName) })
+        is TransferItem.UploadPreparing -> if (item.children.isNotEmpty()) ({ ctx.onToggleBatch(item.key) }) else ({ ctx.onOpenCloudFileById(item.work.parentId, item.work.parentName) })
         is TransferItem.UploadBatch -> ({ ctx.onToggleBatch(item.key) })
         is TransferItem.LocalBatch -> localBatchPrimaryAction(item, buildTransferBatchIntents(item, ctx))
         is TransferItem.Local -> localPrimaryAction(
@@ -338,8 +308,6 @@ internal fun buildTransferPrimaryAction(
         }
         is TransferItem.Vault -> null
         is TransferItem.Write -> locateWriteIdOf(item.work)?.let { id -> { ctx.onOpenCloudFileById(id, item.work.command.title) } }
-        is TransferItem.History -> null
-        is TransferItem.VaultEdit -> null
     }
 }
 
@@ -645,8 +613,6 @@ internal fun TransferTaskDetailsPane(
         is TransferItem.Extract -> ExtractTransferDetails(current, actions, modifier = modifier)
         is TransferItem.Vault -> VaultTransferDetails(current, vaultSession, actions, current.record?.let(state::vaultUndoStatus), modifier = modifier)
         is TransferItem.Write -> FileWriteTransferDetails(current.work, state.writeUndoStatus(current.work), actions, modifier = modifier)
-        is TransferItem.History -> HistoryTransferDetails(current.work, actions, modifier = modifier)
-        is TransferItem.VaultEdit -> VaultEditTransferDetails(current.work, state.vaultEditUndoStatus(current.work), actions, modifier = modifier)
     }
 }
 
@@ -690,14 +656,7 @@ internal fun DeleteSelectedTasksDialog(
         tr("仅移除云端任务记录，已保存至网盘的文件不受影响。", "Only cloud task records will be removed; files saved in drive are kept.", "クラウドタスクの記録のみを削除します。ドライブに保存済みのファイルは保持されます。", "클라우드 작업 기록만 삭제하며 드라이브에 저장된 파일은 유지됩니다.", "僅移除雲端任務記錄，已儲存至雲端硬碟的檔案不受影響。").takeIf { items.any { TransferKind.CLOUD.matches(it) } },
         tr("待确认的文件操作可能已在服务端执行。移除记录不会取消已提交的操作，重试前请先核对实际文件。", "Unconfirmed file operations may have already run on the server. Removing records does not cancel them; inspect files before retrying.", "未確認のファイル操作はサーバーで既に実行されている可能性があります。記録を削除しても操作は取り消されないため、再試行前に実際のファイルを確認してください。", "미확인 파일 작업이 서버에서 이미 실행되었을 수 있습니다. 기록을 삭제해도 작업은 취소되지 않으므로 다시 시도하기 전에 실제 파일을 확인해 주세요.", "待確認的檔案操作可能已在伺服器執行。移除記錄不會取消已提交的操作，重試前請先核對實際檔案。").takeIf {
             items.any { it is TransferItem.Write && it.work.result?.unconfirmed?.isNotEmpty() == true }
-        },
-        tr("待确认的历史记录操作不会因移除此记录而取消，已清除的续播进度亦不会恢复。", "Removing unconfirmed history records does not cancel the request or restore playback positions.", "未確認の履歴記録を削除しても元の操作は取り消されず、消去された再生位置も復元されません。", "미확인 기록 항목을 삭제해도 원래 요청이 취소되거나 지워진 이어보기 위치가 복원되지 않습니다.", "待確認的歷史記錄操作不會因移除此記錄而取消，已清除的續播進度亦不會還原。").takeIf {
-            items.any { it is TransferItem.History && it.work.result?.completion in setOf(HistoryEditCompletion.PARTIAL, HistoryEditCompletion.UNCONFIRMED) }
-        },
-        tr("归档清单修改结果待确认。移除记录不会取消已提交的修改，请先核对归档清单。", "Archive manifest edits are unconfirmed. Removing records does not cancel submitted edits; check the manifest first.", "アーカイブ一覧の変更結果が未確認です。記録を削除しても送信済みの変更は取り消されません。", "보관 목록 편집 결과가 미확인 상태입니다. 기록을 삭제해도 제출된 변경은 취소되지 않습니다.", "歸檔清單修改結果待確認。移除記錄不會取消已提交的修改，請先核對歸檔清單。").takeIf {
-            items.any { it is TransferItem.VaultEdit && it.work.result?.unconfirmed?.isNotEmpty() == true }
-        },
-        tr("部分保存请求可能已在服务端执行。移除记录不会取消请求，重新保存前请先核对目标文件夹。", "Some save requests may have already run. Removing records does not cancel them; check the destination folder before saving again.", "一部の保存リクエストは既に実行されている可能性があります。記録を削除しても取り消されないため、再保存前に保存先フォルダーを確認してください。", "일부 저장 요청이 이미 실행되었을 수 있습니다. 기록을 삭제해도 취소되지 않으므로 다시 저장하기 전에 대상 폴더를 확인해 주세요.", "部分儲存請求可能已在伺服器執行。移除記錄不會取消請求，重新儲存前請先核對目標資料夾。").takeIf {
+        },        tr("部分保存请求可能已在服务端执行。移除记录不会取消请求，重新保存前请先核对目标文件夹。", "Some save requests may have already run. Removing records does not cancel them; check the destination folder before saving again.", "一部の保存リクエストは既に実行されている可能性があります。記録を削除しても取り消されないため、再保存前に保存先フォルダーを確認してください。", "일부 저장 요청이 이미 실행되었을 수 있습니다. 기록을 삭제해도 취소되지 않으므로 다시 저장하기 전에 대상 폴더를 확인해 주세요.", "部分儲存請求可能已在伺服器執行。移除記錄不會取消請求，重新儲存前請先核對目標資料夾。").takeIf {
             items.any { it is TransferItem.InstantAttempt && it.work.receipt?.requiresInspection == true }
         },
         tr("分享转存或重命名结果待确认。移除记录不会取消已提交的请求，重试前请先核对目标文件夹。", "Share save or rename results are unconfirmed. Removing records does not cancel submitted requests; check the destination folder first.", "共有保存または名前変更の結果が未確認です。記録を削除しても送信済みのリクエストは取り消されません。", "공유 저장 또는 이름 변경 결과가 미확인 상태입니다. 기록을 삭제해도 제출된 요청은 취소되지 않습니다.", "分享轉存或重新命名結果待確認。移除記錄不會取消已提交的請求，重試前請先核對目標資料夾。").takeIf {

@@ -33,8 +33,6 @@ import dev.piko.shared.naming.av.parseAvForRename
 import dev.piko.shared.naming.av.withAvFlags
 import dev.piko.shared.scrape.MetaTubeService
 import dev.piko.shared.state.DriveScreenState
-import dev.piko.shared.state.FileWriteCommand
-import dev.piko.shared.state.FileWriteSession
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.CopyTargetDialog
@@ -298,16 +296,10 @@ internal fun DriveSheetHost(
     }
 }
 
-/**
- * 后台会话驱动的全局浮层（压缩包密码请求、批量写操作进度、片段截取面板）：
- * `fileWrites.works` 仅在本组件内订阅，不影响网盘列表重组。
- */
+/** 压缩包密码请求与片段截取面板。 */
 @Composable
 internal fun DriveSystemOverlays(
     state: DriveScreenState,
-    isWorkspaceBrowser: Boolean,
-    currentAccount: String?,
-    fileWrites: FileWriteSession,
     segmentSession: SegmentSession,
     downloadManager: PikoDownloadCoordinator,
     onOpenTransfers: () -> Unit,
@@ -318,18 +310,6 @@ internal fun DriveSystemOverlays(
             incorrect = request.incorrect,
             onSubmit = state::submitArchivePassword,
             onDismiss = state::dismissArchivePassword,
-        )
-    }
-
-    if (isWorkspaceBrowser) {
-        val fileWriteWorks by fileWrites.works.collectAsStateWithLifecycle()
-        BatchOperationDialog(
-            work = fileWriteWorks.firstOrNull {
-                it.account == currentAccount && it.isRunning &&
-                    (it.totalSteps > 1 || it.command is FileWriteCommand.Copy)
-            },
-            trash = state.trashSession,
-            onStopWrite = fileWrites::requestStop,
         )
     }
 

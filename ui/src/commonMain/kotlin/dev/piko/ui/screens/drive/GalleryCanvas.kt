@@ -132,6 +132,9 @@ internal class GalleryCanvasState internal constructor(anchor: GalleryAnchor? = 
     internal val layout = GalleryCanvasLayout(anchor)
     internal var revision by mutableIntStateOf(0)
     internal var visibleFileIds by mutableStateOf<Set<String>>(emptySet())
+    internal val learnedShapes = mutableStateMapOf<String, GalleryShape>()
+    internal val failedCovers = mutableStateSetOf<String>()
+    internal val prefetched = hashSetOf<String>()
 
     internal fun scrollBy(pixels: Float): Float {
         layout.scrollBy(-pixels.toDouble())
@@ -180,11 +183,12 @@ internal fun GalleryCanvas(
     val widthClass = currentWidthClass()
     val columns = galleryTileColumns(tileSize, widthClass)
     val maximumWidth = galleryTileMaxWidth(tileSize)
-    val learnedShapes = remember(state, files) { mutableStateMapOf<String, GalleryShape>() }
-    val failedCovers = remember(state, files) { mutableStateSetOf<String>() }
-    val prefetched = remember(state, files) { hashSetOf<String>() }
-    val memoryPolicy by LocalPikoServices.current.memoryGovernor.policy.collectAsState()
-    val prefetchLimit = remember(state) { Semaphore(COVER_PREFETCH_CONCURRENCY) }
+    val learnedShapes = state.learnedShapes
+    val failedCovers = state.failedCovers
+    val prefetched = state.prefetched
+    val services = LocalPikoServices.current
+    val memoryPolicy by services.memoryGovernor.policy.collectAsState()
+    val workBudget by services.workloadGovernor.budget.collectAsState()
     val platformContext = LocalPlatformContext.current
     val platform = LocalPikoPlatform.current
     val coverFiles = files
@@ -220,8 +224,10 @@ internal fun GalleryCanvas(
     // 已知宽高比的封面仅预热磁盘缓存（零 CPU 解码），未知宽高比的仅按小尺寸探测比例。
     // All children belong to this window: a scroll, dataset change or pressure transition
     // cancels both active requests and semaphore waiters before another window is launched.
-    LaunchedEffect(coverFiles, state.visibleFileIds, memoryPolicy) {
-        if (memoryPolicy != MemoryPolicy.Normal) return@LaunchedEffect
+    val prefetchConcurrency = workBudget.coverPrefetchConcurrency.coerceAtMost(COVER_PREFETCH_CONCURRENCY)
+    LaunchedEffect(coverFiles, state.visibleFileIds, memoryPolicy, prefetchConcurrency) {
+        if (memoryPolicy != MemoryPolicy.Normal || prefetchConcurrency <= 0) return@LaunchedEffect
+        val prefetchLimit = Semaphore(prefetchConcurrency)
         val visible = state.visibleFileIds
         if (visible.isNotEmpty()) delay(COVER_PREFETCH_DEBOUNCE_MS)
         val anchorIndex = if (visible.isEmpty()) 0 else coverFiles.indexOfLast { it.id in visible }.coerceAtLeast(0)

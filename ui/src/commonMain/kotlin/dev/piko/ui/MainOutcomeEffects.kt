@@ -27,6 +27,7 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.workbench.TaskSlot
 import dev.piko.ui.workbench.WorkspaceViewModel
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -145,13 +146,14 @@ internal fun MainOutcomeEffects(
             }
     }
 
-    LaunchedEffect(services.historyEdits, lifecycle, account) {
-        services.historyEdits.outcomes.collect { outcome ->
-            if (outcome.account != services.driveRepository.currentAccount) return@collect
+    LaunchedEffect(services.historyEdits, services.vaultEntryEdits, services.fileWrites, account) {
+        kotlinx.coroutines.flow.merge(
+            services.historyEdits.outcomes.map { it.account to it.result.message },
+            services.vaultEntryEdits.outcomes.filter { it.result.completion != VaultEntryEditCompletion.SUCCEEDED }.map { it.account to it.result.message },
+            services.fileWrites.mutations.outcomes.filter { it.result.completion != FileWriteCompletion.SUCCEEDED }.map { it.account to it.result.message },
+        ).collect { (owner, message) ->
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
-            if (outcome.account != services.driveRepository.currentAccount || services.historyEdits.works.value.none { it.id == outcome.id }) return@collect
-            val answer = rootSnackbar.showSnackbar("${outcome.title}：${outcome.result.message}", actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기", "檢視任務"), withDismissAction = true)
-            if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) latestOpenTransfers()
+            if (owner == services.driveRepository.currentAccount) rootSnackbar.showSnackbar(message, withDismissAction = true)
         }
     }
 
@@ -197,35 +199,19 @@ internal fun MainOutcomeEffects(
         }
     }
 
-    LaunchedEffect(services.vaultEntryEdits, lifecycle, account) {
-        services.vaultEntryEdits.outcomes.collect { outcome ->
-            if (outcome.account != services.driveRepository.currentAccount) return@collect
-            if (outcome.result.completion == VaultEntryEditCompletion.SUCCEEDED) return@collect
-            lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
-            val work = services.vaultEntryEdits.works.value.firstOrNull { it.id == outcome.id } ?: return@collect
-            if (outcome.account != services.driveRepository.currentAccount) return@collect
-            val answer = rootSnackbar.showSnackbar(
-                "${outcome.title}：${outcome.result.message}",
-                actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기", "檢視任務").takeIf { work.showsInTaskPage },
-                withDismissAction = true,
-            )
-            if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) latestOpenTransfers()
-        }
-    }
-
     LaunchedEffect(services.fileWrites, lifecycle, account) {
         services.fileWrites.outcomes.collect { outcome ->
             if (outcome.account != services.driveRepository.currentAccount) return@collect
             val initialWork = services.fileWrites.works.value.firstOrNull { it.id == outcome.workId } ?: return@collect
             if (outcome.result.completion == FileWriteCompletion.SUCCEEDED &&
-                (!initialWork.showsInTaskPage || outcome.result.undoChangeIds.isNotEmpty())
+                outcome.result.undoChangeIds.isNotEmpty()
             ) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
             val work = services.fileWrites.works.value.firstOrNull { it.id == outcome.workId } ?: return@collect
             if (outcome.account != services.driveRepository.currentAccount) return@collect
             val answer = rootSnackbar.showSnackbar(
                 "${outcome.title}：${outcome.result.message}",
-                actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기", "檢視任務").takeIf { work.showsInTaskPage },
+                actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기", "檢視任務"),
                 withDismissAction = true,
             )
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) latestOpenTransfers()
@@ -235,7 +221,7 @@ internal fun MainOutcomeEffects(
     LaunchedEffect(services.driveRepository, lifecycle, account) {
         val changes = services.driveRepository.changes
         showChangeNotices(
-            changes.events.filter { it.change !is DriveChangeJournal.Change.Trash },
+            changes.events,
             rootSnackbar,
             awaitVisible = { lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) } },
             undo = { change ->

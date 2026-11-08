@@ -168,7 +168,6 @@ fun SettingsScreen(
     val settingsSync = services.settingsSync
     val syncStatus by settingsSync.status.collectAsStateWithLifecycle()
     val lastSynced by settingsSync.lastSynced.collectAsStateWithLifecycle()
-    val isConcurrentAccelerationEnabled by sessionManager.concurrentAccelerationFlow.collectAsStateWithLifecycle(initialValue = true)
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
     val isFreeAccount by services.driveRepository.isFreeAccountFlow.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
@@ -468,13 +467,6 @@ fun SettingsScreen(
                                 onCheckedChange = { scope.launch { sessionManager.setHardwareDecoding(it) } },
                             )
                             SettingsSwitchRow(
-                                icon = Icons.Outlined.Speed,
-                                title = tr("并发加速", "Multi-connection acceleration", "マルチ接続高速化", "다중 연결 가속", "並行加速"),
-                                supporting = tr("多连接并发传输，提升播放与下载速度", "Use multiple connections for faster streaming and downloads", "複数接続で再生とダウンロードを高速化", "여러 연결로 재생 및 다운로드 속도 향상", "多連線並行傳輸，提升播放與下載速度"),
-                                checked = isConcurrentAccelerationEnabled,
-                                onCheckedChange = { scope.launch { sessionManager.setConcurrentAccelerationEnabled(it) } },
-                            )
-                            SettingsSwitchRow(
                                 icon = Icons.Outlined.SwipeVertical,
                                 title = tr("信息流自动续播", "Auto-extend feed clips", "フィードの自動延長再生", "피드 클립 자동 연장", "資訊流自動續播"),
                                 supporting = tr("30 秒片段播完后自动顺延播放当前视频后续内容；关闭后循环播放当前片段", "Continue playing subsequent segments of the video after 30 seconds; loop the current clip when disabled", "30秒の再生後に同じ動画の続きを自動再生します。無効時は現在のクリップをループ再生します", "30초 재생 후 현재 동영상의 다음 구간을 이어서 재생하며, 끄면 현재 클립을 반복 재생합니다", "30 秒片段播完後自動順延播放目前影片後續內容；關閉後循環播放目前片段"),
@@ -555,13 +547,6 @@ fun SettingsScreen(
                                 supporting = downloadQualitySummary(downloadMaxHeight),
                                 onClick = { showDownloadQuality = true },
                                 trailingIcon = null,
-                            )
-                            SettingsSwitchRow(
-                                icon = Icons.Outlined.Speed,
-                                title = tr("并发加速", "Multi-connection acceleration", "マルチ接続高速化", "다중 연결 가속", "並行加速"),
-                                supporting = tr("多连接并发传输，提升播放与下载速度", "Use multiple connections for faster streaming and downloads", "複数接続で再生とダウンロードを高速化", "여러 연결로 재생 및 다운로드 속도 향상", "多連線並行傳輸，提升播放與下載速度"),
-                                checked = isConcurrentAccelerationEnabled,
-                                onCheckedChange = { scope.launch { sessionManager.setConcurrentAccelerationEnabled(it) } },
                             )
                             if (backgroundTransferAccess != null) {
                                 SettingsNavigationRow(

@@ -108,6 +108,8 @@ import dev.piko.ui.format.monthlyQuotaResetLabel
 import kotlinx.coroutines.launch
 import dev.piko.shared.data.SavedAccount
 import androidx.compose.ui.unit.Dp
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * 「我的」页：账号卡片（含网盘空间与流量额度）、库与管理的入口、关于、退出登录。
@@ -280,39 +282,48 @@ internal fun rememberAccountSummary(): AccountSummary {
     val driveRepo = services.driveRepository
     val accounts by services.clientManager.accounts.collectAsStateWithLifecycle()
     val client by services.clientManager.currentClient.collectAsStateWithLifecycle()
-    val saved = client?.account?.let(accounts::find)
+    val currentAccount = client?.account
+    val saved = currentAccount?.let(accounts::find)
     // 网络回来之前先用列表里记着的数字渲染，否则卡片整块缺席、刷新完再跳出来
     val liveQuota by driveRepo.quotaFlow.collectAsStateWithLifecycle()
-    val cachedQuota = saved?.takeIf { it.limitBytes > 0 }?.let { QuotaSnapshot(it.usageBytes, it.limitBytes) }
-    val quota = liveQuota?.let { QuotaSnapshot(it.quota.usageBytes, it.quota.limitBytes) } ?: cachedQuota
-    // 不落盘，只在本页存活期间保留；失败时留着上一次的值，只在旁边补一行错误文字
+    val cachedQuota = saved?.quota?.takeIf { it.quota.limitBytes > 0 }?.let { QuotaSnapshot(it.quota.usageBytes, it.quota.limitBytes) }
+        ?: saved?.takeIf { it.limitBytes > 0 }?.let { QuotaSnapshot(it.usageBytes, it.limitBytes) }
+    val quota = liveQuota?.takeIf { it.quota.limitBytes > 0 }?.let { QuotaSnapshot(it.quota.usageBytes, it.quota.limitBytes) } ?: cachedQuota
     val transferQuota by driveRepo.transferQuotaFlow.collectAsStateWithLifecycle()
-    var transferQuotaError by remember { mutableStateOf<String?>(null) }
-    var refreshCount by remember { mutableStateOf(0) }
-    var refreshing by remember { mutableStateOf(false) }
-    LaunchedEffect(refreshCount) {
-        refreshing = true
-        coroutineScope {
-            launch {
-                driveRepo.getQuota()
-                // 昵称与头像不随登录态返回，每次进入取一次。
-                // 失败不提示：头像本就有首字母兜底，为它弹一条错误反而扰人。
-                services.accountRepository.refreshProfile()
-            }
-            launch {
-                driveRepo.getTransferQuota()
-                    .onSuccess { transferQuotaError = null }
-                    .onFailure { transferQuotaError = tr("流量额度加载失败", "Failed to load traffic quota", "転送量の利用枠を読み込めませんでした", "트래픽 할당량을 불러오지 못했습니다", "流量額度載入失敗") }
-            }
+    var transferQuotaError by remember(currentAccount) { mutableStateOf<String?>(null) }
+    var refreshCount by remember(currentAccount) { mutableStateOf(0) }
+    var refreshing by remember(currentAccount) { mutableStateOf(false) }
+    LaunchedEffect(currentAccount, refreshCount) {
+        if (currentAccount == null) {
+            refreshing = false
+            return@LaunchedEffect
         }
-        refreshing = false
+        val maxAge = if (refreshCount == 0) 30.seconds else Duration.ZERO
+        refreshing = true
+        try {
+            coroutineScope {
+                launch {
+                    driveRepo.getQuota(maxAge)
+                    // 昵称与头像不随登录态返回，进入时按 TTL 复用、手动刷新时强刷。
+                    // 失败不提示：头像本就有首字母兜底，为它弹一条错误反而扰人。
+                    services.accountRepository.refreshProfile(maxAge)
+                }
+                launch {
+                    driveRepo.getTransferQuota(maxAge)
+                        .onSuccess { transferQuotaError = null }
+                        .onFailure { transferQuotaError = tr("流量额度加载失败", "Failed to load traffic quota", "転送量の利用枠を読み込めませんでした", "트래픽 할당량을 불러오지 못했습니다", "流量額度載入失敗") }
+                }
+            }
+        } finally {
+            refreshing = false
+        }
     }
     return AccountSummary(
         saved = saved,
         quota = quota,
-        allowances = transferQuota?.account,
+        allowances = (transferQuota ?: saved?.transferQuota)?.account,
         allowancesError = transferQuotaError,
-        cloudDownload = liveQuota?.quotas?.cloudDownload,
+        cloudDownload = (liveQuota ?: saved?.quota)?.quotas?.cloudDownload,
         refreshing = refreshing,
         refresh = { refreshCount++ },
     )

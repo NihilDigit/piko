@@ -140,6 +140,7 @@ import dev.piko.ui.platform.ShortcutModifier
 import dev.piko.ui.format.formatPercentage
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.launch
 
 /**
@@ -185,9 +186,12 @@ fun SpaceMapScreen(
         }
     }
 
+    val client by services.clientManager.currentClient.collectAsStateWithLifecycle()
     val quotaResponse by driveRepo.quotaFlow.collectAsStateWithLifecycle()
-    LaunchedEffect(driveRepo) {
-        if (quotaResponse == null) driveRepo.getQuota()
+    LaunchedEffect(driveRepo, client?.account) {
+        if (client != null && quotaResponse == null) {
+            driveRepo.getQuota(maxAge = 60.seconds)
+        }
     }
 
     val snapshotFlow = remember(driveRepo, currentFolderId, includeVaulted) {
