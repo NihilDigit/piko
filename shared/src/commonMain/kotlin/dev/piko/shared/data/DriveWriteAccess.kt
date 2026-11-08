@@ -16,6 +16,7 @@ import io.github.nihildigit.pikpak.getTask
 import io.github.nihildigit.pikpak.instantCreate
 import io.github.nihildigit.pikpak.listFiles
 import io.github.nihildigit.pikpak.listStarred
+import io.github.nihildigit.pikpak.listTrash
 import io.github.nihildigit.pikpak.rename
 import io.github.nihildigit.pikpak.restoreShare
 import io.github.nihildigit.pikpak.sampleCid
@@ -55,11 +56,11 @@ class DriveWriteAccess internal constructor(
     suspend fun starredIds() = request { client.listStarred().mapTo(HashSet()) { it.id } }
     suspend fun createFolder(parent: String, name: String) = request(listOf(parent)) { client.createFolder(parent, name) }
     suspend fun rename(id: String, name: String) = request(listOf(id)) { client.rename(id, name) }
-    suspend fun move(ids: List<String>, parent: String) = request(ids + parent) { client.batchMove(ids, parent) }
-    suspend fun copy(ids: List<String>, parent: String) = request(ids + parent) { client.batchCopy(ids, parent) }
-    suspend fun trash(ids: List<String>) = request(ids) { client.batchTrash(ids) }
-    suspend fun restore(ids: List<String>) = request(ids) { client.batchUntrash(ids) }
-    suspend fun delete(ids: List<String>) = request(ids) { client.batchDelete(ids) }
+    suspend fun move(ids: List<String>, parent: String, awaitCompletion: Boolean = true) = request(ids + parent) { client.batchMove(ids, parent, awaitCompletion = awaitCompletion) }
+    suspend fun copy(ids: List<String>, parent: String) = request(ids + parent) { client.batchCopy(ids, parent, awaitCompletion = false) }
+    suspend fun trash(ids: List<String>, awaitCompletion: Boolean = true) = request(ids) { client.batchTrash(ids, awaitCompletion = awaitCompletion) }
+    suspend fun restore(ids: List<String>, awaitCompletion: Boolean = true) = request(ids) { client.batchUntrash(ids, awaitCompletion = awaitCompletion) }
+    suspend fun delete(ids: List<String>, awaitCompletion: Boolean = true) = request(ids) { client.batchDelete(ids, awaitCompletion = awaitCompletion) }
     suspend fun star(ids: List<String>, value: Boolean) = request(ids) { if (value) client.starFiles(ids) else client.unstarFiles(ids) }
     suspend fun task(id: String) = request { client.getTask(id) }
     suspend fun sampleCid(fileId: String) = request(listOf(fileId)) { client.sampleCid(client.getFile(fileId)) }
@@ -75,6 +76,7 @@ class DriveWriteAccess internal constructor(
         }
     }
     suspend fun trashFiles(fresh: Boolean = false): Result<List<FileStat>> = repository.trashFilesForClient(client, fresh)
+    suspend fun authoritativeTrashFiles(): Result<List<FileStat>> = request { client.listTrash() }
     suspend fun remainingQuotaBytes(): Result<Long?> =
         request { client.getQuota() }.map { it.quota.takeIf { q -> q.limitBytes > 0 }?.remainingBytes }
     fun knownVaultMetaOf(gcid: String, size: Long): VaultMediaMeta? =

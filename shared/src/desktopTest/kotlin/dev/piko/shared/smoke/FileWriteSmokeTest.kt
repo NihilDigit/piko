@@ -45,122 +45,6 @@ class FileWriteSmokeTest {
     private fun FileCommands.accept(command: FileWriteCommand): Long = assertIs<FileCommandResult.Accepted>(submit(command)).workId
 
     @Test
-    fun `late cleanup of the previous account preserves work already accepted by the new account`() = smoke { scope ->
-        val oldServer = FakePikPakServer("A")
-        val newServer = FakePikPakServer("B")
-        val oldFile = oldServer.addFile("old.txt")
-        val newFile = newServer.addFile("new.txt")
-        val oldEntered = Channel<Unit>(1)
-        val oldRelease = Channel<Unit>(1)
-        val newEntered = Channel<Unit>(1)
-        val newRelease = Channel<Unit>(1)
-        fun client(server: FakePikPakServer, account: String, entered: Channel<Unit>, release: Channel<Unit>): PikPakClient {
-            val http = server.httpClient()
-            http.plugin(HttpSend).intercept { request ->
-                if (request.method == HttpMethod.Patch) {
-                    entered.send(Unit)
-                    withContext(NonCancellable) { release.receive() }
-                }
-                execute(request)
-            }
-            return PikPakClient(account = account, password = "pw", sessionStore = InMemorySessionStore(),
-                rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0), httpClient = http)
-        }
-        val oldClient = client(oldServer, "old@piko.dev", oldEntered, oldRelease)
-        val newClient = client(newServer, "new@piko.dev", newEntered, newRelease)
-        val current = MutableStateFlow<PikPakClient?>(oldClient)
-        val provider = object : dev.piko.shared.data.PikoClientProvider { override val currentClient = current }
-        val repo = PikoDriveRepository(provider, MemoryPreferences())
-        repo.enterAccount(oldClient.account)
-        val session = FileWriteSession(repo, scope, 10)
-        FileCommands(repo, session).accept(FileWriteCommand.Rename(oldFile.id, "old-changed.txt"))
-        withTimeout(5_000) { oldEntered.receive() }
-        try {
-            current.value = newClient
-            repo.enterAccount(newClient.account)
-            val id = FileCommands(repo, session).accept(FileWriteCommand.Rename(newFile.id, "new-changed.txt"))
-            withTimeout(5_000) { newEntered.receive() }
-            session.clear(oldClient.account)
-            assertEquals(listOf(id), session.works.value.map { it.id })
-            oldRelease.send(Unit)
-            newRelease.send(Unit)
-            awaitUntil("新账号操作不被旧账号释放清掉") { session.works.value.single().result != null }
-            assertEquals(FileWriteCompletion.SUCCEEDED, session.works.value.single().result!!.completion)
-            assertEquals("new-changed.txt", newFile.name)
-            assertTrue(repo.changes.state.value.available.filterIsInstance<DriveChangeJournal.Change.Rename>().all { change -> change.renames.all { it.id == newFile.id } })
-        } finally {
-            oldRelease.trySend(Unit)
-            newRelease.trySend(Unit)
-        }
-    }
-
-    @Test
-    fun `independent writes proceed while conflicting actions are blocked before submission`() = smoke { scope ->
-        val server = FakePikPakServer()
-        val source = server.addFile("one.txt")
-        val other = server.addFile("other.txt")
-        val target = server.addFolder("target")
-        val entered = Channel<Unit>(1)
-        val release = Channel<Unit>(1)
-        val http = server.httpClient()
-        http.plugin(HttpSend).intercept { request ->
-            if (request.url.encodedPath.endsWith(":batchMove")) { entered.send(Unit); release.receive() }
-            execute(request)
-        }
-        val repo = drive(server, http)
-        val session = FileWriteSession(repo, scope, pollMillis = 10)
-        val commands = FileCommands(repo, session)
-        val move = FileWriteCommand.Move(listOf(source.id), PikoPathBreadcrumb(target.id, target.name))
-        val id = commands.accept(move)
-        withTimeout(5_000) { entered.receive() }
-        assertIs<FileCommandResult.Rejected>(commands.submit(FileWriteCommand.Delete(listOf(source.id))))
-        assertEquals(ActionAvailability.Available, commands.availability(FileWriteCommand.Star(listOf(source.id), true)))
-        val renameId = commands.accept(FileWriteCommand.Rename(other.id, "changed.txt"))
-        awaitUntil("独立文件不被移动阻塞") { session.works.value.find { it.id == renameId }?.result != null }
-        assertEquals("changed.txt", other.name)
-        assertTrue(session.works.value.find { it.id == id }!!.isRunning)
-        release.send(Unit)
-        awaitUntil("移动完成且结果可查询") { session.works.value.find { it.id == id }?.result != null }
-        assertEquals(FileWriteCompletion.SUCCEEDED, session.works.value.find { it.id == id }!!.result!!.completion)
-        assertEquals(target.id, source.parentId)
-        assertEquals(0, server.count("POST /drive/v1/files:batchDelete"))
-    }
-
-    @Test
-    fun `successful batch acknowledgement does not conceal partial writes and recheck has its own inverse`() = smoke { scope ->
-        val server = FakePikPakServer()
-        val first = server.addFile("first.txt")
-        val second = server.addFile("second.txt")
-        val target = server.addFolder("target")
-        server.ignoredBatchIds += second.id
-        val repo = drive(server)
-        val session = FileWriteSession(repo, scope, 10)
-        val commands = FileCommands(repo, session)
-        val id = commands.accept(FileWriteCommand.Move(listOf(first.id, second.id), PikoPathBreadcrumb(target.id, target.name)))
-        awaitUntil("部分完成可查询") { session.works.value.single().result != null }
-        val partial = session.works.value.single().result!!
-        assertEquals(FileWriteCompletion.PARTIAL, partial.completion)
-        assertEquals(setOf(first.id), partial.confirmed)
-        assertEquals(setOf(second.id), partial.unconfirmed)
-        assertEquals(1, partial.undoChangeIds.size)
-        assertEquals(ActionAvailability.Available, commands.availability(FileWriteCommand.Rename(first.id, "later.txt")), "已确认子集不被未确认的其他项阻塞")
-        first.name = "later.txt"
-        second.parentId = target.id
-        assertTrue(session.recheck(id))
-        awaitUntil("仅查询未确认部分") { session.works.value.single().result?.completion == FileWriteCompletion.SUCCEEDED }
-        val final = session.works.value.single().result!!
-        assertEquals(setOf(first.id, second.id), final.confirmed)
-        assertEquals(2, final.undoChangeIds.size)
-        assertEquals(1, server.count("POST /drive/v1/files:batchMove"), "重新查询不重新发送移动")
-        server.ignoredBatchIds.clear()
-        assertTrue(repo.changes.undo(final.undoChangeIds.last()))
-        awaitUntil("撤销后来确认的子集") { repo.changes.state.value.undo[final.undoChangeIds.last()]?.status == DriveChangeJournal.UndoStatus.UNDONE }
-        assertEquals("", second.parentId)
-        assertEquals(target.id, first.parentId)
-        assertEquals("later.txt", first.name)
-    }
-
-    @Test
     fun `closing the source page preserves execution and the result can be undone elsewhere`() = smoke { scope ->
         val server = FakePikPakServer()
         val file = server.addFile("before.txt")
@@ -175,108 +59,22 @@ class FileWriteSmokeTest {
         val writes = FileWriteSession(repo, scope, 10)
         val pageScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
         val page = dev.piko.shared.state.DriveScreenState(repo, MemoryPreferences(), pageScope, fileWriteSession = writes)
+        page.load()
+        awaitUntil("source page is loaded before rename") { page.files.any { it.id == file.id } }
         page.rename(file.id, "after.txt")
         withTimeout(5_000) { entered.receive() }
         pageScope.cancel()
         release.send(Unit)
-        awaitUntil("原页面释放后仍有业务结果") { writes.works.value.single().result != null }
+        awaitUntil("原页面释放后仍有业务结果") { writes.mutations.active.value.isEmpty() }
         assertEquals("after.txt", file.name)
         assertIs<FileCommandResult.Rejected>(page.fileActions.submit(FileWriteCommand.Rename(file.id, "late.txt")))
         val commands = FileCommands(repo, writes)
-        val inverse = writes.works.value.single().result!!.undoChangeIds.single()
+        val inverse = repo.changes.state.value.available.single().id
         assertIs<FileCommandResult.Accepted>(commands.undo(inverse))
         withTimeout(5_000) { entered.receive() }
         release.send(Unit)
         awaitUntil("其他页面撤销已完成") { repo.changes.state.value.undo[inverse]?.status == DriveChangeJournal.UndoStatus.UNDONE }
         assertEquals("before.txt", file.name)
-    }
-
-    @Test
-    fun `inverse and writes block only overlapping subjects and not unrelated root operations`() = smoke { scope ->
-        val server = FakePikPakServer()
-        val file = server.addFile("before.txt")
-        val other = server.addFile("other.txt")
-        val target = server.addFolder("target")
-        val entered = Channel<Unit>(1)
-        val release = Channel<Unit>(1)
-        val gateRename = AtomicBoolean(false)
-        val http = server.httpClient()
-        http.plugin(HttpSend).intercept { request ->
-            if (request.url.encodedPath.endsWith(":batchMove") || (request.method == HttpMethod.Patch && gateRename.get())) {
-                entered.send(Unit); release.receive()
-            }
-            execute(request)
-        }
-        val repo = drive(server, http)
-        val session = FileWriteSession(repo, scope, 10)
-        val commands = FileCommands(repo, session)
-        val rename = commands.accept(FileWriteCommand.Rename(file.id, "after.txt"))
-        awaitUntil("第一次改名完成") { session.works.value.find { it.id == rename }?.result != null }
-        val inverse = session.works.value.find { it.id == rename }!!.result!!.undoChangeIds.single()
-        val move = commands.accept(FileWriteCommand.Move(listOf(file.id), PikoPathBreadcrumb(target.id, target.name)))
-        withTimeout(5_000) { entered.receive() }
-        assertIs<FileCommandResult.Rejected>(commands.undo(inverse), "移动同一项时不能撤销它的名称")
-        release.send(Unit)
-        awaitUntil("移动已结束") { session.works.value.find { it.id == move }?.result != null }
-        gateRename.set(true)
-        assertIs<FileCommandResult.Accepted>(commands.undo(inverse))
-        withTimeout(5_000) { entered.receive() }
-        assertIs<FileCommandResult.Rejected>(commands.submit(FileWriteCommand.Delete(listOf(file.id))))
-        assertEquals(ActionAvailability.Available, commands.availability(FileWriteCommand.CreateFolder(PikoDriveRepository.ROOT_BREADCRUMB, "unrelated")))
-        assertEquals(ActionAvailability.Available, commands.availability(FileWriteCommand.Copy(listOf(other.id), PikoDriveRepository.ROOT_BREADCRUMB)))
-        assertEquals(ActionAvailability.Available, commands.filesAvailability(listOf(other.id)))
-        release.send(Unit)
-        awaitUntil("撤销完成释放关联信息") { repo.changes.state.value.undo[inverse]?.status == DriveChangeJournal.UndoStatus.UNDONE }
-        assertTrue(repo.changes.state.value.undo[inverse]!!.activeFileIds.isEmpty())
-        assertEquals("before.txt", file.name)
-    }
-
-    @Test
-    fun `blocked cut paste retains clipboard and does not submit a second write`() = smoke { scope ->
-        val server = FakePikPakServer()
-        val file = server.addFile("before.txt")
-        val target = server.addFolder("target")
-        val entered = Channel<Unit>(1)
-        val release = Channel<Unit>(1)
-        val http = server.httpClient()
-        http.plugin(HttpSend).intercept { request ->
-            if (request.url.encodedPath.endsWith(":batchMove")) { entered.send(Unit); release.receive() }
-            execute(request)
-        }
-        val repo = drive(server, http)
-        val session = FileWriteSession(repo, scope, 10)
-        val page = dev.piko.shared.state.DriveScreenState(repo, MemoryPreferences(), scope, fileWriteSession = session)
-        page.load()
-        awaitUntil("剪切来源已列出") { page.files.any { it.id == file.id } }
-        page.putOnClipboard(listOf(file.id), cut = true)
-        FileCommands(repo, session).accept(FileWriteCommand.Move(listOf(file.id), PikoPathBreadcrumb(target.id, target.name)))
-        withTimeout(5_000) { entered.receive() }
-        page.navigation.navigateToFolder(PikoPathBreadcrumb(target.id, target.name))
-        page.paste()
-        assertNotNull(page.clipboardFlow.value)
-        release.send(Unit)
-        awaitUntil("只有原来的移动完成") { session.works.value.single().result != null }
-        assertEquals(1, server.count("POST /drive/v1/files:batchMove"))
-    }
-
-    @Test
-    fun `lost mutation response is verified without replaying the request`() = smoke { scope ->
-        val server = FakePikPakServer()
-        val file = server.addFile("one.txt")
-        val target = server.addFolder("target")
-        val http = server.httpClient()
-        http.plugin(HttpSend).intercept { request ->
-            val call = execute(request)
-            if (request.url.encodedPath.endsWith(":batchMove")) throw IOException("response lost after write")
-            call
-        }
-        val repo = drive(server, http)
-        val session = FileWriteSession(repo, scope, 10)
-        FileCommands(repo, session).accept(FileWriteCommand.Move(listOf(file.id), PikoPathBreadcrumb(target.id, target.name)))
-        awaitUntil("丢失应答后的实际结果") { session.works.value.single().result != null }
-        assertEquals(FileWriteCompletion.SUCCEEDED, session.works.value.single().result!!.completion)
-        assertEquals(1, server.count("POST /drive/v1/files:batchMove"))
-        assertNotNull(session.works.value.single().result!!.undoChangeIds.singleOrNull())
     }
 
     @Test
@@ -322,27 +120,6 @@ class FileWriteSmokeTest {
         assertFalse(session.recheck(id), "没有远端标识时不提供无效查询，也不能重新提交")
         assertEquals(1, server.tasksSnapshot().size)
         assertEquals(1, server.count("POST /drive/v1/files:batchCopy"))
-    }
-
-    @Test
-    fun `star restore and delete are verified through actual service state`() = smoke { scope ->
-        val server = FakePikPakServer()
-        val star = server.addFile("star.txt")
-        val trash = server.addFile("trash.txt", trashed = true)
-        val repo = drive(server)
-        val session = FileWriteSession(repo, scope, 10)
-        val commands = FileCommands(repo, session)
-        val starred = commands.accept(FileWriteCommand.Star(listOf(star.id), true))
-        val restored = commands.accept(FileWriteCommand.Restore(listOf(trash.id)))
-        awaitUntil("星标与恢复已确认") { listOf(starred, restored).all { id -> session.works.value.find { it.id == id }?.result != null } }
-        assertTrue(star.starred)
-        assertFalse(trash.trashed)
-        val detailsBeforeDelete = server.count("GET /drive/v1/files/${trash.id}")
-        commands.accept(FileWriteCommand.Delete(listOf(trash.id)))
-        awaitUntil("永久删除已确认") { session.works.value.all { it.result != null } }
-        assertTrue(session.works.value.all { it.result!!.completion == FileWriteCompletion.SUCCEEDED })
-        assertEquals(null, server.node(trash.id))
-        assertEquals(detailsBeforeDelete, server.count("GET /drive/v1/files/${trash.id}"))
     }
 
     @Test
@@ -414,75 +191,5 @@ class FileWriteSmokeTest {
         assertEquals(4, run.processed)
         assertEquals(listOf("a", "b", "c", "done"), files.map { it.name })
         files.take(2).forEach { assertEquals(0, server.count("PATCH /drive/v1/files/${it.id}")) }
-    }
-
-    @Test
-    fun `large move uses cached preflight and destination listing`() = smoke { scope ->
-        val server = FakePikPakServer()
-        val files = (1..12).map { server.addFile("$it.txt") }
-        val target = server.addFolder("target")
-        val repo = drive(server)
-        repo.listAllFiles("").getOrThrow()
-        val session = FileWriteSession(repo, scope, 10)
-        FileCommands(repo, session).accept(FileWriteCommand.Move(files.map { it.id }, PikoPathBreadcrumb(target.id, target.name)))
-        awaitUntil("批量移动已确认") { session.works.value.single().result != null }
-        val work = session.works.value.single()
-        assertEquals(FileWriteCompletion.SUCCEEDED, work.result!!.completion)
-        assertEquals(12, work.completedCount)
-        files.forEach { assertEquals(0, server.count("GET /drive/v1/files/${it.id}")) }
-        assertEquals(setOf(target.id), files.map { it.parentId }.toSet())
-    }
-
-    @Test
-    fun `stop completes the active chunk and preserves undo`() = smoke { scope ->
-        val server = FakePikPakServer()
-        val files = (1..205).map { server.addFile("$it.txt") }
-        val target = server.addFolder("target")
-        val entered = Channel<Unit>(1)
-        val release = Channel<Unit>(1)
-        val http = server.httpClient()
-        http.plugin(HttpSend).intercept { request ->
-            if (request.url.encodedPath.endsWith(":batchMove") && server.count("POST /drive/v1/files:batchMove") == 0) { entered.send(Unit); release.receive() }
-            execute(request)
-        }
-        val repo = drive(server, http)
-        repo.listAllFiles("").getOrThrow()
-        val session = FileWriteSession(repo, scope, 10)
-        val id = FileCommands(repo, session).accept(FileWriteCommand.Move(files.map { it.id }, PikoPathBreadcrumb(target.id, target.name)))
-        withTimeout(5_000) { entered.receive() }
-        assertTrue(session.requestStop(id))
-        release.send(Unit)
-        awaitUntil("当前批完成后停止") { session.works.value.single().result != null }
-        val work = session.works.value.single()
-        assertTrue(work.stopping)
-        assertEquals(100, work.completedCount)
-        assertEquals(100, work.result!!.confirmed.size)
-        assertEquals(105, work.result!!.notAttempted.size)
-        assertEquals(1, server.count("POST /drive/v1/files:batchMove"))
-        assertTrue(repo.changes.undo(work.result!!.undoChangeIds.single()))
-        awaitUntil("撤销已移动部分") { files.all { it.parentId.isEmpty() } }
-    }
-
-    @Test
-    fun `lost delete acknowledgement can be rechecked without resubmission`() = smoke { scope ->
-        val server = FakePikPakServer()
-        val file = server.addFile("file")
-        var hideDetails = true
-        val http = server.httpClient()
-        http.plugin(HttpSend).intercept { request ->
-            if (hideDetails && request.method == HttpMethod.Get && request.url.encodedPath.endsWith("/files/${file.id}")) throw IOException("detail unavailable")
-            val response = execute(request)
-            if (request.url.encodedPath.endsWith(":batchDelete")) throw IOException("response lost")
-            response
-        }
-        val repo = drive(server, http)
-        val session = FileWriteSession(repo, scope, 10)
-        val id = FileCommands(repo, session).accept(FileWriteCommand.Delete(listOf(file.id)))
-        awaitUntil("删除待核对") { session.works.value.single().result != null }
-        assertEquals(setOf(file.id), session.works.value.single().result!!.unconfirmed)
-        hideDetails = false
-        assertTrue(session.recheck(id))
-        awaitUntil("查询确认删除") { session.works.value.single().result?.completion == FileWriteCompletion.SUCCEEDED }
-        assertEquals(1, server.count("POST /drive/v1/files:batchDelete"))
     }
 }

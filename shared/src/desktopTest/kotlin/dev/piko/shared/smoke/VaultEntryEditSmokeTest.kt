@@ -19,9 +19,11 @@ import dev.piko.shared.state.VaultWorkTargets
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.VaultEntryEditCommand
 import dev.piko.shared.state.VaultEntryEditCompletion
-import dev.piko.shared.state.VaultEntryEditSession
+import dev.piko.shared.state.VaultEntryMutations
 import io.github.nihildigit.pikpak.batchDelete
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -66,9 +68,101 @@ class VaultEntryEditSmokeTest {
         suspend fun seed(folder: String, vararg entries: VaultEntry) {
             repository.vault.update(folder, VaultEdits.add(entries.toList())).getOrThrow()
         }
-        fun commands(session: VaultEntryEditSession, scope: CoroutineScope): VaultEntryCommands = VaultEntryCommands(
-            repository, session, FileCommands(repository, FileWriteSession(repository, scope), vaultEdits = session),
+        fun commands(session: VaultEntryMutations, scope: CoroutineScope): VaultEntryCommands = VaultEntryCommands(
+            repository, session, FileCommands(repository, FileWriteSession(repository, scope)),
         )
+    }
+
+    @Test
+    fun `repeated rename commands queue immediately and preserve rollback and undo`() = smoke { scope ->
+        for (rejectFirst in listOf(false, true)) {
+            val f = Fixture()
+            val entry = f.entry("original")
+            f.seed("", entry)
+            val entered = Channel<Int>(2)
+            val release = Channel<Unit>(2)
+            var attempt = 0
+            f.beforeUpload = {
+                val index = ++attempt
+                entered.send(index)
+                release.receive()
+                if (index == 1 && rejectFirst) throw IOException("first rename rejected")
+            }
+            val session = VaultEntryMutations(f.repository, scope)
+        val outcomes = observeMutationOutcomes(scope, session.outcomes)
+            val commands = f.commands(session, scope)
+            val first = assertIs<VaultEntryCommandResult.Accepted>(commands.submit(VaultEntryEditCommand.Rename("", entry.id, "first"))).workId
+            try {
+                withTimeout(5_000) { assertEquals(1, entered.receive()) }
+                val second = assertIs<VaultEntryCommandResult.Accepted>(commands.submit(VaultEntryEditCommand.Rename("", entry.id, "second"))).workId
+                awaitUntil("second command is projected while the first upload waits") {
+                    f.repository.vault.cached("", emptyList())?.singleOrNull()?.name == "second"
+                }
+                release.send(Unit)
+                withTimeout(5_000) { assertEquals(2, entered.receive()) }
+                awaitUntil("first command settles independently") { outcomes.value.any { it.id == first } }
+                assertEquals(if (rejectFirst) VaultEntryEditCompletion.FAILED else VaultEntryEditCompletion.SUCCEEDED,
+                    outcomes.value.first { it.id == first }.result!!.completion)
+                assertEquals("second", f.repository.vault.read("", emptyList()).getOrThrow().single().name)
+                val files = FileCommands(f.repository, FileWriteSession(f.repository, scope))
+                if (!rejectFirst) {
+                    val firstUndo = outcomes.value.first { it.id == first }.result!!.undoChangeIds.single()
+                    val change = f.repository.changes.state.value.available.first { it.id == firstUndo }
+                    assertIs<ActionAvailability.Blocked>(files.undoAvailability(change))
+                }
+                release.send(Unit)
+                awaitUntil("second command commits") { outcomes.value.any { it.id == second } }
+                assertEquals("second", f.repository.vault.committed("").getOrThrow().single().name)
+                f.beforeUpload = {}
+                val undoId = outcomes.value.first { it.id == second }.result!!.undoChangeIds.single()
+                assertIs<dev.piko.shared.presentation.FileCommandResult.Accepted>(files.undo(undoId))
+                awaitUntil("second rename undo completes") { f.repository.changes.state.value.undo[undoId]?.status == DriveChangeJournal.UndoStatus.UNDONE }
+                assertEquals(if (rejectFirst) "original" else "first", f.repository.vault.committed("").getOrThrow().single().name)
+            } finally {
+                release.trySend(Unit)
+                release.trySend(Unit)
+            }
+        }
+    }
+
+    @Test
+    fun `queued manifest projection survives its predecessor and rebases after rejection`() = smoke { scope ->
+        for (rejectFirst in listOf(false, true)) {
+            val f = Fixture()
+            val first = f.entry("first")
+            val second = f.entry("second")
+            f.seed("", first, second)
+            val entered = Channel<Int>(2)
+            val release = Channel<Unit>(2)
+            var attempt = 0
+            f.beforeUpload = {
+                val index = ++attempt
+                entered.send(index)
+                release.receive()
+                if (index == 1 && rejectFirst) throw IOException("first manifest upload rejected")
+            }
+            val a = scope.async(start = CoroutineStart.UNDISPATCHED) {
+                f.repository.vault.update("", VaultEdits.rename(first.id, "first-new"))
+            }
+            withTimeout(5_000) { assertEquals(1, entered.receive()) }
+            val b = scope.async(start = CoroutineStart.UNDISPATCHED) {
+                f.repository.vault.update("", VaultEdits.rename(second.id, "second-new"))
+            }
+            try {
+                assertEquals(setOf("first-new", "second-new"), f.repository.vault.read("", emptyList()).getOrThrow().map { it.name }.toSet())
+                release.send(Unit)
+                assertEquals(!rejectFirst, a.await().isSuccess)
+                withTimeout(5_000) { assertEquals(2, entered.receive()) }
+                val expected = setOf(if (rejectFirst) "first" else "first-new", "second-new")
+                assertEquals(expected, f.repository.vault.read("", emptyList()).getOrThrow().map { it.name }.toSet())
+                release.send(Unit)
+                assertTrue(b.await().isSuccess)
+                assertEquals(expected, f.repository.vault.committed("").getOrThrow().map { it.name }.toSet())
+            } finally {
+                release.trySend(Unit)
+                release.trySend(Unit)
+            }
+        }
     }
 
     @Test
@@ -82,9 +176,10 @@ class VaultEntryEditSmokeTest {
         val entered = Channel<Unit>(1)
         val release = Channel<Unit>(1)
         f.beforeUpload = { entered.send(Unit); release.receive() }
-        val session = VaultEntryEditSession(f.repository, scope)
+        val session = VaultEntryMutations(f.repository, scope)
+        val outcomes = observeMutationOutcomes(scope, session.outcomes)
         val vault = FolderVaultSession(f.repository, scope)
-        val files = FileCommands(f.repository, FileWriteSession(f.repository, scope), vault = vault, vaultEdits = session)
+        val files = FileCommands(f.repository, FileWriteSession(f.repository, scope), vault = vault)
         vault.conflictReason = { (files.vaultAvailability(it) as? ActionAvailability.Blocked)?.reason }
         f.commands(session, scope).submit(VaultEntryEditCommand.Rename(folder.id, entry.id, "after"))
         withTimeout(5_000) { entered.receive() }
@@ -96,7 +191,7 @@ class VaultEntryEditSmokeTest {
         assertFalse(vault.isRunning, "被 UX 动作规则拦下时不能先开始扫描或恢复")
         assertEquals(ActionAvailability.Available, files.vaultAvailability(VaultWorkTargets(roots = setOf(unrelated.id))))
         release.send(Unit)
-        awaitUntil("编辑结束解除限定目录的冲突") { session.works.value.single().result != null }
+        awaitUntil("编辑结束解除限定目录的冲突") { outcomes.value.isNotEmpty() }
         assertEquals(ActionAvailability.Available, files.vaultAvailability(VaultWorkTargets(roots = setOf(folder.id))))
     }
 
@@ -112,9 +207,10 @@ class VaultEntryEditSmokeTest {
         val release = Channel<Unit>(1)
         var held = false
         f.beforeList = { id -> if (id == folder.id && !held) { held = true; entered.send(Unit); release.receive() } }
-        val session = VaultEntryEditSession(f.repository, scope)
+        val session = VaultEntryMutations(f.repository, scope)
+        val outcomes = observeMutationOutcomes(scope, session.outcomes)
         val vault = FolderVaultSession(f.repository, scope)
-        val files = FileCommands(f.repository, FileWriteSession(f.repository, scope), vault = vault, vaultEdits = session)
+        val files = FileCommands(f.repository, FileWriteSession(f.repository, scope), vault = vault)
         val commands = VaultEntryCommands(f.repository, session, files)
         vault.restoreFolder(PikoPathBreadcrumb(folder.id, folder.name))
         withTimeout(5_000) { entered.receive() }
@@ -135,7 +231,8 @@ class VaultEntryEditSmokeTest {
         val otherEntry = f.entry("other.mkv")
         f.seed("", entry)
         f.seed(otherFolder.id, otherEntry)
-        val session = VaultEntryEditSession(f.repository, scope)
+        val session = VaultEntryMutations(f.repository, scope)
+        val outcomes = observeMutationOutcomes(scope, session.outcomes)
         val pageScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
         val page = DriveScreenState(f.repository, f.preferences, pageScope, vaultEditSession = session)
         page.load()
@@ -147,13 +244,13 @@ class VaultEntryEditSmokeTest {
         withTimeout(5_000) { entered.receive() }
         pageScope.cancel()
         val commands = f.commands(session, scope)
-        assertIs<VaultEntryCommandResult.Rejected>(commands.submit(VaultEntryEditCommand.Rename("", entry.id, "again.mkv")))
+        assertIs<ActionAvailability.Available>(commands.availability(VaultEntryEditCommand.Rename("", entry.id, "again.mkv")))
         assertIs<VaultEntryCommandResult.Accepted>(commands.submit(VaultEntryEditCommand.Rename(otherFolder.id, otherEntry.id, "other-after.mkv")))
-        val files = FileCommands(f.repository, FileWriteSession(f.repository, scope), vaultEdits = session)
+        val files = FileCommands(f.repository, FileWriteSession(f.repository, scope))
         assertEquals(ActionAvailability.Available, files.availability(FileWriteCommand.Rename(unrelated.id, "after.txt")), "根目录清单不能锁住所有真实文件")
         release.send(Unit)
-        awaitUntil("离页后两次独立编辑均完成") { session.works.value.size == 2 && session.works.value.all { it.result != null } }
-        val work = session.works.value.first { it.command.entries.keys == setOf("") }
+        awaitUntil("离页后两次独立编辑均完成") { outcomes.value.size == 2 && outcomes.value.all { it.result != null } }
+        val work = outcomes.value.first { it.result.confirmed.keys == setOf("") }
         assertEquals(VaultEntryEditCompletion.SUCCEEDED, work.result!!.completion)
         val inverseId = work.result!!.undoChangeIds.single()
         f.beforeUpload = {}
@@ -169,41 +266,24 @@ class VaultEntryEditSmokeTest {
     }
 
     @Test
-    fun `partial removal retains only uncertain recovery data and rechecks without another write`() = smoke { scope ->
+    fun `partial removal retains undo and releases the manifest after failure`() = smoke { scope ->
         val f = Fixture()
         val folders = List(3) { f.server.addFolder("folder-$it") }
         val entries = List(3) { f.entry("entry-$it") }
         folders.zip(entries).forEach { (folder, entry) -> f.seed(folder.id, entry) }
         f.beforeUpload = { if (it == folders[1].id) throw IOException("manifest response unavailable") }
-        val session = VaultEntryEditSession(f.repository, scope)
+        val session = VaultEntryMutations(f.repository, scope)
+        val outcomes = observeMutationOutcomes(scope, session.outcomes)
         val command = VaultEntryEditCommand.Remove(folders.zip(entries).associate { (folder, entry) -> folder.id to setOf(entry.id) })
         val id = assertIs<VaultEntryCommandResult.Accepted>(f.commands(session, scope).submit(command)).workId
-        awaitUntil("批次保留部分结果") { session.works.value.single().result != null }
-        val work = session.works.value.single()
+        awaitUntil("批次保留部分结果") { outcomes.value.isNotEmpty() }
+        val work = outcomes.value.single()
         val result = assertNotNull(work.result)
         assertEquals(VaultEntryEditCompletion.PARTIAL, result.completion)
         assertEquals(setOf(folders[0].id), result.confirmed.keys)
-        assertEquals(setOf(folders[1].id), result.unconfirmed.keys)
-        assertEquals(setOf(folders[2].id), result.notAttempted.keys)
-        assertEquals(setOf(folders[1].id), work.before.keys)
+        assertEquals(setOf(folders[1].id, folders[2].id), result.failed.keys)
         assertEquals(1, result.undoChangeIds.size)
-        val uploads = f.uploads
-        val oldResult = session.works.value.single().result
-        assertTrue(session.recheck(id))
-        awaitUntil("只读查询结束") { session.works.value.single().result?.let { it !== oldResult } == true }
-        assertEquals(uploads, f.uploads)
-        assertEquals(result.confirmed, session.works.value.single().result!!.confirmed)
-        f.beforeUpload = {}
-        f.repository.vault.update(folders[1].id, VaultEdits.remove(setOf(entries[1].id))).getOrThrow()
-        val beforeRecheck = f.uploads
-        assertTrue(session.recheck(id))
-        awaitUntil("后来已可核对的结果加入具体撤销") { session.works.value.single().result?.unconfirmed?.isEmpty() == true }
-        val checked = session.works.value.single()
-        assertEquals(beforeRecheck, f.uploads)
-        assertTrue(checked.before.isEmpty())
-        assertEquals(2, checked.result!!.undoChangeIds.size)
-        assertEquals(result.undoChangeIds, checked.result!!.undoChangeIds.take(1))
-        assertEquals(entries[2], f.repository.vault.committed(folders[2].id).getOrThrow().single(), "查询不能补执行从未提交的部分")
+        assertEquals(entries[2], f.repository.vault.committed(folders[2].id).getOrThrow().single())
     }
 
     @Test
@@ -212,10 +292,11 @@ class VaultEntryEditSmokeTest {
         val entry = f.entry("before")
         f.seed("", entry)
         f.failCleanup = true
-        val session = VaultEntryEditSession(f.repository, scope)
+        val session = VaultEntryMutations(f.repository, scope)
+        val outcomes = observeMutationOutcomes(scope, session.outcomes)
         f.commands(session, scope).submit(VaultEntryEditCommand.Rename("", entry.id, "after"))
-        awaitUntil("清理失败不改变已可信确认的业务结果") { session.works.value.single().result != null }
-        val result = session.works.value.single().result!!
+        awaitUntil("清理失败不改变已可信确认的业务结果") { outcomes.value.isNotEmpty() }
+        val result = outcomes.value.single().result!!
         assertEquals(VaultEntryEditCompletion.SUCCEEDED, result.completion)
         assertEquals("after", f.repository.vault.committed("").getOrThrow().single().name)
         assertEquals(1, result.undoChangeIds.size)
@@ -223,25 +304,23 @@ class VaultEntryEditSmokeTest {
     }
 
     @Test
-    fun `committed verification ignores the optimistic edit and keeps an unsuccessful upload uncertain`() = smoke { scope ->
+    fun `failed optimistic upload rolls back and releases the manifest`() = smoke { scope ->
         val f = Fixture()
         val entry = f.entry("before")
         f.seed("", entry)
         val entered = Channel<Unit>(1)
         val release = Channel<Unit>(1)
         f.beforeUpload = { entered.send(Unit); release.receive(); throw IOException("no acknowledgement") }
-        val session = VaultEntryEditSession(f.repository, scope)
+        val session = VaultEntryMutations(f.repository, scope)
+        val outcomes = observeMutationOutcomes(scope, session.outcomes)
         val id = assertIs<VaultEntryCommandResult.Accepted>(f.commands(session, scope).submit(VaultEntryEditCommand.Rename("", entry.id, "after"))).workId
         withTimeout(5_000) { entered.receive() }
         assertEquals("after", f.repository.vault.read("", emptyList()).getOrThrow().single().name)
         assertEquals("before", f.repository.vault.committed("").getOrThrow().single().name)
-        assertFalse(session.forget(id))
         release.send(Unit)
-        awaitUntil("缺少确认不能宣称编辑成功") { session.works.value.single().result != null }
-        val work = session.works.value.single()
-        assertEquals(VaultEntryEditCompletion.UNCONFIRMED, work.result!!.completion)
-        assertEquals(listOf(entry), work.before[""])
+        awaitUntil("缺少确认不能宣称编辑成功") { outcomes.value.isNotEmpty() }
+        val work = outcomes.value.single()
+        assertEquals(VaultEntryEditCompletion.FAILED, work.result!!.completion)
         assertTrue(work.result!!.undoChangeIds.isEmpty())
-        assertTrue(session.canRecheck(id))
     }
 }

@@ -39,7 +39,7 @@ class VaultStoreLifecycleTest {
             assertFailsWith<IllegalStateException> { first.committed("folder") }
             assertFailsWith<IllegalStateException> { first.read("folder", emptyList()) }
             val readsBefore = cache.reads.get()
-            val next = VaultStore(EmptyIo(), cacheStore = cache, account = "A", scope = scope,
+            val next = VaultStore(EmptyIo(), Duration.ZERO, cacheStore = cache, account = "A", scope = scope,
                 saveDelayMillis = 0, predecessor = handoff)
             yield()
             assertEquals(readsBefore, cache.reads.get(), "new account generation must not read before the handoff")

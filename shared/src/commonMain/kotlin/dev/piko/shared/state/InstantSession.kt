@@ -15,17 +15,25 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-data class LinkSaveCompletion(val id: Long, val outcome: InstantSaveOutcome)
+data class LinkSaveCompletion(val id: Long, val outcome: InstantSaveOutcome, val draftId: Long = id)
 data class InstantSaveExecution(val draftId: Long, val trackedOffline: Boolean, val trackedInstantAttempt: Boolean)
 
 /** One editable import. Closing it removes the editor immediately. */
 class InstantDraft internal constructor(
     val id: Long,
-    val state: InstantSheetState,
+    initialState: InstantSheetState,
     private val draftScope: CoroutineScope,
     private val saveScope: CoroutineScope,
     private val onClosed: (InstantDraft) -> Unit,
 ) {
+    var state by mutableStateOf(initialState)
+        internal set
+    internal val submitted = androidx.compose.runtime.mutableStateListOf<InstantSheetState>()
+    internal val hasRecoverableSave: Boolean get() = submitted.any {
+        it.hasRetainedInstantAttempt && (it.hasInstantRetry || it.saveIssue?.requiresInspection == true)
+    }
+    internal val hasExecutingSave: Boolean get() = submitted.any { it.hasLocalSave || it.shareSave?.isSaving == true } || state.hasLocalSave || state.shareSave?.isSaving == true
+
     var isClosed by mutableStateOf(false)
         private set
 
@@ -40,10 +48,10 @@ class InstantDraft internal constructor(
         isClosed = true
         onClosed(this)
         draftScope.cancel()
-        if (state.hasLocalSave) {
+        if (hasExecutingSave || hasRecoverableSave) {
             // The save owns its own scope and preview lease until its receipt is recorded.
             saveScope.launch {
-                snapshotFlow { state.hasLocalSave }.first { !it }
+                snapshotFlow { hasExecutingSave || hasRecoverableSave }.first { !it }
                 saveScope.cancel()
             }
         } else {
@@ -79,10 +87,10 @@ class InstantSession(
     val executingSaves: List<InstantSaveExecution>
         get() {
             executionRevision
-            return ownedDrafts.value.mapNotNull { draft ->
-                draft.takeIf { it.state.hasLocalSave }?.let {
-                    InstantSaveExecution(it.id, trackedOffline = !it.state.hasUntrackedLocalSave,
-                        trackedInstantAttempt = it.state.hasTrackedInstantAttempt)
+            return ownedDrafts.value.flatMap { draft ->
+                (draft.submitted + draft.state).filter { it.hasLocalSave }.map {
+                    InstantSaveExecution(draft.id, trackedOffline = !it.hasUntrackedLocalSave,
+                        trackedInstantAttempt = it.hasTrackedInstantAttempt)
                 }
             }
         }
@@ -95,6 +103,7 @@ class InstantSession(
 
     private val _pendingCompletions = MutableStateFlow<List<LinkSaveCompletion>>(emptyList())
     val pendingCompletions: StateFlow<List<LinkSaveCompletion>> = _pendingCompletions.asStateFlow()
+    private var completionId = 0L
     private val completionEpoch = MutableStateFlow(0L)
 
     fun acknowledgeCompletion(id: Long) {
@@ -113,9 +122,22 @@ class InstantSession(
     fun openDraft(initialLink: String = "", targetContext: SaveTargetContext? = null): InstantDraft {
         val draftScope = newScope()
         val saveScope = newScope()
-        val state = if (newStateForDraft == null || targetContext == null) newState(draftScope, initialLink)
-            else newStateForDraft.invoke(draftScope, saveScope, initialLink, targetContext)
+        val editorScopes = mutableMapOf<InstantSheetState, Pair<CoroutineScope, CoroutineScope>>()
+        fun createEditor(link: String): InstantSheetState {
+            fun child(parent: CoroutineScope) = CoroutineScope(parent.coroutineContext + kotlinx.coroutines.SupervisorJob(parent.coroutineContext[kotlinx.coroutines.Job]))
+            val editorScope = child(saveScope)
+            val executionScope = child(saveScope)
+            val state = if (newStateForDraft == null || targetContext == null) newState(executionScope, link)
+                else newStateForDraft.invoke(editorScope, executionScope, link, targetContext)
+            editorScopes[state] = editorScope to executionScope
+            return state
+        }
+        val state = createEditor(initialLink)
         val draft = InstantDraft(++generation, state, draftScope, saveScope) { closed ->
+            if (!closed.state.hasLocalSave && closed.state.shareSave?.isSaving != true) {
+                editorScopes[closed.state]?.let { (editing, executing) -> editing.cancel(); executing.cancel() }
+                editorScopes -= closed.state
+            }
             drafts = drafts - closed
             if (legacyDraft === closed) legacyDraft = null
         }
@@ -127,16 +149,46 @@ class InstantSession(
         }
         drafts = drafts + draft
         val epoch = completionEpoch.value
-        saveScope.launch(start = CoroutineStart.UNDISPATCHED) {
-            state.outcomes.collect { outcome ->
-                if (completionEpoch.value == epoch) {
-                    _pendingCompletions.update { it + LinkSaveCompletion(draft.id, outcome) }
+        fun observe(editor: InstantSheetState) {
+            fun detach() {
+                if (draft.isClosed || draft.state !== editor) return
+                draft.submitted += editor
+                val next = createEditor("")
+                draft.state = next
+                executionRevision++
+                observe(next)
+                saveScope.launch {
+                    snapshotFlow { editor.hasLocalSave || editor.shareSave?.isSaving == true ||
+                        editor.hasRetainedInstantAttempt && (editor.hasInstantRetry || editor.saveIssue?.requiresInspection == true) }.first { !it }
+                    draft.submitted -= editor
+                    editorScopes[editor]?.let { (editing, executing) -> editing.cancel(); executing.cancel() }
+                    editorScopes -= editor
+                    executionRevision++
                 }
-                draft.close()
+            }
+            editor.onSaveAccepted = ::detach
+            requireNotNull(editorScopes[editor]).second.launch {
+                snapshotFlow { editor.shareSave?.isSaving == true || editor.batch?.rows?.any { it.state.shareSave?.isSaving == true } == true }
+                    .first { it }
+                detach()
+            }
+            requireNotNull(editorScopes[editor]).second.launch(start = CoroutineStart.UNDISPATCHED) {
+                editor.outcomes.collect { outcome ->
+                    if (completionEpoch.value == epoch) {
+                        _pendingCompletions.update { it + LinkSaveCompletion(++completionId, outcome, draft.id) }
+                    }
+                }
             }
         }
+        observe(state)
         return draft
     }
+
+    fun canRetryAttempt(id: String): Boolean = ownedDrafts.value.any { draft ->
+        draft.submitted.any { it.containsInstantAttempt(id) && !it.isSaving && it.retryFileCount > 0 }
+    }
+    fun retryAttempt(id: String): Boolean = ownedDrafts.value.asSequence().flatMap { it.submitted.asSequence() }
+        .firstOrNull { it.containsInstantAttempt(id) }?.retrySubmittedAttempt() == true
 
     fun start(initialMagnet: String = "") {
         end()

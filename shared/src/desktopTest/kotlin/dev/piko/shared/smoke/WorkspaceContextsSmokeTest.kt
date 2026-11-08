@@ -14,7 +14,6 @@ import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateSession
 import dev.piko.shared.state.InstantSaveRecords
 import dev.piko.shared.state.TransferKind
-import dev.piko.shared.state.TrashSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job

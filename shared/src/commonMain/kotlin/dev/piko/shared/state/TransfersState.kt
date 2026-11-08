@@ -40,6 +40,7 @@ sealed class TransferItem {
     abstract val key: String
     abstract val createdAtMs: Long
     open val children: List<TransferItem> = emptyList()
+    open val remoteTaskIds: Set<String> = emptySet()
 
     data class Local(val task: DownloadTask) : TransferItem() {
         override val key: String get() = "local:${task.taskId}"
@@ -82,8 +83,8 @@ sealed class TransferItem {
         override val key: String get() = "upload:${task.taskId}"
         override val createdAtMs: Long get() = task.createdAtMs
     }
-    data class UploadPreparing(val work: dev.piko.shared.upload.UploadPreparation) : TransferItem() {
-        override val key: String get() = "upload-prepare:${work.id}"
+    data class UploadPreparing(val work: dev.piko.shared.upload.UploadPreparation, override val children: List<TransferItem> = emptyList()) : TransferItem() {
+        override val key: String get() = "upload-batch:${work.id}"
         override val createdAtMs: Long get() = work.createdAtMs
     }
 
@@ -123,6 +124,7 @@ sealed class TransferItem {
         override val key: String get() = "cloud:${job.taskId}"
         override val createdAtMs: Long get() = job.createdAtMs
 
+        override val remoteTaskIds: Set<String> get() = setOf(job.taskId)
         val progress: Int get() = if (task?.phase == TaskPhase.RUNNING) task.progress else job.progress
     }
 
@@ -136,6 +138,7 @@ sealed class TransferItem {
         override val createdAtMs: Long get() = work.finishedAtMs ?: work.createdAtMs
     }
     data class Share(val work: ShareSaveWork) : TransferItem() {
+        override val remoteTaskIds: Set<String> get() = setOfNotNull(work.remoteTaskId)
         override val key: String get() = "share:${work.id}"
         override val createdAtMs: Long get() = work.result?.finishedAtMs ?: work.createdAtMs
     }
@@ -146,6 +149,7 @@ sealed class TransferItem {
 
     /** 服务端解压与本次运行期的结局，来自 [ArchiveExtractSession]；提示没有订阅者也不丢记录。 */
     data class Extract(val job: ArchiveJob) : TransferItem() {
+        override val remoteTaskIds: Set<String> get() = setOfNotNull(job.remoteTaskId)
         override val key: String get() = "extract:${job.id}"
 
         override val createdAtMs: Long get() = (job.status as? ArchiveJobStatus.Finished)?.finishedAtMs ?: job.createdAtMs
@@ -159,33 +163,27 @@ sealed class TransferItem {
         override val createdAtMs: Long get() = record?.finishedAtMs ?: work.createdAtMs
     }
     data class Write(val work: FileWriteWork) : TransferItem() {
+        override val remoteTaskIds: Set<String> get() = work.copies.mapTo(HashSet()) { it.id }
         override val key: String get() = "write:${work.id}"
-        override val createdAtMs: Long get() = work.result?.finishedAtMs ?: work.createdAtMs
-    }
-    data class History(val work: HistoryEditWork) : TransferItem() {
-        override val key: String get() = "history:${work.id}"
-        override val createdAtMs: Long get() = work.result?.finishedAtMs ?: work.createdAtMs
-    }
-    data class VaultEdit(val work: VaultEntryEditWork) : TransferItem() {
-        override val key: String get() = "vault-edit:${work.id}"
         override val createdAtMs: Long get() = work.result?.finishedAtMs ?: work.createdAtMs
     }
 }
 
-/** 某一类传输按「进行中」「需要处理」「已完成」「文件已删除」分成的四段。 */
+/** 同一快照中互斥的任务分组。 */
 class TransferSections(
     val inProgress: List<TransferItem>,
     val needsAttention: List<TransferItem>,
     val completed: List<TransferItem>,
     val outputDeleted: List<TransferItem>,
+    val paused: List<TransferItem> = emptyList(),
 ) {
     val isEmpty: Boolean
-        get() = inProgress.isEmpty() && needsAttention.isEmpty() && completed.isEmpty() && outputDeleted.isEmpty()
+        get() = paused.isEmpty() && inProgress.isEmpty() && needsAttention.isEmpty() && completed.isEmpty() && outputDeleted.isEmpty()
 }
 
 /**
  * 传输页的类型筛选。秒传记录归「云端」：它与离线任务出自同一个「添加链接」，东西落在网盘里；
- * 从本机传上去却命中秒传的仍是一项上传，归「上传」。解压、归档、查重与清理归「文件处理」。
+ * 从本机传上去却命中秒传的仍是一项上传，归「上传」。解压、归档与复制归「文件处理」。
  */
 enum class TransferKind(private val labelText: () -> String) {
     ALL({ tr("全部", "All", "すべて", "전체", "全部") }),
@@ -202,12 +200,12 @@ enum class TransferKind(private val labelText: () -> String) {
         DOWNLOAD -> item is TransferItem.Local || item is TransferItem.LocalBatch
         UPLOAD -> item is TransferItem.Upload || item is TransferItem.UploadBatch || item is TransferItem.UploadPreparing
         CLOUD -> item is TransferItem.Cloud || item is TransferItem.Pack || item is TransferItem.Instant || item is TransferItem.InstantAttempt || item is TransferItem.Share || item is TransferItem.OfflineSubmit
-        FILES -> item is TransferItem.Extract || item is TransferItem.Vault || item is TransferItem.Write || item is TransferItem.History || item is TransferItem.VaultEdit
+        FILES -> item is TransferItem.Extract || item is TransferItem.Vault || item is TransferItem.Write
     }
 }
 
 /**
- * 传输页：本地下载、上传与云端离线任务合并为「进行中」「需要处理」「已完成」三段，可按类型筛选（[filter]），
+ * 传输页：本地下载、上传与云端离线任务合并为「进行中」「需要处理」「已完成」分组，可按类型筛选（[filter]），
  * 多选照网盘页（[selectedKeys]）。
  *
  * 云端已完成的任务只列出最近 [COMPLETED_CLOUD_WINDOW] 内完成的，本地已完成的始终保留：
@@ -230,16 +228,11 @@ class TransfersState(
     private val vault: FolderVaultSession,
     /** 是否包含服务端文件处理。主任务页两端都包含，局部投影可关闭。 */
     private val listsServerWork: Boolean,
-    val cleanup: TrashSession? = null,
     val fileWrites: FileWriteSession? = null,
-    val historyEdits: HistoryEditSession? = null,
-    val vaultEdits: VaultEntryEditSession? = null,
     val shareSaves: ShareSaveSession? = null,
     val offlineSubmits: OfflineSubmitSession? = taskRepo.offlineSubmissions,
     receiving: dev.piko.shared.presentation.ReceivingActivity? = null,
 ) {
-    val hasCleanup: Boolean get() = cleanup?.let { it.progress != null || it.failure != null || it.completedCount > 0 || it.isUndoing } == true
-    fun cleanupCount(kind: TransferKind): Int = if (hasCleanup && (kind == TransferKind.ALL || kind == TransferKind.FILES)) 1 else 0
 
     private val cloud = OfflineTasksState(taskRepo, scope)
     private val itemCache = TransferItemCache()
@@ -265,9 +258,7 @@ class TransfersState(
 
     private var journal by mutableStateOf(driveRepo.changes.state.value)
     private var writeRecords by mutableStateOf(fileWrites?.works?.value.orEmpty().filter { it.account == account })
-    private var historyRecords by mutableStateOf(historyEdits?.works?.value.orEmpty().filter { it.account == account })
-    private val fileCommands = fileWrites?.let { dev.piko.shared.presentation.FileCommands(driveRepo, it, account, cleanup, vault, vaultEdits, shareSaves, receiving) }
-    private var vaultEditRecords by mutableStateOf(vaultEdits?.works?.value.orEmpty().filter { it.account == account })
+    private val fileCommands = fileWrites?.let { dev.piko.shared.presentation.FileCommands(driveRepo, it, account, vault = vault, shareSaves = shareSaves, receiving = receiving) }
 
     private fun requestUndo(id: Long): Boolean {
         val commands = fileCommands ?: return driveRepo.changes.undo(id)
@@ -297,7 +288,6 @@ class TransfersState(
         work.result?.undoChangeIds.orEmpty().asReversed().filter { id -> driveRepo.changes.state.value.available.any { it.id == id } }.forEach(::requestUndo)
     }
     fun vaultUndoStatus(record: FolderVaultSession.Record): DriveChangeJournal.UndoResult? = record.undoChangeId?.let { journal.undo[it] }
-    fun vaultEditUndoStatus(work: VaultEntryEditWork): DriveChangeJournal.UndoResult? = undoStatus(work.result?.undoChangeIds.orEmpty(), journal)
     fun shareUndoStatus(work: ShareSaveWork): DriveChangeJournal.UndoResult? = undoStatus(work.undoChangeIds, journal)
     fun canUndoShare(work: ShareSaveWork): Boolean = !work.isRunning && work.pendingRenames.isEmpty() && work.undoChangeIds.any { id -> journal.available.any {
         it.id == id && (fileCommands == null || fileCommands.undoAvailability(it) == dev.piko.shared.presentation.ActionAvailability.Available)
@@ -306,11 +296,6 @@ class TransfersState(
         if (work.account != driveRepo.currentAccount || work.isRunning || shareUndoStatus(work)?.status == DriveChangeJournal.UndoStatus.RUNNING) return
         if (work.pendingRenames.isNotEmpty()) { _messages.tryEmit(tr("本次重命名仍有待确认项，请先重新查询结果", "Some renames are unconfirmed. Check results again first", "今回の名前変更に未確認の項目があります。先に結果を再確認してください", "이번 이름 변경에 미확인 항목이 있습니다. 먼저 결과를 다시 확인해 주세요", "本次重新命名仍有待確認項目，請先重新查詢結果")); return }
         work.undoChangeIds.asReversed().filter { id -> driveRepo.changes.state.value.available.any { it.id == id } }.forEach(::requestUndo)
-    }
-    fun canUndoVaultEdit(work: VaultEntryEditWork): Boolean = !work.isRunning && work.result?.undoChangeIds.orEmpty().any { id -> journal.available.any { it.id == id } }
-    fun undoVaultEdit(work: VaultEntryEditWork) {
-        if (work.account != driveRepo.currentAccount || work.isRunning || vaultEditUndoStatus(work)?.status == DriveChangeJournal.UndoStatus.RUNNING) return
-        work.result?.undoChangeIds.orEmpty().asReversed().filter { id -> driveRepo.changes.state.value.available.any { it.id == id } }.forEach(::requestUndo)
     }
     fun canUndoVault(record: FolderVaultSession.Record): Boolean = record.undoChangeId?.let { id -> journal.available.any { it.id == id } } == true
     fun undoVault(record: FolderVaultSession.Record) {
@@ -329,7 +314,7 @@ class TransfersState(
     /** 云端列表最近一次拉取失败的原因。 */
     val cloudLoadError: String? get() = cloud.loadError
 
-    /** 类型筛选。四段都只列这一类；[counts] 仍按全部算，筛选按钮上的数目不随筛选变。 */
+    /** 类型筛选。各分组只列这一类；[counts] 仍按全部算，筛选按钮上的数目不随筛选变。 */
     var filter by mutableStateOf(TransferKind.ALL)
         private set
 
@@ -339,7 +324,7 @@ class TransfersState(
         clearSelection()
     }
 
-    /** 四个分组来自同一次投影，每项只分类一次，状态变化时不会同时留在两段。 */
+    /** 各分组来自同一次投影，每项只分类一次，状态变化时不会同时留在两段。 */
     private val allSections: TransferSections by derivedStateOf {
         val windowStartMs = nowMs() - COMPLETED_CLOUD_WINDOW.inWholeMilliseconds
         val currentJournal = journal
@@ -347,8 +332,10 @@ class TransfersState(
         val attention = mutableListOf<TransferItem>()
         val completed = mutableListOf<TransferItem>()
         val deleted = mutableListOf<TransferItem>()
+        val paused = mutableListOf<TransferItem>()
         for (item in allItems()) {
             when (sectionOf(item, currentJournal, windowStartMs)) {
+                Section.PAUSED -> paused += item
                 Section.PROGRESS -> progress += item
                 Section.ATTENTION -> attention += item
                 Section.COMPLETED -> completed += item
@@ -356,23 +343,30 @@ class TransfersState(
                 null -> Unit
             }
         }
-        TransferSections(progress, attention, completed, deleted)
+        TransferSections(progress, attention, completed, deleted, paused)
+    }
+
+    val activity: ActivitySummary by derivedStateOf {
+        ActivitySummary(allSections.inProgress, allSections.needsAttention, allSections.paused, downloadSpeed, uploadSpeed,
+            (allSections.inProgress + allSections.needsAttention).any { item -> item.requiresLocalExecution() ||
+                item is TransferItem.Vault && item.record?.let(::vaultUndoStatus)?.status == DriveChangeJournal.UndoStatus.RUNNING })
     }
 
     private val allInProgress get() = allSections.inProgress
     private val allCompleted get() = allSections.completed
 
     /**
-     * 某一类的四段。横划切换类别时相邻的一页跟着手指进来，它列的是还没选中的那一类，所以不能只有 [filter] 的一份。
+     * 按类型筛选分组。横划切换类别时相邻的一页跟着手指进来，它列的是还没选中的那一类，所以不能只有 [filter] 的一份。
      * 读的是派生状态，调用方包一层 derivedStateOf 即可随任务刷新。
      */
     fun sectionsOf(kind: TransferKind): TransferSections {
         val all = allSections
         return TransferSections(all.inProgress.filter(kind::matches), all.needsAttention.filter(kind::matches),
-            all.completed.filter(kind::matches), all.outputDeleted.filter(kind::matches))
+            all.completed.filter(kind::matches), all.outputDeleted.filter(kind::matches), all.paused.filter(kind::matches))
     }
 
     private val current: TransferSections by derivedStateOf { sectionsOf(filter) }
+    val paused: List<TransferItem> get() = current.paused
     val inProgress: List<TransferItem> get() = current.inProgress
     val needsAttention: List<TransferItem> get() = current.needsAttention
     val completed: List<TransferItem> get() = current.completed
@@ -381,8 +375,8 @@ class TransfersState(
     /** 各类的项数，按全部任务算，筛选按钮上显示。 */
     val counts: Map<TransferKind, Int> by derivedStateOf {
         val sections = allSections
-        val items = sections.inProgress + sections.needsAttention + sections.completed + sections.outputDeleted
-        TransferKind.entries.associateWith { kind -> items.count(kind::matches) + cleanupCount(kind) }
+        val items = sections.paused + sections.inProgress + sections.needsAttention + sections.completed + sections.outputDeleted
+        TransferKind.entries.associateWith { kind -> items.count(kind::matches) }
     }
 
     /** 下行与上行的总速度，只算本机的下载与上传：云端离线任务没有速度可报。 */
@@ -415,8 +409,13 @@ class TransfersState(
     }
 
     // 全局的「全部暂停」「全部继续」只管本机的下载与上传：云端离线任务不能暂停
-    val canPauseAll: Boolean by derivedStateOf { allInProgress.any(::isPausable) }
-    val canResumeAll: Boolean by derivedStateOf { allInProgress.any(::isResumable) }
+    private val controllableWork: List<TransferItem> by derivedStateOf {
+        (allSections.inProgress + allSections.needsAttention + allSections.paused).flatMap {
+            if (isPausable(it) || isResumable(it)) listOf(it) else it.children
+        }
+    }
+    val canPauseAll: Boolean by derivedStateOf { controllableWork.any(::isPausable) }
+    val canResumeAll: Boolean by derivedStateOf { controllableWork.any(::isResumable) }
 
     /**
      * 「清除已完成」能清掉的记录：云端任务、上传、秒传与整包离线。本地下载不在内：它的记录就是找回
@@ -426,9 +425,9 @@ class TransfersState(
         allCompleted.any { it !is TransferItem.Local && it !is TransferItem.LocalBatch }
     }
 
-    fun pauseAll() = allInProgress.filter(::isPausable).forEach(::pause)
+    fun pauseAll() = controllableWork.filter(::isPausable).forEach(::pause)
 
-    fun resumeAll() = allInProgress.filter(::isResumable).forEach(::resume)
+    fun resumeAll() = controllableWork.filter(::isResumable).forEach(::resume)
 
     fun clearCompleted() {
         val done = allCompleted
@@ -445,8 +444,6 @@ class TransfersState(
                 is TransferItem.Extract -> skipExtract(item.job.id)
                 is TransferItem.Vault -> vault.dismissRecord(item.work.id)
                 is TransferItem.Write -> fileWrites?.forget(item.work.id)
-                is TransferItem.History -> historyEdits?.forget(item.work.id)
-                is TransferItem.VaultEdit -> vaultEdits?.forget(item.work.id)
                 is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.Cloud, is TransferItem.UploadPreparing -> Unit
             }
         }
@@ -472,7 +469,7 @@ class TransfersState(
     val selectedItems: List<TransferItem> by derivedStateOf {
         val sections = current
         val keys = selectedKeys
-        (sections.inProgress + sections.needsAttention + sections.completed + sections.outputDeleted)
+        (sections.paused + sections.inProgress + sections.needsAttention + sections.completed + sections.outputDeleted)
             .flatMap { item -> listOf(item) + item.children }
             .filter { it.key in keys }
     }
@@ -588,8 +585,7 @@ class TransfersState(
             is TransferItem.Extract -> skipExtract(item.job.id)
             is TransferItem.Vault -> if (item.record != null) dismissVault(item.work.id) else Unit
             is TransferItem.Write -> if (fileWrites?.forget(item.work.id) == false) _messages.tryEmit(tr("正在执行操作或撤销，请待完成后再移除记录", "Operation or undo in progress. Remove the record after completion", "操作または元に戻す処理の実行中です。完了後に記録を削除してください", "작업 또는 실행 취소 중입니다. 완료 후 기록을 삭제해 주세요", "正在執行操作或復原，請待完成後再移除記錄")) else Unit
-            is TransferItem.History -> if (historyEdits?.forget(item.work.id) == false) _messages.tryEmit(tr("正在处理记录，请待完成后再移除", "Processing record. Remove it after completion", "記録を処理中です。完了後に削除してください", "기록 처리 중입니다. 완료 후 삭제해 주세요", "正在處理記錄，請待完成後再移除")) else Unit
-            is TransferItem.VaultEdit -> if (vaultEdits?.forget(item.work.id) == false) _messages.tryEmit(tr("正在执行操作或撤销，请待完成后再移除记录", "Operation or undo in progress. Remove the record after completion", "操作または元に戻す処理の実行中です。完了後に記録を削除してください", "작업 또는 실행 취소 중입니다. 완료 후 기록을 삭제해 주세요", "正在執行操作或復原，請待完成後再移除記錄")) else Unit
+
         }
     }
 
@@ -630,19 +626,17 @@ class TransfersState(
                 is TransferItem.Instant -> item.record.locateId
                 is TransferItem.Upload -> item.task.fileId
                 is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.UploadBatch, is TransferItem.UploadPreparing, is TransferItem.InstantAttempt, is TransferItem.Share, is TransferItem.OfflineSubmit,
-                is TransferItem.Extract, is TransferItem.Vault, is TransferItem.Write, is TransferItem.History, is TransferItem.VaultEdit -> null
+                is TransferItem.Extract, is TransferItem.Vault, is TransferItem.Write -> null
             }?.takeIf { it.isNotEmpty() }
         }
     }
 
     /** 一项传输也没有，不论筛选。筛选后为空另看各段，界面给的是「这一类没有任务」。 */
     val isEmpty: Boolean by derivedStateOf {
-        allSections.isEmpty && !hasCleanup
+        allSections.isEmpty
     }
 
     init {
-        historyEdits?.let { session -> scope.launch { session.works.collect { historyRecords = it.filter { work -> work.account == account } } } }
-        vaultEdits?.let { session -> scope.launch { session.works.collect { vaultEditRecords = it.filter { work -> work.account == account } } } }
         fileWrites?.let { session -> scope.launch { session.works.collect { records -> writeRecords = records.filter { it.account == account } } } }
         scope.launch { driveRepo.changes.state.collect { journal = it } }
         scope.launch {
@@ -689,7 +683,21 @@ class TransfersState(
     }
 
     /** 可见期间轮询云端任务，挂起直到调用方的协程被取消。 */
-    suspend fun whileVisible() = cloud.pollWhileVisible()
+    suspend fun whileVisible() = kotlinx.coroutines.coroutineScope {
+        launch {
+            while (true) {
+                activity.active.forEach { item -> when (item) {
+                    is TransferItem.Write -> if (!item.work.isRunning) fileWrites?.recheck(item.work.id)
+                    is TransferItem.Share -> if (!item.work.isRunning) shareSaves?.recheck(item.work.id)
+                    is TransferItem.InstantAttempt -> if (!item.work.isRunning) instantSaves.recheck(item.work.id, driveRepo)
+                    is TransferItem.Extract -> if (item.job.status is ArchiveJobStatus.Finished) extracts.recheck(item.job.id)
+                    else -> Unit
+                } }
+                kotlinx.coroutines.delay(15_000)
+            }
+        }
+        cloud.pollWhileVisible()
+    }
 
     /** 下拉刷新。本机的下载与上传本就实时，只有云端任务要重新拉取。 */
     val isRefreshing: Boolean get() = cloud.isRefreshing
@@ -808,22 +816,17 @@ class TransfersState(
                         first.batchParentName, sorted, first.batchIsFolder, sorted.map(::uploadItem))
                 }
             }
-        val packIds = packs.mapTo(HashSet()) { it.taskId }
-        val tracked = packIds + shareRecords.mapNotNull { it.remoteTaskId } + writeRecords.flatMap { it.copies.map { copy -> copy.id } } +
-            (extracts.jobs + extracts.completedJobs).mapNotNull { it.remoteTaskId }
         val tasksById = cloudTasks.associateBy { it.id }
         val serverItems = if (!listsServerWork) emptyList() else {
             (extracts.jobs + extracts.completedJobs).map { itemCache.project("extract:${it.id}", it) { TransferItem.Extract(it) } } +
                 listOfNotNull(vault.activeWork?.let { itemCache.project("vault:${it.id}", it to null) { TransferItem.Vault(it) } }) +
                 vault.records.map { itemCache.project("vault:${it.work.id}", it.work to it) { TransferItem.Vault(it.work, it) } } +
-                writeRecords.filter { it.showsInTaskPage }.map { itemCache.project("write:${it.id}", it) { TransferItem.Write(it) } } +
-                historyRecords.filter { !it.isRunning && (it.result?.completion == HistoryEditCompletion.PARTIAL || it.result?.completion == HistoryEditCompletion.UNCONFIRMED) }.map { itemCache.project("history:${it.id}", it) { TransferItem.History(it) } } +
-                vaultEditRecords.filter { it.showsInTaskPage }.map { itemCache.project("vault-edit:${it.id}", it) { TransferItem.VaultEdit(it) } }
+                writeRecords.map { itemCache.project("write:${it.id}", it) { TransferItem.Write(it) } }
         }
         // 同一身份的结局优先于在途快照；文件夹里的本机文件只作为批次成员出现。
-        val items = (serverItems + local.filter { it.batch == null }.map(::localItem) + batches +
+        val items = resolveWorkIdentities(serverItems + local.filter { it.batch == null }.map(::localItem) + batches +
             uploadItems + uploadPreparations.map { itemCache.project("upload-prepare:${it.id}", it) { TransferItem.UploadPreparing(it) } } +
-            cloudTasks.filter { it.id !in tracked }.map { itemCache.project("cloud:${it.id}", it) { TransferItem.Cloud(it) } } +
+            cloudTasks.map { itemCache.project("cloud:${it.id}", it) { TransferItem.Cloud(it) } } +
             packs.map {
                 val task = tasksById[it.taskId]
                 val busy = dev.piko.shared.data.OfflinePackRef(it.account, it.taskId) in busyPacks
@@ -832,20 +835,22 @@ class TransfersState(
             instantAttempts.map { itemCache.project("instant:${it.id}", it) { TransferItem.InstantAttempt(it) } } +
             shareRecords.map { itemCache.project("share:${it.id}", it) { TransferItem.Share(it) } } +
             offlineRecords.map { itemCache.project("offline-submit:${it.id}", it) { TransferItem.OfflineSubmit(it) } })
-            .associateBy { it.key }.values.sortedByDescending { it.createdAtMs }
+            .sortedByDescending { it.createdAtMs }
         itemCache.retain(items.flatMap { item -> listOf(item.key) + item.children.map { it.key } }.toSet())
         return items
     }
 
-    private enum class Section { PROGRESS, ATTENTION, COMPLETED, DELETED }
+    private enum class Section { PAUSED, PROGRESS, ATTENTION, COMPLETED, DELETED }
 
     private fun localSection(status: DownloadStatus): Section = when (status) {
+        DownloadStatus.PAUSED -> Section.PAUSED
         DownloadStatus.COMPLETED -> Section.COMPLETED
         DownloadStatus.FAILED -> Section.ATTENTION
         else -> Section.PROGRESS
     }
 
     private fun uploadSection(status: UploadStatus): Section = when (status) {
+        UploadStatus.PAUSED -> Section.PAUSED
         UploadStatus.COMPLETED -> Section.COMPLETED
         UploadStatus.FAILED -> Section.ATTENTION
         else -> Section.PROGRESS
@@ -856,7 +861,15 @@ class TransfersState(
         is TransferItem.LocalBatch -> localSection(item.status)
         is TransferItem.UploadBatch -> uploadSection(item.status)
         is TransferItem.Upload -> uploadSection(item.task.status)
-        is TransferItem.UploadPreparing -> if (item.work.isRunning) Section.PROGRESS else Section.ATTENTION
+        is TransferItem.UploadPreparing -> when {
+            item.work.isRunning || item.work.result?.completion == dev.piko.shared.upload.UploadPreparationCompletion.UNCONFIRMED -> Section.PROGRESS
+            item.work.result?.completion == dev.piko.shared.upload.UploadPreparationCompletion.STOPPED -> when {
+                item.children.any { it.requiresLocalExecution() } -> Section.PROGRESS
+                item.children.any(::isResumable) -> Section.PAUSED
+                else -> Section.COMPLETED
+            }
+            else -> Section.ATTENTION
+        }
         is TransferItem.Cloud -> when {
             item.task.isOutputDeleted -> Section.DELETED
             item.task.phase == TaskPhase.PENDING || item.task.phase == TaskPhase.RUNNING -> Section.PROGRESS
@@ -875,24 +888,31 @@ class TransfersState(
         is TransferItem.InstantAttempt -> when {
             item.work.isRunning -> Section.PROGRESS
             item.work.isComplete -> Section.COMPLETED
-            else -> Section.ATTENTION
+            item.work.receipt?.let { it.failed.isNotEmpty() || it.notAttempted.isNotEmpty() } == true -> Section.ATTENTION
+            else -> Section.PROGRESS
         }
         is TransferItem.OfflineSubmit -> when (item.work.status) {
             OfflineSubmitStatus.SUBMITTING -> Section.PROGRESS
             OfflineSubmitStatus.COMPLETE -> Section.COMPLETED
-            OfflineSubmitStatus.REFUSED, OfflineSubmitStatus.UNCONFIRMED -> Section.ATTENTION
+            OfflineSubmitStatus.REFUSED -> Section.ATTENTION
+            OfflineSubmitStatus.UNCONFIRMED -> Section.PROGRESS
         }
         is TransferItem.Share -> {
             val undo = undoStatus(item.work.undoChangeIds, currentJournal)
             when {
                 item.work.isRunning || undo?.status == DriveChangeJournal.UndoStatus.RUNNING -> Section.PROGRESS
+                item.work.result?.completion == ShareSaveCompletion.UNCONFIRMED -> Section.PROGRESS
                 item.work.result?.completion != ShareSaveCompletion.SUCCEEDED || undo?.status == DriveChangeJournal.UndoStatus.FAILED -> Section.ATTENTION
                 else -> Section.COMPLETED
             }
         }
         is TransferItem.Extract -> when (val status = item.job.status) {
             is ArchiveJobStatus.NeedsPassword -> Section.ATTENTION
-            is ArchiveJobStatus.Finished -> if (status.outcome == ArchiveCompletion.SUCCEEDED) Section.COMPLETED else Section.ATTENTION
+            is ArchiveJobStatus.Finished -> when (status.outcome) {
+                ArchiveCompletion.SUCCEEDED -> Section.COMPLETED
+                ArchiveCompletion.UNCONFIRMED -> Section.PROGRESS
+                ArchiveCompletion.FAILED -> Section.ATTENTION
+            }
             else -> Section.PROGRESS
         }
         is TransferItem.Vault -> {
@@ -908,20 +928,8 @@ class TransfersState(
             val undo = writeUndoStatus(item.work, currentJournal)
             when {
                 item.work.isRunning || undo?.status == DriveChangeJournal.UndoStatus.RUNNING -> Section.PROGRESS
+                item.work.result?.completion == FileWriteCompletion.UNCONFIRMED -> Section.PROGRESS
                 item.work.result?.completion != FileWriteCompletion.SUCCEEDED || undo?.status == DriveChangeJournal.UndoStatus.FAILED -> Section.ATTENTION
-                else -> Section.COMPLETED
-            }
-        }
-        is TransferItem.History -> when {
-            item.work.isRunning -> Section.PROGRESS
-            item.work.result?.completion == HistoryEditCompletion.SUCCEEDED -> Section.COMPLETED
-            else -> Section.ATTENTION
-        }
-        is TransferItem.VaultEdit -> {
-            val undo = undoStatus(item.work.result?.undoChangeIds.orEmpty(), currentJournal)
-            when {
-                item.work.isRunning || undo?.status == DriveChangeJournal.UndoStatus.RUNNING -> Section.PROGRESS
-                item.work.result?.completion != VaultEntryEditCompletion.SUCCEEDED || undo?.status == DriveChangeJournal.UndoStatus.FAILED -> Section.ATTENTION
                 else -> Section.COMPLETED
             }
         }

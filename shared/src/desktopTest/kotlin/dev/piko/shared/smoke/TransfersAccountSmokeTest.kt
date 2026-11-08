@@ -13,7 +13,6 @@ import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateSession
 import dev.piko.shared.state.InstantSession
 import dev.piko.shared.state.InstantSheetState
-import dev.piko.shared.state.TrashSession
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.TaskRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
@@ -54,46 +53,6 @@ import kotlin.test.assertNotNull
 /** 传输页只列当前账号的下载；别的账号的任务原样留在任务表里，切回去照旧看得到。 */
 class TransfersAccountSmokeTest {
     @Test
-    fun `file write task admission depends on command batch size and unresolved outcome`() {
-        val target = PikoPathBreadcrumb("target", "目标")
-        val ids = (1..101).map { "file$it" }
-        val commands = listOf(
-            dev.piko.shared.state.FileWriteCommand.CreateFolder(target, "目录"),
-            dev.piko.shared.state.FileWriteCommand.Star(ids, true),
-            dev.piko.shared.state.FileWriteCommand.Copy(ids, target),
-            dev.piko.shared.state.FileWriteCommand.Rename(ids.first(), "新名称"),
-            dev.piko.shared.state.FileWriteCommand.Move(ids, target),
-            dev.piko.shared.state.FileWriteCommand.Restore(ids),
-            dev.piko.shared.state.FileWriteCommand.Delete(ids),
-        )
-        for (command in commands) {
-            val work = dev.piko.shared.state.FileWriteWork(1L, "account", command, 0L)
-            val excluded = command is dev.piko.shared.state.FileWriteCommand.CreateFolder || command is dev.piko.shared.state.FileWriteCommand.Star
-            val copy = command is dev.piko.shared.state.FileWriteCommand.Copy
-            assertEquals(!excluded && (copy || work.totalSteps > 1), work.showsInTaskPage, command.title)
-            assertEquals(copy, work.copy(totalCount = 100).showsInTaskPage, "100 项不跨批次：${command.title}")
-            assertEquals(!excluded, work.copy(totalCount = 101).showsInTaskPage, "101 项跨批次：${command.title}")
-            for (completion in dev.piko.shared.state.FileWriteCompletion.entries) {
-                val result = dev.piko.shared.state.FileWriteResult(completion, "结果", finishedAtMs = 1L)
-                val unresolved = completion == dev.piko.shared.state.FileWriteCompletion.PARTIAL || completion == dev.piko.shared.state.FileWriteCompletion.UNCONFIRMED
-                assertEquals(!excluded && (copy || unresolved), work.copy(result = result).showsInTaskPage, "${command.title}: $completion")
-            }
-        }
-    }
-
-    @Test
-    fun `vault entry task admission keeps only unresolved outcomes`() {
-        val work = dev.piko.shared.state.VaultEntryEditWork(1L, "account",
-            dev.piko.shared.state.VaultEntryEditCommand.Remove(mapOf("folder" to setOf("entry"))), 0L)
-        assertTrue(!work.showsInTaskPage)
-        for (completion in dev.piko.shared.state.VaultEntryEditCompletion.entries) {
-            val result = dev.piko.shared.state.VaultEntryEditResult(completion, "结果", emptyMap(), emptyMap(), emptyMap(), emptyList(), 1L)
-            assertEquals(completion == dev.piko.shared.state.VaultEntryEditCompletion.PARTIAL || completion == dev.piko.shared.state.VaultEntryEditCompletion.UNCONFIRMED,
-                work.copy(result = result).showsInTaskPage, completion.name)
-        }
-    }
-
-    @Test
     fun `upload batches restore as groups and support child selection and group removal`() = smoke { scope ->
         val server = FakePikPakServer()
         val provider = server.provider()
@@ -117,24 +76,24 @@ class TransfersAccountSmokeTest {
             ArchiveExtractSession(provider, drive, ArchivePasswordVault(provider, MemorySessionStore(), prefs), scope),
             FolderVaultSession(drive, scope), listsServerWork = true,
         )
-        awaitUntil("上传恢复为两组") { state.inProgress.filterIsInstance<TransferItem.UploadBatch>().size == 2 }
+        awaitUntil("上传恢复为两组") { state.paused.filterIsInstance<TransferItem.UploadBatch>().size == 2 }
         assertEquals(2, state.counts[TransferKind.UPLOAD])
-        val group = state.inProgress.filterIsInstance<TransferItem.UploadBatch>().first { it.batchId == "batch" }
+        val group = state.paused.filterIsInstance<TransferItem.UploadBatch>().first { it.batchId == "batch" }
         assertEquals(3, group.tasks.size)
         assertTrue(state.isResumable(group))
         state.selectOnly("upload:task1")
         assertEquals("upload:task1", state.selectedItems.single().key)
         state.removeSelected()
-        awaitUntil("组内单个文件移除") { state.inProgress.filterIsInstance<TransferItem.UploadBatch>().first { it.batchId == "batch" }.tasks.size == 2 }
+        awaitUntil("组内单个文件移除") { state.paused.filterIsInstance<TransferItem.UploadBatch>().first { it.batchId == "batch" }.tasks.size == 2 }
         state.removeKeys(setOf("upload:task3"))
         awaitUntil("剩余单个文件仍保留原分组") {
-            state.inProgress.filterIsInstance<TransferItem.UploadBatch>().any { it.key == group.key && it.tasks.size == 1 }
+            state.paused.filterIsInstance<TransferItem.UploadBatch>().any { it.key == group.key && it.tasks.size == 1 }
         }
         state.selectOnly("upload:task2")
         state.removeKeys(setOf(group.key))
-        awaitUntil("整组移除保留其他组") { uploads.tasks.value.values.none { it.batchId == "batch" } && state.inProgress.size == 1 }
+        awaitUntil("整组移除保留其他组") { uploads.tasks.value.values.none { it.batchId == "batch" } && state.paused.size == 1 }
         assertTrue(state.selectedKeys.isEmpty())
-        assertEquals("folder", (state.inProgress.single() as TransferItem.UploadBatch).batchId)
+        assertEquals("folder", (state.paused.single() as TransferItem.UploadBatch).batchId)
     }
 
     @Test
@@ -246,17 +205,18 @@ class TransfersAccountSmokeTest {
             InstantSheetState(instant, drive, prefs, preview, packs, records, child, input)
         })
         val duplicates = DuplicateSession(::childScope) { child, root -> DuplicateFinderState(provider, drive, child, root) }
-        val cleanup = TrashSession(drive, ownerScope)
         val vaultSession = FolderVaultSession(drive, ownerScope)
         val fileWrites = dev.piko.shared.state.FileWriteSession(drive, ownerScope)
-        val historyEdits = dev.piko.shared.state.HistoryEditSession(drive, ownerScope)
-        val vaultEdits = dev.piko.shared.state.VaultEntryEditSession(drive, ownerScope)
+        val historyEdits = dev.piko.shared.state.HistoryMutations(drive, ownerScope)
+        val historyOutcomes = observeMutationOutcomes(ownerScope, historyEdits.outcomes)
+        val vaultEdits = dev.piko.shared.state.VaultEntryMutations(drive, ownerScope)
+        val vaultOutcomes = observeMutationOutcomes(ownerScope, vaultEdits.outcomes)
         val state = TransfersState(
             PikoDownloadCoordinator(provider, prefs, DirectoryStorage(Files.createTempDirectory("piko-resume").toFile()), ownerScope),
             TaskRepository(provider, drive, instant), packs, ownerScope, drive,
             PikoUploadCoordinator(provider, prefs, NoSources, drive, ownerScope), records, account,
             ArchiveExtractSession(provider, drive, ArchivePasswordVault(provider, MemorySessionStore(), prefs), ownerScope),
-            vaultSession, listsServerWork = true, cleanup = cleanup, fileWrites = fileWrites, historyEdits = historyEdits, vaultEdits = vaultEdits,
+            vaultSession, listsServerWork = true, fileWrites = fileWrites,
         )
         assertTrue(state.isEmpty)
         links.open("draft text")
@@ -270,15 +230,14 @@ class TransfersAccountSmokeTest {
         assertTrue(state.isEmpty)
         assertEquals(1, firstReport.report.identical.size)
 
-        cleanup.start(listOf(copy.id))
-        awaitUntil("任务页可继续处理清理结果") { cleanup.completedCount == 1 && cleanup.progress == null }
-        assertEquals(1, state.counts[TransferKind.ALL])
-        assertEquals(1, state.counts[TransferKind.FILES])
+        val removal = fileWrites.submit(dev.piko.shared.state.FileWriteCommand.Trash(listOf(copy.id)))!!
+        fileWrites.awaitResult(removal)
+        assertEquals(0, state.counts[TransferKind.ALL])
+        assertEquals(0, state.counts[TransferKind.FILES])
         links.resume()
         assertEquals("draft text", assertNotNull(links.state).input)
         links.discard()
         duplicates.end()
-        cleanup.dismiss()
         assertTrue(state.isEmpty)
         vaultSession.archive(PikoPathBreadcrumb(other.id, other.name), includeUnsourced = true)
         awaitUntil("归档结果在任务列表保留") { state.completed.any { it is TransferItem.Vault } }
@@ -290,33 +249,25 @@ class TransfersAccountSmokeTest {
         assertTrue(server.node(other.id) != null, "移除任务结果不删除网盘目录")
         val commands = dev.piko.shared.presentation.FileCommands(drive, fileWrites)
         assertTrue(commands.submit(dev.piko.shared.state.FileWriteCommand.Rename(original.id, "renamed.mkv")) is dev.piko.shared.presentation.FileCommandResult.Accepted)
-        awaitUntil("普通文件操作完成") { fileWrites.works.value.singleOrNull()?.isRunning == false }
-        val writeWork = fileWrites.works.value.single()
-        assertEquals(dev.piko.shared.state.FileWriteCompletion.SUCCEEDED, writeWork.result!!.completion)
-        assertTrue(!writeWork.showsInTaskPage)
-        assertTrue(state.isEmpty, "普通改名成功不进入任务页")
-        assertTrue(state.canUndoWrite(writeWork))
-        state.undoWrite(writeWork)
-        awaitUntil("前台撤销仍可完成") { state.writeUndoStatus(writeWork)?.status == dev.piko.shared.data.DriveChangeJournal.UndoStatus.UNDONE }
-        assertEquals("a.mkv", original.name)
+        awaitUntil("普通文件操作完成") { fileWrites.mutations.active.value.isEmpty() }
+        assertTrue(fileWrites.works.value.isEmpty())
         assertTrue(state.isEmpty)
-        assertTrue(server.node(original.id) != null)
+        drive.changes.undoLast()
+        awaitUntil("前台撤销仍可完成") { original.name == "a.mkv" }
         val played = server.addEvent(io.github.nihildigit.pikpak.EventType.PLAY, original.id)
         val historyCommands = dev.piko.shared.presentation.HistoryCommands(drive, historyEdits)
         assertTrue(historyCommands.submit(dev.piko.shared.state.HistoryEditCommand.Remove(dev.piko.shared.data.HistoryKind.PLAY, listOf(played.id))) is dev.piko.shared.presentation.HistoryCommandResult.Accepted)
-        awaitUntil("历史处理完成") { historyEdits.works.value.singleOrNull()?.isRunning == false }
-        assertEquals(dev.piko.shared.state.HistoryEditCompletion.SUCCEEDED, historyEdits.works.value.single().result!!.completion)
+        awaitUntil("历史处理完成") { historyOutcomes.value.isNotEmpty() }
+        assertEquals(dev.piko.shared.state.HistoryEditCompletion.SUCCEEDED, historyOutcomes.value.single().result!!.completion)
         assertEquals(0, state.counts[TransferKind.FILES])
         assertTrue(state.isEmpty, "历史删除成功不进入任务页")
         assertNotNull(server.node(original.id))
         val vaultCommands = dev.piko.shared.presentation.VaultEntryCommands(drive, vaultEdits, commands)
         assertTrue(vaultCommands.submit(dev.piko.shared.state.VaultEntryEditCommand.Remove(mapOf(other.id to setOf("absent")))) is dev.piko.shared.presentation.VaultEntryCommandResult.Accepted)
-        awaitUntil("归档条目编辑完成") { vaultEdits.works.value.singleOrNull()?.isRunning == false }
-        val edit = vaultEdits.works.value.single()
+        awaitUntil("归档条目编辑完成") { vaultOutcomes.value.isNotEmpty() }
+        val edit = vaultOutcomes.value.single()
         assertEquals(0, state.counts[TransferKind.FILES])
         assertEquals(dev.piko.shared.state.VaultEntryEditCompletion.SUCCEEDED, edit.result!!.completion)
-        assertTrue(!edit.showsInTaskPage)
-        assertTrue(!state.canUndoVaultEdit(edit), "实际清单未变的操作不能制造撤销数据")
         assertTrue(state.isEmpty, "归档条目编辑成功不进入任务页")
         assertNotNull(server.node(other.id))
         val attemptId = records.beginAttempt(account, "保存尝试", PikoPathBreadcrumb(other.id, other.name),
@@ -324,7 +275,7 @@ class TransfersAccountSmokeTest {
         awaitUntil("保存尝试在进行中投影，草稿不重复计数") { state.inProgress.any { it.key == "instant:$attemptId" } }
         assertEquals(1, state.counts[TransferKind.CLOUD])
         records.finishAttempt(attemptId, dev.piko.shared.data.InstantSaveReceipt(account, other.id, unconfirmed = setOf("partial.mkv")))
-        awaitUntil("不确定结果进入需要处理") { state.needsAttention.any { it.key == "instant:$attemptId" } }
+        awaitUntil("不确定结果等待自动核对") { state.inProgress.any { it.key == "instant:$attemptId" } }
         records.add("partial.mkv", 1, 10, other.name, original.id, id = attemptId, expectedAccount = account)
         awaitUntil("成功历史沿用同一身份替换运行期尝试") { state.completed.any { it.key == "instant:$attemptId" } && state.needsAttention.none { it.key == "instant:$attemptId" } }
         assertEquals(1, state.counts[TransferKind.CLOUD])
@@ -335,8 +286,8 @@ class TransfersAccountSmokeTest {
         val offline = assertNotNull(state.offlineSubmits)
         assertTrue(offline.submit("https://example.invalid/task", PikoPathBreadcrumb(other.id, other.name), "提交测试", account).isFailure)
         server.offline = false
-        awaitUntil("未知离线提交进入需要处理的云端类别") { state.needsAttention.any { it is TransferItem.OfflineSubmit } }
-        val offlineItem = state.needsAttention.filterIsInstance<TransferItem.OfflineSubmit>().single()
+        awaitUntil("未知离线提交保留等待状态") { state.inProgress.any { it is TransferItem.OfflineSubmit && it.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED } }
+        val offlineItem = state.inProgress.filterIsInstance<TransferItem.OfflineSubmit>().single()
         assertEquals(1, state.counts[TransferKind.CLOUD])
         assertEquals(1, state.counts[TransferKind.ALL])
         assertEquals(dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED, offlineItem.work.status)
@@ -432,7 +383,7 @@ class TransfersAccountSmokeTest {
             listsServerWork = false,
         )
 
-        fun listed() = with(state.sectionsOf(TransferKind.ALL)) { inProgress + needsAttention + completed + outputDeleted }.map { it.key }.toSet()
+        fun listed() = with(state.sectionsOf(TransferKind.ALL)) { inProgress + paused + needsAttention + completed + outputDeleted }.map { it.key }.toSet()
         awaitUntil("列出当前账号的下载") { listed().isNotEmpty() }
         assertEquals(setOf("local:mine", "local:legacy"), listed())
         assertEquals(4, coordinator.tasks.value.size, "别的账号的任务不该被删")

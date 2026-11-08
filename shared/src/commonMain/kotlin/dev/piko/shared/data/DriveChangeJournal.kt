@@ -12,6 +12,7 @@ import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
 import io.github.nihildigit.pikpak.TaskPhase
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -105,12 +106,13 @@ class DriveChangeJournal internal constructor(
      */
     class Event(val message: String, val change: Change?, val undone: Change? = null, val failedChange: Change? = null, val generation: Long? = null)
 
-    private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 8)
+    // 撤销数据保留在 state；提示允许合并，不能让慢速界面阻塞写操作。
+    private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     val events: SharedFlow<Event> = _events.asSharedFlow()
 
     enum class UndoStatus { RUNNING, UNDONE, FAILED }
     data class UndoResult(val status: UndoStatus, val message: String, val activeFileIds: Set<String> = emptySet(), val activeManifestFolders: Set<String> = emptySet(), val activeTreeIds: Set<String> = emptySet(),
-        val completedRenameSteps: Int = 0, val completedTrashItems: Int = 0)
+        val completedRenameSteps: Int = 0, val completedTrashItems: Int = 0, val restoredTrashIds: Set<String> = emptySet())
     data class JournalState(
         val generation: Long = 0,
         val available: List<Change> = emptyList(),
@@ -134,9 +136,7 @@ class DriveChangeJournal internal constructor(
             val next = current.copy(available = (current.available + change).takeLast(LIMIT))
             if (_state.compareAndSet(current, next)) break
         }
-        scope.launch {
-            if (_state.value.generation == generation) _events.emit(Event(change.summary, change, generation = generation))
-        }
+        if (_state.value.generation == generation) _events.tryEmit(Event(change.summary, change, generation = generation))
         return true
     }
 
@@ -160,7 +160,7 @@ class DriveChangeJournal internal constructor(
             if (current.generation != generation) current else current.copy(available =
                 (current.available.filterNot { it === previousChange } + change).takeLast(LIMIT))
         }
-        if (_state.value.generation == generation) _events.emit(Event(summary, change, generation = generation))
+        if (_state.value.generation == generation) _events.tryEmit(Event(summary, change, generation = generation))
         if (_state.value.generation != generation) throw kotlinx.coroutines.CancellationException("账号已改变")
         return change
     }
@@ -200,7 +200,7 @@ class DriveChangeJournal internal constructor(
             val next = current.copy(
                 available = current.available.filterNot { it.id == id },
                 undo = current.undo + (id to UndoResult(UndoStatus.RUNNING, tr("正在撤销", "Undoing", "元に戻しています", "실행 취소 중", "正在復原"), candidate.affectedFileIds(), candidate.affectedManifestFolders(), candidate.affectedTreeIds(),
-                    current.undo[id]?.completedRenameSteps ?: 0, current.undo[id]?.completedTrashItems ?: 0)),
+                    current.undo[id]?.completedRenameSteps ?: 0, current.undo[id]?.completedTrashItems ?: 0, current.undo[id]?.restoredTrashIds.orEmpty())),
             )
             if (_state.compareAndSet(current, next)) { generation = current.generation; change = candidate; break }
         }
@@ -217,7 +217,8 @@ class DriveChangeJournal internal constructor(
                     if (current.generation != generation) current else {
                         val undo = current.undo + (id to UndoResult(if (result.isSuccess) UndoStatus.UNDONE else UndoStatus.FAILED, message,
                             completedRenameSteps = if (result.isSuccess) 0 else current.undo[id]?.completedRenameSteps ?: 0,
-                            completedTrashItems = if (result.isSuccess) 0 else current.undo[id]?.completedTrashItems ?: 0))
+                            completedTrashItems = if (result.isSuccess) 0 else current.undo[id]?.completedTrashItems ?: 0,
+                            restoredTrashIds = if (result.isSuccess) emptySet() else current.undo[id]?.restoredTrashIds.orEmpty()))
                         val running = undo.filterValues { it.status == UndoStatus.RUNNING }
                         val finished = undo.filterValues { it.status != UndoStatus.RUNNING }.entries.toList().takeLast(100).associate { it.toPair() }
                         current.copy(
@@ -226,7 +227,7 @@ class DriveChangeJournal internal constructor(
                         )
                     }
                 }
-                if (_state.value.generation == generation) _events.emit(
+                if (_state.value.generation == generation) _events.tryEmit(
                     if (result.isSuccess) Event(message, null, undone = change, generation = generation) else Event(message, null, failedChange = change, generation = generation),
                 )
             } finally { stoppedUndos.update { it - id }; accountGuard.cancel() }
@@ -244,18 +245,29 @@ class DriveChangeJournal internal constructor(
                 }
             }
             is Change.Trash -> runSuspendCatching {
-                var completed = state.value.undo[change.id]?.completedTrashItems ?: 0
-                for (batch in change.ids.drop(completed).chunked(100)) {
-                    check(change.id !in stoppedUndos.value) { tr("撤销已停止，可继续撤销剩余项目", "Undo stopped; you can continue with remaining items", "元に戻す操作を停止しました。残りの項目は続行できます", "실행 취소를 중지했습니다. 나머지 항목을 계속 취소할 수 있습니다", "復原已停止，可繼續復原剩餘項目") }
-                    access.restore(batch).getOrThrow()
-                    access.publish(DriveChange.Restored(batch))
-                    completed += batch.size
-                    _state.update { state ->
-                        val undo = state.undo[change.id]
-                        if (state.generation != generation || undo == null) state else state.copy(undo = state.undo +
-                            (change.id to undo.copy(completedTrashItems = completed)))
-                    }
+                val restored = state.value.undo[change.id]?.restoredTrashIds.orEmpty()
+                val results = coroutineScope {
+                    val permits = Semaphore(8)
+                    change.ids.filterNot { it in restored }.chunked(500).map { batch -> async {
+                        permits.withPermit {
+                            val response = access.restore(batch, awaitCompletion = false)
+                            if (response.isSuccess) {
+                                access.publish(DriveChange.Restored(batch))
+                                _state.update { current ->
+                                    val undo = current.undo[change.id]
+                                    if (current.generation != generation || undo == null) current else {
+                                        val ids = undo.restoredTrashIds + batch
+                                        current.copy(undo = current.undo + (change.id to undo.copy(
+                                            completedTrashItems = ids.size, restoredTrashIds = ids)))
+                                    }
+                                }
+                            }
+                            response
+                        }
+                    } }.awaitAll()
                 }
+                results.firstOrNull { it.isFailure }?.getOrThrow()
+                Unit
             }
             // 倒着改回去：批量重命名按顺序避开了中间冲突，反过来走同样避开
             is Change.Rename -> runSuspendCatching {

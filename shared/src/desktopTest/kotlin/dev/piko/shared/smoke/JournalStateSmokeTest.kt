@@ -9,6 +9,11 @@ import io.github.nihildigit.pikpak.PikPakException
 import io.ktor.client.plugins.HttpSend
 import io.ktor.client.plugins.plugin
 import io.ktor.http.HttpMethod
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -24,6 +29,26 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class JournalStateSmokeTest {
+    @Test
+    fun `a stalled notice collector never blocks recording and undo remains queryable`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val client = PikPakClient("smoke@piko.dev", "pw", sessionStore = InMemorySessionStore(), httpClient = server.httpClient())
+        val drive = PikoDriveRepository(server.provider(client), MemoryPreferences())
+        val journal = DriveChangeJournal(drive, scope)
+        val entered = CompletableDeferred<Unit>()
+        val collector = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            journal.events.collect { entered.complete(Unit); awaitCancellation() }
+        }
+        journal.record(DriveChangeJournal.Change.Trash(listOf("first"), "first"))
+        withTimeout(5_000) { entered.await() }
+        withTimeout(5_000) {
+            repeat(32) { journal.recordTrash(null, listOf("file-$it"), "trash-$it") }
+        }
+        assertEquals(20, journal.state.value.available.size)
+        assertEquals("trash-31", journal.state.value.available.last().summary)
+        collector.cancelAndJoin()
+    }
+
     @Test
     fun `undo refuses to overwrite a subsequent rename`() = smoke { scope ->
         val server = FakePikPakServer()

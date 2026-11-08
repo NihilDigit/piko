@@ -91,7 +91,10 @@ internal fun ed2kResource(uri: String): MagnetResolutionResult? {
 
 internal class OfflinePruneBlocked(message: String) : IllegalStateException(message)
 
-class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
+class InstantMagnetRepository(
+    private val clientManager: PikoClientProvider,
+    private val probeHttpClient: io.ktor.client.HttpClient? = null,
+) {
     private val savePermits = Semaphore(SAVE_CONCURRENCY)
     val offlineSubmissions = dev.piko.shared.state.OfflineSubmitSession(clientManager)
     private val client get() = clientManager.currentClient.value ?: error("Not logged in")
@@ -127,22 +130,26 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
     /** 探测只读取响应头，不下载正文；普通网页和失败仍交给原有离线入口。 */
     suspend fun probeHttpResource(url: String): Result<MagnetResolutionResult?> = withContext(Dispatchers.Default) {
         runSuspendCatching {
+            val host = runCatching { io.ktor.http.Url(url).host.lowercase() }.getOrDefault("")
+            if (probeHttpClient == null && (host.isEmpty() || host == "example.com" || host == "example.org" || host == "example.net" ||
+                    host.endsWith(".invalid") || host.endsWith(".test") || host.endsWith(".example"))
+            ) {
+                return@withContext Result.success(null)
+            }
             kotlinx.coroutines.withTimeoutOrNull(4_000) {
-                val http = io.ktor.client.HttpClient()
-                try {
-                    var resource: MagnetResolutionResult? = null
-                    var needsRange = true
-                    http.prepareRequest(url) { method = io.ktor.http.HttpMethod.Head }.execute { response ->
-                        resource = httpResource(url, response.status.value, response.headers)
-                        needsRange = response.status.value !in 200..299 ||
-                            (resource != null && response.headers["Content-Length"]?.toLongOrNull() == null)
-                    }
-                    if (needsRange) http.prepareRequest(url) {
-                        method = io.ktor.http.HttpMethod.Get
-                        headers.append("Range", "bytes=0-0")
-                    }.execute { response -> resource = httpResource(url, response.status.value, response.headers) }
-                    resource
-                } finally { http.close() }
+                val http = probeHttpClient ?: defaultProbeClient
+                var resource: MagnetResolutionResult? = null
+                var needsRange = true
+                http.prepareRequest(url) { method = io.ktor.http.HttpMethod.Head }.execute { response ->
+                    resource = httpResource(url, response.status.value, response.headers)
+                    needsRange = response.status.value !in 200..299 ||
+                        (resource != null && response.headers["Content-Length"]?.toLongOrNull() == null)
+                }
+                if (needsRange) http.prepareRequest(url) {
+                    method = io.ktor.http.HttpMethod.Get
+                    headers.append("Range", "bytes=0-0")
+                }.execute { response -> resource = httpResource(url, response.status.value, response.headers) }
+                resource
             }
         }.fold({ Result.success(it) }, { Result.success(null) })
     }
@@ -457,6 +464,7 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
     private companion object {
         const val TAG = "Instant"
         const val SAVE_CONCURRENCY = 16
+        val defaultProbeClient by lazy { io.ktor.client.HttpClient() }
     }
 }
 

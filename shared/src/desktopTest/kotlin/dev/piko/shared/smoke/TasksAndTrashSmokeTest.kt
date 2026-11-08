@@ -75,7 +75,7 @@ class TasksAndTrashSmokeTest {
         awaitUntil("回收站加载完成") { drive.files.any { it.id == file.id } }
         drive.enterSelection(file.id)
         drive.restoreFromTrash(drive.selectedFileIds.toList())
-        awaitUntil("回收站移除该文件") { drive.files.isEmpty() && !drive.isTrashActionRunning }
+        awaitUntil("回收站移除该文件") { drive.files.isEmpty() && !file.trashed }
         assertEquals(false, drive.isSelectionMode)
         assertNull(drive.loadError)
 

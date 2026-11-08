@@ -137,7 +137,7 @@ class SpaceFolderFlowTest {
                     onCall(call)
                     if (failFirst && call == 1) error("Injected network failure")
                     val parent = request.url.parameters["parent_id"].orEmpty()
-                    """{"files":[{"id":"new","parent_id":"${if (parent == "*") "" else parent}","name":"new","kind":"drive#file","size":"100","phase":"PHASE_TYPE_COMPLETE"}],"next_page_token":""}"""
+                    """{"files":[{"id":"new","parent_id":"${if (parent == "*") "" else parent}","name":"new","kind":"drive#file","size":"100","phase":"PHASE_TYPE_COMPLETE"}],"next_page_token":"","sync_time":"2026-11-07T00:00:00.000Z"}"""
                 }
                 else -> "{}"
             }

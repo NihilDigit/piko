@@ -130,11 +130,11 @@ class UploadPreparationSmokeTest {
         })
         f.ready()
         val entered = Channel<Unit>(Channel.UNLIMITED)
-        val release = Channel<Unit>(Channel.UNLIMITED)
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
         f.http.plugin(HttpSend).intercept { request ->
             if (request.method == HttpMethod.Post && request.url.encodedPath.endsWith("/drive/v1/files")) {
                 entered.send(Unit)
-                release.receive()
+                release.await()
             }
             execute(request)
         }
@@ -145,13 +145,13 @@ class UploadPreparationSmokeTest {
             assertEquals("one.bin 等 3 项", f.uploads.tasks.value.values.first().batchName)
             f.uploads.pauseBatch(batchId)
             awaitUntil("全部文件暂停") { f.uploads.tasks.value.values.all { it.status == UploadStatus.PAUSED } }
-            repeat(3) { release.send(Unit) }
+            release.complete(Unit)
             f.uploads.resumeBatch(batchId)
             awaitUntil("整组继续并完成") { f.uploads.tasks.value.values.all { it.status == UploadStatus.COMPLETED } }
             assertEquals(3, f.server.children(f.target.id).size)
             f.uploads.removeBatch(batchId)
             assertTrue(f.uploads.tasks.value.isEmpty())
-        } finally { release.close() }
+        } finally { release.complete(Unit) }
     }
 
     @Test

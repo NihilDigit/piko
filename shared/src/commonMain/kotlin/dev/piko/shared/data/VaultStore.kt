@@ -273,7 +273,18 @@ class VaultStore(
 
     // 正在写的改动先套在 known 上的样子。可信写入要列几次目录、确认还要等一会儿，前后两三秒；
     // 改动本身是纯函数，先照它画出来，写成后以网盘上的为准，失败就退回
-    private val pending = MutableStateFlow<Map<String, List<VaultEntry>>>(emptyMap())
+    private class PendingEdit(val edit: VaultEdit) {
+        val done = CompletableDeferred<Unit>()
+    }
+    private val pending = MutableStateFlow<Map<String, List<PendingEdit>>>(emptyMap())
+    internal val editingFolders: Set<String> get() = pending.value.keys
+    internal val hasPendingWrites: Boolean get() = pending.value.isNotEmpty()
+    internal fun projectedEntries(folderId: String): List<VaultEntry>? = pendingEntries(folderId) ?: known.value[folderId]
+
+    private fun pendingEntries(folderId: String): List<VaultEntry>? {
+        val edits = pending.value[folderId] ?: return null
+        return edits.fold(known.value[folderId] ?: return null) { entries, pending -> pending.edit(entries) }
+    }
 
     // 同一进程里对同一目录的改动排队：各自读到同一版本再去撞，只会多重试一轮
     private val locks = Array(64) { Mutex() }
@@ -425,14 +436,14 @@ class VaultStore(
      */
     suspend fun read(folderId: String, listing: List<FileStat>): Result<List<VaultEntry>> = operation {
         runSuspendCatching {
-            pending.value[folderId]?.let { return@runSuspendCatching it }
+            pendingEntries(folderId)?.let { return@runSuspendCatching it }
             // 目录中既无在途乐观改动也无任何 .piko-vault-* 清单文件时，胜出清单必为空，无需阻塞首屏等待全账号缓存加载完毕
             if (listing.none(::looksLikeManifest)) {
                 known.update { it + (folderId to emptyList()) }
                 return@runSuspendCatching emptyList()
             }
             cacheLoaded.await()
-            pending.value[folderId]?.let { return@runSuspendCatching it }
+            pendingEntries(folderId)?.let { return@runSuspendCatching it }
             val entries = activeWinner(listing)?.let { entriesOf(it.file) }.orEmpty()
             known.update { it + (folderId to entries) }
             entries
@@ -449,7 +460,7 @@ class VaultStore(
 
     /** 只用缓存的 [read]：算数的那份没读过时返回 null。 */
     fun cached(folderId: String, listing: List<FileStat>): List<VaultEntry>? {
-        pending.value[folderId]?.let { return it }
+        pendingEntries(folderId)?.let { return it }
         return cachedCommitted(listing)
     }
 
@@ -472,7 +483,7 @@ class VaultStore(
         val p = pending.value
         val k = known.value
         return (p.keys + k.keys).firstOrNull { folderId ->
-            (p[folderId] ?: k[folderId].orEmpty()).any { it.id == entryId }
+            (pendingEntries(folderId) ?: k[folderId].orEmpty()).any { it.id == entryId }
         }
     }
 
@@ -514,14 +525,23 @@ class VaultStore(
         freshlyCreatedFolder: Boolean = false,
         requireRemoteComplete: Boolean = false,
     ): Result<VaultWrite> = operation {
-        cacheLoaded.await()
-        // 前一个改动还没写完时接着它的样子画，免得第二下把第一下暂时盖回去
-        (pending.value[folderId] ?: known.value[folderId])?.let { before ->
-            pending.update { it + (folderId to edit(before)) }
-            onChanged(folderId)
+        val own = PendingEdit(edit)
+        var predecessors = emptyList<PendingEdit>()
+        pending.update {
+            predecessors = it[folderId].orEmpty()
+            it + (folderId to (predecessors + own))
+        }
+        fun removeOwnProjection() {
+            pending.update { all ->
+                val remaining = all[folderId].orEmpty() - own
+                if (remaining.isEmpty()) all - folderId else all + (folderId to remaining)
+            }
         }
         var committed = false
         try {
+            if (pendingEntries(folderId) != null) onChanged(folderId)
+            predecessors.forEach { it.done.await() }
+            cacheLoaded.await()
             var attempted: VaultWrite? = null
             var committedSnapshot: VaultCommitSnapshot? = null
             val result = write(
@@ -537,18 +557,16 @@ class VaultStore(
             } ?: result
             outcome.onSuccess { write ->
                 known.update { it + (folderId to write.after) }
-                pending.update { it - folderId }
-                committed = true
+                removeOwnProjection()
                 onCommitted(folderId, write.after, committedSnapshot)
                 onWritten(folderId, write.after)
                 evictRetired()
+                committed = true
             }
         } finally {
-            val hadPending = folderId in pending.value
-            if (hadPending) pending.update { it - folderId }
-            if (!committed) {
-                onChanged(folderId)
-            }
+            removeOwnProjection()
+            own.done.complete(Unit)
+            if (!committed || hasPending(folderId)) onChanged(folderId)
         }
     }
 
@@ -601,7 +619,7 @@ class VaultStore(
                             return true
                         }
                         if (!baselineReady(listing)) {
-                            val retries = if (requireRemoteComplete) REMOTE_COMPLETE_RETRY_MILLIS else VISIBILITY_RETRY_MILLIS
+                            val retries = retrySteps(requireRemoteComplete)
                             for (wait in retries) {
                                 delay(wait)
                                 val (refetched, serial) = listWithSerial(folderId)
@@ -733,7 +751,7 @@ class VaultStore(
             }
         var (listing, listedAtSerial) = listWithSerial(folderId)
         var rivals = listing.mapNotNull { candidateOf(it, cachedIds) }.filter { it.version >= version }
-        val retries = if (requireRemoteComplete) REMOTE_COMPLETE_RETRY_MILLIS else VISIBILITY_RETRY_MILLIS
+        val retries = retrySteps(requireRemoteComplete)
         for (wait in retries) {
             val settled = rivals.any { it.version > version || (it.version == version && it.token <= token) } &&
                 !hasCompetingPendingStranger(listing)
@@ -787,6 +805,11 @@ class VaultStore(
     }
 
     private fun lockOf(folderId: String): Mutex = locks[folderId.hashCode() and 63]
+
+    private fun retrySteps(requireRemoteComplete: Boolean): List<Long> {
+        val base = if (requireRemoteComplete) REMOTE_COMPLETE_RETRY_MILLIS else VISIBILITY_RETRY_MILLIS
+        return if (confirmDelay == Duration.ZERO) List(base.size) { 0L } else base
+    }
 
     @Serializable
     private class Manifest(val entries: List<VaultEntry>)

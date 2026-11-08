@@ -1,7 +1,12 @@
 package dev.piko.shared.data
 
+import io.github.nihildigit.pikpak.AccountSnapshot
+import io.github.nihildigit.pikpak.QuotaInfo
+import io.github.nihildigit.pikpak.QuotaResponse
 import io.github.nihildigit.pikpak.Session
 import io.github.nihildigit.pikpak.SessionStore
+import io.github.nihildigit.pikpak.TransferQuota
+import io.github.nihildigit.pikpak.UserProfile
 import kotlinx.serialization.Serializable
 
 /**
@@ -14,6 +19,16 @@ interface PikoSessionStore : SessionStore, ArchivePasswordStore {
     suspend fun loadCredentials(account: String): PikoCredentials?
     suspend fun saveCredentials(account: String, password: String)
     suspend fun clearCredentials(account: String)
+
+    override suspend fun loadAccountSnapshot(account: String): AccountSnapshot? =
+        runCatching { loadAccounts().find(account)?.toAccountSnapshot() }.getOrNull()
+
+    /**
+     * Piko 主程序由 [PikoAccountRepository] 订阅当前 client 的状态流并统一经 [PikoClientManager.updateAccount]
+     * 在 accountsLock 保护下写盘，避免后台 debounce 与切号/退出并发读写 [SavedAccounts]。
+     * 独立命令行工具（如 piko-cli）在各自的 SessionStore 包装类中覆盖此方法落盘。
+     */
+    override suspend fun saveAccountSnapshot(account: String, snapshot: AccountSnapshot) = Unit
 }
 
 /**
@@ -51,7 +66,7 @@ data class SavedAccounts(
 
 /**
  * 一个已保存的账号。昵称、头像与邮箱登录时不带回，另取一次后记在这里，切换菜单与账号卡片不必等网络。
- * 空间用量同理，只作取到之前的占位。[usedAt] 是最近一次切到它的时刻，退出当前账号时切到最近用过的那个。
+ * 空间用量与流量额度同理，只作取到之前的占位。[usedAt] 是最近一次切到它的时刻，退出当前账号时切到最近用过的那个。
  */
 @Serializable
 data class SavedAccount(
@@ -63,7 +78,57 @@ data class SavedAccount(
     val usageBytes: Long = -1,
     val limitBytes: Long = -1,
     val usedAt: Long = 0,
+    val quota: QuotaResponse? = null,
+    val transferQuota: TransferQuota? = null,
+    val userProfile: UserProfile? = null,
 ) {
     /** 界面上的名字：昵称，没有时是账号本身。 */
     val displayName: String get() = name.ifBlank { account }
+
+    fun toAccountSnapshot(): AccountSnapshot? {
+        val resolvedQuota = quota ?: if (usageBytes >= 0L && limitBytes > 0L) {
+            QuotaResponse(
+                kind = "drive#about",
+                quota = QuotaInfo(
+                    kind = "drive#quota",
+                    limit = limitBytes.toString(),
+                    usage = usageBytes.toString(),
+                ),
+            )
+        } else {
+            null
+        }
+        val resolvedProfile = userProfile ?: if (name.isNotBlank() || avatarUrl.isNotBlank() || email.isNotBlank()) {
+            UserProfile(
+                name = name,
+                email = email,
+                picture = avatarUrl,
+            )
+        } else {
+            null
+        }
+        if (resolvedQuota == null && transferQuota == null && resolvedProfile == null) return null
+        return AccountSnapshot(
+            quota = resolvedQuota,
+            transferQuota = transferQuota,
+            userProfile = resolvedProfile,
+            updatedAtEpochMs = usedAt,
+        )
+    }
+
+    fun withSnapshot(snapshot: AccountSnapshot): SavedAccount {
+        val q = snapshot.quota ?: quota
+        val tq = snapshot.transferQuota ?: transferQuota
+        val p = snapshot.userProfile ?: userProfile
+        return copy(
+            name = p?.name?.ifEmpty { name } ?: name,
+            avatarUrl = p?.avatarUrl?.ifEmpty { null } ?: avatarUrl,
+            email = p?.email?.ifEmpty { email } ?: email,
+            usageBytes = q?.quota?.usageBytes ?: usageBytes,
+            limitBytes = q?.quota?.limitBytes ?: limitBytes,
+            quota = q,
+            transferQuota = tq,
+            userProfile = p,
+        )
+    }
 }

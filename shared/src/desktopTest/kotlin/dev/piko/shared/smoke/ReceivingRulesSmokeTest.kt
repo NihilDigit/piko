@@ -33,6 +33,7 @@ import kotlinx.coroutines.withTimeout
 import java.io.IOException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -59,7 +60,7 @@ class ReceivingRulesSmokeTest {
     }
 
     @Test
-    fun `moving an ancestor blocks incoming saves and shares while unrelated receiving folders stay available`() = smoke { scope ->
+    fun `moving an ancestor preserves incoming saves and shares addressed by directory id`() = smoke { scope ->
         val f = Rig(scope)
         f.learn()
         val state = f.state()
@@ -72,17 +73,17 @@ class ReceivingRulesSmokeTest {
         }
         val id = assertIs<FileCommandResult.Accepted>(f.commands.submit(FileWriteCommand.Move(listOf(f.parent.id), PikoPathBreadcrumb(f.other.id, f.other.name)))).workId
         withTimeout(5_000) { entered.receive() }
-        assertIs<ActionAvailability.Blocked>(f.commands.receivingAvailability(f.child.id))
+        assertEquals(ActionAvailability.Available, f.commands.receivingAvailability(f.child.id))
         assertEquals(ActionAvailability.Available, f.commands.receivingAvailability(f.other.id))
-        awaitUntil("业务规则变化使保存按钮不可用") { state.primaryAction?.enabled == false && state.saveBlockReason != null }
+        assertTrue(state.primaryAction?.enabled == true)
         state.submitOfflineTask()
-        assertTrue(f.server.tasksSnapshot().isEmpty())
+        awaitUntil("save continues while ancestor move waits") { f.server.tasksSnapshot().any { it.parentId == f.child.id } }
         val source = f.server.addFile("shared.mp4")
         val shares = ShareCommands(f.drive, ShareSaveSession(f.drive, scope), targetAvailability = f.commands::receivingAvailability)
-        assertIs<ShareCommandResult.Rejected>(shares.submit(ShareSaveCommand("S", listOf(ShareSource(source.id, source.name, false, 0, "")), f.target, emptyList()), "token"))
-        assertEquals(0, f.server.count("POST /drive/v1/share/restore"))
+        assertIs<ShareCommandResult.Accepted>(shares.submit(ShareSaveCommand("S", listOf(ShareSource(source.id, source.name, false, 0, "")), f.target, emptyList()), "token"))
+        awaitUntil("share save is submitted to the stable target id") { f.server.count("POST /drive/v1/share/restore") == 1 }
         release.send(Unit)
-        awaitUntil("父目录移动结束后规则解除") { f.writes.works.value.first { it.id == id }.result != null && state.primaryAction?.enabled == true }
+        awaitUntil("父目录移动结束后规则解除") { id !in f.writes.mutations.active.value && state.primaryAction?.enabled == true }
         assertEquals(ActionAvailability.Available, f.commands.receivingAvailability(f.child.id))
     }
 
@@ -105,7 +106,7 @@ class ReceivingRulesSmokeTest {
         awaitUntil("独立离线提交完成") { !state.isSaving && f.server.tasksSnapshot().size == 1 }
         assertEquals(f.child.id, f.server.tasksSnapshot().single().parentId)
         release.send(Unit)
-        awaitUntil("改名完成") { f.writes.works.value.first { it.id == id }.result != null }
+        awaitUntil("改名完成") { id !in f.writes.mutations.active.value }
     }
 
     @Test
@@ -123,7 +124,7 @@ class ReceivingRulesSmokeTest {
     }
 
     @Test
-    fun `an uncertain ancestor move keeps its receiving target blocked until read-only confirmation`() = smoke { scope ->
+    fun `a lost ancestor move response leaves no manual confirmation lock`() = smoke { scope ->
         val f = Rig(scope)
         f.learn()
         var moved = false
@@ -136,11 +137,11 @@ class ReceivingRulesSmokeTest {
             response
         }
         val id = assertIs<FileCommandResult.Accepted>(f.commands.submit(FileWriteCommand.Move(listOf(f.parent.id), PikoPathBreadcrumb(f.other.id, f.other.name)))).workId
-        awaitUntil("目录移动待确认") { f.writes.works.value.first { it.id == id }.result != null }
-        assertIs<ActionAvailability.Blocked>(f.commands.receivingAvailability(f.child.id))
+        awaitUntil("目录移动待确认") { id !in f.writes.mutations.active.value }
+        assertEquals(ActionAvailability.Available, f.commands.receivingAvailability(f.child.id))
         hideDetails = false
-        assertTrue(f.writes.recheck(id))
-        awaitUntil("只读查询解除目标阻止") { f.commands.receivingAvailability(f.child.id) == ActionAvailability.Available }
+        assertFalse(f.writes.recheck(id))
+        assertTrue(f.writes.awaitResult(id)!!.unconfirmed.isEmpty())
         assertEquals(1, f.server.count("POST /drive/v1/files:batchMove"))
         assertNotNull(f.server.node(f.child.id))
     }

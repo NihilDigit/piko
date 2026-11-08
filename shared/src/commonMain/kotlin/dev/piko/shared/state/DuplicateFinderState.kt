@@ -39,7 +39,6 @@ class DuplicateFinderState(
     private val driveRepo: PikoDriveRepository,
     private val scope: CoroutineScope,
     override val root: PikoPathBreadcrumb,
-    private val trashSession: TrashSession? = null,
 ) : FolderTask {
     enum class Phase { SCANNING, ANALYZING, DONE, FAILED }
 
@@ -118,9 +117,8 @@ class DuplicateFinderState(
     private val rootName: String? get() = root.name.takeIf { root.id.isNotEmpty() }
 
     init {
-        if (trashSession != null) scope.launch {
-            snapshotFlow { trashSession.projectedIds }.collect { ids ->
-                projected = ids
+        scope.launch {
+            driveRepo.optimisticRevision.collect {
                 if (phase == Phase.DONE) regroup()
             }
         }
@@ -194,7 +192,8 @@ class DuplicateFinderState(
 
     private suspend fun regroup() {
         regroupLock.withLock {
-            val removed = gone + projected
+            val visible = driveRepo.projectOptimisticFiles(scanned.map { it.file }).mapTo(HashSet()) { it.id }
+            val removed = gone + projected + scanned.mapNotNull { it.file.id.takeUnless(visible::contains) }
             if (groupedFiles === scanned && groupedRemoved == removed) return@withLock
             val present = scanned.filterNot { it.file.id in removed }
             report = withContext(Dispatchers.Default) { findDuplicates(present, rootName) }

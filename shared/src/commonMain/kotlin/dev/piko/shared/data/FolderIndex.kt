@@ -1,5 +1,7 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.util.PikoLock
+import dev.piko.shared.util.withPikoLock
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -24,24 +26,33 @@ internal class FolderIndex {
     /** [gone] 是 Piko 自己移进回收站或删掉的，路径栈停在它们里面的退到它们之外，恢复或再列到时去掉。 */
     data class State(val nodes: Map<String, Node> = emptyMap(), val gone: Set<String> = emptySet())
 
+    private val lock = PikoLock()
     private val state = MutableStateFlow(State())
-    val flow: StateFlow<State> = state.asStateFlow()
+    private val projected = MutableStateFlow(State())
+    val flow: StateFlow<State> = projected.asStateFlow()
+    private var projection: (State) -> State = { it }
+    fun project(transform: (State) -> State) = withPikoLock(lock) {
+        projection = transform
+        projected.value = transform(state.value)
+    }
 
-    fun node(id: String): Node? = state.value.nodes[id]
+    fun node(id: String): Node? = projected.value.nodes[id]
+    fun confirmedNode(id: String): Node? = state.value.nodes[id]
 
-    fun clear() {
+    fun clear() = withPikoLock(lock) {
         state.value = State()
+        projected.value = State()
     }
 
     /** 以下改动都返回索引变了没有，变了由仓库把各处存着的路径重新对一遍。 */
-    private inline fun edit(change: (State) -> State): Boolean {
-        while (true) {
-            val before = state.value
-            val changed = change(before)
-            val after = if (changed.nodes == before.nodes) changed.copy(nodes = before.nodes) else changed
-            if (after == before) return false
-            if (state.compareAndSet(before, after)) return true
-        }
+    private inline fun edit(change: (State) -> State): Boolean = withPikoLock(lock) {
+        val before = state.value
+        val changed = change(before)
+        val after = if (changed.nodes == before.nodes) changed.copy(nodes = before.nodes) else changed
+        if (after == before) return@withPikoLock false
+        state.value = after
+        projected.value = projection(state.value)
+        true
     }
 
     /**
@@ -99,7 +110,7 @@ internal class FolderIndex {
      * 从根到 [folderId] 的路径栈，含根。中间缺一级、或那一级的上级不知道时为 null。
      * [provisional] 为假时不认信息流存盘的那些：「在网盘中显示」跳过去的路径只信服务端说的。
      */
-    fun pathTo(folderId: String, provisional: Boolean = false): List<PikoPathBreadcrumb>? = pathTo(folderId, provisional, state.value.nodes)
+    fun pathTo(folderId: String, provisional: Boolean = false): List<PikoPathBreadcrumb>? = pathTo(folderId, provisional, projected.value.nodes)
 
     private fun pathTo(folderId: String, provisional: Boolean, nodes: Map<String, Node>): List<PikoPathBreadcrumb>? {
         val chain = ArrayDeque<PikoPathBreadcrumb>()
@@ -117,7 +128,7 @@ internal class FolderIndex {
 
     /** 路径栈上一级的名字，按索引换成眼下的。不认识的原样返回。 */
     fun withCurrentName(crumb: PikoPathBreadcrumb): PikoPathBreadcrumb {
-        val name = nameOf(crumb, state.value.nodes) ?: return crumb
+        val name = nameOf(crumb, projected.value.nodes) ?: return crumb
         return if (name == crumb.name) crumb else PikoPathBreadcrumb(crumb.id, name)
     }
 
@@ -127,7 +138,7 @@ internal class FolderIndex {
      */
     fun resolve(stack: List<PikoPathBreadcrumb>): List<PikoPathBreadcrumb> {
         if (stack.isEmpty()) return stack
-        val current = state.value
+        val current = projected.value
         val out = ArrayList<PikoPathBreadcrumb>(stack.size)
         for ((index, crumb) in stack.withIndex()) {
             val nodeId = nodeIdOf(crumb.id)

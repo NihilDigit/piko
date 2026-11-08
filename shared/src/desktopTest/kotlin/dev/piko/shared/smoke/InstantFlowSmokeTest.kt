@@ -709,16 +709,16 @@ class InstantFlowSmokeTest {
         draft.saveSelection()
         withTimeout(5_000) { started.receive() }
 
-        view.open("magnet:?xt=urn:btih:" + "b".repeat(40))
-        assertTrue(session.state === draft)
-        assertNotNull(view.blockedAction)
+        val nextLink = "magnet:?xt=urn:btih:" + "b".repeat(40)
+        view.open(nextLink)
+        assertTrue(session.state !== draft)
+        assertEquals(nextLink, session.state?.input)
+        assertNull(view.blockedAction)
         view.discard()
-        assertTrue(session.state === draft)
-        view.collapse()
-        assertTrue(view.hasCollapsedWork)
+        assertNull(session.state)
         release.send(Unit)
 
-        awaitUntil("没有页面订阅时仍完成") { session.state == null && session.pendingCompletions.value.isNotEmpty() }
+        awaitUntil("关闭新编辑器不取消已接受保存") { session.pendingCompletions.value.isNotEmpty() }
         val completion = session.pendingCompletions.value.single()
         val outcome = assertIs<InstantSaveOutcome.InstantSaved>(completion.outcome)
         assertEquals(target.id, outcome.target.id)
@@ -783,7 +783,7 @@ class InstantFlowSmokeTest {
         assertTrue(second.state.canSaveSelection)
         release.send(Unit)
 
-        awaitUntil("关闭后的保存产生独立回执") { session.pendingCompletions.value.any { it.id == first.id } }
+        awaitUntil("关闭后的保存产生独立回执") { session.pendingCompletions.value.any { it.draftId == first.id } }
         val outcome = assertIs<InstantSaveOutcome.InstantSaved>(session.pendingCompletions.value.single().outcome)
         assertEquals(firstFolder.id, outcome.target.id)
         assertEquals(listOf("Movie.mkv"), server.children(firstFolder.id).map { it.name })

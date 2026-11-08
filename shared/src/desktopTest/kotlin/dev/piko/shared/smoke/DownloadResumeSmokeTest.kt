@@ -3,10 +3,13 @@ package dev.piko.shared.smoke
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.download.PikoDownloadStorage
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.flow.MutableStateFlow
+import io.github.nihildigit.pikpak.PikPakClient
 import java.io.File
 import java.nio.file.Files
 import kotlin.random.Random
@@ -91,7 +94,9 @@ class DownloadResumeSmokeTest {
         )
 
         val coordinator = PikoDownloadCoordinator(
-            FakePikPakServer().provider(),
+            object : PikoClientProvider {
+                override val currentClient = MutableStateFlow<PikPakClient?>(null)
+            },
             prefs,
             DirectoryStorage(directory),
             scope,

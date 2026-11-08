@@ -69,10 +69,20 @@ class OfflineTasksState(
      *
      * 每轮先拉取再等待，所以进入页面立刻有一次加载，不必另调 [refresh]。
      */
+    private var observers = 0
+    private var polling: Job? = null
     suspend fun pollWhileVisible(intervalMs: Long = DEFAULT_POLL_INTERVAL_MS) {
-        while (true) {
-            fetch(notifyFailure = isLoading)
-            delay(intervalMs)
+        observers++
+        if (polling?.isActive != true) polling = scope.launch {
+            while (true) {
+                fetch(notifyFailure = isLoading)
+                delay(intervalMs)
+            }
+        }
+        try { kotlinx.coroutines.awaitCancellation() }
+        finally {
+            observers--
+            if (observers == 0) { polling?.cancel(); polling = null }
         }
     }
 

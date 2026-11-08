@@ -217,7 +217,7 @@ class SqliteDriveTreeIndexTest {
             assertEquals(100, space.items.size)
             assertEquals(99999L, space.fileCount)
             assertEquals(24, space.items.count { it.previewChildren.isNotEmpty() })
-            assertTrue(space.items.filter { it.previewChildren.isNotEmpty() }.all { it.previewChildren.size == 16 })
+            assertTrue(space.items.filter { it.previewChildren.isNotEmpty() }.all { it.previewChildren.size == 24 })
             index.close()
             val provider = object : PikoClientProvider {
                 override val currentClient = kotlinx.coroutines.flow.MutableStateFlow<io.github.nihildigit.pikpak.PikPakClient?>(null)

@@ -8,7 +8,7 @@ import dev.piko.shared.presentation.HistoryCommands
 import dev.piko.shared.state.DriveScreenState
 import dev.piko.shared.state.HistoryEditCommand
 import dev.piko.shared.state.HistoryEditCompletion
-import dev.piko.shared.state.HistoryEditSession
+import dev.piko.shared.state.HistoryMutations
 import io.github.nihildigit.pikpak.EventType
 import io.github.nihildigit.pikpak.InMemorySessionStore
 import io.github.nihildigit.pikpak.PikPakClient
@@ -50,11 +50,12 @@ class HistoryEditSmokeTest {
             execute(request)
         }
         val repo = repository(server, http)
-        val session = HistoryEditSession(repo, scope)
+        val session = HistoryMutations(repo, scope)
+        val outcomes = observeMutationOutcomes(scope, session.outcomes)
         HistoryCommands(repo, session).submit(HistoryEditCommand.ClearPlay)
-        awaitUntil("明确拒绝与待确认区分") { session.works.value.single().result != null }
-        assertEquals(HistoryEditCompletion.FAILED, session.works.value.single().result!!.completion)
-        assertEquals("未能清空播放历史", session.works.value.single().result!!.message)
+        awaitUntil("明确拒绝与待确认区分") { outcomes.value.isNotEmpty() }
+        assertEquals(HistoryEditCompletion.FAILED, outcomes.value.single().result!!.completion)
+        assertEquals("未能清空播放历史", outcomes.value.single().result!!.message)
         assertEquals(setOf(play.id, recent.id), server.eventsSnapshot().map { it.id }.toSet())
     }
 
@@ -73,13 +74,13 @@ class HistoryEditSmokeTest {
             call
         }
         val repo = repository(server, http)
-        val session = HistoryEditSession(repo, scope)
+        val session = HistoryMutations(repo, scope)
+        val outcomes = observeMutationOutcomes(scope, session.outcomes)
         val id = assertIs<HistoryCommandResult.Accepted>(HistoryCommands(repo, session).submit(HistoryEditCommand.ClearPlay)).workId
-        awaitUntil("存在新播放时无法认领清空结果") { session.works.value.single().result != null }
-        assertEquals(HistoryEditCompletion.UNCONFIRMED, session.works.value.single().result!!.completion)
-        assertTrue(session.recheck(id))
-        awaitUntil("只读重新查询结束") { session.works.value.single().result != null }
-        assertEquals(HistoryEditCompletion.UNCONFIRMED, session.works.value.single().result!!.completion)
+        awaitUntil("存在新播放时无法认领清空结果") { outcomes.value.isNotEmpty() }
+        assertEquals(HistoryEditCompletion.UNCONFIRMED, outcomes.value.single().result!!.completion)
+        awaitUntil("只读重新查询结束") { outcomes.value.isNotEmpty() }
+        assertEquals(HistoryEditCompletion.UNCONFIRMED, outcomes.value.single().result!!.completion)
         assertEquals(1, server.count("POST /drive/v1/events:clear"))
         assertEquals(1, server.eventsSnapshot().size)
         assertTrue(server.eventsSnapshot().single().id != old.id)
@@ -98,7 +99,8 @@ class HistoryEditSmokeTest {
             execute(request)
         }
         val repo = repository(server, http)
-        val session = HistoryEditSession(repo, scope)
+        val session = HistoryMutations(repo, scope)
+        val outcomes = observeMutationOutcomes(scope, session.outcomes)
         val firstScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
         val first = DriveScreenState(repo, MemoryPreferences(), firstScope,
             navigation = dev.piko.shared.presentation.LibraryNavigation(repo, DriveLibrary.HISTORY, firstScope), historyEditSession = session)
@@ -112,8 +114,8 @@ class HistoryEditSmokeTest {
         withTimeout(5_000) { entered.receive() }
         firstScope.cancel()
         release.send(Unit)
-        awaitUntil("离页后结果保留，另一份视图同步刷新") { session.works.value.single().result != null && other.files.isEmpty() && other.selectedFileIds.isEmpty() && !other.isSelectionMode }
-        assertEquals(HistoryEditCompletion.SUCCEEDED, session.works.value.single().result!!.completion)
+        awaitUntil("离页后结果保留，另一份视图同步刷新") { outcomes.value.isNotEmpty() && other.files.isEmpty() && other.selectedFileIds.isEmpty() && !other.isSelectionMode }
+        assertEquals(HistoryEditCompletion.SUCCEEDED, outcomes.value.single().result!!.completion)
         assertNotNull(server.node(file.id), "删除历史不能删除文件")
         assertTrue(server.eventsSnapshot().isEmpty())
         assertTrue(other.selectedFileIds.isEmpty(), "其他视图不能保留已经移除的历史行作为选中对象")
@@ -121,7 +123,7 @@ class HistoryEditSmokeTest {
     }
 
     @Test
-    fun `clear play history is blocked by an unfinished play deletion but recent records are independent`() = smoke { scope ->
+    fun `clear play history accepts an unfinished deletion and leaves recent records intact`() = smoke { scope ->
         val server = FakePikPakServer()
         val file = server.addFile("video.mp4")
         val play = server.addEvent(EventType.PLAY, file.id)
@@ -134,16 +136,17 @@ class HistoryEditSmokeTest {
             execute(request)
         }
         val repo = repository(server, http)
-        val session = HistoryEditSession(repo, scope)
+        val session = HistoryMutations(repo, scope)
+        val outcomes = observeMutationOutcomes(scope, session.outcomes)
         val commands = HistoryCommands(repo, session)
         assertIs<HistoryCommandResult.Accepted>(commands.submit(HistoryEditCommand.Remove(HistoryKind.PLAY, listOf(play.id))))
         withTimeout(5_000) { entered.receive() }
-        assertIs<HistoryCommandResult.Rejected>(commands.submit(HistoryEditCommand.ClearPlay))
+        assertIs<HistoryCommandResult.Accepted>(commands.submit(HistoryEditCommand.ClearPlay))
         assertIs<dev.piko.shared.presentation.ActionAvailability.Available>(commands.availability(HistoryEditCommand.Remove(HistoryKind.RECENT, listOf(recent.id))))
         release.send(Unit)
-        awaitUntil("移除完成后允许清空") { session.works.value.single().result != null }
+        awaitUntil("移除与清空完成") { outcomes.value.size == 2 }
         assertIs<HistoryCommandResult.Accepted>(commands.submit(HistoryEditCommand.ClearPlay))
-        awaitUntil("清空完成") { session.works.value.all { it.result != null } }
+        awaitUntil("清空完成") { outcomes.value.size == 3 }
         assertEquals(listOf(recent.id), server.eventsSnapshot().map { it.id })
         assertNotNull(server.node(file.id))
     }
@@ -160,10 +163,11 @@ class HistoryEditSmokeTest {
             call
         }
         val repo = repository(server, http)
-        val session = HistoryEditSession(repo, scope)
+        val session = HistoryMutations(repo, scope)
+        val outcomes = observeMutationOutcomes(scope, session.outcomes)
         HistoryCommands(repo, session).submit(HistoryEditCommand.Remove(HistoryKind.PLAY, listOf(event.id)))
-        awaitUntil("丢失响应后核对事件已消失") { session.works.value.single().result != null }
-        assertEquals(HistoryEditCompletion.SUCCEEDED, session.works.value.single().result!!.completion)
+        awaitUntil("丢失响应后核对事件已消失") { outcomes.value.isNotEmpty() }
+        assertEquals(HistoryEditCompletion.SUCCEEDED, outcomes.value.single().result!!.completion)
         assertEquals(1, server.count("POST /drive/v1/events:delete"))
         assertNotNull(server.node(file.id))
     }
@@ -181,17 +185,17 @@ class HistoryEditSmokeTest {
             call
         }
         val repo = repository(server, http)
-        val session = HistoryEditSession(repo, scope)
+        val session = HistoryMutations(repo, scope)
+        val outcomes = observeMutationOutcomes(scope, session.outcomes)
         val commands = HistoryCommands(repo, session)
         val accepted = assertIs<HistoryCommandResult.Accepted>(commands.submit(HistoryEditCommand.Remove(HistoryKind.PLAY, listOf(first.id, second.id))))
-        awaitUntil("部分移除可查询") { session.works.value.single().result != null }
-        assertEquals(HistoryEditCompletion.PARTIAL, session.works.value.single().result!!.completion)
-        assertEquals(setOf(first.id), session.works.value.single().result!!.confirmedEvents)
+        awaitUntil("部分移除可查询") { outcomes.value.isNotEmpty() }
+        assertEquals(HistoryEditCompletion.PARTIAL, outcomes.value.single().result!!.completion)
+        assertEquals(setOf(first.id), outcomes.value.single().result!!.confirmedEvents)
         val fresh = server.addEvent(EventType.PLAY, first.fileId)
-        assertTrue(session.recheck(accepted.workId))
-        awaitUntil("重新查询完成") { session.works.value.single().result != null }
+        awaitUntil("重新查询完成") { outcomes.value.isNotEmpty() }
         assertEquals(1, server.count("POST /drive/v1/events:delete"))
         assertTrue(server.eventsSnapshot().any { it.id == fresh.id })
-        assertIs<HistoryCommandResult.Rejected>(commands.submit(HistoryEditCommand.ClearPlay))
+        assertIs<HistoryCommandResult.Accepted>(commands.submit(HistoryEditCommand.ClearPlay))
     }
 }

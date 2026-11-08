@@ -87,6 +87,10 @@ class FakePikPakServer(
 
     private val lock = Any()
     private val nodes = LinkedHashMap<String, Node>()
+    private val syncRows = LinkedHashMap<String, Pair<Long, JsonObject>>()
+    private var syncSequence = 0L
+    @Volatile var syncVersionOutdated = false
+    private fun syncTime(sequence: Long) = java.time.Instant.ofEpochMilli(1_800_000_000_000L + sequence).toString()
     private val archives = java.util.concurrent.ConcurrentHashMap<String, Archive>()
     private val decompressOutputs = java.util.concurrent.ConcurrentHashMap<String, String>()
 
@@ -283,6 +287,7 @@ class FakePikPakServer(
             }
             path.endsWith("/drive/v1/resource/list") -> resolveMagnet(request)
             path.endsWith("/drive/v1/about") -> about()
+            path.endsWith("/vip/v1/quantity/list") -> json("""{"base":{"vip_status":"ok"}}""")
             path.endsWith("/drive/v1/events:delete") -> {
                 val body = Json.parseToJsonElement(request.body.text()).jsonObject
                 val ids = body["ids"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet()
@@ -507,6 +512,7 @@ class FakePikPakServer(
 
     private fun MockRequestHandleScope.listFiles(request: HttpRequestData): HttpResponseData {
         val filters = request.url.parameters["filters"].orEmpty()
+        if (request.url.parameters["with_audit"] == "true") return listFileChanges(request)
         val wantsTrash = filters.replace(" ", "").contains("\"trashed\":{\"eq\":true}")
         val parentId = request.url.parameters["parent_id"].orEmpty()
         val wantsStarred = filters.contains("STAR")
@@ -524,6 +530,36 @@ class FakePikPakServer(
             put("files", buildJsonArray { listed.forEach { add(buildJsonObject { putNode(it) }) } })
         }
         return json(body.toString())
+    }
+
+    private fun MockRequestHandleScope.listFileChanges(request: HttpRequestData): HttpResponseData = synchronized(lock) {
+        // Tests also mutate Node fields directly; compare serialized rows to track those writes.
+        for (node in nodes.values) {
+            val row = buildJsonObject { putNode(node) }
+            if (syncRows[node.id]?.second != row) syncRows[node.id] = (++syncSequence) to row
+        }
+        for ((id, previous) in syncRows.toMap()) {
+            if (id !in nodes && previous.second["trashed"]?.jsonPrimitive?.content != "true") {
+                val tombstone = JsonObject(previous.second + ("trashed" to kotlinx.serialization.json.JsonPrimitive(true)))
+                syncRows[id] = (++syncSequence) to tombstone
+            }
+        }
+        val lowerBound = request.url.parameters["filters"]?.let {
+            Json.parseToJsonElement(it).jsonObject["modified_time"]?.jsonObject?.get("gt")?.jsonPrimitive?.content
+        }.orEmpty()
+        val lowerSequence = lowerBound.takeIf { it.isNotEmpty() }?.let {
+            java.time.Instant.parse(it).toEpochMilli() - 1_800_000_000_000L
+        } ?: -1L
+        val changed = syncRows.values.filter { it.first > lowerSequence && it.second["phase"]?.jsonPrimitive?.content == TaskPhase.COMPLETE }
+        val offset = request.url.parameters["page_token"]?.toIntOrNull() ?: 0
+        val limit = request.url.parameters["limit"]?.toIntOrNull() ?: 500
+        val page = changed.drop(offset).take(limit)
+        json(buildJsonObject {
+            put("sync_time", syncTime(syncSequence))
+            put("version_outdated", syncVersionOutdated && lowerBound.isNotEmpty())
+            put("next_page_token", if (offset + page.size < changed.size) (offset + page.size).toString() else "")
+            put("files", JsonArray(page.map { it.second }))
+        }.toString())
     }
 
     private suspend fun MockRequestHandleScope.createFile(request: HttpRequestData): HttpResponseData {
@@ -588,7 +624,9 @@ class FakePikPakServer(
                 }
             }
         }
-        return json("{}")
+        return json(buildJsonObject {
+            put("ids", buildJsonArray { ids.filterNot { it in ignoredBatchIds }.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } })
+        }.toString())
     }
 
     private fun removeSubtree(id: String) {

@@ -67,16 +67,16 @@ class ShareDestinationSmokeTest {
         draft.performPrimaryAction()
         withTimeout(5_000) { entered.receive() }
         model.collapse()
-        assertTrue(model.hasCollapsedWork)
-        assertTrue(draft.isSaving, "顶层替换保护必须看见分享的保存状态")
+        assertTrue(draft.isSaving)
+        awaitUntil("分享执行与编辑器分离") { model.state !== draft }
         model.discard()
         model.open("another link")
         draft.updateInput("another input")
-        assertSame(draft, model.state)
+        assertEquals("another link", model.state?.input)
         assertEquals("https://mypikpak.com/s/S1", draft.input)
         assertSame(resolution, draft.resolution)
         val rebound = AddLinkViewModel(session)
-        assertSame(resolution, rebound.state?.resolution, "界面绑定重建不能重建分享解析状态")
+        assertSame(model.state, rebound.state)
         release.send(Unit)
         awaitUntil("收起状态下分享保存完成并记录回执") { !draft.isSaving && records.records.value.isNotEmpty() }
         assertEquals(listOf(source.name), server.children(target.id).map { it.name })

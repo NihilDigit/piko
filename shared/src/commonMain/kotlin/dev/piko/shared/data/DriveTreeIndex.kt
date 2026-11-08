@@ -107,8 +107,17 @@ internal class DriveTreeIndex(
     fun appendCandidateVaultBatch(generation: Long, batches: List<Pair<String, List<VaultEntry>>>) = withPikoLock(lock) {
         if (!closed) disk?.let { it.vaultBatch(generation, batches); if (it.currentRevision != state.value.revision) publishDisk() }
     }
-    fun commitCandidate(generation: Long, usageBytes: Long?, syncedAtMillis: Long = 0L): Set<String> = withPikoLock(lock) {
-        if (closed) emptySet() else disk?.commitCandidate(generation, usageBytes, syncedAtMillis).orEmpty().also { publishDisk() }
+    fun commitCandidate(generation: Long, usageBytes: Long?, syncedAtMillis: Long = 0L, syncCursor: String? = null): Set<String> = withPikoLock(lock) {
+        if (closed) emptySet() else disk?.commitCandidate(generation, usageBytes, syncedAtMillis, syncCursor).orEmpty().also { publishDisk() }
+    }
+
+    val syncCursor: String? get() = withPikoLock(lock) { disk?.syncCursor }
+    fun beginDelta() = withPikoLock(lock) { check(!closed); requireNotNull(disk).beginDelta() }
+    fun appendDelta(files: List<FileStat>) = withPikoLock(lock) { check(!closed); requireNotNull(disk).appendDelta(files) }
+    fun abortDelta() = withPikoLock(lock) { if (!closed) disk?.abortDelta() }
+    fun commitDelta(cursor: String): Set<String> = withPikoLock(lock) {
+        check(!closed)
+        requireNotNull(disk).commitDelta(cursor).also { publishDisk() }
     }
     fun abortCandidate(generation: Long) = withPikoLock(lock) { if (!closed) disk?.abortCandidate(generation) }
 
@@ -439,8 +448,9 @@ internal class DriveTreeIndex(
         expectedManifestId: String? = null,
         requireMatch: Boolean = false,
         starredEntryIds: Set<String> = emptySet(),
+        optimistic: Boolean = false,
     ): Boolean {
-        withPikoLock(lock) { if (closed) return false; disk?.let { return it.vault(folderId, entries, expectedManifestId, requireMatch, starredEntryIds).also { publishDisk() } } }
+        withPikoLock(lock) { if (closed) return false; disk?.let { return it.vault(folderId, entries, expectedManifestId, requireMatch, starredEntryIds, optimistic = optimistic).also { publishDisk() } } }
         val virtualStats = entries.filter { it.isArchived }.map { it.toFileStat(folderId, starred = it.id in starredEntryIds) }
         val storedEntries = entries.toList()
         var accepted = true
@@ -627,7 +637,7 @@ internal class DriveTreeIndex(
                         } else withoutStar
                         if (nextTags != target.tags) {
                             val map = updatedEntries ?: current.entries.toMutableMap().also { updatedEntries = it }
-                            val patched = target.copy(tags = nextTags)
+                            val patched = target.copy(starred = change.starred, tags = nextTags)
                             map[id] = patched
                             if (!VaultEntry.isVaulted(id)) patchedAtSeq[id] = seq to patched
                         }
@@ -1388,7 +1398,7 @@ internal class DriveTreeIndex(
                 thumbnailLink = stat.thumbnailLink,
                 phase = stat.phase,
                 params = stat.params,
-                tags = stat.tags,
+                tags = if (stat.starred && stat.tags.none { it.name == FileTag.STAR }) stat.tags + FileTag(name = FileTag.STAR) else stat.tags,
             )
         }
     }

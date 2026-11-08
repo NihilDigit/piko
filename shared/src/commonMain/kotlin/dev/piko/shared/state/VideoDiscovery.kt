@@ -5,7 +5,9 @@ import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.upload.isUploading
+import io.github.nihildigit.pikpak.ApiRequestPriority
 import io.github.nihildigit.pikpak.FileStat
+import io.github.nihildigit.pikpak.withApiPriority
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -114,7 +116,7 @@ class VideoDiscovery internal constructor(
             targets.map { id ->
                 async {
                     currentCoroutineContext().ensureActive()
-                    val result = readFolder(id)
+                    val result = withApiPriority(ApiRequestPriority.BACKGROUND) { readFolder(id) }
                     currentCoroutineContext().ensureActive()
                     val error = result.exceptionOrNull()
                     if (error != null) {
@@ -150,7 +152,7 @@ class VideoDiscovery internal constructor(
 
     private suspend fun readBatch(id: String): VideoFolderBatch {
         currentCoroutineContext().ensureActive()
-        val result = readFolder(id)
+        val result = withApiPriority(ApiRequestPriority.BACKGROUND) { readFolder(id) }
         currentCoroutineContext().ensureActive()
         result.exceptionOrNull()?.let { error ->
             if (error is CancellationException) throw error

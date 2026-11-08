@@ -27,6 +27,7 @@ sealed interface FileWriteCommand {
     data class Copy(override val ids: List<String>, override val target: PikoPathBreadcrumb) : FileWriteCommand {
         override val title get() = tr("复制 ${ids.size} 项到「${target.localizedName}」", "Copy ${enCount(ids.size, "item", "items")} to “${target.localizedName}”", "${ids.size} 項目を「${target.localizedName}」にコピー", "${ids.size}개 항목을 “${target.localizedName}”에 복사", "複製 ${ids.size} 項至「${target.localizedName}」")
     }
+    data class Trash(override val ids: List<String>) : FileWriteCommand { override val title get() = tr("移入回收站", "Move to trash", "ゴミ箱に移動", "휴지통으로 이동", "移至資源回收筒") }
     data class Restore(override val ids: List<String>) : FileWriteCommand { override val title get() = tr("恢复 ${ids.size} 项", "Restore ${enCount(ids.size, "item", "items")}", "${ids.size} 項目を復元", "${ids.size}개 항목 복원", "還原 ${ids.size} 項") }
     data class Delete(override val ids: List<String>) : FileWriteCommand { override val title get() = tr("彻底删除 ${ids.size} 项", "Permanently delete ${enCount(ids.size, "item", "items")}", "${ids.size} 項目を完全に削除", "${ids.size}개 항목 영구 삭제", "永久刪除 ${ids.size} 項") }
     data class Star(override val ids: List<String>, val starred: Boolean) : FileWriteCommand {
@@ -38,7 +39,7 @@ sealed interface FileWriteCommand {
     }
 }
 
-enum class FileWritePhase { PREPARING, WRITING, CHECKING, COPYING, FINISHED }
+enum class FileWritePhase { PREPARING, COPYING, FINISHED }
 enum class FileWriteCompletion { SUCCEEDED, PARTIAL, FAILED, UNCONFIRMED }
 data class FileBefore(val name: String, val parentId: String)
 data class FileCopyTask(val id: String, val sources: List<String>, val phase: String = "", val progress: Int = 0)
@@ -56,30 +57,17 @@ data class FileWriteResult(
 data class FileWriteWork(
     val id: Long,
     val account: String,
-    val command: FileWriteCommand,
+    val command: FileWriteCommand.Copy,
     val createdAtMs: Long,
     val phase: FileWritePhase = FileWritePhase.PREPARING,
-    val checked: Int = 0,
-    val completedCount: Int = 0,
-    val totalCount: Int = command.ids.size.coerceAtLeast(1),
     val stopping: Boolean = false,
-    val before: Map<String, FileBefore> = emptyMap(),
     val copies: List<FileCopyTask> = emptyList(),
     val result: FileWriteResult? = null,
 ) {
     val total: Int get() = command.ids.size.coerceAtLeast(1)
-    val totalSteps: Int get() = (totalCount + 99) / 100
     val isRunning: Boolean get() = result == null
 
-    /** 轻量操作由前台反馈；仅长批次、复制和需要核对的结局进入任务页。 */
-    val showsInTaskPage: Boolean
-        get() = when (command) {
-            is FileWriteCommand.Star, is FileWriteCommand.CreateFolder -> false
-            is FileWriteCommand.Copy -> true
-            is FileWriteCommand.Rename, is FileWriteCommand.Move,
-            is FileWriteCommand.Restore, is FileWriteCommand.Delete -> if (isRunning) totalSteps > 1
-                else result?.completion == FileWriteCompletion.PARTIAL || result?.completion == FileWriteCompletion.UNCONFIRMED
-        }
+
 }
 
 data class FileWriteOutcome(val account: String, val workId: Long, val title: String, val result: FileWriteResult)

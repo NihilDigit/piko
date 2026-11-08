@@ -49,56 +49,36 @@ class BatchTrashSmokeTest {
     }
 
     @Test
-    fun `thousand copies update each batch and undo together`() = smoke { scope ->
+    fun thousandFilesSubmitTwoConcurrentBatchesAndOneUndo() = smoke { scope ->
         val started = Channel<Unit>(Channel.UNLIMITED)
         val permits = Channel<Unit>(Channel.UNLIMITED)
         val f = fixture(scope, 1000) { started.send(Unit); permits.receive() }
         val ids = f.drive.selectedFileIds.toList()
         f.drive.moveToTrash(ids)
-        assertEquals(0, assertNotNull(f.drive.trashProgress).completed)
-        assertEquals(1000, f.drive.trashProgress!!.total)
-        f.drive.moveToTrash(ids)
-        started.receive()
-        permits.send(Unit)
-        started.receive()
-        awaitUntil("first batch reflected") { f.drive.displayedFiles.size == 901 }
-        assertEquals(100, f.nodes.count { it.trashed })
-        assertEquals(100, f.drive.trashProgress!!.completed)
-        assertEquals(0, f.drive.selectedFileIds.size)
-        assertNull(f.repo.changes.latest.value, "one undo record only after the operation")
-        repeat(9) { permits.send(Unit) }
-        awaitUntil("all batches") { f.drive.trashProgress == null && f.drive.displayedFiles.isEmpty() && f.repo.changes.latest.value != null }
-        assertEquals(10, f.server.count("POST /drive/v1/files:batchTrash"))
-        assertEquals(1000, (f.repo.changes.latest.value as DriveChangeJournal.Change.Trash).ids.size)
+        kotlinx.coroutines.withTimeout(5000) { repeat(2) { started.receive() } }
+        awaitUntil("all selected files disappear before either response") { f.drive.displayedFiles.none { it.id in ids } }
+        assertTrue(f.nodes.none { it.trashed })
+        repeat(2) { permits.send(Unit) }
+        awaitUntil("both batches committed") { (f.repo.changes.latest.value as? DriveChangeJournal.Change.Trash)?.ids?.size == 1000 }
+        assertEquals(2, f.server.count("POST /drive/v1/files:batchTrash"))
+        assertEquals(1, f.repo.changes.state.value.available.size)
         assertFalse(f.drive.isSelectionMode)
         assertTrue(f.drive.undoLast())
-        awaitUntil("undo all batches") { f.nodes.none { it.trashed } && f.drive.displayedFiles.size == 1001 }
-        awaitUntil("no second undo record") { f.repo.changes.latest.value == null }
+        awaitUntil("single undo restores the selection") { f.nodes.none { it.trashed } && f.drive.displayedFiles.size == 1001 }
     }
 
     @Test
-    fun `failure keeps remaining selection and retry excludes completed files`() = smoke { scope ->
+    fun failedBatchRollsBackOnlyItsOwnProjection() = smoke { scope ->
         var calls = 0
-        var fail = true
-        val f = fixture(scope, 250) {
+        val f = fixture(scope, 1000) {
             calls++
-            if (fail && calls == 2) error("simulated batch rejection")
+            if (calls == 2) throw io.github.nihildigit.pikpak.PikPakException(7, "permission_denied", httpStatus = 403)
         }
         f.drive.moveToTrash(f.drive.selectedFileIds.toList())
-        awaitUntil("partial failure") { f.drive.trashFailure != null && f.drive.trashProgress == null && f.repo.changes.latest.value != null && f.drive.displayedFiles.size == 151 }
-        assertEquals(100, f.nodes.count { it.trashed })
-        assertEquals(100, f.drive.trashFailure!!.completed)
-        assertEquals(150, f.drive.trashFailure!!.remainingIds.size)
-        assertTrue(f.drive.selectedFileIds.isEmpty())
-        assertEquals(100, (f.repo.changes.latest.value as DriveChangeJournal.Change.Trash).ids.size)
-        fail = false
-        f.drive.retryTrash()
-        awaitUntil("retry completes") { f.drive.trashProgress == null && f.nodes.count { it.trashed } == 250 && (f.repo.changes.latest.value as? DriveChangeJournal.Change.Trash)?.ids?.size == 250 }
-        assertNull(f.drive.trashFailure)
-        assertEquals(4, calls)
-        assertEquals(3, f.server.count("POST /drive/v1/files:batchTrash"))
+        awaitUntil("successful subset has an inverse") { (f.repo.changes.latest.value as? DriveChangeJournal.Change.Trash)?.ids?.size == 500 }
+        awaitUntil("rejected subset is visible again") { f.drive.displayedFiles.size == 501 }
+        assertEquals(500, f.nodes.count { it.trashed })
         assertTrue(f.drive.undoLast())
-        awaitUntil("undo whole cleanup") { f.nodes.none { it.trashed } && f.drive.displayedFiles.size == 251 }
-        awaitUntil("one undo including retry") { f.repo.changes.latest.value == null }
+        awaitUntil("undo affects only committed files") { f.nodes.none { it.trashed } && f.drive.displayedFiles.size == 1001 }
     }
 }

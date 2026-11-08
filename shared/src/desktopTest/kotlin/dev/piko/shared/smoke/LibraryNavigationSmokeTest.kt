@@ -6,7 +6,7 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.ScrollAnchor
 import dev.piko.shared.state.DriveScreenState
-import dev.piko.shared.state.TrashSession
+import dev.piko.shared.state.FileWriteSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -65,19 +65,17 @@ class LibraryNavigationSmokeTest {
             httpClient = http,
         )
         val driveRepo = PikoDriveRepository(server.provider(client), MemoryPreferences())
-        val cleanup = TrashSession(driveRepo, scope)
+        val writes = FileWriteSession(driveRepo, scope)
         val pageScope = CoroutineScope(scope.coroutineContext + Job(scope.coroutineContext[Job]))
-        val page = DriveScreenState(driveRepo, MemoryPreferences(), pageScope, trashSession = cleanup)
+        val page = DriveScreenState(driveRepo, MemoryPreferences(), pageScope, fileWriteSession = writes)
         page.moveToTrash(files.map { it.id })
         started.receive()
         pageScope.cancel()
         val library = LibraryNavigation(driveRepo, DriveLibrary.TRASH, scope)
-        assertEquals(0, cleanup.progress!!.completed)
         repeat(3) { permits.send(Unit) }
-        awaitUntil("background cleanup") { cleanup.progress == null && files.all { it.trashed } }
-        assertEquals(250, cleanup.completedCount)
-        cleanup.undo()
-        awaitUntil("whole cleanup restored") { files.none { it.trashed } && cleanup.completedCount == 0 }
+        awaitUntil("background cleanup") { writes.mutations.active.value.isEmpty() && files.all { it.trashed } }
+        driveRepo.changes.undoLast()
+        awaitUntil("whole cleanup restored") { files.none { it.trashed } }
         assertEquals(listOf(DriveLibrary.TRASH.crumb), library.folderStackFlow.value)
         library.close()
     }

@@ -23,7 +23,7 @@ import kotlin.test.assertTrue
 /** MetaTube 的接口用 MockEngine 顶替，不连任何真实服务。 */
 class MetaTubeServiceTest {
     private val json = headersOf(HttpHeaders.ContentType, "application/json")
-    private val requests = mutableListOf<String>()
+    private val requests = java.util.Collections.synchronizedList(mutableListOf<String>())
 
     private fun engine(token: String = "secret") = MockEngine { request ->
         requests += request.url.encodedPath + "?" + request.url.encodedQuery
@@ -66,6 +66,7 @@ class MetaTubeServiceTest {
         assertEquals(
             mapOf("ABC-123" to "查到的片名", "XYZ-456" to "详情里的片名", "1PON-092415_001" to "一本道的片名", "FC2-PPV-1234567" to "FC2 的片名"),
             first.titles,
+            "queries=$requests, dated=${infos[2]}",
         )
         assertEquals(0, first.failed)
         val count = requests.size

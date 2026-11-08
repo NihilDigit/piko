@@ -52,9 +52,6 @@ class PikoClientManager(
     @Volatile
     private var currentTransportBudgetBytes: Long = transportMemoryBudgetBytes.coerceAtLeast(MIN_TRANSPORT_BUDGET_BYTES)
 
-    @Volatile
-    private var currentConcurrentAcceleration: Boolean = true
-
     /** 动态调整 SDK 传输层共享内存预算（如 Android 收到 onTrimMemory 或回到前台恢复）。 */
     fun setTransportMemoryBudgetBytes(bytes: Long) {
         val clamped = bytes.coerceAtLeast(MIN_TRANSPORT_BUDGET_BYTES)
@@ -64,17 +61,8 @@ class PikoClientManager(
         }
     }
 
-    /** 动态切换多连接并发加速（关闭时在线播放与下载均退回与官方客户端一致的单连接顺序传输）。 */
-    fun setConcurrentAcceleration(enabled: Boolean) {
-        withPikoLock(budgetLock) {
-            currentConcurrentAcceleration = enabled
-            _currentClient.value?.concurrentAcceleration = enabled
-        }
-    }
-
     private fun publishCurrentClient(client: PikPakClient): PikPakClient? = withPikoLock(budgetLock) {
         client.setTransportMemoryBudgetBytes(currentTransportBudgetBytes)
-        client.concurrentAcceleration = currentConcurrentAcceleration
         val previous = _currentClient.value
         _currentClient.value = client
         previous
@@ -470,8 +458,15 @@ class PikoClientManager(
             // 取 64 突发 / 60 req/s 留足近一倍安全余量，批量重命名、引用保存与归档直接跑满多路并发
             rateLimiter = io.github.nihildigit.pikpak.RateLimiter(capacity = 64, refillPerSecond = 60.0),
             transportMemoryBudgetBytes = currentTransportBudgetBytes,
-            concurrentAcceleration = currentConcurrentAcceleration,
-        )
+        ).also { created ->
+            _accounts.value.find(account)?.toAccountSnapshot()?.let { snapshot ->
+                created.seedAccountState(
+                    quota = snapshot.quota,
+                    transferQuota = snapshot.transferQuota,
+                    userProfile = snapshot.userProfile,
+                )
+            }
+        }
     }
 
     private fun currentTimeSeconds(): Long = kotlin.time.Clock.System.now().toEpochMilliseconds() / 1000L

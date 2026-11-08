@@ -151,7 +151,7 @@ class VaultStoreTest {
         }
         val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
         try {
-            val store = VaultStore(drive, confirmDelay = Duration.ZERO, cacheStore = slowCache, account = "acc", scope = scope)
+            val store = VaultStore(drive, confirmDelay = Duration.ZERO, cacheStore = slowCache, account = "acc", scope = scope, saveDelayMillis = 0)
             val e1 = entry("E01")
             store.update("fresh", VaultEdits.add(listOf(e1)), freshlyCreatedFolder = true).getOrThrow()
 
@@ -161,7 +161,7 @@ class VaultStoreTest {
             assertTrue(laggyAppend.isFailure, "已提交清单在列表中完全不可见时严禁从空基线重写 v1")
 
             // H1 场景 2：进程重启后即使目录列表暂时全空，凭借持久化的目录级已提交基线证据仍必须拒绝从空基线覆盖
-            val restartedWhileEmpty = VaultStore(drive, confirmDelay = Duration.ZERO, cacheStore = slowCache, account = "acc", scope = scope)
+            val restartedWhileEmpty = VaultStore(drive, confirmDelay = Duration.ZERO, cacheStore = slowCache, account = "acc", scope = scope, saveDelayMillis = 0)
             assertTrue(
                 restartedWhileEmpty.update("fresh", VaultEdits.add(listOf(entry("E02")))).isFailure,
                 "重启后若目录列表尚未刷出已提交清单，仍必须拒绝从空基线覆盖",
@@ -169,7 +169,7 @@ class VaultStoreTest {
 
             // H1 场景 3：列表恢复可见（仍为 PENDING），重启实例在异步缓存加载后基于 E01 追加 E02
             drive.hideCurrentFiles(0)
-            val restarted = VaultStore(drive, confirmDelay = Duration.ZERO, cacheStore = slowCache, account = "acc", scope = scope)
+            val restarted = VaultStore(drive, confirmDelay = Duration.ZERO, cacheStore = slowCache, account = "acc", scope = scope, saveDelayMillis = 0)
             restarted.update("fresh", VaultEdits.add(listOf(entry("E02")))).getOrThrow()
             assertEquals(setOf("E01", "E02"), restarted.committed("fresh").getOrThrow().map { it.name }.toSet())
         } finally {

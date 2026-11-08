@@ -88,6 +88,14 @@ internal class SqliteTreeStore(
         db.execute("DELETE FROM tree_deleted")
         db.execute("DELETE FROM tree_overrides")
         sequence = meta("sequence")?.toLongOrNull() ?: 0L
+        val interruptedVaults = ArrayList<String>()
+        rows("SELECT key FROM tree_meta WHERE key LIKE 'optimistic_vault:%' AND value='true'") {
+            interruptedVaults += it.string(0)!!.removePrefix("optimistic_vault:")
+        }
+        if (interruptedVaults.isNotEmpty()) mutate {
+            for (folder in interruptedVaults) clearVault(folder)
+            db.execute("DELETE FROM tree_meta WHERE key LIKE 'optimistic_vault:%'")
+        }
         if (!complete && syncedAt > 0L && scalar("SELECT 1 FROM tree_nodes WHERE generation=0 LIMIT 1") != null) {
             // 自愈先前已完成全盘同步、却被全盘 ContentsChanged(null) 误抹除 complete 标记的持久库，随后由后台哨兵探针对账增量变更
             db.transaction {
@@ -120,6 +128,63 @@ internal class SqliteTreeStore(
     val syncedAt get() = if (closed) 0L else meta("synced")?.toLongOrNull() ?: 0L
     val mutationSequence get() = sequence
     val currentRevision get() = revision
+    val syncCursor get() = if (closed) null else meta("sync_cursor")
+
+    fun beginDelta() {
+        check(!closed)
+        db.execute("CREATE TEMP TABLE IF NOT EXISTS tree_delta(id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+        db.execute("DELETE FROM tree_delta")
+    }
+
+    fun appendDelta(files: List<FileStat>) {
+        check(!closed)
+        db.transaction {
+            for (file in files) db.execute("INSERT OR REPLACE INTO tree_delta VALUES (?,?)",
+                listOf(file.id, json.encodeToString(FileStat.serializer(), file)))
+        }
+    }
+
+    fun abortDelta() {
+        if (!closed) db.execute("DELETE FROM tree_delta")
+    }
+
+    /** All pages and their conservative server cursor become visible in one transaction. */
+    fun commitDelta(cursor: String): Set<String> {
+        check(!closed)
+        val affected = HashSet<String>()
+        mutate {
+            val manifestsBefore = HashMap<String, String?>()
+            // Moves out of a removed subtree must land before deleting that subtree.
+            for (removing in listOf(false, true)) {
+                var after = ""
+                while (true) {
+                    val page = ArrayList<FileStat>(256)
+                    rows("SELECT payload FROM tree_delta WHERE id>? ORDER BY id LIMIT 256", listOf(after)) {
+                        page += json.decodeFromString(FileStat.serializer(), it.string(0)!!)
+                    }
+                    if (page.isEmpty()) break
+                    for (row in page) {
+                        if (row.trashed != removing) continue
+                        val previous = file(row.id)
+                        affected += row.parentId
+                        previous?.parentId?.let(affected::add)
+                        for (manifest in listOfNotNull(row, previous).filter(VaultStore::looksLikeManifest)) {
+                            if (manifest.parentId !in manifestsBefore) manifestsBefore[manifest.parentId] = winner(manifest.parentId)?.id
+                        }
+                        if (row.trashed) remove(listOf(row.id)) else {
+                            put(row)
+                            if (row.isFolder) coverage(row.id, false)
+                        }
+                    }
+                    after = page.last().id
+                }
+            }
+            for ((folder, previous) in manifestsBefore) if (previous != winner(folder)?.id) clearVault(folder)
+            meta("sync_cursor", cursor)
+            db.execute("DELETE FROM tree_delta")
+        }
+        return affected
+    }
 
     fun close() {
         if (!closed) {
@@ -155,7 +220,7 @@ internal class SqliteTreeStore(
     }
     fun clear() = mutate {
         for (table in listOf("tree_nodes", "tree_content", "tree_instances", "tree_coverage", "tree_vault", "tree_deleted", "tree_aggregate", "tree_subtree", "tree_restores", "tree_overrides", "tree_vault_revision", "tree_vault_state", "tree_direct_usage")) db.execute("DELETE FROM $table")
-        meta("complete", "false"); meta("usage", null); meta("synced", null)
+        meta("complete", "false"); meta("usage", null); meta("synced", null); meta("sync_cursor", null)
         candidates.clear(); clearCandidateContentCache(); rebuildAll = true
         invalidateFolderProjection()
         cachedSubtreeStats = null
@@ -500,10 +565,16 @@ internal class SqliteTreeStore(
         }
     }
 
-    fun vault(folder: String, entries: List<VaultEntry>, expected: String?, requireMatch: Boolean, starred: Set<String>, generation: Long = 0): Boolean {
+    fun vault(folder: String, entries: List<VaultEntry>, expected: String?, requireMatch: Boolean, starred: Set<String>, generation: Long = 0, optimistic: Boolean = false): Boolean {
         if (closed || (generation != 0L && generation !in candidates)) return false
         if (requireMatch && winner(folder, generation)?.id != expected) return false
-        val write = { writeVaultFolderInTx(folder, entries, starred, generation) }
+        val write = {
+            writeVaultFolderInTx(folder, entries, starred, generation)
+            if (generation == 0L) {
+                if (optimistic) meta("optimistic_vault:$folder", "true")
+                else db.execute("DELETE FROM tree_meta WHERE key=?", listOf("optimistic_vault:$folder"))
+            }
+        }
         if (generation == 0L) mutate(write) else db.transaction(write)
         return true
     }
@@ -596,7 +667,7 @@ internal class SqliteTreeStore(
             is DriveChange.Created -> if (change.isFolder) {
                 put(FileStat(id = change.id, parentId = change.parentId, name = change.name, kind = FileKind.FOLDER)); coverage(change.id, false)
             } else if (change.stat != null) put(change.stat) else change.folders.forEach { coverage(it, true) }
-            is DriveChange.Starred -> for (id in change.ids) file(id)?.let { f -> put(f.copy(tags = f.tags.filterNot { it.name.equals("STAR", true) } + if (change.starred) listOf(FileTag(id = "STAR", name = "STAR")) else emptyList())) }
+            is DriveChange.Starred -> for (id in change.ids) file(id)?.let { f -> put(f.copy(starred = change.starred, tags = f.tags.filterNot { it.name.equals("STAR", true) } + if (change.starred) listOf(FileTag(id = "STAR", name = "STAR")) else emptyList())) }
             is DriveChange.Copied -> change.folders.orEmpty().forEach { coverage(it, true) }
             is DriveChange.Restored, is DriveChange.ContentsChanged -> {
                 if (change.folders == null) { rebuildAll = true; meta("complete", "false"); candidates.clear(); db.execute("DELETE FROM tree_coverage") }
@@ -708,7 +779,7 @@ internal class SqliteTreeStore(
             for (table in listOf("tree_legacy_sources", "tree_legacy_refs", "tree_legacy_instances", "tree_legacy_content")) db.execute("DELETE FROM $table WHERE generation=?", listOf(generation))
         }
     }
-    fun commitCandidate(generation: Long, usage: Long?, syncedAt: Long): Set<String> {
+    fun commitCandidate(generation: Long, usage: Long?, syncedAt: Long, syncCursor: String? = null): Set<String> {
         if (closed) return emptySet()
         val baseline = candidates.remove(generation) ?: return emptySet()
         val changed = HashSet<String>()
@@ -765,6 +836,7 @@ internal class SqliteTreeStore(
             meta("complete", "true")
             if ((meta("usage_seq")?.toLongOrNull() ?: 0L) <= baseline && usage != null) meta("usage", usage.toString())
             meta("synced", syncedAt.toString())
+            meta("sync_cursor", syncCursor)
             invalidateFolderProjection()
             rebuildAll = true
         }
