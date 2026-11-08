@@ -87,6 +87,17 @@ class AppSessionStore(private val store: DesktopSessionStore = DesktopSessionSto
 
     // 会话失效时 SDK 会调它；这里不删，留给桌面端自己处理重新登录
     override suspend fun clear(account: String) = Unit
+
+    override suspend fun saveAccountSnapshot(account: String, snapshot: io.github.nihildigit.pikpak.AccountSnapshot) {
+        runCatching {
+            val saved = store.loadAccounts()
+            val existing = saved.find(account) ?: return
+            val updated = existing.withSnapshot(snapshot)
+            if (updated != existing) {
+                store.saveAccounts(saved.upsert(updated))
+            }
+        }
+    }
 }
 
 fun appClient(rateLimiter: io.github.nihildigit.pikpak.RateLimiter = io.github.nihildigit.pikpak.RateLimiter.default(), httpClient: io.ktor.client.HttpClient? = null): PikPakClient {

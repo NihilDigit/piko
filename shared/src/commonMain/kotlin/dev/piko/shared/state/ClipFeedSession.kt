@@ -18,6 +18,7 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.runtime.PikoWorkloadGovernor
 import dev.piko.shared.upload.isUploading
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
@@ -452,6 +453,8 @@ class ClipFeedSession(
         try {
             val discovery = VideoDiscovery(driveRepo, owner, rootId)
             while (true) {
+                PikoWorkloadGovernor.Shared.awaitDiscoveryConcurrency(1)
+                if (request != generation) return
                 val batch = discovery.next() ?: break
                 if (request != generation) return
                 listedFolders++

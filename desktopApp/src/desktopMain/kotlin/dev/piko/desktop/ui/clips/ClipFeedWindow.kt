@@ -4,11 +4,13 @@ import dev.piko.shared.i18n.tr
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import dev.piko.desktop.DesktopSettingsStore
@@ -51,6 +53,7 @@ fun ClipFeedWindow(
     settings: DesktopSettingsStore,
     appearance: Appearance,
     icon: Painter?,
+    pausedByHost: Boolean = false,
 ) {
     val windowState = rememberRememberedWindowState(settings, "clips", DpSize(1000.dp, 620.dp))
     PikoWindow(
@@ -62,6 +65,13 @@ fun ClipFeedWindow(
     ) {
         TitleBarThemeEffect(window, dark = true)
         PixelAlignedContentEffect(window)
+        val focused = LocalWindowInfo.current.isWindowFocused
+        LaunchedEffect(focused) {
+            services.onWindowFocusChanged("clips", focused)
+        }
+        DisposableEffect(Unit) {
+            onDispose { services.onWindowClosed("clips") }
+        }
         LaunchedEffect(raise) { bringToFront(window) }
         // 独立的组合树，主窗口根部的输入来源追踪管不到这里
         val pointerSource = remember { PointerSource() }
@@ -85,6 +95,7 @@ fun ClipFeedWindow(
                         onPlayFull = links.playFull,
                         onLocate = links.locate,
                         onDock = links.dock,
+                        pausedByHost = pausedByHost,
                         modifier = Modifier.trackPointerSource(pointerSource),
                     )
                 }

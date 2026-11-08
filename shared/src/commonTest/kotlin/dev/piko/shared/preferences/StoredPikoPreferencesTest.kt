@@ -31,7 +31,7 @@ class StoredPikoPreferencesTest {
             prefs.spoilerBlurFlow, prefs.autoCheckUpdatesFlow, prefs.hardwareDecodingFlow,
             prefs.heuristicFilterFlow, prefs.nameParsingFlow, prefs.bundleSubtitlesFlow,
             prefs.settingsSyncFlow, prefs.syncPlayHistoryFlow, prefs.showExtensionsFlow,
-            prefs.concurrentAccelerationFlow, prefs.foldersFirstFlow,
+            prefs.foldersFirstFlow,
         ).forEach { assertTrue(it.first()) }
         listOf(
             prefs.autoDetectClipboardLinksFlow, prefs.reduceMotionFlow, prefs.folderMapOpenFlow,
@@ -49,7 +49,6 @@ class StoredPikoPreferencesTest {
         assertEquals(SidePanelPrefs(false, null), prefs.clipPanelFlow.first())
         assertEquals(SnailMode(), prefs.snailModeFlow.first())
         assertEquals(ProxySetting(), prefs.proxySettingFlow.first())
-        assertEquals(8, prefs.concurrentConnectionsFlow.first())
         assertEquals("/downloads/Piko", prefs.getDownloadDirPath())
         assertEquals(Triple("", tr("我的网盘", "My drive", "マイドライブ", "내 드라이브", "我的雲端硬碟"), ""), prefs.getLastFolder())
         assertEquals(0L, prefs.getPlaybackPosition("missing"))
@@ -114,21 +113,17 @@ class StoredPikoPreferencesTest {
 
     @Test
     fun currentDesktopSettingsKeepTheirKeysAndPersistAcrossReopen() = runBlocking {
-        val settings = FakeSettings(mapOf("download.concurrentConnections" to "12"))
+        val settings = FakeSettings()
         val prefs = preferences(settings)
         prefs.setFoldersFirst(false)
         prefs.setSaveAsReference(true)
-        prefs.setConcurrentAccelerationEnabled(false)
         prefs.setMetaTubeUrl("https://example.test")
         val reopened = preferences(settings.reopen())
         assertFalse(reopened.foldersFirstFlow.first())
         assertTrue(reopened.saveAsReferenceFlow.first())
-        assertFalse(reopened.concurrentAccelerationFlow.first())
-        assertEquals(12, reopened.concurrentConnectionsFlow.first())
         assertEquals("https://example.test", reopened.metaTubeUrlFlow.first())
         assertEquals("false", settings.get("drive.foldersFirst"))
         assertEquals("true", settings.get("instant.saveAsReference"))
-        assertEquals("false", settings.get("download.concurrentAcceleration"))
     }
 
     @Test
@@ -184,14 +179,13 @@ class StoredPikoPreferencesTest {
         val prefs = preferences(FakeSettings(mapOf(
             "player.maxHeight" to "bad", "download.defaultMaxHeight" to "bad",
             "download.maxHeight" to "480", "player.seekStepSeconds" to "bad",
-            "player.boostSpeed" to "bad", "download.concurrentConnections" to "bad",
+            "player.boostSpeed" to "bad",
             "network.proxy" to "bad", "playback.file" to "bad",
         )))
         assertEquals(0, prefs.playbackMaxHeightFlow.first())
         assertNull(prefs.downloadMaxHeightFlow.first())
         assertEquals(10, prefs.playerSeekStepSecondsFlow.first())
         assertEquals(2f, prefs.playerBoostSpeedFlow.first())
-        assertEquals(8, prefs.concurrentConnectionsFlow.first())
         assertEquals(ProxySetting(), prefs.proxySettingFlow.first())
         assertEquals(0L, prefs.getPlaybackPosition("file"))
     }

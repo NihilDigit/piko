@@ -163,19 +163,43 @@ class PikoMediaProxy(
                         add("Content-Range" to "bytes ${range.start}-${range.endExclusive - 1}/$size")
                     }
                 }
-                if (range.isPartial) {
-                    output.writeHead(206, "Partial Content", headers)
-                } else {
-                    output.writeHead(200, "OK", headers)
+                suspend fun sendSuccessHead() {
+                    if (range.isPartial) {
+                        output.writeHead(206, "Partial Content", headers)
+                    } else {
+                        output.writeHead(200, "OK", headers)
+                    }
                 }
-                output.flush()
-                if (!isHead && range.length > 0) {
+                if (isHead || range.length == 0L) {
+                    sendSuccessHead()
+                    output.flushAndClose()
+                    return
+                }
+                var headSent = false
+                try {
                     session.stream(range.start, range.endExclusive) { buffer, offset, length ->
+                        if (!headSent) {
+                            headSent = true
+                            sendSuccessHead()
+                        }
                         output.writeFully(buffer, offset, offset + length)
                         output.flush()
                     }
+                    if (!headSent) {
+                        sendSuccessHead()
+                    }
+                    output.flushAndClose()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (!headSent) {
+                        runCatching {
+                            output.writeHead(502, "Bad Gateway", listOf("Content-Length" to "0"))
+                            output.flushAndClose()
+                        }
+                    }
+                    throw e
                 }
-                output.flushAndClose()
             }
         }
     }
@@ -205,6 +229,9 @@ class ProxyStream internal constructor(
 
     /** 文件的字节数。 */
     val size: Long get() = session.size
+
+    /** 底层缓存已从网络收到的累计字节数（单调递增）。 */
+    val receivedBytes: Long get() = session.receivedBytes
 
     /** 前台或后台，见 [ProxySession.role]。 */
     var role: StreamRole

@@ -18,6 +18,7 @@ import dev.piko.shared.media.proxy.SlicedByteSource
 import io.github.nihildigit.pikpak.BlockStore
 import dev.piko.shared.media.cache.PikoFileCachePool
 import dev.piko.download.DownloadTask
+import io.github.nihildigit.pikpak.ApiRequestPriority
 import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.MediaVariant
 import io.github.nihildigit.pikpak.PikPakClient
@@ -31,6 +32,7 @@ import io.github.nihildigit.pikpak.listPlayHistory
 import io.github.nihildigit.pikpak.reportPlay
 import io.github.nihildigit.pikpak.resolveVariant
 import io.github.nihildigit.pikpak.streamRangeFromUrl
+import io.github.nihildigit.pikpak.withApiPriority
 import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -111,6 +113,9 @@ class PreparedPlayback internal constructor(
 ) : AutoCloseable {
     /** 本机代理的地址。handle 建不起来（例如没有 gcid）时为 null，只能读直链。 */
     val proxyUrl: String? get() = stream?.url
+
+    /** 当前流底层缓存已从网络收到的累计字节数（单调递增，用于显示加载实时网速）。 */
+    val receivedBytes: Long get() = stream?.receivedBytes ?: 0L
 
     /** 有人正等着：出第一帧前、拖动后、卡在缓冲上。见 ProxyStream.urgent。 */
     var urgent: Boolean
@@ -210,12 +215,14 @@ class PikoMediaRepository(
     }
 
     // 进程内一个就够：端口按需绑定，没有会话时只占一个监听 socket
-    private val proxy by lazy { PikoMediaProxy() }
+    private val proxy get() = sharedProxy
 
     suspend fun prepareMedia(fileId: String, preferredResolution: String? = null): Result<PlayableMediaInfo> =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
-                val detail = detailOf(client, fileId)
+                val detail = takeFreshDetail(client, fileId)
+                    ?: withApiPriority(ApiRequestPriority.INTERACTIVE) { detailOf(client, fileId) }
+                        .also { rememberFreshDetail(client, fileId, it) }
                 val resolved = detail.resolveVariant(preferenceFor(preferredResolution))
                 playableMediaInfo(detail, resolved, fileId)
             }
@@ -227,7 +234,9 @@ class PikoMediaRepository(
     suspend fun fetchDownloadUrl(fileId: String): Result<String> =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
-                val detail = detailOf(client, fileId)
+                val detail = takeFreshDetail(client, fileId)
+                    ?: withApiPriority(ApiRequestPriority.INTERACTIVE) { detailOf(client, fileId) }
+                        .also { rememberFreshDetail(client, fileId, it) }
                 detail.downloadUrl?.takeIf { it.isNotBlank() } ?: error(tr("未获取到下载链接", "Download link unavailable", "ダウンロードリンクを取得できません", "다운로드 링크를 가져올 수 없습니다", "無法取得下載連結"))
             }
         }
@@ -262,7 +271,9 @@ class PikoMediaRepository(
                         return@runSuspendCatching PreparedPlayback(info, stream)
                     }
                 }
-                val detail = detailOf(client, fileId)
+                val detail = takeFreshDetail(client, fileId)
+                    ?: withApiPriority(ApiRequestPriority.INTERACTIVE) { detailOf(client, fileId) }
+                        .also { rememberFreshDetail(client, fileId, it) }
                 val resolution = preferredResolution
                     ?: defaultMaxHeight.takeIf { it > 0 }?.let { detail.medias.transcodeNameAtMost(it) }
                 val resolved = detail.resolveVariant(preferenceFor(resolution))
@@ -308,7 +319,8 @@ class PikoMediaRepository(
                 clipCache?.record(key)?.let { record ->
                     cachedClip(client, record, startMs, videoDurationMs, role, leased)?.let { return@runSuspendCatching it }
                 }
-                val detail = takeFreshDetail(client, fileId) ?: detailOf(client, fileId)
+                val detail = takeFreshDetail(client, fileId)
+                    ?: detailOf(client, fileId).also { rememberFreshDetail(client, fileId, it) }
                 val transcode = detail.resolveVariant(VariantPreference.Resolution(CLIP_RESOLUTION))
                 if (!transcode.isOrigin && videoDurationMs > 0) {
                     openClipSlice(client, detail, transcode, key, startMs, videoDurationMs, role, leased)
@@ -401,15 +413,8 @@ class PikoMediaRepository(
                     return@runSuspendCatching ClipProbe(false, file?.params?.get("duration")?.toDoubleOrNull()?.let { (it * 1000).toLong() })
                 }
                 val owner = client
-                val detail = detailOf(owner, fileId)
-                freshDetailsLock.withLock {
-                    if (clientManager.currentClient.value === owner) {
-                        if (freshDetailsOwner !== owner) freshDetails.clear()
-                        freshDetailsOwner = owner
-                        freshDetails.entries.removeAll { it.value.second.elapsedNow() > FRESH_DETAIL_FOR }
-                        freshDetails[fileId] = detail to TimeSource.Monotonic.markNow()
-                    }
-                }
+                val detail = withApiPriority(ApiRequestPriority.BACKGROUND) { detailOf(owner, fileId) }
+                rememberFreshDetail(owner, fileId, detail)
                 ClipProbe(
                     hasTranscode = detail.medias.any { !it.isOrigin && it.mediaName == CLIP_RESOLUTION && it.url != null },
                     durationMs = detail.params["duration"]?.toDoubleOrNull()?.let { (it * 1000).toLong() },
@@ -437,10 +442,25 @@ class PikoMediaRepository(
         return detail
     }
 
-    /** [clipProbe] 刚查过的详情，还新鲜就拿走，省一次查询。 */
+    private suspend fun rememberFreshDetail(owner: PikPakClient, fileId: String, detail: FileDetail) = freshDetailsLock.withLock {
+        if (clientManager.currentClient.value === owner) {
+            if (freshDetailsOwner !== owner) freshDetails.clear()
+            freshDetailsOwner = owner
+            freshDetails.entries.removeAll { it.value.second.elapsedNow() > FRESH_DETAIL_FOR }
+            freshDetails[fileId] = detail to TimeSource.Monotonic.markNow()
+        }
+    }
+
+    /** 近期刚查过的详情（如 [clipProbe] 或 [prepareClip]），还新鲜就直接复用，省一次 getFile 查询。 */
     private suspend fun takeFreshDetail(owner: PikPakClient, fileId: String): FileDetail? = freshDetailsLock.withLock {
         if (freshDetailsOwner !== owner) return@withLock null
-        freshDetails.remove(fileId)?.takeIf { it.second.elapsedNow() <= FRESH_DETAIL_FOR }?.first
+        val entry = freshDetails[fileId] ?: return@withLock null
+        if (entry.second.elapsedNow() <= FRESH_DETAIL_FOR) {
+            entry.first
+        } else {
+            freshDetails.remove(fileId)
+            null
+        }
     }
 
     private suspend fun openClipSlice(
@@ -587,16 +607,25 @@ class PikoMediaRepository(
     private suspend fun ProxyByteSource.readAt(offset: Long, length: Int, role: StreamRole): ByteArray {
         // 先在 Long 上取小再转 Int：超过 2 GB 的流，剩余长度直接转 Int 会溢出成负数
         val buffer = ByteArray(minOf(length.toLong(), (size - offset).coerceAtLeast(0)).toInt())
-        openReader(role).use { reader ->
-            reader.readAheadLimit = 0
-            reader.seekTo(offset)
-            var filled = 0
-            while (filled < buffer.size) {
-                val read = reader.read(buffer, filled, buffer.size - filled)
-                if (read < 0) break
-                filled += read
+        if (buffer.isEmpty()) return buffer
+        // 通过 prefetch (warm) 预取目标块并以 BACKGROUND 游标读出，使预热阶段的关键帧扫描与 PTS 校准走 warm 预算，
+        // 不伪装成正在卡顿的前台播放游标触发全账号紧急饥饿模式
+        val warm = prefetch(listOf(offset until (offset + buffer.size)), role)
+        try {
+            warm?.await()
+            openReader(StreamRole.BACKGROUND).use { reader ->
+                reader.readAheadLimit = 0
+                reader.seekTo(offset)
+                var filled = 0
+                while (filled < buffer.size) {
+                    val read = reader.read(buffer, filled, buffer.size - filled)
+                    if (read < 0) break
+                    filled += read
+                }
+                return if (filled == buffer.size) buffer else buffer.copyOf(filled)
             }
-            return if (filled == buffer.size) buffer else buffer.copyOf(filled)
+        } finally {
+            warm?.cancel()
         }
     }
 
@@ -608,7 +637,9 @@ class PikoMediaRepository(
         withContext(Dispatchers.Default) {
             runSuspendCatching {
                 val client = client
-                val detail = detailOf(client, fileId)
+                val detail = takeFreshDetail(client, fileId)
+                    ?: withApiPriority(ApiRequestPriority.INTERACTIVE) { detailOf(client, fileId) }
+                        .also { rememberFreshDetail(client, fileId, it) }
                 val resolved = detail.resolveVariant(VariantPreference.Original)
                 openProxyStream(client, detail, resolved, leased = LeasedFile.isLeased(fileId))
             }.logFailure(TAG, "外挂字幕取流失败：${logFile(fileId, "")}").getOrNull()
@@ -696,7 +727,9 @@ class PikoMediaRepository(
                 val client = client
                 if (mediaId != null) return@runSuspendCatching ReaderRandomAccessSource(transcodeSource(client, fileId, mediaId, retainedBy))
                 partialSource(client, fileId, retainedBy)?.let { return@runSuspendCatching ReaderRandomAccessSource(it.second) }
-                val detail = detailOf(client, fileId)
+                val detail = takeFreshDetail(client, fileId)
+                    ?: withApiPriority(ApiRequestPriority.INTERACTIVE) { detailOf(client, fileId) }
+                        .also { rememberFreshDetail(client, fileId, it) }
                 val resolved = detail.resolveVariant(VariantPreference.Original)
                 val source = openByteSource(client, detail, resolved, leased = LeasedFile.isLeased(fileId), retainedBy = retainedBy)
                     ?: error(tr("文件缺少内容哈希，无法读取", "File is missing content hash and cannot be read", "ファイルにハッシュ情報がないため読み込めません", "파일에 콘텐츠 해시가 없어 읽을 수 없습니다", "檔案缺少內容雜湊值，無法讀取"))
@@ -823,7 +856,9 @@ class PikoMediaRepository(
                     ?.takeIf { known -> known.all { it.isOriginal || it.unreadable || it.sizeBytes != null } }
                     ?.let { known -> return@runSuspendCatching chooseVariant(known, name, maxHeight) }
                 val client = client
-                val detail = detailOf(client, fileId)
+                val detail = takeFreshDetail(client, fileId)
+                    ?: withApiPriority(ApiRequestPriority.INTERACTIVE) { detailOf(client, fileId) }
+                        .also { rememberFreshDetail(client, fileId, it) }
                 val durationMs = durationMsOf(detail)
                 val transcodes = detail.downloadableTranscodes()
                 if (name != null) {
@@ -1012,6 +1047,10 @@ class PikoMediaRepository(
         throw e
     } catch (e: Throwable) {
         Result.failure(e)
+    }
+
+    private companion object {
+        val sharedProxy by lazy { PikoMediaProxy() }
     }
 }
 

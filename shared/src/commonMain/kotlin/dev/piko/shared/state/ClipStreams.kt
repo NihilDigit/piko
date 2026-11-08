@@ -5,7 +5,9 @@ import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.PreparedClip
+import io.github.nihildigit.pikpak.ApiRequestPriority
 import io.github.nihildigit.pikpak.StreamRole
+import io.github.nihildigit.pikpak.withApiPriority
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -15,6 +17,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -49,8 +53,31 @@ class ClipStreams internal constructor(
     private val streams = mutableMapOf<Clip, Deferred<PreparedClip?>>()
     private val ripening = mutableSetOf<Clip>()
     private var foreground: Set<Clip> = emptySet()
+    private val suspended = MutableStateFlow(false)
     private val preparing = Semaphore(PREPARE_LANES)
     private val prefetching = Semaphore(PREFETCH_LANES)
+
+    /**
+     * 宿主暂停（例如打开了完整视频播放器或信息流退到后台）时挂起所有预取与预读，
+     * 将已备好的会话全部降为后台角色并撤回 urgent，把全部连接与带宽让给当前完整播放器。
+     */
+    fun setSuspended(value: Boolean) {
+        if (suspended.value == value) return
+        suspended.value = value
+        if (value) {
+            for ((_, stream) in streams) {
+                withPrepared(stream) {
+                    it.role = StreamRole.BACKGROUND
+                    it.holdReadAhead()
+                    it.urgent = false
+                }
+            }
+        } else {
+            for (clip in foreground) {
+                streams[clip]?.let { stream -> withPrepared(stream) { it.role = StreamRole.FOREGROUND } }
+            }
+        }
+    }
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private inline fun withPrepared(stream: Deferred<PreparedClip?>, crossinline action: (PreparedClip) -> Unit) {
@@ -69,13 +96,19 @@ class ClipStreams internal constructor(
      */
     fun get(clip: Clip, forPlayer: Boolean = false, urgent: Boolean = false): Deferred<PreparedClip?> =
         streams.getOrPut(clip) {
-            // 要去取开头的段也以前台身份备会话：找关键帧读的就是开头，以后台身份读，槽满时排在所有预取之后
-            val role = if (clip in foreground || urgent) StreamRole.FOREGROUND else StreamRole.BACKGROUND
+            // 要去取开头的段也以前台预热身份扫关键帧；建好后按是否仍在 foreground 归位会话角色，避免候补段常驻前台
+            val role = if (!suspended.value && (clip in foreground || urgent)) StreamRole.FOREGROUND else StreamRole.BACKGROUND
             scope.async {
                 val started = TimeSource.Monotonic.markNow()
-                suspend fun prepare() = repository.prepareClip(clip.fileId, clip.startMs, clip.videoDurationMs, role)
-                    .logFailure(TAG, "备会话失败 ${logFile(clip.fileId, clip.name)}，${started.elapsedNow().inWholeMilliseconds} ms").getOrNull()
+                suspend fun prepare() = (if (forPlayer) {
+                    repository.prepareClip(clip.fileId, clip.startMs, clip.videoDurationMs, role)
+                } else {
+                    withApiPriority(ApiRequestPriority.BACKGROUND) {
+                        repository.prepareClip(clip.fileId, clip.startMs, clip.videoDurationMs, role)
+                    }
+                }).logFailure(TAG, "备会话失败 ${logFile(clip.fileId, clip.name)}，${started.elapsedNow().inWholeMilliseconds} ms").getOrNull()
                 val prepared = (if (forPlayer) prepare() else preparing.withPermit { prepare() }) ?: return@async null
+                prepared.role = if (!suspended.value && clip in foreground) StreamRole.FOREGROUND else StreamRole.BACKGROUND
                 prepared.holdReadAhead()
                 PikoLog.d(
                     TAG,
@@ -98,7 +131,9 @@ class ClipStreams internal constructor(
         for (clip in upcoming) {
             if (!ripening.add(clip)) continue
             scope.launch {
-                val prepared = get(clip, urgent = true).await()
+                suspended.first { !it }
+                val prepared = get(clip, urgent = !suspended.value).await()
+                suspended.first { !it }
                 val fetched = prepared != null && fetchOnce(clip, prepared)
                 ripening -= clip
                 if (fetched) {
@@ -145,6 +180,7 @@ class ClipStreams internal constructor(
     fun bringToFront(clips: Set<Clip>) {
         val demoted = foreground - clips
         foreground = clips
+        if (suspended.value) return
         for ((clip, role) in demoted.map { it to StreamRole.BACKGROUND } + clips.map { it to StreamRole.FOREGROUND }) {
             streams[clip]?.let { stream -> withPrepared(stream) { it.role = role } }
         }
@@ -169,7 +205,7 @@ class ClipStreams internal constructor(
 
     /** [clip] 是否有人正等着，见 PreparedClip.urgent。已就绪的会话当场同步写入，保证紧随其后的 seek 首块立享最高优先级。 */
     fun setUrgent(clip: Clip, urgent: Boolean) {
-        streams[clip]?.let { stream -> withPrepared(stream) { it.urgent = urgent } }
+        streams[clip]?.let { stream -> withPrepared(stream) { it.urgent = urgent && !suspended.value } }
     }
 
     /** 翻出 [window] 的段关掉会话；看过的在窗口里保留缓存，不再为它发请求。 */

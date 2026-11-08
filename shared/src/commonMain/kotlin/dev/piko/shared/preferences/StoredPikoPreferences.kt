@@ -118,8 +118,6 @@ class StoredPikoPreferences(
             uploadKiBps = settings.get(KEY_SNAIL_UPLOAD).toIntOrNull() ?: SnailMode.DEFAULT_UPLOAD_KIBPS,
         ),
     )
-    private val acceleration = MutableStateFlow(settings.get(KEY_ACCELERATION, "true").toBoolean())
-    private val connections = MutableStateFlow(settings.get(KEY_CONNECTIONS, "8").toIntOrNull() ?: 8)
     private val recentMoveTargets = MutableStateFlow(settings.get(KEY_RECENT_MOVE_TARGETS))
     private val pinnedFolders = MutableStateFlow(settings.get(KEY_PINNED_FOLDERS))
     private val foldersFirst = MutableStateFlow(settings.get(KEY_FOLDERS_FIRST, "true").toBoolean())
@@ -331,8 +329,6 @@ class StoredPikoPreferences(
         snailMode.value = mode
     }
 
-    override val concurrentAccelerationFlow: Flow<Boolean> = acceleration.asStateFlow()
-    override val concurrentConnectionsFlow: Flow<Int> = connections.asStateFlow()
     override val downloadDirPathFlow: Flow<String> = downloadPath.asStateFlow()
 
     override suspend fun setDownloadDirPath(path: String) {
@@ -343,11 +339,6 @@ class StoredPikoPreferences(
     }
 
     override suspend fun getDownloadDirPath(): String = downloadPath.value
-
-    override suspend fun setConcurrentAccelerationEnabled(enabled: Boolean) {
-        settings.set(KEY_ACCELERATION, enabled.toString())
-        acceleration.value = enabled
-    }
 
     override suspend fun loadDownloadTasks(): String = settings.get(KEY_DOWNLOAD_TASKS)
 
@@ -516,8 +507,6 @@ class StoredPikoPreferences(
         // 沿用 Fluent 版设置页的键，旧值是小写的 system、light、dark，解析时不分大小写
         const val KEY_THEME_MODE = "themeMode"
         const val KEY_THEME_SEED = "ui.themeSeed"
-        const val KEY_ACCELERATION = "download.concurrentAcceleration"
-        const val KEY_CONNECTIONS = "download.concurrentConnections"
         const val KEY_DOWNLOAD_DIR = "download.directory"
         const val KEY_LAST_FOLDER_ID = "drive.lastFolderId"
         const val KEY_LAST_FOLDER_NAME = "drive.lastFolderName"

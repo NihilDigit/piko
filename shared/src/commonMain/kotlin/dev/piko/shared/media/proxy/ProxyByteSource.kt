@@ -15,6 +15,9 @@ import kotlin.time.Duration
 interface ProxyByteSource : AutoCloseable {
     val size: Long
 
+    /** 底层缓存已从网络收到的累计字节数（单调递增，用于计算实时网速）。 */
+    val receivedBytes: Long get() = 0L
+
     suspend fun openReader(): ProxyReader
 
     /** 以 [role] 打开。只有 PikPak 的来源分前后台，其余照常打开。 */
@@ -56,6 +59,9 @@ interface ProxyReader : AutoCloseable {
     /** 向底层流读取器反馈播放器当前已缓冲的媒体时长与字节消耗速率，用于播放头停滞时的期限救援。 */
     fun reportPlaybackBuffer(bufferedDuration: Duration, mediaBytesPerSecond: Long? = null) = Unit
 
+    /** HTTP 请求归还游标时撤回预读需求，复用时恢复；本地来源无需处理。 */
+    fun setDemandActive(active: Boolean) {}
+
     val position: Long
 
     suspend fun seekTo(position: Long)
@@ -74,6 +80,8 @@ internal class PikPakByteSource(
     private val release: (() -> Unit)? = null,
 ) : ProxyByteSource {
     override val size: Long get() = cache.size
+
+    override val receivedBytes: Long get() = cache.receivedBytes
 
     override suspend fun openReader(): ProxyReader = openReader(StreamRole.FOREGROUND)
 
@@ -118,6 +126,8 @@ private class PikPakProxyReader(private val reader: PikPakStreamReader) : ProxyR
     override fun reportPlaybackBuffer(bufferedDuration: Duration, mediaBytesPerSecond: Long?) {
         reader.reportPlaybackBuffer(bufferedDuration, mediaBytesPerSecond)
     }
+
+    override fun setDemandActive(active: Boolean) = reader.setDemandActive(active)
 
     override val position: Long get() = reader.position
 

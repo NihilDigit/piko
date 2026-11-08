@@ -2,6 +2,11 @@ package dev.piko.desktop
 
 import dev.piko.shared.PikoHome
 import java.io.File
+import java.io.FileOutputStream
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.util.Properties
 
 class DesktopSettingsStore(
@@ -18,8 +23,22 @@ class DesktopSettingsStore(
     }
 
     private fun save() {
-        file.parentFile?.mkdirs()
-        file.outputStream().use { properties.store(it, "Piko desktop settings") }
+        val target = file.toPath().toAbsolutePath()
+        Files.createDirectories(target.parent)
+        val temporary = Files.createTempFile(target.parent, ".${file.name}.", ".tmp")
+        try {
+            FileOutputStream(temporary.toFile()).use { output ->
+                properties.store(output, "Piko desktop settings")
+                output.fd.sync()
+            }
+            try {
+                Files.move(temporary, target, ATOMIC_MOVE, REPLACE_EXISTING)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(temporary, target, REPLACE_EXISTING)
+            }
+        } finally {
+            Files.deleteIfExists(temporary)
+        }
     }
 
     /**
@@ -44,6 +63,7 @@ class DesktopSettingsStore(
             ?: File(System.getProperty("user.home"), "Downloads/Piko")
 
     /** [path] 为空时回到默认位置，删掉存下的值，而不是存一个空路径。 */
+    @Synchronized
     fun setDownloadDirectory(path: String) {
         if (path.isBlank()) properties.remove("downloadDirectory") else properties.setProperty("downloadDirectory", File(path).absolutePath)
         save()
@@ -53,6 +73,7 @@ class DesktopSettingsStore(
     fun get(key: String, default: String = ""): String =
         properties.getProperty(key) ?: default
 
+    @Synchronized
     fun set(key: String, value: String) {
         properties.setProperty(key, value)
         save()
@@ -61,6 +82,7 @@ class DesktopSettingsStore(
     fun keysWithPrefix(prefix: String): List<String> =
         properties.stringPropertyNames().filter { it.startsWith(prefix) }.sorted()
 
+    @Synchronized
     fun remove(key: String) {
         properties.remove(key)
         save()

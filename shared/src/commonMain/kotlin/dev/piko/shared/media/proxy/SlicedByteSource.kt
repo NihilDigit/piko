@@ -15,6 +15,8 @@ internal class SlicedByteSource(
     private val offset: Long,
     override val size: Long,
 ) : ProxyByteSource {
+    override val receivedBytes: Long get() = inner.receivedBytes
+
     init {
         require(offset >= 0 && size > 0 && offset + size <= inner.size) { "切片 $offset+$size 超出 ${inner.size}" }
     }
@@ -54,6 +56,8 @@ internal class SlicedByteSource(
         override fun reportPlaybackBuffer(bufferedDuration: Duration, mediaBytesPerSecond: Long?) {
             reader.reportPlaybackBuffer(bufferedDuration, mediaBytesPerSecond)
         }
+
+        override fun setDemandActive(active: Boolean) = reader.setDemandActive(active)
 
         override val position: Long get() = reader.position - offset
 

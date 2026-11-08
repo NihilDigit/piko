@@ -9,6 +9,8 @@
 - `media <文件ID>`：查询单个文件的详情并打印原画与各档转码流的分辨率及媒体直链（**注意：媒体直链属于敏感访问凭据，严禁粘贴进公开日志或 Issue**）。
 - `parse <文件名>…`：对传入的一个或多个文件名单独执行 `parseMediaName` 并打印结构化解析结果。
 - `bench <路径或文件夹ID> [--count <段数>] [--seconds <秒>] [--sequential] [--playing] [--background-first] [--store <目录>]`：只读流式吞吐实验，对指定目录子树内带 `720P` 转码的视频按信息流策略并发或顺序预取开头（默认 8 段各 5 秒），测量 SDK 实际吞吐率、并发在途连接数及启用本地 `FileClipCache`（`--store`）前后的命中表现；`--playing` 额外开启一路前台持续读取模拟正在播放的片段。
+- `playback-bench [/Dramas] [--proxies <SG=127.0.0.1:17891,...>] [--cases <all|cold,resume,seek,clips,popup,download>] [--steady-seconds <8>] [--download-seconds <8>]`：端到端播放与下载基准实测，完整复用 Piko 实际播放/本地代理/稀疏缓存池/瀑布流/信息流/下载链路，支持按本地多节点代理端口逐项验证冷启动、续播、跨位置 Seek、瀑布流+信息流、信息流弹窗播放与稀疏缓存池下载。
+- `account [--cached]`：通过 SDK 统一账号状态机查询当前账号资料、会员等级、网盘容量、回收站占用、流量配额与每日离线次数（`--cached` 优先复用本机缓存快照）。
 - `share <分享链接> [--pass <提取码>] [--restore]`：默认只读列出分享链接的顶层目录内容。附加 `--restore` 时执行真实转存探测：挑选分享中体积最小的一个文件转存至网盘根目录下临时新建的 `piko-probe-restore-*` 文件夹，等待异步转存任务完成后列出产物并永久删除该临时测试文件夹。（实测结论：转存文件直接落在目标目录根下，不保留分享链接中的外层父目录结构；转存任务秒级完成；任务 `params` 中不提供原分享文件 ID 到新网盘文件 ID 的映射表。）
 - `archive-bench /Dramas [--parallel <1,2,4,8,16,32>] [--count <32>] [--timeout <15>] [--api-rate <1000>] [--combined]` 与 `archive-write-bench /Dramas [...]`（配套清理命令 `archive-write-cleanup`）：归档文件详情查询、CID 首尾抽样与可信清单并发写入基准实测（硬性限定仅允许在 `/Dramas` 测试路径内新建独立探测子目录并仅清理自身新建目录），实测数据汇总见 `docs/development/archive.md`。
 

@@ -98,21 +98,31 @@ object PikoLog {
      * 读写失败的异常带着本机路径（含用户名与文件名），服务端的错误说明偶尔带着邮箱。
      * 路径只留扩展名，播放与解压走哪条路要看它。
      */
-    internal fun redact(text: String): String =
-        text.replace(LOCAL_LOCATION) { dev.piko.shared.data.LocalLocation.logIdentity(it.value) ?: "本地 ?" }
-            .replace(REMOTE_URL) { "${it.groupValues[1]}/<略>" }
-            .replace(EMAIL, "<邮箱>")
-            .replace(PHONE, "<手机号>")
-            .replace(LOCAL_PATH) { match ->
+    internal fun redact(text: String): String {
+        var result = if ("piko-local-" in text) {
+            text.replace(LOCAL_LOCATION) { dev.piko.shared.data.LocalLocation.logIdentity(it.value) ?: "本地 ?" }
+        } else text
+        if ("http://" in result || "https://" in result) {
+            result = result.replace(REMOTE_URL) { "${it.groupValues[1]}/<略>" }
+        }
+        if ('@' in result) {
+            result = result.replace(EMAIL, "<邮箱>")
+        }
+        result = result.replace(PHONE, "<手机号>")
+        if (':' in result || '/' in result || '\\' in result) {
+            result = result.replace(LOCAL_PATH) { match ->
                 val extension = match.value.substringAfterLast('.', "").takeIf { it.length in 1..8 && it.all(Char::isLetterOrDigit) }
                 "<路径>" + (extension?.let { ".$it" } ?: "")
             }
+        }
+        return result
+    }
 
     // 网络异常的信息里常带着请求地址。直链的签名参数在有效期内就是下载凭据，路径里还可能有文件名，
     // 只留协议与域名，排查时知道是哪台服务器就够了。本机回环代理的地址不含这些，照原样留着
     private val REMOTE_URL = Regex("""(https?://(?!127\.0\.0\.1|localhost)[^/\s"'<>]+)/[^\s"'<>]*""")
     private val LOCAL_LOCATION = Regex("""piko-local-[a-z-]+:[A-Za-z0-9_:/%+=.\\-]*""")
-    private val EMAIL = Regex("""[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}""")
+    private val EMAIL = Regex("""(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}""")
     private val PHONE = Regex("""(?<![0-9])1[3-9][0-9]{9}(?![0-9])""")
 
     // Windows 盘符路径、Android 与桌面的常见绝对路径、content: 与 file: URI。文件名里可以有空格，

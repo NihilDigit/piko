@@ -757,7 +757,6 @@ class PikoDownloadCoordinator(
         val started = TimeSource.Monotonic.markNow()
         try {
             if (task.qualityCap > 0 || task.quality != null) task = chooseQuality(task)
-            val concurrency = preferences.concurrentConnectionsFlow.first().coerceIn(1, 8)
             // 转码档的 handle 要原画的大小（重建文件对象时用），暂存的大小是转码流的长度
             val isLeased = task.leasedSource || LeasedFile.isLeased(task.fileId)
             val leaseParentId = if (isLeased) {
@@ -769,7 +768,7 @@ class PikoDownloadCoordinator(
             lease = fileCachePool.acquire(client, task.fileId, task.gcid,
                 if (task.mediaId != null) task.fullFileSize else task.totalBytes, task.fileName,
                 parentId = leaseParentId, leased = isLeased,
-                retained = true, concurrency = concurrency, owner = taskId,
+                retained = true, owner = taskId,
                 mediaId = task.mediaId, streamSize = task.totalBytes)
             val entry = lease.entry
             update(taskId) { it.copy(account = client.account, sparseCache = true, downloadedBytes = entry.store.heldBytes.value,
@@ -779,7 +778,7 @@ class PikoDownloadCoordinator(
             val heldAtStart = entry.store.heldBytes.value
             // 文件夹下载里的小文件成百上千，逐个记会把日志刷满，它们只进整批完成的那一行；失败照样逐个记
             val logEach = task.batch == null || task.totalBytes >= BATCH_LOG_MIN_BYTES
-            if (logEach) PikoLog.d(TAG, "开始：${logFile(task.fileId, task.fileName)}，已有 $heldAtStart/${task.totalBytes} 字节，$concurrency 条连接" +
+            if (logEach) PikoLog.d(TAG, "开始：${logFile(task.fileId, task.fileName)}，已有 $heldAtStart/${task.totalBytes} 字节" +
                 (if (task.leasedSource || LeasedFile.isLeased(task.fileId)) "，借出取流" else "") +
                 (limiter.bytesPerSecond?.let { "，限速 ${it / 1024} KiB/s" } ?: ""))
             coroutineScope {

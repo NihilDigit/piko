@@ -439,6 +439,7 @@ fun MediampVideoPlayerScreen(
                 isLocalPlayback = state.isLocalPlayback,
                 isPlaying = state.isPlaying,
                 isLoading = state.isLoading,
+                loadingSpeedText = state.loadingSpeedText,
                 positionMillis = state.positionMillis,
                 durationMillis = state.durationMillis,
                 bufferedPositionMillis = state.bufferedPositionMillis,

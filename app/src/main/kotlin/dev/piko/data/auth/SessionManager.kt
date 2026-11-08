@@ -97,7 +97,6 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
 
     private object PreferencesKeys {
         val SAVE_AS_REFERENCE = booleanPreferencesKey("save_as_reference")
-        val CONCURRENT_ACCELERATION = booleanPreferencesKey("concurrent_acceleration")
         val DOWNLOAD_DIR_PATH = stringPreferencesKey("download_dir_path")
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
         val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
@@ -451,14 +450,6 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val concurrentAccelerationFlow: Flow<Boolean> = preference { preferences ->
-        preferences[PreferencesKeys.CONCURRENT_ACCELERATION] ?: true
-    }
-
-    override val concurrentConnectionsFlow: Flow<Int> = concurrentAccelerationFlow.map { enabled ->
-        if (enabled) 8 else 1
-    }
-
     override val downloadDirPathFlow: Flow<String> = preference { preferences ->
         preferences[PreferencesKeys.DOWNLOAD_DIR_PATH] ?: ""
     }
@@ -472,12 +463,6 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun getDownloadDirPath(): String {
         val prefs = context.dataStore.data.first()
         return prefs[PreferencesKeys.DOWNLOAD_DIR_PATH] ?: ""
-    }
-
-    override suspend fun setConcurrentAccelerationEnabled(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.CONCURRENT_ACCELERATION] = enabled
-        }
     }
 
     override suspend fun loadDownloadTasks(): String =

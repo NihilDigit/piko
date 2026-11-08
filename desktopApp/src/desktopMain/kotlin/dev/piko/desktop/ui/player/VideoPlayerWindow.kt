@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowPlacement
@@ -153,6 +154,14 @@ fun VideoPlayerWindow(
         // 画面四周是黑的，窗口外框不随应用主题，始终用深色
         TitleBarThemeEffect(window, dark = true)
         PixelAlignedContentEffect(window)
+        val windowId = remember(request) { "player-${request.hashCode()}" }
+        val focused = LocalWindowInfo.current.isWindowFocused
+        LaunchedEffect(windowId, focused) {
+            services.onWindowFocusChanged(windowId, focused)
+        }
+        DisposableEffect(windowId) {
+            onDispose { services.onWindowClosed(windowId) }
+        }
         val fullscreen = remember(window) { WindowsFullscreen(window) }
         // 播放窗口是独立的组合树，主窗口根部的输入来源追踪管不到这里
         val pointerSource = remember { PointerSource() }
@@ -383,6 +392,7 @@ private fun VideoPlayerContent(
                 isLocalPlayback = state.isLocalPlayback,
                 isPlaying = state.isPlaying,
                 isLoading = state.isLoading,
+                loadingSpeedText = state.loadingSpeedText,
                 positionMillis = state.positionMillis,
                 durationMillis = state.durationMillis,
                 bufferedPositionMillis = state.bufferedPositionMillis,

@@ -19,13 +19,16 @@ application {
 dependencies {
     implementation(project(":shared"))
     implementation(libs.kotlinx.coroutines.core)
+    runtimeOnly("org.jetbrains.kotlinx:kotlinx-coroutines-swing:${libs.versions.kotlinxCoroutines.get()}")
     implementation(libs.kotlinx.serialization.json)
     // SDK 只把 Ktor 声明为 runtime 依赖且不带引擎，与桌面端用同一个
     implementation(libs.ktor.client.okhttp)
 }
 
 // org.jetbrains.compose.runtime:runtime-desktop 只是转发到 androidx 的空壳（只有 manifest 与 LICENSE），
-// 却与 androidx 那个真正的 jar 同名，installDist 往 lib/ 里拷时撞名
-configurations.runtimeClasspath {
-    exclude(group = "org.jetbrains.compose.runtime", module = "runtime-desktop")
+// 却与 androidx 那个真正的 jar 同名，installDist 往 lib/ 里拷时过滤掉空壳以保留传递依赖的真实 jar
+tasks.named<Sync>("installDist") {
+    eachFile {
+        if (name.startsWith("runtime-desktop") && file.length() < 16384) exclude()
+    }
 }

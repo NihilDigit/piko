@@ -10,6 +10,7 @@ import dev.piko.shared.i18n.tr
 import java.util.Locale
 import dev.piko.shared.i18n.PikoLocale
 
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -252,6 +253,7 @@ fun main(args: Array<String>) {
                 },
                 isClipFeedOpen = { clipFeed != null },
                 closeClipFeed = { clipFeed = null },
+                hasActivePlayer = { players.isNotEmpty() },
             )
         }
         // 播放器与信息流的窗口在主界面之外，换号时主界面重建、它们不会跟着走：放的是上一个账号的文件，
@@ -406,7 +408,10 @@ fun main(args: Array<String>) {
             }
             val focused = LocalWindowInfo.current.isWindowFocused
             LaunchedEffect(focused) {
-                if (focused) services.onAppForegrounded()
+                services.onWindowFocusChanged("main", focused)
+            }
+            DisposableEffect(Unit) {
+                onDispose { services.onWindowClosed("main") }
             }
             SideEffect { isMainWindowFocused = focused }
             TitleBarThemeEffect(window, appearance.isDark())
@@ -542,6 +547,7 @@ fun main(args: Array<String>) {
                 settings = settings,
                 appearance = appearance,
                 icon = appIcon,
+                pausedByHost = players.isNotEmpty(),
             )
         }
 

@@ -11,6 +11,7 @@ import dev.piko.shared.i18n.enCount
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.presentation.localizedName
+import dev.piko.shared.runtime.PikoWorkloadGovernor
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -183,12 +184,14 @@ class GallerySession(
                         .filter { it.isDiscoverableGalleryMedia(includeImages) }
                         .map { it.clipContentKey() }.distinct().count { it !in emitted }
                     if (uniquePending >= FILES_PER_REQUEST && (files.isNotEmpty() || listed >= OPENING_FOLDERS)) break
+                    val allowedConcurrency = PikoWorkloadGovernor.Shared.awaitDiscoveryConcurrency(DISCOVERY_CONCURRENCY)
+                    if (discovery !== traversal || request != generation) return@launch
                     val budget = if (files.isEmpty() && listed < OPENING_FOLDERS) {
-                        (OPENING_FOLDERS - listed).coerceAtMost(DISCOVERY_CONCURRENCY)
+                        (OPENING_FOLDERS - listed).coerceAtMost(allowedConcurrency)
                     } else {
-                        (FOLDERS_PER_REQUEST - listed).coerceAtMost(DISCOVERY_CONCURRENCY)
+                        (FOLDERS_PER_REQUEST - listed).coerceAtMost(allowedConcurrency)
                     }
-                    val batches = traversal.nextBatch(budget, DISCOVERY_CONCURRENCY)
+                    val batches = traversal.nextBatch(budget, allowedConcurrency)
                     if (batches.isEmpty()) break
                     listed += batches.size
                     batches.forEach(::rememberBatch)

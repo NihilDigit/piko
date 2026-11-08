@@ -56,6 +56,8 @@ internal class FakePikPakCloud(
     private val unreadableTranscodeHeight: Int? = null,
     /** 测试可挂起后续块，让暂停发生在确定的部分下载状态。 */
     private val beforeCdnResponse: (suspend () -> Unit)? = null,
+    private val beforeCdnRange: (suspend (Long) -> Unit)? = null,
+    private val beforeCdnChunk: (suspend (Long) -> Unit)? = null,
 ) {
     val detailCalls = AtomicInteger()
     val cdnRequests = AtomicInteger()
@@ -160,6 +162,8 @@ internal class FakePikPakCloud(
             beforeCdnResponse?.invoke()
             currentCoroutineContext().ensureActive()
             val (start, endInclusive) = parseRange(request.headers[HttpHeaders.Range], body.size.toLong())
+            beforeCdnRange?.invoke(start)
+            currentCoroutineContext().ensureActive()
             val length = (endInclusive - start + 1).toInt()
             val channel = ByteChannel(autoFlush = true)
             streaming = true
@@ -172,7 +176,9 @@ internal class FakePikPakCloud(
                             kotlinx.coroutines.yield()
                         }
                         if (channel.isClosedForWrite) break
-                        val chunk = minOf(16 * 1024, endExclusive - offset)
+                        beforeCdnChunk?.invoke(offset.toLong())
+                        if (channel.isClosedForWrite) break
+                        val chunk = minOf(STREAM_CHUNK_BYTES, endExclusive - offset)
                         channel.writeFully(body, offset, offset + chunk)
                         deliveredCdnBytes.addAndGet(chunk.toLong())
                         offset += chunk
@@ -224,6 +230,7 @@ internal class FakePikPakCloud(
     )
 
     companion object {
+        const val STREAM_CHUNK_BYTES = 16 * 1024
         const val CDN_HOST = "cdn.test"
         const val PER_URL_CONNECTION_CAP = 8
         private const val UNREADABLE = "tunreadable"

@@ -173,12 +173,9 @@ interface PikoUserPreferences {
     val snailModeFlow: Flow<SnailMode>
     suspend fun setSnailMode(mode: SnailMode)
 
-    val concurrentAccelerationFlow: Flow<Boolean>
-    val concurrentConnectionsFlow: Flow<Int>
     val downloadDirPathFlow: Flow<String>
     suspend fun setDownloadDirPath(path: String)
     suspend fun getDownloadDirPath(): String
-    suspend fun setConcurrentAccelerationEnabled(enabled: Boolean)
 
     /** 本地下载任务表的 JSON。空串表示从未保存。 */
     suspend fun loadDownloadTasks(): String

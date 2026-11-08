@@ -30,6 +30,8 @@ internal class ProxySession(
 ) : AutoCloseable {
     val size: Long get() = source.size
 
+    val receivedBytes: Long get() = source.receivedBytes
+
     @Volatile
     var isClosed = false
         private set
@@ -38,6 +40,8 @@ internal class ProxySession(
         val reader: ProxyReader,
         var inUse: Boolean = true,
         var lastUsedSeq: Long = 0L,
+        var sequentialHits: Int = 0,
+        var lastPumpBytes: Long = 0L,
         var idleJob: Job? = null,
     )
 
@@ -116,7 +120,6 @@ internal class ProxySession(
 
     /** 把 [start, endExclusive) 的字节依次交给 [sink]。 */
     suspend fun stream(start: Long, endExclusive: Long, sink: suspend (ByteArray, Int, Int) -> Unit) {
-        if (start == 0L) requestTail()
         val entry = acquireReader(start)
         val reader = entry.reader
         var broken = false
@@ -136,7 +139,8 @@ internal class ProxySession(
             if (reader.position != start) {
                 reader.seekTo(start)
             }
-            pump(reader, start, endExclusive, sink)
+            reader.setDemandActive(true)
+            pump(entry, reader, start, endExclusive, sink)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -165,13 +169,34 @@ internal class ProxySession(
                     .filter { it.reader.position > start && it.reader.position - start <= BACKWARD_REUSE_GAP_BYTES }
                     .minByOrNull { it.reader.position - start }
             } else null
-            val candidate = nearForward ?: nearBackward ?: if (pool.size >= MAX_POOLED_READERS) {
-                // 2. 池已满时淘汰复用最久未用的闲置游标；池未满时为远距离新轨道另开游标，免得音视频双轨交替互相冲掉预读
-                idle.minByOrNull { it.lastUsedSeq }
-            } else null
+            val nearMatch = nearForward ?: nearBackward
+            val candidate = nearMatch ?: when {
+                // 没有重叠请求时：若是从首尾探测（尚无连续读取）跳往正片中段，直接复用该探测游标以立即取消废弃的首尾预读；
+                // 否则保留至多 MAX_IDLE_TRACK_READERS（2）个独立轨道游标，避免音视频交错差的 MP4 在单游标上来回远距 seek 互杀预读。
+                pool.none { it.inUse } -> {
+                    val probeVictim = if (start > FORWARD_REUSE_GAP_BYTES && start < size - TAIL_BYTES) {
+                        idle.firstOrNull {
+                            (it.sequentialHits == 0 &&
+                                (it.reader.position <= INITIAL_PROBE_BYTES || it.reader.position >= size - TAIL_BYTES)) ||
+                                it.lastPumpBytes >= CONTINUOUS_STREAM_BYTES
+                        }
+                    } else null
+                    probeVictim ?: if (pool.size >= MAX_IDLE_TRACK_READERS) idle.minByOrNull { it.lastUsedSeq } else null
+                }
+                // 真正并发的远距离请求才另开游标；池满时复用最久未用的闲置游标。
+                pool.size >= MAX_POOLED_READERS -> idle.minByOrNull { it.lastUsedSeq }
+                else -> null
+            }
+            if (start < size - TAIL_BYTES) {
+                idle.filter { it !== candidate }.forEach {
+                    it.reader.setDemandActive(false)
+                }
+            }
             if (candidate != null) {
                 candidate.inUse = true
                 candidate.lastUsedSeq = ++useSeq
+                candidate.lastPumpBytes = 0L
+                if (nearMatch != null) candidate.sequentialHits++ else candidate.sequentialHits = 0
                 candidate.idleJob?.cancel()
                 candidate.idleJob = null
                 reused = candidate
@@ -207,6 +232,13 @@ internal class ProxySession(
             } else {
                 entry.inUse = false
                 entry.lastUsedSeq = ++useSeq
+                val hasActivePeer = pool.any { it.inUse }
+                val immediateWithdraw = scope == null || hasActivePeer ||
+                    entry.lastPumpBytes >= CONTINUOUS_STREAM_BYTES ||
+                    entry.reader.position >= size - TAIL_BYTES
+                if (immediateWithdraw) {
+                    entry.reader.setDemandActive(false)
+                }
                 // 超出池容量上限的额外并发游标在归还时收敛回 MAX_POOLED_READERS
                 if (pool.size > MAX_POOLED_READERS) {
                     val victims = pool.filter { !it.inUse }
@@ -221,7 +253,17 @@ internal class ProxySession(
                 }
                 if (entry in pool && scope != null) {
                     entry.idleJob = scope.launch {
-                        delay(IDLE_READER_KEEP_ALIVE)
+                        if (!immediateWithdraw) {
+                            delay(DEMAND_HOLD_DURATION)
+                            withPikoLock(poolLock) {
+                                if (!entry.inUse && entry in pool) {
+                                    entry.reader.setDemandActive(false)
+                                }
+                            }
+                            delay(IDLE_READER_KEEP_ALIVE - DEMAND_HOLD_DURATION)
+                        } else {
+                            delay(IDLE_READER_KEEP_ALIVE)
+                        }
                         val expired = withPikoLock(poolLock) {
                             if (!entry.inUse && pool.remove(entry)) {
                                 entry.idleJob = null
@@ -244,11 +286,11 @@ internal class ProxySession(
     private suspend fun requestTail() {
         if (tailRequested || size <= TAIL_BYTES * 2) return
         tailRequested = true
-        val priority = if (role == StreamRole.FOREGROUND) PikPakStreamReader.INDEX_PRIORITY else null
+        val priority = if (role == StreamRole.FOREGROUND) PikPakStreamReader.READ_AHEAD_PRIORITY else null
         source.prefetch(listOf(size - TAIL_BYTES until size), role, priority)
     }
 
-    private suspend fun pump(reader: ProxyReader, start: Long, endExclusive: Long, sink: suspend (ByteArray, Int, Int) -> Unit) {
+    private suspend fun pump(entry: PooledReader, reader: ProxyReader, start: Long, endExclusive: Long, sink: suspend (ByteArray, Int, Int) -> Unit) {
         val buffer = ByteArray(CHUNK_BYTES)
         var position = start
         while (position < endExclusive) {
@@ -256,6 +298,8 @@ internal class ProxySession(
             val want = minOf(buffer.size.toLong(), endExclusive - position).toInt()
             val read = reader.read(buffer, 0, want)
             check(read > 0) { "字节来源在 $position 处提前结束，应到 $endExclusive" }
+            entry.lastPumpBytes += read
+            if (position == 0L) requestTail()
             try {
                 sink(buffer, 0, read)
             } catch (e: CancellationException) {
@@ -290,8 +334,12 @@ internal class ProxySession(
 
         // 覆盖交错 MP4 的视频轨、音轨、字幕轨及尾部探测，互不挤占预读窗口
         const val MAX_POOLED_READERS = 4
+        const val MAX_IDLE_TRACK_READERS = 2
+        const val INITIAL_PROBE_BYTES = 1L * 1024 * 1024
+        const val CONTINUOUS_STREAM_BYTES = 1L * 1024 * 1024
         const val FORWARD_REUSE_GAP_BYTES = 2L * 1024 * 1024
         const val BACKWARD_REUSE_GAP_BYTES = 512L * 1024
+        val DEMAND_HOLD_DURATION = 600.milliseconds
         val IDLE_READER_KEEP_ALIVE = 1500.milliseconds
     }
 }

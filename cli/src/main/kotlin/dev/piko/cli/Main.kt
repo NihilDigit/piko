@@ -2,9 +2,12 @@ package dev.piko.cli
 
 import dev.piko.shared.naming.parseMediaName
 import io.github.nihildigit.pikpak.getFile
+import io.github.nihildigit.pikpak.refreshAccountState
 import java.io.File
 import java.io.PrintStream
 import kotlin.system.exitProcess
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlinx.coroutines.runBlocking
 
 private const val USAGE = """piko-cli：Piko 开发工具
@@ -44,6 +47,12 @@ private const val USAGE = """piko-cli：Piko 开发工具
 
   archive-write-bench /Dramas [--parallel <1,2,4,8,16,32>] [--count <32>] [--timeout <60>] [--api-rate <1000>]
       在 Dramas 内新建独立测试目录，实测清单写入和延迟确认。只删除本次新建的目录及其内容。
+
+  account [--cached]
+      通过 SDK 统一状态机查询当前账号资料、会员等级、网盘容量、回收站占用、流量配额与每日离线次数（--cached 优先复用本机缓存快照）。
+
+  playback-bench [/Dramas] [--proxies <SG=127.0.0.1:17891,...>] [--cases <all|cold,resume,seek,clips,popup,download>] [--steady-seconds <8>] [--download-seconds <8>]
+      端到端实测：完全走 Piko 真实播放/代理/稀疏缓存池/瀑布流/信息流/下载链路，切不同代理节点实测吞吐与响应耗时。
 """
 
 fun main(args: Array<String>) {
@@ -119,13 +128,33 @@ fun main(args: Array<String>) {
         }
         "ls" -> runBlocking {
             val path = options.positional.firstOrNull() ?: usage()
-            listWithParams(appClient(), path).forEach(::println)
+            val client = appClient()
+            try {
+                listWithParams(client, path).forEach(::println)
+            } finally {
+                client.close()
+            }
         }
         "media" -> runBlocking {
             val fileId = options.positional.firstOrNull() ?: usage()
-            appClient().getFile(fileId).medias.forEach { media ->
-                println("${media.mediaName}  origin=${media.isOrigin}  ${media.video?.width}x${media.video?.height}\n  ${media.link.url}")
+            val client = appClient()
+            try {
+                client.getFile(fileId).medias.forEach { media ->
+                    println("${media.mediaName}  origin=${media.isOrigin}  ${media.video?.width}x${media.video?.height}\n  ${media.link.url}")
+                }
+            } finally {
+                client.close()
             }
+        }
+        "playback-bench" -> runBlocking {
+            val path = options.positional.firstOrNull() ?: "/Dramas"
+            runPlaybackBench(
+                path = path,
+                proxiesSpec = options.value("--proxies") ?: options.value("--proxy") ?: "SG=127.0.0.1:17891",
+                casesSpec = options.value("--cases") ?: "all",
+                steadySeconds = options.value("--steady-seconds")?.toInt() ?: 8,
+                downloadSeconds = options.value("--download-seconds")?.toInt() ?: 8,
+            )
         }
         "bench" -> runBlocking {
             benchClipHeads(
@@ -147,6 +176,42 @@ fun main(args: Array<String>) {
                 probeShareRestore(appClient(), url, passCode)
             } else {
                 describeShare(appClient(), url, passCode).forEach(::println)
+            }
+        }
+        "account" -> runBlocking {
+            val client = appClient()
+            try {
+                val maxAge = if ("--cached" in options.flags) 24.hours else Duration.ZERO
+                val snap = client.refreshAccountState(maxAge)
+                val profile = snap.userProfile
+                val quota = snap.quota
+                val tq = snap.transferQuota
+                println("账号: ${client.account}")
+                if (profile != null) {
+                    println("资料: name=${profile.name.ifBlank { "(未设置)" }}  email=${profile.email.ifBlank { "(无)" }}  sub=${profile.sub}")
+                }
+                val tier = when (client.isFreeAccount) {
+                    false -> "VIP (${tq?.account?.vipStatus ?: "ok"}, 到期 ${tq?.account?.expireTime?.ifBlank { quota?.expiresAt.orEmpty() }})"
+                    true -> "免费账号 (${tq?.account?.vipStatus ?: "novip"})"
+                    null -> "未知"
+                }
+                println("等级: $tier")
+                if (quota != null) {
+                    println("网盘容量: 已用 ${quota.quota.usageBytes} B / 总计 ${quota.quota.limitBytes} B (剩余 ${quota.quota.remainingBytes} B，回收站 ${quota.quota.usageInTrashBytes} B)")
+                    val cd = quota.quotas.cloudDownload
+                    println("每日离线次数: 已用 ${cd.usage} / 上限 ${cd.limit} (无限=${cd.isUnlimited}, 剩余=${cd.remaining ?: "不限"})")
+                }
+                if (tq != null) {
+                    val acc = tq.account
+                    println("云盘离线月度流量: 已用 ${acc.offline.usedBytes} B / 总计 ${acc.offline.limitBytes} B (剩余 ${acc.offline.remainingBytes} B)")
+                    println("下载月度流量:     已用 ${acc.download.usedBytes} B / 总计 ${acc.download.limitBytes} B (剩余 ${acc.download.remainingBytes} B)")
+                    println("上传/秒传月度流量: 已用 ${acc.upload.usedBytes} B / 总计 ${acc.upload.limitBytes} B (剩余 ${acc.upload.remainingBytes} B)")
+                    if (acc.downloadDaily.limitBytes > 0) {
+                        println("下载单日流量:     已用 ${acc.downloadDaily.usedBytes} B / 总计 ${acc.downloadDaily.limitBytes} B (剩余 ${acc.downloadDaily.remainingBytes} B)")
+                    }
+                }
+            } finally {
+                client.close()
             }
         }
         else -> usage()
@@ -184,6 +249,6 @@ private class Options(args: List<String>) {
 
     companion object {
         // 不带值的开关
-        val FLAGS = setOf("--visited", "--restore", "--sequential", "--playing", "--background-first", "--combined")
+        val FLAGS = setOf("--visited", "--restore", "--sequential", "--playing", "--background-first", "--combined", "--cached")
     }
 }

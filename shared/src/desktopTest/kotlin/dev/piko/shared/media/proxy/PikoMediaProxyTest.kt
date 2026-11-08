@@ -2,6 +2,8 @@ package dev.piko.shared.media.proxy
 
 import dev.piko.shared.media.testing.openRequest
 import dev.piko.shared.media.testing.request
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -117,27 +119,82 @@ class PikoMediaProxyTest {
     @Test
     fun sequentialAndInterleavedShortRangesReusePooledReadersWithoutExtraSeeks() = runBlocking {
         val source = FakeSource(size = 32 * 1024 * 1024)
-        val url = proxy.register(source, "interleaved.mp4").url
+        val session = ProxySession(source)
+        try {
+            // 1. 首尾探测后直接跳往正片中段时，直接复用探测游标，不残留废弃的文件头游标
+            session.stream(0L, 4096L) { _, _, _ -> }
+            session.stream(1_000_000L, 1_004_096L) { _, _, _ -> }
+            assertEquals(1, source.openedReaders.get())
+            assertEquals(1, source.seekCalls.get())
 
-        // 模拟交错不良的 MP4 在视频轨（1 MiB 起）与音轨（16 MiB 起）之间交替发短 Range 请求
-        var videoPos = 1_000_000L
-        var audioPos = 16_000_000L
-        repeat(10) {
-            val vChunk = request(url, range = "bytes=$videoPos-${videoPos + 16_383}")
-            assertEquals(206, vChunk.status)
-            assertContentEquals(source.expected(videoPos, videoPos + 16_384), vChunk.body)
-            videoPos += 16_384
-
-            val aChunk = request(url, range = "bytes=$audioPos-${audioPos + 4_095}")
-            assertEquals(206, aChunk.status)
-            assertContentEquals(source.expected(audioPos, audioPos + 4_096), aChunk.body)
-            audioPos += 4_096
+            // 2. 音视频两轨（1 MB 与 16 MB）交替发短 Range 请求时，各自保有独立轨道游标，连续接续不触发来回 seek
+            val ranges = listOf(
+                1_004_096L to 1_008_192L,
+                16_000_000L to 16_004_096L,
+                1_008_192L to 1_012_288L,
+                16_004_096L to 16_008_192L,
+            )
+            ranges.forEach { (start, end) ->
+                session.stream(start, end) { bytes, offset, count ->
+                    assertEquals(1, source.demandActiveReaders.get())
+                    assertContentEquals(source.expected(start, start + count), bytes.copyOfRange(offset, offset + count))
+                }
+                assertEquals(0, source.demandActiveReaders.get(), "无作用域会话归还游标后应立即撤回需求")
+            }
+            assertEquals(2, source.openedReaders.get())
+            assertEquals(2, source.seekCalls.get())
+            assertEquals(0, source.concurrencyViolations.get())
+        } finally {
+            session.close()
         }
+    }
 
-        // 20 个交替短请求只应建起视频、音频两个游标，且各自仅首次定位一次，后续全部原地零 seek 接续
-        assertEquals(2, source.openedReaders.get(), "openedReaders=${source.openedReaders.get()}")
-        assertEquals(2, source.seekCalls.get(), "seekCalls=${source.seekCalls.get()}")
-        assertEquals(0, source.concurrencyViolations.get())
+    @Test
+    fun slicedReaderForwardsDemandActivationAndRelease() = runBlocking {
+        val source = FakeSource(size = 1_000_000)
+        val session = ProxySession(SlicedByteSource(source, offset = 300_000, size = 200_000))
+        try {
+            session.stream(0L, 4096L) { bytes, offset, count ->
+                assertEquals(1, source.demandActiveReaders.get())
+                assertContentEquals(source.expected(300_000L, 304_096L), bytes.copyOfRange(offset, offset + count))
+            }
+            assertEquals(0, source.demandActiveReaders.get())
+        } finally {
+            session.close()
+        }
+    }
+
+    @Test
+    fun overlappingDistantRequestsUseIndependentReadersAndResumeNearbyWithoutSeek() = runBlocking {
+        val source = FakeSource(size = 32 * 1024 * 1024)
+        val session = ProxySession(source)
+        val firstEntered = CompletableDeferred<Unit>()
+        val finishFirst = CompletableDeferred<Unit>()
+        try {
+            val first = async {
+                session.stream(1_000_000L, 1_004_096L) { _, _, _ ->
+                    firstEntered.complete(Unit)
+                    finishFirst.await()
+                }
+            }
+            withTimeout(5_000) { firstEntered.await() }
+            session.stream(16_000_000L, 16_004_096L) { bytes, offset, count ->
+                assertEquals(2, source.demandActiveReaders.get())
+                assertContentEquals(source.expected(16_000_000L, 16_004_096L), bytes.copyOfRange(offset, offset + count))
+            }
+            assertEquals(1, source.demandActiveReaders.get())
+            // 第二轨仍可复用自己的连续位置，不 seek，也不新增 reader。
+            session.stream(16_004_096L, 16_008_192L) { _, _, _ -> }
+            assertEquals(2, source.openedReaders.get())
+            assertEquals(2, source.seekCalls.get())
+            finishFirst.complete(Unit)
+            first.await()
+            assertEquals(0, source.demandActiveReaders.get())
+            assertEquals(0, source.concurrencyViolations.get())
+        } finally {
+            finishFirst.complete(Unit)
+            session.close()
+        }
     }
 
     @Test
@@ -159,6 +216,7 @@ class PikoMediaProxyTest {
         val concurrencyViolations = AtomicInteger(0)
         val openedReaders = AtomicInteger(0)
         val seekCalls = AtomicInteger(0)
+        val demandActiveReaders = AtomicInteger(0)
 
         /** 所有 reader 上正在进行的读。 */
         val activeReads = AtomicInteger(0)
@@ -180,6 +238,13 @@ class PikoMediaProxyTest {
 
         private inner class FakeReader : ProxyReader {
             private val ownReads = AtomicInteger(0)
+            private var demandActive = false
+
+            override fun setDemandActive(active: Boolean) {
+                if (demandActive == active) return
+                demandActive = active
+                demandActiveReaders.addAndGet(if (active) 1 else -1)
+            }
 
             override var position = 0L
                 private set
@@ -205,7 +270,7 @@ class PikoMediaProxyTest {
                 }
             }
 
-            override fun close() = Unit
+            override fun close() = setDemandActive(false)
         }
 
         private fun byteAt(position: Long): Byte = (position % 251).toByte()
