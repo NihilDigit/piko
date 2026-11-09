@@ -52,6 +52,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import kotlin.concurrent.Volatile
+import kotlin.time.Clock
 
 /**
  * 界面用到的进程级对象。各端在入口按自己的偏好、会话存储与下载实现拼好一份，
@@ -162,7 +164,7 @@ class PikoServices(
 
     // 进程刚启动时各 Sync.start() 已经发起了首轮同步，初始化为当前时刻可避免开屏窗口首次获得焦点时立刻重复跑第二轮同步
     @Volatile
-    private var lastForegroundSyncMs = System.currentTimeMillis()
+    private var lastForegroundSyncMs = Clock.System.now().toEpochMilliseconds()
 
     /** 设置页「立即同步」：一并拉取与推送偏好设置、固定标签、归档树、归档星标与来源账本。 */
     suspend fun syncAllNow() {
@@ -179,7 +181,7 @@ class PikoServices(
 
     /** 窗口重新获得焦点或应用回到前台时轻量增量拉取固定标签与设置（10 秒冷却防抖），无需重启应用即可跨端实时同步。 */
     fun onAppForegrounded() {
-        val now = System.currentTimeMillis()
+        val now = Clock.System.now().toEpochMilliseconds()
         if (now - lastForegroundSyncMs < 10_000L) return
         lastForegroundSyncMs = now
         backgroundScope.launch {

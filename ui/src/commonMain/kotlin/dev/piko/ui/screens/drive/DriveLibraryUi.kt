@@ -33,11 +33,7 @@ import dev.piko.ui.screens.player.formatTime
 import io.github.nihildigit.pikpak.DriveEvent
 import io.github.nihildigit.pikpak.EventType
 import io.github.nihildigit.pikpak.FileStat
-import java.time.LocalDate
-import java.time.OffsetDateTime
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
+import dev.piko.ui.format.formatLibraryEventTime
 
 /**
  * 库里一行的附注，写在列表行的位置那一栏：最近添加是何时怎么加进来的，播放历史是何时看到哪里，
@@ -62,18 +58,7 @@ internal fun libraryNote(library: DriveLibrary, file: FileStat, event: DriveEven
 }
 
 /** 今天、昨天写到分钟，更早的只写日期；跨年时带上年份。解析不了时不写。 */
-private fun formatEventTime(rfc3339: String): String? = runCatching {
-    val time = OffsetDateTime.parse(rfc3339).atZoneSameInstant(ZoneId.systemDefault())
-    val today = LocalDate.now()
-    val date = time.toLocalDate()
-    val clock = time.format(DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault()))
-    when {
-        date == today -> tr("今天 $clock", "Today $clock", "今日 $clock", "오늘 $clock", "今天 $clock")
-        date == today.minusDays(1) -> tr("昨天 $clock", "Yesterday $clock", "昨日 $clock", "어제 $clock", "昨天 $clock")
-        date.year == today.year -> time.format(DateTimeFormatter.ofPattern(tr("M 月 d 日", "MMM d", "M月d日", "M월 d일", "M 月 d 日"), Locale.getDefault()))
-        else -> time.format(DateTimeFormatter.ofPattern(tr("yyyy 年 M 月 d 日", "MMM d, yyyy", "yyyy年M月d日", "yyyy년 M월 d일", "yyyy 年 M 月 d 日"), Locale.getDefault()))
-    }
-}.getOrNull()
+private fun formatEventTime(rfc3339: String): String? = formatLibraryEventTime(rfc3339)
 
 internal class LibraryEmpty(val title: String, val description: String, val icon: ImageVector)
 

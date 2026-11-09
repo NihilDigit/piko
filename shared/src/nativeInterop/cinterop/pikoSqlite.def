@@ -1,0 +1,13 @@
+headers = sqlite3.h
+package = dev.piko.shared.sqlite
+linkerOpts = -lsqlite3
+
+---
+
+static inline int piko_bind_text(sqlite3_stmt *statement, int index, const void *value, int size) {
+    return sqlite3_bind_text(statement, index, (const char *)value, size, SQLITE_TRANSIENT);
+}
+
+static inline int piko_bind_blob(sqlite3_stmt *statement, int index, const void *value, int size) {
+    return sqlite3_bind_blob(statement, index, value, size, SQLITE_TRANSIENT);
+}

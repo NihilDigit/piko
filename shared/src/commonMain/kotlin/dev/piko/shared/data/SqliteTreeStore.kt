@@ -27,8 +27,13 @@ internal class SqliteTreeStore(
     private var cachedChildrenByParent: Map<String, Set<String>>? = null
     private var cachedSubtreeStats: Map<String, SubtreeStats>? = null
     // Bounded ContentMetadata cache active during candidate builds to avoid 120,000+ redundant SELECTs on Android.
-    private val candidateContentCache = object : LinkedHashMap<ContentKey, ContentMetadata>(2048, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<ContentKey, ContentMetadata>): Boolean = size > 8192
+    private val candidateContentCache = LinkedHashMap<ContentKey, ContentMetadata>(2048)
+
+    private fun cacheCandidateContent(key: ContentKey, metadata: ContentMetadata) {
+        // Common LinkedHashMap has insertion order only; remove/reinsert preserves the access-order LRU.
+        candidateContentCache.remove(key)
+        candidateContentCache[key] = metadata
+        if (candidateContentCache.size > 8192) candidateContentCache.remove(candidateContentCache.keys.first())
     }
     private var candidateContentExhaustive = false
 
@@ -98,7 +103,7 @@ internal class SqliteTreeStore(
             rebuildAll = true
             db.transaction { rebuildAggregates() }
         }
-        runCatching { db.query("PRAGMA wal_checkpoint(TRUNCATE)").close() }
+        runCatching { db.query("PRAGMA wal_checkpoint(TRUNCATE)").use { while (it.next()) Unit } }
     }
 
     private fun scalar(sql: String, args: List<Any?> = emptyList()): String? = db.scalarString(sql, args)
@@ -356,10 +361,13 @@ internal class SqliteTreeStore(
     }
     private fun lookupContentForWrite(key: ContentKey, generation: Long): ContentMetadata? {
         if (generation != 0L) {
-            candidateContentCache[key]?.let { return it }
+            candidateContentCache.remove(key)?.let {
+                candidateContentCache[key] = it
+                return it
+            }
             if (candidateContentExhaustive) return null
         }
-        return content(key)?.also { if (generation != 0L) candidateContentCache[key] = it }
+        return content(key)?.also { if (generation != 0L) cacheCandidateContent(key, it) }
     }
 
     private fun clean(file: FileStat) = file.copy(params = file.params - "piko_original_created_at", thumbnailLink = file.thumbnailLink.takeUnless { '?' in it }.orEmpty())
@@ -523,7 +531,7 @@ internal class SqliteTreeStore(
             if (candidateContentCache.size >= 8192 && key !in candidateContentCache) {
                 candidateContentExhaustive = false
             }
-            candidateContentCache[key] = metadata
+            cacheCandidateContent(key, metadata)
         }
         if (previous == metadata) return
         if (previous == null && metadata == ContentMetadata()) return
@@ -762,7 +770,7 @@ internal class SqliteTreeStore(
         }
         candidates.clear()
         clearCandidateContentCache()
-        runCatching { db.query("PRAGMA wal_checkpoint(PASSIVE)").close() }
+        runCatching { db.query("PRAGMA wal_checkpoint(PASSIVE)").use { while (it.next()) Unit } }
         return changed
     }
 

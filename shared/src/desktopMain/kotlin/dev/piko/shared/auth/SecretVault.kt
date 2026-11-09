@@ -1,7 +1,6 @@
 package dev.piko.shared.auth
 
 import dev.piko.shared.log.PikoLog
-import java.io.IOException
 import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
@@ -14,21 +13,6 @@ import java.nio.file.attribute.FileAttribute
 import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 import java.util.EnumSet
-
-/**
- * 按 key 存取一段机密字节。方法都是阻塞的，调用方自己换到 IO 线程。
- *
- * 约定：没有这一项，或有但解不开（换了机器、系统重装后恢复的数据），[read] 返回 null；
- * 保管处暂时用不了（钥匙串锁着、用户拒绝授权、系统组件调用失败）抛异常，
- * 调用方据此区分「没有」与「现在拿不到」，后者不能当作已退出登录。
- */
-interface SecretVault {
-    fun read(key: String): ByteArray?
-    fun write(key: String, data: ByteArray)
-    fun delete(key: String)
-}
-
-class VaultUnavailableException(message: String, cause: Throwable? = null) : IOException(message, cause)
 
 /** 每个 key 一个文件，内容经 [seal] 加工后落盘。写入先写临时文件再原子替换，令牌刷新写到一半退出也不留半截。 */
 abstract class FileSecretVault(private val directory: Path, private val extension: String) : SecretVault {

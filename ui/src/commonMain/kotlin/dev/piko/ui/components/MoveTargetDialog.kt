@@ -290,7 +290,7 @@ private fun FolderPickerContent(
         // 因此本轮零收获时继续向后翻，直到拿到文件夹或翻完为止。
         while (true) {
             val page = driveRepo.listFiles(parentId = current.id, pageToken = token).getOrElse { error ->
-                loadError = error.localizedMessage ?: tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류", "未知錯誤")
+                loadError = error.message ?: tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류", "未知錯誤")
                 isLoading = false
                 isLoadingMore = false
                 return

@@ -1,0 +1,6 @@
+// 团队与包名不写进工程文件：CI 与本地各自覆盖，源码里保持占位。
+// 真机与归档必须填 PIKO_TEAM_ID；模拟器构建可以留空。
+PIKO_TEAM_ID = TEAM_ID
+PIKO_BUNDLE_ID = dev.piko.pikpak.ios
+// 只有做无签名归档（CI 出 .ipa 的兜底路径）时才设为 YES
+PIKO_SKIP_KOTLIN_BUILD = NO

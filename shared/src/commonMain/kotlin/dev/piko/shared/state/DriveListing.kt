@@ -1,5 +1,6 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.util.putIfAbsentCompat
 import dev.piko.data.repository.fileCategory
 import dev.piko.shared.data.ChildFile
 import dev.piko.shared.i18n.enCount
@@ -428,7 +429,7 @@ fun buildDriveItems(
         !attachments && (block.id == OTHERS_BLOCK_ID || block.fileIds.size <= FLAT_BLOCK_MAX || untitled)
     }
     val positionById = HashMap<String, Int>(files.size * 2)
-    files.forEachIndexed { index, file -> positionById.putIfAbsent(file.id, index) }
+    files.forEachIndexed { index, file -> positionById.putIfAbsentCompat(file.id, index) }
     val flatIds = flat.flatMap { it.fileIds }.sortedBy { id -> positionById[id] ?: -1 }
     val flatWorks = flat.filter { it.id != OTHERS_BLOCK_ID }.flatMap { it.fileIds }.toSet()
     val rawBlocks = grouped + listOfNotNull(secondaryBlock)

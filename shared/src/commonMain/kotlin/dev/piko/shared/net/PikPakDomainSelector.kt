@@ -1,5 +1,6 @@
 package dev.piko.shared.net
 
+import kotlin.concurrent.Volatile
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoClientManager

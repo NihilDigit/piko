@@ -1,5 +1,6 @@
 package dev.piko.shared.download
 
+import kotlinx.coroutines.IO
 import dev.piko.shared.i18n.tr
 
 import dev.piko.data.auth.PikoUserPreferences

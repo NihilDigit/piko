@@ -1,5 +1,6 @@
 package dev.piko.shared.i18n
 
+import kotlin.concurrent.Volatile
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import dev.piko.data.auth.AppLanguage

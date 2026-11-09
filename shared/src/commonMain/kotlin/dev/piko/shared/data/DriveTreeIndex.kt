@@ -1,5 +1,7 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.util.PikoLock
+import dev.piko.shared.util.withPikoLock
 import dev.piko.data.repository.NaturalOrder
 import dev.piko.shared.search.cjkFuzzyScore
 import io.github.nihildigit.pikpak.FileDetail
@@ -44,7 +46,7 @@ internal class DriveTreeIndex(
     private var closed = false
     val isPersistent: Boolean get() = disk != null
 
-    fun close() = synchronized(lock) { closed = true; disk?.close() }
+    fun close() = withPikoLock(lock) { closed = true; disk?.close() }
 
     private fun publishDisk() {
         disk?.let { state.value = it.projection(); lastFullSyncAtMillis = it.syncedAt }
@@ -54,12 +56,12 @@ internal class DriveTreeIndex(
 
     /** Source framing stays outside the account lock; each batch is a short, unpublished transaction. */
     fun importLegacySnapshot(source: Source): Boolean {
-        fun <T> step(block: (SqliteTreeStore) -> T): T = synchronized(lock) {
+        fun <T> step(block: (SqliteTreeStore) -> T): T = withPikoLock(lock) {
             val store = disk
             if (closed || store == null) throw RetiredMigration()
             block(store).also { if (store.currentRevision != state.value.revision) publishDisk() }
         }
-        val generation = synchronized(lock) {
+        val generation = withPikoLock(lock) {
             if (closed || disk == null || disk.complete) return false
             disk.beginCandidate()
         }
@@ -92,23 +94,23 @@ internal class DriveTreeIndex(
         } catch (_: RetiredMigration) { false }
         catch (_: IllegalArgumentException) { false }
         catch (_: kotlinx.io.IOException) { false }
-        finally { synchronized(lock) { if (!closed) disk?.abortCandidate(generation) } }
+        finally { withPikoLock(lock) { if (!closed) disk?.abortCandidate(generation) } }
     }
 
-    fun beginCandidate(): Long = synchronized(lock) { if (closed) -1 else disk?.beginCandidate() ?: error("Candidates require SQLite") }
-    fun appendCandidate(generation: Long, files: List<FileStat>) = synchronized(lock) {
+    fun beginCandidate(): Long = withPikoLock(lock) { if (closed) -1 else disk?.beginCandidate() ?: error("Candidates require SQLite") }
+    fun appendCandidate(generation: Long, files: List<FileStat>) = withPikoLock(lock) {
         if (!closed) disk?.let { it.appendCandidate(generation, files); if (it.currentRevision != state.value.revision) publishDisk() }
     }
-    fun appendCandidateVault(generation: Long, folderId: String, entries: List<VaultEntry>) = synchronized(lock) {
+    fun appendCandidateVault(generation: Long, folderId: String, entries: List<VaultEntry>) = withPikoLock(lock) {
         if (!closed) disk?.let { it.vault(folderId, entries, null, false, emptySet(), generation); if (it.currentRevision != state.value.revision) publishDisk() }
     }
-    fun appendCandidateVaultBatch(generation: Long, batches: List<Pair<String, List<VaultEntry>>>) = synchronized(lock) {
+    fun appendCandidateVaultBatch(generation: Long, batches: List<Pair<String, List<VaultEntry>>>) = withPikoLock(lock) {
         if (!closed) disk?.let { it.vaultBatch(generation, batches); if (it.currentRevision != state.value.revision) publishDisk() }
     }
-    fun commitCandidate(generation: Long, usageBytes: Long?, syncedAtMillis: Long = 0L): Set<String> = synchronized(lock) {
+    fun commitCandidate(generation: Long, usageBytes: Long?, syncedAtMillis: Long = 0L): Set<String> = withPikoLock(lock) {
         if (closed) emptySet() else disk?.commitCandidate(generation, usageBytes, syncedAtMillis).orEmpty().also { publishDisk() }
     }
-    fun abortCandidate(generation: Long) = synchronized(lock) { if (!closed) disk?.abortCandidate(generation) }
+    fun abortCandidate(generation: Long) = withPikoLock(lock) { if (!closed) disk?.abortCandidate(generation) }
 
 
     data class State(
@@ -129,7 +131,7 @@ internal class DriveTreeIndex(
 
     private var cachedSortContext: SortContext? = null
     private val canonicalizer = TreeCanonicalizer()
-    private val lock = Any()
+    private val lock = PikoLock()
     private val state = MutableStateFlow(disk?.projection() ?: State())
     val flow: StateFlow<State> = state.asStateFlow()
 
@@ -146,10 +148,10 @@ internal class DriveTreeIndex(
     private var nextHistoryPin = 0L
 
     inner class MutationHistoryToken internal constructor(private val id: Long, val sequence: Long) {
-        fun close() { synchronized(lock) { historyPins.remove(id) } }
+        fun close() { withPikoLock(lock) { historyPins.remove(id) } }
     }
 
-    fun retainMutationHistory(): MutationHistoryToken = synchronized(lock) {
+    fun retainMutationHistory(): MutationHistoryToken = withPikoLock(lock) {
         val id = ++nextHistoryPin
         val sequence = disk?.mutationSequence ?: mutationSeq
         historyPins[id] = sequence
@@ -157,7 +159,7 @@ internal class DriveTreeIndex(
     }
 
     /** Caller confirms legacy, unpinned readers through this baseline have finished. Pins always win. */
-    fun pruneMutationHistory(throughSequence: Long) = synchronized(lock) {
+    fun pruneMutationHistory(throughSequence: Long) = withPikoLock(lock) {
         val cutoff = minOf(throughSequence, historyPins.values.minOrNull() ?: (disk?.mutationSequence ?: mutationSeq))
         disk?.pruneMutationHistory(cutoff)
         dirtyAtSeq.keys.removeAll { dirtyAtSeq.getValue(it) <= cutoff }
@@ -171,14 +173,14 @@ internal class DriveTreeIndex(
     var lastFullSyncAtMillis: Long = disk?.syncedAt ?: 0L
         private set
 
-    val currentMutationSeq: Long get() = synchronized(lock) { disk?.mutationSequence ?: mutationSeq }
+    val currentMutationSeq: Long get() = withPikoLock(lock) { disk?.mutationSequence ?: mutationSeq }
 
     enum class FolderCoverage { UNKNOWN, PARTIAL, COMPLETE, DIRTY }
 
     data class FolderChildren(val files: List<FileStat>, val coverage: FolderCoverage)
 
     private inline fun update(transform: (State) -> State) {
-        synchronized(lock) {
+        withPikoLock(lock) {
             if (closed) return
             val current = state.value
             val next = transform(current).copy(revision = current.revision)
@@ -189,13 +191,13 @@ internal class DriveTreeIndex(
         }
     }
 
-    fun contentMetadata(key: ContentKey): ContentMetadata? = synchronized(lock) {
-        val normalized = ContentKey.of(key.gcid, key.sizeBytes) ?: return@synchronized null
+    fun contentMetadata(key: ContentKey): ContentMetadata? = withPikoLock(lock) {
+        val normalized = ContentKey.of(key.gcid, key.sizeBytes) ?: return@withPikoLock null
         disk?.content(normalized) ?: state.value.contentMetadata[normalized]
     }
 
     fun observeContentMetadata(key: ContentKey, metadata: ContentMetadata) {
-        synchronized(lock) { if (closed) return; disk?.let { it.observeContent(key, metadata); publishDisk(); return } }
+        withPikoLock(lock) { if (closed) return; disk?.let { it.observeContent(key, metadata); publishDisk(); return } }
         val normalized = ContentKey.of(key.gcid, key.sizeBytes) ?: return
         update { current ->
             val merged = current.contentMetadata[normalized]?.merge(metadata) ?: ContentMetadata().merge(metadata)
@@ -219,7 +221,7 @@ internal class DriveTreeIndex(
     }
 
     fun setEntryMetadata(id: String, metadata: EntryMetadata) {
-        synchronized(lock) { if (closed) return; disk?.let { it.instance(id, metadata); publishDisk(); return } }
+        withPikoLock(lock) { if (closed) return; disk?.let { it.instance(id, metadata); publishDisk(); return } }
         update { it.copy(entryMetadata = it.entryMetadata + (id to metadata)) }
     }
 
@@ -228,7 +230,7 @@ internal class DriveTreeIndex(
         if (files.isEmpty() || files.all { it.isFolder } || order == PikoFileSortOrder.NAME_ASC || order == PikoFileSortOrder.NAME_DESC || order == PikoFileSortOrder.SIZE_ASC || order == PikoFileSortOrder.SIZE_DESC) {
             flow.value.sortProjection?.let { return it }
         }
-        return synchronized(lock) {
+        return withPikoLock(lock) {
             disk?.sortContext(state.value, files = files, order = order) ?: sortContextOf(state.value)
         }
     }
@@ -237,22 +239,22 @@ internal class DriveTreeIndex(
     fun fastSortContext(): SortContext = flow.value.sortProjection ?: sortContextOf(flow.value)
 
     /** A non-suspending scope for compound reads. Published State itself contains immutable folder projections. */
-    fun <T> withReadState(block: (State) -> T): T = synchronized(lock) { block(state.value) }
+    fun <T> withReadState(block: (State) -> T): T = withPikoLock(lock) { block(state.value) }
 
     fun sortContext(): SortContext = sortContextOf(flow.value)
 
     private fun sortContextOf(captured: State): SortContext {
         captured.sortProjection?.let { return it }
-        synchronized(lock) { cachedSortContext?.takeIf { it.revision == captured.revision }?.let { return it } }
+        withPikoLock(lock) { cachedSortContext?.takeIf { it.revision == captured.revision }?.let { return it } }
         val computed = SortContext.of(captured)
-        synchronized(lock) { if (state.value.revision == captured.revision) cachedSortContext = computed }
+        withPikoLock(lock) { if (state.value.revision == captured.revision) cachedSortContext = computed }
         return computed
     }
 
     @OptIn(kotlinx.coroutines.FlowPreview::class)
     @Suppress("UNUSED_PARAMETER")
     fun observeSortContext(folderId: String): Flow<SortContext> = flow.debounce(50L).map { captured ->
-        withContext(Dispatchers.Default) { synchronized(lock) { disk?.sortContext(state.value, folderId) ?: sortContextOf(captured) } }
+        withContext(Dispatchers.Default) { withPikoLock(lock) { disk?.sortContext(state.value, folderId) ?: sortContextOf(captured) } }
     }
 
     val isComplete: Boolean get() = flow.value.complete
@@ -262,12 +264,12 @@ internal class DriveTreeIndex(
     val lastUsageBytes: Long? get() = flow.value.lastUsageBytes
 
     fun setLastUsageBytes(bytes: Long?) {
-        synchronized(lock) { if (closed) return; disk?.let { it.usage(bytes); publishDisk(); return } }
+        withPikoLock(lock) { if (closed) return; disk?.let { it.usage(bytes); publishDisk(); return } }
         update { it.copy(lastUsageBytes = bytes) }
     }
 
     fun clear() {
-        synchronized(lock) {
+        withPikoLock(lock) {
             if (closed) return
             disk?.let { it.clear(); publishDisk(); return }
             canonicalizer.clear()
@@ -291,21 +293,21 @@ internal class DriveTreeIndex(
         }
     }
 
-    fun file(id: String): FileStat? = synchronized(lock) { disk?.file(id) ?: flow.value.entries[id] }
+    fun file(id: String): FileStat? = withPikoLock(lock) { disk?.file(id) ?: flow.value.entries[id] }
 
-    fun filesByIds(ids: Collection<String>): Map<String, FileStat> = synchronized(lock) {
+    fun filesByIds(ids: Collection<String>): Map<String, FileStat> = withPikoLock(lock) {
         disk?.filesByIds(ids) ?: ids.mapNotNull { id -> state.value.entries[id]?.let { id to it } }.toMap()
     }
 
-    fun vaultEntries(folderId: String): List<VaultEntry>? = synchronized(lock) {
+    fun vaultEntries(folderId: String): List<VaultEntry>? = withPikoLock(lock) {
         if (disk != null) disk.vaultEntries(folderId) else state.value.vaultEntriesByFolder[folderId]
     }
 
-    fun vaultFolders(): Set<String> = synchronized(lock) {
+    fun vaultFolders(): Set<String> = withPikoLock(lock) {
         disk?.vaultFolders() ?: state.value.vaultEntriesByFolder.keys
     }
 
-    fun hasPhysicalMissingFrom(ids: Set<String>): Boolean = synchronized(lock) {
+    fun hasPhysicalMissingFrom(ids: Set<String>): Boolean = withPikoLock(lock) {
         disk?.hasPhysicalMissingFrom(ids) ?: state.value.entries.values.any { !VaultEntry.isVaulted(it.id) && it.id !in ids }
     }
 
@@ -314,25 +316,25 @@ internal class DriveTreeIndex(
     fun realChildren(folderId: String): FolderChildren = children(folderId, realOnly = true)
 
     internal fun directSpaceFiles(folderId: String, includeVaulted: Boolean): List<SqliteTreeStore.RawSpaceFile>? =
-        synchronized(lock) { disk?.directSpaceFiles(folderId, includeVaulted) }
+        withPikoLock(lock) { disk?.directSpaceFiles(folderId, includeVaulted) }
 
     internal fun topSpacePreviewFiles(folderId: String, includeVaulted: Boolean, limit: Int): List<dev.piko.shared.space.SpacePreviewBlock>? =
-        synchronized(lock) { disk?.topSpacePreviewFiles(folderId, includeVaulted, limit) }
+        withPikoLock(lock) { disk?.topSpacePreviewFiles(folderId, includeVaulted, limit) }
 
     internal fun topSpacePreviewFilesByParent(
         folderIds: Collection<String>,
         includeVaulted: Boolean,
         limitPerParent: Int,
     ): Map<String, List<dev.piko.shared.space.SpacePreviewBlock>>? =
-        synchronized(lock) { disk?.topSpacePreviewFilesByParent(folderIds, includeVaulted, limitPerParent) }
+        withPikoLock(lock) { disk?.topSpacePreviewFilesByParent(folderIds, includeVaulted, limitPerParent) }
 
-    internal fun totalPhysicalBytes(): Long? = synchronized(lock) {
+    internal fun totalPhysicalBytes(): Long? = withPikoLock(lock) {
         if (disk != null) disk.totalPhysicalBytes()
         else state.value.entries.values.sumOf { if (it.isFolder || VaultEntry.isVaulted(it.id)) 0L else it.sizeBytes.coerceAtLeast(0L) }
     }
 
     private fun children(folderId: String, realOnly: Boolean): FolderChildren {
-        synchronized(lock) { disk?.let { return it.children(folderId, realOnly) } }
+        withPikoLock(lock) { disk?.let { return it.children(folderId, realOnly) } }
         val current = flow.value
         val ids = current.childrenByParent[folderId].orEmpty()
         val coverage = when {
@@ -351,7 +353,7 @@ internal class DriveTreeIndex(
 
     /** 完整列举替换真实子项；分页列举只合并已观察到的条目。返回因跨目录移动而受影响的原父目录集合。 */
     fun putFolderListing(parentId: String, files: List<FileStat>, complete: Boolean = true): Set<String> {
-        synchronized(lock) { if (closed) return emptySet(); disk?.let { store ->
+        withPikoLock(lock) { if (closed) return emptySet(); disk?.let { store ->
             val revision = store.currentRevision
             return store.listing(parentId, files, complete).also { if (store.currentRevision != revision) publishDisk() }
         } }
@@ -438,7 +440,7 @@ internal class DriveTreeIndex(
         requireMatch: Boolean = false,
         starredEntryIds: Set<String> = emptySet(),
     ): Boolean {
-        synchronized(lock) { if (closed) return false; disk?.let { return it.vault(folderId, entries, expectedManifestId, requireMatch, starredEntryIds).also { publishDisk() } } }
+        withPikoLock(lock) { if (closed) return false; disk?.let { return it.vault(folderId, entries, expectedManifestId, requireMatch, starredEntryIds).also { publishDisk() } } }
         val virtualStats = entries.filter { it.isArchived }.map { it.toFileStat(folderId, starred = it.id in starredEntryIds) }
         val storedEntries = entries.toList()
         var accepted = true
@@ -467,7 +469,7 @@ internal class DriveTreeIndex(
 
     /** 全盘平铺分页拉回的真实文件列表。 */
     fun putFiles(files: List<FileStat>) {
-        synchronized(lock) { if (closed) return; disk?.let { it.putFiles(files); publishDisk(); return } }
+        withPikoLock(lock) { if (closed) return; disk?.let { it.putFiles(files); publishDisk(); return } }
         val physical = files.filterNot { it.trashed || VaultEntry.isVaulted(it.id) }
         if (physical.isEmpty()) return
         update { current ->
@@ -487,7 +489,7 @@ internal class DriveTreeIndex(
 
     /** 哨兵探针增量补丁：写入新增/修改的节点并记入变更日志，防止并发进行的后台整树重建回滚补丁。 */
     fun applyCanaryPatch(files: List<FileStat>, usageBytes: Long? = null) {
-        synchronized(lock) { if (closed) return; disk?.let { it.canary(files, usageBytes); publishDisk(); return } }
+        withPikoLock(lock) { if (closed) return; disk?.let { it.canary(files, usageBytes); publishDisk(); return } }
         val physical = files.filterNot { it.trashed || VaultEntry.isVaulted(it.id) }
         if (physical.isEmpty() && usageBytes == null) return
         update { current ->
@@ -516,15 +518,15 @@ internal class DriveTreeIndex(
     }
 
     fun markComplete() {
-        synchronized(lock) { if (closed) return; disk?.let { it.markComplete(); publishDisk(); return } }
+        withPikoLock(lock) { if (closed) return; disk?.let { it.markComplete(); publishDisk(); return } }
         update { it.copy(complete = true) }
     }
 
     /** 返回当前本地树中已知属于 [rootFolderId] 子树的全部文件夹 ID（含自身）。 */
-    fun descendantFolders(rootFolderId: String): Set<String> = synchronized(lock) { disk?.descendants(rootFolderId) ?: collectDescendantFolders(flow.value, setOf(rootFolderId)) }
+    fun descendantFolders(rootFolderId: String): Set<String> = withPikoLock(lock) { disk?.descendants(rootFolderId) ?: collectDescendantFolders(flow.value, setOf(rootFolderId)) }
 
     fun applyChange(change: DriveChange) {
-        synchronized(lock) { if (closed) return; disk?.let { it.change(change); publishDisk(); return } }
+        withPikoLock(lock) { if (closed) return; disk?.let { it.change(change); publishDisk(); return } }
         update { current ->
             val seq = ++mutationSeq
             when (change) {
@@ -790,7 +792,7 @@ internal class DriveTreeIndex(
         movedParents: Map<String, String> = emptyMap(),
         syncedAtMillis: Long = 0L,
     ): Set<String> {
-        synchronized(lock) {
+        withPikoLock(lock) {
             if (closed) return emptySet()
             disk?.let {
                 val generation = it.beginCandidate()
@@ -1042,7 +1044,7 @@ internal class DriveTreeIndex(
      * 若 [rootId] 子树在本地树中已完整且无脏目录，直接内存 $O(K)$ 汇总真实文件数与总字节数；否则返回 null 交由网络遍历兜底。
      */
     fun folderUsage(rootId: String): FolderUsage? {
-        synchronized(lock) { disk?.let { return it.folderUsage(rootId, state.value) } }
+        withPikoLock(lock) { disk?.let { return it.folderUsage(rootId, state.value) } }
         val current = flow.value
         if (!current.complete && rootId !in current.listedFolders) return null
         if (rootId in current.dirtyFolders) return null
@@ -1076,7 +1078,7 @@ internal class DriveTreeIndex(
         cachedManifests: Map<String, List<VaultEntry>>,
         sinceMutationSeq: Long = 0L,
     ): Boolean {
-        synchronized(lock) {
+        withPikoLock(lock) {
             if (closed) return false
             disk?.let {
                 if (it.complete) return false
@@ -1252,7 +1254,7 @@ internal class DriveTreeIndex(
         transformFile: (FileStat) -> FileStat = { it },
         skipIds: MutableSet<String>? = null,
     ): List<SearchHit> {
-        synchronized(lock) {
+        withPikoLock(lock) {
             if (closed) return emptyList()
             disk?.let { store ->
                 val hits = ArrayList<Pair<Int, SearchHit>>()

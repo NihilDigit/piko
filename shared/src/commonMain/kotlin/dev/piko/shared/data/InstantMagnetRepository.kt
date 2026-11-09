@@ -250,7 +250,7 @@ class InstantMagnetRepository(private val clientManager: PikoClientProvider) {
         var creatingFolder: String? = null
         val directories = if (keepStructure) files.flatMap { ancestorsOf(it.path) }.distinct().sortedBy { it.count { c -> c == '/' } } else emptyList()
         val prepared = runSuspendCatching {
-            for (level in directories.groupBy { it.count { c -> c == '/' } }.toSortedMap().values) {
+            for (level in directories.groupBy { it.count { c -> c == '/' } }.entries.sortedBy { it.key }.map { it.value }) {
                 val results = coroutineScope {
                     level.filterNot { it in folderIds }.map { dir ->
                         async {

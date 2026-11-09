@@ -1,5 +1,6 @@
 package dev.piko.shared.naming.av
 
+import dev.piko.shared.util.matchRange
 import dev.piko.shared.naming.MediaTag
 import dev.piko.shared.naming.TagKind
 import dev.piko.shared.naming.isCjk
@@ -145,14 +146,14 @@ private fun matchCode(text: String, strict: Boolean): CodeMatch? {
         val match = glued.find(text) ?: continue
         val letters = match.groupValues[1]
         if (acceptablePrefix(letters)) {
-            return CodeMatch(letters.uppercase(), standardNumber(match.groupValues[2]), AvKind.STANDARD, match.groups[2]!!.range.last + 1)
+            return CodeMatch(letters.uppercase(), standardNumber(match.groupValues[2]), AvKind.STANDARD, match.groups[2]!!.matchRange.last + 1)
         }
     }
     GLUED_UPPER_FOUR_DIGIT.find(text)?.let { match ->
         val letters = match.groupValues[1]
         val digits = match.groupValues[2]
         if (acceptablePrefix(letters) && !YEAR_FOUR_DIGIT.matches(digits)) {
-            return CodeMatch(letters, standardNumber(digits), AvKind.STANDARD, match.groups[2]!!.range.last + 1)
+            return CodeMatch(letters, standardNumber(digits), AvKind.STANDARD, match.groups[2]!!.matchRange.last + 1)
         }
     }
     if (!strict) {
@@ -236,7 +237,7 @@ internal fun matchAv(stem: String, allowLanguageSuffix: Boolean): AvMatch? {
         if (!handled) break
         consumed++
     }
-    var titleSource = pieceMatches.getOrNull(consumed)?.let { suffixText.substring(it.groups[2]!!.range.first) }.orEmpty()
+    var titleSource = pieceMatches.getOrNull(consumed)?.let { suffixText.substring(it.groups[2]!!.matchRange.first) }.orEmpty()
     // 规范名把分段写在片名之后：「ABC-123-C 片名-CD1」
     TITLE_PART.find(titleSource)?.let { match ->
         if (part == null) part = "CD" + match.groupValues[1].trimStart('0')

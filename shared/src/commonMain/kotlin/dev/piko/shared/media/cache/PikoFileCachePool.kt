@@ -1,5 +1,6 @@
 package dev.piko.shared.media.cache
 
+import kotlinx.coroutines.IO
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.logRangeAttempt
 import io.github.nihildigit.pikpak.FileDetail

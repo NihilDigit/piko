@@ -1,5 +1,6 @@
 package dev.piko.shared.upload
 
+import kotlinx.coroutines.IO
 import dev.piko.shared.i18n.enCount
 
 import dev.piko.shared.i18n.tr

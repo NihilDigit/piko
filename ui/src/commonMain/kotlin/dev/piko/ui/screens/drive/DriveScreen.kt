@@ -623,7 +623,9 @@ fun DriveScreen(
         onPrefetchQualities = viewModel::prefetchDownloadQualities,
         onCopySource = viewModel::copySource,
         onCopyDownloadLink = viewModel::copyDownloadLink,
-        onOpenInExternalPlayer = viewModel::openInExternalPlayer,
+        onOpenInExternalPlayer = { file ->
+            platform.externalPlayer?.let { viewModel.openInExternalPlayer(file, it.requiresDirectUrl) }
+        },
         onTogglePinFolder = { viewModel.togglePinFolder(it, pinnedFolders) },
         onRevealLocalInFileManager = viewModel::revealLocalInFileManager,
         onUnmountLocalFolder = viewModel::unmountLocalFolder,

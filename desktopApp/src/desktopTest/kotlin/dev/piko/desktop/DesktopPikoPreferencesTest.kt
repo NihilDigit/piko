@@ -83,6 +83,38 @@ class DesktopPikoPreferencesTest {
     }
 
     @Test
+    fun sharedPreferencesKeepMainDesktopKeysAndDefaults() = runBlocking {
+        val file = tempFile()
+        val store = DesktopSettingsStore(file)
+        store.set("ui.gridView", "false")
+        store.set("download.maxHeight", "720")
+        val prefs = DesktopPikoPreferences(store) { secrets }
+        assertEquals("LIST", prefs.driveViewModeFlow.first())
+        assertEquals(null, prefs.downloadMaxHeightFlow.first())
+        assertEquals(true, prefs.galleryShowImagesFlow.first())
+        prefs.setPlayerSeekStepSeconds(17)
+        prefs.setPlayerBoostSpeed(2.5f)
+        prefs.setGalleryShowImages(false)
+        prefs.saveVaultArchiveOptions("options")
+        prefs.setDownloadMaxHeight(1080)
+        prefs.setDriveTileSize("POSTER", "large")
+        prefs.setMetaTubeUrl("https://example.invalid")
+        prefs.setMetaTubeToken("test-token")
+        val reloaded = DesktopPikoPreferences(DesktopSettingsStore(file)) { secrets }
+        assertEquals(17, reloaded.playerSeekStepSecondsFlow.first())
+        assertEquals(2.5f, reloaded.playerBoostSpeedFlow.first())
+        assertFalse(reloaded.galleryShowImagesFlow.first())
+        assertEquals("options", reloaded.vaultArchiveOptionsFlow.first())
+        assertEquals(1080, reloaded.downloadMaxHeightFlow.first())
+        assertEquals("large", reloaded.driveTileSizeFlow("POSTER").first())
+        assertEquals("https://example.invalid", reloaded.metaTubeUrlFlow.first())
+        assertEquals("test-token", reloaded.metaTubeTokenFlow.first())
+        assertEquals("17", store.get("player.seekStepSeconds"))
+        assertEquals("1080", store.get("download.defaultMaxHeight"))
+        assertFalse(file.readText().contains("test-token"))
+    }
+
+    @Test
     fun desktopFontCandidatesMatchLanguageAndPlatformRules() {
         assertEquals(
             "Microsoft YaHei UI",
