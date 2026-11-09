@@ -2,6 +2,8 @@
 
 package dev.piko.shared.data
 
+import cnames.structs.sqlite3
+import cnames.structs.sqlite3_stmt
 import dev.piko.shared.sqlite.*
 import dev.piko.shared.storage.ensureIosDirectory
 import dev.piko.shared.sync.PortableDigest
