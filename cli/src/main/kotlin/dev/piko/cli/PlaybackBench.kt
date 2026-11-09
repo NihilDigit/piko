@@ -66,7 +66,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * 端到端实测工具：完全复用 Piko 真实的播放、代理、稀疏缓存池、瀑布流、信息流与工作负载总督链路，
+ * HTTP 读取实测工具：复用呈现状态、代理、稀疏缓存池、瀑布流与信息流，使用模拟播放后端，
  * 通过本机代理端口（如 mihomo 节点端口）对 /Dramas 下的真实视频执行全场景联调测试。
  */
 suspend fun runPlaybackBench(
@@ -200,7 +200,7 @@ private suspend fun runNodeBench(
                 steadySeconds = steadySeconds,
                 seeksMillis = emptyList(),
             )
-            val summary = "prepare=${result.prepareMs}ms, 首字节=${result.firstByteMs}ms, 首帧(1MiB)=${result.firstFrameMs}ms, " +
+            val summary = "prepare=${result.prepareMs}ms, 首字节=${result.firstByteMs}ms, 读取就绪（模拟）(768KiB)=${result.readReadyMs}ms, " +
                 "稳态吞吐=${"%.2f".format(result.steadyMiBs)} MiB/s (网络接收=${result.networkDeliveredMiB} MiB, 代理读取=${result.proxyReadMiB} MiB)"
             println("    ✓ $summary")
             metrics["Case 1 (冷启动)"] = summary
@@ -219,7 +219,7 @@ private suspend fun runNodeBench(
                 steadySeconds = steadySeconds,
                 seeksMillis = emptyList(),
             )
-            val summary = "prepare=${result.prepareMs}ms, 首尾探测+定位首字节=${result.firstByteMs}ms, 定位首帧(1MiB)=${result.firstFrameMs}ms, " +
+            val summary = "prepare=${result.prepareMs}ms, 首尾探测+定位首字节=${result.firstByteMs}ms, 定位读取就绪（模拟）(768KiB)=${result.readReadyMs}ms, " +
                 "稳态吞吐=${"%.2f".format(result.steadyMiBs)} MiB/s (网络新增=${result.networkDeliveredMiB} MiB)"
             println("    ✓ $summary")
             metrics["Case 2 (进度续播)"] = summary
@@ -243,7 +243,7 @@ private suspend fun runNodeBench(
                 seeksMillis = seeks,
             )
             val seekDetails = result.seekResults.joinToString("; ") { s ->
-                "@${s.targetMs / 1000}s: 首字节=${s.firstByteMs}ms, 首帧(512KiB)=${s.readyMs}ms, 吞吐=${"%.2f".format(s.postSeekMiBs)} MiB/s"
+                "@${s.targetMs / 1000}s: 首字节=${s.firstByteMs}ms, 读取就绪（模拟）(512KiB)=${s.readyMs}ms, 吞吐=${"%.2f".format(s.postSeekMiBs)} MiB/s"
             }
             println("    ✓ $seekDetails")
             metrics["Case 3 (交互Seek)"] = seekDetails
@@ -352,7 +352,7 @@ private suspend fun runNodeBench(
                     )
                     clipFeed.streams.setSuspended(false)
                     val case5Summary = "prepare=${popupResult.prepareMs}ms, 首字节=${popupResult.firstByteMs}ms, " +
-                        "弹窗首帧(1MiB)=${popupResult.firstFrameMs}ms, 稳态吞吐=${"%.2f".format(popupResult.steadyMiBs)} MiB/s"
+                        "弹窗读取就绪（模拟）(768KiB)=${popupResult.readReadyMs}ms, 稳态吞吐=${"%.2f".format(popupResult.steadyMiBs)} MiB/s"
                     println("    ✓ $case5Summary")
                     metrics["Case 5 (信息流弹窗播放)"] = case5Summary
                 }
@@ -397,7 +397,7 @@ private data class SeekBenchResult(
 private data class PlayerScenarioResult(
     val prepareMs: Long,
     val firstByteMs: Long,
-    val firstFrameMs: Long,
+    val readReadyMs: Long,
     val steadyMiBs: Double,
     val networkDeliveredMiB: String,
     val proxyReadMiB: String,
@@ -406,11 +406,11 @@ private data class PlayerScenarioResult(
 
 /**
  * 完整走 PlayerScreenState -> PikoMediaRepository -> PikoFileCachePool -> PikoMediaProxy -> ProxySession -> BlockCache -> RangeReader。
- * 模拟 libmpv 的真实 HTTP Range 访问模式：
- * 1) 先读 0..256KiB 头部（触发 ProxySession.requestTail 预取尾部 512KiB）；
+ * 模拟 HTTP Range 访问模式（不执行解复用、解码或帧呈现）：
+ * 1) 先读 0..256KiB 头部（不触发额外头尾预取）；
  * 2) 若文件 > 1MiB，读末尾 64KiB 索引（MKV Cues / MP4 moov）；
  * 3) 若 startMillis > 0，跳到对应字节偏移发起 Range 请求；否则从 256KiB 处继续顺序流式读取；
- * 4) 实时向 PlayerScreenState 上报 positionMillis / bufferedPositionMillis / Ready 事件，触发 PikoWorkloadGovernor 从 Startup 切到 Steady。
+ * 4) 按读取阈值模拟位置与 Ready 事件；缓冲余量未知，不向 SDK 伪造播放器缓存。
  */
 private suspend fun runPlayerScenario(
     mediaRepository: PikoMediaRepository,
@@ -450,10 +450,10 @@ private suspend fun runPlayerScenario(
         }
         val prepareMs = backend.openCalledAtMs - scenarioStart.elapsedNow().inWholeMilliseconds.let { 0L }
         withTimeout(30_000) {
-            backend.firstFrameSignal.await()
+            backend.readReadySignal.await()
         }
         val firstByteMs = backend.firstByteAtMs
-        val firstFrameMs = backend.firstFrameAtMs
+        val readReadyMs = backend.readReadyAtMs
 
         // 稳态流式读取阶段
         val steadyStartBytes = backend.totalProxyBytesRead.get()
@@ -500,7 +500,7 @@ private suspend fun runPlayerScenario(
         return PlayerScenarioResult(
             prepareMs = backend.openCalledAtMs,
             firstByteMs = firstByteMs,
-            firstFrameMs = firstFrameMs,
+            readReadyMs = readReadyMs,
             steadyMiBs = steadyMiBs,
             networkDeliveredMiB = "%.2f".format(totalNetMiB),
             proxyReadMiB = "%.2f".format(totalProxyMiB),
@@ -522,7 +522,7 @@ private suspend fun runPlayerScenario(
 private fun steadyNetStart(v: Long): Long = v
 
 /**
- * 模拟 libmpv 连接到 PikoMediaProxy (http://127.0.0.1:<port>/stream/<token>) 的真实 PlaybackBackend。
+ * 通过真实回环代理模拟 HTTP 读取；不包含 libmpv，读取阈值不代表帧呈现。
  */
 private class HttpProxyPlaybackBackend(
     private val scope: CoroutineScope,
@@ -557,10 +557,10 @@ private class HttpProxyPlaybackBackend(
 
     private val originMark = TimeSource.Monotonic.markNow()
     val openedSignal = CompletableDeferred<Unit>()
-    val firstFrameSignal = CompletableDeferred<Unit>()
+    val readReadySignal = CompletableDeferred<Unit>()
     @Volatile var openCalledAtMs: Long = 0L
     @Volatile var firstByteAtMs: Long = 0L
-    @Volatile var firstFrameAtMs: Long = 0L
+    @Volatile var readReadyAtMs: Long = 0L
 
     @Volatile var seekReadySignal = CompletableDeferred<Unit>()
     @Volatile var lastSeekFirstByteMs: Long = 0L
@@ -591,7 +591,7 @@ private class HttpProxyPlaybackBackend(
         currentUrl = url
         Snapshot.withMutableSnapshot {
             positionMillis = startMillis
-            bufferedPositionMillis = startMillis
+            bufferedPositionMillis = 0L
             isBuffering = true
             isPlaying = playWhenReady
         }
@@ -640,7 +640,7 @@ private class HttpProxyPlaybackBackend(
                 throw e
             } catch (e: Throwable) {
                 _events.tryEmit(PlaybackBackendEvent.Error(e.message ?: e.javaClass.simpleName))
-                if (!firstFrameSignal.isCompleted) firstFrameSignal.completeExceptionally(e)
+                if (!readReadySignal.isCompleted) readReadySignal.completeExceptionally(e)
             }
         }
     }
@@ -675,7 +675,7 @@ private class HttpProxyPlaybackBackend(
         val seekMark = TimeSource.Monotonic.markNow()
         Snapshot.withMutableSnapshot {
             this.positionMillis = millis
-            bufferedPositionMillis = millis
+            bufferedPositionMillis = 0L
             isBuffering = true
         }
         val bytesPerMs = if (videoDurationMs > 0 && totalFileSize > 0) {
@@ -783,15 +783,13 @@ private class HttpProxyPlaybackBackend(
                     readyMark = TimeSource.Monotonic.markNow()
                 }
                 val playElapsedMs = readyMark?.elapsedNow()?.inWholeMilliseconds ?: 0L
-                val bufferedDeltaMs = (bytesReadInStream / bytesPerMs.coerceAtLeast(1.0)).toLong()
                 if (playElapsedMs - lastStateSyncMs >= 100L || (reachedReady && isBuffering)) {
                     lastStateSyncMs = playElapsedMs
                     val newPos = (initialMillis + playElapsedMs).coerceAtMost(videoDurationMs)
-                    val newBuf = (initialMillis + maxOf(bufferedDeltaMs, playElapsedMs + 2000L)).coerceAtMost(videoDurationMs)
                     scope.launch {
                         Snapshot.withMutableSnapshot {
                             positionMillis = newPos
-                            bufferedPositionMillis = newBuf
+                            bufferedPositionMillis = 0L
                             if (reachedReady && isBuffering) {
                                 isBuffering = false
                                 isPlaying = true
@@ -802,9 +800,9 @@ private class HttpProxyPlaybackBackend(
                 }
 
                 if (reachedReady) {
-                    if (isInitialOpen && !firstFrameSignal.isCompleted) {
-                        firstFrameAtMs = originMark.elapsedNow().inWholeMilliseconds
-                        firstFrameSignal.complete(Unit)
+                    if (isInitialOpen && !readReadySignal.isCompleted) {
+                        readReadyAtMs = originMark.elapsedNow().inWholeMilliseconds
+                        readReadySignal.complete(Unit)
                     }
                     if (!isInitialOpen && seekMark != null && seekSignal != null && !seekSignal.isCompleted) {
                         if (seekSignal === seekReadySignal) {

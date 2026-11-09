@@ -48,6 +48,9 @@ private const val USAGE = """piko-cli：Piko 开发工具
   archive-write-bench /Dramas [--parallel <1,2,4,8,16,32>] [--count <32>] [--timeout <60>] [--api-rate <1000>]
       在 Dramas 内新建独立测试目录，实测清单写入和延迟确认。只删除本次新建的目录及其内容。
 
+  sync-probe
+      创建隔离空目录实测同步分页水位，结束后移入回收站。
+
   account [--cached]
       通过 SDK 统一状态机查询当前账号资料、会员等级、网盘容量、回收站占用、流量配额与每日离线次数（--cached 优先复用本机缓存快照）。
 
@@ -67,6 +70,34 @@ fun main(args: Array<String>) {
     val command = args.firstOrNull() ?: usage()
     val options = Options(args.drop(1))
     when (command) {
+        "clip-probe" -> runBlocking {
+            val client = appClient()
+            try {
+                val fileId = options.positional.firstOrNull() ?: usage()
+                val provider = object : dev.piko.shared.data.PikoClientProvider {
+                    override val currentClient = kotlinx.coroutines.flow.MutableStateFlow<io.github.nihildigit.pikpak.PikPakClient?>(client)
+                }
+                val repository = dev.piko.shared.media.PikoMediaRepository(provider)
+                kotlinx.coroutines.withTimeout(60_000) {
+                    val detail = client.getFile(fileId)
+                    val duration = detail.params["duration"]?.toDoubleOrNull()?.times(1000)?.toLong()
+                        ?: detail.medias.firstNotNullOfOrNull { it.video?.duration }?.times(1000) ?: error("missing duration")
+                    val probe = repository.clipProbe(fileId)
+                    println("has720P=${probe.hasTranscode}")
+                    val started = kotlin.time.TimeSource.Monotonic.markNow()
+                    repository.prepareClip(fileId, duration / 2, duration, io.github.nihildigit.pikpak.StreamRole.FOREGROUND)
+                        .getOrThrow().use { clip ->
+                            println("sliced=${clip.sliced} prepareMs=${started.elapsedNow().inWholeMilliseconds} streamBytes=${clip.streamBytes}")
+                            clip.prefetch(io.github.nihildigit.pikpak.StreamRole.FOREGROUND)
+                            println("readyMs=${started.elapsedNow().inWholeMilliseconds} windowMs=${clip.maxWindowMs}")
+                        }
+                }
+            } finally { client.close() }
+        }
+        "sync-probe" -> runBlocking {
+            val client = appClient()
+            try { probeSyncPagination(client) } finally { client.close() }
+        }
         "archive-write-cleanup" -> runBlocking {
             val path = options.positional.firstOrNull() ?: "/Dramas"
             val client = appClient()
@@ -139,8 +170,10 @@ fun main(args: Array<String>) {
             val fileId = options.positional.firstOrNull() ?: usage()
             val client = appClient()
             try {
-                client.getFile(fileId).medias.forEach { media ->
-                    println("${media.mediaName}  origin=${media.isOrigin}  ${media.video?.width}x${media.video?.height}\n  ${media.link.url}")
+                val detail = client.getFile(fileId, usage = options.value("--usage"))
+                println("metadata medias=${detail.medias.size} downloadMax=${detail.octetStream.maxSpeedBytesPerSec} originMax=${detail.originMediaLink?.maxSpeedBytesPerSec}")
+                detail.medias.forEach { media ->
+                    println("${media.mediaName}  origin=${media.isOrigin}  ${media.video?.width}x${media.video?.height}  playable=${media.url != null}\n  ${media.link.url}")
                 }
             } finally {
                 client.close()
