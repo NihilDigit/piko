@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.Flow
  * 读数属性要由 Compose 的 State 支撑，共用层和视图层直接读，读取粒度与重组范围才对得上。
  */
 interface PlaybackBackend {
+    val playbackGeneration: Long get() = 0L
+    val bufferSnapshot: io.github.nihildigit.pikpak.PlaybackBufferSnapshot? get() = null
     val positionMillis: Long
 
     /** 后端还不知道时长时为 0。 */
@@ -149,7 +151,7 @@ sealed interface PlaybackTarget {
 }
 
 sealed interface PlaybackBackendEvent {
-    /** 本次 open 的第一帧已经出来。 */
+    /** 后端已恢复输出；不等同于屏幕已经呈现首帧。 */
     data object Ready : PlaybackBackendEvent
 
     data object Ended : PlaybackBackendEvent

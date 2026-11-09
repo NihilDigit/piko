@@ -532,6 +532,7 @@ class ClipFeedSession(
                         if (onlyOriginalsLeft && isCollecting && readyAhead > 0) return@launch
                         val batch = picks.mapNotNull { byId[it.id] }
                         if (batch.isEmpty()) break
+                        if (request != generation) return@launch
                         val checkStarted = TimeSource.Monotonic.markNow()
                         val probed = coroutineScope {
                             batch.map { file -> async { file.id to transcodeOf(file, request) } }.awaitAll()
@@ -706,6 +707,7 @@ class ClipFeedSession(
         val verified: List<String> = emptyList(),
         val rejected: Map<String, Long> = emptyMap(),
         val folders: Map<String, String> = emptyMap(),
+        @kotlinx.serialization.SerialName("untranscoded_full_detail")
         val untranscoded: Map<String, Long> = emptyMap(),
         val selectionCounts: Map<String, Int> = emptyMap(),
         val parents: Map<String, String> = emptyMap(),

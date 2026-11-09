@@ -1,6 +1,8 @@
 package dev.piko.shared.media.proxy
 
 import io.github.nihildigit.pikpak.StreamRole
+import io.github.nihildigit.pikpak.TransferDemand
+import io.github.nihildigit.pikpak.PlaybackBufferSnapshot
 import kotlinx.coroutines.Deferred
 import kotlin.time.Duration
 
@@ -32,9 +34,16 @@ internal class SlicedByteSource(
         inner.updateMediaBytesPerSecond(bytesPerSecond)
     }
 
+    override suspend fun prefetch(ranges: List<LongRange>, role: StreamRole, priority: Int?, demand: TransferDemand?): Deferred<Unit>? =
+        inner.prefetch(ranges.map { it.first.coerceAtLeast(0) + offset..it.last.coerceAtMost(size - 1) + offset }, role, priority, demand)
+
     override fun close() = inner.close()
 
     private inner class SlicedReader(private val reader: ProxyReader) : ProxyReader {
+        override var demand: TransferDemand?
+            get() = reader.demand
+            set(value) { reader.demand = value }
+        override fun reportPlaybackBuffer(snapshot: PlaybackBufferSnapshot) = reader.reportPlaybackBuffer(snapshot)
         override var role: StreamRole
             get() = reader.role
             set(value) {

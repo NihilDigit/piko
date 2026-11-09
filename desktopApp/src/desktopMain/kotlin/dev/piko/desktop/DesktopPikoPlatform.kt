@@ -376,12 +376,7 @@ class DesktopPikoPlatform(
             val backend = remember(player) {
                 // 偏好是 StateFlow，first() 当场返回
                 val hardwareDecoding = runBlocking { preferences.hardwareDecodingFlow.first() }
-                MediampPreviewBackend(MediampPlaybackBackend(player, playerScope, preview = true, keyframeStart = keyframeStart, hardwareDecoding = hardwareDecoding))
-            }
-            DisposableEffect(backend, player) {
-                onDispose {
-                    backend.inner.stop()
-                    backend.inner.markClosing()
+                MediampPreviewBackend(MediampPlaybackBackend(player, playerScope, preview = true, keyframeStart = keyframeStart, hardwareDecoding = hardwareDecoding)) {
                     playerJob.cancel()
                     CoroutineScope(Dispatchers.IO).launch { runCatching { player.close() } }
                 }
@@ -415,9 +410,15 @@ class DesktopPikoPlatform(
     override fun ListScrollbar(state: LazyGridState, modifier: Modifier) =
         dev.piko.desktop.ListScrollbar(state, modifier)
 
-    private class MediampPreviewBackend(val inner: MediampPlaybackBackend) : PreviewBackend, PlaybackBackend by inner {
-        // 播放器本身由 rememberPreviewBackend 在离开组合时关闭，这里只停播
-        override fun release() = inner.stop()
+    private class MediampPreviewBackend(val inner: MediampPlaybackBackend, private val dispose: () -> Unit) : PreviewBackend, PlaybackBackend by inner {
+        private var released = false
+        override fun release() {
+            if (released) return
+            released = true
+            inner.stop()
+            inner.markClosing()
+            dispose()
+        }
 
         override fun setBufferAhead(seconds: Int) = inner.setBufferAhead(seconds)
 

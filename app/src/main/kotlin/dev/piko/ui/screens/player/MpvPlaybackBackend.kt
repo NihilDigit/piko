@@ -18,6 +18,7 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.player.ExternalSubtitle
 import dev.piko.shared.media.player.MPV_SUBTITLE_LANGUAGES
 import dev.piko.shared.media.player.MediaTrack
+import dev.piko.shared.media.player.PlaybackFeedbackTracker
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.shared.media.player.PlaybackBackendEvent
 import dev.piko.shared.media.player.PlaybackTarget
@@ -61,6 +62,10 @@ internal class MpvPlaybackBackend(
 ) : PlaybackBackend, MPVLib.EventObserver, MPVLib.LogObserver {
 
     private val mpv: MPVLib = MPVLib.create(context) ?: error(tr("libmpv 初始化失败", "libmpv initialization failed", "libmpvの初期化に失敗しました", "libmpv 초기화 실패", "libmpv 初始化失敗"))
+
+    private val feedback = PlaybackFeedbackTracker()
+    override val playbackGeneration: Long get() = feedback.generation
+    override val bufferSnapshot get() = feedback.snapshot
 
     override var positionMillis by mutableLongStateOf(0L)
         private set
@@ -210,6 +215,7 @@ internal class MpvPlaybackBackend(
             mpv.observeProperty("time-pos", MpvFormat.MPV_FORMAT_DOUBLE)
             mpv.observeProperty("duration", MpvFormat.MPV_FORMAT_DOUBLE)
             mpv.observeProperty("demuxer-cache-time", MpvFormat.MPV_FORMAT_DOUBLE)
+            mpv.observeProperty("demuxer-cache-duration", MpvFormat.MPV_FORMAT_DOUBLE)
             mpv.observeProperty("pause", MpvFormat.MPV_FORMAT_FLAG)
             mpv.observeProperty("paused-for-cache", MpvFormat.MPV_FORMAT_FLAG)
             mpv.observeProperty("eof-reached", MpvFormat.MPV_FORMAT_FLAG)
@@ -232,6 +238,7 @@ internal class MpvPlaybackBackend(
         subtitles: List<ExternalSubtitle>,
     ) {
         if (released) return
+        feedback.invalidate()
         fileLoaded = false
         // 段落预览关着音轨与字幕，挂了也不显示
         pendingSubtitles = if (preview) emptyList() else subtitles
@@ -269,6 +276,7 @@ internal class MpvPlaybackBackend(
 
     override fun stop() {
         if (released) return
+        feedback.invalidate()
         pendingLoad = null
         supersededLoads = issuedLoads
         onMpv { mpv.command(arrayOf("stop")) }
@@ -292,17 +300,18 @@ internal class MpvPlaybackBackend(
             destroyCompleted.await()
             return
         }
+        feedback.invalidate()
         pendingLoad = null
         supersededLoads = issuedLoads
         isLoadingFile = false
         callOnMpv { mpv.command(arrayOf("stop")) }
-        repeat(16) {
+        while (true) {
             if (released) {
                 destroyCompleted.await()
                 return
             }
             val idle = callOnMpv { mpv.getPropertyString("idle-active") }
-            if (idle == null || idle == "yes") return
+            if (destroyed || idle == "yes") return
             delay(15L)
         }
     }
@@ -317,6 +326,8 @@ internal class MpvPlaybackBackend(
 
     override fun seekTo(positionMillis: Long) {
         if (released) return
+        feedback.invalidate()
+        isSeeking = true
         val seconds = String.format(Locale.US, "%.3f", positionMillis.coerceAtLeast(0L) / 1000.0)
         this.positionMillis = positionMillis.coerceAtLeast(0L)
         onMpv { mpv.command(arrayOf("seek", seconds, "absolute")) }
@@ -618,6 +629,7 @@ internal class MpvPlaybackBackend(
     override fun eventProperty(property: String) {
         // 属性暂不可用（空闲、换片途中）
         when (property) {
+            "demuxer-cache-duration" -> feedback.sample(playbackGeneration, null, speed)
             "duration" -> durationMillis = 0L
             "demuxer-cache-time" -> bufferedPositionMillis = 0L
             "video-params/aspect" -> {
@@ -646,6 +658,7 @@ internal class MpvPlaybackBackend(
                 if (abs(millis - positionMillis) >= POSITION_GRANULARITY_MILLIS) positionMillis = millis
             }
 
+            "demuxer-cache-duration" -> feedback.sample(playbackGeneration, value, speed)
             "duration" -> durationMillis = (value * 1000).toLong().coerceAtLeast(0L)
             "demuxer-cache-time" -> {
                 val millis = (value * 1000).toLong().coerceAtLeast(0L)
@@ -708,6 +721,8 @@ internal class MpvPlaybackBackend(
             }
             MpvEvent.MPV_EVENT_SEEK -> isSeeking = true
             MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> {
+                feedback.restarted(playbackGeneration)
+                feedback.sample(playbackGeneration, mpv.getPropertyDouble("demuxer-cache-duration"), speed)
                 isLoadingFile = false
                 isSeeking = false
                 if (!readySent) {

@@ -64,6 +64,8 @@ internal class FakePikPakCloud(
     val expiredResponses = AtomicInteger()
     val overBudgetResponses = AtomicInteger()
     val deliveredCdnBytes = java.util.concurrent.atomic.AtomicLong()
+    val activeCdnRequests: Int get() = inFlightByUrl.values.sumOf { it.get() }
+    val cdnRanges = java.util.concurrent.CopyOnWriteArrayList<LongRange>()
 
     private val generationLock = Any()
     private var generation = 1
@@ -98,7 +100,13 @@ internal class FakePikPakCloud(
                 json("""{"access_token":"AT","refresh_token":"RT","sub":"U","expires_in":3600}""")
             request.method == HttpMethod.Get && path.contains("/drive/v1/files/") -> {
                 detailCalls.incrementAndGet()
-                json(detailJson())
+                val full = detailJson()
+                val body = if (request.url.parameters["usage"] == io.github.nihildigit.pikpak.FILE_USAGE_FETCH) {
+                    val codec = kotlinx.serialization.json.Json
+                    val serializer = io.github.nihildigit.pikpak.FileDetail.serializer()
+                    codec.encodeToString(serializer, codec.decodeFromString(serializer, full).copy(medias = emptyList()))
+                } else full
+                json(body)
             }
             else -> respond("", HttpStatusCode.NotFound, headersOf(HttpHeaders.ContentType, "application/json"))
         }
@@ -162,6 +170,7 @@ internal class FakePikPakCloud(
             beforeCdnResponse?.invoke()
             currentCoroutineContext().ensureActive()
             val (start, endInclusive) = parseRange(request.headers[HttpHeaders.Range], body.size.toLong())
+            cdnRanges.add(start..endInclusive)
             beforeCdnRange?.invoke(start)
             currentCoroutineContext().ensureActive()
             val length = (endInclusive - start + 1).toInt()

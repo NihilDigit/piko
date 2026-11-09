@@ -13,6 +13,7 @@ import dev.piko.shared.media.player.ExternalSubtitle
 import dev.piko.shared.media.player.MPV_SUBTITLE_LANGUAGES
 import dev.piko.shared.media.player.MediaTrack
 import dev.piko.shared.media.player.MpvTrackSnapshot
+import dev.piko.shared.media.player.PlaybackFeedbackTracker
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.shared.media.player.PlaybackBackendEvent
 import dev.piko.shared.media.player.PlaybackTarget
@@ -22,6 +23,8 @@ import kotlin.math.ln
 import dev.piko.shared.media.player.mpvSubtitleAddCommands
 import dev.piko.shared.media.player.mpvSubtitleSelectCommand
 import dev.piko.shared.media.player.readMpvTracks
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -46,6 +49,8 @@ import org.openani.mediamp.isMediaLoaded
 import org.openani.mediamp.metadata.AudioTrack
 import org.openani.mediamp.metadata.SubtitleTrack
 import org.openani.mediamp.mpv.JvmMpvMediampPlayer
+import org.openani.mediamp.mpv.EventListener
+import org.openani.mediamp.mpv.MPVEvent
 import org.openani.mediamp.mpv.MPVHandle
 import org.openani.mediamp.source.UriMediaData
 import java.io.File
@@ -71,6 +76,16 @@ internal class MediampPlaybackBackend(
     private val audioFeature = player.features[AudioLevelController.Key]
     private val metadataFeature = player.features[MediaMetadata.Key]
     private val mpv: MPVHandle? = mpvHandleOf(player)
+    private val nativeInstanceId: Long? = mpv?.let { handle ->
+        runCatching {
+            MPVHandle::class.java.methods.single { it.name.startsWith("getPtr") && it.parameterCount == 0 }.invoke(handle) as Long
+        }.getOrNull()
+    }
+
+    private val feedback = PlaybackFeedbackTracker()
+    override val playbackGeneration: Long get() = feedback.generation
+    override val bufferSnapshot get() = feedback.snapshot
+    private var originalListener: EventListener? = null
 
     override var positionMillis by mutableLongStateOf(0L)
         private set
@@ -126,6 +141,7 @@ internal class MediampPlaybackBackend(
 
     fun markClosing() {
         closing = true
+        originalListener?.let { mpv?.setEventListener(it) }
         awaitingReady = false
         subtitlesAttached = false
         manualSeeking = false
@@ -136,6 +152,22 @@ internal class MediampPlaybackBackend(
     private var subtitlesAttached = false
 
     init {
+        installPlaybackEvents()
+        scope.launch(Dispatchers.IO) {
+            while (isActive && !closing) {
+                val generation = playbackGeneration
+                val seconds = mpv?.let { runCatching { it.getPropertyString("demuxer-cache-duration")?.toDoubleOrNull() }.getOrNull() }
+                val sampledAt = kotlin.time.TimeSource.Monotonic.markNow()
+                withContext(scope.coroutineContext.minusKey(Job)) {
+                    if (!closing && generation == playbackGeneration) {
+                        feedback.sample(generation, seconds, speed, sampledAt)
+                        bufferedPositionMillis = seconds?.takeIf { it.isFinite() && it >= 0 }
+                            ?.let { positionMillis + (it * 1000).toLong() } ?: 0L
+                    }
+                }
+                delay(250L)
+            }
+        }
         mpv?.setPropertyString("slang", MPV_SUBTITLE_LANGUAGES)
         // libass 缺字时经 DirectWrite 找回退字体，传的语言是空串，非中文系统上给汉字挑的多是日文字体：
         // 繁体字在里面有，「这」「们」这类简体字没有，回退失败后落到 sub-font。默认的 sans-serif 也不含中文，
@@ -164,9 +196,6 @@ internal class MediampPlaybackBackend(
         mpv?.setPropertyString("hwdec-codecs", "all")
         scope.launch {
             player.currentPositionMillis.collect { pos ->
-                if (manualSeeking && pos != positionMillis) {
-                    manualSeeking = false
-                }
                 positionMillis = pos
             }
         }
@@ -190,7 +219,6 @@ internal class MediampPlaybackBackend(
                 if (currentAspectRatio == PlayerAspectRatio.RegionCrop) {
                     currentCropRegion?.let(::applyMpvCropRegion)
                 }
-                maybeEmitReady(player.state.value, properties)
             }
         }
         scope.launch {
@@ -202,7 +230,6 @@ internal class MediampPlaybackBackend(
                     subtitlesAttached = true
                     attachPendingSubtitles()
                 }
-                maybeEmitReady(state, player.mediaProperties.value)
             }
         }
         // mediamp-mpv 的 bufferedPercentage 对应 cache-buffering-state（仅在卡顿重缓冲期间为 0..100，
@@ -241,7 +268,9 @@ internal class MediampPlaybackBackend(
             is PlaybackTarget.LocalFile -> File(target.path).toPath().toUri().toString()
             is PlaybackTarget.Url -> target.url
         }
+        feedback.invalidate()
         awaitingReady = true
+        PikoLog.d("Player", "后端会话：实例 ${nativeInstanceId?.toString(16)}，代际 $playbackGeneration，预览 $preview")
         subtitlesAttached = false
         manualSeeking = false
         manualSeekGen++
@@ -331,50 +360,36 @@ internal class MediampPlaybackBackend(
         mpvSubtitleAddCommands(subtitles, hasSelected).forEach { handle.command(*it) }
     }
 
-    private suspend fun maybeEmitReady(
-        state: org.openani.mediamp.PlayerState,
-        properties: org.openani.mediamp.metadata.MediaProperties?,
-    ) {
-        if (!awaitingReady || !state.isMediaLoaded || state.isLoadingOrBuffering) return
-        if (!isDecoderReady(properties)) return
-        awaitingReady = false
-        if (!subtitlesAttached) {
-            subtitlesAttached = true
-            attachPendingSubtitles()
-        }
-        // 显卡出事的反馈要靠它判断当时是不是硬解。必须在视频解码器真正完成首帧解码初始化后再读，
-        // 否则仅解复用器读出容器宽高（MPV_EVENT_FILE_LOADED）时刻尚未建好视频解码器，hwdec-current 仍为空串
-        if (!preview) {
-            mpv?.let { handle ->
-                val loadGen = manualSeekGen
-                scope.launch {
-                    var hwdec = ""
-                    repeat(20) {
-                        if (closing || awaitingReady || manualSeekGen != loadGen) return@launch
-                        hwdec = runCatching { handle.getPropertyString("hwdec-current") }.getOrNull().orEmpty()
-                        if (hwdec.isNotEmpty() && hwdec != "no") return@repeat
-                        delay(50L)
-                    }
-                    if (!closing && !awaitingReady) {
-                        PikoLog.i("Player", "解码：${hwdec.ifEmpty { "no" }}")
+    private fun installPlaybackEvents() {
+        val handle = mpv ?: return
+        val field = MPVHandle::class.java.getDeclaredField("eventListener").apply { isAccessible = true }
+        val delegate = field.get(handle) as EventListener
+        originalListener = delegate
+        handle.setEventListener(object : EventListener by delegate {
+            override fun onEvent(event: Int) {
+                val generation = playbackGeneration
+                delegate.onEvent(event)
+                if (event == MPVEvent.PLAYBACK_RESTART && !closing) {
+                    val nativeSeeking = runCatching { handle.getPropertyString("seeking") == "yes" }.getOrDefault(true)
+                    val decoder = if (!preview && awaitingReady) runCatching { handle.getPropertyString("hwdec-current") }.getOrNull() else null
+                    scope.launch {
+                        if (closing || nativeSeeking || !feedback.restarted(generation)) return@launch
+                        manualSeeking = false
+                        if (awaitingReady) {
+                            awaitingReady = false
+                            if (!subtitlesAttached) { subtitlesAttached = true; attachPendingSubtitles() }
+                            decoder?.let { PikoLog.i("Player", "解码：$it") }
+                            _events.emit(PlaybackBackendEvent.Ready)
+                        }
                     }
                 }
             }
-        }
-        _events.emit(PlaybackBackendEvent.Ready)
-    }
-
-    private fun isDecoderReady(properties: org.openani.mediamp.metadata.MediaProperties?): Boolean {
-        if ((properties?.videoWidth ?: 0) > 0 && (properties?.videoHeight ?: 0) > 0) return true
-        val handle = mpv ?: return true
-        val w = runCatching { handle.getPropertyString("video-params/w")?.toIntOrNull() }.getOrNull() ?: 0
-        if (w > 0) return true
-        val vid = runCatching { handle.getPropertyString("vid") }.getOrNull()
-        return vid == "no" || vid == "false"
+        })
     }
 
     override fun stop() {
         if (closing) return
+        feedback.invalidate()
         awaitingReady = false
         subtitlesAttached = false
         manualSeeking = false
@@ -388,12 +403,12 @@ internal class MediampPlaybackBackend(
         if (closing) return@withContext
         stop()
         val handle = mpv
-        repeat(16) {
+        while (true) {
             if (closing) return@withContext
             val state = player.state.value
             val mpvIdle = handle == null || runCatching { handle.getPropertyString("idle-active") }.getOrNull() == "yes"
             if (!state.isMediaLoaded && !state.isLoadingOrBuffering && mpvIdle) return@withContext
-            if (mpvIdle && it >= 1) return@withContext
+            if (mpvIdle) return@withContext
             delay(15L)
         }
     }
@@ -411,7 +426,8 @@ internal class MediampPlaybackBackend(
     override fun seekTo(positionMillis: Long) {
         if (closing) return
         val target = positionMillis.coerceAtLeast(0L)
-        val gen = ++manualSeekGen
+        ++manualSeekGen
+        feedback.invalidate()
         manualSeeking = true
         // 1. 信息流预览（keyframeStart = true）启用了 hr-seek=no 与 8 MiB 小队列，
         //    而 MediaMP 的 player.seekTo 硬编码下发 "absolute+exact" 会强行覆盖 hr-seek=no，
@@ -423,21 +439,6 @@ internal class MediampPlaybackBackend(
             mpv.command("seek", "${target / 1000.0}", mode)
         } else {
             player.seekTo(target)
-        }
-        scope.launch {
-            delay(80L)
-            repeat(60) {
-                if (closing || manualSeekGen != gen || !manualSeeking) return@launch
-                val mpvSeeking = mpv?.let { handle ->
-                    runCatching { handle.getPropertyString("seeking") }.getOrNull() == "yes"
-                } ?: false
-                if (!mpvSeeking && !playerBuffering) {
-                    manualSeeking = false
-                    return@launch
-                }
-                delay(80L)
-            }
-            if (manualSeekGen == gen) manualSeeking = false
         }
     }
 

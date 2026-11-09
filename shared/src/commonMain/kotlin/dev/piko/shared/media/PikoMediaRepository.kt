@@ -18,6 +18,10 @@ import dev.piko.shared.media.proxy.SlicedByteSource
 import io.github.nihildigit.pikpak.BlockStore
 import dev.piko.shared.media.cache.PikoFileCachePool
 import dev.piko.download.DownloadTask
+import io.github.nihildigit.pikpak.TransferDemand
+import io.github.nihildigit.pikpak.PikPakStreamReader
+import io.github.nihildigit.pikpak.PlaybackBufferSnapshot
+import kotlinx.coroutines.currentCoroutineContext
 import io.github.nihildigit.pikpak.ApiRequestPriority
 import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.MediaVariant
@@ -110,7 +114,7 @@ class PreparedPlayback internal constructor(
     private val stream: ProxyStream?,
     /** 当前变体（原画或转码流）按其实际流长度或编码码率估算的平均字节消耗率（字节/秒）。 */
     val estimatedBytesPerSecond: Long? = null,
-) : AutoCloseable {
+) : dev.piko.shared.media.player.PlaybackTransport {
     /** 本机代理的地址。handle 建不起来（例如没有 gcid）时为 null，只能读直链。 */
     val proxyUrl: String? get() = stream?.url
 
@@ -124,12 +128,28 @@ class PreparedPlayback internal constructor(
             stream?.urgent = value
         }
 
+    private var demand: TransferDemand? = null
+    internal fun bindDemand(owner: TransferDemand) { demand = owner; stream?.demand = owner }
+    fun updatePhase(urgent: Boolean, steady: Boolean) {
+        demand?.takeUnless { it.isClosed }?.updatePriority(when {
+            urgent -> PikPakStreamReader.BLOCKING_PRIORITY
+            steady -> PikPakStreamReader.STREAMING_PRIORITY
+            else -> PikPakStreamReader.WARM_PRIORITY
+        })
+        stream?.role = if (urgent || steady) StreamRole.FOREGROUND else StreamRole.BACKGROUND
+        stream?.urgent = urgent
+        stream?.steady = steady
+    }
+    fun reportPlaybackBuffer(snapshot: PlaybackBufferSnapshot) = stream?.reportPlaybackBuffer(snapshot)
+    override fun withdrawTransport() { stream?.withdrawTransport(); demand?.close() }
+
     /** 向代理会话与底层 SDK 流读取器反馈当前播放器的缓冲时长与媒体平均字节速率。 */
     fun reportPlaybackBuffer(bufferedDuration: Duration, mediaBytesPerSecond: Long? = null) {
         stream?.reportPlaybackBuffer(bufferedDuration, mediaBytesPerSecond)
     }
 
     override fun close() {
+        withdrawTransport()
         stream?.close()
     }
 }
@@ -251,14 +271,26 @@ class PikoMediaRepository(
      * [preferredResolution] 是用户在播放器里点选的档位；为 null 时按 [defaultMaxHeight] 挑，见 [transcodeNameAtMost]，
      * 0 表示原画。
      */
-    suspend fun preparePlayback(
+    fun openTransferDemand(priority: Int = PikPakStreamReader.BLOCKING_PRIORITY): TransferDemand = client.openTransferDemand(priority)
+
+    suspend fun preparePlayback(fileId: String, preferredResolution: String? = null, defaultMaxHeight: Int = 0): Result<PreparedPlayback> {
+        val accountClient = client
+        val owner = accountClient.openTransferDemand()
+        var created: PreparedPlayback? = null
+        try {
+            return withContext(owner) { preparePlaybackOwned(accountClient, fileId, preferredResolution, defaultMaxHeight)
+                .onSuccess { created = it; it.bindDemand(owner) } }.onFailure { owner.close() }
+        } catch (e: Throwable) { created?.close(); owner.close(); throw e }
+    }
+
+    private suspend fun preparePlaybackOwned(
+        client: PikPakClient,
         fileId: String,
         preferredResolution: String? = null,
         defaultMaxHeight: Int = 0,
     ): Result<PreparedPlayback> =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
-                val client = client
                 // 本机下了一部分的原画不费流量，照样先用，画质上限是为了省流量
                 if (preferredResolution.isNullOrBlank() || preferredResolution == ORIGINAL_QUALITY) {
                     partialSource(client, fileId)?.let { (task, source) ->
@@ -300,7 +332,19 @@ class PikoMediaRepository(
      *
      * 没有这一档转码、或者转码不是 TS 时，退回原画整条，由播放器从起点 seek 过去。
      */
-    suspend fun prepareClip(
+    suspend fun prepareClip(fileId: String, startMs: Long, videoDurationMs: Long, role: StreamRole,
+        demand: TransferDemand? = null): Result<PreparedClip> {
+        val accountClient = client
+        val owner = demand ?: accountClient.openTransferDemand(if (role == StreamRole.FOREGROUND) PikPakStreamReader.BLOCKING_PRIORITY else PikPakStreamReader.WARM_PRIORITY)
+        var created: PreparedClip? = null
+        try {
+            return withContext(owner) { prepareClipOwned(accountClient, fileId, startMs, videoDurationMs, role)
+                .onSuccess { created = it; it.bindDemand(owner) } }.onFailure { owner.close() }
+        } catch (e: Throwable) { created?.close(); owner.close(); throw e }
+    }
+
+    private suspend fun prepareClipOwned(
+        client: PikPakClient,
         fileId: String,
         startMs: Long,
         videoDurationMs: Long,
@@ -308,7 +352,6 @@ class PikoMediaRepository(
     ): Result<PreparedClip> =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
-                val client = client
                 if (dev.piko.shared.data.LocalLocation.isLocal(fileId)) {
                     val path = requireNotNull(localPath(fileId)) { "本机文件夹不可访问" }
                     return@runSuspendCatching PreparedClip(null, path, false, startMs, 0.0,
@@ -608,24 +651,18 @@ class PikoMediaRepository(
         // 先在 Long 上取小再转 Int：超过 2 GB 的流，剩余长度直接转 Int 会溢出成负数
         val buffer = ByteArray(minOf(length.toLong(), (size - offset).coerceAtLeast(0)).toInt())
         if (buffer.isEmpty()) return buffer
-        // 通过 prefetch (warm) 预取目标块并以 BACKGROUND 游标读出，使预热阶段的关键帧扫描与 PTS 校准走 warm 预算，
-        // 不伪装成正在卡顿的前台播放游标触发全账号紧急饥饿模式
-        val warm = prefetch(listOf(offset until (offset + buffer.size)), role)
-        try {
-            warm?.await()
-            openReader(StreamRole.BACKGROUND).use { reader ->
-                reader.readAheadLimit = 0
-                reader.seekTo(offset)
-                var filled = 0
-                while (filled < buffer.size) {
-                    val read = reader.read(buffer, filled, buffer.size - filled)
-                    if (read < 0) break
-                    filled += read
-                }
-                return if (filled == buffer.size) buffer else buffer.copyOf(filled)
+        val owner = currentCoroutineContext()[TransferDemand]
+        openReader(role).use { reader ->
+            reader.demand = owner
+            reader.readAheadLimit = 0
+            reader.seekTo(offset)
+            var filled = 0
+            while (filled < buffer.size) {
+                val read = reader.read(buffer, filled, buffer.size - filled)
+                if (read < 0) break
+                filled += read
             }
-        } finally {
-            warm?.cancel()
+            return if (filled == buffer.size) buffer else buffer.copyOf(filled)
         }
     }
 
@@ -701,7 +738,7 @@ class PikoMediaRepository(
     /** 登记失败时关掉 [source] 并返回 null，由调用方退回直链；取消照常抛出。 */
     private suspend fun registerProxy(source: ProxyByteSource, fileName: String?, role: StreamRole): ProxyStream? {
         return try {
-            proxy.register(source, fileName = fileName, role = role)
+            proxy.register(source, fileName = fileName, role = role).also { it.demand = currentCoroutineContext()[TransferDemand] }
         } catch (e: CancellationException) {
             source.close()
             throw e

@@ -21,7 +21,7 @@ interface RandomAccessMediaSource : AutoCloseable {
 
 /**
  * 在一个 [ProxyReader] 上实现按偏移读：位置不连续时先 seek。reader 在首次读取时才开，
- * 每个 reader 都带一份 SDK 的分块缓存与一组 worker，用不到就不该建。
+ * 随机读取不声明连续预读窗口；已开始的缓存块仍可完成，并与下载共用。
  */
 internal class ReaderRandomAccessSource(
     private val source: ProxyByteSource,
@@ -33,7 +33,10 @@ internal class ReaderRandomAccessSource(
 
     override suspend fun readAt(position: Long, buffer: ByteArray, offset: Int, length: Int): Int = lock.withLock {
         if (position >= size) return@withLock -1
-        val current = reader ?: source.openReader().also { reader = it }
+        val current = reader ?: source.openReader().also {
+            it.readAheadLimit = 0
+            reader = it
+        }
         try {
             if (current.position != position) current.seekTo(position)
             current.read(buffer, offset, length)

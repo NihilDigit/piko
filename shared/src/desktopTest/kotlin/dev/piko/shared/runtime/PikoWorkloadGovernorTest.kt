@@ -8,38 +8,19 @@ import kotlin.test.assertTrue
 
 class PikoWorkloadGovernorTest {
     @Test
-    fun `urgent playback pauses discovery cover prefetch and background sync until steady or closed`() = runBlocking {
+    fun playbackPresenceDoesNotGloballySuspendUnrelatedWork() = runBlocking {
         val governor = PikoWorkloadGovernor()
-        assertEquals(WorkBudget(), governor.budget.value)
-
         val lease = governor.register(WorkPurpose.Playback, WorkPhase.Urgent)
-        assertTrue(governor.budget.value.hasActivePlayback)
         assertTrue(governor.budget.value.hasUrgentPlayback)
-        assertEquals(0, governor.budget.value.galleryDiscoveryConcurrency)
-        assertEquals(0, governor.budget.value.coverPrefetchConcurrency)
-        assertFalse(governor.budget.value.allowClipPrefetch)
-        assertFalse(governor.budget.value.allowBackgroundSync)
-
-        lease.updatePhase(WorkPhase.Steady)
-        assertTrue(governor.budget.value.hasActivePlayback)
-        assertFalse(governor.budget.value.hasUrgentPlayback)
-        assertEquals(1, governor.budget.value.galleryDiscoveryConcurrency)
-        assertEquals(2, governor.budget.value.coverPrefetchConcurrency)
-        assertFalse(governor.budget.value.allowClipPrefetch)
-        assertFalse(governor.budget.value.allowBackgroundSync)
-
-        lease.updatePhase(WorkPhase.Paused)
-        assertTrue(governor.budget.value.hasActivePlayback)
-        assertFalse(governor.budget.value.hasUrgentPlayback)
-        assertEquals(2, governor.budget.value.galleryDiscoveryConcurrency)
-        assertEquals(4, governor.budget.value.coverPrefetchConcurrency)
-        assertFalse(governor.budget.value.allowClipPrefetch)
-        assertTrue(governor.budget.value.allowBackgroundSync)
-
-        lease.updatePhase(WorkPhase.Urgent)
-        assertEquals(0, governor.budget.value.galleryDiscoveryConcurrency)
-        assertEquals(0, governor.budget.value.coverPrefetchConcurrency)
-
+        for (phase in listOf(WorkPhase.Urgent, WorkPhase.Steady, WorkPhase.Paused)) {
+            lease.updatePhase(phase)
+            val budget = governor.budget.value
+            assertTrue(budget.allowClipPrefetch)
+            assertTrue(budget.allowBackgroundSync)
+            assertEquals(WorkBudget.DEFAULT_GALLERY_DISCOVERY_CONCURRENCY, budget.galleryDiscoveryConcurrency)
+            assertEquals(WorkBudget.DEFAULT_COVER_PREFETCH_CONCURRENCY, budget.coverPrefetchConcurrency)
+            assertEquals(phase != WorkPhase.Paused, budget.hasActivePlayback)
+        }
         lease.close()
         assertEquals(WorkBudget(), governor.budget.value)
     }

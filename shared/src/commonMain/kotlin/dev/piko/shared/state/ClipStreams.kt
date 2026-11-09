@@ -1,249 +1,229 @@
 package dev.piko.shared.state
 
-import dev.piko.shared.log.PikoLog
-import dev.piko.shared.log.logFailure
-import dev.piko.shared.log.logFile
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.PreparedClip
-import io.github.nihildigit.pikpak.ApiRequestPriority
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFile
+import io.github.nihildigit.pikpak.PikPakStreamReader
 import io.github.nihildigit.pikpak.StreamRole
-import io.github.nihildigit.pikpak.withApiPriority
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.cancelChildren
+import io.github.nihildigit.pikpak.TransferDemand
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.time.Duration.Companion.seconds
-import kotlin.time.TimeSource
 
-/**
- * 队列里各段的代理会话与预取。取流慢：查详情、取直链、连上 CDN、读到容器头与起点附近的数据，
- * 前后要好几秒，所以队列里的每一段都提前备好并预取，轮到播放器装它时读缓存；出了队列的关掉。
- *
- * 候补里的段各自备会话、预取，取好的交给 [onReady] 接进翻页器，取不好的交给 [onDead]，见 [ripen]。
- * 翻页器里因此只有取好的段，翻到哪一段都有得放。
- *
- * 归 [ClipFeedSession] 所有，与进程同寿，换文件夹或关掉信息流时才清空，不随页面走：Android 上「看完整」是压在
- * 信息流之上的一页，信息流离开组合，原先挂在页面上的这份跟着关掉，回来时每段重备会话、重取开头，
- * 当前那段五秒多才重新走起来（2026-09-28）。播放器仍随页面，压栈页要用画面。
- *
- * 每段各自一个协程，不挂在会随翻页取消的任务上：连着快翻时每翻一页任务就重来，挂在上面的永远等不到取完。
- * 备会话要查详情，同时至多 [PREPARE_LANES] 个，几十段一起查容易被限流。
- * 空闲的会话不占连接，只占内存：每段的 reader 缓存着预取的与播过的部分。
- *
- * 主线程上的作用域，映射只在主线程上改，不必加锁。
- */
+/** 每个片段保留同一个准备结果和可提升的需求；挂起只撤回候补预取，不销毁准备好的会话。 */
 class ClipStreams internal constructor(
     private val repository: PikoMediaRepository,
     private val onReady: (Clip) -> Unit,
     private val onDead: (Clip) -> Unit,
+    coroutineContext: kotlin.coroutines.CoroutineContext = Dispatchers.Main.immediate,
+    private val prepare: suspend (Clip, StreamRole, TransferDemand) -> Result<PreparedClip> = { clip, role, owner ->
+        repository.prepareClip(clip.fileId, clip.startMs, clip.videoDurationMs, role, owner)
+    },
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val streams = mutableMapOf<Clip, Deferred<PreparedClip?>>()
-    private val ripening = mutableSetOf<Clip>()
+    private class Entry(val demand: TransferDemand) {
+        val priority = MutableStateFlow(demand.priority)
+        lateinit var result: Deferred<PreparedClip?>
+        var prepared: PreparedClip? = null
+        var fetch: Job? = null
+        var wanted = false
+        var ready = false
+        var closed = false
+        var foreground = false
+        var urgent = false
+        var playing = true
+        var readAheadSeconds: Int? = null
+        var readAheadMinBytes = PreparedClip.MIN_AHEAD_BYTES
+        var readAheadEnabled = false
+        var feedbackOwner: Any? = null
+        var nativeGeneration = Long.MIN_VALUE
+        var feedbackGeneration = 0L
+        fun prioritize(value: Int) {
+            priority.value = value
+            if (!demand.isClosed) demand.updatePriority(value)
+            prepared?.role = if (value >= PikPakStreamReader.STREAMING_PRIORITY) StreamRole.FOREGROUND else StreamRole.BACKGROUND
+        }
+    }
+    private val scope = CoroutineScope(coroutineContext.minusKey(Job) + SupervisorJob())
+    private val preparing = PreparationQueue(backgroundSlots = 4)
+    private val prefetching = PreparationQueue(backgroundSlots = 2)
+    private val streams = mutableMapOf<Clip, Entry>()
     private var foreground: Set<Clip> = emptySet()
     private val suspended = MutableStateFlow(false)
-    private val preparing = Semaphore(PREPARE_LANES)
-    private val prefetching = Semaphore(PREFETCH_LANES)
 
-    /**
-     * 宿主暂停（例如打开了完整视频播放器或信息流退到后台）时挂起所有预取与预读，
-     * 将已备好的会话全部降为后台角色并撤回 urgent，把全部连接与带宽让给当前完整播放器。
-     */
     fun setSuspended(value: Boolean) {
         if (suspended.value == value) return
         suspended.value = value
-        if (value) {
-            for ((_, stream) in streams) {
-                withPrepared(stream) {
-                    it.role = StreamRole.BACKGROUND
-                    it.holdReadAhead()
-                    it.urgent = false
-                }
-            }
-        } else {
-            for (clip in foreground) {
-                streams[clip]?.let { stream -> withPrepared(stream) { it.role = StreamRole.FOREGROUND } }
+        for ((clip, entry) in streams) {
+            updateDemand(entry)
+            if (value) {
+                entry.fetch?.cancel(); entry.fetch = null
+                entry.prepared?.holdReadAhead()
+                entry.prepared?.urgent = false
             }
         }
+        if (!value) ripen(streams.filterValues { it.wanted && !it.ready }.keys.toList())
     }
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    private inline fun withPrepared(stream: Deferred<PreparedClip?>, crossinline action: (PreparedClip) -> Unit) {
-        if (stream.isCompleted) {
-            runCatching { stream.getCompleted() }.getOrNull()?.let(action)
-        } else {
-            scope.launch { runCatching { stream.await() }.getOrNull()?.let(action) }
+    fun get(clip: Clip, forPlayer: Boolean = false, urgent: Boolean = false): Deferred<PreparedClip?> {
+        val existing = streams[clip]
+        val needsUrgent = urgent || (forPlayer && existing?.result?.isCompleted != true)
+        existing?.let {
+            if (forPlayer || clip in foreground) it.foreground = true
+            if (forPlayer) it.playing = true
+            if (needsUrgent) it.urgent = true
+            updateDemand(it)
+            return it.result
         }
-    }
-
-    /**
-     * 备好的会话一律以后台建起，装进播放器的由 [bringToFront] 升为前台。来源见 PikoMediaRepository.prepareClip。
-     *
-     * [forPlayer] 是播放器马上要装的，不跟候补排队备会话：接着上次看的那一段要现备，排在候补的二十几段后面
-     * 实测等了七八秒。这种至多三段，不至于招来限流。
-     */
-    fun get(clip: Clip, forPlayer: Boolean = false, urgent: Boolean = false): Deferred<PreparedClip?> =
-        streams.getOrPut(clip) {
-            // 要去取开头的段也以前台预热身份扫关键帧；建好后按是否仍在 foreground 归位会话角色，避免候补段常驻前台
-            val role = if (!suspended.value && (clip in foreground || urgent)) StreamRole.FOREGROUND else StreamRole.BACKGROUND
-            scope.async {
-                val started = TimeSource.Monotonic.markNow()
-                suspend fun prepare() = (if (forPlayer) {
-                    repository.prepareClip(clip.fileId, clip.startMs, clip.videoDurationMs, role)
-                } else {
-                    withApiPriority(ApiRequestPriority.BACKGROUND) {
-                        repository.prepareClip(clip.fileId, clip.startMs, clip.videoDurationMs, role)
+        val entry = Entry(repository.openTransferDemand(PikPakStreamReader.WARM_PRIORITY))
+        entry.foreground = forPlayer || clip in foreground
+        entry.urgent = needsUrgent
+        updateDemand(entry)
+        streams[clip] = entry
+        entry.result = scope.async(start = CoroutineStart.LAZY) {
+            preparing.run(entry.priority) {
+                val prepared = prepare(clip,
+                    if (entry.priority.value >= 50) StreamRole.FOREGROUND else StreamRole.BACKGROUND, entry.demand)
+                    .getOrElse { error ->
+                        PikoLog.w("Clips", "备会话失败 ${logFile(clip.fileId, clip.name)}", error)
+                        return@run null
                     }
-                }).logFailure(TAG, "备会话失败 ${logFile(clip.fileId, clip.name)}，${started.elapsedNow().inWholeMilliseconds} ms").getOrNull()
-                val prepared = (if (forPlayer) prepare() else preparing.withPermit { prepare() }) ?: return@async null
-                prepared.role = if (!suspended.value && clip in foreground) StreamRole.FOREGROUND else StreamRole.BACKGROUND
+                if (entry.closed) { prepared.close(); return@run null }
+                entry.prepared = prepared
                 prepared.holdReadAhead()
-                PikoLog.d(
-                    TAG,
-                    "备好会话 ${logFile(clip.fileId, clip.name)}（${if (prepared.fromDisk) "磁盘切片" else if (prepared.sliced) "转码切片" else "原画"}，" +
-                        "${(prepared.streamBytes ?: 0) / 1024} KiB）：${started.elapsedNow().inWholeMilliseconds} ms，$role",
-                )
+                updateDemand(entry)
                 prepared
             }
         }
+        entry.result.start()
+        return entry.result
+    }
 
-    /**
-     * 让候补里还没开始的段各自去取：备会话、预取开头，取好了交给 [onReady]。
-     *
-     * 预取以前台身份发出，会话本身仍是后台：以后台身份，有段在放时每段只有两路在途，实测取好一段要五六秒，
-     * 连着翻就供不上。前台预取排在正在放的段之后，同一档里先提出的先取完（SDK 按需求先后排），
-     * 所以按队列顺序调用，最近要翻到的最先好，不必再自己限同时取几段。
-     * 取不到流的交给 [onDead]：会话打不开，或者 SDK 换过主机、重试过仍取不下来。
-     */
     fun ripen(upcoming: List<Clip>) {
         for (clip in upcoming) {
-            if (!ripening.add(clip)) continue
-            scope.launch {
-                suspended.first { !it }
-                val prepared = get(clip, urgent = !suspended.value).await()
-                suspended.first { !it }
-                val fetched = prepared != null && fetchOnce(clip, prepared)
-                ripening -= clip
-                if (fetched) {
-                    onReady(clip)
-                } else {
-                    // 会话一并关掉：重取时重新备，拿新的直链。扔不扔由会话定，见 ClipFeedSession.drop
-                    PikoLog.d(TAG, "取不到 ${logFile(clip.fileId, clip.name)}")
-                    streams.remove(clip)?.let(::close)
-                    onDead(clip)
+            get(clip)
+            val entry = streams.getValue(clip)
+            entry.wanted = true
+            if (entry.ready || entry.fetch?.isActive == true || suspended.value) continue
+            entry.fetch = scope.launch {
+                try {
+                    val prepared = entry.result.await()
+                    if (prepared == null) {
+                        if (!entry.closed) { streams.remove(clip); close(entry); onDead(clip) }
+                        return@launch
+                    }
+                    suspended.first { !it }
+                    prefetching.run(entry.priority) {
+                        suspended.first { !it }
+                        withContext(entry.demand + Dispatchers.Default) { prepared.prefetch(StreamRole.BACKGROUND) }
+                    }
+                    entry.ready = true
+                    if (!entry.closed) onReady(clip)
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) {
+                    if (!entry.closed) {
+                        PikoLog.w("Clips", "预取失败 ${logFile(clip.fileId, clip.name)}", e)
+                        streams.remove(clip); close(entry); onDead(clip)
+                    }
                 }
             }
         }
     }
 
-    private suspend fun fetchOnce(clip: Clip, prepared: PreparedClip): Boolean {
-        if (prepared.localPath != null) return true
-        var started = TimeSource.Monotonic.markNow()
-        val fetched = try {
-            prefetching.withPermit {
-                // 只对拿到预取车道后的真实网络下载计时，避免本地排队等待被误判为资源坏死踢出队列
-                started = TimeSource.Monotonic.markNow()
-                withTimeoutOrNull(RIPEN_TIMEOUT) {
-                    withContext(Dispatchers.Default) { prepared.prefetch(StreamRole.FOREGROUND) }
-                } != null
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            PikoLog.w(TAG, "预取 ${logFile(clip.fileId, clip.name)} 失败", e)
-            false
-        }
-        if (fetched) PikoLog.d(TAG, "取好 ${logFile(clip.fileId, clip.name)}：预取 ${started.elapsedNow().inWholeMilliseconds} ms")
-        else PikoLog.d(TAG, "预取 ${logFile(clip.fileId, clip.name)} 未完成：${started.elapsedNow().inWholeMilliseconds} ms，上限 ${RIPEN_TIMEOUT}")
-        return fetched
-    }
-
-    /**
-     * 装在播放器里的几段升为前台，其余降为后台。都不丢缓存。
-     *
-     * 不只当前段：下一段要在翻过去之前预渲染好第一帧，mpv 为此要依次读文件头、文件尾的索引与起点，
-     * 每一处都是一次新请求。以后台身份，它们与远处的预取同排在最后，只有两路在途，
-     * 实测一处要等 0.6 到 1.5 秒，几处串起来就赶不上翻页。
-     */
     fun bringToFront(clips: Set<Clip>) {
-        val demoted = foreground - clips
         foreground = clips
-        if (suspended.value) return
-        for ((clip, role) in demoted.map { it to StreamRole.BACKGROUND } + clips.map { it to StreamRole.FOREGROUND }) {
-            streams[clip]?.let { stream -> withPrepared(stream) { it.role = role } }
+        for ((clip, entry) in streams) {
+            entry.foreground = clip in clips
+            if (!entry.foreground) entry.urgent = false
+            updateDemand(entry)
         }
     }
 
-    /** [clip] 真在看了，代理往后预读 [seconds] 秒（保底 [minBytes]），见 PreparedClip.extendReadAhead。 */
     fun boost(clip: Clip, seconds: Int, minBytes: Long = PreparedClip.MIN_AHEAD_BYTES) {
-        streams[clip]?.let { stream -> withPrepared(stream) { it.extendReadAhead(seconds, minBytes) } }
+        get(clip)
+        val entry = streams.getValue(clip)
+        entry.readAheadSeconds = seconds
+        entry.readAheadMinBytes = minBytes
+        entry.readAheadEnabled = true
+        updateDemand(entry)
     }
 
-    /** 除 [clip] 外都压回只读开头，也不再算有人在等；升过档的段翻走后不该再往后取。 */
     fun holdAllBut(clip: Clip) {
-        for ((other, stream) in streams) {
-            if (other != clip) {
-                withPrepared(stream) {
-                    it.holdReadAhead()
-                    it.urgent = false
-                }
-            }
+        for ((other, entry) in streams) if (other != clip) {
+            entry.readAheadEnabled = false
+            entry.urgent = false
+            updateDemand(entry)
         }
     }
 
-    /** [clip] 是否有人正等着，见 PreparedClip.urgent。已就绪的会话当场同步写入，保证紧随其后的 seek 首块立享最高优先级。 */
-    fun setUrgent(clip: Clip, urgent: Boolean) {
-        streams[clip]?.let { stream -> withPrepared(stream) { it.urgent = urgent && !suspended.value } }
+    fun bindPlayback(clip: Clip, owner: Any) {
+        get(clip, forPlayer = true)
+        val entry = streams.getValue(clip)
+        if (entry.feedbackOwner === owner) return
+        entry.feedbackOwner = owner
+        entry.nativeGeneration = Long.MIN_VALUE
+        entry.feedbackGeneration++
+        entry.prepared?.reportPlaybackBuffer(io.github.nihildigit.pikpak.PlaybackBufferSnapshot(
+            entry.feedbackGeneration, null, kotlin.time.TimeSource.Monotonic.markNow()))
     }
 
-    /** 翻出 [window] 的段关掉会话；看过的在窗口里保留缓存，不再为它发请求。 */
+    fun reportPlaybackBuffer(clip: Clip, owner: Any, snapshot: io.github.nihildigit.pikpak.PlaybackBufferSnapshot) {
+        val entry = streams[clip] ?: return
+        if (entry.feedbackOwner !== owner || snapshot.generation < entry.nativeGeneration) return
+        if (snapshot.generation > entry.nativeGeneration) {
+            entry.nativeGeneration = snapshot.generation
+            entry.feedbackGeneration++
+        }
+        entry.prepared?.reportPlaybackBuffer(snapshot.copy(generation = entry.feedbackGeneration))
+    }
+
+    fun beginSeek(clip: Clip, backend: dev.piko.shared.media.player.PlaybackBackend) {
+        bindPlayback(clip, backend)
+        setUrgent(clip, true)
+        reportPlaybackBuffer(clip, backend, io.github.nihildigit.pikpak.PlaybackBufferSnapshot(
+            backend.playbackGeneration + 1, null, kotlin.time.TimeSource.Monotonic.markNow()))
+    }
+
+    fun setUrgent(clip: Clip, urgent: Boolean, playing: Boolean = true) {
+        val entry = streams[clip] ?: return
+        entry.urgent = urgent
+        entry.playing = playing
+        updateDemand(entry)
+    }
+
+    private fun updateDemand(entry: Entry) {
+        val active = entry.foreground && !suspended.value
+        val urgent = active && entry.urgent
+        val steady = active && entry.playing && !urgent
+        entry.prioritize(when {
+            urgent -> PikPakStreamReader.BLOCKING_PRIORITY
+            steady -> PikPakStreamReader.STREAMING_PRIORITY
+            else -> PikPakStreamReader.WARM_PRIORITY
+        })
+        entry.prepared?.let { prepared ->
+            val seconds = entry.readAheadSeconds
+            if (active && (urgent || entry.playing) && entry.readAheadEnabled && seconds != null) {
+                prepared.extendReadAhead(seconds, entry.readAheadMinBytes)
+            } else prepared.holdReadAhead()
+            prepared.updatePhase(urgent, steady)
+        }
+    }
+
     fun sync(window: Set<Clip>) {
-        (streams.keys - window).forEach { clip -> close(streams.remove(clip)!!) }
+        (streams.keys - window).forEach { clip -> streams.remove(clip)?.let(::close) }
     }
 
     fun closeAll() {
-        scope.coroutineContext[Job]?.cancelChildren()
         streams.values.forEach(::close)
         streams.clear()
-        ripening.clear()
         foreground = emptySet()
     }
 
-    // 还没备好的先取消；取消前刚好备好的，照样关掉
-    private fun close(stream: Deferred<PreparedClip?>) {
-        stream.cancel()
-        scope.launch { runCatching { stream.await() }.getOrNull()?.close() }
-    }
-
-    private companion object {
-        const val TAG = "Clips"
-
-        /** 同时备会话的段数。每段要查一次详情，再探一次转码流的长度。 */
-        const val PREPARE_LANES = 4
-
-        /**
-         * 同时下载预取字节的候补段数。HTTP/1.1 在途请求不可抢占，8 段齐发会瞬间吃满账号全部 16 个连接槽，
-         * 一旦撞上慢节点，当前段的用户拖动（seek）就要排队苦等；限制为 2 段既足够连翻供给，又常留 10+ 空闲槽给前台交互。
-         */
-        const val PREFETCH_LANES = 2
-
-        /**
-         * 候补的一段这么久还没取完开头，当它取不到，见 [ripen]。只兜住一直在慢慢出字节、不报错的主机；
-         * 坏主机与断流 SDK 自己会换、会报错。计时从请求起，而请求一齐发出、按先后取，排在第八段的要等前七段，
-         * 在 1 MB/s 的线路上约 16 秒，所以留得宽。
-         */
-        val RIPEN_TIMEOUT = 60.seconds
+    private fun close(entry: Entry) {
+        entry.closed = true
+        entry.fetch?.cancel()
+        entry.result.cancel()
+        entry.demand.close()
+        entry.prepared?.close()
     }
 }

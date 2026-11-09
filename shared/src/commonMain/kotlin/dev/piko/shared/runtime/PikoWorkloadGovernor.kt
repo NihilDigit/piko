@@ -21,11 +21,11 @@ enum class WorkPurpose {
 }
 
 enum class WorkPhase {
-    /** 冷启动、定位拖动或缓冲不足：最高优先级，暂停推测性目录发现、封面预取与后台同步。 */
+    /** 冷启动、定位拖动或缓冲不足；网络优先级由账号级需求租约表达。 */
     Urgent,
-    /** 稳定播放且缓冲充足：仅放行有界低并发后台工作。 */
+    /** 稳定播放且缓冲充足。 */
     Steady,
-    /** 播放器暂停或本地/静态资源展示：保留适量后台预算。 */
+    /** 播放器暂停或本地/静态资源展示。 */
     Paused,
     /** 普通活跃工作。 */
     Active,
@@ -51,7 +51,7 @@ interface WorkLease : AutoCloseable {
 }
 
 /**
- * 进程级工作需求与执行预算仲裁器：
+ * 进程级工作阶段汇总；不根据播放器存在与否暂停无关业务：
  * 各业务会话（播放器、瀑布流、信息流、后台同步）仅声明自身工作目的与阶段，
  * 不互相直接引用或手写页面级 `pausedByHost` 布尔开关。
  */
@@ -112,36 +112,9 @@ class PikoWorkloadGovernor {
 
     private fun recomputeLocked() {
         val playbacks = entries.values.filter { it.purpose == WorkPurpose.Playback }
-        val hasPlayback = playbacks.isNotEmpty()
+        val hasPlayback = playbacks.any { it.phase == WorkPhase.Steady || it.phase == WorkPhase.Urgent }
         val hasUrgent = playbacks.any { it.phase == WorkPhase.Urgent }
-        val hasSteady = playbacks.any { it.phase == WorkPhase.Steady }
-        val next = when {
-            hasUrgent -> WorkBudget(
-                hasActivePlayback = true,
-                hasUrgentPlayback = true,
-                galleryDiscoveryConcurrency = 0,
-                coverPrefetchConcurrency = 0,
-                allowClipPrefetch = false,
-                allowBackgroundSync = false,
-            )
-            hasSteady -> WorkBudget(
-                hasActivePlayback = true,
-                hasUrgentPlayback = false,
-                galleryDiscoveryConcurrency = 1,
-                coverPrefetchConcurrency = 2,
-                allowClipPrefetch = false,
-                allowBackgroundSync = false,
-            )
-            hasPlayback -> WorkBudget(
-                hasActivePlayback = true,
-                hasUrgentPlayback = false,
-                galleryDiscoveryConcurrency = 2,
-                coverPrefetchConcurrency = 4,
-                allowClipPrefetch = false,
-                allowBackgroundSync = true,
-            )
-            else -> WorkBudget()
-        }
+        val next = WorkBudget(hasActivePlayback = hasPlayback, hasUrgentPlayback = hasUrgent)
         if (mutableBudget.value != next) {
             mutableBudget.value = next
         }

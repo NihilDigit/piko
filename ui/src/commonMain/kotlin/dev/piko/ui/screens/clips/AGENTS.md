@@ -46,3 +46,10 @@
   - 单击切换暂停/播放，双击为当前文件加星标（归档虚拟条目同步写入 `VaultStars`），长按按播放设置倍速加速（`playerBoostSpeedFlow`，松手或翻页即恢复 `1x`）；开启沉浸模式（`ClipFeedSession.immersive`）后隐藏顶栏与全部控件，此时禁用双击判定以使单击零延迟唤回控件。
   - 键盘支持 `↓` / `PageDown` / `MediaNext` 下一段，`↑` / `PageUp` / `MediaPrevious` 上一段，`←` / `→` 按播放设置步长快退/快进，`Space` 暂停/继续，`M` 静音，`A` 切换自动连刷（外层 `onPreviewKeyEvent` 拦截并过滤按键长按连发）。
   - 当展示区域高度不足 `480dp`（`LandscapeBelowHeight`，如横握手机）时，控件自动切换为右下角横排布局，视频一律按 `Fit` 完整显示并在两侧垫模糊背景（禁止在约 `2.2:1` 窄高屏幕上套用近似比例铺满裁切），同时主界面通过 `feedCoversWindow` 隐藏左侧边栏窄轨以独占整窗。Android 全屏顶栏提供手动横屏锁定按钮（`rememberLandscapeLock`，`SENSOR_LANDSCAPE`），点击「观看完整视频」压入主播放器前必须**先行释放**该横屏锁，确保主播放器记录并恢复进入前的真实系统方向。
+
+### 需求提权与播放器退休
+
+- 前台成员关系、紧迫阶段与暂停状态分别保存，统一派生需求优先级。邻居预渲染集合变化不能覆盖当前片段的紧迫阶段。
+- 预读深度保存在片段状态中，准备完成前的扩展请求延后应用，暂停恢复后重新应用；`holdAllBut` 显式停用邻居的预读，直至下一次 `boost`。
+- `ClipPlaybackBinding` 串行管理每个原生播放器的换片与退休。`PreparedClip` 退出保留窗口时先撤回网络需求并通知播放器停止；只有 `stopAndAwaitIdle` 完成、所有播放器引用释放后才注销代理地址并关闭来源。正在打开的片段退休时取消该次打开，避免停止操作排在未完成的打开之后永久等待。
+- 桌面与 Android 的预览后端均由调用方 `release`，平台组合销毁不另行抢先关闭原生实例。回归覆盖见 `ClipPlaybackBindingTest`；Windows 真实渲染与 mpv 验证使用 `PIKO_NATIVE_CLIP_TEST=1` 运行 `ClipRetirementNativeTest`。

@@ -3,8 +3,11 @@ package dev.piko.shared.media
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.proxy.ProxyStream
 import io.github.nihildigit.pikpak.PikPakStreamReader
+import io.github.nihildigit.pikpak.TransferDemand
 import io.github.nihildigit.pikpak.StreamRole
 import kotlinx.coroutines.CancellationException
+import dev.piko.shared.util.PikoLock
+import dev.piko.shared.util.withPikoLock
 import kotlin.concurrent.Volatile
 
 /**
@@ -38,6 +41,36 @@ class PreparedClip internal constructor(
     /** 切片的开头与末尾都取到了，调用方据此记下这一段与它的实际起点和实测时长，见 ClipCache。 */
     private val onWarmed: (suspend (clipStartMs: Long, actualWindowMs: Long) -> Unit)? = null,
 ) : AutoCloseable {
+    private val lifetimeLock = PikoLock()
+    private val players = mutableMapOf<Any, () -> Unit>()
+    private var closing = false
+
+    /** 原生播放器卸载输入前，代理地址及其字节来源仍须存在。 */
+    internal fun retainPlayback(onWithdrawn: () -> Unit): AutoCloseable {
+        val key = Any()
+        withPikoLock(lifetimeLock) {
+            if (closing) throw CancellationException("clip retired")
+            players[key] = onWithdrawn
+        }
+        return AutoCloseable {
+            val release = withPikoLock(lifetimeLock) {
+                players.remove(key) != null && closing && players.isEmpty()
+            }
+            if (release) stream?.close()
+        }
+    }
+    private var demand: TransferDemand? = null
+    internal fun bindDemand(owner: TransferDemand) { demand = owner; stream?.demand = owner }
+
+    fun updatePhase(urgent: Boolean, steady: Boolean) {
+        stream?.urgent = urgent
+        stream?.steady = steady
+    }
+
+    fun reportPlaybackBuffer(snapshot: io.github.nihildigit.pikpak.PlaybackBufferSnapshot) {
+        stream?.reportPlaybackBuffer(snapshot.copy(mediaBytesPerSecond = (bytesPerMs * 1000).toLong().takeIf { it > 0 }))
+    }
+
     /** 这一段从全片哪一刻开始。切片在 [prefetch] 读过时间戳后改成实际的起点。 */
     @Volatile
     var clipStartMs: Long = clipStartMs
@@ -138,6 +171,7 @@ class PreparedClip internal constructor(
      * 默认深度 32 MiB 是给整部片子的。
      */
     fun holdReadAhead() {
+        stream?.steady = false
         stream?.readAheadLimit = 0
     }
 
@@ -150,7 +184,14 @@ class PreparedClip internal constructor(
     }
 
     override fun close() {
-        stream?.close()
+        val owners = withPikoLock(lifetimeLock) {
+            if (closing) return
+            closing = true
+            players.values.toList()
+        }
+        demand?.close()
+        stream?.withdrawTransport()
+        if (owners.isEmpty()) stream?.close() else owners.forEach { it() }
     }
 
     internal companion object {

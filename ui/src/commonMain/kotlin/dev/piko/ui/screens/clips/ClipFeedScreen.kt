@@ -329,6 +329,9 @@ private fun ClipPager(
     val safeInitialPage = session.currentIndex.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
     val pagerState = rememberPagerState(initialPage = safeInitialPage) { pageCount }
     val players = List(POOL_SIZE) { videoPreview.rememberPreviewBackend(keyframeStart = true) }
+    val playbackBindings = remember(players) {
+        players.map { dev.piko.shared.media.player.ClipPlaybackBinding(it) }
+    }
     // 在协程里读列表的最新值；参数本身是组合时的快照
     val latestClips by rememberUpdatedState(clips)
     val latestUpcoming by rememberUpdatedState(upcoming)
@@ -467,7 +470,7 @@ private fun ClipPager(
         ended[slot] = null
         return scope.launch {
             val started = TimeSource.Monotonic.markNow()
-            val prepared = streams.get(clip, forPlayer = true).await()
+            val prepared = streams.get(clip, forPlayer = true, urgent = page == latestSettled).await()
             val url = prepared?.url
             if (prepared == null || url.isNullOrBlank()) {
                 loaded[slot] = null
@@ -488,7 +491,8 @@ private fun ClipPager(
                 if (resumeOffset > 0L) streams.boost(clip, BOOSTED_READ_AHEAD_SECONDS, BOOSTED_MIN_AHEAD_BYTES)
                 // 新装的段先压着，真看起来才升档，见 LaunchedEffect(current)
                 players[slot].setBufferAhead(HOLD_BUFFER_SECONDS)
-                players[slot].open(
+                playbackBindings[slot].open(
+                    prepared,
                     prepared.localPath?.let { PlaybackTarget.LocalFile(it) } ?: PlaybackTarget.Url(url),
                     startMillis = prepared.startOnPlayer + resumeOffset,
                     playWhenReady = false,
@@ -520,7 +524,7 @@ private fun ClipPager(
     }
 
     DisposableEffect(Unit) {
-        onDispose { players.forEach(PreviewBackend::release) }
+        onDispose { playbackBindings.forEachIndexed { slot, binding -> binding.retire { players[slot].release() } } }
     }
     val pointerSource = dev.piko.ui.components.LocalPointerSource.current
     LaunchedEffect(pointerSource.isTouchLike) {
@@ -560,6 +564,7 @@ private fun ClipPager(
                                 autoStep(loaded[slot])
                             } else {
                                 ended[slot] = null
+                                loaded[slot]?.let { streams.beginSeek(it, player) }
                                 player.seekTo(startOnPlayer[slot])
                                 if (!latestPaused) player.play()
                             }
@@ -623,6 +628,7 @@ private fun ClipPager(
         if ((rememberedPositions[current] ?: 0L) <= 0L) {
             streams.boost(current, ACTIVE_INITIAL_READ_AHEAD_SECONDS, ACTIVE_INITIAL_MIN_AHEAD_BYTES)
         }
+        streams.bindPlayback(current, players[slotOf(settled)])
         val loading = load(settled)
         loading?.join()
         if (loaded[slotOf(settled)] != current) {
@@ -642,6 +648,7 @@ private fun ClipPager(
         if (positionIsOurs && (atEnd || (end >= start + maxRemaining && currentPlayer.positionMillis >= end - REPLAY_WITHIN_MS))) {
             ended[slot] = null
             rememberedPositions[current] = 0L
+            streams.beginSeek(current, currentPlayer)
             currentPlayer.seekTo(start)
         }
         if ((rememberedPositions[current] ?: 0L) > 0L) {
@@ -681,7 +688,7 @@ private fun ClipPager(
                     if (pending == 0) return@collectLatest
                     // 连着定位（按住方向键）时前一次被这一次取代，只记最后一次
                     val sought = TimeSource.Monotonic.markNow()
-                    // 报了缓冲是在等网络，没报是慢在打开或解码，与完整播放器的「拖动后画面走起来」对照
+                    // 后端等待状态与完整播放器的「拖动后播放位置推进」对照
                     var sawBuffering = currentPlayer.isBuffering
                     val bufferingWatch = launch { snapshotFlow { currentPlayer.isBuffering }.first { it }; sawBuffering = true }
                     val resumed = withTimeoutOrNull(SEEK_URGENT_FOR) {
@@ -695,8 +702,8 @@ private fun ClipPager(
                         PikoLog.d(
                             "Clips",
                             if (resumed) {
-                                "定位后画面走起来 ${sought.elapsedNow().inWholeMilliseconds - PLAYING_EVIDENCE_MS} ms，" +
-                                    "${if (sawBuffering) "等过缓冲" else "没报缓冲"} ${logFile(current.fileId, current.name)}"
+                                "定位后播放位置推进 ${sought.elapsedNow().inWholeMilliseconds - PLAYING_EVIDENCE_MS} ms，" +
+                                    "${if (sawBuffering) "后端报告等待" else "后端未报告等待"} ${logFile(current.fileId, current.name)}"
                             } else {
                                 "定位后 ${SEEK_URGENT_FOR.inWholeSeconds} 秒没走起来 ${logFile(current.fileId, current.name)}"
                             },
@@ -705,8 +712,13 @@ private fun ClipPager(
                     seekPending = 0
                 }
             }
-            snapshotFlow { rendered[slotOf(settled)] != current || currentPlayer.isBuffering || seekPending != 0 }
-                .collect { waiting -> streams.setUrgent(current, waiting) }
+            snapshotFlow { (rendered[slotOf(settled)] != current || currentPlayer.isBuffering) to currentPlayer.isPlaying }
+                .collect { (waiting, playing) -> streams.setUrgent(current, waiting, playing) }
+        }
+        launch {
+            snapshotFlow { currentPlayer.bufferSnapshot }.collect { snapshot ->
+                if (snapshot != null && loaded[slot] == current) streams.reportPlaybackBuffer(current, currentPlayer, snapshot)
+            }
         }
         // 升档：这一段放过 BOOST_AFTER_MS 才算真在看，播放器的缓冲与代理的预读一起放开往后取。
         // 在这之前它只读预取好的开头，带宽留给后面几段的开头；刷的时候多数段几秒内就翻走了。
@@ -749,7 +761,7 @@ private fun ClipPager(
                 "开播 ${logFile(current.fileId, current.name)}：画面走起来 ${started.elapsedNow().inWholeMilliseconds - PLAYING_EVIDENCE_MS} ms，" +
                     "就绪 $openedMs ms，" + if (preRendered) tr("翻到时已就绪", "Ready when reached", "表示時に準備済み", "도달 시 준비됨", "切換至此時已就緒") else tr("翻到时未就绪", "Not ready when reached", "表示時に未準備", "도달 시 미준비", "切換至此時尚未就緒"),
             )
-            // 位置停住却没报缓冲：切片到头、解码卡住一类，转圈不会出现，只能看位置
+            // 位置停住却后端未报告等待：切片到头、解码卡住一类，转圈不会出现，只能看位置
             launch {
                 var last = currentPlayer.positionMillis
                 var stillSince: kotlin.time.TimeMark? = null
@@ -812,6 +824,7 @@ private fun ClipPager(
                 else -> {
                     ended[slot] = null
                     rememberedPositions[current] = 0L
+                    streams.beginSeek(current, currentPlayer)
                     currentPlayer.seekTo(start)
                     if (!latestPaused) currentPlayer.play()
                 }
@@ -866,7 +879,7 @@ private fun ClipPager(
         ended[slot] = null
         // 先于 player.seekTo 同步置上 urgent（优先级 100）并放开预读窗口：mpv C 线程在 0.5 ms 内即发出新 HTTP Range 请求，
         // 晚于 seekTo 再经 snapshotFlow 异步置 urgent 会错失定位首块的最高优先级
-        streams.setUrgent(activeClip, true)
+        streams.beginSeek(activeClip, player)
         player.setBufferAhead(BOOSTED_SECONDS)
         streams.boost(activeClip, BOOSTED_READ_AHEAD_SECONDS, BOOSTED_MIN_AHEAD_BYTES)
         val currentClipLen = clipLengths[slot].coerceAtLeast(1_000L)
@@ -1253,7 +1266,7 @@ private val WARM_UP_TIMEOUT = 20.seconds
 /** 翻到后这么久还没走起来的记下播放器状态。 */
 private val NOT_STARTED_REPORT_AFTER = 5.seconds
 
-/** 播放中位置不动、也没报缓冲，这么久记作画面停住；每 [FREEZE_POLL] 看一次。 */
+/** 播放中位置不动、也后端未报告等待，这么久记作画面停住；每 [FREEZE_POLL] 看一次。 */
 private val FREEZE_REPORT_AFTER = 1500.milliseconds
 private val FREEZE_POLL = 500.milliseconds
 

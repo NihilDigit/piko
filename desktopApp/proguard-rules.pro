@@ -90,3 +90,9 @@
 -dontwarn javax.annotation.**
 -dontwarn com.google.errorprone.annotations.**
 -dontwarn org.jetbrains.annotations.**
+
+# Playback event forwarding preserves the MediaMP listener.
+-keepclassmembers class org.openani.mediamp.mpv.MPVHandle {
+    long getPtr*(...);
+    org.openani.mediamp.mpv.EventListener eventListener;
+}

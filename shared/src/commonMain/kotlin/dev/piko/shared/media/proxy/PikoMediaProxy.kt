@@ -143,6 +143,11 @@ class PikoMediaProxy(
             return
         }
 
+        if (session.isWithdrawn && !isHead) {
+            output.writeHead(503, "Service Unavailable", listOf("Content-Length" to "0"))
+            output.flushAndClose()
+            return
+        }
         val size = session.size
         when (val range = parseByteRange(request.headers["range"], size)) {
             ByteRange.Unsatisfiable -> {
@@ -223,7 +228,7 @@ class ProxyStream internal constructor(
     val url: String,
     private val session: ProxySession,
     private val onClose: () -> Unit,
-) : AutoCloseable {
+) : dev.piko.shared.media.player.PlaybackTransport {
     @Volatile
     private var closed = false
 
@@ -232,6 +237,15 @@ class ProxyStream internal constructor(
 
     /** 底层缓存已从网络收到的累计字节数（单调递增）。 */
     val receivedBytes: Long get() = session.receivedBytes
+
+    var demand: io.github.nihildigit.pikpak.TransferDemand?
+        get() = session.demand
+        set(value) { session.demand = value }
+    var steady: Boolean
+        get() = session.steady
+        set(value) { session.steady = value }
+    override fun withdrawTransport() = session.withdrawTransport()
+    fun reportPlaybackBuffer(snapshot: io.github.nihildigit.pikpak.PlaybackBufferSnapshot) = session.reportPlaybackBuffer(snapshot)
 
     /** 前台或后台，见 [ProxySession.role]。 */
     var role: StreamRole

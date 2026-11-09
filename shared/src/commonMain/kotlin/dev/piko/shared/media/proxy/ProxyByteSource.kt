@@ -4,6 +4,8 @@ import io.github.nihildigit.pikpak.PikPakFileHandle
 import io.github.nihildigit.pikpak.PikPakFileCache
 import io.github.nihildigit.pikpak.PikPakStreamReader
 import io.github.nihildigit.pikpak.StreamRole
+import io.github.nihildigit.pikpak.TransferDemand
+import io.github.nihildigit.pikpak.PlaybackBufferSnapshot
 import kotlinx.coroutines.Deferred
 import kotlin.time.Duration
 
@@ -29,12 +31,19 @@ interface ProxyByteSource : AutoCloseable {
      */
     suspend fun prefetch(ranges: List<LongRange>, role: StreamRole, priority: Int? = null): Deferred<Unit>? = null
 
+    suspend fun prefetch(ranges: List<LongRange>, role: StreamRole, priority: Int?, demand: TransferDemand?): Deferred<Unit>? =
+        prefetch(ranges, role, priority)
+
     /** 更新底层共享缓存的媒体平均字节速率（字节/秒）。 */
     fun updateMediaBytesPerSecond(bytesPerSecond: Long?) = Unit
 }
 
 /** 单游标的顺序读取器，不支持并发调用。 */
 interface ProxyReader : AutoCloseable {
+    var demand: TransferDemand?
+        get() = null
+        set(_) {}
+    fun reportPlaybackBuffer(snapshot: PlaybackBufferSnapshot) = Unit
     /**
      * 前台是眼前在放的，后台是为之后预热的；后台的请求整体让着前台，见 SDK 的 PikPakStreamReader.role。
      * 本机文件之类不经连接预算的来源没有这个区别，读写都是空操作。
@@ -90,6 +99,9 @@ internal class PikPakByteSource(
     override suspend fun prefetch(ranges: List<LongRange>, role: StreamRole, priority: Int?): Deferred<Unit> =
         cache.prefetch(ranges, role, priority)
 
+    override suspend fun prefetch(ranges: List<LongRange>, role: StreamRole, priority: Int?, demand: TransferDemand?): Deferred<Unit> =
+        if (demand == null) cache.prefetch(ranges, role, priority) else cache.prefetch(ranges, demand, role, priority)
+
     override fun updateMediaBytesPerSecond(bytesPerSecond: Long?) {
         cache.updateMediaBytesPerSecond(bytesPerSecond)
     }
@@ -105,6 +117,10 @@ internal class PikPakByteSource(
 }
 
 private class PikPakProxyReader(private val reader: PikPakStreamReader) : ProxyReader {
+    override var demand: TransferDemand?
+        get() = reader.demand
+        set(value) { reader.demand = value }
+    override fun reportPlaybackBuffer(snapshot: PlaybackBufferSnapshot) = reader.reportPlaybackBuffer(snapshot)
     override var role: StreamRole
         get() = reader.role
         set(value) {

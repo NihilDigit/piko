@@ -18,18 +18,19 @@ private val SLOW_FIRST_BYTE = 1.seconds
 fun logRangeAttempt(attempt: RangeAttempt) {
     TransportSummary.add(attempt)
     // 读者不要了才停的请求不是传输问题：播放器读够就断、翻走就关，一秒几十个
-    if (attempt.outcome == RangeAttempt.Outcome.Cancelled) return
+    if (attempt.outcome == RangeAttempt.Outcome.Cancelled && attempt.endReason == null) return
     val firstByte = attempt.timeToFirstByte
     val slow = firstByte == null || firstByte >= SLOW_FIRST_BYTE
     if (attempt.outcome == RangeAttempt.Outcome.Complete && !slow && attempt.retries == 0) return
+    val reasonText = attempt.endReason?.let { "，结束原因 $it" }.orEmpty()
     val retryText = if (attempt.retries > 0) {
         "，内部重试 ${attempt.retries} 次，重试退避 ${attempt.retryBackoff.inWholeMilliseconds} ms"
     } else ""
     val sinkWaitText = attempt.sinkWait.inWholeMilliseconds.takeIf { it >= 50L }?.let { "，背压等待 $it ms" }.orEmpty()
     PikoLog.d(
         "Transport",
-        "${attempt.host ?: "?"} ${attempt.outcome}，优先级 ${attempt.priority}：首字节 ${firstByte?.inWholeMilliseconds?.let { "$it ms" } ?: "无"}，" +
-            "送出 ${attempt.delivered / 1024} KiB，历时 ${attempt.duration.inWholeMilliseconds} ms$sinkWaitText$retryText",
+        "${attempt.host ?: "?"} ${attempt.outcome}，优先级 ${attempt.priority}，区间 ${attempt.start}+${attempt.requested ?: "EOF"}：首字节 ${firstByte?.inWholeMilliseconds?.let { "$it ms" } ?: "无"}，" +
+            "送出 ${attempt.delivered / 1024} KiB，历时 ${attempt.duration.inWholeMilliseconds} ms$sinkWaitText$retryText$reasonText",
     )
 }
 

@@ -394,6 +394,8 @@ class InstantFlowSmokeTest {
         assertTrue(state.canPreview(e01))
 
         suspend fun preview(index: Int): String {
+            // 事件送达可早于后台 finally；下一次操作等待公开的准备状态收尾。
+            awaitUntil("上一轮预览准备已完成") { state.previewingIndex == null }
             val request = scope.async(start = CoroutineStart.UNDISPATCHED) { state.previewRequests.first() }
             state.preview(index)
             return request.await().fileId

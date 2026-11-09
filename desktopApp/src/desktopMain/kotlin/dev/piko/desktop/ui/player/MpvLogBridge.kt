@@ -18,14 +18,19 @@ internal object MpvLogBridge {
 
     fun install() {
         MPVHandle.setLogHandler { message ->
-            if (message.level > MPVLog.WARN) return@setLogHandler
-            val line = "${message.prefix}: ${message.line}"
+            val renderingReady = message.prefix == "mediamp" && message.line.startsWith("rendering ")
+            if (message.level > MPVLog.WARN && !renderingReady) return@setLogHandler
+            val line = "${message.prefix}[${message.instanceHandle.toString(16)}]: ${message.line}"
             val fresh = synchronized(recent) {
                 recent.add(line).also { added ->
                     if (added && recent.size > RECENT_LINES) recent.remove(recent.first())
                 }
             }
-            if (fresh) PikoLog.log(if (message.isError) LogLevel.ERROR else LogLevel.WARN, "mpv", line, null)
+            if (fresh) PikoLog.log(when {
+                message.isError -> LogLevel.ERROR
+                message.level <= MPVLog.WARN -> LogLevel.WARN
+                else -> LogLevel.DEBUG
+            }, "mpv", line, null)
         }
     }
 

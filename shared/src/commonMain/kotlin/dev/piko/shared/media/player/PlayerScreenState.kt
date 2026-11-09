@@ -22,6 +22,9 @@ import dev.piko.shared.media.proxy.ProxyStream
 import dev.piko.shared.runtime.PikoWorkloadGovernor
 import dev.piko.shared.runtime.WorkPhase
 import dev.piko.shared.runtime.WorkPurpose
+import io.github.nihildigit.pikpak.PlaybackBufferSnapshot
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -243,6 +246,7 @@ class PlayerScreenState(
 
     // 出错瞬间后端的位置可能已经归零，重连与持久化都用这个
     private var lastKnownPositionMillis = 0L
+    private val playbackTransition = Mutex()
     private var released = false
     private val workloadLease = PikoWorkloadGovernor.Shared.register(
         WorkPurpose.Playback,
@@ -262,21 +266,21 @@ class PlayerScreenState(
         }
         scope.launch { persistLoop() }
         scope.launch {
-            // 有人在等时读得最急，见 PikPakStreamReader.urgent：开播前、拖动后、卡顿时。平时播放器往后缓冲的读
-            // 排在它们之后，拖动那一下不必与自己的缓冲读排队。拖动单独记：桌面端后端拖动时不报缓冲，
-            // 只看缓冲的话开关从没打开过，那几次拖动都在与缓冲读排队（2026-09-28，一次等了 6.7 秒）
-            snapshotFlow { isPreparing || backend.isBuffering || seeking }.collect { waiting -> prepared?.urgent = waiting }
+            snapshotFlow { backend.playbackGeneration to backend.isBuffering }.collect { (_, waiting) ->
+                if (!waiting) seeking = false
+            }
         }
         scope.launch {
             snapshotFlow {
-                when {
+                prepared to when {
                     released || isLocalPlayback || isImage || failure != null -> WorkPhase.Paused
                     isPreparing || isRecovering || backend.isBuffering || seeking -> WorkPhase.Urgent
                     backend.isPlaying -> WorkPhase.Steady
                     else -> WorkPhase.Paused
                 }
-            }.collect { phase ->
+            }.collect { (active, phase) ->
                 workloadLease.updatePhase(phase)
+                active?.updatePhase(phase == WorkPhase.Urgent, phase == WorkPhase.Steady)
             }
         }
         scope.launch {
@@ -315,20 +319,10 @@ class PlayerScreenState(
             }
         }
         scope.launch {
-            // 把播放器的实时缓冲余量与当前变体估算字节速率同步给 SDK，供播放头停滞时按期限发起救援。
-            // 只读纯内存 Compose State，不在 UI 线程同步跨界读取 mpv JNI 属性
-            snapshotFlow {
-                Triple(
-                    prepared,
-                    backend.positionMillis to backend.bufferedPositionMillis,
-                    startedThisAttempt && !isPreparing && !seeking && !backend.isBuffering,
-                )
-            }.collect { (active, posAndBuf, steadyPlayback) ->
-                if (active == null || isLocalPlayback || !usingProxy || isImage || !steadyPlayback) return@collect
-                val (posMs, bufPosMs) = posAndBuf
-                if (bufPosMs <= posMs) return@collect
-                val bufferedMs = (bufPosMs - posMs).coerceAtLeast(2_000L)
-                active.reportPlaybackBuffer(bufferedMs.milliseconds, active.estimatedBytesPerSecond)
+            snapshotFlow { prepared to backend.bufferSnapshot }.collect { (active, snapshot) ->
+                if (active != null && snapshot != null && usingProxy && !isImage) {
+                    active.reportPlaybackBuffer(snapshot.copy(mediaBytesPerSecond = active.estimatedBytesPerSecond))
+                }
             }
         }
         scope.launch {
@@ -454,6 +448,9 @@ class PlayerScreenState(
 
     fun seekTo(positionMillis: Long) {
         val upper = durationMillis.takeIf { it > 0L } ?: Long.MAX_VALUE
+        seeking = true
+        prepared?.updatePhase(urgent = true, steady = false)
+        prepared?.reportPlaybackBuffer(PlaybackBufferSnapshot(backend.playbackGeneration + 1, null, TimeSource.Monotonic.markNow()))
         backend.seekTo(positionMillis.coerceIn(0L, upper))
         watchSeek()
     }
@@ -461,7 +458,7 @@ class PlayerScreenState(
     private var seekWatch: Job? = null
 
     /**
-     * 记下拖动后多久画面重新走起来，与信息流的「定位后画面走起来」对照。连着拖（按住方向键）只记最后一次；
+     * 记下拖动后多久画面重新走起来，与信息流的「定位后播放位置推进」对照。连着拖（按住方向键）只记最后一次；
      * 暂停着拖的等不到走起来，不记。
      */
     private fun watchSeek() {
@@ -469,7 +466,7 @@ class PlayerScreenState(
         val sought = TimeSource.Monotonic.markNow()
         seeking = true
         seekWatch = scope.launch {
-            // 等的期间后端报没报缓冲：报了是在等网络，没报是慢在解码（精确定位要从前一个关键帧解到目标）
+            // 记录后端是否报告等待；该状态不能区分网络与解码耗时。
             var sawBuffering = backend.isBuffering
             val bufferingWatch = launch { snapshotFlow { backend.isBuffering }.first { it }; sawBuffering = true }
             // 刚定位时报的位置可能还是定位前的
@@ -479,7 +476,6 @@ class PlayerScreenState(
                     snapshotFlow { !backend.isBuffering }.first { it }
                 }
                 bufferingWatch.cancel()
-                seeking = false
                 return@launch
             }
             val from = backend.positionMillis
@@ -487,11 +483,10 @@ class PlayerScreenState(
                 snapshotFlow { backend.isPlaying && backend.positionMillis >= from + SEEK_EVIDENCE_MS }.first { it }
             } != null
             bufferingWatch.cancel()
-            seeking = false
             if (resumed) {
                 PikoLog.d(
                     TAG,
-                    "拖动后画面走起来 ${sought.elapsedNow().inWholeMilliseconds - SEEK_EVIDENCE_MS} ms，${if (sawBuffering) "等过缓冲" else "没报缓冲"}",
+                    "拖动后播放位置推进 ${sought.elapsedNow().inWholeMilliseconds - SEEK_EVIDENCE_MS} ms，${if (sawBuffering) "后端报告等待" else "后端未报告等待"}",
                 )
             }
         }
@@ -606,23 +601,11 @@ class PlayerScreenState(
         prepareJob?.cancel()
         lateSubtitlesJob?.cancel()
         recoveryJob?.cancel()
-        backend.stop()
         val oldStreams = detachPrepared()
-        if (!backend.requiresAsyncStopDrain && afterClosed == null) {
-            oldStreams.forEach { runCatching { it.close() } }
-        } else {
-            retireScope.launch {
-                try {
-                    if (oldStreams.isNotEmpty() && backend.requiresAsyncStopDrain) {
-                        withTimeoutOrNull(STOP_DRAIN_TIMEOUT_MILLIS) { backend.stopAndAwaitIdle() }
-                    }
-                } catch (_: Throwable) {
-                } finally {
-                    // 先断开回环连接，唤醒输入线程，再销毁后端的原生句柄。
-                    oldStreams.forEach { runCatching { it.close() } }
-                    afterClosed?.invoke()
-                }
-            }
+        withdrawPlaybackTransport(oldStreams)
+        retireScope.launch {
+            try { playbackTransition.withLock { stopPlayback(backend, oldStreams) } }
+            finally { afterClosed?.invoke() }
         }
     }
 
@@ -644,7 +627,7 @@ class PlayerScreenState(
         prepareJob = scope.launch { prepare() }
     }
 
-    private suspend fun prepare() {
+    private suspend fun prepare() = playbackTransition.withLock {
         isPreparing = true
         failure = null
         startedThisAttempt = false
@@ -652,13 +635,7 @@ class PlayerScreenState(
         resumedFromMillis = null
         val oldStreams = detachPrepared()
         if (oldStreams.isNotEmpty()) {
-            try {
-                withTimeoutOrNull(STOP_DRAIN_TIMEOUT_MILLIS) { backend.stopAndAwaitIdle() }
-            } finally {
-                withContext(NonCancellable) {
-                    oldStreams.forEach { runCatching { it.close() } }
-                }
-            }
+            withContext(NonCancellable) { stopPlayback(backend, oldStreams) }
         } else {
             backend.stop()
         }
@@ -747,7 +724,7 @@ class PlayerScreenState(
         if (released) return
         when (event) {
             PlaybackBackendEvent.Ready -> {
-                if (!startedThisAttempt) PikoLog.d(TAG, "首帧就绪")
+                if (!startedThisAttempt) PikoLog.d(TAG, "后端输出就绪")
                 startedThisAttempt = true
                 isRecovering = false
                 // 出第一帧不代表故障过去了：流每次放几秒就断，立刻清零会无限重连。

@@ -185,6 +185,8 @@ class PlayerScreenStateSmokeTest {
             }.useCode()
         }
         assertEquals(200, statusDuringDrain, "后端尚未完成停止排空前代理会话不应提前关闭")
+        assertEquals(503, dev.piko.shared.media.testing.request(proxyUrl).status,
+            "排空之前应已撤回传输需求，但不能注销 URL")
 
         drainGate.complete(Unit)
         eventually("后端排空完成后代理会话关闭并返回 404") {
@@ -221,6 +223,9 @@ class PlayerScreenStateSmokeTest {
         // 排空尚未结束时立即触发下一次 reload（取消上一轮 prepareJob），旧代理流必须在 finally 中安全关闭，绝不泄漏
         blockNextStop = false
         withContext(stateThread) { state.retry() }
+        assertEquals(200, dev.piko.shared.media.testing.request(firstProxyUrl, "HEAD").status)
+        assertEquals(503, dev.piko.shared.media.testing.request(firstProxyUrl).status)
+        drainBlock.complete(Unit)
         eventually("取消排空后旧代理会话仍被可靠关闭并返回 404") {
             val code = java.net.URI(firstProxyUrl).toURL().openConnection().let { conn ->
                 (conn as java.net.HttpURLConnection).apply {
@@ -231,7 +236,6 @@ class PlayerScreenStateSmokeTest {
             }
             code == 404
         }
-        drainBlock.complete(Unit)
         backend.awaitOpens(2)
     }
 

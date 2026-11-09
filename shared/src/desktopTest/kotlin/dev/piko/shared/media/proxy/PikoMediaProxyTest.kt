@@ -27,6 +27,72 @@ class PikoMediaProxyTest {
     fun tearDown() = proxy.close()
 
     @Test
+    fun urgentClipUsesItsExplicitWindowAfterSequentialReadingIsEstablished() = runBlocking {
+        val source = FakeSource(8L * 1024 * 1024)
+        val session = ProxySession(source)
+        try {
+            session.readAheadLimit = 2L * 1024 * 1024
+            session.urgent = true
+            session.stream(0, 1024 * 1024) { _, _, _ -> }
+            assertEquals(0L, source.aheadAtRead.first(), "initial container probe stays bounded")
+            assertTrue(source.aheadAtRead.any { it == 2L * 1024 * 1024 }, "startup must use the requested window before the first frame")
+            source.aheadAtRead.clear()
+            session.readAheadLimit = 0L
+            session.stream(2L * 1024 * 1024, 3L * 1024 * 1024) { _, _, _ -> }
+            assertTrue(source.aheadAtRead.all { it == 0L }, "paused neighbours keep their explicit hold")
+        } finally { session.close() }
+    }
+
+    @Test
+    fun probingAndSeekingHaveNoSpeculativeWindowOrImplicitTailFetch() = runBlocking {
+        val source = FakeSource(32L * 1024 * 1024)
+        val session = ProxySession(source)
+        try {
+            session.stream(0, 1024) { _, _, _ -> }
+            session.stream(16L * 1024 * 1024, 16L * 1024 * 1024 + 1024) { _, _, _ -> }
+            assertTrue(source.aheadAtRead.all { it == 0L })
+            assertEquals(0, source.prefetchCalls.get())
+            assertEquals(0, source.demandActiveReaders.get())
+            session.steady = true
+            session.stream(4096, 8192) { _, _, _ -> }
+            assertTrue(source.aheadAtRead.last()!! > 0)
+            session.urgent = true
+            session.stream(0, 1024) { _, _, _ -> }
+            assertEquals(0L, source.aheadAtRead.last())
+        } finally { session.close() }
+    }
+
+    @Test
+    fun withdrawnTransportKeepsItsUrlUntilInputHasStopped() = runBlocking {
+        val source = FakeSource(1000)
+        val stream = proxy.register(source, null)
+        stream.withdrawTransport()
+        assertEquals(200, request(stream.url, "HEAD").status)
+        assertEquals(503, request(stream.url).status)
+        assertTrue(!source.closed)
+        stream.close()
+        assertEquals(404, request(stream.url).status)
+        assertTrue(source.closed)
+    }
+
+    @Test
+    fun reusedAndSlicedReadersKeepTheOriginalFeedbackTimestamp() = runBlocking {
+        val source = FakeSource(1_000_000)
+        val session = ProxySession(SlicedByteSource(source, 100_000, 200_000))
+        val clock = kotlin.time.TestTimeSource()
+        val snapshot = io.github.nihildigit.pikpak.PlaybackBufferSnapshot(4,
+            kotlin.time.Duration.parse("2s"), clock.markNow())
+        try {
+            session.reportPlaybackBuffer(snapshot)
+            clock += kotlin.time.Duration.parse("1s")
+            session.stream(0, 1024) { _, _, _ -> }
+            session.stream(1024, 2048) { _, _, _ -> }
+            assertTrue(source.feedback.all { it === snapshot })
+            assertEquals(kotlin.time.Duration.parse("1s"), source.feedback.last().sampledAt.elapsedNow())
+        } finally { session.close() }
+    }
+
+    @Test
     fun servesRangesWithCorrectHeadersAndBytes() = runBlocking {
         val source = FakeSource(size = 1_000_000)
         val url = proxy.register(source, "movie.mkv").url
@@ -124,7 +190,7 @@ class PikoMediaProxyTest {
             // 1. 首尾探测后直接跳往正片中段时，直接复用探测游标，不残留废弃的文件头游标
             session.stream(0L, 4096L) { _, _, _ -> }
             session.stream(1_000_000L, 1_004_096L) { _, _, _ -> }
-            assertEquals(1, source.openedReaders.get())
+            assertEquals(2, source.openedReaders.get())
             assertEquals(1, source.seekCalls.get())
 
             // 2. 音视频两轨（1 MB 与 16 MB）交替发短 Range 请求时，各自保有独立轨道游标，连续接续不触发来回 seek
@@ -141,7 +207,7 @@ class PikoMediaProxyTest {
                 }
                 assertEquals(0, source.demandActiveReaders.get(), "无作用域会话归还游标后应立即撤回需求")
             }
-            assertEquals(2, source.openedReaders.get())
+            assertEquals(3, source.openedReaders.get())
             assertEquals(2, source.seekCalls.get())
             assertEquals(0, source.concurrencyViolations.get())
         } finally {
@@ -217,6 +283,14 @@ class PikoMediaProxyTest {
         val openedReaders = AtomicInteger(0)
         val seekCalls = AtomicInteger(0)
         val demandActiveReaders = AtomicInteger(0)
+        val aheadAtRead = java.util.concurrent.CopyOnWriteArrayList<Long?>()
+        val feedback = java.util.concurrent.CopyOnWriteArrayList<io.github.nihildigit.pikpak.PlaybackBufferSnapshot>()
+        val prefetchCalls = AtomicInteger()
+
+        override suspend fun prefetch(ranges: List<LongRange>, role: io.github.nihildigit.pikpak.StreamRole, priority: Int?): kotlinx.coroutines.Deferred<Unit> {
+            prefetchCalls.incrementAndGet()
+            return CompletableDeferred(Unit)
+        }
 
         /** 所有 reader 上正在进行的读。 */
         val activeReads = AtomicInteger(0)
@@ -237,6 +311,8 @@ class PikoMediaProxyTest {
         }
 
         private inner class FakeReader : ProxyReader {
+            override var readAheadLimit: Long? = null
+            override fun reportPlaybackBuffer(snapshot: io.github.nihildigit.pikpak.PlaybackBufferSnapshot) { feedback.add(snapshot) }
             private val ownReads = AtomicInteger(0)
             private var demandActive = false
 
@@ -255,6 +331,7 @@ class PikoMediaProxyTest {
             }
 
             override suspend fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                aheadAtRead.add(readAheadLimit)
                 if (ownReads.incrementAndGet() > 1) concurrencyViolations.incrementAndGet()
                 activeReads.incrementAndGet()
                 try {

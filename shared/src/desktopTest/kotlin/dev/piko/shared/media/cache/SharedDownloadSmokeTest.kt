@@ -17,6 +17,48 @@ import kotlin.test.assertTrue
 
 class SharedDownloadSmokeTest {
     @Test
+    fun startupAndResumeRequestsDoNotTriggerHeaderOrTailSpeculation() = smoke { _ ->
+        val cloud = FakePikPakCloud(ByteArray(24 * 1024 * 1024) { it.toByte() })
+        val repository = PikoMediaRepository(cloud.provider)
+        val playback = repository.preparePlayback("f1").getOrThrow()
+        try {
+            val url = requireNotNull(playback.proxyUrl)
+            assertEquals(206, dev.piko.shared.media.testing.request(url, range = "bytes=0-1023").status)
+            kotlinx.coroutines.delay(100)
+            assertEquals(1, cloud.cdnRequests.get())
+            assertTrue(cloud.deliveredCdnBytes.get() <= 256 * 1024L)
+            assertEquals(206, dev.piko.shared.media.testing.request(url, range = "bytes=16777216-16778239").status)
+            kotlinx.coroutines.delay(100)
+            assertEquals(2, cloud.cdnRequests.get())
+            assertTrue(cloud.deliveredCdnBytes.get() <= 512 * 1024L)
+        } finally { playback.close(); cloud.provider.currentClient.value?.close() }
+    }
+
+    @Test
+    fun ownedPreparationPreemptsDownloadAndSteadyPlaybackRestoresIt() = smoke { scope ->
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val payload = ByteArray(1024 * 1024) { it.toByte() }
+        val cloud = FakePikPakCloud(payload, beforeCdnResponse = { release.await() })
+        val root = Files.createTempDirectory("piko-priority").toFile()
+        val repository = PikoMediaRepository(cloud.provider)
+        val coordinator = PikoDownloadCoordinator(cloud.provider, MemoryPreferences(), DirectoryStorage(root), scope,
+            mediaRepository = repository)
+        coordinator.enqueue(FileStat(id = "f1", name = "movie.mkv", size = payload.size.toString(), hash = "GCIDFAKE0001"))
+        awaitUntil("后台请求已开始") { cloud.activeCdnRequests > 0 }
+        val playback = repository.preparePlayback("f1").getOrThrow()
+        try {
+            awaitUntil("准备租约撤回后台请求") { cloud.activeCdnRequests == 0 }
+            val requests = cloud.cdnRequests.get()
+            playback.updatePhase(urgent = false, steady = true)
+            awaitUntil("稳定播放立即归还容量") { cloud.activeCdnRequests > 0 && cloud.cdnRequests.get() > requests }
+            playback.withdrawTransport()
+            release.complete(Unit)
+            awaitUntil("下载完成", 20_000) { coordinator.tasks.value["f1"]?.status == DownloadStatus.COMPLETED }
+            assertContentEquals(payload, root.resolve("movie.mkv").readBytes())
+        } finally { release.complete(Unit); playback.close() }
+    }
+
+    @Test
     fun `playback and download share every network block and playback survives completion`() = smoke { scope ->
         val payload = ByteArray(8 * 1024 * 1024 + 17) { (it % 251).toByte() }
         val cloud = FakePikPakCloud(payload, blockDelayMillis = 10)
@@ -32,7 +74,7 @@ class SharedDownloadSmokeTest {
             coordinator.enqueue(FileStat(id = "f1", name = "movie.mkv", size = payload.size.toString(), hash = "GCIDFAKE0001"))
             awaitUntil("共享缓存下载完成", 20_000) { coordinator.tasks.value["f1"]?.status == DownloadStatus.COMPLETED }
             assertContentEquals(payload, root.resolve("movie.mkv").readBytes())
-            assertEquals(payload.size.toLong(), cloud.deliveredCdnBytes.get(), "播放与下载不能重复请求同一个块")
+            assertEquals(payload.size.toLong(), cloud.deliveredCdnBytes.get(), "播放与下载不能重复请求同一个块：${cloud.cdnRanges}")
             var filled = 0
             while (filled < bytes.size) {
                 filled += source.readAt(payload.size - bytes.size.toLong() + filled, bytes, filled, bytes.size - filled)
