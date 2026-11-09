@@ -244,14 +244,27 @@ open class PikoDriveRepository(
                         kotlinx.coroutines.flow.channelFlow {
                             val status = MutableStateFlow(SpaceSyncState())
                             fun pendingFolders(): Set<String> = withPikoLock(treeStateLock) {
-                                val descendants = index.descendantFolders(folderId) + folderId
                                 val state = index.flow.value
-                                descendants.filterTo(LinkedHashSet()) { it in state.dirtyFolders || it !in state.listedFolders }
+                                if (state.complete && state.dirtyFolders.isEmpty()) return@withPikoLock emptySet()
+                                val descendants = index.descendantFolders(folderId) + folderId
+                                descendants.filterTo(LinkedHashSet()) {
+                                    it in state.dirtyFolders || (!state.complete && it !in state.listedFolders)
+                                }
                             }
                             val isBuildingFlow = treeBuildProgressFlow.map { it.isBuilding }.distinctUntilChanged()
-                            combine(index.flow, isBuildingFlow, status) { _, building, sync ->
-                                spaceFolderSnapshot(index, folderId, includeVaulted, sync.error == null && (building || sync.running))
-                                    .copy(syncError = sync.error)
+                            combine(index.flow, isBuildingFlow, status, optimisticRevision) { _, building, sync, _ ->
+                                val needsSync = asked != null && clientManager.currentClient.value === asked &&
+                                    driveTreeIndex === index && sync.error == null &&
+                                    (!index.isComplete || pendingFolders().isNotEmpty())
+                                val project: ((List<FileStat>, String?) -> List<FileStat>)? =
+                                    if (hasPendingOptimisticWrites) { files, parent -> projectOptimisticFiles(files, parent) } else null
+                                spaceFolderSnapshot(
+                                    index = index,
+                                    folderId = folderId,
+                                    includeVaulted = includeVaulted,
+                                    isBuilding = sync.error == null && (building || sync.running || needsSync),
+                                    projectOptimistic = project,
+                                ).copy(syncError = sync.error)
                             }.conflate().collect { snapshot ->
                                 send(snapshot)
                                 if (asked != null && clientManager.currentClient.value === asked &&
@@ -290,6 +303,7 @@ open class PikoDriveRepository(
                                                     }
                                                 }
                                             }
+                                            val store = vaultForClient(asked)
                                             val attempted = HashSet<String>()
                                             while (true) {
                                                 val pending = pendingFolders() - attempted
@@ -300,7 +314,12 @@ open class PikoDriveRepository(
                                                         throw CancellationException("Account changed")
                                                     }
                                                     try {
-                                                        fetchListing(id, asked)
+                                                        val listing = fetchListing(id, asked)
+                                                        if (listing.any(VaultStore::looksLikeManifest)) {
+                                                            runSuspendCatching {
+                                                                readAndRecordVaultEntries(id, listing, store, asked)
+                                                            }
+                                                        }
                                                     } catch (cancelled: CancellationException) {
                                                         currentCoroutineContext().ensureActive()
                                                         throw IllegalStateException("Listing interrupted", cancelled)
@@ -337,7 +356,7 @@ open class PikoDriveRepository(
     val accountChanges: Flow<String?> = clientManager.currentClient.map { it?.account }.distinctUntilChanged()
     private val _clientRevision = MutableStateFlow(0L)
     val clientRevision: StateFlow<Long> = _clientRevision.asStateFlow()
-    internal val accountGeneration: Long get() = withPikoLock(treeStateLock) { changeMarks.value.accountResetAt }
+    internal val accountGeneration: Long get() = changeMarks.value.accountResetAt
     val metadataSink = DriveMetadataSink { owner ->
         withPikoLock(treeStateLock) {
             if (clientManager.currentClient.value !== owner) null else {

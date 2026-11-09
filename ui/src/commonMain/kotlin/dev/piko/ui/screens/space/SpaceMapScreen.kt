@@ -194,14 +194,50 @@ fun SpaceMapScreen(
         }
     }
 
+    val snapshotCache = remember(client?.account) {
+        androidx.compose.runtime.mutableStateMapOf<Pair<String, Boolean>, SpaceFolderSnapshot>()
+    }
     val snapshotFlow = remember(driveRepo, currentFolderId, includeVaulted) {
         driveRepo.observeSpaceFolder(currentFolderId, includeVaulted)
     }
-    val snapshot by snapshotFlow.collectAsStateWithLifecycle(initialValue = null)
+    val rawSnapshot by snapshotFlow.collectAsStateWithLifecycle(initialValue = snapshotCache[currentFolderId to includeVaulted])
+    LaunchedEffect(rawSnapshot, includeVaulted) {
+        val current = rawSnapshot
+        if (current != null) {
+            snapshotCache[current.folderId to includeVaulted] = current
+        }
+    }
+    val snapshot = rawSnapshot?.takeIf { it.folderId == currentFolderId } ?: snapshotCache[currentFolderId to includeVaulted]
     val treeBuildProgress by driveRepo.treeBuildProgressFlow.collectAsStateWithLifecycle()
+    val isBlockingLoad = snapshot == null || (!snapshot.isTreeComplete && (snapshot.isTreeBuilding || treeBuildProgress.isBuilding))
+    val isCalculating = isBlockingLoad || snapshot?.isTreeBuilding == true || treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates
+    var pendingBreadcrumbs by remember(rootFolderId) { mutableStateOf<List<PikoPathBreadcrumb>>(emptyList()) }
+
+    val breadcrumbs = remember(snapshot, pendingBreadcrumbs, currentFolderId, rootFolderId, rootFolderName) {
+        val fromSnapshot = snapshot?.breadcrumbs.orEmpty()
+        val fromPending = pendingBreadcrumbs.takeIf { it.lastOrNull()?.id == currentFolderId }.orEmpty()
+        when {
+            fromSnapshot.isNotEmpty() -> fromSnapshot
+            fromPending.isNotEmpty() -> fromPending
+            currentFolderId.isEmpty() -> listOf(PikoDriveRepository.ROOT_BREADCRUMB)
+            currentFolderId == rootFolderId && rootFolderName.isNotEmpty() -> listOf(
+                PikoDriveRepository.ROOT_BREADCRUMB,
+                PikoPathBreadcrumb(rootFolderId, rootFolderName),
+            )
+            else -> listOf(PikoDriveRepository.ROOT_BREADCRUMB)
+        }
+    }
 
     fun drillInto(folderId: String) {
-        if (folderId == currentFolderId) return
+        if (isBlockingLoad || folderId == currentFolderId) return
+        val existingIndex = breadcrumbs.indexOfFirst { it.id == folderId }
+        pendingBreadcrumbs = when {
+            existingIndex >= 0 -> breadcrumbs.take(existingIndex + 1)
+            else -> {
+                val childName = snapshot?.items?.firstOrNull { it.id == folderId }?.name
+                if (childName != null) breadcrumbs + PikoPathBreadcrumb(folderId, childName) else emptyList()
+            }
+        }
         backHistory = backHistory + currentFolderId
         forwardHistory = emptyList()
         currentFolderId = folderId
@@ -209,7 +245,16 @@ fun SpaceMapScreen(
 
     /** 点击外层大目录内部的嵌套子目录时直接一步下钻到位，并把中间父目录压入回退栈，按返回可逐级退回。 */
     fun drillIntoNested(parentFolderId: String, childFolderId: String) {
-        if (childFolderId == currentFolderId) return
+        if (isBlockingLoad || childFolderId == currentFolderId) return
+        val parentItem = snapshot?.items?.firstOrNull { it.id == parentFolderId }
+        val childName = parentItem?.previewChildren?.firstOrNull { it.id == childFolderId }?.name
+        if (parentItem != null && childName != null) {
+            pendingBreadcrumbs = breadcrumbs +
+                PikoPathBreadcrumb(parentFolderId, parentItem.name) +
+                PikoPathBreadcrumb(childFolderId, childName)
+        } else {
+            pendingBreadcrumbs = emptyList()
+        }
         val additions = if (parentFolderId != currentFolderId && parentFolderId != childFolderId) {
             listOf(currentFolderId, parentFolderId)
         } else {
@@ -222,6 +267,8 @@ fun SpaceMapScreen(
 
     fun goBackInSpace(): Boolean {
         val previous = backHistory.lastOrNull() ?: return false
+        val existingIndex = breadcrumbs.indexOfFirst { it.id == previous }
+        pendingBreadcrumbs = if (existingIndex >= 0) breadcrumbs.take(existingIndex + 1) else emptyList()
         backHistory = backHistory.dropLast(1)
         forwardHistory = forwardHistory + currentFolderId
         currentFolderId = previous
@@ -229,7 +276,9 @@ fun SpaceMapScreen(
     }
 
     fun goForwardInSpace(): Boolean {
+        if (isBlockingLoad) return false
         val next = forwardHistory.lastOrNull() ?: return false
+        pendingBreadcrumbs = emptyList()
         forwardHistory = forwardHistory.dropLast(1)
         backHistory = backHistory + currentFolderId
         currentFolderId = next
@@ -242,19 +291,6 @@ fun SpaceMapScreen(
 
     LaunchedEffect(currentFolderId, pointerSource.isTouchLike) {
         if (!pointerSource.isTouchLike) runCatching { shortcutFocus.requestFocus() }
-    }
-
-    val breadcrumbs = remember(snapshot, currentFolderId, rootFolderId, rootFolderName) {
-        val fromSnapshot = snapshot?.breadcrumbs.orEmpty()
-        when {
-            fromSnapshot.isNotEmpty() -> fromSnapshot
-            currentFolderId.isEmpty() -> listOf(PikoDriveRepository.ROOT_BREADCRUMB)
-            currentFolderId == rootFolderId && rootFolderName.isNotEmpty() -> listOf(
-                PikoDriveRepository.ROOT_BREADCRUMB,
-                PikoPathBreadcrumb(rootFolderId, rootFolderName),
-            )
-            else -> listOf(PikoDriveRepository.ROOT_BREADCRUMB)
-        }
     }
 
     fun parentBreadcrumbsFor(nestedParentId: String? = null, nestedParentName: String? = null): List<PikoPathBreadcrumb> {
@@ -270,6 +306,7 @@ fun SpaceMapScreen(
     }
 
     fun locateInDrive(itemId: String, nestedParentId: String? = null, nestedParentName: String? = null) {
+        if (isBlockingLoad) return
         val knownStack = parentBreadcrumbsFor(nestedParentId, nestedParentName)
         scope.launch {
             if (!onLocate(itemId, knownStack)) {
@@ -288,6 +325,7 @@ fun SpaceMapScreen(
     }
 
     fun openCurrentInDrive() {
+        if (isBlockingLoad) return
         val currentName = breadcrumbs.lastOrNull()?.takeIf { it.id == currentFolderId }?.localizedName
             ?: rootFolderName.takeIf { currentFolderId == rootFolderId }.orEmpty()
         val completeBreadcrumbs = breadcrumbs.takeIf {
@@ -297,6 +335,7 @@ fun SpaceMapScreen(
     }
 
     fun openFolderByIdInDrive(folderId: String, folderName: String, parentFolderId: String? = null) {
+        if (isBlockingLoad) return
         val childBreadcrumbs = when {
             snapshot?.isTreeComplete != true || breadcrumbs.lastOrNull()?.id != currentFolderId -> emptyList()
             parentFolderId == null || parentFolderId == currentFolderId -> breadcrumbs + PikoPathBreadcrumb(folderId, folderName)
@@ -375,7 +414,6 @@ fun SpaceMapScreen(
     }
 
     val pageTitle = tr("空间分布", "Space usage", "ストレージ内訳", "공간 분포", "空間分佈")
-    val isCalculating = snapshot?.isTreeBuilding == true || treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates
     val displayedTotalBytes = snapshot?.let {
         if (includeVaulted) it.physicalBytes + it.vaultedBytes else it.physicalBytes
     } ?: 0L
@@ -425,7 +463,7 @@ fun SpaceMapScreen(
     val toggleVaultedAction = SheetAction(
         icon = Icons.Outlined.Inventory2,
         label = toggleVaultedLabel,
-        onClick = { includeVaulted = !includeVaulted },
+        onClick = { if (!isBlockingLoad) includeVaulted = !includeVaulted },
         group = ActionGroup.View,
         checked = includeVaulted,
     )
@@ -504,7 +542,8 @@ fun SpaceMapScreen(
                                 IncludeVaultedChip(
                                     checked = includeVaulted,
                                     label = toggleVaultedLabel,
-                                    onToggle = { includeVaulted = !includeVaulted },
+                                    enabled = !isBlockingLoad,
+                                    onToggle = { if (!isBlockingLoad) includeVaulted = !includeVaulted },
                                 )
                             },
                             BarItem(
@@ -514,6 +553,7 @@ fun SpaceMapScreen(
                             ) {
                                 FilledTonalButton(
                                     onClick = ::openCurrentInDrive,
+                                    enabled = !isBlockingLoad,
                                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                                 ) {
                                     Icon(Icons.Outlined.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -633,7 +673,8 @@ fun SpaceMapScreen(
                         IncludeVaultedChip(
                             checked = includeVaulted,
                             label = toggleVaultedLabel,
-                            onToggle = { includeVaulted = !includeVaulted },
+                            enabled = !isBlockingLoad,
+                            onToggle = { if (!isBlockingLoad) includeVaulted = !includeVaulted },
                         )
                     }
                 }
@@ -691,11 +732,13 @@ private fun StatusSummaryBadge(isCalculating: Boolean, text: String) {
 private fun IncludeVaultedChip(
     checked: Boolean,
     label: String,
+    enabled: Boolean = true,
     onToggle: () -> Unit,
 ) {
     FilterChip(
         selected = checked,
         onClick = onToggle,
+        enabled = enabled,
         label = { Text(label, maxLines = 1) },
         leadingIcon = {
             Icon(
@@ -806,7 +849,8 @@ private fun SpaceTreemapContent(
             }
         }
     }
-    val isCalculating = snapshot?.isTreeBuilding == true || treeBuildProgress.isBuilding
+    val isBlockingLoad = snapshot == null || (!snapshot.isTreeComplete && (snapshot.isTreeBuilding || treeBuildProgress.isBuilding))
+    val isCalculating = isBlockingLoad || snapshot?.isTreeBuilding == true || treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates
     val phaseKey = when {
         snapshot == null -> "loading"
         displayEntries.isEmpty() -> "empty:${snapshot.folderId}:$isCalculating:$includeVaulted"
@@ -830,31 +874,33 @@ private fun SpaceTreemapContent(
                     ) {
                         InlineLoadingIndicator()
                         Text(
-                            text = if (treeBuildProgress.isBuilding) {
+                            text = if (treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates) {
                                 formatTreeIndexProgressLabel(treeBuildProgress)
                             } else {
                                 tr(
-                                    "正在建立本地索引…",
-                                    "Building local index…",
-                                    "ローカル索引を構築しています…",
-                                    "로컬 색인을 구축하는 중…",
-                                    "正在建立本機索引…",
+                                    "正在统计当前目录…",
+                                    "Calculating current folder…",
+                                    "現在のフォルダーを集計しています…",
+                                    "현재 폴더를 계산하는 중…",
+                                    "正在統計目前資料夾…",
                                 )
                             },
                             style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
                             color = MaterialTheme.colorScheme.onSurface,
                         )
-                        Text(
-                            text = tr(
-                                "首次建立完成后将持久保存在本机，后续打开与跨目录排序可直接秒开并增量复用",
-                                "Once built, the index is persisted locally for instant startup and incremental updates",
-                                "初回構築後は端末に保存され、次回から即座に表示・差分更新されます",
-                                "최초 구축이 완료되면 기기에 저장되어 다음부터는 즉시 열리고 증분 업데이트됩니다",
-                                "首次建立完成後將持久保存在本機，後續開啟與跨資料夾排序可直接秒開並增量複用",
-                            ),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        if (treeBuildProgress.isBuilding) {
+                            Text(
+                                text = tr(
+                                    "首次建立完成后将持久保存在本机，后续打开与跨目录排序可直接秒开并增量复用",
+                                    "Once built, the index is persisted locally for instant startup and incremental updates",
+                                    "初回構築後は端末に保存され、次回から即座に表示・差分更新されます",
+                                    "최초 구축이 완료되면 기기에 저장되어 다음부터는 즉시 열리고 증분 업데이트됩니다",
+                                    "首次建立完成後將持久保存在本機，後續開啟與跨資料夾排序可直接秒開並增量複用",
+                                ),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
                 snapshot == null -> {
@@ -1038,6 +1084,7 @@ private fun SpaceTreemapContent(
     }
 
     fun handleTargetPrimaryClick(target: SpaceInteractiveTarget) {
+        if (isBlockingLoad) return
         when (target) {
             is SpaceInteractiveTarget.Node -> {
                 if (target.isFolder) {
@@ -1055,7 +1102,7 @@ private fun SpaceTreemapContent(
     }
 
     fun handleTargetMenu(target: SpaceInteractiveTarget, windowPos: IntOffset?, fromTouch: Boolean) {
-        if (target is SpaceInteractiveTarget.FreeQuota) return
+        if (isBlockingLoad || target is SpaceInteractiveTarget.FreeQuota) return
         if ((!fromTouch || desktopLayout) && windowPos != null) {
             desktopMenuRequest = TargetMenuRequest(target, windowPos)
         } else {
@@ -1133,7 +1180,7 @@ private fun SpaceTreemapContent(
             }
         }
 
-        val currentHovered = if (pointerSource.isTouchLike || desktopMenuRequest != null) null else hoverTracker.activeTarget
+        val currentHovered = if (isBlockingLoad || pointerSource.isTouchLike || desktopMenuRequest != null) null else hoverTracker.activeTarget
         if (currentHovered != null) {
             SpaceHoverCard(
                 target = currentHovered,
@@ -1142,6 +1189,53 @@ private fun SpaceTreemapContent(
                 hoverTracker = hoverTracker,
                 canvasSize = canvasSize,
             )
+        }
+
+        if (isBlockingLoad) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.2f))
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                event.changes.forEach { it.consume() }
+                            }
+                        }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    tonalElevation = 6.dp,
+                    shadowElevation = 8.dp,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        InlineLoadingIndicator()
+                        Text(
+                            text = if (treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates) {
+                                formatTreeIndexProgressLabel(treeBuildProgress)
+                            } else {
+                                tr(
+                                    "正在统计当前目录…",
+                                    "Calculating current folder…",
+                                    "現在のフォルダーを集計しています…",
+                                    "현재 폴더를 계산하는 중…",
+                                    "正在統計目前資料夾…",
+                                )
+                            },
+                            style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
         }
 
         desktopMenuRequest?.let { req ->

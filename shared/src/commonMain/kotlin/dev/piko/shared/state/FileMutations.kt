@@ -62,7 +62,12 @@ class FileMutations(private val repository: PikoDriveRepository, scope: Coroutin
                             val write = writes[index]
                             try {
                                 write.awaitTurn()
-                                val before = ids.mapNotNull { key -> repository.knownConfirmedFile(key)?.let { key to FileBefore(it.name, it.parentId) } }.toMap()
+                                val before = if (command is FileWriteCommand.Rename || command is FileWriteCommand.Move) {
+                                    ids.associateWith { key ->
+                                        repository.knownConfirmedFile(key)?.let { FileBefore(it.name, it.parentId) }
+                                            ?: access.detail(key).getOrThrow().let { FileBefore(it.name, it.parentId) }
+                                    }
+                                } else emptyMap()
                                 baselines[index] = before
                                 val response = permits.withPermit {
                                     when (command) {

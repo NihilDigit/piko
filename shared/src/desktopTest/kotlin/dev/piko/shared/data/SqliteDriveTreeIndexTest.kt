@@ -26,6 +26,22 @@ class SqliteDriveTreeIndexTest {
     private fun folder(id: String, parent: String = "") = FileStat(id = id, parentId = parent, name = id, kind = FileKind.FOLDER)
     private fun file(id: String, parent: String = "", hash: String = id) = FileStat(id = id, parentId = parent, kind = FileKind.FILE, name = "$id.mp4", size = "100", hash = hash, mimeType = "video/mp4", createdTime = "2025-01-01T00:00:00Z", modifiedTime = "2025-01-02T00:00:00Z")
 
+    @Test fun restoredInvalidationRemainsIncompleteAfterReopen() = fixture { factory ->
+        var index = open(factory)
+        try {
+            val generation = index.beginCandidate()
+            index.appendCandidate(generation, listOf(folder("a"), file("existing", "a")))
+            index.commitCandidate(generation, 100)
+            assertTrue(index.isComplete)
+            index.applyChange(DriveChange.Restored(listOf("restored")))
+            assertFalse(index.isComplete)
+            index.close()
+            index = open(factory)
+            assertFalse(index.isComplete)
+            assertNotNull(index.file("existing"))
+        } finally { index.close() }
+    }
+
     @Test fun candidatesReplayUnknownRenameMoveAndDeletionWithoutPublishingPages() = fixture { factory ->
         val index = open(factory)
         try {

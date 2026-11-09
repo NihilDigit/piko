@@ -13,6 +13,36 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class DriveTreeDeltaTest {
+    @Test fun absentTombstonesUseBatchedParentIndexLookups() = fixture { factory ->
+        val database = factory.open("delta-account")
+        var deletionBatches = 0
+        val checked = object : PikoTreeDatabase by database {
+            override fun execute(sql: String, parameters: List<Any?>) {
+                if (sql.startsWith("WITH RECURSIVE removed") && sql.contains("INSERT OR REPLACE INTO tree_deleted")) {
+                    deletionBatches++
+                    val plan = mutableListOf<String>()
+                    database.query("EXPLAIN QUERY PLAN $sql", parameters).use { cursor ->
+                        while (cursor.next()) plan += cursor.string(3).orEmpty()
+                    }
+                    assertTrue(plan.any { it.contains("SEARCH n") && it.contains("parent=?") }, plan.toString())
+                }
+                database.execute(sql, parameters)
+            }
+        }
+        val index = DriveTreeIndex(database = checked, ownerAccount = "delta-account")
+        try {
+            seed(index, List(1024) { file("kept-$it") })
+            index.beginDelta()
+            repeat(4) { page ->
+                index.appendDelta(List(256) { folder("absent-${page * 256 + it}").copy(trashed = true) })
+            }
+            index.commitDelta("after-tombstones")
+            assertEquals(4, deletionBatches)
+            assertEquals(1024, index.children("").files.size)
+            assertEquals("after-tombstones", index.syncCursor)
+        } finally { index.close() }
+    }
+
     private fun fixture(block: (DesktopPikoTreeDatabaseFactory) -> Unit) {
         val directory = Files.createTempDirectory("piko-tree-delta").toFile()
         try { block(DesktopPikoTreeDatabaseFactory(directory)) } finally { directory.deleteRecursively() }

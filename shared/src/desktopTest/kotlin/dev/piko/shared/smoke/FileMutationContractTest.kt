@@ -15,6 +15,24 @@ import java.io.IOException
 import kotlin.test.*
 
 class FileMutationContractTest {
+    @Test fun renameWithoutCachedBaselineStillRecordsUndo() = smoke { scope ->
+        val server = FakePikPakServer()
+        val file = server.addFile("before")
+        val provider = server.provider()
+        val repository = PikoDriveRepository(provider, MemoryPreferences())
+        repository.enterAccount(provider.currentClient.value!!.account)
+        assertNull(repository.knownConfirmedFile(file.id))
+        val writes = FileWriteSession(repository, scope)
+        val id = writes.submit(FileWriteCommand.Rename(file.id, "after"))!!
+        val result = assertNotNull(writes.awaitResult(id))
+        assertEquals(FileWriteCompletion.SUCCEEDED, result.completion)
+        assertEquals(1, result.undoChangeIds.size)
+        val inverse = assertIs<DriveChangeJournal.Change.Rename>(repository.changes.state.value.available.single())
+        assertEquals("before", inverse.renames.single().oldName)
+        assertTrue(repository.changes.undoLast())
+        awaitUntil("uncached rename is undone") { file.name == "before" }
+    }
+
     @Test fun largeMoveSubmitsNativeBatchesWithoutPollingAndUndoesOnce() = smoke { scope ->
         val server = FakePikPakServer()
         val files = List(1200) { server.addFile("file-$it") }

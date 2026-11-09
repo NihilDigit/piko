@@ -96,18 +96,7 @@ internal class SqliteTreeStore(
             for (folder in interruptedVaults) clearVault(folder)
             db.execute("DELETE FROM tree_meta WHERE key LIKE 'optimistic_vault:%'")
         }
-        if (!complete && syncedAt > 0L && scalar("SELECT 1 FROM tree_nodes WHERE generation=0 LIMIT 1") != null) {
-            // 自愈先前已完成全盘同步、却被全盘 ContentsChanged(null) 误抹除 complete 标记的持久库，随后由后台哨兵探针对账增量变更
-            db.transaction {
-                sequence++
-                db.execute("INSERT OR IGNORE INTO tree_coverage SELECT id,0,? FROM tree_nodes WHERE generation=0 AND folder=1", listOf(sequence))
-                db.execute("INSERT OR IGNORE INTO tree_coverage VALUES ('',0,?)", listOf(sequence))
-                meta("complete", "true")
-                meta("sequence", sequence.toString())
-                rebuildAll = true
-                rebuildAggregates()
-            }
-        } else if (meta("aggregate_version") != "2") {
+        if (meta("aggregate_version") != "2") {
             rebuildAll = true
             db.transaction { rebuildAggregates() }
         }
@@ -171,16 +160,18 @@ internal class SqliteTreeStore(
                         for (manifest in listOfNotNull(row, previous).filter(VaultStore::looksLikeManifest)) {
                             if (manifest.parentId !in manifestsBefore) manifestsBefore[manifest.parentId] = winner(manifest.parentId)?.id
                         }
-                        if (row.trashed) remove(listOf(row.id)) else {
+                        if (!row.trashed) {
                             put(row)
                             if (row.isFolder) coverage(row.id, false)
                         }
                     }
+                    if (removing) remove(page.filter { it.trashed }.map { it.id })
                     after = page.last().id
                 }
             }
             for ((folder, previous) in manifestsBefore) if (previous != winner(folder)?.id) clearVault(folder)
             meta("sync_cursor", cursor)
+            meta("sync_cursor_version", "2")
             db.execute("DELETE FROM tree_delta")
         }
         return affected
@@ -220,7 +211,7 @@ internal class SqliteTreeStore(
     }
     fun clear() = mutate {
         for (table in listOf("tree_nodes", "tree_content", "tree_instances", "tree_coverage", "tree_vault", "tree_deleted", "tree_aggregate", "tree_subtree", "tree_restores", "tree_overrides", "tree_vault_revision", "tree_vault_state", "tree_direct_usage")) db.execute("DELETE FROM $table")
-        meta("complete", "false"); meta("usage", null); meta("synced", null); meta("sync_cursor", null)
+        meta("complete", "false"); meta("usage", null); meta("synced", null); meta("sync_cursor", null); meta("sync_cursor_version", null)
         candidates.clear(); clearCandidateContentCache(); rebuildAll = true
         invalidateFolderProjection()
         cachedSubtreeStats = null
@@ -473,12 +464,16 @@ internal class SqliteTreeStore(
     }
     fun putFiles(files: List<FileStat>) = mutate {
         val before = HashMap<String, String?>()
+        val isComplete = complete
         for (f in files) if (!f.trashed && !VaultEntry.isVaulted(f.id)) {
             if (VaultStore.looksLikeManifest(f)) {
                 if (f.parentId !in before) before[f.parentId] = winner(f.parentId)?.id
                 file(f.id)?.parentId?.let { old -> if (old !in before) before[old] = winner(old)?.id }
             }
             put(f)
+            if (isComplete && f.isFolder) {
+                db.execute("INSERT OR IGNORE INTO tree_coverage VALUES (?,0,?)", listOf(f.id, sequence))
+            }
         }
         for ((folder, previous) in before) if (previous != null && previous != winner(folder)?.id) clearVault(folder)
     }
@@ -508,7 +503,7 @@ internal class SqliteTreeStore(
             }
             if (complete) {
                 val detached = HashSet<String>()
-                rows("WITH RECURSIVE folders(id) AS (SELECT id FROM tree_nodes WHERE generation=0 AND parent=? AND folder=1 AND id NOT IN (SELECT id FROM tree_observed) UNION SELECT n.id FROM tree_nodes n JOIN folders f ON n.parent=f.id WHERE n.generation=0 AND n.folder=1) SELECT id FROM folders", listOf(parent)) { detached += it.string(0)!! }
+                rows("WITH RECURSIVE folders(id) AS (SELECT id FROM tree_nodes WHERE generation=0 AND parent=? AND folder=1 AND id NOT IN (SELECT id FROM tree_observed) UNION SELECT n.id FROM folders f CROSS JOIN tree_nodes n ON n.generation=0 AND n.parent=f.id AND n.folder=1) SELECT id FROM folders", listOf(parent)) { detached += it.string(0)!! }
                 if (detached.isNotEmpty()) invalidateFolderProjection()
                 detached.forEach { coverage(it, true) }
                 db.execute("INSERT OR REPLACE INTO tree_deleted SELECT id,? FROM tree_nodes WHERE generation=0 AND parent=? AND virtual=0 AND id NOT IN (SELECT id FROM tree_observed)", listOf(sequence, parent))
@@ -628,18 +623,32 @@ internal class SqliteTreeStore(
     private fun coverage(id: String, dirty: Boolean) { touchedFolders += id; db.execute("INSERT OR REPLACE INTO tree_coverage VALUES (?,?,?)", listOf(id, if (dirty) 1 else 0, sequence)) }
     fun markComplete() = mutate { rebuildAll = true; meta("complete", "true") }
     fun usage(value: Long?) = mutate { meta("usage", value?.toString()); meta("usage_seq", sequence.toString()) }
-    fun canary(files: List<FileStat>, value: Long?) = mutate { files.forEach { if (!VaultEntry.isVaulted(it.id)) put(it) }; if (value != null) { meta("usage", value.toString()); meta("usage_seq", sequence.toString()) } }
+    fun canary(files: List<FileStat>, value: Long?) = mutate {
+        val isComplete = complete
+        files.forEach {
+            if (!VaultEntry.isVaulted(it.id)) {
+                put(it)
+                if (isComplete && it.isFolder) {
+                    db.execute("INSERT OR IGNORE INTO tree_coverage VALUES (?,0,?)", listOf(it.id, sequence))
+                }
+            }
+        }
+        if (value != null) { meta("usage", value.toString()); meta("usage_seq", sequence.toString()) }
+    }
     fun descendants(root: String): Set<String> {
         val result = HashSet<String>()
-        if (!closed) rows("WITH RECURSIVE folders(id) AS (SELECT ? UNION SELECT n.id FROM tree_nodes n JOIN folders f ON n.parent=f.id WHERE n.generation=0 AND n.folder=1) SELECT id FROM folders", listOf(root)) { result += it.string(0)!! }
+        if (!closed) rows("WITH RECURSIVE folders(id) AS (SELECT ? UNION SELECT n.id FROM folders f CROSS JOIN tree_nodes n ON n.generation=0 AND n.parent=f.id AND n.folder=1) SELECT id FROM folders", listOf(root)) { result += it.string(0)!! }
         return result
     }
     private fun remove(ids: Collection<String>) {
+        if (ids.isEmpty()) return
         if (ids.any { file(it)?.isFolder == true }) invalidateFolderProjection()
         val manifestParents = HashMap<String, String?>()
         for (id in ids) file(id)?.takeIf(VaultStore::looksLikeManifest)?.parentId?.let { manifestParents[it] = winner(it)?.id }
-        for (id in ids) {
-            db.execute("WITH RECURSIVE removed(id) AS (SELECT ? UNION SELECT n.id FROM tree_nodes n JOIN removed r ON n.parent=r.id WHERE n.generation=0) INSERT OR REPLACE INTO tree_deleted SELECT id,? FROM removed", listOf(id, sequence))
+        for (batch in ids.chunked(256)) {
+            // 从待删除父节点查子节点，避免 SQLite 反向连接时为每个墓碑扫描全盘。
+            val roots = batch.joinToString(",") { "(?)" }
+            db.execute("WITH RECURSIVE removed(id) AS (SELECT column1 FROM (VALUES $roots) UNION SELECT n.id FROM removed r CROSS JOIN tree_nodes n ON n.generation=0 AND n.parent=r.id) INSERT OR REPLACE INTO tree_deleted SELECT id,? FROM removed", batch + sequence)
         }
         rows("SELECT DISTINCT parent FROM tree_nodes WHERE generation=0 AND id IN (SELECT id FROM tree_deleted)") { touchedFolders += it.string(0)!! }
         db.execute("DELETE FROM tree_nodes WHERE generation=0 AND id IN (SELECT id FROM tree_deleted)")
@@ -798,7 +807,7 @@ internal class SqliteTreeStore(
                     put(f.copy(name = name, parentId = parent), generation)
                 }
             }
-            db.execute("WITH RECURSIVE removed(id) AS (SELECT id FROM tree_deleted WHERE seq>? UNION SELECT n.id FROM tree_nodes n JOIN removed r ON n.parent=r.id WHERE n.generation=?) DELETE FROM tree_nodes WHERE generation=? AND id IN (SELECT id FROM removed)", listOf(baseline, generation, generation))
+            db.execute("WITH RECURSIVE removed(id) AS (SELECT id FROM tree_deleted WHERE seq>? UNION SELECT n.id FROM removed r CROSS JOIN tree_nodes n ON n.generation=? AND n.parent=r.id) DELETE FROM tree_nodes WHERE generation=? AND id IN (SELECT id FROM removed)", listOf(baseline, generation, generation))
             val liveVaultFolders = HashSet<String>()
             rows("SELECT folder FROM tree_vault_state WHERE generation=0 UNION SELECT folder FROM tree_vault_revision WHERE seq>?", listOf(baseline)) { liveVaultFolders += it.string(0)!! }
             for (folder in liveVaultFolders) {
@@ -837,6 +846,7 @@ internal class SqliteTreeStore(
             if ((meta("usage_seq")?.toLongOrNull() ?: 0L) <= baseline && usage != null) meta("usage", usage.toString())
             meta("synced", syncedAt.toString())
             meta("sync_cursor", syncCursor)
+            meta("sync_cursor_version", "2")
             invalidateFolderProjection()
             rebuildAll = true
         }

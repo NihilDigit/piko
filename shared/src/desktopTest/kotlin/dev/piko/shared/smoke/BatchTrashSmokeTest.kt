@@ -69,10 +69,9 @@ class BatchTrashSmokeTest {
 
     @Test
     fun failedBatchRollsBackOnlyItsOwnProjection() = smoke { scope ->
-        var calls = 0
+        val calls = java.util.concurrent.atomic.AtomicInteger()
         val f = fixture(scope, 1000) {
-            calls++
-            if (calls == 2) throw io.github.nihildigit.pikpak.PikPakException(7, "permission_denied", httpStatus = 403)
+            if (calls.incrementAndGet() == 2) throw io.github.nihildigit.pikpak.PikPakException(7, "permission_denied", httpStatus = 403)
         }
         f.drive.moveToTrash(f.drive.selectedFileIds.toList())
         awaitUntil("successful subset has an inverse") { (f.repo.changes.latest.value as? DriveChangeJournal.Change.Trash)?.ids?.size == 500 }
