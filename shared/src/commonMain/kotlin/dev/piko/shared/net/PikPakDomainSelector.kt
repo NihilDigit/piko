@@ -1,6 +1,5 @@
 package dev.piko.shared.net
 
-import kotlin.concurrent.Volatile
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoClientManager
@@ -8,7 +7,11 @@ import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.DomainProbe
 import io.github.nihildigit.pikpak.PikPakClient
 import io.github.nihildigit.pikpak.PikPakDomain
+import io.github.nihildigit.pikpak.fetchHighAvailabilityConfig
 import io.github.nihildigit.pikpak.probeDomain
+import kotlin.concurrent.Volatile
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -26,11 +29,11 @@ import kotlinx.coroutines.sync.withLock
  * PikPak 的 API 有四个根域名（mypikpak.com、mypikpak.net、pikpak.me、pikpakdrive.com），指向同一组服务器，令牌通用，
  * 直链也跟着根域名走（SDK 的 PikPakDomain 有实测）。各地运营商对不同域名的限速不同，换一个有时就快了。
  *
- * 用户可以固定一个，也可以交给这里自动挑：登录后各测一次，挑最快的。设置页显示每个根域名的延迟。
+ * 用户可以固定一个，也可以交给这里自动挑：登录后各测一次。设置页显示每个根域名的延迟。
  * - 只在已登录之后换：别的根域名下的密码登录 SDK 没有实测过，刷新令牌测过。登录本身总是走 mypikpak.com。
- * - 自动时只在明显更快（快过 [SWITCH_RATIO]）才换。多数时候几个根域名的差别在噪声里，来回换没有意义。
+ * - 自动模式下优先保持当前域名（默认 mypikpak.com）稳定，仅当当前域名不可用，或候选域名同时满足比例更快（快过 [SWITCH_RATIO]）
+ *   且绝对延迟低出至少 [MIN_SWITCH_SAVINGS] 时才切换，避免各域名延迟相近时因单次网络抖动来回乱跳。
  * - 比的是连接复用后的一次请求（DomainProbe.warmRequest）：首次请求含握手，正在用的根域名可能复用了 TLS 会话，显得便宜。
- * - 测速结果不存盘，每次启动重测：换了网络上次的结论就不作数了。
  */
 class PikPakDomainSelector(
     private val clients: PikoClientManager,
@@ -78,7 +81,7 @@ class PikPakDomainSelector(
     }
 
     private suspend fun apply(client: PikPakClient, fixed: PikPakDomain?) {
-        // 用户固定的先换过去；自动模式下优先先切到上次实测可用的根域名，随后照常重测全部四个域名，
+        // 用户固定的先换过去；自动模式下优先沿用上次因默认域名受阻而记下的可用根域名，随后照常重测全部四个域名，
         // 避免默认 mypikpak.com 不通时启动初期请求卡满 60 秒超时
         if (fixed != null) {
             client.domain = fixed
@@ -95,6 +98,7 @@ class PikPakDomainSelector(
         val initialDomain = client.domain
         _active.value = client.domain
         _probing.value = true
+        scope.launch { runCatching { client.fetchHighAvailabilityConfig() } }
         var emergencySwitched = false
         val results = try {
             coroutineScope {
@@ -134,8 +138,17 @@ class PikPakDomainSelector(
         val switched = fixed == null && (switchToFastest(client, results) || emergencySwitched)
         _active.value = client.domain
         if (fixed == null && results.any { it.domain == client.domain && it.usable }) {
-            lastWorkingAutoDomain = client.domain
-            val savedRoot = client.domain.root
+            val usable = results.filter { it.usable && it.warmRequest != null }
+            val best = usable.minByOrNull { it.warmRequest!! }
+            val defaultProbe = usable.firstOrNull { it.domain == PikPakDomain.MYPIKPAK_COM }
+            // 默认域名可用且未被明显拉开时，下次冷启动仍回归默认域名，不把偶然抖动固化到磁盘
+            val preferredForNextStart = if (best != null && defaultProbe != null && !isSignificantlyFaster(best.warmRequest!!, defaultProbe.warmRequest!!)) {
+                PikPakDomain.MYPIKPAK_COM
+            } else {
+                client.domain
+            }
+            lastWorkingAutoDomain = preferredForNextStart
+            val savedRoot = preferredForNextStart.root
             cacheStore?.let { store ->
                 scope.launch { runCatching { store.write(LAST_DOMAIN_CACHE_KEY, savedRoot) } }
             }
@@ -154,17 +167,29 @@ class PikPakDomainSelector(
         val best = usable.minByOrNull { it.warmRequest!! } ?: return false
         if (best.domain == client.domain) return false
         val current = usable.firstOrNull { it.domain == client.domain }?.warmRequest
-        if (current != null && best.warmRequest!! >= current * SWITCH_RATIO) return false
-        client.domain = best.domain
+        if (current != null && !isSignificantlyFaster(best.warmRequest!!, current)) return false
+        // 若确实需要切换，而默认域名 mypikpak.com 同样处于第一梯队（与最快域名差距不显著），优先收敛回 mypikpak.com
+        val defaultProbe = usable.firstOrNull { it.domain == PikPakDomain.MYPIKPAK_COM }
+        val target = if (defaultProbe != null && !isSignificantlyFaster(best.warmRequest!!, defaultProbe.warmRequest!!)) {
+            PikPakDomain.MYPIKPAK_COM
+        } else {
+            best.domain
+        }
+        if (target == client.domain) return false
+        client.domain = target
         return true
     }
+
+    private fun isSignificantlyFaster(candidate: Duration, baseline: Duration): Boolean =
+        candidate < baseline * SWITCH_RATIO && baseline - candidate >= MIN_SWITCH_SAVINGS
 
     private fun DomainProbe.latencyText(): String =
         warmRequest?.takeIf { usable }?.let { "${it.inWholeMilliseconds} ms" } ?: "不可用"
 
     private companion object {
         const val TAG = "Domain"
-        const val SWITCH_RATIO = 0.8
+        const val SWITCH_RATIO = 0.6
+        val MIN_SWITCH_SAVINGS: Duration = 100.milliseconds
         const val LAST_DOMAIN_CACHE_KEY = "pikpak-last-working-domain"
     }
 }

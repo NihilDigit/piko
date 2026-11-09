@@ -434,6 +434,7 @@ internal fun SettingsChoiceDialog(
     description: String? = null,
     footer: String? = null,
     header: (@Composable () -> Unit)? = null,
+    dismissButton: (@Composable () -> Unit)? = null,
     options: @Composable ColumnScope.() -> Unit,
 ) {
     PikoDialog(
@@ -451,6 +452,7 @@ internal fun SettingsChoiceDialog(
                 if (footer != null) DialogFootnote(footer)
             }
         },
+        dismissButton = dismissButton,
         confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_close)) } },
     )
 }
@@ -464,8 +466,11 @@ internal fun SettingsChoiceOption(
     title: String,
     selected: Boolean,
     onClick: () -> Unit,
+    leadingIcon: ImageVector? = null,
     supporting: String? = null,
+    trailingText: String? = null,
     trailingIcon: ImageVector? = null,
+    trailingIconTint: Color = Color.Unspecified,
 ) {
     Row(
         modifier = Modifier
@@ -477,6 +482,14 @@ internal fun SettingsChoiceOption(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RadioButton(selected = selected, onClick = null, modifier = Modifier.padding(horizontal = 12.dp))
+        if (leadingIcon != null) {
+            Icon(
+                imageVector = leadingIcon,
+                contentDescription = null,
+                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(end = 10.dp).size(18.dp),
+            )
+        }
         Column(modifier = Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             if (supporting != null) {
@@ -490,12 +503,21 @@ internal fun SettingsChoiceOption(
                 )
             }
         }
+        if (trailingText != null) {
+            Text(
+                text = trailingText,
+                style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                modifier = Modifier.padding(start = 12.dp, end = if (trailingIcon != null) 6.dp else 12.dp),
+            )
+        }
         if (trailingIcon != null) {
             Icon(
                 imageVector = trailingIcon,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp).size(20.dp),
+                tint = trailingIconTint.takeOrElse(MaterialTheme.colorScheme.onSurfaceVariant),
+                modifier = Modifier.padding(start = if (trailingText != null) 0.dp else 12.dp, end = 12.dp).size(18.dp),
             )
         }
     }
