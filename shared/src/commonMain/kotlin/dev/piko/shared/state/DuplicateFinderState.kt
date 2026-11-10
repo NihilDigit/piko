@@ -63,31 +63,6 @@ class DuplicateFinderState(
         private set
 
     private var scanned by mutableStateOf<List<ScannedFile>>(emptyList())
-    private var scannedDirectories by mutableStateOf<List<ScannedFile>>(emptyList())
-
-    private val directoryIndexes by derivedStateOf {
-        DuplicateKind.entries.associateWith { kind -> directoryIndex(kind) }
-    }
-
-    private fun directoryIndex(kind: DuplicateKind): Map<String, List<FileStat>> {
-        val matches = when (kind) {
-            DuplicateKind.IDENTICAL -> report.identical
-            DuplicateKind.VERSIONS -> report.versions
-        }.flatMap { it.rows }.map { it.file.id }.toSet()
-        val directories = scannedDirectories.associate { it.file.id to it.file }
-        val includedDirectories = linkedSetOf<String>()
-        val files = scanned.filter { it.file.id in matches }.map { it.file }
-        for (file in files) {
-            var parent = file.parentId
-            while (parent != root.id && includedDirectories.add(parent)) {
-                parent = directories[parent]?.parentId ?: break
-            }
-        }
-        return (files + includedDirectories.mapNotNull(directories::get)).groupBy { it.parentId }
-    }
-
-    fun directoryFiles(folderId: String, kind: DuplicateKind = DuplicateKind.IDENTICAL): List<FileStat> =
-        directoryIndexes.getValue(kind)[folderId].orEmpty()
 
     /** 扫描后移入回收站的。不从 [scanned] 里删：撤销时要按原样补回。 */
     private var gone: Set<String> = emptySet()
@@ -105,8 +80,6 @@ class DuplicateFinderState(
     val suggestedIds: Set<String> by derivedStateOf {
         report.identical.flatMapTo(HashSet()) { group -> group.rows.map { it.file.id }.filter { it != group.keptId } }
     }
-
-    val keptIds: Set<String> by derivedStateOf { report.identical.mapNotNullTo(HashSet()) { it.keptId } }
 
     /** 还在扫描或比对，结果还没出来。 */
     val isScanning: Boolean get() = phase == Phase.SCANNING || phase == Phase.ANALYZING
@@ -145,7 +118,6 @@ class DuplicateFinderState(
         errorMessage = null
         report = DuplicateReport.EMPTY
         scanned = emptyList()
-        scannedDirectories = emptyList()
         gone = emptySet()
         scanJob = scope.launch {
             try {
@@ -162,7 +134,6 @@ class DuplicateFinderState(
                             failedFolders = event.failedFolders
                             phase = Phase.ANALYZING
                             scanned = withContext(Dispatchers.Default) { event.files.map(::enrichScannedFile) }
-                            scannedDirectories = event.subfolders
                             regroup()
                             phase = Phase.DONE
                         }
@@ -183,6 +154,23 @@ class DuplicateFinderState(
         scanner?.stop()
     }
 
+    private fun enrichScannedFile(item: ScannedFile): ScannedFile {
+        val file = item.file
+        val meta = driveRepo.contentMetadataOf(file)
+        val originalCreated = driveRepo.originalCreatedAtMillis(file.id)
+        val needsWidth = file.params["width"]?.toIntOrNull()?.takeIf { it > 0 } == null && (meta?.width ?: 0) > 0
+        val needsHeight = file.params["height"]?.toIntOrNull()?.takeIf { it > 0 } == null && (meta?.height ?: 0) > 0
+        val needsDuration = file.params["duration"]?.toDoubleOrNull()?.takeIf { it > 0 } == null && (meta?.durationMillis ?: 0L) > 0L
+        val needsCreated = file.params["piko_original_created_at"]?.toLongOrNull() == null && originalCreated != null
+        if (!needsWidth && !needsHeight && !needsDuration && !needsCreated) return item
+        val nextParams = file.params.toMutableMap()
+        if (needsWidth) nextParams["width"] = meta!!.width.toString()
+        if (needsHeight) nextParams["height"] = meta!!.height.toString()
+        if (needsDuration) nextParams["duration"] = (meta!!.durationMillis!! / 1000L).toString()
+        if (needsCreated) nextParams["piko_original_created_at"] = originalCreated.toString()
+        return item.copy(file = file.copy(params = nextParams))
+    }
+
     private suspend fun updateGone(next: Set<String>) {
         if (next == gone) return
         gone = next
@@ -200,22 +188,5 @@ class DuplicateFinderState(
             groupedFiles = scanned
             groupedRemoved = removed
         }
-    }
-
-    private fun enrichScannedFile(item: ScannedFile): ScannedFile {
-        val file = item.file
-        val meta = driveRepo.contentMetadataOf(file)
-        val originalCreated = driveRepo.originalCreatedAtMillis(file.id)
-        val needsWidth = file.params["width"]?.toIntOrNull()?.takeIf { it > 0 } == null && (meta?.width ?: 0) > 0
-        val needsHeight = file.params["height"]?.toIntOrNull()?.takeIf { it > 0 } == null && (meta?.height ?: 0) > 0
-        val needsDuration = file.params["duration"]?.toDoubleOrNull()?.takeIf { it > 0 } == null && (meta?.durationMillis ?: 0L) > 0L
-        val needsCreated = file.params["piko_original_created_at"]?.toLongOrNull() == null && originalCreated != null
-        if (!needsWidth && !needsHeight && !needsDuration && !needsCreated) return item
-        val nextParams = file.params.toMutableMap()
-        if (needsWidth) nextParams["width"] = meta!!.width.toString()
-        if (needsHeight) nextParams["height"] = meta!!.height.toString()
-        if (needsDuration) nextParams["duration"] = (meta!!.durationMillis!! / 1000L).toString()
-        if (needsCreated) nextParams["piko_original_created_at"] = originalCreated.toString()
-        return item.copy(file = file.copy(params = nextParams))
     }
 }

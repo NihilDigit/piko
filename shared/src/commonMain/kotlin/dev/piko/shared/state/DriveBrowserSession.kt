@@ -52,10 +52,7 @@ class DriveBrowserSession(
     val state = DriveScreenState(
         repository, preferences, scope,
         sessionListing = { place ->
-            if (place == DriveLibrary.DUPLICATES) duplicates.state?.let { finder ->
-                val folder = navigation.folderStackFlow.value.lastOrNull()?.id
-                duplicateReport.listing(finder, folder?.takeUnless { it == place.id } ?: finder.root.id)
-            } else null
+            if (place == DriveLibrary.DUPLICATES) duplicates.state?.let(duplicateReport::listing) else null
         },
         archives = archives,
         navigation = navigation,

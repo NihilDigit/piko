@@ -436,10 +436,3 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
 internal val LocalFileWorkspace = staticCompositionLocalOf<FileWorkspace> { error("文件工作区未提供") }
 
 internal val LocalWorkspaceContexts = staticCompositionLocalOf<WorkspaceViewModel?> { null }
-
-/** Minimizing an inactive view must not steal focus from another retained work item. */
-internal fun WorkspaceContexts.minimizeToFile(id: Long, fileId: Long) {
-    if (activeContextId.value == id && contextsFlow.value.any { it.id == fileId && it is WorkspaceContext.File }) {
-        activate(fileId)
-    }
-}

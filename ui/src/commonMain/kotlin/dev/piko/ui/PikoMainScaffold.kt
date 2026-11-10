@@ -1114,7 +1114,7 @@ private fun EscClosesWhenFocused(onClose: () -> Unit, content: @Composable () ->
 
 internal val SidebarPushMinWindowWidth = 1000.dp
 
-internal fun inlineSidebarIsCollapsed(windowWidthDp: Float, persistedCollapsed: Boolean): Boolean =
+private fun inlineSidebarIsCollapsed(windowWidthDp: Float, persistedCollapsed: Boolean): Boolean =
     windowWidthDp < SidebarPushMinWindowWidth.value || persistedCollapsed
 
 private val ClipPanelMinWidth = 360.dp

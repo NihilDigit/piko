@@ -281,10 +281,7 @@ fun DriveScreen(
             driveRepo, sessionManager, scope,
             sessionListing = { place ->
                 when (place) {
-                    DriveLibrary.DUPLICATES -> duplicateSession.state?.let { finder ->
-                        val folder = navigation.folderStackFlow.value.lastOrNull()?.id
-                        duplicateReport.listing(finder, folder?.takeUnless { it == DriveLibrary.DUPLICATES.id } ?: finder.root.id)
-                    }
+                    DriveLibrary.DUPLICATES -> duplicateSession.state?.let(duplicateReport::listing)
                     else -> null
                 }
             },
@@ -295,7 +292,6 @@ fun DriveScreen(
             historyEditSession = services.historyEdits,
             vaultEditSession = services.vaultEntryEdits,
             folderVault = services.folderVaultSession,
-            shareSaves = services.shareSaves,
             receiving = services.receivingActivity,
             instantSession = services.instantSession,
             supplementalFiles = { gallery.files },

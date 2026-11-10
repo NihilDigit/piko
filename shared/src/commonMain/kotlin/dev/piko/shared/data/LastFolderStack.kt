@@ -11,9 +11,6 @@ import kotlinx.serialization.json.Json
  * 恢复时那一级的名字被截断、其后一段被丢掉，面包屑与「上一级」随之出错。
  */
 object LastFolderStack {
-    fun encode(stack: List<PikoPathBreadcrumb>): String =
-        json.encodeToString(serializer, stack.map { LastFolderCrumb(it.id, it.name) })
-
     /** 内容为空或损坏时返回空表，由调用方退回只恢复最后一级。 */
     fun decode(serialized: String): List<PikoPathBreadcrumb> {
         if (serialized.isBlank()) return emptyList()

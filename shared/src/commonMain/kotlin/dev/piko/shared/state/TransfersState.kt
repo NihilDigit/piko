@@ -944,7 +944,7 @@ private fun parseEpochMillis(rfc3339: String?): Long? =
     rfc3339?.let { runCatching { Instant.parse(it).toEpochMilliseconds() }.getOrNull() }
 
 /** 保留未变化的行身份，让 Strong Skipping 按引用跳过；移除的任务不继续占用缓存。 */
-internal class TransferItemCache {
+private class TransferItemCache {
     private data class Entry(val source: Any?, val item: TransferItem)
     private val entries = mutableMapOf<String, Entry>()
 

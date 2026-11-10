@@ -197,10 +197,6 @@ open class PikoDriveRepository(
     private val treeSyncJob = MutableStateFlow<Pair<PikPakClient, Deferred<Unit>>?>(null)
     private val treeBuildMutex = Mutex()
     private var activeBuildToken: Any? = null
-    private data class TreeSave(val state: DriveTreeIndex.State, val syncedAt: Long)
-    private class TreeWriterBinding(val account: String, val generation: Long, val source: MutableStateFlow<VersionedSnapshot<TreeSave>>, val job: Job, val writer: Deferred<SnapshotWriter<TreeSave>>)
-    private var treeWriter: TreeWriterBinding? = null
-    private var treeWriterHandoff: Deferred<Unit>? = null
     private var lastCanaryProbeAt: TimeSource.Monotonic.ValueTimeMark? = null
 
     data class TreeBuildProgress(
@@ -505,7 +501,6 @@ open class PikoDriveRepository(
             withPikoLock(vaultStoreLock) {
                 vaultBinding.value?.takeIf { it.client.account != account }?.let(::retireVaultStoreLocked)
             }
-            if (previous != null) flushPendingTreeSnapshotSave(previous)
             dataAccount.value = null
             accountBindingReady = false
             pendingServerDeletes.value = emptySet()
@@ -803,7 +798,6 @@ open class PikoDriveRepository(
             changed
         }
         if (indexChanged) normalizeLocations()
-        if (driveTreeIndex.isComplete) scheduleTreeSnapshotSave()
         if (notifyChange) _folderChanges.tryEmit(change)
     }
 
@@ -1186,7 +1180,6 @@ open class PikoDriveRepository(
             val files = projectOptimisticFiles(sourceLedger.enrich(listed), parentId)
             var indexUpdated = false
             var reparentedFrom = emptySet<String>()
-            var shouldSaveSnapshot = false
             withPikoLock(treeStateLock) {
                 if (clientManager.currentClient.value === asked && this@PikoDriveRepository.driveTreeIndex === driveTreeIndex && unchangedSince(parentId, serial) && !hasPendingOptimisticWrites) {
                     rememberListing(parentId, files)
@@ -1202,14 +1195,12 @@ open class PikoDriveRepository(
                         _folderEmptiness.update { it - reparentedFrom }
                     }
                     indexUpdated = folderIndex.listed(parentId, files)
-                    shouldSaveSnapshot = driveTreeIndex.isComplete
                 }
             }
             if (reparentedFrom.isNotEmpty()) {
                 _folderChanges.tryEmit(DriveChange.ContentsChanged(reparentedFrom))
             }
             if (indexUpdated) normalizeLocations()
-            if (shouldSaveSnapshot) scheduleTreeSnapshotSave()
             files
         }
         var pending: Deferred<List<FileStat>>? = null
@@ -1655,7 +1646,6 @@ open class PikoDriveRepository(
                             _quotaUpdates.tryEmit(client.account to q)
                             if (driveTreeIndex.isComplete && driveTreeIndex.lastUsageBytes == null) {
                                 driveTreeIndex.setLastUsageBytes(q.quota.usageBytes)
-                                scheduleTreeSnapshotSave()
                             }
                         }
                     }
@@ -1863,7 +1853,6 @@ open class PikoDriveRepository(
                     true
                 }
                 if (!applied) return
-                if (driveTreeIndex.isComplete) scheduleTreeSnapshotSave()
                 _folderChanges.tryEmit(DriveChange.ContentsChanged(setOf(folderId)))
             }
             is VaultCommitSnapshot.FullListing -> {
@@ -1895,7 +1884,6 @@ open class PikoDriveRepository(
                     return
                 }
                 if (indexUpdated) normalizeLocations()
-                if (driveTreeIndex.isComplete) scheduleTreeSnapshotSave()
                 _folderChanges.tryEmit(DriveChange.ContentsChanged(setOf(folderId) + reparented))
             }
         }
@@ -2152,7 +2140,6 @@ open class PikoDriveRepository(
                         _quotaUpdates.tryEmit(asked.account to it)
                         if (driveTreeIndex.isComplete && driveTreeIndex.lastUsageBytes == null) {
                             driveTreeIndex.setLastUsageBytes(it.quota.usageBytes)
-                            scheduleTreeSnapshotSave()
                         }
                     }
                 }
@@ -2661,9 +2648,6 @@ open class PikoDriveRepository(
                         shouldFullRebuild = false
                         continue
                     }
-                    if ((prevUsage == null || localPhysicalMatchesQuota) && usageBytes != null) {
-                        scheduleTreeSnapshotSave()
-                    }
                     return@runSuspendCatching CanaryProbeResult.UNCHANGED
                 }
 
@@ -2719,7 +2703,6 @@ open class PikoDriveRepository(
                                 readAndRecordVaultEntries(folderId, children, store, asked)
                             }
                         }
-                        scheduleTreeSnapshotSave()
                         _folderChanges.tryEmit(DriveChange.ContentsChanged(affectedParents))
                         PikoLog.i(TAG, "本地文件树索引增量更新完成：变更 ${enriched.size} 项，历时 ${patchStarted.elapsedNow().inWholeMilliseconds} ms")
                         return@runSuspendCatching CanaryProbeResult.INCREMENTAL_PATCH
@@ -2826,7 +2809,6 @@ open class PikoDriveRepository(
                                     readAndRecordVaultEntries(folderId, children, store, asked)
                                 }
                             }
-                            scheduleTreeSnapshotSave()
                             _folderChanges.tryEmit(DriveChange.ContentsChanged(affectedParents))
                             PikoLog.i(
                                 TAG,
@@ -2873,33 +2855,7 @@ open class PikoDriveRepository(
                 index.isComplete
             }
         }
-        val store = cacheStore ?: return@withContext false
-        val handoff = withPikoLock(treeStateLock) { treeWriterHandoff }
-        // The former generation must commit before this generation reads the same account key.
-        // Waiting after admission would deadlock the former writer's persistence permit.
-        handoff?.join()
-        if (clientManager.currentClient.value !== asked || accountGeneration != generation) return@withContext false
-        val vaultStore = vaultForClient(asked)
-        vaultStore.awaitLoaded()
-        val cachedManifests = vaultStore.parsedFlow.value
-        val permit = dev.piko.shared.memory.PikoMemoryGovernor.Shared.acquire(dev.piko.shared.memory.MemoryWorkKind.SnapshotRead, 0)
-        try {
-        val snapshot = store.readStream(DriveTreeIndex.snapshotKeyOf(account), DriveTreeIndex::readSnapshot) ?: return@withContext false
-        var indexUpdated = false
-        val restored = withPikoLock(treeStateLock) {
-            if (!isCurrent()) return@withPikoLock false
-            if (!index.restoreSnapshot(snapshot, cachedManifests)) return@withPikoLock false
-            indexUpdated = populateDerivedFromTreeLocked()
-            true
-        }
-        if (!restored) return@withContext false
-        withPikoLock(treeStateLock) {
-            if (!isCurrent()) return@withContext false
-            if (indexUpdated) normalizeLocations()
-        }
-        PikoLog.d(TAG, "已从本地快照恢复文件树：${snapshot.entries.size} 个节点，归档缓存 ${cachedManifests.size} 份")
-        true
-        } finally { permit.release() }
+        false
     }
 
     private fun populateDerivedFromTreeLocked(): Boolean {
@@ -2912,67 +2868,6 @@ open class PikoDriveRepository(
             }
         }
         return indexUpdated
-    }
-
-    private fun scheduleTreeSnapshotSave() = withPikoLock(treeStateLock) {
-        if (driveTreeIndex.isPersistent) return@withPikoLock
-        val store = cacheStore ?: return@withPikoLock
-        val owner = currentAccount?.takeIf { it.isNotEmpty() } ?: return@withPikoLock
-        val state = driveTreeIndex.flow.value
-        if (!state.complete) return@withPikoLock
-        val generation = accountGeneration
-        val snapshot = VersionedSnapshot(PersistVersion(generation, state.revision), TreeSave(state, driveTreeIndex.lastFullSyncAtMillis))
-        val binding = treeWriter?.takeIf { it.account == owner && it.generation == generation } ?: run {
-            val source = MutableStateFlow(snapshot)
-            val job = SupervisorJob()
-            val writerScope = CoroutineScope(job + Dispatchers.Default)
-            val predecessor = treeWriterHandoff
-            val writer = writerScope.async {
-                // Wait before creating a writer, not from capture/persist while holding its memory permit.
-                predecessor?.join()
-                SnapshotWriter(
-                    scope = writerScope, accountGeneration = generation,
-                    source = SnapshotSource { source.value }, debounceMillis = TREE_SNAPSHOT_SAVE_DELAY,
-                ) { saved: TreeSave ->
-                    try {
-                        store.writeStream(DriveTreeIndex.snapshotKeyOf(owner)) { sink ->
-                            DriveTreeIndex.writeSnapshot(sink, saved.state, kotlin.time.Clock.System.now().toEpochMilliseconds(), saved.syncedAt)
-                        }
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (failure: Exception) {
-                        PikoLog.w(TAG, "保存文件树快照失败", failure)
-                        throw failure
-                    }
-                }
-            }
-            writerScope.launch {
-                val ready = writer.await()
-                source.collect { ready.markDirty(it.version) }
-            }
-            TreeWriterBinding(owner, generation, source, job, writer).also { treeWriter = it }
-        }
-        binding.source.value = snapshot
-    }
-
-    private fun flushPendingTreeSnapshotSave(previousAccount: String) = withPikoLock(treeStateLock) {
-        if (driveTreeIndex.isPersistent) return@withPikoLock
-        val binding = treeWriter?.takeIf { it.account == previousAccount } ?: return@withPikoLock
-        treeWriter = null
-        // The writer's source is sealed here; it never reads the new account's live tree.
-        val state = driveTreeIndex.flow.value
-        if (state.complete) binding.source.value = VersionedSnapshot(
-            PersistVersion(binding.generation, state.revision), TreeSave(state, driveTreeIndex.lastFullSyncAtMillis),
-        )
-        treeWriterHandoff = backgroundScope.async {
-            try {
-                runSuspendCatching { binding.writer.await().flushThrough(binding.source.value.version) }
-                    .logFailure(TAG, "保存旧账号文件树失败")
-            } finally {
-                binding.job.cancelAndJoin()
-            }
-            Unit
-        }
     }
 
     private fun ensureTreeSync(asked: PikPakClient, forceRebuild: Boolean = false): Deferred<Unit> {
@@ -3365,7 +3260,6 @@ open class PikoDriveRepository(
                             if (shouldRestartRebuild) requestTreeRebuild()
                             else if (committed) {
                                 if (indexUpdated) normalizeLocations()
-                                scheduleTreeSnapshotSave()
                                 if (isShadowRebuild && changedFolders.isNotEmpty()) {
                                     _folderChanges.tryEmit(DriveChange.ContentsChanged(changedFolders))
                                 }
@@ -3961,7 +3855,6 @@ open class PikoDriveRepository(
         private const val MAX_CANARY_PAGES = 4
         private const val CANARY_TAIL_SETTLED_COUNT = 32
         private const val MAX_INCREMENTAL_RECONCILE_FOLDERS = 16
-        private const val TREE_SNAPSHOT_SAVE_DELAY = 2_000L
 
         private inline fun firstPageOrTailUnchangedCount(
             items: List<FileStat>,

@@ -387,5 +387,5 @@ private class RollingLogFiles(
 private val ENTRY_START = Regex("""^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}""", RegexOption.MULTILINE)
 
 /** [text] 里第一条时间不早于 [cutoff] 的记录从哪个字符开始；一条都没有时为 null。 */
-internal fun firstEntryNotBefore(text: String, cutoff: String): Int? =
+private fun firstEntryNotBefore(text: String, cutoff: String): Int? =
     ENTRY_START.findAll(text).firstOrNull { it.value >= cutoff }?.range?.first

@@ -4,7 +4,6 @@ import dev.piko.shared.i18n.enCount
 import dev.piko.shared.i18n.tr
 
 import dev.piko.shared.data.readableSize
-import dev.piko.shared.data.DriveLibrary
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -20,34 +19,6 @@ interface SessionListing {
 
     /** 列表项。[isExpanded] 按分区 ID 问展开没有，收起的分区只列标题。 */
     fun items(isExpanded: (blockId: String) -> Boolean): List<DriveListItem>
-}
-
-class DuplicateDirectoryListing(
-    private val finder: DuplicateFinderState,
-    private val folderId: String,
-    private val kind: () -> DuplicateKind = { DuplicateKind.IDENTICAL },
-) : SessionListing {
-    override val usesFolderStructure: Boolean get() = true
-    override val files: List<FileStat> get() = finder.directoryFiles(folderId, kind())
-    override fun filesInFolder(folderId: String): List<FileStat> =
-        finder.directoryFiles(if (folderId == DriveLibrary.DUPLICATES.id) finder.root.id else folderId, kind())
-    override fun items(isExpanded: (blockId: String) -> Boolean): List<DriveListItem> =
-        files.map { DriveListItem.File(it, null) }
-
-    override fun decorate(item: DriveListItem.File): DriveListItem.File {
-        if (item.file.isFolder) return item
-        val view = item.view
-        val kept = item.file.id in finder.keptIds
-        val tags = listOfNotNull(tr("建议保留", "Keep", "保持推奨", "유지 권장", "建議保留").takeIf { kept }) + view?.tags.orEmpty()
-        return DriveListItem.File(item.file, DriveFileView(
-            title = view?.title ?: item.file.name,
-            tags = tags.distinct(),
-            code = view?.code,
-            resolution = view?.resolution,
-            heading = view?.heading ?: item.file.name,
-            fields = view?.fields.orEmpty(),
-        ), item.key)
-    }
 }
 
 enum class DuplicateKeepRule {

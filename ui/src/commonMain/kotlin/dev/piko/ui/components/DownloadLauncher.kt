@@ -45,7 +45,7 @@ internal class DownloadRequest(
 }
 
 /** 点「下载」之后怎么走。 */
-internal sealed interface DownloadPlan {
+private sealed interface DownloadPlan {
     data object Ask : DownloadPlan
 
     /** 不问，按上限直接下，0 是原画。 */
@@ -55,11 +55,11 @@ internal sealed interface DownloadPlan {
 /**
  * 普通下载直接使用默认画质，未设置时用原画。只有显式指定画质才询问，不检查目录内容。
  */
-internal fun planDownload(defaultMaxHeight: Int?, chooseQuality: Boolean): DownloadPlan =
+private fun planDownload(defaultMaxHeight: Int?, chooseQuality: Boolean): DownloadPlan =
     if (chooseQuality) DownloadPlan.Ask else DownloadPlan.Direct(defaultMaxHeight ?: 0)
 
 /** 对话框里勾了「以后按此画质直接下载」时存成默认下载画质的上限；没勾为 null，所选只管这一次。 */
-internal fun keptDefaultMaxHeight(choice: DownloadChoice, keep: Boolean): Int? = if (!keep) null else when (choice) {
+private fun keptDefaultMaxHeight(choice: DownloadChoice, keep: Boolean): Int? = if (!keep) null else when (choice) {
     is DownloadChoice.Exact -> downloadMaxHeightFor(choice.quality)
     is DownloadChoice.Cap -> choice.maxHeight
 }

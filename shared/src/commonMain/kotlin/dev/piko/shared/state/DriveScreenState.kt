@@ -98,9 +98,6 @@ internal fun <T> reinsertRemoved(current: List<T>, snapshot: List<T>, removedIds
     return result
 }
 
-internal fun reinsertRemoved(current: List<FileStat>, snapshot: List<FileStat>, removedIds: Set<String>): List<FileStat> =
-    reinsertRemoved(current, snapshot, removedIds) { it.id }
-
 private const val PREFETCH_DWELL_MILLIS = 400L
 
 private val HIGHLIGHT_RETRY_DELAYS = listOf(300L, 600L, 800L, 1000L)

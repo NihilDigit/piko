@@ -1003,13 +1003,6 @@ class VaultStore(
         fun committedCacheKeyOf(account: String): String =
             "vault-committed-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
 
-        fun encodeParsed(parsed: Map<String, List<VaultEntry>>): String =
-            JSON.encodeToString(CacheSerializer(), CacheSnapshot(parsed))
-
-        fun decodeParsed(text: String): Map<String, List<VaultEntry>>? =
-            runCatching { JSON.decodeFromString(CacheSerializer(), text).parsed }.getOrNull()
-                ?: runCatching { JSON.decodeFromString(PARSED_SERIALIZER, text) }.getOrNull()
-
         private val SOURCE_NAME = Regex("""归档来源-[0-9a-f]{16}\.(magnet|txt)""")
         /** 历史版本曾写入同目录的来源旁路文件，现已不再生成，列表里仍过滤隐藏。 */
         fun isRecoveryFile(file: FileStat): Boolean = !file.isFolder && SOURCE_NAME.matches(file.name)

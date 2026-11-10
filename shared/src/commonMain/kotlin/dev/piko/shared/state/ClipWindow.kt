@@ -11,5 +11,3 @@ fun clipWindowEnded(positionMs: Long, startMs: Long, lengthMs: Long, local: Bool
 fun localClipMaxWindowMs(startMs: Long, videoDurationMs: Long): Long? =
     if (videoDurationMs > 0) (videoDurationMs - startMs.coerceAtLeast(0L)).coerceAtLeast(1_000L) else null
 
-fun localClipWindowMs(startMs: Long, videoDurationMs: Long): Long =
-    minOf(CLIP_LENGTH_MS, (videoDurationMs - startMs.coerceAtLeast(0)).coerceAtLeast(0))

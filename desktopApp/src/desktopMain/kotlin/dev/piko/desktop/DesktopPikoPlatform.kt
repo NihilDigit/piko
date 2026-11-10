@@ -439,7 +439,7 @@ private suspend fun pickFolder(owner: Window?, initial: File?, title: String): F
     }
 }
 
-internal fun desktopPrimaryFontCandidates(
+private fun desktopPrimaryFontCandidates(
     isMacOs: Boolean,
     isLinux: Boolean,
     effectiveLanguage: AppLanguage,

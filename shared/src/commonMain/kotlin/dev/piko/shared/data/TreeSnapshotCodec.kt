@@ -1,11 +1,8 @@
 package dev.piko.shared.data
 
-import io.github.nihildigit.pikpak.FileStat
 import kotlinx.io.Buffer
-import kotlinx.io.Sink
 import kotlinx.io.Source
 import kotlinx.io.readString
-import kotlinx.io.writeString
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -19,130 +16,6 @@ internal object TreeSnapshotCodec {
     private const val MAX_NODES = 1_000_000
     private const val MAX_SOURCES = 200_000
     private const val MAX_SOURCE_CHARS = 64_000_000
-
-    fun write(sink: Sink, state: DriveTreeIndex.State, savedAt: Long, syncedAt: Long) {
-        val sources = HashMap<String, Int>()
-        for (file in state.entries.values) {
-            if (file.trashed || VaultEntry.isVaulted(file.id)) continue
-            file.params["url"]?.let { if (it !in sources) sources[it] = sources.size }
-        }
-        sink.writeString("{\"schemaVersion\":2,\"savedAtMillis\":$savedAt,\"lastFullSyncAtMillis\":$syncedAt,\"complete\":${state.complete}")
-        state.lastUsageBytes?.let { sink.writeString(",\"lastUsageBytes\":$it") }
-        sink.writeString(",\"dirtyFolders\":[")
-        var comma = false
-        for (id in state.dirtyFolders) {
-            if (comma) sink.writeString(",")
-            sink.writeString(json.encodeToString(String.serializer(), id)); comma = true
-        }
-        sink.writeString("],\"sources\":[")
-        // HashMap iteration is not index order. A reference-sized array does not copy source strings.
-        val ordered = arrayOfNulls<String>(sources.size)
-        for ((source, index) in sources) ordered[index] = source
-        comma = false
-        for (source in ordered) {
-            if (comma) sink.writeString(",")
-            sink.writeString(json.encodeToString(String.serializer(), source!!)); comma = true
-        }
-        sink.writeString("],\"contentMetadata\":[")
-        comma = false
-        for ((key, metadata) in state.contentMetadata) {
-            if (comma) sink.writeString(",")
-            sink.writeString(json.encodeToString(StoredContentMetadata.serializer(), StoredContentMetadata(key, metadata)))
-            comma = true
-        }
-        sink.writeString("],\"entries\":[")
-        comma = false
-        for (file in state.entries.values) {
-            if (file.trashed || VaultEntry.isVaulted(file.id)) continue
-            if (comma) sink.writeString(",")
-            val sourceRef = file.params["url"]?.let(sources::get)
-            val stored = DriveTreeIndex.StoredTreeEntry.of(file).copy(
-                params = if (sourceRef == null) file.params else file.params - "url",
-                sourceRef = sourceRef,
-                originalCreatedAtMillis = state.entryMetadata[file.id]?.originalCreatedAtMillis,
-                thumbnailLink = file.thumbnailLink.takeUnless { '?' in it }.orEmpty(),
-            )
-            sink.writeString(json.encodeToString(DriveTreeIndex.StoredTreeEntry.serializer(), stored))
-            comma = true
-        }
-        sink.writeString("]}")
-    }
-
-    fun read(source: Source): DriveTreeIndex.PersistedTreeSnapshot? = try {
-        decode(source)
-    } catch (_: IllegalArgumentException) { null } catch (_: kotlinx.io.IOException) { null }
-
-    private fun decode(source: Source): DriveTreeIndex.PersistedTreeSnapshot {
-        val reader = JsonFrames(source)
-        val entries = HashMap<String, FileStat>()
-        val references = HashMap<String, Int>()
-        val instances = HashMap<String, EntryMetadata>()
-        val metadata = ArrayList<StoredContentMetadata>()
-        val sources = ArrayList<String>()
-        val dirty = HashSet<String>()
-        val canonical = TreeCanonicalizer()
-        var version = 1
-        var savedAt = 0L
-        var syncedAt = 0L
-        var usage: Long? = null
-        var complete = true
-        var sourceCharacters = 0
-        val seen = HashSet<String>()
-        reader.objectFields { name ->
-            require(seen.add(name)) { "Duplicate snapshot field" }
-            when (name) {
-                "schemaVersion" -> version = reader.value().toInt()
-                "savedAtMillis" -> savedAt = reader.value().toLong()
-                "lastFullSyncAtMillis" -> syncedAt = reader.value().toLong()
-                "lastUsageBytes" -> usage = reader.value().let { if (it == "null") null else it.toLong() }
-                "complete" -> complete = reader.value().toBooleanStrict()
-                "dirtyFolders" -> reader.arrayItems {
-                    require(dirty.size < MAX_NODES)
-                    dirty.add(json.decodeFromString(String.serializer(), reader.value()))
-                }
-                "sources" -> reader.arrayItems {
-                    require(sources.size < MAX_SOURCES)
-                    val value = json.decodeFromString(String.serializer(), reader.value())
-                    sourceCharacters += value.length
-                    require(sourceCharacters <= MAX_SOURCE_CHARS)
-                    sources.add(value)
-                }
-                "contentMetadata" -> reader.arrayItems {
-                    require(metadata.size < MAX_NODES)
-                    val item = json.decodeFromString(StoredContentMetadata.serializer(), reader.value())
-                    val key = ContentKey.of(item.key.gcid, item.key.sizeBytes)
-                    if (key != null) metadata.add(item.copy(key = key, metadata = ContentMetadata().merge(item.metadata)))
-                }
-                "entries" -> reader.arrayItems {
-                    require(entries.size < MAX_NODES)
-                    val stored = json.decodeFromString(DriveTreeIndex.StoredTreeEntry.serializer(), reader.value())
-                    require(stored.id !in entries) { "Duplicate node identity" }
-                    val file = canonical.compact(stored.toFileStat().let {
-                        if ('?' in it.thumbnailLink) it.copy(thumbnailLink = "") else it
-                    })
-                    entries[file.id] = file
-                    stored.sourceRef?.let { references[file.id] = it }
-                    (stored.originalCreatedAtMillis ?: file.params["piko_original_created_at"]?.toLongOrNull())?.let {
-                        instances[file.id] = EntryMetadata(it)
-                    }
-                }
-                else -> reader.skipValue()
-            }
-        }
-        require(version == 1 || version == 2) { "Unsupported snapshot schema" }
-        require(reader.finished()) { "Trailing snapshot data" }
-        // Field order is irrelevant. Invalid references drop only the untrusted source association.
-        for ((id, reference) in references) {
-            val url = sources.getOrNull(reference) ?: continue
-            val file = entries.getValue(id)
-            entries[id] = file.copy(params = CompactStringMap.of(file.params + ("url" to url)))
-        }
-        return DriveTreeIndex.PersistedTreeSnapshot(
-            schemaVersion = version, savedAtMillis = savedAt, lastFullSyncAtMillis = syncedAt,
-            lastUsageBytes = usage, complete = complete, dirtyFolders = dirty,
-            contentMetadata = metadata, entryMetadata = instances, physicalEntries = entries,
-        )
-    }
 
     /** Streaming migration callbacks must write to an unpublished transaction/generation. */
     fun readStreaming(

@@ -102,7 +102,6 @@ internal object DriveActions {
      * 调整常用操作的顺序，完整能力集合保持一致。图标行放不下的操作由 layoutActions 放回列表。
      */
     fun quickRow(
-        desktop: Boolean,
         cut: SheetAction?,
         copy: SheetAction?,
         download: SheetAction?,

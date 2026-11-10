@@ -616,34 +616,9 @@ class DriveWorkspace(
     /** 最近去过的文件夹（整条路径），新的在前，命令面板用，见 [RecentFolders]。 */
     override val recentFoldersFlow: StateFlow<List<List<PikoPathBreadcrumb>>> get() = recentFolders.flow
 
-    /**
-     * 人在网盘里往别处走（进出文件夹、面包屑、后退前进、从别处跳进来）之前问一声，返回 false 即拦下、栈不动；
-     * 拦下的一方问过人之后调 retry 把同一步再走一遍；普通导航不结束业务会话。
-     * 在换栈之前拦，而不是换了再跳回去：那样历史里多出一步，画面也闪一下。
-     * 换账号、启动时恢复、切标签与信息流的继续刷不经它：那不是人在这个位置里往外走。
-     */
-    fun interface LeaveGuard {
-        fun allows(next: List<PikoPathBreadcrumb>, retry: () -> Unit): Boolean
-    }
-
-    var leaveGuard: LeaveGuard? = null
-
-    private fun leaveAllowed(next: List<PikoPathBreadcrumb>, retry: () -> Unit): Boolean = leaveGuard?.allows(next, retry) ?: true
-
-    /**
-     * 换栈之外还有别的步骤的导航（先切到网盘页、跳过去后标出某一项）：按要去的 [next] 先问 [leaveGuard]，问的是整个 [action]。
-     * 拦下后取消就什么都没发生，确认后重走的是整个动作；只靠换栈时的那一问，切页已经发生、标出那一步也丢了。
-     */
     override fun navigateThen(next: List<PikoPathBreadcrumb>, action: () -> Unit) {
-        if (leaveAllowed(next, action)) action()
+        action()
     }
-
-    /**
-     * 活动标签停在会话的位置（查重，见 [DriveLibrary.isSession]）、那个会话还没结束时为真，由主界面装上。
-     * 这时换栈改为另开一个普通标签：会话标签只是一个位置，改写它，会话还在、标签却没了，成了关不掉的孤儿。
-     * 只在有标签栏时为真；移动端的返回不结束扫描或报告。
-     */
-    var sessionTabHeld: (DriveLibrary) -> Boolean = { false }
 
     /** 把栈换成 [requested]，换了才把原来的位置记进后退、清掉前进。 */
     private fun moveTo(requested: List<PikoPathBreadcrumb>) {
@@ -652,23 +627,15 @@ class DriveWorkspace(
         val previous = _folderStackFlow.value
         if (next == previous) return
         canRestoreSavedTabs = false
-        if (!leaveAllowed(next) { moveTo(requested) }) return
-        val session = previous.library?.takeIf { it.isSession }
-        if (session != null && next.library != session && sessionTabHeld(session)) {
-            openTab(next)
-            return
-        }
         _folderStackFlow.value = next
         _historyFlow.update { it.visited(previous) }
         stackChanged()
     }
 
-    /** 后退了返回 true。被 [leaveGuard] 拦下也返回 true：这一下已经有人接着处理，调用方不要再退到别处。 */
     override fun goBack(): Boolean {
         refreshFolderReferences()
         val history = _historyFlow.value
         val target = history.back.lastOrNull() ?: return false
-        if (!leaveAllowed(target) { goBack() }) return true
         _historyFlow.value = FolderHistory(back = history.back.dropLast(1), forward = history.forward + listOf(_folderStackFlow.value))
         _folderStackFlow.value = target
         stackChanged()
@@ -679,7 +646,6 @@ class DriveWorkspace(
         refreshFolderReferences()
         val history = _historyFlow.value
         val target = history.forward.lastOrNull() ?: return false
-        if (!leaveAllowed(target) { goForward() }) return true
         _historyFlow.value = FolderHistory(back = history.back + listOf(_folderStackFlow.value), forward = history.forward.dropLast(1))
         _folderStackFlow.value = target
         stackChanged()
