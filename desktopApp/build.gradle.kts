@@ -206,8 +206,11 @@ val bundledAppResources by tasks.registering(Sync::class) {
             includeEmptyDirs = false
         }
     }
-    // Toast 的 AUMID 登记要一个磁盘上的图标文件，exe 里内嵌的那份用不上
+    // Toast 的 AUMID 登记要一个磁盘上的图标文件，exe 里内嵌的那份用不上；.torrent 关联另用独立文档图标
     from("src/desktopMain/resources/app-icon.png")
+    if (isWindowsHost) {
+        from("package/windows/torrent.ico")
+    }
     into(layout.buildDirectory.dir("appResources/common"))
 }
 

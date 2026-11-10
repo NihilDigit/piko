@@ -97,6 +97,7 @@ internal object WindowsLinkAssociation : LinkAssociation {
      * 资源管理器把 exe 的文件描述按路径缓存在 MuiCache 里，exe 换了也不刷新。1.1.0 之前的 exe 描述是一句英文简介，
      * 从那时装上来的人在「打开方式」里看到的一直是那句简介而不是 Piko。只删这个 exe 自己的那几项，
      * 值已是 Piko 时不动；删掉后系统下次按新 exe 重新生成。启动时调一次，没登记过关联的人也不会看到旧名。
+     * 同时把已归属本 exe 的种子 ProgID 旧图标（指向 Piko.exe）就地刷新为独立的 torrent.ico。
      */
     fun forgetStaleName(exe: File? = launcher()) {
         exe ?: return
@@ -107,6 +108,10 @@ internal object WindowsLinkAssociation : LinkAssociation {
                 Registry.deleteValue(MUI_CACHE, "$prefix.FriendlyAppName")
                 Registry.deleteValue(MUI_CACHE, "$prefix.ApplicationCompany")
                 PikoLog.i(TAG, "已清除过期的应用名缓存")
+            }
+            if (registration.refreshTorrentIcon(exe)) {
+                notifyAssociationsChanged()
+                PikoLog.i(TAG, "已更新种子文件关联图标")
             }
         }.onFailure { PikoLog.w(TAG, "清除应用名缓存失败", it) }
     }

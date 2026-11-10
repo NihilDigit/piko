@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="100%" height="100%">
+  <!-- Outer Solid #306EFF Document Frame (r=5.2, concentric with inner r=3.0 + 2.2 border) -->
+  <path fill="#306EFF"
+        d="M12.2,3 H31 L41,13 V39.8 A5.2,5.2 0 0 1 35.8,45 H12.2 A5.2,5.2 0 0 1 7,39.8 V8.2 A5.2,5.2 0 0 1 12.2,3 Z"/>
+
+  <!-- Full-height Pure White Interior (2.2px border all around, inner r=3.0) -->
+  <path fill="#FFFFFF"
+        d="M12.2,5.2 H30.1 L38.8,13.9 V39.8 A3,3 0 0 1 35.8,42.8 H12.2 A3,3 0 0 1 9.2,39.8 V8.2 A3,3 0 0 1 12.2,5.2 Z"/>
+
+  <!-- Solid #306EFF Dog-ear Flap -->
+  <path fill="#306EFF"
+        d="M30.1,4.5 L39.5,13.9 H33.6 A3.5,3.5 0 0 1 30.1,10.4 Z"/>
+
+  <!-- Piko Cat in upper-middle area (same paths as docs/icon.svg, stroke 3.2 * 0.48 = 1.54) -->
+  <g transform="translate(24, 21.5) scale(0.48) translate(-24, -25.5)">
+    <path fill="#306EFF" d="M10.5,16.8 C10.5,14.0 12.2,11.0 13.5,9.8 C14.2,9.0 15.5,9.2 16.0,10.2 L20.8,15.2 Z"/>
+    <path fill="#306EFF" d="M37.5,16.8 C37.5,14.0 35.8,11.0 34.5,9.8 C33.8,9.0 32.5,9.2 32.0,10.2 L27.2,15.2 Z"/>
+    <path fill="none" stroke="#306EFF" stroke-width="3.2" stroke-linejoin="round"
+          d="M15,15 H33 A7.5,7.5 0 0 1 40.5,22.5 V32.5 A7.5,7.5 0 0 1 33,40 H15 A7.5,7.5 0 0 1 7.5,32.5 V22.5 A7.5,7.5 0 0 1 15,15 Z"/>
+    <path fill="#306EFF" d="M17.5,22.5 H17.5 A1.85,1.85 0 0 1 19.35,24.35 V27.0 A1.85,1.85 0 0 1 17.5,28.85 H17.5 A1.85,1.85 0 0 1 15.65,27.0 V24.35 A1.85,1.85 0 0 1 17.5,22.5 Z"/>
+    <path fill="#306EFF" d="M30.5,22.5 H30.5 A1.85,1.85 0 0 1 32.35,24.35 V27.0 A1.85,1.85 0 0 1 30.5,28.85 H30.5 A1.85,1.85 0 0 1 28.65,27.0 V24.35 A1.85,1.85 0 0 1 30.5,22.5 Z"/>
+    <path fill="none" stroke="#306EFF" stroke-width="2.8" stroke-linecap="round" d="M20.8,31.8 Q24,35.5 27.2,31.8"/>
+  </g>
+
+  <!-- Optically centered #306EFF "BT" (stroke 1.50 to match cat face 1.54) -->
+  <path fill="none" stroke="#306EFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+        d="M18.4,33.3 V39.5
+           M18.4,33.3 H21.3 A1.5,1.5 0 0 1 21.3,36.3 H18.4
+           M18.4,36.3 H21.6 A1.6,1.6 0 0 1 21.6,39.5 H18.4
+           M25.3,33.3 H30.1
+           M27.7,33.3 V39.5"/>
+</svg>

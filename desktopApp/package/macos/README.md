@@ -13,7 +13,7 @@ be32() { printf "\\x$(printf %02x $(( ($1>>24)&255 )))\\x$(printf %02x $(( ($1>>
 : > "$out/body"
 for e in ic11:32 ic12:64 ic07:128 ic13:256 ic08:256 ic14:512 ic09:512 ic10:1024; do
   t=${e%:*}; px=${e#*:}; art=$(( px * 824 / 1024 ))
-  magick -background none -density 400 docs/icon.svg -resize ${art}x${art} -gravity center \
+  magick -background none -density 2400 docs/icon.svg -resize ${art}x${art} -gravity center \
     -extent ${px}x${px} "PNG32:$(cygpath -m "$out/$t.png")"
   { printf %s $t; be32 $(( $(stat -c %s "$out/$t.png") + 8 )); cat "$out/$t.png"; } >> "$out/body"
 done

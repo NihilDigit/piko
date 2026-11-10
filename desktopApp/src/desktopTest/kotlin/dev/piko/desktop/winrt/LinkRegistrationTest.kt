@@ -79,9 +79,21 @@ class LinkRegistrationTest {
 
     @Test
     fun keysPikoCreatedAreRemovedWhole() {
+        val torrentIcon = root.resolve("app\\resources\\torrent.ico").apply {
+            parentFile.mkdirs()
+            writeText("ico")
+        }
         assertTrue(registration.register(exe))
         assertEquals("\"${exe.absolutePath}\" \"%1\"", HkcuRegistry.getString("$protocolKey\\shell\\open\\command", null))
         assertEquals(identity.torrentProgId, HkcuRegistry.getString(extensionKey, null))
+        assertEquals("\"${exe.absolutePath}\",0", HkcuRegistry.getString("Software\\Classes\\${identity.magnetProgId}\\DefaultIcon", null))
+        assertEquals("\"${torrentIcon.absolutePath}\",0", HkcuRegistry.getString("Software\\Classes\\${identity.torrentProgId}\\DefaultIcon", null))
+
+        // 模拟旧版本将 DefaultIcon 写成 exe：refreshTorrentIcon 只在归属本 exe 时就地换成 torrent.ico，第二次调用无动作
+        HkcuRegistry.setString("Software\\Classes\\${identity.torrentProgId}\\DefaultIcon", null, "\"${exe.absolutePath}\",0")
+        assertTrue(registration.refreshTorrentIcon(exe))
+        assertEquals("\"${torrentIcon.absolutePath}\",0", HkcuRegistry.getString("Software\\Classes\\${identity.torrentProgId}\\DefaultIcon", null))
+        assertFalse(registration.refreshTorrentIcon(exe))
 
         assertTrue(registration.unregister(exe))
         assertFalse(HkcuRegistry.exists(protocolKey), "协议键没删干净：${dump(protocolKey)}")

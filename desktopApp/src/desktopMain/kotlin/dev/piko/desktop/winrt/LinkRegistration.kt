@@ -51,13 +51,14 @@ internal class LinkRegistration(
     fun register(exe: File): Boolean {
         val command = "\"${exe.absolutePath}\" \"%1\""
         val icon = "\"${exe.absolutePath}\",0"
+        val torrentIcon = torrentIconValue(exe)
         val writes = mutableListOf(
             // 默认应用页里的两个候选
             Registry.setString("$CLASSES\\${identity.magnetProgId}", null, tr("磁力链接", "Magnet link", "マグネットリンク", "마그넷 링크", "磁力連結")),
             Registry.setString("$CLASSES\\${identity.magnetProgId}\\DefaultIcon", null, icon),
             Registry.setString("$CLASSES\\${identity.magnetProgId}\\shell\\open\\command", null, command),
             Registry.setString("$CLASSES\\${identity.torrentProgId}", null, "BitTorrent 种子文件"),
-            Registry.setString("$CLASSES\\${identity.torrentProgId}\\DefaultIcon", null, icon),
+            Registry.setString("$CLASSES\\${identity.torrentProgId}\\DefaultIcon", null, torrentIcon),
             Registry.setString("$CLASSES\\${identity.torrentProgId}\\shell\\open\\command", null, command),
             // 「打开方式」与默认应用列表里的名字。不写时 Windows 取 exe 的文件描述，而那是按路径缓存的（见 forgetStaleName）
             Registry.setString("$CLASSES\\${identity.magnetProgId}\\Application", "ApplicationName", APP_NAME),
@@ -124,6 +125,24 @@ internal class LinkRegistration(
     fun removableProgIds(exe: File): List<String> = progIds.filter { progId ->
         Registry.getString("$CLASSES\\$progId", null) != null &&
             ownerOf(Registry.getString("$CLASSES\\$progId\\shell\\open\\command", null), exe) != Owner.Other
+    }
+
+    /**
+     * 已登记在当前 [exe] 名下的种子 ProgID 若仍指向旧的启动器图标，就地换成独立的种子文档图标。
+     * 只在命令已归属本 [exe] 且图标值实际不同时写入，返回是否改过（供调用方决定是否通知资源管理器刷新）。
+     */
+    fun refreshTorrentIcon(exe: File): Boolean {
+        val progKey = "$CLASSES\\${identity.torrentProgId}"
+        if (ownerOf(Registry.getString("$progKey\\shell\\open\\command", null), exe) != Owner.Self) return false
+        val desired = torrentIconValue(exe)
+        val iconKey = "$progKey\\DefaultIcon"
+        if (Registry.getString(iconKey, null) == desired) return false
+        return Registry.setString(iconKey, null, desired)
+    }
+
+    private fun torrentIconValue(exe: File): String {
+        val docIcon = exe.parentFile?.resolve("app\\resources\\torrent.ico")?.takeIf { it.isFile }
+        return "\"${(docIcon ?: exe).absolutePath}\",0"
     }
 
     fun ownerOf(command: String?, exe: File): Owner {
