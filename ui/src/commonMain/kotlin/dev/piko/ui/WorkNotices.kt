@@ -51,7 +51,6 @@ fun PikoServices.workNotices(): Flow<WorkNotice> = merge(
         outcome.account == driveRepository.currentAccount &&
             fileWrites.works.value.any { it.id == outcome.workId }
     }.map { WorkNotice(it.title, it.result.message) },
-    shareSaves.outcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice(it.title, it.result.message) },
     instantSaveRecords.outcomes.filter { it.account == driveRepository.currentAccount }.map { WorkNotice(it.title, it.message) },
     instantMagnetRepository.offlineSubmissions.outcomes.filter { it.account == driveRepository.currentAccount && it.status != dev.piko.shared.state.OfflineSubmitStatus.COMPLETE }.map { WorkNotice(it.title, it.message) },
 )

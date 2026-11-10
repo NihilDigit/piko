@@ -23,20 +23,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.data.auth.SnailMode
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.upload.UploadStatus
-import dev.piko.shared.presentation.needsAttention
-import dev.piko.shared.state.InstantSaveExecution
-import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.ui.LocalPikoServices
 import kotlin.math.roundToInt
-import io.github.nihildigit.pikpak.TaskPhase
-import kotlinx.coroutines.delay
 
 internal class TransferActivity(val downloadSpeed: Long, val uploadSpeed: Long, val count: Int, val attentionCount: Int = 0) {
     val hasReadout: Boolean get() = downloadSpeed > 0 || uploadSpeed > 0 || count > 0 || attentionCount > 0
 }
-
-internal fun untrackedImportCount(executions: List<InstantSaveExecution>): Int =
-    executions.count { !it.trackedInstantAttempt && !it.trackedOffline }
 
 @Composable
 internal fun rememberTransferActivity(

@@ -137,11 +137,6 @@ sealed class TransferItem {
         override val key: String get() = "instant:${work.id}"
         override val createdAtMs: Long get() = work.finishedAtMs ?: work.createdAtMs
     }
-    data class Share(val work: ShareSaveWork) : TransferItem() {
-        override val remoteTaskIds: Set<String> get() = setOfNotNull(work.remoteTaskId)
-        override val key: String get() = "share:${work.id}"
-        override val createdAtMs: Long get() = work.result?.finishedAtMs ?: work.createdAtMs
-    }
     data class OfflineSubmit(val work: OfflineSubmitWork) : TransferItem() {
         override val key: String get() = "offline-submit:${work.id}"
         override val createdAtMs: Long get() = work.finishedAtMs ?: work.createdAtMs
@@ -199,7 +194,7 @@ enum class TransferKind(private val labelText: () -> String) {
         ALL -> true
         DOWNLOAD -> item is TransferItem.Local || item is TransferItem.LocalBatch
         UPLOAD -> item is TransferItem.Upload || item is TransferItem.UploadBatch || item is TransferItem.UploadPreparing
-        CLOUD -> item is TransferItem.Cloud || item is TransferItem.Pack || item is TransferItem.Instant || item is TransferItem.InstantAttempt || item is TransferItem.Share || item is TransferItem.OfflineSubmit
+        CLOUD -> item is TransferItem.Cloud || item is TransferItem.Pack || item is TransferItem.Instant || item is TransferItem.InstantAttempt || item is TransferItem.OfflineSubmit
         FILES -> item is TransferItem.Extract || item is TransferItem.Vault || item is TransferItem.Write
     }
 }
@@ -229,7 +224,6 @@ class TransfersState(
     /** 是否包含服务端文件处理。主任务页两端都包含，局部投影可关闭。 */
     private val listsServerWork: Boolean,
     val fileWrites: FileWriteSession? = null,
-    val shareSaves: ShareSaveSession? = null,
     val offlineSubmits: OfflineSubmitSession? = taskRepo.offlineSubmissions,
     receiving: dev.piko.shared.presentation.ReceivingActivity? = null,
 ) {
@@ -253,12 +247,11 @@ class TransfersState(
 
     private var instantRecords by mutableStateOf(instantSaves.records.value.filter { it.account == account })
     private var instantAttempts by mutableStateOf(instantSaves.attempts.value.filter { it.account == account })
-    private var shareRecords by mutableStateOf(shareSaves?.works?.value.orEmpty().filter { it.account == account })
     private var offlineRecords by mutableStateOf(offlineSubmits?.works?.value.orEmpty().filter { it.account == account })
 
     private var journal by mutableStateOf(driveRepo.changes.state.value)
     private var writeRecords by mutableStateOf(fileWrites?.works?.value.orEmpty().filter { it.account == account })
-    private val fileCommands = fileWrites?.let { dev.piko.shared.presentation.FileCommands(driveRepo, it, account, vault = vault, shareSaves = shareSaves, receiving = receiving) }
+    private val fileCommands = fileWrites?.let { dev.piko.shared.presentation.FileCommands(driveRepo, it, account, vault = vault, receiving = receiving) }
 
     private fun requestUndo(id: Long): Boolean {
         val commands = fileCommands ?: return driveRepo.changes.undo(id)
@@ -288,15 +281,6 @@ class TransfersState(
         work.result?.undoChangeIds.orEmpty().asReversed().filter { id -> driveRepo.changes.state.value.available.any { it.id == id } }.forEach(::requestUndo)
     }
     fun vaultUndoStatus(record: FolderVaultSession.Record): DriveChangeJournal.UndoResult? = record.undoChangeId?.let { journal.undo[it] }
-    fun shareUndoStatus(work: ShareSaveWork): DriveChangeJournal.UndoResult? = undoStatus(work.undoChangeIds, journal)
-    fun canUndoShare(work: ShareSaveWork): Boolean = !work.isRunning && work.pendingRenames.isEmpty() && work.undoChangeIds.any { id -> journal.available.any {
-        it.id == id && (fileCommands == null || fileCommands.undoAvailability(it) == dev.piko.shared.presentation.ActionAvailability.Available)
-    } }
-    fun undoShare(work: ShareSaveWork) {
-        if (work.account != driveRepo.currentAccount || work.isRunning || shareUndoStatus(work)?.status == DriveChangeJournal.UndoStatus.RUNNING) return
-        if (work.pendingRenames.isNotEmpty()) { _messages.tryEmit(tr("本次重命名仍有待确认项，请先重新查询结果", "Some renames are unconfirmed. Check results again first", "今回の名前変更に未確認の項目があります。先に結果を再確認してください", "이번 이름 변경에 미확인 항목이 있습니다. 먼저 결과를 다시 확인해 주세요", "本次重新命名仍有待確認項目，請先重新查詢結果")); return }
-        work.undoChangeIds.asReversed().filter { id -> driveRepo.changes.state.value.available.any { it.id == id } }.forEach(::requestUndo)
-    }
     fun canUndoVault(record: FolderVaultSession.Record): Boolean = record.undoChangeId?.let { id -> journal.available.any { it.id == id } } == true
     fun undoVault(record: FolderVaultSession.Record) {
         val accepted = record.undoChangeId?.let(::requestUndo) == true
@@ -438,7 +422,6 @@ class TransfersState(
                 is TransferItem.Upload -> removeUpload(item.task.taskId)
                 is TransferItem.Instant -> removeInstant(item.record.id)
                 is TransferItem.InstantAttempt -> instantSaves.forgetAttempt(item.work.id)
-                is TransferItem.Share -> shareSaves?.forget(item.work.id)
                 is TransferItem.OfflineSubmit -> offlineSubmits?.forget(item.work.id)
                 is TransferItem.Pack -> discardPack(item.job.taskId)
                 is TransferItem.Extract -> skipExtract(item.job.id)
@@ -578,7 +561,6 @@ class TransfersState(
             is TransferItem.Pack -> discardPack(item.job.taskId)
             is TransferItem.Instant -> removeInstant(item.record.id)
             is TransferItem.InstantAttempt -> if (!instantSaves.forgetAttempt(item.work.id)) _messages.tryEmit(tr("正在保存，请待完成后再移除记录", "Saving in progress. Remove the record after completion", "保存中です。完了後に記録を削除してください", "저장 중입니다. 완료 후 기록을 삭제해 주세요", "正在儲存，請待完成後再移除記錄")) else Unit
-            is TransferItem.Share -> if (shareSaves?.forget(item.work.id) == false) _messages.tryEmit(tr("正在转存或撤销，请待完成后再移除记录", "Share save or undo in progress. Remove the record after completion", "共有保存または元に戻す操作の実行中です。完了後に記録を削除してください", "공유 저장 또는 실행 취소 중입니다. 완료 후 기록을 삭제해 주세요", "正在轉存或復原，請待完成後再移除記錄")) else Unit
             is TransferItem.OfflineSubmit -> if (offlineSubmits?.forget(item.work.id) == false) _messages.tryEmit(tr("正在提交离线下载，请待完成后再移除记录", "Submitting cloud download. Remove the record after completion", "クラウドダウンロードを送信中です。完了後に記録を削除してください", "클라우드 다운로드 제출 중입니다. 완료 후 기록을 삭제해 주세요", "正在提交離線下載，請待完成後再移除記錄")) else Unit
             is TransferItem.UploadPreparing -> if (!uploads.forgetPreparation(item.work.id)) _messages.tryEmit(tr("正在准备上传，请待完成后再移除记录", "Preparing upload. Remove the record after completion", "アップロードを準備中です。完了後に記録を削除してください", "업로드 준비 중입니다. 완료 후 기록을 삭제해 주세요", "正在準備上傳，請待完成後再移除記錄")) else Unit
             // 提交后的解压在服务端取消不了，只能放弃还在等密码的；归档只能停止，没有删除可言
@@ -625,7 +607,7 @@ class TransfersState(
                 is TransferItem.Pack -> item.job.outputId
                 is TransferItem.Instant -> item.record.locateId
                 is TransferItem.Upload -> item.task.fileId
-                is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.UploadBatch, is TransferItem.UploadPreparing, is TransferItem.InstantAttempt, is TransferItem.Share, is TransferItem.OfflineSubmit,
+                is TransferItem.Local, is TransferItem.LocalBatch, is TransferItem.UploadBatch, is TransferItem.UploadPreparing, is TransferItem.InstantAttempt, is TransferItem.OfflineSubmit,
                 is TransferItem.Extract, is TransferItem.Vault, is TransferItem.Write -> null
             }?.takeIf { it.isNotEmpty() }
         }
@@ -657,7 +639,6 @@ class TransfersState(
             instantSaves.records.collect { records -> instantRecords = records.filter { it.account == account } }
         }
         scope.launch { instantSaves.attempts.collect { records -> instantAttempts = records.filter { it.account == account } } }
-        shareSaves?.let { session -> scope.launch { session.works.collect { shareRecords = it.filter { work -> work.account == account } } } }
         offlineSubmits?.let { session -> scope.launch { session.works.collect { offlineRecords = it.filter { work -> work.account == account } } } }
         scope.launch {
             cloud.messages.collect { _messages.emit(it) }
@@ -698,7 +679,6 @@ class TransfersState(
             while (true) {
                 activity.active.forEach { item -> when (item) {
                     is TransferItem.Write -> if (!item.work.isRunning) fileWrites?.recheck(item.work.id)
-                    is TransferItem.Share -> if (!item.work.isRunning) shareSaves?.recheck(item.work.id)
                     is TransferItem.InstantAttempt -> if (!item.work.isRunning) instantSaves.recheck(item.work.id, driveRepo)
                     is TransferItem.Extract -> if (item.job.status is ArchiveJobStatus.Finished) extracts.recheck(item.job.id)
                     else -> Unit
@@ -843,7 +823,6 @@ class TransfersState(
                 itemCache.project("cloud:${it.taskId}", Triple(it, task, busy)) { TransferItem.Pack(it, task, busy) }
             } + instantRecords.map { itemCache.project("instant:${it.id}", it) { TransferItem.Instant(it) } } +
             instantAttempts.map { itemCache.project("instant:${it.id}", it) { TransferItem.InstantAttempt(it) } } +
-            shareRecords.map { itemCache.project("share:${it.id}", it) { TransferItem.Share(it) } } +
             offlineRecords.map { itemCache.project("offline-submit:${it.id}", it) { TransferItem.OfflineSubmit(it) } })
             .sortedByDescending { it.createdAtMs }
         itemCache.retain(items.flatMap { item -> listOf(item.key) + item.children.map { it.key } }.toSet())
@@ -906,15 +885,6 @@ class TransfersState(
             OfflineSubmitStatus.COMPLETE -> Section.COMPLETED
             OfflineSubmitStatus.REFUSED -> Section.ATTENTION
             OfflineSubmitStatus.UNCONFIRMED -> Section.PROGRESS
-        }
-        is TransferItem.Share -> {
-            val undo = undoStatus(item.work.undoChangeIds, currentJournal)
-            when {
-                item.work.isRunning || undo?.status == DriveChangeJournal.UndoStatus.RUNNING -> Section.PROGRESS
-                item.work.result?.completion == ShareSaveCompletion.UNCONFIRMED -> Section.PROGRESS
-                item.work.result?.completion != ShareSaveCompletion.SUCCEEDED || undo?.status == DriveChangeJournal.UndoStatus.FAILED -> Section.ATTENTION
-                else -> Section.COMPLETED
-            }
         }
         is TransferItem.Extract -> when (val status = item.job.status) {
             is ArchiveJobStatus.NeedsPassword -> Section.ATTENTION

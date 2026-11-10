@@ -201,20 +201,6 @@ internal fun buildTransferItemActions(
             onRetry = if (services.instantSession.canRetryAttempt(item.work.id)) ({ services.instantSession.retryAttempt(item.work.id); Unit }) else null,
             onRecheck = if (services.instantSaveRecords.canRecheck(item.work.id)) ({ services.instantSaveRecords.recheck(item.work.id, services.driveRepository); Unit }) else null,
         )
-        is TransferItem.Share -> shareTransferActions(
-            item.work,
-            state.shareUndoStatus(item.work),
-            state.canUndoShare(item.work),
-            services.shareSaves.canRecheck(item.work.id),
-            { state.undoShare(item.work) },
-            { services.shareSaves.recheck(item.work.id) },
-            {
-                if (item.work.result?.unconfirmedSources?.isNotEmpty() == true || item.work.pendingRenames.isNotEmpty()) {
-                    ctx.onConfirmSingleSideEffectDelete(item.key)
-                } else state.remove(item)
-            },
-            (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id).let { id -> { ctx.onOpenCloudFileById(id, item.work.title) } },
-        )
         is TransferItem.OfflineSubmit -> offlineSubmitActions(
             item.work,
             (item.work.outputId ?: item.work.target.id).let { id -> { ctx.onOpenCloudFileById(id, item.work.title) } },
@@ -297,8 +283,6 @@ internal fun buildTransferPrimaryAction(
         is TransferItem.Instant -> buildTransferPlayAction(item, ctx)
             ?: ({ ctx.onOpenCloudFileById(item.record.locateId, item.record.name) })
         is TransferItem.InstantAttempt -> item.work.locateId?.let { id -> { ctx.onOpenCloudFileById(id, item.work.title) } }
-        is TransferItem.Share -> (item.work.associatedOutputs.values.firstOrNull() ?: item.work.command.target.id)
-            .let { id -> { ctx.onOpenCloudFileById(id, item.work.title) } }
         is TransferItem.OfflineSubmit -> (item.work.outputId ?: item.work.target.id)
             .let { id -> { ctx.onOpenCloudFileById(id, item.work.title) } }
         is TransferItem.Extract -> if (item.job.status is ArchiveJobStatus.NeedsPassword) {
@@ -608,7 +592,6 @@ internal fun TransferTaskDetailsPane(
         is TransferItem.Pack -> PackTransferDetails(current, actions, modifier = modifier)
         is TransferItem.Instant -> InstantTransferDetails(current.record, actions, modifier = modifier)
         is TransferItem.InstantAttempt -> InstantAttemptDetails(current.work, actions, modifier = modifier)
-        is TransferItem.Share -> ShareTransferDetails(current.work, state.shareUndoStatus(current.work), actions, modifier = modifier)
         is TransferItem.OfflineSubmit -> OfflineSubmitDetails(current.work, actions, modifier = modifier)
         is TransferItem.Extract -> ExtractTransferDetails(current, actions, modifier = modifier)
         is TransferItem.Vault -> VaultTransferDetails(current, vaultSession, actions, current.record?.let(state::vaultUndoStatus), modifier = modifier)
@@ -658,9 +641,6 @@ internal fun DeleteSelectedTasksDialog(
             items.any { it is TransferItem.Write && it.work.result?.unconfirmed?.isNotEmpty() == true }
         },        tr("部分保存请求可能已在服务端执行。移除记录不会取消请求，重新保存前请先核对目标文件夹。", "Some save requests may have already run. Removing records does not cancel them; check the destination folder before saving again.", "一部の保存リクエストは既に実行されている可能性があります。記録を削除しても取り消されないため、再保存前に保存先フォルダーを確認してください。", "일부 저장 요청이 이미 실행되었을 수 있습니다. 기록을 삭제해도 취소되지 않으므로 다시 저장하기 전에 대상 폴더를 확인해 주세요.", "部分儲存請求可能已在伺服器執行。移除記錄不會取消請求，重新儲存前請先核對目標資料夾。").takeIf {
             items.any { it is TransferItem.InstantAttempt && it.work.receipt?.requiresInspection == true }
-        },
-        tr("分享转存或重命名结果待确认。移除记录不会取消已提交的请求，重试前请先核对目标文件夹。", "Share save or rename results are unconfirmed. Removing records does not cancel submitted requests; check the destination folder first.", "共有保存または名前変更の結果が未確認です。記録を削除しても送信済みのリクエストは取り消されません。", "공유 저장 또는 이름 변경 결과가 미확인 상태입니다. 기록을 삭제해도 제출된 요청은 취소되지 않습니다.", "分享轉存或重新命名結果待確認。移除記錄不會取消已提交的請求，重試前請先核對目標資料夾。").takeIf {
-            items.any { it is TransferItem.Share && (it.work.result?.unconfirmedSources?.isNotEmpty() == true || it.work.pendingRenames.isNotEmpty()) }
         },
         tr("离线下载请求可能已在服务端执行。移除记录不会取消云端任务，重新提交前请先核对云端任务列表。", "The cloud download request may have already run. Removing records does not cancel remote tasks; check cloud tasks before resubmitting.", "クラウドダウンロードは既に実行されている可能性があります。記録を削除してもリモートタスクは取り消されません。", "클라우드 다운로드 요청이 이미 실행되었을 수 있습니다. 기록을 삭제해도 원격 작업은 취소되지 않습니다.", "離線下載請求可能已在伺服器執行。移除記錄不會取消雲端任務，重新提交前請先核對雲端任務清單。").takeIf {
             items.any { it is TransferItem.OfflineSubmit && it.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED }

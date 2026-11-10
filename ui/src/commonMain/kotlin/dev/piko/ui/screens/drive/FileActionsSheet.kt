@@ -171,11 +171,9 @@ internal class FileActionHandlers(
  */
 internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionHandlers): List<SheetAction> = buildList {
     val video = !file.isFolder && file.isPlayableVideo()
-    val desktop = on.putOnClipboard != null
     val putOnClipboard = on.putOnClipboard?.takeIf { commands.cutCopy }
     addAll(
         DriveActions.quickRow(
-            desktop = desktop,
             cut = null,
             copy = null,
             download = DriveActions.download(onClick = on.download).takeIf { commands.download },

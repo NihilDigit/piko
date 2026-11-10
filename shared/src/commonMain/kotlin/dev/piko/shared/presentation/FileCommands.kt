@@ -26,13 +26,11 @@ class FileCommands(
     val session: FileWriteSession,
     private val account: String? = repository.currentAccount,
     private val vault: dev.piko.shared.state.FolderVaultSession? = null,
-    private val shareSaves: dev.piko.shared.state.ShareSaveSession? = null,
     private val receiving: ReceivingActivity? = null,
     private val acceptsActions: () -> Boolean = { true },
 ) {
     val receivingChanges: Flow<Unit> get() = merge(
         session.works.map { Unit }, session.mutations.active.map { Unit }, repository.changes.state.map { Unit },
-        shareSaves?.works?.map { Unit } ?: emptyFlow(),
         receiving?.changes ?: emptyFlow(),
     )
 
@@ -49,7 +47,6 @@ class FileCommands(
             if ((targets.roots + targets.files).any { contains(it, folder) })
                 return ActionAvailability.Blocked(tr("目标文件夹正在归档或恢复，请待完成后再保存", "Destination is being archived or restored. Save after it finishes", "保存先をアーカイブまたは復元中です。完了後に保存してください", "대상 폴더를 보관 또는 복원 중입니다. 완료 후 저장해 주세요", "目標資料夾正在歸檔或還原，請待完成後再儲存"))
         }
-        if (shareBlocked(emptyList(), folder, false)) return ActionAvailability.Blocked(tr("目标文件夹中的分享文件正在规范命名，请先在任务页处理", "Shared files at the destination are being renamed. Check Tasks first", "保存先の共有ファイル名を整理中です。先にタスク画面で確認してください", "대상 폴더의 공유 파일 이름을 정리 중입니다. 먼저 작업 페이지에서 확인해 주세요", "目標資料夾中的分享檔案正在規範命名，請先至任務頁處理"))
         return ActionAvailability.Available
     }
 
@@ -70,8 +67,6 @@ class FileCommands(
             val target = requireNotNull(command.target).id
             if (command.ids.any { contains(it, target) }) return blocked(tr("不能将文件夹放入自身或其子目录", "Cannot move a folder into itself or its subfolders", "フォルダーを自身やそのサブフォルダーに移動できません", "폴더를 자기 자신이나 하위 폴더로 이동할 수 없습니다", "不能將資料夾放入自身或其子資料夾"))
         }
-        if (command !is FileWriteCommand.Star && shareBlocked(command.ids, command.target?.id, command is FileWriteCommand.Rename))
-            return blocked(tr("相关文件正在转存或规范命名，或名称修改待确认，请先在任务页处理", "Related files are being saved or renamed, or renames are unconfirmed. Check Tasks first", "関連ファイルを保存または改名中か、改名結果が未確認です。先にタスク画面で確認してください", "관련 파일을 저장하거나 이름을 변경 중이거나 결과가 미확인입니다. 먼저 작업 페이지에서 확인해 주세요", "相關檔案正在轉存或規範命名，或名稱變更待確認，請先至任務頁處理"))
         if (command !is FileWriteCommand.Star &&
             (receivingBlocked(if (command is FileWriteCommand.Copy) emptyList() else command.ids, changesTree(command)) ||
                 command.target?.let { target -> receiving?.exclusiveRoots(account)?.any { contains(it, target.id) } } == true))
@@ -98,7 +93,6 @@ class FileCommands(
 
     private fun filesAvailability(ids: Collection<String>, tree: Boolean): ActionAvailability {
         if (!acceptsActions() || account == null || repository.currentAccount != account) return ActionAvailability.Blocked(tr("当前工作区已结束", "This workspace has ended", "このワークスペースは終了しました", "현재 작업 공간이 종료되었습니다", "目前的工作區已結束"))
-        if (shareBlocked(ids, null, !tree)) return ActionAvailability.Blocked(tr("相关文件有进行中或待确认的分享转存，请先在任务页处理", "Related share saves are running or unconfirmed. Check Tasks first", "関連ファイルの共有保存が進行中か未確認です。先にタスク画面で確認してください", "관련 파일의 공유 저장이 진행 중이거나 미확인입니다. 먼저 작업 페이지에서 확인해 주세요", "相關檔案有進行中或待確認的分享轉存，請先至任務頁處理"))
         if (receivingBlocked(ids, tree)) return ActionAvailability.Blocked(tr("相关文件夹有保存、上传或解压任务，请先在任务页处理", "Related folders have save, upload or extraction tasks. Check Tasks first", "関連フォルダーに保存・アップロード・解凍タスクがあります。先にタスク画面で確認してください", "관련 폴더에 저장, 업로드 또는 압축 해제 작업이 있습니다. 먼저 작업 페이지에서 확인해 주세요", "相關資料夾有儲存、上傳或解壓縮任務，請先至任務頁處理"))
         if (repository.changes.state.value.undo.values.any { overlaps(ids, it.activeFileIds) }) return ActionAvailability.Blocked(tr("相关文件正在撤销，完成后再试", "Related files are being reverted. Try again when finished", "関連ファイルの操作を元に戻しています。完了後にお試しください", "관련 파일의 작업을 취소 중입니다. 완료 후 다시 시도해 주세요", "相關檔案正在復原，請待完成後再試"))
         if (repository.changes.state.value.undo.values.any { touchesFolders(ids, it.activeManifestFolders) }) return ActionAvailability.Blocked(tr("相关归档清单正在撤销，请待完成后重试", "The archive manifest is being reverted. Try again when finished", "アーカイブ一覧を元に戻しています。完了後にお試しください", "보관 목록을 되돌리는 중입니다. 완료 후 다시 시도해 주세요", "相關歸檔清單正在復原，請待完成後重試"))
@@ -135,8 +129,6 @@ class FileCommands(
         if (manifests.any { it in repository.vault.editingFolders }) return ActionAvailability.Blocked(editingReason())
         if (session.mutations.active.value.values.any { overlaps(change.affectedFileIds(), it.ids) })
             return ActionAvailability.Blocked(tr("相关文件正在处理，请待完成后撤销", "Related files are being processed. Undo when finished", "関連ファイルを処理中です。完了後に元に戻してください", "관련 파일을 처리 중입니다. 완료 후 실행을 취소해 주세요", "相關檔案正在處理，請待完成後復原"))
-        if (shareSaves?.works?.value.orEmpty().any { it.account == account && change.id in it.undoChangeIds && it.pendingRenames.isNotEmpty() })
-            return ActionAvailability.Blocked(tr("本次重命名仍有待确认的步骤，请先在任务页查询结果", "Some rename steps are unconfirmed. Check results in Tasks first", "今回の改名には未確認の手順があります。先にタスク画面で結果を確認してください", "이번 이름 변경에 미확인 단계가 있습니다. 먼저 작업 페이지에서 결과를 확인해 주세요", "本次重新命名仍有待確認的步驟，請先至任務頁查詢結果"))
         if (receivingBlocked(change.affectedFileIds(), change !is DriveChangeJournal.Change.Rename))
             return ActionAvailability.Blocked(tr("相关文件夹有保存、上传或解压任务，请先在任务页处理", "Related folders have save, upload or extraction tasks. Check Tasks first", "関連フォルダーに保存・アップロード・解凍タスクがあります。先にタスク画面で確認してください", "관련 폴더에 저장, 업로드 또는 압축 해제 작업이 있습니다. 먼저 작업 페이지에서 확인해 주세요", "相關資料夾有儲存、上傳或解壓縮任務，請先至任務頁處理"))
         val files = filesAvailability(change.affectedFileIds(), tree = change !is DriveChangeJournal.Change.Rename)
@@ -166,32 +158,6 @@ class FileCommands(
         val targets = if (tree) activity.targets(owner) else emptySet()
         val exclusive = activity.exclusiveRoots(owner)
         return ids.any { it in files } || ids.any { id -> exclusive.any { contains(it, id) } || targets.any { contains(id, it) } }
-    }
-
-    private fun shareBlocked(ids: Collection<String>, target: String?, metadataOnly: Boolean): Boolean =
-        shareSaves?.works?.value.orEmpty().filter { it.account == account }.any { work ->
-            val pending = work.pendingRenames.mapTo(HashSet()) { it.id }
-            val roots = work.command.sources.filter { it.folder && it.id in work.blockedSources }.mapNotNull { work.associatedOutputs[it.id] }
-            val subjects = if (work.isRunning) work.associatedOutputs.values.toSet() + pending else pending
-            val touches = ids.any { id -> roots.any { contains(it, id) } } ||
-                if (work.isRunning) (if (metadataOnly) ids.any { it in subjects } else overlaps(ids, subjects)) || ids.any { newShareFile(work, it) } else if (metadataOnly) ids.any { it in pending }
-                else ids.any { id -> (pending + roots).any { contains(id, it) } }
-            touches || (target != null && roots.any { contains(it, target) }) || (work.isRunning && target != null && subjects.any { contains(it, target) }) ||
-                (!metadataOnly && (work.isRunning || work.result?.unconfirmedSources?.isNotEmpty() == true) && ids.any { contains(it, work.command.target.id) })
-        }
-
-    private fun newShareFile(work: dev.piko.shared.state.ShareSaveWork, id: String): Boolean {
-        val before = work.beforeIds ?: return false
-        if (!work.command.canonicalNames) return false
-        var candidate = id
-        repeat(64) {
-            val file = repository.knownFile(candidate) ?: return false
-            if (file.id !in before && file.parentId == work.command.target.id && file.params["original_share_id"] == work.command.shareId &&
-                file.params["original_file_id"] in work.sourceIds) return true
-            if (file.parentId.isEmpty() || file.parentId == candidate) return false
-            candidate = file.parentId
-        }
-        return false
     }
 
     private fun affects(command: FileWriteCommand, subjects: Set<String>): Boolean = overlaps(command.ids, subjects) ||

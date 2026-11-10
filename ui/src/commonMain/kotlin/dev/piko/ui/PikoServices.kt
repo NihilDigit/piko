@@ -112,9 +112,6 @@ class PikoServices(
     val vaultEntryEdits = dev.piko.shared.state.VaultEntryMutations(
         driveRepository, CoroutineScope(backgroundScope.coroutineContext + Dispatchers.Main.immediate),
     )
-    val shareSaves = dev.piko.shared.state.ShareSaveSession(
-        driveRepository, CoroutineScope(backgroundScope.coroutineContext + Dispatchers.Main.immediate),
-    )
     val driveWorkspace by lazy { dev.piko.shared.presentation.DriveWorkspace(driveRepository, cacheStore, backgroundScope) }
     internal val saveTargets = dev.piko.shared.state.SaveTargetBinding({ driveRepository.currentAccount }, driveRepository.accountChanges)
     private val _openDriveRequested = MutableStateFlow(false)
@@ -161,7 +158,7 @@ class PikoServices(
                     downloadManager, taskRepository, offlinePacks, fileExecutionScopes.forAccount(account),
                     driveRepository, uploadManager, instantSaveRecords, account, archiveExtractSession,
                     folderVaultSession, listsServerWork = true, fileWrites = fileWrites,
-                    shareSaves = shareSaves, receiving = receivingActivity,
+                    receiving = receivingActivity,
                 )
             }
             return requireNotNull(taskCenterState)
@@ -257,14 +254,13 @@ class PikoServices(
                     scope,
                     magnet,
                     saveTargetContext = saveTargets.context,
-                    shareSaves = shareSaves,
                 )
             },
             newStateForDraft = { scope, saveScope, magnet, target ->
                 InstantSheetState(
                     instantMagnetRepository, driveRepository, preferences, previewTempFolder,
                     offlinePacks, instantSaveRecords, scope, magnet,
-                    saveTargetContext = target, shareSaves = shareSaves, saveScope = saveScope,
+                    saveTargetContext = target, saveScope = saveScope,
                 )
             },
         )
@@ -309,7 +305,7 @@ class PikoServices(
     val folderVaultSession: FolderVaultSession by lazy {
         FolderVaultSession(driveRepository, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)).also { session ->
             session.conflictReason = { targets ->
-                val commands = dev.piko.shared.presentation.FileCommands(driveRepository, fileWrites, vault = session, shareSaves = shareSaves, receiving = receivingActivity)
+                val commands = dev.piko.shared.presentation.FileCommands(driveRepository, fileWrites, vault = session, receiving = receivingActivity)
                 (commands.vaultAvailability(targets) as? dev.piko.shared.presentation.ActionAvailability.Blocked)?.reason
             }
         }
@@ -353,7 +349,6 @@ class PikoServices(
             historyEdits.clear(left)
             vaultEntryEdits.clear(left)
             instantSaveRecords.clearAttempts(left)
-            shareSaves.clear(left)
             instantMagnetRepository.offlineSubmissions.clear(left)
             driveRepository.localMounts.access?.cancelPending()
             driveRepository.enterAccount(clientManager.currentClient.value?.account)

@@ -1,16 +1,10 @@
 package dev.piko.ui
 
-import dev.piko.download.DownloadStatus
-import dev.piko.download.DownloadTask
+import dev.piko.shared.data.DriveChangeJournal
+import dev.piko.shared.state.ArchiveCompletion
 import dev.piko.shared.state.ArchiveJob
 import dev.piko.shared.state.ArchiveJobStatus
-import dev.piko.shared.state.ArchiveCompletion
 import dev.piko.shared.state.FolderVaultSession
-import dev.piko.shared.state.InstantSaveExecution
-import dev.piko.shared.data.DriveChangeJournal
-import dev.piko.shared.upload.UploadStatus
-import dev.piko.shared.upload.UploadTask
-import dev.piko.ui.workbench.untrackedImportCount
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -18,63 +12,25 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * 传输页的行、浮动卡片与 Android 通知都读这一份描述，这里守的是会让它们一起说错的几处：
- * 进度条停住不动、停止时进度条跳空、几件并行时取错了眼下那一件、空闲的任务被算成在跑。
+ * 传输页的行、浮动卡片与 Android 通知共用进度描述，校验归档分阶段进度、停止保位、待确认态与通知合并。
  */
 class WorkProgressTest {
-    @Test
-    fun englishTransferCountersUseSingularAndPluralForms() {
-        try {
-            dev.piko.shared.i18n.PikoLocale.apply(dev.piko.data.auth.AppLanguage.EN)
-            val work = transferProgress(
-                listOf(download("a.mp4", DownloadStatus.DOWNLOADING)),
-                listOf(upload("b.mkv", UploadStatus.UPLOADING), upload("c.mkv", UploadStatus.QUEUED)),
-            )!!
-            assertEquals("Download 1 file, Upload 2 files", work.title)
-        } finally {
-            dev.piko.shared.i18n.PikoLocale.apply(dev.piko.data.auth.AppLanguage.ZH_CN)
-        }
-    }
-
-    @Test
-    fun closedDraftSavesKeepProgressWithoutDuplicatingOfflineSubmissions() {
-        val executions = listOf(
-            InstantSaveExecution(1, trackedOffline = false, trackedInstantAttempt = true),
-            InstantSaveExecution(2, trackedOffline = true, trackedInstantAttempt = false),
-            InstantSaveExecution(3, trackedOffline = false, trackedInstantAttempt = false),
-        )
-        val progress = importSaveProgress(executions)
-        assertEquals(2, progress.size)
-        assertTrue(progress.all { it.title == "保存添加链接" && it.meter == WorkMeter.Indeterminate })
-        assertEquals(1, untrackedImportCount(executions))
-        assertEquals(0, untrackedImportCount(executions.take(2)))
-    }
-
-    @Test
-    fun waitingForInputOrAnUnconfirmedResultDoesNotRequireBackgroundExecution() {
-        assertTrue(ArchiveJobStatus.Waiting.hasExecutingWork())
-        assertTrue(ArchiveJobStatus.Submitting.hasExecutingWork())
-        assertTrue(ArchiveJobStatus.Checking.hasExecutingWork())
-        assertTrue(ArchiveJobStatus.Extracting(20).hasExecutingWork())
-        assertTrue(!ArchiveJobStatus.NeedsPassword(false).hasExecutingWork())
-        assertTrue(ArchiveJobStatus.NeedsPassword(false).needsDesktopSession())
-        assertTrue(!ArchiveJobStatus.Finished(ArchiveCompletion.UNCONFIRMED, "待查询", 1).hasExecutingWork())
-        assertTrue(ArchiveJobStatus.Finished(ArchiveCompletion.UNCONFIRMED, "待查询", 1).needsDesktopSession())
-        assertTrue(!ArchiveJobStatus.Finished(ArchiveCompletion.SUCCEEDED, "完成", 1).needsDesktopSession())
-        val listing = dev.piko.shared.download.FolderListing(dev.piko.download.DownloadBatch("batch", "folder"), 1, "account")
-        assertTrue(!listing.needsDesktopSession())
-        assertTrue(listing.copy(quotaExcess = dev.piko.shared.download.QuotaExcess(20, 10)).needsDesktopSession())
-        assertTrue(listing.copy(error = "列目录失败").needsDesktopSession())
-        assertEquals(WorkMeter.None, listOf(job("locked.zip", ArchiveJobStatus.NeedsPassword(false))).extractProgress()!!.meter)
-    }
     private fun meterOf(work: WorkProgress?) = (work?.meter as WorkMeter.Determinate).fraction
+    private fun job(name: String, status: ArchiveJobStatus) = ArchiveJob(FileStat(id = name, name = name), status)
 
     @Test
     fun unconfirmedCopyKeepsItsResultWithoutAnimating() {
-        val work = dev.piko.shared.state.FileWriteWork(1, "account",
-            dev.piko.shared.state.FileWriteCommand.Copy(listOf("file"), dev.piko.shared.data.PikoPathBreadcrumb("target", "target")), 1,
-            result = dev.piko.shared.state.FileWriteResult(dev.piko.shared.state.FileWriteCompletion.UNCONFIRMED,
-                "请检查实际文件", unconfirmed = setOf("file"), finishedAtMs = 2),
+        val work = dev.piko.shared.state.FileWriteWork(
+            1,
+            "account",
+            dev.piko.shared.state.FileWriteCommand.Copy(listOf("file"), dev.piko.shared.data.PikoPathBreadcrumb("target", "target")),
+            1,
+            result = dev.piko.shared.state.FileWriteResult(
+                dev.piko.shared.state.FileWriteCompletion.UNCONFIRMED,
+                "请检查实际文件",
+                unconfirmed = setOf("file"),
+                finishedAtMs = 2,
+            ),
         )
         assertEquals("结果待确认", work.workProgress().status)
         assertEquals(WorkMeter.None, work.workProgress().meter)
@@ -86,8 +42,13 @@ class WorkProgressTest {
 
     @Test
     fun retainedVaultResultReflectsTheUndoOfThatSpecificChange() {
-        val record = FolderVaultSession.Record(FolderVaultSession.Work(1, "folder", true, 1), FolderVaultSession.Completion.PARTIAL,
-            "恢复未全部完成", "已恢复 1 项，归档清单未更新", 2)
+        val record = FolderVaultSession.Record(
+            FolderVaultSession.Work(1, "folder", true, 1),
+            FolderVaultSession.Completion.PARTIAL,
+            "恢复未全部完成",
+            "已恢复 1 项，归档清单未更新",
+            2,
+        )
         assertEquals(WorkMeter.None, record.workProgress().meter)
         assertEquals("恢复未全部完成", record.workProgress().status)
         assertEquals(WorkMeter.Indeterminate, record.workProgress(DriveChangeJournal.UndoResult(DriveChangeJournal.UndoStatus.RUNNING, "正在撤销")).meter)
@@ -97,7 +58,6 @@ class WorkProgressTest {
 
     @Test
     fun archiveProgressMeasuresTheCurrentStage() {
-        // 取样内容标识要几分钟，这段时间 done 一直是 0；只按 done 算的话进度条停在起点
         val preparing = vaultArchiveProgress(FolderVaultSession.Progress("电影", done = 0, total = 40, prepared = 20), stopping = false)
         assertEquals(0.5f, meterOf(preparing))
         assertEquals(WorkMeasure(20, 40, WorkUnit.ITEMS), preparing.measure)
@@ -135,28 +95,6 @@ class WorkProgressTest {
         assertNull(restoring.detail)
     }
 
-    private fun job(name: String, status: ArchiveJobStatus) = ArchiveJob(FileStat(id = name, name = name), status)
-
-    @Test
-    fun severalArchivesFollowTheOneBeingExtracted() {
-        val jobs = listOf(
-            job("a.rar", ArchiveJobStatus.NeedsPassword(incorrect = false)),
-            job("b.zip", ArchiveJobStatus.Extracting(40)),
-            job("c.7z", ArchiveJobStatus.Waiting),
-        )
-        val work = jobs.extractProgress()!!
-        assertEquals("解压 3 个压缩包", work.title)
-        assertEquals(0.4f, meterOf(work))
-        assertEquals("b.zip，另有 1 个需要密码", work.detail)
-    }
-
-    @Test
-    fun onlyPasswordPromptsLeftShowsNoBar() {
-        val work = listOf(job("a.rar", ArchiveJobStatus.NeedsPassword(incorrect = true))).extractProgress()!!
-        assertEquals(WorkMeter.None, work.meter)
-        assertEquals("密码错误", work.status)
-    }
-
     @Test
     fun unconfirmedExtractionHasNoProgressBarAndIsNotReportedAsFailed() {
         val work = job("pack.zip", ArchiveJobStatus.Finished(ArchiveCompletion.UNCONFIRMED, "查询暂不可用", 1)).workProgress()
@@ -166,47 +104,10 @@ class WorkProgressTest {
         assertEquals(WorkMeter.Indeterminate, job("pack.zip", ArchiveJobStatus.Checking).workProgress().meter)
     }
 
-    private fun download(name: String, status: DownloadStatus, done: Long = 0, total: Long = 100, speed: Long = 0) =
-        DownloadTask(taskId = name, fileId = name, fileName = name, gcid = "", totalBytes = total, downloadedBytes = done, speedBytesPerSec = speed, status = status)
-
-    private fun upload(name: String, status: UploadStatus, done: Long = 0, size: Long = 100) = UploadTask(
-        taskId = name, account = "me", sourceUri = name, fileName = name, size = size, lastModifiedMs = 0,
-        parentId = "p", parentName = "p", status = status, processedBytes = done,
-    )
-
-    @Test
-    fun transfersCountOnlyWhatIsMoving() {
-        // 暂停与等待中的不传字节，算进总量会让进度条与剩余时间都失真
-        val work = transferProgress(
-            listOf(download("a.mp4", DownloadStatus.DOWNLOADING, done = 50), download("b.mp4", DownloadStatus.PAUSED, done = 0)),
-            emptyList(),
-        )!!
-        assertEquals("a.mp4", work.title)
-        assertEquals(0.5f, meterOf(work))
-        assertNull(transferProgress(listOf(download("a.mp4", DownloadStatus.PENDING)), emptyList()))
-    }
-
-    @Test
-    fun mixedTransfersNameBothKinds() {
-        val work = transferProgress(
-            listOf(download("a.mp4", DownloadStatus.DOWNLOADING)),
-            listOf(upload("b.mkv", UploadStatus.UPLOADING), upload("c.mkv", UploadStatus.QUEUED)),
-        )!!
-        assertEquals("下载 1 个文件，上传 2 个文件", work.title)
-        assertEquals(WorkKind.DOWNLOAD, work.kind)
-        assertEquals(WorkKind.UPLOAD, transferProgress(emptyList(), listOf(upload("b.mkv", UploadStatus.UPLOADING)))!!.kind)
-    }
-
-    @Test
-    fun segmentsWithoutSizeAreIndeterminate() {
-        val work = transferProgress(listOf(download("clip.mp4", DownloadStatus.DOWNLOADING, total = 0)), emptyList())!!
-        assertEquals(WorkMeter.Indeterminate, work.meter)
-    }
-
     @Test
     fun notificationMirrorsTheFirstWorkAndListsTheRest() {
         val vault = vaultArchiveProgress(FolderVaultSession.Progress("电影", 10, 40, 40), stopping = false)
-        val extract = listOf(job("b.zip", ArchiveJobStatus.Extracting(40))).extractProgress()!!
+        val extract = job("b.zip", ArchiveJobStatus.Extracting(40)).workProgress()
 
         val single = workNotificationContent(listOf(vault))
         assertEquals(vault.title, single.title)

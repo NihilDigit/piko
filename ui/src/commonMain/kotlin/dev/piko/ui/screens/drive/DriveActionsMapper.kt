@@ -183,7 +183,6 @@ internal fun buildVaultEntryActions(
     if (revealAction != null) add(revealAction)
     addAll(
         DriveActions.quickRow(
-            desktop = intents.desktop,
             cut = null,
             copy = null,
             download = DriveActions.download { intents.onDownload(listOf(file), false) },
@@ -221,7 +220,6 @@ internal fun buildSelectionActions(
     } else null
     addAll(
         DriveActions.quickRow(
-            desktop = intents.desktop,
             cut = null,
             copy = null,
             download = DriveActions.download { intents.onDownload(files.filterNot { it.isUploading }, false) }.takeIf { commands.download },

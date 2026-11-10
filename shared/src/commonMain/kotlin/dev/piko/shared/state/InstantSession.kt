@@ -32,16 +32,16 @@ class InstantDraft internal constructor(
     internal val hasRecoverableSave: Boolean get() = submitted.any {
         it.hasRetainedInstantAttempt && (it.hasInstantRetry || it.saveIssue?.requiresInspection == true)
     }
-    internal val hasExecutingSave: Boolean get() = submitted.any { it.hasLocalSave || it.shareSave?.isSaving == true } || state.hasLocalSave || state.shareSave?.isSaving == true
+    internal val hasExecutingSave: Boolean get() = submitted.any { it.hasLocalSave } || state.hasLocalSave
 
     var isClosed by mutableStateOf(false)
         private set
 
     val endNeedsConfirm: Boolean
-        get() = !state.hasLocalSave && state.shareSave?.isSaving != true && state.hasPickedFiles
+        get() = !state.hasLocalSave && state.hasPickedFiles
 
     val hasUncommittedWork: Boolean
-        get() = !state.hasLocalSave && state.shareSave?.isSaving != true && (!state.isBlank || state.hasPickedFiles)
+        get() = !state.hasLocalSave && (!state.isBlank || state.hasPickedFiles)
 
     fun close() {
         if (isClosed) return
@@ -134,7 +134,7 @@ class InstantSession(
         }
         val state = createEditor(initialLink)
         val draft = InstantDraft(++generation, state, draftScope, saveScope) { closed ->
-            if (!closed.state.hasLocalSave && closed.state.shareSave?.isSaving != true) {
+            if (!closed.state.hasLocalSave) {
                 editorScopes[closed.state]?.let { (editing, executing) -> editing.cancel(); executing.cancel() }
                 editorScopes -= closed.state
             }
@@ -158,7 +158,7 @@ class InstantSession(
                 executionRevision++
                 observe(next)
                 saveScope.launch {
-                    snapshotFlow { editor.hasLocalSave || editor.shareSave?.isSaving == true ||
+                    snapshotFlow { editor.hasLocalSave ||
                         editor.hasRetainedInstantAttempt && (editor.hasInstantRetry || editor.saveIssue?.requiresInspection == true) }.first { !it }
                     draft.submitted -= editor
                     editorScopes[editor]?.let { (editing, executing) -> editing.cancel(); executing.cancel() }
@@ -167,11 +167,6 @@ class InstantSession(
                 }
             }
             editor.onSaveAccepted = ::detach
-            requireNotNull(editorScopes[editor]).second.launch {
-                snapshotFlow { editor.shareSave?.isSaving == true || editor.batch?.rows?.any { it.state.shareSave?.isSaving == true } == true }
-                    .first { it }
-                detach()
-            }
             requireNotNull(editorScopes[editor]).second.launch(start = CoroutineStart.UNDISPATCHED) {
                 editor.outcomes.collect { outcome ->
                     if (completionEpoch.value == epoch) {

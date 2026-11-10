@@ -21,7 +21,6 @@ import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.FileWriteCompletion
 import dev.piko.shared.state.InstantSaveOutcome
 import dev.piko.shared.state.OfflineSubmitStatus
-import dev.piko.shared.state.ShareSaveCompletion
 import dev.piko.shared.state.VaultEntryEditCompletion
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.workbench.TaskSlot
@@ -184,17 +183,6 @@ internal fun MainOutcomeEffects(
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
             if (outcome.account != services.driveRepository.currentAccount || submissions.works.value.none { it.id == outcome.id } || latestViewingImport()) return@collect
             val answer = rootSnackbar.showSnackbar(outcome.message, actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기", "檢視任務"), withDismissAction = true)
-            if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) latestOpenTransfers()
-        }
-    }
-
-    LaunchedEffect(services.shareSaves, lifecycle, account) {
-        services.shareSaves.outcomes.collect { outcome ->
-            if (outcome.account != services.driveRepository.currentAccount) return@collect
-            if (outcome.result.completion == ShareSaveCompletion.SUCCEEDED && services.shareSaves.works.value.firstOrNull { it.id == outcome.id }?.undoChangeIds?.isNotEmpty() == true) return@collect
-            lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
-            if (outcome.account != services.driveRepository.currentAccount || services.shareSaves.works.value.none { it.id == outcome.id } || latestViewingImport()) return@collect
-            val answer = rootSnackbar.showSnackbar(outcome.result.message, actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기", "檢視任務"), withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) latestOpenTransfers()
         }
     }

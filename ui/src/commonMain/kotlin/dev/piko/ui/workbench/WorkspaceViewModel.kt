@@ -44,7 +44,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
     private var closed = false
     private val repository = services.driveRepository
     private val available: Boolean get() = !closed && repository.currentAccount == account
-    val fileCommands = dev.piko.shared.presentation.FileCommands(repository, services.fileWrites, account, services.folderVaultSession, services.shareSaves, services.receivingActivity) {
+    val fileCommands = dev.piko.shared.presentation.FileCommands(repository, services.fileWrites, account, services.folderVaultSession, services.receivingActivity) {
         !closed && repository.currentAccount == account
     }
     init {
@@ -276,7 +276,7 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         val model = importModels[id]
         val draft = model?.state
         val unsubmittedInput = draft != null && !draft.isBlank && !draft.isSaving && draft.batch?.isSaving != true &&
-            !draft.hasRetainedInstantAttempt && !draft.hasRetainedShareWork && !draft.hasRetainedOfflineSubmission
+            !draft.hasRetainedInstantAttempt && !draft.hasRetainedOfflineSubmission
         val isDuplicateContext = contexts.contextsFlow.value.any { it.id == id && it is WorkspaceContext.Duplicate }
         val hasAddLinkOnTab = hasUncommittedAddLinkOnTab(id)
         val hasGalleryOnTab = hasGalleryOnTab(id)
@@ -364,7 +364,6 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
             historyEdits = services.historyEdits,
             vaultEdits = services.vaultEntryEdits,
             folderVault = services.folderVaultSession,
-            shareSaves = services.shareSaves,
             receiving = services.receivingActivity,
             instantSession = services.instantSession,
             addLinkOwnerTabId = { services.addLink.ownerTabId },

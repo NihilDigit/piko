@@ -9,7 +9,6 @@ import dev.piko.shared.state.ArchiveJobStatus
 import dev.piko.shared.state.FileWriteCompletion
 import dev.piko.shared.state.HistoryEditCompletion
 import dev.piko.shared.state.OfflineSubmitStatus
-import dev.piko.shared.state.ShareSaveCompletion
 import dev.piko.shared.state.VaultEntryEditCompletion
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -31,7 +30,6 @@ fun PikoServices.hasDesktopResumeContext(): Boolean {
         (archiveExtractSession.jobs + archiveExtractSession.completedJobs).any { it.status.needsDesktopSession() } ||
         folderVaultSession.records.any { it.needsAttention(it.undoChangeId?.let(journal.undo::get)) } ||
         fileWrites.works.value.any { it.account == account && (it.result?.completion != FileWriteCompletion.SUCCEEDED || undoFailed(it.result?.undoChangeIds.orEmpty())) } ||
-        shareSaves.works.value.any { it.account == account && (it.result?.completion != ShareSaveCompletion.SUCCEEDED || undoFailed(it.undoChangeIds)) } ||
         instantSaveRecords.attempts.value.any { it.account == account } ||
         uploadManager.preparations.value.any { it.account == account && !it.isRunning } ||
         downloadManager.listings.value.values.any { it.account == account && it.needsDesktopSession() } ||

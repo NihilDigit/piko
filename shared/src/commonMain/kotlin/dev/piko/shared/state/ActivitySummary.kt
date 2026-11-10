@@ -31,7 +31,6 @@ fun TransferItem.requiresLocalExecution(): Boolean = when (this) {
     is TransferItem.Cloud, is TransferItem.Instant -> false
     is TransferItem.Pack -> isBusy || job.isActive
     is TransferItem.Write -> work.isRunning
-    is TransferItem.Share -> work.isRunning
     is TransferItem.OfflineSubmit -> work.isRunning
     is TransferItem.InstantAttempt -> work.isRunning
     is TransferItem.Extract -> job.status !is ArchiveJobStatus.Finished && job.status !is ArchiveJobStatus.NeedsPassword

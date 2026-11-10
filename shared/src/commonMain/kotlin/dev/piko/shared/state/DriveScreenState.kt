@@ -131,7 +131,6 @@ class DriveScreenState(
     historyEditSession: HistoryMutations = HistoryMutations(driveRepo, operationScope),
     vaultEditSession: VaultEntryMutations = VaultEntryMutations(driveRepo, operationScope),
     folderVault: FolderVaultSession? = null,
-    shareSaves: ShareSaveSession? = null,
     receiving: dev.piko.shared.presentation.ReceivingActivity? = null,
     private val instantSession: InstantSession? = null,
     private val addLinkOwnerTabId: () -> Long? = { null },
@@ -141,7 +140,7 @@ class DriveScreenState(
     private val browserGeneration = driveRepo.accountGeneration
     private val canAcceptAction: Boolean get() = scope.isActive && driveRepo.currentAccount == browserAccount && driveRepo.accountGeneration == browserGeneration
     val acceptsActions: Boolean get() = canAcceptAction
-    val fileActions = dev.piko.shared.presentation.FileCommands(driveRepo, fileWriteSession, browserAccount, folderVault, shareSaves, receiving) { canAcceptAction }
+    val fileActions = dev.piko.shared.presentation.FileCommands(driveRepo, fileWriteSession, browserAccount, folderVault, receiving) { canAcceptAction }
     val vaultActions = dev.piko.shared.presentation.VaultEntryCommands(driveRepo, vaultEditSession, fileActions, browserAccount) { canAcceptAction }
     val historyActions = dev.piko.shared.presentation.HistoryCommands(driveRepo, historyEditSession, browserAccount) { canAcceptAction }
     init {

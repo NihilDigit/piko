@@ -128,7 +128,6 @@ class InstantSheetState private constructor(
     private val shared: InstantSharedContext,
     private val isRoot: Boolean,
     private val saveTargetContext: SaveTargetContext,
-    private val shareSaves: ShareSaveSession,
 ) {
     constructor(
         instantRepo: InstantMagnetRepository,
@@ -140,11 +139,10 @@ class InstantSheetState private constructor(
         scope: CoroutineScope,
         initialMagnet: String = "",
         saveTargetContext: SaveTargetContext = SaveTargetContext.fixed(),
-        shareSaves: ShareSaveSession? = null,
         saveScope: CoroutineScope = scope,
     ) : this(
         instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, scope, saveScope, initialMagnet,
-        InstantSharedContext(), isRoot = true, saveTargetContext, shareSaves ?: ShareSaveSession(driveRepo, scope),
+        InstantSharedContext(), isRoot = true, saveTargetContext,
     )
 
     var input by mutableStateOf(initialMagnet)
@@ -164,7 +162,7 @@ class InstantSheetState private constructor(
     internal var onSaveAccepted: (() -> Unit)? = null
     private var magnetSaveRunning by mutableStateOf(false)
     var isSaving: Boolean
-        get() = magnetSaveRunning || shareSave?.isSaving == true
+        get() = magnetSaveRunning
         private set(value) {
             magnetSaveRunning = value
         }
@@ -182,8 +180,6 @@ class InstantSheetState private constructor(
     internal val hasUntrackedLocalSave: Boolean
         get() = (magnetSaveRunning && !hasTrackedOfflineSubmission) ||
             (batch?.isSaving == true && batch?.rows?.none { it.state.hasTrackedOfflineSubmission } == true)
-    var shareSave by mutableStateOf<ShareSaveState?>(null)
-        private set
     private val saveAccount = driveRepo.currentAccount
     private var instantAttemptId: String? = null
     private var saveAttempts by mutableStateOf(saveRecords.attempts.value)
@@ -201,17 +197,13 @@ class InstantSheetState private constructor(
     val hasInstantRetry: Boolean get() = instantRetry != null
     fun containsInstantAttempt(id: String): Boolean = instantAttemptId == id || batch?.rows?.any { it.state.containsInstantAttempt(id) } == true
     val hasRetainedInstantAttempt: Boolean get() = saveAttempts.any { containsInstantAttempt(it.id) }
-    fun containsShareWork(id: Long): Boolean = shareSave?.activeWork?.id == id
-    val hasRetainedShareWork: Boolean get() = shareSave?.let { share ->
-        share.activeWork != null && (share.isSaving || share.hasPendingResult || share.selectedIds.isEmpty())
-    } == true
     val retryFileCount: Int get() = instantRetry?.let { retry ->
         if (retry.receipt.unconfirmedFolder != null) 0 else retry.files.count { it.file.path in (retry.receipt.failed + retry.receipt.notAttempted) }
     } ?: 0
     val retryNeededBytes: Long get() = instantRetry?.let { retry ->
         retry.files.filter { it.file.path in (retry.receipt.failed + retry.receipt.notAttempted) }.sumOf { it.file.size }
     } ?: 0L
-    val canEdit: Boolean get() = !isSaving && !hasPendingOfflineSubmission && shareSave?.canEdit != false && batch?.isSaving != true && instantRetry == null && saveIssue?.requiresInspection != true &&
+    val canEdit: Boolean get() = !isSaving && !hasPendingOfflineSubmission && batch?.isSaving != true && instantRetry == null && saveIssue?.requiresInspection != true &&
         batch?.rows?.none { it.state.hasInstantRetry || it.state.hasPendingOfflineSubmission || it.state.saveIssue?.requiresInspection == true } != false
 
     private fun resetEditableAttempt() {
@@ -240,7 +232,7 @@ class InstantSheetState private constructor(
     private var selectionPicked by mutableStateOf(false)
 
     val hasPickedFiles: Boolean
-        get() = saveIssue != null || hasPendingOfflineSubmission || (selectionPicked && selectedIndices.isNotEmpty()) || shareSave?.hasPendingResult == true || shareSave?.selectedIds?.isNotEmpty() == true || batch?.rows?.any { it.state.hasPickedFiles } == true
+        get() = saveIssue != null || hasPendingOfflineSubmission || (selectionPicked && selectedIndices.isNotEmpty()) || batch?.rows?.any { it.state.hasPickedFiles } == true
 
     var errorMessage by mutableStateOf<String?>(null)
         private set
@@ -621,7 +613,7 @@ class InstantSheetState private constructor(
     }
 
     private fun newBatchRow(link: PastedLink, rowScope: CoroutineScope) = InstantSheetState(
-        instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, rowScope, saveScope, link.uri, shared, isRoot = false, saveTargetContext, shareSaves,
+        instantRepo, driveRepo, preferences, previewFolder, packTracker, saveRecords, rowScope, saveScope, link.uri, shared, isRoot = false, saveTargetContext,
     ).also { it.onSaveAccepted = ::acceptSave }
 
     private fun leaveBatch() {
@@ -714,16 +706,6 @@ class InstantSheetState private constructor(
         return lease.put(file).onSuccess { fileId -> previewedIds[gcid] = fileId }
     }
 
-    var previewingSharedId by mutableStateOf<String?>(null)
-        private set
-
-    fun previewSharedFile(file: io.github.nihildigit.pikpak.FileStat) {
-        if (file.isFolder || file.name.fileCategory() != FileCategory.VIDEO || file.hash.isBlank() || previewingIndex != null) return
-        previewingSharedId = file.id
-        previewFile(io.github.nihildigit.pikpak.ResolvedFile(file.name, file.sizeBytes, file.hash), -1)
-        if (previewingIndex == null) previewingSharedId = null
-    }
-
     private fun previewFile(file: io.github.nihildigit.pikpak.ResolvedFile, index: Int) {
         val gcid = file.gcid ?: return
         previewedIds[gcid]?.let { fileId ->
@@ -743,7 +725,6 @@ class InstantSheetState private constructor(
                     .onFailure { _messages.emit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("预览", "Preview", "プレビュー", "미리 보기", "預覽"), it)) }
             } finally {
                 previewingIndex = null
-                previewingSharedId = null
             }
         }
     }

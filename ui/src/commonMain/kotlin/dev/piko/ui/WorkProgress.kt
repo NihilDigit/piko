@@ -1,29 +1,16 @@
 package dev.piko.ui
 
-import dev.piko.shared.state.requiresLocalExecution
 import dev.piko.shared.i18n.enCount
-
 import dev.piko.shared.i18n.tr
-
-import dev.piko.download.DownloadStatus
-import dev.piko.download.DownloadTask
-import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.state.ArchiveJob
 import dev.piko.shared.state.ArchiveJobStatus
 import dev.piko.shared.state.ArchiveCompletion
-import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.FolderVaultSession
-import dev.piko.shared.state.InstantSaveExecution
 import dev.piko.shared.data.DriveChangeJournal
-import dev.piko.shared.upload.UploadTask
-import dev.piko.ui.components.toReadableSize
-import dev.piko.ui.screens.transfers.remainingTime
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.map
 import androidx.compose.runtime.snapshotFlow
 
@@ -49,28 +36,6 @@ fun dev.piko.shared.state.OfflineSubmitWork.workProgress(): WorkProgress = WorkP
         dev.piko.shared.state.OfflineSubmitStatus.REFUSED -> tr("未提交", "Not submitted", "未送信", "제출되지 않음", "未提交")
         dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED -> tr("结果待确认", "Result unconfirmed", "結果未確認", "결과 확인 필요", "結果待確認")
     }, message,
-)
-
-fun dev.piko.shared.state.ShareSaveWork.workProgress(undo: DriveChangeJournal.UndoResult? = null): WorkProgress = WorkProgress(
-    WorkKind.FILES, title,
-    when {
-        !isRunning && undo?.status != DriveChangeJournal.UndoStatus.RUNNING -> WorkMeter.None
-        phase == dev.piko.shared.state.ShareSavePhase.TRACKING && remoteProgress != null -> WorkMeter.Determinate(requireNotNull(remoteProgress).coerceIn(0, 100) / 100f)
-        else -> WorkMeter.Indeterminate
-    },
-    undo?.message ?: result?.let { when (it.completion) {
-        dev.piko.shared.state.ShareSaveCompletion.SUCCEEDED -> tr("已转存", "Share saved", "共有を保存しました", "공유를 저장했습니다", "已轉存")
-        dev.piko.shared.state.ShareSaveCompletion.PARTIAL -> tr("部分处理未完成", "Some operations incomplete", "一部の操作が未完了です", "일부 작업이 완료되지 않았습니다", "部分處理未完成")
-        dev.piko.shared.state.ShareSaveCompletion.FAILED -> tr("未提交转存", "Share save not submitted", "共有の保存は未送信です", "공유 저장을 제출하지 않았습니다", "未提交轉存")
-        dev.piko.shared.state.ShareSaveCompletion.UNCONFIRMED -> tr("结果待确认", "Result unconfirmed", "結果未確認", "결과 확인 필요", "結果待確認")
-    } } ?: when (phase) {
-        dev.piko.shared.state.ShareSavePhase.PREPARING -> tr("正在准备转存", "Preparing to save share", "共有の保存を準備中", "공유 저장 준비 중", "正在準備轉存")
-        dev.piko.shared.state.ShareSavePhase.SUBMITTING -> tr("正在提交转存", "Submitting share save", "共有の保存を送信中", "공유 저장 제출 중", "正在提交轉存")
-        dev.piko.shared.state.ShareSavePhase.TRACKING -> tr("云端正在转存", "Saving share in cloud", "クラウドに共有を保存中", "클라우드에 공유 저장 중", "雲端正在轉存")
-        dev.piko.shared.state.ShareSavePhase.IDENTIFYING -> tr("正在核对转存文件", "Checking saved items", "保存した項目を確認中", "저장된 항목 확인 중", "正在核對轉存檔案")
-        dev.piko.shared.state.ShareSavePhase.NAMING -> tr("正在规范命名", "Normalizing names", "ファイル名を整理中", "이름 정리 중", "正在規範命名")
-        dev.piko.shared.state.ShareSavePhase.FINISHED -> tr("正在重新查询", "Checking again", "再確認中", "다시 확인 중", "正在重新查詢")
-    }, result?.message,
 )
 
 fun dev.piko.shared.state.InstantSaveAttempt.workProgress(): WorkProgress = WorkProgress(
@@ -200,60 +165,6 @@ fun ArchiveJob.workProgress(): WorkProgress {
         )
     }
 }
-
-fun List<ArchiveJob>.extractProgress(): WorkProgress? {
-    val current = firstOrNull { it.status !is ArchiveJobStatus.NeedsPassword } ?: firstOrNull() ?: return null
-    val single = current.workProgress()
-    if (size == 1) return single
-    val needPassword = count { it.status is ArchiveJobStatus.NeedsPassword && it !== current }
-    return single.copy(
-        title = tr("解压 $size 个压缩包", "Extract $size archives", "$size 個の圧縮ファイルを解凍", "압축 파일 ${size}개 해제", "解壓縮 $size 個壓縮檔"),
-        detail = listOfNotNull(current.file.name, needPassword.takeIf { it > 0 }?.let { tr("另有 $it 个需要密码", "$it more require passwords", "ほか $it 個はパスワードが必要です", "추가 ${it}개에 비밀번호 필요", "另有 $it 個需要密碼") }).joinToString(tr("，", ", ", "、", ", ", "，")),
-    )
-}
-
-internal fun ArchiveJobStatus.hasExecutingWork(): Boolean = this !is ArchiveJobStatus.NeedsPassword && this !is ArchiveJobStatus.Finished
-
-fun transferProgress(downloads: List<DownloadTask>, uploads: List<UploadTask>): WorkProgress? {
-    val active = downloads.filter { it.status == DownloadStatus.DOWNLOADING }
-    val sending = uploads.filter { it.status.isActive }
-    if (active.isEmpty() && sending.isEmpty()) return null
-    val kind = if (active.isEmpty()) WorkKind.UPLOAD else WorkKind.DOWNLOAD
-    val title = (active.map { it.fileName } + sending.map { it.fileName }).singleOrNull()
-        ?: listOfNotNull(
-            active.size.takeIf { it > 0 }?.let { tr("下载 $it 个文件", "Download ${enCount(it, "file", "files")}", "$it ファイルをダウンロード", "파일 ${it}개 다운로드", "下載 $it 個檔案") },
-            sending.size.takeIf { it > 0 }?.let { tr("上传 $it 个文件", "Upload ${enCount(it, "file", "files")}", "$it ファイルをアップロード", "파일 ${it}개 업로드", "上傳 $it 個檔案") },
-        ).joinToString(tr("，", ", ", "、", ", ", "，"))
-    val processed = active.sumOf { it.downloadedBytes } + sending.sumOf { it.processedBytes }
-    val total = active.sumOf { it.totalBytes } + sending.sumOf { it.size }
-    val speed = active.sumOf { it.speedBytesPerSec } + sending.sumOf { it.speedBytesPerSec }
-    val speedText = speed.takeIf { it > 0 }?.let { "${it.toReadableSize()}/s" }
-    if (total <= 0) return WorkProgress(kind, title, WorkMeter.Indeterminate, tr("进行中", "In progress", "処理中", "진행 중", "進行中"), speedText)
-    val bytes = "${processed.toReadableSize()} / ${total.toReadableSize()}"
-    return WorkProgress(
-        kind,
-        title,
-        WorkMeter.Determinate((processed.toDouble() / total).toFloat().coerceIn(0f, 1f)),
-        listOfNotNull(bytes, remainingTime(total - processed, speed)?.let { tr("剩余 $it", "$it remaining", "残り $it", "$it 남음", "剩餘 $it") }).joinToString(tr("，", ", ", "、", ", ", "，")),
-        speedText,
-    )
-}
-
-fun DuplicateFinderState.workProgress(): WorkProgress? {
-    if (!isScanning) return null
-    val scanned = tr("已扫描 $scannedFolders 个文件夹、$scannedFiles 个文件", "Scanned ${enCount(scannedFolders, "folder", "folders")} and ${enCount(scannedFiles, "file", "files")}", "$scannedFolders フォルダー、$scannedFiles ファイルを検索済み", "폴더 ${scannedFolders}개, 파일 ${scannedFiles}개 검색 완료", "已掃描 $scannedFolders 個資料夾、$scannedFiles 個檔案")
-    val title = tr("查找「${root.localizedName}」中的重复", "Find duplicates in “${root.localizedName}”", "「${root.localizedName}」の重複を検索", "“${root.localizedName}”에서 중복 찾기", "尋找「${root.localizedName}」中的重複檔案")
-    return if (phase == DuplicateFinderState.Phase.ANALYZING) {
-        WorkProgress(WorkKind.DUPLICATES, title, WorkMeter.Indeterminate, tr("正在比对", "Comparing", "照合中", "비교 중", "正在比對"), scanned)
-    } else {
-        WorkProgress(WorkKind.DUPLICATES, title, WorkMeter.Indeterminate, scanned)
-    }
-}
-
-internal fun importSaveProgress(executions: List<InstantSaveExecution>): List<WorkProgress> =
-    executions.filterNot { it.trackedOffline }.map {
-        WorkProgress(WorkKind.FILES, tr("保存添加链接", "Save added links", "追加したリンクを保存", "추가한 링크 저장", "儲存新增連結"), WorkMeter.Indeterminate, tr("正在保存", "Saving", "保存中", "저장 중", "正在儲存"))
-    }
 
 fun PikoServices.runningWork(): List<WorkProgress> {
     if (driveRepository.currentAccount == null) return emptyList()
