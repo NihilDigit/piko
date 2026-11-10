@@ -3,16 +3,37 @@ package dev.piko.shared.data
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.TaskPhase
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
+import kotlinx.io.Sink
+import kotlinx.io.Source
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import java.nio.file.Files
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 
-/**
- * 可信写入靠两条规则：同一版本几份并存时随机串最小的算数，输的一方拿同一个改动套到赢家上重写。
- * 规则错一处，丢的是用户刚存下的一集，或者删了又冒出来的一行，而列表照样画得出来，看不出坏了。
- */
 class VaultStoreTest {
     @Test
     fun `failed cache commit never grants pending trust`() = runBlocking {
@@ -211,8 +232,6 @@ class VaultStoreTest {
         val drive = MemoryFolder()
         val a = VaultStore(drive, confirmDelay = Duration.ZERO, newToken = { "bb" })
 
-        // 另一台设备也基于空目录写了 v1：在自己的网盘副本里写成，再原样出现在共享的目录里，
-        // 时机是 a 上传之后、确认输赢之前。它的随机串更小，a 输
         drive.beforeList(2) {
             val elsewhere = MemoryFolder()
             VaultStore(elsewhere, Duration.ZERO, newToken = { "aa" }).update("f", VaultEdits.add(listOf(entry("E02")))).getOrThrow()
@@ -279,6 +298,148 @@ class VaultStoreTest {
         assertEquals(magnet, saved.enrich(renamed).sourceUrl)
         assertEquals("CID", saved.enrich(renamed).params["piko_vault_cid"])
         assertEquals(1, drive.files.size)
+    }
+
+    @Test
+    fun `entry enrichment and ingest preserve original instance timestamps`() {
+        val entry = VaultEntry("entry", "video.mkv", 10, "HASH", addedAt = 200, createdAt = 100, restoredFileId = "restored")
+        val file = FileStat(kind = FileKind.FILE, id = "restored", name = "renamed.mkv", hash = "HASH", size = "10",
+            createdTime = "2026-01-01T00:00:00Z", modifiedTime = "2026-02-01T00:00:00Z")
+        val enriched = entry.enrich(file)
+        assertEquals("100", enriched.params["piko_original_created_at"])
+        assertNull(entry.enrich(file.copy(id = "copy", name = entry.name)).params["piko_original_created_at"])
+
+        val origin = FileStat(kind = FileKind.FILE, id = "original", name = "v", hash = "HASH", size = "10", createdTime = "1970-01-01T00:00:01Z")
+        assertEquals(1_000L, VaultIngest.buildEntry(VaultEntryDraft("v", 10, "HASH", originFile = origin), 2_000).createdAt)
+        assertEquals(500L, VaultIngest.buildEntry(VaultEntryDraft("v", 10, "HASH", originFile = origin.copy(params = mapOf("piko_original_created_at" to "500"))), 2_000).createdAt)
+        assertEquals(2_000L, VaultIngest.buildEntry(VaultEntryDraft("v", 10, "HASH", originFile = null), 2_000).createdAt)
+    }
+
+    @Test
+    fun `streaming cache deduplicates sources reads reordered v2 and legacy v1 without whole document reads`() = runBlocking {
+        val directory = Files.createTempDirectory("piko-vault-stream")
+        val owner = SupervisorJob()
+        val scope = CoroutineScope(coroutineContext + owner)
+        val files = FilePikoCacheStore(directory.toString(), Json { ignoreUnknownKeys = true }.streamingCodec())
+        val streamOnly = object : PikoCacheStore by files {
+            override suspend fun read(key: String): String? = error("whole-document reads are forbidden")
+            override suspend fun write(key: String, value: String) = error("whole-document writes are forbidden")
+            override suspend fun <T> readStream(key: String, decode: (Source) -> T): T? = files.readStream(key, decode)
+            override suspend fun writeStream(key: String, encode: (Sink) -> Unit) = files.writeStream(key, encode)
+        }
+        val emptyIo = object : EmptyIo() {}
+        try {
+            val sharedSources = List(50) { "magnet:?xt=urn:btih:shared-$it" }
+            val entries = List(500) { idx ->
+                VaultEntry("$idx", "file$idx.mkv", 1000, "HASH$idx", source = sharedSources[idx % sharedSources.size], addedAt = 1, createdAt = idx.toLong())
+            }
+            val writer = VaultStore(emptyIo, cacheStore = streamOnly, account = "stream", scope = scope, saveDelayMillis = 0, initialParsed = mapOf("manifest" to entries))
+            withTimeout(5_000) { writer.close().await() }
+
+            val rawPath = directory.resolve(VaultStore.cacheKeyOf("stream"))
+            val rawJson = Files.readString(rawPath)
+            assertEquals(1, Regex(Regex.escape(sharedSources.first())).findAll(rawJson).count(), "v2 cache must deduplicate shared source URLs")
+
+            // Reorder JSON fields and entry object keys on disk and verify streaming reader restores interned sources
+            val parsedObj = Json.parseToJsonElement(rawJson).jsonObject
+            val reorderedManifests = parsedObj.getValue("manifests").jsonObject.mapValues { (_, v) ->
+                JsonArray(v.jsonArray.map { row -> JsonObject(row.jsonObject.toList().reversed().toMap()) })
+            }
+            Files.writeString(rawPath, JsonObject(linkedMapOf(
+                "manifests" to JsonObject(reorderedManifests),
+                "sources" to parsedObj.getValue("sources"),
+                "version" to parsedObj.getValue("version"),
+            )).toString())
+
+            val restored = VaultStore(emptyIo, cacheStore = streamOnly, account = "stream", scope = scope, saveDelayMillis = 0)
+            withTimeout(5_000) { restored.awaitLoaded() }
+            val loaded = restored.parsedFlow.value.getValue("manifest")
+            assertEquals(entries, loaded)
+            assertSame(loaded[0].source, loaded[50].source)
+            withTimeout(5_000) { restored.close().await() }
+
+            // Legacy v1 map format compatibility
+            val legacySnapshot = mapOf("m1" to entries.take(3))
+            Files.writeString(
+                directory.resolve(VaultStore.cacheKeyOf("legacy")),
+                Json.encodeToString(MapSerializer(String.serializer(), ListSerializer(VaultEntry.serializer())), legacySnapshot),
+            )
+            val legacyStore = VaultStore(emptyIo, cacheStore = files, account = "legacy", scope = scope, saveDelayMillis = 0)
+            withTimeout(5_000) { legacyStore.awaitLoaded() }
+            assertEquals(legacySnapshot, legacyStore.parsedFlow.value)
+            withTimeout(5_000) { legacyStore.close().await() }
+        } finally {
+            owner.cancelAndJoin()
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `close drains accepted transaction blocks premature reload and survives failed close`() = runBlocking {
+        val owner = SupervisorJob()
+        val scope = CoroutineScope(coroutineContext + owner)
+        val cache = LifecycleCache()
+        val uploaded = CompletableDeferred<Unit>()
+        val releaseUpload = CompletableDeferred<Unit>()
+        val io = object : EmptyIo() {
+            override suspend fun upload(folderId: String, name: String, bytes: ByteArray): String {
+                uploaded.complete(Unit)
+                releaseUpload.await()
+                return "manifest"
+            }
+        }
+        try {
+            val first = VaultStore(io, Duration.ZERO, cacheStore = cache, account = "A", scope = scope, saveDelayMillis = 0)
+            first.awaitLoaded()
+            val item = VaultEntry("one", "one.mkv", 10, "HASH", addedAt = 1)
+            val transaction = async { first.update("folder", VaultEdits.add(listOf(item)), freshlyCreatedFolder = true).getOrThrow() }
+            withTimeout(5_000) { uploaded.await() }
+            val handoff = first.close()
+            assertSame(handoff, first.close())
+            assertFalse(handoff.isCompleted)
+            assertFailsWith<IllegalStateException> { first.update("new", VaultEdits.remove(emptySet())) }
+            val readsBefore = cache.reads.get()
+            val next = VaultStore(EmptyIo(), Duration.ZERO, cacheStore = cache, account = "A", scope = scope, saveDelayMillis = 0, predecessor = handoff)
+            yield()
+            assertEquals(readsBefore, cache.reads.get(), "new account generation must not read before the handoff")
+            releaseUpload.complete(Unit)
+            withTimeout(5_000) { transaction.await(); handoff.await(); next.awaitLoaded() }
+            assertEquals(listOf(item), next.parsedFlow.value["manifest"])
+            val pending = FileStat(kind = FileKind.FILE, id = "manifest", name = ".piko-vault-v1-00.json", phase = TaskPhase.PENDING)
+            assertNotNull(next.winnerOf(listOf(pending)))
+            withTimeout(5_000) { next.close().await() }
+
+            cache.fail = true
+            val failing = VaultStore(EmptyIo(), cacheStore = cache, account = "B", scope = scope, initialParsed = mapOf("old" to emptyList()), saveDelayMillis = 0)
+            val failedHandoff = failing.close()
+            assertFailsWith<IllegalStateException> { withTimeout(5_000) { failedHandoff.await() } }
+            cache.fail = false
+            val recovered = VaultStore(EmptyIo(), cacheStore = cache, account = "B", scope = scope, predecessor = failedHandoff, initialParsed = mapOf("new" to emptyList()), saveDelayMillis = 0)
+            withTimeout(5_000) { recovered.awaitLoaded(); recovered.close().await() }
+            assertNotNull(cache.values[VaultStore.cacheKeyOf("B")])
+            assertTrue(owner.children.none())
+        } finally {
+            owner.cancelAndJoin()
+        }
+    }
+
+    private open class EmptyIo : VaultFolderIo {
+        override suspend fun list(folderId: String): List<FileStat> = emptyList()
+        override suspend fun read(fileId: String): ByteArray = error("unexpected remote read")
+        override suspend fun upload(folderId: String, name: String, bytes: ByteArray): String = error("unexpected upload")
+        override suspend fun delete(ids: List<String>) = Unit
+    }
+
+    private class LifecycleCache : PikoCacheStore {
+        override val jsonCodec = Json { ignoreUnknownKeys = true }.streamingCodec()
+        val values = HashMap<String, String>()
+        val reads = AtomicInteger()
+        var fail = false
+        override suspend fun read(key: String): String? { reads.incrementAndGet(); return values[key] }
+        override suspend fun write(key: String, value: String) {
+            check(!fail) { "disk full" }
+            values[key] = value
+        }
     }
 
     /** 一个目录，列出时按插入顺序。 */

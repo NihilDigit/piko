@@ -1,6 +1,7 @@
 package dev.piko.shared.smoke
 
 import dev.piko.shared.data.ArchivePasswordVault
+import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.OfflinePackTracker
 import dev.piko.shared.data.OfflinePackStage
@@ -46,9 +47,12 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.IOException
+import kotlinx.coroutines.flow.flowOf
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class ReceivingReverseSmokeTest {
@@ -233,5 +237,108 @@ class ReceivingReverseSmokeTest {
             assertEquals(listOf("one.mkv"), f.server.tree(output))
             assertEquals(ActionAvailability.Available, f.commands.availability(FileWriteCommand.Rename(one.id, "renamed.mkv")))
         } finally { release.trySend(Unit) }
+    }
+
+    private class ForwardRig(val scope: CoroutineScope) {
+        val server = FakePikPakServer()
+        val http = server.httpClient()
+        val provider = server.provider(PikPakClient("receiving@piko.dev", "pw", sessionStore = InMemorySessionStore(), httpClient = http,
+            rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0)))
+        val preferences = MemoryPreferences()
+        val drive = PikoDriveRepository(provider, preferences)
+        val writes = FileWriteSession(drive, scope)
+        val commands = FileCommands(drive, writes)
+        val parent = server.addFolder("parent")
+        val child = server.addFolder("child", parent.id)
+        val other = server.addFolder("other")
+        val target = PikoPathBreadcrumb(child.id, child.name)
+        val instant = InstantMagnetRepository(provider)
+        fun state(context: SaveTargetContext = SaveTargetContext({ target }, flowOf(target), commands::receivingAvailability, commands.receivingChanges)) = InstantSheetState(
+            instant, drive, preferences, PreviewTempFolder(provider, drive, instant, scope), OfflinePackTracker(instant, drive, preferences),
+            InstantSaveRecords(provider, null, scope), scope, "https://example.invalid/file", context)
+        suspend fun learn() { drive.listAllFiles().getOrThrow(); drive.listAllFiles(parent.id).getOrThrow() }
+    }
+
+    @Test
+    fun `moving or renaming an ancestor preserves incoming saves addressed by directory id`() = smoke { scope ->
+        val f = ForwardRig(scope)
+        f.learn()
+        val state = f.state()
+        awaitUntil("离线保存主操作可用") { state.primaryAction?.enabled == true }
+        val entered = Channel<Unit>(1)
+        val release = Channel<Unit>(1)
+        f.http.plugin(HttpSend).intercept { request ->
+            if (request.url.encodedPath.endsWith("files:batchMove")) { entered.send(Unit); release.receive() }
+            execute(request)
+        }
+        val id = assertIs<FileCommandResult.Accepted>(f.commands.submit(FileWriteCommand.Move(listOf(f.parent.id), PikoPathBreadcrumb(f.other.id, f.other.name)))).workId
+        withTimeout(5_000) { entered.receive() }
+        assertEquals(ActionAvailability.Available, f.commands.receivingAvailability(f.child.id))
+        assertEquals(ActionAvailability.Available, f.commands.receivingAvailability(f.other.id))
+        assertTrue(state.primaryAction?.enabled == true)
+        state.submitOfflineTask()
+        awaitUntil("save continues while ancestor move waits") { f.server.tasksSnapshot().any { it.parentId == f.child.id } }
+        release.send(Unit)
+        awaitUntil("父目录移动结束后规则解除") { id !in f.writes.mutations.active.value && state.primaryAction?.enabled == true }
+        assertEquals(ActionAvailability.Available, f.commands.receivingAvailability(f.child.id))
+    }
+
+    @Test
+    fun `a stale enabled action rechecks its target before sending any offline request`() = smoke { scope ->
+        val f = ForwardRig(scope)
+        var blocked = false
+        val state = f.state(SaveTargetContext({ f.target }, flowOf(f.target),
+            { if (blocked) ActionAvailability.Blocked("目标已经开始删除") else ActionAvailability.Available }))
+        awaitUntil("旧按钮状态可用") { state.primaryAction?.enabled == true }
+        state.submitOfflineTask()
+        blocked = true
+        awaitUntil("执行前重新检查目标") { !state.isSaving && state.errorMessage == "目标已经开始删除" }
+        assertTrue(f.server.tasksSnapshot().isEmpty())
+        assertTrue(f.instant.offlineSubmissions.works.value.isEmpty())
+    }
+
+    @Test
+    fun `a lost ancestor move response leaves no manual confirmation lock`() = smoke { scope ->
+        val f = ForwardRig(scope)
+        f.learn()
+        var moved = false
+        var hideDetails = true
+        f.http.plugin(HttpSend).intercept { request ->
+            val path = request.url.encodedPath
+            if (moved && hideDetails && request.method == HttpMethod.Get && path.endsWith("/files/${f.parent.id}")) throw IOException("confirmation unavailable")
+            val response = execute(request)
+            if (path.endsWith("files:batchMove")) { moved = true; throw IOException("acknowledgement lost") }
+            response
+        }
+        val id = assertIs<FileCommandResult.Accepted>(f.commands.submit(FileWriteCommand.Move(listOf(f.parent.id), PikoPathBreadcrumb(f.other.id, f.other.name)))).workId
+        awaitUntil("目录移动待确认") { id !in f.writes.mutations.active.value }
+        assertEquals(ActionAvailability.Available, f.commands.receivingAvailability(f.child.id))
+        hideDetails = false
+        assertFalse(f.writes.recheck(id))
+        assertTrue(f.writes.awaitResult(id)!!.unconfirmed.isEmpty())
+        assertEquals(1, f.server.count("POST /drive/v1/files:batchMove"))
+        assertNotNull(f.server.node(f.child.id))
+    }
+
+    @Test
+    fun `undoing an ancestor rename still allows independent incoming saves`() = smoke { scope ->
+        val f = ForwardRig(scope)
+        f.learn()
+        f.drive.rename(f.parent.id, "renamed").getOrThrow()
+        val change = DriveChangeJournal.Change.Rename(listOf(DriveChangeJournal.Renamed(f.parent.id, "parent", "renamed")), "rename")
+        f.drive.changes.record(change)
+        val entered = Channel<Unit>(1)
+        val release = Channel<Unit>(1)
+        f.http.plugin(HttpSend).intercept { request ->
+            if (request.method == HttpMethod.Patch) { entered.send(Unit); release.receive() }
+            execute(request)
+        }
+        assertTrue(f.drive.changes.undo(change))
+        withTimeout(5_000) { entered.receive() }
+        assertEquals(ActionAvailability.Available, f.commands.receivingAvailability(f.child.id))
+        assertIs<FileCommandResult.Accepted>(f.commands.submit(FileWriteCommand.CreateFolder(f.target, "independent")))
+        awaitUntil("撤销改名期间创建独立目录") { f.server.children(f.child.id).any { it.name == "independent" } }
+        release.send(Unit)
+        awaitUntil("名称撤销完成") { f.drive.changes.state.value.undo[change.id]?.status == DriveChangeJournal.UndoStatus.UNDONE }
     }
 }

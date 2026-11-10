@@ -4,6 +4,7 @@ import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.ContentStats
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
+import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.SortContext
 import dev.piko.shared.data.SubtreeStats
 import dev.piko.shared.smoke.FakePikPakServer
@@ -111,5 +112,48 @@ class NameParsingAndFoldersFirstTest {
         val tiers = repository.sortFiles(listOf(text, emptyFolder, unknownVideo, folder, newest), PikoFileSortOrder.DURATION_DESC, "", context, foldersFirst = false)
         assertEquals(listOf(newest, folder, unknownVideo), tiers.take(3))
         assertTrue(tiers.drop(3).containsAll(listOf(emptyFolder, text)))
+    }
+
+    @Test
+    fun perFolderSortRemembersEachFolderOrderIndependentlyWhenEnabled() = smoke { scope ->
+        val server = FakePikPakServer()
+        val folderA = server.addFolder("FolderA")
+        val folderB = server.addFolder("FolderB")
+        val folderC = server.addFolder("FolderC")
+        server.addFile("b.txt", folderA.id, content = ByteArray(10))
+        server.addFile("a.txt", folderA.id, content = ByteArray(100))
+        server.addFile("small.txt", folderB.id, content = ByteArray(10))
+        server.addFile("large.txt", folderB.id, content = ByteArray(500))
+        server.addFile("c1.txt", folderC.id, content = ByteArray(10))
+        server.addFile("c2.txt", folderC.id, content = ByteArray(20))
+
+        val prefs = MemoryPreferences()
+        val repo = PikoDriveRepository(server.provider(), prefs)
+        val state = DriveScreenState(repo, prefs, scope)
+
+        state.setPerFolderSortEnabled(true)
+        assertTrue(state.perFolderSort)
+
+        state.openFolder(folderA.id, folderA.name)
+        awaitUntil("FolderA 加载完成") { !state.isLoading && state.loadedFolderId == folderA.id }
+        state.changeSortOrder(PikoFileSortOrder.NAME_ASC)
+        awaitUntil("FolderA 按名称升序排好") { state.displayedFiles.map { it.name } == listOf("a.txt", "b.txt") }
+
+        state.navigation.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(folderB.id, folderB.name)))
+        awaitUntil("FolderB 加载完成") { !state.isLoading && state.loadedFolderId == folderB.id }
+        state.changeSortOrder(PikoFileSortOrder.SIZE_ASC)
+        awaitUntil("FolderB 按大小升序排好") { state.displayedFiles.map { it.name } == listOf("small.txt", "large.txt") }
+
+        state.navigation.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(folderC.id, folderC.name)))
+        awaitUntil("FolderC 加载完成") { !state.isLoading && state.loadedFolderId == folderC.id }
+        assertEquals(PikoFileSortOrder.TIME_DESC, state.sortOrder)
+
+        state.navigation.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(folderA.id, folderA.name)))
+        awaitUntil("切回 FolderA 恢复 NAME_ASC") { state.loadedFolderId == folderA.id && state.sortOrder == PikoFileSortOrder.NAME_ASC }
+        assertEquals(listOf("a.txt", "b.txt"), state.displayedFiles.map { it.name })
+
+        state.navigation.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(folderB.id, folderB.name)))
+        awaitUntil("切回 FolderB 恢复 SIZE_ASC") { state.loadedFolderId == folderB.id && state.sortOrder == PikoFileSortOrder.SIZE_ASC }
+        assertEquals(listOf("small.txt", "large.txt"), state.displayedFiles.map { it.name })
     }
 }

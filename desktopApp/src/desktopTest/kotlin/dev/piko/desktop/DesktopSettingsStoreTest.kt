@@ -1,5 +1,7 @@
 package dev.piko.desktop
 
+import dev.piko.shared.auth.PlainFileVault
+import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.nio.file.Files
 import java.util.Properties
@@ -60,7 +62,6 @@ class DesktopSettingsStoreTest {
         assertEquals(listOf(file.name), base.listFiles().orEmpty().map { it.name })
     }
 
-    // 经磁力链接关联拉起时工作目录不是程序目录，1.0.0 写下的程序目录照样要认出来，并从文件里删掉
     @Test
     fun programDirectoryWrittenBy100IsDroppedWhateverTheWorkingDirectory() {
         storeDownloadDirectory(program)
@@ -79,12 +80,21 @@ class DesktopSettingsStoreTest {
         assertEquals(default, DesktopSettingsStore(file, programDirectory = program, workingDirectory = elsewhere).downloadDirectory)
     }
 
-    // 程序目录名的前缀相同不算在它之内
     @Test
     fun chosenFolderOutsideProgramDirectoryIsKept() {
         val chosen = base.resolve("Piko Downloads")
         storeDownloadDirectory(chosen)
 
         assertEquals(chosen.absoluteFile, DesktopSettingsStore(file, programDirectory = program, workingDirectory = elsewhere).downloadDirectory)
+    }
+
+    @Test
+    fun legacyArchivePasswordsComeFromWhere110PutThem() = runBlocking {
+        DesktopSettingsStore(file, programDirectory = null, workingDirectory = elsewhere).set("drive.archivePasswords", """["hunter2"]""")
+        val secrets = PlainFileVault(base.resolve("secrets").toPath())
+        val prefs = DesktopPikoPreferences(DesktopSettingsStore(file, programDirectory = null, workingDirectory = elsewhere)) { secrets }
+        assertEquals("""["hunter2"]""", prefs.loadLegacyArchivePasswords())
+        prefs.clearLegacyArchivePasswords()
+        assertFalse("hunter2" in file.readText())
     }
 }

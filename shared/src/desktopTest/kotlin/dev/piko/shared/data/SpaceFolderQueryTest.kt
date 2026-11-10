@@ -2,12 +2,33 @@ package dev.piko.shared.data
 
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class SpaceFolderQueryTest {
+    private fun withSqliteIndex(block: (DriveTreeIndex) -> Unit) {
+        val dir = Files.createTempDirectory("piko-space-query").toFile()
+        val index = DriveTreeIndex(
+            database = DesktopPikoTreeDatabaseFactory(dir).open("space@piko.dev"),
+            ownerAccount = "space@piko.dev",
+        )
+        try {
+            block(index)
+        } finally {
+            index.close()
+            dir.deleteRecursively()
+        }
+    }
+
+    private fun DriveTreeIndex.loadComplete(items: List<FileStat>) {
+        val gen = beginCandidate()
+        appendCandidate(gen, items)
+        commitCandidate(gen, items.filter { !it.isFolder }.sumOf { it.sizeBytes.coerceAtLeast(0L) })
+    }
+
     private fun folder(id: String, parent: String = "", name: String = id) =
         FileStat(id = id, parentId = parent, name = name, kind = FileKind.FOLDER)
 
@@ -15,11 +36,10 @@ class SpaceFolderQueryTest {
         FileStat(id = id, parentId = parent, name = name, size = bytes.toString())
 
     @Test
-    fun separatesPhysicalAndVaultedBytesAndSortsBySelectedSize() {
-        val index = DriveTreeIndex()
-        index.putFiles(listOf(folder("a"), folder("b"), file("physical", "a", 10), file("other", "b", 20)))
+    fun separatesPhysicalAndVaultedBytesAndSortsBySelectedSize() = withSqliteIndex { index ->
+        val manifest = file("m-a", "a", 10, ".piko-vault-v1-0123456789abcdef.json")
+        index.loadComplete(listOf(folder("a"), folder("b"), file("physical", "a", 10), manifest, file("other", "b", 20)))
         index.putVaultEntries("a", listOf(VaultEntry("entry", "archived.mp4", 100, "ABC", addedAt = 0, duration = "3")))
-        index.markComplete()
 
         val physical = spaceFolderSnapshot(index, "", includeVaulted = false, isBuilding = true)
         assertEquals(listOf("b", "a"), physical.items.map { it.id })
@@ -43,9 +63,8 @@ class SpaceFolderQueryTest {
     }
 
     @Test
-    fun excludesInternalTreesAndSidecarsButPreservesNestedUserNames() {
-        val index = DriveTreeIndex()
-        index.putFiles(listOf(
+    fun excludesInternalTreesAndSidecarsButPreservesNestedUserNames() = withSqliteIndex { index ->
+        index.loadComplete(listOf(
             folder("internal", name = ".piko"), folder("temp", name = "Piko-Temp"),
             folder("user"), folder("nested", "user", ".piko"),
             file("hidden", "internal", 500), file("temporary", "temp", 500),
@@ -53,7 +72,6 @@ class SpaceFolderQueryTest {
             file("manifest", bytes = 500, name = ".piko-vault-v1-abcd.json"),
             file("recovery", bytes = 500, name = "归档来源-0123456789abcdef.magnet"),
         ))
-        index.markComplete()
         val root = spaceFolderSnapshot(index, "", true, false)
         assertEquals(listOf("user"), root.items.map { it.id })
         assertEquals(7L, root.physicalBytes)
@@ -62,11 +80,12 @@ class SpaceFolderQueryTest {
     }
 
     @Test
-    fun breadcrumbsFollowLocalParentsAndStopAtCycles() {
-        val index = DriveTreeIndex()
-        index.putFiles(listOf(folder("a"), folder("b", "a"), folder("c", "b")))
+    fun breadcrumbsFollowLocalParentsAndStopAtCycles() = withSqliteIndex { index ->
+        index.putFolderListing("", listOf(folder("a")))
+        index.putFolderListing("a", listOf(folder("b", "a")))
+        index.putFolderListing("b", listOf(folder("c", "b")))
         assertEquals(listOf("", "a", "b", "c"), spaceFolderSnapshot(index, "c", false, false).breadcrumbs.map { it.id })
-        index.putFiles(listOf(folder("a", "c")))
+        index.putFolderListing("c", listOf(folder("a", "c")))
         val cyclic = spaceFolderSnapshot(index, "c", false, false)
         assertEquals(listOf("", "a", "b", "c"), cyclic.breadcrumbs.map { it.id })
         assertFalse(cyclic.isTreeComplete)
@@ -74,30 +93,28 @@ class SpaceFolderQueryTest {
     }
 
     @Test
-    fun limitsPreviewsToLargest24FoldersAnd16DirectChildren() {
-        val index = DriveTreeIndex()
+    fun limitsPreviewsToLargest24FoldersAnd24DirectChildren() = withSqliteIndex { index ->
         val files = buildList {
             add(file("large-root-file", bytes = 1_000_000))
             repeat(25) { n ->
                 add(folder("folder-$n"))
-                repeat(18) { child -> add(file("$n-$child", "folder-$n", (n + 1L) * (child + 1))) }
+                repeat(26) { child -> add(file("$n-$child", "folder-$n", (n + 1L) * (child + 1))) }
             }
         }
-        index.putFiles(files.reversed())
+        index.loadComplete(files.reversed())
         val snapshot = spaceFolderSnapshot(index, "", false, false)
         assertEquals(26, snapshot.items.size)
         assertEquals(24, snapshot.items.count { it.previewChildren.isNotEmpty() })
         assertTrue(snapshot.items.first().previewChildren.isEmpty())
         assertTrue(snapshot.items.last().previewChildren.isEmpty())
         val largest = snapshot.items.first { it.isFolder }
-        assertEquals(16, largest.previewChildren.size)
-        assertEquals("24-17", largest.previewChildren.first().id)
+        assertEquals(24, largest.previewChildren.size)
+        assertEquals("24-25", largest.previewChildren.first().id)
         assertEquals("24-2", largest.previewChildren.last().id)
     }
 
     @Test
-    fun incompleteAndDirtyListingsAreNotReportedComplete() {
-        val index = DriveTreeIndex()
+    fun incompleteAndDirtyListingsAreNotReportedComplete() = withSqliteIndex { index ->
         index.putFolderListing("", listOf(folder("a")))
         assertFalse(spaceFolderSnapshot(index, "", false, false).isTreeComplete)
         index.putFolderListing("a", emptyList())
@@ -109,9 +126,8 @@ class SpaceFolderQueryTest {
     }
 
     @Test
-    fun durationUsesCapturedContentMetadataAndTiesUseStableIds() {
-        val index = DriveTreeIndex()
-        index.putFiles(listOf(
+    fun durationUsesCapturedContentMetadataAndTiesUseStableIds() = withSqliteIndex { index ->
+        index.loadComplete(listOf(
             file("b", bytes = 10, name = "same.mp4").copy(hash = "ABC"),
             file("a", bytes = 10, name = "same.mp4").copy(hash = "DEF"),
             file("negative", bytes = -10),

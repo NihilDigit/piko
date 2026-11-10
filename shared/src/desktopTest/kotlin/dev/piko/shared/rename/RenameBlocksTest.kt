@@ -44,7 +44,6 @@ class RenameBlocksTest {
 
     @Test
     fun `digit blocks match ascii digits only and never crash on unicode digits`() {
-        // 积木的「数字」就是阿拉伯数字：第２集、第𝟐集、第٢集原样留着，与手写 \d 的 Unicode 语义不同，是有意的
         val find = listOf(FindBlock.Text("第"), FindBlock.Digits(capture = true), FindBlock.Text("集"))
         val replace = listOf(ReplaceBlock.Text("E"), ReplaceBlock.Piece(1), ReplaceBlock.Counter(start = 1, padding = 2))
         val options = FindReplaceOptions(search = findBlocksToRegex(find), replacement = replaceBlocksToTemplate(replace), useRegex = true)
@@ -80,13 +79,11 @@ class RenameBlocksTest {
 
     @Test
     fun `highlights map each block to its own span of the name`() {
-        // 取出的与不取出的积木混在一起，各块仍对到自己的那段；只改主名时扩展名不参与
         val find = listOf(FindBlock.Start, FindBlock.Bracketed(BracketKind.SQUARE), FindBlock.Text(" "), FindBlock.Digits(capture = true), FindBlock.AnyText())
         val options = FindReplaceOptions(search = findBlocksToRegex(find), useRegex = true, scope = RenameScope.NAME)
         val item = RenameSource("1", "p", "[Sub] 09.mkv", isFolder = false)
         val spans = MatchHighlighter(options, find).highlights(item).map { item.name.substring(it.range) to it.block }
         assertEquals(listOf("[Sub]" to 1, " " to 2, "09" to 3), spans)
-        // 文本模式整个匹配一种颜色，全部替换时每处都标
         val text = MatchHighlighter(FindReplaceOptions(search = "[0-9]", useRegex = true, scope = RenameScope.FULL), null).highlights(RenameSource("2", "p", "a1b2.mp4", isFolder = false))
         assertEquals(listOf("1", "2", "4"), text.map { "a1b2.mp4".substring(it.range) })
     }
@@ -100,15 +97,47 @@ class RenameBlocksTest {
     @Test
     fun `moving a selected group lands on the same side as a single block would`() {
         val list = listOf("a", "b", "c", "d", "e", "f")
-        // 单块与 add(to, removeAt(from)) 一致
         for (from in list.indices) for (to in list.indices) {
             if (from == to) continue
             assertEquals(list.toMutableList().apply { add(to, removeAt(from)) }, list.moveGroup(setOf(from), to), "$from → $to")
         }
         assertEquals(listOf("a", "d", "e", "b", "c", "f"), list.moveGroup(setOf(1, 2), 4))
         assertEquals(listOf("d", "e", "a", "b", "c", "f"), list.moveGroup(setOf(3, 4), 0))
-        // 不连续的一组收拢到一起，组内保持原来的先后
         assertEquals(listOf("b", "d", "e", "a", "c", "f"), list.moveGroup(setOf(0, 2), 4))
         assertEquals(list, list.moveGroup(setOf(1, 2), 2))
+    }
+
+    @Test
+    fun `localized guides and presets produce the displayed results and numbering counts once`() {
+        fun assertExample(example: BlockGuideExample, title: String) {
+            val options = FindReplaceOptions(
+                search = findBlocksToRegex(example.find),
+                replacement = replaceBlocksToTemplate(example.replace),
+                useRegex = true,
+                scope = RenameScope.FULL,
+            )
+            val item = RenameSource("1", "p", example.input, isFolder = true)
+            assertEquals(example.result, FindReplaceRule(options, 0).apply(listOf(item), listOf(item.name)).single(), title)
+        }
+        try {
+            for (language in dev.piko.data.auth.AppLanguage.entries.filter { it != dev.piko.data.auth.AppLanguage.SYSTEM }) {
+                dev.piko.shared.i18n.PikoLocale.apply(language)
+                for (entry in BlockGuide) entry.example?.let { assertExample(it, entry.title) }
+                for (preset in RenamePresets) {
+                    assertExample(preset.example, preset.label)
+                    assertEquals(preset.find, preset.example.find, preset.label)
+                }
+            }
+        } finally {
+            dev.piko.shared.i18n.PikoLocale.apply(dev.piko.data.auth.AppLanguage.ZH_CN)
+        }
+        val preset = RenamePresets.single { it.label == "改为序号" }
+        val options = FindReplaceOptions(
+            search = findBlocksToRegex(preset.find),
+            replacement = replaceBlocksToTemplate(preset.replace),
+            useRegex = true,
+        )
+        val items = listOf("甲.mkv", "乙.mkv", "丙.mkv").mapIndexed { index, name -> RenameSource("$index", "p", name, isFolder = false) }
+        assertEquals(listOf("01.mkv", "02.mkv", "03.mkv"), FindReplaceRule(options, 0).apply(items, items.map { it.name }))
     }
 }

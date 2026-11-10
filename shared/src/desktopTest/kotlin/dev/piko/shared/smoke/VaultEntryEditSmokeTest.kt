@@ -16,14 +16,20 @@ import dev.piko.shared.state.FileWriteCommand
 import dev.piko.shared.state.FileWriteSession
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.shared.state.VaultWorkTargets
+import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.data.isVaulted
 import dev.piko.shared.state.VaultEntryEditCommand
 import dev.piko.shared.state.VaultEntryEditCompletion
 import dev.piko.shared.state.VaultEntryMutations
+import dev.piko.shared.state.VaultScope
 import io.github.nihildigit.pikpak.batchDelete
+import io.github.nihildigit.pikpak.thumbnailUrlOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -322,5 +328,142 @@ class VaultEntryEditSmokeTest {
         val work = outcomes.value.single()
         assertEquals(VaultEntryEditCompletion.FAILED, work.result!!.completion)
         assertTrue(work.result!!.undoChangeIds.isEmpty())
+    }
+
+    @Test
+    fun `archiving a starred real file preserves its star in vault stars and restoring transfers it back`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val folder = server.addFolder("Favorites")
+        val starredReal = server.addFile("episode.mkv", parentId = folder.id, content = ByteArray(128) { 7 }, hash = "GCID_STAR_1")
+        val repo = PikoDriveRepository(server.provider(), MemoryPreferences(), MemoryCacheStore())
+        repo.setStarred(listOf(starredReal.id), starred = true).getOrThrow()
+        assertTrue(repo.starredFiles().getOrThrow().any { it.id == starredReal.id })
+
+        val vaultSession = FolderVaultSession(repo, scope)
+        vaultSession.archive(PikoPathBreadcrumb(folder.id, folder.name), includeUnsourced = true, moveToTrash = false)
+        vaultSession.outcomes.first()
+
+        val browsed = repo.listBrowsable(folder.id, PikoFileSortOrder.TIME_DESC).getOrThrow()
+        val vaultedStat = browsed.single { it.isVaulted }
+        assertTrue(vaultedStat.tags.any { it.name.equals("STAR", ignoreCase = true) })
+        assertTrue(repo.starredFiles().getOrThrow().any { it.id == vaultedStat.id })
+        assertEquals(folder.id, repo.locateFolder(vaultedStat.id).getOrThrow().last().id)
+
+        repo.setStarred(listOf(vaultedStat.id), starred = false).getOrThrow()
+        assertFalse(repo.starredFiles().getOrThrow().any { it.id == vaultedStat.id })
+        repo.setStarred(listOf(vaultedStat.id), starred = true, mapOf(vaultedStat.id to vaultedStat)).getOrThrow()
+        assertTrue(repo.starredFiles().getOrThrow().any { it.id == vaultedStat.id })
+
+        vaultSession.restore(listOf(vaultedStat))
+        vaultSession.outcomes.first()
+
+        val starredAfterRestore = repo.starredFiles().getOrThrow()
+        assertFalse(starredAfterRestore.any { VaultEntry.isVaulted(it.id) })
+        val restoredReal = starredAfterRestore.single { !it.isFolder && it.name == "episode.mkv" }
+        assertTrue(restoredReal.tags.any { it.name.equals("STAR", ignoreCase = true) })
+    }
+
+    @Test
+    fun `single and mixed file selections archive per parent folder and support undo`() = smoke { scope ->
+        val f1 = Fixture()
+        val show = f1.server.addFolder("Show")
+        val episode = f1.server.addFile("episode.mkv", show.id, content = ByteArray(100), hash = "G1")
+        val sibling = f1.server.addFile("extra.mkv", show.id, content = ByteArray(100), hash = "G2")
+        val session1 = FolderVaultSession(f1.repository, scope)
+        val row = f1.repository.listBrowsable(show.id, PikoFileSortOrder.NAME_ASC).getOrThrow().single { it.name == "episode.mkv" }
+        val singleTarget = VaultScope("episode.mkv", files = listOf(row))
+
+        val survey = session1.survey(singleTarget).getOrThrow()
+        assertEquals(1, survey.files)
+        assertEquals(1, survey.unsourcedFiles)
+
+        session1.archive(singleTarget, includeUnsourced = true)
+        awaitUntil("single file archived") { f1.repository.changes.latest.value != null }
+        assertTrue(f1.server.node(episode.id)!!.trashed)
+        assertFalse(f1.server.node(sibling.id)!!.trashed)
+        suspend fun PikoDriveRepository.archived(folderId: String) =
+            vault.read(folderId, listAllFiles(folderId).getOrThrow()).getOrThrow().filter { it.isArchived }
+        assertEquals(listOf("G1"), f1.repository.archived(show.id).map { it.gcid })
+        assertTrue(f1.repository.vaultTrees.flow.value.isEmpty())
+        f1.repository.listBrowsable(show.id, PikoFileSortOrder.NAME_ASC).getOrThrow()
+        awaitUntil("parent folder marked vaulted") { show.id in f1.repository.vaultedFolders.value }
+
+        f1.repository.changes.undo(assertNotNull(f1.repository.changes.latest.value))
+        withTimeout(10_000) { while (f1.repository.archived(show.id).isNotEmpty()) delay(20) }
+        awaitUntil("trashed file restored") { !f1.server.node(episode.id)!!.trashed }
+
+        val f2 = Fixture()
+        val left = f2.server.addFolder("Left")
+        val right = f2.server.addFolder("Right")
+        val picked = f2.server.addFolder("Picked")
+        val nested = f2.server.addFolder("Season 1", picked.id)
+        val a = f2.server.addFile("a.mkv", left.id, content = ByteArray(100), hash = "GA")
+        val b = f2.server.addFile("b.mkv", right.id, content = ByteArray(100), hash = "GB")
+        val untouched = f2.server.addFile("c.mkv", right.id, content = ByteArray(100), hash = "GC")
+        val deep = f2.server.addFile("d.mkv", nested.id, content = ByteArray(100), hash = "GD")
+        val session2 = FolderVaultSession(f2.repository, scope)
+        val rowA = f2.repository.listBrowsable(left.id, PikoFileSortOrder.NAME_ASC).getOrThrow().single { it.name == "a.mkv" }
+        val rowB = f2.repository.listBrowsable(right.id, PikoFileSortOrder.NAME_ASC).getOrThrow().single { it.name == "b.mkv" }
+        session2.archive(
+            VaultScope("mixed", folders = listOf(PikoPathBreadcrumb(picked.id, picked.name)), files = listOf(rowA, rowB)),
+            includeUnsourced = true,
+        )
+        awaitUntil("mixed archive finished") { f2.repository.changes.latest.value != null }
+        assertEquals(listOf("GA"), f2.repository.archived(left.id).map { it.gcid })
+        assertEquals(listOf("GB"), f2.repository.archived(right.id).map { it.gcid })
+        assertEquals(listOf("GD"), f2.repository.archived(nested.id).map { it.gcid })
+        assertTrue(listOf(a, b, deep).all { f2.server.node(it.id)!!.trashed })
+        assertFalse(f2.server.node(untouched.id)!!.trashed)
+        assertEquals(mapOf(picked.id to setOf(nested.id)), f2.repository.vaultTrees.flow.value)
+        val change = assertIs<DriveChangeJournal.Change.Vault>(f2.repository.changes.latest.value)
+        assertEquals(setOf(a.id, b.id, deep.id), change.untrashOnRevert.toSet())
+    }
+
+    @Test
+    fun `archived folders resolve video covers across nested containers while ignoring restored entries`() = smoke { scope ->
+        val oldManifest = """
+            {"entries":[
+              {"id":"a1","name":"Frieren - 02.mkv","size":4096,"gcid":"GCIDEP02","addedAt":1759000000000},
+              {"id":"a2","name":"Frieren - 01.ass","size":10,"gcid":"GCIDSUB01","addedAt":1759000000000},
+              {"id":"a3","name":"Frieren - 01.mkv","size":4096,"gcid":"GCIDEP01","cid":"CID01","source":"magnet:?xt=urn:btih:${"a".repeat(40)}","addedAt":1759000000000}
+            ]}
+        """.trimIndent()
+        val expectedCover = thumbnailUrlOf("GCIDEP01")
+
+        val server = FakePikPakServer()
+        val frieren = server.addFolder("Frieren")
+        server.addFile(".piko-vault-v1-0123456789abcdef.json", frieren.id, content = oldManifest.encodeToByteArray())
+        val plain = server.addFolder("Plain")
+        server.addFile("notes.txt", plain.id)
+        val restoredFolder = server.addFolder("Restored")
+        server.addFile(
+            ".piko-vault-v2-0000000000000001.json",
+            restoredFolder.id,
+            content = """{"entries":[{"id":"r1","name":"E01.mkv","size":4096,"gcid":"GCIDR1","addedAt":1759000000000,"restoredFileId":"N999"}]}""".encodeToByteArray(),
+        )
+        val outer = server.addFolder("Show")
+        val season = server.addFolder("Season", outer.id)
+        val leaf = server.addFolder("Episodes", season.id)
+        server.addFile(".piko-vault-v1-0123456789abcdef.json", leaf.id, content = oldManifest.encodeToByteArray())
+
+        val prefs = MemoryPreferences()
+        val repo = PikoDriveRepository(server.provider(), prefs)
+        val drive = DriveScreenState(repo, prefs, scope)
+        drive.load()
+        awaitUntil("root listed") { !drive.isLoading && drive.files.size == 4 }
+        drive.files.forEach { drive.onFolderVisible(it) }
+        awaitUntil("frieren cover populated") { drive.files.single { it.id == frieren.id }.thumbnailLink == expectedCover }
+        assertEquals("", drive.files.single { it.id == plain.id }.thumbnailLink)
+
+        repo.listBrowsable(restoredFolder.id, PikoFileSortOrder.NAME_ASC).getOrThrow()
+        repo.fetchVaultCover(restoredFolder.id)
+        assertEquals("", repo.listBrowsable("", PikoFileSortOrder.NAME_ASC).getOrThrow().single { it.id == restoredFolder.id }.thumbnailLink)
+
+        repo.listBrowsable(leaf.id, PikoFileSortOrder.NAME_ASC).getOrThrow()
+        repo.listBrowsable(season.id, PikoFileSortOrder.NAME_ASC).getOrThrow()
+        repo.listBrowsable(outer.id, PikoFileSortOrder.NAME_ASC).getOrThrow()
+        awaitUntil("nested containers fully vaulted") { setOf(outer.id, season.id, leaf.id).all { it in repo.fullyVaultedFolders.value } }
+        val outerRow = repo.listBrowsable("", PikoFileSortOrder.NAME_ASC).getOrThrow().single { it.id == outer.id }
+        assertEquals(expectedCover, repo.withVaultCovers(listOf(outerRow.copy(thumbnailLink = "leftover-image"))).single().thumbnailLink)
     }
 }

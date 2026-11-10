@@ -13,8 +13,10 @@ import dev.piko.shared.state.InstantSaveRecords
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.OfflineSubmitException
 import dev.piko.shared.state.OfflineSubmitStatus
+import dev.piko.shared.state.SaveRoute
 import dev.piko.shared.state.SaveTargetContext
 import io.github.nihildigit.pikpak.CreateUrlResult
+import io.github.nihildigit.pikpak.DriveTask
 import io.github.nihildigit.pikpak.PikPakClient
 import io.github.nihildigit.pikpak.InMemorySessionStore
 import io.github.nihildigit.pikpak.PikPakException
@@ -305,5 +307,66 @@ class OfflineSubmissionSmokeTest {
         assertTrue(f.packs.busy.value.isEmpty())
         assertEquals(listOf(current.taskId), f.server.tasksSnapshot().map { it.id })
         assertEquals(current.taskId, f.packs.jobs.value.single().taskId)
+    }
+
+    @Test
+    fun `partial catalog blocks offline pack submission and pruning until catalog is complete`() = smoke { scope ->
+        val magnet = "magnet:?xt=urn:btih:" + "e".repeat(40)
+        val files = listOf(Triple("保留.mkv", 100L, "A".repeat(40)), Triple("其他.mkv", 200L, ""))
+        fun catalog(partial: Boolean) = resourceListBody("合集", files).let {
+            if (partial) it.replace("\"page_size\":500", "\"page_size\":500,\"next_page_token\":\"NEXT\"") else it
+        }
+
+        val server = FakePikPakServer()
+        server.indexMagnet(magnet, catalog(partial = true))
+        val provider = server.provider()
+        val prefs = MemoryPreferences()
+        val repo = InstantMagnetRepository(provider)
+        val drive = PikoDriveRepository(provider, prefs)
+        val state = InstantSheetState(
+            repo, drive, prefs, PreviewTempFolder(provider, drive, repo, scope),
+            OfflinePackTracker(repo, drive, prefs), InstantSaveRecords(provider, null, scope), scope, magnet,
+            SaveTargetContext.fixed(),
+        )
+        awaitUntil("partial catalog resolved") { state.resolution != null && state.target != null }
+        state.setSourceSelected(setOf(0, 1), true)
+        assertTrue(assertNotNull(state.savePlan).blocked)
+        state.saveSelection()
+        assertTrue(server.tasksSnapshot().isEmpty())
+        state.setSourceSelected(setOf(1), false)
+        assertEquals(SaveRoute.INSTANT, state.savePlan?.route)
+        state.updateSaveAsReference(true)
+        assertTrue(state.canSaveSelection)
+
+        val root = server.addFolder("合集")
+        server.addFile("保留.mkv", root.id)
+        server.addFile("其他.mkv", root.id)
+        server.addFile("未列出.mkv", root.id)
+        val pruneTask = DriveTask(id = "old-job", phase = TaskPhase.COMPLETE, fileId = root.id)
+        assertTrue(repo.pruneOfflineOutput(pruneTask, setOf("保留.mkv"), magnet).isFailure)
+        assertEquals(0, server.count("POST /drive/v1/files:batchDelete"))
+
+        val account = provider.currentClient.value!!.account
+        val queuedTask = assertIs<CreateUrlResult.Queued>(repo.enqueueOfflineTask(magnet).getOrThrow()).task
+        server.completeTask(queuedTask.id, "合集", listOf("保留.mkv", "其他.mkv"))
+        val output = server.tasksSnapshot().single().fileId
+        val restored = OfflinePackJob(
+            account, queuedTask.id, magnet, "", "合集", setOf("保留.mkv"), 2, 300,
+            kotlin.time.Clock.System.now().toEpochMilliseconds(), stage = OfflinePackStage.PRUNING,
+        )
+        prefs.saveOfflinePacks(Json.encodeToString(ListSerializer(OfflinePackJob.serializer()), listOf(restored)))
+        val tracker = OfflinePackTracker(repo, drive, prefs)
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { tracker.run(account) }
+        awaitUntil("partial catalog halts pruning") { tracker.jobs.value.singleOrNull()?.stage == OfflinePackStage.FAILED }
+        assertTrue(tracker.jobs.value.single().cleanupFailed)
+        awaitUntil("tracker idle") { tracker.busy.value.isEmpty() }
+
+        server.indexMagnet(magnet, catalog(partial = false))
+        assertTrue(repo.pruneOfflineOutput(pruneTask, setOf("不存在.mkv"), magnet).isFailure)
+        assertTrue(repo.pruneOfflineOutput(pruneTask, setOf("保留.mkv"), magnet).isSuccess)
+        assertEquals(listOf("保留.mkv"), server.tree(root.id))
+        tracker.retry(queuedTask.id).getOrThrow()
+        awaitUntil("complete catalog prune succeeds") { tracker.jobs.value.single().stage == OfflinePackStage.DONE }
+        assertEquals(listOf("保留.mkv"), server.tree(output))
     }
 }

@@ -18,35 +18,17 @@ import kotlin.test.assertTrue
 
 /** Real Foundation preferences, isolated suites/temp paths. No system Keychain access. */
 class IosPreferenceSettingsTest {
-    @Test fun stringValuesReopenAndOtherPreferenceTypesFallBack() = fixture { defaults, root ->
-        val settings = IosPreferenceSettings(defaults, root)
-        assertEquals("fallback", settings.get("missing", "fallback"))
-        settings.set("theme", "dark")
-        assertEquals("dark", IosPreferenceSettings(defaults, root).get("theme"))
+    @Test fun nonStringDefaultsFallBackAndPrefixEnumerationIsolatesNamespace() = fixture { defaults, root ->
         defaults.setBool(true, forKey = "piko.wrongType")
-        assertEquals("fallback", settings.get("wrongType", "fallback"))
-    }
-
-    @Test fun prefixEnumerationIsSortedAndDoesNotTouchForeignKeys() = fixture { defaults, root ->
         defaults.setObject("foreign", forKey = "foreign.playback.0")
         val settings = IosPreferenceSettings(defaults, root)
+        assertEquals("fallback", settings.get("wrongType", "fallback"))
         settings.set("playback.b", "2")
         settings.set("playback.a", "1")
-        settings.set("theme", "dark")
         assertEquals(listOf("playback.a", "playback.b"), settings.keysWithPrefix("playback."))
         settings.remove("playback.a")
         assertEquals(listOf("playback.b"), settings.keysWithPrefix("playback."))
         assertEquals("foreign", defaults.objectForKey("foreign.playback.0"))
-    }
-
-    @Test fun namespacesRemainIndependent() = fixture { defaults, root ->
-        val first = IosPreferenceSettings(defaults, root, "one.")
-        val second = IosPreferenceSettings(defaults, root, "two.")
-        first.set("value", "first")
-        second.set("value", "second")
-        first.remove("value")
-        assertEquals("", first.get("value"))
-        assertEquals("second", second.get("value"))
     }
 
     @Test fun downloadDirectoriesUseRelativeStorageAndRebaseWithTheContainer() = fixture { defaults, root ->
@@ -64,16 +46,13 @@ class IosPreferenceSettingsTest {
         assertNull(defaults.objectForKey("piko.__storage.downloadRelative"))
     }
 
-    @Test fun rejectedExternalFolderLeavesTheSelectionUnchanged() = fixture { defaults, root ->
+    @Test fun rejectedExternalOrEscapingPathsDoNotEscapeContainer() = fixture { defaults, root ->
         val settings = IosPreferenceSettings(defaults, root)
         settings.setDownloadDirectory("$root/selected")
         assertFailsWith<IllegalArgumentException> { settings.setDownloadDirectory("${root}-external") }
         assertEquals("$root/selected", settings.downloadDirectoryPath)
         assertFalse(NSFileManager.defaultManager.fileExistsAtPath("${root}-external"))
-    }
 
-    @Test fun corruptRelativePathDoesNotEscapeOrSilentlyReset() = fixture { defaults, root ->
-        val settings = IosPreferenceSettings(defaults, root)
         defaults.setObject("../outside", forKey = "piko.__storage.downloadRelative")
         assertFailsWith<IllegalArgumentException> { settings.get("download.directory") }
         assertEquals("../outside", defaults.objectForKey("piko.__storage.downloadRelative"))

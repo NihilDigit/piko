@@ -131,4 +131,24 @@ class PikoLocaleTest {
             PikoLocale.apply(AppLanguage.ZH_CN)
         }
     }
+
+    @Test
+    fun `root aliases remain valid across languages and do not replace folder names`() {
+        try {
+            PikoLocale.apply(AppLanguage.KO)
+            for (root in listOf("网盘", "我的网盘", "雲端硬碟", "我的雲端硬碟", "My drive", "マイドライブ", "내 드라이브")) {
+                assertEquals(listOf("目录"), dev.piko.shared.state.addressPathNames("$root/目录", emptyList()), root)
+            }
+            assertEquals(listOf("Drive", "目录"), dev.piko.shared.state.addressPathNames("Drive/目录", emptyList()))
+            assertEquals(listOf("My drive", "目录"), dev.piko.shared.state.addressPathNames("/My drive/目录", emptyList()))
+            assertEquals(listOf("Driveway", "目录"), dev.piko.shared.state.addressPathNames("Driveway/目录", emptyList()))
+            val current = listOf(
+                dev.piko.shared.data.PikoPathBreadcrumb("", "我的网盘"),
+                dev.piko.shared.data.PikoPathBreadcrumb("parent", "existing"),
+            )
+            assertEquals(listOf("existing", "Drive", "目录"), dev.piko.shared.state.addressPathNames("./Drive/目录", current))
+        } finally {
+            PikoLocale.apply(AppLanguage.ZH_CN)
+        }
+    }
 }

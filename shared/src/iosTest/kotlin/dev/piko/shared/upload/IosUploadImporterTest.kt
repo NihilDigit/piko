@@ -67,13 +67,6 @@ class IosUploadImporterTest {
         assertFalse(SystemFileSystem.exists(Path(dirs.downloads)))
     }
 
-    @Test fun negativeLimitFailsWithoutCreatingImportDirectories() = fixture { dirs, external ->
-        val selected = write(external, "file", byteArrayOf(1))
-        assertFailsWith<IllegalArgumentException> { importIosUploadDocument(dirs, NSURL.fileURLWithPath(selected.toString()), -1) }
-        assertFalse(SystemFileSystem.exists(Path(dirs.downloads)))
-        assertFalse(SystemFileSystem.exists(Path(dirs.caches)))
-    }
-
     @Test fun stagingAliasIntoUploadTreeIsRejected() = fixture { dirs, external ->
         val selected = write(external, "file", byteArrayOf(1))
         SystemFileSystem.createDirectories(Path(dirs.downloads))

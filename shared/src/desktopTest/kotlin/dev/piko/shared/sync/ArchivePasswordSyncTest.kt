@@ -1,13 +1,17 @@
 package dev.piko.shared.sync
 
 import dev.piko.shared.data.ArchivePasswordVault
+import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.smoke.FakePikPakServer
 import dev.piko.shared.smoke.MemoryPreferences
 import dev.piko.shared.smoke.MemorySessionStore
+import dev.piko.shared.smoke.awaitUntil
+import io.github.nihildigit.pikpak.PikPakClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
@@ -15,6 +19,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class ArchivePasswordSyncTest {
     private class MemoryRemote : RemoteSettingsStore {
@@ -25,14 +30,30 @@ class ArchivePasswordSyncTest {
         }
     }
 
+    private class PerAccountRemote : RemoteSettingsStore {
+        val files = mutableMapOf<String, String>()
+        override suspend fun read(account: String) = files[account]
+        override suspend fun write(account: String, text: String, stamp: Long) {
+            files[account] = text
+        }
+    }
+
+    private class Accounts(val a: PikPakClient, val b: PikPakClient) : PikoClientProvider {
+        override val currentClient = MutableStateFlow<PikPakClient?>(a)
+    }
+
     private class Device(val vault: ArchivePasswordVault, val sync: ArchivePasswordSync)
 
     private fun device(remote: RemoteSettingsStore, scope: CoroutineScope, accountPassword: () -> String): Device {
-        // 同步只要一个当前账号，SDK 的请求走不到
         val provider = FakePikPakServer().provider()
         val vault = ArchivePasswordVault(provider, MemorySessionStore(), MemoryPreferences())
         val sync = ArchivePasswordSync(provider, remote, vault, { accountPassword() }, JvmSyncCipher(), scope, flowOf(true))
         return Device(vault, sync)
+    }
+
+    private fun accounts(): Accounts {
+        val server = FakePikPakServer()
+        return Accounts(server.client(account = "a@piko.dev"), server.client(account = "b@piko.dev"))
     }
 
     @Test
@@ -49,7 +70,6 @@ class ArchivePasswordSyncTest {
             desktop.sync.syncNow()
             assertEquals(setOf("old-secret", "keep-me", "from-desktop"), desktop.vault.passwords.first().toSet())
 
-            // 桌面上还留着 old-secret 的有效记录，比笔记本上的删除旧
             laptop.vault.forget("old-secret")
             laptop.sync.syncNow()
             desktop.sync.syncNow()
@@ -73,11 +93,63 @@ class ArchivePasswordSyncTest {
             val desktop = device(remote, scope) { "after" }
             desktop.vault.remember("only-on-desktop")
             desktop.sync.syncNow()
-            // 用旧密码加密的那份解不开，丢掉，以桌面的记录重写；之后用新密码的设备都读得出来
             val phone = device(remote, scope) { "after" }
             phone.sync.syncNow()
             assertEquals(listOf("only-on-desktop"), phone.vault.passwords.first())
         }
         scope.cancel()
+    }
+
+    @Test
+    fun `a password entered under one account stays with it through switches and sync`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            withTimeout(60_000) {
+                val accounts = accounts()
+                val remote = PerAccountRemote()
+                val store = MemorySessionStore()
+                val vault = ArchivePasswordVault(accounts, store, MemoryPreferences())
+                val sync = ArchivePasswordSync(accounts, remote, vault, { "login-$it" }, JvmSyncCipher(), scope, flowOf(true))
+
+                vault.remember("from-a")
+                assertTrue(sync.syncNow())
+
+                accounts.currentClient.value = accounts.b
+                assertEquals(emptyList(), vault.passwords.first())
+                vault.remember("from-b")
+                assertTrue(sync.syncNow())
+                assertFalse("from-a" in store.archivePasswords.getValue("b@piko.dev"))
+
+                val otherDevice = ArchivePasswordVault(accounts, MemorySessionStore(), MemoryPreferences())
+                ArchivePasswordSync(accounts, remote, otherDevice, { "login-$it" }, JvmSyncCipher(), scope, flowOf(true)).syncNow()
+                assertEquals(listOf("from-b"), otherDevice.passwords.first())
+
+                accounts.currentClient.value = accounts.a
+                assertEquals(listOf("from-a"), vault.passwords.first())
+            }
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `the device-wide list from 1_1_0 goes to the first account to run, once`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            withTimeout(60_000) {
+                val accounts = accounts()
+                val store = MemorySessionStore()
+                val prefs = MemoryPreferences().apply { legacyArchivePasswords = """["newer","older"]""" }
+                ArchivePasswordVault(accounts, store, prefs).start(scope)
+                awaitUntil("并入头一个账号") { prefs.legacyArchivePasswords.isEmpty() }
+
+                val restarted = ArchivePasswordVault(accounts, store, prefs)
+                assertEquals(listOf("newer", "older"), restarted.passwords.first())
+                accounts.currentClient.value = accounts.b
+                assertEquals(emptyList(), restarted.passwords.first())
+            }
+        } finally {
+            scope.cancel()
+        }
     }
 }

@@ -2,6 +2,8 @@ package dev.piko.ui.screens.drive
 
 import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.MenuQuickLimit
+import dev.piko.ui.components.QuickLimit
+import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.layoutActions
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
@@ -9,11 +11,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * 图标行按平台排：桌面右键菜单照 Win11 是剪切、复制、重命名、分享、下载，星标进整理组的列表；
- * 移动端面板没有剪贴板，仍是下载、分享、星标、重命名。两套共用一份 fileActions 与 layoutActions，
- * 改分档、改上限或改先后都可能让一端串到另一端的样子。
- */
 class FileActionsRowTest {
     private val file = FileStat(kind = FileKind.FILE, id = "f", name = "a.txt", fileExtension = ".txt")
 
@@ -65,17 +62,60 @@ class FileActionsRowTest {
         assertEquals(listOf("下载到本地", "重命名", "分享", "添加星标"), layout.quick.map { it.label })
         assertTrue(layout.sections.flatten().none { it.label == "剪切" || it.label == "复制" })
     }
+
     @Test
-    fun `narrow selection rows preserve clipboard actions`() {
+    fun `selection quick rows preserve clipboard actions`() {
         val cut = DriveActions.cut {}
         val copy = DriveActions.copy {}
         val download = DriveActions.download {}
         val share = DriveActions.share {}
         val rename = DriveActions.rename {}
-        fun row(wide: Boolean) = DriveActions.quickRow(wide, cut, copy, download, share, rename, null)
-        assertEquals(row(true).toSet(), row(false).toSet())
-        val layout = layoutActions(row(false) + DriveActions.properties {})
+        val row = DriveActions.quickRow(cut, copy, download, share, rename, null)
+        val layout = layoutActions(row + DriveActions.properties {})
         assertTrue((layout.quick + layout.sections.flatten()).containsAll(listOf(cut, copy)))
     }
 
+    @Test
+    fun `scrollable panels preserve all actions including folder subtree tools tabs pins and clipboard`() {
+        val video = FileStat(
+            kind = FileKind.FILE, id = "v", name = "ABC-123 Movie.mp4",
+            mimeType = "video/mp4", thumbnailLink = "https://thumb",
+            params = mapOf("url" to "magnet:?xt=urn:btih:0"),
+        )
+        val folder = FileStat(kind = FileKind.FOLDER, id = "d", name = "ABC-123", params = mapOf("url" to "https://mypikpak.com/s/x"))
+        fun fullHandlers(inLibrary: Boolean, vaultMarked: Boolean) = FileActionHandlers(
+            toggleStar = {}, download = {}, downloadAtQuality = {}, share = {}, rename = {}, move = {}, copy = {},
+            trash = {}, extract = {}, findDuplicates = {}, canonicalNameFolder = if (inLibrary) null else ({}),
+            viewSpaceMap = {}, downloadSegment = {}, prepareQualities = {}, copySource = {}, openSource = {},
+            openInExternalPlayer = {}, openInNewTab = {}, togglePin = {}, isPinned = false,
+            vault = {}, unvault = if (!inLibrary && vaultMarked) ({}) else null,
+            previewHidden = false, togglePreview = {}, putOnClipboard = { _ -> },
+        )
+        fun panel(target: FileStat, place: CommandPlace, vaultMarked: Boolean = false): List<SheetAction> {
+            val commands = itemCommands(place, listOf(target))
+            val inLibrary = place in setOf(CommandPlace.LIBRARY, CommandPlace.RECENT, CommandPlace.HISTORY)
+            val reveal = listOfNotNull(DriveActions.revealInDrive {}.takeIf { inLibrary })
+            val removeRecord = listOfNotNull(DriveActions.removeRecord {}.takeIf { commands.removeRecord })
+            return reveal + removeRecord + fileActions(target, commands, fullHandlers(inLibrary, vaultMarked)) + DriveActions.properties {}
+        }
+        fun assertFits(actions: List<SheetAction>, case: String) {
+            val layout = layoutActions(actions)
+            val rows = layout.sections.flatten() + layout.properties + layout.danger
+            assertTrue(layout.quick.size <= QuickLimit, case)
+            assertEquals(actions.toSet(), (layout.quick + rows).toSet(), case)
+        }
+
+        for (place in listOf(CommandPlace.FOLDER, CommandPlace.SEARCH, CommandPlace.RECENT, CommandPlace.HISTORY, CommandPlace.LIBRARY)) {
+            assertFits(panel(video, place), "$place")
+        }
+        val folderInDrive = panel(folder, CommandPlace.FOLDER, vaultMarked = true)
+        assertFits(folderInDrive, "folder-drive")
+        val labels = folderInDrive.map { it.label }
+        for (label in listOf("查重", "查看空间分布", "规范命名", "在新标签页打开", "固定到快速访问", "剪切", "复制")) {
+            assertTrue(label in labels, "Missing $label in $labels")
+        }
+        val folderInLibrary = panel(folder, CommandPlace.LIBRARY)
+        assertFits(folderInLibrary, "folder-library")
+        assertTrue(folderInLibrary.any { it.label == "复制到…" })
+    }
 }

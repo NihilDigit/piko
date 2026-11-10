@@ -5,6 +5,9 @@ import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
 import io.github.nihildigit.pikpak.TaskPhase
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlin.test.*
 import kotlin.time.Duration
 
@@ -155,6 +158,41 @@ class ReferenceSaveSmokeTest {
         assertEquals("1920", entry.width)
         assertEquals("1080", entry.height)
         assertEquals("video/x-matroska", entry.mimeType)
+    }
+
+    @Test
+    fun rememberedReferenceStateStaysDeviceLocalAcrossSingleAndBatchDraftsWithoutBlockingDirectLinks() = smoke { scope ->
+        val server = FakePikPakServer()
+        val prefs = MemoryPreferences()
+        val provider = server.provider()
+        val instant = InstantMagnetRepository(provider)
+        val drive = PikoDriveRepository(provider, prefs)
+        val preview = PreviewTempFolder(provider, drive, instant, scope)
+        val packs = OfflinePackTracker(instant, drive, prefs)
+        val records = dev.piko.shared.state.InstantSaveRecords(provider, null, scope)
+        fun sheet(input: String = "") = dev.piko.shared.state.InstantSheetState(instant, drive, prefs, preview, packs, records, scope, input)
+
+        assertFalse(prefs.saveAsReferenceFlow.value)
+        assertTrue(dev.piko.shared.sync.SyncedSettings.none { it.key.contains("reference", ignoreCase = true) })
+
+        val first = sheet()
+        first.updateSaveAsReference(true)
+        awaitUntil("persisted") { prefs.saveAsReferenceFlow.value }
+        awaitUntil("restored on new draft") { sheet().saveAsReference }
+
+        val links = listOf(
+            "ed2k://|file|first.mkv|1024|0123456789ABCDEF0123456789ABCDEF|/",
+            "ed2k://|file|second.mkv|2048|ABCDEF0123456789ABCDEF0123456789|/",
+        )
+        val batchState = sheet(links.joinToString("\n"))
+        val batch = assertNotNull(batchState.batch)
+        awaitUntil("batch direct links ready") { batch.saveAsReference && batch.canSaveAll }
+        assertNull(batch.blockedReason)
+        assertTrue(batch.rows.none { it.state.effectiveSaveAsReference })
+        val outcome = scope.async(start = CoroutineStart.UNDISPATCHED) { batchState.outcomes.first() }
+        batch.saveAll()
+        assertEquals(2, assertIs<dev.piko.shared.state.InstantSaveOutcome.OfflineTaskCreated>(outcome.await()).submittedCount)
+        assertEquals(links.toSet(), server.tasksSnapshot().map { it.url }.toSet())
     }
 
     private class MemoryManifestIo(private val failConfirmation: Boolean = false) : VaultFolderIo {

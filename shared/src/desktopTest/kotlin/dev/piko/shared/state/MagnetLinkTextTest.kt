@@ -1,11 +1,20 @@
 package dev.piko.shared.state
 
+import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
-/** 批量粘贴的文本来自论坛帖、聊天记录与种子站，同一个种子常以几种写法重复出现。 */
 class MagnetLinkTextTest {
+    private val hex = "c9e15763f722f23e98a29decdfae341b98d53056"
+    private val base32 = "ZHQVOY7XELZD5GFCTXWN7LRUDOMNKMCW"
+
+    private val torrent = Base64.getDecoder().decode(
+        "ZDg6YW5ub3VuY2UyNDp1ZHA6Ly90cmFja2VyLmV4YW1wbGU6ODA0OmluZm9kNTpmaWxlc2xkNjpsZW5ndGhpMWU0OnBhdGhsODplcDAxLmFz" +
+            "c2VlZDY6bGVuZ3RoaTEwZTQ6cGF0aGw4OmVwMDEubWt2ZWVlNDpuYW1lMTA655Wq5YmnIFMwMTEyOnBpZWNlIGxlbmd0aGkxNjM4NGU2OnBp" +
+            "ZWNlczIwOs01YLZsKz6P31CQa7ytHSfULefdNzpwcml2YXRlaTBlZWU=",
+    )
+
     @Test
     fun `app and web shares normalize and preserve their own pass codes in mixed input`() {
         val links = extractLinks("""
@@ -13,19 +22,20 @@ class MagnetLinkTextTest {
             https://mypikpak.net/s/second 提取码：abcd
             magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567
         """.trimIndent())
-        assertEquals(listOf("https://mypikpak.com/s/first?pwd=1234", "https://mypikpak.com/s/second?pwd=abcd",
-            "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"), links.map { it.uri })
+        assertEquals(
+            listOf(
+                "https://mypikpak.com/s/first?pwd=1234",
+                "https://mypikpak.com/s/second?pwd=abcd",
+                "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+            ),
+            links.map { it.uri },
+        )
     }
 
     @Test
     fun `official share aliases deduplicate after normalization`() {
         assertEquals(1, extractLinks("https://mypikpak.com/s/abc https://pikpakdrive.com/s/abc").size)
     }
-
-    private val hex = "c9e15763f722f23e98a29decdfae341b98d53056"
-
-    // 同一个 hash 的 Base32 写法，用 coreutils 的 base32 另行算出
-    private val base32 = "ZHQVOY7XELZD5GFCTXWN7LRUDOMNKMCW"
 
     @Test
     fun `base32 and hex forms of one torrent collapse into one hex magnet`() {
@@ -37,7 +47,6 @@ class MagnetLinkTextTest {
         val links = extractLinks(text)
         assertEquals(1, links.size)
         assertEquals(hex, links.single().infoHash)
-        // 第一次出现的写法保留参数，hash 换成十六进制
         assertEquals("magnet:?xt=urn:btih:$hex&dn=Show%20E01", links.single().uri)
     }
 
@@ -57,9 +66,7 @@ class MagnetLinkTextTest {
 
     @Test
     fun `hashes glued to other characters are not extracted`() {
-        // 41 位与夹在长串中间的都不算，掐掉一位凑出来的 hash 指向的是不存在的种子
         assertEquals(emptyList(), extractLinks("${hex}0 x$hex"))
-        // 网址里的 hash 属于网址本身
         assertEquals(listOf(null), extractLinks("https://example.com/torrent/$hex").map { it.infoHash })
     }
 
@@ -82,11 +89,11 @@ class MagnetLinkTextTest {
     @Test
     fun `thunder links unwrap into underlying magnet or ed2k`() {
         val rawEd2k = "ed2k://|file|Ep01.mkv|4096|0123456789ABCDEF0123456789ABCDEF|/"
-        val thunderEd2k = "thunder://" + java.util.Base64.getEncoder().encodeToString("AA${rawEd2k}ZZ".toByteArray())
+        val thunderEd2k = "thunder://" + Base64.getEncoder().encodeToString("AA${rawEd2k}ZZ".toByteArray())
         assertEquals(listOf(rawEd2k), extractLinks(thunderEd2k).map { it.uri })
 
         val rawMagnet = "magnet:?xt=urn:btih:$hex"
-        val thunderMagnet = "thunder://" + java.util.Base64.getEncoder().encodeToString("AA${rawMagnet}ZZ".toByteArray())
+        val thunderMagnet = "thunder://" + Base64.getEncoder().encodeToString("AA${rawMagnet}ZZ".toByteArray())
         val unwrapped = extractLinks(thunderMagnet).single()
         assertEquals(hex, unwrapped.infoHash)
         assertEquals(rawMagnet, unwrapped.uri)
@@ -97,5 +104,15 @@ class MagnetLinkTextTest {
         assertEquals("magnet:?xt=urn:btih:$hex", InstantSheetState.normalizeMagnet(hex))
         assertEquals("magnet:?xt=urn:btih:$hex", InstantSheetState.normalizeMagnet("看这个 $base32"))
         assertNull(InstantSheetState.normalizeMagnet("$hex https://example.com/a.mp4"))
+    }
+
+    @Test
+    fun `torrent file bytes derive infohash magnet and reject malformed input`() {
+        assertEquals(
+            "magnet:?xt=urn:btih:500a68f42941ca214ba78490c1f5aafbaec5581e&dn=%E7%95%AA%E5%89%A7%20S01",
+            TorrentMagnet.fromBytes(torrent),
+        )
+        assertNull(TorrentMagnet.fromBytes("hello".toByteArray()))
+        assertNull(TorrentMagnet.fromBytes(torrent.copyOf(40)))
     }
 }

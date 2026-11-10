@@ -16,6 +16,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class FolderContentMemoryTest {
 
@@ -216,5 +217,56 @@ class FolderContentMemoryTest {
             assertNull(restarted.get("folder"), "另一个账号的目录内容不该出现")
         }
         scope.cancel()
+    }
+
+    @Test
+    fun folderFailurePreservesAllTablesAndDoesNotPoisonNextAccount() = runBlocking {
+        for (prefix in listOf("folder-contents-", "vault-folders-", "vault-covers-")) {
+            val scope = CoroutineScope(Job() + Dispatchers.Unconfined)
+            val files = mutableMapOf("folder-contents-bob.json" to """[{"id":"b","files":[{"n":"b.mkv"}]}]""")
+            val writes = Channel<String>(Channel.UNLIMITED)
+            var failingKey: String? = "${prefix}alice.json"
+            var failures = 0
+            val store = object : PikoCacheStore {
+                override suspend fun read(key: String) = files[key]
+                override suspend fun write(key: String, value: String) {
+                    if (key == failingKey) {
+                        failures++
+                        error("disk full")
+                    }
+                    files[key] = value
+                    writes.send(key)
+                }
+            }
+            suspend fun awaitWrite(key: String) {
+                while (writes.receive() != key) Unit
+            }
+            try {
+                withTimeout(5_000) {
+                    val memory = FolderContentMemory(store, scope, saveDelayMillis = 0)
+                    memory.switchAccount("alice")
+                    val sample = listOf(ChildFile("a.mkv"))
+                    memory.put("a", sample)
+                    memory.markVaulted("a", true)
+                    memory.rememberCover("a", "HASH")
+                    memory.switchAccount("bob")
+                    memory.state.first { it["b"] == listOf(ChildFile("b.mkv")) }
+                    assertTrue(failures > 0)
+                    assertTrue(scope.coroutineContext[Job]!!.isActive)
+                    memory.put("fresh", listOf(ChildFile("fresh.mkv")))
+                    awaitWrite("vault-covers-bob.json")
+                    assertTrue(files.getValue("folder-contents-bob.json").contains("fresh.mkv"))
+
+                    failingKey = null
+                    memory.switchAccount("alice")
+                    memory.state.first { it["a"] == sample }
+                    assertEquals(setOf("a"), memory.vaultedFolders.value)
+                    assertEquals(mapOf("a" to "HASH"), memory.vaultCovers.value)
+                    awaitWrite("vault-covers-alice.json")
+                }
+            } finally {
+                scope.cancel()
+            }
+        }
     }
 }

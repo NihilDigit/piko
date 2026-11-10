@@ -5,20 +5,49 @@ import dev.piko.shared.data.SavedAccount
 import dev.piko.shared.data.SavedAccounts
 import dev.piko.shared.state.LoginState
 import io.github.nihildigit.pikpak.Session
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** 登录态的恢复、失败与退出。PikoClientManager 自建 SDK 客户端，这里经 httpClient 参数接到假服务端。 */
 class SessionSmokeTest {
     private val account = "smoke@piko.dev"
 
-    /**
-     * 防的是离线冷启动被踢回登录页：access token 过期、refresh 因断网失败时，旧实现关掉 client，
-     * 用户连已下载的文件都打不开。现在应保留登录态，网络恢复后在后台补上 refresh。
-     */
+    @Test
+    fun `immediate local account restore publishes before background coroutine advances`() = smoke { scope ->
+        val localAccount = "restore@piko.dev"
+        val store = MemorySessionStore().apply {
+            accounts = SavedAccounts(current = localAccount, accounts = listOf(SavedAccount(localAccount)))
+            sessions[localAccount] = Session(
+                accessToken = "LOCAL",
+                refreshToken = "REFRESH",
+                sub = "local",
+                expiresAt = kotlin.time.Clock.System.now().epochSeconds + 3600,
+            )
+        }
+        val server = FakePikPakServer()
+        val job = SupervisorJob()
+        try {
+            val manager = PikoClientManager(
+                store,
+                CoroutineScope(scope.coroutineContext + job),
+                httpClient = server.httpClient(),
+                restoreLocallyImmediately = true,
+            )
+            assertFalse(manager.isInitializing.value)
+            assertEquals(localAccount, manager.currentClient.value?.account)
+            assertEquals(0, server.count("POST /v1/auth/"))
+            manager.currentClient.value?.close()
+        } finally {
+            job.cancelAndJoin()
+        }
+    }
+
     @Test
     fun `an offline cold start keeps the session and refreshes once the network is back`() = smoke { scope ->
         val server = FakePikPakServer()
@@ -30,43 +59,38 @@ class SessionSmokeTest {
         server.offline = true
 
         val manager = PikoClientManager(store, scope, server.httpClient())
-        awaitUntil("恢复流程结束") { !manager.isInitializing.value }
-        assertNotNull(manager.currentClient.value, "断网不应等同于登录失效")
+        awaitUntil("restore finished") { !manager.isInitializing.value }
+        assertNotNull(manager.currentClient.value)
 
         server.offline = false
-        awaitUntil("网络恢复后会话被刷新", timeoutMs = 15_000) { store.sessions[account]?.accessToken == "AT" }
+        awaitUntil("session refreshed", timeoutMs = 15_000) { store.sessions[account]?.accessToken == "AT" }
         assertNotNull(manager.currentClient.value)
     }
 
-    /** 防的是密码错误时界面卡在加载中、或把错误的密码存下来。 */
     @Test
     fun `a rejected password surfaces the reason and stores nothing`() = smoke { scope ->
         val server = FakePikPakServer().apply { rejectSignIn = true }
         val store = MemorySessionStore()
         val manager = PikoClientManager(store, scope, server.httpClient())
-        awaitUntil("恢复流程结束") { !manager.isInitializing.value }
+        awaitUntil("restore finished") { !manager.isInitializing.value }
 
         val login = LoginState(manager, scope)
         login.updateAccount(account)
         login.updatePassword("wrong")
         login.login()
-        awaitUntil("登录请求结束") { !login.isLoggingIn && login.errorMessage != null }
+        awaitUntil("login failed") { !login.isLoggingIn && login.errorMessage != null }
 
         assertNull(manager.currentClient.value)
-        assertTrue(store.passwords.isEmpty(), "失败的密码不能落盘")
+        assertTrue(store.passwords.isEmpty())
         assertNull(store.accounts.current)
     }
 
-    /**
-     * 防的是退出一个账号时连带清掉别的账号的凭据，或退出后停在登录页、不切到还保存着的账号：
-     * 单账号时代的存储以「上次的账号」判断凭据归属，多账号下这个判断不成立。
-     */
     @Test
     fun `logging out of one account switches to another and keeps its credentials`() = smoke { scope ->
         val server = FakePikPakServer()
         val store = MemorySessionStore()
         val manager = PikoClientManager(store, scope, server.httpClient())
-        awaitUntil("恢复流程结束") { !manager.isInitializing.value }
+        awaitUntil("restore finished") { !manager.isInitializing.value }
         val other = "other@piko.dev"
 
         manager.login(account) { "pw-a" }.getOrThrow()
@@ -87,19 +111,18 @@ class SessionSmokeTest {
         assertEquals(listOf(other), store.accounts.accounts.map { it.account })
     }
 
-    /** 防的是退出登录后明文密码仍留在磁盘上：旧实现从不调用 clearCredentials。 */
     @Test
     fun `logging out forgets the saved password`() = smoke { scope ->
         val server = FakePikPakServer()
         val store = MemorySessionStore()
         val manager = PikoClientManager(store, scope, server.httpClient())
-        awaitUntil("恢复流程结束") { !manager.isInitializing.value }
+        awaitUntil("restore finished") { !manager.isInitializing.value }
 
         val login = LoginState(manager, scope)
         login.updateAccount(account)
         login.updatePassword("pw")
         login.login()
-        awaitUntil("登录成功") { manager.currentClient.value != null }
+        awaitUntil("login succeeded") { manager.currentClient.value != null }
         assertEquals("pw", store.passwords[account])
 
         manager.logout().join()

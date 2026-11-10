@@ -18,12 +18,10 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
-/**
- * 检查更新的来源回退：GitHub API 被限流时改取 release.json，github.com 连不上时经 ghfast.top 下载。
- * 这两条回退只在真出事时才走到，平时的手测碰不上，用假的服务端逐条走一遍。
- */
 class ReleaseSourceFallbackTest {
     private val manifestUrl = "https://github.com/NihilDigit/piko/releases/latest/download/release.json"
     private val assetUrl = "https://github.com/NihilDigit/piko/releases/download/v2.0.0/piko-2.0.0-universal.apk"
@@ -49,7 +47,6 @@ class ReleaseSourceFallbackTest {
         val release = assertIs<ReleaseCheck.Newer>(check).release
         assertEquals("2.0.0", release.version)
         assertEquals("ab", release.asset("piko-2.0.0-universal.apk")?.sha256)
-        // 第二个来源成功就停，不再去问 ghfast
         assertEquals(listOf(GithubReleaseClient.LATEST_RELEASE_SOURCES[0], manifestUrl), requested)
     }
 
@@ -75,13 +72,11 @@ class ReleaseSourceFallbackTest {
             if (request.url.host == "ghfast.top") {
                 respond(ByteReadChannel(byteArrayOf(1, 2, 3, 4)))
             } else {
-                // 交出两个字节后断开：这两个字节已写进调用方的文件，再从镜像接着写就是一份拼接的坏文件
                 @OptIn(DelicateCoroutinesApi::class)
                 val body = GlobalScope.writer {
                     channel.writeFully(byteArrayOf(1, 2))
                     channel.flush()
-                    // 等读的一方先拿走这两个字节：通道带着异常关闭时，还没读走的数据随之丢弃，
-                    // 那样就成了一个字节都没收到，测不到中途断开
+                    // Give the consumer time to drain the partial prefix before resetting the stream.
                     delay(300)
                     error("connection reset")
                 }.channel
@@ -161,4 +156,13 @@ class ReleaseSourceFallbackTest {
     private fun client(engine: MockEngine) = GithubReleaseClient(HttpClient(engine), userAgent = "test")
 
     private fun asset() = ReleaseAsset(name = "piko-2.0.0-universal.apk", url = assetUrl, size = 4, sha256 = null)
+
+    @Test
+    fun `version segments compare numerically and ignore debug suffixes`() {
+        assertTrue(isNewerVersion("0.10.0", "0.9.0"))
+        assertFalse(isNewerVersion("0.9.0", "0.10.0"))
+        assertFalse(isNewerVersion("0.6.0", "0.6.0-debug"))
+        assertFalse(isNewerVersion("0.6", "0.6.0"))
+        assertTrue(isNewerVersion("0.6.1", "0.6"))
+    }
 }

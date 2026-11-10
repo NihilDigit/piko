@@ -1,18 +1,16 @@
-package dev.piko
+package dev.piko.shared.data
 
-import dev.piko.shared.data.isArchiveVolume
-import dev.piko.shared.data.isExtractableArchive
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class ArchiveFormatTest {
 
     @Test
     fun everyVolumeIsRecognisedIncludingTheFirst() {
         for (name in listOf("Show.part1.rar", "Show.PART001.RAR", "Show.part10.rar", "Pack.7z.001", "Pack.zip.002", "Pack.z01", "Old.r00")) {
-            assertTrue(name, isArchiveVolume(name))
-            assertFalse(name, isExtractableArchive(name))
+            assertTrue(isArchiveVolume(name), name)
+            assertFalse(isExtractableArchive(name), name)
         }
     }
 

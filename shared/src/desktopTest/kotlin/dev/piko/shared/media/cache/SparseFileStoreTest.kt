@@ -91,4 +91,33 @@ class SparseFileStoreTest {
         store.delete()
         directory.deleteRecursively()
     }
+
+    @Test
+    fun `cache pool preserves retained and active files during completion and pruning`() = smoke { scope ->
+        val root = Files.createTempDirectory("piko-cache-pool").toFile()
+        val cloud = dev.piko.shared.media.testing.FakePikPakCloud(ByteArray(262144))
+        val client = cloud.provider.currentClient.value!!
+        val pool = PikoFileCachePool(scope) { root.resolve("$it.data").path }
+        val first = pool.acquire(client, "f1", "GCID", 262144, "one", retained = true, owner = "one")
+        pool.remember(client.account, "GCID", 262144, "two")
+        first.entry.store.write("key", 0, ByteArray(262144))
+        pool.complete(first, "one")
+        val saved = File(first.entry.store.path)
+        first.release()
+        kotlin.test.assertTrue(saved.exists())
+        val orphan = root.resolve("${"a".repeat(64)}.data").apply { writeBytes(byteArrayOf(1)) }
+        val unrelated = root.resolve("notes.data").apply { writeBytes(byteArrayOf(2)) }
+        pool.prune()
+        kotlin.test.assertTrue(saved.exists())
+        assertFalse(orphan.exists())
+        kotlin.test.assertTrue(unrelated.exists())
+        val playing = pool.acquire(client, "f1", "GCID", 262144, "one")
+        pool.discard(client.account, "GCID", 262144, "two")
+        pool.prune()
+        kotlin.test.assertTrue(saved.exists())
+        playing.release()
+        assertFalse(saved.exists())
+        assertFalse(File("${saved.path}.blocks").exists())
+        root.deleteRecursively()
+    }
 }

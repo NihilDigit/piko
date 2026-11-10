@@ -1,19 +1,17 @@
 package dev.piko.shared.search
 
 import dev.piko.shared.data.PikoDriveRepository
-import dev.piko.shared.data.PikoFileSortOrder
-import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.VaultEdits
 import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.smoke.FakePikPakServer
 import dev.piko.shared.smoke.MemoryPreferences
-import dev.piko.shared.smoke.awaitUntil
 import dev.piko.shared.smoke.smoke
-import dev.piko.shared.state.DriveScreenState
 import kotlinx.coroutines.flow.toList
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CjkFuzzyMatchTest {
@@ -126,50 +124,15 @@ class CjkFuzzyMatchTest {
     }
 
     @Test
-    fun `per folder sort remembers each folder order independently when enabled`() = smoke { scope ->
-        val server = FakePikPakServer()
-        val folderA = server.addFolder("FolderA")
-        val folderB = server.addFolder("FolderB")
-        val folderC = server.addFolder("FolderC")
-        server.addFile("b.txt", folderA.id, content = ByteArray(10))
-        server.addFile("a.txt", folderA.id, content = ByteArray(100))
-        server.addFile("small.txt", folderB.id, content = ByteArray(10))
-        server.addFile("large.txt", folderB.id, content = ByteArray(500))
-        server.addFile("c1.txt", folderC.id, content = ByteArray(10))
-        server.addFile("c2.txt", folderC.id, content = ByteArray(20))
-
-        val prefs = MemoryPreferences()
-        val repo = PikoDriveRepository(server.provider(), prefs)
-        val state = DriveScreenState(repo, prefs, scope)
-
-        state.setPerFolderSortEnabled(true)
-        assertTrue(state.perFolderSort)
-
-        // 进入 FolderA，设为按名称升序（a.txt 在前）
-        state.openFolder(folderA.id, folderA.name)
-        awaitUntil("FolderA 加载完成") { !state.isLoading && state.loadedFolderId == folderA.id }
-        state.changeSortOrder(PikoFileSortOrder.NAME_ASC)
-        awaitUntil("FolderA 按名称升序排好") { state.displayedFiles.map { it.name } == listOf("a.txt", "b.txt") }
-
-        // 进入 FolderB，设为按大小升序（small.txt 在前）
-        state.navigation.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(folderB.id, folderB.name)))
-        awaitUntil("FolderB 加载完成") { !state.isLoading && state.loadedFolderId == folderB.id }
-        state.changeSortOrder(PikoFileSortOrder.SIZE_ASC)
-        awaitUntil("FolderB 按大小升序排好") { state.displayedFiles.map { it.name } == listOf("small.txt", "large.txt") }
-
-        // 进入从未单独设置过排序的 FolderC，应回落到默认排序（TIME_DESC）
-        state.navigation.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(folderC.id, folderC.name)))
-        awaitUntil("FolderC 加载完成") { !state.isLoading && state.loadedFolderId == folderC.id }
-        assertEquals(PikoFileSortOrder.TIME_DESC, state.sortOrder)
-
-        // 切回 FolderA，自动恢复 NAME_ASC
-        state.navigation.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(folderA.id, folderA.name)))
-        awaitUntil("切回 FolderA 恢复 NAME_ASC") { state.loadedFolderId == folderA.id && state.sortOrder == PikoFileSortOrder.NAME_ASC }
-        assertEquals(listOf("a.txt", "b.txt"), state.displayedFiles.map { it.name })
-
-        // 切回 FolderB，自动恢复 SIZE_ASC
-        state.navigation.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB, PikoPathBreadcrumb(folderB.id, folderB.name)))
-        awaitUntil("切回 FolderB 恢复 SIZE_ASC") { state.loadedFolderId == folderB.id && state.sortOrder == PikoFileSortOrder.SIZE_ASC }
-        assertEquals(listOf("small.txt", "large.txt"), state.displayedFiles.map { it.name })
+    fun `fuzzyScore orders contiguous and prefix matches ahead of scattered letters`() {
+        assertNotNull(fuzzyScore("frn", "Frieren"))
+        assertNull(fuzzyScore("nrf", "Frieren"))
+        assertEquals(0, fuzzyScore("  ", "anything"))
+        val prefix = fuzzyScore("fri", "Frieren")!!
+        val inside = fuzzyScore("ere", "Frieren")!!
+        val scattered = fuzzyScore("frn", "Frieren")!!
+        assertTrue(prefix > inside && inside > scattered)
+        assertTrue(fuzzyScore("动画", "动画")!! > fuzzyScore("动画", "动画 2024 合集")!!)
+        assertNotNull(fuzzyScore("回收", "打开回收站"))
     }
 }

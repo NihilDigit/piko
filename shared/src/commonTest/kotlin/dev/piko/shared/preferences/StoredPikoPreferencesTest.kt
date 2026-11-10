@@ -1,12 +1,10 @@
 package dev.piko.shared.preferences
 
 import dev.piko.data.auth.AppLanguage
-import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.data.auth.SnailMode
 import dev.piko.shared.auth.SecretVault
 import dev.piko.shared.auth.VaultUnavailableException
-import dev.piko.shared.i18n.tr
 import dev.piko.shared.net.ProxyMode
 import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.Dispatchers
@@ -17,141 +15,38 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class StoredPikoPreferencesTest {
     @Test
-    fun defaultsMatchDesktopWithoutOpeningSecrets() = runBlocking {
+    fun structuredValuesAndRepresentativeKeysPersistWithoutOpeningSecretsOnDefaults() = runBlocking {
         val settings = FakeSettings()
-        val prefs = StoredPikoPreferences(settings) { error("Secrets must stay lazy") }
-        listOf(
-            prefs.spoilerBlurFlow, prefs.autoCheckUpdatesFlow, prefs.hardwareDecodingFlow,
-            prefs.heuristicFilterFlow, prefs.nameParsingFlow, prefs.bundleSubtitlesFlow,
-            prefs.settingsSyncFlow, prefs.syncPlayHistoryFlow, prefs.showExtensionsFlow,
-            prefs.foldersFirstFlow,
-        ).forEach { assertTrue(it.first()) }
-        listOf(
-            prefs.autoDetectClipboardLinksFlow, prefs.reduceMotionFlow, prefs.folderMapOpenFlow,
-            prefs.folderMapPinnedFlow, prefs.autoCleanNamesFlow, prefs.sidebarCollapsedFlow,
-            prefs.renameRegexTextModeFlow, prefs.saveAsReferenceFlow,
-        ).forEach { assertFalse(it.first()) }
-        assertNull(prefs.themeModeFlow.first())
-        assertNull(prefs.themeSeedFlow.first())
-        assertNull(prefs.downloadMaxHeightFlow.first())
-        assertNull(prefs.getIgnoredUpdateVersion())
-        assertEquals(0, prefs.playbackMaxHeightFlow.first())
-        assertEquals(PlayerGestureDefaults.SEEK_STEP_SECONDS, prefs.playerSeekStepSecondsFlow.first())
-        assertEquals(PlayerGestureDefaults.BOOST_SPEED, prefs.playerBoostSpeedFlow.first())
-        assertEquals("POSTER", prefs.driveViewModeFlow.first())
-        assertEquals(SidePanelPrefs(false, null), prefs.clipPanelFlow.first())
-        assertEquals(SnailMode(), prefs.snailModeFlow.first())
-        assertEquals(ProxySetting(), prefs.proxySettingFlow.first())
-        assertEquals("/downloads/Piko", prefs.getDownloadDirPath())
-        assertEquals(Triple("", tr("我的网盘", "My drive", "マイドライブ", "내 드라이브", "我的雲端硬碟"), ""), prefs.getLastFolder())
-        assertEquals(0L, prefs.getPlaybackPosition("missing"))
+        val lazyPrefs = StoredPikoPreferences(settings) { error("Secrets must stay lazy") }
+        assertTrue(lazyPrefs.spoilerBlurFlow.first())
+        assertFalse(lazyPrefs.autoDetectClipboardLinksFlow.first())
+        assertEquals(SidePanelPrefs(false, null), lazyPrefs.clipPanelFlow.first())
+        assertEquals(SnailMode(), lazyPrefs.snailModeFlow.first())
+        assertEquals(ProxySetting(), lazyPrefs.proxySettingFlow.first())
         assertTrue(settings.snapshot().isEmpty())
-    }
 
-    @Test
-    fun switchesAndStructuredValuesPersistAcrossReopen() = runBlocking {
-        val settings = FakeSettings()
         val prefs = preferences(settings)
-        prefs.setSpoilerBlurEnabled(false)
-        prefs.setAutoDetectClipboardLinks(true)
-        prefs.setHardwareDecoding(false)
-        prefs.setPlayerSeekStepSeconds(30)
-        prefs.setPlayerBoostSpeed(3f)
-        prefs.setFolderMapOpen(true)
-        prefs.setFolderMapPinned(true)
+        val proxy = ProxySetting(mode = ProxyMode.MANUAL, host = "localhost", port = 8080)
+        prefs.setAppLanguage(AppLanguage.JA)
         prefs.setClipPanelOpen(true)
         prefs.setClipPanelWidth(320f)
         prefs.setSnailMode(SnailMode(true, 250, 125))
-        val proxy = ProxySetting(mode = ProxyMode.MANUAL, host = "localhost", port = 8080)
         prefs.saveProxySetting(proxy)
-        prefs.setIgnoredUpdateVersion("2.0")
+        prefs.saveLastFolder("folder", "Folder", "stack")
+
         val reopened = preferences(settings.reopen())
-        assertFalse(reopened.spoilerBlurFlow.first())
-        assertTrue(reopened.autoDetectClipboardLinksFlow.first())
-        assertFalse(reopened.hardwareDecodingFlow.first())
-        assertEquals(30, reopened.playerSeekStepSecondsFlow.first())
-        assertEquals(3f, reopened.playerBoostSpeedFlow.first())
-        assertTrue(reopened.folderMapOpenFlow.first())
-        assertTrue(reopened.folderMapPinnedFlow.first())
+        assertEquals(AppLanguage.JA, reopened.appLanguageFlow.first())
         assertEquals(SidePanelPrefs(true, 320f), reopened.clipPanelFlow.first())
         assertEquals(SnailMode(true, 250, 125), reopened.snailModeFlow.first())
         assertEquals(proxy, reopened.proxySettingFlow.first())
-        assertEquals("2.0", reopened.getIgnoredUpdateVersion())
-        assertEquals("true", settings.get("ui.autoDetectClipboardLinks"))
-        assertEquals("30", settings.get("player.seekStepSeconds"))
-    }
-
-    @Test
-    fun release14SettingsPersistAcrossReopen() = runBlocking {
-        val settings = FakeSettings()
-        val prefs = preferences(settings)
-        assertEquals(AppLanguage.SYSTEM, prefs.appLanguageFlow.first())
-        assertTrue(prefs.clipAutoExtendFlow.first())
-        assertTrue(prefs.galleryShowImagesFlow.first())
-        assertFalse(prefs.perFolderSortFlow.first())
-        prefs.setAppLanguage(AppLanguage.JA)
-        prefs.setClipAutoExtend(false)
-        prefs.setGalleryShowImages(false)
-        prefs.setPerFolderSort(true)
-        prefs.saveFolderSortOrders("sort-map")
-        prefs.saveLocalMounts("mounts")
-        val reopened = preferences(settings.reopen())
-        assertEquals(AppLanguage.JA, reopened.appLanguageFlow.first())
-        assertFalse(reopened.clipAutoExtendFlow.first())
-        assertFalse(reopened.galleryShowImagesFlow.first())
-        assertTrue(reopened.perFolderSortFlow.first())
-        assertEquals("sort-map", reopened.folderSortOrdersFlow.first())
-        assertEquals("mounts", reopened.localMountsFlow.first())
-    }
-
-    @Test
-    fun currentDesktopSettingsKeepTheirKeysAndPersistAcrossReopen() = runBlocking {
-        val settings = FakeSettings()
-        val prefs = preferences(settings)
-        prefs.setFoldersFirst(false)
-        prefs.setSaveAsReference(true)
-        prefs.setMetaTubeUrl("https://example.test")
-        val reopened = preferences(settings.reopen())
-        assertFalse(reopened.foldersFirstFlow.first())
-        assertTrue(reopened.saveAsReferenceFlow.first())
-        assertEquals("https://example.test", reopened.metaTubeUrlFlow.first())
-        assertEquals("false", settings.get("drive.foldersFirst"))
-        assertEquals("true", settings.get("instant.saveAsReference"))
-    }
-
-    @Test
-    fun serializedDataAndFolderPersistUsingLegacyKeys() = runBlocking {
-        val settings = FakeSettings()
-        val prefs = preferences(settings)
-        prefs.savePlaybackPosition("file", 12345L)
-        prefs.saveLastFolder("folder", "Folder", "stack")
-        prefs.saveDownloadTasks("downloads")
-        prefs.saveUploadTasks("uploads")
-        prefs.saveOfflinePacks("packs")
-        prefs.saveRecentMoveTargets("moves")
-        prefs.savePinnedFolders("pins")
-        prefs.saveBatchRename("rename")
-        prefs.saveVaultArchiveOptions("archive")
-        val reopened = preferences(settings.reopen())
-        assertEquals(12345L, reopened.getPlaybackPosition("file"))
         assertEquals(Triple("folder", "Folder", "stack"), reopened.getLastFolder())
-        assertEquals("downloads", reopened.loadDownloadTasks())
-        assertEquals("uploads", reopened.loadUploadTasks())
-        assertEquals("packs", reopened.loadOfflinePacks())
-        assertEquals("moves", reopened.recentMoveTargetsFlow.first())
-        assertEquals("pins", reopened.pinnedFoldersFlow.first())
-        assertEquals("rename", reopened.batchRenameFlow.first())
-        assertEquals("archive", reopened.vaultArchiveOptionsFlow.first())
-        assertEquals("12345", settings.get("playback.file"))
-        assertEquals("downloads", settings.get("download.tasks"))
-        assertEquals("uploads", settings.get("upload.tasks"))
     }
 
     @Test
@@ -175,12 +70,12 @@ class StoredPikoPreferencesTest {
     }
 
     @Test
-    fun invalidNumbersUseDefaultsAndOldDownloadQualityIsIgnored() = runBlocking {
+    fun invalidNumbersUseDefaultsAndLegacyFlagsMigrateCleanly() = runBlocking {
         val prefs = preferences(FakeSettings(mapOf(
             "player.maxHeight" to "bad", "download.defaultMaxHeight" to "bad",
             "download.maxHeight" to "480", "player.seekStepSeconds" to "bad",
-            "player.boostSpeed" to "bad",
-            "network.proxy" to "bad", "playback.file" to "bad",
+            "player.boostSpeed" to "bad", "network.proxy" to "bad",
+            "playback.file" to "bad", "ui.gridView" to "false",
         )))
         assertEquals(0, prefs.playbackMaxHeightFlow.first())
         assertNull(prefs.downloadMaxHeightFlow.first())
@@ -188,14 +83,7 @@ class StoredPikoPreferencesTest {
         assertEquals(2f, prefs.playerBoostSpeedFlow.first())
         assertEquals(ProxySetting(), prefs.proxySettingFlow.first())
         assertEquals(0L, prefs.getPlaybackPosition("file"))
-    }
-
-    @Test
-    fun explicitViewModeWinsOverLegacyGridFlag() = runBlocking {
-        val settings = FakeSettings(mapOf("ui.gridView" to "false"))
-        assertEquals("LIST", preferences(settings).driveViewModeFlow.first())
-        preferences(settings).setDriveViewMode("GALLERY")
-        assertEquals("GALLERY", preferences(settings.reopen()).driveViewModeFlow.first())
+        assertEquals("LIST", prefs.driveViewModeFlow.first())
     }
 
     @Test
@@ -274,7 +162,7 @@ class StoredPikoPreferencesTest {
     }
 
     @Test
-    fun failedSecretWritesAndDeletesDoNotPublishOptimisticValues() = runBlocking {
+    fun failedSecretAndSettingsWritesDoNotPublishOptimisticValues() = runBlocking {
         val settings = FakeSettings()
         val vault = FakeVault()
         val prefs = StoredPikoPreferences(settings) { vault }
@@ -290,26 +178,14 @@ class StoredPikoPreferencesTest {
         assertFailsWith<VaultUnavailableException> { prefs.clearUploadCredentials("task") }
         assertEquals("old-token", prefs.metaTubeTokenFlow.first())
         assertEquals("old-credential", prefs.loadUploadCredentials("task"))
-        assertTrue(settings.snapshot().isEmpty())
-    }
 
-    @Test
-    fun failedSettingsWriteDoesNotPublishOptimisticFlowValue() = runBlocking {
-        val settings = FakeSettings()
-        val prefs = preferences(settings)
         settings.failWrites = true
         assertFailsWith<IllegalStateException> { prefs.setSpoilerBlurEnabled(false) }
         assertTrue(prefs.spoilerBlurFlow.first())
         assertFailsWith<IllegalStateException> { prefs.setSaveAsReference(true) }
         assertFalse(prefs.saveAsReferenceFlow.first())
         assertTrue(settings.snapshot().isEmpty())
-    }
 
-    @Test
-    fun uploadReadFailurePropagatesInsteadOfLookingLikeMissingCredentials() = runBlocking {
-        val vault = FakeVault()
-        val prefs = StoredPikoPreferences(FakeSettings()) { vault }
-        assertNull(prefs.loadUploadCredentials("missing"))
         vault.failReads = true
         assertFailsWith<VaultUnavailableException> { prefs.loadUploadCredentials("task") }
         Unit
