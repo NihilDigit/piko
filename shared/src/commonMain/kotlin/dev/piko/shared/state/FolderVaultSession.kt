@@ -9,10 +9,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
+import dev.piko.shared.data.ContentStats
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.data.SubtreeStats
 import dev.piko.shared.data.VaultEdit
 import dev.piko.shared.data.VaultEdits
 import dev.piko.shared.data.VaultEntry
@@ -95,8 +97,9 @@ class FolderVaultSession internal constructor(
     private val operations: FolderVaultOperations,
     private val scope: CoroutineScope,
     private val cidTimeoutMillis: Long = 2_500,
+    private val driveRepo: PikoDriveRepository? = null,
 ) {
-    constructor(driveRepo: PikoDriveRepository, scope: CoroutineScope) : this(DriveFolderVaultOperations(driveRepo), scope)
+    constructor(driveRepo: PikoDriveRepository, scope: CoroutineScope) : this(DriveFolderVaultOperations(driveRepo), scope, driveRepo = driveRepo)
 
     enum class Completion { SUCCEEDED, PARTIAL, FAILED, STOPPED }
     data class Work(val id: Long, val name: String, val restoring: Boolean, val createdAtMs: Long)
@@ -542,7 +545,11 @@ class FolderVaultSession internal constructor(
                 val levels = coroutineScope { chunk.map { id -> async { ops.archived(id) } }.awaitAll() }
                 chunk.zip(levels).forEach { (folderId, level) ->
                     if (level.entries.isNotEmpty()) found[folderId] = level.entries
-                    level.subfolders.forEach { if (visited.add(it.id)) next += it.id }
+                    level.subfolders.forEach { sub ->
+                        val stats = driveRepo?.folderSubtreeStats(sub.id)
+                        if (stats != null && stats.archived.listingComplete && stats.archived.fileCount == 0L) return@forEach
+                        if (visited.add(sub.id)) next += sub.id
+                    }
                 }
                 scanned += chunk.size
                 onScanned(scanned)
@@ -827,10 +834,12 @@ class FolderVaultSession internal constructor(
                 val listings = coroutineScope { chunk.map { id -> async { ops.list(id) } }.awaitAll() }
                 chunk.zip(listings).forEach { (folderId, listing) ->
                     listing.filter { it.isFolder && it.name !in SKIPPED_FOLDERS && !it.trashed }
-                        .forEach {
-                            if (visited.add(it.id)) {
-                                next += it.id
-                                parents?.put(it.id, folderId)
+                        .forEach { sub ->
+                            val stats = driveRepo?.folderSubtreeStats(sub.id)
+                            if (stats != null && stats.physical.listingComplete && stats.physical.fileCount == 0L) return@forEach
+                            if (visited.add(sub.id)) {
+                                next += sub.id
+                                parents?.put(sub.id, folderId)
                             }
                         }
                     levels += folderId to listing.filter(::archivable)

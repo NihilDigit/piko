@@ -80,7 +80,9 @@ class SubtitleBrowserState(
         loadError = null
         folders = emptyList()
         subtitles = emptyList()
-        driveRepo.listAllFiles(folderId, PikoFileSortOrder.NAME_ASC)
+        val cached = driveRepo.cachedBrowsable(folderId, PikoFileSortOrder.NAME_ASC)
+        val result = if (cached != null) Result.success(cached) else driveRepo.listBrowsable(folderId, PikoFileSortOrder.NAME_ASC)
+        result
             .onSuccess { files ->
                 // .piko 是设置同步的目录，网盘页同样不列
                 folders = files.filter { it.isFolder && !(folderId.isEmpty() && it.name == ".piko") }

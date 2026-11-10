@@ -1706,6 +1706,7 @@ class DriveScreenState(
     private fun knownFile(id: String): FileStat? = displayedFiles.firstOrNull { it.id == id }
         ?: files.firstOrNull { it.id == id }
         ?: supplementalFiles().firstOrNull { it.id == id }
+        ?: driveRepo.knownFile(id)
 
     fun putOnClipboard(requested: List<String>, cut: Boolean) {
         if (!canAcceptAction) return

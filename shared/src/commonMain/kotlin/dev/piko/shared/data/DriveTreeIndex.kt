@@ -226,7 +226,42 @@ internal class DriveTreeIndex(
             mimeType = listed.mimeType,
             cid = listed.cid ?: detail.params["cid"],
             qualityRank = if (original != null) 2 else 1,
+            transcodes = detail.extractTranscodeVariants(),
         ))
+    }
+
+    fun observeTranscodeSize(
+        gcid: String,
+        sizeBytes: Long,
+        mediaId: String,
+        streamSizeBytes: Long?,
+        unreadable: Boolean = false,
+    ) {
+        if (mediaId.isBlank()) return
+        val normalized = ContentKey.of(gcid, sizeBytes) ?: return
+        withPikoLock(lock) {
+            if (closed) return
+            disk?.let {
+                it.observeTranscodeSize(normalized, mediaId, streamSizeBytes, unreadable)
+                publishDisk()
+                return
+            }
+        }
+        update { current ->
+            val prev = current.contentMetadata[normalized] ?: return@update current
+            val next = prev.withTranscodeProbe(mediaId, streamSizeBytes, unreadable)
+            if (next == prev) current else current.copy(contentMetadata = current.contentMetadata + (normalized to next))
+        }
+    }
+
+    fun originalCreatedAtMillis(id: String): Long? = withPikoLock(lock) {
+        if (closed || id.isBlank()) return@withPikoLock null
+        disk?.originalCreated(id) ?: state.value.entryMetadata[id]?.originalCreatedAtMillis
+    }
+
+    fun subtreeStats(folderId: String): SubtreeStats? {
+        val projected = fastSortContext().subtreeStats[folderId]
+        return projected?.takeIf { it.structuralValid }
     }
 
     fun setEntryMetadata(id: String, metadata: EntryMetadata) {
@@ -302,10 +337,21 @@ internal class DriveTreeIndex(
         }
     }
 
-    fun file(id: String): FileStat? = withPikoLock(lock) { disk?.file(id) ?: flow.value.entries[id] }
+    fun file(id: String): FileStat? = withPikoLock(lock) {
+        disk?.file(id) ?: flow.value.let { s ->
+            val raw = s.entries[id] ?: return@let null
+            raw.enrichWithContentMetadata(ContentKey.of(raw)?.let { s.contentMetadata[it] })
+        }
+    }
 
     fun filesByIds(ids: Collection<String>): Map<String, FileStat> = withPikoLock(lock) {
-        disk?.filesByIds(ids) ?: ids.mapNotNull { id -> state.value.entries[id]?.let { id to it } }.toMap()
+        disk?.filesByIds(ids) ?: state.value.let { s ->
+            ids.mapNotNull { id ->
+                s.entries[id]?.let { raw ->
+                    id to raw.enrichWithContentMetadata(ContentKey.of(raw)?.let { s.contentMetadata[it] })
+                }
+            }.toMap()
+        }
     }
 
     fun vaultEntries(folderId: String): List<VaultEntry>? = withPikoLock(lock) {
@@ -354,7 +400,9 @@ internal class DriveTreeIndex(
         }
         return FolderChildren(
             ids.mapNotNull { id ->
-                current.entries[id]?.takeUnless { realOnly && VaultEntry.isVaulted(id) }
+                current.entries[id]?.takeUnless { realOnly && VaultEntry.isVaulted(id) }?.let { raw ->
+                    raw.enrichWithContentMetadata(ContentKey.of(raw)?.let { current.contentMetadata[it] })
+                }
             },
             coverage,
         )
@@ -1340,11 +1388,6 @@ internal class DriveTreeIndex(
         val lastUsageBytes: Long? = null,
         val complete: Boolean = true,
         val dirtyFolders: Set<String> = emptySet(),
-        val entries: List<StoredTreeEntry> = emptyList(),
-        val sources: List<String> = emptyList(),
-        val contentMetadata: List<StoredContentMetadata> = emptyList(),
-        val entryMetadata: Map<String, EntryMetadata> = emptyMap(),
-        @kotlinx.serialization.Transient val physicalEntries: Map<String, FileStat>? = null,
     )
 
     @Serializable

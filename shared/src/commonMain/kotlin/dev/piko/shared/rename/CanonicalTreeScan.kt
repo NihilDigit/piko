@@ -88,9 +88,12 @@ class CanonicalTreeScan(
         // 扫描器只交出列全了的目录与其中要整理的条目；各目录列出的全部名字另记一份，作为冲突检查里不参与改名的名字
         val listings = HashMap<String, List<FileStat>>()
         val listingsLock = Mutex()
-        val scanner = DuplicateScanner(listFolder = { folderId ->
-            listFolder(folderId).also { entries -> listingsLock.withLock { listings[folderId] = entries } }
-        }).also { scanner = it }
+        val scanner = DuplicateScanner(
+            listFolder = { folderId ->
+                listFolder(folderId).also { entries -> listingsLock.withLock { listings[folderId] = entries } }
+            },
+            isSubtreeClean = driveRepo::isSubtreeClean,
+        ).also { scanner = it }
         phase = Phase.SCANNING
         scannedFolders = 0
         scannedFiles = 0

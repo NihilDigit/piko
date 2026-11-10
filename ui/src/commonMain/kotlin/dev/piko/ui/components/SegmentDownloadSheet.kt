@@ -208,11 +208,35 @@ fun SegmentDownloadSheet(
     val services = LocalPikoServices.current
     val mediaRepo = services.mediaRepository
 
+    fun applyInitialDuration(duration: Long) {
+        if (duration > 0L && session.totalDurationMs <= 0L) {
+            val initialRange = session.initialRange
+            session.totalDurationMs = duration
+            val range = normalizeSegmentRange(duration, initialRange?.first ?: 0L, initialRange?.last ?: minOf(duration, 60_000L))
+            if (range != null) {
+                session.startPosMs = range.startMs
+                session.endPosMs = range.endMs
+                session.defaultRange = session.startPosMs to session.endPosMs
+            }
+            session.loaded = true
+        }
+    }
+    if (!session.loaded) {
+        val knownDuration = file.params["duration"]?.toDoubleOrNull()?.let { (it * 1000).toLong() }?.takeIf { it > 0L }
+            ?: mediaRepo.knownDurationMs(file.id, file.hash, file.sizeBytes)
+        if (knownDuration != null && knownDuration > 0L) {
+            applyInitialDuration(knownDuration)
+        }
+    }
+
     // 档位与大小单独取，取不到只是不给选，照样能按设置截。收起再打开时照样取：仓库留着上次的探测，
     // 探完的立即回来，收起时还没探完的接着等，不会停在一半
     LaunchedEffect(file.id) {
         try {
-            mediaRepo.downloadQualities(file.id).collect { session.qualities = it }
+            mediaRepo.downloadQualities(file.id).collect { list ->
+                session.qualities = list
+                list.firstOrNull { it.durationMs > 0L }?.durationMs?.let(::applyInitialDuration)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
@@ -228,18 +252,10 @@ fun SegmentDownloadSheet(
 
     // 收起再打开时已经取过就不再取：区间跟着会话留着，重取会把它按初始区间盖掉
     LaunchedEffect(file.id) {
-        if (session.loaded) return@LaunchedEffect
+        if (session.loaded && session.mediaInfo != null) return@LaunchedEffect
         mediaRepo.prepareMedia(file.id).onSuccess { info ->
             session.mediaInfo = info
-            val duration = info.durationSeconds * 1000L
-            if (duration > 0) {
-                val initialRange = session.initialRange
-                session.totalDurationMs = duration
-                val range = normalizeSegmentRange(duration, initialRange?.first ?: 0L, initialRange?.last ?: minOf(duration, 60_000L))!!
-                session.startPosMs = range.startMs
-                session.endPosMs = range.endMs
-                session.defaultRange = session.startPosMs to session.endPosMs
-            }
+            applyInitialDuration(info.durationSeconds * 1000L)
         }
         session.loaded = true
     }

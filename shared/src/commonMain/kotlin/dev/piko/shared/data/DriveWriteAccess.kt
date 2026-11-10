@@ -39,7 +39,10 @@ class DriveWriteAccess internal constructor(
             block()
         }
     }
-    suspend fun detail(id: String) = request(listOf(id)) { client.getFile(id) }
+    suspend fun detail(id: String) = request(listOf(id)) {
+        val observer = repository.metadataSink.capture(client)
+        client.getFile(id).also { observer?.observe(id, it) }
+    }
     suspend fun listFolder(id: String) = request(listOf(id)) { client.listFiles(id) }
     suspend fun browsableList(folderId: String): Result<List<FileStat>> {
         if (LocalLocation.isLocal(folderId)) return Result.failure(IllegalArgumentException("本地文件夹为只读"))
@@ -63,7 +66,18 @@ class DriveWriteAccess internal constructor(
     suspend fun delete(ids: List<String>, awaitCompletion: Boolean = true) = request(ids) { client.batchDelete(ids, awaitCompletion = awaitCompletion) }
     suspend fun star(ids: List<String>, value: Boolean) = request(ids) { if (value) client.starFiles(ids) else client.unstarFiles(ids) }
     suspend fun task(id: String) = request { client.getTask(id) }
-    suspend fun sampleCid(fileId: String) = request(listOf(fileId)) { client.sampleCid(client.getFile(fileId)) }
+    suspend fun sampleCid(fileId: String) = request(listOf(fileId)) {
+        val observer = repository.metadataSink.capture(client)
+        val detail = client.getFile(fileId)
+        observer?.observe(fileId, detail)
+        client.sampleCid(detail).also { sampled ->
+            if (sampled.isNotBlank() && isCurrentClient) {
+                ContentKey.of(detail.hash, detail.sizeBytes)?.let { key ->
+                    repository.driveTreeIndex.observeContentMetadata(key, ContentMetadata(cid = sampled))
+                }
+            }
+        }
+    }
     suspend fun instantCreate(
         file: ResolvedFile,
         parentId: String,

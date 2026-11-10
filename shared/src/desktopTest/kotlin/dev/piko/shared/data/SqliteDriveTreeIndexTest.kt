@@ -257,4 +257,48 @@ class SqliteDriveTreeIndexTest {
             if (lowHeap) assertTrue(peak.get() < 240L * 1024 * 1024, "Need 16 MiB worker heap headroom")
         } finally { index.close(); sampling.set(false); sampler.join() }
     }
+
+    @Test
+    fun unchangedSqliteFolderListingAndSelfSyncUploadKeepRevisionAndCanaryClean() = dev.piko.shared.smoke.smoke {
+        val dir = Files.createTempDirectory("piko-sqlite-perf").toFile()
+        try {
+            val server = dev.piko.shared.smoke.FakePikPakServer()
+            val pikoDir = server.addFolder(".piko")
+            val oldSync = server.addFile("settings-100.json", pikoDir.id, content = ByteArray(240), hash = "S100")
+            val mediaDir = server.addFolder("Media")
+            val ep1 = server.addFile("E01.mp4", mediaDir.id, content = ByteArray(1000), hash = "E1")
+            val ep2 = server.addFile("E02.mp4", mediaDir.id, content = ByteArray(1500), hash = "E2")
+            server.quotaUsage = 240L + 1000L + 1500L
+
+            val factory = DesktopPikoTreeDatabaseFactory(dir)
+            val repo = PikoDriveRepository(server.provider(), treeDatabaseFactory = factory)
+            try {
+                repo.getQuota().getOrThrow()
+                repo.warmDriveTree().getOrThrow()
+                assertTrue(repo.driveTreeIndex.isComplete)
+
+                val listing = repo.listBrowsable(mediaDir.id, PikoFileSortOrder.TIME_DESC).getOrThrow()
+                assertEquals(setOf(ep1.id, ep2.id), listing.map { it.id }.toSet())
+                val revAfterFirst = repo.driveTreeIndex.flow.value.revision
+                repo.driveTreeIndex.putFolderListing(mediaDir.id, listing, complete = true)
+                assertEquals(revAfterFirst, repo.driveTreeIndex.flow.value.revision, "内容未变的完整列举不应触发 SQLite 重写与 revision 广播")
+
+                val newPayload = ByteArray(310) { 0x41 }
+                repo.uploadBytes(pikoDir.id, "settings-200.json", newPayload).getOrThrow()
+                repo.delete(listOf(oldSync.id)).getOrThrow()
+                server.quotaUsage = 310L + 1000L + 1500L
+
+                val probeResult = repo.probeRemoteChanges(force = true).getOrThrow()
+                assertTrue(
+                    probeResult != PikoDriveRepository.CanaryProbeResult.FULL_REBUILD,
+                    "本机 .piko 同步轮换不应击穿哨兵探针导致全盘重扫，实际结果：$probeResult",
+                )
+            } finally {
+                repo.enterAccount(null)
+            }
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
 }

@@ -259,11 +259,15 @@ class ArchiveExtractSession(
             when (progress.phase) {
                 TaskPhase.COMPLETE -> {
                     finish(job, tr("已解压 ${job.file.name}", "Extracted ${job.file.name}", "${job.file.name} を解凍しました", "${job.file.name} 압축 해제 완료", "已解壓縮 ${job.file.name}"), succeeded = true)
-                    // 从压缩包内部发起解压时占位 FileStat 的 parentId 可能为空；优先用产出根或原压缩包详情核实真实父目录
-                    val outputDetail = progress.fileId.takeIf { it.isNotBlank() }?.let { driveRepository.getFileDetail(it).getOrNull() }
-                    val actualParentId = outputDetail?.parentId
-                        ?: job.file.parentId.takeIf { it.isNotEmpty() }
+                    // 从压缩包内部发起解压时占位 FileStat 的 parentId 可能为空；优先用本地已知父级，缺口再查产出根或原压缩包详情
+                    val actualParentId = job.file.parentId.takeIf { it.isNotEmpty() }
+                        ?: progress.fileId.takeIf { it.isNotBlank() }?.let { id ->
+                            driveRepository.knownParentOf(id)?.takeIf { it.isNotBlank() }
+                                ?: driveRepository.knownFile(id)?.parentId?.takeIf { it.isNotBlank() }
+                        }
                         ?: driveRepository.knownParentOf(job.file.id)
+                        ?: driveRepository.knownFile(job.file.id)?.parentId
+                        ?: progress.fileId.takeIf { it.isNotBlank() }?.let { driveRepository.getFileDetail(it).getOrNull()?.parentId }
                         ?: driveRepository.getFileDetail(job.file.id).getOrNull()?.parentId
                         ?: job.file.parentId
                     driveRepository.applyChange(DriveChange.ContentsChanged(setOf(actualParentId)))

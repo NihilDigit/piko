@@ -102,6 +102,9 @@ class PlayerScreenState(
 
     val isImage by derivedStateOf { mediaInfo?.kind == PlayableMediaKind.Image }
 
+    private val knownContent
+        get() = if (isLocalPlayback || fileId.isBlank()) null else repository.knownContentMetadata(fileId)
+
     val isPlaying: Boolean get() = backend.isPlaying
     val positionMillis: Long get() = backend.positionMillis
     val bufferedPositionMillis: Long get() = backend.bufferedPositionMillis
@@ -113,6 +116,12 @@ class PlayerScreenState(
                 if (rotationDegrees % 180 == 0) info.width.toFloat() / info.height
                 else info.height.toFloat() / info.width
             } else null
+        } ?: knownContent?.let { content ->
+            val w = content.width ?: 0
+            val h = content.height ?: 0
+            if (w > 0 && h > 0) {
+                if (rotationDegrees % 180 == 0) w.toFloat() / h else h.toFloat() / w
+            } else null
         }
     }
 
@@ -123,7 +132,9 @@ class PlayerScreenState(
         private set
 
     val durationMillis by derivedStateOf {
-        backend.durationMillis.takeIf { it > 0L } ?: ((mediaInfo?.durationSeconds ?: 0L) * 1000L)
+        backend.durationMillis.takeIf { it > 0L }
+            ?: ((mediaInfo?.durationSeconds ?: 0L) * 1000L).takeIf { it > 0L }
+            ?: (knownContent?.durationMillis ?: 0L)
     }
 
     /** 后端不能调速时为 null，控件据此隐藏倍速入口。 */
@@ -131,13 +142,23 @@ class PlayerScreenState(
 
     val qualityOptions by derivedStateOf {
         val info = mediaInfo
-        if (isLocalPlayback || info == null || info.kind != PlayableMediaKind.Video) {
+        if (isLocalPlayback) {
             emptyList()
+        } else if (info != null) {
+            if (info.kind != PlayableMediaKind.Video) {
+                emptyList()
+            } else {
+                val variants = info.availableVariants
+                    .map { it.mediaName.ifBlank { it.resolutionName } }
+                    .filter { it.isNotBlank() }
+                if (variants.isEmpty()) emptyList() else (listOf(ORIGINAL_QUALITY) + variants).distinct()
+            }
         } else {
-            val variants = info.availableVariants
-                .map { it.mediaName.ifBlank { it.resolutionName } }
-                .filter { it.isNotBlank() }
-            if (variants.isEmpty()) emptyList() else (listOf(ORIGINAL_QUALITY) + variants).distinct()
+            val transcodes = knownContent?.transcodes
+                ?.filter { !it.unreadable && it.name.isNotBlank() }
+                ?.map { it.name }
+                .orEmpty()
+            if (transcodes.isEmpty()) emptyList() else (listOf(ORIGINAL_QUALITY) + transcodes).distinct()
         }
     }
 
@@ -149,7 +170,13 @@ class PlayerScreenState(
 
     /** 横向画面。优先信后端解出的画面参数（已计入旋转），其次信服务端元数据。 */
     val isLandscapeVideo by derivedStateOf {
-        backend.videoAspect?.let { it > 1f } ?: mediaInfo?.isLandscapeVideo
+        backend.videoAspect?.let { it > 1f }
+            ?: mediaInfo?.isLandscapeVideo
+            ?: knownContent?.let { content ->
+                val w = content.width ?: 0
+                val h = content.height ?: 0
+                if (w <= 0 || h <= 0) null else w > h
+            }
     }
 
     /**

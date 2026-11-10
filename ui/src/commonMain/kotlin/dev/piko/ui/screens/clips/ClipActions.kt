@@ -6,6 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.log.PikoLog
@@ -38,8 +39,15 @@ internal class ClipActions(
     fun loadStars() {
         scope.launch {
             refreshStars()
-            driveRepo.folderChanges.collect {
-                refreshStars()
+            driveRepo.folderChanges.collect { change ->
+                if (change is DriveChange.Starred) {
+                    change.ids.forEach { id ->
+                        if (id !in pending) {
+                            if (change.starred) starred[id] = true else starred.remove(id)
+                        }
+                    }
+                    refreshStars()
+                }
             }
         }
     }
@@ -57,7 +65,9 @@ internal class ClipActions(
     }
 
     fun isStarred(clip: Clip): Boolean =
-        starred[clip.fileId] ?: if (starsLoaded) false else (session.listedFile(clip.fileId)?.isStarred ?: false)
+        starred[clip.fileId]
+            ?: driveRepo.knownFile(clip.fileId)?.isStarred
+            ?: if (starsLoaded) false else (session.listedFile(clip.fileId)?.isStarred ?: false)
 
     /** [value] 为 null 时切换。双击画面只加不减，与短视频应用的点赞一致。真实文件与归档条目均支持星标。 */
     fun setStarred(clip: Clip, value: Boolean? = null) {

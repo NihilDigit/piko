@@ -534,9 +534,7 @@ class ClipFeedSession(
                         if (batch.isEmpty()) break
                         if (request != generation) return@launch
                         val checkStarted = TimeSource.Monotonic.markNow()
-                        val probed = coroutineScope {
-                            batch.map { file -> async { file.id to transcodeOf(file, request) } }.awaitAll()
-                        }
+                        val probed = probeBatch(batch, request)
                         if (request != generation) return@launch
                         // 查过之后池里的那份才带着时长；量出来太短的（多是样片、花絮）从此不挑
                         val (checked, tooShort) = probed.mapNotNull { (id, transcode) -> pooled(id)?.let { it to transcode } }
@@ -580,15 +578,58 @@ class ClipFeedSession(
 
     private enum class Transcode { Yes, JustFoundMissing, KnownMissing }
 
-    /** 没有时长的（归档条目）不走记下的结论，要查一次：时长只能从详情里取。 */
-    private suspend fun transcodeOf(file: FileStat, request: Long): Transcode {
-        val timed = file.durationMs() > 0
-        if (timed && file.id in verified) return Transcode.Yes
-        if (timed && file.id in untranscoded) return Transcode.KnownMissing
-        val probe = media.clipProbe(file.id)
-        if (request != generation) throw CancellationException("Feed scope changed")
-        probe.durationMs?.let { learnDuration(file.id, it) }
-        return if (probe.hasTranscode) Transcode.Yes else if (dev.piko.shared.data.LocalLocation.isLocal(file.id)) Transcode.KnownMissing else Transcode.JustFoundMissing
+    private fun resolveKnownTranscode(file: FileStat): Transcode? {
+        val content = driveRepo.contentMetadataOf(file) ?: driveRepo.contentMetadataByFileId(file.id)
+        val contentDuration = content?.durationMillis?.takeIf { it > 0L }
+        if (contentDuration != null && file.params["duration"] == null) {
+            learnDuration(file.id, contentDuration)
+        }
+        val timed = file.durationMs() > 0L || contentDuration != null
+        if (!timed) return null
+        if (file.id in verified) return Transcode.Yes
+        if (file.id in untranscoded) return Transcode.KnownMissing
+        val transcodes = content?.transcodes
+        if (transcodes != null && (transcodes.isNotEmpty() || content.qualityRank > 0)) {
+            val has720p = transcodes.any { it.name == "720P" && !it.unreadable }
+            return if (has720p) {
+                Transcode.Yes
+            } else if (dev.piko.shared.data.LocalLocation.isLocal(file.id)) {
+                Transcode.KnownMissing
+            } else {
+                Transcode.JustFoundMissing
+            }
+        }
+        return null
+    }
+
+    /** 优先从本地 [ContentMetadata] 零网络判别 720P 转码与时长；未知项合并为单次 [PikoMediaRepository.batchClipProbe] 批量查询。 */
+    private suspend fun probeBatch(batch: List<FileStat>, request: Long): List<Pair<String, Transcode>> {
+        val known = LinkedHashMap<String, Transcode>(batch.size)
+        val needProbe = ArrayList<FileStat>()
+        for (file in batch) {
+            val resolved = resolveKnownTranscode(file)
+            if (resolved != null) {
+                known[file.id] = resolved
+            } else {
+                needProbe += file
+            }
+        }
+        if (needProbe.isNotEmpty()) {
+            val probed = media.batchClipProbe(needProbe.map { it.id })
+            if (request != generation) throw CancellationException("Feed scope changed")
+            for (file in needProbe) {
+                val probe = probed[file.id]
+                probe?.durationMs?.takeIf { it > 0L }?.let { learnDuration(file.id, it) }
+                known[file.id] = if (probe?.hasTranscode == true) {
+                    Transcode.Yes
+                } else if (dev.piko.shared.data.LocalLocation.isLocal(file.id)) {
+                    Transcode.KnownMissing
+                } else {
+                    Transcode.JustFoundMissing
+                }
+            }
+        }
+        return batch.mapNotNull { file -> known[file.id]?.let { file.id to it } }
     }
 
     /** 记进候选池，随队列存下：下次打开不必再借一次对象去量。 */
@@ -762,8 +803,11 @@ class ClipFeedSession(
      * 归档条目例外：它们存自磁力解析，本来就没有时长，挑中后查转码时从借出的详情里量，见 [transcodeOf]。
      */
     private fun FileStat.isClipCandidate(): Boolean =
-        isPlayableVideo() && !isUploading && (dev.piko.shared.data.LocalLocation.isLocal(id) || isVaulted || durationMs() >= MIN_DURATION_MS)
+        isPlayableVideo() && !isUploading && (dev.piko.shared.data.LocalLocation.isLocal(id) || (isVaulted && durationMs().let { it <= 0L || it >= MIN_DURATION_MS }) || durationMs() >= MIN_DURATION_MS)
 
     private fun FileStat.durationMs(): Long =
-        ((params["duration"]?.toDoubleOrNull() ?: 0.0) * 1000).toLong()
+        ((params["duration"]?.toDoubleOrNull() ?: 0.0) * 1000).toLong().takeIf { it > 0L }
+            ?: driveRepo.contentMetadataOf(this)?.durationMillis?.takeIf { it > 0L }
+            ?: driveRepo.contentMetadataByFileId(id)?.durationMillis?.takeIf { it > 0L }
+            ?: 0L
 }

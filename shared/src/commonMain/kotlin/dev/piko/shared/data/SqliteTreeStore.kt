@@ -216,7 +216,14 @@ internal class SqliteTreeStore(
         invalidateFolderProjection()
         cachedSubtreeStats = null
     }
-    fun file(id: String, generation: Long = 0): FileStat? = if (closed) null else scalar("SELECT payload FROM tree_nodes WHERE generation=? AND id=?", listOf(generation, id))?.let(::decode)
+    fun file(id: String, generation: Long = 0): FileStat? {
+        if (closed) return null
+        val cursor = db.query("SELECT payload,duration FROM tree_nodes WHERE generation=? AND id=?", listOf(generation, id))
+        return try {
+            if (!cursor.next()) null
+            else decode(cursor.string(0)!!).enrichWithContentMetadata(null, cursor.long(1))
+        } finally { cursor.close() }
+    }
     /** Nonmatching files never allocate FileStat, params, tags or metadata. */
     fun searchCandidates(query: String, extraFolderTitle: (FileStat) -> String?, consume: (Int, FileStat) -> Unit) {
         if (closed) return
@@ -233,7 +240,9 @@ internal class SqliteTreeStore(
     fun children(id: String, realOnly: Boolean = false): DriveTreeIndex.FolderChildren {
         if (closed) return DriveTreeIndex.FolderChildren(emptyList(), DriveTreeIndex.FolderCoverage.UNKNOWN)
         val files = ArrayList<FileStat>()
-        rows("SELECT payload FROM tree_nodes WHERE generation=0 AND parent=?" + if (realOnly) " AND virtual=0" else "", listOf(id)) { files += decode(it.string(0)!!) }
+        rows("SELECT payload,duration FROM tree_nodes WHERE generation=0 AND parent=?" + if (realOnly) " AND virtual=0" else "", listOf(id)) {
+            files += decode(it.string(0)!!).enrichWithContentMetadata(null, it.long(1))
+        }
         val dirty = scalar("SELECT dirty FROM tree_coverage WHERE id=?", listOf(id))
         val coverage = when {
             dirty == "1" -> DriveTreeIndex.FolderCoverage.DIRTY
@@ -616,6 +625,16 @@ internal class SqliteTreeStore(
         rows("SELECT DISTINCT parent FROM tree_nodes WHERE generation=0 AND gcid=? AND bytes=?", listOf(normalized.gcid, normalized.sizeBytes)) { touchedFolders += it.string(0)!! }
         db.execute("UPDATE tree_nodes SET duration=? WHERE gcid=? AND bytes=?", listOf(merged.durationMillis, normalized.gcid, normalized.sizeBytes))
     }
+    fun observeTranscodeSize(key: ContentKey, mediaId: String, streamSizeBytes: Long?, unreadable: Boolean = false) = mutate {
+        val normalized = ContentKey.of(key.gcid, key.sizeBytes) ?: return@mutate
+        val prev = content(normalized) ?: return@mutate
+        val updated = prev.withTranscodeProbe(mediaId, streamSizeBytes, unreadable)
+        if (updated != prev) {
+            candidateContentCache.remove(normalized)
+            putContent(normalized, updated, previousKnown = true, previousValue = prev, updateLiveDuration = false)
+        }
+    }
+    fun originalCreated(id: String): Long? = if (closed) null else scalar("SELECT original_created FROM tree_instances WHERE id=?", listOf(id))?.toLongOrNull()
     fun instance(id: String, value: EntryMetadata) = mutate {
         if (value.originalCreatedAtMillis == null) db.execute("DELETE FROM tree_instances WHERE id=?", listOf(id))
         else db.execute("INSERT OR REPLACE INTO tree_instances VALUES (?,?)", listOf(id, value.originalCreatedAtMillis))

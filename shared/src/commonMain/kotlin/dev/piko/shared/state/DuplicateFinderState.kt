@@ -161,7 +161,7 @@ class DuplicateFinderState(
                             scanStop = event.stop
                             failedFolders = event.failedFolders
                             phase = Phase.ANALYZING
-                            scanned = event.files
+                            scanned = withContext(Dispatchers.Default) { event.files.map(::enrichScannedFile) }
                             scannedDirectories = event.subfolders
                             regroup()
                             phase = Phase.DONE
@@ -200,5 +200,22 @@ class DuplicateFinderState(
             groupedFiles = scanned
             groupedRemoved = removed
         }
+    }
+
+    private fun enrichScannedFile(item: ScannedFile): ScannedFile {
+        val file = item.file
+        val meta = driveRepo.contentMetadataOf(file)
+        val originalCreated = driveRepo.originalCreatedAtMillis(file.id)
+        val needsWidth = file.params["width"]?.toIntOrNull()?.takeIf { it > 0 } == null && (meta?.width ?: 0) > 0
+        val needsHeight = file.params["height"]?.toIntOrNull()?.takeIf { it > 0 } == null && (meta?.height ?: 0) > 0
+        val needsDuration = file.params["duration"]?.toDoubleOrNull()?.takeIf { it > 0 } == null && (meta?.durationMillis ?: 0L) > 0L
+        val needsCreated = file.params["piko_original_created_at"]?.toLongOrNull() == null && originalCreated != null
+        if (!needsWidth && !needsHeight && !needsDuration && !needsCreated) return item
+        val nextParams = file.params.toMutableMap()
+        if (needsWidth) nextParams["width"] = meta!!.width.toString()
+        if (needsHeight) nextParams["height"] = meta!!.height.toString()
+        if (needsDuration) nextParams["duration"] = (meta!!.durationMillis!! / 1000L).toString()
+        if (needsCreated) nextParams["piko_original_created_at"] = originalCreated.toString()
+        return item.copy(file = file.copy(params = nextParams))
     }
 }

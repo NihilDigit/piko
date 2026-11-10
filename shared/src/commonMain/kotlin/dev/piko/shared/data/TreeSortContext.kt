@@ -3,7 +3,7 @@ package dev.piko.shared.data
 import dev.piko.data.repository.isPlayableVideo
 
 @kotlinx.serialization.Serializable
-internal data class ContentStats(
+data class ContentStats(
     val bytes: Long = 0,
     val fileCount: Long = 0,
     val durationMillis: Long = 0,
@@ -12,6 +12,10 @@ internal data class ContentStats(
     val listingComplete: Boolean = true,
     val metadataComplete: Boolean = true,
 ) {
+    val totalBytes: Long get() = bytes
+    val knownDurationVideoCount: Long get() = knownDurationFiles
+    val unknownDurationVideoCount: Long get() = unknownDurationFiles
+
     operator fun plus(other: ContentStats) = ContentStats(
         saturatedAdd(bytes, other.bytes), saturatedAdd(fileCount, other.fileCount),
         saturatedAdd(durationMillis, other.durationMillis),
@@ -23,11 +27,21 @@ internal data class ContentStats(
 private fun saturatedAdd(a: Long, b: Long): Long = if (Long.MAX_VALUE - a < b) Long.MAX_VALUE else a + b
 
 @kotlinx.serialization.Serializable
-internal data class SubtreeStats(
+data class SubtreeStats(
     val physical: ContentStats = ContentStats(),
     val vaulted: ContentStats = ContentStats(),
     val structuralValid: Boolean = true,
 ) {
+    val archived: ContentStats get() = vaulted
+    val bytes: Long get() = saturatedAdd(physical.bytes, vaulted.bytes)
+    val totalBytes: Long get() = bytes
+    val fileCount: Long get() = saturatedAdd(physical.fileCount, vaulted.fileCount)
+    val durationMillis: Long get() = saturatedAdd(physical.durationMillis, vaulted.durationMillis)
+    val knownDurationFiles: Long get() = saturatedAdd(physical.knownDurationFiles, vaulted.knownDurationFiles)
+    val unknownDurationFiles: Long get() = saturatedAdd(physical.unknownDurationFiles, vaulted.unknownDurationFiles)
+    val listingComplete: Boolean get() = physical.listingComplete && vaulted.listingComplete
+    val metadataComplete: Boolean get() = physical.metadataComplete && vaulted.metadataComplete
+
     operator fun plus(other: SubtreeStats) = SubtreeStats(
         physical + other.physical, vaulted + other.vaulted, structuralValid && other.structuralValid,
     )

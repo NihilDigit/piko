@@ -10,8 +10,10 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.data.PikoPathBreadcrumb
+import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
 import dev.piko.shared.data.isPikoInternalFolder
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -117,31 +119,19 @@ class FolderPickerState(
         val parentId = current.id
         val generation = ++loadGeneration
         isLoadingMore = true
-        var token = pageToken
-        var added = 0
         try {
-            // 一页 100 条可能全是文件，只靠触底加载永远翻不到后面的文件夹，
-            // 因此本轮零收获时继续向后翻，直到拿到文件夹或翻完为止。
-            while (true) {
-                val (list, next) = driveRepo.listFiles(parentId = parentId, pageToken = token)
-                    .getOrElse { error ->
-                        PikoLog.w("FolderPicker", tr("读取目录失败", "Failed to load folder", "フォルダーを読み込めませんでした", "폴더를 불러오지 못했습니다", "讀取資料夾失敗"), error)
-                        loadError = dev.piko.shared.notice.PikoErrorMapper.message(error)
-                        return
-                    }
-                val childFolders = list.filter { it.isFolder && !isPikoInternalFolder(it, parentId) }
-                if (childFolders.isNotEmpty()) {
-                    folders = folders + childFolders
-                    added += childFolders.size
-                }
-                token = next
-                if (next.isEmpty()) {
-                    hasMore = false
-                    break
-                }
-                if (added > 0) break
+            val childFolders = try {
+                toFolderStats(driveRepo.subfolders(parentId), parentId)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                PikoLog.w("FolderPicker", tr("读取目录失败", "Failed to load folder", "フォルダーを読み込めませんでした", "폴더를 불러오지 못했습니다", "讀取資料夾失敗"), error)
+                loadError = dev.piko.shared.notice.PikoErrorMapper.message(error)
+                return
             }
-            pageToken = token
+            folders = childFolders
+            hasMore = false
+            pageToken = ""
         } finally {
             // 被 reload 取消的旧加载会晚于新加载开始才走到这里，不能替新加载收尾
             if (generation == loadGeneration) {
@@ -150,4 +140,16 @@ class FolderPickerState(
             }
         }
     }
+
+    @kotlin.jvm.JvmName("subfoldersFromBreadcrumbs")
+    private fun toFolderStats(result: Result<List<PikoPathBreadcrumb>>, parentId: String): List<FileStat> =
+        result.getOrThrow().map { FileStat(kind = FileKind.FOLDER, id = it.id, parentId = parentId, name = it.name) }
+
+    @kotlin.jvm.JvmName("subfoldersFromStatsResult")
+    private fun toFolderStats(result: Result<List<FileStat>>, parentId: String): List<FileStat> =
+        result.getOrThrow().filter { it.isFolder && !it.trashed && !isPikoInternalFolder(it, parentId) }
+
+    @kotlin.jvm.JvmName("subfoldersFromStats")
+    private fun toFolderStats(list: List<FileStat>, parentId: String): List<FileStat> =
+        list.filter { it.isFolder && !it.trashed && !isPikoInternalFolder(it, parentId) }
 }

@@ -68,11 +68,19 @@ class VideoDiscovery internal constructor(
     rootId: String,
     private var readFolder: suspend (String) -> Result<List<FileStat>>,
     private val random: Random = Random,
+    private var shouldEnqueueFolder: (FileStat) -> Boolean = { true },
 ) {
-    constructor(driveRepo: PikoDriveRepository, account: String, rootId: String, random: Random = Random) : this(
-        rootId,
-        driveRepo.browsableReader(account) ?: { throw CancellationException("Account changed") },
-        random,
+    constructor(
+        driveRepo: PikoDriveRepository,
+        account: String,
+        rootId: String,
+        random: Random = Random,
+        includeImages: Boolean = false,
+    ) : this(
+        rootId = rootId,
+        readFolder = driveRepo.browsableReader(account) ?: { throw CancellationException("Account changed") },
+        random = random,
+        shouldEnqueueFolder = { folder -> shouldEnqueueSubfolder(driveRepo, folder, includeImages) },
     )
 
     private val level = ArrayDeque<String>().apply { add(rootId) }
@@ -134,7 +142,7 @@ class VideoDiscovery internal constructor(
                 failures[id] = batch.failure
             } else {
                 failures.remove(id)
-                batch.files.filter { it.isFolder && !it.trashed }.forEach { folder ->
+                batch.files.filter { it.isFolder && !it.trashed && shouldEnqueueFolder(it) }.forEach { folder ->
                     if (enqueued.add(folder.id)) nextLevel += folder.id
                 }
             }
@@ -146,8 +154,9 @@ class VideoDiscovery internal constructor(
     suspend fun refreshFolder(folderId: String): VideoFolderBatch = readBatch(folderId)
 
     /** 调用方先结束旧请求；同账号重新登录可换 reader，仍保留探索位置。 */
-    internal fun rebind(driveRepo: PikoDriveRepository, account: String) {
+    internal fun rebind(driveRepo: PikoDriveRepository, account: String, includeImages: Boolean = false) {
         readFolder = driveRepo.browsableReader(account) ?: throw CancellationException("Account changed")
+        shouldEnqueueFolder = { folder -> shouldEnqueueSubfolder(driveRepo, folder, includeImages) }
     }
 
     private suspend fun readBatch(id: String): VideoFolderBatch {
@@ -162,7 +171,7 @@ class VideoDiscovery internal constructor(
         val batch = analyzeVideoFolder(id, result.getOrThrow())
         currentCoroutineContext().ensureActive()
         failures.remove(id)
-        batch.files.filter { it.isFolder && !it.trashed }.forEach { folder ->
+        batch.files.filter { it.isFolder && !it.trashed && shouldEnqueueFolder(it) }.forEach { folder ->
             if (enqueued.add(folder.id)) nextLevel += folder.id
         }
         return batch
@@ -178,5 +187,18 @@ class VideoDiscovery internal constructor(
     fun retryFailed() {
         val waiting = level.toSet() + nextLevel
         failures.keys.filter { it !in waiting }.forEach(level::addLast)
+    }
+
+    private companion object {
+        fun shouldEnqueueSubfolder(driveRepo: PikoDriveRepository, folder: FileStat, includeImages: Boolean): Boolean {
+            if (includeImages) return true
+            val stats = driveRepo.folderSubtreeStats(folder.id) ?: return true
+            if (!stats.physical.listingComplete || !stats.archived.listingComplete) return true
+            val totalVideos = stats.physical.knownDurationVideoCount +
+                stats.physical.unknownDurationVideoCount +
+                stats.archived.knownDurationVideoCount +
+                stats.archived.unknownDurationVideoCount
+            return totalVideos > 0L
+        }
     }
 }

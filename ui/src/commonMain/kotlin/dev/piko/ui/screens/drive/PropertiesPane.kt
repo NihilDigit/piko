@@ -208,6 +208,14 @@ private fun SingleDetails(
     }
 
     val usage = if (file.isFolder) folderUsageById(file.id) else ""
+    val contentMetadata = if (!file.isFolder) {
+        driveRepo.contentMetadataOf(file) ?: driveRepo.contentMetadataByFileId(file.id)
+    } else null
+    val folderSubtreeStats = if (file.isFolder && isDriveFolderId(file.id)) {
+        driveRepo.folderSubtreeStats(file.id)
+    } else null
+    val originalCreatedAtMillis = driveRepo.originalCreatedAtMillis(file.id)
+        ?: file.params["piko_original_created_at"]?.toLongOrNull()
     DetailSection(
         buildList {
             if (file.isFolder) {
@@ -218,6 +226,10 @@ private fun SingleDetails(
                 )
                 val usageField = usage.takeIf { it.isNotEmpty() }?.let { DetailField(tr("内容", "Contents", "内容", "내용", "內容"), it) }
                 if (usageField != null) add(DetailRow.PairRow(typeField, usageField)) else add(DetailRow.Single(typeField))
+                val folderDurationSeconds = folderSubtreeStats?.let { (it.physical + it.vaulted).durationMillis / 1000L }?.takeIf { it > 0L }
+                if (folderDurationSeconds != null) {
+                    add(DetailRow.Single(DetailField(tr("总时长", "Total duration", "合計再生時間", "총 재생 시간", "總時長"), formatDuration(folderDurationSeconds))))
+                }
                 when (file.id) {
                     in fullyVaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태", "歸檔狀態"), tr("完全归档（仅保留引用，不占网盘空间）", "Fully archived (references only; no cloud storage used)", "完全アーカイブ（参照のみ、ドライブ容量を使用しません）", "전체 보관 (참조만 유지, 클라우드 공간 사용 안 함)", "完全歸檔（僅保留引用，不占雲端硬碟空間）"))))
                     in vaultedFolders -> add(DetailRow.Single(DetailField(tr("归档状态", "Archive status", "アーカイブ状態", "보관 상태", "歸檔狀態"), tr("部分归档（包含归档引用）", "Partially archived (includes archive references)", "一部アーカイブ（アーカイブ参照を含む）", "일부 보관 (보관 참조 포함)", "部分歸檔（包含歸檔引用）"))))
@@ -231,22 +243,31 @@ private fun SingleDetails(
                     supportingText = if (file.isVaulted) tr("已归档引用，不占网盘空间", "Archived reference; uses no cloud storage", "アーカイブ参照。ドライブ容量を使用しません", "보관 참조. 클라우드 공간을 사용하지 않습니다", "已歸檔引用，不占雲端硬碟空間") else null,
                 )
                 add(DetailRow.PairRow(typeField, sizeField))
-                if (file.isPlayableVideo() || file.params["local_path"] != null) {
-                    val duration = file.params["duration"]?.toDoubleOrNull()?.let { DetailField(tr("时长", "Duration", "再生時間", "재생 시간", "時長"), formatDuration(it.toLong())) }
-                    val width = file.params["width"]
-                    val height = file.params["height"]
-                    val resolution = if (!width.isNullOrEmpty() && !height.isNullOrEmpty()) {
-                        DetailField(tr("分辨率", "Resolution", "解像度", "해상도", "解析度"), "$width × $height")
-                    } else null
+                val durationSeconds = file.params["duration"]?.toDoubleOrNull()?.takeIf { it > 0 }?.toLong()
+                    ?: contentMetadata?.durationMillis?.takeIf { it > 0 }?.let { it / 1000L }
+                val duration = durationSeconds?.let { DetailField(tr("时长", "Duration", "再生時間", "재생 시간", "時長"), formatDuration(it)) }
+                val width = file.params["width"]?.takeIf { it.isNotEmpty() }
+                    ?: contentMetadata?.width?.takeIf { it > 0 }?.toString()
+                val height = file.params["height"]?.takeIf { it.isNotEmpty() }
+                    ?: contentMetadata?.height?.takeIf { it > 0 }?.toString()
+                val resolution = if (!width.isNullOrEmpty() && !height.isNullOrEmpty()) {
+                    DetailField(tr("分辨率", "Resolution", "解像度", "해상도", "解析度"), "$width × $height")
+                } else null
+                val transcodeQualities = contentMetadata?.transcodes?.mapNotNull { it.name.takeIf(String::isNotBlank) }.orEmpty()
+                if (file.isPlayableVideo() || file.params["local_path"] != null || duration != null || resolution != null || transcodeQualities.isNotEmpty()) {
                     when {
                         duration != null && resolution != null -> add(DetailRow.PairRow(duration, resolution))
                         duration != null -> add(DetailRow.Single(duration))
                         resolution != null -> add(DetailRow.Single(resolution))
                     }
+                    if (transcodeQualities.isNotEmpty()) {
+                        add(DetailRow.Single(DetailField(tr("转码画质", "Transcode qualities", "トランスコード画質", "트랜스코드 화질", "轉碼畫質"), transcodeQualities.joinToString(" · "))))
+                    }
                 }
             }
             val modifiedText = timestamp(file.modifiedTime)
-            val createdText = timestamp(file.createdTime)?.takeIf { it != modifiedText }
+            val originalCreatedText = originalCreatedAtMillis?.let { timestamp(kotlin.time.Instant.fromEpochMilliseconds(it).toString()) }
+            val createdText = (originalCreatedText ?: timestamp(file.createdTime))?.takeIf { it != modifiedText || originalCreatedText != null }
             val modified = modifiedText?.let { DetailField(tr("修改时间", "Modified", "更新日時", "수정한 날짜", "修改時間"), it) }
             val created = createdText?.let { DetailField(tr("创建时间", "Created", "作成日時", "만든 날짜", "建立時間"), it) }
             when {
@@ -373,16 +394,30 @@ private fun FolderDetails(target: PropertiesTarget.Folder) {
 
     val folders = target.files.count { it.isFolder }
     val others = target.files.size - folders
+    val subtreeStats = if (isDriveFolderId(target.id)) driveRepo.folderSubtreeStats(target.id) else null
+    val totalSubtree = subtreeStats?.let { it.physical + it.vaulted }
+    val effectiveFiles = if (folders == 0 && totalSubtree != null && totalSubtree.listingComplete) {
+        totalSubtree.fileCount.toInt()
+    } else others
+    val totalBytes = if (totalSubtree != null && (folders > 0 || totalSubtree.listingComplete)) {
+        totalSubtree.bytes
+    } else {
+        target.files.filterNot { it.isFolder }.sumOf { it.sizeBytes }
+    }
+    val totalDurationSeconds = totalSubtree?.let { it.durationMillis / 1000L }?.takeIf { it > 0L }
     val recursiveUsage = if (folders > 0) folderUsageById(target.id) else ""
     DetailSection(
         buildList {
-            val itemsField = DetailField(tr("项目", "Items", "項目", "항목", "項目"), itemsSummary(folders, others))
-            val sumField = if (others > 0) {
-                DetailField(tr("文件合计", "Total files", "ファイル合計", "파일 합계", "檔案合計"), target.files.filterNot { it.isFolder }.sumOf { it.sizeBytes }.toReadableSize())
+            val itemsField = DetailField(tr("项目", "Items", "項目", "항목", "項目"), itemsSummary(folders, effectiveFiles))
+            val sumField = if (effectiveFiles > 0 || totalBytes > 0L) {
+                DetailField(tr("文件合计", "Total files", "ファイル合計", "파일 합계", "檔案合計"), totalBytes.toReadableSize())
             } else null
             if (sumField != null) add(DetailRow.PairRow(itemsField, sumField)) else add(DetailRow.Single(itemsField))
             if (recursiveUsage.isNotEmpty()) {
                 add(DetailRow.Single(DetailField(tr("包含内容", "Includes", "含まれる内容", "포함 내용", "包含內容"), recursiveUsage)))
+            }
+            if (totalDurationSeconds != null) {
+                add(DetailRow.Single(DetailField(tr("总时长", "Total duration", "合計再生時間", "총 재생 시간", "總時長"), formatDuration(totalDurationSeconds))))
             }
             if (target.id.isNotEmpty()) {
                 when {
@@ -399,7 +434,7 @@ private fun FolderDetails(target: PropertiesTarget.Folder) {
             listOf(
                 DetailRow.Single(
                     DetailField(
-                        label = tr("位置", "Location", "場所", "위치", "位置"),
+                        label = tr("Location", "Location", "場所", "위치", "位置").let { tr("位置", "Location", "場所", "위치", "位置") },
                         value = loc,
                         actions = listOf(
                             DetailAction(
@@ -419,9 +454,26 @@ private fun FolderDetails(target: PropertiesTarget.Folder) {
 @Composable
 private fun SelectionDetails(target: PropertiesTarget.Selection) {
     val platform = LocalPikoPlatform.current
+    val driveRepo = LocalPikoServices.current.driveRepository
     val folders = target.files.count { it.isFolder }
     val others = target.files.size - folders
     val vaultedCount = target.files.count { it.isVaulted }
+    val totalBytes = target.files.sumOf { file ->
+        if (file.isFolder) {
+            driveRepo.folderSubtreeStats(file.id)?.let { (it.physical + it.vaulted).bytes } ?: 0L
+        } else {
+            file.sizeBytes
+        }
+    }
+    val totalDurationSeconds = target.files.sumOf { file ->
+        if (file.isFolder) {
+            driveRepo.folderSubtreeStats(file.id)?.let { (it.physical + it.vaulted).durationMillis } ?: 0L
+        } else {
+            file.params["duration"]?.toDoubleOrNull()?.takeIf { it > 0 }?.let { (it * 1000).toLong() }
+                ?: driveRepo.contentMetadataOf(file)?.durationMillis?.takeIf { it > 0 }
+                ?: 0L
+        }
+    } / 1000L
 
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Surface(
@@ -447,10 +499,13 @@ private fun SelectionDetails(target: PropertiesTarget.Selection) {
     DetailSection(
         buildList {
             val itemsField = DetailField(tr("项目", "Items", "項目", "항목", "項目"), itemsSummary(folders, others))
-            val sumField = if (others > 0) {
-                DetailField(tr("文件合计", "Total files", "ファイル合計", "파일 합계", "檔案合計"), target.files.filterNot { it.isFolder }.sumOf { it.sizeBytes }.toReadableSize())
+            val sumField = if (others > 0 || totalBytes > 0L) {
+                DetailField(tr("文件合计", "Total files", "ファイル合計", "파일 합계", "檔案合計"), totalBytes.toReadableSize())
             } else null
             if (sumField != null) add(DetailRow.PairRow(itemsField, sumField)) else add(DetailRow.Single(itemsField))
+            if (totalDurationSeconds > 0L) {
+                add(DetailRow.Single(DetailField(tr("总时长", "Total duration", "合計再生時間", "총 재생 시간", "總時長"), formatDuration(totalDurationSeconds))))
+            }
             if (vaultedCount > 0) {
                 add(DetailRow.Single(DetailField(tr("归档引用", "Archive references", "アーカイブ参照", "보관 참조", "歸檔引用"), tr("$vaultedCount 项已归档（不占网盘空间）", "${enCount(vaultedCount, "item", "items")} archived (no drive quota used)", "$vaultedCount 項目をアーカイブ済み（容量消費なし）", "${vaultedCount}개 항목 보관됨 (용량 미사용)", "$vaultedCount 項已歸檔（不占雲端硬碟空間）"))))
             }
@@ -509,6 +564,17 @@ private fun FullName(name: DriveItemName) {
 private fun folderUsageById(folderId: String): String {
     if (!isDriveFolderId(folderId)) return ""
     val driveRepo = LocalPikoServices.current.driveRepository
+    val subtree = driveRepo.folderSubtreeStats(folderId)?.let { it.physical + it.vaulted }
+    if (subtree != null && subtree.listingComplete) {
+        val count = subtree.fileCount.toInt()
+        return tr(
+            "$count 个文件，${subtree.bytes.toReadableSize()}",
+            "${enCount(count, "file", "files")}, ${subtree.bytes.toReadableSize()}",
+            "$count ファイル、${subtree.bytes.toReadableSize()}",
+            "파일 ${count}개, ${subtree.bytes.toReadableSize()}",
+            "$count 個檔案，${subtree.bytes.toReadableSize()}",
+        )
+    }
     val flow = remember(folderId) { driveRepo.folderUsage(folderId) }
     val usage by produceState<FolderUsage?>(null, flow) {
         try {

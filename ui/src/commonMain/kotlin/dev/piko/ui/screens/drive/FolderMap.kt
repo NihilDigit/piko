@@ -401,12 +401,19 @@ private fun flatten(
     }
 }
 
-// 过滤时不分层级，列出已经列过的各层里名字含 [query] 的；没展开过的层不去列，那要遍历整个网盘
-private fun filtered(state: FolderMapState, root: List<PikoPathBreadcrumb>, query: String): List<MapRow> {
+// 过滤时不分层级，优先列出已经列过的各层里名字含 [query] 的；再从本地文件树索引补充未展开过的子文件夹
+private fun filtered(
+    state: FolderMapState,
+    root: List<PikoPathBreadcrumb>,
+    query: String,
+    driveRepo: PikoDriveRepository,
+): List<MapRow> {
     val out = mutableListOf<MapRow>()
+    val seenIds = HashSet<String>()
     fun walk(parent: List<PikoPathBreadcrumb>) {
         val level = state.levels[parent.last().id] as? FolderMapLevel.Loaded ?: return
         level.nodes.forEach { node ->
+            seenIds += node.crumb.id
             val stack = parent + node.crumb
             if (node.crumb.localizedName.contains(query, ignoreCase = true) || node.crumb.name.contains(query, ignoreCase = true)) {
                 out += MapRow("node:${node.crumb.id}", stack, 0, node = node)
@@ -415,6 +422,35 @@ private fun filtered(state: FolderMapState, root: List<PikoPathBreadcrumb>, quer
         }
     }
     walk(root)
+    val rootCrumb = root.lastOrNull()
+    if (rootCrumb != null && isDriveFolderId(rootCrumb.id)) {
+        val allFolders = driveRepo.allDescendantFolders(rootCrumb.id)
+        if (allFolders.isNotEmpty()) {
+            val byId = allFolders.associateBy { it.id }
+            fun buildStack(folder: FileStat): List<PikoPathBreadcrumb>? {
+                val chain = ArrayDeque<PikoPathBreadcrumb>()
+                val visited = HashSet<String>()
+                var cur: FileStat? = folder
+                while (cur != null && cur.id != rootCrumb.id) {
+                    if (!visited.add(cur.id)) return null
+                    chain.addFirst(PikoPathBreadcrumb(cur.id, cur.name))
+                    val parentId = cur.parentId
+                    if (parentId == rootCrumb.id) return root + chain
+                    cur = byId[parentId] ?: driveRepo.knownFile(parentId)?.takeIf { it.isFolder }
+                }
+                return if (chain.isEmpty()) null else root + chain
+            }
+            for (folder in allFolders) {
+                if (!folder.isFolder || folder.trashed || folder.id in seenIds) continue
+                val crumb = PikoPathBreadcrumb(folder.id, folder.name)
+                if (crumb.localizedName.contains(query, ignoreCase = true) || crumb.name.contains(query, ignoreCase = true)) {
+                    seenIds += folder.id
+                    val stack = buildStack(folder) ?: (root + crumb)
+                    out += MapRow("node:${crumb.id}", stack, 0, node = FolderMapNode(crumb, isArchive = false))
+                }
+            }
+        }
+    }
     return out
 }
 
@@ -455,12 +491,13 @@ private fun FolderMapTree(
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
+    val driveRepo = dev.piko.ui.LocalPikoServices.current.driveRepository
     val query = state.query
     val filterShown = state.filterShown
     val rows = if (query.isBlank()) {
         buildList { flatten(state, root, 0, onOpen, this) }
     } else {
-        filtered(state, root, query.trim())
+        filtered(state, root, query.trim(), driveRepo)
     }
     val selectable = rows.indices.filter { rows[it].node != null || rows[it].onNoteClick != null }
     val currentId = current.lastOrNull()?.id

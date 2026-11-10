@@ -670,11 +670,21 @@ class TransfersState(
     private suspend fun loadThumbnails(ids: List<String>) {
         val missing = ids.filter { it !in thumbnails }.take(THUMBNAIL_BATCH)
         if (missing.isEmpty()) return
-        val parents = missing.associateWith { id -> driveRepo.getFileDetail(id).getOrNull()?.parentId }
         val found = mutableMapOf<String, String>()
-        for (parentId in parents.values.filterNotNull().distinct()) {
-            val listing = driveRepo.listAllFiles(parentId).getOrNull() ?: continue
-            listing.filter { it.id in missing }.forEach { found[it.id] = it.thumbnailLink }
+        for (id in missing) {
+            driveRepo.knownFile(id)?.thumbnailLink?.takeIf { it.isNotBlank() }?.let { found[id] = it }
+        }
+        val unresolved = missing.filter { it !in found }
+        if (unresolved.isNotEmpty()) {
+            val parents = unresolved.associateWith { id ->
+                driveRepo.knownFile(id)?.parentId
+                    ?: driveRepo.knownParentOf(id)
+                    ?: driveRepo.getFileDetail(id).getOrNull()?.parentId
+            }
+            for (parentId in parents.values.filterNotNull().distinct()) {
+                val listing = driveRepo.listAllFiles(parentId).getOrNull() ?: continue
+                listing.filter { it.id in unresolved }.forEach { found[it.id] = it.thumbnailLink }
+            }
         }
         // 取不到的也记下，免得每次列表变动都重查同一批
         val loaded = missing.associateWith { found[it].orEmpty() }

@@ -24,6 +24,7 @@ data class DuplicateFile(
     val width: Int?,
     val height: Int?,
     val durationSeconds: Long?,
+    val originalCreatedAtMillis: Long? = null,
 ) {
     val path: String get() = if (folderPath.isEmpty()) name else "$folderPath/$name"
 }
@@ -109,7 +110,7 @@ private fun identicalGroups(files: List<Pair<DuplicateFile, String>>): List<Dupl
  */
 internal val KEEP_ORDER: Comparator<DuplicateFile> =
     compareBy<DuplicateFile> { copyMarkerCount(it.name) }
-        .thenBy(nullsLast()) { parseInstant(it.createdTime) }
+        .thenBy(nullsLast()) { it.originalCreatedAtMillis ?: parseInstant(it.createdTime)?.toEpochMilliseconds() }
         .thenBy { it.path.length }
         .thenBy { it.path }
         .thenBy { it.id }
@@ -288,7 +289,7 @@ private fun versionTags(parsed: ParsedName): List<String> = buildList {
 
 // endregion
 
-private fun ScannedFile.toDuplicateFile(): DuplicateFile = DuplicateFile(
+internal fun ScannedFile.toDuplicateFile(): DuplicateFile = DuplicateFile(
     id = file.id,
     name = file.name,
     folderPath = folderPath,
@@ -299,4 +300,5 @@ private fun ScannedFile.toDuplicateFile(): DuplicateFile = DuplicateFile(
     width = file.params["width"]?.toIntOrNull()?.takeIf { it > 0 },
     height = file.params["height"]?.toIntOrNull()?.takeIf { it > 0 },
     durationSeconds = file.params["duration"]?.toDoubleOrNull()?.toLong()?.takeIf { it > 0 },
+    originalCreatedAtMillis = file.params["piko_original_created_at"]?.toLongOrNull(),
 )

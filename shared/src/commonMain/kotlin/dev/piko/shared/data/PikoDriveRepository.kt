@@ -357,20 +357,87 @@ open class PikoDriveRepository(
     private val _clientRevision = MutableStateFlow(0L)
     val clientRevision: StateFlow<Long> = _clientRevision.asStateFlow()
     internal val accountGeneration: Long get() = changeMarks.value.accountResetAt
-    val metadataSink = DriveMetadataSink { owner ->
-        withPikoLock(treeStateLock) {
-            if (clientManager.currentClient.value !== owner) null else {
-                val generation = accountGeneration
-                val boundIndex = driveTreeIndex
-                DriveDetailObserver { _, detail ->
-                    withPikoLock(treeStateLock) {
-                        if (clientManager.currentClient.value === owner && generation == accountGeneration) {
-                            boundIndex.observeDetail(detail)
-                            scheduleTreeSnapshotSave()
+    val metadataSink = object : DriveMetadataSink {
+        override fun capture(owner: PikPakClient): DriveDetailObserver? =
+            withPikoLock(treeStateLock) {
+                if (clientManager.currentClient.value !== owner) null else {
+                    val generation = accountGeneration
+                    val boundIndex = driveTreeIndex
+                    object : DriveDetailObserver {
+                        override fun observe(originalFileId: String, detail: FileDetail) {
+                            withPikoLock(treeStateLock) {
+                                if (clientManager.currentClient.value === owner && generation == accountGeneration) {
+                                    boundIndex.observeDetail(detail)
+                                }
+                            }
+                        }
+
+                        override fun observeTranscodeSize(
+                            gcid: String,
+                            fileSizeBytes: Long,
+                            mediaId: String,
+                            streamSizeBytes: Long?,
+                            unreadable: Boolean,
+                        ) {
+                            withPikoLock(treeStateLock) {
+                                if (clientManager.currentClient.value === owner && generation == accountGeneration) {
+                                    boundIndex.observeTranscodeSize(gcid, fileSizeBytes, mediaId, streamSizeBytes, unreadable)
+                                }
+                            }
                         }
                     }
                 }
             }
+
+        override fun lookupFile(owner: PikPakClient, fileId: String): FileStat? =
+            if (clientManager.currentClient.value !== owner) null else knownFile(fileId)
+
+        override fun lookupContent(owner: PikPakClient, gcid: String, sizeBytes: Long): ContentMetadata? =
+            if (clientManager.currentClient.value !== owner) null else contentMetadataOf(gcid, sizeBytes)
+
+        override fun lookupContentByFileId(owner: PikPakClient, fileId: String): ContentMetadata? =
+            if (clientManager.currentClient.value !== owner) null else contentMetadataByFileId(fileId)
+    }
+
+    fun contentMetadataOf(gcid: String, sizeBytes: Long): ContentMetadata? =
+        ContentKey.of(gcid, sizeBytes)?.let(driveTreeIndex::contentMetadata)
+
+    fun contentMetadataOf(file: FileStat): ContentMetadata? =
+        ContentKey.of(file)?.let(driveTreeIndex::contentMetadata)
+
+    fun contentMetadataByFileId(fileId: String): ContentMetadata? {
+        if (fileId.isBlank()) return null
+        val resolved = VaultEntry.resolvedFileOf(fileId) ?: LeasedFile.resolvedFileOf(fileId)
+        if (resolved != null && !resolved.gcid.isNullOrBlank() && resolved.size >= 0L) {
+            contentMetadataOf(resolved.gcid!!, resolved.size)?.let { return it }
+        }
+        val known = knownFile(fileId) ?: driveTreeIndex.file(fileId) ?: return null
+        return contentMetadataOf(known)
+    }
+
+    fun originalCreatedAtMillis(fileId: String): Long? =
+        driveTreeIndex.originalCreatedAtMillis(fileId)
+
+    fun folderSubtreeStats(folderId: String): SubtreeStats? =
+        driveTreeIndex.subtreeStats(folderId)
+
+    fun isSubtreeClean(rootFolderId: String): Boolean {
+        val stats = driveTreeIndex.subtreeStats(rootFolderId) ?: return false
+        return stats.structuralValid && stats.physical.listingComplete && stats.vaulted.listingComplete
+    }
+
+    fun allDescendantFolders(rootFolderId: String): List<FileStat> {
+        val state = driveTreeIndex.flow.value
+        val ids = if (rootFolderId.isEmpty()) {
+            state.entries.values.asSequence()
+                .filter { it.isFolder && !it.trashed && !isPikoInternalFolder(it, it.parentId) }
+                .map { it.id }
+                .toList()
+        } else {
+            driveTreeIndex.descendantFolders(rootFolderId).toList()
+        }
+        return ids.mapNotNull { id ->
+            state.entries[id]?.takeIf { it.isFolder && !it.trashed && !isPikoInternalFolder(it, it.parentId) }
         }
     }
 
@@ -850,12 +917,12 @@ open class PikoDriveRepository(
      * [fileId] 所在的文件夹：文件夹看索引，文件看列过的目录里有没有它。过期的列表不认：标为过期正是因为里面的东西挪过。
      * 都没有为 null。
      */
-    internal fun knownParentOf(fileId: String): String? {
+    fun knownParentOf(fileId: String): String? {
         folderIndex.node(fileId)?.takeUnless { it.provisional }?.parentId?.let { return it }
         driveTreeIndex.file(fileId)?.takeIf { isParentFreshInTree(it.parentId) }?.parentId?.let { return it }
         return listings.value.entries.firstOrNull { (_, listing) -> !listing.stale && listing.files.any { it.id == fileId } }?.key
     }
-    internal fun knownFile(fileId: String): FileStat? = knownConfirmedFile(fileId)?.let {
+    fun knownFile(fileId: String): FileStat? = knownConfirmedFile(fileId)?.let {
         projectOptimisticFiles(listOf(it), trash = it.trashed).firstOrNull()
     }
 
@@ -916,7 +983,12 @@ open class PikoDriveRepository(
     suspend fun subfolders(folderId: String, fresh: Boolean = false): Result<List<PikoPathBreadcrumb>> = withContext(Dispatchers.Default) {
         runSuspendCatching {
             if (!isDriveFolderId(folderId) && !LocalLocation.isLocal(folderId)) return@runSuspendCatching emptyList()
-            val files = listBrowsable(folderId, PikoFileSortOrder.NAME_ASC).getOrThrow()
+            val files = if (!fresh) {
+                cachedBrowsable(folderId, PikoFileSortOrder.NAME_ASC)
+                    ?: listBrowsable(folderId, PikoFileSortOrder.NAME_ASC).getOrThrow()
+            } else {
+                listBrowsable(folderId, PikoFileSortOrder.NAME_ASC).getOrThrow()
+            }
             files.asSequence()
                 .filter { it.isFolder && !it.trashed && !isPikoInternalFolder(it, folderId) }
                 .sortedWith(compareBy(NaturalOrder) { it.name })
@@ -983,8 +1055,13 @@ open class PikoDriveRepository(
             return listing.files
         }
         val state = driveTreeIndex.flow.value
-        if (state.complete && folderId !in state.dirtyFolders && (folderId.isEmpty() || folderId in state.entries)) {
-            return driveTreeIndex.realChildren(folderId).files
+        val children = driveTreeIndex.realChildren(folderId)
+        if (folderId !in state.dirtyFolders && (
+            children.coverage == DriveTreeIndex.FolderCoverage.COMPLETE ||
+                (state.complete && (folderId.isEmpty() || folderId in state.entries))
+            )
+        ) {
+            return children.files
         }
         return null
     }
@@ -1271,8 +1348,13 @@ open class PikoDriveRepository(
         if (LocalLocation.isLocal(folderId)) return@reader runSuspendCatching { localMounts.list(folderId) }
         if (clientManager.currentClient.value === asked) {
             val state = driveTreeIndex.flow.value
-            if (state.complete && folderId !in state.dirtyFolders && (folderId.isEmpty() || folderId in state.entries)) {
-                val real = driveTreeIndex.realChildren(folderId).files
+            val children = driveTreeIndex.realChildren(folderId)
+            val isFolderClean = folderId !in state.dirtyFolders && (
+                children.coverage == DriveTreeIndex.FolderCoverage.COMPLETE ||
+                    (state.complete && (folderId.isEmpty() || folderId in state.entries))
+                )
+            if (isFolderClean) {
+                val real = children.files
                 val indexedVault = driveTreeIndex.vaultEntries(folderId)
                 val hasUnresolvedManifest = folderId in state.manifestsByFolder &&
                     indexedVault == null && store.cached(folderId, real) == null
@@ -2196,6 +2278,9 @@ open class PikoDriveRepository(
 
     /** [parentId] 下名为 [name] 的文件夹，没有就新建。返回它的 ID。 */
     suspend fun folderNamed(parentId: String, name: String): Result<String> {
+        localRealChildrenIfClean(parentId)
+            ?.firstOrNull { it.isFolder && it.name == name && !it.trashed }
+            ?.let { return Result.success(it.id) }
         val existing = listAllFiles(parentId).getOrElse { return Result.failure(it) }
             .firstOrNull { it.isFolder && it.name == name && !it.trashed }
         return existing?.let { Result.success(it.id) } ?: createFolder(parentId, name)
@@ -2207,7 +2292,20 @@ open class PikoDriveRepository(
     }
 
     suspend fun sampleCid(fileId: String): Result<String> = withContext(Dispatchers.Default) {
-        runSuspendCatching { requireCloudIds(listOf(fileId)); client.sampleCid(client.getFile(fileId)) }
+        runSuspendCatching {
+            requireCloudIds(listOf(fileId))
+            val asked = client
+            val observer = metadataSink.capture(asked)
+            val detail = asked.getFile(fileId)
+            observer?.observe(fileId, detail)
+            asked.sampleCid(detail).also { sampled ->
+                if (sampled.isNotBlank() && clientManager.currentClient.value === asked) {
+                    ContentKey.of(detail.hash, detail.sizeBytes)?.let { key ->
+                        driveTreeIndex.observeContentMetadata(key, ContentMetadata(cid = sampled))
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -3646,8 +3744,12 @@ open class PikoDriveRepository(
      * 每次都会再建一个同名目录。
      */
     /** 根目录里的 My Pack，没有时为 null，不新建：侧边栏只为显示它不该往网盘里添一个文件夹。 */
-    suspend fun findMyPacksFolder(): Result<PikoPathBreadcrumb?> =
-        listAllFiles().map { files -> files.firstOrNull { it.isMyPacksFolder() }?.let { PikoPathBreadcrumb(it.id, it.name) } }
+    suspend fun findMyPacksFolder(): Result<PikoPathBreadcrumb?> {
+        localRealChildrenIfClean("")?.let { files ->
+            return Result.success(files.firstOrNull { it.isMyPacksFolder() }?.let { PikoPathBreadcrumb(it.id, it.name) })
+        }
+        return listAllFiles().map { files -> files.firstOrNull { it.isMyPacksFolder() }?.let { PikoPathBreadcrumb(it.id, it.name) } }
+    }
 
     suspend fun getOrCreateMyPacksFolder(): Result<PikoPathBreadcrumb> {
         val access = currentAccount?.let(::writeAccess) ?: return Result.failure(IllegalStateException(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入")))
@@ -3669,7 +3771,14 @@ open class PikoDriveRepository(
 
     suspend fun isFolderMeaningless(folderId: String, thresholdBytes: Long, forceRefresh: Boolean = false): Boolean =
         withContext(Dispatchers.Default) {
-            if (!forceRefresh) folderMeaninglessCache[folderId]?.let { return@withContext it }
+            if (!forceRefresh) {
+                folderMeaninglessCache[folderId]?.let { return@withContext it }
+                localRealChildrenIfClean(folderId)?.let { local ->
+                    val empty = local.isEmpty() && driveTreeIndex.vaultEntries(folderId).orEmpty().none { it.isArchived }
+                    cacheFolderMeaningless(folderId, empty)
+                    return@withContext empty
+                }
+            }
             val result = listFiles(folderId, sortOrder = PikoFileSortOrder.TIME_DESC)
                 .getOrDefault(emptyList<FileStat>() to "").first
                 .isEmpty()

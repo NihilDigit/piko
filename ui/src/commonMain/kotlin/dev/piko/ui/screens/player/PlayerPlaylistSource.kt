@@ -22,10 +22,12 @@ class SiblingMedia(val videos: List<FileStat>, val subtitles: List<FileStat>)
  * 只在打开播放器时取一次：播放期间目录内容变了，也不该让播放列表在脚下重排。
  */
 suspend fun DriveRepository.siblingMedia(fileId: String): SiblingMedia {
-    val parentId = locateFolder(fileId).getOrNull()?.lastOrNull()?.id
+    val parentId = knownFile(fileId)?.parentId
+        ?: locateFolder(fileId).getOrNull()?.lastOrNull()?.id
         ?: getFileDetail(fileId).getOrNull()?.parentId
         ?: return SiblingMedia(emptyList(), emptyList())
-    val files = listBrowsable(parentId, dev.piko.shared.data.PikoFileSortOrder.NAME_ASC).getOrNull().orEmpty()
+    val files = cachedBrowsable(parentId, dev.piko.shared.data.PikoFileSortOrder.NAME_ASC)
+        ?: listBrowsable(parentId, dev.piko.shared.data.PikoFileSortOrder.NAME_ASC).getOrNull().orEmpty()
     return SiblingMedia(
         videos = files.filter { it.isPlayableVideo() },
         subtitles = files.filter { !it.isFolder && isPlayerSubtitleName(it.name) },

@@ -56,6 +56,7 @@ class DuplicateScanner(
     private val maxFiles: Int = 200_000,
     private val timeout: Duration = 5.minutes,
     private val concurrency: Int = 12,
+    private val isSubtreeClean: (rootId: String) -> Boolean = { false },
 ) {
     constructor(clients: PikoClientProvider) : this(
         listFolder = { folderId ->
@@ -69,6 +70,7 @@ class DuplicateScanner(
             val client = clients.currentClient.value ?: error("Not logged in")
             driveRepo.scanRealChildren(folderId, client)
         },
+        isSubtreeClean = driveRepo::isSubtreeClean,
     )
 
     // 停止不取消协程：取消会连同已经列出的结果一起丢掉，而用户按停止多半是想看已有的部分
@@ -82,6 +84,9 @@ class DuplicateScanner(
     /** 列不出起点目录时抛出异常；其下的目录列不出来只计数跳过。 */
     fun scan(rootId: String): Flow<DuplicateScanEvent> = flow {
         val deadline = TimeSource.Monotonic.markNow() + timeout
+        val unlimited = isSubtreeClean(rootId)
+        val effectiveMaxFolders = if (unlimited) Int.MAX_VALUE else maxFolders
+        val effectiveMaxFiles = if (unlimited) Int.MAX_VALUE else maxFiles
         val files = mutableListOf<ScannedFile>()
         val subfolders = mutableListOf<ScannedFile>()
         var listed = 0
@@ -97,12 +102,12 @@ class DuplicateScanner(
                 stop = when {
                     stopRequested -> ScanStop.CANCELLED
                     deadline.hasPassedNow() -> ScanStop.TIMEOUT
-                    listed >= maxFolders -> ScanStop.FOLDER_LIMIT
-                    files.size >= maxFiles -> ScanStop.FILE_LIMIT
+                    listed >= effectiveMaxFolders -> ScanStop.FOLDER_LIMIT
+                    files.size >= effectiveMaxFiles -> ScanStop.FILE_LIMIT
                     else -> null
                 }
                 if (stop != null) break
-                val budgeted = batch.take(maxFolders - listed)
+                val budgeted = if (unlimited) batch else batch.take(effectiveMaxFolders - listed)
                 val listings = coroutineScope {
                     budgeted.map { folder ->
                         async {

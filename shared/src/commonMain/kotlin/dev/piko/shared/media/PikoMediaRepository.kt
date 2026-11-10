@@ -30,6 +30,7 @@ import io.github.nihildigit.pikpak.PikPakFileHandle
 import io.github.nihildigit.pikpak.ResolvedVariant
 import io.github.nihildigit.pikpak.StreamRole
 import io.github.nihildigit.pikpak.VariantPreference
+import io.github.nihildigit.pikpak.batchGetFileDetails
 import io.github.nihildigit.pikpak.fileHandle
 import io.github.nihildigit.pikpak.getFile
 import io.github.nihildigit.pikpak.listPlayHistory
@@ -42,6 +43,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -220,6 +223,19 @@ class PikoMediaRepository(
     private val freshDetails = HashMap<String, Pair<FileDetail, TimeMark>>()
     private val freshDetailsLock = Mutex()
     private var freshDetailsOwner: PikPakClient? = null
+
+    internal fun knownContentMetadata(fileId: String): dev.piko.shared.data.ContentMetadata? {
+        val owner = clientManager.currentClient.value ?: return null
+        return metadataSink?.lookupContentByFileId(owner, fileId)
+    }
+
+    fun knownDurationMs(fileId: String, gcid: String = "", sizeBytes: Long = 0L): Long? {
+        val owner = clientManager.currentClient.value ?: return null
+        val sink = metadataSink ?: return null
+        val content = sink.lookupContentByFileId(owner, fileId)
+            ?: (if (gcid.isNotBlank() && sizeBytes >= 0L) sink.lookupContent(owner, gcid, sizeBytes) else null)
+        return content?.durationMillis?.takeIf { it > 0L }
+    }
 
     init {
         backgroundScope.launch {
@@ -456,15 +472,114 @@ class PikoMediaRepository(
                     return@runSuspendCatching ClipProbe(false, file?.params?.get("duration")?.toDoubleOrNull()?.let { (it * 1000).toLong() })
                 }
                 val owner = client
+                if (LeasedFile.isLeased(fileId)) {
+                    val content = metadataSink?.lookupContentByFileId(owner, fileId)
+                    val transcodes = content?.transcodes
+                    val durationMs = content?.durationMillis
+                    if (transcodes != null && (transcodes.isNotEmpty() || content.qualityRank > 0) && (durationMs ?: 0L) > 0L) {
+                        return@runSuspendCatching ClipProbe(
+                            hasTranscode = transcodes.any { it.name == CLIP_RESOLUTION && !it.unreadable },
+                            durationMs = durationMs,
+                        )
+                    }
+                }
                 val detail = withApiPriority(ApiRequestPriority.BACKGROUND) { detailOf(owner, fileId) }
                 rememberFreshDetail(owner, fileId, detail)
-                ClipProbe(
-                    hasTranscode = detail.medias.any { !it.isOrigin && it.mediaName == CLIP_RESOLUTION && it.url != null },
-                    durationMs = detail.params["duration"]?.toDoubleOrNull()?.let { (it * 1000).toLong() },
-                )
+                clipProbeOf(detail)
             }.onFailure { PikoLog.d(TAG, "信息流查详情失败，按无转码处理：${logFile(fileId, "")}，${it::class.simpleName}：${it.message}") }
                 .getOrDefault(ClipProbe(hasTranscode = false, durationMs = null))
         }
+
+    /**
+     * 批量探测多个候选视频是否包含 [CLIP_RESOLUTION] 转码流及时长：
+     * 普通网盘文件优先复用近期缓存详情，其余合并为单次 [batchGetFileDetails] 批量查询并写回 [metadataSink] 与 [freshDetails]；
+     * 归档条目优先从 [metadataSink] 的持久化内容元数据零网络直出，缺失时再回退单条探测。
+     */
+    suspend fun batchClipProbe(fileIds: List<String>): Map<String, ClipProbe> =
+        withContext(Dispatchers.Default) {
+            if (fileIds.isEmpty()) return@withContext emptyMap()
+            val distinctIds = fileIds.distinct()
+            val result = LinkedHashMap<String, ClipProbe>(distinctIds.size)
+            val owner = clientManager.currentClient.value
+            val missingDriveIds = ArrayList<String>()
+            val fallbackIds = ArrayList<String>()
+            for (id in distinctIds) {
+                if (dev.piko.shared.data.LocalLocation.isLocal(id)) {
+                    val file = runSuspendCatching { localMounts?.probe(id) }.getOrNull()
+                    result[id] = ClipProbe(false, file?.params?.get("duration")?.toDoubleOrNull()?.let { (it * 1000).toLong() })
+                    continue
+                }
+                if (owner == null) {
+                    result[id] = ClipProbe(hasTranscode = false, durationMs = null)
+                    continue
+                }
+                val fresh = takeFreshDetail(owner, id)
+                if (fresh != null) {
+                    result[id] = clipProbeOf(fresh)
+                    continue
+                }
+                if (LeasedFile.isLeased(id)) {
+                    val content = metadataSink?.lookupContentByFileId(owner, id)
+                    val transcodes = content?.transcodes
+                    val durationMs = content?.durationMillis
+                    if (transcodes != null && (transcodes.isNotEmpty() || content.qualityRank > 0) && (durationMs ?: 0L) > 0L) {
+                        result[id] = ClipProbe(
+                            hasTranscode = transcodes.any { it.name == CLIP_RESOLUTION && !it.unreadable },
+                            durationMs = durationMs,
+                        )
+                    } else {
+                        fallbackIds += id
+                    }
+                } else {
+                    missingDriveIds += id
+                }
+            }
+            if (owner != null && missingDriveIds.isNotEmpty()) {
+                val observer = metadataSink?.capture(owner)
+                val fetched = runSuspendCatching {
+                    withApiPriority(ApiRequestPriority.BACKGROUND) {
+                        owner.batchGetFileDetails(missingDriveIds, usage = "PLAY")
+                    }
+                }.onFailure {
+                    PikoLog.d(TAG, "信息流批量查详情失败，回退单条查询：${it::class.simpleName}：${it.message}")
+                }.getOrDefault(emptyList())
+                for (detail in fetched) {
+                    if (detail.id.isBlank()) continue
+                    observer?.observe(detail.id, detail)
+                    rememberFreshDetail(owner, detail.id, detail)
+                    result[detail.id] = clipProbeOf(detail)
+                }
+                for (id in missingDriveIds) {
+                    if (id !in result) {
+                        val content = metadataSink?.lookupContentByFileId(owner, id)
+                        val transcodes = content?.transcodes
+                        val durationMs = content?.durationMillis
+                        if (transcodes != null && (transcodes.isNotEmpty() || content.qualityRank > 0) && (durationMs ?: 0L) > 0L) {
+                            result[id] = ClipProbe(
+                                hasTranscode = transcodes.any { it.name == CLIP_RESOLUTION && !it.unreadable },
+                                durationMs = durationMs,
+                            )
+                        } else {
+                            fallbackIds += id
+                        }
+                    }
+                }
+            }
+            if (fallbackIds.isNotEmpty()) {
+                val probed = coroutineScope {
+                    fallbackIds.map { id -> async { id to clipProbe(id) } }.awaitAll()
+                }
+                for ((id, probe) in probed) {
+                    result[id] = probe
+                }
+            }
+            result
+        }
+
+    private fun clipProbeOf(detail: FileDetail): ClipProbe = ClipProbe(
+        hasTranscode = detail.medias.any { !it.isOrigin && it.mediaName == CLIP_RESOLUTION && it.url != null },
+        durationMs = durationMsOf(detail).takeIf { it > 0L },
+    )
 
     /**
      * 文件详情。归档条目在网盘里没有常驻的文件，按 gcid 借一个对象查完就删（SDK 的 leaseDetail）：
@@ -575,30 +690,19 @@ class PikoMediaRepository(
             sliceStartMs = sliceStartMs,
             sliceDurationMs = sliceDurationMs,
         )
-        // 切片起点的时间戳已在找关键帧时读到；流开头的几十 KB 要另取一次，放到预取之后，不拖慢出会话
+        // 切片起点的时间戳已在找关键帧时读到，按 PikPak MPEG-TS 流起始 PTS（约 1480ms）直接在内存校准，不再额外请求流头与流尾
+        val calibratedStartMs = (verified.ptsMs - STREAM_START_PTS_MS).coerceAtLeast(0L).let {
+            if (videoDurationMs > 0L) it.coerceAtMost((videoDurationMs - 1L).coerceAtLeast(0L)) else it
+        }
         return PreparedClip(
             stream,
             fallbackUrl = null,
             sliced = true,
-            clipStartMs = startMs,
+            clipStartMs = calibratedStartMs,
             bytesPerMs = bytesPerMs,
             maxWindowMs = CLIP_SLICE_MS,
-            resolveStart = {
-                // 前台读：这一步在开头预取之后、算作取好之前，与预取一样急。以后台身份读，预取一结束这个文件
-                // 就没有前台需求，被限到两路、排在所有段的预取之后，取好一段要等别段取完一段（2026-09-28）
-                TsTimestamps.firstVideoPtsMs(source.readAt(0, STREAM_HEAD_BYTES, StreamRole.FOREGROUND))
-                    ?.let { streamStart -> TsTimestamps.elapsedMs(streamStart, verified.ptsMs) }
-            },
-            resolveWindowDuration = {
-                val headPts = verified.ptsMs
-                val tailReadOffset = (sliceLength - PreparedClip.SLICE_TAIL_BYTES).coerceAtLeast(0L)
-                val tailPts = TsTimestamps.lastVideoPtsMs(
-                    slice.readAt(tailReadOffset, PreparedClip.SLICE_TAIL_BYTES.toInt(), StreamRole.FOREGROUND),
-                )
-                if (tailPts != null) {
-                    TsTimestamps.elapsedMs(headPts, tailPts).takeIf { it in 1_000L..(CLIP_SLICE_MS * 4) }
-                } else null
-            },
+            resolveStart = null,
+            resolveWindowDuration = null,
             // 开头与末尾都在盘上了才记，记录在就当它们在
             onWarmed = { actualStartMs, actualWindowMs -> clipCache?.remember(key, record(actualStartMs, actualWindowMs)) },
         )
@@ -615,17 +719,30 @@ class PikoMediaRepository(
         role: StreamRole,
     ): TsTimestamps.VerifiedSlice? {
         suspend fun scanFrom(startOffset: Long, limitBytes: Long): TsTimestamps.VerifiedSlice? {
+            val maxAvailable = minOf(limitBytes, (size - startOffset).coerceAtLeast(0L))
+            if (maxAvailable <= 0L) return null
             val scanner = TsTimestamps.VerifiedSliceScanner()
-            var scanned = 0L
-            while (scanned < limitBytes && startOffset + scanned < size) {
-                val remaining = minOf(KEYFRAME_SCAN_CHUNK.toLong(), limitBytes - scanned)
-                    .coerceAtMost(size - (startOffset + scanned))
-                    .toInt()
-                if (remaining <= 0) break
-                val chunk = readAt(startOffset + scanned, remaining, role)
-                if (chunk.isEmpty()) break
-                scanner.feed(chunk, startOffset + scanned)?.let { return it }
-                scanned += chunk.size
+            val owner = currentCoroutineContext()[TransferDemand]
+            openReader(role).use { reader ->
+                reader.demand = owner
+                reader.readAheadLimit = KEYFRAME_SCAN_READ_AHEAD_BYTES
+                reader.seekTo(startOffset)
+                var scanned = 0L
+                val scratch = ByteArray(minOf(KEYFRAME_SCAN_CHUNK.toLong(), maxAvailable).toInt())
+                while (scanned < maxAvailable) {
+                    val toRead = minOf(scratch.size.toLong(), maxAvailable - scanned).toInt()
+                    var filled = 0
+                    while (filled < toRead) {
+                        val n = reader.read(scratch, filled, toRead - filled)
+                        if (n < 0) break
+                        filled += n
+                    }
+                    if (filled <= 0) break
+                    val chunk = if (filled == scratch.size) scratch else scratch.copyOf(filled)
+                    scanner.feed(chunk, startOffset + scanned)?.let { return it }
+                    scanned += filled
+                    if (filled < toRead) break
+                }
             }
             return scanner.finish()
         }
@@ -647,14 +764,19 @@ class PikoMediaRepository(
      * reader 的预读压到最小：默认窗口 32 MB，为读几十 KB 开一个，会顺手往后要一串块，
      * 信息流冷开时十来段各开几个，白白占着连接（2026-09-28 的传输汇总里大半是这种请求）。
      */
-    private suspend fun ProxyByteSource.readAt(offset: Long, length: Int, role: StreamRole): ByteArray {
+    private suspend fun ProxyByteSource.readAt(
+        offset: Long,
+        length: Int,
+        role: StreamRole,
+        readAheadLimit: Long = KEYFRAME_SCAN_READ_AHEAD_BYTES,
+    ): ByteArray {
         // 先在 Long 上取小再转 Int：超过 2 GB 的流，剩余长度直接转 Int 会溢出成负数
         val buffer = ByteArray(minOf(length.toLong(), (size - offset).coerceAtLeast(0)).toInt())
         if (buffer.isEmpty()) return buffer
         val owner = currentCoroutineContext()[TransferDemand]
         openReader(role).use { reader ->
             reader.demand = owner
-            reader.readAheadLimit = 0
+            reader.readAheadLimit = readAheadLimit
             reader.seekTo(offset)
             var filled = 0
             while (filled < buffer.size) {
@@ -842,7 +964,10 @@ class PikoMediaRepository(
     }
 
     /** 已经探完、还没过期的那一份，没有为 null。不发起探测。 */
-    private suspend fun finishedQualities(fileId: String): List<DownloadQuality>? {
+    private suspend fun finishedQualities(fileId: String): List<DownloadQuality>? =
+        finishedQualitiesForClient(client, fileId)
+
+    private suspend fun finishedQualitiesForClient(client: PikPakClient, fileId: String): List<DownloadQuality>? {
         val key = "${client.account}/$fileId"
         return qualityProbesLock.withLock {
             qualityProbes[key]?.takeIf { it.started.elapsedNow() <= QUALITY_PROBE_FOR }?.state?.value
@@ -850,27 +975,137 @@ class PikoMediaRepository(
         }
     }
 
+    private suspend fun knownTranscodeStreamSize(client: PikPakClient, detail: FileDetail, mediaId: String): Long? {
+        if (detail.id.isNotBlank()) {
+            finishedQualitiesForClient(client, detail.id)
+                ?.firstOrNull { it.mediaId == mediaId && !it.unreadable }
+                ?.sizeBytes
+                ?.takeIf { it > 0L }
+                ?.let { return it }
+        }
+        if (detail.hash.isNotBlank()) {
+            client.knownStreamSize(detail.hash, mediaId)?.takeIf { it > 0L }?.let { return it }
+            metadataSink?.lookupContent(client, detail.hash, detail.sizeBytes)
+                ?.transcodes
+                ?.firstOrNull { it.mediaId == mediaId && !it.unreadable }
+                ?.streamSizeBytes
+                ?.takeIf { it > 0L }
+                ?.let { return it }
+        }
+        return null
+    }
+
+    private fun recordTranscodeStreamSize(
+        client: PikPakClient,
+        detail: FileDetail,
+        mediaId: String,
+        streamSizeBytes: Long?,
+        unreadable: Boolean = false,
+    ) {
+        if (detail.hash.isBlank() || mediaId.isBlank()) return
+        if (streamSizeBytes != null && streamSizeBytes > 0L && !unreadable) {
+            client.rememberStreamSize(detail.hash, mediaId, streamSizeBytes)
+        }
+        metadataSink?.capture(client)?.observeTranscodeSize(
+            gcid = detail.hash,
+            fileSizeBytes = detail.sizeBytes,
+            mediaId = mediaId,
+            streamSizeBytes = streamSizeBytes?.takeIf { it > 0L },
+            unreadable = unreadable,
+        )
+    }
+
     private suspend fun probeQualities(client: PikPakClient, fileId: String, state: MutableStateFlow<QualityProbeState>) {
-        val detail = detailOf(client, fileId)
+        if (!LeasedFile.isLeased(fileId)) {
+            val cachedFile = metadataSink?.lookupFile(client, fileId)
+            val cachedContent = metadataSink?.lookupContentByFileId(client, fileId)
+            val cachedTranscodes = cachedContent?.transcodes
+            if (cachedFile != null && cachedTranscodes != null && (cachedTranscodes.isNotEmpty() || cachedContent.qualityRank > 0)) {
+                val initialDurationMs = cachedContent.durationMillis?.takeIf { it > 0L }
+                    ?: cachedFile.params["duration"]?.toDoubleOrNull()?.let { (it * 1000).toLong() }
+                    ?: 0L
+                val initialOriginal = DownloadQuality(
+                    name = null,
+                    mediaId = null,
+                    height = cachedContent.height ?: cachedFile.params["height"]?.toIntOrNull() ?: 0,
+                    sizeBytes = cachedFile.sizeBytes,
+                    durationMs = initialDurationMs,
+                )
+                val initialTranscodes = cachedTranscodes
+                    .filter { it.name.isNotBlank() && it.mediaId.isNotBlank() }
+                    .sortedByDescending { it.height }
+                    .map { t ->
+                        val exactSize = client.knownStreamSize(cachedFile.hash, t.mediaId)?.takeIf { it > 0L }
+                            ?: t.streamSizeBytes?.takeIf { it > 0L }
+                        DownloadQuality(
+                            name = t.name,
+                            mediaId = t.mediaId,
+                            height = t.height,
+                            sizeBytes = if (t.unreadable) null else (exactSize ?: t.estimatedSizeBytes),
+                            durationMs = t.durationSeconds.takeIf { it > 0L }?.times(1000L) ?: initialDurationMs,
+                            unreadable = t.unreadable,
+                        )
+                    }
+                state.value = QualityProbeState(listOf(initialOriginal) + initialTranscodes)
+            }
+        }
+        val detail = takeFreshDetail(client, fileId)
+            ?: withApiPriority(ApiRequestPriority.INTERACTIVE) { detailOf(client, fileId) }
+                .also { rememberFreshDetail(client, fileId, it) }
         val durationMs = durationMsOf(detail)
         val original = originalQuality(detail, durationMs)
         val transcodes = if (LeasedFile.isLeased(fileId)) emptyList() else detail.downloadableTranscodes().sortedByDescending { it.video?.height ?: 0 }
-        state.value = QualityProbeState(listOf(original) + transcodes.map { it.toDownloadQuality(durationMs) })
+        val content = metadataSink?.lookupContent(client, detail.hash, detail.sizeBytes)
+            ?: metadataSink?.lookupContentByFileId(client, fileId)
+        val knownByMediaId = content?.transcodes?.associateBy { it.mediaId }.orEmpty()
+        val initialOptions = transcodes.map { media ->
+            val known = knownByMediaId[media.mediaId]
+            val exactSize = client.knownStreamSize(detail.hash, media.mediaId)?.takeIf { it > 0L }
+                ?: known?.streamSizeBytes?.takeIf { it > 0L }
+            val unreadable = known?.unreadable == true
+            media.toDownloadQuality(
+                fallbackDurationMs = durationMs,
+                sizeBytes = if (unreadable) null else (exactSize ?: known?.estimatedSizeBytes),
+                unreadable = unreadable,
+            )
+        }
+        state.value = QualityProbeState(listOf(original) + initialOptions)
         coroutineScope {
             transcodes.forEach { media ->
+                val known = knownByMediaId[media.mediaId]
+                val exactSize = client.knownStreamSize(detail.hash, media.mediaId)?.takeIf { it > 0L }
+                    ?: known?.streamSizeBytes?.takeIf { it > 0L }
+                if (known?.unreadable == true) return@forEach
+                if (exactSize != null) {
+                    client.rememberStreamSize(detail.hash, media.mediaId, exactSize)
+                    return@forEach
+                }
                 launch {
                     val probed = runSuspendCatching { probeTranscode(client, media) }
                     val error = probed.exceptionOrNull()
                     if (error is UnreadableTranscodeException) {
                         PikoLog.w(TAG, "转码档 ${media.qualityName} 读不出字节：${logFile(fileId, "")}", error)
+                        recordTranscodeStreamSize(client, detail, media.mediaId, null, unreadable = true)
                     } else if (error != null) {
                         PikoLog.w(TAG, "探测转码档大小失败：${logFile(fileId, "")}", error)
+                        state.update { current ->
+                            QualityProbeState(current.options?.map { option ->
+                                if (option.mediaId != media.mediaId) option else option.copy(sizeBytes = null)
+                            })
+                        }
                         return@launch
+                    } else {
+                        probed.getOrNull()?.let { size ->
+                            recordTranscodeStreamSize(client, detail, media.mediaId, size, unreadable = false)
+                        }
                     }
                     state.update { current ->
                         QualityProbeState(current.options?.map { option ->
                             if (option.mediaId != media.mediaId) option
-                            else probed.fold(onSuccess = { option.copy(sizeBytes = it) }, onFailure = { option.copy(unreadable = true) })
+                            else probed.fold(
+                                onSuccess = { option.copy(sizeBytes = it, unreadable = false) },
+                                onFailure = { option.copy(sizeBytes = null, unreadable = true) },
+                            )
                         })
                     }
                 }
@@ -898,15 +1133,34 @@ class PikoMediaRepository(
                         .also { rememberFreshDetail(client, fileId, it) }
                 val durationMs = durationMsOf(detail)
                 val transcodes = detail.downloadableTranscodes()
+                val content = metadataSink?.lookupContent(client, detail.hash, detail.sizeBytes)
+                    ?: metadataSink?.lookupContentByFileId(client, fileId)
+                val knownByMediaId = content?.transcodes?.associateBy { it.mediaId }.orEmpty()
+                suspend fun resolveTranscodeSize(media: MediaVariant): Long {
+                    val known = knownByMediaId[media.mediaId]
+                    if (known?.unreadable == true) throw UnreadableTranscodeException()
+                    knownTranscodeStreamSize(client, detail, media.mediaId)?.let { return it }
+                    return try {
+                        probeTranscode(client, media).also { size ->
+                            recordTranscodeStreamSize(client, detail, media.mediaId, size, unreadable = false)
+                        }
+                    } catch (e: UnreadableTranscodeException) {
+                        recordTranscodeStreamSize(client, detail, media.mediaId, null, unreadable = true)
+                        throw e
+                    }
+                }
                 if (name != null) {
                     val media = transcodes.firstOrNull { it.qualityName == name } ?: return@runSuspendCatching null
-                    return@runSuspendCatching media.toDownloadQuality(durationMs, probeTranscode(client, media))
+                    return@runSuspendCatching media.toDownloadQuality(durationMs, resolveTranscodeSize(media))
                 }
-                val options = listOf(originalQuality(detail, durationMs)) + transcodes.map { it.toDownloadQuality(durationMs) }
+                val options = listOf(originalQuality(detail, durationMs)) + transcodes.map { media ->
+                    val known = knownByMediaId[media.mediaId]
+                    media.toDownloadQuality(durationMs, known?.streamSizeBytes, unreadable = known?.unreadable == true)
+                }
                 for (option in downloadQualityOrder(options, maxHeight)) {
                     if (option.isOriginal) return@runSuspendCatching null
                     val media = transcodes.first { it.mediaId == option.mediaId }
-                    val probed = runSuspendCatching { probeTranscode(client, media) }
+                    val probed = runSuspendCatching { resolveTranscodeSize(media) }
                     val error = probed.exceptionOrNull()
                     if (error is UnreadableTranscodeException) {
                         PikoLog.w(TAG, "转码档 ${media.qualityName} 读不出字节，改挑下一档：${logFile(fileId, "")}", error)
@@ -934,8 +1188,8 @@ class PikoMediaRepository(
     private fun FileDetail.downloadableTranscodes(): List<MediaVariant> =
         medias.filter { !it.isOrigin && it.video != null && it.link.url.isNotBlank() && it.qualityName != null }
 
-    private fun MediaVariant.toDownloadQuality(fallbackDurationMs: Long, sizeBytes: Long? = null) =
-        DownloadQuality(qualityName, mediaId, video?.height ?: 0, sizeBytes, video?.duration?.times(1000) ?: fallbackDurationMs)
+    private fun MediaVariant.toDownloadQuality(fallbackDurationMs: Long, sizeBytes: Long? = null, unreadable: Boolean = false) =
+        DownloadQuality(qualityName, mediaId, video?.height ?: 0, sizeBytes, video?.duration?.times(1000) ?: fallbackDurationMs, unreadable = unreadable)
 
     /**
      * 一档转码的长度，并确认它真能读出字节：一次 1 字节的 Range 请求，长度取 Content-Range。读不出时抛
@@ -959,7 +1213,9 @@ class PikoMediaRepository(
      * 换成暂存的话边看边往盘上写整条 TS。
      */
     private suspend fun transcodeSource(client: PikPakClient, fileId: String, mediaId: String, retainedBy: String?): PikPakByteSource {
-        val detail = detailOf(client, fileId)
+        val detail = takeFreshDetail(client, fileId)
+            ?: withApiPriority(ApiRequestPriority.INTERACTIVE) { detailOf(client, fileId) }
+                .also { rememberFreshDetail(client, fileId, it) }
         if (detail.hash.isBlank()) error(tr("文件缺少内容哈希，无法读取", "File is missing content hash and cannot be read", "ファイルにハッシュ情報がないため読み込めません", "파일에 콘텐츠 해시가 없어 읽을 수 없습니다", "檔案缺少內容雜湊值，無法讀取"))
         val variant = detail.medias.firstOrNull { it.mediaId == mediaId && it.link.url.isNotBlank() }
             ?: error(TRANSCODE_GONE_MESSAGE)
@@ -987,11 +1243,18 @@ class PikoMediaRepository(
         return PikPakByteSource(lease.entry.handle, lease.entry.cache, lease::close)
     }
 
-    private suspend fun streamSizeOf(client: PikPakClient, detail: FileDetail, mediaId: String): Long =
-        client.fileHandle(detail, mediaId = mediaId, onRangeAttempt = ::logRangeAttempt).use { it.streamSize() }
+    private suspend fun streamSizeOf(client: PikPakClient, detail: FileDetail, mediaId: String): Long {
+        knownTranscodeStreamSize(client, detail, mediaId)?.let { return it }
+        return client.fileHandle(detail, mediaId = mediaId, onRangeAttempt = ::logRangeAttempt)
+            .use { it.streamSize() }
+            .also { recordTranscodeStreamSize(client, detail, mediaId, it, unreadable = false) }
+    }
 
     private fun durationMsOf(detail: FileDetail): Long =
-        detail.params["duration"]?.toDoubleOrNull()?.let { (it * 1000).toLong() } ?: 0L
+        detail.params["duration"]?.toDoubleOrNull()?.let { (it * 1000).toLong() }?.takeIf { it > 0L }
+            ?: detail.medias.firstOrNull { it.isOrigin }?.video?.duration?.takeIf { it > 0L }?.times(1000L)
+            ?: detail.medias.firstNotNullOfOrNull { it.video?.duration?.takeIf { d -> d > 0L } }?.times(1000L)
+            ?: 0L
 
     private fun estimatedMediaBytesPerSecond(
         streamSize: Long,
@@ -1018,8 +1281,14 @@ class PikoMediaRepository(
     ): PikPakByteSource? {
         // handle 在直链被拒时按 gcid 重建文件对象，没有 gcid 就失去了它存在的意义
         if (detail.hash.isBlank()) return null
+        val knownStreamSize = if (resolved.isOrigin) {
+            detail.sizeBytes
+        } else {
+            resolved.sizeBytes?.takeIf { it > 0L }
+                ?: resolved.mediaId?.let { knownTranscodeStreamSize(client, detail, it) }
+        }
         val mediaRate = estimatedMediaBytesPerSecond(
-            streamSize = resolved.sizeBytes ?: detail.sizeBytes.takeIf { resolved.isOrigin } ?: 0L,
+            streamSize = knownStreamSize ?: detail.sizeBytes.takeIf { resolved.isOrigin } ?: 0L,
             durationSeconds = resolved.video?.duration ?: (durationMsOf(detail) / 1000L),
             bitRateBitsPerSecond = resolved.video?.bitRate,
         )
@@ -1037,13 +1306,22 @@ class PikoMediaRepository(
         val handle = client.fileHandle(
             detail,
             mediaId = resolved.mediaId,
+            streamSize = knownStreamSize,
             onRangeAttempt = ::logRangeAttempt,
             leased = leased,
         )
         return try {
-            // 原画的大小已知；转码流没有，本进程头一回会发一次 1 字节探测
+            // 原画的大小已知；转码流若已知流大小则直接复用，未知时首次探测后回写持久化
             val cache = handle.openCache(blockStore, proxy.readerContext)
-            if (mediaRate != null) cache.updateMediaBytesPerSecond(mediaRate)
+            if (!resolved.isOrigin && resolved.mediaId != null && cache.size > 0L) {
+                recordTranscodeStreamSize(client, detail, resolved.mediaId!!, cache.size, unreadable = false)
+            }
+            val effectiveRate = estimatedMediaBytesPerSecond(
+                streamSize = cache.size,
+                durationSeconds = resolved.video?.duration ?: (durationMsOf(detail) / 1000L),
+                bitRateBitsPerSecond = resolved.video?.bitRate,
+            ) ?: mediaRate
+            if (effectiveRate != null) cache.updateMediaBytesPerSecond(effectiveRate)
             PikPakByteSource(handle, cache)
         } catch (e: CancellationException) {
             handle.close()
@@ -1068,13 +1346,13 @@ class PikoMediaRepository(
             name = detail.name,
             gcid = detail.hash,
             currentUrl = resolved.link.url,
-            durationSeconds = resolved.video?.duration ?: 0L,
+            durationSeconds = resolved.video?.duration?.takeIf { it > 0L } ?: (durationMsOf(detail) / 1000L),
             currentResolution = resolved.video?.height?.toString() ?: ORIGINAL_QUALITY,
             availableVariants = detail.medias,
             mediaId = resolved.mediaId,
             sizeBytes = resolved.sizeBytes ?: detail.sizeBytes,
-            width = resolved.video?.width ?: 0,
-            height = resolved.video?.height ?: 0,
+            width = resolved.video?.width?.takeIf { it > 0 } ?: detail.params["width"]?.toIntOrNull() ?: 0,
+            height = resolved.video?.height?.takeIf { it > 0 } ?: detail.params["height"]?.toIntOrNull() ?: 0,
             isOrigin = resolved.isOrigin,
         )
 
@@ -1098,11 +1376,14 @@ private const val CLIP_RESOLUTION = "720P"
 
 private const val TS_PACKET_BYTES = 188L
 
-// 转码流开头的这一截里必有第一个视频 PES：PAT、PMT 之后紧接着就是
-private const val STREAM_HEAD_BYTES = 64 * 1024
+// PikPak 的 MPEG-TS 转码流首个视频帧 PTS 固定在约 1480ms
+private const val STREAM_START_PTS_MS = 1_480L
 
 // 188 的倍数，约 256 KiB，与 SDK 的块一样大
 private const val KEYFRAME_SCAN_CHUNK = 188 * 1394
+
+// 关键帧扫描打开 1 MiB（4 × 256 KiB）并发预读窗口，使估算切点处的前 4 个分块一次性并发拉回
+private const val KEYFRAME_SCAN_READ_AHEAD_BYTES = 4L * 256 * 1024L
 
 // 关键帧扫描窗口覆盖 15 秒峰值码率（保底 2 MiB、上限扩展至 6 MiB），足以跨过 10s+ 长 GOP 高码率动作段
 private const val VERIFIED_KEYFRAME_WINDOW_MS = 15_000L
