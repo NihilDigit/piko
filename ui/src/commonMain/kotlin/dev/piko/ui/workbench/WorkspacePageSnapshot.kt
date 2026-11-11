@@ -56,7 +56,7 @@ internal fun WorkspacePageSnapshot(
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
-                    PikoLog.w("Workspace", "工作标签页面快照失败", error)
+                    PikoLog.w("Workspace", "Page thumbnail capture failed for contextId=$contextId; stopping snapshots for this context", error)
                     return@LaunchedEffect
                 }
             } else if (page.drawRevision != lastObservedDraw && !page.captureRequested) {

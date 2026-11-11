@@ -69,8 +69,7 @@ interface PikoSheetScope : ColumnScope {
  *
  * 面板承接的是临时任务（条目操作、传输详情），一律浮在内容上，不停进外框右侧那一栏。
  * 曾经停进去过，图它不挡列表；但那一栏还放详情与信息流，三者轮流让位，返回键关的是哪一个说不清。
- * scaffold.md 的划分是常驻的工具与内容并排，临时任务无论多宽都浮着。唯一的例外是桌面的添加链接：
- * 详情栏删掉后那一栏只剩信息流，添加链接停回去与它互斥，放不下时才经这里浮着，见 ui/CLAUDE.md 的「右侧那一栏」。
+ * scaffold.md 的划分是常驻的工具与内容并排，临时任务无论多宽都浮着；外框右栏规则见 ui/AGENTS.md。
  *
  * bottom-sheets.md 的 Adaptive design 一节："On larger expanded breakpoints, like desktop, a bottom
  * sheet can be swapped for a side sheet that shows similar content." 底部 sheet 在宽窗口里只能在正中
@@ -94,7 +93,6 @@ fun PikoSheet(
     sideSheetTitle: String? = null,
     /**
      * 侧边面板顶上那一行标题右边的按钮，取代默认的一个关闭按钮；[dismiss] 是划出去再关的那一下。
-     * 桌面的添加链接要收起与放弃两个按钮，关闭只是收起，用 × 就与放弃撞了。
      */
     sideSheetButtons: (@Composable RowScope.(dismiss: () -> Unit) -> Unit)? = null,
     skipPartiallyExpanded: Boolean = true,

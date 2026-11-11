@@ -190,7 +190,7 @@ class SegmentSession {
 
 /**
  * 下载视频片段：选起点与终点，不转码抽取为 MP4。原片里 MP4 装不下的轨道（内封字幕、部分音轨）会丢，
- * 所以界面上不说「无损」。状态在 [session] 里，收起再打开时原样回来。
+ * 所以界面上不说「无损」。状态挂在 [session] 上，面板随宿主重组时不丢；主动关闭面板即销毁会话。
  *
  * 只放一个预览，用「起点 | 终点」切换它显示哪一端；拖动区间滑块时自动跟随被拖的那一端。
  * 原先两张半屏宽的预览并排，画面小到看不清，且各开一个代理会话，白占一份账号连接预算。
@@ -229,8 +229,8 @@ fun SegmentDownloadSheet(
         }
     }
 
-    // 档位与大小单独取，取不到只是不给选，照样能按设置截。收起再打开时照样取：仓库留着上次的探测，
-    // 探完的立即回来，收起时还没探完的接着等，不会停在一半
+    // 档位与大小单独取，取不到只是不给选，照样能按设置截。面板因窗口尺寸变化重组时照样取：仓库留着上次的探测，
+    // 探完的立即回来，还没探完的接着等，不会停在一半
     LaunchedEffect(file.id) {
         try {
             mediaRepo.downloadQualities(file.id).collect { list ->
@@ -240,7 +240,7 @@ fun SegmentDownloadSheet(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            PikoLog.w("Download", "片段面板查询画质失败：${logFile(file.id, file.name)}", e)
+            PikoLog.w("SegmentDownload", "Failed to probe segment qualities for ${logFile(file.id, file.name)}", e)
         }
     }
     val defaultCap by produceState(0) { value = services.preferences.downloadMaxHeightFlow.first() ?: 0 }
@@ -250,7 +250,7 @@ fun SegmentDownloadSheet(
     val pickedUnreadable = pickedOption?.unreadable == true
     val selectedQuality = if (pickedUnreadable) null else pickedOption ?: qualities?.let { chooseDownloadQuality(it, defaultCap) ?: it.first() }
 
-    // 收起再打开时已经取过就不再取：区间跟着会话留着，重取会把它按初始区间盖掉
+    // 同一会话因宿主界面重组而重新挂载时已经取过就不再取，免得把用户调过的区间按初始区间盖掉
     LaunchedEffect(file.id) {
         if (session.loaded && session.mediaInfo != null) return@LaunchedEffect
         mediaRepo.prepareMedia(file.id).onSuccess { info ->

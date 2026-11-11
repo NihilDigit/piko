@@ -1,4 +1,4 @@
-# Windows 上应用内更新的端到端冒烟：真装、真启动、真更新，断言落到磁盘上的结果。
+﻿# Windows 上应用内更新的端到端冒烟：真装、真启动、真更新，断言落到磁盘上的结果。
 #
 # 输入是同一份源码打出的两个版本（Base 与 Next），各自一个目录，里面是 Release 附件原样的
 # piko-windows-<架构>-<版本>.msi / .7z / -files.json / -app.zip。两个包都用测试专用的 UpgradeCode 与
@@ -276,8 +276,8 @@ function Count-Log([string] $logsDir, [string] $pattern) {
     @(Get-ChildItem -LiteralPath $logsDir -File | Select-String -Pattern $pattern -Encoding utf8).Count
 }
 
-# 进程在不等于启动成功：JVM 起不来时启动器弹出错误框，照样活着。以应用日志里「启动 <版本>，」一行为准
-function Count-Started([string] $logsDir, [string] $version) { Count-Log $logsDir "启动 $([regex]::Escape($version))，" }
+# 进程在不等于启动成功：JVM 起不来时启动器弹出错误框，照样活着。以应用日志里「Starting <版本> on 」一行为准
+function Count-Started([string] $logsDir, [string] $version) { Count-Log $logsDir "Starting $([regex]::Escape($version)) on " }
 
 function Wait-Started([string] $dir, [string] $logsDir, [string] $version, [int] $before, [string] $scenario) {
     for ($i = 0; $i -lt 60; $i++) {
@@ -647,7 +647,7 @@ try {
         Stop-App $portableDir
         Assert-Tree $portableDir $nextManifest
         Assert-StagingCleaned $stagingRoots[1]
-        $plan = @(Get-ChildItem -LiteralPath (Join-Path $portableDir 'data\logs') -File | Select-String -Pattern "$([regex]::Escape($NextVersion))：Image" -Encoding utf8)
+        $plan = @(Get-ChildItem -LiteralPath (Join-Path $portableDir 'data\logs') -File | Select-String -Pattern "Auto-installing $([regex]::Escape($NextVersion)): plan=Image" -Encoding utf8)
         if ($plan.Count -eq 0) { Save-UpdateLogs $scenario; Fail 'the update did not go through image.zip' }
         if (-not (Test-Path -LiteralPath (Join-Path $portableDir 'portable'))) { Fail 'the portable marker is gone' }
         $imageName = "piko-windows-$Arch-$NextVersion-image.zip"
@@ -679,7 +679,7 @@ try {
     $journal = Join-Path $portableDir '.piko-update.journal'
     [System.IO.File]::WriteAllText($journal, "staging`t$staging`n+`t$added`n~`t$replaced`n~`t$cfg`n")
     $logsDir = Join-Path $portableDir 'data\logs'
-    $noticed = "上次更新到 $([regex]::Escape($NextVersion)) 未完成"
+    $noticed = "Previous update to $([regex]::Escape($NextVersion)) did not complete"
     Publish $NextVersion
     Start-App $portableDir
     $deadline = (Get-Date).AddSeconds(120)
@@ -688,7 +688,7 @@ try {
         Start-Sleep -Seconds 2
     }
     Save-UpdateLogs 'portable-recover'
-    if ((Count-Log $logsDir '上次更新中断，交给更新脚本回滚') -eq 0) { Fail 'the app did not hand the journal over to the update script' }
+    if ((Count-Log $logsDir 'Interrupted update detected; handing over to update script') -eq 0) { Fail 'the app did not hand the journal over to the update script' }
     Stop-App $portableDir
     if (Test-Path -LiteralPath $journal) { Fail 'the journal is still there after the recovery' }
     if (Test-Path -LiteralPath (Join-Path $staging 'failed')) { Fail 'the failure marker was not taken by the relaunched app' }

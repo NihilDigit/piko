@@ -1,10 +1,13 @@
 package dev.piko.cli
 
+import dev.piko.shared.log.LogLevel
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.naming.parseMediaName
 import io.github.nihildigit.pikpak.getFile
 import io.github.nihildigit.pikpak.refreshAccountState
 import java.io.File
 import java.io.PrintStream
+import java.nio.file.Files
 import kotlin.system.exitProcess
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
@@ -67,6 +70,21 @@ fun main(args: Array<String>) {
     if (System.getProperty("piko.home").isNullOrBlank()) {
         System.setProperty("piko.home", File(System.getProperty("user.home"), ".piko-dev").path)
     }
+    val logDir = Files.createTempDirectory("piko-cli-log-").toFile().apply { deleteOnExit() }
+    PikoLog.install(logDir.path) { level, tag, message, error ->
+        if (level >= LogLevel.WARN) {
+            System.err.println("Piko/$tag: $message" + (error?.let { "\n" + PikoLog.redact(it.stackTraceToString()) } ?: ""))
+        }
+    }
+    try {
+        runCli(args)
+    } finally {
+        runBlocking { PikoLog.flush() }
+        logDir.listFiles()?.forEach { it.deleteOnExit() }
+    }
+}
+
+private fun runCli(args: Array<String>) {
     val command = args.firstOrNull() ?: usage()
     val options = Options(args.drop(1))
     when (command) {

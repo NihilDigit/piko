@@ -14,6 +14,7 @@ import java.lang.foreign.SymbolLookup
 import java.lang.foreign.ValueLayout.ADDRESS
 import java.lang.foreign.ValueLayout.JAVA_BOOLEAN
 import java.lang.foreign.ValueLayout.JAVA_INT
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -54,11 +55,11 @@ internal object SystemReducedMotion {
         val target = scale ?: return
         reader.execute {
             val reduced = runCatching { readReduced() }
-                .onFailure { PikoLog.w(TAG, "读取系统的减少动画设置失败", it) }
+                .onFailure { PikoLog.w(TAG, "Failed to query OS reduced-motion setting", it) }
                 .getOrNull() ?: return@execute
             val value = if (reduced) 0f else 1f
             if (target.systemScale != value) {
-                PikoLog.i(TAG, if (reduced) "系统开启了减少动画" else "系统关闭了减少动画")
+                PikoLog.i(TAG, if (reduced) "OS reduced motion enabled" else "OS reduced motion disabled")
                 target.systemScale = value
             }
         }
@@ -83,7 +84,7 @@ internal object SystemReducedMotion {
         fun clientAreaAnimation(): Boolean = Arena.ofConfined().use { arena ->
             val enabled = arena.allocate(JAVA_INT)
             val ok = systemParametersInfo.invokeWithArguments(SPI_GETCLIENTAREAANIMATION, 0, enabled, 0) as Int
-            check(ok != 0) { "SystemParametersInfoW 失败" }
+            check(ok != 0) { "SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION) failed" }
             enabled.get(JAVA_INT, 0) != 0
         }
     }
@@ -100,7 +101,7 @@ internal object SystemReducedMotion {
 
         fun shouldReduceMotion(): Boolean = Arena.ofConfined().use { arena ->
             val workspaceClass = getClass.invokeWithArguments(arena.allocateFrom("NSWorkspace")) as MemorySegment
-            check(workspaceClass != MemorySegment.NULL) { "找不到 NSWorkspace" }
+            check(workspaceClass != MemorySegment.NULL) { "Objective-C class NSWorkspace not found" }
             // sharedWorkspace 是单例，不经 autorelease，不必包自动释放池
             val workspace = sendObject.invokeWithArguments(workspaceClass, selector(arena, "sharedWorkspace")) as MemorySegment
             sendBool.invokeWithArguments(workspace, selector(arena, "accessibilityDisplayShouldReduceMotion")) as Boolean
@@ -117,12 +118,15 @@ internal object SystemReducedMotion {
                     .redirectError(ProcessBuilder.Redirect.DISCARD)
                     .start()
             }.getOrNull() ?: return null
+            val out = CompletableFuture.supplyAsync {
+                runCatching { process.inputStream.bufferedReader().use { it.readText() } }.getOrDefault("")
+            }
             if (!process.waitFor(2, TimeUnit.SECONDS)) {
-                process.destroy()
+                process.destroyForcibly()
                 return null
             }
             if (process.exitValue() != 0) return null
-            return when (process.inputStream.bufferedReader().readText().trim()) {
+            return when (out.get(1, TimeUnit.SECONDS).trim()) {
                 "true" -> true
                 "false" -> false
                 else -> null

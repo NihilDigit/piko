@@ -1,6 +1,7 @@
 package dev.piko.desktop.winrt
 
 import dev.piko.desktop.update.WindowsInstaller
+import dev.piko.shared.log.PikoLog
 import java.awt.Desktop
 import java.io.File
 import java.net.URI
@@ -20,6 +21,7 @@ import java.util.concurrent.TimeUnit
  * - WinRT 调用串行跑在同一条专用线程上，线程首次使用时初始化一次 WinRT，见 [WindowsToast]。
  */
 object WinRTSupport {
+    private const val TAG = "WinRT"
     val isWindows: Boolean = System.getProperty("os.name").contains("Windows", ignoreCase = true)
 
     /**
@@ -74,7 +76,8 @@ object WinRTSupport {
         return runCatching {
             val iconOk = icon?.takeIf { it.isFile }?.let { HkcuRegistry.ensureString(key, "IconUri", it.absolutePath) } ?: true
             HkcuRegistry.ensureString(key, "DisplayName", "Piko") && iconOk
-        }.getOrDefault(false)
+        }.onFailure { PikoLog.w(TAG, "Failed to register Toast AUMID identity for $appId", it) }
+            .getOrDefault(false)
     }
 
     @Volatile
@@ -90,7 +93,10 @@ object WinRTSupport {
 
     private fun resolveToastAppId(): String {
         val exe = System.getProperty("jpackage.app-path")?.let(::File)?.takeIf { it.isFile } ?: return APP_USER_MODEL_ID
-        if (runCatching { WindowsInstaller.installedExecutable() }.getOrNull() != null) return APP_USER_MODEL_ID
+        val installed = runCatching { WindowsInstaller.installedExecutable() }
+            .onFailure { PikoLog.w(TAG, "Failed to check MSI installation status for Toast AUMID", it) }
+            .getOrNull()
+        if (installed != null) return APP_USER_MODEL_ID
         val pathHash = MessageDigest.getInstance("SHA-256")
             .digest(exe.absolutePath.lowercase().toByteArray())
             .take(4)
@@ -125,9 +131,11 @@ object WinRTSupport {
                     val native = arena.allocate(utf16.size.toLong())
                     native.copyFrom(java.lang.foreign.MemorySegment.ofArray(utf16))
                     val hr = setAppId.invokeWithArguments(native) as Int
+                    if (hr < 0) PikoLog.w(TAG, "SetCurrentProcessExplicitAppUserModelID failed: HRESULT 0x%08X".format(hr))
                     hr >= 0 // SUCCEEDED(hr)
                 }
-            }.getOrDefault(false)
+            }.onFailure { PikoLog.w(TAG, "Failed to set process AppUserModelID", it) }
+                .getOrDefault(false)
     }
 
     /**
@@ -151,7 +159,8 @@ object WinRTSupport {
                 WindowsToast.show(toastAppId(), xml)
             }
             true
-        }.getOrDefault(false)
+        }.onFailure { PikoLog.w(TAG, "Failed to show Windows Toast notification", it) }
+            .getOrDefault(false)
     }
 
     private fun escapeXml(text: String): String =
@@ -169,15 +178,22 @@ object WinRTSupport {
      * 投影里有生成代码 bug（IDisplayRequest 的 ABI glue 类 <clinit> 传了空
      * typeSignature，requestActive 直接 NPE），等上游 kotlin-winrt 修好再评估切回。
      * FFM 在 JDK 22+ 已是稳定 API（要求 JDK 25，见 desktopApp jvmToolchain）。
+     *
+     * `ES_CONTINUOUS` 按线程生效，申请与释放必须落在同一条常驻 OS 线程上（这里复用 [comThread]）。
      */
     fun acquireDisplayRequest(): AutoCloseable? {
         if (!isWindows) return null
         return runCatching {
-            Win32ExecutionState.preventSleep()
+            val prev = comThread.submit(Callable { Win32ExecutionState.preventSleep() }).get(5, TimeUnit.SECONDS)
+            check(prev != 0) { "SetThreadExecutionState(preventSleep) returned 0" }
             AutoCloseable {
-                runCatching { Win32ExecutionState.allowSleep() }
+                comThread.execute {
+                    runCatching { Win32ExecutionState.allowSleep() }
+                        .onFailure { PikoLog.w(TAG, "Failed to clear thread execution state", it) }
+                }
             }
-        }.getOrNull()
+        }.onFailure { PikoLog.w(TAG, "Failed to acquire display wake request", it) }
+            .getOrNull()
     }
 
     /** Win32 电源状态：kernel32.SetThreadExecutionState 的最小 FFM 绑定。 */
@@ -201,17 +217,18 @@ object WinRTSupport {
             )
         }
 
-        fun preventSleep() {
-            setState.invokeWithArguments(ES_CONTINUOUS or ES_SYSTEM_REQUIRED or ES_DISPLAY_REQUIRED)
-        }
+        fun preventSleep(): Int =
+            setState.invokeWithArguments(ES_CONTINUOUS or ES_SYSTEM_REQUIRED or ES_DISPLAY_REQUIRED) as Int
 
-        fun allowSleep() {
-            setState.invokeWithArguments(ES_CONTINUOUS)
-        }
+        fun allowSleep(): Int =
+            setState.invokeWithArguments(ES_CONTINUOUS) as Int
     }
 
     fun openUrl(url: String) {
-        shellThread.execute { runCatching { Desktop.getDesktop().browse(URI(url)) } }
+        shellThread.execute {
+            runCatching { Desktop.getDesktop().browse(URI(url)) }
+                .onFailure { PikoLog.w(TAG, "Failed to open external URL in browser", it) }
+        }
     }
 
     fun openFolder(folder: File) = shellThread.execute {
@@ -221,7 +238,7 @@ object WinRTSupport {
             if (isWindows) {
                 ProcessBuilder("explorer", folder.absolutePath).start()
             }
-        }
+        }.onFailure { PikoLog.w(TAG, "Failed to open folder in Explorer", it) }
     }
 
     fun openFile(file: File) = shellThread.execute {
@@ -232,7 +249,7 @@ object WinRTSupport {
                 // start "" <path> 经 shell 走默认关联，比 explorer 更稳。
                 ProcessBuilder("cmd", "/c", "start", "", file.absolutePath).start()
             }
-        }
+        }.onFailure { PikoLog.w(TAG, "Failed to open local file externally", it) }
     }
 
     /**
@@ -255,7 +272,8 @@ object WinRTSupport {
             val selected = runCatching {
                 WindowsToast.initializeThread()
                 ShellReveal.select(file.absolutePath)
-            }.getOrDefault(false)
+            }.onFailure { PikoLog.w(TAG, "SHOpenFolderAndSelectItems failed; falling back to opening parent folder", it) }
+                .getOrDefault(false)
             if (!selected) file.parentFile?.let(::openFolder)
         }
     }

@@ -46,6 +46,8 @@ import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.FolderUsage
 import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.isVaulted
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.state.DriveItemName
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.DetailAction
@@ -559,6 +561,12 @@ private fun FullName(name: DriveItemName) {
     DetailHeading(name.headingText, name.headingOriginal)
 }
 
+private sealed interface PropertiesFolderUsage {
+    data object Loading : PropertiesFolderUsage
+    data class Counted(val usage: FolderUsage) : PropertiesFolderUsage
+    data object Failed : PropertiesFolderUsage
+}
+
 /** 文件夹的递归统计，逐步长上去；与操作面板用的是同一个统计，换了文件夹就重新数。库与压缩包里的文件夹数不了，为空。 */
 @Composable
 private fun folderUsageById(folderId: String): String {
@@ -576,16 +584,21 @@ private fun folderUsageById(folderId: String): String {
         )
     }
     val flow = remember(folderId) { driveRepo.folderUsage(folderId) }
-    val usage by produceState<FolderUsage?>(null, flow) {
+    val state by produceState<PropertiesFolderUsage>(PropertiesFolderUsage.Loading, flow) {
         try {
-            flow.collect { value = it }
+            flow.collect { value = PropertiesFolderUsage.Counted(it) }
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
-            value = null
+        } catch (e: Exception) {
+            PikoLog.w("Drive", "Failed to calculate folder usage in properties pane for ${logFolder(folderId)}", e)
+            value = PropertiesFolderUsage.Failed
         }
     }
-    val counted = usage ?: return tr("统计中", "Calculating", "集計中", "계산 중", "統計中")
+    val counted = when (val current = state) {
+        PropertiesFolderUsage.Loading -> return tr("统计中", "Calculating", "集計中", "계산 중", "統計中")
+        PropertiesFolderUsage.Failed -> return ""
+        is PropertiesFolderUsage.Counted -> current.usage
+    }
     val text = tr("${counted.fileCount} 个文件，${counted.bytes.toReadableSize()}", "${enCount(counted.fileCount, "file", "files")}, ${counted.bytes.toReadableSize()}", "${counted.fileCount} ファイル、${counted.bytes.toReadableSize()}", "파일 ${counted.fileCount}개, ${counted.bytes.toReadableSize()}", "${counted.fileCount} 個檔案，${counted.bytes.toReadableSize()}")
     return when (counted.progress) {
         FolderUsage.Progress.COUNTING -> tr("$text（统计中）", "$text (calculating)", "$text（集計中）", "$text (계산 중)", "$text（統計中）")

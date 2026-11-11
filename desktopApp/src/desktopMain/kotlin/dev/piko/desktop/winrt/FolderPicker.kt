@@ -1,5 +1,7 @@
 package dev.piko.desktop.winrt
 
+import dev.piko.shared.log.PikoLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import java.awt.Window
@@ -67,9 +69,18 @@ object FolderPicker {
     suspend fun pickFolder(owner: Window?, initial: File?, title: String): FolderPickResult {
         if (!WinRTSupport.isWindows) return FolderPickResult.Unavailable
         // HWND 在调用方线程上取好：对话框线程只做 COM
-        val ownerHwnd = owner?.let { runCatching { Win32Window.handleOf(it) }.getOrNull() } ?: MemorySegment.NULL
+        val ownerHwnd = owner?.let {
+            runCatching { Win32Window.handleOf(it) }
+                .onFailure { e -> PikoLog.w("Dialog", "Failed to resolve owner HWND for FolderPicker", e) }
+                .getOrNull()
+        } ?: MemorySegment.NULL
         return withContext(dispatcher) {
-            runCatching { show(ownerHwnd, initial, title) }.getOrDefault(FolderPickResult.Unavailable)
+            runCatching { show(ownerHwnd, initial, title) }
+                .onFailure {
+                    if (it is CancellationException) throw it
+                    PikoLog.w("Dialog", "Native FolderPicker failed; falling back to AwtDialogs", it)
+                }
+                .getOrDefault(FolderPickResult.Unavailable)
         }
     }
 

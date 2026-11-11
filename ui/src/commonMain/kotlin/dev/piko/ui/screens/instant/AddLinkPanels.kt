@@ -29,12 +29,12 @@ import dev.piko.ui.components.PikoSheet
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.pageFocusTarget
 
-// 桌面上添加链接的两种形态，由主界面按右栏放不放得下挑一种。移动端在网盘页底部的 TaskSheet 里，不经这里。
-// 预览一律不先收起面板：桌面的播放器是独立窗口，面板盖不住它，看完回来接着挑。
+// 宽窗口并列右栏容纳添加链接时的停靠容器（解析后的结果工作区见 ResolvedImportWorkspace）。
+// 预览一律不先收起面板：桌面播放器是独立窗口，面板盖不住它，看完回来接着挑。
 
 /**
- * 停在右栏里的添加链接，与信息流同一栏、同一时刻只放一样，见 ui/CLAUDE.md 的「右侧那一栏」。
- * 打开即取得焦点：下一步多半是粘贴链接，右栏里的 Esc 也要当场能收起它。
+ * 停在右栏里的添加链接，与信息流同一栏、同一时刻只放一样，见 ui/AGENTS.md。
+ * 打开即取得焦点：下一步多半是粘贴链接，右栏里的 Esc 也会触发当前草稿的关闭/放弃流程。
  */
 @Composable
 fun DockedAddLink(

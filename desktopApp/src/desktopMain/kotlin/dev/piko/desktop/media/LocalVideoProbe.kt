@@ -45,17 +45,24 @@ import java.lang.foreign.MemorySegment
 import java.lang.foreign.ValueLayout.*
 import javax.imageio.ImageIO
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CancellationException
 
 /** 使用随包 FFmpeg 读取本地文件，不启动外部进程，也不建立网络或回环代理。 */
 internal fun probeLocalVideo(source: File, output: File, ff: Ffmpeg = Ffmpeg.bundled(), timeoutMs: Long = 4_000L, cancelled: () -> Boolean = { false }): LocalMediaMetadata =
     try {
         FileChannel.open(source.toPath(), StandardOpenOption.READ).use { probeLocalVideo(it, output, ff, timeoutMs, cancelled) }
-    } catch (_: Exception) { throw FfmpegException("本地媒体探测失败") }
+    } catch (cancel: CancellationException) {
+        throw cancel
+    } catch (e: FfmpegException) {
+        throw e
+    } catch (e: Exception) {
+        throw FfmpegException("Failed to probe local media", e)
+    }
 
 internal fun probeLocalVideo(channel: FileChannel, output: File, ff: Ffmpeg = Ffmpeg.bundled(), timeoutMs: Long = 4_000L, cancelled: () -> Boolean = { false }): LocalMediaMetadata = Arena.ofConfined().use { arena ->
     val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs.coerceAtLeast(1L))
     fun interrupted() = cancelled() || System.nanoTime() > deadlineNanos
-    fun checkActive() { if (interrupted()) throw FfmpegException("本地媒体探测已中断") }
+    fun checkActive() { if (interrupted()) throw FfmpegException("Local media probe interrupted") }
     val avioRef = arena.allocate(ADDRESS)
     val openOptionsRef = arena.allocate(ADDRESS)
     var temporary: File? = null
@@ -72,14 +79,14 @@ internal fun probeLocalVideo(channel: FileChannel, output: File, ff: Ffmpeg = Ff
         context.reinterpret(FORMAT_SIZE).set(ADDRESS, FORMAT_PB, avioRef.get(ADDRESS, 0))
         inputRef.set(ADDRESS, 0, context)
         for ((key, value) in mapOf("protocol_whitelist" to "", "probesize" to "8388608", "analyzeduration" to "3000000")) {
-            ff.check(ff.dictSet.invokeWithArguments(openOptionsRef, arena.allocateFrom(key), arena.allocateFrom(value), 0) as Int, "配置本地探测")
+            ff.check(ff.dictSet.invokeWithArguments(openOptionsRef, arena.allocateFrom(key), arena.allocateFrom(value), 0) as Int, "Configure local probe")
         }
-        ff.check(ff.openInput.invokeWithArguments(inputRef, MemorySegment.NULL, MemorySegment.NULL, openOptionsRef) as Int, "读取本地媒体")
+        ff.check(ff.openInput.invokeWithArguments(inputRef, MemorySegment.NULL, MemorySegment.NULL, openOptionsRef) as Int, "Open local media")
         checkActive()
         val input = inputRef.get(ADDRESS, 0).reinterpret(FORMAT_SIZE)
-        ff.check(ff.findStreamInfo.invokeWithArguments(input, MemorySegment.NULL) as Int, "读取媒体信息")
+        ff.check(ff.findStreamInfo.invokeWithArguments(input, MemorySegment.NULL) as Int, "Read stream info")
         checkActive()
-        val index = ff.check(ff.findBestStream.invokeWithArguments(input, 0, -1, -1, MemorySegment.NULL, 0) as Int, "查找视频轨")
+        val index = ff.check(ff.findBestStream.invokeWithArguments(input, 0, -1, -1, MemorySegment.NULL, 0) as Int, "Find video stream")
         val count = input.get(JAVA_INT, FfmpegLayout.FORMAT_NB_STREAMS)
         val streams = input.get(ADDRESS, FfmpegLayout.FORMAT_STREAMS).reinterpret(count * 8L)
         val stream = streams.getAtIndex(ADDRESS, index.toLong()).reinterpret(STREAM_SIZE)
@@ -103,9 +110,9 @@ internal fun probeLocalVideo(channel: FileChannel, output: File, ff: Ffmpeg = Ff
         val decoder = ff.decoderAlloc.invokeWithArguments(codec) as MemorySegment
         check(decoder != MemorySegment.NULL)
         decoderRef.set(ADDRESS, 0, decoder)
-        ff.check(ff.parametersToContext.invokeWithArguments(decoder, parameters) as Int, "配置视频解码")
+        ff.check(ff.parametersToContext.invokeWithArguments(decoder, parameters) as Int, "Configure video decoder")
         ff.dictSet.invokeWithArguments(optionsRef, arena.allocateFrom("threads"), arena.allocateFrom("2"), 0)
-        ff.check(ff.decoderOpen.invokeWithArguments(decoder, codec, optionsRef) as Int, "打开视频解码")
+        ff.check(ff.decoderOpen.invokeWithArguments(decoder, codec, optionsRef) as Int, "Open video decoder")
         val frame = (ff.frameAlloc.invokeWithArguments() as MemorySegment).also { check(it != MemorySegment.NULL) }.reinterpret(FRAME_PREFIX_SIZE)
         frameRef.set(ADDRESS, 0, frame)
         val packet = (ff.packetAlloc.invokeWithArguments() as MemorySegment).also { check(it != MemorySegment.NULL) }.reinterpret(FfmpegLayout.PACKET_SIZE)
@@ -135,8 +142,12 @@ internal fun probeLocalVideo(channel: FileChannel, output: File, ff: Ffmpeg = Ff
         }
         checkActive()
         metadata(thumbnail)
-    } catch (_: Exception) {
-        throw FfmpegException("本地媒体探测失败")
+    } catch (cancel: CancellationException) {
+        throw cancel
+    } catch (e: FfmpegException) {
+        throw e
+    } catch (e: Exception) {
+        throw FfmpegException("Failed to probe local media", e)
     } finally {
         temporary?.delete()
         ff.dictFree.invokeWithArguments(openOptionsRef)
@@ -210,7 +221,7 @@ private fun frameToImage(ff: Ffmpeg, frame: MemorySegment, arena: Arena): Buffer
         val pixels = arena.allocate(stride * h.toLong() + 64, 32)
         val pointers = arena.allocate(ADDRESS, 8).apply { set(ADDRESS, 0, pixels) }
         val strides = arena.allocate(JAVA_INT, 8).apply { set(JAVA_INT, 0, stride) }
-        ff.check(ff.scaleFrame.invokeWithArguments(scaler, frame, frame.asSlice(FRAME_LINESIZE), 0, height, pointers, strides) as Int, "转换视频封面")
+        ff.check(ff.scaleFrame.invokeWithArguments(scaler, frame, frame.asSlice(FRAME_LINESIZE), 0, height, pointers, strides) as Int, "Scale video thumbnail")
         val image = BufferedImage(w, h, BufferedImage.TYPE_INT_RGB)
         for (y in 0 until h) for (x in 0 until w) {
             val at = y.toLong() * stride + x * 3

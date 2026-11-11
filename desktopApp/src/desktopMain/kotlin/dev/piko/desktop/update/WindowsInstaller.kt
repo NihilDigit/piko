@@ -1,5 +1,6 @@
 package dev.piko.desktop.update
 
+import dev.piko.shared.log.PikoLog
 import java.io.File
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -37,7 +38,8 @@ internal object WindowsInstaller {
     fun isInstalledAt(upgradeCode: String, installDir: File): Boolean = runCatching {
         val expected = installDir.canonicalPath.trimEnd('\\')
         installLocations(upgradeCode).any { it.trimEnd('\\').equals(expected, ignoreCase = true) }
-    }.getOrDefault(false)
+    }.onFailure { PikoLog.w("Updater", "Failed to query MSI install locations for UpgradeCode $upgradeCode", it) }
+        .getOrDefault(false)
 
     private fun installLocations(upgradeCode: String): List<String> = Arena.ofConfined().use { arena ->
         val linker = Linker.nativeLinker()

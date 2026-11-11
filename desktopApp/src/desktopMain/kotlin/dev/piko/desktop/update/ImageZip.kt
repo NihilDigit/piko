@@ -42,10 +42,10 @@ internal suspend fun readImageCatalog(size: Long, range: suspend (LongRange) -> 
     val tailStart = size - tailLength
     val tail = range(tailStart until size)
     val eocd = (tail.size - 22 downTo 0).firstOrNull { tail.u32(it) == EOCD_SIGNATURE.toLong() }
-        ?: throw IOException("image.zip 里找不到中央目录的结尾记录")
+        ?: throw IOException("End of central directory record not found in image.zip")
     val centralSize = tail.u32(eocd + 12)
     val centralOffset = tail.u32(eocd + 16)
-    if (centralSize == 0xFFFFFFFFL || centralOffset == 0xFFFFFFFFL) throw IOException("image.zip 是 ZIP64，不支持")
+    if (centralSize == 0xFFFFFFFFL || centralOffset == 0xFFFFFFFFL) throw IOException("ZIP64 format is not supported for image.zip")
     val central = if (centralOffset >= tailStart) {
         tail.copyOfRange((centralOffset - tailStart).toInt(), (centralOffset - tailStart + centralSize).toInt())
     } else {
@@ -87,7 +87,7 @@ internal suspend fun fetchImageEntries(
 ) {
     val root = target.canonicalFile
     for (spec in wanted) {
-        val entry = catalog.entries[spec.path] ?: throw ChecksumMismatchException("image.zip 缺少：${spec.path}")
+        val entry = catalog.entries[spec.path] ?: throw ChecksumMismatchException("Missing entry in image.zip: ${spec.path}")
         val out = outputFor(root, spec)
         val receiver = EntryReceiver(entry, out.outputStream().buffered())
         receiver.use {
@@ -112,7 +112,7 @@ internal fun readImageEntries(zip: File, wanted: List<ManifestFile>, target: Fil
     val root = target.canonicalFile
     ZipFile(zip).use { archive ->
         for (spec in wanted) {
-            val entry = archive.getEntry(spec.path) ?: throw ChecksumMismatchException("image.zip 缺少：${spec.path}")
+            val entry = archive.getEntry(spec.path) ?: throw ChecksumMismatchException("Missing entry in image.zip: ${spec.path}")
             val out = outputFor(root, spec)
             val actual = archive.getInputStream(entry).use { input ->
                 out.outputStream().use { output -> sha256Hex(input) { buffer, length -> output.write(buffer, 0, length) } }
@@ -131,7 +131,7 @@ internal fun changedFiles(installDir: File, manifest: UpdateManifest): List<Mani
 
 private fun outputFor(root: File, spec: ManifestFile): File {
     val out = root.resolve(spec.path).canonicalFile
-    check(out.path.startsWith(root.path + File.separator)) { "路径越界：${spec.path}" }
+    check(out.path.startsWith(root.path + File.separator)) { "Path traversal outside staging directory: ${spec.path}" }
     out.parentFile.mkdirs()
     return out
 }
@@ -152,7 +152,7 @@ private class EntryReceiver(private val entry: ImageEntry, private val out: Outp
     private val inflated = ByteArray(64 * 1024)
 
     init {
-        if (entry.method != STORED && entry.method != DEFLATED) throw IOException("image.zip 的 ${entry.name} 用了不支持的压缩方式 ${entry.method}")
+        if (entry.method != STORED && entry.method != DEFLATED) throw IOException("Unsupported compression method ${entry.method} for ${entry.name} in image.zip")
     }
 
     val complete get() = skip == 0L && dataReceived == entry.compressedSize
@@ -168,7 +168,7 @@ private class EntryReceiver(private val entry: ImageEntry, private val out: Outp
                 headerFilled += take
                 at += take
                 if (headerFilled == LOCAL_HEADER) {
-                    if (header.u32(0) != LOCAL_SIGNATURE.toLong()) throw IOException("image.zip 的 ${entry.name} 本地文件头不对")
+                    if (header.u32(0) != LOCAL_SIGNATURE.toLong()) throw IOException("Invalid local file header for ${entry.name} in image.zip")
                     skip = (header.u16(26) + header.u16(28)).toLong()
                 }
                 continue
@@ -207,7 +207,7 @@ private class EntryReceiver(private val entry: ImageEntry, private val out: Outp
     /** 不带 zlib 头的 Inflater 有时要多喂一个字节才认出流已结束，ZipFile 自己也这样做。 */
     fun finish() {
         if (entry.method == DEFLATED && !inflater.finished()) data(ByteArray(1), 0, 1)
-        if (entry.method == DEFLATED && !inflater.finished()) throw IOException("image.zip 的 ${entry.name} 解压不完整")
+        if (entry.method == DEFLATED && !inflater.finished()) throw IOException("Incomplete deflate stream for ${entry.name} in image.zip")
     }
 
     override fun close() {

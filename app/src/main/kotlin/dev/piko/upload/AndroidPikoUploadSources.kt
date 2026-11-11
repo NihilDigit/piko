@@ -10,6 +10,7 @@ import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.upload.PikoUploadSources
 import dev.piko.shared.upload.UploadFolder
 import dev.piko.shared.upload.UploadSourceInfo
@@ -17,6 +18,7 @@ import dev.piko.shared.upload.UploadTreeEntry
 import java.io.EOFException
 import java.io.FileInputStream
 import java.nio.ByteBuffer
+import kotlinx.coroutines.CancellationException
 import kotlinx.io.RawSource
 import kotlinx.io.asSource
 
@@ -33,8 +35,11 @@ class AndroidPikoUploadSources(context: Context) : PikoUploadSources {
             val size = cursor.long(OpenableColumns.SIZE) ?: statSize(parsed) ?: return@use null
             UploadSourceInfo(name, size, lastModifiedMs(cursor))
         }
+    } catch (cancel: CancellationException) {
+        throw cancel
     } catch (e: Exception) {
         // 授权已失效是 SecurityException，文档已删除时各家提供方抛的异常不一
+        PikoLog.w(TAG, "Failed to query upload source metadata (authority=${Uri.parse(uri).authority})", e)
         null
     }
 
@@ -67,13 +72,17 @@ class AndroidPikoUploadSources(context: Context) : PikoUploadSources {
         val name = resolver.query(rootUri, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)
             ?.use { if (it.moveToFirst()) it.getString(0) else null }
         if (name == null) {
+            PikoLog.w(TAG, "Upload folder display name query returned empty (authority=${treeUri.authority})")
             null
         } else {
             val files = mutableListOf<UploadTreeEntry>()
             collectFiles(treeUri, rootId, "", files)
             UploadFolder(name, files)
         }
+    } catch (cancel: CancellationException) {
+        throw cancel
     } catch (e: Exception) {
+        PikoLog.w(TAG, "Failed to list upload folder tree (authority=${Uri.parse(uri).authority})", e)
         null
     }
 
@@ -141,6 +150,10 @@ class AndroidPikoUploadSources(context: Context) : PikoUploadSources {
         cursor.long(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
             ?: cursor.long(MediaStore.MediaColumns.DATE_MODIFIED)?.let { it * 1000 }
             ?: 0L
+
+    private companion object {
+        const val TAG = "Upload"
+    }
 }
 
 private class ChildDocument(val id: String, val name: String, val mimeType: String?)

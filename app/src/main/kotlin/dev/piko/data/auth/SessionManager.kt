@@ -26,7 +26,10 @@ import kotlinx.coroutines.flow.map
 // 那里抛出的异常没有人接，结果是每次冷启动都崩，只能清数据
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
     name = "piko_preferences",
-    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+    corruptionHandler = ReplaceFileCorruptionHandler { ex ->
+        PikoLog.e(TAG, "DataStore piko_preferences corrupted; resetting to empty preferences", ex)
+        emptyPreferences()
+    },
 )
 
 /** 1.1.0 全机一份的解压密码，明文。之后按账号存在 AndroidPikoSessionStore，这里只在迁移时读。 */
@@ -40,14 +43,20 @@ private const val TAG = "Preferences"
  */
 private val Context.playbackDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "piko_playback",
-    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+    corruptionHandler = ReplaceFileCorruptionHandler { ex ->
+        PikoLog.e(TAG, "DataStore piko_playback corrupted; resetting to empty preferences", ex)
+        emptyPreferences()
+    },
     produceMigrations = { context -> listOf(LegacyPlaybackPositionMigration(context.dataStore)) },
 )
 
 /** 下载任务表同理单独一个文件：整张表一个键，随任务数增长，每次状态变化都整份重写。 */
 private val Context.downloadsDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "piko_downloads",
-    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+    corruptionHandler = ReplaceFileCorruptionHandler { ex ->
+        PikoLog.e(TAG, "DataStore piko_downloads corrupted; resetting to empty preferences", ex)
+        emptyPreferences()
+    },
 )
 
 private val DOWNLOAD_TASKS = stringPreferencesKey("download_tasks")
@@ -150,9 +159,9 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     }
 
     /**
-     * 每个 DataStore 值都从同一份 data 流映射出来，任何一个键的写入都会让所有映射重新发射。
-     * 不去重的话，播放器每 5 秒写一次进度，网盘列表、下载存储、设置页的收集者就跟着每 5 秒
-     * 醒一次。
+     * 主偏好 DataStore 的各个设置项都从同一份 data 流映射出来，任一偏好键写入都会让整份 Preferences 重新发射；
+     * 加上 distinctUntilChanged 后，修改单个设置不会无谓唤醒其余无关收集者。
+     * （高频续播进度与传输任务表已分别拆入独立的 playbackDataStore 与 downloadsDataStore。）
      */
     private fun <T> preference(read: (Preferences) -> T): Flow<T> =
         context.dataStore.data.map(read).distinctUntilChanged()
@@ -483,8 +492,11 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override suspend fun loadUploadCredentials(taskId: String): String? =
-        context.downloadsDataStore.data.first()[uploadCredentialsKey(taskId)]?.let(CredentialCipher::decrypt)
+    override suspend fun loadUploadCredentials(taskId: String): String? {
+        val stored = context.downloadsDataStore.data.first()[uploadCredentialsKey(taskId)] ?: return null
+        return CredentialCipher.decrypt(stored)
+            ?: null.also { PikoLog.w(TAG, "Failed to decrypt upload credentials for task $taskId") }
+    }
 
     // 密钥库不可用时加密抛出、不存明文，由调用方记下；这个会话重启后按凭据过期处理，只是重传
     override suspend fun saveUploadCredentials(taskId: String, serialized: String) {
@@ -616,7 +628,12 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
 
     // 与解压密码同样加密存放；解不开（密钥库被清）当作没填
     override val metaTubeTokenFlow: Flow<String> = preference { it[PreferencesKeys.METATUBE_TOKEN] }.map { stored ->
-        stored?.let(CredentialCipher::decrypt).orEmpty()
+        if (stored.isNullOrEmpty()) {
+            ""
+        } else {
+            CredentialCipher.decrypt(stored)
+                ?: "".also { PikoLog.w(TAG, "Failed to decrypt MetaTube token; treating as unset") }
+        }
     }
 
     // 加密失败时不存，宁可让用户再填一次，也不落明文
@@ -625,7 +642,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
             ""
         } else {
             runCatching { CredentialCipher.encrypt(token) }
-                .onFailure { PikoLog.w(TAG, "MetaTube 令牌加密失败，未保存", it) }
+                .onFailure { PikoLog.w(TAG, "Failed to encrypt MetaTube token; skipping save", it) }
                 .getOrNull() ?: return
         }
         context.dataStore.edit { preferences ->

@@ -268,7 +268,7 @@ class PikoServices(
 
     val addLink by lazy { dev.piko.shared.presentation.AddLinkViewModel(instantSession) }
 
-    /** 下载片段的面板收起后选好的区间还在，见 [SegmentSession]。 */
+    /** 挂在进程级服务上，网盘页被压栈页临时盖住而离开组合时状态不丢；主动关掉面板即结束会话，见 [SegmentSession]。 */
     val segmentSession: SegmentSession by lazy { SegmentSession() }
 
     val duplicateSessions = androidx.compose.runtime.mutableStateListOf<DuplicateSession>()
@@ -342,7 +342,8 @@ class PikoServices(
         // 未完成的添加链接、查重、解压、片段下载、信息流与归档都属于上一个账号：保存目标、文件 ID 都是那边的。
         // 主线程上当场结束，会话的状态只在主线程上改
         CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launchOnAccountLeave(clientManager) { left ->
-            PikoLog.i(TAG, "${if (clientManager.currentClient.value == null) "退出登录" else "换号"}：结束上一账号的进程级会话")
+            val transition = if (clientManager.currentClient.value == null) "Signed out" else "Switched account"
+            PikoLog.i(TAG, "$transition: ending process-scoped sessions for previous account")
             presentationStores.leave(left)
             if (taskCenterAccount == left) { taskCenterAccount = null; taskCenterState = null }
             fileWrites.clear(left)
@@ -368,7 +369,9 @@ class PikoServices(
                 if (client == null) return@collectLatest
                 // 上次进程被杀时面板来不及清 Piko-Temp，登录后补上。每个账号只清一次：断线重连
                 // 也会换一个新的 client，那时面板可能正开着，预览的文件还要用
-                if (cleanedAccounts.add(client.account)) previewTempFolder.clear(client).logFailure(TAG, "登录后清理 Piko-Temp 失败")
+                if (cleanedAccounts.add(client.account)) {
+                    previewTempFolder.clear(client).logFailure(TAG, "Failed to clean up Piko-Temp after sign-in")
+                }
                 // 换号或退出登录时 collectLatest 取消它，换成新账号的记录重来
                 offlinePacks.run(client.account)
             }

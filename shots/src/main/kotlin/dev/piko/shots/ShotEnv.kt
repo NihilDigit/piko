@@ -139,7 +139,7 @@ private fun FakePikPak.addVaultManifest(parentId: String, vararg entries: VaultE
     addBlob(".piko-vault-v1-${"0".repeat(16)}.json", body.toString().encodeToByteArray(), parentId)
 }
 
-/** 日志装到临时目录：不装时 PikoLog 把所有记录攒在内存里的 channel 中。 */
+/** 日志装到本次运行的临时目录：未安装时 PikoLog 会在内存中缓冲待写记录，安装后落盘供截图排障并避免常驻内存。 */
 private val logInstalled by lazy {
     PikoLog.install(File(ShotDirs.run, "log-${ProcessHandle.current().pid()}").path)
 }

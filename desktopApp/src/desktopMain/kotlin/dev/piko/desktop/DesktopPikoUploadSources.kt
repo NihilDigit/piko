@@ -1,5 +1,6 @@
 package dev.piko.desktop
 
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.upload.PikoUploadSources
 import dev.piko.shared.upload.UploadFolder
 import dev.piko.shared.upload.UploadSourceInfo
@@ -17,6 +18,8 @@ import java.nio.file.attribute.DosFileAttributes
 import kotlinx.io.RawSource
 import kotlinx.io.asSource
 
+private const val TAG = "Upload"
+
 /** 桌面端的 uri 就是本机绝对路径。 */
 class DesktopPikoUploadSources : PikoUploadSources {
     override fun describe(uri: String): UploadSourceInfo? {
@@ -25,6 +28,8 @@ class DesktopPikoUploadSources : PikoUploadSources {
         return runCatching {
             val attrs = Files.readAttributes(path, BasicFileAttributes::class.java)
             UploadSourceInfo(path.fileName.toString(), attrs.size(), attrs.lastModifiedTime().toMillis())
+        }.onFailure {
+            PikoLog.w(TAG, "Failed to read attributes for upload source", it)
         }.getOrNull()
     }
 
@@ -63,9 +68,13 @@ class DesktopPikoUploadSources : PikoUploadSources {
                 return FileVisitResult.CONTINUE
             }
 
-            override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult = FileVisitResult.CONTINUE
+            override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult {
+                PikoLog.w(TAG, "Skipping unreadable entry while scanning upload folder", exc)
+                return FileVisitResult.CONTINUE
+            }
         }
         runCatching { Files.walkFileTree(root, setOf(FileVisitOption.FOLLOW_LINKS), Int.MAX_VALUE, visitor) }
+            .onFailure { PikoLog.w(TAG, "Failed to traverse upload folder", it) }
             .getOrElse { return null }
         // 选的是盘符根目录时没有文件名，取盘符
         val name = root.fileName?.toString() ?: root.toString().trimEnd('\\', '/', ':')

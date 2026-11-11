@@ -1,5 +1,6 @@
 package dev.piko.desktop
 
+import dev.piko.shared.log.PikoLog
 import java.awt.Dialog
 import java.awt.FileDialog
 import java.awt.Frame
@@ -23,7 +24,7 @@ import kotlinx.coroutines.withContext
  * 放到这条线程上后，界面线程只是挂起等结果，照常绘制。
  *
  * Windows 的原生对话框（FolderPicker、SaveFilePicker）走 COM，本来就在自己的 STA 线程上，不经这里；
- * 这里管 macOS 与原生框弹不出来时的退路。属主窗口要在点击的当下取（焦点在 launch 之后可能已经变了），再传进来。
+ * 这里管 macOS、Linux 与 Windows 原生框不可用时的退路。属主窗口要在点击的当下取（焦点在 launch 之后可能已经变了），再传进来。
  */
 internal object AwtDialogs {
     // 单线程：同一时刻只该有一个模态框
@@ -70,7 +71,7 @@ internal object AwtDialogs {
     /**
      * 选目录，取消时为 null。macOS 上 FileDialog 就是原生面板，一个系统属性让它改选目录；
      * 属性在弹出时读取，用完放回，免得之后的选文件框也只能选目录。
-     * 别处（Windows 原生框弹不出来时）AWT 的 FileDialog 选不了目录，只能用 Swing 的，换成系统外观，免得弹出 Metal 风格的窗口。
+     * 别处（Linux 及 Windows 原生框不可用时）AWT 的 FileDialog 选不了目录，只能用 Swing 的，换成系统外观，免得弹出 Metal 风格的窗口。
      */
     suspend fun chooseDirectory(owner: Window?, initial: File?, title: String): File? = withContext(dispatcher) {
         if (isMacOs) {
@@ -86,6 +87,7 @@ internal object AwtDialogs {
             }
         } else {
             runCatching { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()) }
+                .onFailure { PikoLog.w("Dialog", "Failed to apply system LookAndFeel for Swing directory chooser", it) }
             val chooser = JFileChooser(initial).apply {
                 fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
                 dialogTitle = title

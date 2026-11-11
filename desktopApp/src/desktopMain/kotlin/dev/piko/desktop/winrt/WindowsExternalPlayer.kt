@@ -36,7 +36,7 @@ internal object WindowsExternalPlayer : ExternalVideoPlayer {
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start()
             true
-        }.logFailure("ExternalPlayer", "启动外部播放器失败").getOrDefault(false)
+        }.logFailure("ExternalPlayer", "Failed to launch external video player").getOrDefault(false)
     }
 }
 

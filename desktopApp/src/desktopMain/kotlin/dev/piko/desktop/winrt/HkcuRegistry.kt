@@ -103,7 +103,7 @@ internal object HkcuRegistry {
             val values = arena.allocate(JAVA_INT)
             val nul = MemorySegment.NULL
             val status = queryInfoKeyHandle.invokeWithArguments(key, nul, nul, nul, subKeys, nul, nul, values, nul, nul, nul, nul) as Int
-            check(status == ERROR_SUCCESS) { "查询注册表项失败：$subKey，错误码 $status" }
+            check(status == ERROR_SUCCESS) { "RegQueryInfoKeyW failed for $subKey (status=$status)" }
             subKeys.get(JAVA_INT, 0) to values.get(JAVA_INT, 0)
         } finally {
             closeKeyHandle.invokeWithArguments(key)
@@ -140,7 +140,10 @@ internal object HkcuRegistry {
         val key = arena.allocateFrom(subKey, UTF_16LE)
         val valueName = name?.let { arena.allocateFrom(it, UTF_16LE) } ?: MemorySegment.NULL
         val status = setKeyValue.invokeWithArguments(HKEY_CURRENT_USER, key, valueName, type, data, size) as Int
-        if (status != ERROR_SUCCESS) PikoLog.w(TAG, "写入注册表失败：$subKey，错误码 $status")
+        if (status != ERROR_SUCCESS) {
+            val target = if (name != null) "$subKey\\$name" else subKey
+            PikoLog.w(TAG, "Failed to write HKCU registry value $target (status=$status)")
+        }
         return status == ERROR_SUCCESS
     }
 
@@ -161,18 +164,21 @@ internal object HkcuRegistry {
     /** 本来就没有算删掉了。 */
     fun deleteTree(subKey: String): Boolean = Arena.ofConfined().use { arena ->
         val status = deleteTreeHandle.invokeWithArguments(HKEY_CURRENT_USER, arena.allocateFrom(subKey, UTF_16LE)) as Int
-        reportDelete(subKey, status)
+        reportDelete(subKey, null, status)
     }
 
     fun deleteValue(subKey: String, name: String?): Boolean = Arena.ofConfined().use { arena ->
         val valueName = name?.let { arena.allocateFrom(it, UTF_16LE) } ?: MemorySegment.NULL
         val status = deleteValueHandle.invokeWithArguments(HKEY_CURRENT_USER, arena.allocateFrom(subKey, UTF_16LE), valueName) as Int
-        reportDelete(subKey, status)
+        reportDelete(subKey, name, status)
     }
 
-    private fun reportDelete(subKey: String, status: Int): Boolean {
+    private fun reportDelete(subKey: String, name: String?, status: Int): Boolean {
         val ok = status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND
-        if (!ok) PikoLog.w(TAG, "删除注册表项失败：$subKey，错误码 $status")
+        if (!ok) {
+            val target = if (name != null) "$subKey\\$name" else subKey
+            PikoLog.w(TAG, "Failed to delete HKCU registry entry $target (status=$status)")
+        }
         return ok
     }
 }

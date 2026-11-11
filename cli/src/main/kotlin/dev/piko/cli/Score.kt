@@ -53,7 +53,7 @@ private fun recognizedCode(item: DriveListItem.File): String {
 
 /** 文件名里出现了番号的数字部分，才算有番号可认。只比数字：前缀的写法五花八门，正是要考的东西。 */
 private fun mentionsCode(fileName: String, code: String): Boolean {
-    val digits = Regex("""\d{3,}""").findAll(code).map { it.value.trimStart('0') }.toList()
+    val digits = Regex("""[0-9]{3,}""").findAll(code).map { it.value.trimStart('0') }.toList()
     return digits.isNotEmpty() && digits.all { it in fileName }
 }
 

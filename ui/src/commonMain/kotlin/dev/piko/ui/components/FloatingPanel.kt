@@ -152,7 +152,7 @@ internal class FloatingPanelState(width: Dp, followsEnd: Boolean = true) {
  * [fixedSide] 那一侧的边与两个角不给拖：贴边停靠的面板那一侧本来就顶着列表边沿。
  *
  * 用普通 Layout 而不是 Popup：不抢焦点的 Popup 收不到键盘，目录图的方向键与过滤框都用不了。
- * 也不是 BoxWithConstraints：里面有提示气泡这类弹层，测量时组合的布局在桌面端会撞上弹层销毁的崩溃（desktopApp/CLAUDE.md）。
+ * 也不是 BoxWithConstraints：里面有提示气泡这类弹层，测量时组合的布局在桌面端会撞上弹层销毁的崩溃（desktopApp/AGENTS.md）。
  */
 @Composable
 internal fun FloatingPanel(

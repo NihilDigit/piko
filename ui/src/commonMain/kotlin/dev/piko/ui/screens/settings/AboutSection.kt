@@ -116,10 +116,19 @@ internal fun AboutSection(snackbarHostState: SnackbarHostState, modifier: Modifi
             icon = Icons.Outlined.BugReport,
             title = tr("导出日志", "Export logs", "ログをエクスポート", "로그 내보내기", "匯出日誌"),
             supporting = tr("反馈问题时附上，不含文件名与账号机密", "Attach when reporting issues; file names and account secrets are excluded", "問題報告時に添付してください。ファイル名やアカウントの機密情報は含みません", "문제 보고 시 첨부하세요. 파일 이름 및 계정 비밀 정보는 포함되지 않습니다", "回報問題時附上，不含檔案名稱與帳號機密"),
-            onClick = { scope.launch { exportLogs(platform) } },
+            onClick = {
+                scope.launch {
+                    if (!exportLogs(platform)) {
+                        snackbarHostState.showSnackbar(
+                            tr("导出日志失败", "Failed to export logs", "ログのエクスポートに失敗しました", "로그 내보내기에 실패했습니다", "匯出日誌失敗"),
+                            withDismissAction = true,
+                        )
+                    }
+                }
+            },
             trailingIcon = null,
         )
-        // 日志只留七天，这里给的是复现之前手动清一次：导出的就只有这一次的经过
+        // 全量日志留七天、警告与错误留三十天；这里给的是复现前手动清空一次，导出时就只含本次经过
         SettingsNavigationRow(
             icon = Icons.Outlined.History,
             title = tr("清除日志", "Clear logs", "ログを消去", "로그 지우기", "清除日誌"),
@@ -148,12 +157,12 @@ private const val REPOSITORY_URL = "https://github.com/NihilDigit/piko"
 private const val CHANNEL_URL = "https://t.me/piko_dev"
 
 /** 开头写明版本与运行环境，收到的人不必再问；文件名带时间，多次导出不会互相覆盖。 */
-private suspend fun exportLogs(platform: PikoPlatform) {
+private suspend fun exportLogs(platform: PikoPlatform): Boolean {
     val now = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
     fun Int.pad() = toString().padStart(2, '0')
     val stamp = "${now.year}${now.month.number.pad()}${now.day.pad()}-${now.hour.pad()}${now.minute.pad()}${now.second.pad()}"
     val header = tr("Piko ${platform.appVersion}\n${platform.deviceSummary}\n导出于 $now\n\n", "Piko ${platform.appVersion}\n${platform.deviceSummary}\nExported at $now\n\n", "Piko ${platform.appVersion}\n${platform.deviceSummary}\nエクスポート日時 $now\n\n", "Piko ${platform.appVersion}\n${platform.deviceSummary}\n내보낸 시각 $now\n\n", "Piko ${platform.appVersion}\n${platform.deviceSummary}\n匯出於 $now\n\n")
-    platform.exportLog("piko-log-$stamp.txt", header + PikoLog.export())
+    return platform.exportLog("piko-log-$stamp.txt", header + PikoLog.export())
 }
 
 /**

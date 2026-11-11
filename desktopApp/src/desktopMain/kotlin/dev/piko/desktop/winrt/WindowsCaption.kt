@@ -21,6 +21,7 @@ import java.lang.invoke.MethodHandle
 import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Windows 上由 Compose 绘制标题栏，同时保留系统窗口的行为。
@@ -105,7 +106,9 @@ internal class WindowsCaption(private val window: Window) {
     private val rect = arena.allocate(16)
     private val trackMouseEvent = arena.allocate(TRACKMOUSEEVENT_BYTES)
 
-    private val touch = WindowsTouchInput.create(window) { message, error -> PikoLog.w("touch", message, error) }
+    private val touch = WindowsTouchInput.create(window) { message, error -> PikoLog.w("WindowsTouch", message, error) }
+    private val loggedFrameProcError = AtomicBoolean(false)
+    private val loggedChildProcError = AtomicBoolean(false)
 
     private val frameProcStub: MemorySegment by lazy { upcall("frameProc") }
     private val childProcStub: MemorySegment by lazy { upcall("childProc") }
@@ -132,6 +135,7 @@ internal class WindowsCaption(private val window: Window) {
             )
             true
         }.getOrElse {
+            PikoLog.w("Window", "Failed to install custom caption window proc", it)
             frame = MemorySegment.NULL
             false
         }
@@ -216,7 +220,10 @@ internal class WindowsCaption(private val window: Window) {
                 }
             }
             return callFrame(hwnd, message, wParam, lParam)
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            if (loggedFrameProcError.compareAndSet(false, true)) {
+                PikoLog.w("Window", "Unhandled exception in custom frameProc; falling back to original window proc", e)
+            }
             return runCatching { callFrame(hwnd, message, wParam, lParam) }.getOrDefault(0L)
         }
     }
@@ -234,7 +241,10 @@ internal class WindowsCaption(private val window: Window) {
                 }
             }
             return callWindowProc(original, hwnd, message, wParam, lParam)
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            if (loggedChildProcError.compareAndSet(false, true)) {
+                PikoLog.w("Window", "Unhandled exception in custom childProc; falling back to original window proc", e)
+            }
             return runCatching { callWindowProc(original, hwnd, message, wParam, lParam) }.getOrDefault(0L)
         }
     }

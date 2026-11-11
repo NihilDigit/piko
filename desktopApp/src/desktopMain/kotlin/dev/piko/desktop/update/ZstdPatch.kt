@@ -57,7 +57,7 @@ class ZstdPatch private constructor(lookup: SymbolLookup) {
                 val written = requireOk(
                     decompressDCtx.invokeWithArguments(ctx, target, size.toLong(), source, frame.size.toLong()) as Long,
                 )
-                if (written != size.toLong()) throw ZstdPatchException("还原出 $written 字节，应为 $size")
+                if (written != size.toLong()) throw ZstdPatchException("Decompressed $written bytes, expected $size")
                 return target.asSlice(0, written).toArray(JAVA_BYTE)
             } finally {
                 freeDCtx.invokeWithArguments(ctx)
@@ -81,7 +81,7 @@ class ZstdPatch private constructor(lookup: SymbolLookup) {
          */
         fun open(directory: File): ZstdPatch {
             val library = directory.listFiles { file -> file.isFile && file.name.endsWith(".dll") }
-                ?.singleOrNull() ?: throw NoSuchElementException("$directory 里没有唯一的 zstd 库")
+                ?.singleOrNull() ?: throw NoSuchElementException("Expected single zstd DLL in $directory")
             return ZstdPatch(SymbolLookup.libraryLookup(library.toPath(), Arena.global()))
         }
 
@@ -93,7 +93,7 @@ class ZstdPatch private constructor(lookup: SymbolLookup) {
             val resources = System.getProperty("compose.application.resources.dir") ?: return@lazy null
             val directory = File(resources, "zstd").takeIf { it.isDirectory } ?: return@lazy null
             runCatching { open(directory) }
-                .onFailure { PikoLog.w("Update", "libzstd 加载失败，差分更新不可用，改下完整补丁包", it) }
+                .onFailure { PikoLog.w("Update", "Failed to load bundled libzstd; delta updates unavailable, falling back to full patch archive", it) }
                 .getOrNull()
         }
     }

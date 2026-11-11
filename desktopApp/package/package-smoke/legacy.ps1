@@ -1,4 +1,4 @@
-# 已发布的老版本（1.0.0、1.1.0）升级到这次构建的冒烟：真实的老版本便携 zip 与 MSI，升级到 Next，断言各走预定的路、
+﻿# 已发布的老版本（1.0.0、1.1.0）升级到这次构建的冒烟：真实的老版本便携 zip 与 MSI，升级到 Next，断言各走预定的路、
 # 升级后能启动、版本号对、用户数据还在。
 #
 # 老客户端只认三个附件：-files.json、-app.zip、.msi。清单里 patch=false 的文件与本机逐字节相同才走补丁；否则 MSI 安装版
@@ -9,7 +9,7 @@
 # 1.1.0 带 piko.update.api 与 piko.update.auto，整个流程由它自己走：查到 Next、下载、退出、交给它自带的更新脚本，
 # 断言走的是补丁。带 -Delta 时另跑一轮 1.1.0 便携版，假 Release 多挂 -from-1.1.0.zip，断言它用差分还原、没有下完整的 app.zip。
 #
-# 1.0.0 的更新脚本在 8.3 临时目录下把补丁写错位置、仍报成功，所以不再给它补丁（理由见 shared/.../update/CLAUDE.md）。
+# 1.0.0 的更新脚本在 8.3 临时目录下把补丁写错位置、仍报成功，所以不再给它补丁（理由见 shared/.../update/AGENTS.md）。
 # 它有 piko.update.api，没有自动安装，这里照它的 resolve 判断：先断言它的 canPatch 对 Next 失败。便携版到此为止，
 # 它只给下载页；MSI 版照它的做法把 Next 的 MSI 放进暂存目录，再以 msi 模式跑 v1.0.0 原样的 apply-update.ps1。
 #
@@ -284,7 +284,7 @@ try {
         }
         Start-Sleep -Seconds 15
         if ((App-Processes $dir).Count -eq 0) { Save-Logs $name; Fail "$name : $NextVersion exited after the update" }
-        if ((Count-Log "启动 $([regex]::Escape($NextVersion))，") -eq 0) { Save-Logs $name; Fail "$name : $NextVersion never logged its start" }
+        if ((Count-Log "Starting $([regex]::Escape($NextVersion)) on ") -eq 0) { Save-Logs $name; Fail "$name : $NextVersion never logged its start" }
         Stop-App $dir
         Assert-Tree $dir $nextManifest
         if (-not (Test-Path -LiteralPath $sentinel)) { Fail "$name lost the user data in ~/.piko" }
@@ -298,12 +298,12 @@ try {
                 if ($p.ExitCode -ne 0) { Fail "msiexec /fomus after $name exited $($p.ExitCode)" }
             }
             Assert-Tree $dir $nextManifest
-            $started = Count-Log "启动 $([regex]::Escape($NextVersion))，"
+            $started = Count-Log "Starting $([regex]::Escape($NextVersion)) on "
             $env:JAVA_TOOL_OPTIONS = "-Dpiko.update.api=http://127.0.0.1:$Port/latest $homeOption"
             try { Start-Process -FilePath (Join-Path $dir 'Piko.exe') -WorkingDirectory $dir }
             finally { Remove-Item Env:JAVA_TOOL_OPTIONS }
-            for ($i = 0; $i -lt 60 -and (Count-Log "启动 $([regex]::Escape($NextVersion))，") -le $started; $i++) { Start-Sleep -Seconds 1 }
-            if ((Count-Log "启动 $([regex]::Escape($NextVersion))，") -le $started) { Save-Logs $name; Fail "$name : $NextVersion did not start after a Windows Installer repair" }
+            for ($i = 0; $i -lt 60 -and (Count-Log "Starting $([regex]::Escape($NextVersion)) on ") -le $started; $i++) { Start-Sleep -Seconds 1 }
+            if ((Count-Log "Starting $([regex]::Escape($NextVersion)) on ") -le $started) { Save-Logs $name; Fail "$name : $NextVersion did not start after a Windows Installer repair" }
             Stop-App $dir
             foreach ($code in (Msi-Products)) {
                 $p = Start-Process msiexec.exe -ArgumentList @('/x', $code, '/qn', '/norestart', '/l*v', "`"$(Join-Path $logs "uninstall-$name.log")`"") -Wait -PassThru

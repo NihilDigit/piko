@@ -60,19 +60,19 @@ internal class ZsyncControl(
                     break
                 }
             }
-            require(headerEnd > 0) { "zsync 控制文件没有头部" }
+            require(headerEnd > 0) { "Missing header in zsync control file" }
             val headers = bytes.copyOfRange(0, headerEnd).decodeToString().lines()
                 .mapNotNull { line -> line.indexOf(':').takeIf { it > 0 }?.let { line.substring(0, it).trim() to line.substring(it + 1).trim() } }
                 .toMap()
-            val blockSize = checkNotNull(headers["Blocksize"]?.toIntOrNull()) { "zsync 控制文件缺少 Blocksize" }
-            val length = checkNotNull(headers["Length"]?.toLongOrNull()) { "zsync 控制文件缺少 Length" }
+            val blockSize = checkNotNull(headers["Blocksize"]?.toIntOrNull()) { "Missing Blocksize in zsync control file" }
+            val length = checkNotNull(headers["Length"]?.toLongOrNull()) { "Missing Length in zsync control file" }
             val (seqMatches, rsumBytes, checksumBytes) = (headers["Hash-Lengths"] ?: "1,4,16").split(',').map { it.trim().toInt() }
-            require(blockSize > 0 && length >= 0) { "zsync 控制文件的块大小或长度无效" }
-            require(seqMatches in 1..2 && rsumBytes in 1..4 && checksumBytes in 3..16) { "zsync 控制文件的 Hash-Lengths 无效" }
+            require(blockSize > 0 && length >= 0) { "Invalid Blocksize or Length in zsync control file" }
+            require(seqMatches in 1..2 && rsumBytes in 1..4 && checksumBytes in 3..16) { "Invalid Hash-Lengths in zsync control file" }
             val blockCount = Math.toIntExact((length + blockSize - 1) / blockSize)
             val perBlock = rsumBytes + checksumBytes
             val body = headerEnd + 2
-            require(bytes.size - body >= blockCount.toLong() * perBlock) { "zsync 控制文件的块校验不完整" }
+            require(bytes.size - body >= blockCount.toLong() * perBlock) { "Truncated block checksums in zsync control file" }
             val rsums = IntArray(blockCount)
             val checksums = ByteArray(blockCount * checksumBytes)
             for (block in 0 until blockCount) {
@@ -128,7 +128,7 @@ internal fun planZsync(control: ZsyncControl, local: File): ZsyncPlan {
     FileChannel.open(local.toPath(), StandardOpenOption.READ).use { channel ->
         val size = channel.size()
         // 超过 2 GiB 映射不了；AppImage 远没有这么大，真碰上就整包下载
-        require(size <= Int.MAX_VALUE) { "本机文件过大：$size" }
+        require(size <= Int.MAX_VALUE) { "Local seed file too large to map: $size" }
         val data = channel.map(FileChannel.MapMode.READ_ONLY, 0, size)
         ZsyncScanner(control, data, size.toInt(), sources).scan()
     }
@@ -277,7 +277,7 @@ internal suspend fun assembleZsync(
                 var copied = 0L
                 while (copied < size) {
                     val n = input.transferTo(source + copied, size - copied, out.position(offset + copied))
-                    if (n <= 0) throw ChecksumMismatchException("本机文件在拼接途中变短了")
+                    if (n <= 0) throw ChecksumMismatchException("Local seed file truncated during zsync assembly")
                     copied += n
                 }
             }
@@ -292,7 +292,7 @@ internal suspend fun assembleZsync(
                             val chunk = ByteBuffer.wrap(buffer, 0, length)
                             while (chunk.hasRemaining()) position += out.write(chunk, position)
                         }
-                        if (position != range.last + 1) throw ChecksumMismatchException("区间 $range 只收到 ${position - range.first} 字节")
+                        if (position != range.last + 1) throw ChecksumMismatchException("Range $range received only ${position - range.first} bytes")
                     }
                 }
             }.awaitAll()
@@ -310,7 +310,7 @@ internal suspend fun assembleZsync(
             }
             digest.digest().toHex()
         }
-        if (actual != expected) throw ChecksumMismatchException("zsync 拼出的文件 SHA-1 不符：$actual != $expected")
+        if (actual != expected) throw ChecksumMismatchException("zsync assembled file SHA-1 mismatch: $actual != $expected")
     }
 }
 

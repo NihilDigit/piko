@@ -44,20 +44,6 @@ internal class DownloadRequest(
     val video: FileStat? = files.singleOrNull()?.takeIf { !it.isFolder }
 }
 
-/** 点「下载」之后怎么走。 */
-private sealed interface DownloadPlan {
-    data object Ask : DownloadPlan
-
-    /** 不问，按上限直接下，0 是原画。 */
-    data class Direct(val maxHeight: Int) : DownloadPlan
-}
-
-/**
- * 普通下载直接使用默认画质，未设置时用原画。只有显式指定画质才询问，不检查目录内容。
- */
-private fun planDownload(defaultMaxHeight: Int?, chooseQuality: Boolean): DownloadPlan =
-    if (chooseQuality) DownloadPlan.Ask else DownloadPlan.Direct(defaultMaxHeight ?: 0)
-
 /** 对话框里勾了「以后按此画质直接下载」时存成默认下载画质的上限；没勾为 null，所选只管这一次。 */
 private fun keptDefaultMaxHeight(choice: DownloadChoice, keep: Boolean): Int? = if (!keep) null else when (choice) {
     is DownloadChoice.Exact -> downloadMaxHeightFor(choice.quality)
@@ -103,24 +89,27 @@ class DownloadLauncher internal constructor(
 
     private fun start(files: List<FileStat>, folderSource: DownloadFolderSource?, chooseQuality: Boolean, onQueued: (String?) -> Unit) {
         if (files.isEmpty() || isPreparing || request != null) return
+        val folderCount = files.count { it.isFolder }
+        if (folderCount == files.size && folderSource == null) {
+            PikoLog.d(TAG, "Skipped download request: ${files.size} folder(s) without folderSource")
+            return
+        }
         val pending = DownloadRequest(files.toList(), folderSource, onQueued)
         if (chooseQuality) {
+            PikoLog.d(TAG, "Awaiting download quality selection: ${files.size} item(s), $folderCount folder(s)")
             request = pending
             return
         }
         isPreparing = true
         val started = TimeSource.Monotonic.markNow()
-        PikoLog.d("Download", "准备下载：${files.size} 项，其中 ${files.count { it.isFolder }} 个文件夹")
+        PikoLog.d(TAG, "Preparing direct download: ${files.size} item(s), $folderCount folder(s)")
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
-                val default = preferences.downloadMaxHeightFlow.first()
-                val plan = planDownload(default, chooseQuality = false)
+                // 普通下载直接使用默认画质上限，未设置时用 0（原画）；仅显式指定画质才弹窗询问
+                val maxHeight = preferences.downloadMaxHeightFlow.first() ?: 0
                 currentCoroutineContext().ensureActive()
-                PikoLog.d("Download", "下载准备完成：${started.elapsedNow().inWholeMilliseconds} ms，${if (plan is DownloadPlan.Ask) "等待选择画质" else "提交下载"}")
-                when (plan) {
-                    DownloadPlan.Ask -> request = pending
-                    is DownloadPlan.Direct -> enqueue(pending, DownloadChoice.Cap(plan.maxHeight), notice = null)
-                }
+                PikoLog.d(TAG, "Submitting direct download after ${started.elapsedNow().inWholeMilliseconds} ms (maxHeight=$maxHeight)")
+                enqueue(pending, DownloadChoice.Cap(maxHeight), notice = null)
             } finally {
                 if (preparation === currentCoroutineContext()[Job]) {
                     preparation = null
@@ -137,6 +126,11 @@ class DownloadLauncher internal constructor(
         this.request = null
         val kept = keptDefaultMaxHeight(choice, keep)
         if (kept != null) scope.launch { preferences.setDownloadMaxHeight(kept) }
+        val choiceLabel = when (choice) {
+            is DownloadChoice.Exact -> choice.quality.name ?: "original"
+            is DownloadChoice.Cap -> if (choice.maxHeight <= 0) "original" else "${choice.maxHeight}P"
+        }
+        PikoLog.d(TAG, "Confirmed download quality: $choiceLabel, keepDefault=$keep, items=${request.files.size}")
         enqueue(request, choice, notice = DEFAULT_QUALITY_SAVED_NOTICE.takeIf { kept != null })
     }
 
@@ -150,6 +144,10 @@ class DownloadLauncher internal constructor(
         }
         val batches = request.folderSource?.takeIf { folders.isNotEmpty() }?.let { coordinator.enqueueFolders(folders, it, cap) } ?: 0
         if (files.isNotEmpty() || batches > 0) request.onQueued(notice)
+    }
+
+    private companion object {
+        const val TAG = "Download"
     }
 }
 

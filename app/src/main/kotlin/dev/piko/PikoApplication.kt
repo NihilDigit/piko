@@ -208,10 +208,6 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
     }
 
     /**
-     * 日志放在私有的 files/logs，导出时另拷一份到缓存目录再分享。debug 包同时进 logcat；
-     * release 包不进，省掉每条一次的 logcat 写入。
-     */
-    /**
      * 要赶在 SDK、图片加载与更新检查建出 OkHttpClient 之前：它们建客户端时取走默认的 ProxySelector。
      * 同步读一次设置，手动代理从第一个请求起就生效；之后改设置经 flow 跟上。
      */
@@ -220,6 +216,10 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
         appScope.launch { sessionManager.proxySettingFlow.collect(PikoProxySelector::apply) }
     }
 
+    /**
+     * 日志放在私有的 files/logs，导出时另拷一份到缓存目录再分享；同时接管未捕获异常确保崩溃栈先落盘。
+     * debug 包同时进 logcat；release 包不进，省掉每条一次的 logcat 写入。
+     */
     private fun installLog() {
         val echo: ((LogLevel, String, String, Throwable?) -> Unit)? = if (BuildConfig.DEBUG) {
             { level, tag, message, error ->
@@ -229,22 +229,22 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
                     LogLevel.WARN -> Log.WARN
                     LogLevel.ERROR -> Log.ERROR
                 }
-                Log.println(priority, "Piko/$tag", if (error == null) message else "$message\n${Log.getStackTraceString(error)}")
+                Log.println(priority, "Piko/$tag", if (error == null) message else "$message\n${PikoLog.redact(Log.getStackTraceString(error))}")
             }
         } else {
             null
         }
-        PikoLog.install(File(filesDir, "logs").path, echo)
+        PikoLog.install(File(filesDir, "logs").path, echo = echo)
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
-            PikoLog.e("Crash", "线程 ${thread.name} 未捕获的异常", error)
+            PikoLog.e("Crash", "Uncaught exception on thread ${thread.name}", error)
             // 进程马上就没了，等写入协程把这条落盘；卡住也只等一秒，不耽误系统的崩溃处理
             runBlocking { withTimeoutOrNull(1_000) { PikoLog.flush() } }
             previous?.uncaughtException(thread, error)
         }
         PikoLog.i(
             "App",
-            "启动 ${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}），Android ${Build.VERSION.RELEASE}，${Build.MANUFACTURER} ${Build.MODEL}",
+            "App started: Piko ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}), Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}",
         )
     }
 

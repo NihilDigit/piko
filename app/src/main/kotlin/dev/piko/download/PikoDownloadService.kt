@@ -83,7 +83,7 @@ class PikoDownloadService : Service() {
             // Android 12 起应用在后台时不能进入前台服务（ForegroundServiceStartNotAllowedException），
             // Android 15 起 dataSync 用满当日时长后也会被拒。下载协程本身不依赖服务，
             // 下一次退到后台时 WorkResultNotifier 会再试
-            PikoLog.w(TAG, "进入前台服务被拒，传输在无通知的情况下继续", e)
+            PikoLog.w(TAG, "Foreground service promotion denied; continuing transfers without ongoing notification", e)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -98,7 +98,7 @@ class PikoDownloadService : Service() {
      * 用户回到应用可以原地继续。
      */
     override fun onTimeout(startId: Int, fgsType: Int) {
-        PikoLog.w(TAG, "前台服务到达系统时长上限，暂停全部传输")
+        PikoLog.w(TAG, "Foreground service reached system time limit (fgsType=$fgsType); pausing active transfers")
         val services = PikoApplication.instance.services
         synchronized(timeoutLock) {
             timedOutDownloads += services.downloadManager.tasks.value.values.filter { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING }.map { it.taskId }
@@ -137,7 +137,7 @@ class PikoDownloadService : Service() {
                     Intent(this, PikoDownloadService::class.java),
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                 getSystemService(AlarmManager::class.java).set(AlarmManager.ELAPSED_REALTIME, SystemClock.elapsedRealtime() + 1000L, pending)
-            }.onFailure { PikoLog.w(TAG, "注册后台传输恢复失败", it) }
+            }.onFailure { PikoLog.w(TAG, "Failed to schedule background transfer restart alarm on task removal", it) }
         }
         super.onTaskRemoved(rootIntent)
     }
@@ -284,7 +284,7 @@ class PikoDownloadService : Service() {
                 ContextCompat.startForegroundService(context, intent)
             } catch (e: Exception) {
                 // 处理后台启动限制回退
-                PikoLog.w(TAG, "启动传输服务被拒", e)
+                PikoLog.w(TAG, "Failed to start foreground transfer service", e)
             }
         }
 

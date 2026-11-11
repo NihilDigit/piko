@@ -18,8 +18,9 @@ import dev.piko.shared.log.PikoLog
 class UpdateInstallReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
-        // 失败的原因只在系统给的状态码与说明里，界面上只有一句「安装失败」
-        PikoLog.i("Update", "安装会话回调：状态 $status${intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)?.let { "，$it" } ?: ""}")
+        val detail = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)?.takeIf { it.isNotBlank() }
+        val statusSummary = if (detail != null) "status=$status, detail=$detail" else "status=$status"
+        // 失败的原因只在系统给的状态码与说明里，界面上只有精简提示，诊断日志须写入 WARN+ 以进入 piko-errors.log
         when (status) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 val confirm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -28,11 +29,40 @@ class UpdateInstallReceiver : BroadcastReceiver() {
                     @Suppress("DEPRECATION")
                     intent.getParcelableExtra(Intent.EXTRA_INTENT)
                 }
-                confirm?.let { context.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                if (confirm == null) {
+                    PikoApplication.instance.appUpdater.onInstallFailed(
+                        userMessage = tr("无法启动安装", "Unable to start installation", "インストールを開始できません", "설치를 시작할 수 없습니다", "無法啟動安裝"),
+                        logReason = "STATUS_PENDING_USER_ACTION missing confirmation EXTRA_INTENT ($statusSummary)",
+                    )
+                } else {
+                    runCatching { context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                        .onSuccess {
+                            PikoLog.i("Update", "PackageInstaller session awaiting user confirmation ($statusSummary)")
+                        }
+                        .onFailure { e ->
+                            PikoApplication.instance.appUpdater.onInstallFailed(
+                                userMessage = tr("无法启动安装", "Unable to start installation", "インストールを開始できません", "설치를 시작할 수 없습니다", "無法啟動安裝"),
+                                logReason = "Failed to launch PackageInstaller confirmation Activity ($statusSummary)",
+                                cause = e,
+                            )
+                        }
+                }
             }
-            PackageInstaller.STATUS_SUCCESS -> Unit
-            PackageInstaller.STATUS_FAILURE_ABORTED -> PikoApplication.instance.appUpdater.onInstallFailed(tr("已取消安装", "Installation cancelled", "インストールをキャンセルしました", "설치 취소됨", "已取消安裝"))
-            else -> PikoApplication.instance.appUpdater.onInstallFailed(tr("安装失败", "Installation failed", "インストールに失敗しました", "설치 실패", "安裝失敗"))
+            PackageInstaller.STATUS_SUCCESS -> {
+                PikoLog.i("Update", "PackageInstaller session succeeded ($statusSummary)")
+            }
+            PackageInstaller.STATUS_FAILURE_ABORTED -> {
+                PikoApplication.instance.appUpdater.onInstallFailed(
+                    userMessage = tr("已取消安装", "Installation cancelled", "インストールをキャンセルしました", "설치 취소됨", "已取消安裝"),
+                    logReason = "Installation aborted ($statusSummary)",
+                )
+            }
+            else -> {
+                PikoApplication.instance.appUpdater.onInstallFailed(
+                    userMessage = tr("安装失败", "Installation failed", "インストールに失敗しました", "설치 실패", "安裝失敗"),
+                    logReason = "Installation failed ($statusSummary)",
+                )
+            }
         }
     }
 }

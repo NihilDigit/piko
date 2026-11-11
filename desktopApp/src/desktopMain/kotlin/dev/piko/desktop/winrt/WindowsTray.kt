@@ -6,6 +6,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import dev.piko.shared.log.PikoLog
 import java.awt.Image
 import java.awt.SystemTray
 import java.awt.TrayIcon
@@ -35,6 +36,8 @@ import javax.swing.SwingUtilities
  * 宽字符 Tooltip）配合 FFM 直调 user32.dll 的宽字符菜单接口（CreatePopupMenu + AppendMenuW +
  * TrackPopupMenu），彻底消除编码乱码并保留 Windows 11 原生圆角与深浅色菜单样式。
  */
+private const val TAG = "Tray"
+
 @Composable
 internal fun WindowsSystemTray(
     tooltip: String,
@@ -47,6 +50,7 @@ internal fun WindowsSystemTray(
     onOpenTransfers: (() -> Unit)? = null,
     pauseAllLabel: String? = null,
     onPauseAll: (() -> Unit)? = null,
+    onUnavailable: () -> Unit = {},
 ) {
     val currentShowLabel by rememberUpdatedState(showLabel)
     val currentQuitLabel by rememberUpdatedState(quitLabel)
@@ -57,10 +61,13 @@ internal fun WindowsSystemTray(
     val currentOnOpenTransfers by rememberUpdatedState(onOpenTransfers)
     val currentPauseAllLabel by rememberUpdatedState(pauseAllLabel)
     val currentOnPauseAll by rememberUpdatedState(onPauseAll)
+    val currentOnUnavailable by rememberUpdatedState(onUnavailable)
 
     val awtImage: Image = remember {
         runCatching {
             object {}.javaClass.getResourceAsStream("/app-icon.png")?.use(ImageIO::read)
+        }.onFailure {
+            PikoLog.w(TAG, "Failed to decode tray icon resource; using blank fallback", it)
         }.getOrNull() ?: BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB)
     }
 
@@ -108,13 +115,26 @@ internal fun WindowsSystemTray(
     }
 
     DisposableEffect(trayIcon) {
-        val tray = runCatching { SystemTray.getSystemTray() }.getOrNull()
-        SwingUtilities.invokeLater {
-            runCatching { tray?.add(trayIcon) }
+        val tray = runCatching { SystemTray.getSystemTray() }
+            .onFailure {
+                PikoLog.w(TAG, "Failed to obtain Windows SystemTray", it)
+                currentOnUnavailable()
+            }
+            .getOrNull()
+        if (tray != null) {
+            SwingUtilities.invokeLater {
+                runCatching { tray.add(trayIcon) }
+                    .onFailure {
+                        PikoLog.w(TAG, "Failed to install Windows system tray icon", it)
+                        SwingUtilities.invokeLater { currentOnUnavailable() }
+                    }
+            }
         }
         onDispose {
-            SwingUtilities.invokeLater {
-                runCatching { tray?.remove(trayIcon) }
+            if (tray != null) {
+                SwingUtilities.invokeLater {
+                    runCatching { tray.remove(trayIcon) }
+                }
             }
         }
     }
@@ -267,7 +287,7 @@ private object Win32PopupMenu {
                 destroyWindow.invokeWithArguments(hwnd)
             }
         }
-    }.getOrDefault(0)
+    }.onFailure { PikoLog.w(TAG, "Failed to show Win32 tray popup menu", it) }.getOrDefault(0)
 
     private fun Arena.utf16Z(text: String): MemorySegment {
         val chars = text.toCharArray()

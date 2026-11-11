@@ -49,14 +49,16 @@ internal object WindowsToast {
     private val callWithTwoPointers = FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS)
     private val release = FunctionDescriptor.of(JAVA_INT, ADDRESS)
 
-    private var initialized = false
+    // 按线程记录是否调过 RoInitialize：日常走 WinRTSupport.comThread，自测与测试可能在别的线程调用，
+    // 若用进程级布尔位会在未初始化 COM 的线程上跳过 RoInitialize 而触发 CO_E_NOTINITIALIZED。
+    private val initialized = ThreadLocal.withInitial { false }
 
     /** 在当前线程上初始化 WinRT。重复调用无害；线程已是单线程套间时沿用。 */
     fun initializeThread() {
-        if (initialized) return
+        if (initialized.get()) return
         val hr = hresult(roInitialize, RO_INIT_MULTITHREADED)
         if (hr < 0 && hr != RPC_E_CHANGED_MODE) check(hr, "RoInitialize")
-        initialized = true
+        initialized.set(true)
     }
 
     /** 以 [appUserModelId] 的名义弹出一条 Toast，[xml] 是完整的 toast 模板。失败时抛异常。 */
@@ -147,7 +149,7 @@ internal object WindowsToast {
         linker.downcallHandle(combase.find(name).orElseThrow(), descriptor)
 
     private fun check(hr: Int, what: String) {
-        if (hr < 0) error("$what 失败：HRESULT 0x%08X".format(hr))
+        if (hr < 0) error("$what failed: HRESULT 0x%08X".format(hr))
     }
 
     /** GUID 的内存布局：前三段按小端存放，后两段按字节原样。 */

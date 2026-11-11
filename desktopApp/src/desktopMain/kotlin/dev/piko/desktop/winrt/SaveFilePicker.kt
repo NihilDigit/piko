@@ -1,5 +1,7 @@
 package dev.piko.desktop.winrt
 
+import dev.piko.shared.log.PikoLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import java.awt.Window
 import java.io.File
@@ -36,9 +38,18 @@ object SaveFilePicker {
         pattern: String,
     ): FolderPickResult {
         if (!WinRTSupport.isWindows) return FolderPickResult.Unavailable
-        val ownerHwnd = owner?.let { runCatching { Win32Window.handleOf(it) }.getOrNull() } ?: MemorySegment.NULL
+        val ownerHwnd = owner?.let {
+            runCatching { Win32Window.handleOf(it) }
+                .onFailure { e -> PikoLog.w("Dialog", "Failed to resolve owner HWND for SaveFilePicker", e) }
+                .getOrNull()
+        } ?: MemorySegment.NULL
         return withContext(FolderPicker.dispatcher) {
-            runCatching { show(ownerHwnd, folder, fileName, title, filterName, pattern) }.getOrDefault(FolderPickResult.Unavailable)
+            runCatching { show(ownerHwnd, folder, fileName, title, filterName, pattern) }
+                .onFailure {
+                    if (it is CancellationException) throw it
+                    PikoLog.w("Dialog", "Native SaveFilePicker failed; falling back to AwtDialogs", it)
+                }
+                .getOrDefault(FolderPickResult.Unavailable)
         }
     }
 

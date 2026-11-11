@@ -41,8 +41,19 @@ class SingleInstance private constructor(
         val server = server ?: return
         Thread(
             {
+                var loggedAcceptError = false
                 while (server.isOpen) {
-                    val args = runCatching { server.accept().use(::readArgs) }.getOrNull() ?: continue
+                    val args = try {
+                        server.accept().use(::readArgs).also { loggedAcceptError = false }
+                    } catch (e: Throwable) {
+                        if (!server.isOpen) break
+                        if (!loggedAcceptError) {
+                            loggedAcceptError = true
+                            PikoLog.w(TAG, "Failed to accept single-instance socket connection", e)
+                        }
+                        Thread.sleep(200)
+                        continue
+                    }
                     if (isDevRun && DEV_QUIT_ARG in args) exitProcess(0)
                     onArgs(args)
                 }
@@ -70,7 +81,7 @@ class SingleInstance private constructor(
             val channel = runCatching {
                 FileChannel.open(directory.resolve("instance.lock").toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE)
             }.getOrElse {
-                PikoLog.w(TAG, "无法创建实例锁，按独立实例启动", it)
+                PikoLog.w(TAG, "Failed to open single-instance lock file; starting as standalone instance", it)
                 return SingleInstance(lock = null, server = null)
             }
             // 同一 JVM 里重复加锁抛 OverlappingFileLockException，别的进程持有时返回 null
@@ -88,11 +99,12 @@ class SingleInstance private constructor(
                 return null
             }
             runCatching { directory.resolve(OWNER_FILE).writeText(currentUser) }
+                .onFailure { PikoLog.w(TAG, "Failed to write single-instance owner file", it) }
             val server = runCatching {
                 socketFile.delete()
                 ServerSocketChannel.open(StandardProtocolFamily.UNIX)
                     .apply { bind(UnixDomainSocketAddress.of(socketFile.toPath())) }
-            }.onFailure { PikoLog.w(TAG, "无法监听实例 socket，后来的启动参数收不到", it) }.getOrNull()
+            }.onFailure { PikoLog.w(TAG, "Failed to bind single-instance socket; forwarded launch arguments will not be received", it) }.getOrNull()
             // 退出钩子在锁释放之前跑，此时不会有新的主实例已经绑上同一个路径
             if (server != null) {
                 Runtime.getRuntime().addShutdownHook(Thread {
@@ -110,14 +122,15 @@ class SingleInstance private constructor(
          */
         private fun forward(args: List<String>): Boolean {
             allowAnyForeground()
+            var lastError: Throwable? = null
             repeat(20) {
                 val sent = runCatching {
                     SocketChannel.open(UnixDomainSocketAddress.of(socketFile.toPath())).use { writeArgs(it, args) }
-                }.isSuccess
+                }.onFailure { lastError = it }.isSuccess
                 if (sent) return true
                 Thread.sleep(100)
             }
-            PikoLog.w(TAG, "已有实例在运行，但转交启动参数失败")
+            PikoLog.w(TAG, "Another instance is running, but forwarding launch arguments failed", lastError)
             return false
         }
 
@@ -128,7 +141,7 @@ class SingleInstance private constructor(
         private fun explainForwardFailure() {
             val owner = runCatching { directory.resolve(OWNER_FILE).readText().trim() }.getOrNull()
             if (owner.isNullOrEmpty() || owner.equals(currentUser, ignoreCase = true)) return
-            PikoLog.w(TAG, "数据目录正由另一个系统用户使用")
+            PikoLog.w(TAG, "Data directory is already in use by another OS user (owner=$owner, current=$currentUser)")
             if (isUnattended()) exitProcess(EXIT_HELD_BY_OTHER_USER)
             runCatching {
                 javax.swing.UIManager.setLookAndFeel(javax.swing.UIManager.getSystemLookAndFeelClassName())

@@ -1,7 +1,5 @@
 package dev.piko.desktop.media
 
-import dev.piko.shared.i18n.tr
-
 import dev.piko.desktop.media.FfmpegLayout.AVERROR_EIO
 import dev.piko.desktop.media.FfmpegLayout.AVERROR_EOF
 import dev.piko.desktop.media.FfmpegLayout.AVERROR_EXIT
@@ -84,13 +82,13 @@ internal class FfmpegRemuxer(private val ffmpeg: Ffmpeg) {
             val inputRef = arena.allocate(ADDRESS)
             try {
                 val context = (ffmpeg.allocContext.invokeWithArguments() as MemorySegment).reinterpret(FORMAT_SIZE)
-                if (context == MemorySegment.NULL) throw FfmpegException("内存不足：avformat_alloc_context")
+                if (context == MemorySegment.NULL) throw FfmpegException("Out of memory: avformat_alloc_context")
                 context.set(ADDRESS, FORMAT_PB, avioRef.get(ADDRESS, 0))
                 inputRef.set(ADDRESS, 0, context)
                 // 失败时它自己释放 context 并把 inputRef 置空，finally 里据此判断
-                reader.guarded { ffmpeg.check(ffmpeg.openInput.invokeWithArguments(inputRef, MemorySegment.NULL, MemorySegment.NULL, MemorySegment.NULL) as Int, tr("识别源文件格式", "Detect source format", "元ファイルの形式を認識", "원본 형식 인식", "辨識來源檔案格式")) }
+                reader.guarded { ffmpeg.check(ffmpeg.openInput.invokeWithArguments(inputRef, MemorySegment.NULL, MemorySegment.NULL, MemorySegment.NULL) as Int, "Detect source format") }
                 val input = inputRef.get(ADDRESS, 0).reinterpret(FORMAT_SIZE)
-                reader.guarded { ffmpeg.check(ffmpeg.findStreamInfo.invokeWithArguments(input, MemorySegment.NULL) as Int, tr("读取流信息", "Read stream information", "ストリーム情報を読み込み", "스트림 정보 읽기", "讀取串流資訊")) }
+                reader.guarded { ffmpeg.check(ffmpeg.findStreamInfo.invokeWithArguments(input, MemorySegment.NULL) as Int, "Read stream information") }
                 Session(arena, reader, input, destination, onProgress).run(range)
             } finally {
                 if (inputRef.get(ADDRESS, 0) != MemorySegment.NULL) ffmpeg.closeInput.invokeWithArguments(inputRef)
@@ -138,7 +136,7 @@ internal class FfmpegRemuxer(private val ffmpeg: Ffmpeg) {
         private fun copy(range: ClipRange?) {
             val outputRef = arena.allocate(ADDRESS)
             val path = arena.allocateFrom(destination.absolutePath)
-            ffmpeg.check(ffmpeg.allocOutputContext.invokeWithArguments(outputRef, MemorySegment.NULL, arena.allocateFrom("mp4"), path) as Int, tr("建立 MP4 输出", "Create MP4 output", "MP4出力を作成", "MP4 출력 생성", "建立 MP4 輸出"))
+            ffmpeg.check(ffmpeg.allocOutputContext.invokeWithArguments(outputRef, MemorySegment.NULL, arena.allocateFrom("mp4"), path) as Int, "Create MP4 output context")
             val output = outputRef.get(ADDRESS, 0).reinterpret(FORMAT_SIZE)
             try {
                 val selected = selectStreams(output.get(ADDRESS, FORMAT_OFORMAT))
@@ -155,16 +153,16 @@ internal class FfmpegRemuxer(private val ffmpeg: Ffmpeg) {
                     seek(video, start.seekFrom)
                     start.keyframe..(origin + clip.endMillis * 1000)
                 }
-                ffmpeg.check(ffmpeg.avioOpen.invokeWithArguments(output.asSlice(FORMAT_PB), path, AVIO_FLAG_WRITE) as Int, tr("创建输出文件", "Create output file", "出力ファイルを作成", "출력 파일 생성", "建立輸出檔案"))
+                ffmpeg.check(ffmpeg.avioOpen.invokeWithArguments(output.asSlice(FORMAT_PB), path, AVIO_FLAG_WRITE) as Int, "Open output file")
                 val options = arena.allocate(ADDRESS)
                 ffmpeg.dictSet.invokeWithArguments(options, arena.allocateFrom("movflags"), arena.allocateFrom("+faststart"), 0)
                 try {
-                    ffmpeg.check(ffmpeg.writeHeader.invokeWithArguments(output, options) as Int, tr("写入 MP4 头", "Write MP4 header", "MP4ヘッダーを書き込み", "MP4 헤더 쓰기", "寫入 MP4 標頭"))
+                    ffmpeg.check(ffmpeg.writeHeader.invokeWithArguments(output, options) as Int, "Write MP4 header")
                 } finally {
                     ffmpeg.dictFree.invokeWithArguments(options)
                 }
                 copyPackets(output, outputIndex, video, origin, window)
-                ffmpeg.check(ffmpeg.writeTrailer.invokeWithArguments(output) as Int, tr("写入 MP4 索引", "Write MP4 index", "MP4インデックスを書き込み", "MP4 인덱스 쓰기", "寫入 MP4 索引"))
+                ffmpeg.check(ffmpeg.writeTrailer.invokeWithArguments(output) as Int, "Write MP4 trailer")
                 report(1f)
             } finally {
                 val pb = output.asSlice(FORMAT_PB)
@@ -180,8 +178,8 @@ internal class FfmpegRemuxer(private val ffmpeg: Ffmpeg) {
         private fun selectStreams(format: MemorySegment): List<SourceStream> {
             val best = ffmpeg.findBestStream.invokeWithArguments(input, AVMEDIA_TYPE_VIDEO, -1, -1, MemorySegment.NULL, 0) as Int
             // 片段与转码档下载都是视频，读不出画面就失败，不出一个只有声音的文件
-            val video = streams.getOrNull(best)?.takeUnless { it.attachedPicture } ?: throw FfmpegException(tr("源文件中没有可读的视频", "No readable video in source", "元ファイルに読み込める動画がありません", "원본에 읽을 수 있는 동영상이 없습니다", "來源檔案中沒有可讀取的影片"))
-            if (!accepts(format, video)) throw FfmpegException(tr("此视频编码不支持封装为 MP4", "This video codec is not supported in MP4 containers", "この映像コーデックはMP4コンテナに対応していません", "이 비디오 코덱은 MP4 컨테이너를 지원하지 않습니다", "此影片編碼不支援封裝為 MP4"))
+            val video = streams.getOrNull(best)?.takeUnless { it.attachedPicture } ?: throw FfmpegException("No readable video stream in source")
+            if (!accepts(format, video)) throw FfmpegException("Video codec (${video.codecId}) is not supported in MP4 container")
             val audio = streams.filter { it.type == AVMEDIA_TYPE_AUDIO && accepts(format, it) }
             return listOf(video) + audio
         }
@@ -192,9 +190,9 @@ internal class FfmpegRemuxer(private val ffmpeg: Ffmpeg) {
 
         private fun addOutputStream(output: MemorySegment, source: SourceStream) {
             val stream = (ffmpeg.newStream.invokeWithArguments(output, MemorySegment.NULL) as MemorySegment).reinterpret(STREAM_SIZE)
-            if (stream == MemorySegment.NULL) throw FfmpegException("内存不足：avformat_new_stream")
+            if (stream == MemorySegment.NULL) throw FfmpegException("Out of memory: avformat_new_stream")
             val codecpar = stream.get(ADDRESS, STREAM_CODECPAR).reinterpret(PAR_SIZE)
-            ffmpeg.check(ffmpeg.parametersCopy.invokeWithArguments(codecpar, source.codecpar) as Int, tr("复制编码参数", "Copy codec parameters", "コーデックパラメーターをコピー", "코덱 매개변수 복사", "複製編碼參數"))
+            ffmpeg.check(ffmpeg.parametersCopy.invokeWithArguments(codecpar, source.codecpar) as Int, "Copy codec parameters")
             // 源容器的 tag 不能照搬（TS 与 MKV 的 tag 在 MP4 里无效），置 0 由 muxer 按编码挑；HEVC 例外，见 TAG_HVC1
             codecpar.set(JAVA_INT, PAR_CODEC_TAG, if (source.codecId == AV_CODEC_ID_HEVC) TAG_HVC1 else 0)
             stream.set(JAVA_INT, STREAM_TIME_BASE, source.timeBaseNum)
@@ -240,14 +238,14 @@ internal class FfmpegRemuxer(private val ffmpeg: Ffmpeg) {
 
         private fun seek(video: SourceStream?, microseconds: Long) {
             val (index, timestamp) = if (video == null) -1 to microseconds else video.index to rescale(microseconds, video.timeBaseDen.toLong(), video.timeBaseNum * 1_000_000L)
-            reader.guarded { ffmpeg.check(ffmpeg.seekFrame.invokeWithArguments(input, index, timestamp, AVSEEK_FLAG_BACKWARD) as Int, tr("定位起点", "Locate start", "開始点を特定", "시작점 찾기", "定位起點")) }
+            reader.guarded { ffmpeg.check(ffmpeg.seekFrame.invokeWithArguments(input, index, timestamp, AVSEEK_FLAG_BACKWARD) as Int, "Seek to clip start") }
         }
 
         private fun readPacket(): Boolean {
-            if (!reader.job.isActive) throw CancellationException(tr("转封装已取消", "Remux cancelled", "再多重化をキャンセルしました", "리먹싱 취소됨", "已取消轉封裝"))
+            if (!reader.job.isActive) throw CancellationException("Remux cancelled")
             val code = reader.guarded { ffmpeg.readFrame.invokeWithArguments(input, packet) as Int }
             if (code == AVERROR_EOF) return false
-            ffmpeg.check(code, tr("读取源文件", "Read source file", "元ファイルを読み込み", "원본 파일 읽기", "讀取來源檔案"))
+            ffmpeg.check(code, "Read source packet")
             return true
         }
 
@@ -314,7 +312,7 @@ internal class FfmpegRemuxer(private val ffmpeg: Ffmpeg) {
                     packet.set(JAVA_LONG, PACKET_POS, -1L)
                     packet.set(JAVA_INT, PACKET_STREAM_INDEX, target)
                     // 写入后包的内容归 muxer，packet 被清空，finally 里的 unref 不再有事可做
-                    ffmpeg.check(ffmpeg.interleavedWriteFrame.invokeWithArguments(output, packet) as Int, tr("写入 MP4", "Write MP4", "MP4を書き込み", "MP4 쓰기", "寫入 MP4"))
+                    ffmpeg.check(ffmpeg.interleavedWriteFrame.invokeWithArguments(output, packet) as Int, "Write MP4 packet")
                     report(
                         if (window == null) reader.furthest.toFloat() / reader.size.coerceAtLeast(1)
                         else (ptsUs - start).toFloat() / (window.last - start).coerceAtLeast(1),
@@ -376,7 +374,7 @@ internal class AvioReader(private val source: RandomAccessMediaSource, val job: 
 
     fun read(@Suppress("UNUSED_PARAMETER") opaque: MemorySegment, buffer: MemorySegment, length: Int): Int = try {
         when {
-            !job.isActive -> fail(CancellationException(tr("转封装已取消", "Remux cancelled", "再多重化をキャンセルしました", "리먹싱 취소됨", "已取消轉封裝")))
+            !job.isActive -> fail(CancellationException("Remux cancelled"))
             position >= source.size -> AVERROR_EOF
             else -> {
                 if (chunk.size < length) chunk = ByteArray(length)
@@ -445,11 +443,11 @@ internal class AvioReader(private val source: RandomAccessMediaSource, val job: 
             arena,
         )
         val buffer = ffmpeg.malloc.invokeWithArguments(BUFFER_BYTES.toLong()) as MemorySegment
-        if (buffer == MemorySegment.NULL) throw FfmpegException("内存不足：av_malloc")
+        if (buffer == MemorySegment.NULL) throw FfmpegException("Out of memory: av_malloc")
         val context = ffmpeg.avioAllocContext.invokeWithArguments(buffer, BUFFER_BYTES, 0, MemorySegment.NULL, readStub, MemorySegment.NULL, seekStub) as MemorySegment
         if (context == MemorySegment.NULL) {
             ffmpeg.freep.invokeWithArguments(arena.allocate(ADDRESS).also { it.set(ADDRESS, 0, buffer) })
-            throw FfmpegException("内存不足：avio_alloc_context")
+            throw FfmpegException("Out of memory: avio_alloc_context")
         }
         return context
     }

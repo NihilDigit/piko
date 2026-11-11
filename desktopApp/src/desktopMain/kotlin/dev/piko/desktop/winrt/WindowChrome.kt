@@ -1,6 +1,7 @@
 package dev.piko.desktop.winrt
 
 import androidx.compose.ui.awt.ComposeWindow
+import dev.piko.shared.log.PikoLog
 import java.awt.Window
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -40,7 +41,8 @@ object WindowChrome {
                 val hr = dwmSetWindowAttribute.invokeWithArguments(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, value, 4) as Int
                 hr >= 0
             }
-        }.getOrDefault(false)
+        }.onFailure { PikoLog.w("Window", "Failed to set DWM dark title bar attribute", it) }
+            .getOrDefault(false)
     }
 }
 

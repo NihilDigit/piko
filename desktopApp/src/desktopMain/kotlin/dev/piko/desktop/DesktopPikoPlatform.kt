@@ -1,6 +1,7 @@
 package dev.piko.desktop
 
 import dev.piko.shared.i18n.tr
+import dev.piko.shared.log.PikoLog
 
 import dev.piko.desktop.winrt.WindowsLaunchAtStartup
 import dev.piko.ui.platform.LaunchAtStartup
@@ -91,7 +92,7 @@ private class StoredToggle(private val settings: DesktopSettingsStore, private v
     }
 }
 
-/** 共享界面在 Windows 上的平台能力。 */
+/** 共享界面在 Windows、macOS 与 Linux 上的平台能力实现。 */
 class DesktopPikoPlatform(
     private val settings: DesktopSettingsStore,
     /** 入口传进注入 Recomposer 的那一份（见 Main.kt）；截图与测试不注入，用一份不接系统的。 */
@@ -122,7 +123,7 @@ class DesktopPikoPlatform(
 
     @Composable
     override fun dynamicColorScheme(dark: Boolean): ColorScheme =
-        error(tr("桌面端不支持系统取色，已回退至内置主题", "System colors are unavailable on desktop; falling back to built-in theme", "デスクトップ版はシステムカラーに非対応のため、内蔵テーマを使用します", "데스크톱에서는 시스템 색상을 지원하지 않아 내장 테마를 사용합니다", "桌面版不支援系統取色，已回退至內建主題"))
+        error("Dynamic color scheme is not supported on desktop")
 
     override val supportsBlur: Boolean = true
 
@@ -158,7 +159,7 @@ class DesktopPikoPlatform(
 
     /**
      * 系统的保存框，默认放在下载目录。Windows 上用原生保存框，放在单独的线程上：AWT 的 FileDialog
-     * 会让界面在对话框开着时停止重绘，见 SaveFilePicker。原生框弹不出来与 macOS 上才用 FileDialog。
+     * 会让界面在对话框开着时停止重绘，见 SaveFilePicker。原生框不可用或 macOS / Linux 上才用 FileDialog。
      */
     override suspend fun exportLog(fileName: String, content: String): Boolean {
         val owner = activeWindow()
@@ -166,10 +167,14 @@ class DesktopPikoPlatform(
             val picked = SaveFilePicker.pickSaveFile(owner, settings.downloadDirectory, fileName, tr("导出日志", "Export logs", "ログをエクスポート", "로그 내보내기", "匯出日誌"), tr("文本文件", "Text files", "テキストファイル", "텍스트 파일", "文字檔案"), "*.txt")
         ) {
             is FolderPickResult.Picked -> picked.folder
-            FolderPickResult.Cancelled -> return false
-            FolderPickResult.Unavailable -> AwtDialogs.chooseSaveFile(owner, tr("导出日志", "Export logs", "ログをエクスポート", "로그 내보내기", "匯出日誌"), settings.downloadDirectory, fileName) ?: return false
+            FolderPickResult.Cancelled -> return true
+            FolderPickResult.Unavailable -> AwtDialogs.chooseSaveFile(owner, tr("导出日志", "Export logs", "ログをエクスポート", "로그 내보내기", "匯出日誌"), settings.downloadDirectory, fileName) ?: return true
         }
-        return withContext(Dispatchers.IO) { runCatching { target.writeText(content) }.isSuccess }
+        return withContext(Dispatchers.IO) {
+            runCatching { target.writeText(content) }
+                .onFailure { PikoLog.w("Platform", "Failed to write exported log file", it) }
+                .isSuccess
+        }
     }
 
     override fun openUrl(url: String) = if (isLinux) LinuxDesktop.open(url) else WinRTSupport.openUrl(url)
@@ -351,8 +356,7 @@ class DesktopPikoPlatform(
         else -> null
     }
 
-    // macOS 按 Info.plist 的 CFBundleURLTypes 自动列为候选，改默认要调已弃用的 LaunchServices 接口，
-    // 包又没有签名，不给入口。开发版与便携版由 state 报 Unavailable，设置页同样不显示
+    // macOS 经 NSWorkspace.setDefaultApplicationAtURL 设默认应用；开发版与便携版由 state 报 Unavailable，设置页不显示入口
     override val linkAssociation: LinkAssociation? = when {
         WinRTSupport.isWindows -> WindowsLinkAssociation
         isMacOs -> MacLinkAssociation
@@ -378,7 +382,9 @@ class DesktopPikoPlatform(
                 val hardwareDecoding = runBlocking { preferences.hardwareDecodingFlow.first() }
                 MediampPreviewBackend(MediampPlaybackBackend(player, playerScope, preview = true, keyframeStart = keyframeStart, hardwareDecoding = hardwareDecoding)) {
                     playerJob.cancel()
-                    CoroutineScope(Dispatchers.IO).launch { runCatching { player.close() } }
+                    CoroutineScope(Dispatchers.IO).launch {
+                        runCatching { player.close() }.onFailure { PikoLog.w("Player", "Failed to close preview player", it) }
+                    }
                 }
             }
             return backend
@@ -429,7 +435,7 @@ class DesktopPikoPlatform(
 /** 点击发生在哪个窗口，对话框就模态于哪个窗口。要在点击的当下取，launch 之后焦点可能已经变了。 */
 private fun activeWindow(): Window? = KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow
 
-/** 系统目录框。Windows 用原生框，弹不出来与 macOS 上走 [AwtDialogs]。取消时为 null。 */
+/** 系统目录框。Windows 用原生框，不可用或 macOS / Linux 上走 [AwtDialogs]。取消时为 null。 */
 private suspend fun pickFolder(owner: Window?, initial: File?, title: String): File? {
     if (isMacOs) return AwtDialogs.chooseDirectory(owner, initial, title)
     return when (val result = FolderPicker.pickFolder(owner, initial, title)) {

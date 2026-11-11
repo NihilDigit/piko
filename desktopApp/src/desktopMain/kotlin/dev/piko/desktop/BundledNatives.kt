@@ -1,5 +1,6 @@
 package dev.piko.desktop
 
+import dev.piko.shared.log.PikoLog
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -49,6 +50,7 @@ internal object BundledMpvRuntime {
         // Windows 上是 mediampv.dll，macOS 上是 libmediampv.dylib，Linux 上是 libmediampv.so
         if (!dir.resolve(System.mapLibraryName("mediampv")).isFile) return
         runCatching { MpvMediampPlayer.prepareLibraries(dir.absolutePath, false) }
+            .onFailure { PikoLog.w("Player", "Failed to prepare bundled mpv native libraries from ${dir.absolutePath}", it) }
     }
 
     /**
@@ -57,7 +59,9 @@ internal object BundledMpvRuntime {
      */
     fun ensure(timeoutMillis: Long = 3_000) {
         prepareInBackground()
-        done.await(timeoutMillis, TimeUnit.MILLISECONDS)
+        if (!done.await(timeoutMillis, TimeUnit.MILLISECONDS)) {
+            PikoLog.w("Player", "Timed out waiting ${timeoutMillis}ms for bundled mpv native libraries to prepare")
+        }
     }
 
     val isPrepared: Boolean get() = done.count == 0L

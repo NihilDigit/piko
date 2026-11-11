@@ -52,9 +52,9 @@ internal fun extractPatch(zip: File, manifest: UpdateManifest, target: File) {
     ZipFile(zip).use { archive ->
         for (entry in archive.entries()) {
             if (entry.isDirectory) continue
-            val spec = expected[entry.name] ?: throw ChecksumMismatchException("补丁包里有清单外的文件：${entry.name}")
+            val spec = expected[entry.name] ?: throw ChecksumMismatchException("Unexpected file in patch archive: ${entry.name}")
             val out = root.resolve(spec.path).canonicalFile
-            check(out.path.startsWith(root.path + File.separator)) { "路径越界：${spec.path}" }
+            check(out.path.startsWith(root.path + File.separator)) { "Path traversal outside staging directory: ${spec.path}" }
             out.parentFile.mkdirs()
             val actual = archive.getInputStream(entry).use { input ->
                 out.outputStream().use { output -> sha256Hex(input) { buffer, length -> output.write(buffer, 0, length) } }
@@ -67,7 +67,7 @@ internal fun extractPatch(zip: File, manifest: UpdateManifest, target: File) {
         }
     }
     val missing = expected.keys - seen
-    if (missing.isNotEmpty()) throw ChecksumMismatchException("补丁包缺少：${missing.joinToString()}")
+    if (missing.isNotEmpty()) throw ChecksumMismatchException("Missing files in patch archive: ${missing.joinToString()}")
 }
 
 /**
@@ -90,17 +90,17 @@ internal fun applyDelta(zip: File, manifest: UpdateManifest, installDir: File, t
         val allowed = expected.flatMap { listOf("${it.path}.zst", "${it.path}.base") }.toSet()
         val names = archive.entries().asSequence().filterNot { it.isDirectory }.map { it.name }.toSet()
         val foreign = names - allowed
-        if (foreign.isNotEmpty()) throw ChecksumMismatchException("差分包里有清单外的文件：${foreign.joinToString()}")
+        if (foreign.isNotEmpty()) throw ChecksumMismatchException("Unexpected files in delta archive: ${foreign.joinToString()}")
         for (spec in expected) {
-            val entry = archive.getEntry("${spec.path}.zst") ?: throw ChecksumMismatchException("差分包缺少：${spec.path}")
+            val entry = archive.getEntry("${spec.path}.zst") ?: throw ChecksumMismatchException("Missing file in delta archive: ${spec.path}")
             val out = root.resolve(spec.path).canonicalFile
-            check(out.path.startsWith(root.path + File.separator)) { "路径越界：${spec.path}" }
+            check(out.path.startsWith(root.path + File.separator)) { "Path traversal outside staging directory: ${spec.path}" }
             val renamedFrom = archive.getEntry("${spec.path}.base")
                 ?.let { base -> archive.getInputStream(base).use { it.readBytes().decodeToString().trim() } }
             val basePath = renamedFrom ?: spec.path
             val baseFile = installRoot.resolve(basePath).canonicalFile
-            check(baseFile.path.startsWith(installRoot.path + File.separator)) { "路径越界：$basePath" }
-            if (renamedFrom != null && !baseFile.isFile) throw ChecksumMismatchException("本机缺少差分的基准：$basePath")
+            check(baseFile.path.startsWith(installRoot.path + File.separator)) { "Path traversal outside install directory: $basePath" }
+            if (renamedFrom != null && !baseFile.isFile) throw ChecksumMismatchException("Missing local base file for delta patch: $basePath")
             val base = baseFile.takeIf { it.isFile }?.readBytes()
             val restored = try {
                 // 旧版没有对应文件时，CI 按普通 zstd 压缩，base 为 null，不需要字典

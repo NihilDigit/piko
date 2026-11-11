@@ -35,7 +35,7 @@ internal object MacLinkAssociation : LinkAssociation {
 
     override suspend fun state(): LinkAssociationState = withContext(Dispatchers.IO) {
         runCatching { MacObjc.withPool { readState() } }
-            .onFailure { PikoLog.w(TAG, "读取默认打开方式失败", it) }
+            .onFailure { PikoLog.w(TAG, "Failed to query macOS default link handlers", it) }
             .getOrDefault(LinkAssociationState.Unavailable)
     }
 
@@ -48,14 +48,14 @@ internal object MacLinkAssociation : LinkAssociation {
                 MacObjc.sendVoid(workspace, "setDefaultApplicationAtURL:toOpenContentType:completionHandler:", app, torrentType(), MemorySegment.NULL)
                 true
             }
-        }.onFailure { PikoLog.w(TAG, "设为默认打开方式失败", it) }.getOrDefault(false)
+        }.onFailure { PikoLog.w(TAG, "Failed to set macOS default link handlers", it) }.getOrDefault(false)
         if (!requested) return@withContext false
         // 回调传了 nil，改动在系统那边异步落定。等它读回来是 Default，最多几秒
         repeat(SETTLE_POLLS) {
             if (state() == LinkAssociationState.Default) return@withContext true
             delay(SETTLE_POLL_MILLIS)
         }
-        PikoLog.w(TAG, "设为默认打开方式后读回来的仍不是 Piko")
+        PikoLog.w(TAG, "Default handler did not settle to Piko after NSWorkspace registration")
         false
     }
 
@@ -83,7 +83,7 @@ internal object MacLinkAssociation : LinkAssociation {
     private fun torrentType(): MemorySegment {
         MacObjc.loadFramework("UniformTypeIdentifiers")
         val type = MacObjc.send(MacObjc.cls("UTType"), "typeWithIdentifier:", MacObjc.string(TORRENT_TYPE))
-        check(type != MemorySegment.NULL) { "系统不认得 $TORRENT_TYPE" }
+        check(type != MemorySegment.NULL) { "UTType not recognized by macOS: $TORRENT_TYPE" }
         return type
     }
 

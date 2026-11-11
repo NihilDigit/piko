@@ -28,6 +28,35 @@ import java.nio.file.Path
  */
 internal class DpapiSecretVault(directory: Path, user: String = windowsUserName()) :
     FileSecretVault(directory, "${windowsUserTag(user)}.bin") {
+    private val currentKey = ThreadLocal<String?>()
+
+    override fun read(key: String): ByteArray? {
+        currentKey.set(key)
+        return try {
+            super.read(key)
+        } finally {
+            currentKey.remove()
+        }
+    }
+
+    override fun write(key: String, data: ByteArray) {
+        try {
+            super.write(key, data)
+        } catch (e: Exception) {
+            PikoLog.w(TAG, "Failed to write DPAPI secret for key=$key", e)
+            throw e
+        }
+    }
+
+    override fun delete(key: String) {
+        try {
+            super.delete(key)
+        } catch (e: Exception) {
+            PikoLog.w(TAG, "Failed to delete DPAPI secret for key=$key", e)
+            throw e
+        }
+    }
+
     override fun seal(data: ByteArray): ByteArray = try {
         Dpapi.protect(data)
     } catch (e: DpapiException) {
@@ -38,8 +67,12 @@ internal class DpapiSecretVault(directory: Path, user: String = windowsUserName(
         Dpapi.unprotect(data)
     } catch (e: DpapiException) {
         // 换了机器、换了用户或重置过密码，密钥已不是加密时那一把，只能当作没有
-        PikoLog.w("credentials", "DPAPI 解不开这份凭据，当作没有", e)
+        PikoLog.w(TAG, "Failed to unprotect DPAPI secret for key=${currentKey.get() ?: "unknown"}; treating as absent", e)
         null
+    }
+
+    private companion object {
+        const val TAG = "Credentials"
     }
 }
 
@@ -85,7 +118,7 @@ internal object Dpapi {
         ) as Int
         if (ok == 0) {
             val error = callState.get(JAVA_INT, callStateLayout.byteOffset(MemoryLayout.PathElement.groupElement("GetLastError")))
-            throw DpapiException("$name 失败：错误码 0x%08X".format(error))
+            throw DpapiException("$name failed: Win32 error 0x%08X".format(error))
         }
         // 输出缓冲由 DPAPI 以 LocalAlloc 分配，拷出来之后由调用方 LocalFree
         val size = output.get(JAVA_INT, BLOB_SIZE_OFFSET).toLong()

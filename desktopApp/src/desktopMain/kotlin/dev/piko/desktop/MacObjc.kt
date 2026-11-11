@@ -53,7 +53,7 @@ internal object MacObjc {
 
     fun cls(name: String): MemorySegment = Arena.ofConfined().use { arena ->
         val cls = getClass.invokeWithArguments(arena.allocateFrom(name)) as MemorySegment
-        check(cls != MemorySegment.NULL) { "找不到 Objective-C 类 $name" }
+        check(cls != MemorySegment.NULL) { "Objective-C class not found: $name" }
         cls
     }
 

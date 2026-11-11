@@ -3,6 +3,7 @@ package dev.piko
 import java.util.Locale
 import dev.piko.shared.i18n.PikoLocale
 import dev.piko.shared.i18n.tr
+import dev.piko.shared.log.PikoLog
 import dev.piko.data.auth.AppLanguage
 
 import android.Manifest
@@ -182,16 +183,34 @@ class MainActivity : ComponentActivity() {
     private fun torrentUri(intent: Intent): Uri? {
         if (intent.action != Intent.ACTION_VIEW) return null
         val uri = intent.data?.takeIf { it.scheme == ContentResolver.SCHEME_CONTENT } ?: return null
-        return uri.takeIf { (intent.type ?: contentResolver.getType(uri)) == TORRENT_MIME_TYPE }
+        val mimeType = intent.type ?: runCatching { contentResolver.getType(uri) }
+            .onFailure { PikoLog.w("IncomingLink", "Failed to query MIME type for incoming URI (authority=${uri.authority})", it) }
+            .getOrNull()
+        return uri.takeIf { mimeType == TORRENT_MIME_TYPE }
     }
 
     /** 与桌面端拖进种子相同，在本地换算成磁力链接。读取放在后台：文档提供者可能现从网络取内容。 */
     private fun openTorrent(uri: Uri) {
         val app = PikoApplication.instance
         app.appScope.launch(Dispatchers.IO) {
-            val magnet = runCatching { app.contentResolver.openInputStream(uri)?.use { it.readBytes() } }
-                .getOrNull()
-                ?.let(TorrentMagnet::fromBytes)
+            val magnet = try {
+                val bytes = app.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                if (bytes == null) {
+                    PikoLog.w("IncomingLink", "ContentResolver returned null stream for .torrent URI (authority=${uri.authority})")
+                    null
+                } else {
+                    TorrentMagnet.fromBytes(bytes).also { parsed ->
+                        if (parsed == null) {
+                            PikoLog.w("IncomingLink", "Failed to parse .torrent payload (${bytes.size} bytes)")
+                        }
+                    }
+                }
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (e: Exception) {
+                PikoLog.w("IncomingLink", "Failed to read or parse .torrent URI (authority=${uri.authority})", e)
+                null
+            }
             if (magnet != null) {
                 app.instantMagnetRepository.onIncomingMagnet(magnet)
             } else {
@@ -249,7 +268,7 @@ class MainActivity : ComponentActivity() {
 /**
  * Android 13 起通知要在运行时授权，只在清单里声明的话，传输进度与任务结果的通知都发不出来。
  * 等第一次有工作要在后台跑时再问：这时说得清为什么要通知，一打开应用就问多半会被拒。
- * 每个进程只问一次；拒绝两次后系统自己也不再弹。
+ * 每次 Activity 组合生命周期内最多问一次（Activity 重建后若仍未授权会再次检查）；拒绝两次后系统自己也不再弹。
  */
 @Composable
 private fun AskForNotificationsOnFirstWork(services: PikoServices) {
@@ -269,7 +288,6 @@ private fun AskForNotificationsOnFirstWork(services: PikoServices) {
 
 private const val TORRENT_MIME_TYPE = "application/x-bittorrent"
 
-/** 进行中的常驻通知点进来时带上，打开传输页看各项进度。 */
 /**
  * 窗口高度 compact（横握的手机）时收起状态栏，下滑临时唤出；导航条不动。整个应用一个入口，按窗口高度生效。
  *
@@ -299,6 +317,7 @@ private fun HideStatusBarWhileShort() {
     }
 }
 
+/** 进行中的常驻通知点进来时带上，打开传输页看各项进度，见 WorkResultNotifier 与 PikoDownloadService。 */
 internal const val EXTRA_OPEN_TRANSFERS = "dev.piko.extra.OPEN_TRANSFERS"
 
 // 与 androidx.activity 的 DefaultLightScrim、DefaultDarkScrim 相同，那两个是 internal

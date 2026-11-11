@@ -44,11 +44,11 @@ internal object MacExternalPlayer : ExternalVideoPlayer {
         runCatching {
             val app = playerFor(fileName)
             if (app == null) {
-                PikoLog.w(TAG, "找不到能打开此类视频的默认应用（扩展名 ${extensionOf(fileName) ?: "无"}）")
+                PikoLog.w(TAG, "No default video player found for extension=${extensionOf(fileName) ?: "none"}")
                 return@runCatching false
             }
             launch(app, url)
-        }.logFailure(TAG, "启动外部播放器失败").getOrDefault(false)
+        }.logFailure(TAG, "Failed to launch external video player").getOrDefault(false)
     }
 
     /** 该文件该交给的应用所在路径，查不到为 null。只读 LaunchServices，不打开任何东西，自检也调它。 */
@@ -80,7 +80,7 @@ internal object MacExternalPlayer : ExternalVideoPlayer {
         // open 在 LaunchServices 接下请求后即退出，冷启动的应用也只要几秒。超时视为仍在启动，不当失败
         if (!process.waitFor(LAUNCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)) return true
         val exitCode = process.exitValue()
-        if (exitCode != 0) PikoLog.w(TAG, "open -a 退出码 $exitCode")
+        if (exitCode != 0) PikoLog.w(TAG, "open -a exited with code $exitCode")
         return exitCode == 0
     }
 

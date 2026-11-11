@@ -139,7 +139,7 @@ import kotlinx.datetime.toLocalDateTime
  * 桌面放得下时左边是分类目录，点了滚到那一类，滚动时亮当前的一类。不做成选一类显示一类：
  * 几类都只有几组，分页后每页大半是空的，找一项还得先猜它归哪一类。
  *
- * 行与组的外观在 SettingsLayout.kt，后来加设置项照 ui/CLAUDE.md「设置页」一节。
+ * 行与组的外观在 SettingsLayout.kt，后来加设置项照 ui/AGENTS.md「设置页」一节。
  */
 @Composable
 fun SettingsScreen(
@@ -289,7 +289,7 @@ fun SettingsScreen(
         },
     ) { innerPadding ->
         BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            // 目录只在桌面：移动端照 M3 的单列列表，平板与手机一致，宽时只把内容限宽居中
+            // 左侧目录随宽窗口布局出现（>= 600×480dp 且内容区宽度不低于 SettingsIndexMinWidth，大屏平板同样适用）；窄窗保持单列列表
             val withIndex = desktop && maxWidth >= SettingsIndexMinWidth
             Row(modifier = Modifier.fillMaxSize()) {
                 if (withIndex) {

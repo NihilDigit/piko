@@ -1,5 +1,6 @@
 package dev.piko.desktop.winrt
 
+import dev.piko.shared.log.PikoLog
 import java.awt.Window
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -57,7 +58,10 @@ internal class WindowsFullscreen(private val window: Window) {
                     hwnd, MemorySegment.NULL, left, top, info.int(3) - left, info.int(4) - top, REPOSITION_FLAGS,
                 )
             }
-        }.onFailure { saved = null }
+        }.onFailure {
+            saved = null
+            PikoLog.w("Window", "Failed to enter borderless fullscreen", it)
+        }
     }
 
     fun exit() {
@@ -72,7 +76,7 @@ internal class WindowsFullscreen(private val window: Window) {
                 REPOSITION_FLAGS,
             )
             if (state.maximized) User32.showWindow.invokeWithArguments(hwnd, SW_MAXIMIZE)
-        }
+        }.onFailure { PikoLog.w("Window", "Failed to restore window from borderless fullscreen", it) }
     }
 
     private fun MemorySegment.int(index: Int): Int = getAtIndex(JAVA_INT, index.toLong())

@@ -6,6 +6,7 @@ import dev.piko.shared.log.PikoLog
 import java.awt.SystemTray
 import java.awt.Toolkit
 import java.io.File
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import org.jetbrains.skia.FontMgr
@@ -48,7 +49,7 @@ internal object LinuxDesktop {
             val field = toolkit.javaClass.getDeclaredField("awtAppClassName")
             field.isAccessible = true
             field.set(null, APP_ID)
-        }.onFailure { PikoLog.w(TAG, "设置 WM_CLASS 失败，桌面环境可能认不出窗口", it) }
+        }.onFailure { PikoLog.w(TAG, "Failed to set X11 WM_CLASS; desktop environment may not match window icon", it) }
     }
 
     private val scFontCandidates = listOf(
@@ -138,12 +139,13 @@ internal object LinuxDesktop {
             "tail", "--pid=${ProcessHandle.current().pid()}", "-f", "/dev/null",
         ).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
         AutoCloseable { process.descendants().forEach { it.destroy() }; process.destroy() }
-    }.getOrNull()
+    }.onFailure { PikoLog.w(TAG, "Failed to start systemd-inhibit sleep lock", it) }
+        .getOrNull()
 
     /** 用默认程序打开链接、文件或文件夹。 */
     fun open(target: String) {
         launcher.execute {
-            if (!run("xdg-open", target)) PikoLog.w(TAG, "xdg-open 没能打开")
+            if (!run("xdg-open", target)) PikoLog.w(TAG, "xdg-open failed to open target")
         }
     }
 
@@ -194,7 +196,7 @@ internal object LinuxDesktop {
             .redirectOutput(ProcessBuilder.Redirect.DISCARD)
             .start()
         if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
-            process.destroy()
+            process.destroyForcibly()
             return@runCatching false
         }
         process.exitValue() == 0
@@ -203,11 +205,14 @@ internal object LinuxDesktop {
     /** 跑一个外部程序，退出码为 0 时返回它的标准输出。 */
     fun output(vararg command: String, timeoutSeconds: Long = 15): String? = runCatching {
         val process = ProcessBuilder(*command).redirectError(ProcessBuilder.Redirect.DISCARD).start()
-        val text = process.inputStream.bufferedReader().use { it.readText() }
+        val reader = CompletableFuture.supplyAsync {
+            process.inputStream.bufferedReader().use { it.readText() }
+        }
         if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
-            process.destroy()
+            process.destroyForcibly()
             return@runCatching null
         }
+        val text = reader.get(2, TimeUnit.SECONDS)
         text.takeIf { process.exitValue() == 0 }
     }.getOrNull()
 }

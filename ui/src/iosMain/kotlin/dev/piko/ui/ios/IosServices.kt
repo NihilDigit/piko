@@ -34,7 +34,7 @@ fun createIosServices(
     /** Keychain 的 service 名，包名变形，跨版本必须稳定，不然读不回已存的会话。 */
     keychainService: String,
 ): PikoServices {
-    val preferences = createIosPreferences(directories, keychainService)
+    val preferences = createIosPreferences(directories, "$keychainService.preferences")
     val clientManager = PikoClientManager(createIosSessionStore(keychainService), appScope)
     val mediaRepository = PikoMediaRepository(
         clientManager,

@@ -27,6 +27,7 @@ import androidx.compose.ui.draganddrop.DragAndDropEvent
 import androidx.compose.ui.draganddrop.DragAndDropTarget
 import androidx.compose.ui.draganddrop.awtTransferable
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.TorrentMagnet
 import dev.piko.shared.state.extractLinks
@@ -39,6 +40,8 @@ import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.Transferable
 import java.io.File
 
+private const val TAG = "DragDrop"
+
 /**
  * 拖进来的磁力链接或 .torrent 文件交给秒传面板，与协议唤起走同一个入口。种子文件在本地
  * 换算成磁力链接，见 [TorrentMagnet]。其余本机文件与文件夹交给 [onUpload]。
@@ -50,10 +53,11 @@ fun MagnetDropTarget(
     appearance: Appearance,
     onMagnet: (String) -> Unit,
     onUpload: (UploadSelection) -> Unit,
+    onInvalidTorrent: () -> Unit = {},
     content: @Composable () -> Unit,
 ) {
     var isHovering by remember { mutableStateOf(false) }
-    val target = remember(onMagnet, onUpload) {
+    val target = remember(onMagnet, onUpload, onInvalidTorrent) {
         object : DragAndDropTarget {
             override fun onEntered(event: DragAndDropEvent) {
                 isHovering = true
@@ -72,6 +76,7 @@ fun MagnetDropTarget(
                 when (val dropped = droppedIn(event)) {
                     is Dropped.Magnet -> onMagnet(dropped.text)
                     is Dropped.Upload -> onUpload(dropped.selection)
+                    Dropped.InvalidTorrent -> onInvalidTorrent()
                     null -> return false
                 }
                 return true
@@ -119,13 +124,17 @@ private sealed interface Dropped {
     data class Magnet(val text: String) : Dropped
 
     data class Upload(val selection: UploadSelection) : Dropped
+
+    data object InvalidTorrent : Dropped
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
 private fun droppedIn(event: DragAndDropEvent): Dropped? {
     val transferable = event.awtTransferable
     if (transferable.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
-        val files = runCatching { transferable.getTransferData(DataFlavor.javaFileListFlavor) as List<*> }.getOrNull()
+        val files = runCatching { transferable.getTransferData(DataFlavor.javaFileListFlavor) as List<*> }
+            .onFailure { PikoLog.w(TAG, "Failed to read dropped file list from Transferable", it) }
+            .getOrNull()
         return filesDropped(files.orEmpty().filterIsInstance<File>().filter { it.exists() })
     }
     return magnetIn(transferable)?.let(Dropped::Magnet)
@@ -140,14 +149,23 @@ private fun filesDropped(files: List<File>): Dropped? {
     if (files.isEmpty()) return null
     if (files.all { it.isFile && it.extension.equals("torrent", ignoreCase = true) }) {
         val magnets = files.mapNotNull(TorrentMagnet::fromFile)
+        if (magnets.size < files.size) {
+            PikoLog.w(
+                TAG,
+                "Failed to parse ${files.size - magnets.size} of ${files.size} dropped .torrent file(s) into magnet link(s) (corrupted or BitTorrent v2-only)",
+            )
+        }
         return magnets.takeIf { it.isNotEmpty() }?.let { Dropped.Magnet(it.joinToString("\n")) }
+            ?: Dropped.InvalidTorrent
     }
     val (folders, plainFiles) = files.partition { it.isDirectory }
     return Dropped.Upload(UploadSelection(files = plainFiles.map { it.absolutePath }, folders = folders.map { it.absolutePath }))
 }
 
 private fun magnetIn(transferable: Transferable): String? {
-    val text = runCatching { transferable.getTransferData(DataFlavor.stringFlavor) as? String }.getOrNull() ?: return null
+    val text = runCatching { transferable.getTransferData(DataFlavor.stringFlavor) as? String }
+        .onFailure { PikoLog.w(TAG, "Failed to read dropped text from Transferable", it) }
+        .getOrNull() ?: return null
     // 分享链接连同整段文本交出去：提取码常写在链接后面，面板从同一段里认出来
     if (InstantSheetState.findShareLink(text) != null) return text.trim()
     // 浏览器拖链接时可能带上标题或多行。只取磁力链，多条时一并交出去，面板列成批量清单

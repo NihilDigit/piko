@@ -56,13 +56,13 @@ internal object GpuDeviceWatch {
             removedReason(window) ?: return false
         } catch (e: Throwable) {
             disabled = true
-            PikoLog.w(TAG, "读不到 skiko 的显卡设备，设备失效时无法自动重建窗口", e)
+            PikoLog.w(TAG, "Failed to inspect Skiko D3D12 device; automatic window recovery on GPU reset disabled", e)
             return false
         }
         if (!attached) {
             // 问不到设备时（别的渲染后端、skiko 布局变了）这里一直安静，这一行说明兜底确实在起作用
             attached = true
-            PikoLog.d(TAG, "已接上显卡设备检查")
+            PikoLog.d(TAG, "Attached Skiko D3D12 device-removed watch")
         }
         if (hr == 0) return false
         report(hr)
@@ -74,7 +74,7 @@ internal object GpuDeviceWatch {
         val now = System.currentTimeMillis()
         if (now - lastReportMillis < REPORT_DEBOUNCE_MS) return
         lastReportMillis = now
-        PikoLog.w(TAG, "显卡设备失效（HRESULT 0x%08X），重建窗口".format(hr))
+        PikoLog.w(TAG, "D3D12 device removed (HRESULT 0x%08X); recreating window".format(hr))
         generation++
     }
 

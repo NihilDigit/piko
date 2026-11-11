@@ -109,7 +109,7 @@ private fun SingleVideoDialog(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            PikoLog.w(TAG, "查询可下载的画质失败：${logFile(file.id, file.name)}", e)
+            PikoLog.w(TAG, "Failed to probe downloadable qualities for ${logFile(file.id, file.name)}", e)
             value = QualityChoices(probing = false, failed = true)
         }
     }

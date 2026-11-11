@@ -230,7 +230,7 @@ internal fun CheckboxRow(label: String, checked: Boolean, enabled: Boolean, modi
 /**
  * 一行下拉选择：标签在左，描边按钮占满其余宽度，点开是菜单，当前项带勾。几项选项统一用它，不各自用连体按钮：
  * 左栏四组连体按钮排在一起太重，菜单项也能写全称（「标题格式，虚词小写」），不必另起一行解释。
- * 不用 ExposedDropdownMenuBox：它自建弹层，桌面端测量途中销毁弹层的崩溃（见 desktopApp/CLAUDE.md）不好排查。
+ * 不用 ExposedDropdownMenuBox：它自建弹层，桌面端测量途中销毁弹层的崩溃（见 desktopApp/AGENTS.md）不好排查。
  * [selected] 为 null 时（旧的无效组合）按钮上写「请选择」。
  */
 @Composable

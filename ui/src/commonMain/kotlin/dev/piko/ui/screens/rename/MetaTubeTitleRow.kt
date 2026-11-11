@@ -33,7 +33,7 @@ import kotlinx.coroutines.launch
 /**
  * 单个条目按番号规范命名时，对话框里取片名的一行：点一下从 MetaTube 查，查到就把输入框换成带这个片名的规范名。
  * 不在打开对话框时自动查：多数时候原名里的片名就够用，查询要等外部站点，几秒到十几秒。
- * 状态文字常驻这一行，查询前后对话框高度不变（对话框里不做尺寸变化，见 ui/CLAUDE.md）。
+ * 状态文字常驻这一行，查询前后对话框高度不变（对话框里不做尺寸变化，见 ui/AGENTS.md）。
  */
 @Composable
 internal fun MetaTubeTitleRow(

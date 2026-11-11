@@ -62,8 +62,8 @@ internal object LinuxLinkAssociation : LinkAssociation {
             installIcon()
             // 刷新 mimeinfo.cache：有的桌面环境按它列「打开方式」，没有这个命令也不影响 mimeapps.list 生效
             LinuxDesktop.run("update-desktop-database", "-q", desktopFile.parentFile.absolutePath)
-            check(LinuxDesktop.run("xdg-mime", "default", DESKTOP_FILE, *MIME_TYPES.toTypedArray())) { "xdg-mime default 失败" }
-        }.onFailure { PikoLog.w(TAG, "设为默认打开方式失败", it) }.getOrElse { return@withContext false }
+            check(LinuxDesktop.run("xdg-mime", "default", DESKTOP_FILE, *MIME_TYPES.toTypedArray())) { "xdg-mime default failed" }
+        }.onFailure { PikoLog.w(TAG, "Failed to register Linux default link handler", it) }.getOrElse { return@withContext false }
         state() == LinkAssociationState.Default
     }
 
@@ -72,7 +72,7 @@ internal object LinuxLinkAssociation : LinkAssociation {
             removeFromMimeApps(configHome.resolve("mimeapps.list"))
             desktopFile.delete()
             LinuxDesktop.run("update-desktop-database", "-q", desktopFile.parentFile.absolutePath)
-        }.onFailure { PikoLog.w(TAG, "取消关联失败", it) }.isSuccess && state() != LinkAssociationState.Default
+        }.onFailure { PikoLog.w(TAG, "Failed to unregister Linux link association", it) }.isSuccess && state() != LinkAssociationState.Default
     }
 
     /**
@@ -85,16 +85,16 @@ internal object LinuxLinkAssociation : LinkAssociation {
         runCatching {
             if (desktopFile.readText() != desktopEntry(appImage)) {
                 writeDesktopFile(appImage)
-                PikoLog.i(TAG, "AppImage 位置变了，已更新 .desktop 的 Exec")
+                PikoLog.i(TAG, "AppImage path changed; updated .desktop Exec entry")
             }
-        }.onFailure { PikoLog.w(TAG, "更新 .desktop 失败", it) }
+        }.onFailure { PikoLog.w(TAG, "Failed to refresh .desktop Exec entry", it) }
     }
 
     private fun writeDesktopFile(appImage: File) {
         desktopFile.parentFile.mkdirs()
         val temp = File(desktopFile.parentFile, ".$DESKTOP_FILE.tmp")
         temp.writeText(desktopEntry(appImage))
-        check(temp.renameTo(desktopFile)) { "写不进 ${desktopFile.parentFile}" }
+        check(temp.renameTo(desktopFile)) { "Failed to rename temporary .desktop file into ${desktopFile.parentFile}" }
     }
 
     private fun desktopEntry(appImage: File): String = """

@@ -12,14 +12,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import dev.piko.shared.storage.IosAppDirectories
 import dev.piko.shared.i18n.tr
-import dev.piko.update.AppUpdateService
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.storage.IosAppDirectories
 import dev.piko.shared.upload.importIosUploadDocument
 import dev.piko.shared.upload.importIosUploadFolder
 import dev.piko.ui.adaptive.FormFactor
 import dev.piko.ui.theme.MotionStyle
 import dev.piko.ui.theme.PikoMotionScale
+import dev.piko.update.AppUpdateService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,6 +37,10 @@ import platform.Foundation.NSNumber
 import platform.Foundation.NSURL
 import platform.UIKit.UIAccessibilityIsReduceMotionEnabled
 import platform.UIKit.UIActivityViewController
+import platform.UIKit.UIAlertAction
+import platform.UIKit.UIAlertActionStyleDefault
+import platform.UIKit.UIAlertController
+import platform.UIKit.UIAlertControllerStyleAlert
 import platform.UIKit.UIApplication
 import platform.UIKit.UIDevice
 import platform.UIKit.UIDocumentPickerDelegateProtocol
@@ -92,7 +98,7 @@ class IosPikoPlatform(
         refreshSystemMotion()
     }
 
-    /** 系统「减少动态效果」改动后由宿主的 scenePhase 回调再调一次（系统设置在外，应用内监听不到）。 */
+    /** 在初始化及宿主应用回到前台（UIApplicationDidBecomeActiveNotification）时同步系统「减少动态效果」开关。 */
     fun refreshSystemMotion() {
         motionScale.systemScale = if (UIAccessibilityIsReduceMotionEnabled()) 0f else 1f
     }
@@ -102,19 +108,34 @@ class IosPikoPlatform(
         error("iOS 不支持系统取色，外观会落到内置主题上")
 
     /**
-     * 日志导出成文件后交给系统分享面板（存到「文件」、发给自己都可以）。没有可展示的控制器时返回 false，
-     * 调用方据此提示导出失败，而不是写到一个用户找不到的路径。
+     * 日志导出成文件后交给系统分享面板（存到「文件」、发给自己都可以），写出前清理缓存目录下的历史导出文件。
+     * 写盘失败或没有可展示的控制器时记录告警并返回 false，由调用方提示导出失败。
      */
     override suspend fun exportLog(fileName: String, content: String): Boolean = withContext(Dispatchers.Main) {
         val target = Path(directories.caches, "exports/$fileName")
-        val wrote = runCatching {
-            val parent = target.parent ?: return@runCatching false
-            if (SystemFileSystem.metadataOrNull(parent) == null) SystemFileSystem.createDirectories(parent)
+        val wrote = try {
+            val parent = target.parent ?: return@withContext false
+            if (SystemFileSystem.metadataOrNull(parent) == null) {
+                SystemFileSystem.createDirectories(parent)
+            } else {
+                runCatching {
+                    SystemFileSystem.list(parent)
+                        .filter { it.name.endsWith(".txt") }
+                        .forEach { SystemFileSystem.delete(it, mustExist = false) }
+                }
+            }
             SystemFileSystem.sink(target).buffered().use { it.writeString(content) }
             true
-        }.getOrDefault(false)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            PikoLog.w(TAG, "Failed to write exported log file on iOS", e)
+            false
+        }
         if (!wrote) return@withContext false
-        shareItems(listOf(NSURL.fileURLWithPath(target.toString())))
+        shareItems(listOf(NSURL.fileURLWithPath(target.toString()))).also { shared ->
+            if (!shared) PikoLog.w(TAG, "Failed to present log share sheet on iOS: no active UIViewController")
+        }
     }
 
     override fun openUrl(url: String) {
@@ -266,11 +287,26 @@ private class IosDocumentPickerDelegate(
         val directories = directories ?: return
         scope.launch {
             val imported = mutableListOf<String>()
+            var failed = 0
             for (url in urls) {
-                val uri = runCatching { importIosUploadDocument(directories, url, limitBytes) }.getOrNull()
+                val uri = try {
+                    importIosUploadDocument(directories, url, limitBytes)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    failed++
+                    PikoLog.w("Upload", "Failed to import selected iOS upload document (limitBytes=$limitBytes)", e)
+                    null
+                }
                 if (uri != null) imported += uri
             }
-            if (imported.isNotEmpty()) onPicked(imported)
+            if (imported.isNotEmpty()) {
+                onPicked(imported)
+            } else if (failed > 0) {
+                presentPlatformAlert(
+                    tr("无法导入所选文件（可能超出大小限制或无法读取）", "Unable to import selected file(s); they may exceed the size limit or be unreadable", "選択したファイルを読み込めません（サイズ上限を超えているか読み取れません）", "선택한 파일을 가져올 수 없습니다(크기 제한 초과 또는 읽기 불가)", "無法匯入所選檔案（可能超出大小限制或無法讀取）"),
+                )
+            }
         }
     }
 }
@@ -290,7 +326,17 @@ private class IosFolderPickerDelegate(
         val scope = scope ?: return
         val directories = directories ?: return
         scope.launch {
-            val uri = runCatching { importIosUploadFolder(directories, url, limitBytes, totalLimitBytes) }.getOrNull()
+            val uri = try {
+                importIosUploadFolder(directories, url, limitBytes, totalLimitBytes)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                PikoLog.w("Upload", "Failed to import selected iOS upload folder (fileLimit=$limitBytes, totalLimit=$totalLimitBytes)", e)
+                presentPlatformAlert(
+                    tr("无法导入所选文件夹（可能超出大小限制或无法读取）", "Unable to import selected folder; it may exceed the size limit or be unreadable", "選択したフォルダーを読み込めません（サイズ上限を超えているか読み取れません）", "선택한 폴더를 가져올 수 없습니다(크기 제한 초과 또는 읽기 불가)", "無法匯入所選資料夾（可能超出大小限制或無法讀取）"),
+                )
+                null
+            }
             if (uri != null) onPicked(uri)
         }
     }
@@ -303,6 +349,23 @@ private fun topViewController(): UIViewController? {
     return controller
 }
 
+private fun presentPlatformAlert(message: String) {
+    val host = topViewController() ?: return
+    val dialog = UIAlertController.alertControllerWithTitle(
+        title = null,
+        message = message,
+        preferredStyle = UIAlertControllerStyleAlert,
+    )
+    dialog.addAction(
+        UIAlertAction.actionWithTitle(
+            tr("确定", "OK", "OK", "확인", "確定"),
+            UIAlertActionStyleDefault,
+            handler = null,
+        ),
+    )
+    host.presentViewController(dialog, animated = true, completion = null)
+}
+
 private fun shareItems(items: List<Any>): Boolean {
     val host = topViewController() ?: return false
     val controller = UIActivityViewController(activityItems = items, applicationActivities = null)
@@ -311,3 +374,5 @@ private fun shareItems(items: List<Any>): Boolean {
     host.presentViewController(controller, animated = true, completion = null)
     return true
 }
+
+private const val TAG = "Platform"

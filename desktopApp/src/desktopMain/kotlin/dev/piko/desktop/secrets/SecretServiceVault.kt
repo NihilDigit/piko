@@ -30,7 +30,7 @@ internal class SecretServiceVault private constructor(private val lib: LibSecret
     override fun read(key: String): ByteArray? {
         val text = lib.lookup(key) ?: return null
         return runCatching { Base64.getDecoder().decode(text) }
-            .onFailure { PikoLog.w(TAG, "Secret Service 里的凭据不是本应用写入的格式，当作没有") }
+            .onFailure { PikoLog.w(TAG, "Stored Secret Service entry for key=$key is not valid Base64; treating as absent", it) }
             .getOrNull()
     }
 
@@ -39,13 +39,13 @@ internal class SecretServiceVault private constructor(private val lib: LibSecret
     override fun delete(key: String) = lib.clear(key)
 
     companion object {
-        private const val TAG = "credentials"
+        private const val TAG = "Credentials"
 
         fun open(timeoutSeconds: Long = 120): SecretServiceVault? {
             val lib = try {
                 LibSecret(timeoutSeconds)
             } catch (e: Throwable) {
-                PikoLog.i(TAG, "加载不了 libsecret，凭据存明文文件：${e.javaClass.simpleName}")
+                PikoLog.i(TAG, "Failed to load libsecret; falling back to plaintext credential storage: ${e.javaClass.simpleName}: ${e.message}")
                 return null
             }
             // 查一个不存在的项试探服务在不在。没有匹配项时 libsecret 不去解锁，不会弹解锁框
@@ -53,7 +53,7 @@ internal class SecretServiceVault private constructor(private val lib: LibSecret
                 lib.lookup(PROBE_KEY)
                 SecretServiceVault(lib)
             } catch (e: VaultUnavailableException) {
-                PikoLog.i(TAG, "会话中没有 Secret Service，凭据存明文文件：${e.message}")
+                PikoLog.i(TAG, "Secret Service unavailable in current session; falling back to plaintext credential storage: ${e.message}")
                 null
             }
         }
@@ -138,7 +138,7 @@ internal class LibSecret(private val timeoutSeconds: Long) {
             *attributes(arena, key),
         ) as Int
         throwIfFailed(error, "secret_password_store_sync")
-        if (ok == 0) throw VaultUnavailableException("secret_password_store_sync 失败")
+        if (ok == 0) throw VaultUnavailableException("secret_password_store_sync returned FALSE")
     }
 
     // 没有匹配项时返回 FALSE 且不设 GError，与删掉了同样看待
@@ -180,7 +180,7 @@ internal class LibSecret(private val timeoutSeconds: Long) {
         val code = struct.get(JAVA_INT, 4)
         val message = struct.get(ADDRESS, 8).let { if (it == MemorySegment.NULL) "" else it.reinterpret(Long.MAX_VALUE).getString(0) }
         errorFree.invokeWithArguments(gError)
-        throw VaultUnavailableException("$what 失败（$code）：$message")
+        throw VaultUnavailableException("$what failed (code=$code): $message")
     }
 
     private fun downcall(library: SymbolLookup, name: String, descriptor: FunctionDescriptor, firstVariadic: Int): MethodHandle =

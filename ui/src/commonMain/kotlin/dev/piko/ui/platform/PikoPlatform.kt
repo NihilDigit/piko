@@ -17,7 +17,7 @@ import dev.piko.update.AppUpdateService
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * 共享界面向所在平台要的能力。Android 与 Desktop 各实现一份，按 CLAUDE.md 的约定用接口而不用
+ * 共享界面向所在平台要的能力。各宿主端各自实现一份，按 AGENTS.md 的约定用接口而不用
  * expect/actual：实现要拿 Context、窗口与各自的播放后端，这些都是运行时对象，不是编译期的平台差异。
  */
 interface PikoPlatform {
@@ -79,8 +79,8 @@ interface PikoPlatform {
     val deviceSummary: String
 
     /**
-     * 把导出的日志交给用户：Android 调起系统分享，直接发进聊天或邮件；桌面端弹保存对话框。
-     * 返回 false 表示没有交出去（取消或失败）。
+     * 把导出的日志交给用户：移动端调起系统分享，直接发进聊天、文件或邮件；桌面端弹保存对话框。
+     * 返回 false 表示写出或分享失败；用户在保存框中主动取消视为已处理，返回 true。
      */
     suspend fun exportLog(fileName: String, content: String): Boolean
 

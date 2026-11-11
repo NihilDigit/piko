@@ -14,6 +14,7 @@ import java.lang.foreign.ValueLayout.JAVA_BYTE
 import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.foreign.ValueLayout.JAVA_SHORT
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import kotlin.text.Charsets.UTF_16LE
 
@@ -26,7 +27,7 @@ import kotlin.text.Charsets.UTF_16LE
 internal object HardwareReport {
     fun logInBackground() {
         Thread({
-            runCatching { PikoLog.i(TAG, describe()) }.onFailure { PikoLog.w(TAG, "读取硬件信息失败", it) }
+            runCatching { PikoLog.i(TAG, describe()) }.onFailure { PikoLog.w(TAG, "Failed to collect hardware report", it) }
         }, "Piko-Hardware").apply { isDaemon = true }.start()
     }
 
@@ -38,11 +39,11 @@ internal object HardwareReport {
             else -> Triple(null, null, emptyList())
         }
         val parts = listOfNotNull(
-            cpu?.let { "处理器 $it" },
-            memoryBytes?.let { "内存 ${(it + GIB / 2) / GIB} GiB" },
-            if (gpus.isEmpty()) "显卡 未知" else gpus.joinToString("；") { "显卡 $it" },
+            cpu?.let { "CPU: $it" },
+            memoryBytes?.let { "RAM: ${(it + GIB / 2) / GIB} GiB" },
+            if (gpus.isEmpty()) "GPU: unknown" else gpus.joinToString("; ") { "GPU: $it" },
         )
-        return parts.joinToString("，")
+        return parts.joinToString(", ")
     }
 
     private object Windows {
@@ -53,12 +54,12 @@ internal object HardwareReport {
          * 原因没查清。不去重，合成一条注明次数：mpv 建在第一个上，Skiko 若拿到另一个，就成了跨适配器共享。
          */
         fun gpus(): List<String> = runCatching { dxgiAdapters() }
-            .onFailure { PikoLog.w(TAG, "枚举显卡失败", it) }
+            .onFailure { PikoLog.w(TAG, "Failed to enumerate DXGI adapters", it) }
             .getOrDefault(emptyList())
             // groupBy 保持首次出现的先后，第一组含第一个适配器，即默认的那块
             .groupBy { it }
             .entries.mapIndexed { index, (summary, same) ->
-                summary + (if (index == 0) "，默认" else "") + (if (same.size > 1) "，枚举到 ${same.size} 个" else "") + "）"
+                summary + (if (index == 0) ", primary" else "") + (if (same.size > 1) ", count=${same.size}" else "") + ")"
             }
 
         /**
@@ -119,9 +120,9 @@ internal object HardwareReport {
             }
             return buildString {
                 append(name)
-                append("（%04x:%04x".format(vendor, device))
-                if (dedicated > 0) append("，显存 ${(dedicated + MIB / 2) / MIB} MiB")
-                driver?.let { append("，驱动 $it") }
+                append(" (%04x:%04x".format(vendor, device))
+                if (dedicated > 0) append(", VRAM ${(dedicated + MIB / 2) / MIB} MiB")
+                driver?.let { append(", driver $it") }
             }
         }
 
@@ -211,7 +212,7 @@ internal object HardwareReport {
                 val deviceId = File(device, "device").readTrimmedOrNull()?.removePrefix("0x")
                 val driver = File(device, "driver").canonicalFile.name
                 val version = File("/sys/module/$driver/version").readTrimmedOrNull()
-                "$vendorId:$deviceId（$driver${version?.let { " $it" }.orEmpty()}）"
+                "$vendorId:$deviceId ($driver${version?.let { " $it" }.orEmpty()})"
             }
 
         private fun File.readTrimmedOrNull(): String? = runCatching { readText().trim() }.getOrNull()?.ifEmpty { null }
@@ -219,9 +220,14 @@ internal object HardwareReport {
 
     private fun run(vararg command: String): String? = runCatching {
         val process = ProcessBuilder(*command).redirectErrorStream(true).start()
-        val output = process.inputStream.bufferedReader().readText()
-        if (!process.waitFor(COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)) process.destroyForcibly()
-        output
+        val reader = CompletableFuture.supplyAsync {
+            process.inputStream.bufferedReader().use { it.readText() }
+        }
+        if (!process.waitFor(COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            return@runCatching null
+        }
+        reader.get(2, TimeUnit.SECONDS)
     }.getOrNull()
 
     private const val TAG = "Hardware"

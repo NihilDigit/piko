@@ -5,6 +5,7 @@ import dev.piko.desktop.LinuxDesktop
 import dev.piko.desktop.isLinux
 import dev.piko.desktop.isMacOs
 import dev.piko.shared.PikoHome
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.update.ChecksumMismatchException
 import dev.piko.shared.update.GithubReleaseClient
@@ -144,7 +145,7 @@ class DesktopAppUpdater private constructor(
             return DesktopUpdate(release.version, release.notes, release.pageUrl, plan, localizedNotes = release.localizedNotes)
         }
         val prefix = "piko-windows-$ARCH-${release.version}"
-        // 三个附件由另一条流水线陆续挂上，缺一个都按还没有新版本处理
+        // release.yml 在全平台构建汇总后统一挂齐附件创建 Release，缺任一必需附件都按尚未发布处理
         val manifestAsset = release.asset("$prefix-files.json") ?: return null
         val zip = release.asset("$prefix-app.zip") ?: return null
         val msi = release.asset("$prefix.msi") ?: return null
@@ -184,9 +185,12 @@ class DesktopAppUpdater private constructor(
             runCatching {
                 val parsed = ZsyncControl.parse(fetchVerified(control))
                 val plan = withContext(Dispatchers.IO) { planZsync(parsed, target) }
-                PikoLog.i("Update", "zsync：${plan.control.blockCount} 块，本机已有 ${plan.reusedBytes} 字节，要下 ${plan.downloadBytes} 字节，${plan.ranges.size} 段")
+                PikoLog.i(
+                    "Update",
+                    "zsync plan: blocks=${plan.control.blockCount}, reused=${plan.reusedBytes}B, download=${plan.downloadBytes}B, ranges=${plan.ranges.size}",
+                )
                 DesktopUpdatePlan.ZsyncDelta(control, plan)
-            }.onFailure { if (it is CancellationException) throw it; log("zsync 对照失败，改为整包下载", it) }.getOrNull()
+            }.onFailure { if (it is CancellationException) throw it; log("zsync planning failed; falling back to full AppImage download", it) }.getOrNull()
         }
         return update(DesktopUpdatePlan.AppImage(appImage, target, delta))
     }
@@ -198,10 +202,13 @@ class DesktopAppUpdater private constructor(
     private suspend fun imagePlan(image: ReleaseAsset, manifest: UpdateManifest, installDir: File): DesktopUpdatePlan.Image {
         val files = changedFiles(installDir, manifest)
         val catalog = runCatching { readImageCatalog(image.size) { range -> fetchRange(image, range) } }
-            .onFailure { if (it is CancellationException) throw it; log("取 image.zip 的目录未成，改为整个下载", it) }
+            .onFailure { if (it is CancellationException) throw it; log("Failed to fetch image.zip central directory; falling back to full archive download", it) }
             .getOrNull()
         return DesktopUpdatePlan.Image(image, manifest, files, catalog).also { plan ->
-            PikoLog.i("Update", "image.zip：要换 ${files.size} 个文件，下载 ${plan.downloadBytes} 字节，整个 ${image.size} 字节")
+            PikoLog.i(
+                "Update",
+                "image.zip plan: changedFiles=${files.size}, download=${plan.downloadBytes}B, archive=${image.size}B",
+            )
         }
     }
 
@@ -235,7 +242,7 @@ class DesktopAppUpdater private constructor(
             } catch (e: ChecksumMismatchException) {
                 throw e
             } catch (e: Exception) {
-                log("按 Range 取 image.zip 未成，改为整个下载", e)
+                log("Range download from image.zip failed; falling back to full archive download", e)
                 target.deleteRecursively()
                 status = UpdateStatus.Downloading(update, 0f)
             }
@@ -261,15 +268,15 @@ class DesktopAppUpdater private constructor(
         // 每一轮还把上一轮的暂存连同失败记号一起清掉，看不出为什么失败
         val attempted = stagingRoot.resolve("auto-${update.version}")
         if (attempted.exists()) {
-            PikoLog.w("Update", "自动安装 ${update.version} 已试过一次，不再自动重试")
+            PikoLog.w("Update", "Auto-install for ${update.version} was already attempted; skipping retry")
             return
         }
         stagingRoot.mkdirs()
         attempted.createNewFile()
-        PikoLog.i("Update", "自动安装 ${update.version}：${update.own().plan::class.simpleName}")
+        PikoLog.i("Update", "Auto-installing ${update.version}: plan=${update.own().plan::class.simpleName}")
         downloadAndInstall(update)
         (status as? UpdateStatus.ReadyToRestart)?.let { restartToInstall(it.update) }
-        PikoLog.i("Update", "自动安装结束于 ${status::class.simpleName}")
+        PikoLog.i("Update", "Auto-install finished with status=${status::class.simpleName}")
     }
 
     // 桌面端的 Installing 是退出前的最后几秒：这时再查，状态会回到 Available，下载按钮又能点了。
@@ -309,7 +316,7 @@ class DesktopAppUpdater private constructor(
                     applyDelta(zip, plan.fallback.manifest, installDir, staging.resolve(PATCH_DIR), plan.zstd)
                 } catch (e: ChecksumMismatchException) {
                     // 本机的 jar 或 AOT 缓存被改动过、不是差分所基于的那一版，或者 zstd 解不开，退回完整补丁包
-                    log("差分还原失败，改下完整补丁包", e)
+                    log("Delta patch reconstruction failed; falling back to full app.zip patch", e)
                     staging.resolve(PATCH_DIR).deleteRecursively()
                     stagePatch(plan.fallback, staging, update)
                 }
@@ -319,7 +326,7 @@ class DesktopAppUpdater private constructor(
             is DesktopUpdatePlan.Image -> stageImage(plan, staging, update)
             is DesktopUpdatePlan.MacBundle -> download(plan.dmg, staging.resolve(plan.dmg.name), update)
             is DesktopUpdatePlan.AppImage -> stageAppImage(plan, update)
-            is DesktopUpdatePlan.Manual -> error("只给下载页的更新不能在应用内安装")
+            is DesktopUpdatePlan.Manual -> error("Manual download-only update plan cannot be installed in-app")
         }
     }
 
@@ -333,7 +340,7 @@ class DesktopAppUpdater private constructor(
         val delta = plan.delta
         if (delta != null) {
             try {
-                val expected = plan.appImage.sha256 ?: throw ChecksumMismatchException("Release 没有公布 ${plan.appImage.name} 的摘要")
+                val expected = plan.appImage.sha256 ?: throw ChecksumMismatchException("Release did not publish SHA-256 checksum for ${plan.appImage.name}")
                 var fetched = 0L
                 var reported = 0f
                 val progressLock = Any()
@@ -352,8 +359,8 @@ class DesktopAppUpdater private constructor(
                     }
                 }
                 val actual = staged.inputStream().use(::sha256Hex)
-                if (actual != expected) throw ChecksumMismatchException("${plan.appImage.name}（zsync 拼出）: $actual != $expected")
-                PikoLog.i("Update", "zsync 拼出新版 AppImage，下载 $fetched 字节，整包 ${plan.appImage.size} 字节")
+                if (actual != expected) throw ChecksumMismatchException("${plan.appImage.name} (zsync assembled): $actual != $expected")
+                PikoLog.i("Update", "Assembled AppImage via zsync: downloaded=${fetched}B, fullSize=${plan.appImage.size}B")
                 makeExecutable(staged)
                 return
             } catch (e: CancellationException) {
@@ -361,7 +368,7 @@ class DesktopAppUpdater private constructor(
                 throw e
             } catch (e: Exception) {
                 // 本机的 AppImage 被改过、镜像不认 Range、半路断网：都退回整包下载，整包也下不来才算失败
-                log("zsync 差分未成，改下整包", e)
+                log("zsync delta assembly failed; falling back to full AppImage download", e)
                 staged.delete()
                 status = UpdateStatus.Downloading(update, 0f)
             }
@@ -371,7 +378,7 @@ class DesktopAppUpdater private constructor(
     }
 
     private fun makeExecutable(file: File) {
-        check(file.setExecutable(true, false)) { "无法给 ${file.name} 加上执行权限" }
+        check(file.setExecutable(true, false)) { "Failed to mark ${file.name} executable" }
     }
 
     private suspend fun stagePatch(plan: DesktopUpdatePlan.Patch, staging: File, update: DesktopUpdate) {
@@ -381,7 +388,7 @@ class DesktopAppUpdater private constructor(
     }
 
     private suspend fun download(asset: ReleaseAsset, target: File, update: DesktopUpdate): File {
-        val expected = asset.sha256 ?: throw ChecksumMismatchException("Release 没有公布 ${asset.name} 的摘要")
+        val expected = asset.sha256 ?: throw ChecksumMismatchException("Release did not publish SHA-256 checksum for ${asset.name}")
         val digest = MessageDigest.getInstance("SHA-256")
         target.outputStream().use { out ->
             releases.download(
@@ -402,7 +409,7 @@ class DesktopAppUpdater private constructor(
     }
 
     private suspend fun fetchVerified(asset: ReleaseAsset): ByteArray {
-        val expected = asset.sha256 ?: throw ChecksumMismatchException("Release 没有公布 ${asset.name} 的摘要")
+        val expected = asset.sha256 ?: throw ChecksumMismatchException("Release did not publish SHA-256 checksum for ${asset.name}")
         val bytes = ByteArrayOutputStream()
         releases.download(asset, onChunk = { buffer, length -> bytes.write(buffer, 0, length) }, onProgress = {})
         val content = bytes.toByteArray()
@@ -419,9 +426,18 @@ class DesktopAppUpdater private constructor(
         status = UpdateStatus.Installing(update)
         val started = runCatching {
             withContext(Dispatchers.IO) { launchApplyScript(own, installation) }
-        }.onFailure { log("启动更新脚本失败", it) }
+        }.onFailure { log("Failed to launch update script", it) }
         if (started.isFailure) {
-            status = UpdateStatus.Failed("无法启动更新程序", update)
+            status = UpdateStatus.Failed(
+                tr(
+                    "无法启动更新程序",
+                    "Could not start the installer",
+                    "インストーラーを起動できませんでした",
+                    "설치 프로그램을 시작할 수 없습니다",
+                    "無法啟動更新程式",
+                ),
+                update,
+            )
             return
         }
         mutableExitRequests.tryEmit(Unit)
@@ -443,12 +459,12 @@ class DesktopAppUpdater private constructor(
         if (plan is DesktopUpdatePlan.AppImage) return installAppImage(update, plan)
         val staging = stagingDir(update)
         val script = staging.resolve("apply-update.ps1")
-        val resource = checkNotNull(javaClass.getResourceAsStream("/update/apply-update.ps1")) { "缺少更新脚本" }
+        val resource = checkNotNull(javaClass.getResourceAsStream("/update/apply-update.ps1")) { "Missing bundled apply-update.ps1 resource" }
         resource.use { input -> script.outputStream().use { input.copyTo(it) } }
         val (mode, source) = when (plan) {
             is DesktopUpdatePlan.Patch, is DesktopUpdatePlan.Delta, is DesktopUpdatePlan.Image -> "patch" to staging.resolve(PATCH_DIR)
             is DesktopUpdatePlan.Installer -> "msi" to staging.resolve(plan.msi.name)
-            is DesktopUpdatePlan.MacBundle, is DesktopUpdatePlan.AppImage, is DesktopUpdatePlan.Manual -> error("不是 Windows 的更新方式：$plan")
+            is DesktopUpdatePlan.MacBundle, is DesktopUpdatePlan.AppImage, is DesktopUpdatePlan.Manual -> error("Unsupported Windows update plan: $plan")
         }
         val checksums = staging.resolve(CHECKSUMS_FILE)
         checksums.writeText(stagedChecksums(update.plan).joinToString("") { (sha256, path) -> "$sha256  $path\n" })
@@ -483,7 +499,7 @@ class DesktopAppUpdater private constructor(
     private fun launchMacScript(update: DesktopUpdate, plan: DesktopUpdatePlan.MacBundle, installation: Installation) {
         val staging = stagingDir(update)
         val script = staging.resolve("apply-update-mac.sh")
-        val resource = checkNotNull(javaClass.getResourceAsStream("/update/apply-update-mac.sh")) { "缺少更新脚本" }
+        val resource = checkNotNull(javaClass.getResourceAsStream("/update/apply-update-mac.sh")) { "Missing bundled apply-update-mac.sh resource" }
         resource.use { input -> script.outputStream().use { input.copyTo(it) } }
         val checksums = staging.resolve(CHECKSUMS_FILE)
         checksums.writeText(stagedChecksums(plan).joinToString("") { (sha256, path) -> "$sha256  $path\n" })
@@ -522,7 +538,7 @@ class DesktopAppUpdater private constructor(
             java.nio.file.StandardCopyOption.ATOMIC_MOVE,
             java.nio.file.StandardCopyOption.REPLACE_EXISTING,
         )
-        PikoLog.i("Update", "已换上 ${update.version} 的 AppImage")
+        PikoLog.i("Update", "Replaced AppImage with version ${update.version}")
         val staging = stagingDir(update)
         val relaunch = listOf("/bin/sh", "-c", RELAUNCH_SCRIPT, "piko-relaunch", ProcessHandle.current().pid().toString(), plan.target.absolutePath)
         fun start(command: List<String>) = ProcessBuilder(command)
@@ -568,9 +584,9 @@ class DesktopAppUpdater private constructor(
         is DesktopUpdatePlan.Delta -> plan.fallback.manifest.patchChecksums()
         is DesktopUpdatePlan.Installer -> listOf(checkNotNull(plan.msi.sha256) to plan.msi.name)
         is DesktopUpdatePlan.MacBundle -> listOf(checkNotNull(plan.dmg.sha256) to plan.dmg.name)
-        is DesktopUpdatePlan.AppImage -> error("AppImage 在本进程里换上，不经脚本")
+        is DesktopUpdatePlan.AppImage -> error("AppImage is replaced in-process without staging checksums")
         is DesktopUpdatePlan.Image -> plan.files.map { it.sha256 to "$PATCH_DIR/${it.path}" }
-        is DesktopUpdatePlan.Manual -> error("只给下载页的更新不能在应用内安装")
+        is DesktopUpdatePlan.Manual -> error("Manual download-only update plan cannot be installed in-app")
     }
 
     private fun manifestOf(plan: DesktopUpdatePlan): UpdateManifest? = when (plan) {
@@ -591,23 +607,27 @@ class DesktopAppUpdater private constructor(
     private fun keepScriptLogs(staging: File) {
         runCatching {
             val history = stagingRoot.resolve(HISTORY_LOG)
-            listOf("update.log", "powershell.log", "bash.log", "msiexec.log")
+            SCRIPT_LOGS
                 .map(staging::resolve)
                 .filter { it.isFile && it.length() > 0 }
-                .forEach { log -> history.appendText("== ${staging.name}/${log.name}\n${log.readText()}\n") }
+                .forEach { log ->
+                    val decoded = decodeScriptLog(log)
+                    if (decoded.isNotBlank()) {
+                        history.appendText("== ${staging.name}/${log.name}\n${decoded.trimEnd()}\n", Charsets.UTF_8)
+                    }
+                }
             // msiexec 的详细日志一次就有几 MB，只留最近的部分
-            if (history.length() > HISTORY_LIMIT) {
-                val bytes = history.readBytes()
-                history.writeBytes(bytes.copyOfRange(bytes.size - HISTORY_LIMIT / 2, bytes.size))
+            if (history.isFile && history.length() > HISTORY_LIMIT) {
+                history.writeBytes(truncateUtf8Tail(history.readBytes(), HISTORY_LIMIT / 2))
             }
-        }.onFailure { log("保留更新日志失败", it) }
+        }.onFailure { log("Failed to preserve previous update script logs", it) }
     }
 
-    // apply-update.ps1 失败时在暂存目录留下这个文件；暂存目录要到下一次下载才清
+    // apply-update.ps1（Windows）与 apply-update-mac.sh（macOS）失败时在暂存目录留下这个文件；暂存目录要到下一次下载才清
     override fun takePreviousFailure(version: String): Boolean {
         val marker = stagingRoot.resolve(version).resolve("failed")
         if (!marker.isFile) return false
-        log("上次更新到 $version 未完成：${marker.readText().trim()}", null)
+        log("Previous update to $version did not complete: ${marker.readText().trim()}", null)
         marker.delete()
         return true
     }
@@ -623,6 +643,77 @@ class DesktopAppUpdater private constructor(
         private const val KEEP_FILE = "keep.txt"
         private const val HISTORY_LOG = "update-history.log"
         private const val HISTORY_LIMIT = 1024 * 1024
+        private val SCRIPT_LOGS = listOf("update.log", "powershell.log", "bash.log", "msiexec.log", "relaunch.log")
+
+        fun exportHistoryLog(): String = runCatching {
+            val root = stagingRoot()
+            val sb = StringBuilder()
+            val history = root.resolve(HISTORY_LOG)
+            if (history.isFile && history.length() > 0) {
+                val text = decodeScriptLog(history).trimEnd()
+                if (text.isNotEmpty()) sb.append(text).append('\n')
+            }
+            root.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name }?.forEach { dir ->
+                SCRIPT_LOGS.map(dir::resolve).filter { it.isFile && it.length() > 0 }.forEach { logFile ->
+                    val decoded = decodeScriptLog(logFile).trimEnd()
+                    if (decoded.isNotEmpty()) {
+                        sb.append("== ${dir.name}/${logFile.name}\n").append(decoded).append('\n')
+                    }
+                }
+            }
+            if (sb.isEmpty()) "" else "==== Desktop Update History ====\n" + PikoLog.redact(sb.toString())
+        }.onFailure { PikoLog.w("Update", "Failed to read update history log for export", it) }.getOrDefault("")
+
+        fun clearHistoryLog() {
+            runCatching {
+                val root = stagingRoot()
+                java.nio.file.Files.deleteIfExists(root.resolve(HISTORY_LOG).toPath())
+                root.listFiles()?.filter { it.isDirectory }?.forEach { dir ->
+                    SCRIPT_LOGS.forEach { name ->
+                        java.nio.file.Files.deleteIfExists(dir.resolve(name).toPath())
+                    }
+                }
+            }.onFailure { PikoLog.w("Update", "Failed to clear update history log", it) }
+        }
+
+        private fun decodeScriptLog(file: File): String {
+            val bytes = file.readBytes()
+            if (bytes.isEmpty()) return ""
+            val text = when {
+                bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte() ->
+                    String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE)
+                bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte() ->
+                    String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE)
+                bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte() ->
+                    String(bytes, 3, bytes.size - 3, Charsets.UTF_8)
+                looksLikeUtf16Le(bytes) -> String(bytes, Charsets.UTF_16LE)
+                else -> String(bytes, Charsets.UTF_8)
+            }
+            return text.replace("\u0000", "")
+        }
+
+        private fun looksLikeUtf16Le(bytes: ByteArray): Boolean {
+            if (bytes.size < 4 || bytes.size % 2 != 0) return false
+            val samplePairs = minOf(bytes.size / 2, 128)
+            var oddZeros = 0
+            for (i in 0 until samplePairs) {
+                if (bytes[i * 2 + 1] == 0.toByte()) oddZeros++
+            }
+            return oddZeros * 2 >= samplePairs
+        }
+
+        private fun truncateUtf8Tail(bytes: ByteArray, keepBytes: Int): ByteArray {
+            if (bytes.size <= keepBytes) return bytes
+            var start = bytes.size - keepBytes
+            while (start < bytes.size && (bytes[start].toInt() and 0xC0) == 0x80) {
+                start++
+            }
+            val newline = (start until minOf(bytes.size, start + 512)).firstOrNull { bytes[it] == '\n'.code.toByte() }
+            if (newline != null && newline + 1 < bytes.size) {
+                start = newline + 1
+            }
+            return bytes.copyOfRange(start, bytes.size)
+        }
 
         /** 补丁的事务记录，在安装目录下，由 apply-update.ps1 写，同名常量在脚本里。 */
         private const val JOURNAL_FILE = ".piko-update.journal"
@@ -666,13 +757,13 @@ class DesktopAppUpdater private constructor(
                     ?.takeIf { it.startsWith("staging\t") }?.substringAfter('\t')?.let(::File)
                     ?: stagingRoot().resolve("recover")
             } catch (e: java.io.IOException) {
-                PikoLog.i("Update", "更新脚本正在换文件")
+                PikoLog.i("Update", "Update script is currently holding journal lock; skipping interrupted-update recovery")
                 return false
             }
             return runCatching {
                 staging.mkdirs()
                 val script = staging.resolve("apply-update.ps1")
-                val resource = checkNotNull(DesktopAppUpdater::class.java.getResourceAsStream("/update/apply-update.ps1")) { "缺少更新脚本" }
+                val resource = checkNotNull(DesktopAppUpdater::class.java.getResourceAsStream("/update/apply-update.ps1")) { "Missing bundled apply-update.ps1 resource" }
                 resource.use { input -> script.outputStream().use { input.copyTo(it) } }
                 ProcessBuilder(
                     "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
@@ -687,8 +778,8 @@ class DesktopAppUpdater private constructor(
                     .redirectErrorStream(true)
                     .redirectOutput(staging.resolve("powershell.log"))
                     .start()
-                PikoLog.w("Update", "上次更新中断，交给更新脚本回滚后重新启动")
-            }.onFailure { PikoLog.w("Update", "无法启动回滚中断更新的脚本", it) }.isSuccess
+                PikoLog.w("Update", "Interrupted update detected; handing over to update script for rollback and restart")
+            }.onFailure { PikoLog.w("Update", "Failed to launch recovery script for interrupted update", it) }.isSuccess
         }
 
         /** 换掉 Release 接口地址，用于在本机对着假的 Release 走一遍更新。 */
@@ -720,7 +811,7 @@ class DesktopAppUpdater private constructor(
                     patched.matches(file.name.dropLast(4))
             }.orEmpty().toList()
             val found = leftovers(installDir, ROOT_PATCHED) + leftovers(installDir.resolve("app"), APP_PATCHED)
-            found.forEach { leftover -> if (leftover.delete()) PikoLog.i("Update", "清掉更新残留 ${leftover.name}") }
+            found.forEach { leftover -> if (leftover.delete()) PikoLog.i("Update", "Removed update leftover ${leftover.name}") }
         }
 
         // 补丁会换的文件，与 desktopApp/build.gradle.kts 的 UpdateArtifactsTask.isPatch 同一套
@@ -734,7 +825,11 @@ class DesktopAppUpdater private constructor(
         private val RELAUNCH_SCRIPT = """
             deadline=${'$'}(( ${'$'}(date +%s) + 120 ))
             while kill -0 "${'$'}1" 2>/dev/null; do
-                if [ "${'$'}(date +%s)" -gt "${'$'}deadline" ]; then echo 'app did not exit within 120 s'; exit 1; fi
+                if [ "${'$'}(date +%s)" -gt "${'$'}deadline" ]; then
+                    echo 'app did not exit within 120 s'
+                    printf '%s\n' 'app did not exit within 120 s' > failed
+                    exit 1
+                fi
                 sleep 0.2
             done
             exec "${'$'}2"
@@ -743,7 +838,7 @@ class DesktopAppUpdater private constructor(
         /** 上次下到一半或没换上的 AppImage 暂存文件，见 [stagedAppImage]。 */
         private fun removeStagedAppImage(appImage: File) {
             val staged = File(appImage.parentFile, ".${appImage.name}.piko-update")
-            if (staged.isFile && staged.delete()) PikoLog.i("Update", "清掉未换上的 AppImage 暂存文件")
+            if (staged.isFile && staged.delete()) PikoLog.i("Update", "Removed unapplied staged AppImage")
         }
 
         /** Flatpak 里返回 null：更新由 flatpak 负责，应用自己也写不进 /app。 */

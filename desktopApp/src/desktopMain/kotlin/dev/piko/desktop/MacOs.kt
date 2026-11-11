@@ -1,10 +1,12 @@
 package dev.piko.desktop
 
+import dev.piko.shared.log.PikoLog
 import java.awt.Desktop
 import java.awt.Taskbar
 import java.awt.Window
 import java.awt.desktop.AppReopenedListener
 import java.io.File
+import java.util.concurrent.TimeUnit
 import javax.swing.RootPaneContainer
 
 internal val isMacOs: Boolean = System.getProperty("os.name").startsWith("Mac")
@@ -46,14 +48,25 @@ internal fun installMacHandlers(
 
 /** macOS 上与 WinRTSupport 对应的系统能力。调用方先判断 [isMacOs]。 */
 internal object MacOs {
+    private const val TAG = "MacOS"
+
     /**
      * 系统通知。经 osascript 发出，通知中心里署名为「脚本编辑器」：以 Piko 自己的名义发要用
      * UNUserNotificationCenter，它只认签过名的 bundle，现在的包没有签名。
      */
     fun showNotification(title: String, message: String): Boolean = runCatching {
         val script = "display notification ${appleScriptString(message)} with title ${appleScriptString(title)}"
-        ProcessBuilder("osascript", "-e", script).start().waitFor() == 0
-    }.getOrDefault(false)
+        val process = ProcessBuilder("osascript", "-e", script)
+            .redirectErrorStream(true)
+            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            .start()
+        if (!process.waitFor(10, TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            return@runCatching false
+        }
+        process.exitValue() == 0
+    }.onFailure { PikoLog.w(TAG, "Failed to show macOS notification via osascript", it) }
+        .getOrDefault(false)
 
     private fun appleScriptString(text: String): String =
         "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
@@ -65,11 +78,13 @@ internal object MacOs {
     fun preventSleep(): AutoCloseable? = runCatching {
         val process = ProcessBuilder("caffeinate", "-d", "-i", "-w", ProcessHandle.current().pid().toString()).start()
         AutoCloseable { process.destroy() }
-    }.getOrNull()
+    }.onFailure { PikoLog.w(TAG, "Failed to start caffeinate sleep lock", it) }
+        .getOrNull()
 
     /** 在 Finder 里打开所在文件夹并选中该文件。 */
     fun revealInFinder(file: File) {
         runCatching { ProcessBuilder("open", "-R", file.absolutePath).start() }
+            .onFailure { PikoLog.w(TAG, "Failed to reveal file in Finder", it) }
     }
 
     /** 标题栏与窗口边框的深浅。JDK 在 macOS 上读根面板的这个属性，设成 NSAppearance 的名字。 */

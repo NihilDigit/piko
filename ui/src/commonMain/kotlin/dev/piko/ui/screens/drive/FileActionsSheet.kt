@@ -25,6 +25,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.FolderUsage
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.state.DriveItemName
 import dev.piko.ui.components.ActionTier
 import dev.piko.ui.components.FileTypeIcon
@@ -60,7 +62,8 @@ internal fun FileActionsSheet(
             folderUsage.collect { value = FolderUsageResult.Counted(it) }
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            PikoLog.w("Drive", "Failed to calculate folder usage in actions sheet for ${logFolder(file.id)}", e)
             value = FolderUsageResult.Failed
         }
     }

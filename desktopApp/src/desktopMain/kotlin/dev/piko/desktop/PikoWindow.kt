@@ -136,7 +136,7 @@ internal class WindowFaultScope internal constructor(
         } else {
             phase = Phase.CLOSING
             queuedGeneration = -1
-            PikoLog.e("Window", "界面故障无法自动恢复，关闭故障窗口", throwable)
+            PikoLog.e("Window", "Unrecoverable UI fault; closing affected window", throwable)
             coordinator.dispatch {
                 val shouldRun = coordinator.withLock {
                     if (phase == Phase.CLOSED) false
@@ -156,7 +156,7 @@ internal class DesktopWindowFaultCoordinator(
     private val nowMillis: () -> Long = { System.nanoTime() / 1_000_000L },
     internal val dispatch: (() -> Unit) -> Unit = { SwingUtilities.invokeLater(it) },
     internal val log: (Throwable) -> Unit = {
-        PikoLog.e("Window", "界面渲染或事件异常，自动重建窗口恢复出帧", it)
+        PikoLog.e("Window", "UI rendering or event fault; recreating window to recover frame loop", it)
     },
 ) {
     private val handled = ArrayDeque<WeakReference<Throwable>>()

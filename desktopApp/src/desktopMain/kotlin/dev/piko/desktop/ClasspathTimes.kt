@@ -32,10 +32,10 @@ internal fun restoreClasspathTimes() {
         val skew = jar.lastModified() - expected
         when {
             skew == 0L -> Unit
-            !isZoneOffset(skew) -> PikoLog.w("App", "${jar.name} 的修改时间与打包时差 ${skew / 1000} 秒，不是时区差，AOT 缓存不可用")
+            !isZoneOffset(skew) -> PikoLog.w("App", "${jar.name} mtime differs from build timestamp by ${skew / 1000}s (not a timezone offset); AOT cache unavailable")
             jar.setLastModified(expected) ->
-                PikoLog.i("App", "${jar.name} 的修改时间按安装机时区偏了 ${skew / 60_000} 分钟，已改回，AOT 缓存下次启动起可用")
-            else -> PikoLog.w("App", "${jar.name} 的修改时间偏了 ${skew / 60_000} 分钟，改不回，AOT 缓存不可用")
+                PikoLog.i("App", "Restored ${jar.name} mtime (was skewed by ${skew / 60_000}m due to installer timezone); AOT cache available on next launch")
+            else -> PikoLog.w("App", "Failed to restore ${jar.name} mtime (skewed by ${skew / 60_000}m); AOT cache unavailable")
         }
     }
 }

@@ -34,7 +34,7 @@ interface AvailableUpdate {
 
     /**
      * 为 false 时只给下载页链接：Android 的 debug 包与 Release 包名不同，装上去是另一个应用；
-     * 桌面端的便携版要整包更新时没有安装器可用。
+     * 其他不支持应用内直接替换的形态也只跳转下载页。
      */
     val canInstallInApp: Boolean
 }
@@ -90,10 +90,9 @@ interface AppUpdateService {
 }
 
 /**
- * 两端共用的检查逻辑：取 GitHub 最新 Release、比版本、按平台挑附件。
+ * 多端共用的检查逻辑：取 GitHub 最新 Release、比版本、按平台挑附件。
  *
- * [resolve] 返回 null 表示这个 Release 里还没有本平台的附件。桌面端的附件由另一条流水线
- * 在 Release 建好后几分钟才挂上，这段时间按「没有新版本」处理，不报错。
+ * [resolve] 返回 null 表示这个 Release 里没有当前平台与架构匹配的附件，此时按「没有新版本」处理，不报错。
  */
 abstract class GithubUpdateService<U : AvailableUpdate>(
     protected val releases: GithubReleaseClient,
@@ -122,15 +121,21 @@ abstract class GithubUpdateService<U : AvailableUpdate>(
             when (val check = releases.check(currentVersion)) {
                 is ReleaseCheck.Newer -> try {
                     val update = resolve(check.release)
-                    PikoLog.i(TAG, "检查更新：$currentVersion → ${check.release.version}" +
-                        (update?.let { "，附件 ${it.downloadSize} 字节${if (it.canInstallInApp) "" else "，不能应用内安装"}" } ?: tr("，本平台附件尚未上传", "; download for this platform is not available yet", "。このプラットフォーム用のファイルは未公開です", ". 이 플랫폼의 파일이 아직 업로드되지 않았습니다", "，本平台附件尚未上傳")))
+                    PikoLog.i(
+                        TAG,
+                        "Update check: $currentVersion -> ${check.release.version}" +
+                            (update?.let { ", asset ${it.downloadSize} bytes, inAppInstall=${it.canInstallInApp}" }
+                                ?: ", no matching platform asset"),
+                    )
                     update?.let { UpdateStatus.Available(it) } ?: UpdateStatus.UpToDate
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     failure(e)
                 }
-                ReleaseCheck.UpToDate -> UpdateStatus.UpToDate.also { PikoLog.d(TAG, "检查更新：$currentVersion 已是最新${if (silent) "（开屏）" else ""}") }
+                ReleaseCheck.UpToDate -> UpdateStatus.UpToDate.also {
+                    PikoLog.d(TAG, "Update check: $currentVersion is up to date (startup=$silent)")
+                }
                 is ReleaseCheck.Failed -> failure(check.cause)
             }
         } catch (e: CancellationException) {
@@ -179,13 +184,13 @@ abstract class GithubUpdateService<U : AvailableUpdate>(
      * UnknownHostException 之类的原文用户读不懂也用不上。
      */
     private fun failure(cause: Throwable): UpdateStatus.Failed {
-        log(tr("检查更新失败", "Update check failed", "更新の確認に失敗しました", "업데이트 확인 실패", "檢查更新失敗"), cause)
+        log("Update check failed (current=$currentVersion)", cause)
         return UpdateStatus.Failed(if (cause.isNetworkFailure()) tr("无法连接网络，请检查网络设置后重试", "Unable to connect. Check your network settings and retry", "接続できません。ネットワーク設定を確認して再試行してください", "연결할 수 없습니다. 네트워크 설정을 확인한 후 다시 시도해 주세요", "無法連線網路，請檢查網路設定後重試") else tr("检查更新失败，请稍后重试", "Update check failed. Try again later", "更新を確認できませんでした。しばらくしてから再試行してください", "업데이트를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요", "檢查更新失敗，請稍後重試"))
     }
 
     /** 下载与校验失败，措辞同上。校验不符单独说：重试多半还是同一个结果，该去下载页。 */
     protected fun downloadFailed(cause: Throwable, update: AvailableUpdate): UpdateStatus.Failed {
-        log(tr("下载更新失败", "Update download failed", "更新のダウンロードに失敗しました", "업데이트 다운로드 실패", "下載更新失敗"), cause)
+        log("Update download failed for ${update.version}", cause)
         val message = when {
             cause is ChecksumMismatchException -> tr("安装包校验未通过，请从下载页获取", "Package verification failed. Use the download page", "パッケージの検証に失敗しました。ダウンロードページから取得してください", "설치 패키지 검증에 실패했습니다. 다운로드 페이지에서 받으세요", "安裝套件驗證未通過，請從下載頁取得")
             cause.isNetworkFailure() -> tr("无法连接网络，请检查网络设置后重试", "Unable to connect. Check your network settings and retry", "接続できません。ネットワーク設定を確認して再試行してください", "연결할 수 없습니다. 네트워크 설정을 확인한 후 다시 시도해 주세요", "無法連線網路，請檢查網路設定後重試")

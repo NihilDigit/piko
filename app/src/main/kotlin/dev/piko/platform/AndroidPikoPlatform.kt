@@ -46,7 +46,9 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.documentfile.provider.DocumentFile
 import dev.piko.BuildConfig
 import dev.piko.data.auth.AppLanguage
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.player.PlaybackBackend
+import kotlinx.coroutines.CancellationException
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.platform.BackgroundTransferAccess
 import dev.piko.ui.platform.DownloadLocationPicker
@@ -149,14 +151,19 @@ class AndroidPikoPlatform(
             if (uri != null) {
                 scope.launch {
                     val picked = withContext(Dispatchers.IO) {
-                        runCatching {
+                        try {
                             context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                             val document = android.provider.DocumentsContract.buildDocumentUriUsingTree(uri, android.provider.DocumentsContract.getTreeDocumentId(uri))
                             val name = context.contentResolver.query(document, arrayOf(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use {
                                 if (it.moveToFirst()) it.getString(0) else null
-                            } ?: "本地文件夹"
+                            } ?: tr("本地文件夹", "Local folder", "ローカルフォルダー", "로컬 폴더", "本機資料夾")
                             uri.toString() to name
-                        }.getOrNull()
+                        } catch (cancel: CancellationException) {
+                            throw cancel
+                        } catch (e: Exception) {
+                            PikoLog.w(TAG, "Failed to persist permission or query local folder tree (authority=${uri.authority})", e)
+                            null
+                        }
                     }
                     picked?.let { onPicked(it.first, it.second) }
                 }
@@ -212,17 +219,22 @@ class AndroidPikoPlatform(
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
         val prefs = context.getSharedPreferences("piko_app_links", Context.MODE_PRIVATE)
         if (prefs.getBoolean("prompt_dismissed", false)) return false
-        return runCatching {
+        return try {
             val manager = context.getSystemService(android.content.pm.verify.domain.DomainVerificationManager::class.java)
-                ?: return@runCatching false
-            val userState = manager.getDomainVerificationUserState(context.packageName) ?: return@runCatching false
-            if (!userState.isLinkHandlingAllowed) return@runCatching true
+                ?: return false
+            val userState = manager.getDomainVerificationUserState(context.packageName) ?: return false
+            if (!userState.isLinkHandlingAllowed) return true
             val hostStates = userState.hostToStateMap
             // 只要用户还没有在「默认打开」里把核心分享域名（mypikpak.com）勾上，就提示
             val mainState = hostStates["mypikpak.com"]
             mainState != android.content.pm.verify.domain.DomainVerificationUserState.DOMAIN_STATE_SELECTED &&
                 mainState != android.content.pm.verify.domain.DomainVerificationUserState.DOMAIN_STATE_VERIFIED
-        }.getOrDefault(false)
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (e: Exception) {
+            PikoLog.w(TAG, "Failed to query domain verification state", e)
+            false
+        }
     }
 
     override fun dismissAppLinkPrompt() {
@@ -248,6 +260,8 @@ class AndroidPikoPlatform(
             .putExtra("title", fileName)
         runCatching {
             context.startActivity(Intent.createChooser(view, tr("选择播放器", "Choose player", "プレーヤーを選択", "플레이어 선택", "選擇播放器")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.onFailure { e ->
+            PikoLog.w("ExternalPlayer", "Failed to launch external video player chooser (mimeType=$mimeType)", e)
         }.isSuccess
     }
 
@@ -345,7 +359,7 @@ class AndroidPikoPlatform(
         containerHeightPx: Int,
         targetBlurPx: Float,
     ): ImageBitmap? = withContext(Dispatchers.Default) {
-        runCatching {
+        try {
             val request = ImageRequest.Builder(context)
                 .data(model)
                 .size(BackdropBlurKernel.DECODE_MAX_SIDE_PX)
@@ -354,31 +368,38 @@ class AndroidPikoPlatform(
                 .memoryCachePolicy(CachePolicy.DISABLED)
                 .build()
             val rawBitmap = (SingletonImageLoader.get(context).execute(request).image as? BitmapImage)?.bitmap
-                ?: return@runCatching null
+                ?: return@withContext null
             val readable = if (rawBitmap.config == Bitmap.Config.ARGB_8888) {
                 rawBitmap
             } else {
-                rawBitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return@runCatching null
+                rawBitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return@withContext null
             }
             val w = readable.width
             val h = readable.height
-            if (w <= 0 || h <= 0) return@runCatching null
+            if (w <= 0 || h <= 0) return@withContext null
             val pixels = IntArray(w * h)
             readable.getPixels(pixels, 0, w, 0, 0, w, h)
             if (readable !== rawBitmap) readable.recycle()
             val radius = BackdropBlurKernel.equivalentRadiusPx(w, h, containerWidthPx, containerHeightPx, targetBlurPx)
             val blurred = BackdropBlurKernel.blurArgb(pixels, w, h, radius)
             Bitmap.createBitmap(blurred, w, h, Bitmap.Config.ARGB_8888).asImageBitmap()
-        }.getOrNull()
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (_: Exception) {
+            null
+        }
     }
 
     override val deviceSummary: String =
-        "Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}），${Build.MANUFACTURER} ${Build.MODEL}，${Build.SUPPORTED_ABIS.firstOrNull()}"
+        "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}, ${Build.SUPPORTED_ABIS.firstOrNull()}"
 
-    override suspend fun exportLog(fileName: String, content: String): Boolean = runCatching {
-        // 放在缓存目录的 logs 下，由 file_paths.xml 单独授权给 FileProvider；下次导出时覆盖
+    override suspend fun exportLog(fileName: String, content: String): Boolean = try {
+        // 放在缓存目录的 logs 下，由 file_paths.xml 单独授权给 FileProvider；每次导出前先清理旧的 .txt 导出副本，避免堆积
         val file = withContext(Dispatchers.IO) {
-            File(context.cacheDir, "logs").apply { mkdirs() }.resolve(fileName).apply { writeText(content) }
+            val dir = File(context.cacheDir, "logs").apply { mkdirs() }
+            dir.listFiles { existing -> existing.isFile && existing.extension.equals("txt", ignoreCase = true) }
+                ?.forEach { it.delete() }
+            dir.resolve(fileName).apply { writeText(content) }
         }
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         val send = Intent(Intent.ACTION_SEND).apply {
@@ -390,10 +411,16 @@ class AndroidPikoPlatform(
         }
         context.startActivity(Intent.createChooser(send, tr("导出日志", "Export logs", "ログをエクスポート", "로그 내보내기", "匯出日誌")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         true
-    }.getOrDefault(false)
+    } catch (cancel: CancellationException) {
+        throw cancel
+    } catch (e: Exception) {
+        PikoLog.w(TAG, "Failed to export logs ($fileName)", e)
+        false
+    }
 
     private fun startActivity(intent: Intent) {
         runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            .onFailure { PikoLog.w(TAG, "Failed to start Activity (action=${intent.action})", it) }
     }
 
     private inner class AndroidLocalFiles : LocalFileActions {
@@ -433,7 +460,9 @@ class AndroidPikoPlatform(
             val uri = if (path.startsWith("content:")) {
                 val fileUri = Uri.parse(path)
                 val authority = fileUri.authority ?: return
-                val documentId = runCatching { DocumentsContract.getDocumentId(fileUri) }.getOrNull() ?: return
+                val documentId = runCatching { DocumentsContract.getDocumentId(fileUri) }
+                    .onFailure { PikoLog.w(TAG, "Failed to resolve SAF document ID for containing folder (authority=$authority)", it) }
+                    .getOrNull() ?: return
                 val parentId = documentId.substringBeforeLast('/', documentId)
                 DocumentsContract.buildTreeDocumentUri(authority, parentId)
             } else {
@@ -459,7 +488,9 @@ class AndroidPikoPlatform(
             val uri = if (path.startsWith("content:")) {
                 val folderUri = Uri.parse(path)
                 val authority = folderUri.authority ?: return
-                val documentId = runCatching { DocumentsContract.getDocumentId(folderUri) }.getOrNull() ?: return
+                val documentId = runCatching { DocumentsContract.getDocumentId(folderUri) }
+                    .onFailure { PikoLog.w(TAG, "Failed to resolve SAF directory document ID (authority=$authority)", it) }
+                    .getOrNull() ?: return
                 DocumentsContract.buildTreeDocumentUri(authority, documentId)
             } else {
                 FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", File(path))
@@ -516,6 +547,7 @@ class AndroidPikoPlatform(
                 val selected = result.data?.data ?: return@rememberLauncherForActivityResult
                 val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 runCatching { context.contentResolver.takePersistableUriPermission(selected, flags) }
+                    .onFailure { PikoLog.w(TAG, "Failed to persist download folder URI permission (authority=${selected.authority})", it) }
                 onPicked(selected.toString())
             }
             return {
@@ -561,6 +593,7 @@ class AndroidPikoPlatform(
 
         private fun persistReadPermission(uri: Uri) {
             runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+                .onFailure { PikoLog.w(TAG, "Failed to persist upload read URI permission (authority=${uri.authority})", it) }
         }
     }
 
@@ -588,6 +621,10 @@ class AndroidPikoPlatform(
         override fun setBufferAhead(seconds: Int) = mpv.setBufferAhead(seconds)
 
         override fun bufferReport(): String? = mpv.bufferReport()
+    }
+
+    private companion object {
+        const val TAG = "Platform"
     }
 }
 

@@ -9,6 +9,7 @@ import android.provider.DocumentsContract
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.*
+import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.TaskPhase
@@ -73,10 +74,22 @@ class AndroidLocalFileAccess(private val context: Context, scope: CoroutineScope
                 val file = stat(mount, child, entry, uri)
                 cache.enrich(file) { output -> metadata(file, uri, output) }
             }
-        } catch (_: Exception) { throw IllegalStateException("本机文件夹不可访问") }
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (e: Exception) {
+            PikoLog.w(TAG, "Failed to list local mount directory (mountId=${mount.mountId})", e)
+            throw IllegalStateException("本机文件夹不可访问", e)
+        }
     }
     override suspend fun playbackPath(mount: LocalMount, location: LocalLocation): String = withContext(Dispatchers.IO) {
-        try { document(mount, location).toString() } catch (_: Exception) { throw IllegalStateException("本机文件夹不可访问") }
+        try {
+            document(mount, location).toString()
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (e: Exception) {
+            PikoLog.w(TAG, "Failed to resolve local playback path (mountId=${mount.mountId})", e)
+            throw IllegalStateException("本机文件夹不可访问", e)
+        }
     }
     override suspend fun subtitlePath(mount: LocalMount, location: LocalLocation): String = withContext(Dispatchers.IO) {
         try {
@@ -157,8 +170,12 @@ class AndroidLocalFileAccess(private val context: Context, scope: CoroutineScope
                 } catch (_: Exception) { "" }
                 finally { frame.recycle() }
             } else ""
-            if (rotation == 90L || rotation == 270L) { val original = width; width = height; height = original }
+                if (rotation == 90L || rotation == 270L) { val original = width; width = height; height = original }
             return LocalMediaMetadata(width, height, duration, thumbnail)
         } finally { retriever.release() }
+    }
+
+    private companion object {
+        const val TAG = "LocalMount"
     }
 }

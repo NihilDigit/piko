@@ -73,8 +73,9 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
         if (!context.packageManager.canRequestPackageInstalls()) {
             val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            PikoLog.i(TAG, "未授予安装未知应用，先去授权")
-            runCatching { context.startActivity(intent) }.onFailure { PikoLog.w(TAG, "打不开安装未知应用的授权页", it) }
+            PikoLog.i(TAG, "Unknown app install permission not granted; opening system settings")
+            runCatching { context.startActivity(intent) }
+                .onFailure { PikoLog.w(TAG, "Failed to open unknown app sources settings", it) }
             return
         }
         status = UpdateStatus.Downloading(update, 0f)
@@ -87,17 +88,17 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
             status = downloadFailed(e, update)
             return
         }
-        PikoLog.i(TAG, "更新包已下载并校验：${own.apk.name}，${file.length()} 字节")
+        PikoLog.i(TAG, "Update APK downloaded and verified: ${own.apk.name} (${file.length()} bytes)")
         runCatching { install(file) }
             .onSuccess { status = UpdateStatus.Installing(update) }
             .onFailure {
-                PikoLog.w(TAG, "提交安装会话失败", it)
+                PikoLog.w(TAG, "Failed to commit PackageInstaller session for ${own.apk.name}", it)
                 status = UpdateStatus.Failed(tr("无法启动安装", "Unable to start installation", "インストールを開始できません", "설치를 시작할 수 없습니다", "無法啟動安裝"), update)
             }
     }
 
     private suspend fun download(update: AndroidUpdate): File = withContext(Dispatchers.IO) {
-        val expected = update.apk.sha256 ?: throw ChecksumMismatchException("Release 没有公布摘要")
+        val expected = update.apk.sha256 ?: throw ChecksumMismatchException("Release asset has no SHA-256 digest")
         val dir = File(context.cacheDir, UPDATE_DIR).apply { deleteRecursively(); mkdirs() }
         val target = File(dir, update.apk.name)
         val digest = MessageDigest.getInstance("SHA-256")
@@ -139,11 +140,11 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
         }
     }
 
-    internal fun onInstallFailed(message: String) {
-        PikoLog.w(TAG, "系统安装未完成：$message")
+    internal fun onInstallFailed(userMessage: String, logReason: String, cause: Throwable? = null) {
+        PikoLog.w(TAG, "System package installation did not complete: $logReason", cause)
         val update = (status as? UpdateStatus.Installing)?.update
         status = UpdateStatus.Failed(tr("安装未完成", "Installation incomplete", "インストールが未完了です", "설치 미완료", "安裝未完成"), update)
-        mutableMessages.tryEmit(message)
+        mutableMessages.tryEmit(userMessage)
     }
 
     private fun pickApk(release: LatestRelease): ReleaseAsset? =

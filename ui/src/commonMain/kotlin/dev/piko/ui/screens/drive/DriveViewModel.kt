@@ -22,6 +22,8 @@ import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFile
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.proxy.openForExternalPlayer
 import dev.piko.shared.naming.av.canonicalAvNameOf
@@ -449,7 +451,9 @@ internal class DriveViewModel(
 
     fun copyDownloadLink(file: FileStat) {
         viewModelScope.launch {
-            val url = mediaRepository.fetchDownloadUrl(file.id).logFailure("Drive", "查文件下载链接失败").getOrNull()
+            val url = mediaRepository.fetchDownloadUrl(file.id)
+                .logFailure("Drive", "Failed to fetch download URL for ${logFile(file.id, file.name)}")
+                .getOrNull()
             if (!url.isNullOrBlank()) {
                 _effects.emit(
                     DriveUiEffect.CopyToClipboard(
@@ -475,7 +479,7 @@ internal class DriveViewModel(
             val url = source
                 .logFailure(
                     "Drive",
-                    tr("外部播放器取不到播放地址", "Playback address unavailable for external player", "外部プレーヤー用の再生アドレスを取得できません", "외부 플레이어의 재생 주소를 가져올 수 없습니다", "外部播放器無法取得播放位址"),
+                    "Failed to resolve playback URL for external player (direct=$requiresDirectUrl, ${logFile(file.id, file.name)})",
                 )
                 .getOrNull()
             if (url != null) {
@@ -517,7 +521,7 @@ internal class DriveViewModel(
     fun completeLocalMount(path: String, name: String) {
         val destination = pendingMountDestination ?: return
         pendingMountDestination = null
-        launchLocalAction {
+        launchLocalAction("mount into ${logFolder(destination.second)}") {
             if (destination.first == driveRepo.currentAccount) {
                 val outcome = driveRepo.localMounts.mountOrExisting(destination.second, path, name)
                 state.highlight(setOf(outcome.mount.location.id))
@@ -533,24 +537,24 @@ internal class DriveViewModel(
     }
 
     fun revealLocalInFileManager(fileId: String) {
-        launchLocalAction {
+        launchLocalAction("reveal $fileId") {
             val resolved = driveRepo.localMounts.resolve(fileId)?.takeUnless { it.startsWith("content://") }
             if (resolved != null) _effects.emit(DriveUiEffect.OpenLocalContainingFolder(resolved))
         }
     }
 
     fun unmountLocalFolder(fileId: String) {
-        launchLocalAction { driveRepo.localMounts.unmount(fileId) }
+        launchLocalAction("unmount $fileId") { driveRepo.localMounts.unmount(fileId) }
     }
 
-    private fun launchLocalAction(action: suspend () -> Unit) {
+    private fun launchLocalAction(operation: String, action: suspend () -> Unit) {
         viewModelScope.launch {
             try {
                 action()
             } catch (cancel: CancellationException) {
                 throw cancel
-            } catch (_: Exception) {
-                PikoLog.w("LocalMount", "本地文件夹操作失败")
+            } catch (error: Exception) {
+                PikoLog.w("LocalMount", "Local folder action failed ($operation)", error)
                 _effects.emit(
                     DriveUiEffect.ShowSnackbar(
                         tr("本地文件夹操作失败", "Local folder action failed", "ローカルフォルダーの操作に失敗しました", "로컬 폴더 작업에 실패했습니다", "本機資料夾操作失敗"),

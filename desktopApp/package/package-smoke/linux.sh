@@ -78,7 +78,7 @@ wait_incoming() {
     done
     fail "Piko did not log receiving the $kind from $what within 60 s"
 }
-started_as() { cat "$HOME/.piko/logs/"* 2>/dev/null | grep -c "启动 $1，" || true; }
+started_as() { cat "$HOME/.piko/logs/"* 2>/dev/null | grep -c "Starting $1 on " || true; }
 
 for pair in "$base_dir:$base_version" "$next_dir:$next_version"; do
     dir="${pair%%:*}"; version="${pair##*:}"

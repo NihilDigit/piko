@@ -9,7 +9,11 @@ import androidx.documentfile.provider.DocumentFile
 import dev.piko.shared.download.PikoRemuxRequest
 import dev.piko.shared.download.PikoSegmentDownloader
 import dev.piko.shared.download.PikoSegmentRequest
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFile
 import dev.piko.shared.media.RandomAccessMediaSource
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -28,7 +32,14 @@ class AndroidPikoSegmentDownloader(private val context: Context) : PikoSegmentDo
         val stagingFile = treeRoot?.let { context.cacheDir.resolve(request.fileName) }
         val outputFile = stagingFile ?: File(request.destinationPath)
         val randomAccess = request.openRandomAccess?.let { open ->
-            runCatching { open() }.getOrElse { return@withContext Result.failure(it) }
+            try {
+                open()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                PikoLog.w(TAG, "Failed to open random-access media source for ${logFile(null, request.fileName)}", e)
+                return@withContext Result.failure(e)
+            }
         }
         val result = try {
             VideoSegmentExtractor.extractSegment(
@@ -46,7 +57,11 @@ class AndroidPikoSegmentDownloader(private val context: Context) : PikoSegmentDo
         } finally {
             randomAccess?.close()
         }
-        if (result.isFailure || treeRoot == null) return@withContext result.map { request.destinationPath }
+        if (result.isFailure || treeRoot == null) {
+            return@withContext result
+                .logFailure(TAG, "Segment extraction failed for ${logFile(null, request.fileName)}")
+                .map { request.destinationPath }
+        }
         // 抽取成功后才在下载目录里建文件：先建的话，失败会在那里留下一个 0 字节的空文件
         try {
             val targetDocument = treeRoot.findFile(request.fileName) ?: treeRoot.createFile("video/mp4", request.fileName)
@@ -55,7 +70,10 @@ class AndroidPikoSegmentDownloader(private val context: Context) : PikoSegmentDo
                 ?: error(tr("无法打开目标文件", "Cannot open destination file", "出力ファイルを開けません", "대상 파일을 열 수 없습니다", "無法開啟目標檔案"))
             output.use { stream -> stagingFile!!.inputStream().use { input -> input.copyTo(stream) } }
             Result.success(targetDocument.uri.toString())
+        } catch (e: CancellationException) {
+            throw e
         } catch (error: Throwable) {
+            PikoLog.w(TAG, "Failed to write extracted segment to SAF folder for ${logFile(null, request.fileName)}", error)
             Result.failure(error)
         } finally {
             stagingFile?.delete()
@@ -72,7 +90,12 @@ class AndroidPikoSegmentDownloader(private val context: Context) : PikoSegmentDo
         destinationFile = File(request.destinationPath),
         durationHintMs = request.durationMillis,
         onProgress = { progress -> runBlocking { onProgress(progress) } },
-    ).map { request.destinationPath }
+    ).logFailure(TAG, "Remux failed for ${logFile(null, File(request.destinationPath).name)}")
+        .map { request.destinationPath }
+
+    private companion object {
+        const val TAG = "SegmentDownload"
+    }
 }
 
 /**

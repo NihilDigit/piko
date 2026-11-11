@@ -556,7 +556,7 @@ abstract class UpdateArtifactsTask : DefaultTask() {
             val blocking = kept.filter { (path, hash) -> retired[path] != hash }.keys
             check(blocking.isNotEmpty()) {
                 "${manifest.name} 的客户端对本版仍能走补丁：补丁包之外的文件它全有且相同。它的更新脚本在 8.3 临时目录下" +
-                    "静默失败、反复提示（见 shared/src/commonMain/kotlin/dev/piko/shared/update/CLAUDE.md），须让补丁包之外" +
+                    "静默失败、反复提示（见 shared/src/commonMain/kotlin/dev/piko/shared/update/AGENTS.md），须让补丁包之外" +
                     "留有它没有的文件"
             }
             logger.lifecycle("${manifest.name} 的客户端走不了补丁，它缺或不同的文件：${blocking.joinToString()}")
