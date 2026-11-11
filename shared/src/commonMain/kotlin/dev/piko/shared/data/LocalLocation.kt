@@ -34,7 +34,7 @@ data class LocalLocation(val mountId: String, val segments: List<String> = empty
         }
         /** 不能把编码后的相对路径交给日志，非法 ID 同样不保留路径。 */
         fun logIdentity(id: String): String? = if (isLocal(id)) {
-            "本地 " + (of(id)?.mountId ?: "?")
+            "local " + (of(id)?.mountId ?: "?")
         } else null
     }
 }

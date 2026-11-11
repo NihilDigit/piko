@@ -173,10 +173,10 @@ class LocalMountsTest {
     @Test fun localLogIdentityNeverContainsReversiblePath() {
         val id = LocalLocation("mount-1", listOf("private folder", "private movie.MKV"), false).id
         val shown = logFile(id, "private movie.MKV")
-        assertEquals("文件 本地 mount-1（.mkv）", shown)
+        assertEquals("file local mount-1 (.mkv)", shown)
         assertFalse(shown.contains(id.substringAfter('/')))
-        assertEquals("打开 本地 mount-1，失败", dev.piko.shared.log.PikoLog.redact("打开 $id，失败"))
-        assertEquals("文件 本地 ?（.mkv）", logFile("piko-local-file:malformed/private", "x.mkv"))
+        assertEquals("Open local mount-1 failed", dev.piko.shared.log.PikoLog.redact("Open $id failed"))
+        assertEquals("file local ? (.mkv)", logFile("piko-local-file:malformed/private", "x.mkv"))
     }
 
     @Test fun persistenceIsolationFallbackAndReadOnlyUnmount() = smoke { scope ->
