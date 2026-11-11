@@ -85,7 +85,7 @@ internal class MediampPlaybackBackend(
     private val feedback = PlaybackFeedbackTracker()
     override val playbackGeneration: Long get() = feedback.generation
     override val bufferSnapshot get() = feedback.snapshot
-    private var originalListener: EventListener? = null
+    private var transcodeProbeTightened = false
 
     override var positionMillis by mutableLongStateOf(0L)
         private set
@@ -141,7 +141,10 @@ internal class MediampPlaybackBackend(
 
     fun markClosing() {
         closing = true
-        originalListener?.let { mpv?.setEventListener(it) }
+        nativeInstanceId?.let(MpvLogBridge::markStopping)
+        // 替换为无引用的空监听器而非恢复 MediaMP 原始监听器：外层协程取消后 mpv 原生排空阶段仍会回调
+        // onPropertyChange，恢复原始未防护监听器会导致跨 JNI 抛异常刷出错误日志。
+        runCatching { mpv?.setEventListener(NO_OP_EVENT_LISTENER) }
         awaitingReady = false
         subtitlesAttached = false
         manualSeeking = false
@@ -283,6 +286,19 @@ internal class MediampPlaybackBackend(
         manualSeekGen++
         pendingSubtitles = subtitles
         mpv?.setPropertyString("hwdec", if (hardwareDecoding) "auto,auto-copy" else "no")
+        if (!preview) {
+            val isMpegTsTranscode = target is PlaybackTarget.Url && target.isMpegTsTranscode
+            if (isMpegTsTranscode) {
+                mpv?.setPropertyString("demuxer-lavf-probesize", "$MPEGTS_TRANSCODE_PROBE_BYTES")
+                mpv?.setPropertyString("demuxer-lavf-analyzeduration", "$MPEGTS_TRANSCODE_ANALYZE_SECONDS")
+                transcodeProbeTightened = true
+            } else if (transcodeProbeTightened) {
+                // mpv 对 demuxer-lavf-probesize 要求写入整数 >= 32（读取未设置属性会返回 "0"，写回 "0" 会报错）
+                mpv?.setPropertyString("demuxer-lavf-probesize", "$DEFAULT_LAVF_PROBE_BYTES")
+                mpv?.setPropertyString("demuxer-lavf-analyzeduration", "0")
+                transcodeProbeTightened = false
+            }
+        }
         // 本机回环代理由 SDK 内部负责重试与选路；关闭 FFmpeg 的 HTTP 自动重连，避免关窗或切集撤回代理会话后
         // FFmpeg 继续对已撤回的 127.0.0.1 URL 发重连请求并刷出 503/404 与残缺包报错。
         when {
@@ -380,7 +396,6 @@ internal class MediampPlaybackBackend(
         runCatching {
             val field = MPVHandle::class.java.getDeclaredField("eventListener").apply { isAccessible = true }
             val delegate = field.get(handle) as EventListener
-            originalListener = delegate
             handle.setEventListener(object : EventListener {
                 override fun onPropertyChange(name: String) {
                     if (closing) return
@@ -446,13 +461,28 @@ internal class MediampPlaybackBackend(
     override fun stop() {
         if (closing) return
         feedback.invalidate()
+        nativeInstanceId?.let(MpvLogBridge::markStopping)
+        // 同步向 libmpv 下达 stop，先于后续 withdrawPlaybackTransport 关闭回环代理 reader，避免 FFmpeg 读到半截包报错
+        runCatching { mpv?.command("stop") }
+        if (javax.swing.SwingUtilities.isEventDispatchThread()) {
+            stopOnMain()
+        } else {
+            scope.launch {
+                if (!closing) stopOnMain()
+            }
+        }
+    }
+
+    private fun stopOnMain() {
         awaitingReady = false
         subtitlesAttached = false
         manualSeeking = false
         manualSeekGen++
-        // 同步向 libmpv 下达 stop，先于后续 withdrawPlaybackTransport 关闭回环代理 reader，避免 FFmpeg 读到半截包报错
-        runCatching { mpv?.command("stop") }
         player.stopPlayback()
+    }
+
+    override suspend fun beginStop() = withContext(scope.coroutineContext.minusKey(Job)) {
+        stop()
     }
 
     override val requiresAsyncStopDrain: Boolean get() = true
@@ -658,7 +688,21 @@ private const val MIB = 1024 * 1024
 private const val PREVIEW_CACHE_SECONDS = 8
 private const val PREVIEW_PROBE_BYTES = 1024 * 1024
 private const val PREVIEW_ANALYZE_SECONDS = 1
+private const val DEFAULT_LAVF_PROBE_BYTES = 5_000_000
+private const val MPEGTS_TRANSCODE_PROBE_BYTES = 512 * 1024
+private const val MPEGTS_TRANSCODE_ANALYZE_SECONDS = 1
 private const val STOP_IDLE_TIMEOUT_MILLIS = 2_000L
+
+private val NO_OP_EVENT_LISTENER = object : EventListener {
+    override fun onPropertyChange(name: String) = Unit
+    override fun onPropertyChange(name: String, value: Boolean) = Unit
+    override fun onPropertyChange(name: String, value: Long) = Unit
+    override fun onPropertyChange(name: String, value: Double) = Unit
+    override fun onPropertyChange(name: String, value: String) = Unit
+    override fun onStartFile(playlistEntryId: Long) = Unit
+    override fun onEndFile(reason: Int, mpvError: Int, playlistEntryId: Long) = Unit
+    override fun onEvent(event: Int) = Unit
+}
 
 /** 句柄取不到时退回 MediaMP 读的轨道：音轨没有语言，也分不出外挂。 */
 private fun snapshotOf(feature: MediaMetadata, audio: List<AudioTrack>, subtitles: List<SubtitleTrack>) = MpvTrackSnapshot(

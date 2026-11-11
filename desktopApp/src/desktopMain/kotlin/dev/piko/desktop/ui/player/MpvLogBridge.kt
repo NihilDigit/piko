@@ -16,10 +16,23 @@ import org.openani.mediamp.mpv.MPVLog
  */
 internal object MpvLogBridge {
     private val recent = LinkedHashSet<String>()
+    private val stoppingHandles = LinkedHashSet<Long>()
+    private val FFMPEG_NUMBER_PATTERN = Regex("-?[0-9]+")
+
+    fun markStopping(instanceHandle: Long) {
+        synchronized(recent) {
+            stoppingHandles.remove(instanceHandle)
+            stoppingHandles.add(instanceHandle)
+            if (stoppingHandles.size > RECENT_LINES) {
+                stoppingHandles.remove(stoppingHandles.first())
+            }
+        }
+    }
 
     fun clearHandle(instanceHandle: Long) {
         val marker = "[${instanceHandle.toString(16)}]: "
         synchronized(recent) {
+            stoppingHandles.remove(instanceHandle)
             recent.removeIf { it.contains(marker) }
         }
     }
@@ -28,12 +41,23 @@ internal object MpvLogBridge {
         MPVHandle.setLogHandler { message ->
             val renderingReady = message.prefix == "mediamp" && message.line.startsWith("rendering ")
             val preSurfaceNoise = (message.prefix == "mediamp" && message.line.contains("skia interop unavailable")) ||
-                ((message.prefix == "mediamp" || message.prefix == "mediampv") && message.line.contains("has no consumer-side texture"))
+                ((message.prefix == "mediamp" || message.prefix == "mediampv") && message.line.contains("has no consumer-side texture")) ||
+                (message.prefix == "ao/wasapi" && message.line.contains("0x88890005"))
             if (message.level > MPVLog.WARN && !renderingReady) return@setLogHandler
-            val line = "${message.prefix}[${message.instanceHandle.toString(16)}]: ${message.line}"
+            val handleTag = "${message.prefix}[${message.instanceHandle.toString(16)}]: "
+            val line = "$handleTag${message.line}"
+            val dedupKey = if (message.prefix.startsWith("ffmpeg")) {
+                "$handleTag${FFMPEG_NUMBER_PATTERN.replace(message.line, "#")}"
+            } else {
+                line
+            }
             val fresh = synchronized(recent) {
-                recent.add(line).also { added ->
-                    if (added && recent.size > RECENT_LINES) recent.remove(recent.first())
+                if (message.prefix.startsWith("ffmpeg") && message.instanceHandle in stoppingHandles) {
+                    false
+                } else {
+                    recent.add(dedupKey).also { added ->
+                        if (added && recent.size > RECENT_LINES) recent.remove(recent.first())
+                    }
                 }
             }
             if (fresh) PikoLog.log(when {

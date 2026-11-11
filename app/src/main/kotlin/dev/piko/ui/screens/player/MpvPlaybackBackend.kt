@@ -142,6 +142,9 @@ internal class MpvPlaybackBackend(
     @Volatile private var rotateDegrees = 0L
     @Volatile private var rawAspect: Double? = null
 
+    @Volatile private var stopping = false
+    private var transcodeProbeTightened = false
+
     init {
         val configDir = MpvConfig.prepare(context)
         // 读取 config-dir 下的 fonts.conf 需要 config=yes；目录里没有 mpv.conf，不会读到别的配置
@@ -252,7 +255,22 @@ internal class MpvPlaybackBackend(
         }
         observePropertiesOnce()
         val start = String.format(Locale.US, "%.3f", startMillis.coerceAtLeast(0L) / 1000.0)
-        onMpv { mpv.setPropertyBoolean("pause", !playWhenReady) }
+        stopping = false
+        val isMpegTsTranscode = target is PlaybackTarget.Url && target.isMpegTsTranscode
+        onMpv {
+            if (!preview) {
+                if (isMpegTsTranscode) {
+                    mpv.setPropertyString("demuxer-lavf-probesize", "$MPEGTS_TRANSCODE_PROBE_BYTES")
+                    mpv.setPropertyString("demuxer-lavf-analyzeduration", "$MPEGTS_TRANSCODE_ANALYZE_SECONDS")
+                    transcodeProbeTightened = true
+                } else if (transcodeProbeTightened) {
+                    mpv.setPropertyString("demuxer-lavf-probesize", "$DEFAULT_LAVF_PROBE_BYTES")
+                    mpv.setPropertyString("demuxer-lavf-analyzeduration", "0")
+                    transcodeProbeTightened = false
+                }
+            }
+            mpv.setPropertyBoolean("pause", !playWhenReady)
+        }
         positionMillis = startMillis.coerceAtLeast(0L)
         durationMillis = 0L
         bufferedPositionMillis = 0L
@@ -288,11 +306,16 @@ internal class MpvPlaybackBackend(
 
     override fun stop() {
         if (released) return
+        stopping = true
         feedback.invalidate()
         pendingLoad = null
         supersededLoads = issuedLoads
         onMpv { mpv.command(arrayOf("stop")) }
         isLoadingFile = false
+    }
+
+    override suspend fun beginStop() = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+        stop()
     }
 
     override val requiresAsyncStopDrain: Boolean get() = true
@@ -775,15 +798,22 @@ internal class MpvPlaybackBackend(
     }
 
     override fun logMessage(prefix: String, level: Int, text: String) {
+        if ((stopping || released) && prefix.startsWith("ffmpeg")) return
         // 回调里是 v 级别的全量日志，只留错误作为失败原因
         if (level <= MPV_LOG_LEVEL_ERROR) lastErrorLog = "$prefix: ${text.trim()}"
         // 警告以上进应用日志。坏流会逐包刷同几句，最近记过的不再记，免得挤掉日志里别的内容。
         // 只比上一句不够：从切片开头解到第一个关键帧前，HEVC 解码器每个包交替报「PPS id out of range」
         // 与「Skipping invalid undecodable NALU」，一段就是几百行
         if (level <= MPV_LOG_LEVEL_WARN) {
-            val line = "$prefix: ${text.trim()}"
+            val trimmed = text.trim()
+            val line = "$prefix: $trimmed"
+            val dedupKey = if (prefix.startsWith("ffmpeg")) {
+                "$prefix: ${FFMPEG_NUMBER_PATTERN.replace(trimmed, "#")}"
+            } else {
+                line
+            }
             val shouldLog = synchronized(recentMpvLines) {
-                val added = recentMpvLines.add(line)
+                val added = recentMpvLines.add(dedupKey)
                 if (added && recentMpvLines.size > RECENT_MPV_LINES) {
                     recentMpvLines.remove(recentMpvLines.first())
                 }
@@ -817,7 +847,11 @@ internal class MpvPlaybackBackend(
         const val STOP_IDLE_TIMEOUT_MILLIS = 2_000L
         const val PREVIEW_PROBE_BYTES = 1024 * 1024
         const val PREVIEW_ANALYZE_SECONDS = 1
+        const val DEFAULT_LAVF_PROBE_BYTES = 5_000_000
+        const val MPEGTS_TRANSCODE_PROBE_BYTES = 512 * 1024
+        const val MPEGTS_TRANSCODE_ANALYZE_SECONDS = 1
         const val POSITION_GRANULARITY_MILLIS = 250L
+        val FFMPEG_NUMBER_PATTERN = Regex("-?[0-9]+")
 
         // mpv_log_level 的 MPV_LOG_LEVEL_ERROR。1.0.0 的构件没带 MpvLogLevel 常量类
         const val MPV_LOG_LEVEL_ERROR = 20

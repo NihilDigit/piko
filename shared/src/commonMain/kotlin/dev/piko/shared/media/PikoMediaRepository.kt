@@ -296,13 +296,20 @@ class PikoMediaRepository(
      * [preferredResolution] 是用户在播放器里点选的档位；为 null 时按 [defaultMaxHeight] 挑，见 [transcodeNameAtMost]，
      * 0 表示原画。
      */
-    suspend fun preparePlayback(fileId: String, preferredResolution: String? = null, defaultMaxHeight: Int = 0): Result<PreparedPlayback> {
+    suspend fun preparePlayback(
+        fileId: String,
+        preferredResolution: String? = null,
+        defaultMaxHeight: Int = 0,
+        startPositionMillis: Long = 0L,
+    ): Result<PreparedPlayback> {
         val accountClient = client
         val owner = accountClient.openTransferDemand()
         var created: PreparedPlayback? = null
         try {
-            return withContext(owner) { preparePlaybackOwned(accountClient, fileId, preferredResolution, defaultMaxHeight)
-                .onSuccess { created = it; it.bindDemand(owner) } }.onFailure { owner.close() }
+            return withContext(owner) {
+                preparePlaybackOwned(accountClient, fileId, preferredResolution, defaultMaxHeight, startPositionMillis)
+                    .onSuccess { created = it; it.bindDemand(owner) }
+            }.onFailure { owner.close() }
         } catch (e: Throwable) { created?.close(); owner.close(); throw e }
     }
 
@@ -311,6 +318,7 @@ class PikoMediaRepository(
         fileId: String,
         preferredResolution: String? = null,
         defaultMaxHeight: Int = 0,
+        startPositionMillis: Long = 0L,
     ): Result<PreparedPlayback> =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
@@ -337,9 +345,15 @@ class PikoMediaRepository(
                 val leased = LeasedFile.isLeased(fileId)
                 val stream = if (info.kind == PlayableMediaKind.Video) openProxyStream(client, detail, resolved, leased = leased) else null
                 val actualStreamBytes = stream?.size ?: resolved.sizeBytes ?: detail.sizeBytes.takeIf { resolved.isOrigin } ?: 0L
+                val resolvedInfo = if (actualStreamBytes > 0L && info.sizeBytes != actualStreamBytes) {
+                    info.copy(sizeBytes = actualStreamBytes)
+                } else {
+                    info
+                }
+                val durationSeconds = resolved.video?.duration?.takeIf { it > 0L } ?: (durationMsOf(detail) / 1000L)
                 val estimatedRate = estimatedMediaBytesPerSecond(
                     streamSize = actualStreamBytes,
-                    durationSeconds = resolved.video?.duration ?: (durationMsOf(detail) / 1000L),
+                    durationSeconds = durationSeconds,
                     bitRateBitsPerSecond = resolved.video?.bitRate,
                 )
                 if (estimatedRate != null && stream != null) {
@@ -348,20 +362,25 @@ class PikoMediaRepository(
                         PikPakStreamReader.DEFAULT_READ_AHEAD_BYTES,
                     )
                 }
-                // 完整播放器必读偏移 0 识别容器与编解码头：趁等待云端续播点与后端初始化的空窗期，
-                // 单连接预热第 0 块（<= 256 KiB）并暖好首条 CDN TLS 连接（会话关闭或撤回时自动随 warms 取消）。
+                // 完整播放器必读偏移 0 识别容器与编解码头；MPEG-TS 转码流从中途续播或切换画质时，
+                // FFmpeg 打开无索引 TS 还需读末尾 PCR 计算总时长并向比例偏移跳读定位，并发预热首尾与估计落点可省去串行往返。
                 if (stream != null && stream.size > 0L) {
-                    val headEnd = minOf(stream.size, 256L * 1024L) - 1L
+                    val prewarmRanges = playbackPrewarmRanges(
+                        streamSize = stream.size,
+                        isOrigin = resolved.isOrigin,
+                        startPositionMillis = startPositionMillis,
+                        durationMillis = durationSeconds * 1000L,
+                    )
                     backgroundScope.launch {
-                        runCatching { stream.prefetch(listOf(0L..headEnd), StreamRole.FOREGROUND, PikPakStreamReader.BLOCKING_PRIORITY) }
+                        runCatching { stream.prefetch(prewarmRanges, StreamRole.FOREGROUND, PikPakStreamReader.BLOCKING_PRIORITY) }
                             .onFailure {
                                 if (it !is CancellationException) {
-                                    PikoLog.d(TAG, "Playback head block prewarm skipped: ${logFile(fileId, detail.name)}, cause=${it::class.simpleName}: ${it.message}")
+                                    PikoLog.d(TAG, "Playback prewarm skipped: ${logFile(fileId, detail.name)}, cause=${it::class.simpleName}: ${it.message}")
                                 }
                             }
                     }
                 }
-                PreparedPlayback(info, stream, estimatedRate)
+                PreparedPlayback(resolvedInfo, stream, estimatedRate)
             }
         }
 
@@ -943,10 +962,48 @@ class PikoMediaRepository(
         onByteSource?.invoke(source)
         return registerProxy(
             source = source,
-            fileName = detail.name.takeIf { resolved.isOrigin },
+            fileName = if (resolved.isOrigin) detail.name else "stream.ts",
             role = role,
             fileLabel = logFile(detail.id, detail.name),
         )
+    }
+
+    internal fun playbackPrewarmRanges(
+        streamSize: Long,
+        isOrigin: Boolean,
+        startPositionMillis: Long,
+        durationMillis: Long,
+    ): List<LongRange> {
+        if (streamSize <= 0L) return emptyList()
+        val blockBytes = 256L * 1024L
+        if (isOrigin || startPositionMillis <= 0L) {
+            return listOf(0L..(minOf(streamSize, blockBytes) - 1L))
+        }
+        val rawRanges = buildList {
+            // 覆盖 MPEG-TS 头部探测窗口（512 KiB）
+            add(0L..(minOf(streamSize, 2L * blockBytes) - 1L))
+            // 覆盖 FFmpeg mpegts_read_header 读取末尾 PCR 的跳读窗口（>= 256 KiB 对齐块边界）
+            val tailStart = ((streamSize - blockBytes).coerceAtLeast(0L) / blockBytes) * blockBytes
+            add(tailStart..(streamSize - 1L))
+            // 覆盖按时长线性折算的起播初探块
+            if (durationMillis > 0L && startPositionMillis < durationMillis) {
+                val estByte = ((streamSize.toDouble() * startPositionMillis.toDouble() / durationMillis.toDouble()).toLong())
+                    .coerceIn(0L, streamSize - 1L)
+                val midStart = (estByte / blockBytes) * blockBytes
+                val midEnd = minOf(streamSize, midStart + blockBytes) - 1L
+                add(midStart..midEnd)
+            }
+        }.sortedBy { it.first }
+        val merged = ArrayList<LongRange>(rawRanges.size)
+        for (range in rawRanges) {
+            val prev = merged.lastOrNull()
+            if (prev != null && range.first <= prev.last + 1L) {
+                merged[merged.lastIndex] = prev.first..maxOf(prev.last, range.last)
+            } else {
+                merged.add(range)
+            }
+        }
+        return merged
     }
 
     /** 登记失败时关掉 [source] 并返回 null，由调用方按场景处理；取消照常抛出。 */

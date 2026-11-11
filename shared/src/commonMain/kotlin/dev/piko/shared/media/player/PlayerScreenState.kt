@@ -775,8 +775,17 @@ class PlayerScreenState(
                 sessionSpeed?.let(backend::setSpeed)
             } else {
                 isLocalPlayback = false
+                val prewarmStartHint = pending
+                    ?: (if (cloudPosition?.isCompleted == true) cloudPosition.await() else null)
+                    ?: localSaved
+                    ?: 0L
                 val playbackStarted = TimeSource.Monotonic.markNow()
-                val playback = repository.preparePlayback(fileId, requestedQuality, sessionMaxHeight ?: defaultMaxHeight()).getOrThrow()
+                val playback = repository.preparePlayback(
+                    fileId = fileId,
+                    preferredResolution = requestedQuality,
+                    defaultMaxHeight = sessionMaxHeight ?: defaultMaxHeight(),
+                    startPositionMillis = prewarmStartHint,
+                ).getOrThrow()
                 val prepareMillis = playbackStarted.elapsedNow().inWholeMilliseconds
                 // 出第一帧前就有人在等；之后由 init 里按缓冲状态接管
                 playback.urgent = true
@@ -811,7 +820,14 @@ class PlayerScreenState(
                         val startAt = startPosition()
                         val subs = openSubtitles()
                         openStartedAt = TimeSource.Monotonic.markNow()
-                        backend.open(PlaybackTarget.Url(proxyUrl ?: playback.info.currentUrl), startAt, subtitles = subs)
+                        backend.open(
+                            PlaybackTarget.Url(
+                                url = proxyUrl ?: playback.info.currentUrl,
+                                isMpegTsTranscode = !info.isOrigin,
+                            ),
+                            startAt,
+                            subtitles = subs,
+                        )
                         sessionSpeed?.let(backend::setSpeed)
                     }
                 }

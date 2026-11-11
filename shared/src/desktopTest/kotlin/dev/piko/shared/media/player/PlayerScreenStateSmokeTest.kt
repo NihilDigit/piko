@@ -263,6 +263,64 @@ class PlayerScreenStateSmokeTest {
         backend.awaitOpens(2)
     }
 
+    @Test
+    fun transcodeQualitySwitchUsesStreamTsAndPrewarmsHeadMidpointAndTail() = runBlocking {
+        val state = newState()
+        val firstOpen = backend.awaitOpens(1).single()
+        val firstUrl = assertIs<PlaybackTarget.Url>(firstOpen.target)
+        assertTrue(firstUrl.url.endsWith("/media.mkv"), "原画代理 URL 应保留原始扩展名后缀: ${firstUrl.url}")
+        assertEquals(false, firstUrl.isMpegTsTranscode)
+        assertEquals(1024L * 1024L, state.mediaInfo?.sizeBytes)
+
+        backend.emit(PlaybackBackendEvent.Ready)
+        backend.progress(positionMillis = 180_000L, durationMillis = 600_000L)
+        withContext(stateThread) { state.selectQuality("480P") }
+
+        val secondOpen = backend.awaitOpens(2)[1]
+        val secondUrl = assertIs<PlaybackTarget.Url>(secondOpen.target)
+        assertTrue(secondUrl.url.endsWith("/media.ts"), "转码代理 URL 应携带 .ts 扩展名供 FFmpeg 直接识别 mpegts: ${secondUrl.url}")
+        assertEquals(true, secondUrl.isMpegTsTranscode)
+        assertEquals(180_000L, secondOpen.startMillis)
+        assertEquals(512L * 1024L, state.mediaInfo?.sizeBytes)
+
+        val block = 256L * 1024L
+        assertEquals(
+            listOf(0L until block),
+            repository.playbackPrewarmRanges(streamSize = 10L * block, isOrigin = true, startPositionMillis = 180_000L, durationMillis = 600_000L),
+        )
+        assertEquals(
+            listOf(0L until block),
+            repository.playbackPrewarmRanges(streamSize = 10L * block, isOrigin = false, startPositionMillis = 0L, durationMillis = 600_000L),
+        )
+        assertEquals(
+            listOf(
+                0L until 2L * block,
+                3L * block until 4L * block,
+                9L * block until 10L * block,
+            ),
+            repository.playbackPrewarmRanges(streamSize = 10L * block, isOrigin = false, startPositionMillis = 180_000L, durationMillis = 600_000L),
+        )
+    }
+
+    @Test
+    fun releaseDrainsOnMainDispatcherWithoutOffThreadStop() = runBlocking {
+        backend.requiresAsyncStopDrain = true
+        val state = newState()
+        val opened = backend.awaitOpens(1).single()
+        val proxyUrl = assertNotNull(opened.urlOrNull())
+
+        val afterClosed = kotlinx.coroutines.CompletableDeferred<Unit>()
+        withContext(stateThread) {
+            state.release { afterClosed.complete(Unit) }
+        }
+        afterClosed.await()
+
+        // 排空关闭完成后回环代理端点已注销（404），且全过程未在 IO 线程裸调 stop()
+        val code = java.net.URI(proxyUrl).toURL().openConnection().let { (it as java.net.HttpURLConnection).useCode() }
+        assertEquals(404, code)
+        assertTrue(backend.stopCalls >= 2)
+    }
+
     private fun java.net.HttpURLConnection.useCode(): Int = try {
         responseCode
     } finally {
@@ -329,10 +387,16 @@ class PlayerScreenStateSmokeTest {
         }
 
         override fun stop() {
+            check(Thread.currentThread().name.startsWith("player-state")) {
+                "PlaybackBackend.stop() must be invoked on the main state thread, was ${Thread.currentThread().name}"
+            }
             stopCalls += 1
         }
-        override suspend fun stopAndAwaitIdle() {
+        override suspend fun beginStop() = withContext(stateThread) {
             stop()
+        }
+        override suspend fun stopAndAwaitIdle() {
+            withContext(stateThread) { stop() }
             onStopDrain()
         }
         override fun play() = Unit
