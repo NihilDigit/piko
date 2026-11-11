@@ -356,6 +356,7 @@ internal fun MainSidebarSlot(
     onOpenPage: (Screen) -> Unit,
     onToggleLibrary: (DriveLibrary) -> Unit,
     onToggleCollapsed: () -> Unit,
+    scrollState: ScrollState = rememberScrollState(),
 ) {
     val pinnedFolders by quickAccess.pinnedFolders.collectAsStateWithLifecycle(emptyList())
     MainSidebar(
@@ -371,6 +372,7 @@ internal fun MainSidebarSlot(
         onToggleLibrary = onToggleLibrary,
         collapsed = collapsed,
         onToggleCollapsed = onToggleCollapsed,
+        scrollState = scrollState,
     )
 }
 
@@ -591,6 +593,7 @@ private fun MainSidebar(
     onToggleLibrary: (DriveLibrary) -> Unit,
     collapsed: Boolean,
     onToggleCollapsed: (() -> Unit)?,
+    scrollState: ScrollState = rememberScrollState(),
 ) {
     CompositionLocalProvider(LocalSidebarCollapsed provides collapsed) {
         Column(modifier = Modifier.width(width).fillMaxHeight()) {
@@ -612,12 +615,11 @@ private fun MainSidebar(
                     )
                 }
             }
-            val itemsScroll = rememberScrollState()
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .scrollFadeEdges(itemsScroll, SidebarFadeLength)
-                    .verticalScroll(itemsScroll)
+                    .scrollFadeEdges(scrollState, SidebarFadeLength)
+                    .verticalScroll(scrollState)
                     .padding(start = if (collapsed) 0.dp else 12.dp, end = if (collapsed) 0.dp else 12.dp, bottom = 16.dp),
             ) {
                 MainTabSwitch(
@@ -655,20 +657,27 @@ private fun MainSidebar(
 private fun MainTabSwitch(currentTab: MainTab?, onTabClick: (MainTab) -> Unit, activity: TransferActivity, collapsed: Boolean) {
     val tabs = listOf(MainTab.FILES, MainTab.TRANSFERS)
     val snail by LocalPikoServices.current.preferences.snailModeFlow.collectAsStateWithLifecycle(initialValue = SnailMode())
+    val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
     if (collapsed) {
         tabs.forEach { tab ->
             val selected = tab == currentTab
             val snailed = tab == MainTab.TRANSFERS && snail.enabled
+            val isTransfers = tab == MainTab.TRANSFERS
+            val showSpeedOnRail = isTransfers && activity.maxSpeed > 0L
             SidebarItem(
                 icon = tab.icon(false),
                 selectedIcon = tab.icon(true),
                 label = if (snailed) tr("任务（蜗牛模式）", "Tasks (snail mode)", "タスク（低速モード）", "작업 (저속 모드)", "任務（蝸牛模式）") else tab.title,
                 selected = selected,
                 onClick = { onTabClick(tab) },
-                trailing = if (tab == MainTab.TRANSFERS && activity.hasReadout) {
-                    { SidebarTransferReadout(activity, checked = selected) }
+                trailing = if (showSpeedOnRail) {
+                    { SidebarTransferReadout(activity, checked = selected, railCompact = true) }
                 } else null,
                 accent = snailed,
+                shortcut = shortcutModifier.label(if (tab == MainTab.FILES) "1" else "2"),
+                tooltipDetail = if (isTransfers && activity.hasReadout) activity.summaryText() else null,
+                badgeCount = if (isTransfers && !showSpeedOnRail) activity.attentionCount else 0,
+                badgeDot = isTransfers && !showSpeedOnRail && activity.attentionCount == 0 && activity.count > 0,
             )
         }
         return

@@ -1,9 +1,15 @@
 package dev.piko.ui
 
+import androidx.compose.animation.core.animateDp
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.updateTransition
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +26,8 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Person
@@ -29,6 +37,7 @@ import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.SyncAlt
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -105,6 +114,7 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.LocalWindowCaption
 import dev.piko.ui.platform.LocalWindowResizing
 import dev.piko.ui.screens.clips.FeedResumeBar
+import dev.piko.ui.screens.drive.LocalSidebarTooltipsEnabled
 import dev.piko.ui.screens.drive.SidebarRailWidth
 import dev.piko.ui.screens.drive.SidebarWidth
 import dev.piko.ui.screens.drive.icon
@@ -785,7 +795,7 @@ fun PikoMainScaffold(
                         drawerOpen = false
                         return@onPreviewKeyEvent true
                     }
-                    if (!workspaceSurface || event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) false
+                    if (!workspaceSurface || drawerOpen || event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) false
                     else when (event.key) {
                         Key.Tab -> { workspaceModel.cycleContext(if (event.isShiftPressed) -1 else 1); true }
                         Key.T -> { workspaceModel.newFileContext(); true }
@@ -806,10 +816,12 @@ fun PikoMainScaffold(
                     }
                     if (event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) return@onKeyEvent false
                     if (event.key == Key.K) {
+                        drawerOpen = false
                         workspaceModel.paletteOpen = true
                         return@onKeyEvent true
                     }
                     if (event.key == Key.Comma) {
+                        drawerOpen = false
                         openPage(Screen.Settings)
                         return@onKeyEvent true
                     }
@@ -823,41 +835,47 @@ fun PikoMainScaffold(
                         Key.Three -> if (desktop) return@onKeyEvent false else MainTab.SETTINGS
                         else -> return@onKeyEvent false
                     }
+                    drawerOpen = false
                     currentTab = tab
                     resetToHome()
                     true
                 },
         ) {
+            val sidebarScrollState = rememberScrollState()
+            val floatingDrawerTarget = drawerOpen && sidebarMode && !sidebarPushes
             val frameModifier = (if (sidebarMode) Modifier.background(MaterialTheme.colorScheme.frame) else Modifier)
-                .then(if (workspaceModel.ongoingWorkShown && !desktop) Modifier.clearAndSetSemantics { } else Modifier)
+                .then(if ((workspaceModel.ongoingWorkShown && !desktop) || floatingDrawerTarget) Modifier.clearAndSetSemantics { } else Modifier)
             if (sidebarMode) LocalWindowCaption.current?.Host()
 
             CompositionLocalProvider(LocalFramed provides sidebarMode) {
                 Row(Modifier.fillMaxSize().then(frameModifier)) {
                     if (sidebarMode) {
-                        Box(
-                            Modifier
-                                .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom + WindowInsetsSides.Start))
-                                .padding(start = IslandGap, top = IslandGap, bottom = IslandGap)
-                                .clip(FrameCardShape)
-                                .background(MaterialTheme.colorScheme.surface),
-                        ) {
-                            MainSidebarSlot(
-                                width = inlineSidebarWidth,
-                                collapsed = inlineCollapsed,
-                                currentTab = currentTab,
-                                quickAccess = quickAccess,
-                                folderStack = folderStack,
-                                selectedPage = selectedPane,
-                                onTabClick = { tab ->
-                                    resetToHome()
-                                    onTabClick(tab)
-                                },
-                                onOpenQuickAccess = ::goToDrive,
-                                onOpenPage = ::openPage,
-                                onToggleLibrary = ::pushLibrary,
-                                onToggleCollapsed = ::toggleSidebar,
-                            )
+                        CompositionLocalProvider(LocalSidebarTooltipsEnabled provides !floatingDrawerTarget) {
+                            Box(
+                                Modifier
+                                    .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom + WindowInsetsSides.Start))
+                                    .padding(start = IslandGap, top = IslandGap, bottom = IslandGap)
+                                    .clip(FrameCardShape)
+                                    .background(MaterialTheme.colorScheme.surface),
+                            ) {
+                                MainSidebarSlot(
+                                    width = inlineSidebarWidth,
+                                    collapsed = inlineCollapsed,
+                                    currentTab = currentTab,
+                                    quickAccess = quickAccess,
+                                    folderStack = folderStack,
+                                    selectedPage = selectedPane,
+                                    onTabClick = { tab ->
+                                        resetToHome()
+                                        onTabClick(tab)
+                                    },
+                                    onOpenQuickAccess = ::goToDrive,
+                                    onOpenPage = ::openPage,
+                                    onToggleLibrary = ::pushLibrary,
+                                    onToggleCollapsed = ::toggleSidebar,
+                                    scrollState = sidebarScrollState,
+                                )
+                            }
                         }
                         Spacer(Modifier.width(IslandGap))
                     }
@@ -1032,26 +1050,76 @@ fun PikoMainScaffold(
             }
 
             BackHandler(enabled = drawerOpen) { drawerOpen = false }
-            if (drawerOpen && sidebarMode) {
-                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.32f)).clickable { drawerOpen = false })
+            val floatingSidebar = updateTransition(targetState = floatingDrawerTarget, label = "floatingSidebar")
+            if (floatingSidebar.currentState || floatingSidebar.targetState) {
+                val motionScheme = MaterialTheme.motionScheme
+                val scrimAlpha by floatingSidebar.animateFloat(
+                    transitionSpec = { if (targetState) motionScheme.defaultEffectsSpec() else motionScheme.fastEffectsSpec() },
+                    label = "floatingSidebarScrim",
+                ) { if (it) 0.22f else 0f }
+                val drawerWidth by floatingSidebar.animateDp(
+                    transitionSpec = { if (targetState) motionScheme.defaultSpatialSpec() else motionScheme.fastSpatialSpec() },
+                    label = "floatingSidebarWidth",
+                ) { if (it) SidebarWidth else SidebarRailWidth }
+                val drawerAlpha by floatingSidebar.animateFloat(
+                    transitionSpec = { motionScheme.fastEffectsSpec() },
+                    label = "floatingSidebarAlpha",
+                ) { if (it) 1f else 0f }
+                val drawerFocus = remember { FocusRequester() }
+                LaunchedEffect(floatingSidebar.targetState) {
+                    if (floatingSidebar.targetState && !pointerSource.isTouchLike) {
+                        drawerFocus.requestFocus()
+                    }
+                }
                 Box(
-                    Modifier.align(Alignment.TopStart).fillMaxHeight()
+                    Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.scrim.copy(alpha = scrimAlpha))
+                        .then(
+                            if (floatingSidebar.targetState) {
+                                Modifier.clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClickLabel = tr("收起侧边栏", "Collapse sidebar", "サイドバーを折りたたむ", "사이드바 접기", "收合側邊欄"),
+                                    onClick = { drawerOpen = false },
+                                )
+                            } else {
+                                Modifier
+                            },
+                        ),
+                )
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .fillMaxHeight()
                         .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom + WindowInsetsSides.Start))
-                        .padding(IslandGap).clip(FrameCardShape).background(MaterialTheme.colorScheme.surface),
+                        .padding(IslandGap)
+                        .width(drawerWidth)
+                        .graphicsLayer { alpha = drawerAlpha }
+                        .focusRequester(drawerFocus)
+                        .focusable(!pointerSource.isTouchLike),
+                    shape = FrameCardShape,
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 2.dp,
+                    shadowElevation = 12.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
                 ) {
-                    MainSidebarSlot(
-                        width = SidebarWidth,
-                        collapsed = false,
-                        currentTab = currentTab,
-                        quickAccess = quickAccess,
-                        folderStack = folderStack,
-                        selectedPage = selectedPane,
-                        onTabClick = { tab -> drawerOpen = false; resetToHome(); onTabClick(tab) },
-                        onOpenQuickAccess = { stack -> drawerOpen = false; goToDrive(stack) },
-                        onOpenPage = { screen -> drawerOpen = false; openPage(screen) },
-                        onToggleLibrary = { library -> drawerOpen = false; pushLibrary(library) },
-                        onToggleCollapsed = { drawerOpen = false },
-                    )
+                    Box(Modifier.fillMaxHeight().wrapContentWidth(Alignment.Start, unbounded = true)) {
+                        MainSidebarSlot(
+                            width = SidebarWidth,
+                            collapsed = false,
+                            currentTab = currentTab,
+                            quickAccess = quickAccess,
+                            folderStack = folderStack,
+                            selectedPage = selectedPane,
+                            onTabClick = { tab -> drawerOpen = false; resetToHome(); onTabClick(tab) },
+                            onOpenQuickAccess = { stack -> drawerOpen = false; goToDrive(stack) },
+                            onOpenPage = { screen -> drawerOpen = false; openPage(screen) },
+                            onToggleLibrary = { library -> drawerOpen = false; pushLibrary(library) },
+                            onToggleCollapsed = { drawerOpen = false },
+                            scrollState = sidebarScrollState,
+                        )
+                    }
                 }
             }
 

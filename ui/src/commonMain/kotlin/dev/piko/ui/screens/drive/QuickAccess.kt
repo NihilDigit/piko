@@ -23,21 +23,30 @@ import androidx.compose.material.icons.outlined.AddToPhotos
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.fileDropTarget
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import dev.piko.ui.components.focusIndication
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -145,10 +154,16 @@ internal fun QuickAccessState.highlights(pinned: List<PikoPathBreadcrumb>, stack
  */
 internal val LocalSidebarCollapsed = staticCompositionLocalOf { false }
 
+/** 悬浮抽屉覆盖在窄轨之上时关闭底层窄轨的悬停提示，防止双层提示穿透。 */
+internal val LocalSidebarTooltipsEnabled = staticCompositionLocalOf { true }
+
 @Composable
 internal fun SectionLabel(text: String) {
     if (LocalSidebarCollapsed.current) {
-        HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)
+        HorizontalDivider(
+            Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f),
+        )
         return
     }
     Text(
@@ -178,18 +193,47 @@ internal fun SidebarItem(
     trailing: (@Composable () -> Unit)? = null,
     /** 没亮起时图标用强调色，表示这一项有个设置正生效（传输的蜗牛模式）。 */
     accent: Boolean = false,
+    /** 窄轨悬停提示中附带的快捷键说明。 */
+    shortcut: String? = null,
+    /** 窄轨悬停提示中的副标题（例如实时传输速度或待处理项数）。 */
+    tooltipDetail: String? = null,
+    /** 窄轨图标右上角的数字角标。 */
+    badgeCount: Int = 0,
+    /** 窄轨图标右上角的圆点角标。 */
+    badgeDot: Boolean = false,
 ) {
     val colors = MaterialTheme.colorScheme
     if (LocalSidebarCollapsed.current) {
-        CollapsedSidebarItem(icon, label, selected, selectedIcon, onClick, bold, modifier, onMiddleClick, trailing, accent)
+        CollapsedSidebarItem(
+            icon = icon,
+            label = label,
+            selected = selected,
+            selectedIcon = selectedIcon,
+            onClick = onClick,
+            bold = bold,
+            modifier = modifier,
+            onMiddleClick = onMiddleClick,
+            trailing = trailing,
+            accent = accent,
+            shortcut = shortcut,
+            tooltipDetail = tooltipDetail,
+            badgeCount = badgeCount,
+            badgeDot = badgeDot,
+        )
         return
     }
+    val containerColor by animateColorAsState(
+        targetValue = if (selected) colors.secondaryContainer else Color.Transparent,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "sidebarItemBg",
+    )
     Row(
         modifier = modifier
             .fillMaxWidth()
             .height(40.dp)
             .clip(CircleShape)
-            .background(if (selected) colors.secondaryContainer else Color.Transparent)
+            .background(containerColor)
+            .focusIndication(CircleShape, showPointerFocus = false)
             .then(
                 if (onMiddleClick == null) {
                     Modifier
@@ -213,7 +257,11 @@ internal fun SidebarItem(
             // 加粗是「这一页开着、但亮的是快速访问里的某一项」：页确实开着，图标照样实心
             imageVector = if (selected || bold) selectedIcon else icon,
             contentDescription = null,
-            tint = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant,
+            tint = when {
+                selected -> colors.onSecondaryContainer
+                accent -> colors.tertiary
+                else -> colors.onSurfaceVariant
+            },
             modifier = Modifier.size(20.dp),
         )
         Text(
@@ -229,7 +277,7 @@ internal fun SidebarItem(
     }
 }
 
-/** 窄轨入口原地点击即可访问，名称由提示与无障碍描述提供。 */
+/** 窄轨入口原地点击即可访问，悬停、按压、焦点与选中状态共享同一胶囊裁剪边界。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CollapsedSidebarItem(
@@ -243,19 +291,26 @@ private fun CollapsedSidebarItem(
     onMiddleClick: (() -> Unit)?,
     trailing: (@Composable () -> Unit)?,
     accent: Boolean,
+    shortcut: String?,
+    tooltipDetail: String?,
+    badgeCount: Int,
+    badgeDot: Boolean,
 ) {
     val colors = MaterialTheme.colorScheme
-    TooltipBox(
-        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.End),
-        tooltip = { PlainTooltip { Text(label) } },
-        state = rememberTooltipState(),
-        modifier = modifier,
-    ) {
+    val pillShape = if (trailing != null) CollapsedExpandedPillShape else CircleShape
+    val containerColor by animateColorAsState(
+        targetValue = if (selected) colors.secondaryContainer else Color.Transparent,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "railItemBg",
+    )
+    val pillContent: @Composable () -> Unit = {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 2.dp)
-                .clickable(role = Role.Button, onClickLabel = label, onClick = onClick)
+                .width(CollapsedPillWidth)
+                .heightIn(min = CollapsedPillHeight)
+                .clip(pillShape)
+                .background(containerColor)
+                .focusIndication(pillShape, showPointerFocus = false)
                 .then(
                     if (onMiddleClick == null) Modifier else Modifier.pointerInput(onMiddleClick) {
                         awaitPointerEventScope {
@@ -265,16 +320,16 @@ private fun CollapsedSidebarItem(
                             }
                         }
                     },
+                )
+                .clickable(role = Role.Button, onClickLabel = label, onClick = onClick)
+                .padding(
+                    horizontal = 4.dp,
+                    vertical = if (trailing != null) 6.dp else 0.dp,
                 ),
             horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(width = 56.dp, height = 32.dp)
-                    .clip(CircleShape)
-                    .background(if (selected) colors.secondaryContainer else Color.Transparent),
-                contentAlignment = Alignment.Center,
-            ) {
+            val iconNode: @Composable () -> Unit = {
                 Icon(
                     imageVector = if (selected || bold) selectedIcon else icon,
                     contentDescription = label,
@@ -286,12 +341,65 @@ private fun CollapsedSidebarItem(
                     modifier = Modifier.size(20.dp),
                 )
             }
+            if (badgeCount > 0) {
+                BadgedBox(
+                    badge = {
+                        Badge {
+                            Text(if (badgeCount > 99) "99+" else badgeCount.toString())
+                        }
+                    },
+                ) {
+                    iconNode()
+                }
+            } else if (badgeDot) {
+                BadgedBox(badge = { Badge() }) {
+                    iconNode()
+                }
+            } else {
+                iconNode()
+            }
             if (trailing != null) {
                 ProvideTextStyle(MaterialTheme.typography.labelSmall) { trailing() }
             }
         }
     }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (LocalSidebarTooltipsEnabled.current) {
+            TooltipBox(
+                positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.End),
+                tooltip = {
+                    PlainTooltip {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(if (shortcut != null) "$label ($shortcut)" else label)
+                            if (!tooltipDetail.isNullOrBlank()) {
+                                Text(
+                                    text = tooltipDetail,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = LocalContentColor.current.copy(alpha = 0.8f),
+                                )
+                            }
+                        }
+                    }
+                },
+                state = rememberTooltipState(),
+            ) {
+                pillContent()
+            }
+        } else {
+            pillContent()
+        }
+    }
 }
+
+private val CollapsedPillWidth: Dp = 52.dp
+private val CollapsedPillHeight: Dp = 38.dp
+private val CollapsedExpandedPillShape = RoundedCornerShape(16.dp)
 
 internal val SidebarWidth: Dp = 240.dp
 internal val SidebarRailWidth: Dp = 68.dp

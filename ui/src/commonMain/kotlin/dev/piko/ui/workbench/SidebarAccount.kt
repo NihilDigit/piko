@@ -2,6 +2,7 @@ package dev.piko.ui.workbench
 
 import dev.piko.shared.i18n.tr
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Settings
@@ -21,6 +23,7 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -44,8 +47,10 @@ import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
+import dev.piko.ui.components.focusIndication
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.screens.drive.LocalSidebarTooltipsEnabled
 import dev.piko.ui.screens.settings.AccountCard
 import dev.piko.ui.screens.settings.Avatar
 import dev.piko.ui.screens.settings.AccountSwitcher
@@ -66,68 +71,122 @@ internal fun SidebarAccountRow(selected: Boolean, onOpenSettings: () -> Unit, co
     val availableUpdate = (LocalPikoPlatform.current.updater?.status as? UpdateStatus.Available)?.update
     val colors = MaterialTheme.colorScheme
     val shortcut = LocalPikoPlatform.current.shortcutModifier.label(",")
-    TooltipBox(
-        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-        tooltip = { PlainTooltip { Text(availableUpdate?.let { tr("账号与设置（发现新版本 ${it.version}）", "Account and settings (update ${it.version} available)", "アカウントと設定（新バージョン ${it.version}）", "계정 및 설정 (새 버전 ${it.version})", "帳號與設定（發現新版本 ${it.version}）") } ?: tr("账号与设置 ($shortcut)", "Account and settings ($shortcut)", "アカウントと設定 ($shortcut)", "계정 및 설정 ($shortcut)", "帳號與設定 ($shortcut)")) } },
-        state = rememberTooltipState(),
-    ) {
+    val containerColor by animateColorAsState(
+        targetValue = if (selected) colors.secondaryContainer else Color.Transparent,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "sidebarAccountBg",
+    )
+    val clickLabel = tr("账号与设置", "Account and settings", "アカウントと設定", "계정 및 설정", "帳號與設定")
+    val displayName = saved?.displayName ?: tr("PikPak 用户", "PikPak user", "PikPakユーザー", "PikPak 사용자", "PikPak 使用者")
+    val collapsedSubtitle = if (collapsed) {
+        account.quota?.let { quota ->
+            "$displayName · ${quota.usageBytes.toReadableSize()} / ${quota.limitBytes.toReadableSize()}"
+        } ?: displayName
+    } else {
+        null
+    }
+    val content: @Composable () -> Unit = {
         // 收起成窄轨时只剩头像，名字、用量与齿轮都在悬停提示与设置里；有新版本时头像上挂一个点
         if (collapsed) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .height(FrameBottomRowHeight),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(containerColor)
+                        .focusIndication(CircleShape, showPointerFocus = false)
+                        .clickable(onClickLabel = clickLabel, onClick = onOpenSettings),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    BadgedBox(badge = { if (availableUpdate != null) Badge() }) {
+                        Avatar(saved?.displayName, saved?.avatarUrl, size = 32.dp)
+                    }
+                }
+            }
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // 与传输页的底栏同高，两边的中线对齐
                     .height(FrameBottomRowHeight)
                     .padding(horizontal = 12.dp, vertical = 4.dp)
                     .clip(MaterialTheme.shapes.large)
-                    .background(if (selected) colors.secondaryContainer else Color.Transparent)
-                    .clickable(onClickLabel = tr("账号与设置", "Account and settings", "アカウントと設定", "계정 및 설정", "帳號與設定"), onClick = onOpenSettings),
-                contentAlignment = Alignment.Center,
+                    .background(containerColor)
+                    .focusIndication(MaterialTheme.shapes.large, showPointerFocus = false)
+                    .clickable(onClickLabel = clickLabel, onClick = onOpenSettings)
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                BadgedBox(badge = { if (availableUpdate != null) Badge() }) {
-                    Avatar(saved?.displayName, saved?.avatarUrl, size = 32.dp)
-                }
-            }
-            return@TooltipBox
-        }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                // 与传输页的底栏同高，两边的中线对齐
-                .height(FrameBottomRowHeight)
-                .padding(horizontal = 12.dp, vertical = 4.dp)
-                .clip(MaterialTheme.shapes.large)
-                .background(if (selected) colors.secondaryContainer else Color.Transparent)
-                .clickable(onClickLabel = tr("账号与设置", "Account and settings", "アカウントと設定", "계정 및 설정", "帳號與設定"), onClick = onOpenSettings)
-                .padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Avatar(saved?.displayName, saved?.avatarUrl, size = 32.dp)
-            Column(Modifier.weight(1f)) {
-                Text(
-                    saved?.displayName ?: tr("PikPak 用户", "PikPak user", "PikPakユーザー", "PikPak 사용자", "PikPak 使用者"),
-                    style = MaterialTheme.typography.labelLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                account.quota?.let { quota ->
+                Avatar(saved?.displayName, saved?.avatarUrl, size = 32.dp)
+                Column(Modifier.weight(1f)) {
                     Text(
-                        "${quota.usageBytes.toReadableSize()} / ${quota.limitBytes.toReadableSize()}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = colors.onSurfaceVariant,
+                        displayName,
+                        style = MaterialTheme.typography.labelLarge,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    account.quota?.let { quota ->
+                        Text(
+                            "${quota.usageBytes.toReadableSize()} / ${quota.limitBytes.toReadableSize()}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                }
+                BadgedBox(badge = { if (availableUpdate != null) Badge() }) {
+                    Icon(
+                        if (selected) Icons.Filled.Settings else Icons.Outlined.Settings,
+                        contentDescription = null,
+                        tint = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
                     )
                 }
             }
-            BadgedBox(badge = { if (availableUpdate != null) Badge() }) {
-                Icon(
-                    if (selected) Icons.Filled.Settings else Icons.Outlined.Settings,
-                    contentDescription = null,
-                    tint = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
         }
+    }
+
+    if (LocalSidebarTooltipsEnabled.current) {
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(
+                if (collapsed) TooltipAnchorPosition.End else TooltipAnchorPosition.Above,
+            ),
+            tooltip = {
+                PlainTooltip {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            availableUpdate?.let {
+                                tr(
+                                    "账号与设置 ($shortcut，发现新版本 ${it.version})",
+                                    "Account and settings ($shortcut, update ${it.version} available)",
+                                    "アカウントと設定 ($shortcut、新バージョン ${it.version})",
+                                    "계정 및 설정 ($shortcut, 새 버전 ${it.version})",
+                                    "帳號與設定 ($shortcut，發現新版本 ${it.version})",
+                                )
+                            } ?: "$clickLabel ($shortcut)",
+                        )
+                        if (!collapsedSubtitle.isNullOrBlank()) {
+                            Text(
+                                text = collapsedSubtitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = LocalContentColor.current.copy(alpha = 0.8f),
+                            )
+                        }
+                    }
+                }
+            },
+            state = rememberTooltipState(),
+        ) {
+            content()
+        }
+    } else {
+        content()
     }
 }
 
