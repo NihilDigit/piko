@@ -117,6 +117,7 @@ internal class PlayerControlsUiState(
 
     var keyVolume by mutableStateOf<Float?>(null)
     var keyVolumeCount by mutableIntStateOf(0)
+    var volumeRevision by mutableIntStateOf(0)
     private var volumeBeforeMute by mutableStateOf<Float?>(null)
     private var lastSubtitleId by mutableStateOf<String?>(null)
 
@@ -130,6 +131,9 @@ internal class PlayerControlsUiState(
 
     // 同步当前帧最新的数据输入供事件回调读取
     var currentPositionMillis: Long = 0L
+    var currentPositionProvider: (() -> Long)? = null
+    val effectivePositionMillis: Long
+        get() = currentPositionProvider?.invoke() ?: currentPositionMillis
     var currentDurationMillis: Long = 0L
     var currentPlaybackSpeed: Float? = initialSpeed
     var currentRotationDegrees: Int? = initialRotation
@@ -180,7 +184,7 @@ internal class PlayerControlsUiState(
         byTap: Boolean = false,
     ) {
         val continuing = doubleTapVisible && doubleTapForward == forward
-        val base = if (continuing) doubleTapTargetMillis else currentPositionMillis
+        val base = if (continuing) doubleTapTargetMillis else effectivePositionMillis
         val step = if (forward) stepMillis else -stepMillis
         val target = (base + step).coerceIn(0L, currentDurationMillis.coerceAtLeast(0L))
         val stepSeconds = (stepMillis / 1000).toInt()
@@ -197,6 +201,7 @@ internal class PlayerControlsUiState(
         val control = currentVolumeControl ?: return null
         val applied = control.set(fraction.coerceIn(0f, 1f))
         if (applied > 0f) volumeBeforeMute = null
+        volumeRevision += 1
         return applied
     }
 
@@ -210,7 +215,10 @@ internal class PlayerControlsUiState(
         val control = currentVolumeControl ?: return
         val current = control.current()
         val applied = if (current > 0f) {
-            control.set(0f).also { volumeBeforeMute = current }
+            control.set(0f).also {
+                volumeBeforeMute = current
+                volumeRevision += 1
+            }
         } else {
             setVolume(volumeBeforeMute ?: UNMUTE_FALLBACK_VOLUME) ?: return
         }

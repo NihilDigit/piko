@@ -8,6 +8,7 @@ import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -31,6 +32,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
  * 竖滑手势与上下方向键调节的一路电平，取值 0 到 1。由平台实现：Android 的亮度是窗口属性、
  * 音量是系统媒体音量；桌面没有可调的屏幕亮度，音量是播放器自身的软件音量。
  */
+@Stable
 interface PlayerLevelControl {
     fun current(): Float
 

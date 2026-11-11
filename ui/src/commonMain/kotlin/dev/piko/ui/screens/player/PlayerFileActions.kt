@@ -107,59 +107,62 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
         )
     }
 
+    val currentLanguage = dev.piko.shared.i18n.PikoLocale.effectiveLanguage
     // 名字与图标取自网盘的同名操作，两处叫法一致；下载、复制直链、星标、分享排成一排
-    return buildList {
-        if (!isLocalPlayback) {
-            add(
-                DriveActions.download(
-                    onClick = {
-                        val resolved = LeasedFile.resolvedFileOf(fileId)
-                        if (resolved != null) {
-                            services.downloadManager.enqueueResolved(listOf(resolved), "")
-                            message(tr("已加入下载", "Added to downloads", "ダウンロードに追加しました", "다운로드에 추가했습니다", "已加入下載"))
-                        } else {
-                            withFile { file -> downloads.download(listOf(file)) { notice -> message(notice ?: tr("已加入下载", "Added to downloads", "ダウンロードに追加しました", "다운로드에 추가했습니다", "已加入下載")) } }
-                        }
-                    },
-                ),
-            )
-            add(
-                DriveActions.copyDownloadLink {
-                    scope.launch {
-                        val url = services.mediaRepository.fetchDownloadUrl(fileId)
-                            .logFailure(TAG, "Failed to fetch download URL in player for ${logFile(fileId, "")}")
-                            .getOrNull()
-                        if (!url.isNullOrBlank()) {
-                            platform.copyToClipboard(tr("下载链接", "Download link", "ダウンロードリンク", "다운로드 링크", "下載連結"), url)
-                            message(tr("已复制下载链接", "Download link copied", "ダウンロードリンクをコピーしました", "다운로드 링크를 복사했습니다", "已複製下載連結"))
-                        } else {
-                            message(tr("未能获取下载链接", "Failed to get download link", "ダウンロードリンクを取得できませんでした", "다운로드 링크를 가져오지 못했습니다", "無法取得下載連結"))
-                        }
-                    }
-                },
-            )
-        }
-        if (!isNonVaultLeased) {
-            add(
-                DriveActions.star(
-                    starred = isStarred,
-                    onClick = {
-                        val target = !isStarred
-                        isStarred = target
+    return remember(fileId, isLocalPlayback, isNonVaultLeased, isVaulted, isStarred, downloads, services, platform, scope, currentLanguage) {
+        buildList {
+            if (!isLocalPlayback) {
+                add(
+                    DriveActions.download(
+                        onClick = {
+                            val resolved = LeasedFile.resolvedFileOf(fileId)
+                            if (resolved != null) {
+                                services.downloadManager.enqueueResolved(listOf(resolved), "")
+                                message(tr("已加入下载", "Added to downloads", "ダウンロードに追加しました", "다운로드에 추가했습니다", "已加入下載"))
+                            } else {
+                                withFile { file -> downloads.download(listOf(file)) { notice -> message(notice ?: tr("已加入下载", "Added to downloads", "ダウンロードに追加しました", "다운로드에 추가했습니다", "已加入下載")) } }
+                            }
+                        },
+                    ),
+                )
+                add(
+                    DriveActions.copyDownloadLink {
                         scope.launch {
-                            services.driveRepository.setStarred(listOf(fileId), target)
-                                .onSuccess { message(if (target) tr("已添加星标", "Starred", "スターを付けました", "별표를 추가했습니다", "已新增星號") else tr("已取消星标", "Unstarred", "スターを外しました", "별표를 해제했습니다", "已取消星號")) }
-                                .logFailure(TAG, "Failed to update star=$target in player for ${logFile(fileId, "")}")
-                                .onFailure {
-                                    isStarred = !target
-                                    message(if (target) tr("添加星标失败", "Failed to add star", "スターを付けられませんでした", "별표를 추가하지 못했습니다", "新增星號失敗") else tr("取消星标失败", "Failed to remove star", "スターを外せませんでした", "별표를 해제하지 못했습니다", "取消星號失敗"))
-                                }
+                            val url = services.mediaRepository.fetchDownloadUrl(fileId)
+                                .logFailure(TAG, "Failed to fetch download URL in player for ${logFile(fileId, "")}")
+                                .getOrNull()
+                            if (!url.isNullOrBlank()) {
+                                platform.copyToClipboard(tr("下载链接", "Download link", "ダウンロードリンク", "다운로드 링크", "下載連結"), url)
+                                message(tr("已复制下载链接", "Download link copied", "ダウンロードリンクをコピーしました", "다운로드 링크를 복사했습니다", "已複製下載連結"))
+                            } else {
+                                message(tr("未能获取下载链接", "Failed to get download link", "ダウンロードリンクを取得できませんでした", "다운로드 링크를 가져오지 못했습니다", "無法取得下載連結"))
+                            }
                         }
                     },
-                ),
-            )
-            if (!isVaulted) {
-                add(DriveActions.share { withFile { sharing = it } })
+                )
+            }
+            if (!isNonVaultLeased) {
+                add(
+                    DriveActions.star(
+                        starred = isStarred,
+                        onClick = {
+                            val target = !isStarred
+                            isStarred = target
+                            scope.launch {
+                                services.driveRepository.setStarred(listOf(fileId), target)
+                                    .onSuccess { message(if (target) tr("已添加星标", "Starred", "スターを付けました", "별표를 추가했습니다", "已新增星號") else tr("已取消星标", "Unstarred", "スターを外しました", "별표를 해제했습니다", "已取消星號")) }
+                                    .logFailure(TAG, "Failed to update star=$target in player for ${logFile(fileId, "")}")
+                                    .onFailure {
+                                        isStarred = !target
+                                        message(if (target) tr("添加星标失败", "Failed to add star", "スターを付けられませんでした", "별표를 추가하지 못했습니다", "新增星號失敗") else tr("取消星标失败", "Failed to remove star", "スターを外せませんでした", "별표를 해제하지 못했습니다", "取消星號失敗"))
+                                    }
+                            }
+                        },
+                    ),
+                )
+                if (!isVaulted) {
+                    add(DriveActions.share { withFile { sharing = it } })
+                }
             }
         }
     }

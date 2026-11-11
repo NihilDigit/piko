@@ -181,9 +181,11 @@ fun MediampVideoPlayerScreen(
         }
     }
     // 字幕的 MIME 类型各家登记得不一，按类型过滤会把 .ass 这类藏起来，只能全列、选完按扩展名判断
-    val pickLocalSubtitle = {
-        subtitlePickedFor = state.fileId
-        subtitleLauncher.launch(arrayOf("*/*"))
+    val pickLocalSubtitle: () -> Unit = remember(state, subtitleLauncher) {
+        {
+            subtitlePickedFor = state.fileId
+            subtitleLauncher.launch(arrayOf("*/*"))
+        }
     }
 
     LaunchedEffect(isFullscreen) {
@@ -367,6 +369,11 @@ fun MediampVideoPlayerScreen(
         }
     }
     LaunchedEffect(mediaSession, state) {
+        var lastPlaybackState = -1
+        var lastActions = -1L
+        var lastSpeed = Float.NaN
+        var lastReportedPosMs = -1L
+        var lastReportedElapsedMs = 0L
         snapshotFlow {
             Triple(
                 state.isPlaying,
@@ -396,12 +403,32 @@ fun MediampVideoPlayerScreen(
                     playing -> PlaybackState.STATE_PLAYING
                     else -> PlaybackState.STATE_PAUSED
                 }
-                mediaSession.setPlaybackState(
-                    PlaybackState.Builder()
-                        .setActions(actions)
-                        .setState(playbackState, (posSeconds * 1_000L).coerceAtLeast(0L), speed ?: 1f)
-                        .build(),
-                )
+                val effectiveSpeed = speed ?: 1f
+                val posMs = (posSeconds * 1_000L).coerceAtLeast(0L)
+                val nowElapsedMs = android.os.SystemClock.elapsedRealtime()
+                val extrapolatedPosMs = if (lastPlaybackState == PlaybackState.STATE_PLAYING) {
+                    lastReportedPosMs + ((nowElapsedMs - lastReportedElapsedMs) * lastSpeed).toLong()
+                } else {
+                    lastReportedPosMs
+                }
+                val unchanged = playbackState == lastPlaybackState &&
+                    actions == lastActions &&
+                    effectiveSpeed == lastSpeed &&
+                    lastReportedPosMs >= 0L &&
+                    kotlin.math.abs(posMs - extrapolatedPosMs) <= 1_500L
+                if (!unchanged) {
+                    lastPlaybackState = playbackState
+                    lastActions = actions
+                    lastSpeed = effectiveSpeed
+                    lastReportedPosMs = posMs
+                    lastReportedElapsedMs = nowElapsedMs
+                    mediaSession.setPlaybackState(
+                        PlaybackState.Builder()
+                            .setActions(actions)
+                            .setState(playbackState, posMs, effectiveSpeed)
+                            .build(),
+                    )
+                }
             }
         }
     }
@@ -410,9 +437,36 @@ fun MediampVideoPlayerScreen(
         if (isFullscreen) exitFullscreen() else onBackClick()
     }
 
-    val leave = {
-        orientationController.resetOrientation()
-        onBackClick()
+    val leave = remember(orientationController, onBackClick) {
+        {
+            orientationController.resetOrientation()
+            onBackClick()
+        }
+    }
+    val positionMillisProvider = remember(state) { { state.positionMillis } }
+    val bufferedPositionMillisProvider = remember(state) { { state.bufferedPositionMillis } }
+    val toggleFullscreen = remember(isFullscreen, orientationController, state) {
+        // 比例还没拿到时按横片进，与原先一律横屏全屏相同
+        { if (isFullscreen) exitFullscreen() else enterFullscreen(state.isLandscapeVideo != false) }
+    }
+    val handleSeekStepChange: (Int) -> Unit = remember(scope, preferences) {
+        { scope.launch { preferences.setPlayerSeekStepSeconds(it) } }
+    }
+    val handleLongPressSpeedChange: (Float) -> Unit = remember(scope, preferences) {
+        { scope.launch { preferences.setPlayerBoostSpeed(it) } }
+    }
+    val handleRotationChange: (Int) -> Unit = remember(state, isFullscreen, orientationController) {
+        { degrees ->
+            // 转了 90 度，片子横竖对调。全屏时屏幕跟着换方向；不在全屏时只转画面，页面照旧，
+            // 如同桌面窗口最大化时不动窗口。新比例由后端观察 video-params 异步报回，这里按对调直接推算
+            val turned = (degrees - state.rotationDegrees) % 180 != 0
+            val landscapeVideo = state.isLandscapeVideo
+            state.setRotation(degrees)
+            if (turned && isFullscreen && landscapeVideo != null) enterFullscreen(!landscapeVideo)
+        }
+    }
+    val pickDriveSubtitle: (FileStat) -> Unit = remember(state) {
+        { file -> state.addDriveSubtitle(file.id, file.name) }
     }
 
     Box(modifier.fillMaxSize().background(Color.Black)) {
@@ -440,9 +494,9 @@ fun MediampVideoPlayerScreen(
                 isPlaying = state.isPlaying,
                 isLoading = state.isLoading,
                 loadingSpeedText = state.loadingSpeedText,
-                positionMillis = state.positionMillis,
                 durationMillis = state.durationMillis,
-                bufferedPositionMillis = state.bufferedPositionMillis,
+                positionMillisProvider = positionMillisProvider,
+                bufferedPositionMillisProvider = bufferedPositionMillisProvider,
                 playbackSpeed = state.playbackSpeed,
                 aspectRatio = state.aspectRatio,
                 cropRegion = state.cropRegion,
@@ -460,8 +514,7 @@ fun MediampVideoPlayerScreen(
                 onRetry = state::retry,
                 onRestartFromBeginning = state::restartFromBeginning,
                 onBack = leave,
-                // 比例还没拿到时按横片进，与原先一律横屏全屏相同
-                onToggleFullscreen = { if (isFullscreen) exitFullscreen() else enterFullscreen(state.isLandscapeVideo != false) },
+                onToggleFullscreen = toggleFullscreen,
                 isFullscreen = isFullscreen,
                 isLandscapeVideo = state.isLandscapeVideo,
                 playlist = state.playlist,
@@ -473,9 +526,9 @@ fun MediampVideoPlayerScreen(
                 onSelectEntry = state::playEntry,
                 hideEpisodeThumbnails = isSpoilerBlurEnabled,
                 seekStepSeconds = seekStepSeconds,
-                onSeekStepChange = { scope.launch { preferences.setPlayerSeekStepSeconds(it) } },
+                onSeekStepChange = handleSeekStepChange,
                 longPressSpeed = longPressSpeed,
-                onLongPressSpeedChange = { scope.launch { preferences.setPlayerBoostSpeed(it) } },
+                onLongPressSpeedChange = handleLongPressSpeedChange,
                 playbackStats = state::stats,
                 audioTracks = state.audioTracks,
                 selectedAudioTrackId = state.selectedAudioTrackId,
@@ -490,17 +543,9 @@ fun MediampVideoPlayerScreen(
                     scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) }
                 },
                 rotationDegrees = state.rotationDegrees.takeIf { state.supportsRotation },
-                onRotationChange = { degrees ->
-                    // 转了 90 度，片子横竖对调。全屏时屏幕跟着换方向；不在全屏时只转画面，页面照旧，
-                    // 如同桌面窗口最大化时不动窗口。新比例由后端观察 video-params 异步报回，这里按对调直接推算
-                    val turned = (degrees - state.rotationDegrees) % 180 != 0
-                    val landscapeVideo = state.isLandscapeVideo
-                    state.setRotation(degrees)
-                    if (turned && isFullscreen && landscapeVideo != null) enterFullscreen(!landscapeVideo)
-                },
+                onRotationChange = handleRotationChange,
                 onPickLocalSubtitle = pickLocalSubtitle.takeIf { state.canAddSubtitle },
-                onPickDriveSubtitle = { file: FileStat -> state.addDriveSubtitle(file.id, file.name) }
-                    .takeIf { state.canAddSubtitle },
+                onPickDriveSubtitle = pickDriveSubtitle.takeIf { state.canAddSubtitle },
             )
         }
     }

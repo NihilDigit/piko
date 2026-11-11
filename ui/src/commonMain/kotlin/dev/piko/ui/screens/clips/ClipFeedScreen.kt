@@ -1054,7 +1054,7 @@ private fun ClipPager(
             val onLongPress by rememberUpdatedState { if (active) startBoost() }
             val onRelease by rememberUpdatedState { stopBoost() }
 
-            BoxWithConstraints(
+            Box(
                 Modifier
                     .fillMaxSize()
                     .clipToBounds()

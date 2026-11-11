@@ -14,12 +14,14 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshots.Snapshot
 import dev.piko.data.auth.PlayerGestureDefaults
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -349,7 +351,7 @@ private fun VideoPlayerContent(
             defaultMaxHeight = { services.preferences.playbackMaxHeightFlow.first() },
         )
     }
-    val volume = remember(backend) { backend.volume?.let { BackendVolume(backend) } }
+    val volume = remember(backend) { Snapshot.withoutReadObservation { backend.volume }?.let { BackendVolume(backend) } }
     val isSpoilerBlurEnabled by services.preferences.spoilerBlurFlow.collectAsState(initial = true)
     val seekStepSeconds by services.preferences.playerSeekStepSecondsFlow
         .collectAsState(initial = PlayerGestureDefaults.SEEK_STEP_SECONDS)
@@ -467,15 +469,51 @@ private fun VideoPlayerContent(
         } else {
             MediampPlayerSurface(backend.player, Modifier.fillMaxSize())
 
+            val positionMillisProvider = remember(state) { { state.positionMillis } }
+            val bufferedPositionMillisProvider = remember(state) { { state.bufferedPositionMillis } }
+            val handleSeekStepChange: (Int) -> Unit = remember(scope, services.preferences) {
+                { scope.launch { services.preferences.setPlayerSeekStepSeconds(it) } }
+            }
+            val handleLongPressSpeedChange: (Float) -> Unit = remember(scope, services.preferences) {
+                { scope.launch { services.preferences.setPlayerBoostSpeed(it) } }
+            }
+            val handleRotationChange: (Int) -> Unit = remember(state, onQuarterTurn) {
+                { degrees ->
+                    // 只在用户转的时候动窗口；换集时 mpv 自己保留旋转，窗口本就是转过的样子
+                    val turned = (degrees - state.rotationDegrees) % 180 != 0
+                    state.setRotation(degrees)
+                    if (turned) onQuarterTurn()
+                }
+            }
+            val pickLocalSubtitle: () -> Unit = remember(state, scope, snackbarHostState) {
+                {
+                    // 属主要在点击的当下取，launch 之后焦点可能已经变了
+                    val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow
+                    // 文件框开着时照常播放，可能已连播到下一集
+                    val videoFileId = state.fileId
+                    scope.launch {
+                        val file = chooseSubtitleFile(owner) ?: return@launch
+                        if (isPlayerSubtitleName(file.name)) {
+                            state.addLocalSubtitle(videoFileId, file.absolutePath, file.name)
+                        } else {
+                            snackbarHostState.showSnackbar(tr("不支持此字幕格式", "Unsupported subtitle format", "未対応の字幕形式です", "지원하지 않는 자막 형식입니다", "不支援此字幕格式"), withDismissAction = true)
+                        }
+                    }
+                }
+            }
+            val pickDriveSubtitle: (FileStat) -> Unit = remember(state) {
+                { file -> state.addDriveSubtitle(file.id, file.name) }
+            }
+
             MobilePlayerControls(
                 title = state.title,
                 isLocalPlayback = state.isLocalPlayback,
                 isPlaying = state.isPlaying,
                 isLoading = state.isLoading,
                 loadingSpeedText = state.loadingSpeedText,
-                positionMillis = state.positionMillis,
                 durationMillis = state.durationMillis,
-                bufferedPositionMillis = state.bufferedPositionMillis,
+                positionMillisProvider = positionMillisProvider,
+                bufferedPositionMillisProvider = bufferedPositionMillisProvider,
                 playbackSpeed = state.playbackSpeed,
                 aspectRatio = state.aspectRatio,
                 cropRegion = state.cropRegion,
@@ -505,9 +543,9 @@ private fun VideoPlayerContent(
                 onSelectEntry = state::playEntry,
                 hideEpisodeThumbnails = isSpoilerBlurEnabled,
                 seekStepSeconds = seekStepSeconds,
-                onSeekStepChange = { scope.launch { services.preferences.setPlayerSeekStepSeconds(it) } },
+                onSeekStepChange = handleSeekStepChange,
                 longPressSpeed = longPressSpeed,
-                onLongPressSpeedChange = { scope.launch { services.preferences.setPlayerBoostSpeed(it) } },
+                onLongPressSpeedChange = handleLongPressSpeedChange,
                 playbackStats = state::stats,
                 audioTracks = state.audioTracks,
                 selectedAudioTrackId = state.selectedAudioTrackId,
@@ -523,28 +561,9 @@ private fun VideoPlayerContent(
                     scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) }
                 },
                 rotationDegrees = state.rotationDegrees.takeIf { state.supportsRotation },
-                onRotationChange = { degrees ->
-                    // 只在用户转的时候动窗口；换集时 mpv 自己保留旋转，窗口本就是转过的样子
-                    val turned = (degrees - state.rotationDegrees) % 180 != 0
-                    state.setRotation(degrees)
-                    if (turned) onQuarterTurn()
-                },
-                onPickLocalSubtitle = fun() {
-                    // 属主要在点击的当下取，launch 之后焦点可能已经变了
-                    val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow
-                    // 文件框开着时照常播放，可能已连播到下一集
-                    val videoFileId = state.fileId
-                    scope.launch {
-                        val file = chooseSubtitleFile(owner) ?: return@launch
-                        if (isPlayerSubtitleName(file.name)) {
-                            state.addLocalSubtitle(videoFileId, file.absolutePath, file.name)
-                        } else {
-                            snackbarHostState.showSnackbar(tr("不支持此字幕格式", "Unsupported subtitle format", "未対応の字幕形式です", "지원하지 않는 자막 형식입니다", "不支援此字幕格式"), withDismissAction = true)
-                        }
-                    }
-                }.takeIf { state.canAddSubtitle },
-                onPickDriveSubtitle = { file: FileStat -> state.addDriveSubtitle(file.id, file.name) }
-                    .takeIf { state.canAddSubtitle },
+                onRotationChange = handleRotationChange,
+                onPickLocalSubtitle = pickLocalSubtitle.takeIf { state.canAddSubtitle },
+                onPickDriveSubtitle = pickDriveSubtitle.takeIf { state.canAddSubtitle },
                 registerKeyFallback = registerKeyFallback,
             )
         }
@@ -566,6 +585,7 @@ private const val KEY_PLAYER_VOLUME = "player.volume"
 private const val VOLUME_SAVE_DEBOUNCE_MILLIS = 500L
 
 /** 桌面没有系统媒体音量可借，音量手势、方向键与底栏滑块调的是 mpv 自身的音量。 */
+@Stable
 private class BackendVolume(private val backend: PlaybackBackend) : PlayerLevelControl {
     override fun current(): Float = backend.volume ?: 1f
 

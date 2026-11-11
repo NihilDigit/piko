@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.data.repository.isPlayableVideo
+import dev.piko.shared.data.FolderIndex
 import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
@@ -26,12 +27,15 @@ import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Transient
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -196,7 +200,7 @@ class ClipFeedSession(
     val isEmpty: Boolean get() = !isCollecting && !isFilling && clips.isEmpty() && upcoming.isEmpty()
 
     private val pool = mutableListOf<FileStat>()
-    private val poolIds = HashSet<String>()
+    private val poolIndexById = HashMap<String, Int>()
     private val selectionCounts = HashMap<String, Int>()
 
     // 候选所属的作品，列目录时按网盘页同一套文件名解析得出；认不出作品的不在这里，各自算一部
@@ -251,7 +255,7 @@ class ClipFeedSession(
         streams.closeAll()
         preparedUpcoming.clear()
         pool.clear()
-        poolIds.clear()
+        poolIndexById.clear()
         selectionCounts.clear()
         workOf.clear()
         listedFolders = 0
@@ -352,7 +356,10 @@ class ClipFeedSession(
     fun reopensFor(current: String?): Boolean = account == null || (root != null && account == current)
 
     private fun addToPool(file: FileStat) {
-        if (poolIds.add(file.id)) pool += file
+        if (file.id !in poolIndexById) {
+            poolIndexById[file.id] = pool.size
+            pool += file
+        }
     }
 
     private fun contentKey(fileId: String): String = pooled(fileId)?.clipContentKey() ?: "id:$fileId"
@@ -380,8 +387,9 @@ class ClipFeedSession(
             } else content !in blocked
         }
         if (ready.isEmpty()) return
-        preparedUpcoming.removeAll(ready.toSet())
-        upcoming = upcoming - ready.toSet()
+        val readySet = ready.toHashSet()
+        preparedUpcoming.removeAll(readySet)
+        upcoming = upcoming.filterNot { it in readySet }
         clips = clips + ready
         fillAhead()
         save()
@@ -403,7 +411,8 @@ class ClipFeedSession(
             PikoLog.d(TAG, "Clip stream failed once; scheduling retry for ${logFile(clip.fileId, clip.name)} (startMs=${clip.startMs})")
             // A new identity makes the retry observable even when it stays at the same queue position.
             val retry = clip.copy(occurrence = Random.nextLong())
-            val nextSame = upcoming.indexOfFirst { contentKey(it.fileId) == contentKey(clip.fileId) }
+            val failedContent = contentKey(clip.fileId)
+            val nextSame = upcoming.indexOfFirst { contentKey(it.fileId) == failedContent }
             upcoming = if (nextSame < 0) upcoming + retry else upcoming.toMutableList().apply { add(nextSame, retry) }
         } else {
             PikoLog.w(TAG, "Clip stream failed twice; rejecting ${logFile(clip.fileId, clip.name)} for ${REJECT_TTL_MS / 3_600_000}h (startMs=${clip.startMs})")
@@ -429,7 +438,7 @@ class ClipFeedSession(
         try {
             val discovered = mutableListOf<FileStat>()
             selection.groupBy { it.parentId }.forEach { (folderId, files) ->
-                val batch = analyzeVideoFolder(folderId, files)
+                val batch = withContext(Dispatchers.Default) { analyzeVideoFolder(folderId, files) }
                 if (request != generation) return
                 workOf.putAll(batch.workOf)
                 files.forEach { if (it.isDiscoverableVideo()) discovered += it }
@@ -526,8 +535,7 @@ class ClipFeedSession(
                         val readyAhead = (clips.size - 1 - furthestIndex) + upcoming.size
                         val missing = KEPT_AROUND - readyAhead
                         if (missing <= 0) break
-                        val byId = pool.associateBy { it.id }
-                        fun candidateOf(clip: Clip) = byId[clip.fileId]?.let(::feedCandidate)
+                        fun candidateOf(clip: Clip) = pooled(clip.fileId)?.let(::feedCandidate)
                             ?: FeedCandidate(clip.fileId, clip.parentId, "id:${clip.fileId}", "id:${clip.fileId}", clip.parentId == root?.id)
                         val picks = selectFeedCandidates(
                             pool = pool.filter { it.id !in rejected }.map(::feedCandidate),
@@ -547,7 +555,7 @@ class ClipFeedSession(
                         // 一段都没有了才不等，免得停在转圈上
                         val onlyOriginalsLeft = picks.firstOrNull()?.original == true
                         if (onlyOriginalsLeft && isCollecting && readyAhead > 0) return@launch
-                        val batch = picks.mapNotNull { byId[it.id] }
+                        val batch = picks.mapNotNull { pooled(it.id) }
                         if (batch.isEmpty()) break
                         if (request != generation) return@launch
                         val checkStarted = TimeSource.Monotonic.markNow()
@@ -665,14 +673,12 @@ class ClipFeedSession(
 
     /** 记进候选池，随队列存下：下次打开不必重新探测时长。 */
     private fun learnDuration(fileId: String, durationMs: Long) {
-        val seconds = (durationMs / 1000.0).toString()
-        for (i in pool.indices) {
-            val item = pool[i]
-            if (item.id == fileId) pool[i] = item.copy(params = item.params + ("duration" to seconds))
-        }
+        val index = poolIndexById[fileId] ?: return
+        val item = pool[index]
+        pool[index] = item.copy(params = item.params + ("duration" to (durationMs / 1000.0).toString()))
     }
 
-    private fun pooled(fileId: String): FileStat? = pool.firstOrNull { it.id == fileId }
+    private fun pooled(fileId: String): FileStat? = poolIndexById[fileId]?.let { pool[it] }
 
     private fun feedCandidate(file: FileStat): FeedCandidate {
         val content = file.clipContentKey()
@@ -711,40 +717,78 @@ class ClipFeedSession(
         val folder = root ?: return
         val owner = account ?: return
         saveJob?.cancel()
-        val taken = if (immediately) snapshot() else null
+        val taken = if (immediately) captureSnapshotInputs() else null
         saveJob = scope.launch {
-            val saved = taken ?: run {
+            val inputs = taken ?: run {
                 delay(SAVE_DELAY_MS)
-                snapshot()
+                if (selectedIds != null || root?.id != folder.id || account != owner) return@launch
+                captureSnapshotInputs()
             }
             runSuspendCatching {
-                store.write(keyOf(owner, folder.id), json.encodeToString(SavedFeed.serializer(), saved))
-                rememberFolder(store, owner, folder)
+                val encoded = withContext(Dispatchers.Default) {
+                    json.encodeToString(SavedFeed.serializer(), buildSavedFeed(inputs))
+                }
+                withContext(Dispatchers.IO) {
+                    store.write(keyOf(owner, folder.id), encoded)
+                    rememberFolder(store, owner, folder)
+                }
             }.logFailure(TAG, "Failed to persist clip feed queue for ${logFolder(folder.id)}")
         }
     }
 
-    private fun snapshot(): SavedFeed {
+    private class SnapshotInputs(
+        val window: List<Clip>,
+        val current: Int,
+        val pool: List<FileStat>,
+        val workOf: Map<String, String>,
+        val selectionCounts: Map<String, Int>,
+        val verified: List<String>,
+        val rejected: Map<String, Long>,
+        val untranscoded: Map<String, Long>,
+        val nodes: Map<String, FolderIndex.Node>,
+        val rootId: String?,
+    )
+
+    private fun captureSnapshotInputs(): SnapshotInputs {
         val from = (currentIndex - KEPT_AROUND).coerceAtLeast(0).coerceAtMost(clips.size)
         // 候补接在后面一起存，读回来时上次正看的那段起都回到候补，见 open
         val window = clips.subList(from, clips.size) + upcoming
+        return SnapshotInputs(
+            window = window,
+            current = currentIndex - from,
+            pool = ArrayList(pool),
+            workOf = HashMap(workOf),
+            selectionCounts = HashMap(selectionCounts),
+            verified = ArrayList(verified),
+            rejected = HashMap(rejected),
+            untranscoded = HashMap(untranscoded),
+            nodes = folders.nodes,
+            rootId = root?.id,
+        )
+    }
+
+    private fun buildSavedFeed(inputs: SnapshotInputs): SavedFeed {
         // 只存段与候选所在的目录及其各级上级，到信息流的根为止，遍历过的其余目录用不上
-        val nodes = folders.nodes
-        val rootId = root?.id
+        val nodes = inputs.nodes
+        val rootId = inputs.rootId
         val usedFolders = HashSet<String>()
-        for (folderId in window.map { it.parentId } + pool.map { it.parentId }) {
-            var id: String? = folderId
+        for (clip in inputs.window) {
+            var id: String? = clip.parentId
+            while (id != null && id != rootId && usedFolders.add(id)) id = nodes[id]?.parentId
+        }
+        for (file in inputs.pool) {
+            var id: String? = file.parentId
             while (id != null && id != rootId && usedFolders.add(id)) id = nodes[id]?.parentId
         }
         val used = usedFolders.mapNotNull { id -> nodes[id]?.let { id to it } }
         return SavedFeed(
-            clips = window,
-            current = currentIndex - from,
-            pool = pool.map { SavedCandidate(it.id, it.name, it.parentId, it.durationMs(), it.hash, it.size, workOf[it.id].orEmpty()) },
-            selectionCounts = selectionCounts.toMap(),
-            verified = verified.toList(),
-            rejected = rejected.toMap(),
-            untranscoded = untranscoded.toMap(),
+            clips = inputs.window,
+            current = inputs.current,
+            pool = inputs.pool.map { SavedCandidate(it.id, it.name, it.parentId, it.durationMs(), it.hash, it.size, inputs.workOf[it.id].orEmpty()) },
+            selectionCounts = inputs.selectionCounts,
+            verified = inputs.verified,
+            rejected = inputs.rejected,
+            untranscoded = inputs.untranscoded,
             folders = used.associate { (id, node) -> id to node.name },
             parents = used.mapNotNull { (id, node) -> node.parentId?.let { id to it } }.toMap(),
         )
@@ -757,17 +801,20 @@ class ClipFeedSession(
             .logFailure(TAG, "Failed to read clip feed folder index ($indexKey)")
             .getOrNull()
         val recent = rawIndex?.takeIf { it.isNotBlank() }?.let {
-            runSuspendCatching { json.decodeFromString<List<String>>(it) }
+            runSuspendCatching { withContext(Dispatchers.Default) { json.decodeFromString<List<String>>(it) } }
                 .logFailure(TAG, "Failed to decode clip feed folder index ($indexKey); resetting index")
                 .getOrNull()
         }.orEmpty()
         val updated = listOf(folder.id) + (recent - folder.id)
         updated.drop(KEPT_FOLDERS).forEach { store.delete(keyOf(owner, it)) }
-        store.write(indexKey, json.encodeToString(updated.take(KEPT_FOLDERS)))
+        val encodedIndex = withContext(Dispatchers.Default) { json.encodeToString(updated.take(KEPT_FOLDERS)) }
+        store.write(indexKey, encodedIndex)
     }
 
     private suspend fun load(owner: String, folderId: String): SavedFeed? = runSuspendCatching {
-        cacheStore?.read(keyOf(owner, folderId))?.let { json.decodeFromString(SavedFeed.serializer(), it) }
+        val store = cacheStore ?: return@runSuspendCatching null
+        val raw = withContext(Dispatchers.IO) { store.read(keyOf(owner, folderId)) } ?: return@runSuspendCatching null
+        withContext(Dispatchers.Default) { json.decodeFromString(SavedFeed.serializer(), raw) }
     }.logFailure(TAG, "Failed to load cached clip feed queue for ${logFolder(folderId)}; starting fresh").getOrNull()
 
     // 根目录的 ID 是空串。1.1.0 及更早的存盘不带账号（clip-feed-<文件夹>），不再读：分不出是哪个账号的，

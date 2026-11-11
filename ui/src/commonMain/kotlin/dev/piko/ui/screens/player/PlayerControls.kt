@@ -32,7 +32,6 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -92,12 +91,15 @@ import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -115,6 +117,7 @@ import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
@@ -151,7 +154,8 @@ import androidx.compose.ui.unit.dp
 import dev.piko.ui.platform.LocalFramelessWindow
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.windowDragArea
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import dev.piko.ui.format.formatDurationMillis
 import dev.piko.ui.format.formatPlaybackSpeed
 import kotlin.math.abs
@@ -554,11 +558,11 @@ internal fun PlayerBottomBar(
     isLandscape: Boolean,
     isFullscreen: Boolean,
     thumbOnHoverOnly: Boolean,
-    positionMillis: Long,
+    positionMillisProvider: () -> Long,
     /** 画面上拖动进度的目标处，不为 null 时进度条与时间停在这里，见 PlayerSeekBar 的 previewMillis。 */
     previewPositionMillis: Long?,
     durationMillis: Long,
-    bufferedPositionMillis: Long,
+    bufferedPositionMillisProvider: () -> Long,
     playbackSpeed: Float?,
     showEpisodes: Boolean,
     /** 上一集、下一集两个快捷键。窄窗口不给，换集走选集面板。 */
@@ -586,7 +590,14 @@ internal fun PlayerBottomBar(
     onVolumeDraggingChange: (Boolean) -> Unit = {},
 ) {
     var scrubPositionMillis by remember { mutableStateOf<Long?>(null) }
-    val shownPosition = scrubPositionMillis ?: previewPositionMillis ?: positionMillis
+    val latestOnScrubbingChange by rememberUpdatedState(onScrubbingChange)
+    val handleScrub: (Long?) -> Unit = remember {
+        { target ->
+            val wasScrubbing = scrubPositionMillis != null
+            scrubPositionMillis = target
+            if (wasScrubbing != (target != null)) latestOnScrubbingChange(target != null)
+        }
+    }
 
     Column(
         modifier = modifier
@@ -597,21 +608,14 @@ internal fun PlayerBottomBar(
             )
             .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = if (isLandscape) 8.dp else 12.dp),
     ) {
-        PlayerSeekBar(
-            positionMillis = positionMillis,
-            previewMillis = previewPositionMillis,
+        PlayerBottomSeekBar(
+            positionMillisProvider = positionMillisProvider,
+            previewPositionMillis = previewPositionMillis,
             durationMillis = durationMillis,
-            bufferedPositionMillis = bufferedPositionMillis,
+            bufferedPositionMillisProvider = bufferedPositionMillisProvider,
             onSeek = onSeek,
             thumbOnHoverOnly = thumbOnHoverOnly,
-            onScrub = { target ->
-                val wasScrubbing = scrubPositionMillis != null
-                scrubPositionMillis = target
-                if (wasScrubbing != (target != null)) onScrubbingChange(target != null)
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .windowInsetsPadding(WindowInsets.safeGestures.only(WindowInsetsSides.Horizontal)),
+            onScrub = handleScrub,
         )
         Spacer(Modifier.height(4.dp))
         Row(
@@ -638,16 +642,11 @@ internal fun PlayerBottomBar(
                     )
                     Spacer(Modifier.width(8.dp))
                 }
-                Text(
-                    text = formatTime(shownPosition),
-                    style = TimeTextStyle(),
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Text(
-                    text = " / ${formatTime(durationMillis)}",
-                    style = TimeTextStyle(),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
+                PlayerTimeReadout(
+                    positionMillisProvider = positionMillisProvider,
+                    scrubPositionMillis = scrubPositionMillis,
+                    previewPositionMillis = previewPositionMillis,
+                    durationMillis = durationMillis,
                 )
             }
 
@@ -691,6 +690,59 @@ internal fun PlayerBottomBar(
             )
         }
     }
+}
+
+@Composable
+private fun PlayerBottomSeekBar(
+    positionMillisProvider: () -> Long,
+    previewPositionMillis: Long?,
+    durationMillis: Long,
+    bufferedPositionMillisProvider: () -> Long,
+    onSeek: (Long) -> Unit,
+    thumbOnHoverOnly: Boolean,
+    onScrub: (Long?) -> Unit,
+) {
+    PlayerSeekBar(
+        positionMillis = positionMillisProvider(),
+        previewMillis = previewPositionMillis,
+        durationMillis = durationMillis,
+        bufferedPositionMillis = bufferedPositionMillisProvider(),
+        onSeek = onSeek,
+        thumbOnHoverOnly = thumbOnHoverOnly,
+        onScrub = onScrub,
+        modifier = Modifier
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.safeGestures.only(WindowInsetsSides.Horizontal)),
+    )
+}
+
+@Composable
+private fun PlayerTimeReadout(
+    positionMillisProvider: () -> Long,
+    scrubPositionMillis: Long?,
+    previewPositionMillis: Long?,
+    durationMillis: Long,
+) {
+    val latestPositionProvider by rememberUpdatedState(positionMillisProvider)
+    val latestScrub by rememberUpdatedState(scrubPositionMillis)
+    val latestPreview by rememberUpdatedState(previewPositionMillis)
+    val displayedSeconds by remember {
+        derivedStateOf {
+            val millis = latestScrub ?: latestPreview ?: latestPositionProvider()
+            millis.coerceAtLeast(0L) / 1_000L
+        }
+    }
+    Text(
+        text = formatTime(displayedSeconds * 1_000L),
+        style = TimeTextStyle(),
+        color = MaterialTheme.colorScheme.onSurface,
+    )
+    Text(
+        text = " / ${formatTime(durationMillis)}",
+        style = TimeTextStyle(),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+    )
 }
 
 /**
@@ -996,15 +1048,16 @@ internal fun PlayerSeekBar(
     var hoverFraction by remember { mutableStateOf<Float?>(null) }
     // 松手到新位置回报之间有一段延迟，这段时间里滑块停在目标处，不回跳到旧位置
     var pendingSeekMillis by remember { mutableStateOf<Long?>(null) }
+    var pendingSeekSeq by remember { mutableIntStateOf(0) }
+    val latestPositionMillis by rememberUpdatedState(positionMillis)
 
-    LaunchedEffect(pendingSeekMillis, positionMillis) {
+    LaunchedEffect(pendingSeekMillis, pendingSeekSeq) {
         val pending = pendingSeekMillis ?: return@LaunchedEffect
-        if (abs(positionMillis - pending) < SEEK_SETTLE_TOLERANCE_MILLIS) {
-            pendingSeekMillis = null
-        } else {
-            delay(SEEK_SETTLE_TIMEOUT_MILLIS)
-            pendingSeekMillis = null
+        withTimeoutOrNull(SEEK_SETTLE_TIMEOUT_MILLIS) {
+            snapshotFlow { latestPositionMillis }
+                .first { abs(it - pending) < SEEK_SETTLE_TOLERANCE_MILLIS }
         }
+        pendingSeekMillis = null
     }
 
     val enabled = durationMillis > 0
@@ -1035,8 +1088,6 @@ internal fun PlayerSeekBar(
         },
         motion.fastSpatialSpec(),
     )
-    val positionText = formatTime((fraction * durationMillis).toLong())
-    val durationText = formatTime(durationMillis)
     val currentDurationMillis by rememberUpdatedState(durationMillis)
     val currentOnSeek by rememberUpdatedState(onSeek)
     val currentOnScrub by rememberUpdatedState(onScrub)
@@ -1044,6 +1095,7 @@ internal fun PlayerSeekBar(
     fun commitSeek(target: Float) {
         val millis = (target * currentDurationMillis).toLong()
         pendingSeekMillis = millis
+        pendingSeekSeq += 1
         currentOnSeek(millis)
     }
 
@@ -1051,14 +1103,42 @@ internal fun PlayerSeekBar(
     // 连按时从上一步的目标接着算，位置回报还没跟上也不会原地打转
     fun stepBy(deltaMillis: Long): Boolean {
         if (!enabled) return false
-        val base = pendingSeekMillis ?: positionMillis
+        val base = pendingSeekMillis ?: latestPositionMillis
         commitSeek(fractionOf(base + deltaMillis))
         return true
     }
 
-    val focusRingColor = scheme.secondary
+    // 无障碍语义按整秒（1000ms）粒度量化，避免毫秒级进度每帧标脏 Windows UIA / Android 语义树；视觉绘制仍保持毫秒级平滑
+    val displayedMillis = if (!enabled) {
+        0L
+    } else {
+        when {
+            dragFraction != null -> (dragFraction!! * durationMillis).toLong().coerceIn(0L, durationMillis)
+            previewMillis != null -> previewMillis.coerceIn(0L, durationMillis)
+            else -> (pendingSeekMillis ?: positionMillis).coerceIn(0L, durationMillis)
+        }
+    }
+    val semanticsPositionMillis = (displayedMillis / 1_000L) * 1_000L
+    val semanticsFraction = fractionOf(semanticsPositionMillis)
+    val progressLabel = tr("播放进度", "Playback progress", "再生位置", "재생 위치", "播放進度")
+    val semanticsStateDescription = remember(semanticsPositionMillis, durationMillis) {
+        "${formatTime(semanticsPositionMillis)} / ${formatTime(durationMillis)}"
+    }
+    val setSemanticsProgress: (Float) -> Boolean = remember {
+        { target ->
+            commitSeek(target.coerceIn(0f, 1f))
+            true
+        }
+    }
 
-    BoxWithConstraints(modifier = modifier.height(SeekBarHeight)) {
+    val focusRingColor = scheme.secondary
+    var barWidthPx by remember { mutableIntStateOf(0) }
+
+    Box(
+        modifier = modifier
+            .height(SeekBarHeight)
+            .onSizeChanged { barWidthPx = it.width },
+    ) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -1129,14 +1209,11 @@ internal fun PlayerSeekBar(
                 }
                 .focusable(enabled, focusInteraction)
                 .semantics {
-                    contentDescription = tr("播放进度", "Playback progress", "再生位置", "재생 위치", "播放進度")
-                    stateDescription = "$positionText / $durationText"
-                    progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f)
+                    contentDescription = progressLabel
+                    stateDescription = semanticsStateDescription
+                    progressBarRangeInfo = ProgressBarRangeInfo(semanticsFraction, 0f..1f)
                     if (enabled) {
-                        setProgress { target ->
-                            commitSeek(target.coerceIn(0f, 1f))
-                            true
-                        }
+                        setProgress(action = setSemanticsProgress)
                     }
                 },
         )
@@ -1145,8 +1222,6 @@ internal fun PlayerSeekBar(
         (scrubFraction ?: hoverFraction)?.let { shown ->
             val density = LocalDensity.current
             val inset = with(density) { SeekThumbDraggingRadius.toPx() }
-            val trackWidthPx = constraints.maxWidth - 2 * inset
-            val anchorPx = inset + shown * trackWidthPx
             val gapPx = with(density) { 2.dp.roundToPx() }
             val dragging = scrubFraction != null
             Surface(
@@ -1156,7 +1231,14 @@ internal fun PlayerSeekBar(
                 contentColor = if (dragging) scheme.onPrimary else scheme.inverseOnSurface,
                 modifier = Modifier.layout { measurable, constraints ->
                     val placeable = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
-                    val maxX = (constraints.maxWidth - placeable.width).coerceAtLeast(0)
+                    val widthPx = when {
+                        barWidthPx > 0 -> barWidthPx
+                        constraints.hasBoundedWidth -> constraints.maxWidth
+                        else -> 0
+                    }
+                    val trackWidthPx = (widthPx - 2 * inset).coerceAtLeast(0f)
+                    val anchorPx = inset + shown * trackWidthPx
+                    val maxX = (widthPx - placeable.width).coerceAtLeast(0)
                     val x = (anchorPx - placeable.width / 2f).roundToInt().coerceIn(0, maxX)
                     layout(0, 0) { placeable.place(x, -placeable.height - gapPx) }
                 },
@@ -1176,7 +1258,8 @@ internal fun PlayerSeekBar(
 private fun seekFractionAt(x: Float, width: Float, inset: Float): Float =
     ((x - inset) / (width - 2 * inset).coerceAtLeast(1f)).coerceIn(0f, 1f)
 
-private class SeekTrackColors(val active: Color, val inactive: Color, val buffered: Color)
+@Immutable
+private data class SeekTrackColors(val active: Color, val inactive: Color, val buffered: Color)
 
 /**
  * 轨道从左到右：已播放段、手柄、缓冲段、未播放段。[inset] 是两端给手柄留的边，

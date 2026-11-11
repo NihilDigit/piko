@@ -871,13 +871,21 @@ internal class MpvPlaybackBackend(
  * Noto Sans CJK 覆盖，不必在 APK 里再塞一套几十 MB 的字体。
  */
 internal object MpvConfig {
+    @Volatile
+    private var preparedDir: File? = null
+
     fun prepare(context: Context): File {
-        val dir = File(context.filesDir, "mpv").apply { mkdirs() }
-        val cacheDir = File(context.cacheDir, "fontconfig").apply { mkdirs() }
-        val fontsConf = File(dir, "fonts.conf")
-        val content = fontsConfig(cacheDir)
-        if (!fontsConf.exists() || fontsConf.readText() != content) fontsConf.writeText(content)
-        return dir
+        preparedDir?.let { return it }
+        return synchronized(this) {
+            preparedDir?.let { return@synchronized it }
+            val appContext = context.applicationContext ?: context
+            val dir = File(appContext.filesDir, "mpv").apply { mkdirs() }
+            val cacheDir = File(appContext.cacheDir, "fontconfig").apply { mkdirs() }
+            val fontsConf = File(dir, "fonts.conf")
+            val content = fontsConfig(cacheDir)
+            if (!fontsConf.exists() || fontsConf.readText() != content) fontsConf.writeText(content)
+            dir.also { preparedDir = it }
+        }
     }
 
     private fun fontsConfig(cacheDir: File) = """

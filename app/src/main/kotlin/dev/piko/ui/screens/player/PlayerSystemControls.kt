@@ -10,6 +10,7 @@ import android.view.Window
 import android.view.WindowManager
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.view.WindowCompat
@@ -27,6 +28,7 @@ import kotlin.math.roundToInt
 /**
  * 窗口级亮度控制。离开播放器时自动还原。
  */
+@Stable
 internal class WindowBrightness(private val window: Window?) : PlayerLevelControl {
     override fun current(): Float {
         val override = window?.attributes?.screenBrightness ?: -1f
@@ -57,6 +59,7 @@ internal class WindowBrightness(private val window: Window?) : PlayerLevelContro
 /**
  * 系统媒体音量控制。
  */
+@Stable
 internal class MediaVolume(context: Context) : PlayerLevelControl {
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
     private val max: Int = (audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 15).coerceAtLeast(1)

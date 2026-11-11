@@ -86,9 +86,9 @@ fun MobilePlayerControls(
     isLocalPlayback: Boolean,
     isPlaying: Boolean,
     isLoading: Boolean,
-    positionMillis: Long,
+    positionMillis: Long = 0L,
     durationMillis: Long,
-    bufferedPositionMillis: Long,
+    bufferedPositionMillis: Long = 0L,
     playbackSpeed: Float?,
     aspectRatio: PlayerAspectRatio?,
     cropRegion: VideoCropRegion? = null,
@@ -141,6 +141,8 @@ fun MobilePlayerControls(
     playbackStats: (() -> List<PlaybackStatsSection>)? = null,
     loadingSpeedText: String? = null,
     registerKeyFallback: (((KeyEvent) -> Boolean)?) -> Unit = {},
+    positionMillisProvider: (() -> Long)? = null,
+    bufferedPositionMillisProvider: (() -> Long)? = null,
 ) {
     val windowInfo = LocalWindowInfo.current
     val windowSize = windowInfo.containerSize
@@ -152,6 +154,11 @@ fun MobilePlayerControls(
     val framelessWindow = LocalFramelessWindow.current
     var subtreeHasFocus by remember { mutableStateOf(false) }
     var rootSelfFocused by remember { mutableStateOf(false) }
+
+    val latestFallbackPositionMillis by rememberUpdatedState(positionMillis)
+    val latestFallbackBufferedMillis by rememberUpdatedState(bufferedPositionMillis)
+    val readPositionMillis: () -> Long = positionMillisProvider ?: remember { { latestFallbackPositionMillis } }
+    val readBufferedPositionMillis: () -> Long = bufferedPositionMillisProvider ?: remember { { latestFallbackBufferedMillis } }
 
     val controlsHover = remember { MutableInteractionSource() }
     val isHoveringControls by controlsHover.collectIsHoveredAsState()
@@ -168,7 +175,10 @@ fun MobilePlayerControls(
         onSpeedChange = onSpeedChange,
     )
     SideEffect {
-        ui.currentPositionMillis = positionMillis
+        ui.currentPositionProvider = readPositionMillis
+        if (positionMillisProvider == null) {
+            ui.currentPositionMillis = positionMillis
+        }
         ui.currentDurationMillis = durationMillis
         ui.currentPlaybackSpeed = playbackSpeed
         ui.currentRotationDegrees = rotationDegrees
@@ -282,7 +292,6 @@ fun MobilePlayerControls(
         ?.label
         ?.let { if (it.matches(PLAIN_EPISODE)) tr("第 $it 集", "Episode $it", "第 $it 話", "에피소드 $it", "第 $it 集") else it }
 
-    val volumeLevel = volume?.current()
     val hideCursor = idleCursor != null && ui.isMouseIdle && !ui.controlsVisible && isPlaying
 
     PlayerTheme {
@@ -329,7 +338,7 @@ fun MobilePlayerControls(
             PlayerGestureLayer(
                 isLocked = ui.isLocked || ui.isEditingCropRegion,
                 durationMillis = durationMillis,
-                positionProvider = { ui.currentPositionMillis },
+                positionProvider = readPositionMillis,
                 brightness = brightness,
                 volume = volume,
                 onGestureChange = { ui.activeGesture = it },
@@ -453,15 +462,19 @@ fun MobilePlayerControls(
                 exit = fadeOut(motion.fastEffectsSpec()),
                 modifier = Modifier.fillMaxSize(),
             ) {
+                val volumeLevel = volume?.let { control ->
+                    ui.volumeRevision
+                    control.current()
+                }
                 Box(Modifier.fillMaxSize()) {
                     PlayerBottomBar(
                         isLandscape = isLandscape,
                         isFullscreen = isFullscreen,
                         thumbOnHoverOnly = seekThumbOnHoverOnly,
-                        positionMillis = positionMillis,
+                        positionMillisProvider = readPositionMillis,
                         previewPositionMillis = seekPreviewMillis,
                         durationMillis = durationMillis,
-                        bufferedPositionMillis = bufferedPositionMillis,
+                        bufferedPositionMillisProvider = readBufferedPositionMillis,
                         playbackSpeed = playbackSpeed,
                         showEpisodes = hasPlaylist,
                         showEpisodeSkip = hasPlaylist && !compactWidth,
