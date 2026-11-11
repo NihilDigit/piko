@@ -9,6 +9,10 @@ import kotlinx.coroutines.withContext
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
+import java.io.IOException
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * [ClipCache] 的文件实现：每块一个文件放在 `blocks/` 下，每段的记录放在 `records/` 下。
@@ -47,7 +51,7 @@ class FileClipCache(
                     writeAtomically(target) { it.write(bytes) }
                     val total = stored + bytes.size - before
                     storedBytes = if (total > capBytes) evictBlocks() else total
-                }.onFailure { PikoLog.w(TAG, "切片写盘失败", it) }
+                }.onFailure { PikoLog.w(TAG, "Failed to write clip cache block: key=${safe(file)}, offset=$offset, bytes=${bytes.size}", it) }
                 Unit
             }
         }
@@ -71,6 +75,8 @@ class FileClipCache(
                     sliceLength = input.readLong(),
                     sliceStartMs = input.readLong(),
                     sliceDurationMs = input.readLong(),
+                    keyframeOffset = input.readLong(),
+                    videoPid = input.readInt(),
                 )
             }
         }.getOrNull()?.also { file.setLastModified(System.currentTimeMillis()) }
@@ -92,16 +98,22 @@ class FileClipCache(
                     output.writeLong(record.sliceLength)
                     output.writeLong(record.sliceStartMs)
                     output.writeLong(record.sliceDurationMs)
+                    output.writeLong(record.keyframeOffset)
+                    output.writeInt(record.videoPid)
                 }
                 val records = recordDirectory.listFiles { it.isFile && !it.name.endsWith(".tmp") } ?: return@runCatching
                 val excess = records.size - MAX_RECORDS
                 if (excess > 0) {
+                    var deleted = 0
                     records.map { it to it.lastModified() }
                         .sortedBy { it.second }
                         .take(excess)
-                        .forEach { it.first.delete() }
+                        .forEach { if (it.first.delete()) deleted++ }
+                    if (deleted > 0) {
+                        PikoLog.d(TAG, "Evicted $deleted clip cache records (max=$MAX_RECORDS)")
+                    }
                 }
-            }.onFailure { PikoLog.w(TAG, "切片记录写盘失败", it) }
+            }.onFailure { PikoLog.w(TAG, "Failed to write clip cache record: key=${safe(key)}", it) }
             Unit
         }
     }
@@ -116,11 +128,20 @@ class FileClipCache(
             .toList()
         var total = files.sumOf { it.second }
         val target = (capBytes * EVICT_TO).toLong()
+        var deletedCount = 0
+        var freedBytes = 0L
         for ((file, size, _) in files.sortedBy { it.third }) {
             if (total <= target) break
-            if (file.delete()) total -= size
+            if (file.delete()) {
+                total -= size
+                deletedCount++
+                freedBytes += size
+            }
         }
         blockDirectory.listFiles()?.filter { it.isDirectory && it.list()?.isEmpty() == true }?.forEach { it.delete() }
+        if (deletedCount > 0) {
+            PikoLog.d(TAG, "Evicted clip cache blocks: deleted=$deletedCount, freedBytes=$freedBytes, remainingBytes=$total, capBytes=$capBytes")
+        }
         return total
     }
 
@@ -128,12 +149,20 @@ class FileClipCache(
         directory.walkTopDown().filter { it.isFile }.sumOf { it.length() }
 
     private fun writeAtomically(target: File, body: (DataOutputStream) -> Unit) {
-        target.parentFile.mkdirs()
-        val temp = File(target.parentFile, "${target.name}.tmp")
-        DataOutputStream(temp.outputStream().buffered()).use(body)
-        if (!temp.renameTo(target)) {
-            target.delete()
-            temp.renameTo(target)
+        val parent = target.parentFile
+        if (parent != null && !parent.exists() && !parent.mkdirs() && !parent.exists()) {
+            throw IOException("Failed to create clip cache directory")
+        }
+        val temp = File(parent, "${target.name}.tmp")
+        try {
+            DataOutputStream(temp.outputStream().buffered()).use(body)
+            try {
+                Files.move(temp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        } finally {
+            if (temp.exists()) temp.delete()
         }
     }
 
@@ -146,8 +175,8 @@ class FileClipCache(
 
     private companion object {
         const val TAG = "Clips"
-        // 4 起要求切点同时携带完整的 PAT + PMT + 视频参数集（VPS/SPS/PPS）与匹配关键帧，淘汰历史裸切旧记录
-        const val FORMAT = 4
+        // 5 起持久化关键帧偏移与视频 PID，从磁盘恢复切片时同样将前序 GOP 孤儿 P/B 帧置为 MPEG-TS 空包
+        const val FORMAT = 5
         const val DEFAULT_CAP_BYTES = 300L * 1024 * 1024
         const val MAX_RECORDS = 4096
         const val EVICT_TO = 0.8

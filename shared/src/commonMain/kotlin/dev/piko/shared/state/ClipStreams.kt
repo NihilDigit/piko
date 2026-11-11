@@ -2,6 +2,7 @@ package dev.piko.shared.state
 
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.PreparedClip
+import dev.piko.shared.media.proxy.ProxyByteSource
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFile
 import io.github.nihildigit.pikpak.PikPakStreamReader
@@ -10,20 +11,35 @@ import io.github.nihildigit.pikpak.TransferDemand
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlin.concurrent.Volatile
 
-/** 每个片段保留同一个准备结果和可提升的需求；挂起只撤回候补预取，不销毁准备好的会话。 */
+/**
+ * 信息流各片段的流会话与预取调度器（仅在主线程调用，内部字典不加锁）。
+ *
+ * 每个 [Clip] 保有同一份准备结果与可动态升降级的 [TransferDemand]；页面挂起（[setSuspended]）时仅撤回后台候补预取
+ * 并收紧预读水位，不销毁已准备好的流会话。
+ */
 class ClipStreams internal constructor(
     private val repository: PikoMediaRepository,
     private val onReady: (Clip) -> Unit,
     private val onDead: (Clip) -> Unit,
     coroutineContext: kotlin.coroutines.CoroutineContext = Dispatchers.Main.immediate,
-    private val prepare: suspend (Clip, StreamRole, TransferDemand) -> Result<PreparedClip> = { clip, role, owner ->
-        repository.prepareClip(clip.fileId, clip.startMs, clip.videoDurationMs, role, owner)
+    private val prepare: suspend (Clip, StreamRole, TransferDemand, ((ProxyByteSource) -> Unit)?) -> Result<PreparedClip> = { clip, role, owner, onByteSource ->
+        repository.prepareClip(clip.fileId, clip.startMs, clip.videoDurationMs, role, owner, onByteSource)
     },
 ) {
+    internal constructor(
+        repository: PikoMediaRepository,
+        onReady: (Clip) -> Unit,
+        onDead: (Clip) -> Unit,
+        coroutineContext: kotlin.coroutines.CoroutineContext,
+        prepare: suspend (Clip, StreamRole, TransferDemand) -> Result<PreparedClip>,
+    ) : this(repository, onReady, onDead, coroutineContext, { clip, role, owner, _ -> prepare(clip, role, owner) })
     private class Entry(val demand: TransferDemand) {
         val priority = MutableStateFlow(demand.priority)
         lateinit var result: Deferred<PreparedClip?>
+        @Volatile var byteSource: ProxyByteSource? = null
+        @Volatile var priorSourceBytes: Long = 0L
         var prepared: PreparedClip? = null
         var fetch: Job? = null
         var wanted = false
@@ -38,6 +54,15 @@ class ClipStreams internal constructor(
         var feedbackOwner: Any? = null
         var nativeGeneration = Long.MIN_VALUE
         var feedbackGeneration = 0L
+        fun attachSource(source: ProxyByteSource) {
+            val prev = byteSource
+            if (prev != null && prev !== source) {
+                priorSourceBytes += prev.receivedBytes
+            }
+            byteSource = source
+        }
+        fun receivedBytes(): Long = priorSourceBytes + maxOf(byteSource?.receivedBytes ?: 0L, prepared?.receivedBytes ?: 0L)
+        fun isReactivating(): Boolean = prepared?.isReactivating?.value == true || byteSource?.isReactivating?.value == true
         fun prioritize(value: Int) {
             priority.value = value
             if (!demand.isClosed) demand.updatePriority(value)
@@ -48,6 +73,7 @@ class ClipStreams internal constructor(
     private val preparing = PreparationQueue(backgroundSlots = 4)
     private val prefetching = PreparationQueue(backgroundSlots = 2)
     private val streams = mutableMapOf<Clip, Entry>()
+    private var retiredBytes = 0L
     private var foreground: Set<Clip> = emptySet()
     private val suspended = MutableStateFlow(false)
 
@@ -82,10 +108,22 @@ class ClipStreams internal constructor(
         streams[clip] = entry
         entry.result = scope.async(start = CoroutineStart.LAZY) {
             preparing.run(entry.priority) {
-                val prepared = prepare(clip,
-                    if (entry.priority.value >= 50) StreamRole.FOREGROUND else StreamRole.BACKGROUND, entry.demand)
+                val role = if (entry.priority.value >= PikPakStreamReader.STREAMING_PRIORITY) StreamRole.FOREGROUND else StreamRole.BACKGROUND
+                val prepared = prepare(
+                    clip,
+                    role,
+                    entry.demand,
+                    entry::attachSource,
+                )
                     .getOrElse { error ->
-                        PikoLog.w("Clips", "备会话失败 ${logFile(clip.fileId, clip.name)}", error)
+                        if (!entry.closed && error !is CancellationException) {
+                            PikoLog.w(
+                                TAG,
+                                "Failed to prepare clip stream for ${logFile(clip.fileId, clip.name)} " +
+                                    "(startMs=${clip.startMs}, role=$role, priority=${entry.priority.value})",
+                                error,
+                            )
+                        }
                         return@run null
                     }
                 if (entry.closed) { prepared.close(); return@run null }
@@ -122,7 +160,12 @@ class ClipStreams internal constructor(
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
                     if (!entry.closed) {
-                        PikoLog.w("Clips", "预取失败 ${logFile(clip.fileId, clip.name)}", e)
+                        PikoLog.w(
+                            TAG,
+                            "Failed to prefetch clip stream for ${logFile(clip.fileId, clip.name)} " +
+                                "(startMs=${clip.startMs}, receivedBytes=${entry.receivedBytes()})",
+                            e,
+                        )
                         streams.remove(clip); close(entry); onDead(clip)
                     }
                 }
@@ -209,6 +252,14 @@ class ClipStreams internal constructor(
         }
     }
 
+    fun receivedBytes(clip: Clip): Long = streams[clip]?.receivedBytes() ?: 0L
+
+    fun isReactivating(clip: Clip): Boolean = streams[clip]?.isReactivating() ?: false
+
+    fun totalReceivedBytes(): Long = retiredBytes + streams.values.sumOf { it.receivedBytes() }
+
+    fun anyReactivating(): Boolean = streams.values.any { it.isReactivating() }
+
     fun sync(window: Set<Clip>) {
         (streams.keys - window).forEach { clip -> streams.remove(clip)?.let(::close) }
     }
@@ -216,14 +267,21 @@ class ClipStreams internal constructor(
     fun closeAll() {
         streams.values.forEach(::close)
         streams.clear()
+        retiredBytes = 0L
         foreground = emptySet()
     }
 
     private fun close(entry: Entry) {
+        if (entry.closed) return
         entry.closed = true
+        retiredBytes += entry.receivedBytes()
         entry.fetch?.cancel()
         entry.result.cancel()
         entry.demand.close()
         entry.prepared?.close()
+    }
+
+    private companion object {
+        const val TAG = "ClipFeed"
     }
 }

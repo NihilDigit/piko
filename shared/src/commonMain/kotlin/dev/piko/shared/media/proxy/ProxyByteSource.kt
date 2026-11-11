@@ -7,7 +7,12 @@ import io.github.nihildigit.pikpak.StreamRole
 import io.github.nihildigit.pikpak.TransferDemand
 import io.github.nihildigit.pikpak.PlaybackBufferSnapshot
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlin.time.Duration
+
+private val InactiveReactivation: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow()
 
 /**
  * 代理会话背后的字节来源。
@@ -19,6 +24,9 @@ interface ProxyByteSource : AutoCloseable {
 
     /** 底层缓存已从网络收到的累计字节数（单调递增，用于计算实时网速）。 */
     val receivedBytes: Long get() = 0L
+
+    /** 底层文件是否正在执行云端冷存唤醒轮询。 */
+    val isReactivating: StateFlow<Boolean> get() = InactiveReactivation
 
     suspend fun openReader(): ProxyReader
 
@@ -91,6 +99,8 @@ internal class PikPakByteSource(
     override val size: Long get() = cache.size
 
     override val receivedBytes: Long get() = cache.receivedBytes
+
+    override val isReactivating: StateFlow<Boolean> get() = cache.isReactivating
 
     override suspend fun openReader(): ProxyReader = openReader(StreamRole.FOREGROUND)
 

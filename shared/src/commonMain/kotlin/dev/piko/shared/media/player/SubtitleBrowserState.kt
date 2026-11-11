@@ -8,6 +8,8 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFile
+import dev.piko.shared.log.logFolder
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -16,13 +18,13 @@ import kotlinx.coroutines.launch
 /**
  * 播放器里从网盘挑字幕：从视频所在的文件夹开始，列出子文件夹与播放器能读的字幕文件，可以上下进出。
  *
- * 路径栈是自己的，理由同 FolderPickerState：碰仓库层的 folderStackFlow 会把主界面的位置一起带走。
+ * 路径栈与 FolderPickerState 一样由自身独立维护，与 DriveWorkspace 主工作区标签路径栈隔离，挑字幕时不会改动网盘页当前浏览目录。
  * 一次列全不分页：字幕通常就在视频旁边，目录不大，分页只会让同目录的字幕排不到一起。
  */
 class SubtitleBrowserState(
     private val driveRepo: PikoDriveRepository,
     private val scope: CoroutineScope,
-    videoFileId: String,
+    private val videoFileId: String,
 ) {
     /** 视频所在目录的完整路径还没查到时为空。 */
     var path by mutableStateOf<List<PikoPathBreadcrumb>>(emptyList())
@@ -89,7 +91,7 @@ class SubtitleBrowserState(
                 subtitles = files.filter { !it.isFolder && isPlayerSubtitleName(it.name) }
             }
             .onFailure { error ->
-                PikoLog.w(TAG, "列字幕目录失败", error)
+                PikoLog.w(TAG, "Failed to list subtitle directory ${logFolder(folderId)} for video ${logFile(videoFileId, "")}", error)
                 loadError = error.message ?: dev.piko.shared.i18n.tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류", "未知錯誤")
             }
         isLoading = false

@@ -168,4 +168,59 @@ class ClipPreparationTest {
             assertEquals(5, started.size)
         } finally { release.complete(Unit); streams.closeAll(); cloud.provider.currentClient.value?.close() }
     }
+
+    @Test fun receivedBytesTrackPreparationAndStayMonotonicAcrossRetirement() = smoke { _ ->
+        val cloud = FakePikPakCloud(ByteArray(64))
+        var firstBytes = 0L
+        var secondBytes = 0L
+        val firstSource = object : dev.piko.shared.media.proxy.ProxyByteSource {
+            override val size = 64L
+            override val receivedBytes: Long get() = firstBytes
+            override suspend fun openReader(): dev.piko.shared.media.proxy.ProxyReader = error("no reads")
+            override fun close() = Unit
+        }
+        val secondSource = object : dev.piko.shared.media.proxy.ProxyByteSource {
+            override val size = 64L
+            override val receivedBytes: Long get() = secondBytes
+            override suspend fun openReader(): dev.piko.shared.media.proxy.ProxyReader = error("no reads")
+            override fun close() = Unit
+        }
+        val gate = CompletableDeferred<Unit>()
+        val streams = ClipStreams(
+            PikoMediaRepository(cloud.provider),
+            {},
+            {},
+            coroutineContext,
+        ) { clip, _, owner, onByteSource ->
+            val src = if (clip.fileId == "c1") firstSource else secondSource
+            onByteSource?.invoke(src)
+            if (clip.fileId == "c1") gate.await()
+            val session = dev.piko.shared.media.proxy.ProxySession(src)
+            val proxy = dev.piko.shared.media.proxy.ProxyStream("test-${clip.fileId}", session) { session.close() }
+            Result.success(PreparedClip(proxy, null, false, 0, 1.0).also { it.bindDemand(owner) })
+        }
+        val c1 = Clip("c1", "a.mp4", "", 0, 60_000)
+        val c2 = Clip("c2", "b.mp4", "", 0, 60_000)
+        try {
+            val d1 = streams.get(c1, forPlayer = true)
+            awaitUntil("c1 已登记底层字节源") { firstBytes = 4096L; streams.receivedBytes(c1) == 4096L }
+            assertEquals(4096L, streams.totalReceivedBytes())
+            gate.complete(Unit)
+            d1.await()
+            firstBytes = 12_288L
+            assertEquals(12_288L, streams.receivedBytes(c1))
+
+            streams.get(c2).await()
+            secondBytes = 8_192L
+            assertEquals(20_480L, streams.totalReceivedBytes())
+
+            // 淘汰 c1 后总接收字节数不倒退，避免等待页网速跳零
+            streams.sync(setOf(c2))
+            assertEquals(20_480L, streams.totalReceivedBytes())
+        } finally {
+            gate.complete(Unit)
+            streams.closeAll()
+            cloud.provider.currentClient.value?.close()
+        }
+    }
 }

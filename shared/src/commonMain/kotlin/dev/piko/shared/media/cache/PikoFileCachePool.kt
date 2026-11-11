@@ -1,7 +1,10 @@
 package dev.piko.shared.media.cache
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.IO
 import dev.piko.shared.i18n.tr
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logRangeAttempt
 import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.PikPakClient
@@ -46,6 +49,7 @@ class PikoFileCachePool(
                         entry.cache.close()
                         entry.handle.close()
                         runCatching { if (entry.retained) entry.store.close() else entry.store.delete() }
+                            .logFailure(TAG, "Failed to close/delete cache store on pool shutdown: cache=${fileCacheName(entry.key).take(12)}, retained=${entry.retained}")
                     }
                     entries.clear()
                 } } finally { cleanupScope.cancel() }
@@ -187,9 +191,25 @@ class PikoFileCachePool(
 
     suspend fun prune() {
         val candidates = ownedCacheFiles(target("probe"))
+        var deletedCount = 0
         lock.withLock {
             val retained = paths.value.values.toSet() + entries.values.map { it.store.path }
-            for (path in candidates) if (path !in retained) deleteCacheFiles(path)
+            for (path in candidates) {
+                if (path !in retained) {
+                    try {
+                        deleteCacheFiles(path)
+                        deletedCount++
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        val safeId = path.substringAfterLast('/').substringAfterLast('\\').take(12)
+                        PikoLog.w(TAG, "Failed to prune orphan sparse cache entry: cache=$safeId", e)
+                    }
+                }
+            }
+        }
+        if (deletedCount > 0) {
+            PikoLog.i(TAG, "Pruned $deletedCount orphan sparse cache entries")
         }
     }
 
@@ -207,6 +227,8 @@ class PikoFileCachePool(
     }
 
     companion object {
+        private const val TAG = "FileCachePool"
+
         /**
          * 暂存的身份，暂存文件名由它推出。[size] 是暂存里那一档的长度；[mediaId] 为 null 是原画，
          * 末段写 origin，与没有转码档之前存下的暂存同名，旧的续传照常认。

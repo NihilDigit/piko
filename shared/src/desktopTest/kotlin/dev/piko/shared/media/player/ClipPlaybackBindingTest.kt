@@ -5,6 +5,7 @@ import dev.piko.shared.media.proxy.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.emptyFlow
 import kotlin.test.*
+import kotlin.time.Duration.Companion.milliseconds
 
 class ClipPlaybackBindingTest {
     private class Backend : PlaybackBackend {
@@ -102,16 +103,16 @@ class ClipPlaybackBindingTest {
         val gen0 = feedback.invalidate()
         feedback.restarted(gen0)
         val sampledAt = clock.markNow()
-        clock += kotlin.time.Duration.Companion.milliseconds(1000)
+        clock += 1000.milliseconds
         feedback.sample(gen0, 2.0, 1f, sampledAt)
-        assertEquals(kotlin.time.Duration.Companion.milliseconds(1000), feedback.snapshot!!.sampledAt.elapsedNow())
+        assertEquals(1000.milliseconds, feedback.snapshot!!.sampledAt.elapsedNow())
 
         val first = feedback.invalidate()
         feedback.sample(first, 5.0, 1f)
         assertNull(feedback.snapshot!!.bufferedDuration)
         assertTrue(feedback.restarted(first))
         feedback.sample(first, 0.2, 2f)
-        assertEquals(kotlin.time.Duration.Companion.milliseconds(100), feedback.snapshot!!.bufferedDuration)
+        assertEquals(100.milliseconds, feedback.snapshot!!.bufferedDuration)
         val seek = feedback.invalidate()
         assertNull(feedback.snapshot!!.bufferedDuration)
         assertFalse(feedback.restarted(first))
@@ -120,6 +121,6 @@ class ClipPlaybackBindingTest {
         assertNull(feedback.snapshot!!.bufferedDuration)
         feedback.restarted(seek)
         feedback.sample(seek, 0.0, 1f)
-        assertEquals(kotlin.time.Duration.Companion.milliseconds(0), feedback.snapshot!!.bufferedDuration)
+        assertEquals(0.milliseconds, feedback.snapshot!!.bufferedDuration)
     }
 }

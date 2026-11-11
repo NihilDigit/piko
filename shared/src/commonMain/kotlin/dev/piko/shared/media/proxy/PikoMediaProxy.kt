@@ -1,5 +1,6 @@
 package dev.piko.shared.media.proxy
 
+import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.StreamRole
 import io.ktor.network.selector.SelectorManager
 import io.ktor.network.sockets.ServerSocket
@@ -21,12 +22,14 @@ import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
@@ -69,9 +72,10 @@ class PikoMediaProxy(
     suspend fun register(source: ProxyByteSource, fileName: String?, role: StreamRole = StreamRole.FOREGROUND): ProxyStream {
         val port = ensureStarted()
         val token = newToken()
-        val session = ProxySession(source, scope).also { it.role = role }
+        val pathName = pathNameOf(fileName)
+        val session = ProxySession(source, scope, label = "${token.take(8)}/$pathName").also { it.role = role }
         sessionsLock.withLock { sessions[token] = session }
-        return ProxyStream(url = "http://$LOOPBACK:$port/$token/${pathNameOf(fileName)}", session = session) {
+        return ProxyStream(url = "http://$LOOPBACK:$port/$token/$pathName", session = session) {
             session.close()
             scope.launch {
                 sessionsLock.withLock { if (sessions[token] === session) sessions.remove(token) }
@@ -85,6 +89,7 @@ class PikoMediaProxy(
         // 端口传 0 由系统挑一个空闲端口；只绑回环，局域网里的其他设备连不上
         val bound = aSocket(manager).tcp().bind(LOOPBACK, 0)
         server = bound
+        PikoLog.i(TAG, "Loopback proxy listening on $LOOPBACK:${bound.port}")
         scope.launch { acceptLoop(bound) }
         bound.port
     }
@@ -95,8 +100,17 @@ class PikoMediaProxy(
                 bound.accept()
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
-                // 监听 socket 被关了。下一次 register 会重新绑定
+            } catch (e: Exception) {
+                if (!bound.isClosed) {
+                    PikoLog.w(TAG, "Loopback proxy accept failed on port ${bound.port}, closing listener for rebind", e)
+                }
+                // 关闭失败或已失效的监听 socket 并清空 server 引用，避免后续 ensureStarted() 返回无人 accept 的僵尸端口
+                runCatching { bound.close() }
+                withContext(NonCancellable) {
+                    startLock.withLock {
+                        if (server === bound) server = null
+                    }
+                }
                 return
             }
             scope.launch { serveConnection(socket) }
@@ -122,7 +136,7 @@ class PikoMediaProxy(
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            // 客户端中途断开时写端抛异常，属于正常收尾
+            // 连接级收尾：客户端中途断开属于正常现象，协议与上游读取错误已在 respond / ProxySession 中分类记录
         } finally {
             socket.close()
         }
@@ -130,20 +144,26 @@ class PikoMediaProxy(
 
     private suspend fun respond(request: ProxyRequest, output: ByteWriteChannel) {
         val isHead = request.method == "HEAD"
+        val token = request.target.removePrefix("/").substringBefore('/').substringBefore('?')
+        val shortToken = token.take(8).ifEmpty { "empty" }
         if (!isHead && request.method != "GET") {
+            PikoLog.d(TAG, "Proxy 405 method not allowed: method=${request.method}, session=$shortToken")
             output.writeHead(405, "Method Not Allowed", listOf("Allow" to "GET, HEAD", "Content-Length" to "0"))
             output.flushAndClose()
             return
         }
-        val token = request.target.removePrefix("/").substringBefore('/').substringBefore('?')
         val session = sessionsLock.withLock { sessions[token] }?.takeUnless { it.isClosed }
         if (session == null) {
+            PikoLog.w(TAG, "Proxy 404 session not found or closed: method=${request.method}, session=$shortToken")
             output.writeHead(404, "Not Found", listOf("Content-Length" to "0"))
             output.flushAndClose()
             return
         }
 
         if (session.isWithdrawn && !isHead) {
+            if (session.markWithdrawnLogged()) {
+                PikoLog.i(TAG, "Proxy 503 transport withdrawn: session=${session.label}, range=${request.headers["range"] ?: "full"}")
+            }
             output.writeHead(503, "Service Unavailable", listOf("Content-Length" to "0"))
             output.flushAndClose()
             return
@@ -151,6 +171,10 @@ class PikoMediaProxy(
         val size = session.size
         when (val range = parseByteRange(request.headers["range"], size)) {
             ByteRange.Unsatisfiable -> {
+                PikoLog.w(
+                    TAG,
+                    "Proxy 416 range not satisfiable: session=${session.label}, method=${request.method}, range=${request.headers["range"]}, size=$size",
+                )
                 output.writeHead(
                     416,
                     "Range Not Satisfiable",
@@ -198,8 +222,27 @@ class PikoMediaProxy(
                     throw e
                 } catch (e: Exception) {
                     if (!headSent) {
+                        val rangeDesc = "bytes ${range.start}..${range.endExclusive - 1}/$size"
+                        when {
+                            e is ProxySession.ClientGone -> {
+                                PikoLog.d(TAG, "Client disconnected before response header: session=${session.label}, range=$rangeDesc")
+                            }
+                            session.isWithdrawn -> {
+                                if (session.markWithdrawnLogged()) {
+                                    PikoLog.i(TAG, "Proxy 503 transport withdrawn before first byte: session=${session.label}, range=$rangeDesc")
+                                }
+                            }
+                            else -> {
+                                PikoLog.w(
+                                    TAG,
+                                    "Proxy 502 upstream failed before response header: session=${session.label}, range=$rangeDesc, cause=${e::class.simpleName}: ${e.message}",
+                                )
+                            }
+                        }
                         runCatching {
-                            output.writeHead(502, "Bad Gateway", listOf("Content-Length" to "0"))
+                            val status = if (session.isWithdrawn) 503 else 502
+                            val reason = if (session.isWithdrawn) "Service Unavailable" else "Bad Gateway"
+                            output.writeHead(status, reason, listOf("Content-Length" to "0"))
                             output.flushAndClose()
                         }
                     }
@@ -211,14 +254,21 @@ class PikoMediaProxy(
 
     /** 关闭监听与全部会话。进程内常驻时不需要调用，主要给测试用。 */
     override fun close() {
+        val activePort = runCatching { server?.takeUnless { it.isClosed }?.port }.getOrNull()
+        val activeSessions = runCatching { sessions.size }.getOrDefault(0)
+        if (activePort != null || activeSessions > 0) {
+            PikoLog.i(TAG, "Closing loopback proxy: port=${activePort ?: "none"}, sessions=$activeSessions")
+        }
         scope.cancel()
         runCatching { server?.close() }
+        server = null
         runCatching { selector?.close() }
         // 作用域已取消，拿不到锁也不再有并发写入，直接遍历快照
         runCatching { sessions.values.toList() }.getOrNull()?.forEach { it.close() }
     }
 
     private companion object {
+        const val TAG = "MediaProxy"
         const val LOOPBACK = "127.0.0.1"
     }
 }
@@ -237,6 +287,9 @@ class ProxyStream internal constructor(
 
     /** 底层缓存已从网络收到的累计字节数（单调递增）。 */
     val receivedBytes: Long get() = session.receivedBytes
+
+    /** 底层文件是否正在执行云端冷存唤醒轮询。 */
+    val isReactivating: kotlinx.coroutines.flow.StateFlow<Boolean> get() = session.isReactivating
 
     var demand: io.github.nihildigit.pikpak.TransferDemand?
         get() = session.demand

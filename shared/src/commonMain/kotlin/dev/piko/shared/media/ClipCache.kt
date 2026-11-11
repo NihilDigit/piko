@@ -24,6 +24,10 @@ class ClipRecord(
     val sliceStartMs: Long,
     /** 切片按首尾 PTS 实测的可播放时长（毫秒），小于等于 0 时按未知处理。 */
     val sliceDurationMs: Long = 0L,
+    /** 切片内首个带参数集关键帧 PES 在转码流中的绝对偏移，用于重放时屏蔽前序 GOP 孤儿 P/B 帧。 */
+    val keyframeOffset: Long = sliceOffset,
+    /** 视频流 PID，与 [keyframeOffset] 配合将前导孤儿视频包置为 MPEG-TS 空包。 */
+    val videoPid: Int = -1,
 )
 
 /**

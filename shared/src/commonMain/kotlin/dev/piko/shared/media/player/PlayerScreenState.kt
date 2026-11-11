@@ -264,11 +264,19 @@ class PlayerScreenState(
 
     /** 本轮 open 用的起点，还没出第一帧就换源时从这里重来。 */
     private var attemptStartMillis = 0L
+
+    /**
+     * 续播定位是否已真正落到目标附近（或由用户主动拖动/从头播放覆盖）。
+     * 容器尾部索引读取失败导致 mpv 丢失初始 seek、退回 0:00 附近输出画面时，
+     * 禁止把几秒钟的错误位置覆盖进本机续播记录、云端播放历史或切档/重连起点。
+     */
+    private var resumePositionVerified = true
     private var usingProxy = false
     private var preferDirectLink = false
     private var directLinkTried = false
     private var stableJob: Job? = null
     private var startedThisAttempt = false
+    private var openStartedAt = TimeSource.Monotonic.markNow()
     private var retryAttempt = 0
 
     // 出错瞬间后端的位置可能已经归零，重连与持久化都用这个
@@ -288,7 +296,14 @@ class PlayerScreenState(
         scope.launch {
             snapshotFlow { backend.positionMillis }.collect { position ->
                 // 新文件出第一帧前，后端报的可能还是上一个文件的位置
-                if (startedThisAttempt && position > 0L) lastKnownPositionMillis = position
+                if (startedThisAttempt && position > 0L) {
+                    if (!resumePositionVerified && isInitialResumeLanded(position)) {
+                        resumePositionVerified = true
+                    }
+                    if (resumePositionVerified) {
+                        lastKnownPositionMillis = position
+                    }
+                }
             }
         }
         scope.launch { persistLoop() }
@@ -317,32 +332,28 @@ class PlayerScreenState(
                     loadingSpeedText = null
                     return@collectLatest
                 }
-                var lastPrepared = prepared
-                var lastBytes = lastPrepared?.receivedBytes ?: 0L
-                var lastMark = TimeSource.Monotonic.markNow()
-                var smoothedBytesPerSec = 0.0
-                loadingSpeedText = formatTransferRate(0L)
-                while (true) {
-                    delay(SPEED_SAMPLE_INTERVAL_MS)
-                    val curPrepared = prepared
-                    if (curPrepared !== lastPrepared) {
-                        lastPrepared = curPrepared
-                        lastBytes = 0L
-                    }
-                    if (curPrepared == null) {
-                        lastMark = TimeSource.Monotonic.markNow()
-                        loadingSpeedText = formatTransferRate(0L)
-                        continue
-                    }
-                    val nowBytes = curPrepared.receivedBytes
-                    val elapsedMs = lastMark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1L)
-                    lastMark = TimeSource.Monotonic.markNow()
-                    val delta = (nowBytes - lastBytes).coerceAtLeast(0L)
-                    lastBytes = nowBytes
-                    val instantRate = delta * 1000.0 / elapsedMs
-                    smoothedBytesPerSec = if (smoothedBytesPerSec <= 0.0) instantRate else smoothedBytesPerSec * 0.45 + instantRate * 0.55
-                    loadingSpeedText = formatTransferRate(smoothedBytesPerSec.toLong())
-                }
+                var notifiedReactivationFor: Any? = null
+                observeLoadingSpeed(
+                    token = { prepared },
+                    sampleBytes = { prepared?.receivedBytes },
+                    isReactivating = { prepared?.isReactivating?.value == true },
+                    onReactivating = { curPrepared ->
+                        if (curPrepared != null && notifiedReactivationFor !== curPrepared) {
+                            notifiedReactivationFor = curPrepared
+                            PikoLog.i(TAG, "Cloud cold-storage reactivation detected: ${logFile(fileId, title)}")
+                            _messages.tryEmit(
+                                tr(
+                                    "文件长期未访问，云端正在唤醒恢复，请稍候…",
+                                    "File is being reactivated in the cloud. Please wait…",
+                                    "長期間未アクセスのファイルをクラウドで復元しています。しばらくお待ちください…",
+                                    "오랫동안 접근하지 않은 파일을 클라우드에서 복구 중입니다. 잠시만 기다려 주세요…",
+                                    "檔案長期未存取，雲端正在喚醒還原，請稍候…",
+                                ),
+                            )
+                        }
+                    },
+                    onUpdate = { loadingSpeedText = it },
+                )
             }
         }
         scope.launch {
@@ -394,12 +405,14 @@ class PlayerScreenState(
     /** 网盘上的字幕文件，与自动挂的外挂字幕一样经本机代理读。 */
     fun addDriveSubtitle(subtitleFileId: String, name: String) {
         val videoFileId = fileId
+        val videoTitle = title
         scope.launch {
             val localSubtitle = try {
                 repository.localPath(subtitleFileId, subtitle = true)
             } catch (cancel: CancellationException) {
                 throw cancel
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                PikoLog.w(TAG, "Failed to resolve local path for drive subtitle ${logFile(subtitleFileId, name)} on ${logFile(videoFileId, videoTitle)}", e)
                 _messages.tryEmit(tr("无法打开字幕文件", "Unable to open subtitle file", "字幕ファイルを開けません", "자막 파일을 열 수 없습니다", "無法開啟字幕檔案"))
                 return@launch
             }
@@ -419,13 +432,19 @@ class PlayerScreenState(
             }
             subtitleStreams = subtitleStreams + stream
             manualSubtitles = manualSubtitles + ManualSubtitle(title = name, localPath = null, fileId = subtitleFileId)
-            attachManualSubtitle(ExternalSubtitle(url = stream.url, title = name, language = null))
+            attachManualSubtitle(ExternalSubtitle(url = stream.url, title = name, language = null), subtitleFileId = subtitleFileId)
         }
     }
 
-    private fun attachManualSubtitle(subtitle: ExternalSubtitle) {
-        // 日志只留扩展名，文件名不进导出的日志
-        PikoLog.i(TAG, "手动挂字幕，格式 ${subtitle.title.substringAfterLast('.', "未知")}，${logFile(fileId, title)}")
+    private fun attachManualSubtitle(subtitle: ExternalSubtitle, subtitleFileId: String? = null) {
+        // 日志只留扩展名或脱敏后的字幕文件标识，原始明文文件名不直接裸写进导出日志
+        val ext = subtitle.title.substringAfterLast('.', "").lowercase().ifBlank { "unknown" }
+        val subDesc = if (subtitleFileId != null) {
+            "drive=${logFile(subtitleFileId, subtitle.title)}, ext=$ext"
+        } else {
+            "source=local, ext=$ext"
+        }
+        PikoLog.i(TAG, "Attached manual subtitle ($subDesc) for ${logFile(fileId, title)}")
         pendingManualTitle = subtitle.title
         backend.addSubtitle(subtitle)
     }
@@ -475,20 +494,24 @@ class PlayerScreenState(
 
     fun seekTo(positionMillis: Long) {
         val upper = durationMillis.takeIf { it > 0L } ?: Long.MAX_VALUE
+        val clamped = positionMillis.coerceIn(0L, upper)
+        val beforeSeek = backend.positionMillis
+        resumePositionVerified = true
+        if (clamped > 0L) lastKnownPositionMillis = clamped
         seeking = true
         prepared?.updatePhase(urgent = true, steady = false)
         prepared?.reportPlaybackBuffer(PlaybackBufferSnapshot(backend.playbackGeneration + 1, null, TimeSource.Monotonic.markNow()))
-        backend.seekTo(positionMillis.coerceIn(0L, upper))
-        watchSeek()
+        backend.seekTo(clamped)
+        watchSeek(beforeSeek = beforeSeek, targetMillis = clamped)
     }
 
     private var seekWatch: Job? = null
 
     /**
-     * 记下拖动后多久画面重新走起来，与信息流的「定位后播放位置推进」对照。连着拖（按住方向键）只记最后一次；
-     * 暂停着拖的等不到走起来，不记。
+     * 记下拖动发出到播放位置重新向前推进的真实挂钟耗时（毫秒），与信息流的定位恢复耗时对照。
+     * 连着拖（按住方向键）只记最后一次；暂停状态下拖动等不到播放推进，不记。
      */
-    private fun watchSeek() {
+    private fun watchSeek(beforeSeek: Long, targetMillis: Long) {
         seekWatch?.cancel()
         val sought = TimeSource.Monotonic.markNow()
         seeking = true
@@ -496,25 +519,35 @@ class PlayerScreenState(
             // 记录后端是否报告等待；该状态不能区分网络与解码耗时。
             var sawBuffering = backend.isBuffering
             val bufferingWatch = launch { snapshotFlow { backend.isBuffering }.first { it }; sawBuffering = true }
-            // 刚定位时报的位置可能还是定位前的
-            delay(SEEK_SETTLE_MS)
-            if (!backend.isPlaying) {
-                withTimeoutOrNull(SEEK_WATCH_MS) {
-                    snapshotFlow { !backend.isBuffering }.first { it }
+            try {
+                // 刚发出异步定位时后端报出的位置可能仍是定位前的旧值：大幅跳转可一旦观察到位置跳离旧值即提前结束防抖，小步微调则等满防抖窗口
+                if (kotlin.math.abs(targetMillis - beforeSeek) > SEEK_JUMP_DETECT_THRESHOLD_MS) {
+                    withTimeoutOrNull(SEEK_SETTLE_MS) {
+                        snapshotFlow {
+                            backend.isBuffering || kotlin.math.abs(backend.positionMillis - beforeSeek) > SEEK_JUMP_MOVED_MS
+                        }.first { it }
+                    }
+                } else {
+                    delay(SEEK_SETTLE_MS)
                 }
+                val settled = withTimeoutOrNull(SEEK_WATCH_MS) {
+                    snapshotFlow { !backend.isBuffering }.first { it }
+                } != null
+                if (!settled || !backend.isPlaying) return@launch
+                val anchor = backend.positionMillis
+                val remainingMs = (SEEK_WATCH_MS - sought.elapsedNow().inWholeMilliseconds).coerceAtLeast(1L)
+                val resumed = withTimeoutOrNull(remainingMs) {
+                    snapshotFlow { backend.isPlaying && !backend.isBuffering && backend.positionMillis > anchor }.first { it }
+                } != null
+                if (resumed) {
+                    val elapsedMs = sought.elapsedNow().inWholeMilliseconds
+                    PikoLog.d(
+                        TAG,
+                        "Seek playback resumed: ${logFile(fileId, title)}, targetMs=$targetMillis, posMs=${backend.positionMillis}, elapsedMs=$elapsedMs, buffered=$sawBuffering",
+                    )
+                }
+            } finally {
                 bufferingWatch.cancel()
-                return@launch
-            }
-            val from = backend.positionMillis
-            val resumed = withTimeoutOrNull(SEEK_WATCH_MS) {
-                snapshotFlow { backend.isPlaying && backend.positionMillis >= from + SEEK_EVIDENCE_MS }.first { it }
-            } != null
-            bufferingWatch.cancel()
-            if (resumed) {
-                PikoLog.d(
-                    TAG,
-                    "拖动后播放位置推进 ${sought.elapsedNow().inWholeMilliseconds - SEEK_EVIDENCE_MS} ms，${if (sawBuffering) "后端报告等待" else "后端未报告等待"}",
-                )
             }
         }
     }
@@ -560,8 +593,15 @@ class PlayerScreenState(
     }
 
     fun restartFromBeginning() {
+        val key = positionKey
+        val targetLog = logFile(fileId, title)
+        resumePositionVerified = true
+        lastKnownPositionMillis = 0L
         backend.seekTo(0L)
         resumedFromMillis = null
+        if (key.isNotBlank() && !isImage) {
+            scope.launch { runCatchingNonCancel("save local playback position ($targetLog)") { repository.savePlaybackPosition(key, 0L) } }
+        }
     }
 
     fun dismissResumeTip() {
@@ -574,11 +614,19 @@ class PlayerScreenState(
         val previousKey = positionKey
         val previousPosition = lastKnownPositionMillis
         val previousDuration = durationMillis
-        scope.launch { persist(previousKey, previousPosition, previousDuration) }
+        val previousVerified = resumePositionVerified
+        if (previousVerified) {
+            scope.launch { persist(previousKey, previousPosition, previousDuration) }
+        }
         // 上一集最后不足一个上报间隔的进度，换片后就报不出去了，这里补一次
-        if (startedThisAttempt && !isImage) {
+        if (startedThisAttempt && previousVerified && !isImage) {
             val previousFileId = this.fileId
-            scope.launch { runCatchingNonCancel { repository.reportPlay(previousFileId, previousPosition, previousDuration) } }
+            val previousTitle = this.title
+            scope.launch {
+                runCatchingNonCancel("report cloud play history (${logFile(previousFileId, previousTitle)})") {
+                    repository.reportPlay(previousFileId, previousPosition, previousDuration)
+                }
+            }
         }
 
         this.fileId = fileId
@@ -589,6 +637,7 @@ class PlayerScreenState(
         requestedQuality = null
         pendingStartMillis = null
         lastKnownPositionMillis = 0L
+        resumePositionVerified = true
         manualSubtitles = emptyList()
         pendingManualTitle = null
         resetRecovery()
@@ -629,6 +678,7 @@ class PlayerScreenState(
         lateSubtitlesJob?.cancel()
         recoveryJob?.cancel()
         val oldStreams = detachPrepared()
+        backend.stop()
         withdrawPlaybackTransport(oldStreams)
         retireScope.launch {
             try { playbackTransition.withLock { stopPlayback(backend, oldStreams) } }
@@ -637,7 +687,26 @@ class PlayerScreenState(
     }
 
     private fun currentPosition(): Long =
-        backend.positionMillis.takeIf { it > 0L && startedThisAttempt } ?: lastKnownPositionMillis
+        backend.positionMillis.takeIf { it > 0L && startedThisAttempt && resumePositionVerified } ?: lastKnownPositionMillis
+
+    private fun isInitialResumeLanded(position: Long): Boolean {
+        if (attemptStartMillis <= RESUME_THRESHOLD_MILLIS) return true
+        if (attemptStartMillis > RESUME_VERIFY_TOLERANCE_MILLIS) {
+            return position >= attemptStartMillis - RESUME_VERIFY_TOLERANCE_MILLIS
+        }
+        return durationMillis > 0L && position > 0L
+    }
+
+    private fun applyAttemptStart(positionMillis: Long): Long {
+        attemptStartMillis = positionMillis
+        if (positionMillis > RESUME_THRESHOLD_MILLIS) {
+            lastKnownPositionMillis = positionMillis
+            resumePositionVerified = false
+        } else {
+            resumePositionVerified = true
+        }
+        return positionMillis
+    }
 
     private fun resetRecovery() {
         recoveryJob?.cancel()
@@ -678,7 +747,7 @@ class PlayerScreenState(
             } else null
             var saved: Long? = null
             suspend fun startPosition(): Long {
-                if (pending != null) return pending.also { attemptStartMillis = it }
+                if (pending != null) return applyAttemptStart(pending)
                 val waitBudget = if (localSaved != null) LOCAL_RESUME_WAIT_MILLIS else CLOUD_RESUME_WAIT_MILLIS
                 val remaining = (waitBudget - prepareStarted.elapsedNow().inWholeMilliseconds).coerceAtLeast(0L)
                 // 预算耗尽也要使用已经返回的云端结果；withTimeoutOrNull(0) 不会执行 await。
@@ -688,8 +757,8 @@ class PlayerScreenState(
                     withTimeoutOrNull(remaining) { cloudPosition?.await() }
                 }
                 saved = (cloud ?: localSaved)?.takeIf { it > RESUME_THRESHOLD_MILLIS }
-                saved?.let { PikoLog.d(TAG, "续播自 $it ms，取自${if (cloud != null) "云端播放历史" else "本机记录"}") }
-                return (saved ?: 0L).also { attemptStartMillis = it }
+                saved?.let { PikoLog.d(TAG, "Resuming playback at ${it}ms (source=${if (cloud != null) "cloud" else "local"}): ${logFile(fileId, title)}") }
+                return applyAttemptStart(saved ?: 0L)
             }
 
             tracksChosenThisFile = false
@@ -698,8 +767,11 @@ class PlayerScreenState(
                 isLocalPlayback = true
                 usingProxy = false
                 activeQuality = null
-                PikoLog.i(TAG, "打开本地副本：${logFile(fileId, title)}")
-                backend.open(PlaybackTarget.LocalFile(localPath), startPosition(), subtitles = openSubtitles())
+                PikoLog.i(TAG, "Opening local file for playback: ${logFile(fileId, title)}")
+                val startAt = startPosition()
+                val subs = openSubtitles()
+                openStartedAt = TimeSource.Monotonic.markNow()
+                backend.open(PlaybackTarget.LocalFile(localPath), startAt, subtitles = subs)
                 sessionSpeed?.let(backend::setSpeed)
             } else {
                 isLocalPlayback = false
@@ -720,13 +792,26 @@ class PlayerScreenState(
                         val proxyUrl = playback.proxyUrl.takeUnless { preferDirectLink }
                         usingProxy = proxyUrl != null
                         val info = playback.info
+                        val variantDesc = if (info.isOrigin) {
+                            ORIGINAL_QUALITY
+                        } else {
+                            val label = info.transcodeName
+                                ?: info.height.takeIf { it > 0 }?.let { "${it}p" }
+                                ?: info.currentResolution.takeUnless { it == ORIGINAL_QUALITY }?.let { "${it}p" }
+                                ?: "unknown"
+                            "transcode($label)"
+                        }
                         PikoLog.i(
                             TAG,
-                            "打开：${logFile(fileId, title)}，${if (usingProxy) "经代理" else "直链"}，${if (info.isOrigin) "原画" else info.currentResolution + "p 转码"}，" +
-                                "${info.width}x${info.height}，${info.sizeBytes} B，取流 $prepareMillis ms" +
-                                (requestedQuality?.let { "，指定档位 $it" } ?: "") + (if (retryAttempt > 0) "，第 $retryAttempt 次重连" else ""),
+                            "Opening stream: ${logFile(fileId, title)}, transport=${if (usingProxy) "proxy" else "direct"}, variant=$variantDesc, " +
+                                "video=${info.width}x${info.height}, size=${info.sizeBytes} B, prepareMs=$prepareMillis" +
+                                (requestedQuality?.let { ", requested=$it" } ?: "") +
+                                (if (retryAttempt > 0) ", reconnect=$retryAttempt/${RECOVERY_DELAYS_MILLIS.size}" else ""),
                         )
-                        backend.open(PlaybackTarget.Url(proxyUrl ?: playback.info.currentUrl), startPosition(), subtitles = openSubtitles())
+                        val startAt = startPosition()
+                        val subs = openSubtitles()
+                        openStartedAt = TimeSource.Monotonic.markNow()
+                        backend.open(PlaybackTarget.Url(proxyUrl ?: playback.info.currentUrl), startAt, subtitles = subs)
                         sessionSpeed?.let(backend::setSpeed)
                     }
                 }
@@ -737,7 +822,7 @@ class PlayerScreenState(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            PikoLog.w(TAG, "取流失败：${logFile(fileId, title)}", e)
+            PikoLog.w(TAG, "Failed to prepare playback: ${logFile(fileId, title)}", e)
             failure = dev.piko.shared.notice.PikoErrorMapper.failure(tr("播放", "Playback", "再生", "재생", "播放"), e)
             isPreparing = false
             // 这一轮连流都没拿到，退避到此为止，否则失败卡片会被加载态一直挡着
@@ -751,7 +836,17 @@ class PlayerScreenState(
         if (released) return
         when (event) {
             PlaybackBackendEvent.Ready -> {
-                if (!startedThisAttempt) PikoLog.d(TAG, "后端输出就绪")
+                if (!startedThisAttempt) {
+                    val transport = when {
+                        isLocalPlayback -> "local"
+                        usingProxy -> "proxy"
+                        else -> "direct"
+                    }
+                    PikoLog.d(
+                        TAG,
+                        "Playback backend first frame ready: ${logFile(fileId, title)}, transport=$transport, firstFrameMs=${openStartedAt.elapsedNow().inWholeMilliseconds}",
+                    )
+                }
                 startedThisAttempt = true
                 isRecovering = false
                 // 出第一帧不代表故障过去了：流每次放几秒就断，立刻清零会无限重连。
@@ -765,7 +860,8 @@ class PlayerScreenState(
 
             PlaybackBackendEvent.Ended -> {
                 val key = positionKey
-                scope.launch { runCatchingNonCancel { repository.savePlaybackPosition(key, 0L) } }
+                val targetLog = logFile(fileId, title)
+                scope.launch { runCatchingNonCancel("save local playback position ($targetLog)") { repository.savePlaybackPosition(key, 0L) } }
                 // 放完接着放下一集。switchTo 会按片尾位置再存一次，而片尾位置存的也是 0
                 nextEntry?.let(::playEntry)
             }
@@ -778,10 +874,20 @@ class PlayerScreenState(
         stableJob?.cancel()
         val safeDetail = detail?.takeUnless { dev.piko.shared.data.LocalLocation.isLocal(fileId) }
         val message = safeDetail?.takeIf { it.isNotBlank() }?.let { tr("播放失败：$it", "Playback failed: $it", "再生に失敗しました：$it", "재생 실패: $it", "播放失敗：$it") } ?: tr("播放中断", "Playback interrupted", "再生が中断されました", "재생이 중단되었습니다", "播放中斷")
+        val transport = when {
+            isLocalPlayback -> "local"
+            usingProxy -> "proxy"
+            else -> "direct"
+        }
+        val stage = if (startedThisAttempt) "mid-stream" else "pre-first-frame"
+        val nextRetry = if (!isLocalPlayback && startedThisAttempt && retryAttempt < RECOVERY_DELAYS_MILLIS.size) {
+            "${retryAttempt + 1}/${RECOVERY_DELAYS_MILLIS.size}"
+        } else {
+            "none"
+        }
         PikoLog.w(
             TAG,
-            "$message（${if (isLocalPlayback) "本地" else if (usingProxy) "代理" else "直链"}，" +
-                "${if (startedThisAttempt) "播放中，第 ${retryAttempt + 1} 次重连" else "首帧前"}，位置 ${currentPosition()} ms）",
+            "Playback backend error: ${logFile(fileId, title)}, transport=$transport, stage=$stage, posMs=${currentPosition()}, reconnect=$nextRetry, detail=${safeDetail?.ifBlank { null } ?: "none"}",
         )
         // 本地文件重来一遍还是同一个错误，直接交给用户
         if (isLocalPlayback) {
@@ -790,12 +896,57 @@ class PlayerScreenState(
         }
 
         if (!startedThisAttempt) {
+            val activePrepared = prepared
+            val proxyUrl = activePrepared?.proxyUrl
+            if (usingProxy && activePrepared != null && proxyUrl != null && activePrepared.isReactivating.value) {
+                // 云端冷存正在唤醒：播放器自身 HTTP 读超时早于冷存恢复完成，保留当前代理会话等待唤醒结束再重开，不退回同样未唤醒的直链
+                PikoLog.i(TAG, "Playback timed out while cloud reactivation is in progress, holding proxy session: ${logFile(fileId, title)}")
+                isRecovering = true
+                recoveryJob?.cancel()
+                recoveryJob = scope.launch {
+                    val woke = withTimeoutOrNull(REACTIVATION_WAIT_MILLIS) {
+                        activePrepared.isReactivating.first { !it }
+                        true
+                    } == true
+                    if (released || prepared !== activePrepared) return@launch
+                    if (!woke) {
+                        PikoLog.w(TAG, "Cloud reactivation timed out after ${REACTIVATION_WAIT_MILLIS}ms: ${logFile(fileId, title)}")
+                        isRecovering = false
+                        failure = dev.piko.shared.notice.PikoErrorMapper.failure(
+                            tr("播放", "Playback", "再生", "재생", "播放"),
+                            io.github.nihildigit.pikpak.FileReactivatingException(),
+                        )
+                        return@launch
+                    }
+                    // isReactivating 置回 false 仅代表后台轮询结束，需查验云端文件已确实恢复可读链接而非轮询失败退出
+                    val probe = repository.prepareMedia(fileId, activeQuality)
+                    if (released || prepared !== activePrepared) return@launch
+                    val readyInfo = probe.getOrNull()
+                    val probeError = probe.exceptionOrNull()
+                    if (readyInfo == null || readyInfo.currentUrl.isBlank()) {
+                        PikoLog.w(TAG, "Cloud reactivation finished without a playable stream: ${logFile(fileId, title)}", probeError)
+                        isRecovering = false
+                        failure = dev.piko.shared.notice.PikoErrorMapper.failure(
+                            tr("播放", "Playback", "再生", "재생", "播放"),
+                            probeError ?: io.github.nihildigit.pikpak.FileReactivatingException(),
+                        )
+                        return@launch
+                    }
+                    PikoLog.i(TAG, "Cloud reactivation succeeded, reopening proxy stream: ${logFile(fileId, title)}")
+                    val subs = openSubtitles()
+                    if (released || prepared !== activePrepared) return@launch
+                    openStartedAt = TimeSource.Monotonic.markNow()
+                    backend.open(PlaybackTarget.Url(proxyUrl), attemptStartMillis, subtitles = subs)
+                    sessionSpeed?.let(backend::setSpeed)
+                }
+                return
+            }
             // 还没出第一帧：同一条路原样重试没有意义，换一条
             pendingStartMillis = attemptStartMillis
             if (usingProxy && !directLinkTried) {
                 // 代理与直链读的是同一份字节，先排除代理本身的问题。只试一次：
                 // 直链也失败就说明坏的不是代理，换到转码流后不必再绕一遍直链
-                PikoLog.i(TAG, "首帧前失败，换直链重试一次")
+                PikoLog.i(TAG, "Pre-first-frame proxy failure, retrying once via direct URL: ${logFile(fileId, title)}")
                 directLinkTried = true
                 preferDirectLink = true
                 isRecovering = true
@@ -804,7 +955,7 @@ class PlayerScreenState(
             }
             val transcode = mediaInfo?.bestTranscodeName()
             if (activeQuality == null && transcode != null) {
-                PikoLog.i(TAG, "原画首帧前失败，换 $transcode 转码")
+                PikoLog.i(TAG, "Original stream failed before first frame, falling back to $transcode transcode: ${logFile(fileId, title)}")
                 preferDirectLink = false
                 requestedQuality = transcode
                 isRecovering = true
@@ -812,7 +963,10 @@ class PlayerScreenState(
                 reload()
                 return
             }
-            PikoLog.w(TAG, "首帧前失败，来源已试尽（直链${if (directLinkTried) "已试" else "未试"}，档位 ${activeQuality ?: "原画"}），放弃")
+            PikoLog.w(
+                TAG,
+                "Pre-first-frame playback failed after exhausting fallbacks (directTried=$directLinkTried, quality=${activeQuality ?: ORIGINAL_QUALITY}): ${logFile(fileId, title)}",
+            )
             pendingStartMillis = null
             isRecovering = false
             // 转码流一帧都没放出来，多半是服务端那一档坏了（有的档回 206 却没有正文，见 PikoMediaRepository.probeTranscode），
@@ -822,7 +976,10 @@ class PlayerScreenState(
         }
 
         if (retryAttempt >= RECOVERY_DELAYS_MILLIS.size) {
-            PikoLog.w(TAG, "播放中断，${RECOVERY_DELAYS_MILLIS.size} 次重连都未恢复，放弃")
+            PikoLog.w(
+                TAG,
+                "Mid-stream playback interrupted and ${RECOVERY_DELAYS_MILLIS.size} reconnect attempts failed, giving up: ${logFile(fileId, title)}, posMs=${currentPosition()}",
+            )
             isRecovering = false
             failure = message
             return
@@ -851,13 +1008,17 @@ class PlayerScreenState(
         try {
             while (true) {
                 delay(PERSIST_INTERVAL_MILLIS)
-                persist(positionKey, lastKnownPositionMillis, durationMillis)
+                if (resumePositionVerified) {
+                    persist(positionKey, lastKnownPositionMillis, durationMillis)
+                }
                 reportPlay(force = false)
             }
         } finally {
             // 离开播放器时补一次，否则最后不足 5 秒的进度会丢
             withContext(NonCancellable) {
-                persist(positionKey, lastKnownPositionMillis, durationMillis)
+                if (resumePositionVerified) {
+                    persist(positionKey, lastKnownPositionMillis, durationMillis)
+                }
                 reportPlay(force = true)
             }
         }
@@ -873,17 +1034,20 @@ class PlayerScreenState(
      */
     private suspend fun reportPlay(force: Boolean) {
         val id = fileId
-        if (!startedThisAttempt || isImage || id.isBlank()) return
+        if (!startedThisAttempt || !resumePositionVerified || isImage || id.isBlank()) return
         val sameFile = id == lastReportedFileId
         if (!force && sameFile && lastReportedAt.elapsedNow() < PLAY_REPORT_INTERVAL) return
         lastReportedFileId = id
         lastReportedAt = TimeSource.Monotonic.markNow()
-        runCatchingNonCancel { repository.reportPlay(id, lastKnownPositionMillis, durationMillis) }
+        runCatchingNonCancel("report cloud play history (${logFile(id, title)})") {
+            repository.reportPlay(id, lastKnownPositionMillis, durationMillis)
+        }
     }
 
     private suspend fun persist(key: String, positionMillis: Long, durationMillis: Long) {
         if (key.isBlank() || isImage) return
-        runCatchingNonCancel {
+        val targetLog = logFile(fileId, title)
+        runCatchingNonCancel("save local playback position ($targetLog)") {
             // 放完最后十秒记 0，下次从头播，而不是停在片尾
             if (durationMillis > 0L && positionMillis >= durationMillis - NEAR_END_MILLIS) {
                 repository.savePlaybackPosition(key, 0L)
@@ -929,7 +1093,7 @@ class PlayerScreenState(
         return subtitles + manual
     }
 
-    // 每开一条就登记，由 closePrepared 统一关。攒齐了再交出去的话，换集取消准备时已开的几条无人关闭；
+    // 每开一条就登记，由 detachPrepared 统一拆出关闭。攒齐了再交出去的话，换集取消准备时已开的几条无人关闭；
     // 整体赋值还会盖掉这期间 addDriveSubtitle 登记的那条
     private fun registerSubtitleStream(stream: ProxyStream): String {
         subtitleStreams = subtitleStreams + stream
@@ -938,7 +1102,11 @@ class PlayerScreenState(
 
     private suspend fun openPlaylistSubtitle(ref: SubtitleRef): ExternalSubtitle? {
         repository.localPath(ref.fileId, subtitle = true)?.let { path ->
-            return ExternalSubtitle(path, ref.language ?: "外挂字幕", ref.language?.let(::subtitleLanguageCode))
+            return ExternalSubtitle(
+                url = path,
+                title = ref.language ?: tr("外挂字幕", "External subtitles", "外部字幕", "외부 자막", "外掛字幕"),
+                language = ref.language?.let(::subtitleLanguageCode),
+            )
         }
         val stream = repository.prepareSubtitle(ref.fileId) ?: return null
         return ExternalSubtitle(
@@ -965,26 +1133,27 @@ class PlayerScreenState(
         }
     }
 
-    private suspend fun runCatchingNonCancel(block: suspend () -> Unit) {
+    private suspend fun runCatchingNonCancel(operation: String, block: suspend () -> Unit) {
         try {
             block()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            // 持久化失败不能掐掉播放
-            PikoLog.w(TAG, "保存或上报播放进度失败", e)
+            // 本地进度写入异常不能中断播放；云端上报异常已由 repository.reportPlay 内部记录并吞掉
+            PikoLog.w(TAG, "Failed to $operation", e)
         }
     }
 
     private companion object {
         const val TAG = "Player"
 
-        /** 拖动后位置走过这么多才算画面走起来，计时里扣掉它；等这么久还不走就不记。 */
-        const val SEEK_EVIDENCE_MS = 300L
         const val SEEK_SETTLE_MS = 200L
+        const val SEEK_JUMP_DETECT_THRESHOLD_MS = 5_000L
+        const val SEEK_JUMP_MOVED_MS = 2_000L
         const val SEEK_WATCH_MS = 15_000L
         const val SPEED_SAMPLE_INTERVAL_MS = 350L
         const val RESUME_THRESHOLD_MILLIS = 3_000L
+        const val RESUME_VERIFY_TOLERANCE_MILLIS = 30_000L
 
         // 打开第一个文件前等播放列表的上限，超过就不带外挂字幕先放；支持运行时挂载字幕的后端只短暂等缓存命中
         const val PLAYLIST_WAIT_MILLIS = 3_000L
@@ -1002,12 +1171,13 @@ class PlayerScreenState(
         const val RESUME_TIP_MILLIS = 5_000L
         const val STABLE_PLAYBACK_MILLIS = 15_000L
         const val STOP_DRAIN_TIMEOUT_MILLIS = 350L
+        const val REACTIVATION_WAIT_MILLIS = 5 * 60_000L
         val RECOVERY_DELAYS_MILLIS = longArrayOf(500L, 1_500L, 4_000L)
         val retireScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 }
 
-private fun formatTransferRate(bytesPerSec: Long): String {
+fun formatTransferRate(bytesPerSec: Long): String {
     val kb = bytesPerSec / 1024.0
     return if (kb >= 1000.0) {
         val mb = kb / 1024.0

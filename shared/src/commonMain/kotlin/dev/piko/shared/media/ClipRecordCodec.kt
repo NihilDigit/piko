@@ -1,17 +1,18 @@
 package dev.piko.shared.media
 
 /**
- * [ClipRecord] 落盘用的文本形式，两端共用：JVM 的 `FileClipCache` 用它落记录文件，iOS 的
- * `IosClipCache` 也用它。写成文本而不是二进制，是为了让 iOS 侧不必自己拼字节序，
- * 也让记录能被单测直接读。
+ * [ClipRecord] 落盘用的文本编解码器：iOS 的 `IosClipCache` 用它持久化记录文件，单测也直接校验它
+ * （JVM 侧 `FileClipCache` 使用 `DataOutputStream` 二进制格式）。写成文本是为了让 iOS 侧不必自己拼字节序，
+ * 也让记录能被直接审阅。
  *
- * 一行一个字段，字段内把 `\`、换行与回车转义成 `\\`、`\n`、`\r`；文件名里的这些字符不能
- * 让记录读错位。字段顺序与 [ClipRecord] 的构造参数一致，末尾追加字段才算兼容变更，
- * 增删字段要抬 [VERSION]。
+ * 一行一个字段，字符串字段内把 `\`、换行与回车转义成 `\\`、`\n`、`\r`，避免文件名中的特殊字符把行读错位。
+ * 行序依次为：首行版本头（`v3`）、5 个字符串字段（`fileId`、`gcid`、`name`、`parentId`、`mediaId`）、
+ * 8 个整数字段（`originalBytes`、`streamBytes`、`sliceOffset`、`sliceLength`、`sliceStartMs`、
+ * `sliceDurationMs`、`keyframeOffset`、`videoPid`）。增删或重排字段须同步抬升 [VERSION]。
  */
 object ClipRecordCodec {
     /** 记录格式版本。读到别的版本一律当作没有这条记录，下次播放时重写。 */
-    const val VERSION: Int = 2
+    const val VERSION: Int = 3
 
     fun encode(record: ClipRecord): String = buildString {
         // 首行是版本号，与字段行分开，将来加字段时旧代码能直接认出「这不是我能读的」
@@ -31,6 +32,9 @@ object ClipRecordCodec {
             record.sliceOffset,
             record.sliceLength,
             record.sliceStartMs,
+            record.sliceDurationMs,
+            record.keyframeOffset,
+            record.videoPid.toLong(),
         )) {
             append('\n').append(number)
         }
@@ -43,6 +47,8 @@ object ClipRecordCodec {
         val fields = lines.drop(1)
         val strings = fields.take(STRING_FIELDS).map { unescape(it) ?: return null }
         val numbers = fields.drop(STRING_FIELDS).map { it.toLongOrNull() ?: return null }
+        val videoPid = numbers[7]
+        if (videoPid < Int.MIN_VALUE || videoPid > Int.MAX_VALUE) return null
         return ClipRecord(
             fileId = strings[0],
             gcid = strings[1],
@@ -54,6 +60,9 @@ object ClipRecordCodec {
             sliceOffset = numbers[2],
             sliceLength = numbers[3],
             sliceStartMs = numbers[4],
+            sliceDurationMs = numbers[5],
+            keyframeOffset = numbers[6],
+            videoPid = videoPid.toInt(),
         )
     }
 
@@ -89,9 +98,10 @@ object ClipRecordCodec {
         }
     }
 
-    // 版本行 + 5 个字符串 + 5 个数字
+    // 版本行 + 5 个字符串 + 8 个整数
     private const val STRING_FIELDS = 5
-    private const val FIELD_COUNT = 1 + STRING_FIELDS + 5
+    private const val NUMERIC_FIELDS = 8
+    private const val FIELD_COUNT = 1 + STRING_FIELDS + NUMERIC_FIELDS
 }
 
 /**

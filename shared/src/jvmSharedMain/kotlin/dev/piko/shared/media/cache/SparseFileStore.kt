@@ -1,6 +1,8 @@
 package dev.piko.shared.media.cache
 
+import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.PikPakStreamReader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -72,11 +74,13 @@ actual suspend fun ownedCacheFiles(examplePath: String): List<String> = withCont
 actual suspend fun deleteCacheFiles(path: String) = withContext(Dispatchers.IO) {
     for (suffix in listOf("", ".blocks", ".blocks.tmp")) {
         val file = File(path + suffix)
-        check(!file.exists() || file.delete()) { "无法删除暂存文件" }
+        check(!file.exists() || file.delete()) { "Failed to delete cache staging file" }
     }
 }
 
 private const val BLOCK_BYTES = 256L * 1024
+private const val TAG = "SparseCache"
+private const val FLUSH_WARN_INTERVAL_NANOS = 60_000_000_000L
 
 /** 数据同步成功后才发布位图；同步失败或位图损坏时，重启后重新下载相应块。 */
 internal class SparseFileStore(
@@ -98,10 +102,22 @@ internal class SparseFileStore(
     private val progress = MutableStateFlow(bits.mapIndexed { index, held -> if (held) lengthOf(index) else 0L }.sum())
     override val heldBytes: StateFlow<Long> get() = progress
 
+    private var lastFlushWarnNanos = 0L
+
     private val persistence = scope.launch(Dispatchers.IO) {
         while (true) {
             delay(5_000)
-            runCatching { flush() }
+            try {
+                flush()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                val now = System.nanoTime()
+                if (lastFlushWarnNanos == 0L || now - lastFlushWarnNanos >= FLUSH_WARN_INTERVAL_NANOS) {
+                    lastFlushWarnNanos = now
+                    PikoLog.w(TAG, "Periodic sparse cache bitmap flush failed: cache=${fileCacheName(key).take(12)}, size=$size", e)
+                }
+            }
         }
     }
 
@@ -125,7 +141,7 @@ internal class SparseFileStore(
     }
 
     override suspend fun write(file: String, offset: Long, bytes: ByteArray) = withContext(Dispatchers.IO) {
-        val index = requireNotNull(indexOf(offset)) { "无效的块偏移：$offset" }
+        val index = requireNotNull(indexOf(offset)) { "Invalid cache block offset: $offset" }
         require(bytes.size.toLong() == lengthOf(index))
         ioLock.read {
             val output = synchronized(lock) {
@@ -251,8 +267,8 @@ internal class SparseFileStore(
     override suspend fun delete() {
         close()
         withContext(Dispatchers.IO) {
-            check(!file.exists() || file.delete()) { "无法删除缓存文件" }
-            check(!bitmap.exists() || bitmap.delete()) { "无法删除缓存位图" }
+            check(!file.exists() || file.delete()) { "Failed to delete sparse cache data file" }
+            check(!bitmap.exists() || bitmap.delete()) { "Failed to delete sparse cache bitmap file" }
         }
     }
 
@@ -278,23 +294,64 @@ internal class SparseFileStore(
         fun readBits(file: File, key: String, size: Long): BooleanArray {
             require(size >= 0 && (size + BLOCK_BYTES - 1) / BLOCK_BYTES <= Int.MAX_VALUE)
             val count = ((size + BLOCK_BYTES - 1) / BLOCK_BYTES).toInt()
-            return runCatching {
-                val raw = File("${file.path}.blocks").readBytes()
-                require(raw.size >= 8)
+            val bitmapFile = File("${file.path}.blocks")
+            if (!bitmapFile.exists()) return BooleanArray(count)
+            val cacheId = fileCacheName(key).take(12)
+            return try {
+                val raw = bitmapFile.readBytes()
+                if (raw.size < 8) {
+                    PikoLog.w(TAG, "Discarding sparse cache bitmap (truncated ${raw.size} B): cache=$cacheId, expectedSize=$size")
+                    return BooleanArray(count)
+                }
                 val payload = raw.copyOf(raw.size - 8)
                 val crc = DataInputStream(ByteArrayInputStream(raw, raw.size - 8, 8)).readLong()
-                require(CRC32().apply { update(payload) }.value == crc)
+                if (CRC32().apply { update(payload) }.value != crc) {
+                    PikoLog.w(TAG, "Discarding sparse cache bitmap (CRC32 mismatch): cache=$cacheId, expectedSize=$size")
+                    return BooleanArray(count)
+                }
                 DataInputStream(ByteArrayInputStream(payload)).use { input ->
-                    require(input.readInt() == MAGIC && input.readUTF() == key && input.readLong() == size)
-                    require(input.readLong() == BLOCK_BYTES && input.readInt() == count)
+                    val magic = input.readInt()
+                    if (magic != MAGIC) {
+                        PikoLog.w(TAG, "Discarding sparse cache bitmap (invalid magic 0x${magic.toUInt().toString(16)}): cache=$cacheId, expectedSize=$size")
+                        return BooleanArray(count)
+                    }
+                    val storedKey = input.readUTF()
+                    val storedSize = input.readLong()
+                    val storedBlockBytes = input.readLong()
+                    val storedCount = input.readInt()
+                    if (storedKey != key || storedSize != size || storedBlockBytes != BLOCK_BYTES || storedCount != count) {
+                        PikoLog.w(
+                            TAG,
+                            "Discarding sparse cache bitmap (metadata mismatch: keyMatch=${storedKey == key}, size=$storedSize->$size, blockBytes=$storedBlockBytes, count=$storedCount->$count): cache=$cacheId",
+                        )
+                        return BooleanArray(count)
+                    }
                     val packed = ByteArray((count + 7) / 8).also { input.readFully(it) }
                     val length = if (file.isFile) file.length() else 0L
-                    BooleanArray(count) { index ->
-                        packed[index / 8].toInt() and (1 shl (index % 8)) != 0 &&
-                            minOf(size, (index + 1) * BLOCK_BYTES) <= length
+                    var droppedBlocks = 0
+                    val result = BooleanArray(count) { index ->
+                        val bitSet = packed[index / 8].toInt() and (1 shl (index % 8)) != 0
+                        if (!bitSet) {
+                            false
+                        } else if (minOf(size, (index + 1) * BLOCK_BYTES) <= length) {
+                            true
+                        } else {
+                            droppedBlocks++
+                            false
+                        }
                     }
+                    if (droppedBlocks > 0) {
+                        PikoLog.w(
+                            TAG,
+                            "Sparse cache data file shorter than bitmap ($length B, droppedBlocks=$droppedBlocks/$count): cache=$cacheId, expectedSize=$size",
+                        )
+                    }
+                    result
                 }
-            }.getOrElse { BooleanArray(count) }
+            } catch (e: Throwable) {
+                PikoLog.w(TAG, "Failed to read sparse cache bitmap, resetting to empty: cache=$cacheId, expectedSize=$size", e)
+                BooleanArray(count)
+            }
         }
     }
 }

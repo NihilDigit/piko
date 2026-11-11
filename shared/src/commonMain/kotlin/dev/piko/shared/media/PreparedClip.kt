@@ -6,9 +6,14 @@ import io.github.nihildigit.pikpak.PikPakStreamReader
 import io.github.nihildigit.pikpak.TransferDemand
 import io.github.nihildigit.pikpak.StreamRole
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import dev.piko.shared.util.PikoLock
 import dev.piko.shared.util.withPikoLock
 import kotlin.concurrent.Volatile
+
+private val InactiveClipReactivation: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow()
 
 /**
  * 随机片段里的一段，备好了代理会话：全片 [clipStartMs] 起的一段，交给播放器从 [startOnPlayer] 起播。
@@ -32,11 +37,13 @@ class PreparedClip internal constructor(
     /** 本地原文件直通，不创建代理或 TS 切片。 */
     val localPath: String? = null,
     /**
-     * 读切片开头的时间戳，得出它实际从全片哪一刻开始。切片按平均码率算起点字节，码率不均时
-     * 与原定的起点差出十几秒，看完整就接不上眼前的画面。null 是起点已经准了（原画、盘上记着的）。
+     * 可选的预取后起点校准回调：读取切片开头的时间戳修正 [clipStartMs]。
+     * 常规切片路径已在 `openClipSlice` 扫描验证关键帧时直接完成内存 PTS 校准并传 null；仅在需要预取后二次校准的场景传入。
      */
     private val resolveStart: (suspend () -> Long?)? = null,
-    /** 读已预取的切片流尾 PTS，得出该有界切片实际覆盖的视频时长（毫秒），避免高码率段落实际不足 180 秒却向界面承诺 180 秒。 */
+    /**
+     * 可选的预取后窗口时长校准回调：读取已预取切片流尾 PTS 修正 [maxWindowMs]，无额外流尾校准时为 null。
+     */
     private val resolveWindowDuration: (suspend () -> Long?)? = null,
     /** 切片的开头与末尾都取到了，调用方据此记下这一段与它的实际起点和实测时长，见 ClipCache。 */
     private val onWarmed: (suspend (clipStartMs: Long, actualWindowMs: Long) -> Unit)? = null,
@@ -88,6 +95,12 @@ class PreparedClip internal constructor(
     /** 代理实际读的那条流的字节数，切片即切片的长度。没有代理会话时为 null。 */
     val streamBytes: Long? get() = stream?.size
 
+    /** 当前片段底层缓存已从网络收到的累计字节数（单调递增）。 */
+    val receivedBytes: Long get() = stream?.receivedBytes ?: 0L
+
+    /** 底层云端文件是否正在执行冷存唤醒轮询。 */
+    val isReactivating: StateFlow<Boolean> get() = stream?.isReactivating ?: InactiveClipReactivation
+
     var role: StreamRole
         get() = stream?.role ?: StreamRole.FOREGROUND
         set(value) {
@@ -138,7 +151,7 @@ class PreparedClip internal constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                PikoLog.w("Clips", "读切片时间戳失败，沿用估算的起点", e)
+                PikoLog.w(TAG, "Failed to resolve clip start PTS, keeping estimated start: clipStartMs=$clipStartMs, streamBytes=${proxy.size}", e)
             }
         }
         resolveWindowDuration?.let { resolveDur ->
@@ -150,7 +163,7 @@ class PreparedClip internal constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                PikoLog.w("Clips", "读切片流尾时长失败，沿用策略窗口上限", e)
+                PikoLog.w(TAG, "Failed to resolve clip tail window duration, keeping policy cap: clipStartMs=$clipStartMs, maxWindowMs=$maxWindowMs, streamBytes=${proxy.size}", e)
             }
         }
         onWarmed?.invoke(clipStartMs, maxWindowMs ?: 0L)
@@ -168,7 +181,7 @@ class PreparedClip internal constructor(
     /**
      * 代理这一层不往读位置之后多取，只剩 SDK 的下限一块。还没真看起来的段（刚翻到的、停在第一帧的前后两段）
      * 读的都是预取好的开头，不必再往后要；要了就以前台预读的档位压过别段开头的预取。
-     * 默认深度 32 MiB 是给整部片子的。
+     * 默认稳态预读深度（8 MiB 起，完整播放器按码率调整）是给整部片子的。
      */
     fun holdReadAhead() {
         stream?.steady = false
@@ -195,6 +208,8 @@ class PreparedClip internal constructor(
     }
 
     internal companion object {
+        private const val TAG = "Clips"
+
         /** 切片里开播要的两截：开头与末尾，见 [prefetch]。落盘的也是这两截，所以由这里一处算。 */
         fun sliceRanges(size: Long, bytesPerMs: Double): List<LongRange> {
             val headEnd = maxOf((bytesPerMs * SLICE_PREFETCH_SECONDS * 1000 * BITRATE_MARGIN).toLong(), MIN_SLICE_HEAD_BYTES)
@@ -214,7 +229,7 @@ class PreparedClip internal constructor(
         // 低码率的切片 5 秒不到半兆。SDK 按 256 KiB 一块取，再往下省不出什么
         const val MIN_SLICE_HEAD_BYTES = 512L * 1024
 
-        // 与代理读文件头时顺手取的文件尾一样长，见 ProxySession.requestTail
+        // 预取切片末尾 512 KiB，覆盖 FFmpeg 打开 MPEG-TS 时读取流尾 PTS 估算总时长的窗口
         const val SLICE_TAIL_BYTES = 512L * 1024
         const val EDGE_BYTES = 2L * 1024 * 1024
         const val MIN_BEFORE_BYTES = 1L * 1024 * 1024

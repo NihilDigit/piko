@@ -153,4 +153,67 @@ class TsTimestampsTest {
         assertTrue(realWithoutPat.isNotEmpty())
         assertNull(scanSingle(realWithoutPat))
     }
+
+    @Test
+    fun slicedByteSourceMasksOrphanVideoPacketsBeforeVerifiedKeyframePes() = kotlinx.coroutines.runBlocking {
+        val realTs = sampleHevcTsBytes()
+        val firstPat = (0 until realTs.size step 188).first { pos ->
+            val payloadStart = realTs[pos + 1].toInt() and 0x40 != 0
+            val pid = ((realTs[pos + 1].toInt() and 0x1F) shl 8) or (realTs[pos + 2].toInt() and 0xFF)
+            payloadStart && pid == 0
+        }
+        val verifiedBase = assertNotNull(scanSingle(realTs))
+        assertTrue(verifiedBase.videoPid > 0)
+        // Insert an orphan previous-GOP P-frame TS packet between PMT and the real keyframe PES
+        val pmtEnd = firstPat + 188 * 2
+        val orphanVideoPacket = tsPacket(pid = verifiedBase.videoPid, payloadStart = false)
+        val combined = realTs.copyOfRange(0, pmtEnd) + orphanVideoPacket + realTs.copyOfRange(pmtEnd, realTs.size)
+
+        val verified = assertNotNull(scanSingle(combined))
+        assertEquals(firstPat.toLong(), verified.sliceStartOffset)
+        assertTrue(verified.keyframeOffset > verified.sliceStartOffset + 188 * 2)
+
+        val inner = object : dev.piko.shared.media.proxy.ProxyByteSource {
+            override val size: Long = combined.size.toLong()
+            override suspend fun openReader(): dev.piko.shared.media.proxy.ProxyReader =
+                object : dev.piko.shared.media.proxy.ProxyReader {
+                    override var position: Long = 0L
+                    override suspend fun seekTo(position: Long) { this.position = position }
+                    override suspend fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                        if (position >= combined.size) return -1
+                        val n = minOf(length.toLong(), combined.size - position).toInt()
+                        combined.copyInto(buffer, offset, position.toInt(), position.toInt() + n)
+                        position += n
+                        return n
+                    }
+                    override fun close() = Unit
+                }
+            override fun close() = Unit
+        }
+        val sliceLen = combined.size - verified.sliceStartOffset
+        val sliced = dev.piko.shared.media.proxy.SlicedByteSource(
+            inner = inner,
+            offset = verified.sliceStartOffset,
+            size = sliceLen,
+            nullVideoBeforeOffset = verified.keyframeOffset - verified.sliceStartOffset,
+            nullVideoPid = verified.videoPid,
+        )
+        val out = ByteArray(sliceLen.toInt())
+        sliced.openReader().use { reader ->
+            var total = 0
+            while (total < out.size) {
+                val n = reader.read(out, total, out.size - total)
+                if (n <= 0) break
+                total += n
+            }
+            assertEquals(out.size, total)
+        }
+        val keyframeRel = (verified.keyframeOffset - verified.sliceStartOffset).toInt()
+        for (pos in 0 until keyframeRel step 188) {
+            val pid = ((out[pos + 1].toInt() and 0x1F) shl 8) or (out[pos + 2].toInt() and 0xFF)
+            assertTrue(pid != verified.videoPid, "orphan video packet at $pos should be masked to null PID 0x1FFF")
+        }
+        val keyPid = ((out[keyframeRel + 1].toInt() and 0x1F) shl 8) or (out[keyframeRel + 2].toInt() and 0xFF)
+        assertEquals(verified.videoPid, keyPid)
+    }
 }

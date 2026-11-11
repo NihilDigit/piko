@@ -4,6 +4,7 @@ import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.upload.isUploading
 import io.github.nihildigit.pikpak.ApiRequestPriority
 import io.github.nihildigit.pikpak.FileStat
@@ -17,6 +18,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlin.random.Random
+
+private const val TAG = "VideoDiscovery"
 
 /** 一次列目录的结果。失败仍交给调用方显示，不能把没有列到当成已经列完。 */
 class VideoFolderBatch(
@@ -42,7 +45,7 @@ suspend fun analyzeVideoFolder(folderId: String, files: List<FileStat>): VideoFo
     currentCoroutineContext().ensureActive()
     val structure = runCatching { DriveAnalysisCache.analyze(files) }
         .onFailure { if (it is CancellationException) throw it }
-        .logFailure("VideoDiscovery", "解析视频目录失败，不折叠")
+        .logFailure(TAG, "Failed to analyze video folder structure in ${logFolder(folderId)} (${files.size} items); skipping folding")
         .getOrNull()
     currentCoroutineContext().ensureActive()
     val workOf = buildMap {
@@ -60,9 +63,10 @@ suspend fun analyzeVideoFolder(folderId: String, files: List<FileStat>): VideoFo
 }
 
 /**
- * 按层遍历，只有 next 才列下一个目录，不自建后台扫描。调用方在自己的 owner scope 内串行调用。
- * 每一层打乱；同一目录只入队一次，错误保留到显式重试。仓库边界固定打开时的 client，
- * 仍使用 listBrowsable 的清单投影、内部目录过滤和共享缓存。
+ * 按层广度遍历目录树，仅在调用方请求 [next] 或 [nextBatch] 时推进，不自建后台常驻扫描。
+ * 调用方在自身的 owner scope 内串行驱动每一轮（[nextBatch] 单轮内部在同层并发拉取）；
+ * 每一层打乱顺序，同一目录只入队一次，错误保留至显式调用 [retryFailed]。
+ * 仓库边界固定打开时的 client，沿用 `listBrowsable` 的清单投影、内部目录过滤与共享缓存。
  */
 class VideoDiscovery internal constructor(
     rootId: String,

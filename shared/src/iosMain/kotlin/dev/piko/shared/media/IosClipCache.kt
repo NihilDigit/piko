@@ -20,8 +20,8 @@ import platform.posix.memcpy
  * 记录只限条数。
  *
  * 为什么不用 kotlinx-io：取不到修改时间与目录列表，而淘汰只能靠最近读过。这里走 NSFileManager，
- * 修改时间用 `NSFileModificationDate`，读到就刷新。写先落临时文件再整体替换（`writeToFile:atomically:`），
- * 进程半路被杀不会留下半个文件；读失败一律当作没有。
+ * 修改时间用 `NSFileModificationDate`，读到就刷新。写操作先用 `createFileAtPath` 写入 `.tmp` 临时文件，
+ * 再删旧目标并用 `moveItemAtPath` 挪入原位，进程半路被杀不会留下半截正式文件；读失败一律当作没有。
  */
 class IosClipCache(
     /** 缓存根目录，见 `createIosAppDirectories().caches` 下的 clip-cache。 */
@@ -60,7 +60,7 @@ class IosClipCache(
                     writeAtomically(path, bytes)
                     val total = stored + bytes.size - before
                     storedBytes = if (total > capBytes) evictBlocks() else total
-                }.onFailure { PikoLog.w(TAG, "切片写盘失败", it) }
+                }.onFailure { PikoLog.w(TAG, "Failed to write clip cache block: key=${clipCacheSafeName(file)}, offset=$offset, bytes=${bytes.size}", it) }
                 Unit
             }
         }
@@ -88,12 +88,16 @@ class IosClipCache(
                     ?: return@runCatching
                 val excess = names.size - MAX_RECORDS
                 if (excess > 0) {
+                    var deleted = 0
                     names.map { it to modifiedAt("$recordDirectory/$it") }
                         .sortedBy { it.second }
                         .take(excess)
-                        .forEach { files.removeItemAtPath("$recordDirectory/${it.first}", error = null) }
+                        .forEach { if (files.removeItemAtPath("$recordDirectory/${it.first}", error = null)) deleted++ }
+                    if (deleted > 0) {
+                        PikoLog.d(TAG, "Evicted $deleted clip cache records (max=$MAX_RECORDS)")
+                    }
                 }
-            }.onFailure { PikoLog.w(TAG, "切片记录写盘失败", it) }
+            }.onFailure { PikoLog.w(TAG, "Failed to write clip cache record: key=${clipCacheSafeName(key)}", it) }
             Unit
         }
     }
@@ -114,15 +118,24 @@ class IosClipCache(
         }
         var total = candidates.sumOf { it.second }
         val target = (capBytes * EVICT_TO).toLong()
+        var deletedCount = 0
+        var freedBytes = 0L
         for ((path, size, _) in candidates.sortedBy { it.third }) {
             if (total <= target) break
-            if (files.removeItemAtPath(path, error = null)) total -= size
+            if (files.removeItemAtPath(path, error = null)) {
+                total -= size
+                deletedCount++
+                freedBytes += size
+            }
         }
         // 空的桶目录顺手删掉，下次写入会再建
         for (bucket in files.contentsOfDirectoryAtPath(blockDirectory, error = null)?.filterIsInstance<String>() ?: emptyList()) {
             val bucketPath = "$blockDirectory/$bucket"
             val remaining = files.contentsOfDirectoryAtPath(bucketPath, error = null)?.filterIsInstance<String>().orEmpty()
             if (remaining.isEmpty()) files.removeItemAtPath(bucketPath, error = null)
+        }
+        if (deletedCount > 0) {
+            PikoLog.d(TAG, "Evicted clip cache blocks: deleted=$deletedCount, freedBytes=$freedBytes, remainingBytes=$total, capBytes=$capBytes")
         }
         return total
     }
@@ -139,10 +152,13 @@ class IosClipCache(
     private fun writeAtomically(path: String, bytes: ByteArray) {
         val temp = "$path.tmp"
         val data = bytes.toNSData()
-        // atomically: true 由系统改名替到位；先写临时名只是为了半路失败时不留垃圾
-        check(files.createFileAtPath(temp, data, null)) { "写入缓存文件失败" }
+        // 先写 .tmp 临时文件再移除旧目标并改名入位，避免半截写入污染缓存文件
+        check(files.createFileAtPath(temp, data, null)) { "Failed to create temporary clip cache file" }
         files.removeItemAtPath(path, error = null)
-        check(files.moveItemAtPath(temp, path, error = null)) { "替换缓存文件失败" }
+        if (!files.moveItemAtPath(temp, path, error = null)) {
+            files.removeItemAtPath(temp, error = null)
+            error("Failed to replace clip cache file")
+        }
     }
 
     private fun sizeOfDirectory(directory: String): Long {

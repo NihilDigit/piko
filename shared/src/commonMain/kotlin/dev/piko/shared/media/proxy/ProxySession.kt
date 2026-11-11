@@ -7,24 +7,38 @@ import io.github.nihildigit.pikpak.PlaybackBufferSnapshot
 import io.github.nihildigit.pikpak.StreamRole
 import io.github.nihildigit.pikpak.TransferDemand
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.StateFlow
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 import kotlin.time.TimeSource
 
 /** HTTP 请求拥有读取需求；空闲 reader 只保留对象和位置，不保留网络需求。 */
-internal class ProxySession(private val source: ProxyByteSource, private val scope: CoroutineScope? = null) : AutoCloseable {
+internal class ProxySession(
+    private val source: ProxyByteSource,
+    private val scope: CoroutineScope? = null,
+    internal val label: String = "anon",
+) : AutoCloseable {
     val size: Long get() = source.size
     val receivedBytes: Long get() = source.receivedBytes
+    val isReactivating: StateFlow<Boolean> get() = source.isReactivating
     @Volatile var isClosed = false
         private set
     @Volatile var isWithdrawn = false
         private set
+    private var withdrawnLogged = false
     private class Entry(val reader: ProxyReader, var inUse: Boolean = true, var streaming: Boolean = false, var sequence: Long = 0, var expiry: Job? = null)
     private val lock = PikoLock()
     private val pool = mutableListOf<Entry>()
     private val warms = mutableSetOf<Deferred<Unit>>()
     private var sequence = 0L
     @Volatile private var feedback: PlaybackBufferSnapshot? = null
+
+    internal fun markWithdrawnLogged(): Boolean = withPikoLock(lock) {
+        if (withdrawnLogged) false else {
+            withdrawnLogged = true
+            true
+        }
+    }
 
     @Volatile var role = StreamRole.FOREGROUND
         set(value) { field = value; configureReaders() }
@@ -69,29 +83,33 @@ internal class ProxySession(private val source: ProxyByteSource, private val sco
     }
 
     suspend fun stream(start: Long, endExclusive: Long, sink: suspend (ByteArray, Int, Int) -> Unit) {
-        val entry = acquire(start)
+        var entry: Entry? = null
         var broken = false
         try {
+            val acquired = acquire(start)
+            entry = acquired
             if (isWithdrawn) throw CancellationException("transport withdrawn")
             configureReaders()
-            feedback?.let { entry.reader.reportPlaybackBuffer(it) }
-            if (entry.reader.position != start) {
-                withPikoLock(lock) { entry.streaming = false }
-                entry.reader.seekTo(start)
+            feedback?.let { acquired.reader.reportPlaybackBuffer(it) }
+            if (acquired.reader.position != start) {
+                withPikoLock(lock) { acquired.streaming = false }
+                acquired.reader.seekTo(start)
                 configureReaders()
             }
             val buffer = ByteArray(256 * 1024)
             var position = start
             while (position < endExclusive) {
                 currentCoroutineContext().ensureActive()
-                val count = entry.reader.read(buffer, 0, minOf(buffer.size.toLong(), endExclusive - position).toInt())
+                val count = acquired.reader.read(buffer, 0, minOf(buffer.size.toLong(), endExclusive - position).toInt())
                 check(count > 0) { "source ended at $position before $endExclusive" }
                 try { sink(buffer, 0, count) }
                 catch (e: CancellationException) { throw e }
                 catch (e: Exception) { throw ClientGone(e) }
                 position += count
-                if (!entry.streaming && position < endExclusive && position - start >= 256 * 1024L) {
-                    withPikoLock(lock) { entry.streaming = true }
+                val crossedFirstBlock = position - start >= 256 * 1024L ||
+                    (endExclusive - start >= 1024 * 1024L && position / (256 * 1024L) > start / (256 * 1024L))
+                if (!acquired.streaming && position < endExclusive && crossedFirstBlock) {
+                    withPikoLock(lock) { acquired.streaming = true }
                     configureReaders()
                 }
             }
@@ -99,10 +117,13 @@ internal class ProxySession(private val source: ProxyByteSource, private val sco
         catch (e: Exception) {
             if (e !is ClientGone) {
                 broken = true
-                if (!isWithdrawn) PikoLog.w("Proxy", "读取 $start-$endExclusive/$size 失败", e)
+                if (!isWithdrawn) {
+                    val rangeDesc = if (endExclusive > start) "bytes $start..${endExclusive - 1}/$size" else "empty@$start/$size"
+                    PikoLog.w(TAG, "Proxy stream read failed: session=$label, role=$role, range=$rangeDesc", e)
+                }
             }
             throw e
-        } finally { release(entry, broken) }
+        } finally { entry?.let { release(it, broken) } }
     }
 
     private suspend fun acquire(start: Long): Entry {
@@ -163,8 +184,9 @@ internal class ProxySession(private val source: ProxyByteSource, private val sco
         source.close()
     }
 
-    private class ClientGone(cause: Exception) : Exception("播放器断开", cause)
+    internal class ClientGone(cause: Exception) : Exception("Client disconnected", cause)
     private companion object {
+        const val TAG = "MediaProxy"
         const val MAX_READERS = 4
         const val DEFAULT_STEADY_AHEAD = 8L * 1024 * 1024
     }

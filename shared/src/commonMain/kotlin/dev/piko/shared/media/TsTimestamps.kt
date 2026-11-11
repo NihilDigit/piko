@@ -1,14 +1,18 @@
 package dev.piko.shared.media
 
 /**
- * 从 MPEG-TS 字节里读视频的显示时间戳（PTS），毫秒。
+ * 从 MPEG-TS 字节流中扫描具备完整解码前提的安全切点并读取视频显示时间戳（PTS，毫秒）。
  *
- * 随机片段的切片按平均码率算起点字节，码率不均时切出来的那一截实际从哪一刻开始，只有流里的时间戳说得准。
- * 视频按 PES 头的 stream_id（0xE0 到 0xEF）认，不解析 PAT/PMT：PikPak 的转码只有一路视频，
- * 为认它先读节目表，切片开头未必带着节目表。
+ * 随机片段的切片先按平均码率估算起点偏移，再由 [VerifiedSliceScanner] 跨分块解析 PAT 与 PMT 锁定视频 PID 及编码格式（H.264/HEVC），
+ * 仅在近期出现完整 PAT + PMT、且 PES 内包含合法带内参数集（VPS/SPS/PPS）与匹配独立关键帧（IDR/IRAP）时才确认切点并提取其 PTS。
  */
 internal object TsTimestamps {
-    class VerifiedSlice(val sliceStartOffset: Long, val ptsMs: Long)
+    class VerifiedSlice(
+        val sliceStartOffset: Long,
+        val ptsMs: Long,
+        val keyframeOffset: Long = sliceStartOffset,
+        val videoPid: Int = -1,
+    )
 
     /**
      * 跨分块保持解析状态的 TS 安全切点扫描器，消除固定重叠包数漏掉前导 PAT/PMT 或跨块截断 PES 的盲区。
@@ -18,6 +22,8 @@ internal object TsTimestamps {
 
         private class Candidate(
             val sliceStartOffset: Long,
+            val keyframeOffset: Long,
+            val videoPid: Int,
             val ptsMs: Long,
             val codec: Codec,
         ) {
@@ -113,7 +119,7 @@ internal object TsTimestamps {
             val pending = candidate ?: return null
             candidate = null
             return if (isSelfContainedKeyframe(pending.buffer, pending.size, pending.codec, completePes = true)) {
-                VerifiedSlice(pending.sliceStartOffset, pending.ptsMs)
+                VerifiedSlice(pending.sliceStartOffset, pending.ptsMs, pending.keyframeOffset, pending.videoPid)
             } else {
                 null
             }
@@ -200,7 +206,7 @@ internal object TsTimestamps {
                 candidate?.let { prev ->
                     candidate = null
                     if (isSelfContainedKeyframe(prev.buffer, prev.size, prev.codec, completePes = true)) {
-                        return VerifiedSlice(prev.sliceStartOffset, prev.ptsMs)
+                        return VerifiedSlice(prev.sliceStartOffset, prev.ptsMs, prev.keyframeOffset, prev.videoPid)
                     }
                 }
                 val hasRecentPsi = lastPatOffset >= 0 && sawPmtSinceLastPat &&
@@ -208,10 +214,10 @@ internal object TsTimestamps {
                 if (!hasRecentPsi) return null
 
                 val pes = parseVideoPesHeader(bytes, payload, at + PACKET) ?: return null
-                val next = Candidate(lastPatOffset, pes.first, codec)
+                val next = Candidate(lastPatOffset, packetOffset, videoPid, pes.first, codec)
                 next.append(bytes, pes.second, (at + PACKET) - pes.second)
                 if (isSelfContainedKeyframe(next.buffer, next.size, codec, completePes = false)) {
-                    return VerifiedSlice(next.sliceStartOffset, next.ptsMs)
+                    return VerifiedSlice(next.sliceStartOffset, next.ptsMs, next.keyframeOffset, next.videoPid)
                 }
                 candidate = next
             } else {
@@ -223,7 +229,7 @@ internal object TsTimestamps {
                 }
                 if (isSelfContainedKeyframe(active.buffer, active.size, active.codec, completePes = false)) {
                     candidate = null
-                    return VerifiedSlice(active.sliceStartOffset, active.ptsMs)
+                    return VerifiedSlice(active.sliceStartOffset, active.ptsMs, active.keyframeOffset, active.videoPid)
                 }
             }
             return null

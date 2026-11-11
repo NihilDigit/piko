@@ -92,6 +92,30 @@ class PlayerScreenStateSmokeTest {
     }
 
     @Test
+    fun unverifiedInitialSeekNearZeroDoesNotClobberSavedResumePosition() = runBlocking {
+        positions.saved["f1"] = 8_185_177L
+        val state = newState()
+
+        val opened = backend.awaitOpens(1).single()
+        assertEquals(8_185_177L, opened.startMillis)
+
+        // 模拟容器尾部索引读取失败：后端丢失初始 seek，duration=0 并从 0:00 附近输出前几秒画面
+        backend.emit(PlaybackBackendEvent.Ready)
+        backend.progress(positionMillis = 6_260L, durationMillis = 0L)
+
+        // 此时切档或重连仍须携带原续播点，离开播放器也绝不能用 6_260 ms 覆盖 8_185_177 ms
+        withContext(stateThread) { state.retry() }
+        val retried = backend.awaitOpens(2)[1]
+        assertEquals(8_185_177L, retried.startMillis)
+
+        backend.emit(PlaybackBackendEvent.Ready)
+        backend.progress(positionMillis = 6_260L, durationMillis = 0L)
+        leavePlayer(state)
+
+        assertEquals(8_185_177L, positions.saved["f1"])
+    }
+
+    @Test
     fun endOfFileResetsTheResumePosition() = runBlocking {
         positions.saved["f1"] = 120_000L
         val state = newState()

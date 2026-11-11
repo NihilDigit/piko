@@ -16,6 +16,9 @@ class ClipRecordCodecTest {
         sliceOffset: Long = 4096,
         sliceLength: Long = 65_536,
         sliceStartMs: Long = 12_345,
+        sliceDurationMs: Long = 20_500,
+        keyframeOffset: Long = 8_192,
+        videoPid: Int = 256,
     ) = ClipRecord(
         fileId = fileId,
         gcid = gcid,
@@ -27,6 +30,9 @@ class ClipRecordCodecTest {
         sliceOffset = sliceOffset,
         sliceLength = sliceLength,
         sliceStartMs = sliceStartMs,
+        sliceDurationMs = sliceDurationMs,
+        keyframeOffset = keyframeOffset,
+        videoPid = videoPid,
     )
 
     @Test
@@ -43,6 +49,9 @@ class ClipRecordCodecTest {
         assertEquals(original.sliceOffset, decoded?.sliceOffset)
         assertEquals(original.sliceLength, decoded?.sliceLength)
         assertEquals(original.sliceStartMs, decoded?.sliceStartMs)
+        assertEquals(original.sliceDurationMs, decoded?.sliceDurationMs)
+        assertEquals(original.keyframeOffset, decoded?.keyframeOffset)
+        assertEquals(original.videoPid, decoded?.videoPid)
     }
 
     // 文件名里的换行与反斜杠不能把字段读错位
@@ -56,16 +65,26 @@ class ClipRecordCodecTest {
 
     @Test
     fun roundTripsExtremeNumbers() {
-        val original = record(originalBytes = Long.MAX_VALUE, streamBytes = 0, sliceStartMs = -1)
+        val original = record(
+            originalBytes = Long.MAX_VALUE,
+            streamBytes = 0,
+            sliceStartMs = -1,
+            sliceDurationMs = Long.MAX_VALUE,
+            keyframeOffset = 0,
+            videoPid = -1,
+        )
         val decoded = ClipRecordCodec.decode(ClipRecordCodec.encode(original))
         assertEquals(Long.MAX_VALUE, decoded?.originalBytes)
         assertEquals(0L, decoded?.streamBytes)
         assertEquals(-1L, decoded?.sliceStartMs)
+        assertEquals(Long.MAX_VALUE, decoded?.sliceDurationMs)
+        assertEquals(0L, decoded?.keyframeOffset)
+        assertEquals(-1, decoded?.videoPid)
     }
 
     @Test
     fun rejectsOtherVersions() {
-        val text = ClipRecordCodec.encode(record()).replaceFirst("v${ClipRecordCodec.VERSION}", "v1")
+        val text = ClipRecordCodec.encode(record()).replaceFirst("v${ClipRecordCodec.VERSION}", "v2")
         assertNull(ClipRecordCodec.decode(text))
     }
 
@@ -82,6 +101,8 @@ class ClipRecordCodecTest {
         assertNull(ClipRecordCodec.decode(text))
         val broken = ClipRecordCodec.encode(record()).replace("\n12345", "\n12x45")
         assertNull(ClipRecordCodec.decode(broken))
+        val overflowPid = ClipRecordCodec.encode(record()).substringBeforeLast('\n') + "\n${Int.MAX_VALUE.toLong() + 1L}"
+        assertNull(ClipRecordCodec.decode(overflowPid))
     }
 
     @Test

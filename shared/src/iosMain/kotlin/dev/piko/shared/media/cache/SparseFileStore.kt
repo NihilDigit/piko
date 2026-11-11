@@ -2,6 +2,7 @@
 
 package dev.piko.shared.media.cache
 
+import dev.piko.shared.log.PikoLog
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
@@ -28,9 +29,13 @@ import platform.Foundation.NSLock
 import platform.Foundation.NSURL
 import platform.Foundation.NSUUID
 import platform.posix.*
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 private const val BLOCK_BYTES = 256L * 1024
 private const val BITMAP_SUFFIX = ".ios-blocks"
+private const val TAG = "SparseCache"
 
 actual fun fileCacheName(key: String): String {
     val input = key.encodeToByteArray()
@@ -135,13 +140,20 @@ internal class IosSparseFileStore(
     private val progress = MutableStateFlow(bits.indices.sumOf { if (bits[it]) blockLength(size, it) else 0L })
     override val heldBytes: StateFlow<Long> get() = progress
 
+    private var lastFlushWarn: TimeMark? = null
+
     private val persistence = scope.launch(Dispatchers.IO) {
         while (true) {
             delay(2_000)
             try { flush() } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (_: IOException) {
+            } catch (e: IOException) {
                 // Keep dirty bits for retry. Explicit flush/close still reports the error.
+                val prev = lastFlushWarn
+                if (prev == null || prev.elapsedNow() >= 60.seconds) {
+                    lastFlushWarn = TimeSource.Monotonic.markNow()
+                    PikoLog.w(TAG, "Periodic sparse cache bitmap flush failed: cache=${fileCacheName(key).take(12)}, size=$size", e)
+                }
             }
         }
     }
@@ -320,26 +332,74 @@ private fun readBits(path: String, key: String, size: Long): BooleanArray {
     val empty = BooleanArray(count)
     val header = bitmapHeader(key, size, count)
     val expected = header.size + (count.toLong() + 7).div(8).toInt() + 4
+    val cacheId = fileCacheName(key).take(12)
     try {
         val bitmap = platform.posix.open(path + BITMAP_SUFFIX, O_RDONLY or O_NOFOLLOW)
-        if (bitmap < 0) return empty
+        if (bitmap < 0) {
+            val err = errno
+            if (err != ENOENT) {
+                PikoLog.w(TAG, "Failed to open sparse cache bitmap (errno=$err), resetting to empty: cache=$cacheId, expectedSize=$size")
+            }
+            return empty
+        }
         val raw = try {
-            if (fileLength(bitmap) != expected.toLong()) return empty
-            ByteArray(expected).also { if (!readFully(bitmap, 0, it)) return empty }
+            val actualLength = fileLength(bitmap)
+            if (actualLength != expected.toLong()) {
+                PikoLog.w(TAG, "Discarding sparse cache bitmap (size $actualLength B != expected $expected B): cache=$cacheId, expectedSize=$size")
+                return empty
+            }
+            ByteArray(expected).also {
+                if (!readFully(bitmap, 0, it)) {
+                    PikoLog.w(TAG, "Discarding sparse cache bitmap (unexpected EOF): cache=$cacheId, expectedSize=$size")
+                    return empty
+                }
+            }
         } finally { platform.posix.close(bitmap) }
-        if (!header.indices.all { raw[it] == header[it] }) return empty
+        if (!header.indices.all { raw[it] == header[it] }) {
+            PikoLog.w(TAG, "Discarding sparse cache bitmap (header/metadata mismatch): cache=$cacheId, expectedSize=$size")
+            return empty
+        }
         var storedCrc = 0
         for (i in 0..3) storedCrc = storedCrc or ((raw[raw.size - 4 + i].toInt() and 255) shl (i * 8))
-        if (crc32(raw, raw.size - 4) != storedCrc) return empty
-        if (count % 8 != 0 && (raw[raw.size - 5].toInt() and 255) ushr (count % 8) != 0) return empty
-        val input = platform.posix.open(path, O_RDONLY or O_NOFOLLOW)
-        if (input < 0) return empty
-        val length = try { fileLength(input) } finally { platform.posix.close(input) }
-        return BooleanArray(count) { index ->
-            raw[header.size + index / 8].toInt() and (1 shl (index % 8)) != 0 &&
-                index * BLOCK_BYTES + blockLength(size, index) <= length
+        if (crc32(raw, raw.size - 4) != storedCrc) {
+            PikoLog.w(TAG, "Discarding sparse cache bitmap (CRC32 mismatch): cache=$cacheId, expectedSize=$size")
+            return empty
         }
-    } catch (_: IOException) {
+        if (count % 8 != 0 && (raw[raw.size - 5].toInt() and 255) ushr (count % 8) != 0) {
+            PikoLog.w(TAG, "Discarding sparse cache bitmap (non-zero trailing padding bits): cache=$cacheId, expectedSize=$size")
+            return empty
+        }
+        val input = platform.posix.open(path, O_RDONLY or O_NOFOLLOW)
+        if (input < 0) {
+            val err = errno
+            val hadHeldBlocks = (0 until count).any { raw[header.size + it / 8].toInt() and (1 shl (it % 8)) != 0 }
+            if (hadHeldBlocks || err != ENOENT) {
+                PikoLog.w(TAG, "Discarding sparse cache bitmap (data file unavailable, errno=$err): cache=$cacheId, expectedSize=$size")
+            }
+            return empty
+        }
+        val length = try { fileLength(input) } finally { platform.posix.close(input) }
+        var droppedBlocks = 0
+        val result = BooleanArray(count) { index ->
+            val bitSet = raw[header.size + index / 8].toInt() and (1 shl (index % 8)) != 0
+            if (!bitSet) {
+                false
+            } else if (index * BLOCK_BYTES + blockLength(size, index) <= length) {
+                true
+            } else {
+                droppedBlocks++
+                false
+            }
+        }
+        if (droppedBlocks > 0) {
+            PikoLog.w(
+                TAG,
+                "Sparse cache data file shorter than bitmap ($length B, droppedBlocks=$droppedBlocks/$count): cache=$cacheId, expectedSize=$size",
+            )
+        }
+        return result
+    } catch (e: IOException) {
+        PikoLog.w(TAG, "Failed to read sparse cache bitmap, resetting to empty: cache=$cacheId, expectedSize=$size", e)
         return empty
     }
 }
