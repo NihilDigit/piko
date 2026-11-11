@@ -7,8 +7,15 @@ import androidx.compose.material.icons.filled.BrightnessMedium
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Rotate90DegreesCw
 import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.Subtitles
+import androidx.compose.material.icons.outlined.SubtitlesOff
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
@@ -34,6 +41,7 @@ import androidx.compose.ui.platform.LocalWindowInfo
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.media.player.MediaTrack
 import dev.piko.shared.media.player.PlayerAspectRatio
+import dev.piko.shared.media.player.trackDisplayName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -54,6 +62,7 @@ private const val LONG_SEEK_STEP_MILLIS = 60_000L
 private const val HOLD_ARROW_MILLIS = 350L
 private const val HOLD_REWIND_STEP_MILLIS = 5_000L
 private const val HOLD_REWIND_INTERVAL_MILLIS = 500L
+private const val MAX_HUD_TRACK_CHARS = 20
 
 private val DigitKeys = listOf(
     Key.Zero, Key.One, Key.Two, Key.Three, Key.Four, Key.Five, Key.Six, Key.Seven, Key.Eight, Key.Nine,
@@ -117,6 +126,7 @@ internal class PlayerControlsUiState(
     private var heldArrow by mutableStateOf<Key?>(null)
     private var holdJob by mutableStateOf<Job?>(null)
     private var arrowHeld by mutableStateOf(false)
+    private val heldKeys = HashSet<Key>()
 
     // 同步当前帧最新的数据输入供事件回调读取
     var currentPositionMillis: Long = 0L
@@ -124,13 +134,18 @@ internal class PlayerControlsUiState(
     var currentPlaybackSpeed: Float? = initialSpeed
     var currentRotationDegrees: Int? = initialRotation
     var currentIsPlaying: Boolean = false
+    var currentIsFullscreen: Boolean = false
     var currentSeekStepMillis: Long = 10_000L
     var currentLongPressSpeed: Float = initialBoostSpeed
     var currentVolumeControl: PlayerLevelControl? = null
+    var currentAudioTracks: List<MediaTrack> = emptyList()
+    var currentSelectedAudioId: String? = null
     var currentSubtitleTracks: List<MediaTrack> = emptyList()
     var currentSelectedSubtitleId: String? = null
     var currentHasPrevious: Boolean = false
     var currentHasNext: Boolean = false
+    var currentHasStats: Boolean = false
+    var currentIsAlwaysOnTop: Boolean? = null
 
     fun interacted() {
         interactionCount += 1
@@ -236,6 +251,42 @@ internal class PlayerControlsUiState(
         arrowHeld = false
     }
 
+    fun releaseHeldKeys(onSpeedChange: (Float) -> Unit) {
+        heldKeys.clear()
+        abandonArrowHold(onSpeedChange)
+        endBoost(onSpeedChange)
+    }
+
+    /**
+     * 逐层退出的统一决策（Esc 与系统返回共用）：每次只收起最上层的一级状态，不穿透多层，普通播放态不直接关窗。
+     */
+    fun dismissTopLayer(
+        onAspectRatioChange: (PlayerAspectRatio) -> Unit,
+        onToggleFullscreen: () -> Unit,
+    ): Boolean = when {
+        isEditingCropRegion -> {
+            cancelCropEdit(onAspectRatioChange)
+            true
+        }
+        isSpeedPopupOpen -> {
+            isSpeedPopupOpen = false
+            true
+        }
+        openSheet == PlayerSheet.DriveSubtitles -> {
+            openSheet = PlayerSheet.Tracks
+            true
+        }
+        openSheet != null -> {
+            openSheet = null
+            true
+        }
+        currentIsFullscreen -> {
+            onToggleFullscreen()
+            true
+        }
+        else -> false
+    }
+
     private fun arrowDown(
         key: Key,
         onSeek: (Long) -> Unit,
@@ -283,17 +334,70 @@ internal class PlayerControlsUiState(
         next?.let(onSpeedChange)
     }
 
-    private fun toggleSubtitles(onSelectSubtitleTrack: (MediaTrack?) -> Unit): Boolean {
+    private fun compactTrackLabel(track: MediaTrack, index: Int): String {
+        val raw = trackDisplayName(track, index).trim()
+        return if (raw.length > MAX_HUD_TRACK_CHARS) raw.take(MAX_HUD_TRACK_CHARS - 1) + "…" else raw
+    }
+
+    private fun toggleSubtitles(onSelectSubtitleTrack: (MediaTrack?) -> Unit) {
         val tracks = currentSubtitleTracks
-        if (tracks.isEmpty()) return false
+        if (tracks.isEmpty()) {
+            val text = tr("无可用字幕", "No subtitles", "字幕なし", "사용 가능한 자막 없음", "無可用字幕")
+            flash(CenterIndicator(Icons.Outlined.SubtitlesOff, text, text))
+            return
+        }
         val selected = currentSelectedSubtitleId
         if (selected != null) {
             lastSubtitleId = selected
             onSelectSubtitleTrack(null)
+            val text = tr("字幕：关闭", "Subtitles: Off", "字幕：オフ", "자막: 끔", "字幕：關閉")
+            flash(CenterIndicator(Icons.Outlined.SubtitlesOff, text, text))
         } else {
-            onSelectSubtitleTrack(tracks.find { it.id == lastSubtitleId } ?: tracks.first())
+            val targetIndex = tracks.indexOfFirst { it.id == lastSubtitleId }.let { if (it >= 0) it else 0 }
+            val target = tracks[targetIndex]
+            onSelectSubtitleTrack(target)
+            val name = compactTrackLabel(target, targetIndex)
+            val text = tr("字幕：$name", "Subtitles: $name", "字幕：$name", "자막: $name", "字幕：$name")
+            flash(CenterIndicator(Icons.Outlined.Subtitles, text, text))
         }
+    }
+
+    private fun cycleAudioTrack(onSelectAudioTrack: (MediaTrack) -> Unit): Boolean {
+        val tracks = currentAudioTracks
+        if (tracks.isEmpty()) return false
+        val targetIndex = if (tracks.size == 1) {
+            0
+        } else {
+            val currentIndex = tracks.indexOfFirst { it.id == currentSelectedAudioId }
+            ((currentIndex + 1) % tracks.size).also { onSelectAudioTrack(tracks[it]) }
+        }
+        val name = compactTrackLabel(tracks[targetIndex], targetIndex)
+        val text = tr("音轨：$name", "Audio: $name", "音声：$name", "오디오: $name", "音軌：$name")
+        flash(CenterIndicator(Icons.Filled.GraphicEq, text, text))
         return true
+    }
+
+    private fun togglePlayPauseWithFeedback(onPlayPause: () -> Unit) {
+        if (!controlsVisible) {
+            val pausing = currentIsPlaying
+            flash(
+                CenterIndicator(
+                    if (pausing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    if (pausing) tr("暂停", "Pause", "一時停止", "일시 중지", "暫停") else tr("播放", "Play", "再生", "재생", "播放"),
+                    if (pausing) tr("已暂停", "Paused", "一時停止中", "일시 중지됨", "已暫停") else tr("继续播放", "Continue playback", "再生を続ける", "계속 재생", "繼續播放"),
+                ),
+            )
+        }
+        onPlayPause()
+    }
+
+    private fun isRepeatableKey(key: Key, shift: Boolean): Boolean = when (key) {
+        Key.DirectionUp, Key.DirectionDown,
+        Key.J, Key.L, Key.MediaRewind, Key.MediaFastForward,
+        Key.LeftBracket, Key.RightBracket,
+        -> true
+        Key.DirectionLeft, Key.DirectionRight -> shift
+        else -> false
     }
 
     fun handleKey(
@@ -307,22 +411,75 @@ internal class PlayerControlsUiState(
         onSelectSubtitleTrack: (MediaTrack?) -> Unit,
         onPrevious: () -> Unit,
         onNext: () -> Unit,
+        onSelectAudioTrack: (MediaTrack) -> Unit = {},
+        onToggleAlwaysOnTop: (() -> Unit)? = null,
+        letFocusedControlHandleSpace: Boolean = false,
     ): Boolean {
-        if (isEditingCropRegion) {
-            if (event.type == KeyEventType.KeyDown && event.key == Key.Escape) {
-                cancelCropEdit(onAspectRatioChange)
-                return true
-            }
-            return false
+        if (event.type == KeyEventType.KeyUp) {
+            heldKeys.remove(event.key)
+            return arrowUp(event.key, onSeek, onSpeedChange)
         }
-        if (event.type == KeyEventType.KeyUp) return arrowUp(event.key, onSeek, onSpeedChange)
         if (event.type != KeyEventType.KeyDown) return false
         if (event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return false
         val shift = event.isShiftPressed
+
+        if (event.key == Key.Escape) {
+            if (!heldKeys.add(Key.Escape)) return true
+            val dismissed = dismissTopLayer(onAspectRatioChange, onToggleFullscreen)
+            if (dismissed) interacted()
+            return dismissed
+        }
+        if (isEditingCropRegion) return false
+
+        // 侧边/底部面板打开时，常规方向键与空格留给面板内部控件导航与激活；仅保留专用媒体键与面板自身开关
+        if (openSheet != null) {
+            when (event.key) {
+                Key.I -> if (!shift && currentHasStats && openSheet == PlayerSheet.Stats) {
+                    if (!heldKeys.add(Key.I)) return true
+                    openSheet = null
+                    interacted()
+                    return true
+                } else return false
+                Key.MediaPlayPause -> {
+                    if (!heldKeys.add(event.key)) return true
+                    onPlayPause()
+                    return true
+                }
+                Key.MediaPlay -> {
+                    if (!heldKeys.add(event.key)) return true
+                    if (!currentIsPlaying) onPlayPause()
+                    return true
+                }
+                Key.MediaPause, Key.MediaStop -> {
+                    if (!heldKeys.add(event.key)) return true
+                    if (currentIsPlaying) onPlayPause()
+                    return true
+                }
+                Key.MediaPrevious -> {
+                    if (!heldKeys.add(event.key)) return true
+                    if (currentHasPrevious) onPrevious() else return false
+                    return true
+                }
+                Key.MediaNext -> {
+                    if (!heldKeys.add(event.key)) return true
+                    if (currentHasNext) onNext() else return false
+                    return true
+                }
+                else -> return false
+            }
+        }
+
+        if (event.key == Key.Spacebar && letFocusedControlHandleSpace) return false
+
+        val repeatable = isRepeatableKey(event.key, shift)
+        if (!repeatable && event.key in heldKeys) {
+            return true
+        }
+
         when (event.key) {
-            Key.Spacebar, Key.K, Key.MediaPlayPause -> onPlayPause()
-            Key.MediaPlay -> if (!currentIsPlaying) onPlayPause() else return true
-            Key.MediaPause, Key.MediaStop -> if (currentIsPlaying) onPlayPause() else return true
+            Key.Spacebar, Key.K, Key.MediaPlayPause -> togglePlayPauseWithFeedback(onPlayPause)
+            Key.MediaPlay -> if (!currentIsPlaying) togglePlayPauseWithFeedback(onPlayPause)
+            Key.MediaPause, Key.MediaStop -> if (currentIsPlaying) togglePlayPauseWithFeedback(onPlayPause)
             Key.DirectionLeft, Key.DirectionRight -> {
                 val forward = event.key == Key.DirectionRight
                 if (shift) stepSeek(forward, onSeek, LONG_SEEK_STEP_MILLIS) else arrowDown(event.key, onSeek, onSpeedChange)
@@ -332,12 +489,28 @@ internal class PlayerControlsUiState(
             Key.DirectionUp -> stepVolume(VOLUME_KEY_STEP)
             Key.DirectionDown -> stepVolume(-VOLUME_KEY_STEP)
             Key.M -> toggleMute()
-            Key.F -> onToggleFullscreen()
+            Key.F, Key.F11 -> onToggleFullscreen()
             Key.R -> onRotationChange(((currentRotationDegrees ?: return false) + 90) % 360)
             Key.LeftBracket -> stepSpeed(faster = false, onSpeedChange = onSpeedChange)
             Key.RightBracket -> stepSpeed(faster = true, onSpeedChange = onSpeedChange)
             Key.Backspace -> onSpeedChange(1f)
-            Key.C -> return toggleSubtitles(onSelectSubtitleTrack)
+            Key.C -> toggleSubtitles(onSelectSubtitleTrack)
+            Key.A -> if (!cycleAudioTrack(onSelectAudioTrack)) return false
+            Key.I -> if (currentHasStats) {
+                openSheet = if (openSheet == PlayerSheet.Stats) null else PlayerSheet.Stats
+            } else return false
+            Key.T -> {
+                val onTop = currentIsAlwaysOnTop ?: return false
+                val toggle = onToggleAlwaysOnTop ?: return false
+                val nextOnTop = !onTop
+                toggle()
+                val text = if (nextOnTop) {
+                    tr("已置顶", "Pinned on top", "最前面に固定", "항상 위에 고정됨", "已置頂")
+                } else {
+                    tr("取消置顶", "Unpinned", "最前面表示を解除", "고정 해제됨", "取消置頂")
+                }
+                flash(CenterIndicator(if (nextOnTop) Icons.Filled.PushPin else Icons.Outlined.PushPin, text, text))
+            }
             Key.PageUp, Key.MediaPrevious -> if (currentHasPrevious) onPrevious() else return false
             Key.PageDown, Key.MediaNext -> if (currentHasNext) onNext() else return false
             Key.MoveHome -> onSeek(0L)
@@ -347,6 +520,7 @@ internal class PlayerControlsUiState(
                 onSeek(currentDurationMillis * digit / 10)
             }
         }
+        if (!repeatable) heldKeys.add(event.key)
         interacted()
         return true
     }
@@ -444,8 +618,7 @@ internal fun rememberPlayerControlsUiState(
     val windowFocused = LocalWindowInfo.current.isWindowFocused
     LaunchedEffect(windowFocused) {
         if (!windowFocused) {
-            state.abandonArrowHold(onSpeedChange)
-            state.endBoost(onSpeedChange)
+            state.releaseHeldKeys(onSpeedChange)
         }
     }
 

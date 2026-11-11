@@ -13,17 +13,27 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import dev.piko.data.auth.PlayerGestureDefaults
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.DpSize
@@ -54,10 +64,12 @@ import dev.piko.ui.PikoServices
 import dev.piko.ui.VideoPlayerRequest
 import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.PointerSource
+import dev.piko.ui.components.trackInputModality
 import dev.piko.ui.components.trackPointerSource
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.screens.player.MobilePlayerControls
+import dev.piko.ui.workbench.ShortcutsDialog
 import dev.piko.desktop.AwtDialogs
 import dev.piko.ui.screens.player.rememberPlayerFileActions
 import kotlinx.coroutines.launch
@@ -144,12 +156,34 @@ fun VideoPlayerWindow(
     }
     // 换集后标题跟着当前这集走
     var title by remember { mutableStateOf(request.fileName) }
+    var shortcutsOpen by remember { mutableStateOf(false) }
+    var fallbackKeyHandler by remember { mutableStateOf<((KeyEvent) -> Boolean)?>(null) }
+    val shortcutModifier = platform.shortcutModifier
 
     PikoWindow(
         onCloseRequest = requestClose,
         title = tr("$title - Piko 播放器", "$title - Piko Player", "$title - Pikoプレーヤー", "$title - Piko 플레이어", "$title - Piko 播放器"),
         icon = icon,
         state = windowState,
+        onPreviewKeyEvent = { event ->
+            if (event.type == KeyEventType.KeyDown &&
+                (event.key == Key.F1 || (shortcutModifier.isPressed(event) && event.key == Key.Slash))
+            ) {
+                shortcutsOpen = !shortcutsOpen
+                true
+            } else if (event.type == KeyEventType.KeyDown && shortcutModifier.isPressed(event) && event.key == Key.W) {
+                requestClose()
+                true
+            } else if (shortcutsOpen && event.type == KeyEventType.KeyDown && event.key == Key.Escape) {
+                shortcutsOpen = false
+                true
+            } else {
+                false
+            }
+        },
+        onKeyEvent = { event ->
+            if (shortcutsOpen) false else fallbackKeyHandler?.invoke(event) == true
+        },
     ) {
         // 画面四周是黑的，窗口外框不随应用主题，始终用深色
         TitleBarThemeEffect(window, dark = true)
@@ -163,8 +197,8 @@ fun VideoPlayerWindow(
             onDispose { services.onWindowClosed(windowId) }
         }
         val fullscreen = remember(window) { WindowsFullscreen(window) }
-        // 播放窗口是独立的组合树，主窗口根部的输入来源追踪管不到这里
-        val pointerSource = remember { PointerSource() }
+        // 播放窗口是独立的组合树，主窗口根部的输入来源追踪管不到这里；桌面端初始按鼠标/键盘落点就绪
+        val pointerSource = remember { PointerSource(initialTouchLike = false) }
         val effectiveLanguage by PikoLocale.effectiveLanguageState
         CompositionLocalProvider(
             LocalAppLanguage provides effectiveLanguage,
@@ -210,8 +244,12 @@ fun VideoPlayerWindow(
                             if (!inFullscreen && turnWindow(window, windowState)) windowTurned = !windowTurned
                         },
                         onClose = requestClose,
-                        modifier = Modifier.trackPointerSource(pointerSource),
+                        registerKeyFallback = { fallbackKeyHandler = it },
+                        modifier = Modifier.trackInputModality().trackPointerSource(pointerSource),
                     )
+                    if (shortcutsOpen) {
+                        ShortcutsDialog(shortcutModifier, onDismiss = { shortcutsOpen = false })
+                    }
                 }
             }
         }
@@ -263,6 +301,7 @@ private fun VideoPlayerContent(
     onTitleChange: (String) -> Unit,
     onQuarterTurn: () -> Unit,
     onClose: () -> Unit,
+    registerKeyFallback: (((KeyEvent) -> Boolean)?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -371,6 +410,46 @@ private fun VideoPlayerContent(
 
     Box(modifier.fillMaxSize().background(Color.Black)) {
         if (state.isImage) {
+            val frameless = dev.piko.ui.platform.LocalFramelessWindow.current
+            val latestFullscreen by rememberUpdatedState(isFullscreen)
+            val latestToggleFullscreen by rememberUpdatedState(onToggleFullscreen)
+            val latestFrameless by rememberUpdatedState(frameless)
+            val heldImageKeys = remember { HashSet<Key>() }
+            val windowFocused = LocalWindowInfo.current.isWindowFocused
+            LaunchedEffect(windowFocused) {
+                if (!windowFocused) heldImageKeys.clear()
+            }
+            DisposableEffect(Unit) {
+                registerKeyFallback { event ->
+                    when (event.type) {
+                        KeyEventType.KeyUp -> {
+                            heldImageKeys.remove(event.key)
+                            false
+                        }
+                        KeyEventType.KeyDown -> {
+                            if (event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) false
+                            else when (event.key) {
+                                Key.F, Key.F11 -> {
+                                    if (heldImageKeys.add(event.key)) latestToggleFullscreen()
+                                    true
+                                }
+                                Key.Escape -> if (latestFullscreen) {
+                                    if (heldImageKeys.add(Key.Escape)) latestToggleFullscreen()
+                                    true
+                                } else false
+                                Key.T -> {
+                                    val fw = latestFrameless ?: return@registerKeyFallback false
+                                    if (heldImageKeys.add(Key.T)) fw.setAlwaysOnTop(!fw.isAlwaysOnTop)
+                                    true
+                                }
+                                else -> false
+                            }
+                        }
+                        else -> false
+                    }
+                }
+                onDispose { registerKeyFallback(null) }
+            }
             AsyncImage(
                 model = state.mediaInfo?.currentUrl,
                 contentDescription = state.title,
@@ -466,6 +545,7 @@ private fun VideoPlayerContent(
                 }.takeIf { state.canAddSubtitle },
                 onPickDriveSubtitle = { file: FileStat -> state.addDriveSubtitle(file.id, file.name) }
                     .takeIf { state.canAddSubtitle },
+                registerKeyFallback = registerKeyFallback,
             )
         }
     }

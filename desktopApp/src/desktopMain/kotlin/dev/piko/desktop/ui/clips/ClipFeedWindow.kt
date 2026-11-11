@@ -74,7 +74,7 @@ fun ClipFeedWindow(
         }
         LaunchedEffect(raise) { bringToFront(window) }
         // 独立的组合树，主窗口根部的输入来源追踪管不到这里
-        val pointerSource = remember { PointerSource() }
+        val pointerSource = remember { PointerSource(initialTouchLike = false) }
         val effectiveLanguage = PikoLocale.effectiveLanguageState.value
         CompositionLocalProvider(
             LocalAppLanguage provides effectiveLanguage,

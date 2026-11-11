@@ -30,6 +30,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -61,7 +66,14 @@ internal fun DriveSubtitlePanel(
     // 横屏的侧边面板里返回先回上一级；在最上一层时交给面板自己的返回，收起面板
     BackHandler(enabled = state.path.size > 1) { state.navigateUp() }
 
-    Column(modifier.fillMaxSize()) {
+    Column(
+        modifier.fillMaxSize().onKeyEvent { event ->
+            if (state.path.size > 1 && event.type == KeyEventType.KeyDown && (event.key == Key.Escape || event.key == Key.Backspace)) {
+                state.navigateUp()
+                true
+            } else false
+        },
+    ) {
         Text(
             text = state.path.joinToString(" / ") { it.localizedName },
             style = MaterialTheme.typography.labelLarge,

@@ -48,6 +48,9 @@ private object InputModality {
     var keyboard by mutableStateOf(true)
 }
 
+internal val isKeyboardModality: Boolean
+    get() = InputModality.keyboard
+
 /** 挂在界面的根上。 */
 fun Modifier.trackInputModality(): Modifier = onPreviewKeyEvent { event ->
     if (event.type == KeyEventType.KeyDown && event.key in NavigationKeys) InputModality.keyboard = true

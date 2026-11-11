@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -28,14 +29,20 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusTarget
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -58,6 +65,8 @@ import dev.piko.shared.media.player.PlaylistEntry
 import dev.piko.shared.media.player.VideoCropRegion
 import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.SheetAction
+import dev.piko.ui.components.isKeyboardModality
+import dev.piko.ui.platform.LocalFramelessWindow
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.math.abs
 
@@ -131,12 +140,18 @@ fun MobilePlayerControls(
     onLongPressSpeedChange: ((Float) -> Unit)? = null,
     playbackStats: (() -> List<PlaybackStatsSection>)? = null,
     loadingSpeedText: String? = null,
+    registerKeyFallback: (((KeyEvent) -> Boolean)?) -> Unit = {},
 ) {
-    val windowSize = LocalWindowInfo.current.containerSize
+    val windowInfo = LocalWindowInfo.current
+    val windowSize = windowInfo.containerSize
+    val windowFocused = windowInfo.isWindowFocused
     val compactWidth = with(LocalDensity.current) { windowSize.width.toDp() } < COMPACT_WIDTH
     val isLandscape = windowSize.width > windowSize.height
     val focusRequester = remember { FocusRequester() }
     val pointerSource = LocalPointerSource.current
+    val framelessWindow = LocalFramelessWindow.current
+    var subtreeHasFocus by remember { mutableStateOf(false) }
+    var rootSelfFocused by remember { mutableStateOf(false) }
 
     val controlsHover = remember { MutableInteractionSource() }
     val isHoveringControls by controlsHover.collectIsHoveredAsState()
@@ -158,13 +173,55 @@ fun MobilePlayerControls(
         ui.currentPlaybackSpeed = playbackSpeed
         ui.currentRotationDegrees = rotationDegrees
         ui.currentIsPlaying = isPlaying
+        ui.currentIsFullscreen = isFullscreen
         ui.currentSeekStepMillis = seekStepSeconds * 1000L
         ui.currentLongPressSpeed = longPressSpeed
         ui.currentVolumeControl = volume
+        ui.currentAudioTracks = audioTracks
+        ui.currentSelectedAudioId = selectedAudioTrackId
         ui.currentSubtitleTracks = subtitleTracks
         ui.currentSelectedSubtitleId = selectedSubtitleTrackId
         ui.currentHasPrevious = hasPrevious
         ui.currentHasNext = hasNext
+        ui.currentHasStats = playbackStats != null
+        ui.currentIsAlwaysOnTop = framelessWindow?.isAlwaysOnTop
+    }
+
+    val latestOnPlayPause by rememberUpdatedState(onPlayPause)
+    val latestOnSeek by rememberUpdatedState(onSeek)
+    val latestOnSpeedChange by rememberUpdatedState(onSpeedChange)
+    val latestOnAspectRatioChange by rememberUpdatedState(onAspectRatioChange)
+    val latestOnToggleFullscreen by rememberUpdatedState(onToggleFullscreen)
+    val latestOnRotationChange by rememberUpdatedState(onRotationChange)
+    val latestOnSelectAudioTrack by rememberUpdatedState(onSelectAudioTrack)
+    val latestOnSelectSubtitleTrack by rememberUpdatedState(onSelectSubtitleTrack)
+    val latestOnPrevious by rememberUpdatedState(onPrevious)
+    val latestOnNext by rememberUpdatedState(onNext)
+    val latestFramelessWindow by rememberUpdatedState(framelessWindow)
+    val latestRegisterKeyFallback by rememberUpdatedState(registerKeyFallback)
+
+    val dispatchPlayerKey: (KeyEvent, Boolean) -> Boolean = remember(ui) {
+        { event, letFocusedControlHandleSpace ->
+            ui.handleKey(
+                event = event,
+                onPlayPause = latestOnPlayPause,
+                onSeek = latestOnSeek,
+                onSpeedChange = latestOnSpeedChange,
+                onAspectRatioChange = latestOnAspectRatioChange,
+                onToggleFullscreen = latestOnToggleFullscreen,
+                onRotationChange = latestOnRotationChange,
+                onSelectSubtitleTrack = latestOnSelectSubtitleTrack,
+                onPrevious = latestOnPrevious,
+                onNext = latestOnNext,
+                onSelectAudioTrack = latestOnSelectAudioTrack,
+                onToggleAlwaysOnTop = latestFramelessWindow?.let { fw -> { fw.setAlwaysOnTop(!fw.isAlwaysOnTop) } },
+                letFocusedControlHandleSpace = letFocusedControlHandleSpace,
+            )
+        }
+    }
+    DisposableEffect(dispatchPlayerKey) {
+        latestRegisterKeyFallback { event -> dispatchPlayerKey(event, false) }
+        onDispose { latestRegisterKeyFallback(null) }
     }
 
     val holdControls = ui.shouldHoldControls(isPlaying, errorMessage, isHoveringControls)
@@ -196,11 +253,25 @@ fun MobilePlayerControls(
     val bottomBarVisible = (chromeVisible || seekPreviewMillis != null) && !ui.isEditingCropRegion
     val centerVisible = ((chromeVisible && !ui.isBoosting) || (isLoading && (chromeVisible || stalledLoading)) || centerIndicator != null) && errorMessage == null && !ui.isEditingCropRegion
 
-    BackHandler(enabled = isFullscreen && !ui.isEditingCropRegion, onBack = onToggleFullscreen)
+    BackHandler(enabled = isFullscreen && !ui.isEditingCropRegion && !ui.isSpeedPopupOpen && ui.openSheet == null, onBack = onToggleFullscreen)
+    BackHandler(enabled = ui.isSpeedPopupOpen && !ui.isEditingCropRegion) { ui.isSpeedPopupOpen = false }
     BackHandler(enabled = ui.isEditingCropRegion) { ui.cancelCropEdit(onAspectRatioChange) }
 
-    LaunchedEffect(chromeVisible, ui.openSheet, ui.isEditingCropRegion, pointerSource.isTouchLike) {
-        if (!pointerSource.isTouchLike) runCatching { focusRequester.requestFocus() }
+    LaunchedEffect(
+        subtreeHasFocus,
+        windowFocused,
+        chromeVisible,
+        ui.openSheet,
+        ui.isSpeedPopupOpen,
+        ui.isEditingCropRegion,
+        pointerSource.isTouchLike,
+    ) {
+        if (!pointerSource.isTouchLike && windowFocused && !subtreeHasFocus && ui.openSheet == null && !ui.isSpeedPopupOpen) {
+            withFrameNanos {}
+            if (!subtreeHasFocus && !pointerSource.isTouchLike) {
+                runCatching { focusRequester.requestFocus() }
+            }
+        }
     }
 
     val hasPlaylist = playlist.size > 1
@@ -221,18 +292,15 @@ fun MobilePlayerControls(
                 .fillMaxSize()
                 .onSizeChanged { viewportSize = it }
                 .onPreviewKeyEvent { event ->
-                    ui.handleKey(
-                        event = event,
-                        onPlayPause = onPlayPause,
-                        onSeek = onSeek,
-                        onSpeedChange = onSpeedChange,
-                        onAspectRatioChange = onAspectRatioChange,
-                        onToggleFullscreen = onToggleFullscreen,
-                        onRotationChange = onRotationChange,
-                        onSelectSubtitleTrack = onSelectSubtitleTrack,
-                        onPrevious = onPrevious,
-                        onNext = onNext,
-                    )
+                    if (event.key == Key.Escape) false
+                    else dispatchPlayerKey(event, subtreeHasFocus && !rootSelfFocused && isKeyboardModality)
+                }
+                .onKeyEvent { event ->
+                    if (event.key == Key.Escape) dispatchPlayerKey(event, false) else false
+                }
+                .onFocusChanged { state ->
+                    subtreeHasFocus = state.hasFocus
+                    rootSelfFocused = state.isFocused
                 }
                 .focusRequester(focusRequester)
                 .then(if (!pointerSource.isTouchLike) Modifier.focusTarget() else Modifier)
@@ -269,6 +337,7 @@ fun MobilePlayerControls(
                     if (pointerSource.isTouchLike) {
                         ui.controlsVisible = !ui.controlsVisible
                     } else {
+                        if (!rootSelfFocused) runCatching { focusRequester.requestFocus() }
                         ui.interacted()
                         onPlayPause()
                     }

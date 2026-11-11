@@ -149,6 +149,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.platform.LocalFramelessWindow
+import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.windowDragArea
 import kotlinx.coroutines.delay
 import dev.piko.ui.format.formatDurationMillis
@@ -244,7 +245,6 @@ fun PlayerTopBar(
                 label = tr("音轨与字幕", "Audio and subtitles", "音声と字幕", "오디오 및 자막", "音軌與字幕"),
                 onClick = onTracksClick,
                 tooltipBelow = true,
-                shortcut = "C",
             )
         }
         if (onStatsClick != null) {
@@ -253,6 +253,7 @@ fun PlayerTopBar(
                 label = tr("详细信息", "Details", "詳細情報", "세부 정보", "詳細資訊"),
                 onClick = onStatsClick,
                 tooltipBelow = true,
+                shortcut = "I",
             )
         }
         if (onSettingsClick != null) {
@@ -270,12 +271,14 @@ fun PlayerTopBar(
                 label = if (onTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제", "取消置頂") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시", "置頂"),
                 onClick = { framelessWindow.setAlwaysOnTop(!onTop) },
                 tooltipBelow = true,
+                shortcut = "T",
             )
             PlayerIconButton(
                 icon = Icons.Filled.Close,
                 label = tr("关闭", "Close", "閉じる", "닫기", "關閉"),
                 onClick = framelessWindow::close,
                 tooltipBelow = true,
+                shortcut = LocalPikoPlatform.current.shortcutModifier.label("W"),
             )
         }
     }
@@ -619,8 +622,8 @@ internal fun PlayerBottomBar(
             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                 // 换集在时间前面，照多数播放器底栏的排法。没有上一集或下一集时禁用而不是隐藏，时间不会左右跳
                 if (showEpisodeSkip) {
-                    PlayerIconButton(icon = Icons.Filled.SkipPrevious, label = tr("上一集", "Previous episode", "前のエピソード", "이전 에피소드", "上一集"), onClick = onPrevious, enabled = hasPrevious)
-                    PlayerIconButton(icon = Icons.Filled.SkipNext, label = tr("下一集", "Next episode", "次のエピソード", "다음 에피소드", "下一集"), onClick = onNext, enabled = hasNext)
+                    PlayerIconButton(icon = Icons.Filled.SkipPrevious, label = tr("上一集", "Previous episode", "前のエピソード", "이전 에피소드", "上一集"), onClick = onPrevious, enabled = hasPrevious, shortcut = "PageUp")
+                    PlayerIconButton(icon = Icons.Filled.SkipNext, label = tr("下一集", "Next episode", "次のエピソード", "다음 에피소드", "下一集"), onClick = onNext, enabled = hasNext, shortcut = "PageDown")
                     Spacer(Modifier.width(8.dp))
                 }
                 // 照 YouTube 放在换集之后、时间之前，右边一组的位置不变
@@ -654,6 +657,7 @@ internal fun PlayerBottomBar(
                     PlayerChipButton(
                         text = formatSpeed(playbackSpeed),
                         onClick = { onSpeedPopupOpenChange(!isSpeedPopupOpen) },
+                        tooltip = if (!isSpeedPopupOpen) tr("倍速 ([ / ]，Backspace 恢复原速)", "Speed ([ / ], Backspace resets)", "再生速度 ([ / ]、Backspace で等倍)", "재생 속도 ([ / ], Backspace 기본 속도)", "倍速 ([ / ]，Backspace 還原原速)") else null,
                         modifier = Modifier.semantics { contentDescription = tr("倍速 ${formatSpeed(playbackSpeed)}", "Speed ${formatSpeed(playbackSpeed)}", "再生速度 ${formatSpeed(playbackSpeed)}", "재생 속도 ${formatSpeed(playbackSpeed)}", "倍速 ${formatSpeed(playbackSpeed)}") },
                     )
                     if (isSpeedPopupOpen) {
@@ -677,12 +681,13 @@ internal fun PlayerBottomBar(
             // 一次转 90 度，与 R 键相同。原先在播放设置里列四个角度，要转画面得先开面板，
             // 桌面上转了窗口还跟着对调，这一步该是顺手就点的
             if (onRotate != null) {
-                PlayerIconButton(icon = Icons.Filled.Rotate90DegreesCw, label = tr("顺时针旋转 90 度", "Rotate 90° clockwise", "右に90度回転", "시계 방향으로 90도 회전", "順時針旋轉 90 度"), onClick = onRotate)
+                PlayerIconButton(icon = Icons.Filled.Rotate90DegreesCw, label = tr("顺时针旋转 90 度", "Rotate 90° clockwise", "右に90度回転", "시계 방향으로 90도 회전", "順時針旋轉 90 度"), onClick = onRotate, shortcut = "R")
             }
             PlayerIconButton(
                 icon = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
                 label = if (isFullscreen) tr("退出全屏", "Exit fullscreen", "全画面を終了", "전체 화면 종료", "結束全螢幕") else tr("全屏", "Fullscreen", "全画面", "전체 화면", "全螢幕"),
                 onClick = onToggleFullscreen,
+                shortcut = "F",
             )
         }
     }
@@ -922,29 +927,43 @@ private fun TimeTextStyle(): TextStyle =
  * 底栏的文字按钮。浮在视频上不能用无容器的 TextButton，改用 XS 高度的 tonal 按钮，
  * 与旁边的图标按钮同为半透明容器，按压时有形变。
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun PlayerChipButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     icon: ImageVector? = null,
+    tooltip: String? = null,
 ) {
-    FilledTonalButton(
-        onClick = onClick,
-        shapes = ButtonDefaults.shapes(),
-        colors = ButtonDefaults.filledTonalButtonColors(
-            containerColor = playerContainerColor(),
-            contentColor = MaterialTheme.colorScheme.onSurface,
-        ),
-        contentPadding = ButtonDefaults.ExtraSmallContentPadding,
-        modifier = modifier.heightIn(min = ButtonDefaults.ExtraSmallContainerHeight).handCursor(),
-    ) {
-        if (icon != null) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(ButtonDefaults.ExtraSmallIconSize))
-            Spacer(Modifier.width(ButtonDefaults.ExtraSmallIconSpacing))
+    val button: @Composable () -> Unit = {
+        FilledTonalButton(
+            onClick = onClick,
+            shapes = ButtonDefaults.shapes(),
+            colors = ButtonDefaults.filledTonalButtonColors(
+                containerColor = playerContainerColor(),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+            ),
+            contentPadding = ButtonDefaults.ExtraSmallContentPadding,
+            modifier = modifier.heightIn(min = ButtonDefaults.ExtraSmallContainerHeight).handCursor(),
+        ) {
+            if (icon != null) {
+                Icon(icon, contentDescription = null, modifier = Modifier.size(ButtonDefaults.ExtraSmallIconSize))
+                Spacer(Modifier.width(ButtonDefaults.ExtraSmallIconSpacing))
+            }
+            Text(text, style = MaterialTheme.typography.labelLarge, maxLines = 1)
         }
-        Text(text, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+    }
+    if (tooltip != null) {
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+            tooltip = { PlainTooltip { Text(tooltip) } },
+            state = rememberTooltipState(),
+        ) {
+            button()
+        }
+    } else {
+        button()
     }
 }
 

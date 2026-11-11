@@ -23,8 +23,8 @@ import androidx.compose.ui.input.pointer.pointerInput
  * 只在类别切换时写状态，否则每个指针事件都触发一次重组。尚未见过任何指针时按触摸算，
  * 那是纯触屏设备的初始状态。
  */
-class PointerSource {
-    var isTouchLike: Boolean by mutableStateOf(true)
+class PointerSource(initialTouchLike: Boolean = true) {
+    var isTouchLike: Boolean by mutableStateOf(initialTouchLike)
         private set
 
     internal fun observe(type: PointerType) {

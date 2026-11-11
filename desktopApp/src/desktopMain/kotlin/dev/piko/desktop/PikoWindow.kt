@@ -16,6 +16,7 @@ import dev.piko.shared.log.PikoLog
 import kotlinx.coroutines.delay
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.window.FrameWindowScope
 import androidx.compose.ui.window.LocalWindowExceptionHandlerFactory
 import androidx.compose.ui.window.Window
@@ -36,6 +37,8 @@ fun PikoWindow(
     icon: Painter?,
     visible: Boolean = true,
     onFatalClose: () -> Unit = onCloseRequest,
+    onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
+    onKeyEvent: (KeyEvent) -> Boolean = { false },
     content: @Composable FrameWindowScope.() -> Unit,
 ) {
     val currentFatalClose by rememberUpdatedState(onFatalClose)
@@ -54,7 +57,15 @@ fun PikoWindow(
         // 显卡设备失效或未归属 EDT 异常走全局代次；已知所属窗口的故障仅递增该窗口自己的 windowScope.generation，
         // 避免主窗口异常把正在连播的独立播放器窗口重置回初始集，反之亦然。
         key(GpuDeviceWatch.generation, desktopWindowFaultCoordinator.generation, windowScope.generation) {
-            Window(onCloseRequest = onCloseRequest, state = state, visible = visible, title = title, icon = icon) {
+            Window(
+                onCloseRequest = onCloseRequest,
+                state = state,
+                visible = visible,
+                title = title,
+                icon = icon,
+                onPreviewKeyEvent = onPreviewKeyEvent,
+                onKeyEvent = onKeyEvent,
+            ) {
                 LaunchedEffect(window) {
                     while (true) {
                         delay(DEVICE_CHECK_INTERVAL_MS)

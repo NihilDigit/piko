@@ -23,6 +23,7 @@ import dev.piko.ui.screens.auth.LoginScreen
 import dev.piko.ui.screens.upload.UploadRequestHost
 import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.LocalPikoMotion
+import dev.piko.ui.theme.MotionStyle
 import dev.piko.ui.theme.PikoTheme
 import dev.piko.update.StartupUpdatePrompt
 
@@ -50,7 +51,9 @@ fun PikoApp(
     LaunchedEffect(effectiveLanguage) {
         onLanguageChanged(effectiveLanguage)
     }
-    val pointerSource = remember { PointerSource() }
+    val pointerSource = remember(platform.motionStyle) {
+        PointerSource(initialTouchLike = platform.motionStyle != MotionStyle.Standard)
+    }
     platform.ProvideLocalizedEnvironment(effectiveLanguage) {
         CompositionLocalProvider(
             LocalAppLanguage provides effectiveLanguage,

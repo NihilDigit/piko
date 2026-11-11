@@ -30,7 +30,7 @@ import dev.piko.ui.platform.ShortcutModifier
  * 改了哪处的快捷键，这张表跟着改。按键写法随平台：mac 上是 ⌘ 与 ⌥。
  */
 @Composable
-internal fun ShortcutsDialog(modifier: ShortcutModifier, onDismiss: () -> Unit) {
+fun ShortcutsDialog(modifier: ShortcutModifier, onDismiss: () -> Unit) {
     val mac = modifier == ShortcutModifier.Command
     val primary = if (mac) "⌘" else "Ctrl+"
     val groups = listOf(
@@ -88,7 +88,7 @@ internal fun ShortcutsDialog(modifier: ShortcutModifier, onDismiss: () -> Unit) 
         tr("播放器", "Player", "プレーヤー", "플레이어", "播放器") to listOf(
             tr("空格 / K", "Space / K", "スペース / K", "스페이스 / K", "空白鍵 / K") to tr("播放、暂停", "Play or pause", "再生・一時停止", "재생 또는 일시 중지", "播放、暫停"),
             tr("← / → 或 J / L", "← / → or J / L", "← / → または J / L", "← / → 또는 J / L", "← / → 或 J / L") to tr("按步长快退或快进", "Seek backward or forward by step", "設定間隔で巻き戻し・早送り", "설정한 간격만큼 뒤로 또는 앞으로 탐색", "依步長快退或快進"),
-            tr("按住 ← / →", "Hold ← / →", "← / → を長押し", "← / → 길게 누르기", "按住 ← / →") to tr("快退、快进", "Rewind or fast forward", "巻き戻し・早送り", "되감기 또는 빨리 감기", "快退、快進"),
+            tr("按住 ← / →", "Hold ← / →", "← / → を長押し", "← / → 길게 누르기", "按住 ← / →") to tr("连续快退，或临时倍速播放（松开恢复）", "Rewind continuously, or hold temporary speed boost", "連続巻き戻し、または一時倍速再生（離すと戻る）", "연속 되감기 또는 임시 배속 재생 (놓으면 복원)", "連續快退，或臨時倍速播放（放開還原）"),
             "Shift+← / →" to tr("后退、快进 1 分钟", "Seek back or forward one minute", "1分戻る・進む", "1분 뒤로 또는 앞으로", "後退、快進 1 分鐘"),
             tr("0 至 9", "0 to 9", "0 ～ 9", "0~9", "0 至 9") to tr("跳转至对应百分比进度（0%–90%）", "Seek to 0%–90% of the video", "動画の0%～90%の位置へ移動", "동영상의 0%~90% 위치로 이동", "跳轉至對應百分比進度（0%–90%）"),
             "Home" to tr("回到开头", "Go to start", "先頭に戻る", "처음으로 이동", "回到開頭"),
@@ -97,9 +97,14 @@ internal fun ShortcutsDialog(modifier: ShortcutModifier, onDismiss: () -> Unit) 
             "[ / ]" to tr("减速、加速", "Decrease or increase speed", "減速・加速", "감속 또는 가속", "減速、加速"),
             "Backspace" to tr("恢复原速", "Reset playback speed", "通常速度に戻す", "기본 속도로 복원", "還原原速"),
             "C" to tr("开关字幕", "Toggle subtitles", "字幕を切り替え", "자막 켜기 또는 끄기", "開啟或關閉字幕"),
+            "A" to tr("切换音轨", "Switch audio track", "音声トラックを切り替え", "오디오 트랙 전환", "切換音軌"),
             "PageUp / PageDown" to tr("上一集、下一集", "Previous or next episode", "前・次のエピソード", "이전 또는 다음 에피소드", "上一集、下一集"),
-            "F" to tr("全屏", "Fullscreen", "全画面", "전체 화면", "全螢幕"),
+            tr("F 或 F11", "F or F11", "F または F11", "F 또는 F11", "F 或 F11") to tr("全屏", "Fullscreen", "全画面", "전체 화면", "全螢幕"),
             "R" to tr("画面顺时针旋转 90 度", "Rotate video 90° clockwise", "映像を右に90度回転", "화면을 시계 방향으로 90도 회전", "畫面順時針旋轉 90 度"),
+            "I" to tr("详细信息", "Playback details", "詳細情報", "세부 정보", "詳細資訊"),
+            "T" to tr("置顶或取消置顶（独立播放窗口）", "Pin or unpin window on top (player window)", "最前面表示の切り替え（独立プレーヤーウィンドウ）", "창 항상 위에 표시 전환 (독립 플레이어 창)", "置頂或取消置頂（獨立播放視窗）"),
+            "Esc" to tr("关闭面板、取消裁剪或退出全屏", "Close panel, cancel crop or exit fullscreen", "パネルを閉じる・切り抜き解除・全画面終了", "패널 닫기, 자르기 취소 또는 전체 화면 종료", "關閉面板、取消裁剪或結束全螢幕"),
+            "${primary}W" to tr("关闭独立播放窗口", "Close player window", "プレーヤーウィンドウを閉じる", "플레이어 창 닫기", "關閉獨立播放視窗"),
         ),
     )
     PikoDialog(
