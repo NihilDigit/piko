@@ -41,23 +41,34 @@ fun rememberRememberedWindowState(
     )
     LaunchedEffect(state) {
         // 拖动与缩放时每帧都在变，停下来再写盘
-        snapshotFlow { Triple(state.placement, state.position, state.size) }
+        snapshotFlow { WindowGeometry(state.placement, state.position, state.size) }
             .debounce(500)
             .collect { (placement, position, size) ->
                 if (placement == WindowPlacement.Fullscreen || isBorderlessFullscreen()) return@collect
-                settings.set(prefix + "maximized", (placement == WindowPlacement.Maximized).toString())
-                if (placement != WindowPlacement.Floating) return@collect
+                if (placement != WindowPlacement.Floating) {
+                    settings.set(prefix + "maximized", (placement == WindowPlacement.Maximized).toString())
+                    return@collect
+                }
+                val updates = LinkedHashMap<String, String>(5)
+                updates[prefix + "maximized"] = "false"
                 if (position is WindowPosition.Absolute) {
-                    settings.set(prefix + "x", position.x.value.toString())
-                    settings.set(prefix + "y", position.y.value.toString())
+                    updates[prefix + "x"] = position.x.value.toString()
+                    updates[prefix + "y"] = position.y.value.toString()
                 }
                 val saved = sizeToSave(size)
-                settings.set(prefix + "width", saved.width.value.toString())
-                settings.set(prefix + "height", saved.height.value.toString())
+                updates[prefix + "width"] = saved.width.value.toString()
+                updates[prefix + "height"] = saved.height.value.toString()
+                settings.setAll(updates)
             }
     }
     return state
 }
+
+private data class WindowGeometry(
+    val placement: WindowPlacement,
+    val position: WindowPosition,
+    val size: DpSize,
+)
 
 private fun savedSize(settings: DesktopSettingsStore, prefix: String): DpSize? {
     val width = settings.get(prefix + "width").toFloatOrNull() ?: return null

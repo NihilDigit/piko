@@ -7,6 +7,7 @@ import dev.piko.shared.data.SavedAccount
 import dev.piko.shared.data.SavedAccounts
 import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.Session
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -42,6 +43,7 @@ class DesktopSessionStore(
     private val mutex = Mutex()
     private val cache = HashMap<String, AccountSecrets>()
     private var migrated = false
+    private var lastSavedAccounts: SavedAccounts? = null
 
     /** 旧格式迁移没做完时由旧文件得出的账号列表，只在本进程内顶替 accounts.json，下次启动重做迁移。 */
     private var legacyAccounts: SavedAccounts? = null
@@ -126,16 +128,29 @@ class DesktopSessionStore(
         return runCatching { json.decodeFromString(SavedAccounts.serializer(), Files.readString(accountsFile)) }
             .onFailure { PikoLog.w(TAG, "Failed to parse accounts.json (${it::class.simpleName})") }
             .getOrNull()
+            ?.also { lastSavedAccounts = it }
     }
 
     private fun writeAccountsFile(accounts: SavedAccounts) {
-        Files.createDirectories(root)
+        if (accounts == lastSavedAccounts && Files.isRegularFile(accountsFile)) return
+        if (!Files.isDirectory(root)) {
+            Files.createDirectories(root)
+        }
         val staging = Files.createTempFile(root, "accounts", ".tmp")
+        var moved = false
         try {
             Files.writeString(staging, json.encodeToString(SavedAccounts.serializer(), accounts))
-            Files.move(staging, accountsFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            try {
+                Files.move(staging, accountsFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(staging, accountsFile, StandardCopyOption.REPLACE_EXISTING)
+            }
+            moved = true
+            lastSavedAccounts = accounts
         } finally {
-            Files.deleteIfExists(staging)
+            if (!moved) {
+                Files.deleteIfExists(staging)
+            }
         }
     }
 

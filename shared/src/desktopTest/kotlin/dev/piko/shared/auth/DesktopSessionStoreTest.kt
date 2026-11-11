@@ -1,8 +1,11 @@
 package dev.piko.shared.auth
 
+import dev.piko.shared.data.SavedAccount
+import dev.piko.shared.data.SavedAccounts
 import io.github.nihildigit.pikpak.Session
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.FileTime
 import kotlin.io.path.createTempDirectory
 import kotlin.io.path.exists
 import kotlin.io.path.listDirectoryEntries
@@ -238,5 +241,34 @@ class DesktopSessionStoreTest {
         primary.available = true
         assertEquals("""{"zip-pw":{"at":1}}""", DesktopSessionStore(root) { primary }.loadArchivePasswords("a"))
         assertEquals("", DesktopSessionStore(root) { primary }.loadArchivePasswords("b"))
+    }
+
+    @Test
+    fun unchangedAccountsSkipDiskRewriteAndCleanStagingFiles() = runBlocking {
+        val primary = FakeVault()
+        val store = DesktopSessionStore(root) { primary }
+        val initial = SavedAccounts(
+            current = "user@example.com",
+            accounts = listOf(SavedAccount(account = "user@example.com", name = "Alice")),
+        )
+        store.saveAccounts(initial)
+        val accountsFile = root.resolve("accounts.json")
+        assertTrue(accountsFile.exists())
+        assertTrue(root.listDirectoryEntries().none { it.fileName.toString().endsWith(".tmp") })
+
+        val fixedMtime = FileTime.fromMillis(123_456_000L)
+        Files.setLastModifiedTime(accountsFile, fixedMtime)
+        store.saveAccounts(initial.copy())
+        assertEquals(fixedMtime.toMillis(), Files.getLastModifiedTime(accountsFile).toMillis())
+
+        val reopened = DesktopSessionStore(root) { primary }
+        assertEquals(initial, reopened.loadAccounts())
+        reopened.saveAccounts(initial.copy())
+        assertEquals(fixedMtime.toMillis(), Files.getLastModifiedTime(accountsFile).toMillis())
+
+        val updated = initial.copy(accounts = listOf(SavedAccount(account = "user@example.com", name = "Bob")))
+        reopened.saveAccounts(updated)
+        assertEquals(updated, DesktopSessionStore(root) { primary }.loadAccounts())
+        assertTrue(root.listDirectoryEntries().none { it.fileName.toString().endsWith(".tmp") })
     }
 }

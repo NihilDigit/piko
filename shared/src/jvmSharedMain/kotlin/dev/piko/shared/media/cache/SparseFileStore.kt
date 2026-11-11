@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -17,6 +18,8 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.file.FileAlreadyExistsException
@@ -44,16 +47,43 @@ actual suspend fun copyCachedFile(source: String, destination: String) = withCon
         val stagingName = if (rawStagingName.toByteArray(Charsets.UTF_8).size <= 240) rawStagingName
             else ".${fileCacheName(to.name).take(24)}.piko-export"
         val staging = File(to.parentFile, stagingName)
+        var moved = false
         try {
-            from.inputStream().use { input -> staging.outputStream().use { input.copyTo(it) } }
-            RandomAccessFile(staging, "rw").use { it.channel.force(true) }
+            FileInputStream(from).channel.use { input ->
+                FileOutputStream(staging).channel.use { output ->
+                    val total = input.size()
+                    var offset = 0L
+                    var fallbackBuffer: ByteBuffer? = null
+                    while (offset < total) {
+                        coroutineContext.ensureActive()
+                        val chunk = minOf(COPY_CHUNK_BYTES, total - offset)
+                        val transferred = input.transferTo(offset, chunk, output)
+                        if (transferred > 0L) {
+                            offset += transferred
+                        } else {
+                            val buffer = fallbackBuffer ?: ByteBuffer.allocateDirect(64 * 1024).also { fallbackBuffer = it }
+                            buffer.clear()
+                            buffer.limit(minOf(buffer.capacity().toLong(), total - offset).toInt())
+                            val read = input.read(buffer, offset)
+                            if (read < 0) break
+                            buffer.flip()
+                            while (buffer.hasRemaining()) {
+                                output.write(buffer)
+                            }
+                            offset += read
+                        }
+                    }
+                    output.force(true)
+                }
+            }
             try {
                 Files.move(staging.toPath(), to.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
                 Files.move(staging.toPath(), to.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
+            moved = true
         } finally {
-            staging.delete()
+            if (!moved) staging.delete()
         }
     }
     Unit
@@ -79,6 +109,7 @@ actual suspend fun deleteCacheFiles(path: String) = withContext(Dispatchers.IO) 
 }
 
 private const val BLOCK_BYTES = 256L * 1024
+private const val COPY_CHUNK_BYTES = 8L * 1024 * 1024
 private const val TAG = "SparseCache"
 private const val FLUSH_WARN_INTERVAL_NANOS = 60_000_000_000L
 
@@ -88,7 +119,7 @@ internal class SparseFileStore(
     private val key: String,
     override val size: Long,
     scope: CoroutineScope,
-    private val syncData: (RandomAccessFile) -> Unit = { it.channel.force(true) },
+    private val syncData: ((RandomAccessFile) -> Unit)? = null,
 ) : PersistentFileStore {
     private val file = File(path)
     private val bitmap = File("$path.blocks")
@@ -97,6 +128,7 @@ internal class SparseFileStore(
     private val ioLock = ReentrantReadWriteLock()
     private val bits = readBits(file, key, size)
     private var dirty = false
+    private var needsMetadataSync = false
     private var closed = false
     private var handle: RandomAccessFile? = null
     private val progress = MutableStateFlow(bits.mapIndexed { index, held -> if (held) lengthOf(index) else 0L }.sum())
@@ -108,7 +140,7 @@ internal class SparseFileStore(
         while (true) {
             delay(5_000)
             try {
-                flush()
+                flushInternal(metaData = false)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -159,6 +191,7 @@ internal class SparseFileStore(
                 if (!bits[index]) {
                     bits[index] = true
                     dirty = true
+                    needsMetadataSync = true
                     progress.value += bytes.size
                 }
             }
@@ -205,52 +238,98 @@ internal class SparseFileStore(
         flush()
     }
 
-    override suspend fun flush(): Unit = withContext(Dispatchers.IO) {
+    override suspend fun flush(): Unit = flushInternal(metaData = true)
+
+    private suspend fun flushInternal(metaData: Boolean): Unit = withContext(Dispatchers.IO) {
         synchronized(flushLock) {
             ioLock.read {
-                val (targetHandle, snapshot) = synchronized(lock) {
-                    if (size == 0L && !closed && handle == null) { open(); dirty = true }
-                    if (!dirty || closed) return@withContext
-                    dirty = false
-                    checkNotNull(handle) to bits.copyOf()
+                val targetHandle: RandomAccessFile
+                val snapshot: BooleanArray?
+                val syncMetaOnly: Boolean
+                synchronized(lock) {
+                    if (size == 0L && !closed && handle == null) {
+                        open()
+                        dirty = true
+                        needsMetadataSync = true
+                    }
+                    if (closed) return@withContext
+                    if (!dirty) {
+                        if (metaData && needsMetadataSync && handle != null) {
+                            targetHandle = checkNotNull(handle)
+                            snapshot = null
+                            syncMetaOnly = true
+                            needsMetadataSync = false
+                        } else {
+                            return@withContext
+                        }
+                    } else {
+                        dirty = false
+                        if (metaData) needsMetadataSync = false
+                        targetHandle = checkNotNull(handle)
+                        snapshot = bits.copyOf()
+                        syncMetaOnly = false
+                    }
                 }
+                if (syncMetaOnly) {
+                    try {
+                        syncFileHandle(targetHandle, metaData = true)
+                    } catch (e: Throwable) {
+                        synchronized(lock) { needsMetadataSync = true }
+                        throw e
+                    }
+                    return@withContext
+                }
+                val currentSnapshot = checkNotNull(snapshot)
                 try {
-                    syncData(targetHandle)
+                    syncFileHandle(targetHandle, metaData)
                     val payload = ByteArrayOutputStream().also { buffer ->
                         DataOutputStream(buffer).use { output ->
                             output.writeInt(MAGIC)
                             output.writeUTF(key)
                             output.writeLong(size)
                             output.writeLong(BLOCK_BYTES)
-                            output.writeInt(snapshot.size)
-                            for (base in snapshot.indices step 8) {
+                            output.writeInt(currentSnapshot.size)
+                            for (base in currentSnapshot.indices step 8) {
                                 var byte = 0
-                                for (bit in 0..7) if (snapshot.getOrElse(base + bit) { false }) byte = byte or (1 shl bit)
+                                for (bit in 0..7) if (currentSnapshot.getOrElse(base + bit) { false }) byte = byte or (1 shl bit)
                                 output.writeByte(byte)
                             }
                         }
                     }.toByteArray()
                     val temp = File("${bitmap.path}.tmp")
+                    var moved = false
                     try {
-                        DataOutputStream(temp.outputStream()).use {
-                            it.write(payload)
-                            it.writeLong(CRC32().apply { update(payload) }.value)
+                        FileOutputStream(temp).use { fileOut ->
+                            DataOutputStream(fileOut).apply {
+                                write(payload)
+                                writeLong(CRC32().apply { update(payload) }.value)
+                                flush()
+                            }
+                            fileOut.channel.force(metaData)
                         }
-                        RandomAccessFile(temp, "rw").use { it.channel.force(true) }
                         try {
                             Files.move(temp.toPath(), bitmap.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
                         } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
                             Files.move(temp.toPath(), bitmap.toPath(), StandardCopyOption.REPLACE_EXISTING)
                         }
+                        moved = true
                     } finally {
-                        temp.delete()
+                        if (!moved) temp.delete()
                     }
                 } catch (e: Throwable) {
-                    synchronized(lock) { dirty = true }
+                    synchronized(lock) {
+                        dirty = true
+                        if (metaData) needsMetadataSync = true
+                    }
                     throw e
                 }
             }
         }
+    }
+
+    private fun syncFileHandle(targetHandle: RandomAccessFile, metaData: Boolean) {
+        val custom = syncData
+        if (custom != null) custom(targetHandle) else targetHandle.channel.force(metaData)
     }
 
     override suspend fun close(): Unit = withContext(NonCancellable) {

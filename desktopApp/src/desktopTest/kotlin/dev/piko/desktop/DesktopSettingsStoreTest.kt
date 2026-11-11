@@ -22,6 +22,7 @@ class DesktopSettingsStoreTest {
 
     @AfterTest
     fun cleanUp() {
+        DesktopSettingsStore.flushPendingFor(file.toPath())
         base.deleteRecursively()
     }
 
@@ -96,5 +97,24 @@ class DesktopSettingsStoreTest {
         assertEquals("""["hunter2"]""", prefs.loadLegacyArchivePasswords())
         prefs.clearLegacyArchivePasswords()
         assertFalse("hunter2" in file.readText())
+    }
+
+    @Test
+    fun batchesMutationsAndFlushesOnDemandOrReopen() {
+        val store = DesktopSettingsStore(file, programDirectory = null, workingDirectory = elsewhere)
+        store.setAll(mapOf("window.main.w" to "1280", "window.main.h" to "800"))
+        store.set("window.main.x", "120")
+        assertEquals(listOf("window.main.h", "window.main.w", "window.main.x"), store.keysWithPrefix("window.main."))
+
+        store.flush()
+        assertTrue(file.isFile)
+        assertTrue("1280" in file.readText())
+        assertEquals(listOf(file.name), base.listFiles().orEmpty().map { it.name })
+
+        // 未手动调 flush 时直接用同一路径重开新实例，构造前会自动刷写待落盘快照
+        store.set("pending.reopen", "persisted")
+        val reopened = DesktopSettingsStore(file, programDirectory = null, workingDirectory = elsewhere)
+        assertEquals("persisted", reopened.get("pending.reopen"))
+        assertEquals(listOf(file.name), base.listFiles().orEmpty().map { it.name })
     }
 }

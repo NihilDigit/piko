@@ -14,7 +14,7 @@ class DesktopPikoDownloadStorage(
     override suspend fun cacheTarget(name: String): String = withContext(Dispatchers.IO) {
         // 放在下载目录以外，目录大小与用户看到的文件不包含暂存数据。
         val root = cacheDirectory
-        root.mkdirs()
+        if (!root.isDirectory) root.mkdirs()
         root.resolve("$name.data").absolutePath
     }
     private val directory: File get() = directoryProvider()
@@ -24,7 +24,7 @@ class DesktopPikoDownloadStorage(
 
     override suspend fun downloadTarget(fileName: String): String = withContext(Dispatchers.IO) {
         val target = directory.resolve(fileName)
-        target.parentFile?.mkdirs()
+        target.parentFile?.let { parent -> if (!parent.isDirectory) parent.mkdirs() }
         target.absolutePath
     }
 

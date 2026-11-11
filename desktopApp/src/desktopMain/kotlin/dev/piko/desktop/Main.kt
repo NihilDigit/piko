@@ -33,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -47,9 +48,11 @@ import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.res.loadImageBitmap
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.ApplicationScope
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.awaitApplication
 import dev.piko.desktop.motion.SystemReducedMotion
@@ -285,9 +288,6 @@ fun main(args: Array<String>) {
                 clipFeed = null
             }
         }
-        val downloads by services.downloadManager.tasks.collectAsState()
-        val uploads by services.uploadManager.tasks.collectAsState()
-        val account = services.clientManager.currentClient.collectAsState().value?.account
         val hasActiveTransfers by remember(services) { services.backgroundWorkChanges() }
             .collectAsState(initial = services.hasBackgroundWork())
         val keepSessionAlive by remember(services) { services.desktopSessionChanges() }
@@ -312,8 +312,10 @@ fun main(args: Array<String>) {
         LaunchedEffect(Unit) {
             invalidTorrentNotices.collect { showInvalidTorrentDialog = true }
         }
-        val quitNow = remember(services) {
+        val quitNow = remember(services, settings) {
             {
+                runCatching { settings.flush() }
+                    .onFailure { PikoLog.w("Settings", "Failed to flush desktop settings before exit", it) }
                 runBlocking {
                     withTimeoutOrNull(800) {
                         services.downloadManager.flushPersistence()
@@ -336,55 +338,23 @@ fun main(args: Array<String>) {
         }
 
         if (isInBackground && isTraySupported) {
-            val trayTooltip = if (hasActiveTransfers) backgroundTooltip(downloads.values, uploads.values.filter { it.account == account }) else "Piko"
-            val showLabel = tr("显示 Piko", "Show Piko", "Pikoを表示", "Piko 표시", "顯示 Piko")
-            val transfersLabel = tr("打开任务页", "Open tasks", "タスクを開く", "작업 열기", "開啟任務頁")
-            val pauseAllLabel = tr("全部暂停", "Pause all", "すべて一時停止", "모두 일시 중지", "全部暫停").takeIf {
-                downloads.values.any { it.status.isActive } || uploads.values.any { it.account == account && it.status.isActive }
-            }
-            val quitLabel = tr("立即退出", "Quit now", "今すぐ終了", "지금 종료", "立即結束")
-            val openTransfersFromTray = {
-                services.requestOpenTransfers()
-                isInBackground = false
-                mainWindow?.let(::bringToFront)
-                Unit
-            }
-            val pauseAllFromTray = {
-                services.downloadManager.pauseAll()
-                services.uploadManager.pauseAll()
-            }
-            if (WinRTSupport.isWindows) {
-                dev.piko.desktop.winrt.WindowsSystemTray(
-                    tooltip = trayTooltip,
-                    darkTheme = appearance.isDark(),
-                    showLabel = showLabel,
-                    quitLabel = quitLabel,
-                    onShow = { isInBackground = false },
-                    onQuit = quitNow,
-                    transfersLabel = transfersLabel,
-                    onOpenTransfers = openTransfersFromTray,
-                    pauseAllLabel = pauseAllLabel,
-                    onPauseAll = pauseAllFromTray.takeIf { pauseAllLabel != null },
-                    onUnavailable = {
-                        trayInstallFailed = true
-                        isInBackground = false
-                    },
-                )
-            } else {
-                Tray(
-                    icon = appIcon ?: BitmapPainter(ImageBitmap(16, 16)),
-                    tooltip = trayTooltip,
-                    onAction = { isInBackground = false },
-                    menu = {
-                        Item(showLabel, onClick = { isInBackground = false })
-                        Item(transfersLabel, onClick = openTransfersFromTray)
-                        if (pauseAllLabel != null) {
-                            Item(pauseAllLabel, onClick = pauseAllFromTray)
-                        }
-                        Item(quitLabel, onClick = quitNow)
-                    },
-                )
-            }
+            BackgroundSystemTray(
+                services = services,
+                hasActiveTransfers = hasActiveTransfers,
+                darkTheme = appearance.isDark(),
+                appIcon = appIcon,
+                onShow = { isInBackground = false },
+                onOpenTransfers = {
+                    services.requestOpenTransfers()
+                    isInBackground = false
+                    mainWindow?.let(::bringToFront)
+                },
+                onQuit = quitNow,
+                onUnavailable = {
+                    trayInstallFailed = true
+                    isInBackground = false
+                },
+            )
         }
 
         val hideToTray: (manual: Boolean) -> Unit = { manual ->
@@ -593,8 +563,8 @@ fun main(args: Array<String>) {
         }
 
         if (mpvReady) clipFeed?.let { links ->
-            ClipFeedWindow(
-                links = ClipFeedLinks(
+            val windowLinks = remember(links) {
+                ClipFeedLinks(
                     playFull = links.playFull,
                     // 位置在主窗口里，主窗口可能被片段窗口盖着或藏在托盘
                     locate = { file ->
@@ -608,7 +578,10 @@ fun main(args: Array<String>) {
                         mainWindow?.let(::bringToFront)
                     },
                     close = links.close,
-                ),
+                )
+            }
+            ClipFeedWindow(
+                links = windowLinks,
                 raise = clipFeedRaises,
                 services = services,
                 platform = platform,
@@ -634,9 +607,89 @@ fun main(args: Array<String>) {
             }
         }
     } }
+    runCatching { settings.flush() }
+        .onFailure { PikoLog.w("Settings", "Failed to flush desktop settings on shutdown", it) }
     // 照 application {} 的默认做法当场结束进程，否则关窗后进程还要挂一到四秒才退
     exitProcess(0)
 }
+
+@Composable
+private fun ApplicationScope.BackgroundSystemTray(
+    services: PikoServices,
+    hasActiveTransfers: Boolean,
+    darkTheme: Boolean,
+    appIcon: Painter?,
+    onShow: () -> Unit,
+    onOpenTransfers: () -> Unit,
+    onQuit: () -> Unit,
+    onUnavailable: () -> Unit,
+) {
+    val downloadsState = services.downloadManager.tasks.collectAsState()
+    val uploadsState = services.uploadManager.tasks.collectAsState()
+    val clientState = services.clientManager.currentClient.collectAsState()
+    val hasActiveTransfersState = rememberUpdatedState(hasActiveTransfers)
+    val traySummary by remember {
+        derivedStateOf {
+            val downloads = downloadsState.value.values
+            val account = clientState.value?.account
+            val activeAccountUploads = uploadsState.value.values.filter { it.account == account }
+            val tooltip = if (hasActiveTransfersState.value) {
+                backgroundTooltip(downloads, activeAccountUploads)
+            } else {
+                "Piko"
+            }
+            val canPauseAll = downloads.any { it.status.isActive } || activeAccountUploads.any { it.status.isActive }
+            tooltip to canPauseAll
+        }
+    }
+    val (trayTooltip, canPauseAll) = traySummary
+    val showLabel = tr("显示 Piko", "Show Piko", "Pikoを表示", "Piko 표시", "顯示 Piko")
+    val transfersLabel = tr("打开任务页", "Open tasks", "タスクを開く", "작업 열기", "開啟任務頁")
+    val pauseAllLabel = if (canPauseAll) {
+        tr("全部暂停", "Pause all", "すべて一時停止", "모두 일시 중지", "全部暫停")
+    } else {
+        null
+    }
+    val quitLabel = tr("立即退出", "Quit now", "今すぐ終了", "지금 종료", "立即結束")
+    val pauseAllFromTray = remember(services) {
+        {
+            services.downloadManager.pauseAll()
+            services.uploadManager.pauseAll()
+        }
+    }
+    if (WinRTSupport.isWindows) {
+        dev.piko.desktop.winrt.WindowsSystemTray(
+            tooltip = trayTooltip,
+            darkTheme = darkTheme,
+            showLabel = showLabel,
+            quitLabel = quitLabel,
+            onShow = onShow,
+            onQuit = onQuit,
+            transfersLabel = transfersLabel,
+            onOpenTransfers = onOpenTransfers,
+            pauseAllLabel = pauseAllLabel,
+            onPauseAll = pauseAllFromTray.takeIf { pauseAllLabel != null },
+            onUnavailable = onUnavailable,
+        )
+    } else {
+        val fallbackIcon = remember { BitmapPainter(ImageBitmap(16, 16)) }
+        Tray(
+            icon = appIcon ?: fallbackIcon,
+            tooltip = trayTooltip,
+            onAction = onShow,
+            menu = {
+                Item(showLabel, onClick = onShow)
+                Item(transfersLabel, onClick = onOpenTransfers)
+                if (pauseAllLabel != null) {
+                    Item(pauseAllLabel, onClick = pauseAllFromTray)
+                }
+                Item(quitLabel, onClick = onQuit)
+            },
+        )
+    }
+}
+
+private val DesktopCacheJson = Json { ignoreUnknownKeys = true }
 
 // 侧栏拖宽处的悬停光标。公共代码里的 PointerIcon 没有调整大小这一种，见 LocalHorizontalResizeCursor
 private val HorizontalResizeCursor = PointerIcon(java.awt.Cursor(java.awt.Cursor.E_RESIZE_CURSOR))
@@ -730,7 +783,7 @@ private fun createServices(settings: DesktopSettingsStore, preferences: DesktopP
     )
     val cacheStore = FilePikoCacheStore(
         PikoHome.root.resolve("cache").toString(),
-        jsonCodec = Json { ignoreUnknownKeys = true }.streamingCodec(),
+        jsonCodec = DesktopCacheJson.streamingCodec(),
     )
     return PikoServices(
         platformPreferences = preferences,
