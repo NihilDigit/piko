@@ -1,8 +1,9 @@
 package dev.piko.shared.sync
 
 /**
- * 同步进网盘之前的加密，密钥由账号密码派生。两端都是 JVM，实现只有一份 JvmSyncCipher（jvmSharedMain），
- * 由入口组装 PikoServices 时传进来。
+ * 网盘机密同步载荷的加解密接口，密钥由账号密码经 PBKDF2 派生。
+ * Android 与桌面端使用基于 JDK 标准库的 `JvmSyncCipher`，iOS 端使用零平台外部依赖的 [PortableSyncCipher]，
+ * 两者密文线格式完全一致（`IV(12) + 密文 + 标签(16)`），由平台入口在组装 `PikoServices` 时注入。
  */
 interface SyncCipher {
     fun newSalt(): ByteArray

@@ -1,7 +1,7 @@
 package dev.piko.shared.net
 
 import dev.piko.shared.i18n.tr
-
+import dev.piko.shared.log.PikoLog
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -29,6 +29,13 @@ data class ProxySetting(
         ProxyMode.MANUAL -> if (isManualComplete) "${protocol.label} $host:$port" else tr("手动（未填写地址）", "Manual (no address)", "手動（アドレス未入力）", "수동 (주소 없음)", "手動（未填寫位址）")
     }
 
+    /** 诊断日志专用的固定英文描述，不随界面语言波动。 */
+    internal fun logDescription(): String = when (mode) {
+        ProxyMode.SYSTEM -> "system"
+        ProxyMode.NONE -> "none (direct)"
+        ProxyMode.MANUAL -> if (isManualComplete) "manual ${protocol.label} ${host.trim()}:$port" else "manual (incomplete address, direct fallback)"
+    }
+
     fun encode(): String = json.encodeToString(serializer(), this)
 
     companion object {
@@ -36,7 +43,10 @@ data class ProxySetting(
 
         /** 偏好里存的 JSON。空串或读不懂时回到默认的跟随系统。 */
         fun decode(serialized: String): ProxySetting =
-            serialized.takeIf { it.isNotBlank() }?.let { runCatching { json.decodeFromString(serializer(), it) }.getOrNull() }
-                ?: ProxySetting()
+            serialized.takeIf { it.isNotBlank() }?.let { raw ->
+                runCatching { json.decodeFromString(serializer(), raw) }
+                    .onFailure { PikoLog.w("Proxy", "Failed to parse stored proxy setting (${it::class.simpleName}); falling back to system proxy") }
+                    .getOrNull()
+            } ?: ProxySetting()
     }
 }

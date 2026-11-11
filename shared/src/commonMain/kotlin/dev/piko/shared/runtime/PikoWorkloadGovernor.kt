@@ -99,13 +99,13 @@ class PikoWorkloadGovernor {
         }
     }
 
-    /** 在真正发起下一批目录扫描前等待可用预算，返回本批允许的并发度。 */
+    /** 查询当前目录扫描并发度上限（当前恒定开放至 [WorkBudget.DEFAULT_GALLERY_DISCOVERY_CONCURRENCY]，不因播放暂停无关业务）。 */
     suspend fun awaitDiscoveryConcurrency(requestedMax: Int): Int {
         val allowed = budget.map { it.galleryDiscoveryConcurrency }.first { it > 0 }
         return minOf(requestedMax.coerceAtLeast(1), allowed)
     }
 
-    /** 后台自动同步在播放器急需网络时让位等待。 */
+    /** 校验后台同步准入预算（当前默认常开，播放器网络让位经由 SDK 账号级传输需求租约调度，不在此处阻塞后台任务）。 */
     suspend fun awaitBackgroundSyncAllowed() {
         budget.first { it.allowBackgroundSync }
     }

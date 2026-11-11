@@ -19,12 +19,21 @@ class LayeredVault(private val primary: SecretVault?, private val fallback: Secr
 
     val hasPrimary: Boolean get() = primary != null
 
-    fun inFallback(key: String): Boolean = fallback?.read(key) != null
+    fun inFallback(key: String): Boolean = runCatching { fallback?.read(key) != null }.getOrDefault(false)
 
     override fun read(key: String): ByteArray? {
-        fallback?.read(key)?.let { data ->
-            if (primary != null) promote(key, data)
-            return data
+        val fallbackData = fallback?.let { fb ->
+            try {
+                fb.read(key)
+            } catch (e: Exception) {
+                if (primary == null) throw e
+                PikoLog.w(TAG, "Failed to read fallback secret for key=$key; falling back to system vault", e)
+                null
+            }
+        }
+        if (fallbackData != null) {
+            if (primary != null) promote(key, fallbackData)
+            return fallbackData
         }
         return primary?.read(key)
     }
@@ -35,12 +44,14 @@ class LayeredVault(private val primary: SecretVault?, private val fallback: Secr
         val fallback = fallback ?: return
         try {
             primary.write(key, data)
-            check(primary.read(key)?.contentEquals(data) == true) { "读回的内容与写入的不一致" }
+            check(primary.read(key)?.contentEquals(data) == true) { "System vault read-back did not match written bytes" }
         } catch (e: Exception) {
-            PikoLog.w(TAG, "兜底层的凭据未能移入系统保管处，暂留原处", e)
+            PikoLog.w(TAG, "Failed to promote fallback secret key=$key to system vault; keeping fallback copy", e)
             return
         }
-        runCatching { fallback.delete(key) }.onFailure { PikoLog.w(TAG, "凭据已移入系统保管处，删除兜底副本失败", it) }
+        runCatching { fallback.delete(key) }
+            .onSuccess { PikoLog.i(TAG, "Promoted secret key=$key from fallback storage to system vault") }
+            .onFailure { PikoLog.w(TAG, "Promoted secret key=$key to system vault, but failed to delete fallback copy", it) }
     }
 
     override fun write(key: String, data: ByteArray) {
@@ -50,23 +61,26 @@ class LayeredVault(private val primary: SecretVault?, private val fallback: Secr
         try {
             primary.write(key, data)
         } catch (e: Exception) {
-            PikoLog.w(TAG, "系统保管处写入失败，凭据改存兜底层", e)
+            PikoLog.w(TAG, "System vault write failed for key=$key; storing in fallback vault", e)
             fallback.write(key, data)
             return
         }
-        runCatching { fallback.delete(key) }.onFailure { PikoLog.w(TAG, "删除兜底层的旧凭据失败", it) }
+        runCatching { fallback.delete(key) }
+            .onFailure { PikoLog.w(TAG, "Failed to delete stale fallback secret for key=$key", it) }
     }
 
-    // 主里删不掉只记日志：账号已从列表里去掉，留下的那份不会再被读到，下次以同一账号登录时被覆盖
+    // 兜底与主删除异常相互隔离：账号已从列表移除，任一层删除失败仅记警告，不得阻断另一层清理
     override fun delete(key: String) {
-        fallback?.delete(key)
+        fallback?.let { fb ->
+            runCatching { fb.delete(key) }.onFailure { PikoLog.w(TAG, "Failed to delete fallback secret for key=$key", it) }
+        }
         primary?.let { vault ->
-            runCatching { vault.delete(key) }.onFailure { PikoLog.w(TAG, "系统保管处的凭据删除失败", it) }
+            runCatching { vault.delete(key) }.onFailure { PikoLog.w(TAG, "Failed to delete system vault secret for key=$key", it) }
         }
     }
 
     private companion object {
-        const val TAG = "credentials"
+        const val TAG = "Credentials"
     }
 }
 

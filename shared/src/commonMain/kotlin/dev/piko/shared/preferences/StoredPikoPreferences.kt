@@ -353,13 +353,25 @@ class StoredPikoPreferences(
     }
 
     override suspend fun loadUploadCredentials(taskId: String): String? =
-        withSecrets { secrets.read(uploadCredentialsKey(taskId))?.decodeToString() }
+        withSecrets {
+            runCatching { secrets.read(uploadCredentialsKey(taskId))?.decodeToString() }
+                .onFailure { PikoLog.w(TAG, "Failed to read upload credentials for task=$taskId", it) }
+                .getOrThrow()
+        }
 
     override suspend fun saveUploadCredentials(taskId: String, serialized: String) =
-        withSecrets { secrets.write(uploadCredentialsKey(taskId), serialized.encodeToByteArray()) }
+        withSecrets {
+            runCatching { secrets.write(uploadCredentialsKey(taskId), serialized.encodeToByteArray()) }
+                .onFailure { PikoLog.w(TAG, "Failed to save upload credentials for task=$taskId", it) }
+                .getOrThrow()
+        }
 
     override suspend fun clearUploadCredentials(taskId: String) =
-        withSecrets { secrets.delete(uploadCredentialsKey(taskId)) }
+        withSecrets {
+            runCatching { secrets.delete(uploadCredentialsKey(taskId)) }
+                .onFailure { PikoLog.w(TAG, "Failed to delete upload credentials for task=$taskId", it) }
+                .getOrThrow()
+        }
 
     override suspend fun loadOfflinePacks(): String = settings.get(KEY_OFFLINE_PACKS)
 
@@ -443,19 +455,21 @@ class StoredPikoPreferences(
     override val metaTubeTokenFlow: Flow<String> = metaTubeToken.onStart {
         if (metaTubeToken.value == null) {
             val stored = withSecrets { runCatching { secrets.read(SECRET_METATUBE_TOKEN)?.decodeToString() } }
-            metaTubeToken.compareAndSet(null, stored.onFailure { PikoLog.w(TAG, "MetaTube 令牌未能从系统保管处读出", it) }.getOrNull().orEmpty())
+            metaTubeToken.compareAndSet(null, stored.onFailure { PikoLog.w(TAG, "Failed to read MetaTube token from secret vault", it) }.getOrNull().orEmpty())
         }
     }.filterNotNull()
 
     override suspend fun setMetaTubeToken(token: String) {
         withSecrets {
-            if (token.isEmpty()) secrets.delete(SECRET_METATUBE_TOKEN) else secrets.write(SECRET_METATUBE_TOKEN, token.encodeToByteArray())
+            runCatching {
+                if (token.isEmpty()) secrets.delete(SECRET_METATUBE_TOKEN) else secrets.write(SECRET_METATUBE_TOKEN, token.encodeToByteArray())
+            }.onFailure { PikoLog.w(TAG, "Failed to update MetaTube token in secret vault", it) }.getOrThrow()
         }
         metaTubeToken.value = token
     }
 
     private companion object {
-        const val TAG = "credentials"
+        const val TAG = "Credentials"
         const val SECRET_METATUBE_TOKEN = "metatube-token"
         const val KEY_METATUBE_URL = "scrape.metaTubeUrl"
         const val KEY_SAVE_AS_REFERENCE = "instant.saveAsReference"
@@ -467,7 +481,7 @@ class StoredPikoPreferences(
         const val KEY_DOWNLOAD_TASKS = "download.tasks"
         const val KEY_OFFLINE_PACKS = "download.offlinePacks"
         const val KEY_UPLOAD_TASKS = "upload.tasks"
-        /** 1.1.0 全机一份明文存解压密码的位置，只在迁移时读。之后按账号存在 DesktopSessionStore。 */
+        /** 1.1.0 全机一份明文存解压密码的位置，只在迁移时读。之后按账号存入平台会话保管处（如 DesktopSessionStore / VaultSessionStore）。 */
         const val KEY_ARCHIVE_PASSWORDS = "drive.archivePasswords"
         const val KEY_RECENT_MOVE_TARGETS = "drive.recentMoveTargets"
         const val KEY_PINNED_FOLDERS = "drive.pinnedFolders"

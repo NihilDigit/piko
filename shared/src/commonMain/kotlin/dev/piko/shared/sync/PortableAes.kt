@@ -1,11 +1,10 @@
 package dev.piko.shared.sync
 
 /**
- * AES（只做加密方向的块运算，GCM 用不到解密）与 GCM 模式的可移植实现。
+ * AES（仅实现 GCM 所需的正向块加密）与 GCM 模式的可移植纯 Kotlin 实现，供 [PortableSyncCipher] 在 Kotlin/Native 端使用。
  *
- * 为什么自己写而不借平台库：iOS 的 CommonCrypto 里 AES-GCM 的 C 接口在 Kotlin/Native 侧没有稳定绑定，
- * 而桌面与 Android 用的是 JDK 的 `AES/GCM/NoPadding`。同一份 GCM 代码跑在三端，密文才互相解不开的
- * 概率为零。常数表由 GF(2^8) 计算得出而不是手抄 256 个字节，减少手误。
+ * 之所以不经平台原生库桥接：iOS CommonCrypto 的 AES-GCM C 接口未向 Kotlin/Native 提供稳定公开绑定；
+ * 此实现与 Android/桌面端 JDK `AES/GCM/NoPadding` 保持严格的字节级互通，且 S-Box 由 GF(2^8) 有限域实时推导以避免硬编码抄写差错。
  */
 internal class PortableAes(private val key: ByteArray) {
     private val rounds: Int

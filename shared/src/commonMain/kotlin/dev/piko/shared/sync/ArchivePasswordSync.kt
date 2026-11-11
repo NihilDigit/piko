@@ -9,7 +9,10 @@ import dev.piko.shared.data.decodeArchivePasswords
 import dev.piko.shared.data.encodeArchivePasswords
 import dev.piko.shared.data.mergeArchivePasswords
 import dev.piko.shared.log.PikoLog
-import dev.piko.shared.log.logFailure
+import kotlin.io.encoding.Base64
+import kotlin.time.Clock
+import kotlin.time.TimeSource
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -25,8 +28,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlin.io.encoding.Base64
-import kotlin.time.Clock
 
 /**
  * 把当前账号解压用过的密码（[ArchivePasswordVault]）加密后存进它网盘 `.piko` 下的 `archive-passwords-<时间戳>.json`，
@@ -57,7 +58,7 @@ class ArchivePasswordSync(
         cipher: SyncCipher,
         scope: CoroutineScope,
         enabled: Flow<Boolean>,
-    ) : this(clients, DriveSettingsStore(clients, driveRepo, FILE_PREFIX), vault, clients::savedPassword, cipher, scope, enabled)
+    ) : this(clients, DriveSettingsStore(clients, driveRepo, FILE_PREFIX, TAG), vault, clients::savedPassword, cipher, scope, enabled)
 
     private val lock = Mutex()
 
@@ -80,59 +81,109 @@ class ArchivePasswordSync(
 
     suspend fun syncNow(): Boolean = lock.withLock {
         val account = clients.currentClient.value?.account ?: return@withLock false
-        runCatching { sync(account) }
-            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
-            .logFailure(TAG, "压缩包密码同步失败")
-            .isSuccess
+        try {
+            sync(account)
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: SyncAccountSwitchedException) {
+            PikoLog.d(TAG, "Skipped sync: active account changed")
+            false
+        } catch (e: Throwable) {
+            PikoLog.w(TAG, "Archive password sync failed: ${e::class.simpleName}")
+            false
+        }
+    }
+
+    private fun requireCurrent(account: String) {
+        if (clients.currentClient.value?.account != account) throw SyncAccountSwitchedException()
+    }
+
+    private sealed interface RemoteReadResult {
+        data object Absent : RemoteReadResult
+        data object AbortCorruptOrUnsupported : RemoteReadResult
+        class KeyChanged(val envelope: Envelope) : RemoteReadResult
+        class Opened(val envelope: Envelope, val salt: ByteArray, val entries: Map<String, ArchivePasswordEntry>) : RemoteReadResult
     }
 
     private suspend fun sync(account: String) {
+        requireCurrent(account)
         val secret = passwordOf(account) ?: run {
-            PikoLog.i(TAG, "读不出账号密码，这一轮不同步压缩包密码")
+            PikoLog.i(TAG, "Account password unavailable; skipping archive password sync for this round")
             return
         }
+        requireCurrent(account)
         val local = vault.current(account)
-        val envelope = remote.read(account)?.let { text ->
-            runCatching { json.decodeFromString(Envelope.serializer(), text) }.logFailure(TAG, "网盘上的压缩包密码文件格式不对，按没有处理").getOrNull()
+        val remoteText = remote.read(account)
+        requireCurrent(account)
+
+        val opened = if (remoteText == null) {
+            RemoteReadResult.Absent
+        } else {
+            readRemoteEnvelope(remoteText, secret)
         }
-        if (envelope != null && envelope.version > VERSION) {
-            // 更新的版本写的，读不懂也不能拿旧格式盖掉它
-            PikoLog.i(TAG, "网盘上的压缩包密码是更新的版本写的（${envelope.version}），这一轮不同步")
-            return
+        if (opened is RemoteReadResult.AbortCorruptOrUnsupported) return
+
+        val remoteEntries = (opened as? RemoteReadResult.Opened)?.entries
+        val hasRemoteFile = opened !is RemoteReadResult.Absent
+        if (opened is RemoteReadResult.KeyChanged) {
+            PikoLog.w(TAG, "Failed to decrypt remote archive passwords (account password may have changed); rewriting from ${local.size} local entries")
         }
-        val remoteEntries = envelope?.let { open(it, secret) }
-        if (envelope != null && remoteEntries == null) PikoLog.i(TAG, "网盘上的压缩包密码解不开（账号密码改过？），以本机的记录重写")
+
         val merged = mergeArchivePasswords(local, remoteEntries.orEmpty())
+        requireCurrent(account)
         if (merged != local) vault.merge(account, merged)
         // 只记条数，密码与它对应的压缩包都不进日志
-        PikoLog.d(TAG, "压缩包密码合并：本机 ${local.size} 条，远端 ${remoteEntries?.size?.toString() ?: if (envelope == null) "无文件" else "解不开"}，" +
-            "合并后 ${merged.size} 条（其中已删 ${merged.count { it.value.removed }}），本机${if (merged != local) "已更新" else "未变"}")
-        if (merged != remoteEntries && (envelope != null || merged.isNotEmpty())) {
+        PikoLog.d(
+            TAG,
+            "Archive passwords merged: local=${local.size}, remote=${remoteEntries?.size?.toString() ?: if (!hasRemoteFile) "none" else "key_changed"}, " +
+                "merged=${merged.size} (removed=${merged.count { it.value.removed }}), localUpdated=${merged != local}",
+        )
+        if (merged != remoteEntries && (hasRemoteFile || merged.isNotEmpty())) {
             // 解得开就沿用原来的 salt，省一次派生；解不开的换新的
-            val salt = envelope?.takeIf { remoteEntries != null }?.salt?.let(Base64::decode) ?: cipher.newSalt()
+            val salt = (opened as? RemoteReadResult.Opened)?.salt ?: cipher.newSalt()
             val key = keyFor(secret, salt, ITERATIONS)
             val sealed = cipher.seal(key, encodeArchivePasswords(merged).encodeToByteArray())
             val text = json.encodeToString(Envelope.serializer(), Envelope(VERSION, ITERATIONS, Base64.encode(salt), Base64.encode(sealed)))
+            requireCurrent(account)
             remote.write(account, text, now())
-            PikoLog.d(TAG, "已推送压缩包密码，${merged.count { !it.value.removed }} 个")
+            PikoLog.d(TAG, "Pushed encrypted archive passwords: active=${merged.count { !it.value.removed }}")
         }
     }
 
-    private suspend fun open(envelope: Envelope, secret: String): Map<String, ArchivePasswordEntry>? {
-        val salt = runCatching { Base64.decode(envelope.salt) }.logFailure(TAG, "压缩包密码文件的 salt 不是 Base64").getOrNull() ?: return null
-        val sealed = runCatching { Base64.decode(envelope.data) }.logFailure(TAG, "压缩包密码文件的密文不是 Base64").getOrNull() ?: return null
-        val plain = cipher.open(keyFor(secret, salt, envelope.iterations), sealed) ?: run {
-            PikoLog.d(TAG, "压缩包密码文件解密失败（密钥不符或内容损坏），迭代 ${envelope.iterations} 次")
-            return null
+    private suspend fun readRemoteEnvelope(remoteText: String, secret: String): RemoteReadResult {
+        val envelope = runCatching { json.decodeFromString(Envelope.serializer(), remoteText) }
+            .onFailure {
+                PikoLog.w(TAG, "Remote archive password envelope is malformed (${it::class.simpleName}); skipping sync to preserve remote file")
+            }
+            .getOrNull() ?: return RemoteReadResult.AbortCorruptOrUnsupported
+        if (envelope.version > VERSION) {
+            PikoLog.w(TAG, "Remote archive password version ${envelope.version} is newer than supported $VERSION; skipping sync")
+            return RemoteReadResult.AbortCorruptOrUnsupported
         }
-        return decodeArchivePasswords(plain.decodeToString())
+        if (envelope.iterations !in 1..ITERATIONS) {
+            PikoLog.w(TAG, "Remote archive password KDF iterations (${envelope.iterations}) out of range 1..$ITERATIONS; skipping sync")
+            return RemoteReadResult.AbortCorruptOrUnsupported
+        }
+        val salt = runCatching { Base64.decode(envelope.salt) }
+            .onFailure { PikoLog.w(TAG, "Remote archive password salt is not valid Base64; skipping sync") }
+            .getOrNull() ?: return RemoteReadResult.AbortCorruptOrUnsupported
+        val sealed = runCatching { Base64.decode(envelope.data) }
+            .onFailure { PikoLog.w(TAG, "Remote archive password ciphertext is not valid Base64; skipping sync") }
+            .getOrNull() ?: return RemoteReadResult.AbortCorruptOrUnsupported
+        val plain = cipher.open(keyFor(secret, salt, envelope.iterations), sealed)
+            ?: return RemoteReadResult.KeyChanged(envelope)
+        val decodedText = runCatching { plain.decodeToString(throwOnInvalidSequence = true) }
+            .onFailure { PikoLog.w(TAG, "Decrypted archive password payload is not valid UTF-8; skipping sync") }
+            .getOrNull() ?: return RemoteReadResult.AbortCorruptOrUnsupported
+        return RemoteReadResult.Opened(envelope, salt, decodeArchivePasswords(decodedText))
     }
 
     private suspend fun keyFor(secret: String, salt: ByteArray, iterations: Int): ByteArray {
         cachedKey?.takeIf { it.secret == secret && it.salt.contentEquals(salt) && it.iterations == iterations }?.let { return it.key }
-        val started = kotlin.time.TimeSource.Monotonic.markNow()
+        val started = TimeSource.Monotonic.markNow()
         val key = withContext(Dispatchers.Default) { cipher.deriveKey(secret, salt, iterations) }
-        PikoLog.d(TAG, "派生同步密钥：$iterations 次迭代，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
+        PikoLog.d(TAG, "Derived archive password sync key: iterations=$iterations, elapsed=${started.elapsedNow().inWholeMilliseconds} ms")
         cachedKey = CachedKey(secret, salt, iterations, key)
         return key
     }

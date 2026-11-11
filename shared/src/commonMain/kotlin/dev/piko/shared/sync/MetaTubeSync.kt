@@ -6,7 +6,10 @@ import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.PikoLog
+import io.github.nihildigit.pikpak.PikPakException
 import io.ktor.util.Digest
+import kotlin.io.encoding.Base64
+import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,8 +26,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlin.io.encoding.Base64
-import kotlin.time.Clock
 
 /** MetaTube 地址与令牌仅以账号密码派生的密钥加密后同步，本机同步账本只保存摘要与时刻。 */
 class MetaTubeSync(
@@ -46,8 +47,16 @@ class MetaTubeSync(
         cipher: SyncCipher,
         scope: CoroutineScope,
         enabled: Flow<Boolean>,
-    ) : this(clients, DriveSettingsStore(clients, driveRepo, FILE_PREFIX), preferences, cacheStore,
-        clients::savedPassword, cipher, scope, enabled)
+    ) : this(
+        clients,
+        DriveSettingsStore(clients, driveRepo, FILE_PREFIX, TAG),
+        preferences,
+        cacheStore,
+        clients::savedPassword,
+        cipher,
+        scope,
+        enabled,
+    )
 
     private val lock = Mutex()
     private var cachedKey: CachedKey? = null
@@ -76,15 +85,30 @@ class MetaTubeSync(
             true
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
-            // 异常消息可能包含输入或远端明文，不把异常交给日志。
-            PikoLog.w(TAG, "MetaTube 加密同步失败")
+        } catch (_: SyncAccountSwitchedException) {
+            PikoLog.d(TAG, "Skipped sync: active account changed")
+            false
+        } catch (e: Exception) {
+            // 仅记录异常类名或 PikPak 错误码/HTTP 状态码，严禁输出可能包含明文地址或令牌的异常 message
+            val detail = if (e is PikPakException) {
+                "PikPakException(code=${e.errorCode}, http=${e.httpStatus})"
+            } else {
+                e::class.simpleName ?: "Exception"
+            }
+            PikoLog.w(TAG, "Encrypted MetaTube sync failed: $detail")
             false
         }
     }
 
     private fun requireCurrent(account: String) {
-        check(clients.currentClient.value?.account == account) { "同步途中切换账号" }
+        if (clients.currentClient.value?.account != account) throw SyncAccountSwitchedException()
+    }
+
+    private sealed interface RemotePayloadResult {
+        data object Absent : RemotePayloadResult
+        data object AbortCorruptOrUnsupported : RemotePayloadResult
+        class KeyChanged(val envelope: Envelope) : RemotePayloadResult
+        class Opened(val envelope: Envelope, val salt: ByteArray, val payload: Payload) : RemotePayloadResult
     }
 
     private suspend fun sync(account: String) {
@@ -94,34 +118,59 @@ class MetaTubeSync(
         requireCurrent(account)
         val localToken = preferences.metaTubeTokenFlow.first()
         requireCurrent(account)
-        val known = cacheStore?.read(stateKey(account))?.let {
-            runCatching { json.decodeFromString(LocalState.serializer(), it) }.getOrNull()
+        val known = cacheStore?.read(stateKey(account))?.let { raw ->
+            runCatching { json.decodeFromString(LocalState.serializer(), raw) }
+                .onFailure { PikoLog.w(TAG, "Failed to parse local MetaTube sync ledger (${it::class.simpleName}); treating as unsynced") }
+                .getOrNull()
         }
         requireCurrent(account)
         val remoteText = remote.read(account)
         requireCurrent(account)
         if (remoteText == null && localUrl.isEmpty() && localToken.isEmpty() && known == null) return
-        val secret = passwordOf(account) ?: return
+        val secret = passwordOf(account) ?: run {
+            PikoLog.i(TAG, "Account password unavailable; skipping MetaTube sync for this round")
+            return
+        }
         requireCurrent(account)
-        val envelope = remoteText?.let { runCatching { json.decodeFromString(Envelope.serializer(), it) }.getOrNull() }
-        if (envelope != null && envelope.version > VERSION) return
-        val remotePayload = envelope?.let { open(it, secret) }
+
+        val remoteResult = if (remoteText == null) {
+            RemotePayloadResult.Absent
+        } else {
+            openEnvelope(remoteText, secret)
+        }
+        if (remoteResult is RemotePayloadResult.AbortCorruptOrUnsupported) return
+        if (remoteResult is RemotePayloadResult.KeyChanged) {
+            PikoLog.w(TAG, "Failed to decrypt remote MetaTube config (account password may have changed); re-encrypting from local state")
+        }
+
+        val remotePayload = (remoteResult as? RemotePayloadResult.Opened)?.payload
+        val hasRemoteFile = remoteResult !is RemotePayloadResult.Absent
         val urlDigest = digest(localUrl)
         val tokenDigest = digest(localToken)
-        fun entry(value: String, sha256: String, last: FieldDigest?): Entry = Entry(value, when {
-            last == null -> if (value.isEmpty()) 0L else if (remotePayload != null) 1L else stamp
-            last.sha256 == sha256 -> last.updatedAt
-            else -> stamp
-        })
+
+        // 首次参与同步（last == null）时的时间戳优先级约定：
+        // - 空值取 0L（最低优先级，不覆盖任何有效配置）；
+        // - 非空旧值在远端已有有效配置时取 1L（让位于远端正整数时间戳，防止新登录设备的残留配置覆盖远端），
+        //   远端尚无可读配置时取当前 stamp 以作为初始配置上传。
+        fun entry(value: String, sha256: String, last: FieldDigest?): Entry = Entry(
+            value,
+            when {
+                last == null -> if (value.isEmpty()) 0L else if (remotePayload != null) 1L else stamp
+                last.sha256 == sha256 -> last.updatedAt
+                else -> stamp
+            },
+        )
         fun merge(a: Entry, b: Entry?): Entry = if (b != null && b.updatedAt >= a.updatedAt) b else a
         val merged = Payload(
             merge(entry(localUrl, urlDigest, known?.url), remotePayload?.url),
             merge(entry(localToken, tokenDigest, known?.token), remotePayload?.token),
         )
         requireCurrent(account)
-        if (merged.url.value != localUrl) preferences.setMetaTubeUrl(merged.url.value)
+        val urlUpdated = merged.url.value != localUrl
+        if (urlUpdated) preferences.setMetaTubeUrl(merged.url.value)
         requireCurrent(account)
-        if (merged.token.value != localToken) preferences.setMetaTubeToken(merged.token.value)
+        val tokenUpdated = merged.token.value != localToken
+        if (tokenUpdated) preferences.setMetaTubeToken(merged.token.value)
         requireCurrent(account)
         lastSyncedPair = account to (merged.url.value to merged.token.value)
         val state = LocalState(
@@ -130,23 +179,53 @@ class MetaTubeSync(
         )
         requireCurrent(account)
         cacheStore?.write(stateKey(account), json.encodeToString(LocalState.serializer(), state))
-        if (merged != remotePayload && (envelope != null || merged.url.value.isNotEmpty() || merged.token.value.isNotEmpty())) {
-            val salt = envelope?.takeIf { remotePayload != null }?.salt?.let(Base64::decode) ?: cipher.newSalt()
+        val pushed = merged != remotePayload && (hasRemoteFile || merged.url.value.isNotEmpty() || merged.token.value.isNotEmpty())
+        if (pushed) {
+            val salt = (remoteResult as? RemotePayloadResult.Opened)?.salt ?: cipher.newSalt()
             val key = keyFor(secret, salt, ITERATIONS)
             val sealed = cipher.seal(key, json.encodeToString(Payload.serializer(), merged).encodeToByteArray())
             val text = json.encodeToString(Envelope.serializer(), Envelope(VERSION, ITERATIONS, Base64.encode(salt), Base64.encode(sealed)))
             requireCurrent(account)
             remote.write(account, text, stamp)
         }
+        PikoLog.d(
+            TAG,
+            "MetaTube config synced: remote=${when (remoteResult) {
+                is RemotePayloadResult.Absent -> "none"
+                is RemotePayloadResult.KeyChanged -> "key_changed"
+                is RemotePayloadResult.Opened -> "ok"
+                is RemotePayloadResult.AbortCorruptOrUnsupported -> "aborted"
+            }}, urlUpdated=$urlUpdated, tokenUpdated=$tokenUpdated, pushed=$pushed, elapsed=${now() - stamp} ms",
+        )
     }
 
-    private suspend fun open(envelope: Envelope, secret: String): Payload? {
-        // 限制不可信远端的派生代价；未来提高迭代次数时需同步调整上限。
-        if (envelope.iterations !in 1..ITERATIONS) return null
-        val salt = runCatching { Base64.decode(envelope.salt) }.getOrNull() ?: return null
-        val sealed = runCatching { Base64.decode(envelope.data) }.getOrNull() ?: return null
-        val plain = cipher.open(keyFor(secret, salt, envelope.iterations), sealed) ?: return null
-        return runCatching { json.decodeFromString(Payload.serializer(), plain.decodeToString()) }.getOrNull()
+    private suspend fun openEnvelope(remoteText: String, secret: String): RemotePayloadResult {
+        val envelope = runCatching { json.decodeFromString(Envelope.serializer(), remoteText) }
+            .onFailure {
+                PikoLog.w(TAG, "Remote MetaTube envelope is malformed (${it::class.simpleName}); skipping sync to preserve remote file")
+            }
+            .getOrNull() ?: return RemotePayloadResult.AbortCorruptOrUnsupported
+        if (envelope.version > VERSION) {
+            PikoLog.w(TAG, "Remote MetaTube version ${envelope.version} is newer than supported $VERSION; skipping sync")
+            return RemotePayloadResult.AbortCorruptOrUnsupported
+        }
+        // 限制不可信远端的密钥派生开销；未来提高默认迭代次数时需同步调整上限
+        if (envelope.iterations !in 1..ITERATIONS) {
+            PikoLog.w(TAG, "Remote MetaTube KDF iterations (${envelope.iterations}) out of range 1..$ITERATIONS; skipping sync")
+            return RemotePayloadResult.AbortCorruptOrUnsupported
+        }
+        val salt = runCatching { Base64.decode(envelope.salt) }
+            .onFailure { PikoLog.w(TAG, "Remote MetaTube salt is not valid Base64; skipping sync") }
+            .getOrNull() ?: return RemotePayloadResult.AbortCorruptOrUnsupported
+        val sealed = runCatching { Base64.decode(envelope.data) }
+            .onFailure { PikoLog.w(TAG, "Remote MetaTube ciphertext is not valid Base64; skipping sync") }
+            .getOrNull() ?: return RemotePayloadResult.AbortCorruptOrUnsupported
+        val plain = cipher.open(keyFor(secret, salt, envelope.iterations), sealed)
+            ?: return RemotePayloadResult.KeyChanged(envelope)
+        val payload = runCatching { json.decodeFromString(Payload.serializer(), plain.decodeToString(throwOnInvalidSequence = true)) }
+            .onFailure { PikoLog.w(TAG, "Decrypted MetaTube payload is malformed (${it::class.simpleName}); skipping sync") }
+            .getOrNull() ?: return RemotePayloadResult.AbortCorruptOrUnsupported
+        return RemotePayloadResult.Opened(envelope, salt, payload)
     }
 
     private suspend fun digest(value: String): String {

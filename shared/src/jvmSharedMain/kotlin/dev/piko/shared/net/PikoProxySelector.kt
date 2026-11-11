@@ -23,23 +23,32 @@ object PikoProxySelector : ProxySelector() {
     /** 装之前的默认选择器，跟随系统时交给它。桌面端要先打开 java.net.useSystemProxies 它才读系统设置。 */
     private var system: ProxySelector? = null
 
+    @Volatile
+    private var initialized = false
+
     /** 在建任何网络客户端之前调用，[initial] 是同步读出的当前设置，免得最早的几个请求先按默认值走。 */
     fun install(initial: ProxySetting) {
+        val firstInstall = !initialized
         if (system == null) {
             system = getDefault()
             setDefault(this)
         }
-        apply(initial)
+        initialized = true
+        applyInternal(initial, forceLog = firstInstall)
     }
 
     fun apply(setting: ProxySetting) {
-        if (setting == this.setting && system != null) return
-        this.setting = setting
-        PikoLog.i("Proxy", "代理：${setting.summary()}")
+        applyInternal(setting, forceLog = false)
+    }
+
+    private fun applyInternal(next: ProxySetting, forceLog: Boolean) {
+        if (!forceLog && next == this.setting && initialized) return
+        this.setting = next
+        PikoLog.i(TAG, "Proxy mode set to ${next.logDescription()}")
     }
 
     override fun select(uri: URI): List<Proxy> {
-        // 本机回环代理与局域网里的自己永远直连：播放器读的就是 127.0.0.1
+        // 本机回环地址（127.x.x.x / localhost / ::1）永远直连：播放器读取的本地回环流代理不经外部代理转发
         if (isLoopback(uri.host)) return NO_PROXY
         val current = setting
         return when (current.mode) {
@@ -65,7 +74,7 @@ object PikoProxySelector : ProxySelector() {
             msg.contains("unexpected end of stream", ignoreCase = true) ||
             msg.contains("StreamResetException", ignoreCase = true)
         if (!benignAbort) {
-            PikoLog.w("Proxy", "经代理 $address 连接 ${uri.host} 失败", error)
+            PikoLog.w(TAG, "Proxy connection to ${uri.host ?: "?"} via $address failed", error)
         }
         if (setting.mode == ProxyMode.SYSTEM) system?.connectFailed(uri, address, error)
     }
@@ -75,7 +84,7 @@ object PikoProxySelector : ProxySelector() {
         host == null || host.equals("localhost", ignoreCase = true) || host == "::1" || host == "[::1]" ||
             LOOPBACK_V4.matches(host)
 
+    private const val TAG = "Proxy"
     private val LOOPBACK_V4 = Regex("""127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}""")
-
     private val NO_PROXY = listOf(Proxy.NO_PROXY)
 }

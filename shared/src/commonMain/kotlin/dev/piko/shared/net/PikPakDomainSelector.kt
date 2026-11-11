@@ -12,6 +12,7 @@ import io.github.nihildigit.pikpak.probeDomain
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -55,13 +56,14 @@ class PikPakDomainSelector(
     val active: StateFlow<PikPakDomain?> = _active.asStateFlow()
 
     private val reprobes = MutableStateFlow(0)
+
     @Volatile
     private var lastWorkingAutoDomain: PikPakDomain? = null
     private var loadedCachedDomain = false
     private val switchMutex = Mutex()
 
     fun start() {
-        // 测试注入的是 MockEngine，测不出东西，也不该往外发请求
+        // 离线测试注入的是本地 MockEngine，无需也不应发起真实外网探测
         if (!clients.reachesRealNetwork) return
         scope.launch {
             combine(clients.currentClient, preferences.pikpakDomainFlow, reprobes) { client, choice, _ -> client to choice }
@@ -88,17 +90,33 @@ class PikPakDomainSelector(
         } else {
             if (!loadedCachedDomain) {
                 loadedCachedDomain = true
-                val savedRoot = runCatching { cacheStore?.read(LAST_DOMAIN_CACHE_KEY)?.trim() }.getOrNull()
+                val savedRoot = runCatching { cacheStore?.read(LAST_DOMAIN_CACHE_KEY)?.trim() }
+                    .onFailure { if (it !is CancellationException) PikoLog.w(TAG, "Failed to read cached working domain", it) }
+                    .getOrNull()
                 lastWorkingAutoDomain = PikPakDomain.entries.firstOrNull { it.root == savedRoot }
             }
             lastWorkingAutoDomain?.let { cached ->
-                if (client.domain != cached) client.domain = cached
+                if (client.domain != cached) {
+                    val previous = client.domain
+                    client.domain = cached
+                    PikoLog.i(TAG, "Restored cached root domain ${cached.root} (was ${previous.root}) before probing")
+                }
             }
         }
         val initialDomain = client.domain
         _active.value = client.domain
         _probing.value = true
-        scope.launch { runCatching { client.fetchHighAvailabilityConfig() } }
+        scope.launch {
+            runCatching { client.fetchHighAvailabilityConfig() }
+                .onSuccess { ha ->
+                    if (ha != null) {
+                        PikoLog.d(TAG, "Refreshed high-availability DNS config: entries=${ha.dns.size}, main=${ha.mainDomain.ifEmpty { "none" }}")
+                    } else {
+                        PikoLog.d(TAG, "High-availability DNS config unavailable across all config origins")
+                    }
+                }
+                .onFailure { if (it !is CancellationException) PikoLog.d(TAG, "High-availability config fetch failed: ${it::class.simpleName}") }
+        }
         var emergencySwitched = false
         val results = try {
             coroutineScope {
@@ -124,6 +142,10 @@ class PikPakDomainSelector(
                                         _active.value = client.domain
                                         lastWorkingAutoDomain = candidate.domain
                                         emergencySwitched = true
+                                        PikoLog.w(
+                                            TAG,
+                                            "Initial root domain ${initialDomain.root} failed probe; emergency-switched to ${candidate.domain.root} (${candidate.warmRequest?.inWholeMilliseconds} ms)",
+                                        )
                                     }
                                 }
                             }
@@ -135,7 +157,8 @@ class PikPakDomainSelector(
             _probing.value = false
         }
         _probes.value = results.associateBy { it.domain }
-        val switched = fixed == null && (switchToFastest(client, results) || emergencySwitched)
+        val switchedAfterProbe = fixed == null && switchToFastest(client, results)
+        val switched = switchedAfterProbe || (emergencySwitched && client.domain != initialDomain)
         _active.value = client.domain
         if (fixed == null && results.any { it.domain == client.domain && it.usable }) {
             val usable = results.filter { it.usable && it.warmRequest != null }
@@ -150,33 +173,35 @@ class PikPakDomainSelector(
             lastWorkingAutoDomain = preferredForNextStart
             val savedRoot = preferredForNextStart.root
             cacheStore?.let { store ->
-                scope.launch { runCatching { store.write(LAST_DOMAIN_CACHE_KEY, savedRoot) } }
+                scope.launch {
+                    runCatching { store.write(LAST_DOMAIN_CACHE_KEY, savedRoot) }
+                        .onFailure { if (it !is CancellationException) PikoLog.w(TAG, "Failed to persist working domain $savedRoot", it) }
+                }
             }
         }
-        val summary = results.joinToString("，") { "${it.domain.root} ${it.latencyText()}" }
-        val how = when {
-            fixed != null -> "固定用"
-            switched -> "改用"
-            else -> "沿用"
+        val summary = results.joinToString(", ") { "${it.domain.root}=${it.latencyText()}" }
+        val selectionMode = when {
+            fixed != null -> "pinned"
+            switched -> "switched to"
+            else -> "kept"
         }
-        PikoLog.i(TAG, "根域名测速：$summary，$how ${client.domain.root}")
+        PikoLog.i(TAG, "Root domain probe [$summary] -> $selectionMode ${client.domain.root}")
     }
 
     private fun switchToFastest(client: PikPakClient, results: List<DomainProbe>): Boolean {
         val usable = results.filter { it.usable && it.warmRequest != null }
         val best = usable.minByOrNull { it.warmRequest!! } ?: return false
+        val defaultProbe = usable.firstOrNull { it.domain == PikPakDomain.MYPIKPAK_COM }
+        // 若默认域名 mypikpak.com 可用且与最快候选差距不显著，始终优先收敛回默认域名（含从缓存域名或紧急切换域名回切）
+        if (defaultProbe != null && !isSignificantlyFaster(best.warmRequest!!, defaultProbe.warmRequest!!)) {
+            if (client.domain == PikPakDomain.MYPIKPAK_COM) return false
+            client.domain = PikPakDomain.MYPIKPAK_COM
+            return true
+        }
         if (best.domain == client.domain) return false
         val current = usable.firstOrNull { it.domain == client.domain }?.warmRequest
         if (current != null && !isSignificantlyFaster(best.warmRequest!!, current)) return false
-        // 若确实需要切换，而默认域名 mypikpak.com 同样处于第一梯队（与最快域名差距不显著），优先收敛回 mypikpak.com
-        val defaultProbe = usable.firstOrNull { it.domain == PikPakDomain.MYPIKPAK_COM }
-        val target = if (defaultProbe != null && !isSignificantlyFaster(best.warmRequest!!, defaultProbe.warmRequest!!)) {
-            PikPakDomain.MYPIKPAK_COM
-        } else {
-            best.domain
-        }
-        if (target == client.domain) return false
-        client.domain = target
+        client.domain = best.domain
         return true
     }
 
@@ -184,7 +209,8 @@ class PikPakDomainSelector(
         candidate < baseline * SWITCH_RATIO && baseline - candidate >= MIN_SWITCH_SAVINGS
 
     private fun DomainProbe.latencyText(): String =
-        warmRequest?.takeIf { usable }?.let { "${it.inWholeMilliseconds} ms" } ?: "不可用"
+        warmRequest?.takeIf { usable }?.let { "${it.inWholeMilliseconds} ms" }
+            ?: "unavailable(${failure ?: "unknown"})"
 
     private companion object {
         const val TAG = "Domain"

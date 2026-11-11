@@ -52,13 +52,23 @@ object PikoErrorMapper {
         else -> tr("网络异常", "Network error", "ネットワークエラー", "네트워크 오류", "網路異常")
     }
 
-    fun archiveReason(code: String?, description: String): String = reason(code) ?: tr(
-        description.ifEmpty { code ?: "服务端未返回具体原因" },
-        "No details returned by server",
-        "サーバーから詳細が返されませんでした",
-        "서버에서 세부 정보를 반환하지 않았습니다",
-        "伺服器未傳回具體原因",
-    )
+    fun archiveReason(code: String?, description: String): String = reason(code) ?: if (code.isNullOrBlank() && description.isBlank()) {
+        tr(
+            "服务端未返回具体原因",
+            "No details returned by server",
+            "サーバーから詳細が返されませんでした",
+            "서버에서 세부 정보를 반환하지 않았습니다",
+            "伺服器未傳回具體原因",
+        )
+    } else {
+        tr(
+            "服务端处理失败，请稍后重试",
+            "Server processing failed. Please try again later",
+            "サーバーでの処理に失敗しました。しばらくしてから再試行してください",
+            "서버 처리에 실패했습니다. 잠시 후 다시 시도해 주세요",
+            "伺服器處理失敗，請稍後重試",
+        )
+    }
 
     fun failure(action: String, error: Throwable): String {
         if (isReactivating(error)) return reactivatingMessage

@@ -24,7 +24,7 @@ import java.nio.file.Path
 object PikoHome {
     private class Resolved(val root: Path, val isDefault: Boolean, val portableFallback: PortableFallback? = null)
 
-    /** 便携目录 [portableData] 写不进，数据改放在了 [root]。[problem] 是写入失败的异常，可能带路径，不进日志。 */
+    /** 便携目录 [portableData] 写不进，数据改放在了 [root]。[problem] 为写入探测异常（含本机或 UNC 路径，落盘经 PikoLog.redact 脱敏）。 */
     class PortableFallback(val portableData: Path, val problem: Throwable)
 
     private val resolved: Resolved by lazy { resolve() }

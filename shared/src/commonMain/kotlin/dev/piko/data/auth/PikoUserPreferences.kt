@@ -124,7 +124,7 @@ interface PikoUserPreferences {
     val syncPlayHistoryFlow: Flow<Boolean>
     suspend fun setSyncPlayHistoryEnabled(enabled: Boolean)
 
-    /** 深浅模式，存 ThemeMode 的名字。为 null 表示跟随系统。 */
+    /** 深浅模式，存 ThemeMode 的名字（`SYSTEM`、`LIGHT`、`DARK`）；首次未设置时流中初值为 null，按跟随系统处理。 */
     val themeModeFlow: Flow<String?>
     suspend fun setThemeMode(mode: String)
 
@@ -234,7 +234,7 @@ interface PikoUserPreferences {
 
     /**
      * 批量重命名的查找替换写成正则文本，而不是拼积木。默认关（积木）。记的是用户手动切换的结果，
-     * 因正则无法图形化而停在文本模式的那一次不算。跨设备同步：它反映的是这个人的水平。
+     * 因正则无法图形化而停在文本模式的那一次不算。属于用户的操作习惯，随设置跨设备同步。
      */
     val renameRegexTextModeFlow: Flow<Boolean>
     suspend fun setRenameRegexTextMode(enabled: Boolean)

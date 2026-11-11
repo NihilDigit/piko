@@ -8,6 +8,8 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.TaskPhase
+import kotlin.time.Clock
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
@@ -28,7 +30,9 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
-import kotlin.time.Clock
+
+/** 同步途中活动账号已切换时抛出的受控信号，不继承 [CancellationException]，避免误取消外部调用方协程。 */
+internal class SyncAccountSwitchedException : RuntimeException("Active account changed during sync")
 
 /**
  * 同步到网盘的一项偏好。值一律存成字符串，[read] 与 [write] 负责换算。
@@ -51,7 +55,7 @@ val SyncedSettings: List<SyncedSetting> = listOf(
     bool("bundleSubtitles", { it.bundleSubtitlesFlow }) { setBundleSubtitlesEnabled(it) },
     bool("autoCleanNames", { it.autoCleanNamesFlow }) { setAutoCleanNamesEnabled(it) },
     bool("syncPlayHistory", { it.syncPlayHistoryFlow }) { setSyncPlayHistoryEnabled(it) },
-    // 批量重命名用积木还是写正则，看的是这个人的水平，不是这台设备
+    // 批量重命名默认使用正则文本还是规则积木属于用户的操作习惯，随账号跨设备同步
     bool("renameRegexTextMode", { it.renameRegexTextModeFlow }) { setRenameRegexTextMode(it) },
     // 空串是「跟随系统」。设置接口没有写回跟随系统的入口，远端的空值不往本机写
     SyncedSetting("themeMode", { prefs -> prefs.themeModeFlow.map { it.orEmpty() } }, { prefs, value -> if (value.isNotEmpty()) prefs.setThemeMode(value) }),
@@ -111,7 +115,7 @@ class PikoSettingsSync(
         cacheStore: PikoCacheStore?,
         scope: CoroutineScope,
         enabled: Flow<Boolean>,
-    ) : this(clients, DriveSettingsStore(clients, driveRepo), preferences, cacheStore, scope, enabled)
+    ) : this(clients, DriveSettingsStore(clients, driveRepo, tag = TAG), preferences, cacheStore, scope, enabled)
 
     enum class Status { IDLE, SYNCING, SYNCED, FAILED }
 
@@ -148,13 +152,23 @@ class PikoSettingsSync(
     suspend fun syncNow(): Boolean = lock.withLock {
         val account = clients.currentClient.value?.account ?: return@withLock false
         _status.value = Status.SYNCING
-        val ok = runCatching { sync(account) }
-            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
-            .logFailure(TAG, "设置同步失败")
-            .isSuccess
-        _status.value = if (ok) Status.SYNCED else Status.FAILED
-        if (ok) _lastSynced.value = now()
-        ok
+        try {
+            sync(account)
+            _status.value = Status.SYNCED
+            _lastSynced.value = now()
+            true
+        } catch (e: CancellationException) {
+            _status.value = Status.IDLE
+            throw e
+        } catch (_: SyncAccountSwitchedException) {
+            PikoLog.d(TAG, "Skipped sync: active account changed")
+            _status.value = Status.IDLE
+            false
+        } catch (e: Throwable) {
+            PikoLog.w(TAG, "Settings sync failed", e)
+            _status.value = Status.FAILED
+            false
+        }
     }
 
     private suspend fun sync(account: String) {
@@ -172,7 +186,21 @@ class PikoSettingsSync(
             }
         }
         val remoteText = remote.read(account)
-        val remoteValues = remoteText?.let { json.decodeFromString(Document.serializer(), it).values }.orEmpty()
+        val remoteDoc = if (remoteText != null) {
+            val parsed = runCatching { json.decodeFromString(Document.serializer(), remoteText) }
+                .onFailure {
+                    PikoLog.w(TAG, "Remote settings document is malformed (${it::class.simpleName}); skipping sync to preserve remote file")
+                }
+                .getOrNull() ?: return
+            if (parsed.version > VERSION) {
+                PikoLog.w(TAG, "Remote settings version ${parsed.version} is newer than supported $VERSION; skipping sync")
+                return
+            }
+            parsed
+        } else {
+            null
+        }
+        val remoteValues = remoteDoc?.values.orEmpty()
 
         // 远端带着已停用的项时，合并结果与远端不同，下面随即写一份不含它的新文件，旧文件随之删掉
         val merged = (mine.keys + remoteValues.keys - RetiredSettingKeys).associateWith { key ->
@@ -199,15 +227,20 @@ class PikoSettingsSync(
         val pushed = merged != remoteValues
         if (pushed) remote.write(account, json.encodeToString(Document.serializer(), Document(VERSION, merged)), stamp)
         // 只记项名，不记值：值里有快速访问的文件夹 ID 与主题这类无关排查的内容
-        PikoLog.i(TAG, "设置同步：远端${if (remoteText == null) "无文件" else " ${remoteValues.size} 项"}，" +
-            "本机改过 ${mine.count { it.value.updatedAt == stamp }} 项，写入本机 ${pulled.size} 项${if (pulled.isEmpty()) "" else " $pulled"}，" +
-            "${if (pushed) "已推送 ${merged.size} 项" else "无需推送"}，历时 ${now() - stamp} ms")
+        PikoLog.i(
+            TAG,
+            "Settings synced: remote=${if (remoteText == null) "none" else "${remoteValues.size} keys"}, " +
+                "localModified=${mine.count { it.value.updatedAt == stamp }}, " +
+                "pulled=${pulled.size}${if (pulled.isEmpty()) "" else " $pulled"}, " +
+                "pushed=${if (pushed) "${merged.size} keys" else "no"}, elapsed=${now() - stamp} ms",
+        )
     }
 
     private suspend fun loadState(account: String): Map<String, Entry> {
         val text = cacheStore?.read(stateKey(account)) ?: return emptyMap()
         return runCatching { json.decodeFromString(StateSerializer, text) }
-            .logFailure(TAG, "读不出本机的同步记录，按从未同步处理").getOrDefault(emptyMap())
+            .logFailure(TAG, "Failed to parse local settings sync ledger; treating as unsynced")
+            .getOrDefault(emptyMap())
     }
 
     private suspend fun saveState(account: String, state: Map<String, Entry>) {
@@ -250,23 +283,47 @@ interface RemoteSettingsStore {
 }
 
 /**
- * 网盘里的同步文件：`.piko/<filePrefix><毫秒时间戳>.json`。设置是 `settings-`，整棵归档过的文件夹是 `vault-trees-`
- * （见 VaultTreeSync），秒传文件的来源账本是 `sources-`（见 SourceLedgerSync），各管各的一份。PikPak 上传同名文件不覆盖，另起一个带序号的，
- * 所以每次写一个新文件、再删掉旧的；读的时候取时间戳最大的一个。删旧文件失败也无妨，下次读的仍是最新的那个。
+ * 网盘 `.piko/<filePrefix><毫秒时间戳>.json` 同步文件存储，供偏好设置（`settings-`）、压缩包密码（`archive-passwords-`）、
+ * MetaTube 配置（`metatube-`）、固定标签（`pinned-tabs-`）、来源账本（`sources-`）、归档星标（`vault-stars-`）与归档目录树
+ * （`vault-trees-`）各自按独立前缀存取。
+ *
+ * PikPak 上传同名文件会自动重命名而不覆盖，因此每次写入新时间戳文件后再清理较早文件，读取时始终选取已完成上传且时间戳最大的一份。
  */
 class DriveSettingsStore(
     private val clients: PikoClientProvider,
     private val driveRepo: PikoDriveRepository,
     private val filePrefix: String = "settings-",
+    private val tag: String = DEFAULT_TAG,
 ) : RemoteSettingsStore {
+    private data class CachedRemoteFile(val fileId: String, val stamp: Long, val text: String)
+
     // 各账号的 .piko 文件夹 ID：找它要列整个根目录，每次同步都找一遍太贵
     private val folderIds = HashMap<String, String>()
+    private val lastRead = HashMap<String, CachedRemoteFile>()
+    private val cacheLock = Mutex()
 
     override suspend fun read(account: String): String? {
-        val file = latestFile(folderOf(account)) ?: return null
+        val (_, entries) = folderAndEntriesOf(account)
+        // 上传分创建元数据与传输内容两步；进程若在两步之间中断会留下 phase != COMPLETE 的空壳文件且无下载直链，
+        // 必须过滤掉未完成条目，避免因其时间戳最新而阻塞后续读取与清理。
+        val file = entries
+            .filter { it.isSettingsFile() && it.phase == TaskPhase.COMPLETE }
+            .maxByOrNull { it.stamp() }
+            ?: return null
+        val stamp = file.stamp()
+        val cached = cacheLock.withLock {
+            lastRead[account]?.takeIf { it.fileId == file.id && it.stamp == stamp }?.text
+        }
+        if (cached != null) {
+            requireCurrent(account)
+            return cached
+        }
         val text = driveRepo.readBytes(file.id).getOrThrow().decodeToString()
         // 读回来的要并进本机的那一份，那时本机已换成别的账号的，就并错了地方
         requireCurrent(account)
+        cacheLock.withLock {
+            lastRead[account] = CachedRemoteFile(file.id, stamp, text)
+        }
         return text
     }
 
@@ -274,47 +331,57 @@ class DriveSettingsStore(
         val folder = folderOf(account)
         val name = "$filePrefix$stamp$FILE_SUFFIX"
         requireCurrent(account)
-        driveRepo.uploadBytes(folder, name, text.encodeToByteArray()).getOrThrow()
+        val createdId = driveRepo.uploadBytes(folder, name, text.encodeToByteArray()).getOrThrow()
+        cacheLock.withLock {
+            lastRead[account] = CachedRemoteFile(createdId, stamp, text)
+        }
         // 只删比这一份旧的：另一台设备同时在同步时，它更新的那份（可能还在上传）留给它自己收拾
-        val stale = driveRepo.listAllFiles(folder).logFailure(TAG, "写入后列出 .piko 失败，旧的 $filePrefix 文件留到下次清理")
+        val stale = driveRepo.listAllFiles(folder)
+            .logFailure(tag, "Failed to list .piko after writing $name; stale $filePrefix files will be cleaned up next run")
             .getOrNull().orEmpty().filter { it.isSettingsFile() && it.stamp() < stamp }
-        if (stale.isNotEmpty()) driveRepo.delete(stale.map { it.id }).logFailure(TAG, "删除旧的 $filePrefix 文件失败（${stale.size} 个）")
+        if (stale.isNotEmpty()) {
+            driveRepo.delete(stale.map { it.id })
+                .logFailure(tag, "Failed to delete ${stale.size} stale $filePrefix files")
+        }
     }
 
-    // 记着的文件夹可能已被删掉或移走：列不出来就忘掉它，重新找一次。找与建在全部实例共用的锁里：
-    // 设置与归档树两份同步在登录后同时开始，各自没找到就各建一个 .piko
-    private suspend fun folderOf(account: String): String = folderLock.withLock {
+    // 记着的文件夹可能已被删掉或移走：列不出来就忘掉它，重新找一次。多个同步器在登录后并发启动，
+    // 查找与创建共用静态 folderLock，防止并发在根目录建出重复的 .piko 文件夹。
+    private suspend fun folderAndEntriesOf(account: String): Pair<String, List<FileStat>> = folderLock.withLock {
         requireCurrent(account)
         folderIds[account]?.let { known ->
-            if (driveRepo.listAllFiles(known).logFailure(TAG, "列不出记着的 .piko 文件夹 $known，重新查找").isSuccess) return@withLock known
+            val listed = driveRepo.listAllFiles(known)
+                .logFailure(tag, "Failed to list cached .piko folder $known; re-resolving from root")
+            if (listed.isSuccess) return@withLock known to listed.getOrThrow()
             folderIds.remove(account)
         }
         val root = driveRepo.listAllFiles("").getOrThrow()
         requireCurrent(account)
-        val id = root.firstOrNull { it.isFolder && it.name == PikoSettingsSync.FOLDER_NAME && !it.trashed }?.id
-            ?: driveRepo.createFolder("", PikoSettingsSync.FOLDER_NAME).getOrThrow()
-                .also { PikoLog.i(TAG, "网盘根目录没有 .piko，已新建：$it") }
-        folderIds[account] = id
-        id
+        val existingId = root.firstOrNull { it.isFolder && it.name == PikoSettingsSync.FOLDER_NAME && !it.trashed }?.id
+        if (existingId != null) {
+            folderIds[account] = existingId
+            val entries = driveRepo.listAllFiles(existingId).getOrThrow()
+            return@withLock existingId to entries
+        }
+        val created = driveRepo.createFolder("", PikoSettingsSync.FOLDER_NAME).getOrThrow()
+            .also { PikoLog.i(tag, "Created missing .piko sync folder: $it") }
+        folderIds[account] = created
+        created to emptyList()
     }
+
+    private suspend fun folderOf(account: String): String = folderAndEntriesOf(account).first
 
     /**
-     * 网盘读写走的是仓库眼前的账号，不是 [account]：同步做到一半换了号，接下来的请求就落在新账号的网盘里，
-     * 记着的 .piko 列不出来，于是在新账号的根目录找到它的 .piko、记成旧账号的，把旧账号的设置、来源账本推进去。
-     * 每一步之前核对一次，换了号就放弃这一轮，由新账号的同步接着做。
+     * 网盘读写走的是仓库眼前的活动账号而非 [account] 参数：每步操作前后均须核对当前账号，
+     * 一旦切换账号立即抛出 [SyncAccountSwitchedException] 中止本轮同步，防止跨账号污染 `.piko` 数据。
      */
     private fun requireCurrent(account: String) {
-        check(clients.currentClient.value?.account == account) { "同步途中换了账号，放弃这一轮" }
+        if (clients.currentClient.value?.account != account) {
+            throw SyncAccountSwitchedException()
+        }
     }
 
-    // 上传是先建文件、再传内容，进程死在两步之间就留下一份 PENDING 的空壳，没有下载链接。
-    // 它的时间戳最新，不排除掉就次次读它失败，同步走不到写新文件、删旧文件那一步，永远清不掉它
-    private suspend fun latestFile(folderId: String): FileStat? =
-        driveRepo.listAllFiles(folderId).getOrThrow()
-            .filter { it.isSettingsFile() && it.phase == TaskPhase.COMPLETE }
-            .maxByOrNull { it.stamp() }
-
-    // 前缀后面紧跟时间戳：「settings-」不会把「vault-trees-」的文件认成自己的，反过来也一样
+    // 前缀后面紧跟时间戳：各同步器的文件名前缀互不包含，不会误认彼此的同步文件
     private fun FileStat.isSettingsFile() = !isFolder && name.startsWith(filePrefix) && name.endsWith(FILE_SUFFIX) && stampOrNull() != null
 
     private fun FileStat.stampOrNull() = name.removePrefix(filePrefix).removeSuffix(FILE_SUFFIX).toLongOrNull()
@@ -324,6 +391,6 @@ class DriveSettingsStore(
     private companion object {
         val folderLock = Mutex()
         const val FILE_SUFFIX = ".json"
-        const val TAG = "SettingsSync"
+        const val DEFAULT_TAG = "SettingsSync"
     }
 }

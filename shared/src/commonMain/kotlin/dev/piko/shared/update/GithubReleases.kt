@@ -2,9 +2,6 @@ package dev.piko.shared.update
 
 import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.log.PikoLog
-import io.ktor.util.Digest
-import kotlinx.io.Buffer
-import kotlinx.io.readByteArray
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -13,9 +10,12 @@ import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.isSuccess
+import io.ktor.util.Digest
 import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
+import kotlinx.io.Buffer
 import kotlinx.io.IOException
+import kotlinx.io.readByteArray
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -67,7 +67,7 @@ class ChecksumMismatchException(message: String) : Exception(message)
 fun Throwable.isNetworkFailure(): Boolean = this is IOException
 
 /**
- * 从 GitHub Releases 取最新版本并下载附件。两端共用；选哪个附件、怎么安装归各平台。
+ * 从 GitHub Releases 取最新版本并下载附件。Android 与桌面各端共用；选哪个附件、怎么安装归各平台。
  *
  * 最新版本按 [latestReleaseUrls] 的先后取，前一个失败才试下一个，见 [LATEST_RELEASE_SOURCES]。
  * 可换，是为了在本机用假的 Release 端到端地走一遍更新流程。
@@ -89,23 +89,29 @@ class GithubReleaseClient(
     } catch (e: CancellationException) {
         throw e
     } catch (e: Throwable) {
+        PikoLog.w(TAG, "Update check failed across all ${latestReleaseUrls.size} release sources (current=$currentVersion)", e)
         ReleaseCheck.Failed(e)
     }
 
     /** 逐个来源地取，都失败时抛最后一个的异常，前面的挂在 suppressed 上，日志里看得到每一处为什么失败。 */
     private suspend fun fetchLatest(): LatestRelease? {
         var failure: Throwable? = null
+        val total = latestReleaseUrls.size
         for ((index, url) in latestReleaseUrls.withIndex()) {
             try {
-                return fetchLatest(url).also { if (index > 0) PikoLog.i(TAG, "取最新版本：前 $index 个来源失败，第 ${index + 1} 个取到") }
+                return fetchLatest(url).also {
+                    if (index > 0) {
+                        PikoLog.i(TAG, "Fetched latest release from fallback source #${index + 1}/$total after $index failed source(s)")
+                    }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                PikoLog.d(TAG, "取最新版本：第 ${index + 1} 个来源失败，${e::class.simpleName}：${e.message}")
+                PikoLog.d(TAG, "Latest release source #${index + 1}/$total failed ($url): ${e::class.simpleName}: ${e.message}")
                 failure = e.also { current -> failure?.let(current::addSuppressed) }
             }
         }
-        throw checkNotNull(failure) { "没有可用的 Release 来源" }
+        throw checkNotNull(failure) { "No release sources configured" }
     }
 
     /** 草稿与预发布不算新版本，返回 null。releases/latest 本身已排除这两类，这里再防一道。 */
@@ -119,7 +125,7 @@ class GithubReleaseClient(
         val release = json.decodeFromString(ReleaseDto.serializer(), response.bodyAsText())
         if (release.draft || release.prerelease) return null
         val version = release.tagName.removePrefix("v")
-        check(version.isNotEmpty()) { "Release 没有 tag" }
+        check(version.isNotEmpty()) { "Release payload has empty tag_name" }
         val assets = release.assets.map { asset ->
             ReleaseAsset(
                 name = asset.name,
@@ -141,14 +147,21 @@ class GithubReleaseClient(
                     digest += buffer.copyOf(length)
                 }, onProgress = {})
                 val actual = digest.build().toHexString()
-                if (actual != manifestAsset.sha256) throw ChecksumMismatchException("Release manifest checksum mismatch")
+                if (actual != manifestAsset.sha256) {
+                    throw ChecksumMismatchException(
+                        "Release manifest checksum mismatch: expected=${manifestAsset.sha256}, actual=$actual",
+                    )
+                }
                 val manifest = json.decodeFromString(ReleaseDto.serializer(), bytes.readByteArray().decodeToString())
                 if (notes.isBlank()) notes = updateNotesOf(manifest.body.orEmpty())
                 parseLocalizedNotesMap(manifest.localizedNotes)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: ChecksumMismatchException) {
+                PikoLog.w(TAG, "Supplementary release manifest failed SHA-256 verification; falling back to default release body", e)
+                emptyMap()
             } catch (e: Exception) {
-                PikoLog.d(TAG, "取多语言更新说明失败：${e::class.simpleName}")
+                PikoLog.d(TAG, "Failed to fetch supplementary localized release notes: ${e::class.simpleName}: ${e.message}")
                 emptyMap()
             }
         } else directLocalized
@@ -168,9 +181,16 @@ class GithubReleaseClient(
         onProgress: (Float) -> Unit,
     ) {
         var failure: Throwable? = null
-        for ((index, url) in asset.urls.withIndex()) {
+        val urls = asset.urls
+        for ((index, url) in urls.withIndex()) {
             var written = 0L
-            if (index > 0) PikoLog.i(TAG, "下载更新：第 $index 个地址未取到，换第 ${index + 1} 个")
+            if (index > 0) {
+                PikoLog.i(
+                    TAG,
+                    "Switching download of ${asset.name} to mirror #${index + 1}/${urls.size} after error before first byte: " +
+                        "${failure?.let { "${it::class.simpleName}: ${it.message}" } ?: "unknown"}",
+                )
+            }
             try {
                 http.prepareGet(url) { header("User-Agent", userAgent) }.execute { response ->
                     check(response.status.isSuccess()) { "HTTP ${response.status.value} ($url)" }
@@ -189,17 +209,20 @@ class GithubReleaseClient(
                             onProgress(progress)
                         }
                     }
-                    check(asset.size <= 0 || written == asset.size) { "下载不完整：$written / ${asset.size}" }
+                    check(asset.size <= 0 || written == asset.size) { "Incomplete asset download for ${asset.name}: $written / ${asset.size} bytes" }
                 }
                 return
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                if (written > 0) throw e
+                if (written > 0) {
+                    PikoLog.w(TAG, "Download of ${asset.name} interrupted after $written/${asset.size} bytes on source #${index + 1}/${urls.size}", e)
+                    throw e
+                }
                 failure = e.also { current -> failure?.let(current::addSuppressed) }
             }
         }
-        throw checkNotNull(failure) { "${asset.name} 没有下载地址" }
+        throw checkNotNull(failure) { "No download URLs available for ${asset.name}" }
     }
 
     /**
@@ -214,37 +237,52 @@ class GithubReleaseClient(
     ) {
         val expected = range.last - range.first + 1
         var failure: Throwable? = null
-        for (url in asset.urls) {
+        val urls = asset.urls
+        for ((index, url) in urls.withIndex()) {
             var written = 0L
+            if (index > 0) {
+                PikoLog.i(
+                    TAG,
+                    "Switching range download of ${asset.name} (bytes=${range.first}-${range.last}) to mirror #${index + 1}/${urls.size} after error: " +
+                        "${failure?.let { "${it::class.simpleName}: ${it.message}" } ?: "unknown"}",
+                )
+            }
             try {
                 http.prepareGet(url) {
                     header("User-Agent", userAgent)
                     header("Range", "bytes=${range.first}-${range.last}")
                 }.execute { response ->
-                    check(response.status == HttpStatusCode.PartialContent) { "HTTP ${response.status.value}，不是分段响应 ($url)" }
+                    check(response.status == HttpStatusCode.PartialContent) {
+                        "HTTP ${response.status.value} (expected 206 Partial Content for $url)"
+                    }
                     val contentRange = response.headers["Content-Range"].orEmpty()
-                    check(contentRange.startsWith("bytes ${range.first}-${range.last}/")) { "分段响应的区间不符：$contentRange ($url)" }
+                    check(contentRange.startsWith("bytes ${range.first}-${range.last}/")) {
+                        "Mismatched Content-Range '$contentRange' for requested ${range.first}-${range.last} ($url)"
+                    }
                     val channel = response.bodyAsChannel()
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
                         val read = channel.readAvailable(buffer)
                         if (read < 0) break
                         if (read == 0) continue
-                        check(written + read <= expected) { "分段响应超出区间 ($url)" }
+                        check(written + read <= expected) { "Range response exceeded requested length $expected ($url)" }
                         onChunk(buffer, read)
                         written += read
                     }
-                    check(written == expected) { "分段下载不完整：$written / $expected" }
+                    check(written == expected) { "Incomplete range download for ${asset.name}: $written / $expected bytes" }
                 }
                 return
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                if (written > 0) throw e
+                if (written > 0) {
+                    PikoLog.w(TAG, "Range download of ${asset.name} (bytes=${range.first}-${range.last}) interrupted after $written/$expected bytes", e)
+                    throw e
+                }
                 failure = e.also { current -> failure?.let(current::addSuppressed) }
             }
         }
-        throw checkNotNull(failure) { "${asset.name} 没有下载地址" }
+        throw checkNotNull(failure) { "No download URLs available for ${asset.name}" }
     }
 
     companion object {

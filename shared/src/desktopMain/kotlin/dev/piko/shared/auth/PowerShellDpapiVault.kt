@@ -3,6 +3,8 @@ package dev.piko.shared.auth
 import dev.piko.shared.log.PikoLog
 import java.nio.file.Path
 import java.util.Base64
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 
 /**
  * 经 Windows PowerShell 调 DPAPI（ProtectedData，当前用户范围，不带附加熵），密文存 `<key>.<账户标记>.bin`，
@@ -15,7 +17,10 @@ import java.util.Base64
 class PowerShellDpapiVault(directory: Path) : FileSecretVault(directory, "${windowsUserTag()}.bin") {
     override fun seal(data: ByteArray): ByteArray {
         val result = run("Protect", data)
-        if (result.exitCode != 0) throw VaultUnavailableException("DPAPI 加密失败：powershell 退出码 ${result.exitCode}")
+        if (result.exitCode != 0) {
+            val detail = result.errorSummary.let { if (it.isEmpty()) "" else " ($it)" }
+            throw VaultUnavailableException("DPAPI Protect failed: PowerShell exitCode=${result.exitCode}$detail")
+        }
         return result.output
     }
 
@@ -24,14 +29,17 @@ class PowerShellDpapiVault(directory: Path) : FileSecretVault(directory, "${wind
         return when (result.exitCode) {
             0 -> result.output
             CRYPTOGRAPHIC_FAILURE -> {
-                PikoLog.w(TAG, "DPAPI 解不开这份凭据（换了机器或用户），当作没有")
+                PikoLog.w(TAG, "DPAPI failed to unprotect stored secret (different Windows user or machine); treating as absent")
                 null
             }
-            else -> throw VaultUnavailableException("DPAPI 解密失败：powershell 退出码 ${result.exitCode}")
+            else -> {
+                val detail = result.errorSummary.let { if (it.isEmpty()) "" else " ($it)" }
+                throw VaultUnavailableException("DPAPI Unprotect failed: PowerShell exitCode=${result.exitCode}$detail")
+            }
         }
     }
 
-    private class Result(val exitCode: Int, val output: ByteArray)
+    private class Result(val exitCode: Int, val output: ByteArray, val errorSummary: String)
 
     // 机密经标准输入进出，不放进命令行；脚本本身不含机密，走 -EncodedCommand 免去引号转义
     private fun run(operation: String, data: ByteArray): Result {
@@ -49,12 +57,36 @@ class PowerShellDpapiVault(directory: Path) : FileSecretVault(directory, "${wind
         """.trimIndent()
         val encoded = Base64.getEncoder().encodeToString(script.toByteArray(Charsets.UTF_16LE))
         val process = ProcessBuilder(powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded)
-            .redirectError(ProcessBuilder.Redirect.DISCARD)
             .start()
-        process.outputStream.use { it.write(Base64.getEncoder().encode(data)) }
-        val output = process.inputStream.use { String(it.readAllBytes()) }
-        val exitCode = process.waitFor()
-        return Result(exitCode, if (exitCode == 0) Base64.getDecoder().decode(output.trim()) else ByteArray(0))
+        val stdoutFuture = CompletableFuture.supplyAsync {
+            process.inputStream.use { String(it.readAllBytes()) }
+        }
+        val stderrFuture = CompletableFuture.supplyAsync {
+            process.errorStream.use { String(it.readNBytes(4096)) }
+        }
+        runCatching {
+            process.outputStream.use { it.write(Base64.getEncoder().encode(data)) }
+        }
+        if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            PikoLog.w(TAG, "PowerShell DPAPI $operation timed out after ${TIMEOUT_SECONDS}s")
+            throw VaultUnavailableException("PowerShell DPAPI $operation timed out after ${TIMEOUT_SECONDS}s")
+        }
+        val exitCode = process.exitValue()
+        val stdout = runCatching { stdoutFuture.get(2, TimeUnit.SECONDS) }.getOrDefault("")
+        val stderr = runCatching { stderrFuture.get(2, TimeUnit.SECONDS) }.getOrDefault("")
+            .lineSequence()
+            .map(String::trim)
+            .firstOrNull(String::isNotEmpty)
+            .orEmpty()
+        val outputBytes = if (exitCode == 0) {
+            runCatching { Base64.getDecoder().decode(stdout.trim()) }.getOrElse { e ->
+                throw VaultUnavailableException("PowerShell DPAPI $operation returned invalid Base64 (${e::class.simpleName})", e)
+            }
+        } else {
+            ByteArray(0)
+        }
+        return Result(exitCode, outputBytes, stderr)
     }
 
     // 写全路径：PATH 里的 powershell 可能被别的同名程序顶替
@@ -62,7 +94,8 @@ class PowerShellDpapiVault(directory: Path) : FileSecretVault(directory, "${wind
         (System.getenv("SystemRoot") ?: "C:\\Windows") + "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
 
     private companion object {
-        const val TAG = "credentials"
+        const val TAG = "Credentials"
         const val CRYPTOGRAPHIC_FAILURE = 3
+        const val TIMEOUT_SECONDS = 30L
     }
 }

@@ -107,5 +107,5 @@ private val windowsOwnerOnly: FileAttribute<List<AclEntry>>? by lazy {
             override fun name() = "acl:acl"
             override fun value() = listOf(entry)
         }
-    }.onFailure { PikoLog.w("credentials", "查不到当前用户，机密文件沿用继承的权限", it) }.getOrNull()
+    }.onFailure { PikoLog.w("Credentials", "Failed to look up current Windows user principal; secret files will inherit directory ACLs", it) }.getOrNull()
 }

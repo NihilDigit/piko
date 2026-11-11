@@ -7,12 +7,12 @@ package dev.piko.shared.sync
 internal expect fun secureRandomBytes(count: Int): ByteArray
 
 /**
- * 不依赖任何平台加密库的 [SyncCipher]：PBKDF2-HMAC-SHA256 派生 256 位密钥，AES-256-GCM 加密，
- * 结果布局与 [JvmSyncCipher] 完全一致（IV(12) + 密文 + 标签(16)），所以 iOS 写的同步包桌面能解、
- * 桌面包 iOS 也能解。
+ * 不依赖任何平台加密库的 [SyncCipher]（供 iOS 等 Kotlin/Native 目标使用）：PBKDF2-HMAC-SHA256 派生 256 位密钥，
+ * AES-256-GCM 加密，线格式与 Android/桌面端的 `JvmSyncCipher` 完全一致（`IV(12) + 密文 + 标签(16)`），
+ * 跨平台密文互通由单元测试交叉验证。
  *
- * 之所以不用平台实现：桌面与 Android 走 JDK，iOS 走 CommonCrypto，两边参数一旦有细微差别（比如
- * 标签长度或 IV 布局），用户就会在两台设备之间丢数据。同一份代码三端跑，差异面为零。
+ * 之所以在 Native 端自备纯 Kotlin 实现：iOS CommonCrypto 未对 Kotlin/Native 暴露稳定的公开 AES-GCM C 绑定，
+ * 直接对齐 `JvmSyncCipher` 的参数与字节布局可消除平台桥接差异。
  */
 class PortableSyncCipher : SyncCipher {
     override fun newSalt(): ByteArray = secureRandomBytes(SALT_BYTES)

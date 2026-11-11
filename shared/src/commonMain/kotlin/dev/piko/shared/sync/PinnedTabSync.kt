@@ -6,8 +6,7 @@ import dev.piko.shared.data.PinnedTabRecord
 import dev.piko.shared.data.PinnedTabs
 import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.log.PikoLog
-import dev.piko.shared.log.logFailure
-import kotlinx.coroutines.CancellationException
+import kotlin.time.Clock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
@@ -18,7 +17,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlin.time.Clock
 
 /** Sync account-owned pinned directories through the same remote store as settings. */
 class PinnedTabSync(
@@ -30,7 +28,7 @@ class PinnedTabSync(
     private val now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
 ) {
     constructor(clients: PikoClientProvider, driveRepo: PikoDriveRepository, pinnedTabs: PinnedTabs, scope: CoroutineScope, enabled: Flow<Boolean>) :
-        this(clients, DriveSettingsStore(clients, driveRepo, FILE_PREFIX), pinnedTabs, scope, enabled)
+        this(clients, DriveSettingsStore(clients, driveRepo, FILE_PREFIX, TAG), pinnedTabs, scope, enabled)
 
     private val lock = Mutex()
 
@@ -52,25 +50,42 @@ class PinnedTabSync(
     suspend fun syncNow(): Boolean = syncSnapshot().isSuccess
 
     private suspend fun syncSnapshot(expectedAccount: String? = null): Result<Map<String, PinnedTabRecord>> = lock.withLock {
-        val account = clients.currentClient.value?.account ?: return@withLock Result.failure(IllegalStateException("未登录"))
-        if (expectedAccount != null && account != expectedAccount) throw CancellationException("固定标签账号已改变")
-        runSuspendCatching { sync(account) }.logFailure(TAG, "固定标签同步失败")
+        val account = clients.currentClient.value?.account
+            ?: return@withLock Result.failure(IllegalStateException("No active account"))
+        if (expectedAccount != null && account != expectedAccount) {
+            PikoLog.d(TAG, "Skipped sync: active account changed")
+            return@withLock Result.failure(SyncAccountSwitchedException())
+        }
+        runSuspendCatching { sync(account) }.onFailure { err ->
+            if (err is SyncAccountSwitchedException) {
+                PikoLog.d(TAG, "Skipped sync: active account changed")
+            } else {
+                PikoLog.w(TAG, "Pinned tabs sync failed", err)
+            }
+        }
     }
 
     private fun checkAccount(account: String) {
-        if (clients.currentClient.value?.account != account) throw CancellationException("固定标签账号已改变")
+        if (clients.currentClient.value?.account != account) throw SyncAccountSwitchedException()
     }
 
     private suspend fun sync(account: String): Map<String, PinnedTabRecord> {
         checkAccount(account)
         pinnedTabs.switchAccount(account)
-        val local = pinnedTabs.awaitAccountReady(account) ?: throw CancellationException("固定标签账号已改变")
+        val local = pinnedTabs.awaitAccountReady(account) ?: throw SyncAccountSwitchedException()
         checkAccount(account)
         val text = remote.read(account)
         checkAccount(account)
-        val remoteRecords = text?.let(PinnedTabs::decode).orEmpty()
+        val remoteRecords = if (text != null) {
+            PinnedTabs.decode(text) ?: run {
+                PikoLog.w(TAG, "Remote pinned tabs file is malformed or uses an unsupported version; skipping sync to preserve remote file")
+                return local
+            }
+        } else {
+            emptyMap()
+        }
         val merged = pinnedTabs.mergeAndSnapshot(remoteRecords, now(), expectedAccount = account)
-            ?: throw CancellationException("固定标签账号已改变")
+            ?: throw SyncAccountSwitchedException()
         val pushed = merged != remoteRecords
         if (pushed) {
             checkAccount(account)
@@ -82,8 +97,8 @@ class PinnedTabSync(
         val activeMerged = merged.values.count { it.pinned }
         PikoLog.i(
             TAG,
-            "固定标签同步：本机 $activeLocal 条，远端${if (text == null) "无文件" else " $activeRemote 条"}，" +
-                "合并后 $activeMerged 条，${if (pushed) "已推送" else "无需推送"}",
+            "Pinned tabs synced: local=$activeLocal, remote=${if (text == null) "none" else activeRemote.toString()}, " +
+                "merged=$activeMerged, pushed=$pushed",
         )
         return merged
     }

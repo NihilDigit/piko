@@ -2,6 +2,7 @@
 
 package dev.piko.shared.auth
 
+import dev.piko.shared.log.PikoLog
 import kotlinx.cinterop.*
 import platform.CoreFoundation.*
 import platform.Security.*
@@ -35,16 +36,20 @@ class IosKeychainVault internal constructor(
                     errSecItemNotFound -> null
                     errSecSuccess -> {
                         if (value == null || CFGetTypeID(value) != CFDataGetTypeID()) {
+                            PikoLog.w(TAG, "Keychain read returned unexpected CFType result")
                             throw VaultUnavailableException("Keychain returned an unexpected value")
                         }
                         val data: CFDataRef = value.reinterpret()
                         val size = CFDataGetLength(data)
                         if (size < 0 || size > Int.MAX_VALUE) {
+                            PikoLog.w(TAG, "Keychain read returned out-of-bounds CFData length: $size")
                             throw VaultUnavailableException("Keychain value is too large")
                         }
                         if (size == 0L) byteArrayOf() else {
-                            val bytes = CFDataGetBytePtr(data)
-                                ?: throw VaultUnavailableException("Keychain returned no bytes")
+                            val bytes = CFDataGetBytePtr(data) ?: run {
+                                PikoLog.w(TAG, "Keychain read returned null byte pointer for non-empty CFData")
+                                throw VaultUnavailableException("Keychain returned no bytes")
+                            }
                             bytes.reinterpret<ByteVar>().readBytes(size.toInt())
                         }
                     }
@@ -118,8 +123,14 @@ class IosKeychainVault internal constructor(
     }
 
     // Never include keys, service names, or secret bytes in diagnostics.
-    private fun fail(operation: String, status: Int): Nothing =
+    private fun fail(operation: String, status: Int): Nothing {
+        PikoLog.w(TAG, "iOS Keychain $operation failed: OSStatus=$status")
         throw VaultUnavailableException("Keychain $operation failed: OSStatus=$status")
+    }
+
+    private companion object {
+        const val TAG = "Credentials"
+    }
 }
 
 /** Injectable system boundary so Native regression tests do not require Keychain entitlements. */

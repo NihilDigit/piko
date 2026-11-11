@@ -6,8 +6,7 @@ import dev.piko.shared.data.VaultStarRecord
 import dev.piko.shared.data.VaultStars
 import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.log.PikoLog
-import dev.piko.shared.log.logFailure
-import kotlinx.coroutines.CancellationException
+import kotlin.time.Clock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
@@ -18,7 +17,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlin.time.Clock
 
 /**
  * 把 Piko 自管的归档星标账本（[VaultStars]）同步至网盘 `.piko/vault-stars-<时间戳>.json`。
@@ -37,7 +35,7 @@ class VaultStarSync(
         driveRepo: PikoDriveRepository,
         scope: CoroutineScope,
         enabled: Flow<Boolean>,
-    ) : this(clients, DriveSettingsStore(clients, driveRepo, FILE_PREFIX), driveRepo.vaultStars, scope, enabled)
+    ) : this(clients, DriveSettingsStore(clients, driveRepo, FILE_PREFIX, TAG), driveRepo.vaultStars, scope, enabled)
 
     private val lock = Mutex()
 
@@ -60,30 +58,52 @@ class VaultStarSync(
     suspend fun syncNow(): Boolean = syncSnapshot().isSuccess
 
     private suspend fun syncSnapshot(expectedAccount: String? = null): Result<Map<String, VaultStarRecord>> = lock.withLock {
-        val account = clients.currentClient.value?.account ?: return@withLock Result.failure(IllegalStateException("未登录"))
-        if (expectedAccount != null && account != expectedAccount) throw CancellationException("归档星标账号已改变")
-        runSuspendCatching { sync(account) }
-            .logFailure(TAG, "归档星标同步失败")
+        val account = clients.currentClient.value?.account
+            ?: return@withLock Result.failure(IllegalStateException("No active account"))
+        if (expectedAccount != null && account != expectedAccount) {
+            PikoLog.d(TAG, "Skipped sync: active account changed")
+            return@withLock Result.failure(SyncAccountSwitchedException())
+        }
+        runSuspendCatching { sync(account) }.onFailure { err ->
+            if (err is SyncAccountSwitchedException) {
+                PikoLog.d(TAG, "Skipped sync: active account changed")
+            } else {
+                PikoLog.w(TAG, "Vault stars sync failed", err)
+            }
+        }
+    }
+
+    private fun checkAccount(account: String) {
+        if (clients.currentClient.value?.account != account) throw SyncAccountSwitchedException()
     }
 
     private suspend fun sync(account: String): Map<String, VaultStarRecord> {
-        val localBefore = stars.awaitAccountReady(account) ?: throw CancellationException("归档星标账号已改变")
+        checkAccount(account)
+        val localBefore = stars.awaitAccountReady(account) ?: throw SyncAccountSwitchedException()
         val remoteText = remote.read(account)
-        if (clients.currentClient.value?.account != account) throw CancellationException("归档星标账号已改变")
-        val remoteRecords = remoteText?.let(VaultStars::decode).orEmpty()
+        checkAccount(account)
+        val remoteRecords = if (remoteText != null) {
+            VaultStars.decode(remoteText) ?: run {
+                PikoLog.w(TAG, "Remote vault stars file is malformed or uses an unsupported version; skipping sync to preserve remote file")
+                return localBefore
+            }
+        } else {
+            emptyMap()
+        }
         val beforeActive = localBefore.values.count { it.starred }
         val merged = stars.mergeAndSnapshot(remoteRecords, now(), expectedAccount = account)
-            ?: throw CancellationException("归档星标账号已改变")
+            ?: throw SyncAccountSwitchedException()
         val activeAfter = merged.values.count { it.starred }
         val pushed = merged != remoteRecords
         if (pushed) {
-            if (clients.currentClient.value?.account != account) throw CancellationException("归档星标账号已改变")
+            checkAccount(account)
             remote.write(account, VaultStars.encode(merged), now())
+            checkAccount(account)
         }
         PikoLog.d(
             TAG,
-            "归档星标同步：本机 $beforeActive 条，远端${if (remoteText == null) "无文件" else " ${remoteRecords.values.count { it.starred }} 条"}，" +
-                "合并后 $activeAfter 条，${if (pushed) "已推送" else "无需推送"}",
+            "Vault stars synced: local=$beforeActive, remote=${if (remoteText == null) "none" else remoteRecords.values.count { it.starred }.toString()}, " +
+                "merged=$activeAfter, pushed=$pushed",
         )
         return merged
     }

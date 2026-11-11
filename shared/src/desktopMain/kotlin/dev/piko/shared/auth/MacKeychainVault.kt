@@ -5,12 +5,12 @@ import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 /**
- * 登录钥匙串里的通用密码项，经 /usr/bin/security 存取，service 固定，account 属性是 key。
+ * 登录钥匙串里的通用密码项，经 `/usr/bin/security` 存取，service 固定，account 属性是 key。
  *
  * 不直调 SecItem：应用是 ad-hoc 签名，每个版本的签名都不同，钥匙串按签名认访问者，直调的话每次更新后
  * 都要弹授权框。项由 security 建出，访问控制列表信任的是 security 本身，它的签名随系统走，不会变。
  *
- * 以下取自 Apple 开源的 SecurityTool/macOS 源码（security.c、keychain_add.c、keychain_find.c），未在 Mac 上实测：
+ * 以下行为依据 Apple SecurityTool 源码（`security.c`、`keychain_add.c`、`keychain_find.c`）并在 macOS CI（`MacKeychainVaultTest`）实测核验：
  * - 机密不能放进命令行参数，ps 看得到。-w 省略取值时由 getpass 从终端读，不读标准输入，
  *   所以写入走 security -i：从标准输入逐行读命令执行，进程的退出码是最后一条命令的结果。
  * - -i 的一行上限 4096 字节（MAX_LINE_LEN），超出的部分不报错，而被当作下一行命令执行，写入前自己检查长度。
@@ -28,29 +28,33 @@ class MacKeychainVault(
         val result = security(listOf("find-generic-password", "-s", service, "-a", key, "-w"))
         return when (result.exitCode) {
             0 -> runCatching { Base64.getDecoder().decode(result.stdout.trimEnd('\n')) }
-                .onFailure { PikoLog.w(TAG, "钥匙串里的凭据不是本应用写入的格式，当作没有") }
+                .onFailure { PikoLog.w(TAG, "Keychain entry for key=$key is not valid Base64 (${it::class.simpleName}); treating as absent") }
                 .getOrNull()
             ITEM_NOT_FOUND -> null
-            else -> throw result.failure("读取钥匙串")
+            else -> throw result.failure("read", key)
         }
     }
 
     override fun write(key: String, data: ByteArray) {
         val line = "add-generic-password -U -s $service -a $key -w ${Base64.getEncoder().encodeToString(data)}\n"
-        if (line.length >= MAX_LINE_LENGTH) throw VaultUnavailableException("凭据过长，security -i 一行放不下")
+        if (line.length >= MAX_LINE_LENGTH) {
+            throw VaultUnavailableException("Secret payload for key=$key exceeds security -i line limit ($MAX_LINE_LENGTH bytes)")
+        }
         val result = security(listOf("-i"), stdin = line)
-        if (result.exitCode != 0) throw result.failure("写入钥匙串")
+        if (result.exitCode != 0) throw result.failure("write", key)
     }
 
     override fun delete(key: String) {
         val result = security(listOf("delete-generic-password", "-s", service, "-a", key))
-        if (result.exitCode != 0 && result.exitCode != ITEM_NOT_FOUND) throw result.failure("删除钥匙串项")
+        if (result.exitCode != 0 && result.exitCode != ITEM_NOT_FOUND) throw result.failure("delete", key)
     }
 
     // stderr 只有 security 自己的错误描述（如 User interaction is not allowed），不含机密
     private class Result(val exitCode: Int, val stdout: String, val stderr: String) {
-        fun failure(action: String) =
-            VaultUnavailableException("${action}失败：security 退出码 $exitCode，${stderr.trim().lines().firstOrNull().orEmpty()}")
+        fun failure(action: String, key: String): VaultUnavailableException {
+            val detail = stderr.trim().lines().firstOrNull().orEmpty()
+            return VaultUnavailableException("macOS Keychain $action failed for key=$key: exitCode=$exitCode${if (detail.isEmpty()) "" else ", $detail"}")
+        }
     }
 
     private fun security(arguments: List<String>, stdin: String? = null): Result {
@@ -60,7 +64,7 @@ class MacKeychainVault(
         // 先等退出再读输出：输出只有几 KB，放得进管道缓冲，先读的话读取会一直阻塞到进程退出，超时形同虚设
         if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
             process.destroyForcibly()
-            throw VaultUnavailableException("security 未在 $timeoutSeconds 秒内返回")
+            throw VaultUnavailableException("macOS security CLI timed out after ${timeoutSeconds}s")
         }
         val stdout = process.inputStream.use { String(it.readAllBytes()) }
         val stderr = process.errorStream.use { String(it.readAllBytes()) }
@@ -68,7 +72,7 @@ class MacKeychainVault(
     }
 
     private companion object {
-        const val TAG = "credentials"
+        const val TAG = "Credentials"
         const val SECURITY = "/usr/bin/security"
         const val ITEM_NOT_FOUND = 44
         const val MAX_LINE_LENGTH = 4096

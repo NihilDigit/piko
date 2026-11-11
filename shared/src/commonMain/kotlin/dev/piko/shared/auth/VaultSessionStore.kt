@@ -3,6 +3,7 @@ package dev.piko.shared.auth
 import dev.piko.shared.data.PikoCredentials
 import dev.piko.shared.data.PikoSessionStore
 import dev.piko.shared.data.SavedAccounts
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.cache.fileCacheName
 import io.github.nihildigit.pikpak.Session
 import kotlinx.coroutines.CancellationException
@@ -42,8 +43,12 @@ class VaultSessionStore(private val vault: SecretVault) : PikoSessionStore {
 
     override suspend fun loadAccounts(): SavedAccounts = locked {
         val bytes = vault.read(ACCOUNTS_KEY) ?: return@locked SavedAccounts()
-        val record = decode { json.decodeFromString<AccountsRecord>(bytes.decodeToString(throwOnInvalidSequence = true)) }
-        if (record.version != VERSION) corrupt()
+        val text = decodeUtf8(bytes, target = "accounts list")
+        val record = decodeJson(target = "accounts list") { json.decodeFromString<AccountsRecord>(text) }
+        if (record.version != VERSION) {
+            PikoLog.w(TAG, "Unsupported stored accounts schema version: ${record.version} (expected $VERSION)")
+            corrupt()
+        }
         record.accounts
     }
 
@@ -61,20 +66,40 @@ class VaultSessionStore(private val vault: SecretVault) : PikoSessionStore {
     }
 
     private fun readSecrets(account: String): SecretsRecord {
-        val bytes = vault.read(key(account)) ?: return SecretsRecord(account = account)
-        val record = decode { json.decodeFromString<SecretsRecord>(bytes.decodeToString(throwOnInvalidSequence = true)) }
-        if (record.version != VERSION || record.account != account) corrupt()
+        val secretKey = key(account)
+        val bytes = vault.read(secretKey) ?: return SecretsRecord(account = account)
+        val text = decodeUtf8(bytes, target = "credentials ($secretKey)")
+        val record = decodeJson(target = "credentials ($secretKey)") { json.decodeFromString<SecretsRecord>(text) }
+        if (record.version != VERSION) {
+            PikoLog.w(TAG, "Unsupported stored credentials schema version for $secretKey: ${record.version} (expected $VERSION)")
+            corrupt()
+        }
+        if (record.account != account) {
+            PikoLog.w(TAG, "Stored credentials payload account mismatch for $secretKey")
+            corrupt()
+        }
         return record
     }
 
-    // Decoder diagnostics may contain input JSON, including tokens. Keep them out of exceptions.
-    private inline fun <T> decode(block: () -> T): T = try {
+    private fun decodeUtf8(bytes: ByteArray, target: String): String = try {
+        bytes.decodeToString(throwOnInvalidSequence = true)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (e: Exception) {
+        PikoLog.w(TAG, "Stored $target is not valid UTF-8 (${e::class.simpleName})")
+        corrupt()
+    }
+
+    // Decoder diagnostics may contain input JSON, including tokens. Log only the exception class name.
+    private inline fun <T> decodeJson(target: String, block: () -> T): T = try {
         block()
     } catch (cancelled: CancellationException) {
         throw cancelled
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        PikoLog.w(TAG, "Failed to deserialize stored $target (${e::class.simpleName})")
         corrupt()
     }
+
     private fun corrupt(): Nothing = throw VaultUnavailableException("Stored credentials are corrupt or use an unsupported format")
     private fun key(account: String): String = "piko.session.v1." + fileCacheName(account)
     private suspend fun <T> locked(block: () -> T): T = lock.withLock { withContext(Dispatchers.IO) { block() } }
@@ -94,6 +119,7 @@ class VaultSessionStore(private val vault: SecretVault) : PikoSessionStore {
     }
 
     private companion object {
+        const val TAG = "Credentials"
         const val VERSION = 1
         const val ACCOUNTS_KEY = "piko.accounts.v1"
     }
