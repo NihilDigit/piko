@@ -47,8 +47,10 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.ScanStop
 import dev.piko.shared.state.DuplicateFinderState
 import dev.piko.shared.state.DuplicateFinderState.Phase
+import dev.piko.shared.state.DuplicateGroup
 import dev.piko.shared.state.DuplicateKind
 import dev.piko.shared.state.DuplicateKeepRule
+import kotlin.concurrent.Volatile
 import dev.piko.shared.presentation.DuplicateReportViewModel
 import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.PinnedPriority
@@ -73,15 +75,39 @@ internal fun duplicateLocations(finder: DuplicateFinderState?): Map<String, Stri
     }
 }
 
+private class CachedDuplicateGroupStats(
+    val groups: List<DuplicateGroup>,
+    val identical: Boolean,
+    val reclaimableText: String,
+    val versionCount: Int,
+)
+
+@Volatile
+private var lastDuplicateGroupStats: CachedDuplicateGroupStats? = null
+
+private fun summaryStatsOf(groups: List<DuplicateGroup>, identical: Boolean): CachedDuplicateGroupStats {
+    val cached = lastDuplicateGroupStats
+    if (cached != null && cached.groups === groups && cached.identical == identical) return cached
+    val computed = if (identical) {
+        CachedDuplicateGroupStats(groups, true, groups.sumOf { it.reclaimableBytes }.toReadableSize(), 0)
+    } else {
+        CachedDuplicateGroupStats(groups, false, "", groups.sumOf { it.rows.size })
+    }
+    lastDuplicateGroupStats = computed
+    return computed
+}
+
 /** 宽窗口里查重标签上的样子：扫描中转圈，悬停说明进度或结果。 */
 internal fun duplicatesTab(finder: DuplicateFinderState): SessionTab {
     val groups = finder.report.identical.size + finder.report.versions.size
+    val rootName = finder.root.localizedName
+    val scannedFolders = finder.scannedFolders
     val tooltip = when {
-        finder.isScanning -> tr("已扫描 ${finder.scannedFolders} 个文件夹", "Scanned ${enCount(finder.scannedFolders, "folder", "folders")}", "${finder.scannedFolders} フォルダーを検索済み", "폴더 ${finder.scannedFolders}개 검색 완료", "已掃描 ${finder.scannedFolders} 個資料夾")
+        finder.isScanning -> tr("已扫描 $scannedFolders 个文件夹", "Scanned ${enCount(scannedFolders, "folder", "folders")}", "$scannedFolders フォルダーを検索済み", "폴더 ${scannedFolders}개 검색 완료", "已掃描 $scannedFolders 個資料夾")
         groups == 0 -> tr("未发现重复文件", "No duplicate files found", "重複ファイルはありません", "중복 파일이 없습니다", "未發現重複檔案")
         else -> tr("$groups 组重复文件", "$groups duplicate groups", "$groups 組の重複ファイル", "중복 파일 ${groups}개 그룹", "$groups 組重複檔案")
     }
-    return SessionTab(tr("查重：${finder.root.localizedName}", "Duplicates: ${finder.root.localizedName}", "重複検索：${finder.root.localizedName}", "중복 검색: ${finder.root.localizedName}", "查重：${finder.root.localizedName}"), tooltip, busy = finder.isScanning, icon = Icons.Outlined.FileCopy)
+    return SessionTab(tr("查重：$rootName", "Duplicates: $rootName", "重複検索：$rootName", "중복 검색: $rootName", "查重：$rootName"), tooltip, busy = finder.isScanning, icon = Icons.Outlined.FileCopy)
 }
 
 internal fun duplicateCommandBarLeading(
@@ -94,10 +120,14 @@ internal fun duplicateCommandBarLeading(
 ): List<BarItem> {
     val identical = selectedKind == DuplicateKind.IDENTICAL
     val groups = if (identical) finder.report.identical else finder.report.versions
+    val groupCount = groups.size
+    val stats = summaryStatsOf(groups, identical)
     val summary = if (identical) {
-        tr("${groups.size} 组，可释放 ${groups.sumOf { it.reclaimableBytes }.toReadableSize()}", "${enCount(groups.size, "group", "groups")}; ${groups.sumOf { it.reclaimableBytes }.toReadableSize()} reclaimable", "${groups.size} 組、${groups.sumOf { it.reclaimableBytes }.toReadableSize()} 解放可能", "${groups.size}개 그룹, ${groups.sumOf { it.reclaimableBytes }.toReadableSize()} 확보 가능", "${groups.size} 組，可釋出 ${groups.sumOf { it.reclaimableBytes }.toReadableSize()}")
+        val reclaimableText = stats.reclaimableText
+        tr("$groupCount 组，可释放 $reclaimableText", "${enCount(groupCount, "group", "groups")}; $reclaimableText reclaimable", "$groupCount 組、$reclaimableText 解放可能", "${groupCount}개 그룹, $reclaimableText 확보 가능", "$groupCount 組，可釋出 $reclaimableText")
     } else {
-        tr("${groups.size} 组，${groups.sumOf { it.rows.size }} 个版本", "${enCount(groups.size, "group", "groups")}, ${groups.sumOf { it.rows.size }} versions", "${groups.size} 組、${groups.sumOf { it.rows.size }} バージョン", "${groups.size}개 그룹, ${groups.sumOf { it.rows.size }}개 버전", "${groups.size} 組，${groups.sumOf { it.rows.size }} 個版本")
+        val versionCount = stats.versionCount
+        tr("$groupCount 组，$versionCount 个版本", "${enCount(groupCount, "group", "groups")}, $versionCount versions", "$groupCount 組、$versionCount バージョン", "${groupCount}개 그룹, ${versionCount}개 버전", "$groupCount 組，$versionCount 個版本")
     }
     return buildList {
         add(BarItem("dupKind", PinnedPriority) {
@@ -122,9 +152,10 @@ internal fun duplicateCommandBarLeading(
                 key = "dupRule",
                 priority = 70,
                 overflow = DuplicateKeepRule.entries.map { rule ->
+                    val ruleLabel = rule.label
                     SheetAction(
                         Icons.Outlined.TaskAlt,
-                        tr("规则：${rule.label}", "Rule: ${rule.label}", "ルール：${rule.label}", "규칙: ${rule.label}", "規則：${rule.label}"),
+                        tr("规则：$ruleLabel", "Rule: $ruleLabel", "ルール：$ruleLabel", "규칙: $ruleLabel", "規則：$ruleLabel"),
                         { reportView.selectKeepRule(rule) },
                         group = ActionGroup.Sort,
                         checked = reportView.keepRule == rule,
@@ -132,9 +163,10 @@ internal fun duplicateCommandBarLeading(
                 },
             ) {
                 var ruleMenu by remember { mutableStateOf(false) }
+                val keepRuleLabel = reportView.keepRule.label
                 Box {
                     TextButton(onClick = { ruleMenu = true }) {
-                        Text(tr("规则：${reportView.keepRule.label} ▾", "Rule: ${reportView.keepRule.label} ▾", "ルール：${reportView.keepRule.label} ▾", "규칙: ${reportView.keepRule.label} ▾", "規則：${reportView.keepRule.label} ▾"), maxLines = 1)
+                        Text(tr("规则：$keepRuleLabel ▾", "Rule: $keepRuleLabel ▾", "ルール：$keepRuleLabel ▾", "규칙: $keepRuleLabel ▾", "規則：$keepRuleLabel ▾"), maxLines = 1)
                     }
                     DropdownMenu(expanded = ruleMenu, onDismissRequest = { ruleMenu = false }) {
                         DuplicateKeepRule.entries.forEach { rule ->
@@ -216,12 +248,13 @@ internal fun DuplicatesBanner(
                     }
                 }
                 if (groups.isNotEmpty() && reportView != null) {
+                    val keepRuleLabel = reportView.keepRule.label
                     Box {
                         TextButton(
                             onClick = { ruleMenu = true },
                             contentPadding = PaddingValues(horizontal = 8.dp),
                         ) {
-                            Text(tr("规则：${reportView.keepRule.label} ▾", "Rule: ${reportView.keepRule.label} ▾", "ルール：${reportView.keepRule.label} ▾", "규칙: ${reportView.keepRule.label} ▾", "規則：${reportView.keepRule.label} ▾"), maxLines = 1)
+                            Text(tr("规则：$keepRuleLabel ▾", "Rule: $keepRuleLabel ▾", "ルール：$keepRuleLabel ▾", "규칙: $keepRuleLabel ▾", "規則：$keepRuleLabel ▾"), maxLines = 1)
                         }
                         DropdownMenu(expanded = ruleMenu, onDismissRequest = { ruleMenu = false }) {
                             DuplicateKeepRule.entries.forEach { rule ->
@@ -241,11 +274,18 @@ internal fun DuplicatesBanner(
                         }
                     }
                 }
+                val stats = remember(groups, identical) { summaryStatsOf(groups, identical) }
+                val groupCount = groups.size
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.End) {
-                    Text(tr("${groups.size} 组", "${enCount(groups.size, "group", "groups")}", "${groups.size} 組", "${groups.size}개 그룹", "${groups.size} 組"), style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                    Text(tr("$groupCount 组", enCount(groupCount, "group", "groups"), "$groupCount 組", "${groupCount}개 그룹", "$groupCount 組"), style = MaterialTheme.typography.titleSmall, maxLines = 1)
                     Text(
-                        if (identical) tr("可释放 ${groups.sumOf { it.reclaimableBytes }.toReadableSize()}", "${groups.sumOf { it.reclaimableBytes }.toReadableSize()} reclaimable", "${groups.sumOf { it.reclaimableBytes }.toReadableSize()} 解放可能", "${groups.sumOf { it.reclaimableBytes }.toReadableSize()} 확보 가능", "可釋出 ${groups.sumOf { it.reclaimableBytes }.toReadableSize()}")
-                        else tr("${groups.sumOf { it.rows.size }} 个版本", "${groups.sumOf { it.rows.size }} versions", "${groups.sumOf { it.rows.size }} バージョン", "${groups.sumOf { it.rows.size }}개 버전", "${groups.sumOf { it.rows.size }} 個版本"),
+                        if (identical) {
+                            val reclaimableText = stats.reclaimableText
+                            tr("可释放 $reclaimableText", "$reclaimableText reclaimable", "$reclaimableText 解放可能", "$reclaimableText 확보 가능", "可釋出 $reclaimableText")
+                        } else {
+                            val versionCount = stats.versionCount
+                            tr("$versionCount 个版本", "$versionCount versions", "$versionCount バージョン", "${versionCount}개 버전", "$versionCount 個版本")
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -261,8 +301,9 @@ internal fun DuplicatesBanner(
             }
         }
         if (hasWarning) {
+            val failedFolders = finder.failedFolders
             Text(
-                listOfNotNull(warning, tr("${finder.failedFolders} 个文件夹读取失败", "${enCount(finder.failedFolders, "folder", "folders")} failed to load", "${finder.failedFolders} フォルダーの読み込みに失敗", "폴더 ${finder.failedFolders}개 불러오기 실패", "${finder.failedFolders} 個資料夾讀取失敗").takeIf { finder.failedFolders > 0 }).joinToString("，"),
+                listOfNotNull(warning, if (failedFolders > 0) tr("$failedFolders 个文件夹读取失败", "${enCount(failedFolders, "folder", "folders")} failed to load", "$failedFolders フォルダーの読み込みに失敗", "폴더 ${failedFolders}개 불러오기 실패", "$failedFolders 個資料夾讀取失敗") else null).joinToString("，"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = if (controlsInCommandBar) 0.dp else 4.dp),
@@ -295,14 +336,17 @@ internal fun DuplicatesEmptyState(finder: DuplicateFinderState?, onLeave: () -> 
                 // 要等几分钟、总量事先不知道：不确定的线性进度条，与窄窗口 sheet 里的同一种（progress-indicators.md）
                 LinearProgressIndicator(Modifier.widthIn(max = 240.dp).fillMaxWidth())
                 Spacer(Modifier.height(16.dp))
+                val rootName = finder.root.localizedName
+                val scannedFolders = finder.scannedFolders
+                val scannedFiles = finder.scannedFiles
                 Text(
-                    text = if (finder.phase == Phase.ANALYZING) tr("正在比对", "Comparing", "照合中", "비교 중", "正在比對") else tr("正在扫描「${finder.root.localizedName}」", "Scanning “${finder.root.localizedName}”", "「${finder.root.localizedName}」を検索中", "“${finder.root.localizedName}” 검색 중", "正在掃描「${finder.root.localizedName}」"),
+                    text = if (finder.phase == Phase.ANALYZING) tr("正在比对", "Comparing", "照合中", "비교 중", "正在比對") else tr("正在扫描「$rootName」", "Scanning “$rootName”", "「$rootName」を検索中", "“$rootName” 검색 중", "正在掃描「$rootName」"),
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
                     // 窄窗口里离开即结束查找，见 TaskSlot
-                    text = tr("已扫描 ${finder.scannedFolders} 个文件夹、${finder.scannedFiles} 个文件", "Scanned ${enCount(finder.scannedFolders, "folder", "folders")} and ${enCount(finder.scannedFiles, "file", "files")}", "${finder.scannedFolders} フォルダー、${finder.scannedFiles} ファイルを検索済み", "폴더 ${finder.scannedFolders}개, 파일 ${finder.scannedFiles}개 검색 완료", "已掃描 ${finder.scannedFolders} 個資料夾、${finder.scannedFiles} 個檔案") + if (canLeave) tr("，离开此页后继续", "; continues after leaving this page", "。この画面を離れても続行します", ". 이 페이지를 나가도 계속합니다", "，離開此頁後繼續") else "",
+                    text = tr("已扫描 $scannedFolders 个文件夹、$scannedFiles 个文件", "Scanned ${enCount(scannedFolders, "folder", "folders")} and ${enCount(scannedFiles, "file", "files")}", "$scannedFolders フォルダー、$scannedFiles ファイルを検索済み", "폴더 ${scannedFolders}개, 파일 ${scannedFiles}개 검색 완료", "已掃描 $scannedFolders 個資料夾、$scannedFiles 個檔案") + if (canLeave) tr("，离开此页后继续", "; continues after leaving this page", "。この画面を離れても続行します", ". 이 페이지를 나가도 계속합니다", "，離開此頁後繼續") else "",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

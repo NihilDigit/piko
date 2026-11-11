@@ -70,6 +70,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.data.repository.PathBreadcrumb
 import dev.piko.shared.data.DriveLibrary
 import dev.piko.shared.data.isDriveFolderId
+import dev.piko.shared.i18n.PikoLocale
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.naming.av.hasAvCode
 import dev.piko.shared.presentation.DriveNavigation
@@ -198,7 +199,18 @@ internal fun DriveDesktopHeader(
 ) {
     // 浏览历史后退/前进能力仅在桌面导航栏订阅。
     val history by state.history.collectAsStateWithLifecycle()
+    val selectedBytes by remember(state, displayedFiles, selectedIdSet) {
+        derivedStateOf {
+            if (!state.isSelectionMode) 0L
+            else displayedFiles.sumOf { if (!it.isFolder && it.id in selectedIdSet) it.sizeBytes else 0L }
+        }
+    }
+    val language = PikoLocale.effectiveLanguage
+    val sectionLabels = remember(galleryActive, state.sectionHeaders, language) {
+        if (galleryActive) emptyList() else state.sectionHeaders.map { it.value.menuLabel }
+    }
     val bars: @Composable () -> Unit = {
+        val activeFolderName = activeFolder.localizedName
         ExplorerNavBar(
             shortcuts = shortcuts,
             canGoBack = history.canGoBack || !isWorkspaceBrowser,
@@ -213,7 +225,7 @@ internal fun DriveDesktopHeader(
                 ExplorerSearchField(
                     query = state.searchQuery,
                     onQueryChange = state::updateSearchQuery,
-                    placeholder = tr("搜索 ${activeFolder.localizedName}", "Search ${activeFolder.localizedName}", "${activeFolder.localizedName} を検索", "${activeFolder.localizedName} 검색", "搜尋 ${activeFolder.localizedName}"),
+                    placeholder = tr("搜索 $activeFolderName", "Search $activeFolderName", "$activeFolderName を検索", "$activeFolderName 검색", "搜尋 $activeFolderName"),
                     shortcut = shortcuts.label("F"),
                     isGlobalSearching = state.isGlobalSearching,
                     isGlobalSearchActive = state.isGlobalSearchActive,
@@ -233,7 +245,7 @@ internal fun DriveDesktopHeader(
                 SheetAction(Icons.Outlined.DriveFolderUpload, tr("上传文件夹", "Upload folder", "フォルダーをアップロード", "폴더 업로드", "上傳資料夾"), onPickFolder),
             ),
             selectedCount = if (state.isSelectionMode) state.selectedFileIds.size else 0,
-            selectedBytes = if (state.isSelectionMode) displayedFiles.filter { it.id in selectedIdSet && !it.isFolder }.sumOf { it.sizeBytes } else 0L,
+            selectedBytes = selectedBytes,
             onExitSelection = state::exitSelection,
             onPaste = state::paste,
             onSelectAll = onSelectAll,
@@ -251,7 +263,7 @@ internal fun DriveDesktopHeader(
             sectionJumper = {
                 SectionJumper(
                     currentSection = currentSection.takeUnless { galleryActive },
-                    sections = if (galleryActive) emptyList() else state.sectionHeaders.map { it.value.menuLabel },
+                    sections = sectionLabels,
                     onSectionSelected = onJumpToSection,
                 )
             },
@@ -377,6 +389,10 @@ internal fun DriveCompactHeader(
     onGalleryShowImagesChange: (Boolean) -> Unit,
 ) {
     val isSearchOpen = state.isSearchOpen
+    val language = PikoLocale.effectiveLanguage
+    val sectionLabels = remember(galleryActive, state.sectionHeaders, language) {
+        if (galleryActive) emptyList() else state.sectionHeaders.map { it.value.menuLabel }
+    }
     Column {
         when {
             state.isSelectionMode -> DriveSelectionTopBar(
@@ -399,7 +415,7 @@ internal fun DriveCompactHeader(
                 scrollBehavior = scrollBehavior,
                 title = if (folderStack.size <= rootDepth) rootTitle ?: activeFolder.localizedName else activeFolder.localizedName,
                 currentSection = currentSection.takeUnless { galleryActive },
-                sections = if (galleryActive) emptyList() else state.sectionHeaders.map { it.value.menuLabel },
+                sections = sectionLabels,
                 onSectionSelected = onJumpToSection,
                 moreActions = emptyList(),
                 navigationIcon = when {
@@ -422,7 +438,7 @@ internal fun DriveCompactHeader(
                     else -> null
                 },
                 actions = listOf(
-                    iconBarItem(Icons.Outlined.Search, tr("搜索", "Search", "検索", "검색", "搜尋"), state::openSearch, priority = 30, shortcut = shortcuts.label("F")),
+                    iconBarItem(Icons.Outlined.Search, tr("搜索", "Search", "検索", "검색", "搜尋"), state::openSearch, priority = 30, shortcut = shortcuts.label("F"), key = "search"),
                 ),
             )
         }
@@ -701,9 +717,10 @@ internal fun DrivePaletteContribution(
             )
             add(PaletteItem(tr("属性", "Properties", "プロパティ", "속성", "屬性"), Icons.Outlined.Info, tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"), detail = label("I"), keywords = "properties info details", run = onShowProperties))
             DriveViewMode.entries.filter { it != viewMode }.forEach { mode ->
+                val modeLabel = mode.paletteLabel
                 add(
                     PaletteItem(
-                        tr("切换到${mode.paletteLabel}", "Switch to ${mode.paletteLabel}", "${mode.paletteLabel}に切り替え", "${mode.paletteLabel}(으)로 전환", "切換至${mode.paletteLabel}"),
+                        tr("切换到$modeLabel", "Switch to $modeLabel", "${modeLabel}に切り替え", "$modeLabel(으)로 전환", "切換至$modeLabel"),
                         mode.icon(),
                         tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟"),
                         keywords = "视图 view ${mode.name.lowercase()}",

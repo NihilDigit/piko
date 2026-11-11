@@ -45,6 +45,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -218,32 +219,10 @@ fun TransfersScreen(
 
     val density = LocalDensity.current
     var taskContentWidth by remember { mutableIntStateOf(0) }
-    val taskLayout = TaskRowLayout.forWidth(with(density) { taskContentWidth.toDp() })
+    val taskLayout = remember(taskContentWidth, density) {
+        TaskRowLayout.forWidth(with(density) { taskContentWidth.toDp() })
+    }
     val taskPresenter = remember(state, vaultSession) { TaskPresenter(state, vaultSession) }
-
-    val actionCtx = TransferActionContext(
-        state = state,
-        services = services,
-        localFiles = platform.localFiles,
-        isSpoilerBlurEnabled = isSpoilerBlurEnabled,
-        wideLayout = taskLayout.wide,
-        isBatchExpanded = { it in expandedBatches },
-        isKeyRevealed = { it in revealedKeys },
-        onToggleBatch = ::toggleBatch,
-        onTogglePreviewReveal = { key -> if (!revealedKeys.remove(key)) revealedKeys.add(key) },
-        onOpenBatchFolder = { batch, open -> scope.launch { state.batchFolderPath(batch)?.let(open) } },
-        onOpenCloudFileById = openCloudFileById,
-        onCopySourceUrl = ::copySourceUrl,
-        onPlayLocal = playLocal,
-        onPlayCloud = playCloud,
-        onCreateImport = onCreateImport,
-        onShowDetails = ::showDetails,
-        onConfirmSingleSideEffectDelete = { key ->
-            detailState.close()
-            if (key !in state.selectedKeys) state.selectOnly(key)
-            confirmingDeleteKeys = setOf(key)
-        },
-    )
 
     val selectionActive = state.selectedKeys.isNotEmpty()
     val checkboxActive = state.checkboxMode
@@ -270,12 +249,78 @@ fun TransfersScreen(
     val pauseSelected = bulkSelected.filter(state::isPausable).takeIf { it.isNotEmpty() }?.let { items -> { items.forEach(state::pause) } }
     val resumeSelected = bulkSelected.filter(state::isResumable).takeIf { it.isNotEmpty() }?.let { items -> { items.forEach(state::resume) } }
 
+    val latestOpenCloudFileById by rememberUpdatedState(openCloudFileById)
+    val latestPlayLocal by rememberUpdatedState(playLocal)
+    val latestPlayCloud by rememberUpdatedState(playCloud)
+    val latestCreateImport by rememberUpdatedState(onCreateImport)
+    val latestCheckboxActive by rememberUpdatedState(checkboxActive)
+    val latestVisibleOrder by rememberUpdatedState(visibleOrder)
+    val latestBulkSelected by rememberUpdatedState(bulkSelected)
+    val latestPauseSelected by rememberUpdatedState(pauseSelected)
+    val latestResumeSelected by rememberUpdatedState(resumeSelected)
+    val latestHaptic by rememberUpdatedState(haptic)
+
+    val actionCtx = remember(state, services, platform.localFiles, isSpoilerBlurEnabled, taskLayout.wide, detailState) {
+        lateinit var ctx: TransferActionContext
+        ctx = TransferActionContext(
+            state = state,
+            services = services,
+            localFiles = platform.localFiles,
+            isSpoilerBlurEnabled = isSpoilerBlurEnabled,
+            wideLayout = taskLayout.wide,
+            isBatchExpanded = { it in expandedBatches },
+            isKeyRevealed = { it in revealedKeys },
+            onToggleBatch = ::toggleBatch,
+            onTogglePreviewReveal = { key -> if (!revealedKeys.remove(key)) revealedKeys.add(key) },
+            onOpenBatchFolder = { batch, open -> scope.launch { state.batchFolderPath(batch)?.let(open) } },
+            onOpenCloudFileById = { fileId, fileName -> latestOpenCloudFileById(fileId, fileName) },
+            onCopySourceUrl = ::copySourceUrl,
+            onPlayLocal = { latestPlayLocal(it) },
+            onPlayCloud = { fileId, fileName -> latestPlayCloud(fileId, fileName) },
+            onCreateImport = { latestCreateImport(it) },
+            onShowDetails = ::showDetails,
+            onConfirmSingleSideEffectDelete = { key ->
+                detailState.close()
+                if (key !in state.selectedKeys) state.selectOnly(key)
+                confirmingDeleteKeys = setOf(key)
+            },
+            onPlacedRow = { key, coords -> detailState.anchors.placed(key, coords) },
+            onSelectRow = { key ->
+                if (latestCheckboxActive) state.toggleSelected(key) else state.selectOnly(key)
+                focusList()
+            },
+            onToggleSelectRow = { key ->
+                state.toggleSelected(key)
+                focusList()
+            },
+            onExtendSelectRow = { key ->
+                state.selectRange(key, latestVisibleOrder)
+                focusList()
+            },
+            onLongClickRow = { key ->
+                latestHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                showDetails(key)
+            },
+            buildRowContextActions = { rowItem ->
+                buildTransferContextActions(
+                    item = rowItem,
+                    ctx = ctx,
+                    bulkSelected = latestBulkSelected,
+                    visibleOrder = latestVisibleOrder,
+                    pauseSelected = latestPauseSelected,
+                    resumeSelected = latestResumeSelected,
+                    onConfirmBulkDelete = { confirmingDeleteKeys = state.selectedKeys.toSet() },
+                )
+            },
+        )
+        ctx
+    }
+
     val rowSections by remember(state) { derivedStateOf { state.sectionsOf(TransferKind.ALL) } }
-    val completedKeys by remember(rowSections) { derivedStateOf { (rowSections.completed + rowSections.outputDeleted).mapTo(HashSet()) { it.key } } }
-    val attentionKeys by remember(rowSections) { derivedStateOf { rowSections.needsAttention.mapTo(HashSet()) { it.key } } }
+    val completedKeys by remember(state) { derivedStateOf { (rowSections.completed + rowSections.outputDeleted).mapTo(HashSet()) { it.key } } }
+    val attentionKeys by remember(state) { derivedStateOf { rowSections.needsAttention.mapTo(HashSet()) { it.key } } }
 
     val renderItem: @Composable (TransferItem, Modifier, Int, Int) -> Unit = { item, itemModifier, index, count ->
-        val primary = buildTransferPrimaryAction(item, actionCtx)
         TransferItemRowSlot(
             item = item,
             index = index,
@@ -293,42 +338,10 @@ fun TransfersScreen(
                 else -> false
             },
             isBlurred = isSpoilerBlurEnabled && item.key !in revealedKeys,
+            isBatchExpanded = (item is TransferItem.LocalBatch || item is TransferItem.UploadBatch) && item.key in expandedBatches,
             taskLayout = taskLayout,
-            state = state,
             taskPresenter = taskPresenter,
-            localFiles = platform.localFiles,
-            quickAction = buildTransferQuickAction(item, actionCtx),
-            extraAction = buildTransferExtraAction(item, actionCtx),
-            playAction = buildTransferPlayAction(item, actionCtx),
-            contextActions = {
-                buildTransferContextActions(
-                    item = item,
-                    ctx = actionCtx,
-                    bulkSelected = bulkSelected,
-                    visibleOrder = visibleOrder,
-                    pauseSelected = pauseSelected,
-                    resumeSelected = resumeSelected,
-                    onConfirmBulkDelete = { confirmingDeleteKeys = state.selectedKeys.toSet() },
-                )
-            },
-            onPlaced = { detailState.anchors.placed(item.key, it) },
-            onSelect = {
-                if (checkboxActive) state.toggleSelected(item.key) else state.selectOnly(item.key)
-                focusList()
-            },
-            onToggleSelect = {
-                state.toggleSelected(item.key)
-                focusList()
-            },
-            onExtendSelect = {
-                state.selectRange(item.key, visibleOrder)
-                focusList()
-            },
-            onLongClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                showDetails(item.key)
-            },
-            onOpen = { primary?.invoke() ?: showDetails(item.key) },
+            actionCtx = actionCtx,
             modifier = itemModifier,
         )
     }
@@ -734,8 +747,8 @@ private fun LazyGridScope.deletedOutputSection(
         }
     }
     if (expanded) {
-        items(items, key = { it.key }) { item ->
-            renderItem(item, Modifier.animateItem(), items.indexOf(item), items.size)
+        itemsIndexed(items, key = { _, item -> item.key }) { index, item ->
+            renderItem(item, Modifier.animateItem(), index, items.size)
         }
     }
 }

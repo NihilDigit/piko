@@ -54,12 +54,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -335,6 +338,7 @@ internal class FolderMapState(
  * 树里的一行。[node] 为 null 的是提示行：在列、列不出、要密码、还有几个文件没列。
  * [guides] 是各级上级的竖线要不要穿过这一行（那一级后面还有兄弟），[last] 是它是不是这一层的最后一项，画引导线用。
  */
+@Immutable
 private class MapRow(
     val key: String,
     val stack: List<PikoPathBreadcrumb>,
@@ -347,6 +351,15 @@ private class MapRow(
     val noteIcon: ImageVector? = null,
     val guides: List<Boolean> = emptyList(),
     val last: Boolean = true,
+)
+
+@Immutable
+private class FolderMapProjection(
+    val rows: List<MapRow>,
+    val selectable: List<Int>,
+    val rowsByKey: Map<String, MapRow>,
+    val selectablePosByKey: Map<String, Int>,
+    val rowByCrumbId: Map<String, MapRow>,
 )
 
 /**
@@ -494,20 +507,52 @@ private fun FolderMapTree(
     val driveRepo = dev.piko.ui.LocalPikoServices.current.driveRepository
     val query = state.query
     val filterShown = state.filterShown
-    val rows = if (query.isBlank()) {
-        buildList { flatten(state, root, 0, onOpen, this) }
-    } else {
-        filtered(state, root, query.trim(), driveRepo)
-    }
-    val selectable = rows.indices.filter { rows[it].node != null || rows[it].onNoteClick != null }
     val currentId = current.lastOrNull()?.id
+    val latestCurrentId by rememberUpdatedState(currentId)
+    val latestOnOpen by rememberUpdatedState(onOpen)
+    val latestOnOpenFile by rememberUpdatedState(onOpenFile)
+
+    val projection by remember(state, root, driveRepo) {
+        derivedStateOf {
+            // 订阅语言切换，使空文件夹/展开提示与双名称过滤随语言即时重算
+            tr("", "", "", "", "")
+            val q = state.query
+            val computedRows = if (q.isBlank()) {
+                buildList { flatten(state, root, 0, { latestOnOpen(it) }, this) }
+            } else {
+                filtered(state, root, q.trim(), driveRepo)
+            }
+            val computedSelectable = ArrayList<Int>(computedRows.size)
+            val rowsByKey = HashMap<String, MapRow>(computedRows.size * 2)
+            val selectablePosByKey = HashMap<String, Int>(computedRows.size * 2)
+            val rowByCrumbId = HashMap<String, MapRow>(computedRows.size * 2)
+            computedRows.forEachIndexed { index, r ->
+                if (r.key !in rowsByKey) rowsByKey[r.key] = r
+                val cid = r.node?.crumb?.id
+                if (cid != null && cid !in rowByCrumbId) rowByCrumbId[cid] = r
+                if (r.node != null || r.onNoteClick != null) {
+                    if (r.key !in selectablePosByKey) selectablePosByKey[r.key] = computedSelectable.size
+                    computedSelectable.add(index)
+                }
+            }
+            FolderMapProjection(
+                rows = computedRows,
+                selectable = computedSelectable,
+                rowsByKey = rowsByKey,
+                selectablePosByKey = selectablePosByKey,
+                rowByCrumbId = rowByCrumbId,
+            )
+        }
+    }
+    val rows = projection.rows
+    val selectable = projection.selectable
     val highlighted = state.highlighted
     // 高亮跟着眼前所在的那一级走，不只在召出时定一次：否则点了主页、在列表里换了文件夹，高亮还停在原先那一块。
     // 根目录在树里没有那一行，回到根就不高亮；那一级还没展开出来时等列出来再定。定过一次之后只认人用方向键挪的，
     // 展开、收起改了行数也不把高亮拽回来
-    LaunchedEffect(currentId, rows.size, query) {
+    LaunchedEffect(currentId, rows, query) {
         if (state.followedId != currentId) {
-            val here = rows.firstOrNull { it.node?.crumb?.id == currentId }
+            val here = currentId?.let { projection.rowByCrumbId[it] }
             when {
                 here != null -> {
                     state.highlighted = here.key
@@ -519,7 +564,8 @@ private fun FolderMapTree(
                 }
             }
         }
-        if (state.highlighted != null && rows.none { it.key == state.highlighted }) state.highlighted = null
+        val currentHighlighted = state.highlighted
+        if (currentHighlighted != null && currentHighlighted !in projection.rowsByKey) state.highlighted = null
     }
     val treeFocus = remember { FocusRequester() }
     LaunchedEffect(state.pendingTreeFocus) {
@@ -531,17 +577,23 @@ private fun FolderMapTree(
 
     fun move(step: Int) {
         if (selectable.isEmpty()) return
-        val at = selectable.indexOfFirst { rows[it].key == state.highlighted }
+        val at = state.highlighted?.let { projection.selectablePosByKey[it] } ?: -1
         val next = if (at < 0) 0 else (at + step).coerceIn(0, selectable.lastIndex)
         state.highlighted = rows[selectable[next]].key
     }
 
-    fun activate(row: MapRow) = row.activate(state, currentId, onOpen, onOpenFile)
+    fun activate(row: MapRow) = row.activate(state, latestCurrentId, latestOnOpen, latestOnOpenFile)
+    val onActivateNodeRow = remember(state) {
+        { row: MapRow ->
+            state.highlighted = row.key
+            row.activate(state, latestCurrentId, latestOnOpen, latestOnOpenFile)
+        }
+    }
 
     Column(
         modifier = modifier.onPreviewKeyEvent { event ->
             if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent event.key in TreeKeys
-            val row = rows.firstOrNull { it.key == state.highlighted }
+            val row = state.highlighted?.let { projection.rowsByKey[it] }
             when (event.key) {
                 Key.DirectionDown -> move(1)
                 Key.DirectionUp -> move(-1)
@@ -555,7 +607,7 @@ private fun FolderMapTree(
                         state.collapse(id)
                     } else {
                         val parentId = row.stack.getOrNull(row.stack.size - 2)?.id
-                        rows.firstOrNull { it.node?.crumb?.id == parentId }?.let { state.highlighted = it.key }
+                        parentId?.let { projection.rowByCrumbId[it] }?.let { state.highlighted = it.key }
                     }
                 }
                 Key.Enter, Key.NumPadEnter -> row?.let(::activate)
@@ -591,8 +643,12 @@ private fun FolderMapTree(
                 )
             }
         }
+        val showPath = query.isNotBlank()
         Column(Modifier.weight(1f, fill = false).verticalScroll(state.scroll).padding(bottom = 8.dp)) {
-            if (rows.isEmpty() && query.isNotBlank()) MapNote(tr("已展开的目录中无匹配「${query.trim()}」的项目", "No matches for “${query.trim()}” in expanded folders", "展開中のフォルダーに「${query.trim()}」と一致する項目はありません", "펼친 폴더에 “${query.trim()}”과(와) 일치하는 항목이 없습니다", "已展開的目錄中無相符「${query.trim()}」的項目"), row = null)
+            if (rows.isEmpty() && showPath) {
+                val trimmedQuery = query.trim()
+                MapNote(tr("已展开的目录中无匹配「$trimmedQuery」的项目", "No matches for “$trimmedQuery” in expanded folders", "展開中のフォルダーに「$trimmedQuery」と一致する項目はありません", "펼친 폴더에 “$trimmedQuery”과(와) 일치하는 항목이 없습니다", "已展開的目錄中無相符「$trimmedQuery」的項目"), row = null)
+            }
             rows.forEach { row ->
                 when {
                     row.loading -> Box(
@@ -608,11 +664,8 @@ private fun FolderMapTree(
                         state = state,
                         current = current,
                         highlighted = row.key == highlighted,
-                        showPath = query.isNotBlank(),
-                        onClick = {
-                            state.highlighted = row.key
-                            activate(row)
-                        },
+                        showPath = showPath,
+                        onActivate = onActivateNodeRow,
                     )
                 }
             }
@@ -627,7 +680,7 @@ private fun MapNodeRow(
     current: List<PikoPathBreadcrumb>,
     highlighted: Boolean,
     showPath: Boolean,
-    onClick: () -> Unit,
+    onActivate: (MapRow) -> Unit,
 ) {
     val node = row.node ?: return
     val colors = MaterialTheme.colorScheme
@@ -644,7 +697,7 @@ private fun MapNodeRow(
         icon = node.file?.typeIcon() ?: if (node.isArchive) Icons.Outlined.FolderZip else Icons.Outlined.Folder,
         expanded = if (leaf) null else state.isExpanded(id),
         onExpand = { if (state.isExpanded(id)) state.collapse(id) else state.expand(id) },
-        onOpen = onClick, emphasized = here || onPath,
+        onOpen = { onActivate(row) }, emphasized = here || onPath,
         supporting = if (showPath && row.stack.size > 2) row.stack.drop(1).dropLast(1).joinToString(" › ") { it.localizedName } else null,
         modifier = Modifier.bringIntoViewRequester(bring).padding(horizontal = 4.dp)
             .then(if (node.expandable) Modifier.fileDropTarget("map:$id", node.crumb) else Modifier)

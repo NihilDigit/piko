@@ -109,11 +109,14 @@ import dev.piko.ui.workbench.LocalWorkspaceContexts
 import dev.piko.ui.workbench.TaskSlot
 import dev.piko.ui.workbench.WorkspaceViewModel
 import io.github.nihildigit.pikpak.FileStat
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 private const val HighlightAppearTimeoutMs = 4000L
 private const val MapOpenTimeoutMs = 10_000L
@@ -812,10 +815,10 @@ private fun DriveScreenContent(
         }
     }
 
-    val selectedIdSet by remember { derivedStateOf { state.selectedFileIds.toSet() } }
+    val selectedIdSet = state.selectedIdSet
     val commandTargets: List<FileStat> by remember(state, displayedFiles) {
         derivedStateOf {
-            if (state.isSelectionMode) displayedFiles.filter { it.id in selectedIdSet }
+            if (state.isSelectionMode) displayedFiles.filter { it.id in state.selectedIdSet }
             else listOfNotNull(commandFile?.let { current -> displayedFiles.firstOrNull { it.id == current.id } })
         }
     }
@@ -838,7 +841,7 @@ private fun DriveScreenContent(
     fun selectAllDisplayed() {
         if (snapshot.galleryActive) {
             val ids = displayedFiles.mapTo(LinkedHashSet()) { it.id }
-            if (ids.isNotEmpty() && state.selectedFileIds.toSet() == ids) state.exitSelection() else state.selectOnly(ids)
+            if (ids.isNotEmpty() && state.selectedIdSet == ids) state.exitSelection() else state.selectOnly(ids)
         } else state.toggleSelectAll()
     }
     fun openSelectedFeed(files: List<FileStat>) {
@@ -949,8 +952,8 @@ private fun DriveScreenContent(
     val latestShowProperties by rememberUpdatedState<(List<FileStat>, PanelAnchor) -> Unit>(::showProperties)
 
     fun targetsOf(file: FileStat): List<FileStat> =
-        if (state.isSelectionMode && file.id in state.selectedFileIds && state.selectedFileIds.size > 1) {
-            latestIntents.displayedFiles.filter { it.id in state.selectedFileIds }
+        if (state.isSelectionMode && file.id in state.selectedIdSet && state.selectedFileIds.size > 1) {
+            latestIntents.displayedFiles.filter { it.id in state.selectedIdSet }
         } else listOf(file)
 
     fun itemActions(file: FileStat, targets: List<FileStat>, fromMenu: Boolean): List<SheetAction> =
@@ -1005,13 +1008,13 @@ private fun DriveScreenContent(
             onStartSelection = { state.enterSelection(it.id) },
             onLongClick = { file ->
                 if (state.libraryView == DriveLibrary.DUPLICATES && file.isFolder) latestEvents.onOpenSingleItemSheet(file)
-                else if (state.isSelectionMode) state.setSelected(file.id, file.id !in state.selectedFileIds)
+                else if (state.isSelectionMode) state.setSelected(file.id, file.id !in state.selectedIdSet)
                 else state.enterSelection(file.id)
             },
             onSelect = { file, selected -> state.setSelected(file.id, selected) },
             onToggleSelect = { id ->
                 if (latestIntents.galleryActive) {
-                    val select = id !in state.selectedFileIds
+                    val select = id !in state.selectedIdSet
                     state.setSelected(id, select)
                     if (!select && state.selectedFileIds.isEmpty()) state.exitSelection()
                 } else state.toggleSelected(id)
@@ -1022,8 +1025,9 @@ private fun DriveScreenContent(
                     val to = files.indexOfFirst { it.id == id }
                     val anchorId = state.selectedFileIds.lastOrNull() ?: commandFile?.id
                     val from = anchorId?.let { anchor -> files.indexOfFirst { it.id == anchor } } ?: -1
-                    if (to >= 0 && from >= 0) files.subList(minOf(from, to), maxOf(from, to) + 1).forEach { state.setSelected(it.id, true) }
-                    else state.setSelected(id, true)
+                    if (to >= 0 && from >= 0) {
+                        state.selectFiles(files.subList(minOf(from, to), maxOf(from, to) + 1).map { it.id })
+                    } else state.setSelected(id, true)
                 } else state.selectRange(id)
             },
             onBoxSelect = { base, boxed ->
@@ -1039,8 +1043,8 @@ private fun DriveScreenContent(
             },
             dragPayload = dragPayload@{ file ->
                 if (state.libraryView == DriveLibrary.TRASH || state.archiveView != null) return@dragPayload null
-                val batch = if (state.isSelectionMode && file.id in state.selectedFileIds) {
-                    latestIntents.displayedFiles.filter { it.id in state.selectedFileIds }
+                val batch = if (state.isSelectionMode && file.id in state.selectedIdSet) {
+                    latestIntents.displayedFiles.filter { it.id in state.selectedIdSet }
                 } else {
                     listOf(file)
                 }.filterNot { it.isLocal || it.isUploading || it.isVaulted || it.isImportPreview }
@@ -1127,6 +1131,9 @@ private fun DriveScreenContent(
     BackHandler(enabled = snapshot.acceptsNavigation && state.isSelectionMode) { state.exitSelection() }
 
     val showExtensions = LocalShowExtensions.current
+    val allSelected by remember(state, displayedFiles) {
+        derivedStateOf { displayedFiles.isNotEmpty() && displayedFiles.all { it.id in state.selectedIdSet } }
+    }
     val currentPlace = commandPlaceOf(state, folderStack.size)
     val targetCommands = itemCommands(currentPlace, commandTargets, snapshot.fullyVaultedFolders)
     val commands = driveCommands(
@@ -1136,7 +1143,7 @@ private fun DriveScreenContent(
             selecting = state.isSelectionMode,
             clipboardFull = snapshot.clipboard != null,
             itemCount = displayedFiles.size,
-            allSelected = displayedFiles.isNotEmpty() && displayedFiles.all { it.id in selectedIdSet },
+            allSelected = allSelected,
             typeCount = state.availableTypes.size,
             filtering = state.typeFilter != null,
             feedSupported = platform.videoPreview != null && events.onFeedShownChange != null,
@@ -1147,15 +1154,23 @@ private fun DriveScreenContent(
     ).let { if (snapshot.isWorkspaceBrowser) it else it.copy(findDuplicates = false) }
         .let { if (snapshot.galleryActive) it.copy(sort = false, filter = false) else it }
 
+    val suggestedDuplicateIds by remember(inDuplicates, duplicateState, duplicateReport, displayedFiles) {
+        derivedStateOf {
+            if (!inDuplicates) emptySet()
+            else duplicateState?.takeIf {
+                duplicateReport.kind == DuplicateKind.IDENTICAL || duplicateReport.keepRule != DuplicateKeepRule.RECOMMENDED
+            }?.let { finder -> duplicateReport.smartSelectIds(finder) }
+                ?.intersect(displayedFiles.filterNot { it.isFolder }.mapTo(HashSet()) { it.id })
+                .orEmpty()
+        }
+    }
+
     val placePrimaryAction: SheetAction? = when {
         state.isSelectionMode && !pathInTopBar -> null
-        inDuplicates -> duplicateState?.takeIf {
-            duplicateReport.kind == DuplicateKind.IDENTICAL || duplicateReport.keepRule != DuplicateKeepRule.RECOMMENDED
-        }?.let { finder -> duplicateReport.smartSelectIds(finder) }
-            ?.intersect(displayedFiles.filterNot { it.isFolder }.mapTo(HashSet()) { it.id })
-            ?.takeIf { it.isNotEmpty() }?.let { suggested ->
-                SheetAction(Icons.Outlined.Checklist, tr("选择建议清理的 ${suggested.size} 项", "Select ${suggested.size} suggested items to clean up", "整理推奨の ${suggested.size} 項目を選択", "정리 권장 ${suggested.size}개 항목 선택", "選取建議清理的 ${suggested.size} 個項目"), { state.selectOnly(suggested) })
-            }
+        inDuplicates -> suggestedDuplicateIds.takeIf { it.isNotEmpty() }?.let { suggested ->
+            val count = suggested.size
+            SheetAction(Icons.Outlined.Checklist, tr("选择建议清理的 $count 项", "Select $count suggested items to clean up", "整理推奨の $count 項目を選択", "정리 권장 ${count}개 항목 선택", "選取建議清理的 $count 個項目"), { state.selectOnly(suggested) })
+        }
         state.archiveView != null && displayedFiles.isNotEmpty() && !state.isArchiveInImportPreview ->
             SheetAction(Icons.Outlined.Unarchive, tr("全部解压", "Extract all", "すべて解凍", "모두 압축 해제", "全部解壓縮"), { events.onExtractFromArchive(emptyList()) })
         commands.emptyPlace -> libraryPageActions(libraryView, state.files.isEmpty(), events.onRequestLibraryConfirm) { state.files.map { it.id } }.firstOrNull()
@@ -1650,10 +1665,49 @@ private fun DriveLifecycleEffects(
         }
     }
 
-    LaunchedEffect(gridState) {
+    LaunchedEffect(gridState, loadedFolderId, navigation) {
         val folderId = loadedFolderId ?: return@LaunchedEffect
-        snapshotFlow { ScrollAnchor(gridState.firstVisibleItemIndex, gridState.firstVisibleItemScrollOffset) }
-            .collect { navigation.saveScrollAnchor(folderId, it) }
+        var lastSaved: ScrollAnchor? = null
+        var lastSaveMark: TimeMark? = null
+        var wasScrolling = false
+        var trailingJob: Job? = null
+        fun flush(anchor: ScrollAnchor) {
+            trailingJob?.cancel()
+            trailingJob = null
+            if (anchor != lastSaved) {
+                lastSaved = anchor
+                lastSaveMark = TimeSource.Monotonic.markNow()
+                navigation.saveScrollAnchor(folderId, anchor)
+            }
+        }
+        snapshotFlow {
+            Triple(
+                gridState.firstVisibleItemIndex,
+                gridState.firstVisibleItemScrollOffset,
+                gridState.isScrollInProgress,
+            )
+        }.collect { (index, offset, scrolling) ->
+            val settled = wasScrolling && !scrolling
+            wasScrolling = scrolling
+            val anchor = ScrollAnchor(index, offset)
+            if (anchor == lastSaved) return@collect
+            val elapsedMs = lastSaveMark?.elapsedNow()?.inWholeMilliseconds ?: Long.MAX_VALUE
+            if (settled || elapsedMs >= 100L) {
+                flush(anchor)
+            } else if (trailingJob == null) {
+                val remainingMs = (100L - elapsedMs).coerceAtLeast(16L)
+                trailingJob = launch {
+                    delay(remainingMs)
+                    trailingJob = null
+                    val latest = ScrollAnchor(gridState.firstVisibleItemIndex, gridState.firstVisibleItemScrollOffset)
+                    if (latest != lastSaved) {
+                        lastSaved = latest
+                        lastSaveMark = TimeSource.Monotonic.markNow()
+                        navigation.saveScrollAnchor(folderId, latest)
+                    }
+                }
+            }
+        }
     }
     val latestScrollToTop by rememberUpdatedState(scrollToTopRequests)
     LaunchedEffect(gridState) {

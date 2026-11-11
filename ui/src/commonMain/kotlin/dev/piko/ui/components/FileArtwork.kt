@@ -2,12 +2,17 @@ package dev.piko.ui.components
 
 import dev.piko.shared.i18n.tr
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
-import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.layout.Layout
 import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.isDark
+import kotlin.math.roundToInt
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -55,6 +60,8 @@ internal fun FileArtwork(
     }
 }
 
+private val CoverCardShape = RoundedCornerShape(6.dp)
+
 @Composable
 private fun StackedSheets(
     modifier: Modifier = Modifier,
@@ -67,65 +74,103 @@ private fun StackedSheets(
     val frontTopColor = Color.White.copy(alpha = if (dark) 0.08f else 0.34f).compositeOver(colors.secondaryContainer)
     val frontBottomColor = colors.secondary.copy(alpha = if (dark) 0.14f else 0.12f).compositeOver(colors.secondaryContainer)
     val cardBorder = Color.Black.copy(alpha = if (dark) 0.24f else 0.08f)
+    val sheetColor = colors.surfaceContainerLowest
+    val topHighlight = Color.White.copy(alpha = if (dark) 0.22f else 0.55f)
+    val topSeam = Color.Black.copy(alpha = if (dark) 0.28f else 0.08f)
+    val bottomRimColor = backPlate.copy(alpha = if (dark) 0.65f else 0.5f)
     val hasCover = cover != null
     val yLeftFraction = if (hasCover) FRONT_OPEN_LEFT_TOP else FRONT_CLOSED_LEFT_TOP
     val yRightFraction = if (hasCover) FRONT_OPEN_RIGHT_TOP else FRONT_CLOSED_RIGHT_TOP
-    val frontShape = remember(hasCover) { FolderFrontShape(yLeftFraction, yRightFraction) }
-    BoxWithConstraints(modifier) {
-        Box(Modifier.fillMaxSize().clip(FolderBackShape).background(backPlate))
-        if (hasCover) {
-            val cardTop = maxHeight * COVER_CARD_TOP
-            val cardWidth = maxWidth * COVER_CARD_WIDTH
-            val cardHeight = cardWidth * 9f / 16f
-            val innerShape = RoundedCornerShape(6.dp)
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = cardTop)
-                    .size(cardWidth, cardHeight)
-                    .clip(innerShape)
-                    .background(colors.surfaceContainerLowest)
-                    .border(1.dp, cardBorder, innerShape),
-                contentAlignment = Alignment.TopCenter,
-            ) {
-                cover()
+
+    Layout(
+        content = {
+            if (cover != null) {
+                Box(
+                    modifier = Modifier
+                        .clip(CoverCardShape)
+                        .background(sheetColor)
+                        .border(1.dp, cardBorder, CoverCardShape),
+                    contentAlignment = Alignment.TopCenter,
+                ) {
+                    cover()
+                }
             }
-        } else if (!empty) {
-            val sheetShape = RoundedCornerShape(topStart = 6.dp, topEnd = 5.dp)
-            Box(
-                modifier = Modifier
-                    .padding(start = maxWidth * 0.035f, top = maxHeight * FRONT_CLOSED_RIGHT_TOP)
-                    .size(maxWidth * 0.43f, maxHeight * 0.18f)
-                    .clip(sheetShape)
-                    .background(colors.surfaceContainerLowest)
-                    .border(1.dp, cardBorder, sheetShape),
+        },
+        modifier = modifier.drawWithCache {
+            val backPath = buildFolderBackPath(size, this)
+            val contourPath = buildFolderFrontTopContourPath(size, this, yLeftFraction, yRightFraction)
+            val frontPath = buildFolderFrontPath(size, this, yLeftFraction, yRightFraction)
+            val seamStroke = Stroke(1.dp.toPx())
+            val highlightStroke = Stroke(1.25.dp.toPx())
+            val rimHeight = 2.dp.toPx()
+            val frontBrush = Brush.verticalGradient(
+                listOf(frontTopColor, frontBottomColor),
+                startY = size.height * yRightFraction,
             )
-        }
-        val frontStartPx = with(androidx.compose.ui.platform.LocalDensity.current) { (maxHeight * yRightFraction).toPx() }
-        val topHighlight = Color.White.copy(alpha = if (dark) 0.22f else 0.55f)
-        val topSeam = Color.Black.copy(alpha = if (dark) 0.28f else 0.08f)
-        Canvas(Modifier.fillMaxSize()) {
-            drawPath(buildFolderFrontTopContourPath(size, this, yLeftFraction, yRightFraction), topSeam, style = Stroke(1.dp.toPx()))
-        }
-        Box(
-            Modifier.fillMaxSize()
-                .clip(frontShape)
-                .background(Brush.verticalGradient(listOf(frontTopColor, frontBottomColor), startY = frontStartPx))
-                .drawWithContent {
-                    drawContent()
-                    val rimHeight = 2.dp.toPx()
+            val sheetPath = if (!hasCover && !empty) {
+                val sheetW = size.width * 0.43f
+                val sheetH = size.height * 0.18f
+                val isLtr = layoutDirection == LayoutDirection.Ltr
+                val sheetLeft = if (isLtr) size.width * 0.035f else size.width - size.width * 0.035f - sheetW
+                val sheetTop = size.height * FRONT_CLOSED_RIGHT_TOP
+                val topStartR = 6.dp.toPx()
+                val topEndR = 5.dp.toPx()
+                val topLeftR = if (isLtr) topStartR else topEndR
+                val topRightR = if (isLtr) topEndR else topStartR
+                Path().apply {
+                    addRoundRect(
+                        RoundRect(
+                            left = sheetLeft,
+                            top = sheetTop,
+                            right = sheetLeft + sheetW,
+                            bottom = sheetTop + sheetH,
+                            topLeftCornerRadius = CornerRadius(topLeftR),
+                            topRightCornerRadius = CornerRadius(topRightR),
+                        ),
+                    )
+                }
+            } else {
+                null
+            }
+            val sheetBorderStroke = if (sheetPath != null) Stroke(2.dp.toPx()) else null
+
+            onDrawWithContent {
+                drawPath(backPath, backPlate)
+                if (sheetPath != null && sheetBorderStroke != null) {
+                    drawPath(sheetPath, sheetColor)
+                    clipPath(sheetPath) {
+                        drawPath(sheetPath, cardBorder, style = sheetBorderStroke)
+                    }
+                }
+                drawContent()
+                drawPath(contourPath, topSeam, style = seamStroke)
+                clipPath(frontPath) {
+                    drawRect(brush = frontBrush)
                     drawRect(
-                        color = backPlate.copy(alpha = if (dark) 0.65f else 0.5f),
-                        topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - rimHeight),
+                        color = bottomRimColor,
+                        topLeft = Offset(0f, size.height - rimHeight),
                         size = Size(size.width, rimHeight),
                     )
-                    drawPath(
-                        buildFolderFrontTopContourPath(size, this, yLeftFraction, yRightFraction),
-                        topHighlight,
-                        style = Stroke(1.25.dp.toPx()),
-                    )
-                },
-        )
+                    drawPath(contourPath, topHighlight, style = highlightStroke)
+                }
+            }
+        },
+    ) { measurables, constraints ->
+        val width = if (constraints.hasBoundedWidth) constraints.maxWidth else constraints.minWidth
+        val height = if (constraints.hasBoundedHeight) constraints.maxHeight else constraints.minHeight
+        val coverPlaceable = measurables.firstOrNull()?.let { measurable ->
+            val cardW = (width * COVER_CARD_WIDTH).roundToInt().coerceAtLeast(0)
+            val cardH = (cardW * 9f / 16f).roundToInt().coerceAtLeast(0)
+            measurable.measure(Constraints.fixed(cardW, cardH))
+        }
+        layout(width, height) {
+            if (coverPlaceable != null) {
+                coverPlaceable.place(
+                    ((width - coverPlaceable.width) / 2f).roundToInt(),
+                    (height * COVER_CARD_TOP).roundToInt(),
+                )
+            }
+        }
     }
 }
 
@@ -176,29 +221,26 @@ private const val FRONT_OPEN_RIGHT_TOP = 0.68f
 private const val FRONT_CLOSED_LEFT_TOP = 0.20f
 private const val FRONT_CLOSED_RIGHT_TOP = 0.12f
 
-private object FolderBackShape : Shape {
-    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
-        val w = size.width
-        val h = size.height
-        val r = with(density) { 10.dp.toPx() }.coerceAtMost(minOf(w, h) / 2)
-        val tabHeight = h * 0.065f
-        val tabEnd = w * 0.33f
-        val shoulderStart = w * 0.43f
-        val mid = (tabEnd + shoulderStart) * 0.5f
-        val path = Path().apply {
-            moveTo(0f, r)
-            quadraticTo(0f, 0f, r, 0f)
-            lineTo(tabEnd, 0f)
-            cubicTo(mid, 0f, mid, tabHeight, shoulderStart, tabHeight)
-            lineTo(w - r, tabHeight)
-            quadraticTo(w, tabHeight, w, tabHeight + r)
-            lineTo(w, h - r)
-            quadraticTo(w, h, w - r, h)
-            lineTo(r, h)
-            quadraticTo(0f, h, 0f, h - r)
-            close()
-        }
-        return Outline.Generic(path)
+private fun buildFolderBackPath(size: Size, density: Density): Path {
+    val w = size.width
+    val h = size.height
+    val r = with(density) { 10.dp.toPx() }.coerceAtMost(minOf(w, h) / 2)
+    val tabHeight = h * 0.065f
+    val tabEnd = w * 0.33f
+    val shoulderStart = w * 0.43f
+    val mid = (tabEnd + shoulderStart) * 0.5f
+    return Path().apply {
+        moveTo(0f, r)
+        quadraticTo(0f, 0f, r, 0f)
+        lineTo(tabEnd, 0f)
+        cubicTo(mid, 0f, mid, tabHeight, shoulderStart, tabHeight)
+        lineTo(w - r, tabHeight)
+        quadraticTo(w, tabHeight, w, tabHeight + r)
+        lineTo(w, h - r)
+        quadraticTo(w, h, w - r, h)
+        lineTo(r, h)
+        quadraticTo(0f, h, 0f, h - r)
+        close()
     }
 }
 
@@ -243,11 +285,3 @@ internal fun buildFolderFrontPath(
         quadraticTo(0f, h, 0f, h - r)
         close()
     }
-
-private class FolderFrontShape(
-    private val yLeftFraction: Float,
-    private val yRightFraction: Float,
-) : Shape {
-    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
-        Outline.Generic(buildFolderFrontPath(size, density, yLeftFraction, yRightFraction))
-}

@@ -14,8 +14,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -26,7 +29,8 @@ import dev.piko.shared.upload.UploadStatus
 import dev.piko.ui.LocalPikoServices
 import kotlin.math.roundToInt
 
-internal class TransferActivity(val downloadSpeed: Long, val uploadSpeed: Long, val count: Int, val attentionCount: Int = 0) {
+@Immutable
+internal data class TransferActivity(val downloadSpeed: Long, val uploadSpeed: Long, val count: Int, val attentionCount: Int = 0) {
     val maxSpeed: Long get() = maxOf(downloadSpeed, uploadSpeed)
     val hasReadout: Boolean get() = downloadSpeed > 0 || uploadSpeed > 0 || count > 0 || attentionCount > 0
 
@@ -50,7 +54,16 @@ internal fun rememberTransferActivity(
     }
     val summary = state.activity
     return TransferActivity(summary.downloadSpeed, summary.uploadSpeed, summary.active.size, summary.needsAttention.size)
+}
 
+@Composable
+internal fun rememberActiveTransferCount(): Int {
+    val services = LocalPikoServices.current
+    val client by services.clientManager.currentClient.collectAsStateWithLifecycle()
+    if (client == null) return 0
+    val state = services.taskCenter
+    val count by remember(state) { derivedStateOf { state.activity.active.size } }
+    return count
 }
 
 @Composable

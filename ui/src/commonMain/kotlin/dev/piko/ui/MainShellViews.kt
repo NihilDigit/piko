@@ -127,10 +127,10 @@ import dev.piko.ui.workbench.ShortcutsDialog
 import dev.piko.ui.workbench.SidebarAccountRow
 import dev.piko.ui.workbench.SidebarTransferReadout
 import dev.piko.ui.workbench.TaskSlot
-import dev.piko.ui.workbench.TransferActivity
 import dev.piko.ui.workbench.WorkspaceContextDialogs
 import dev.piko.ui.workbench.WorkspaceContextHost
 import dev.piko.ui.workbench.WorkspaceViewModel
+import dev.piko.ui.workbench.rememberActiveTransferCount
 import dev.piko.ui.workbench.rememberTransferActivity
 import io.github.nihildigit.pikpak.FileStat
 
@@ -298,10 +298,10 @@ internal fun MainHomeContent(
         NavigationSuiteScaffold(
             containerColor = if (sidebarMode) MaterialTheme.colorScheme.frame else MaterialTheme.colorScheme.background,
             navigationItems = {
-                val activity = if (sidebarMode) null else rememberTransferActivity(pollCloud = false)
+                val activeTransferCount = if (sidebarMode) 0 else rememberActiveTransferCount()
                 MainTab.entries.forEach { tab ->
                     val selected = currentTab == tab
-                    val badgeCount = activity?.count?.takeIf { tab == MainTab.TRANSFERS && !selected && it > 0 }
+                    val badgeCount = activeTransferCount.takeIf { tab == MainTab.TRANSFERS && !selected && it > 0 }
                     NavigationSuiteItem(
                         selected = selected,
                         onClick = { onTabClick(tab) },
@@ -625,7 +625,6 @@ private fun MainSidebar(
                 MainTabSwitch(
                     currentTab = currentTab.takeIf { selectedPage == null },
                     onTabClick = onTabClick,
-                    activity = rememberTransferActivity(),
                     collapsed = collapsed,
                 )
                 QuickAccessSection(
@@ -654,31 +653,30 @@ private fun MainSidebar(
 }
 
 @Composable
-private fun MainTabSwitch(currentTab: MainTab?, onTabClick: (MainTab) -> Unit, activity: TransferActivity, collapsed: Boolean) {
+private fun MainTabSwitch(currentTab: MainTab?, onTabClick: (MainTab) -> Unit, collapsed: Boolean) {
     val tabs = listOf(MainTab.FILES, MainTab.TRANSFERS)
     val snail by LocalPikoServices.current.preferences.snailModeFlow.collectAsStateWithLifecycle(initialValue = SnailMode())
     val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
     if (collapsed) {
         tabs.forEach { tab ->
             val selected = tab == currentTab
-            val snailed = tab == MainTab.TRANSFERS && snail.enabled
-            val isTransfers = tab == MainTab.TRANSFERS
-            val showSpeedOnRail = isTransfers && activity.maxSpeed > 0L
-            SidebarItem(
-                icon = tab.icon(false),
-                selectedIcon = tab.icon(true),
-                label = if (snailed) tr("任务（蜗牛模式）", "Tasks (snail mode)", "タスク（低速モード）", "작업 (저속 모드)", "任務（蝸牛模式）") else tab.title,
-                selected = selected,
-                onClick = { onTabClick(tab) },
-                trailing = if (showSpeedOnRail) {
-                    { SidebarTransferReadout(activity, checked = selected, railCompact = true) }
-                } else null,
-                accent = snailed,
-                shortcut = shortcutModifier.label(if (tab == MainTab.FILES) "1" else "2"),
-                tooltipDetail = if (isTransfers && activity.hasReadout) activity.summaryText() else null,
-                badgeCount = if (isTransfers && !showSpeedOnRail) activity.attentionCount else 0,
-                badgeDot = isTransfers && !showSpeedOnRail && activity.attentionCount == 0 && activity.count > 0,
-            )
+            if (tab == MainTab.TRANSFERS) {
+                CollapsedTransfersSidebarItem(
+                    selected = selected,
+                    snailed = snail.enabled,
+                    shortcut = shortcutModifier.label("2"),
+                    onClick = { onTabClick(tab) },
+                )
+            } else {
+                SidebarItem(
+                    icon = tab.icon(false),
+                    selectedIcon = tab.icon(true),
+                    label = tab.title,
+                    selected = selected,
+                    onClick = { onTabClick(tab) },
+                    shortcut = shortcutModifier.label("1"),
+                )
+            }
         }
         return
     }
@@ -708,11 +706,46 @@ private fun MainTabSwitch(currentTab: MainTab?, onTabClick: (MainTab) -> Unit, a
                                 maxLines = 1,
                             )
                         }
-                        if (tab == MainTab.TRANSFERS && activity.hasReadout) SidebarTransferReadout(activity, checked = selected, compact = true)
+                        if (tab == MainTab.TRANSFERS) ExpandedTransfersReadout(selected = selected)
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CollapsedTransfersSidebarItem(
+    selected: Boolean,
+    snailed: Boolean,
+    shortcut: String,
+    onClick: () -> Unit,
+) {
+    val activity = rememberTransferActivity()
+    val showSpeedOnRail = activity.maxSpeed > 0L
+    val tab = MainTab.TRANSFERS
+    SidebarItem(
+        icon = tab.icon(false),
+        selectedIcon = tab.icon(true),
+        label = if (snailed) tr("任务（蜗牛模式）", "Tasks (snail mode)", "タスク（低速モード）", "작업 (저속 모드)", "任務（蝸牛模式）") else tab.title,
+        selected = selected,
+        onClick = onClick,
+        trailing = if (showSpeedOnRail) {
+            { SidebarTransferReadout(activity, checked = selected, railCompact = true) }
+        } else null,
+        accent = snailed,
+        shortcut = shortcut,
+        tooltipDetail = if (activity.hasReadout) activity.summaryText() else null,
+        badgeCount = if (!showSpeedOnRail) activity.attentionCount else 0,
+        badgeDot = !showSpeedOnRail && activity.attentionCount == 0 && activity.count > 0,
+    )
+}
+
+@Composable
+private fun ExpandedTransfersReadout(selected: Boolean) {
+    val activity = rememberTransferActivity()
+    if (activity.hasReadout) {
+        SidebarTransferReadout(activity, checked = selected, compact = true)
     }
 }
 

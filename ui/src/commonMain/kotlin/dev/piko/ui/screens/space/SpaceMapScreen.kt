@@ -46,8 +46,10 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -439,20 +441,27 @@ fun SpaceMapScreen(
             }
             current.syncError != null -> current.syncError.orEmpty()
             treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates -> formatTreeIndexProgressLabel(treeBuildProgress)
-            isCalculating -> tr(
-                "正在统计 ${displayedTotalBytes.toReadableSize()}",
-                "Calculating ${displayedTotalBytes.toReadableSize()}",
-                "集計中 ${displayedTotalBytes.toReadableSize()}",
-                "계산 중 ${displayedTotalBytes.toReadableSize()}",
-                "正在統計 ${displayedTotalBytes.toReadableSize()}",
-            )
-            current.fileCount > 0L -> tr(
-                "${displayedTotalBytes.toReadableSize()}（${current.fileCount} 个文件）",
-                "${displayedTotalBytes.toReadableSize()} (${enCount(current.fileCount, "file", "files")})",
-                "${displayedTotalBytes.toReadableSize()}（${current.fileCount} ファイル）",
-                "${displayedTotalBytes.toReadableSize()} (파일 ${current.fileCount}개)",
-                "${displayedTotalBytes.toReadableSize()}（${current.fileCount} 個檔案）",
-            )
+            isCalculating -> {
+                val totalSizeText = displayedTotalBytes.toReadableSize()
+                tr(
+                    "正在统计 $totalSizeText",
+                    "Calculating $totalSizeText",
+                    "集計中 $totalSizeText",
+                    "계산 중 $totalSizeText",
+                    "正在統計 $totalSizeText",
+                )
+            }
+            current.fileCount > 0L -> {
+                val totalSizeText = displayedTotalBytes.toReadableSize()
+                val enFiles = enCount(current.fileCount, "file", "files")
+                tr(
+                    "$totalSizeText（${current.fileCount} 个文件）",
+                    "$totalSizeText ($enFiles)",
+                    "$totalSizeText（${current.fileCount} ファイル）",
+                    "$totalSizeText (파일 ${current.fileCount}개)",
+                    "$totalSizeText（${current.fileCount} 個檔案）",
+                )
+            }
             else -> displayedTotalBytes.toReadableSize()
         }
     }
@@ -765,10 +774,12 @@ private sealed interface SpaceDisplayEntry {
 }
 
 /** 鼠标悬停或右键/长按命中的具体交互目标（既可是顶层色块，也可是外层大文件夹内部的嵌套子色块）。 */
+@Immutable
 private sealed interface SpaceInteractiveTarget {
     val targetKey: String
     val displayBytes: Long
 
+    @Immutable
     data class Node(
         val id: String,
         val name: String,
@@ -783,23 +794,25 @@ private sealed interface SpaceInteractiveTarget {
         val nestedUnderFolderId: String? = null,
         val nestedUnderFolderName: String? = null,
     ) : SpaceInteractiveTarget {
-        override val targetKey: String
-            get() = if (nestedUnderFolderId != null) "nested:$nestedUnderFolderId/$id" else "node:$id"
+        override val targetKey: String =
+            if (nestedUnderFolderId != null) "nested:$nestedUnderFolderId/$id" else "node:$id"
     }
 
+    @Immutable
     data class OtherGroup(
         val groupId: String,
         val items: List<SpaceNodeItem>,
         override val displayBytes: Long,
     ) : SpaceInteractiveTarget {
-        override val targetKey: String get() = "other:$groupId"
+        override val targetKey: String = "other:$groupId"
     }
 
+    @Immutable
     data class FreeQuota(
         override val displayBytes: Long,
         val limitBytes: Long,
     ) : SpaceInteractiveTarget {
-        override val targetKey: String get() = "__piko_free_quota__"
+        override val targetKey: String = "__piko_free_quota__"
     }
 }
 
@@ -811,6 +824,18 @@ private sealed interface SpaceInteractiveTarget {
 private class SpaceHoverTracker {
     var pointer by mutableStateOf(Offset.Zero)
     var activeTarget by mutableStateOf<SpaceInteractiveTarget?>(null)
+
+    fun hover(target: SpaceInteractiveTarget) {
+        if (activeTarget?.targetKey != target.targetKey || activeTarget != target) {
+            activeTarget = target
+        }
+    }
+
+    fun leave(target: SpaceInteractiveTarget) {
+        if (activeTarget?.targetKey == target.targetKey) {
+            activeTarget = null
+        }
+    }
 
     fun clear() {
         activeTarget = null
@@ -1110,6 +1135,18 @@ private fun SpaceTreemapContent(
         }
     }
 
+    val latestHandlePrimaryClick by rememberUpdatedState(::handleTargetPrimaryClick)
+    val latestHandleTargetMenu by rememberUpdatedState(::handleTargetMenu)
+    val stableOnPrimaryClick = remember {
+        { target: SpaceInteractiveTarget -> latestHandlePrimaryClick(target) }
+    }
+    val stableOnContextMenu = remember {
+        { target: SpaceInteractiveTarget, windowPos: IntOffset?, fromTouch: Boolean ->
+            latestHandleTargetMenu(target, windowPos, fromTouch)
+        }
+    }
+    val hoverEnabled = !pointerSource.isTouchLike && desktopMenuRequest == null
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1134,11 +1171,6 @@ private fun SpaceTreemapContent(
             val insetRects = remember(tiles, tileGapHalfPx) {
                 tiles.map { tile -> tile.bounds.inset(tileGapHalfPx) }
             }
-            val activeHoverKey = if (pointerSource.isTouchLike || desktopMenuRequest != null) {
-                null
-            } else {
-                hoverTracker.activeTarget?.targetKey
-            }
             Layout(
                 modifier = Modifier.fillMaxSize(),
                 content = {
@@ -1152,15 +1184,10 @@ private fun SpaceTreemapContent(
                             isTreeBuilding = isCalculating,
                             totalDisplayedBytes = totalDisplayedBytes,
                             rankFraction = rankFraction,
-                            activeHoverKey = activeHoverKey,
-                            onHoverTarget = { target -> hoverTracker.activeTarget = target },
-                            onLeaveTarget = { target ->
-                                if (hoverTracker.activeTarget?.targetKey == target.targetKey) {
-                                    hoverTracker.activeTarget = null
-                                }
-                            },
-                            onPrimaryClick = ::handleTargetPrimaryClick,
-                            onContextMenu = ::handleTargetMenu,
+                            hoverTracker = hoverTracker,
+                            hoverEnabled = hoverEnabled,
+                            onPrimaryClick = stableOnPrimaryClick,
+                            onContextMenu = stableOnContextMenu,
                         )
                     }
                 },
@@ -1180,16 +1207,13 @@ private fun SpaceTreemapContent(
             }
         }
 
-        val currentHovered = if (isBlockingLoad || pointerSource.isTouchLike || desktopMenuRequest != null) null else hoverTracker.activeTarget
-        if (currentHovered != null) {
-            SpaceHoverCard(
-                target = currentHovered,
-                totalBytes = totalDisplayedBytes,
-                includeVaulted = includeVaulted,
-                hoverTracker = hoverTracker,
-                canvasSize = canvasSize,
-            )
-        }
+        SpaceHoverOverlay(
+            enabled = !isBlockingLoad && hoverEnabled,
+            totalBytes = totalDisplayedBytes,
+            includeVaulted = includeVaulted,
+            hoverTracker = hoverTracker,
+            canvasSize = canvasSize,
+        )
 
         if (isBlockingLoad) {
             Box(
@@ -1273,7 +1297,8 @@ private fun SpaceTreemapContent(
     }
 }
 
-private class BlockPalette(
+@Immutable
+private data class BlockPalette(
     val container: Color,
     val headerContainer: Color,
     val content: Color,
@@ -1408,9 +1433,8 @@ private fun SpaceTreemapOuterTile(
     isTreeBuilding: Boolean,
     totalDisplayedBytes: Double,
     rankFraction: Float,
-    activeHoverKey: String?,
-    onHoverTarget: (SpaceInteractiveTarget) -> Unit,
-    onLeaveTarget: (SpaceInteractiveTarget) -> Unit,
+    hoverTracker: SpaceHoverTracker,
+    hoverEnabled: Boolean,
     onPrimaryClick: (SpaceInteractiveTarget) -> Unit,
     onContextMenu: (target: SpaceInteractiveTarget, windowPos: IntOffset?, fromTouch: Boolean) -> Unit,
 ) {
@@ -1427,12 +1451,13 @@ private fun SpaceTreemapOuterTile(
             val target = remember(tile.id, groupedNodes, tile.bytes) {
                 SpaceInteractiveTarget.OtherGroup(tile.id, groupedNodes, tile.bytes)
             }
+            val groupedCount = groupedNodes.size
             val title = tr(
-                "其他 ${groupedNodes.size} 项",
-                "${groupedNodes.size} other items",
-                "ほか ${groupedNodes.size} 項目",
-                "기타 ${groupedNodes.size}개 항목",
-                "其他 ${groupedNodes.size} 項",
+                "其他 $groupedCount 项",
+                "$groupedCount other items",
+                "ほか $groupedCount 項目",
+                "기타 ${groupedCount}개 항목",
+                "其他 $groupedCount 項",
             )
             LeafInteractiveBlock(
                 target = target,
@@ -1444,10 +1469,9 @@ private fun SpaceTreemapOuterTile(
                 widthDp = widthDp,
                 heightDp = heightDp,
                 palette = otherGroupPalette(colors),
-                isHovered = activeHoverKey == target.targetKey,
+                hoverTracker = hoverTracker,
+                hoverEnabled = hoverEnabled,
                 clickable = groupedNodes.isNotEmpty(),
-                onHoverTarget = onHoverTarget,
-                onLeaveTarget = onLeaveTarget,
                 onPrimaryClick = onPrimaryClick,
                 onContextMenu = onContextMenu,
             )
@@ -1469,10 +1493,9 @@ private fun SpaceTreemapOuterTile(
                         widthDp = widthDp,
                         heightDp = heightDp,
                         palette = freeQuotaPalette(colors),
-                        isHovered = activeHoverKey == target.targetKey,
+                        hoverTracker = hoverTracker,
+                        hoverEnabled = hoverEnabled,
                         clickable = false,
-                        onHoverTarget = onHoverTarget,
-                        onLeaveTarget = onLeaveTarget,
                         onPrimaryClick = onPrimaryClick,
                         onContextMenu = onContextMenu,
                     )
@@ -1538,9 +1561,8 @@ private fun SpaceTreemapOuterTile(
                             widthDp = widthDp,
                             purelyVaulted = purelyVaulted,
                             framePalette = framePalette,
-                            activeHoverKey = activeHoverKey,
-                            onHoverTarget = onHoverTarget,
-                            onLeaveTarget = onLeaveTarget,
+                            hoverTracker = hoverTracker,
+                            hoverEnabled = hoverEnabled,
                             onPrimaryClick = onPrimaryClick,
                             onContextMenu = onContextMenu,
                         )
@@ -1568,10 +1590,9 @@ private fun SpaceTreemapOuterTile(
                             widthDp = widthDp,
                             heightDp = heightDp,
                             palette = palette,
-                            isHovered = activeHoverKey == outerTarget.targetKey,
+                            hoverTracker = hoverTracker,
+                            hoverEnabled = hoverEnabled,
                             clickable = true,
-                            onHoverTarget = onHoverTarget,
-                            onLeaveTarget = onLeaveTarget,
                             onPrimaryClick = onPrimaryClick,
                             onContextMenu = onContextMenu,
                         )
@@ -1609,9 +1630,8 @@ private fun NestedGroupTile(
     widthDp: Dp,
     purelyVaulted: Boolean,
     framePalette: BlockPalette,
-    activeHoverKey: String?,
-    onHoverTarget: (SpaceInteractiveTarget) -> Unit,
-    onLeaveTarget: (SpaceInteractiveTarget) -> Unit,
+    hoverTracker: SpaceHoverTracker,
+    hoverEnabled: Boolean,
     onPrimaryClick: (SpaceInteractiveTarget) -> Unit,
     onContextMenu: (target: SpaceInteractiveTarget, windowPos: IntOffset?, fromTouch: Boolean) -> Unit,
 ) {
@@ -1620,7 +1640,9 @@ private fun NestedGroupTile(
     val haptic = LocalHapticFeedback.current
     val pointerSource = LocalPointerSource.current
     val outerShape = RoundedCornerShape(10.dp)
-    val isHeaderHovered = activeHoverKey == outerTarget.targetKey
+    val isHeaderHovered by remember(outerTarget.targetKey, hoverTracker, hoverEnabled) {
+        derivedStateOf { hoverEnabled && hoverTracker.activeTarget?.targetKey == outerTarget.targetKey }
+    }
 
     val activeChildren = previewChildren
     val activeSum = remember(activeChildren) { activeChildren.sumOf { it.bytes.coerceAtLeast(0L) } }
@@ -1675,8 +1697,6 @@ private fun NestedGroupTile(
     var headerCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var lastPressOffset by remember { mutableStateOf(Offset.Zero) }
     var lastPressType by remember { mutableStateOf(PointerType.Unknown) }
-    val latestOnHover by rememberUpdatedState(onHoverTarget)
-    val latestOnLeave by rememberUpdatedState(onLeaveTarget)
     val latestOnClick by rememberUpdatedState(onPrimaryClick)
     val latestOnMenu by rememberUpdatedState(onContextMenu)
 
@@ -1698,7 +1718,7 @@ private fun NestedGroupTile(
                 .height(36.dp)
                 .background(framePalette.headerContainer)
                 .onPlaced { headerCoords = it }
-                .pointerInput(outerTarget.targetKey) {
+                .pointerInput(outerTarget.targetKey, hoverTracker) {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
@@ -1709,8 +1729,8 @@ private fun NestedGroupTile(
                             }
                             if (change.type == PointerType.Mouse) {
                                 when (event.type) {
-                                    PointerEventType.Enter, PointerEventType.Move -> latestOnHover(outerTarget)
-                                    PointerEventType.Exit -> latestOnLeave(outerTarget)
+                                    PointerEventType.Enter, PointerEventType.Move -> hoverTracker.hover(outerTarget)
+                                    PointerEventType.Exit -> hoverTracker.leave(outerTarget)
                                 }
                             }
                         }
@@ -1832,10 +1852,9 @@ private fun NestedGroupTile(
                                     widthDp = subWidthDp,
                                     heightDp = subHeightDp,
                                     palette = childPalette,
-                                    isHovered = activeHoverKey == subTarget.targetKey,
+                                    hoverTracker = hoverTracker,
+                                    hoverEnabled = hoverEnabled,
                                     clickable = true,
-                                    onHoverTarget = onHoverTarget,
-                                    onLeaveTarget = onLeaveTarget,
                                     onPrimaryClick = onPrimaryClick,
                                     onContextMenu = onContextMenu,
                                 )
@@ -1851,10 +1870,9 @@ private fun NestedGroupTile(
                                     widthDp = subWidthDp,
                                     heightDp = subHeightDp,
                                     palette = otherGroupPalette(colors),
-                                    isHovered = activeHoverKey == outerTarget.targetKey,
+                                    hoverTracker = hoverTracker,
+                                    hoverEnabled = hoverEnabled,
                                     clickable = true,
-                                    onHoverTarget = onHoverTarget,
-                                    onLeaveTarget = onLeaveTarget,
                                     onPrimaryClick = onPrimaryClick,
                                     onContextMenu = onContextMenu,
                                 )
@@ -1908,23 +1926,23 @@ private fun LeafInteractiveBlock(
     widthDp: Dp,
     heightDp: Dp,
     palette: BlockPalette,
-    isHovered: Boolean,
+    hoverTracker: SpaceHoverTracker,
+    hoverEnabled: Boolean,
     clickable: Boolean,
-    onHoverTarget: (SpaceInteractiveTarget) -> Unit,
-    onLeaveTarget: (SpaceInteractiveTarget) -> Unit,
     onPrimaryClick: (SpaceInteractiveTarget) -> Unit,
     onContextMenu: (target: SpaceInteractiveTarget, windowPos: IntOffset?, fromTouch: Boolean) -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
     val pointerSource = LocalPointerSource.current
+    val isHovered by remember(target.targetKey, hoverTracker, hoverEnabled) {
+        derivedStateOf { hoverEnabled && hoverTracker.activeTarget?.targetKey == target.targetKey }
+    }
     val cornerDp = minOf(8.dp, minOf(widthDp, heightDp) * 0.22f).coerceAtLeast(3.dp)
     val shape = RoundedCornerShape(cornerDp)
 
     var coordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var lastPressOffset by remember { mutableStateOf(Offset.Zero) }
     var lastPressType by remember { mutableStateOf(PointerType.Unknown) }
-    val latestOnHover by rememberUpdatedState(onHoverTarget)
-    val latestOnLeave by rememberUpdatedState(onLeaveTarget)
     val latestOnClick by rememberUpdatedState(onPrimaryClick)
     val latestOnMenu by rememberUpdatedState(onContextMenu)
 
@@ -1975,7 +1993,7 @@ private fun LeafInteractiveBlock(
         modifier = Modifier
             .fillMaxSize()
             .onPlaced { coordinates = it }
-            .pointerInput(target.targetKey) {
+            .pointerInput(target.targetKey, hoverTracker) {
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
@@ -1986,8 +2004,8 @@ private fun LeafInteractiveBlock(
                         }
                         if (change.type == PointerType.Mouse) {
                             when (event.type) {
-                                PointerEventType.Enter, PointerEventType.Move -> latestOnHover(target)
-                                PointerEventType.Exit -> latestOnLeave(target)
+                                PointerEventType.Enter, PointerEventType.Move -> hoverTracker.hover(target)
+                                PointerEventType.Exit -> hoverTracker.leave(target)
                             }
                         }
                     }
@@ -2170,6 +2188,26 @@ private fun LeafInteractiveBlock(
 }
 
 @Composable
+private fun SpaceHoverOverlay(
+    enabled: Boolean,
+    totalBytes: Double,
+    includeVaulted: Boolean,
+    hoverTracker: SpaceHoverTracker,
+    canvasSize: IntSize,
+) {
+    val currentHovered = if (enabled) hoverTracker.activeTarget else null
+    if (currentHovered != null) {
+        SpaceHoverCard(
+            target = currentHovered,
+            totalBytes = totalBytes,
+            includeVaulted = includeVaulted,
+            hoverTracker = hoverTracker,
+            canvasSize = canvasSize,
+        )
+    }
+}
+
+@Composable
 private fun SpaceHoverCard(
     target: SpaceInteractiveTarget,
     totalBytes: Double,
@@ -2245,34 +2283,37 @@ private fun SpaceHoverCard(
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    val physicalSizeText = target.physicalBytes.toReadableSize()
                     Text(
                         text = tr(
-                            "占配额 ${target.physicalBytes.toReadableSize()}（$shareText）",
-                            "Quota used: ${target.physicalBytes.toReadableSize()} ($shareText)",
-                            "容量枠使用 ${target.physicalBytes.toReadableSize()}（$shareText）",
-                            "할당량 사용 ${target.physicalBytes.toReadableSize()} ($shareText)",
-                            "佔配額 ${target.physicalBytes.toReadableSize()}（$shareText）",
+                            "占配额 $physicalSizeText（$shareText）",
+                            "Quota used: $physicalSizeText ($shareText)",
+                            "容量枠使用 $physicalSizeText（$shareText）",
+                            "할당량 사용 $physicalSizeText ($shareText)",
+                            "佔配額 $physicalSizeText（$shareText）",
                         ),
                         style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     if (target.vaultedBytes > 0L) {
+                        val vaultedSizeText = target.vaultedBytes.toReadableSize()
                         Text(
                             text = tr(
-                                "归档大小 ${target.vaultedBytes.toReadableSize()}",
-                                "Archived: ${target.vaultedBytes.toReadableSize()}",
-                                "アーカイブ ${target.vaultedBytes.toReadableSize()}",
-                                "보관 크기 ${target.vaultedBytes.toReadableSize()}",
-                                "歸檔大小 ${target.vaultedBytes.toReadableSize()}",
+                                "归档大小 $vaultedSizeText",
+                                "Archived: $vaultedSizeText",
+                                "アーカイブ $vaultedSizeText",
+                                "보관 크기 $vaultedSizeText",
+                                "歸檔大小 $vaultedSizeText",
                             ),
                             style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
                             color = MaterialTheme.colorScheme.tertiary,
                         )
                     }
                     if (target.isFolder) {
+                        val enFiles = enCount(target.fileCount, "file", "files")
                         val countText = tr(
                             "${target.fileCount} 个文件",
-                            enCount(target.fileCount, "file", "files"),
+                            enFiles,
                             "${target.fileCount} ファイル",
                             "파일 ${target.fileCount}개",
                             "${target.fileCount} 個檔案",

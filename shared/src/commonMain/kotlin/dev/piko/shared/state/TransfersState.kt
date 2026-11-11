@@ -46,8 +46,8 @@ sealed class TransferItem {
     open val remoteTaskIds: Set<String> = emptySet()
 
     data class Local(val task: DownloadTask) : TransferItem() {
-        override val key: String get() = "local:${task.taskId}"
-        override val createdAtMs: Long get() = task.createdAtMs
+        override val key: String = "local:${task.taskId}"
+        override val createdAtMs: Long = task.createdAtMs
     }
 
     /**
@@ -83,17 +83,18 @@ sealed class TransferItem {
     }
 
     data class Upload(val task: UploadTask) : TransferItem() {
-        override val key: String get() = "upload:${task.taskId}"
-        override val createdAtMs: Long get() = task.createdAtMs
+        override val key: String = "upload:${task.taskId}"
+        override val createdAtMs: Long = task.createdAtMs
     }
     data class UploadPreparing(val work: dev.piko.shared.upload.UploadPreparation, override val children: List<TransferItem> = emptyList()) : TransferItem() {
-        override val key: String get() = "upload-batch:${work.id}"
-        override val createdAtMs: Long get() = work.createdAtMs
+        override val key: String = "upload-batch:${work.id}"
+        override val createdAtMs: Long = work.createdAtMs
     }
 
     data class Cloud(val task: DriveTask) : TransferItem() {
-        override val key: String get() = "cloud:${task.id}"
-        override val createdAtMs: Long get() = parseEpochMillis(task.createdTime) ?: 0L
+        override val key: String = "cloud:${task.id}"
+        override val createdAtMs: Long = parseEpochMillis(task.createdTime) ?: 0L
+        val updatedAtMs: Long? = parseEpochMillis(task.updatedTime)
     }
 
     data class UploadBatch(
@@ -124,46 +125,46 @@ sealed class TransferItem {
      */
     data class Pack(val job: OfflinePackJob, val task: DriveTask?, val isBusy: Boolean = false) : TransferItem() {
         // 与 Cloud 同一命名空间：同一任务只该出现一次
-        override val key: String get() = "cloud:${job.taskId}"
-        override val createdAtMs: Long get() = job.createdAtMs
+        override val key: String = "cloud:${job.taskId}"
+        override val createdAtMs: Long = job.createdAtMs
 
-        override val remoteTaskIds: Set<String> get() = setOf(job.taskId)
+        override val remoteTaskIds: Set<String> = setOf(job.taskId)
         val progress: Int get() = if (task?.phase == TaskPhase.RUNNING) task.progress else job.progress
     }
 
     /** 秒传或引用保存记录：保存即完成，在 [COMPLETED_CLOUD_WINDOW] 内展示于「已完成」。 */
     data class Instant(val record: InstantSaveRecord) : TransferItem() {
-        override val key: String get() = "instant:${record.id}"
-        override val createdAtMs: Long get() = record.createdAtMs
+        override val key: String = "instant:${record.id}"
+        override val createdAtMs: Long = record.createdAtMs
     }
     data class InstantAttempt(val work: InstantSaveAttempt) : TransferItem() {
-        override val key: String get() = "instant:${work.id}"
-        override val createdAtMs: Long get() = work.finishedAtMs ?: work.createdAtMs
+        override val key: String = "instant:${work.id}"
+        override val createdAtMs: Long = work.finishedAtMs ?: work.createdAtMs
     }
     data class OfflineSubmit(val work: OfflineSubmitWork) : TransferItem() {
-        override val key: String get() = "offline-submit:${work.id}"
-        override val createdAtMs: Long get() = work.finishedAtMs ?: work.createdAtMs
+        override val key: String = "offline-submit:${work.id}"
+        override val createdAtMs: Long = work.finishedAtMs ?: work.createdAtMs
     }
 
     /** 服务端解压与本次运行期的结局，来自 [ArchiveExtractSession]；提示没有订阅者也不丢记录。 */
     data class Extract(val job: ArchiveJob) : TransferItem() {
-        override val remoteTaskIds: Set<String> get() = setOfNotNull(job.remoteTaskId)
-        override val key: String get() = "extract:${job.id}"
+        override val remoteTaskIds: Set<String> = setOfNotNull(job.remoteTaskId)
+        override val key: String = "extract:${job.id}"
 
-        override val createdAtMs: Long get() = (job.status as? ArchiveJobStatus.Finished)?.finishedAtMs ?: job.createdAtMs
+        override val createdAtMs: Long = (job.status as? ArchiveJobStatus.Finished)?.finishedAtMs ?: job.createdAtMs
     }
 
     /** 归档或恢复及本次运行期的结果。同一次工作从进度到结局保持身份。 */
     data class Vault(val work: FolderVaultSession.Work, val record: FolderVaultSession.Record? = null) : TransferItem() {
         val folderName: String get() = work.name
         val restoring: Boolean get() = work.restoring
-        override val key: String get() = "vault:${work.id}"
-        override val createdAtMs: Long get() = record?.finishedAtMs ?: work.createdAtMs
+        override val key: String = "vault:${work.id}"
+        override val createdAtMs: Long = record?.finishedAtMs ?: work.createdAtMs
     }
     data class Write(val work: FileWriteWork) : TransferItem() {
-        override val remoteTaskIds: Set<String> get() = work.copies.mapTo(HashSet()) { it.id }
-        override val key: String get() = "write:${work.id}"
-        override val createdAtMs: Long get() = work.result?.finishedAtMs ?: work.createdAtMs
+        override val remoteTaskIds: Set<String> = work.copies.mapTo(HashSet()) { it.id }
+        override val key: String = "write:${work.id}"
+        override val createdAtMs: Long = work.result?.finishedAtMs ?: work.createdAtMs
     }
 }
 
@@ -454,8 +455,9 @@ class TransfersState(
 
     /** 选中项里还在列表上的，条目被移除后自然不算。文件夹下载展开后其中的文件也选得中。 */
     val selectedItems: List<TransferItem> by derivedStateOf {
-        val sections = current
         val keys = selectedKeys
+        if (keys.isEmpty()) return@derivedStateOf emptyList()
+        val sections = current
         (sections.paused + sections.inProgress + sections.needsAttention + sections.completed + sections.outputDeleted)
             .flatMap { item -> listOf(item) + item.children }
             .filter { it.key in keys }
@@ -500,7 +502,7 @@ class TransfersState(
     fun selectBoxed(base: Set<String>, boxed: Collection<String>) {
         val next = base + boxed
         if (next.isEmpty()) return clearSelection()
-        selectedKeys = next
+        if (selectedKeys != next) selectedKeys = next
         checkboxMode = next.size > 1
     }
 
@@ -898,7 +900,7 @@ class TransfersState(
             item.task.isOutputDeleted -> Section.DELETED
             item.task.phase == TaskPhase.PENDING || item.task.phase == TaskPhase.RUNNING -> Section.PROGRESS
             item.task.phase == TaskPhase.ERROR -> Section.ATTENTION
-            item.task.phase == TaskPhase.COMPLETE && (parseEpochMillis(item.task.updatedTime) ?: Long.MIN_VALUE) >= windowStart -> Section.COMPLETED
+            item.task.phase == TaskPhase.COMPLETE && (item.updatedAtMs ?: Long.MIN_VALUE) >= windowStart -> Section.COMPLETED
             else -> null
         }
         is TransferItem.Pack -> when {

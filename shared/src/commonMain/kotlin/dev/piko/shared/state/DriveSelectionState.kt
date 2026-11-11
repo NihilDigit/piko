@@ -9,14 +9,24 @@ internal class DriveSelectionState(
     private val canSelect: (String) -> Boolean,
 ) {
     private val fileByRowKey by derivedStateOf { rows().associate { it.key to it.file } }
+    private val rowIndexByKey by derivedStateOf {
+        val list = rows()
+        if (list.isEmpty()) emptyMap()
+        else HashMap<String, Int>(list.size).also { map ->
+            for (i in list.indices) map.put(list[i].key, i)
+        }
+    }
     val ids = mutableStateListOf<String>()
+    val idSet: Set<String> by derivedStateOf {
+        if (ids.isEmpty()) emptySet() else ids.toHashSet()
+    }
     private val _selectedFileIds get() = ids
     private var selectionHeldOpen by mutableStateOf(false)
     val active by derivedStateOf { selectionHeldOpen || ids.isNotEmpty() }
     fun enterSelection(fileId: String? = null) {
         if (fileId != null && !canSelect(fileId)) return
         selectionHeldOpen = true
-        if (fileId != null && fileId !in _selectedFileIds) _selectedFileIds.add(fileId)
+        if (fileId != null && fileId !in idSet) _selectedFileIds.add(fileId)
     }
 
     fun exitSelection() {
@@ -28,9 +38,9 @@ internal class DriveSelectionState(
     fun setSelected(fileId: String, selected: Boolean) {
         if (selected && !canSelect(fileId)) return
         if (selected) {
-            if (fileId !in _selectedFileIds) _selectedFileIds.add(fileId)
+            if (fileId !in idSet) _selectedFileIds.add(fileId)
         } else {
-            _selectedFileIds.remove(fileId)
+            if (fileId in idSet) _selectedFileIds.remove(fileId)
         }
     }
 
@@ -38,32 +48,62 @@ internal class DriveSelectionState(
 
     fun toggleSelected(rowKey: String) {
         val fileId = fileByRowKey[rowKey]?.id ?: return
-        setSelected(fileId, fileId !in _selectedFileIds)
+        setSelected(fileId, fileId !in idSet)
         selectionAnchor = rowKey
         if (_selectedFileIds.isEmpty()) exitSelection()
     }
 
     fun selectRange(rowKey: String) {
-        val rows = rows()
-        val to = rows.indexOfFirst { it.key == rowKey }.takeIf { it >= 0 } ?: return
-        val from = selectionAnchor?.let { anchor -> rows.indexOfFirst { it.key == anchor } }?.takeIf { it >= 0 }
+        val currentRows = rows()
+        val indexByKey = rowIndexByKey
+        val to = indexByKey[rowKey] ?: return
+        val from = selectionAnchor?.let { indexByKey[it] }
         if (from == null) {
-            setSelected(rows[to].file.id, true)
+            setSelected(currentRows[to].file.id, true)
             selectionAnchor = rowKey
             return
         }
-        rows.subList(minOf(from, to), maxOf(from, to) + 1).forEach { setSelected(it.file.id, true) }
+        val existing = idSet
+        val added = HashSet<String>()
+        val batch = ArrayList<String>()
+        val start = minOf(from, to)
+        val end = maxOf(from, to)
+        for (i in start..end) {
+            val fileId = currentRows[i].file.id
+            if (fileId !in existing && added.add(fileId) && canSelect(fileId)) {
+                batch.add(fileId)
+            }
+        }
+        if (batch.isNotEmpty()) _selectedFileIds.addAll(batch)
+    }
+
+    fun selectFiles(fileIds: Iterable<String>) {
+        val existing = idSet
+        val added = HashSet<String>()
+        val batch = ArrayList<String>()
+        for (fileId in fileIds) {
+            if (fileId !in existing && added.add(fileId) && canSelect(fileId)) {
+                batch.add(fileId)
+            }
+        }
+        if (batch.isNotEmpty()) _selectedFileIds.addAll(batch)
     }
 
     fun selectBoxed(base: Set<String>, boxedRows: Collection<String>) {
-        val next = LinkedHashSet(base.filter(canSelect)).apply {
-            boxedRows.mapNotNull { fileByRowKey[it]?.id }.filterTo(this, canSelect)
+        val byRow = fileByRowKey
+        val next = LinkedHashSet<String>(base.size + boxedRows.size)
+        for (id in base) {
+            if (canSelect(id)) next.add(id)
+        }
+        for (rowKey in boxedRows) {
+            val id = byRow[rowKey]?.id ?: continue
+            if (canSelect(id)) next.add(id)
         }
         if (next.isEmpty()) {
             exitSelection()
             return
         }
-        if (_selectedFileIds.toSet() != next) {
+        if (idSet != next) {
             _selectedFileIds.clear()
             _selectedFileIds.addAll(next)
         }

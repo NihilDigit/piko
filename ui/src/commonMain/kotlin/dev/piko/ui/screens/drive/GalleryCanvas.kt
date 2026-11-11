@@ -135,6 +135,22 @@ internal class GalleryCanvasState internal constructor(anchor: GalleryAnchor? = 
     internal val learnedShapes = mutableStateMapOf<String, GalleryShape>()
     internal val failedCovers = mutableStateSetOf<String>()
     internal val prefetched = hashSetOf<String>()
+    private val scratchVisibleIds = HashSet<String>()
+
+    internal fun updateVisibleFileIds(placements: List<GalleryPlacement>, viewportHeight: Int) {
+        val scratch = scratchVisibleIds
+        scratch.clear()
+        for (i in placements.indices) {
+            val placement = placements[i]
+            if (placement.top < viewportHeight && placement.top + placement.height > 0) {
+                val id = placement.fileId
+                if (id != null) scratch.add(id)
+            }
+        }
+        if (scratch != visibleFileIds) {
+            visibleFileIds = HashSet(scratch)
+        }
+    }
 
     internal fun scrollBy(pixels: Float): Float {
         layout.scrollBy(-pixels.toDouble())
@@ -195,14 +211,24 @@ internal fun GalleryCanvas(
     val byId by remember(coverFiles) {
         derivedStateOf { coverFiles.associateBy { it.id } }
     }
-    fun recordDecodedRatio(file: FileStat, ratio: Float) {
-        if (aspectRatio(file) != null) return
-        val decodedShape = GalleryShape.nearest(ratio.toDouble())
-        val currentShape = learnedShapes[file.id] ?: GalleryShape.nearest(null)
-        if (decodedShape != currentShape && (file.id in learnedShapes || learnedShapes.size < COVER_METADATA_LIMIT)) {
-            learnedShapes[file.id] = decodedShape
+    val latestAspectRatio by rememberUpdatedState(aspectRatio)
+    val onRecordAspectRatio: (FileStat, Float) -> Unit = remember(state) {
+        { targetFile, ratio ->
+            if (latestAspectRatio(targetFile) == null) {
+                val decodedShape = GalleryShape.nearest(ratio.toDouble())
+                val currentShape = state.learnedShapes[targetFile.id] ?: GalleryShape.nearest(null)
+                if (decodedShape != currentShape && (targetFile.id in state.learnedShapes || state.learnedShapes.size < COVER_METADATA_LIMIT)) {
+                    state.learnedShapes[targetFile.id] = decodedShape
+                }
+            }
         }
     }
+    val onMarkCoverFailed: (String) -> Unit = remember(state) {
+        { fileId ->
+            if (state.failedCovers.size < COVER_METADATA_LIMIT) state.failedCovers.add(fileId)
+        }
+    }
+    fun recordDecodedRatio(file: FileStat, ratio: Float) = onRecordAspectRatio(file, ratio)
     val descriptors by remember(coverFiles, aspectRatio) {
         derivedStateOf {
             coverFiles.distinctBy { it.id }.map { file ->
@@ -278,6 +304,9 @@ internal fun GalleryCanvas(
     }
     val scroll = rememberScrollableState(state::scrollBy)
     var menuTarget by remember { mutableStateOf<Pair<String, IntOffset>?>(null) }
+    val onOpenContextMenu: (String, IntOffset) -> Unit = remember {
+        { fileId, offset -> menuTarget = fileId to offset }
+    }
     Box(modifier.fillMaxSize()) {
         SubcomposeLayout(
             modifier = Modifier
@@ -310,8 +339,7 @@ internal fun GalleryCanvas(
             val availableWidth = (width - inset * 2).coerceAtLeast(1.0)
             val count = max(columns, ceil((availableWidth + gap) / (maximumWidth.toPx() + gap)).toInt())
             val placements = state.layout.frame(descriptors, count, availableWidth, height.toDouble(), gap)
-            val nextVisible = placements.filter { it.top < height && it.top + it.height > 0 }.mapNotNullTo(HashSet()) { it.fileId }
-            if (nextVisible != state.visibleFileIds) state.visibleFileIds = nextVisible
+            state.updateVisibleFileIds(placements, height)
             val measured = placements.map { placement ->
                 val file = placement.fileId?.let(byId::get)
                 val placeable = subcompose(placement.key) {
@@ -326,12 +354,16 @@ internal fun GalleryCanvas(
                         }
                     } else {
                         GalleryCanvasCover(
-                            file, isSelectionMode, file.id in selectedIds, file.id in highlightedIds,
-                            isBlurred(file), callbacks,
+                            file = file,
+                            isSelectionMode = isSelectionMode,
+                            isSelected = file.id in selectedIds,
+                            isHighlighted = file.id in highlightedIds,
+                            isBlurred = isBlurred(file),
+                            callbacks = callbacks,
                             locationLabel = locationLabel(file),
-                            onAspectRatio = { ratio -> recordDecodedRatio(file, ratio) },
-                            onCoverFailed = { if (failedCovers.size < COVER_METADATA_LIMIT) failedCovers.add(file.id) },
-                            onContextMenu = { menuTarget = file.id to it },
+                            onAspectRatio = onRecordAspectRatio,
+                            onCoverFailed = onMarkCoverFailed,
+                            onContextMenu = onOpenContextMenu,
                         )
                     }
                 }.single().measure(Constraints.fixed(placement.width.roundToInt().coerceAtLeast(1), placement.height.roundToInt().coerceAtLeast(1)))
@@ -352,6 +384,10 @@ internal fun GalleryCanvas(
     }
 }
 
+private val GalleryCoverScrimBrush = Brush.verticalGradient(
+    listOf(Color.Transparent, Color.Black.copy(alpha = 0.28f), Color.Black.copy(alpha = 0.80f)),
+)
+
 @Composable
 private fun GalleryCanvasCover(
     file: FileStat,
@@ -361,9 +397,9 @@ private fun GalleryCanvasCover(
     isBlurred: Boolean,
     callbacks: DriveItemCallbacks,
     locationLabel: String?,
-    onAspectRatio: (Float) -> Unit,
-    onCoverFailed: () -> Unit,
-    onContextMenu: (IntOffset) -> Unit,
+    onAspectRatio: (FileStat, Float) -> Unit,
+    onCoverFailed: (String) -> Unit,
+    onContextMenu: (String, IntOffset) -> Unit,
 ) {
     val focus = remember { FocusRequester() }
     val ownClicks = remember { OwnClicks() }
@@ -382,6 +418,9 @@ private fun GalleryCanvasCover(
     var coverFailed by remember(coverUrl) { mutableStateOf(false) }
     var coordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
     val currentOnContextMenu by rememberUpdatedState(onContextMenu)
+    val aspectRatioCallback: (Float) -> Unit = remember(file, onAspectRatio) {
+        { ratio -> onAspectRatio(file, ratio) }
+    }
     CompositionLocalProvider(LocalOwnClicks provides ownClicks) {
         Box(
             modifier = Modifier
@@ -404,7 +443,7 @@ private fun GalleryCanvasCover(
                             val change = event.changes.first()
                             if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed && !change.isConsumed) {
                                 coordinates?.takeIf { it.isAttached }?.let { coords ->
-                                    currentOnContextMenu(coords.localToWindow(change.position).round())
+                                    currentOnContextMenu(file.id, coords.localToWindow(change.position).round())
                                     change.consume()
                                 }
                             }
@@ -452,16 +491,16 @@ private fun GalleryCanvasCover(
                         isBlurred,
                         PosterSpoilerBlur,
                         Modifier.fillMaxSize(),
-                        onAspectRatio = onAspectRatio,
+                        onAspectRatio = aspectRatioCallback,
                         onError = {
                             coverFailed = true
-                            onCoverFailed()
+                            onCoverFailed(file.id)
                         },
                     )
                 }
                 Column(
                     Modifier.align(Alignment.BottomStart).fillMaxWidth()
-                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.28f), Color.Black.copy(alpha = 0.80f))))
+                        .background(GalleryCoverScrimBrush)
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                 ) {
                     Text(

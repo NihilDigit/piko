@@ -211,6 +211,7 @@ class DriveScreenState(
     private val selection = DriveSelectionState({ fileRows }, { displayedFiles }, ::canSelect)
     private val _selectedFileIds get() = selection.ids
     val selectedFileIds: List<String> get() = selection.ids
+    val selectedIdSet: Set<String> get() = selection.idSet
     val isSelectionMode: Boolean get() = selection.active
 
     private val _revealedFileIds = mutableStateListOf<String>()
@@ -367,6 +368,31 @@ class DriveScreenState(
         val shownIds = shown.mapTo(HashSet()) { it.id }
         val attachments = files.filter { file -> hosts[file.id]?.let { it in shownIds } == true && !isHiddenByThumbnails(file) }
         (shown + attachments).distinctBy { it.id }
+    }
+
+    private val filesById: Map<String, FileStat> by derivedStateOf {
+        if (files.isEmpty()) emptyMap() else files.associateBy { it.id }
+    }
+
+    private val displayedFilesById: Map<String, FileStat> by derivedStateOf {
+        if (displayedFiles.isEmpty()) emptyMap() else displayedFiles.associateBy { it.id }
+    }
+
+    private var cachedSupplementalSource: List<FileStat>? = null
+    private var cachedSupplementalById: Map<String, FileStat> = emptyMap()
+
+    private fun supplementalFile(id: String): FileStat? {
+        val list = supplementalFiles()
+        if (list.isEmpty()) return null
+        val byId = if (list === cachedSupplementalSource) {
+            cachedSupplementalById
+        } else {
+            list.associateBy { it.id }.also {
+                cachedSupplementalSource = list
+                cachedSupplementalById = it
+            }
+        }
+        return byId[id]
     }
 
     fun withAttachedFiles(selected: List<FileStat>): List<FileStat> {
@@ -667,14 +693,26 @@ class DriveScreenState(
         scope.launch {
             val reloads = Channel<Unit>(Channel.CONFLATED)
             launch { driveRepo.folderChanges.collect { change ->
+                val targetIdSet: Set<String>? = when (change) {
+                    is DriveChange.Moved -> change.ids.toHashSet()
+                    is DriveChange.Trashed -> change.ids.toHashSet()
+                    is DriveChange.Restored -> change.ids.toHashSet()
+                    is DriveChange.Deleted -> change.ids.toHashSet()
+                    is DriveChange.Starred -> change.ids.toHashSet()
+                    else -> null
+                }
                 if (change !is DriveChange.ContentsChanged && !isLocalPlace && archiveView == null && importPreviewView == null && libraryView?.isSession != true) {
+                    fun matchesChange(id: String): Boolean = when (change) {
+                        is DriveChange.Renamed -> id == change.id
+                        else -> targetIdSet != null && id in targetIdSet
+                    }
                     fun patch(item: FileStat): FileStat? = when (change) {
                         is DriveChange.Renamed -> if (item.id == change.id) item.copy(name = change.name) else item
-                        is DriveChange.Moved -> if (item.id in change.ids) item.copy(parentId = change.to) else item
-                        is DriveChange.Trashed -> if (item.id in change.ids) item.copy(trashed = true) else item
-                        is DriveChange.Restored -> if (item.id in change.ids) item.copy(trashed = false) else item
-                        is DriveChange.Deleted -> item.takeUnless { it.id in change.ids }
-                        is DriveChange.Starred -> if (item.id in change.ids) item.copy(
+                        is DriveChange.Moved -> if (targetIdSet != null && item.id in targetIdSet) item.copy(parentId = change.to) else item
+                        is DriveChange.Trashed -> if (targetIdSet != null && item.id in targetIdSet) item.copy(trashed = true) else item
+                        is DriveChange.Restored -> if (targetIdSet != null && item.id in targetIdSet) item.copy(trashed = false) else item
+                        is DriveChange.Deleted -> item.takeUnless { targetIdSet != null && it.id in targetIdSet }
+                        is DriveChange.Starred -> if (targetIdSet != null && item.id in targetIdSet) item.copy(
                             starred = change.starred,
                             tags = item.tags.filterNot { it.name.equals("STAR", true) } +
                                 if (change.starred) listOf(FileTag(id = "STAR", name = "STAR")) else emptyList(),
@@ -684,15 +722,22 @@ class DriveScreenState(
                     fun inCurrentView(item: FileStat): Boolean = item.trashed == (libraryView == DriveLibrary.TRASH) &&
                         (libraryView != null || item.parentId == activeFolderId) &&
                         (libraryView != DriveLibrary.STARRED || item.isStarred)
-                    Snapshot.withMutableSnapshot {
-                        baseFiles = baseFiles.mapNotNull(::patch).filter(::inCurrentView)
-                        remoteFiles = remoteFiles.mapNotNull(::patch).filter(::inCurrentView)
-                        val nextHits = globalSearchHits.mapNotNull { hit ->
-                            patch(hit.file)?.takeUnless { it.trashed }?.let { hit.copy(file = it) }
-                        }
-                        if (nextHits != globalSearchHits.toList()) {
-                            globalSearchHits.clear()
-                            globalSearchHits.addAll(nextHits)
+                    val patchBase = baseFiles.any { matchesChange(it.id) || !inCurrentView(it) }
+                    val patchRemote = remoteFiles.any { matchesChange(it.id) || !inCurrentView(it) }
+                    val patchHits = globalSearchHits.any { matchesChange(it.file.id) || it.file.trashed }
+                    if (patchBase || patchRemote || patchHits) {
+                        Snapshot.withMutableSnapshot {
+                            if (patchBase) baseFiles = baseFiles.mapNotNull(::patch).filter(::inCurrentView)
+                            if (patchRemote) remoteFiles = remoteFiles.mapNotNull(::patch).filter(::inCurrentView)
+                            if (patchHits) {
+                                val nextHits = globalSearchHits.mapNotNull { hit ->
+                                    patch(hit.file)?.takeUnless { it.trashed }?.let { hit.copy(file = it) }
+                                }
+                                if (nextHits != globalSearchHits.toList()) {
+                                    globalSearchHits.clear()
+                                    globalSearchHits.addAll(nextHits)
+                                }
+                            }
                         }
                     }
                 }
@@ -723,7 +768,7 @@ class DriveScreenState(
                         } else reloads.trySend(Unit)
                     }
                 } else if (change is DriveChange.Starred && libraryView == null && archiveView == null) {
-                    val targetIds = change.ids.toSet()
+                    val targetIds = targetIdSet ?: change.ids.toHashSet()
                     if (remoteFiles.any { it.id in targetIds } || files.any { it.id in targetIds }) {
                         fun patchStar(item: FileStat): FileStat {
                             if (item.id !in targetIds) return item
@@ -1522,10 +1567,11 @@ class DriveScreenState(
     fun setSelected(fileId: String, selected: Boolean) = selection.setSelected(fileId, selected)
     fun toggleSelected(rowKey: String) = selection.toggleSelected(rowKey)
     fun selectRange(rowKey: String) = selection.selectRange(rowKey)
+    fun selectFiles(fileIds: Iterable<String>) = selection.selectFiles(fileIds)
     fun selectBoxed(base: Set<String>, boxedRows: Collection<String>) = selection.selectBoxed(base, boxedRows)
     fun toggleSelectAll() = selection.toggleSelectAll()
 
-    private fun canSelect(id: String): Boolean = !usesFolderStructure || files.none { it.id == id && it.isFolder }
+    private fun canSelect(id: String): Boolean = !usesFolderStructure || filesById[id]?.isFolder != true
 
     private var highlightSatisfiedFolderId: String? = null
 
@@ -1697,7 +1743,7 @@ class DriveScreenState(
         val moving = withoutVaulted(ids).filter { it != targetId && sourceOf(it) != targetId }
         if (moving.isEmpty()) return false
         val before = moving.mapNotNull { id ->
-            (knownFile(id) ?: driveRepo.knownFile(id))?.takeUnless { it.trashed }
+            knownFile(id)?.takeUnless { it.trashed }
                 ?.let { id to FileBefore(it.name, it.parentId) }
         }.toMap()
         return submitFileAction(FileWriteCommand.Move(moving, PikoPathBreadcrumb(targetId, targetName), before), onSuccess = onSuccess)
@@ -1711,9 +1757,9 @@ class DriveScreenState(
             is dev.piko.shared.presentation.FileCommandResult.Rejected -> { _messages.tryEmit(result.reason); true }
         }
     }
-    private fun knownFile(id: String): FileStat? = displayedFiles.firstOrNull { it.id == id }
-        ?: files.firstOrNull { it.id == id }
-        ?: supplementalFiles().firstOrNull { it.id == id }
+    private fun knownFile(id: String): FileStat? = displayedFilesById[id]
+        ?: filesById[id]
+        ?: supplementalFile(id)
         ?: driveRepo.knownFile(id)
 
     fun putOnClipboard(requested: List<String>, cut: Boolean) {

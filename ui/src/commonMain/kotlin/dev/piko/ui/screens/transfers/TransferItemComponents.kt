@@ -21,6 +21,7 @@ import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -32,6 +33,7 @@ import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.data.OfflinePackStage
 import dev.piko.shared.data.sourceUrl
+import dev.piko.shared.i18n.PikoLocale
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.state.ArchiveJobStatus
 import dev.piko.shared.state.FileWriteCommand
@@ -63,6 +65,7 @@ import dev.piko.ui.resources.text_clear_completed_tasks
 import io.github.nihildigit.pikpak.DriveTask
 import io.github.nihildigit.pikpak.TaskPhase
 
+@Stable
 internal class TransferActionContext(
     val state: TransfersState,
     val services: PikoServices,
@@ -81,6 +84,12 @@ internal class TransferActionContext(
     val onCreateImport: (String) -> Unit,
     val onShowDetails: (String) -> Unit,
     val onConfirmSingleSideEffectDelete: (String) -> Unit,
+    val onPlacedRow: (String, LayoutCoordinates) -> Unit = { _, _ -> },
+    val onSelectRow: (String) -> Unit = {},
+    val onToggleSelectRow: (String) -> Unit = {},
+    val onExtendSelectRow: (String) -> Unit = {},
+    val onLongClickRow: (String) -> Unit = {},
+    val buildRowContextActions: (TransferItem) -> List<SheetAction> = { emptyList() },
 )
 
 private fun locateWriteIdOf(work: FileWriteWork): String = work.command.target.id
@@ -480,22 +489,44 @@ internal fun TransferItemRowSlot(
     isCompleted: Boolean,
     isAttention: Boolean,
     isBlurred: Boolean,
+    isBatchExpanded: Boolean,
     taskLayout: TaskRowLayout,
-    state: TransfersState,
     taskPresenter: TaskPresenter,
-    localFiles: LocalFileActions,
-    quickAction: SheetAction?,
-    extraAction: SheetAction?,
-    playAction: (() -> Unit)?,
-    contextActions: () -> List<SheetAction>,
-    onPlaced: (LayoutCoordinates) -> Unit,
-    onSelect: () -> Unit,
-    onToggleSelect: () -> Unit,
-    onExtendSelect: () -> Unit,
-    onLongClick: () -> Unit,
-    onOpen: () -> Unit,
+    actionCtx: TransferActionContext,
     modifier: Modifier = Modifier,
 ) {
+    val state = actionCtx.state
+    val language = PikoLocale.effectiveLanguage
+    val undoOrVaultKey: Any? = when (item) {
+        is TransferItem.Vault -> state.isVaultStopping to item.record?.let(state::vaultUndoStatus)
+        is TransferItem.Write -> state.writeUndoStatus(item.work)
+        else -> null
+    }
+    val quickAction = remember(item, actionCtx, undoOrVaultKey, language) {
+        buildTransferQuickAction(item, actionCtx)
+    }
+    val extraAction = remember(item, actionCtx, isBatchExpanded, language) {
+        buildTransferExtraAction(item, actionCtx)
+    }
+    val playAction = remember(item, actionCtx) {
+        buildTransferPlayAction(item, actionCtx)
+    }
+    val primaryAction = remember(item, actionCtx) {
+        buildTransferPrimaryAction(item, actionCtx)
+    }
+    val onOpen = remember(item.key, primaryAction, actionCtx) {
+        { primaryAction?.invoke() ?: actionCtx.onShowDetails(item.key) }
+    }
+    val onSelect = remember(item.key, actionCtx) { { actionCtx.onSelectRow(item.key) } }
+    val onToggleSelect = remember(item.key, actionCtx) { { actionCtx.onToggleSelectRow(item.key) } }
+    val onExtendSelect = remember(item.key, actionCtx) { { actionCtx.onExtendSelectRow(item.key) } }
+    val onLongClick = remember(item.key, actionCtx) { { actionCtx.onLongClickRow(item.key) } }
+    val onPlaced: (LayoutCoordinates) -> Unit = remember(item.key, actionCtx) {
+        { coords -> actionCtx.onPlacedRow(item.key, coords) }
+    }
+    val contextActions = remember(item, actionCtx) {
+        { actionCtx.buildRowContextActions(item) }
+    }
     val trailingCount = (if (quickAction != null) 1 else 0) + (if (extraAction != null) 1 else 0)
     val hasLeadingClick = !checkboxActive && playAction != null
     val selection = RowSelection(
@@ -540,7 +571,7 @@ internal fun TransferItemRowSlot(
                         isBlurred = isBlurred,
                         state = state,
                         taskPresenter = taskPresenter,
-                        localFiles = localFiles,
+                        localFiles = actionCtx.localFiles,
                     )
                 },
             )
