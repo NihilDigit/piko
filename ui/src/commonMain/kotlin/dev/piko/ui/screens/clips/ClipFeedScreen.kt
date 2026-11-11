@@ -84,6 +84,7 @@ import dev.piko.shared.state.ClipFeedSession
 import dev.piko.shared.state.ClipStreams
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.MediaLoadingIndicator
+import dev.piko.ui.components.rememberMediaLoadingSpeedText
 import dev.piko.ui.components.pageFocusTarget
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.platform.LocalPikoPlatform
@@ -120,17 +121,17 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
 /**
- * 信息流：竖向翻页，每页是某个视频里随机一处起的 30 秒，放完自动翻到下一页。队列在 ClipFeedSession 里，
- * 这一页只管播放：打开完整播放器时它可能被销毁，回来时从会话里的当前段接着放。
+ * 信息流：竖向翻页，每页是某个视频里随机一处起的 30 秒，默认自动顺延窗口或单段循环，开启自动连刷后播完翻到下一条。
+ * 队列在 ClipFeedSession 里，这一页只管播放：打开完整播放器时它可能被销毁，回来时从会话里的当前段接着放。
  *
  * 三个预览播放器轮换，按页码取模分给上一段、当前段与下一段：前后两段提前打开、停在第一帧，翻过去只需 play。
  * 只用一个播放器时，翻页中相邻页没有画面，停稳后换源又要等首帧，两处都黑。
  * 翻页器里只有取好的段，还没取好的在候补里，见 [ClipStreams] 与 ClipFeedSession.upcoming。
  *
- * 样子照短视频应用：顶部只有在刷的文件夹与静音、沉浸、关闭，右侧一列操作，左下是说明，底边一条细进度条，都常驻，
- * 只在拖进度条时让开。控件是翻页器之上的固定一层，只画当前段，不随页滑动。区域矮到竖排的操作栏放不下时
- * （横握的手机）操作栏改为右下横排。单击暂停或继续，双击收藏，长按两倍速，上下滑、滚轮或上下键翻页，
- * 左右键前进后退，空格暂停，M 静音。沉浸时控件连同顶栏全部藏起，单击只叫回控件。
+ * 样子照短视频应用：顶栏包含当前范围与自动连刷、弹出/收回窗口、全屏、横竖屏、静音、沉浸、关闭等入口，右侧一列操作，
+ * 左下是说明，底边一条细进度条，都常驻，只在拖进度条时让开。控件是翻页器之上的固定一层，只画当前段，不随页滑动。
+ * 区域矮到竖排的操作栏放不下时（横握的手机）操作栏改为右下横排。单击暂停或继续，双击收藏，长按按播放设置倍速加速，
+ * 上下滑、滚轮或上下键翻页，左右键前进后退，空格暂停，M 静音，A 切换自动连刷。沉浸时控件连同顶栏全部藏起，单击只叫回控件。
  *
  * [compact] 是放在网盘页右侧的窄面板里：按钮与文字缩小，范围靠左。面板不画栏名，关闭也在这条顶栏上。
  * [onPopOut] 与 [onDock] 是桌面端在主窗口与独立窗口之间挪动它，平台没有独立窗口时为 null。
@@ -251,10 +252,13 @@ fun ClipFeedScreen(
                 videoPreview == null -> FeedMessage(tr("此平台暂不支持信息流", "Feed is not supported on this platform yet", "このプラットフォームではフィードにまだ対応していません", "이 플랫폼은 아직 피드를 지원하지 않습니다", "此平台尚不支援資訊流"), null, topBar)
                 clips.isEmpty() && !session.isEmpty -> {
                     Box(Modifier.fillMaxSize()) {
-                        Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                            MediaLoadingIndicator()
-                            Text(stringResource(Res.string.text_preparing), color = Color.White, modifier = Modifier.padding(top = 16.dp))
-                        }
+                        ClipLoadingStateIndicator(
+                            active = true,
+                            title = stringResource(Res.string.text_preparing),
+                            sampleBytes = streams::totalReceivedBytes,
+                            isReactivating = streams::anyReactivating,
+                            modifier = Modifier.align(Alignment.Center),
+                        )
                         topBar(null)
                     }
                 }
@@ -359,7 +363,7 @@ private fun ClipPager(
     var paused by remember { mutableStateOf(pausedByHost) }
     val latestPaused by rememberUpdatedState(paused)
     val latestHostPaused by rememberUpdatedState(pausedByHost)
-    // 长按期间两倍速
+    // 长按倍速播放中（倍率见 playerBoostSpeedFlow）
     var boosting by remember { mutableStateOf(false) }
     // 拖进度条时说明与操作栏让开，看得到画面
     var scrubbing by remember { mutableStateOf(false) }
@@ -486,6 +490,8 @@ private fun ClipPager(
             clipLengths[slot] = initialLength
             val rawSaved = (rememberedPositions[clip] ?: 0L).coerceIn(0L, initialLength)
             val resumeOffset = if (initialLength >= maxRem && rawSaved >= initialLength - REPLAY_WITHIN_MS) 0L else rawSaved
+            val openStarted = TimeSource.Monotonic.markNow()
+            val openMs: Long
             try {
                 // 回翻恢复到半途位置时，先放开代理侧预读，确保跳出开头 5 秒预取区也能顺畅解出首帧
                 if (resumeOffset > 0L) streams.boost(clip, BOOSTED_READ_AHEAD_SECONDS, BOOSTED_MIN_AHEAD_BYTES)
@@ -499,21 +505,27 @@ private fun ClipPager(
                 )
                 // 换文件后音量是否沿用看后端，静音时每次装完都再设一遍
                 if (latestMuted) players[slot].setVolume(0f)
+                openMs = openStarted.elapsedNow().inWholeMilliseconds
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 // 打不开的这一段交给翻到它时的跳过；异常不能漏出去，这个作用域的异常会一路报到 UI 线程
-                PikoLog.w("Clips", "第 $page 段打不开：${logFile(clip.fileId, clip.name)}", e)
+                PikoLog.w(TAG, "Failed to open clip page=$page (${logFile(clip.fileId, clip.name)})", e)
                 loaded[slot] = null
                 return@launch
             }
+            val mode = when {
+                prepared.localPath != null -> "local"
+                prepared.sliced -> "sliced"
+                else -> "original"
+            }
             PikoLog.d(
-                "Clips",
-                "装入第 $page 段 ${logFile(clip.fileId, clip.name)}（${if (prepared.sliced) "转码切片" else "原画"}）：" +
-                    "取流 $preparedMs ms，打开 ${started.elapsedNow().inWholeMilliseconds} ms",
+                TAG,
+                "Loaded clip page=$page (${logFile(clip.fileId, clip.name)}, mode=$mode): " +
+                    "prepare=${preparedMs} ms, open=${openMs} ms",
             )
             snapshotFlow { rendered[slot] == clip }.first { it }
-            PikoLog.d("Clips", "第 $page 段就绪：共 ${started.elapsedNow().inWholeMilliseconds} ms")
+            PikoLog.d(TAG, "Clip page=$page first frame ready in ${started.elapsedNow().inWholeMilliseconds} ms (${logFile(clip.fileId, clip.name)})")
         }.also { loadJobs[slot] = it }
     }
 
@@ -604,7 +616,7 @@ private fun ClipPager(
             try {
                 awaitCancellation()
             } finally {
-                PikoLog.d("Clips", "等待页停了 ${waiting.elapsedNow().inWholeMilliseconds} ms，候补 ${latestUpcoming.size} 段")
+                PikoLog.d(TAG, "Waiting page dismissed after ${waiting.elapsedNow().inWholeMilliseconds} ms (upcoming=${latestUpcoming.size})")
             }
         }
         // 等待页原地变成一段时页码没变，翻页器不会再报停稳，当前位置得在这里补报
@@ -700,12 +712,12 @@ private fun ClipPager(
                     // 暂停着定位的本来就不走，不算
                     if (resumed || !paused) {
                         PikoLog.d(
-                            "Clips",
+                            TAG,
                             if (resumed) {
-                                "定位后播放位置推进 ${sought.elapsedNow().inWholeMilliseconds - PLAYING_EVIDENCE_MS} ms，" +
-                                    "${if (sawBuffering) "后端报告等待" else "后端未报告等待"} ${logFile(current.fileId, current.name)}"
+                                "Seek playback resumed in ${sought.elapsedNow().inWholeMilliseconds} ms " +
+                                    "(bufferingReported=$sawBuffering, ${logFile(current.fileId, current.name)})"
                             } else {
-                                "定位后 ${SEEK_URGENT_FOR.inWholeSeconds} 秒没走起来 ${logFile(current.fileId, current.name)}"
+                                "Seek did not resume within ${SEEK_URGENT_FOR.inWholeSeconds}s (${logFile(current.fileId, current.name)})"
                             },
                         )
                     }
@@ -731,8 +743,8 @@ private fun ClipPager(
             streams.boost(current, BOOSTED_READ_AHEAD_SECONDS, BOOSTED_MIN_AHEAD_BYTES)
             delay(BOOST_CHECK_AFTER)
             PikoLog.d(
-                "Clips",
-                "升档 ${logFile(current.fileId, current.name)}：升档前 $before，${BOOST_CHECK_AFTER.inWholeSeconds} 秒后 ${currentPlayer.bufferReport()}",
+                TAG,
+                "Boosted buffer for ${logFile(current.fileId, current.name)}: before=$before, after ${BOOST_CHECK_AFTER.inWholeSeconds}s=${currentPlayer.bufferReport()}",
             )
         }
         // 就绪只说明文件打开了，起点的画面未必到手；位置走起来才是看的人感到的开播
@@ -742,10 +754,10 @@ private fun ClipPager(
             // 暂停着的不算：点「看完整」时这一段就是停着的
             if (!began && !paused) {
                 PikoLog.d(
-                    "Clips",
-                    "第 $settled 段 $NOT_STARTED_REPORT_AFTER 没走起来 ${logFile(current.fileId, current.name)}：" +
-                        "装着 ${loaded[slotOf(settled)] == current}，就绪 ${rendered[slotOf(settled)] == current}，" +
-                        "播放 ${currentPlayer.isPlaying}，缓冲 ${currentPlayer.isBuffering}，位置 ${currentPlayer.positionMillis - start} ms",
+                    TAG,
+                    "Clip page=$settled did not start within $NOT_STARTED_REPORT_AFTER (${logFile(current.fileId, current.name)}): " +
+                        "loaded=${loaded[slotOf(settled)] == current}, ready=${rendered[slotOf(settled)] == current}, " +
+                        "playing=${currentPlayer.isPlaying}, buffering=${currentPlayer.isBuffering}, offsetMs=${currentPlayer.positionMillis - start}",
                 )
             }
         }
@@ -757,9 +769,9 @@ private fun ClipPager(
             began = true
             onStarted()
             PikoLog.d(
-                "Clips",
-                "开播 ${logFile(current.fileId, current.name)}：画面走起来 ${started.elapsedNow().inWholeMilliseconds - PLAYING_EVIDENCE_MS} ms，" +
-                    "就绪 $openedMs ms，" + if (preRendered) tr("翻到时已就绪", "Ready when reached", "表示時に準備済み", "도달 시 준비됨", "切換至此時已就緒") else tr("翻到时未就绪", "Not ready when reached", "表示時に未準備", "도달 시 미준비", "切換至此時尚未就緒"),
+                TAG,
+                "Playback started for ${logFile(current.fileId, current.name)}: " +
+                    "wall=${started.elapsedNow().inWholeMilliseconds} ms, ready=${openedMs} ms, preRendered=$preRendered",
             )
             // 位置停住却后端未报告等待：切片到头、解码卡住一类，转圈不会出现，只能看位置
             launch {
@@ -776,7 +788,7 @@ private fun ClipPager(
                     } else if (since == null) {
                         stillSince = TimeSource.Monotonic.markNow()
                     } else if (since.elapsedNow() >= FREEZE_REPORT_AFTER) {
-                        PikoLog.d("Clips", "画面停住 ${logFile(current.fileId, current.name)}：位置 ${now - start} ms，未报缓冲")
+                        PikoLog.d(TAG, "Playback position stalled without buffering for ${logFile(current.fileId, current.name)} at offsetMs=${now - start}")
                         stillSince = null
                         last = -1
                     }
@@ -792,7 +804,7 @@ private fun ClipPager(
                     stallStart = null
                     val stalledMs = mark.elapsedNow().inWholeMilliseconds
                     if (stalledMs >= SPINNER_DELAY.inWholeMilliseconds) {
-                        PikoLog.d("Clips", "卡顿 ${logFile(current.fileId, current.name)}：$stalledMs ms，位置 ${currentPlayer.positionMillis - start} ms")
+                        PikoLog.d(TAG, "Buffering stall on ${logFile(current.fileId, current.name)}: duration=${stalledMs} ms at offsetMs=${currentPlayer.positionMillis - start}")
                     }
                 }
             }
@@ -815,11 +827,12 @@ private fun ClipPager(
                 latestAutoAdvance -> autoStep(current)
                 latestAutoExtend && ended[slot] != current && length < maxRemaining -> {
                     val nextLength = (length + CLIP_LENGTH_MS).coerceAtMost(maxRemaining)
+                    val extendedMs = nextLength - length
                     clipLengths[slot] = nextLength
                     rememberedLengths[current] = nextLength
                     currentPlayer.setBufferAhead(BOOSTED_SECONDS)
                     streams.boost(current, BOOSTED_READ_AHEAD_SECONDS, BOOSTED_MIN_AHEAD_BYTES)
-                    PikoLog.d("Clips", "自动续播 30s ${logFile(current.fileId, current.name)}：当前窗口 ${nextLength / 1000}s")
+                    PikoLog.d(TAG, "Auto-extended clip window by ${extendedMs / 1000}s for ${logFile(current.fileId, current.name)} (window=${nextLength / 1000}s)")
                 }
                 else -> {
                     ended[slot] = null
@@ -871,7 +884,7 @@ private fun ClipPager(
         val activeClip = latestClips.getOrNull(page)
         val slot = slotOf(page)
         if (activeClip == null || rendered[slot] != activeClip) {
-            PikoLog.d("Clips", "忽略定位：page=$page, clips=${latestClips.size}, active=${activeClip != null}, rendered=${rendered[slot] == activeClip}")
+            PikoLog.d(TAG, "Ignored seek: page=$page, clips=${latestClips.size}, hasActive=${activeClip != null}, rendered=${rendered[slot] == activeClip}")
             return
         }
         val player = players[slot]
@@ -886,8 +899,10 @@ private fun ClipPager(
         val maxRemaining = maxPlayableLength(slot, activeClip)
         if (latestAutoExtend && !latestAutoAdvance && millis >= currentClipLen - SEEK_EXTEND_THRESHOLD_MS && currentClipLen < maxRemaining) {
             val nextLength = (currentClipLen + CLIP_LENGTH_MS).coerceAtMost(maxRemaining)
+            val extendedMs = nextLength - currentClipLen
             clipLengths[slot] = nextLength
             rememberedLengths[activeClip] = nextLength
+            PikoLog.d(TAG, "Extended clip window on seek by ${extendedMs / 1000}s for ${logFile(activeClip.fileId, activeClip.name)} (window=${nextLength / 1000}s)")
         }
         val limit = clipLengths[slot].coerceAtLeast(1_000L)
         val clampedOffset = millis.coerceIn(0L, limit)
@@ -896,7 +911,7 @@ private fun ClipPager(
         }
         rememberedPositions[activeClip] = clampedOffset
         val targetOnPlayer = startOnPlayer[slot] + clampedOffset
-        PikoLog.d("Clips", "请求定位 ${logFile(activeClip.fileId, activeClip.name)}：段内 $clampedOffset/$limit ms（播放器 $targetOnPlayer ms）")
+        PikoLog.d(TAG, "Seeking ${logFile(activeClip.fileId, activeClip.name)}: offset=${clampedOffset}/${limit} ms (playerPos=${targetOnPlayer} ms)")
         player.seekTo(targetOnPlayer)
         seekPending++
     }
@@ -1008,9 +1023,13 @@ private fun ClipPager(
         ) { page ->
             val clip = clips.getOrNull(page)
             if (clip == null) {
-                Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                    MediaLoadingIndicator()
-                    Text(stringResource(Res.string.text_buffering_next_clip), color = Color.White, modifier = Modifier.padding(top = 16.dp))
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    ClipLoadingStateIndicator(
+                        active = pagerState.currentPage == page || pagerState.targetPage == page,
+                        title = stringResource(Res.string.text_buffering_next_clip),
+                        sampleBytes = streams::totalReceivedBytes,
+                        isReactivating = streams::anyReactivating,
+                    )
                 }
                 return@VerticalPager
             }
@@ -1058,10 +1077,13 @@ private fun ClipPager(
                 if (!ready) ClipBackdrop(listed?.thumbnailLink, Modifier.fillMaxSize())
 
                 if (active && !warmUpDone) {
-                    Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                        MediaLoadingIndicator()
-                        Text(tr("正在缓存 $warmed/$WARM_UP_CLIPS", "Buffering $warmed/$WARM_UP_CLIPS", "バッファ中 $warmed/$WARM_UP_CLIPS", "버퍼링 중 $warmed/$WARM_UP_CLIPS", "正在快取 $warmed/$WARM_UP_CLIPS"), color = Color.White, modifier = Modifier.padding(top = 16.dp))
-                    }
+                    ClipLoadingStateIndicator(
+                        active = true,
+                        title = tr("正在缓存 $warmed/$WARM_UP_CLIPS", "Buffering $warmed/$WARM_UP_CLIPS", "バッファ中 $warmed/$WARM_UP_CLIPS", "버퍼링 중 $warmed/$WARM_UP_CLIPS", "正在快取 $warmed/$WARM_UP_CLIPS"),
+                        sampleBytes = streams::totalReceivedBytes,
+                        isReactivating = streams::anyReactivating,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
                 } else {
                     // 缓冲过一会儿才转圈：开播与换源时缓冲状态会闪一两下，每次都转就像卡了两次
                     var stalled by remember { mutableStateOf(false) }
@@ -1073,7 +1095,14 @@ private fun ClipPager(
                             stalled = true
                         }
                     }
-                    if (stalled) MediaLoadingIndicator(Modifier.align(Alignment.Center))
+                    ClipBufferingIndicator(
+                        waiting = waiting,
+                        stalled = stalled,
+                        isLocal = dev.piko.shared.data.LocalLocation.isLocal(clip.fileId),
+                        sampleBytes = { streams.receivedBytes(clip) },
+                        isReactivating = { streams.isReactivating(clip) },
+                        modifier = Modifier.align(Alignment.Center),
+                    )
                     AnimatedVisibility(
                         visible = active && paused && !stalled,
                         enter = fadeIn(motion.fastEffectsSpec()) + scaleIn(motion.fastSpatialSpec(), initialScale = PAUSED_MARK_ENTER_SCALE),
@@ -1207,6 +1236,51 @@ private fun ActiveClipProgressBar(
     )
 }
 
+/** 独立隔离缓冲期间 350ms 网速采样重组，与完整播放器共用 [rememberMediaLoadingSpeedText] 规则与 [MediaLoadingIndicator] 悬挂样式。 */
+@Composable
+private fun ClipBufferingIndicator(
+    waiting: Boolean,
+    stalled: Boolean,
+    isLocal: Boolean,
+    sampleBytes: () -> Long,
+    isReactivating: () -> Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val speedText = rememberMediaLoadingSpeedText(
+        active = waiting && !isLocal,
+        sampleBytes = sampleBytes,
+        isReactivating = isReactivating,
+    )
+    if (stalled) {
+        MediaLoadingIndicator(
+            modifier = modifier,
+            subtitle = speedText,
+            appearImmediate = true,
+        )
+    }
+}
+
+/** 信息流首屏准备、预热与尾页等待的统一加载指示器，将高频网速刷新隔离在叶子节点内且保持圆心固定不跳动。 */
+@Composable
+private fun ClipLoadingStateIndicator(
+    active: Boolean,
+    title: String,
+    sampleBytes: () -> Long,
+    isReactivating: () -> Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val speedText = rememberMediaLoadingSpeedText(
+        active = active,
+        sampleBytes = sampleBytes,
+        isReactivating = isReactivating,
+    )
+    MediaLoadingIndicator(
+        modifier = modifier,
+        title = title,
+        subtitle = speedText,
+    )
+}
+
 /** 列目录时带回的显示宽高比；没有宽高的为 null。不计旋转，只作就绪前的估计。 */
 private fun listedAspect(file: FileStat): Float? {
     val width = file.params["width"]?.toFloatOrNull() ?: return null
@@ -1235,8 +1309,8 @@ private const val BOOSTED_READ_AHEAD_SECONDS = 25
 private const val BOOSTED_MIN_AHEAD_BYTES = 6L * 1024 * 1024
 
 /**
- * 还没升档的段播放器往后缓冲的秒数。播放器的缓冲读都是最高档，压着它才不越过预取好的 5 秒开头：
- * 放到 3 秒升档时，缓冲到的正是 5 秒。
+ * 尚未升档的邻居段播放器往后缓冲的秒数。播放器的缓冲读都是最高档，压着它才不越过预取好的 5 秒开头；
+ * 当前活动段初始给 8 秒代理预读，连续播放满 2.5 秒（[BOOST_AFTER_MS]）确认在看后再放开至 10 秒缓冲与 25 秒预读。
  */
 private const val HOLD_BUFFER_SECONDS = 2
 
@@ -1273,7 +1347,7 @@ private val FREEZE_POLL = 500.milliseconds
 /** 缓冲超过这么久才转圈，也才记作一次卡顿。 */
 private val SPINNER_DELAY = 300.milliseconds
 
-/** 位置走过这么多才算真在放，开播日志从耗时里扣掉它。 */
+/** 媒体时钟推进过这么多毫秒才算画面真正持续推进（避免把换源或定位瞬间的微小跳变算作开播）。 */
 private const val PLAYING_EVIDENCE_MS = 300L
 
 /** 翻回的一段离终点不到这么多，就从头再放。 */
@@ -1316,3 +1390,5 @@ private const val PAUSED_MARK_ENTER_SCALE = 1.3f
 
 /** 双击冒出的星左右歪斜的最大角度。 */
 private const val BURST_TILT = 15f
+
+private const val TAG = "Clips"

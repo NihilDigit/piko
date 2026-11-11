@@ -196,7 +196,7 @@ fun MediampVideoPlayerScreen(
         onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
     }
 
-    // 没有后台播放与媒体通知，退到后台就暂停；Surface 此时也被销毁，画面本就停了
+    // 不支持退到后台继续播放（前台期间通过下方 MediaSession 与媒体通知提供耳机按键和系统媒体控制），ON_STOP 时暂停；Surface 此时也被销毁
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, state) {
         val observer = LifecycleEventObserver { _, event ->
@@ -534,14 +534,14 @@ private fun copySubtitleToCache(context: Context, uri: Uri): LocalSubtitle {
     }.getOrElse { LocalSubtitle.Unreadable }
 }
 
+private const val MEDIA_CHANNEL_ID = "piko_media_playback"
+private const val MEDIA_NOTIFICATION_ID = 9528
+
 /**
  * 这个文件已下载到本地的完整副本，没有则为 null。
  *
  * 分段下载的片段不算，路径对应的文件也要还在。
  */
-private const val MEDIA_CHANNEL_ID = "piko_media_playback"
-private const val MEDIA_NOTIFICATION_ID = 9528
-
 private fun completedDownloadPath(fileId: String): String? =
     PikoApplication.instance.downloadManager.tasks.value.values
         .find { it.fileId == fileId && it.status == DownloadStatus.COMPLETED && !it.isSegment }

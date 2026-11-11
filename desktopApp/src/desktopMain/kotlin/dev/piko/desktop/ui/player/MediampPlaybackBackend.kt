@@ -150,6 +150,7 @@ internal class MediampPlaybackBackend(
     // 正常播放时在 scope 的调度器（Compose 主线程）上读写，关闭时由后台清理回调复位。
     private var awaitingReady by mutableStateOf(false)
     private var subtitlesAttached = false
+    private var hasNativeEventHook = false
 
     init {
         installPlaybackEvents()
@@ -169,9 +170,9 @@ internal class MediampPlaybackBackend(
             }
         }
         mpv?.setPropertyString("slang", MPV_SUBTITLE_LANGUAGES)
-        // libass 缺字时经 DirectWrite 找回退字体，传的语言是空串，非中文系统上给汉字挑的多是日文字体：
-        // 繁体字在里面有，「这」「们」这类简体字没有，回退失败后落到 sub-font。默认的 sans-serif 也不含中文，
-        // 简体字幕就缺字。换成雅黑，简繁都全，Windows 各语言版都自带
+        // libass 缺字时在 Windows 上经 DirectWrite 找回退字体，传的语言是空串，非中文系统上给汉字挑的多是日文字体：
+        // 繁体字在里面有，「这」「们」这类简体字没有，回退失败后落到 sub-font。默认的 sans-serif 在 Windows 上也不含中文，
+        // 按当前平台与语言偏好挑选自带简繁字体（见 SUBTITLE_FALLBACK_FONT）
         mpv?.setPropertyString("sub-font", SUBTITLE_FALLBACK_FONT)
         // 纯文本字幕（SRT/VTT）按实际视频画面高度缩放而非整个窗口高度，避免竖窄窗口下字幕暴涨并落入上下大黑边
         mpv?.setPropertyString("sub-scale-with-window", "no")
@@ -230,6 +231,11 @@ internal class MediampPlaybackBackend(
                     subtitlesAttached = true
                     attachPendingSubtitles()
                 }
+                if (!hasNativeEventHook && awaitingReady && state.isMediaLoaded && !state.isLoadingOrBuffering) {
+                    awaitingReady = false
+                    manualSeeking = false
+                    _events.emit(PlaybackBackendEvent.Ready)
+                }
             }
         }
         // mediamp-mpv 的 bufferedPercentage 对应 cache-buffering-state（仅在卡顿重缓冲期间为 0..100，
@@ -270,12 +276,21 @@ internal class MediampPlaybackBackend(
         }
         feedback.invalidate()
         awaitingReady = true
-        PikoLog.d("Player", "后端会话：实例 ${nativeInstanceId?.toString(16)}，代际 $playbackGeneration，预览 $preview")
+        nativeInstanceId?.let(MpvLogBridge::clearHandle)
+        PikoLog.d("Player", "Opening playback session: instance=${nativeInstanceId?.toString(16)}, generation=$playbackGeneration, preview=$preview")
         subtitlesAttached = false
         manualSeeking = false
         manualSeekGen++
         pendingSubtitles = subtitles
         mpv?.setPropertyString("hwdec", if (hardwareDecoding) "auto,auto-copy" else "no")
+        // 本机回环代理由 SDK 内部负责重试与选路；关闭 FFmpeg 的 HTTP 自动重连，避免关窗或切集撤回代理会话后
+        // FFmpeg 继续对已撤回的 127.0.0.1 URL 发重连请求并刷出 503/404 与残缺包报错。
+        when {
+            uri.startsWith("http://127.0.0.1:") ->
+                mpv?.setPropertyString("stream-lavf-o", "reconnect=0,reconnect_streamed=0,reconnect_on_network_error=0")
+            uri.startsWith("http://") || uri.startsWith("https://") ->
+                mpv?.setPropertyString("stream-lavf-o", "reconnect=1,reconnect_streamed=1,reconnect_delay_max=2")
+        }
         try {
             player.setMediaData(UriMediaData(uri), playWhenReady = playWhenReady, startPositionMillis = startMillis)
         } catch (e: Exception) {
@@ -362,29 +377,70 @@ internal class MediampPlaybackBackend(
 
     private fun installPlaybackEvents() {
         val handle = mpv ?: return
-        val field = MPVHandle::class.java.getDeclaredField("eventListener").apply { isAccessible = true }
-        val delegate = field.get(handle) as EventListener
-        originalListener = delegate
-        handle.setEventListener(object : EventListener by delegate {
-            override fun onEvent(event: Int) {
-                val generation = playbackGeneration
-                delegate.onEvent(event)
-                if (event == MPVEvent.PLAYBACK_RESTART && !closing) {
-                    val nativeSeeking = runCatching { handle.getPropertyString("seeking") == "yes" }.getOrDefault(true)
-                    val decoder = if (!preview && awaitingReady) runCatching { handle.getPropertyString("hwdec-current") }.getOrNull() else null
-                    scope.launch {
-                        if (closing || nativeSeeking || !feedback.restarted(generation)) return@launch
-                        manualSeeking = false
-                        if (awaitingReady) {
-                            awaitingReady = false
-                            if (!subtitlesAttached) { subtitlesAttached = true; attachPendingSubtitles() }
-                            decoder?.let { PikoLog.i("Player", "解码：$it") }
-                            _events.emit(PlaybackBackendEvent.Ready)
+        runCatching {
+            val field = MPVHandle::class.java.getDeclaredField("eventListener").apply { isAccessible = true }
+            val delegate = field.get(handle) as EventListener
+            originalListener = delegate
+            handle.setEventListener(object : EventListener {
+                override fun onPropertyChange(name: String) {
+                    if (closing) return
+                    runCatching { delegate.onPropertyChange(name) }
+                }
+
+                override fun onPropertyChange(name: String, value: Boolean) {
+                    if (closing) return
+                    runCatching { delegate.onPropertyChange(name, value) }
+                }
+
+                override fun onPropertyChange(name: String, value: Long) {
+                    if (closing) return
+                    runCatching { delegate.onPropertyChange(name, value) }
+                }
+
+                override fun onPropertyChange(name: String, value: Double) {
+                    if (closing) return
+                    runCatching { delegate.onPropertyChange(name, value) }
+                }
+
+                override fun onPropertyChange(name: String, value: String) {
+                    if (closing) return
+                    runCatching { delegate.onPropertyChange(name, value) }
+                }
+
+                override fun onStartFile(playlistEntryId: Long) {
+                    if (closing) return
+                    runCatching { delegate.onStartFile(playlistEntryId) }
+                }
+
+                override fun onEndFile(reason: Int, error: Int, playlistEntryId: Long) {
+                    if (closing) return
+                    runCatching { delegate.onEndFile(reason, error, playlistEntryId) }
+                }
+
+                override fun onEvent(event: Int) {
+                    if (closing) return
+                    val generation = playbackGeneration
+                    runCatching { delegate.onEvent(event) }
+                    if (event == MPVEvent.PLAYBACK_RESTART && !closing) {
+                        val nativeSeeking = runCatching { handle.getPropertyString("seeking") == "yes" }.getOrDefault(true)
+                        val decoder = if (!preview && awaitingReady) runCatching { handle.getPropertyString("hwdec-current") }.getOrNull() else null
+                        scope.launch {
+                            if (closing || nativeSeeking || !feedback.restarted(generation)) return@launch
+                            manualSeeking = false
+                            if (awaitingReady) {
+                                awaitingReady = false
+                                if (!subtitlesAttached) { subtitlesAttached = true; attachPendingSubtitles() }
+                                decoder?.let { PikoLog.i("Player", "Active decoder: $it") }
+                                _events.emit(PlaybackBackendEvent.Ready)
+                            }
                         }
                     }
                 }
-            }
-        })
+            })
+            hasNativeEventHook = true
+        }.onFailure {
+            PikoLog.w("Player", "Failed to hook MPVHandle eventListener; falling back to state-based ready detection", it)
+        }
     }
 
     override fun stop() {
@@ -394,6 +450,8 @@ internal class MediampPlaybackBackend(
         subtitlesAttached = false
         manualSeeking = false
         manualSeekGen++
+        // 同步向 libmpv 下达 stop，先于后续 withdrawPlaybackTransport 关闭回环代理 reader，避免 FFmpeg 读到半截包报错
+        runCatching { mpv?.command("stop") }
         player.stopPlayback()
     }
 
@@ -403,12 +461,32 @@ internal class MediampPlaybackBackend(
         if (closing) return@withContext
         stop()
         val handle = mpv
+        val startedAt = kotlin.time.TimeSource.Monotonic.markNow()
+        var loggedFailure = false
         while (true) {
             if (closing) return@withContext
             val state = player.state.value
-            val mpvIdle = handle == null || runCatching { handle.getPropertyString("idle-active") }.getOrNull() == "yes"
-            if (!state.isMediaLoaded && !state.isLoadingOrBuffering && mpvIdle) return@withContext
-            if (mpvIdle) return@withContext
+            val stateIdle = !state.isMediaLoaded && !state.isLoadingOrBuffering
+            val mpvIdle = if (handle == null) {
+                stateIdle
+            } else {
+                runCatching { handle.getPropertyString("idle-active") }
+                    .onFailure {
+                        if (!loggedFailure) {
+                            loggedFailure = true
+                            PikoLog.w("Player", "Failed to query mpv idle-active while draining playback", it)
+                        }
+                    }
+                    .getOrNull() == "yes"
+            }
+            if (mpvIdle && (stateIdle || startedAt.elapsedNow().inWholeMilliseconds >= 250L)) return@withContext
+            if (startedAt.elapsedNow().inWholeMilliseconds >= STOP_IDLE_TIMEOUT_MILLIS) {
+                PikoLog.w(
+                    "Player",
+                    "Timed out waiting for player idle state (mpvIdle=$mpvIdle, mediaLoaded=${state.isMediaLoaded}, buffering=${state.isLoadingOrBuffering})",
+                )
+                return@withContext
+            }
             delay(15L)
         }
     }
@@ -473,7 +551,9 @@ internal class MediampPlaybackBackend(
     fun bufferReport(): String? {
         if (closing) return null
         return mpv?.let { handle ->
-            "cache-secs=${handle.getPropertyString("cache-secs")}，缓存 ${handle.getPropertyString("demuxer-cache-duration")} 秒"
+            val cacheSecs = runCatching { handle.getPropertyString("cache-secs") }.getOrNull()
+            val cacheDuration = runCatching { handle.getPropertyString("demuxer-cache-duration") }.getOrNull()
+            "cache-secs=$cacheSecs, demuxer-cache=${cacheDuration}s"
         }
     }
 
@@ -548,11 +628,14 @@ private fun AspectRatioMode.toShared(): PlayerAspectRatio = when (this) {
 
 /**
  * MediaMP 的 mpv 句柄。它把句柄的 getter 标成了 internal，而 0.5.0 打开文件时不理会 MediaExtraFiles，
- * 外挂字幕只能自己 sub-add，所以经反射取。版本锁在 0.5.0（原因见 CLAUDE.md），升级时这里要重新核对。
- * 取不到时为 null：内嵌轨道照常经 MediaMetadata 可用，只是没有外挂字幕。
+ * 首帧 PLAYBACK_RESTART 就绪事件、外挂字幕、画面旋转与区域裁剪都依赖直调 mpv，所以经反射取。
+ * 版本锁在 0.5.0（原因见 desktopApp/AGENTS.md），升级时这里要重新核对。
+ * 取不到时为 null：退回基于 MediaMP 状态的首帧就绪判定与内嵌轨道读取，无外挂字幕、旋转与裁剪。
  */
 private fun mpvHandleOf(player: MediampPlayer): MPVHandle? = runCatching {
     JvmMpvMediampPlayer::class.java.getMethod("getHandle" + "$" + "mediamp_mpv").invoke(player) as? MPVHandle
+}.onFailure {
+    PikoLog.w("Player", "Failed to reflect MPVHandle from Mediamp player; native event hook, rotation, crop, and external subtitles unavailable", it)
 }.getOrNull()
 
 // macOS 的 libass 经 CoreText 找字体，苹方简繁都全，系统自带。Linux 的 libass 经 fontconfig 找，
@@ -575,6 +658,7 @@ private const val MIB = 1024 * 1024
 private const val PREVIEW_CACHE_SECONDS = 8
 private const val PREVIEW_PROBE_BYTES = 1024 * 1024
 private const val PREVIEW_ANALYZE_SECONDS = 1
+private const val STOP_IDLE_TIMEOUT_MILLIS = 2_000L
 
 /** 句柄取不到时退回 MediaMP 读的轨道：音轨没有语言，也分不出外挂。 */
 private fun snapshotOf(feature: MediaMetadata, audio: List<AudioTrack>, subtitles: List<SubtitleTrack>) = MpvTrackSnapshot(

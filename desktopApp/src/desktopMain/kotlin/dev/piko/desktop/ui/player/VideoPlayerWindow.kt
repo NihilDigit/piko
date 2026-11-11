@@ -267,7 +267,8 @@ private fun VideoPlayerContent(
 ) {
     val scope = rememberCoroutineScope()
     // 不使用 rememberMediampPlayer：其 RememberObserver 会在 EDT 同步销毁原生播放器。
-    val playerJob = remember { SupervisorJob() }
+    // 按 request 隔离生命周期，避免窗口内切换打开新视频时旧 state 的异步销毁回调误杀新请求正在使用的 backend/player。
+    val playerJob = remember(request) { SupervisorJob() }
     val playerScope = remember(playerJob) { CoroutineScope(Dispatchers.Main.immediate + playerJob) }
     val player = remember(playerScope) { MediampPlayer(Unit, playerScope.coroutineContext) }
     // 偏好是 StateFlow，first() 当场返回
@@ -340,7 +341,7 @@ private fun VideoPlayerContent(
         LaunchedEffect(window) {
             delay(1_000)
             if (window.renderApi.name.startsWith("SOFTWARE")) {
-                PikoLog.w("Player", "Skiko 以 ${window.renderApi} 渲染，Linux 上播放器画面出不来")
+                PikoLog.w("Player", "Skiko is using ${window.renderApi}; hardware OpenGL video rendering is unavailable on Linux")
                 snackbarHostState.showSnackbar(tr("未检测到可用的硬件 OpenGL，无法渲染视频画面。请检查显卡驱动程序。", "Hardware OpenGL is unavailable; unable to render video. Check your graphics driver.", "利用可能なハードウェアOpenGLがないため映像を描画できません。グラフィックスドライバーを確認してください。", "사용 가능한 하드웨어 OpenGL이 없어 동영상을 렌더링할 수 없습니다. 그래픽 드라이버를 확인해 주세요.", "未偵測到可用的硬體 OpenGL，無法繪製影片畫面。請檢查顯示卡驅動程式。"), withDismissAction = true)
             }
         }
@@ -363,7 +364,7 @@ private fun VideoPlayerContent(
             state.release {
                 backend.markClosing()
                 playerJob.cancel()
-                runCatching { player.close() }
+                runCatching { player.close() }.onFailure { PikoLog.w("Player", "Failed to close native player", it) }
             }
         }
     }

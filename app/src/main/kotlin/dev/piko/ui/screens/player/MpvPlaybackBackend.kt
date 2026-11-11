@@ -240,10 +240,14 @@ internal class MpvPlaybackBackend(
         if (released) return
         feedback.invalidate()
         fileLoaded = false
-        // 段落预览关着音轨与字幕，挂了也不显示
+        // 段落预览与信息流片段仅关闭字幕轨（sid=no，音轨仍保留），无需挂载外挂字幕
         pendingSubtitles = if (preview) emptyList() else subtitles
         val uri = when (target) {
-            is PlaybackTarget.LocalFile -> localUri(target.path) ?: return
+            is PlaybackTarget.LocalFile -> localUri(target.path) ?: run {
+                isLoadingFile = false
+                _events.tryEmit(PlaybackBackendEvent.Error("Failed to open local content URI descriptor"))
+                return
+            }
             is PlaybackTarget.Url -> target.url
         }
         observePropertiesOnce()
@@ -269,8 +273,16 @@ internal class MpvPlaybackBackend(
      */
     private fun localUri(path: String): String? {
         if (!path.startsWith("content:")) return path
-        val descriptor = runCatching { context.contentResolver.openFileDescriptor(Uri.parse(path), "r") }.getOrNull()
-            ?: return null
+        val parsed = Uri.parse(path)
+        val descriptor = runCatching { context.contentResolver.openFileDescriptor(parsed, "r") }
+            .onFailure { e ->
+                PikoLog.w("Player", "Failed to open local content URI descriptor (authority=${parsed.authority})", e)
+            }
+            .getOrElse { return null }
+        if (descriptor == null) {
+            PikoLog.w("Player", "ContentResolver returned null descriptor for local content URI (authority=${parsed.authority})")
+            return null
+        }
         return "fdclose://${descriptor.detachFd()}"
     }
 
@@ -285,11 +297,11 @@ internal class MpvPlaybackBackend(
 
     override val requiresAsyncStopDrain: Boolean get() = true
 
-    private suspend fun <T> callOnMpv(block: () -> T?): T? {
-        if (released) return null
-        val done = CompletableDeferred<T?>()
+    private suspend fun <T> callOnMpv(block: () -> T?): Result<T?> {
+        if (released) return Result.success(null)
+        val done = CompletableDeferred<Result<T?>>()
         calls.execute {
-            val result = if (destroyed) null else runCatching(block).getOrNull()
+            val result = if (destroyed) Result.success(null) else runCatching(block)
             done.complete(result)
         }
         return done.await()
@@ -305,13 +317,31 @@ internal class MpvPlaybackBackend(
         supersededLoads = issuedLoads
         isLoadingFile = false
         callOnMpv { mpv.command(arrayOf("stop")) }
+        val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(STOP_IDLE_TIMEOUT_MILLIS)
         while (true) {
             if (released) {
                 destroyCompleted.await()
                 return
             }
-            val idle = callOnMpv { mpv.getPropertyString("idle-active") }
-            if (destroyed || idle == "yes") return
+            val idleResult = callOnMpv { mpv.getPropertyString("idle-active") }
+            if (destroyed) return
+            val error = idleResult.exceptionOrNull()
+            if (error != null) {
+                PikoLog.w("Player", "Failed to query mpv idle-active while stopping", error)
+                return
+            }
+            val idle = idleResult.getOrNull()
+            if (idle == "yes") return
+            if (idle == null) {
+                if (!released && !destroyed) {
+                    PikoLog.w("Player", "mpv idle-active returned null while stopping; aborting idle wait")
+                }
+                return
+            }
+            if (System.nanoTime() >= deadlineNanos) {
+                PikoLog.w("Player", "Timed out waiting for mpv idle-active after ${STOP_IDLE_TIMEOUT_MILLIS}ms (last=$idle)")
+                return
+            }
             delay(15L)
         }
     }
@@ -406,7 +436,7 @@ internal class MpvPlaybackBackend(
     }
 
     fun bufferReport(): String? =
-        if (released) null else "cache-secs=${mpv.getPropertyString("cache-secs")}，缓存 ${mpv.getPropertyString("demuxer-cache-duration")} 秒"
+        if (released) null else "cache-secs=${mpv.getPropertyString("cache-secs")}, cached=${mpv.getPropertyString("demuxer-cache-duration")}s"
 
     override fun selectAudioTrack(id: String) {
         onMpv { mpv.setPropertyString("aid", id) }
@@ -613,6 +643,7 @@ internal class MpvPlaybackBackend(
         issuedLoads += 1
         readySent = false
         lastErrorLog = null
+        synchronized(recentMpvLines) { recentMpvLines.clear() }
         isLoadingFile = true
         val hasSurfaceNow = surfaceAttached || headless
         onMpv {
@@ -700,10 +731,10 @@ internal class MpvPlaybackBackend(
         lastLoggedDecoderKey = key
         if (!loggedAudioOutput) {
             loggedAudioOutput = true
-            PikoLog.d("Player", "mpv 音频输出：${mpv.getPropertyString("current-ao")}，硬解：$hwdec")
+            PikoLog.d("Player", "mpv audio output: ${mpv.getPropertyString("current-ao").orEmpty().ifEmpty { "none" }}, hwdec: $hwdec")
         }
-        val summary = "mpv 解码状态（preview=$preview, load=#$issuedLoads, surface=#$surfaceGeneration, $trigger）：" +
-            "codec=${codec.ifEmpty { "unknown" }}, ${w}x$h, vo=${vo.ifEmpty { "none" }}, 硬解：$hwdec"
+        val summary = "mpv decoder state (preview=$preview, load=#$issuedLoads, surface=#$surfaceGeneration, trigger=$trigger): " +
+            "codec=${codec.ifEmpty { "unknown" }}, ${w}x$h, vo=${vo.ifEmpty { "none" }}, hwdec=$hwdec"
         if (hardwareDecoding && !headless && (hwdec == "no" || hwdec == "none") && codec.isNotEmpty()) {
             PikoLog.w("Player", summary)
         } else {
@@ -751,14 +782,20 @@ internal class MpvPlaybackBackend(
         // 与「Skipping invalid undecodable NALU」，一段就是几百行
         if (level <= MPV_LOG_LEVEL_WARN) {
             val line = "$prefix: ${text.trim()}"
-            if (recentMpvLines.add(line)) {
-                if (recentMpvLines.size > RECENT_MPV_LINES) recentMpvLines.remove(recentMpvLines.first())
-                PikoLog.log(if (level <= MPV_LOG_LEVEL_ERROR) LogLevel.ERROR else LogLevel.WARN, "mpv", line, null)
+            val shouldLog = synchronized(recentMpvLines) {
+                val added = recentMpvLines.add(line)
+                if (added && recentMpvLines.size > RECENT_MPV_LINES) {
+                    recentMpvLines.remove(recentMpvLines.first())
+                }
+                added
+            }
+            if (shouldLog) {
+                PikoLog.log(if (level <= MPV_LOG_LEVEL_ERROR) LogLevel.ERROR else LogLevel.WARN, "Mpv", line, null)
             }
         }
     }
 
-    // 只在 mpv 的日志线程上读写。按加入先后排，满了挤掉最早的
+    // mpv 日志线程与切集线程均会访问，经 synchronized(recentMpvLines) 串行化；换片时清空，避免前一部视频的重复报错压掉后一部视频的首条报错
     private val recentMpvLines = LinkedHashSet<String>()
 
     private fun updateVideoAspect() {
@@ -777,6 +814,7 @@ internal class MpvPlaybackBackend(
 
         const val MIB = 1024 * 1024
         const val CALL_THREAD_IDLE_SECONDS = 5L
+        const val STOP_IDLE_TIMEOUT_MILLIS = 2_000L
         const val PREVIEW_PROBE_BYTES = 1024 * 1024
         const val PREVIEW_ANALYZE_SECONDS = 1
         const val POSITION_GRANULARITY_MILLIS = 250L

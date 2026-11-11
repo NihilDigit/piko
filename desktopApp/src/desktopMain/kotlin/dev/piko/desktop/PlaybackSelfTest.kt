@@ -121,7 +121,9 @@ internal fun playbackSelfTest(file: File, holdMillis: Long, report: (String) -> 
                                     runCatching { stream.close() }
                                     backend.markClosing()
                                     playerJob.cancel()
-                                    runCatching { player.close() }
+                                    runCatching { player.close() }.onFailure {
+                                        dev.piko.shared.log.PikoLog.w("Player", "Failed to close native player during self-test", it)
+                                    }
                                     closedLatch.complete(Unit)
                                 }
                             }

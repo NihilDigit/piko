@@ -13,6 +13,7 @@ import androidx.compose.runtime.setValue
 import dev.piko.shared.data.LeasedFile
 import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFile
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.rememberDownloadLauncher
@@ -51,6 +52,7 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
                     isStarred = entryId != null && services.driveRepository.vaultStars.isStarred(entryId)
                 } else {
                     services.driveRepository.starredFiles()
+                        .logFailure(TAG, "Failed to load starred files in player for ${logFile(fileId, "")}")
                         .onSuccess { files -> isStarred = files.any { it.id == fileId } }
                 }
             }
@@ -77,7 +79,7 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
                 return@launch
             }
             services.driveRepository.getFileDetail(fileId)
-                .logFailure(TAG, "播放器查文件详情失败")
+                .logFailure(TAG, "Failed to load file detail in player for ${logFile(fileId, "")}")
                 .onSuccess { detail ->
                     action(
                         FileStat(
@@ -125,7 +127,7 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
                 DriveActions.copyDownloadLink {
                     scope.launch {
                         val url = services.mediaRepository.fetchDownloadUrl(fileId)
-                            .logFailure(TAG, "播放器查文件下载链接失败")
+                            .logFailure(TAG, "Failed to fetch download URL in player for ${logFile(fileId, "")}")
                             .getOrNull()
                         if (!url.isNullOrBlank()) {
                             platform.copyToClipboard(tr("下载链接", "Download link", "ダウンロードリンク", "다운로드 링크", "下載連結"), url)
@@ -147,7 +149,7 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
                         scope.launch {
                             services.driveRepository.setStarred(listOf(fileId), target)
                                 .onSuccess { message(if (target) tr("已添加星标", "Starred", "スターを付けました", "별표를 추가했습니다", "已新增星號") else tr("已取消星标", "Unstarred", "スターを外しました", "별표를 해제했습니다", "已取消星號")) }
-                                .logFailure(TAG, "播放器修改星标失败")
+                                .logFailure(TAG, "Failed to update star=$target in player for ${logFile(fileId, "")}")
                                 .onFailure {
                                     isStarred = !target
                                     message(if (target) tr("添加星标失败", "Failed to add star", "スターを付けられませんでした", "별표를 추가하지 못했습니다", "新增星號失敗") else tr("取消星标失败", "Failed to remove star", "スターを外せませんでした", "별표를 해제하지 못했습니다", "取消星號失敗"))

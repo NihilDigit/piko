@@ -185,8 +185,16 @@ fun MobilePlayerControls(
     val seekPreviewMillis = (ui.activeGesture as? PlayerGesture.Seek)?.targetMillis(durationMillis) ?: ui.settledSeekMillis
 
     val chromeVisible = ui.controlsVisible && !ui.isLocked && !ui.isEditingCropRegion
+    var stalledLoading by remember { mutableStateOf(false) }
+    LaunchedEffect(isLoading) {
+        stalledLoading = false
+        if (isLoading) {
+            kotlinx.coroutines.delay(dev.piko.ui.components.LOADING_APPEAR_DELAY_MS)
+            stalledLoading = true
+        }
+    }
     val bottomBarVisible = (chromeVisible || seekPreviewMillis != null) && !ui.isEditingCropRegion
-    val centerVisible = ((chromeVisible && !ui.isBoosting) || isLoading || centerIndicator != null) && errorMessage == null && !ui.isEditingCropRegion
+    val centerVisible = ((chromeVisible && !ui.isBoosting) || (isLoading && (chromeVisible || stalledLoading)) || centerIndicator != null) && errorMessage == null && !ui.isEditingCropRegion
 
     BackHandler(enabled = isFullscreen && !ui.isEditingCropRegion, onBack = onToggleFullscreen)
     BackHandler(enabled = ui.isEditingCropRegion) { ui.cancelCropEdit(onAspectRatioChange) }

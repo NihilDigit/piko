@@ -9,16 +9,26 @@ import org.openani.mediamp.mpv.MPVLog
  * 把 mediamp 的日志接进应用日志：mpv 自己的、mediamp 原生层（前缀 mediampv）的、它 Kotlin 层（mediamp）的都走这一个出口。
  * 不接的话它只把警告以上 println 到标准输出，安装版没人看，GPU 设备失效这类线索（wait_for_gpu、flush query 失败）就丢了。
  *
- * 只留警告以上。坏流会逐包刷同几句，最近记过的不再记，做法同 Android 的 MpvPlaybackBackend.logMessage：
+ * 默认保留警告以上，外加 mediamp 首帧渲染就绪行（`rendering ...`）；表面尚未就绪前的互操作提示降为 DEBUG。
+ * 坏流会逐包刷同几句，最近记过的不再记，做法同 Android 的 MpvPlaybackBackend.logMessage：
  * 只比上一句不够，HEVC 从切片开头解到第一个关键帧前是两句交替刷。
  * handler 是进程级的，几个播放器（主播放器、信息流里预备的几段）的 mpv 日志线程与界面线程都会调进来，所以加锁。
  */
 internal object MpvLogBridge {
     private val recent = LinkedHashSet<String>()
 
+    fun clearHandle(instanceHandle: Long) {
+        val marker = "[${instanceHandle.toString(16)}]: "
+        synchronized(recent) {
+            recent.removeIf { it.contains(marker) }
+        }
+    }
+
     fun install() {
         MPVHandle.setLogHandler { message ->
             val renderingReady = message.prefix == "mediamp" && message.line.startsWith("rendering ")
+            val preSurfaceNoise = (message.prefix == "mediamp" && message.line.contains("skia interop unavailable")) ||
+                ((message.prefix == "mediamp" || message.prefix == "mediampv") && message.line.contains("has no consumer-side texture"))
             if (message.level > MPVLog.WARN && !renderingReady) return@setLogHandler
             val line = "${message.prefix}[${message.instanceHandle.toString(16)}]: ${message.line}"
             val fresh = synchronized(recent) {
@@ -27,10 +37,11 @@ internal object MpvLogBridge {
                 }
             }
             if (fresh) PikoLog.log(when {
+                preSurfaceNoise -> LogLevel.DEBUG
                 message.isError -> LogLevel.ERROR
                 message.level <= MPVLog.WARN -> LogLevel.WARN
                 else -> LogLevel.DEBUG
-            }, "mpv", line, null)
+            }, "Mpv", line, null)
         }
     }
 

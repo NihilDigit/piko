@@ -15,7 +15,7 @@ import dev.jdtech.mpv.MPVLib.MpvEvent
  * 不用 SurfaceHolder.Callback2 推迟「画完了」：真机上（Android 16）转屏那次遍历没有走 relayoutWindow，
  * SurfaceView 走的是 handleSyncNoBuffer，mpv 的 buffer 不进窗口的同步事务，推迟只会把窗口的同步拖到超时。
  *
- * mpv 在 vo=gpu 下没有逐帧的出图通知，下面两条信号都由 mpv 的流水线保证，不靠数时间：
+ * mpv 在 vo=gpu 下没有逐帧的出图通知，正常情况下优先依赖 mpv 流水线给出的首帧信号揭幕，并以 [MAX_COVER_MILLIS] 超时兜底：
  * 设置 android-surface-size 要等 vo 线程处理完才返回，此后交出的 buffer 都是新尺寸，起点取在这里。
  * 播放中，time-pos 是最近一帧送进 vo 的 pts，而 vo 只有一格队列，core 要等 vo 取走上一帧才送下一帧，
  * vo 又要画完、交出一帧才取下一帧。所以起点之后出现第三个更大的 time-pos 时，其中第一帧已经交出；
@@ -24,7 +24,7 @@ import dev.jdtech.mpv.MPVLib.MpvEvent
  * 只认它之后的 SEEK 所对应的那一次。
  *
  * 等待中途可能暂停或继续，原先认的信号就不会再来。所以每隔 [REARM_MILLIS] 由 [arm] 看一次 mpv 的状态，
- * 换了状态就重新设起点；新起点只会更晚，不会提前揭开。缓冲中两条信号都不来，盖着直到出帧。
+ * 换了状态就重新设起点；新起点只会更晚，不会提前揭开。缓冲或异常卡住导致两条信号迟迟不来时，继续盖着等待出帧，至多到 [MAX_COVER_MILLIS] 兜底揭开以免黑屏常驻。
  */
 internal class SurfaceRedrawGate(
     private val dropCount: () -> Long,

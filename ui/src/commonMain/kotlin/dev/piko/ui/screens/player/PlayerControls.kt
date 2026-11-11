@@ -1,5 +1,6 @@
 package dev.piko.ui.screens.player
 
+import dev.piko.ui.components.MediaLoadingCaption
 import dev.piko.ui.resources.*
 import dev.piko.ui.i18n.stringResource
 
@@ -520,29 +521,13 @@ private fun PlayPauseButton(
             }
         }
         if (visible && isLoading && indicator == null && !loadingSpeedText.isNullOrBlank()) {
-            val gapPx = with(density) { 8.dp.roundToPx() }
-            val anchorHeightPx = with(density) { size.height.roundToPx() }
-            Text(
-                text = loadingSpeedText,
-                color = Color.White,
-                style = MaterialTheme.typography.labelLarge.copy(
-                    fontFeatureSettings = "tnum",
-                    shadow = LoadingSpeedShadow,
-                ),
-                maxLines = 1,
-                softWrap = false,
-                modifier = Modifier.layout { measurable, _ ->
-                    val placeable = measurable.measure(Constraints())
-                    layout(0, 0) {
-                        placeable.place(-placeable.width / 2, anchorHeightPx / 2 + gapPx)
-                    }
-                },
+            MediaLoadingCaption(
+                anchorHalfHeight = size.height / 2,
+                subtitle = loadingSpeedText,
             )
         }
     }
 }
-
-private val LoadingSpeedShadow = Shadow(color = Color.Black.copy(alpha = 0.6f), offset = Offset(0f, 1f), blurRadius = 6f)
 
 // 读数胶囊的内部排布：两端留白、图标、间隙、进度条
 private val READOUT_PADDING = 20.dp

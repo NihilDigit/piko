@@ -9,7 +9,6 @@ import androidx.compose.runtime.setValue
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.download.PikoDownloadCoordinator
-import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 import dev.piko.shared.state.Clip
@@ -54,7 +53,7 @@ internal class ClipActions(
 
     private suspend fun refreshStars() {
         driveRepo.starredFiles()
-            .logFailure(TAG, "信息流取星标失败")
+            .logFailure(TAG, "Failed to load starred files in clip feed")
             .onSuccess { files ->
                 val remoteIds = files.mapTo(HashSet()) { it.id }
                 val toRemove = starred.keys.filter { it !in remoteIds && it !in pending }
@@ -86,7 +85,7 @@ internal class ClipActions(
                 driveRepo.setStarred(listOf(clip.fileId), target, mapOf(clip.fileId to knownStat))
                     // 网盘页可能就在旁边，列表里的星标由仓库通知它重列
                     .onSuccess { onMessage(if (target) tr("已添加星标", "Starred", "スターを付けました", "별표를 추가했습니다", "已新增星號") else tr("已取消星标", "Unstarred", "スターを外しました", "별표를 해제했습니다", "已取消星號")) }
-                    .logFailure(TAG, "信息流修改星标失败")
+                    .logFailure(TAG, "Failed to update star=$target in clip feed for ${logFile(clip.fileId, clip.file.name)}")
                     .onFailure {
                         starred[clip.fileId] = before
                         onMessage(if (target) tr("添加星标失败", "Failed to add star", "スターを付けられませんでした", "별표를 추가하지 못했습니다", "新增星號失敗") else tr("取消星标失败", "Failed to remove star", "スターを外せませんでした", "별표를 해제하지 못했습니다", "取消星號失敗"))
