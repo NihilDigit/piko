@@ -89,9 +89,10 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
             return
         }
         PikoLog.i(TAG, "Update APK downloaded and verified: ${own.apk.name} (${file.length()} bytes)")
-        runCatching { install(file) }
+        runCatching { withContext(Dispatchers.IO) { install(file) } }
             .onSuccess { status = UpdateStatus.Installing(update) }
             .onFailure {
+                if (it is CancellationException) throw it
                 PikoLog.w(TAG, "Failed to commit PackageInstaller session for ${own.apk.name}", it)
                 status = UpdateStatus.Failed(tr("无法启动安装", "Unable to start installation", "インストールを開始できません", "설치를 시작할 수 없습니다", "無法啟動安裝"), update)
             }
@@ -128,7 +129,7 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
         val sessionId = installer.createSession(params)
         installer.openSession(sessionId).use { session ->
             session.openWrite("piko.apk", 0, apk.length()).use { out ->
-                apk.inputStream().use { it.copyTo(out) }
+                apk.inputStream().use { it.copyTo(out, INSTALL_COPY_BUFFER_BYTES) }
                 session.fsync(out)
             }
             val callback = Intent(context, UpdateInstallReceiver::class.java).setPackage(context.packageName)
@@ -154,5 +155,6 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
     private companion object {
         const val TAG = "Update"
         const val UPDATE_DIR = "updates"
+        const val INSTALL_COPY_BUFFER_BYTES = 256 * 1024
     }
 }

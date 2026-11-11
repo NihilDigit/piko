@@ -5,7 +5,10 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.SystemClock
 import android.provider.DocumentsContract
+import android.system.Os
+import android.system.OsConstants
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.*
@@ -30,7 +33,17 @@ class AndroidLocalFileAccess(private val context: Context, scope: CoroutineScope
     private val cache = LocalMediaCache(File(context.cacheDir, "piko/local-media"), scope, changed)
     private val subtitleLocks = Array(16) { Mutex() }
     private val subtitleCleanup = Any()
-    override fun cancelPending() = cache.cancelPending()
+    private val childrenCacheLock = Any()
+    private val childrenCache = object : LinkedHashMap<Pair<String, String>, CachedEntries>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<String, String>, CachedEntries>): Boolean =
+            size > MAX_CACHED_DIRS
+    }
+
+    override fun cancelPending() {
+        synchronized(childrenCacheLock) { childrenCache.clear() }
+        cache.cancelPending()
+    }
+
     private fun atomicReplace(source: File, target: File) {
         try {
             Files.move(source.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
@@ -39,21 +52,52 @@ class AndroidLocalFileAccess(private val context: Context, scope: CoroutineScope
         }
     }
     private data class Entry(val id: String, val name: String, val mime: String, val size: Long, val modified: Long)
-    private fun children(tree: Uri, documentId: String): List<Entry> {
+    private data class CachedEntries(val fetchedAtMs: Long, val entries: List<Entry>)
+    private data class ResolvedDocument(val uri: Uri, val entry: Entry?)
+
+    private fun children(tree: Uri, documentId: String, useCache: Boolean = true): List<Entry> {
+        val cacheKey = tree.toString() to documentId
+        val now = SystemClock.elapsedRealtime()
+        if (useCache) {
+            synchronized(childrenCacheLock) {
+                val cached = childrenCache[cacheKey]
+                if (cached != null && now - cached.fetchedAtMs <= CHILDREN_CACHE_TTL_MS) {
+                    return cached.entries
+                }
+            }
+        }
         val uri = DocumentsContract.buildChildDocumentsUriUsingTree(tree, documentId)
-        val columns = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-            DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED)
-        return resolver.query(uri, columns, null, null, null)?.use { cursor ->
-            buildList { while (cursor.moveToNext()) add(Entry(cursor.getString(0), cursor.getString(1), cursor.getString(2).orEmpty(), cursor.getLong(3), cursor.getLong(4))) }
+        val entries = resolver.query(uri, ENTRY_COLUMNS, null, null, null)?.use { cursor ->
+            buildList<Entry>(cursor.count.coerceAtLeast(0)) {
+                while (cursor.moveToNext()) {
+                    add(Entry(cursor.getString(0), cursor.getString(1), cursor.getString(2).orEmpty(), cursor.getLong(3), cursor.getLong(4)))
+                }
+            }
         } ?: error("本机文件夹不可访问")
+        val fetchedAt = SystemClock.elapsedRealtime()
+        synchronized(childrenCacheLock) {
+            childrenCache[cacheKey] = CachedEntries(fetchedAt, entries)
+        }
+        return entries
     }
-    private fun document(mount: LocalMount, location: LocalLocation): Uri {
+
+    private fun resolveDocument(mount: LocalMount, location: LocalLocation): ResolvedDocument {
         require(location.mountId == mount.mountId)
         val tree = Uri.parse(mount.localRootUriOrPath)
         var id = DocumentsContract.getTreeDocumentId(tree)
-        for (segment in location.segments) id = children(tree, id).firstOrNull { it.name == segment }?.id ?: error("本机文件夹不可访问")
-        return DocumentsContract.buildDocumentUriUsingTree(tree, id)
+        var matched: Entry? = null
+        for (segment in location.segments) {
+            val found = children(tree, id, useCache = true).firstOrNull { it.name == segment }
+                ?: children(tree, id, useCache = false).firstOrNull { it.name == segment }
+                ?: error("本机文件夹不可访问")
+            id = found.id
+            matched = found
+        }
+        return ResolvedDocument(DocumentsContract.buildDocumentUriUsingTree(tree, id), matched)
     }
+
+    private fun document(mount: LocalMount, location: LocalLocation): Uri = resolveDocument(mount, location).uri
+
     private fun stat(mount: LocalMount, location: LocalLocation, entry: Entry, uri: Uri): FileStat {
         val folder = entry.mime == DocumentsContract.Document.MIME_TYPE_DIR
         val base = FileStat(id = location.copy(directory = folder).id, parentId = location.parent?.id ?: mount.parentFolderId,
@@ -68,7 +112,8 @@ class AndroidLocalFileAccess(private val context: Context, scope: CoroutineScope
         try {
             val tree = Uri.parse(mount.localRootUriOrPath)
             val parent = document(mount, location)
-            children(tree, DocumentsContract.getDocumentId(parent)).mapNotNull { entry ->
+            // 列目录本身始终取最新子项并刷新缓存，后续点击播放/探测同一目录内文件时直接命中缓存免去重复逐级 IPC
+            children(tree, DocumentsContract.getDocumentId(parent), useCache = false).mapNotNull { entry ->
                 val child = runCatching { location.child(entry.name, entry.mime == DocumentsContract.Document.MIME_TYPE_DIR) }.getOrNull() ?: return@mapNotNull null
                 val uri = DocumentsContract.buildDocumentUriUsingTree(tree, entry.id)
                 val file = stat(mount, child, entry, uri)
@@ -93,12 +138,11 @@ class AndroidLocalFileAccess(private val context: Context, scope: CoroutineScope
     }
     override suspend fun subtitlePath(mount: LocalMount, location: LocalLocation): String = withContext(Dispatchers.IO) {
         try {
-            val uri = document(mount, location)
-            val columns = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED)
-            val entry = resolver.query(uri, columns, null, null, null)?.use { cursor ->
+            val resolved = resolveDocument(mount, location)
+            val uri = resolved.uri
+            val entry = resolver.query(uri, ENTRY_COLUMNS, null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst()) Entry(cursor.getString(0), cursor.getString(1), cursor.getString(2).orEmpty(), cursor.getLong(3), cursor.getLong(4)) else null
-            } ?: error("字幕不可访问")
+            } ?: resolved.entry ?: error("字幕不可访问")
             val directory = File(context.cacheDir, "piko/local-subtitles").apply { mkdirs() }
             val key = MessageDigest.getInstance("SHA-256").digest("${location.id}|${entry.size}|${entry.modified}".toByteArray()).joinToString("") { "%02x".format(it) }
             subtitleLocks[key.hashCode() and 15].withLock {
@@ -107,7 +151,7 @@ class AndroidLocalFileAccess(private val context: Context, scope: CoroutineScope
                 if (output.isFile && output.length() > 0) return@withLock output.absolutePath
                 val tmp = File.createTempFile("subtitle-", ".tmp", directory)
                 try {
-                    resolver.openInputStream(uri)?.use { source -> tmp.outputStream().use { source.copyTo(it) } } ?: error("字幕不可访问")
+                    resolver.openInputStream(uri)?.use { source -> tmp.outputStream().use { source.copyTo(it, SUBTITLE_COPY_BUFFER_BYTES) } } ?: error("字幕不可访问")
                     check(tmp.length() > 0) { "字幕不可访问" }
                     atomicReplace(tmp, output)
                     synchronized(subtitleCleanup) {
@@ -127,9 +171,15 @@ class AndroidLocalFileAccess(private val context: Context, scope: CoroutineScope
     }
     override suspend fun probe(mount: LocalMount, location: LocalLocation): FileStat? = withContext(Dispatchers.IO) {
         try {
-            val parent = location.parent ?: return@withContext mount.toFileStat()
-            val file = list(mount, parent).firstOrNull { it.id == location.id } ?: return@withContext null
-            cache.probe(file) { output -> metadata(file, document(mount, location), output) }
+            if (location.parent == null) return@withContext mount.toFileStat()
+            // 直接定位目标文档本身，避免像旧实现那样为了单个文件调 list(parent) 全量枚举并触发全部同级项的后台缩略图解码
+            val resolved = runCatching { resolveDocument(mount, location) }.getOrNull() ?: return@withContext null
+            val entry = resolved.entry ?: resolver.query(resolved.uri, ENTRY_COLUMNS, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) Entry(cursor.getString(0), cursor.getString(1), cursor.getString(2).orEmpty(), cursor.getLong(3), cursor.getLong(4)) else null
+            } ?: return@withContext null
+            val file = stat(mount, location, entry, resolved.uri)
+            if (file.id != location.id) return@withContext null
+            cache.probe(file) { output -> metadata(file, resolved.uri, output) }
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (_: Exception) { throw IllegalStateException("本机文件夹不可访问") }
@@ -137,11 +187,29 @@ class AndroidLocalFileAccess(private val context: Context, scope: CoroutineScope
     private fun metadata(file: FileStat, uri: Uri, output: File): LocalMediaMetadata? {
         if (file.isPreviewableImage()) {
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
-            val swaps = runCatching { resolver.openInputStream(uri)?.use { stream ->
-                val orientation = android.media.ExifInterface(stream).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)
-                orientation in 5..8
-            } ?: false }.getOrDefault(false)
+            var decodedViaFd = false
+            var swaps = false
+            runCatching {
+                resolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    val fd = pfd.fileDescriptor
+                    BitmapFactory.decodeFileDescriptor(fd, null, options)
+                    if (options.outWidth > 0 && options.outHeight > 0) {
+                        decodedViaFd = true
+                        swaps = runCatching {
+                            Os.lseek(fd, 0L, OsConstants.SEEK_SET)
+                            val orientation = android.media.ExifInterface(fd).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)
+                            orientation in 5..8
+                        }.getOrDefault(false)
+                    }
+                }
+            }
+            if (!decodedViaFd) {
+                resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+                swaps = runCatching { resolver.openInputStream(uri)?.use { stream ->
+                    val orientation = android.media.ExifInterface(stream).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)
+                    orientation in 5..8
+                } ?: false }.getOrDefault(false)
+            }
             return if (swaps) LocalMediaMetadata(options.outHeight, options.outWidth) else LocalMediaMetadata(options.outWidth, options.outHeight)
         }
         if (!file.isPlayableVideo()) return null
@@ -177,5 +245,15 @@ class AndroidLocalFileAccess(private val context: Context, scope: CoroutineScope
 
     private companion object {
         const val TAG = "LocalMount"
+        const val CHILDREN_CACHE_TTL_MS = 2_000L
+        const val MAX_CACHED_DIRS = 128
+        const val SUBTITLE_COPY_BUFFER_BYTES = 256 * 1024
+        val ENTRY_COLUMNS = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+        )
     }
 }

@@ -5,7 +5,6 @@ import dev.piko.shared.i18n.tr
 import android.content.Context
 import android.media.MediaDataSource
 import android.net.Uri
-import androidx.documentfile.provider.DocumentFile
 import dev.piko.shared.download.PikoRemuxRequest
 import dev.piko.shared.download.PikoSegmentDownloader
 import dev.piko.shared.download.PikoSegmentRequest
@@ -24,12 +23,14 @@ class AndroidPikoSegmentDownloader(private val context: Context) : PikoSegmentDo
         request: PikoSegmentRequest,
         onProgress: suspend (Float) -> Unit,
     ): Result<String> = withContext(Dispatchers.IO) {
-        val treeRoot = if (request.destinationPath.startsWith("content:")) {
-            DocumentFile.fromTreeUri(context, Uri.parse(request.destinationPath))
+        val safTarget = if (request.destinationPath.startsWith("content:")) {
+            val parsed = Uri.parse(request.destinationPath)
+            val rootId = treeRootDocumentId(parsed)
                 ?: return@withContext Result.failure(IllegalStateException(tr("无法访问下载目录", "Cannot access download folder", "ダウンロード先にアクセスできません", "다운로드 폴더에 접근할 수 없습니다", "無法存取下載資料夾")))
+            parsed to rootId
         } else null
         // SAF 目录先抽到缓存再拷过去。中转文件不带 .part：抽取器自己会以 .part 写入、完成后改名
-        val stagingFile = treeRoot?.let { context.cacheDir.resolve(request.fileName) }
+        val stagingFile = safTarget?.let { context.cacheDir.resolve(request.fileName) }
         val outputFile = stagingFile ?: File(request.destinationPath)
         val randomAccess = request.openRandomAccess?.let { open ->
             try {
@@ -57,19 +58,26 @@ class AndroidPikoSegmentDownloader(private val context: Context) : PikoSegmentDo
         } finally {
             randomAccess?.close()
         }
-        if (result.isFailure || treeRoot == null) {
+        if (result.isFailure || safTarget == null) {
             return@withContext result
                 .logFailure(TAG, "Segment extraction failed for ${logFile(null, request.fileName)}")
                 .map { request.destinationPath }
         }
         // 抽取成功后才在下载目录里建文件：先建的话，失败会在那里留下一个 0 字节的空文件
         try {
-            val targetDocument = treeRoot.findFile(request.fileName) ?: treeRoot.createFile("video/mp4", request.fileName)
-                ?: error(tr("无法创建分段文件", "Cannot create segment file", "分割ファイルを作成できません", "분할 파일을 만들 수 없습니다", "無法建立片段檔案"))
-            val output = context.contentResolver.openOutputStream(targetDocument.uri, "wt")
-                ?: error(tr("无法打开目标文件", "Cannot open destination file", "出力ファイルを開けません", "대상 파일을 열 수 없습니다", "無法開啟目標檔案"))
-            output.use { stream -> stagingFile!!.inputStream().use { input -> input.copyTo(stream) } }
-            Result.success(targetDocument.uri.toString())
+            val (treeUri, rootId) = safTarget
+            val targetUri = findOrCreateChildFileUri(
+                resolver = context.contentResolver,
+                treeUri = treeUri,
+                parentDocumentId = rootId,
+                displayName = request.fileName,
+                mimeType = "video/mp4",
+            ) ?: error(tr("无法创建分段文件", "Cannot create segment file", "分割ファイルを作成できません", "분할 파일을 만들 수 없습니다", "無法建立片段檔案"))
+            val written = exportFileToSafUri(context.contentResolver, stagingFile!!, targetUri)
+            if (!written) {
+                error(tr("无法打开目标文件", "Cannot open destination file", "出力ファイルを開けません", "대상 파일을 열 수 없습니다", "無法開啟目標檔案"))
+            }
+            Result.success(targetUri.toString())
         } catch (e: CancellationException) {
             throw e
         } catch (error: Throwable) {

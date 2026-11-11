@@ -7,6 +7,7 @@ import android.content.Intent
 import android.database.Cursor
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
@@ -25,8 +26,14 @@ import kotlinx.io.asSource
 /** uri 是 content: URI：选择器给的文档、系统分享来的文件，或文件夹树里的文档。 */
 class AndroidPikoUploadSources(context: Context) : PikoUploadSources {
     private val resolver = context.contentResolver
+    private val prefetchLock = Any()
+    private val prefetchedFolderEntries = object : LinkedHashMap<String, PrefetchedSourceInfo>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PrefetchedSourceInfo>): Boolean =
+            size > MAX_PREFETCHED_ENTRIES
+    }
 
     override fun describe(uri: String): UploadSourceInfo? = try {
+        consumePrefetched(uri)?.let { return it }
         val parsed = Uri.parse(uri)
         // 投影传 null：分享来的 URI 可能出自 MediaStore 或 FileProvider，点名它们没有的列会直接抛异常
         resolver.query(parsed, null, null, null, null)?.use { cursor ->
@@ -109,26 +116,41 @@ class AndroidPikoUploadSources(context: Context) : PikoUploadSources {
 
     private fun collectFiles(treeUri: Uri, documentId: String, relativeDir: String, into: MutableList<UploadTreeEntry>) {
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId)
-        val projection = arrayOf(
-            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-            DocumentsContract.Document.COLUMN_MIME_TYPE,
-        )
-        val children = resolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
-            buildList<ChildDocument> {
-                while (cursor.moveToNext()) add(ChildDocument(cursor.getString(0), cursor.getString(1), cursor.getString(2)))
+        val children = resolver.query(childrenUri, TREE_CHILD_PROJECTION, null, null, null)?.use { cursor ->
+            buildList<ChildDocument>(cursor.count.coerceAtLeast(0)) {
+                while (cursor.moveToNext()) {
+                    val size = if (cursor.isNull(3)) null else cursor.getLong(3).takeIf { it >= 0L }
+                    val lastModified = if (cursor.isNull(4)) 0L else cursor.getLong(4)
+                    add(ChildDocument(cursor.getString(0), cursor.getString(1), cursor.getString(2), size, lastModified))
+                }
             }
         } ?: throw IllegalStateException(tr("无法列出 $childrenUri", "Cannot list $childrenUri", "$childrenUri の一覧を取得できません", "$childrenUri 목록을 불러올 수 없습니다", "無法列出 $childrenUri"))
+        val now = SystemClock.elapsedRealtime()
         for (child in children) {
             if (child.mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
                 val childDir = if (relativeDir.isEmpty()) child.name else "$relativeDir/${child.name}"
                 collectFiles(treeUri, child.id, childDir, into)
             } else {
                 // 用树 URI 拼出文档 URI，持久化的树授权才覆盖得到它
-                val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, child.id)
-                into += UploadTreeEntry(fileUri.toString(), relativeDir)
+                val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, child.id).toString()
+                // 在单次列目录 IPC 里顺带把大小与修改时间预取下来供入队阶段一次性消费，省去逐文件 describe 的 N 次跨进程查询；
+                // 消费即删，后续真正开始上传前的变更复核仍走实时查询。
+                if (child.size != null && child.name.isNotEmpty()) {
+                    synchronized(prefetchLock) {
+                        prefetchedFolderEntries[fileUri] = PrefetchedSourceInfo(
+                            UploadSourceInfo(child.name, child.size, child.lastModifiedMs),
+                            now,
+                        )
+                    }
+                }
+                into += UploadTreeEntry(fileUri, relativeDir)
             }
         }
+    }
+
+    private fun consumePrefetched(uri: String): UploadSourceInfo? {
+        val prefetched = synchronized(prefetchLock) { prefetchedFolderEntries.remove(uri) } ?: return null
+        return prefetched.info.takeIf { SystemClock.elapsedRealtime() - prefetched.fetchedAtMs <= PREFETCH_TTL_MS }
     }
 
     /** AutoCloseInputStream 关闭时连同 ParcelFileDescriptor 一起关，不会留下句柄。 */
@@ -151,12 +173,32 @@ class AndroidPikoUploadSources(context: Context) : PikoUploadSources {
             ?: cursor.long(MediaStore.MediaColumns.DATE_MODIFIED)?.let { it * 1000 }
             ?: 0L
 
+    private data class PrefetchedSourceInfo(
+        val info: UploadSourceInfo,
+        val fetchedAtMs: Long,
+    )
+
     private companion object {
         const val TAG = "Upload"
+        const val MAX_PREFETCHED_ENTRIES = 4_096
+        const val PREFETCH_TTL_MS = 30_000L
+        val TREE_CHILD_PROJECTION = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+        )
     }
 }
 
-private class ChildDocument(val id: String, val name: String, val mimeType: String?)
+private class ChildDocument(
+    val id: String,
+    val name: String,
+    val mimeType: String?,
+    val size: Long?,
+    val lastModifiedMs: Long,
+)
 
 private fun Cursor.string(column: String): String? {
     val index = getColumnIndex(column)

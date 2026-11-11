@@ -43,10 +43,11 @@ import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.documentfile.provider.DocumentFile
 import dev.piko.BuildConfig
 import dev.piko.data.auth.AppLanguage
+import dev.piko.data.auth.SessionManager
 import dev.piko.shared.log.PikoLog
+import java.util.concurrent.ConcurrentHashMap
 import dev.piko.shared.media.player.PlaybackBackend
 import kotlinx.coroutines.CancellationException
 import dev.piko.ui.LocalPikoServices
@@ -479,7 +480,19 @@ class AndroidPikoPlatform(
 
         private fun isDirectory(path: String): Boolean =
             if (path.startsWith("content:")) {
-                DocumentFile.fromSingleUri(context, Uri.parse(path))?.isDirectory == true
+                runCatching {
+                    val uri = Uri.parse(path)
+                    context.contentResolver.query(
+                        uri,
+                        arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
+                        null,
+                        null,
+                        null,
+                    )?.use { cursor ->
+                        cursor.moveToFirst() && !cursor.isNull(0) &&
+                            cursor.getString(0) == DocumentsContract.Document.MIME_TYPE_DIR
+                    } == true
+                }.getOrDefault(false)
             } else {
                 File(path).isDirectory
             }
@@ -514,12 +527,32 @@ class AndroidPikoPlatform(
 
     /** 下载位置是 SAF 目录树，选中后持久化授权，偏好里存 content: URI。 */
     private inner class AndroidDownloadLocation : DownloadLocationPicker {
+        private val cachedDisplayNames = ConcurrentHashMap<String, String>()
+
         override val description: String
             get() = tr("默认保存至应用私有目录。选择公共目录后，文件将保存至已授权的文件夹。", "Saved to app-private storage by default. Choose a public folder to save to an authorized location.", "既定ではアプリ専用領域に保存されます。共有フォルダーを選択すると、許可した場所に保存されます。", "기본적으로 앱 전용 폴더에 저장됩니다. 공용 폴더를 선택하면 권한을 허용한 폴더에 저장됩니다.", "預設儲存至應用程式專用目錄。選擇共用目錄後，檔案將儲存至已授權的資料夾。")
 
         override fun displayName(storedPath: String): String {
             if (storedPath.startsWith("content:")) {
-                return DocumentFile.fromTreeUri(context, Uri.parse(storedPath))?.name ?: tr("已选择的文件夹", "Selected folder", "選択したフォルダー", "선택한 폴더", "已選擇的資料夾")
+                cachedDisplayNames[storedPath]?.let { return it }
+                val resolved = runCatching {
+                    val tree = Uri.parse(storedPath)
+                    val docUri = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+                    context.contentResolver.query(
+                        docUri,
+                        arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                        null,
+                        null,
+                        null,
+                    )?.use { cursor ->
+                        if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getString(0) else null
+                    }
+                }.getOrNull()
+                if (!resolved.isNullOrEmpty()) {
+                    cachedDisplayNames[storedPath] = resolved
+                    return resolved
+                }
+                return tr("已选择的文件夹", "Selected folder", "選択したフォルダー", "선택한 폴더", "已選擇的資料夾")
             }
             return storedPath.ifBlank {
                 context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.absolutePath
@@ -548,7 +581,9 @@ class AndroidPikoPlatform(
                 val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 runCatching { context.contentResolver.takePersistableUriPermission(selected, flags) }
                     .onFailure { PikoLog.w(TAG, "Failed to persist download folder URI permission (authority=${selected.authority})", it) }
-                onPicked(selected.toString())
+                val serialized = selected.toString()
+                cachedDisplayNames.remove(serialized)
+                onPicked(serialized)
             }
             return {
                 val initialUri = DocumentsContract.buildTreeDocumentUri(
@@ -603,8 +638,9 @@ class AndroidPikoPlatform(
         override fun rememberPreviewBackend(keyframeStart: Boolean): PreviewBackend {
             val preferences = LocalPikoServices.current.preferences
             return remember {
-                // 启动时已读过偏好，DataStore 有缓存，first() 不等磁盘
-                val hardwareDecoding = runBlocking { preferences.hardwareDecodingFlow.first() }
+                // 启动时已预加载主偏好内存快照，优先零阻塞直取，仅非标准实现时回退协程首帧读取
+                val hardwareDecoding = (preferences as? SessionManager)?.currentHardwareDecoding()
+                    ?: runBlocking { preferences.hardwareDecodingFlow.first() }
                 MpvPreviewBackend(MpvPlaybackBackend(context, preview = true, keyframeStart = keyframeStart, hardwareDecoding = hardwareDecoding))
             }
         }

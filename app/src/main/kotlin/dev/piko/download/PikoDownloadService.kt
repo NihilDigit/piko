@@ -56,6 +56,12 @@ class PikoDownloadService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private lateinit var notificationManager: NotificationManager
     private var observeJob: Job? = null
+    private var lastPostedKey: NotificationKey? = null
+
+    private data class NotificationKey(
+        val content: WorkNotificationContent,
+        val canPause: Boolean,
+    )
 
     override fun onCreate() {
         super.onCreate()
@@ -71,7 +77,8 @@ class PikoDownloadService : Service() {
         }
         // 第一条就写眼下在做的事：观察循环的第一次更新之前工作可能已经结束（小目录的查找重复只要几秒），
         // 写死成「传输」的话，查找重复时看到的就一直是它
-        val initialNotification = buildNotification(currentContent())
+        val initialKey = currentNotificationKey()
+        val initialNotification = buildNotification(initialKey)
         try {
             ServiceCompat.startForeground(
                 this,
@@ -79,6 +86,7 @@ class PikoDownloadService : Service() {
                 initialNotification,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
             )
+            lastPostedKey = initialKey
         } catch (e: RuntimeException) {
             // Android 12 起应用在后台时不能进入前台服务（ForegroundServiceStartNotAllowedException），
             // Android 15 起 dataSync 用满当日时长后也会被拒。下载协程本身不依赖服务，
@@ -166,7 +174,11 @@ class PikoDownloadService : Service() {
                         if (!services.hasBackgroundWork()) stepDown()
                     }
                     else -> {
-                        notificationManager.notify(NOTIFICATION_ID, buildNotification(currentContent()))
+                        val key = currentNotificationKey()
+                        if (key != lastPostedKey) {
+                            notificationManager.notify(NOTIFICATION_ID, buildNotification(key))
+                            lastPostedKey = key
+                        }
                         delay(NOTIFICATION_INTERVAL_MS)
                     }
                 }
@@ -175,14 +187,23 @@ class PikoDownloadService : Service() {
     }
 
     private fun stepDown() {
+        lastPostedKey = null
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
-    private fun currentContent(): WorkNotificationContent =
-        workNotificationContent(PikoApplication.instance.services.runningWork())
+    private fun currentNotificationKey(): NotificationKey {
+        val services = PikoApplication.instance.services
+        val content = workNotificationContent(services.runningWork())
+        val account = services.clientManager.currentClient.value?.account
+        val canPause = services.downloadManager.tasks.value.values.any {
+            it.status == DownloadStatus.PENDING || it.status == DownloadStatus.DOWNLOADING
+        } || services.uploadManager.tasks.value.values.any { it.account == account && it.status.isActive }
+        return NotificationKey(content, canPause)
+    }
 
-    private fun buildNotification(content: WorkNotificationContent): Notification {
+    private fun buildNotification(key: NotificationKey): Notification {
+        val content = key.content
         // 下载、上传、解压与归档的进度都在传输页，点通知直接去那里
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -212,11 +233,7 @@ class PikoDownloadService : Service() {
         if (content.lines.isNotEmpty()) {
             builder.setStyle(NotificationCompat.InboxStyle().also { style -> content.lines.forEach(style::addLine) })
         }
-        val services = PikoApplication.instance.services
-        val account = services.clientManager.currentClient.value?.account
-        val canPause = services.downloadManager.tasks.value.values.any { it.status == DownloadStatus.PENDING || it.status == DownloadStatus.DOWNLOADING } ||
-            services.uploadManager.tasks.value.values.any { it.account == account && it.status.isActive }
-        if (canPause) {
+        if (key.canPause) {
             val pause = PendingIntent.getService(this, PAUSE_REQUEST_CODE,
                 Intent(this, PikoDownloadService::class.java).setAction(ACTION_PAUSE_ALL),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)

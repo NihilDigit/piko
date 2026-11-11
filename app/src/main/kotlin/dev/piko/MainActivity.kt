@@ -75,7 +75,7 @@ class MainActivity : ComponentActivity() {
         val systemLocale = android.content.res.Resources.getSystem().configuration.locales.get(0) ?: Locale.getDefault()
         PikoLocale.bindSystemLocale(systemLocale.toLanguageTag())
         super.onCreate(savedInstanceState)
-        val initialLanguage = runBlocking { PikoApplication.instance.sessionManager.appLanguageFlow.first() }
+        val initialLanguage = PikoApplication.instance.sessionManager.currentAppLanguage()
         applyLanguage(PikoLocale.resolve(initialLanguage))
         PikoLocale.apply(initialLanguage)
         enableEdgeToEdge()
@@ -276,6 +276,9 @@ private fun AskForNotificationsOnFirstWork(services: PikoServices) {
     val context = LocalContext.current
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     LaunchedEffect(services) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+            return@LaunchedEffect
+        }
         // 与拉起前台服务同一个判断（hasBackgroundWork）；任务表是 StateFlow，snapshotFlow 看不到，另外合进来
         combine(snapshotFlow { services.hasBackgroundWork() }, services.downloadManager.tasks, services.uploadManager.tasks,
             services.fileWorkChanges()) { _, _, _, _ ->

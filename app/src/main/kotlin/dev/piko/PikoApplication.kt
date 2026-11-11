@@ -49,7 +49,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -133,11 +132,11 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
         instance = this
         installLog()
 
-        sessionManager = SessionManager(this)
+        sessionManager = SessionManager(this).also { it.preloadMainPreferences() }
         // 先于进程级服务与系统通知渠道初始化语言绑定，确保无 Activity 唤起或冷启动时通知渠道按用户语言注册
         val systemLocale = android.content.res.Resources.getSystem().configuration.locales.get(0) ?: java.util.Locale.getDefault()
         PikoLocale.bindSystemLocale(systemLocale.toLanguageTag())
-        PikoLocale.apply(runBlocking { sessionManager.appLanguageFlow.first() })
+        PikoLocale.apply(sessionManager.currentAppLanguage())
         installProxy()
         val clientManager = PikoClientManager(
             sessionStore = AndroidPikoSessionStore(this),
@@ -212,7 +211,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
      * 同步读一次设置，手动代理从第一个请求起就生效；之后改设置经 flow 跟上。
      */
     private fun installProxy() {
-        PikoProxySelector.install(runBlocking { sessionManager.proxySettingFlow.first() })
+        PikoProxySelector.install(sessionManager.currentProxySetting())
         appScope.launch { sessionManager.proxySettingFlow.collect(PikoProxySelector::apply) }
     }
 
