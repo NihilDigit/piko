@@ -1,5 +1,6 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
 import kotlinx.coroutines.CancellationException
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlin.concurrent.Volatile
 import kotlin.time.Clock
@@ -30,7 +32,7 @@ data class SourceRecord(val source: String, val path: String, val recordedAt: Lo
 
 /**
  * 秒传文件的来源账本。PikPak 只给离线下载与分享转存的文件填 `params.url`，按 gcid 秒传建出的文件为空，
- * 客户端也写不进（CLAUDE.md「文件的 params 客户端写不进」），所以由 Piko 记下，列表出来时并进 params，
+ * 客户端也写不进（服务端忽略客户端写入的文件 params，见 `AGENTS.md`），所以由 Piko 记下，列表出来时并进 params，
  * 下游照常读 sourceUrl，不必分辨文件是怎么来的。
  *
  * 键是 gcid（大写）加大小，不是文件 ID：改名、移动不换 ID，复制却换，而内容不变。官方客户端秒传的、
@@ -119,9 +121,20 @@ class SourceLedger internal constructor(
             try {
                 barrier?.join()
                 val recovered = failedSnapshots.value[newAccount]
-                val stored = union(runSuspendCatching {
-                    cacheStore.readStream(keyOf(newAccount)) { cacheStore.jsonCodec?.decode(Stored.serializer(), it) ?: json.decodeFromString(Stored.serializer(), it.readString()) }?.let(::restore)
-                }.getOrNull().orEmpty(), recovered.orEmpty())
+                val fromDisk = runSuspendCatching {
+                    cacheStore.readStream(keyOf(newAccount)) {
+                        cacheStore.jsonCodec?.decode(Stored.serializer(), it) ?: json.decodeFromString(Stored.serializer(), it.readString())
+                    }?.let(::restore)
+                }.onFailure { err ->
+                    if (err !is CancellationException) {
+                        PikoLog.w(
+                            TAG,
+                            "Corrupted local source ledger for acct=${logAccountSlot(newAccount)}; resetting to empty (${err::class.simpleName})",
+                            err.takeIf { it !is SerializationException },
+                        )
+                    }
+                }.getOrNull().orEmpty()
+                val stored = union(fromDisk, recovered.orEmpty())
                 session.snapshot.update {
                     it.copy(
                         version = it.version.copy(revision = it.version.revision + if (recovered != null) 1 else 0),
@@ -130,9 +143,12 @@ class SourceLedger internal constructor(
                 }
                 if (recovered != null) failedSnapshots.update { it - newAccount }
                 if (generation == token) merge(stored, expectedAccount = newAccount)
+            } catch (cancelled: CancellationException) {
+                session.loaded.completeExceptionally(cancelled)
+                throw cancelled
             } catch (failure: Throwable) {
                 session.loaded.completeExceptionally(failure)
-                throw failure
+                PikoLog.w(TAG, "Failed to load source ledger for acct=${logAccountSlot(newAccount)}", failure)
             } finally {
                 if (session.loaded.complete(Unit)) {
                     val version = session.snapshot.value.version
@@ -179,7 +195,7 @@ class SourceLedger internal constructor(
             } catch (failure: Exception) {
                 failedSnapshots.update { it + (session.owner to session.snapshot.value.value) }
                 // 保留失败结果，但不让 async 的异常取消共享作用域。
-                dev.piko.shared.log.PikoLog.w("SourceLedger", "保存旧账号来源账本失败", failure)
+                PikoLog.w(TAG, "Failed to flush source ledger for previous account (acct=${logAccountSlot(session.owner)})", failure)
                 Result.failure(failure)
             } finally {
                 session.job.cancel()
@@ -200,6 +216,7 @@ class SourceLedger internal constructor(
     private class Row(val source: Int, val path: String = "", val at: Long = 0)
 
     companion object {
+        private const val TAG = "SourceLedger"
         private const val VERSION = 1
         private val UNSAFE_KEY_CHARS = Regex("""[^A-Za-z0-9._@-]""")
         private val json = Json { ignoreUnknownKeys = true }
@@ -221,6 +238,14 @@ class SourceLedger internal constructor(
         /** 读不出时为 null。下标越界的行丢掉，键按 [keyOf] 重新规整。 */
         fun decode(text: String): Map<String, SourceRecord>? = runCatching {
             restore(json.decodeFromString(Stored.serializer(), text))
+        }.onFailure { err ->
+            if (text.isNotBlank()) {
+                PikoLog.w(
+                    TAG,
+                    "Failed to decode source ledger payload (${text.length} chars, error=${err::class.simpleName})",
+                    err.takeIf { it !is SerializationException },
+                )
+            }
         }.getOrNull()
 
         private fun restore(stored: Stored): Map<String, SourceRecord> {

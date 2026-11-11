@@ -1,5 +1,6 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.memory.MemoryWorkKind
 import dev.piko.shared.memory.PikoMemoryGovernor
 import kotlinx.coroutines.CancellationException
@@ -67,6 +68,11 @@ class SnapshotWriter<S>(
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (failure: Exception) {
+                        PikoLog.w(
+                            TAG,
+                            "Background snapshot persist failed (generation=$accountGeneration, dirtyRevision=${progress.value.dirty}, persistedRevision=${progress.value.persisted})",
+                            failure,
+                        )
                         update { it.copy(failure = failure) }
                         break
                     }
@@ -75,6 +81,10 @@ class SnapshotWriter<S>(
         } finally {
             wake.close()
         }
+    }
+
+    private companion object {
+        const val TAG = "SnapshotWriter"
     }
 
     init {

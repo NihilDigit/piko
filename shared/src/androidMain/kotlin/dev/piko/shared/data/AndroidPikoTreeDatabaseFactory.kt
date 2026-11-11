@@ -17,7 +17,10 @@ class AndroidPikoTreeDatabaseFactory(private val directory: File) : PikoTreeData
             connection = opened
             check(opened.enableWriteAheadLogging()) { "Cannot enable SQLite WAL" }
             val database = AndroidTreeDatabase(opened, release)
-            // Android SQLiteDatabase.compileStatement("PRAGMA ...") 在返回结果集型 PRAGMA 上可能抛异常，走 rawQuery 消费最稳妥
+            // Android SQLiteDatabase.compileStatement("PRAGMA ...") 在返回结果集型 PRAGMA 上可能抛异常，走 rawQuery 消费最稳妥。
+            // 锁等待契约：进程内由 TreeDatabaseLeases 保证同一库文件单实例互斥打开，Android SQLiteConnectionPool
+            // 内置 WAL 连接池与原生 sqlite3_busy_timeout（默认 2500ms）等待；显式对齐桌面/iOS 设为 5000ms 以防外部工具短暂持锁。
+            database.query("PRAGMA busy_timeout=5000").close()
             database.query("PRAGMA synchronous=NORMAL").close()
             database.query("PRAGMA temp_store=MEMORY").close()
             database.query("PRAGMA cache_size=-8192").close()

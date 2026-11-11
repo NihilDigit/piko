@@ -8,8 +8,8 @@ import dev.piko.shared.i18n.tr
  * 用户反馈要「前缀加原名」「顺序重命名」，这些积木早就拼得出，难在想到「查找开头、替换成文字」就是加前缀。
  * 起手式只是预填，不另设重命名模式：模式一多，预览、撤销与最近使用都要按模式分开记。
  *
- * [example] 由 [BlockGuideTest] 逐条跑过，替换条里的文字是例子填上的；界面上换上的是 [replace]，
- * 需要文字的那一段留给积木条末尾的输入框，[RenamePreset.focusReplace] 为真时把焦点交给它。
+ * [example] 由 [RenameBlocksTest] 逐条跑过，替换条里的文字是例子填上的；界面上换上的是 [replace]，
+ * 需要文字的那一段留给积木条插入点处的输入框（如「改为序号」将插入点置于序号之前），[RenamePreset.focusReplace] 为真时把焦点交给它。
  */
 class RenamePreset(
     val label: String,

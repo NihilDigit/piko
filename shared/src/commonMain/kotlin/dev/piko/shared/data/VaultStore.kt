@@ -2,6 +2,8 @@ package dev.piko.shared.data
 
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
+import kotlinx.serialization.SerializationException
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.FileTag
@@ -320,32 +322,60 @@ class VaultStore(
         }
     } else null
 
+    private suspend fun <T> readCachedStream(
+        store: PikoCacheStore,
+        key: String,
+        decode: (kotlinx.io.Source) -> T,
+    ): Result<T>? = runSuspendCatching {
+        store.readStream(key) { source ->
+            runCatching { decode(source) }
+                .onFailure { if (it is kotlin.coroutines.cancellation.CancellationException) throw it }
+        }
+    }.fold(
+        onSuccess = { it },
+        onFailure = { Result.failure(it) },
+    )
+
     init {
         if (cacheStore != null && !account.isNullOrEmpty() && scope != null) {
             val loading = storeScope.launch {
                 try {
                     predecessor?.join()
-                    val stored = runSuspendCatching {
-                        cacheStore.readStream(cacheKeyOf(account)) {
-                            cacheStore.jsonCodec?.decode(CacheSerializer(), it)
-                                ?: JSON.decodeFromString(CacheSerializer(), it.readString())
-                        }
-                    }.getOrNull()
+                    val slot = logAccountSlot(account)
+                    val v2Attempt = readCachedStream(cacheStore, cacheKeyOf(account)) {
+                        cacheStore.jsonCodec?.decode(CacheSerializer(), it)
+                            ?: JSON.decodeFromString(CacheSerializer(), it.readString())
+                    }
+                    val stored = v2Attempt?.getOrNull()
                     var migratedLegacyFormat = false
-                    val storedParsed = stored?.parsed ?: runSuspendCatching {
-                        cacheStore.readStream(cacheKeyOf(account)) { cacheStore.jsonCodec?.decode(PARSED_SERIALIZER, it)
-                            ?: JSON.decodeFromString(PARSED_SERIALIZER, it.readString()) }
-                    }.getOrNull()?.also { if (it.isNotEmpty()) migratedLegacyFormat = true }
+                    val storedParsed = if (v2Attempt == null || v2Attempt.isSuccess) {
+                        stored?.parsed
+                    } else {
+                        readCachedStream(cacheStore, cacheKeyOf(account)) {
+                            cacheStore.jsonCodec?.decode(PARSED_SERIALIZER, it)
+                                ?: JSON.decodeFromString(PARSED_SERIALIZER, it.readString())
+                        }?.onFailure { err ->
+                            PikoLog.w(
+                                TAG,
+                                "Corrupted local vault manifest cache; resetting cached manifests (acct=$slot, error=${err::class.simpleName})",
+                                err.takeIf { it !is SerializationException },
+                            )
+                        }?.getOrNull()?.also { if (it.isNotEmpty()) migratedLegacyFormat = true }
+                    }
                     if (!storedParsed.isNullOrEmpty()) {
                         parsed.update { storedParsed + it }
                         trustedPendingIds.update { it + storedParsed.keys }
                     }
-                    val storedCommitted = stored?.committed ?: runSuspendCatching {
-                        cacheStore.readStream(committedCacheKeyOf(account)) {
-                            (cacheStore.jsonCodec?.decode(COMMITTED_PAIRS, it)
-                                ?: JSON.decodeFromString(COMMITTED_PAIRS, it.readString()))
-                        }
-                    }.getOrNull()?.also { if (it.isNotEmpty()) migratedLegacyFormat = true }
+                    val storedCommitted = stored?.committed ?: readCachedStream(cacheStore, committedCacheKeyOf(account)) {
+                        cacheStore.jsonCodec?.decode(COMMITTED_PAIRS, it)
+                            ?: JSON.decodeFromString(COMMITTED_PAIRS, it.readString())
+                    }?.onFailure { err ->
+                        PikoLog.w(
+                            TAG,
+                            "Corrupted legacy vault committed cache; ignoring baseline (acct=$slot, error=${err::class.simpleName})",
+                            err.takeIf { it !is SerializationException },
+                        )
+                    }?.getOrNull()?.also { if (it.isNotEmpty()) migratedLegacyFormat = true }
                     if (!storedCommitted.isNullOrEmpty()) lastCommittedByFolder.update { storedCommitted + it }
                     // 旧版 v1 缓存首次回退读取成功后排期升级为 v2 单文件格式，避免后续每次冷启动先试读失败再二次解析
                     if (migratedLegacyFormat) scheduleSave()
@@ -668,7 +698,7 @@ class VaultStore(
                             phase = TaskPhase.COMPLETE,
                         )
                         onListingConfirmed(VaultCommitSnapshot.IncrementalFiles(listOf(syntheticManifest)))
-                        PikoLog.i(TAG, "写成归档清单：新建文件夹 $folderId，v$version，条目 0 → ${after.size}")
+                        PikoLog.i(TAG, "Vault manifest written for new ${logFolder(folderId)} (v$version, entries=0->${after.size})")
                         return@runSuspendCatching VaultWrite(before, after)
                     }
 
@@ -694,26 +724,29 @@ class VaultStore(
                             val cleaned = if (stale.isEmpty()) 0 else runSuspendCatching {
                                 io.delete(stale.map { it.id })
                                 stale.size
-                            }.logFailure(TAG, "清单已可信写成，旧版本清理留待下次更新").getOrNull()
+                            }.logFailure(TAG, "Vault manifest committed in ${logFolder(folderId)} (v$version), but stale manifest cleanup failed; deferred to next write").getOrNull()
                             val finalListing = if (cleaned != null && staleIds.isNotEmpty()) {
                                 retired.update { it + staleIds }
                                 confirmedListing.filterNot { it.id in staleIds }
                             } else confirmedListing
                             onListingConfirmed(VaultCommitSnapshot.FullListing(finalListing, secondCheck.listedAtSerial))
                             val cleanNote = when {
-                                !ownComplete -> "云端转正中，暂留旧清单兜底"
-                                cleaned != null -> "清掉旧清单 $cleaned 份"
-                                else -> "旧版本清理未完成"
+                                !ownComplete -> "pendingRemoteFinalize=true"
+                                cleaned != null -> "cleanedStale=$cleaned"
+                                else -> "staleCleanupDeferred=true"
                             }
-                            PikoLog.i(TAG, "写成归档清单：文件夹 $folderId，v$version，条目 ${before.size} → ${after.size}，" +
-                                "第 ${attempt + 1} 次尝试，$cleanNote")
+                            PikoLog.i(
+                                TAG,
+                                "Vault manifest written in ${logFolder(folderId)} (v$version, entries=${before.size}->${after.size}, " +
+                                    "attempt=${attempt + 1}/$MAX_ATTEMPTS, $cleanNote)",
+                            )
                             return@runSuspendCatching VaultWrite(before, after)
                         }
                         is ConfirmOutcome.Lost -> {
                             PikoLog.w(
                                 TAG,
-                                "归档清单写入冲突：文件夹 $folderId，v$version-$token 输给 v${secondCheck.winner.version}-${secondCheck.winner.token}，" +
-                                    "第 ${attempt + 1}/$MAX_ATTEMPTS 次，重读重写",
+                                "Vault manifest write conflict in ${logFolder(folderId)}: v$version-$token lost to v${secondCheck.winner.version}-${secondCheck.winner.token} " +
+                                    "(attempt=${attempt + 1}/$MAX_ATTEMPTS); re-reading and retrying",
                             )
                             io.delete(listOf(id))
                         }
@@ -723,7 +756,7 @@ class VaultStore(
                     }
                 }
                 error("清单写入冲突，重试 $MAX_ATTEMPTS 次仍未写成")
-            }.logFailure(TAG, "写归档清单失败：文件夹 $folderId")
+            }.logFailure(TAG, "Failed to write vault manifest in ${logFolder(folderId)}")
         }
 
     /**

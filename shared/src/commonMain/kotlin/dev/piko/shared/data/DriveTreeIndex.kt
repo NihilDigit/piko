@@ -1,5 +1,6 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.util.PikoLock
 import dev.piko.shared.util.withPikoLock
 import dev.piko.data.repository.NaturalOrder
@@ -23,24 +24,28 @@ import kotlinx.coroutines.flow.update
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
+private const val TREE_INDEX_TAG = "DriveTreeIndex"
+
 /**
- * 当前账号的本地文件树索引（文件夹、真实文件与已读出的归档虚拟条目）。
+ * 当前账号的本地全盘树索引（文件夹骨架、真实文件与已解析的归档虚拟条目）。
  *
- * 来源：
- * 1. 日常浏览列目录（[putFolderListing]）与读取归档清单（[putVaultEntries]）实时写入；
- * 2. 全盘搜索首次流式拉取平铺目录与文件（[putFolders]、[putFiles]）后拼齐整棵树并标为 [isComplete]；
- * 3. 网盘内的新建、改名、移动、移入回收站、删除经 [applyChange] 原地更新，无需整树作废。
- *
- * 有了完整本地树后，再次全盘搜索或边输边改搜索词可直接在内存中毫秒级完成 CJK 模糊匹配。
+ * 存储与投影模型：
+ * 1. 常规运行下由原生 SQLite WAL 库（[SqliteTreeStore]）承载全量文件行，Java 堆仅常驻文件夹骨架与物化子树聚合表
+ *    （[SubtreeStats]）；未注入 [database] 时（如轻量测试或数据库打开失败）自动回退至纯内存状态表；
+ * 2. 全盘基线构建经候选代（[beginCandidate] / [appendCandidate] / [commitCandidate]）分页流式落盘，后续增量对账经
+ *    [beginDelta] / [appendDelta] / [commitDelta] 原子推进服务端水位；日常列目录（[putFolderListing]）、归档清单更新
+ *    （[putVaultEntries]）与本地变更（[applyChange]）实时原地写穿；
+ * 3. 全盘搜索在 SQLite 模式下直接扫描预归一化 `norm_name` 轻量游标完成 CJK 模糊匹配，仅对最终命中项解码完整行。
  */
 internal class DriveTreeIndex(
     private val locallyCachedManifestIds: () -> Set<String> = ::emptySet,
     database: PikoTreeDatabase? = null,
-    ownerAccount: String = "",
+    private val ownerAccount: String = "",
 ) {
     private val disk = database?.let { SqliteTreeStore(it, ownerAccount, locallyCachedManifestIds) }
     private var closed = false
     val isPersistent: Boolean get() = disk != null
+    val isClosed: Boolean get() = withPikoLock(lock) { closed }
 
     fun close() = withPikoLock(lock) { closed = true; disk?.close() }
 
@@ -87,10 +92,24 @@ internal class DriveTreeIndex(
             after = null
             while (true) { after = step { it.resolveLegacyContent(generation, after) } ?: break }
             step { it.finishLegacy(generation, header).also { publishDisk() } }
-        } catch (_: RetiredMigration) { false }
-        catch (_: IllegalArgumentException) { false }
-        catch (_: kotlinx.io.IOException) { false }
-        finally { withPikoLock(lock) { if (!closed) disk?.abortCandidate(generation) } }
+        } catch (_: RetiredMigration) {
+            false
+        } catch (err: IllegalArgumentException) {
+            PikoLog.w(
+                TREE_INDEX_TAG,
+                "Corrupted legacy tree snapshot rejected (acct=${logAccountSlot(ownerAccount)}, error=${err::class.simpleName})",
+            )
+            false
+        } catch (err: kotlinx.io.IOException) {
+            PikoLog.w(
+                TREE_INDEX_TAG,
+                "I/O failure while importing legacy tree snapshot (acct=${logAccountSlot(ownerAccount)}, error=${err::class.simpleName})",
+                err,
+            )
+            false
+        } finally {
+            withPikoLock(lock) { if (!closed) disk?.abortCandidate(generation) }
+        }
     }
 
     fun beginCandidate(): Long = withPikoLock(lock) { if (closed) -1 else disk?.beginCandidate() ?: error("Candidates require SQLite") }

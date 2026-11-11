@@ -1,13 +1,13 @@
 package dev.piko.shared.naming.av
 
-// 番号识别的规则表。放 Kotlin 文件而不放 JSON：AndroidRegexGuardTest 只扫 .kt，写进 JSON 的正则躲过它，
-// 到 Android 的 ICU 上才炸。改了规则就把版本加一，日志与将来按版本迁移的数据据此分辨。
+// 番号识别规则表。定义为 Kotlin 源码而非外部 JSON，以便 AndroidRegexGuardTest 静态扫描全部正则表达式，
+// 防止误用 Android ICU 正则引擎不支持的 Java 专有属性前缀或宽泛 Unicode 数字类。
 //
 // 部分写法参照 MetaTube（metatube-sdk-go 的 common/number/number.go，Copyright the MetaTube authors，
 // Apache License 2.0）：开头的 HD-、FHD-，hhb 一类压制后缀，10musume、pacopacomama、muramura、
 // caribbeancompr 的厂牌名。这里只取规则的思路，正则按本文件的约定重写。
 
-/** 规则表的版本。识别结果有变（番号字符串、分段写法、旗标）时加一。 */
+/** 规则表版本号。识别结果（番号字符串、分段写法、旗标）发生变化时递增，供后续按版本迁移派生数据使用。 */
 const val AV_RULES_VERSION = 5
 
 // 番号只在文件名开头找：站点前缀（xxx.com@、kcf9.com-、[site.net]、123456_site_）与标签方括号

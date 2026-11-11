@@ -2,6 +2,7 @@ package dev.piko.shared.data
 
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import io.github.nihildigit.pikpak.ResolvedFile
 import io.github.nihildigit.pikpak.PikPakClient
 import io.github.nihildigit.pikpak.listFiles
@@ -62,7 +63,10 @@ class PreviewTempFolder(
                         val remaining = owner.listFiles(folder).mapTo(HashSet()) { it.id }.intersect(ids)
                         if (remaining.isNotEmpty()) owner.batchDelete(remaining.toList())
                         if (clients.currentClient.value === owner) driveRepo.applyChange(DriveChange.ContentsChanged(setOf(folder)))
-                    }.logFailure(TAG, "清理会话预览失败，留到下次登录时再清")
+                    }.logFailure(
+                        TAG,
+                        "Failed to clean session preview files (items=${ids.size}, folder=${logFolder(folderIds[owner.account])}, acct=${logAccountSlot(owner.account)}); deferring to next sign-in",
+                    )
                 }
             }
         }
@@ -99,8 +103,8 @@ class PreviewTempFolder(
                     if (clients.currentClient.value === owner) {
                         driveRepo.applyChange(DriveChange.Deleted(ids, setOf("")))
                     }
+                    PikoLog.i(TAG, "Cleaned Piko-Temp (${ids.size} folder(s), acct=${logAccountSlot(owner.account)})")
                 }
-                PikoLog.d(TAG, "已清理 Piko-Temp（${ids.size} 个同名目录）")
             }
         }
     }

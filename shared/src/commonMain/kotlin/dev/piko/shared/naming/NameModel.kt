@@ -40,8 +40,9 @@ enum class NameKind {
 }
 
 /**
- * 集号的把握。[LOW] 只有一种来源：作品名后面紧跟的裸数字，如「Deji Meets Girl  04」。
- * 这种写法与「Mob Psycho 100」无从区分，批量分析时会拿同作品的其他文件核对。
+ * 集号或解析结果的置信度。[LOW] 涵盖无法单凭单个文件名断定的弱来源：作品名后紧跟的裸数字/裸区间（如「Deji Meets Girl  04」
+ * 与「Mob Psycho 100」单看文件名无从区分）、词尾粘连数字、标签段内的方括号数字、相机/录屏自动生成名以及未识别兜底，
+ * 批量分析时会结合同作品或同目录的其他文件交叉核对。
  */
 enum class Confidence { HIGH, LOW }
 
@@ -139,8 +140,9 @@ data class ParsedName(
     val recognized: Boolean get() = kind != NameKind.UNKNOWN
 }
 
-/** 批量分析的输入：带目录的相对路径（只有文件名也可以）与字节数，未知时传 0。 */
 /**
+ * 批量分析的输入：带目录的相对路径（只有文件名也可以）与字节数，未知时传 0。
+ *
  * [kind] 是文件名之外得知的类型，如网盘按 mime 给出的。只在名字本身认不出类型时采用：网盘里有不带扩展名的视频
  * （「… - 12 [WebRip 1080p HEVC-10bit AAC][END]」），光看名字会被当成说明文件。
  */
@@ -211,7 +213,7 @@ data class MediaWork(
     val key: String,
     val title: String?,
     val kind: WorkKind,
-    /** 作品内所有文件共有的标签，只在作品一级显示一次。 */
+    /** 正片视频（无正片时退回视频或全体成员）共有的非 [MediaTag.pinned] 标签，只在作品一级显示一次。 */
     val commonTags: List<MediaTag>,
     val sections: List<WorkSection>,
 )

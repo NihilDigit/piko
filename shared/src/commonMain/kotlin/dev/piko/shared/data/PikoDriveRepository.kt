@@ -112,6 +112,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
+import kotlinx.serialization.SerializationException
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.emitAll
@@ -330,7 +332,11 @@ open class PikoDriveRepository(
                                             throw cancelled
                                         } catch (failure: Exception) {
                                             currentCoroutineContext().ensureActive()
-                                            PikoLog.w(TAG, "同步空间分布失败", failure)
+                                            PikoLog.w(
+                                                TAG,
+                                                "Space statistics sync failed for ${logFolder(folderId)} (acct=${logAccountSlot(asked?.account)})",
+                                                failure,
+                                            )
                                             status.value = SpaceSyncState(error = tr(
                                                 "空间统计同步失败", "Space statistics sync failed", "容量統計の同期に失敗しました", "공간 통계 동기화 실패", "空間統計同步失敗",
                                             ))
@@ -525,7 +531,7 @@ open class PikoDriveRepository(
             _folderEmptiness.value = emptyMap()
             old
         } ?: return@withPikoLock
-        runCatching { retired.close() }.logFailure(TAG, "关闭旧账号文件树失败")
+        runCatching { retired.close() }.logFailure(TAG, "Failed to close previous account tree index")
         val opened = runCatching {
             val database = account?.let { treeDatabaseFactory?.open(it) }
             try {
@@ -538,7 +544,7 @@ open class PikoDriveRepository(
                 try { database?.close() } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
                 throw failure
             }
-        }.logFailure(TAG, "打开账号文件树失败")
+        }.logFailure(TAG, "Failed to open tree index for acct=${logAccountSlot(account)}; staying on in-memory fallback")
         opened.getOrNull()?.let { ready ->
             withPikoLock(treeStateLock) {
                 driveTreeIndex = ready
@@ -591,12 +597,13 @@ open class PikoDriveRepository(
         // 通知所有活跃视图与在途首载会话（如 GallerySession）重列受影响视图，不经过 applyChange 以保护已持久化的完整 SQLite 树索引
         _folderChanges.tryEmit(DriveChange.ContentsChanged(null))
         val asked = clientManager.currentClient.value ?: return
+        val slot = logAccountSlot(asked.account)
         backgroundScope.launch {
             if (driveTreeIndex.isComplete) {
-                probeRemoteChanges(asked).logFailure(TAG, "唤醒后增量对账本地文件树失败")
+                probeRemoteChanges(asked).logFailure(TAG, "Post-wakeup incremental tree reconciliation failed (acct=$slot)")
             } else {
                 runSuspendCatching { ensureTreeSync(asked).await() }
-                    .logFailure(TAG, "唤醒后继续建立本地文件树索引失败")
+                    .logFailure(TAG, "Post-wakeup tree index build failed (acct=$slot)")
             }
         }
     }
@@ -668,15 +675,21 @@ open class PikoDriveRepository(
 
     internal fun finishOptimisticWrite(write: OptimisticWrites.Write, succeeded: Boolean) {
         val boundClient = write.client ?: clientManager.currentClient.value?.takeIf { it.account == write.account }
-        if (!succeeded && boundClient != null) {
-            val revertSnapshots = write.change.fileIds().map { id ->
-                write.before[id] ?: FileStat(
-                    id = id,
-                    trashed = write.change is DriveChange.Restored,
-                )
-            }
-            if (revertSnapshots.isNotEmpty()) {
-                boundClient.revertFiles(revertSnapshots)
+        if (!succeeded) {
+            PikoLog.d(
+                TAG,
+                "Reverting failed optimistic write (kind=${write.change::class.simpleName}, items=${write.change.fileIds().size}, acct=${logAccountSlot(write.account)})",
+            )
+            if (boundClient != null) {
+                val revertSnapshots = write.change.fileIds().map { id ->
+                    write.before[id] ?: FileStat(
+                        id = id,
+                        trashed = write.change is DriveChange.Restored,
+                    )
+                }
+                if (revertSnapshots.isNotEmpty()) {
+                    boundClient.revertFiles(revertSnapshots)
+                }
             }
         }
         if (currentAccount == write.account && succeeded) applyChange(write.change)
@@ -1227,9 +1240,12 @@ open class PikoDriveRepository(
     private val vaultHandoffs = HashMap<String, Job>()
 
     private fun retireVaultStoreLocked(binding: VaultBinding) {
+        val slot = logAccountSlot(binding.client.account)
         vaultHandoffs[binding.client.account] = binding.store.close().also { closing ->
             closing.invokeOnCompletion { failure ->
-                if (failure != null && failure !is CancellationException) PikoLog.w(TAG, "保存旧账号归档缓存失败", failure)
+                if (failure != null && failure !is CancellationException) {
+                    PikoLog.w(TAG, "Failed to flush retiring vault store (acct=$slot)", failure)
+                }
             }
         }
         if (vaultBinding.value === binding) vaultBinding.value = null
@@ -1340,9 +1356,10 @@ open class PikoDriveRepository(
         if (clientManager.currentClient.value === asked) {
             val state = driveTreeIndex.flow.value
             val children = driveTreeIndex.realChildren(folderId)
-            val isFolderClean = folderId !in state.dirtyFolders && (
-                children.coverage == DriveTreeIndex.FolderCoverage.COMPLETE ||
-                    (state.complete && (folderId.isEmpty() || folderId in state.entries))
+            val isFolderClean = folderId !in state.dirtyFolders &&
+                listings.value[folderId]?.stale != true && (
+                    children.coverage == DriveTreeIndex.FolderCoverage.COMPLETE ||
+                        (state.complete && (folderId.isEmpty() || folderId in state.entries))
                 )
             if (isFolderClean) {
                 val real = children.files
@@ -1534,7 +1551,7 @@ open class PikoDriveRepository(
                 if (candidate in childContents.vaultCovers.value) return@withPermit
                 val asked = client
                 val listing = listAllFiles(candidate).getOrNull() ?: return@withPermit
-                readAndRecordVaultEntries(candidate, listing, vault, asked, logFailure = true, logTagSuffix = "（补封面）")
+                readAndRecordVaultEntries(candidate, listing, vault, asked, logFailure = true, logTagSuffix = " (cover probe)")
             }
             if (vaultCoverOf(folderId) != null) return@withContext
         }
@@ -1650,13 +1667,16 @@ open class PikoDriveRepository(
                         }
                     }
                 }
+                val slot = logAccountSlot(client.account)
                 launch {
                     client.transferQuotaFlow.collect { tq ->
                         if (clientManager.currentClient.value === client && tq != null) {
                             _transferQuotaFlow.value = tq
                             cacheStore?.let { store ->
                                 backgroundScope.launch {
-                                    runCatching { store.write(transferQuotaCacheKey(client.account), QUOTA_JSON.encodeToString(TransferQuota.serializer(), tq)) }
+                                    runSuspendCatching {
+                                        store.write(transferQuotaCacheKey(client.account), QUOTA_JSON.encodeToString(TransferQuota.serializer(), tq))
+                                    }.logFailure(TAG, "Failed to persist transfer quota cache (acct=$slot)")
                                 }
                             }
                         }
@@ -1665,9 +1685,15 @@ open class PikoDriveRepository(
                 // 优先从本机缓存零网络恢复云盘流量与完整文件树快照，不阻塞在任何网络请求之后
                 if (cacheStore != null) {
                     if (_transferQuotaFlow.value == null) {
-                        val cachedTq = runCatching {
+                        val cachedTq = runSuspendCatching {
                             cacheStore.read(transferQuotaCacheKey(client.account))
                                 ?.let { QUOTA_JSON.decodeFromString(TransferQuota.serializer(), it) }
+                        }.onFailure { err ->
+                            PikoLog.w(
+                                TAG,
+                                "Corrupted transfer quota cache; ignoring snapshot (acct=$slot, error=${err::class.simpleName})",
+                                err.takeIf { it !is SerializationException },
+                            )
                         }.getOrNull()
                         if (cachedTq != null && clientManager.currentClient.value === client && _transferQuotaFlow.value == null) {
                             client.seedAccountState(transferQuota = cachedTq)
@@ -1676,9 +1702,11 @@ open class PikoDriveRepository(
                     }
                     if (driveTreeIndex.isPersistent && driveTreeIndex.isComplete) {
                         val restoredIndex = driveTreeIndex
+                        val restoredState = restoredIndex.flow.value
                         PikoLog.i(
                             TAG,
-                            "本地文件树索引已从 SQLite 秒开复用：${restoredIndex.flow.value.entries.size} 个文件夹",
+                            "Reused SQLite WAL tree index on startup (acct=$slot, folders=${restoredState.entries.size}, " +
+                                "complete=${restoredState.complete}, dirtyFolders=${restoredState.dirtyFolders.size}, hasCursor=${restoredIndex.syncCursor != null})",
                         )
                         launch {
                             migrateLegacyTreeCache(restoredIndex, client.account, cacheStore)
@@ -1688,7 +1716,8 @@ open class PikoDriveRepository(
                                 if (firstProbe.isFailure && clientManager.currentClient.value === client && driveTreeIndex === restoredIndex) {
                                     delay(2_000L)
                                     if (clientManager.currentClient.value === client && driveTreeIndex === restoredIndex) {
-                                        probeRemoteChanges(client, force = true).logFailure(TAG, "后台哨兵探针对账失败")
+                                        probeRemoteChanges(client, force = true)
+                                            .logFailure(TAG, "Background tree reconciliation failed after retry (acct=$slot)")
                                     }
                                 }
                             }
@@ -1705,7 +1734,8 @@ open class PikoDriveRepository(
                                 if (firstProbe.isFailure && clientManager.currentClient.value === client) {
                                     delay(2_000L)
                                     if (clientManager.currentClient.value === client) {
-                                        probeRemoteChanges(client, force = true).logFailure(TAG, "后台哨兵探针对账失败")
+                                        probeRemoteChanges(client, force = true)
+                                            .logFailure(TAG, "Background tree reconciliation failed after cache migration (acct=$slot)")
                                     }
                                 }
                             } else if (!driveTreeIndex.isComplete) {
@@ -1715,10 +1745,10 @@ open class PikoDriveRepository(
                                     delay(2_000L)
                                     if (clientManager.currentClient.value === client && !driveTreeIndex.isComplete) {
                                         runSuspendCatching { ensureTreeSync(client, forceRebuild = true).await() }
-                                            .logFailure(TAG, "后台建立本地文件树索引失败")
+                                            .logFailure(TAG, "Background tree index build failed after retry (acct=$slot)")
                                     }
                                 } else {
-                                    firstSync.logFailure(TAG, "后台建立本地文件树索引失败")
+                                    firstSync.logFailure(TAG, "Background tree index build failed (acct=$slot)")
                                 }
                             }
                         }
@@ -1726,14 +1756,19 @@ open class PikoDriveRepository(
                 }
                 // 并行单飞刷新云盘流量与存储配额，避免两项网络请求串行排队
                 launch {
-                    getTransferQuota().logFailure(TAG, "取账号类型失败")
+                    getTransferQuota().logFailure(TAG, "Failed to fetch transfer quota (acct=$slot)")
                 }
                 launch {
-                    getQuota().logFailure(TAG, "取剩余空间失败，借出归档条目暂不设上限").getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.let { quota ->
-                        if (client.leaseBudget != null) {
-                            PikoLog.d(TAG, "借出额度：剩余 ${quota.remainingBytes} 字节的九成")
+                    getQuota()
+                        .logFailure(TAG, "Failed to fetch storage quota; archive lease budget temporarily unbounded (acct=$slot)")
+                        .getOrNull()?.quota?.takeIf { it.limitBytes > 0 }?.let { quota ->
+                            if (client.leaseBudget != null) {
+                                PikoLog.d(
+                                    TAG,
+                                    "Archive lease budget updated from storage quota (acct=$slot, remainingBytes=${quota.remainingBytes}, limitBytes=${quota.limitBytes})",
+                                )
+                            }
                         }
-                    }
                 }
             }
         }
@@ -1808,7 +1843,12 @@ open class PikoDriveRepository(
     ) {
         val starredIds = vaultStars.flow.value.values.asSequence().filter { it.starred }.mapTo(HashSet()) { it.entryId }
         val optimistic = vaultBinding.value?.store?.hasPending(folderId) == true
-        if (!driveTreeIndex.putVaultEntries(folderId, entries, expectedManifestId, requireMatch, starredIds, optimistic = optimistic)) return
+        if (!driveTreeIndex.putVaultEntries(folderId, entries, expectedManifestId, requireMatch, starredIds, optimistic = optimistic)) {
+            if (requireMatch) {
+                PikoLog.d(TAG, "Skipped stale vault entries for ${logFolder(folderId)} (expectedManifest=${expectedManifestId ?: "none"})")
+            }
+            return
+        }
         if (reconcileStars) {
             vaultStars.reconcileFolder(folderId, entries, expectedAccount = currentAccount)
         }
@@ -1951,7 +1991,9 @@ open class PikoDriveRepository(
         val startedFromPending = store.hasPending(folderId)
         val expectedManifestId = store.winnerOf(listing)?.id
         val result = store.read(folderId, listing).let {
-            if (logFailure) it.logFailure(TAG, "读取归档清单失败$logTagSuffix") else it
+            if (logFailure) {
+                it.logFailure(TAG, "Failed to read vault manifest in ${logFolder(folderId)} (manifest=${expectedManifestId ?: "none"})$logTagSuffix")
+            } else it
         }
         val entries = result.getOrNull() ?: return emptyList()
         withPikoLock(treeStateLock) {
@@ -1969,13 +2011,13 @@ open class PikoDriveRepository(
     }
 
     /*
-     * 列过的文件夹是不是空的，连子文件夹在内，按 ID；没列过的不在表里。海报墙给空文件夹画空的封面用。
-     * 不从 childContents 推：那里只记文件，只有子文件夹的与真空的都是一张空表，分不开；它还跨进程保留，
-     * 这里只在这一次运行里有效，重启后按需再探（probeFolderEmptiness）。
+     * 本次会话内已探明是否完全为空（连子文件夹在内）的文件夹表，按 ID 索引；海报墙据此给真空文件夹绘制空占位封面。
+     * childContents 虽记录子文件采样与 Completeness（供全量归档标记推导），但 probeFolderEmptiness 仅翻取 1 项探测，
+     * 不能把 1 项分页写进跨进程持久化的 childContents 免得污染子文件名采样，故单独在会话内存中记录空态。
      */
     /**
-     * 只取一项，看文件夹空不空。记下的内容是空表、而这一次运行里还没列过它时才需要：那张空表可能是真空，
-     * 也可能只有子文件夹。一项的页不记进 childContents，免得把只取了一项当成全部内容。
+     * 只取一项，看文件夹空不空。记下的子文件表为空、且本次运行尚未完整列过该目录时才需要：子文件为空可能是真空，
+     * 也可能仍有子文件夹。单条探测页不写入 childContents，避免将局部探测误记为完整内容。
      */
     suspend fun probeFolderEmptiness(folderId: String) = withContext(Dispatchers.Default) {
         if (folderId in _folderEmptiness.value) return@withContext
@@ -2162,7 +2204,9 @@ open class PikoDriveRepository(
                         _transferQuotaFlow.value = tq
                         cacheStore?.let { store ->
                             backgroundScope.launch {
-                                runCatching { store.write(transferQuotaCacheKey(asked.account), QUOTA_JSON.encodeToString(TransferQuota.serializer(), tq)) }
+                                runSuspendCatching {
+                                    store.write(transferQuotaCacheKey(asked.account), QUOTA_JSON.encodeToString(TransferQuota.serializer(), tq))
+                                }.logFailure(TAG, "Failed to persist transfer quota cache (acct=${logAccountSlot(asked.account)})")
                             }
                         }
                     }
@@ -2212,7 +2256,7 @@ open class PikoDriveRepository(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            PikoLog.w(TAG, "小文件建单或初始化分片失败：size=$size, error=${e::class.simpleName}")
+            PikoLog.w(TAG, "Small file upload init failed in ${logFolder(parentId)} (size=$size, error=${e::class.simpleName})", e)
             throw e
         }
         var lastError: Throwable? = null
@@ -2241,7 +2285,11 @@ open class PikoDriveRepository(
             throw lastError ?: error(tr("上传失败", "Upload failed", "アップロードに失敗しました", "업로드 실패", "上傳失敗"))
         } catch (e: Throwable) {
             if (e !is CancellationException) {
-                PikoLog.w(TAG, "小文件分片上传失败：host=${session.endpoint}, size=$size, error=${e::class.simpleName}")
+                PikoLog.w(
+                    TAG,
+                    "Small file part upload failed in ${logFolder(parentId)} (id=${session.fileId}, host=${session.endpoint}, size=$size, error=${e::class.simpleName})",
+                    e,
+                )
             }
             withContext(NonCancellable) { runCatching { asked.cancelUpload(session) } }
             throw e
@@ -2346,7 +2394,7 @@ open class PikoDriveRepository(
             asked.batchTrash(ids)
         }.onSuccess {
             if (clientManager.currentClient.value === asked) applyChange(DriveChange.Trashed(ids, from))
-        }.logOperation("移入回收站", ids, started)
+        }.logOperation("Trash", ids, started)
     }
 
     suspend fun restore(ids: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
@@ -2358,7 +2406,7 @@ open class PikoDriveRepository(
             asked.batchUntrash(ids)
         }.onSuccess {
             if (clientManager.currentClient.value === asked) applyChange(DriveChange.Restored(ids))
-        }.logOperation("从回收站恢复", ids, started)
+        }.logOperation("Restore from trash", ids, started)
     }
 
     suspend fun delete(ids: List<String>): Result<Unit> = withContext(Dispatchers.Default) {
@@ -2371,7 +2419,7 @@ open class PikoDriveRepository(
             asked.batchDelete(ids)
         }.onSuccess {
             if (clientManager.currentClient.value === asked) applyChange(DriveChange.Deleted(ids, from))
-        }.logOperation("彻底删除", ids, started)
+        }.logOperation("Delete permanently", ids, started)
     }
 
     suspend fun move(ids: List<String>, parentId: String): Result<Unit> = withContext(Dispatchers.Default) {
@@ -2381,7 +2429,7 @@ open class PikoDriveRepository(
         val from = knownParentsOf(ids)
         runSuspendCatching { requireCloudIds(ids + parentId); asked.batchMove(ids, parentId) }.onSuccess {
             if (clientManager.currentClient.value === asked) applyChange(DriveChange.Moved(ids, from, parentId))
-        }.logOperation("移动到 ${LocalLocation.logIdentity(parentId) ?: parentId.ifEmpty { "根目录" }}", ids, started)
+        }.logOperation("Move to ${logFolder(parentId)}", ids, started)
     }
 
     /**
@@ -2393,20 +2441,21 @@ open class PikoDriveRepository(
         val asked = client
         runSuspendCatching { requireCloudIds(ids + parentId); asked.batchCopy(ids, parentId); Unit }.onSuccess {
             if (clientManager.currentClient.value === asked) applyChange(DriveChange.Copied(ids, parentId))
-        }.logOperation("复制到 ${LocalLocation.logIdentity(parentId) ?: parentId.ifEmpty { "根目录" }}", ids, started)
+        }.logOperation("Copy to ${logFolder(parentId)}", ids, started)
     }
 
     /**
-     * 批量改动各记一行：几项、前几个 ID、多久。失败只记错误名，堆栈由给用户提示的调用方记，
-     * 那边的一行不带 ID，这一行补上是哪几项。逐项调用的（重命名、建文件夹）不在这里记，批量时会刷屏。
+     * 直接经仓库发起的批量文件操作（复制、测试或非乐观回退调用；常规交互式编辑走 `FileMutations` 乐观队列）各记一行：
+     * 条目数、前几个 ID、耗时及失败异常详情。逐项高频调用的（单条重命名、建文件夹）不在此处记录以免批量刷屏。
      */
     private fun <T> Result<T>.logOperation(action: String, ids: List<String>, started: TimeMark): Result<T> {
-        val shown = ids.take(LOGGED_IDS).joinToString(",") { LocalLocation.logIdentity(it) ?: it } + if (ids.size > LOGGED_IDS) " 等" else ""
+        val shown = ids.take(LOGGED_IDS).joinToString(",") { LocalLocation.logIdentity(it) ?: it } + if (ids.size > LOGGED_IDS) ",..." else ""
         val elapsed = started.elapsedNow().inWholeMilliseconds
-        onSuccess { PikoLog.i(TAG, "$action：${ids.size} 项（$shown），$elapsed ms") }
+        onSuccess { PikoLog.i(TAG, "$action succeeded: count=${ids.size} ($shown), elapsedMs=$elapsed") }
         onFailure { error ->
-            val reason = (error as? PikPakException)?.let { "${it.errorCode} ${it.errorMessage}" } ?: error::class.simpleName
-            PikoLog.w(TAG, "${action}失败：${ids.size} 项（$shown），$elapsed ms，$reason")
+            if (error is CancellationException) return@onFailure
+            val reason = (error as? PikPakException)?.let { "${it.errorCode} ${it.errorMessage}" } ?: "${error::class.simpleName}: ${error.message}"
+            PikoLog.w(TAG, "$action failed: count=${ids.size} ($shown), elapsedMs=$elapsed, reason=$reason", error)
         }
         return this
     }
@@ -2443,30 +2492,41 @@ open class PikoDriveRepository(
             return
         }
         backgroundScope.launch {
-            probeRemoteChanges(asked, force = true).logFailure(TAG, "下拉刷新对账本地文件树失败")
+            probeRemoteChanges(asked, force = true)
+                .logFailure(TAG, "Pull-to-refresh tree reconciliation failed (acct=${logAccountSlot(asked.account)})")
         }
     }
 
     private val remoteDeltaMutex = Mutex()
 
     private suspend fun syncRemoteDelta(asked: PikPakClient, index: DriveTreeIndex): CanaryProbeResult = remoteDeltaMutex.withLock {
+        val started = TimeSource.Monotonic.markNow()
+        val acctSlot = logAccountSlot(asked.account)
         fun ensureCurrent() {
             if (clientManager.currentClient.value !== asked || driveTreeIndex !== index) throw CancellationException("Account changed")
         }
         ensureCurrent()
         val cursor = index.syncCursor
         if (cursor == null) {
+            PikoLog.i(TAG, "Delta sync skipped: missing sync cursor; falling back to full tree build (acct=$acctSlot)")
             ensureTreeSync(asked, forceRebuild = true).await()
             return@withLock CanaryProbeResult.FULL_REBUILD
         }
         val (serial, sequence) = withPikoLock(treeStateLock) {
-            if (hasPendingOptimisticWrites) return@withLock CanaryProbeResult.UNCHANGED
+            if (hasPendingOptimisticWrites) {
+                PikoLog.d(TAG, "Delta sync deferred: optimistic writes in flight (acct=$acctSlot)")
+                return@withLock CanaryProbeResult.UNCHANGED
+            }
             changeMarks.value.serial to index.currentMutationSeq
         }
+        var deltaPages = 0
+        var deltaItems = 0
         index.beginDelta()
         try {
             val checkpoint = asked.consumeFileChanges(cursor) { page ->
                 ensureCurrent()
+                deltaPages++
+                deltaItems += page.files.size
                 index.appendDelta(sourceLedger.enrich(page.files))
             }
             val oldFolders = index.flow.value.entries
@@ -2474,6 +2534,10 @@ open class PikoDriveRepository(
             val affected = withPikoLock(treeStateLock) {
                 ensureCurrent()
                 if (hasPendingOptimisticWrites || changeMarks.value.serial != serial || index.currentMutationSeq != sequence) {
+                    PikoLog.d(
+                        TAG,
+                        "Delta sync discarded staged batch due to concurrent local write (acct=$acctSlot, pages=$deltaPages, items=$deltaItems)",
+                    )
                     return@withLock CanaryProbeResult.UNCHANGED
                 }
                 index.commitDelta(checkpoint.syncTime).also { parents ->
@@ -2493,13 +2557,25 @@ open class PikoDriveRepository(
                 rememberChildContents(parent, children, complete = true)
                 if (children.any(VaultStore::looksLikeManifest) || parent in oldManifestFolders) {
                     runSuspendCatching { readAndRecordVaultEntries(parent, children, store, asked) }
-                        .logFailure(TAG, "增量同步归档清单失败")
+                        .logFailure(TAG, "Delta sync failed to read vault manifest in ${logFolder(parent)} (acct=$acctSlot)")
                 }
             }
             if (affected.isNotEmpty() || unresolved.isNotEmpty()) _folderChanges.tryEmit(DriveChange.ContentsChanged(affected + unresolved))
+            if (deltaItems > 0 || affected.isNotEmpty() || unresolved.isNotEmpty()) {
+                PikoLog.i(
+                    TAG,
+                    "Delta sync applied (acct=$acctSlot, pages=$deltaPages, items=$deltaItems, affectedFolders=${affected.size}, " +
+                        "unresolvedManifestFolders=${unresolved.size}, cursorAdvanced=${checkpoint.syncTime != cursor}, elapsedMs=${started.elapsedNow().inWholeMilliseconds})",
+                )
+            }
             if (affected.isEmpty()) CanaryProbeResult.UNCHANGED else CanaryProbeResult.INCREMENTAL_PATCH
-        } catch (_: io.github.nihildigit.pikpak.FileSyncVersionOutdatedException) {
+        } catch (outdated: io.github.nihildigit.pikpak.FileSyncVersionOutdatedException) {
             ensureCurrent()
+            PikoLog.w(
+                TAG,
+                "Delta sync cursor expired; falling back to full tree rebuild (acct=$acctSlot, elapsedMs=${started.elapsedNow().inWholeMilliseconds})",
+                outdated,
+            )
             ensureTreeSync(asked, forceRebuild = true).await()
             CanaryProbeResult.FULL_REBUILD
         } finally {
@@ -2700,11 +2776,15 @@ open class PikoDriveRepository(
                         for (folderId in manifestFolders) {
                             val children = driveTreeIndex.realChildren(folderId).files
                             runSuspendCatching {
-                                readAndRecordVaultEntries(folderId, children, store, asked)
+                                readAndRecordVaultEntries(folderId, children, store, asked, logFailure = true, logTagSuffix = " (canary patch)")
                             }
                         }
                         _folderChanges.tryEmit(DriveChange.ContentsChanged(affectedParents))
-                        PikoLog.i(TAG, "本地文件树索引增量更新完成：变更 ${enriched.size} 项，历时 ${patchStarted.elapsedNow().inWholeMilliseconds} ms")
+                        PikoLog.i(
+                            TAG,
+                            "Canary incremental patch applied (acct=${logAccountSlot(asked.account)}, items=${enriched.size}, " +
+                                "folders=${affectedParents.size}, elapsedMs=${patchStarted.elapsedNow().inWholeMilliseconds})",
+                        )
                         return@runSuspendCatching CanaryProbeResult.INCREMENTAL_PATCH
                     }
 
@@ -2806,14 +2886,14 @@ open class PikoDriveRepository(
                             for (folderId in manifestFolders) {
                                 val children = reconciledByFolder[folderId] ?: driveTreeIndex.realChildren(folderId).files
                                 runSuspendCatching {
-                                    readAndRecordVaultEntries(folderId, children, store, asked)
+                                    readAndRecordVaultEntries(folderId, children, store, asked, logFailure = true, logTagSuffix = " (canary reconcile)")
                                 }
                             }
                             _folderChanges.tryEmit(DriveChange.ContentsChanged(affectedParents))
                             PikoLog.i(
                                 TAG,
-                                "本地文件树索引增量对账完成：变更 ${enrichedChanged.size} 项，重列目录 ${reconciledByFolder.size} 个，" +
-                                    "历时 ${patchStarted.elapsedNow().inWholeMilliseconds} ms",
+                                "Canary folder reconciliation applied (acct=${logAccountSlot(asked.account)}, items=${enrichedChanged.size}, " +
+                                    "reconciledFolders=${reconciledByFolder.size}, elapsedMs=${patchStarted.elapsedNow().inWholeMilliseconds})",
                             )
                             return@runSuspendCatching CanaryProbeResult.INCREMENTAL_PATCH
                         }
@@ -3033,12 +3113,14 @@ open class PikoDriveRepository(
                             }
                         }
                         currentCoroutineContext().ensureActive()
+                        val acctSlot = logAccountSlot(asked.account)
                         // 先在锁外执行 SQLite commitCandidate 与子树聚合重算，严禁长时间占用 treeStateLock 阻塞主线程 UI
                         val preInvalidated = withPikoLock(treeStateLock) {
                             if (!isCurrent()) return@withLock
                             changeMarks.value.treeInvalidatedAt > serial
                         }
                         if (preInvalidated) {
+                            PikoLog.d(TAG, "SQLite tree build superseded by concurrent tree invalidation; scheduling rebuild (acct=$acctSlot)")
                             requestTreeRebuild()
                             return@withLock
                         }
@@ -3052,6 +3134,7 @@ open class PikoDriveRepository(
                         withPikoLock(treeStateLock) {
                             if (!isCurrent()) return@withPikoLock
                             if (changeMarks.value.treeInvalidatedAt > serial) {
+                                PikoLog.d(TAG, "SQLite tree commit superseded by concurrent tree invalidation; scheduling rebuild (acct=$acctSlot)")
                                 requestTreeRebuild()
                                 return@withPikoLock
                             }
@@ -3072,10 +3155,12 @@ open class PikoDriveRepository(
                             }
                         }
                         if (committedSuccessfully) {
+                            val readyState = index.flow.value
                             PikoLog.i(
                                 TAG,
-                                "本地文件树索引就绪：$folderCount 个文件夹，$fileCount 个文件，" +
-                                    "归档目录 $totalManifestFolders 个，历时 ${started.elapsedNow().inWholeMilliseconds} ms",
+                                "SQLite WAL tree index ready (acct=$acctSlot, folders=$folderCount, files=$fileCount, " +
+                                    "manifestFolders=$totalManifestFolders, complete=${readyState.complete}, dirtyFolders=${readyState.dirtyFolders.size}, " +
+                                    "hasCursor=${syncCursor != null}, shadowRebuild=$isShadowRebuild, elapsedMs=${started.elapsedNow().inWholeMilliseconds})",
                             )
                         }
                     } catch (failure: Exception) {
@@ -3093,6 +3178,7 @@ open class PikoDriveRepository(
                     }
                     return@withLock
                 }
+                val acctSlot = logAccountSlot(asked.account)
                 val permit = dev.piko.shared.memory.PikoMemoryGovernor.Shared.acquire(dev.piko.shared.memory.MemoryWorkKind.TreeBuild, 0)
                 withPikoLock(treeStateLock) {
                     if (!isCurrent()) {
@@ -3117,8 +3203,9 @@ open class PikoDriveRepository(
                 try {
                     val folders = asked.listAllDriveFolders(pageSize = 500)
                     if (!isCurrent()) throw CancellationException("Account changed")
+                    val activeFolderCount = folders.count { !it.trashed }
                     withPikoLock(treeStateLock) {
-                        if (isCurrent()) _treeBuildProgressFlow.update { it.copy(foldersRead = folders.size) }
+                        if (isCurrent()) _treeBuildProgressFlow.update { it.copy(foldersRead = activeFolderCount) }
                     }
                     if (!isShadowRebuild) {
                         var indexUpdated = false
@@ -3142,11 +3229,12 @@ open class PikoDriveRepository(
                     val manifestByFolder = LinkedHashMap<String, MutableList<FileStat>>()
                     asked.listAllDriveEntriesFlow(pageSize = 500, extraFilters = mapOf(FileFilter.kind(FileKind.FILE))).collect { page ->
                         if (!isCurrent()) throw CancellationException("Account changed")
-                        fileCount += page.size
+                        val activePage = page.filterNot { it.trashed }
+                        fileCount += activePage.size
                         val enriched = withPikoLock(treeStateLock) {
                             if (!isCurrent()) throw CancellationException("Account changed")
                             _treeBuildProgressFlow.update { it.copy(filesRead = fileCount) }
-                            sourceLedger.enrich(page)
+                            sourceLedger.enrich(activePage)
                         }
                         allFiles.addAll(enriched)
                         if (!isShadowRebuild) {
@@ -3187,7 +3275,9 @@ open class PikoDriveRepository(
                                 async {
                                     manifestPermits.withPermit {
                                         if (!isCurrent()) throw CancellationException("Account changed")
-                                        val entries = store.read(folderId, manifests).getOrDefault(emptyList())
+                                        val entries = store.read(folderId, manifests)
+                                            .logFailure(TAG, "In-memory tree build failed to read vault manifest in ${logFolder(folderId)} (acct=$acctSlot)")
+                                            .getOrDefault(emptyList())
                                         withPikoLock(treeStateLock) {
                                             if (isCurrent() && !store.hasPending(folderId)) {
                                                 vaultEntriesKnown(folderId, entries, expectedManifestId = VaultStore.winnerOf(manifests)?.id, requireMatch = true)
@@ -3257,8 +3347,10 @@ open class PikoDriveRepository(
                     }
                     withPikoLock(treeStateLock) {
                         if (isCurrent()) {
-                            if (shouldRestartRebuild) requestTreeRebuild()
-                            else if (committed) {
+                            if (shouldRestartRebuild) {
+                                PikoLog.d(TAG, "In-memory tree build superseded by concurrent tree invalidation; scheduling rebuild (acct=$acctSlot)")
+                                requestTreeRebuild()
+                            } else if (committed) {
                                 if (indexUpdated) normalizeLocations()
                                 if (isShadowRebuild && changedFolders.isNotEmpty()) {
                                     _folderChanges.tryEmit(DriveChange.ContentsChanged(changedFolders))
@@ -3267,10 +3359,12 @@ open class PikoDriveRepository(
                         }
                     }
                     if (committed) {
-                        PikoLog.d(
+                        val readyState = index.flow.value
+                        PikoLog.i(
                             TAG,
-                            "本地文件树索引就绪：${folders.size} 个文件夹，$fileCount 个文件，" +
-                                "归档目录 ${manifestByFolder.size} 个，历时 ${started.elapsedNow().inWholeMilliseconds} ms",
+                            "In-memory fallback tree index ready (acct=$acctSlot, folders=$activeFolderCount, files=$fileCount, " +
+                                "manifestFolders=${manifestByFolder.size}, complete=${readyState.complete}, dirtyFolders=${readyState.dirtyFolders.size}, " +
+                                "hasCursor=false, shadowRebuild=$isShadowRebuild, elapsedMs=${started.elapsedNow().inWholeMilliseconds})",
                         )
                     }
                 } catch (failure: Exception) {
@@ -3302,9 +3396,9 @@ open class PikoDriveRepository(
     /**
      * 全盘/子树按名搜索（支持 CJK 简繁、日本新字体、平片假名及有界子序列模糊匹配，并包含已归档的虚拟条目）。
      *
-     * 1. 先立即在内存本地文件树（[driveTreeIndex]）中检索并发出命中，0 网络等待；
-     * 2. 若登录后后台预热已完成（[DriveTreeIndex.isComplete]），仅对有改动的脏目录做增量重列后立即结束；
-     * 3. 若预热仍在进行或尚未开始，复用单飞同步任务 [ensureTreeSync]，随页面到达实时发出新增命中。
+     * 1. 先立即在本地文件树索引（[driveTreeIndex]：SQLite `norm_name` 轻量游标扫描或内存树回退）中检索并发出命中，0 网络等待；
+     * 2. 若本地树已完备（[DriveTreeIndex.isComplete]），仅对有改动的脏目录做增量重列后立即结束；
+     * 3. 若全盘同步仍在进行或尚未开始，复用单飞同步任务 [ensureTreeSync]，随页面到达实时发出新增命中。
      */
     fun searchRecursive(query: String, parentId: String = ""): Flow<SearchHit> = flow {
         val cleanQuery = query.trim()
@@ -3373,9 +3467,11 @@ open class PikoDriveRepository(
             val dirty = driveTreeIndex.dirtyFolders
             for (folderId in dirty) {
                 if (clientManager.currentClient.value !== asked) return@flow
-                val listing = runSuspendCatching { fetchListing(folderId, asked) }.getOrNull() ?: continue
+                val listing = runSuspendCatching { fetchListing(folderId, asked) }
+                    .logFailure(TAG, "Search failed to refresh dirty ${logFolder(folderId)}; skipping")
+                    .getOrNull() ?: continue
                 runSuspendCatching {
-                    readAndRecordVaultEntries(folderId, listing, store, asked)
+                    readAndRecordVaultEntries(folderId, listing, store, asked, logFailure = true, logTagSuffix = " (search dirty refresh)")
                 }
                 emitNewMatches()
             }
@@ -3663,6 +3759,10 @@ open class PikoDriveRepository(
         }
     }
 
+    /**
+     * 判断目录是否为空目录（无真实子项且无归档虚拟条目），供查重清理页识别残余空壳文件夹。
+     * 保留 [thresholdBytes] 形参以兼容既有接口签名，当前仅按空目录判定，不将非空小体积文件夹视作无意义目录。
+     */
     suspend fun isFolderMeaningless(folderId: String, thresholdBytes: Long, forceRefresh: Boolean = false): Boolean =
         withContext(Dispatchers.Default) {
             if (!forceRefresh) {
@@ -3803,15 +3903,22 @@ open class PikoDriveRepository(
                 } catch (e: Exception) {
                     lastError = e
                     if (!isRetryableSmallFileFailure(e)) {
-                        PikoLog.w(TAG, "读取小文件失败：${diagnostic(attempt + 1)}, error=${e::class.simpleName}")
+                        PikoLog.w(TAG, "Small file read failed: ${diagnostic(attempt + 1)}, error=${e::class.simpleName}", e)
                         throw e
                     }
                 }
+                val reason = lastError?.let { error ->
+                    (error as? PikPakException)?.let { "${it::class.simpleName}(${it.httpStatus} ${it.errorMessage})" }
+                        ?: "${error::class.simpleName}: ${error.message}"
+                } ?: "empty_download_url"
                 if (attempt == LINK_RETRY_DELAYS.size) {
-                    PikoLog.w(TAG, "读取小文件失败：${diagnostic(attempt + 1)}, error=${lastError?.let { it::class.simpleName }}")
-                    throw lastError ?: IllegalStateException(tr("未获取到下载链接", "Download link unavailable", "ダウンロードリンクを取得できません", "다운로드 링크를 가져올 수 없습니다", "無法取得下載連結"))
+                    val terminalError = lastError ?: IllegalStateException(
+                        tr("未获取到下载链接", "Download link unavailable", "ダウンロードリンクを取得できません", "다운로드 링크를 가져올 수 없습니다", "無法取得下載連結"),
+                    )
+                    PikoLog.w(TAG, "Small file read exhausted retries: ${diagnostic(attempt + 1)}, reason=$reason", lastError)
+                    throw terminalError
                 }
-                PikoLog.d(TAG, "重试读取小文件：${diagnostic(attempt + 1)}, error=${lastError?.let { it::class.simpleName }}")
+                PikoLog.d(TAG, "Retrying small file read: ${diagnostic(attempt + 1)}, reason=$reason")
                 wait(LINK_RETRY_DELAYS[attempt])
             }
             error("Unreachable")

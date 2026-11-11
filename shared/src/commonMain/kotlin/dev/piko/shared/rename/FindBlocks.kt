@@ -114,7 +114,7 @@ fun captureNumbers(blocks: List<FindBlock>): List<Int?> {
     return blocks.map { if (it.capture) next++ else null }
 }
 
-/** 一块积木的中文说明，如「2 位数字」「方括号内容」。取出的积木不在这里标编号，由调用方加。 */
+/** 一块积木的本地化说明（随当前界面语言切换），如「2 位数字」「[…]」。取出的积木不在这里标编号，由调用方加。 */
 fun FindBlock.describe(): String = when (this) {
     is FindBlock.Text -> "「$text」"
     is FindBlock.Digits -> when {
@@ -133,7 +133,7 @@ fun FindBlock.describe(): String = when (this) {
 }
 
 /**
- * 整条查找拼成一句话，如「开头的方括号内容、任意字符、2 位数字①」。开头与结尾不单独成项，
+ * 整条查找拼成一句本地化说明，如「开头的[…]、任意文字、2 位数字①」。开头与结尾不单独成项，
  * 并进紧挨着的那一块（「开头的…」「结尾的…」）。并列项用顿号，不用中点。
  */
 fun describeFind(blocks: List<FindBlock>): String {

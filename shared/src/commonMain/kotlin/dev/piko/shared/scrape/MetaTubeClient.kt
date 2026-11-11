@@ -1,6 +1,7 @@
 package dev.piko.shared.scrape
 
 import dev.piko.shared.data.runSuspendCatching
+import dev.piko.shared.i18n.tr
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -90,9 +91,25 @@ class MetaTubeClient(
 
 /** 服务端回了非 2xx。[status] 为 401 是令牌不对或没填。 */
 class MetaTubeException(val status: HttpStatusCode, val serverMessage: String?) :
-    Exception("MetaTube 返回 HTTP ${status.value}" + (serverMessage?.let { "：$it" } ?: ""))
+    Exception(
+        tr(
+            "MetaTube 返回 HTTP ${status.value}" + (serverMessage?.let { "：$it" } ?: ""),
+            "MetaTube returned HTTP ${status.value}" + (serverMessage?.let { ": $it" } ?: ""),
+            "MetaTube が HTTP ${status.value} を返しました" + (serverMessage?.let { "：$it" } ?: ""),
+            "MetaTube가 HTTP ${status.value} 응답을 반환했습니다" + (serverMessage?.let { ": $it" } ?: ""),
+            "MetaTube 回傳 HTTP ${status.value}" + (serverMessage?.let { "：$it" } ?: ""),
+        ),
+    )
 
-class MetaTubeTimeoutException(timeoutMillis: Long) : Exception("MetaTube 在 ${timeoutMillis / 1000} 秒内没有响应")
+class MetaTubeTimeoutException(val timeoutMillis: Long) : Exception(
+    tr(
+        "MetaTube 在 ${timeoutMillis / 1000} 秒内没有响应",
+        "MetaTube did not respond within ${timeoutMillis / 1000}s",
+        "MetaTube が ${timeoutMillis / 1000} 秒以内に応答しませんでした",
+        "MetaTube가 ${timeoutMillis / 1000}초 이내에 응답하지 않았습니다",
+        "MetaTube 在 ${timeoutMillis / 1000} 秒內沒有回應",
+    ),
+)
 
 /** 搜索结果与详情共有的几项。详情另有简介、演员、厂商等，用到时再加。 */
 @Serializable

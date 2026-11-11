@@ -2,11 +2,16 @@ package dev.piko.shared.scrape
 
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.PikoCacheStore
+import dev.piko.shared.data.runSuspendCatching
+import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import dev.piko.shared.naming.av.AvInfo
 import dev.piko.shared.naming.av.AvKind
 import dev.piko.shared.naming.av.normalizeAvCode
 import io.ktor.client.HttpClient
+import kotlin.time.TimeSource
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -69,8 +74,17 @@ class MetaTubeService(
             diskLoaded = true
             return
         }
-        val text = runCatching { store.read(CACHE_FILE_KEY) }.getOrNull()
-        val decoded = text?.let(::decodeCache).orEmpty()
+        val text = runSuspendCatching { store.read(CACHE_FILE_KEY) }
+            .logFailure(TAG, "Failed to read persisted title cache ($CACHE_FILE_KEY)")
+            .getOrNull()
+        val decoded = if (text != null) {
+            decodeCache(text) ?: run {
+                PikoLog.w(TAG, "Corrupted persisted title cache ($CACHE_FILE_KEY); resetting in-memory snapshot")
+                emptyMap()
+            }
+        } else {
+            emptyMap()
+        }
         cacheLock.withLock {
             if (diskLoaded) return
             diskLoaded = true
@@ -96,7 +110,8 @@ class MetaTubeService(
         pendingSave = serviceScope.launch {
             delay(saveDelayMillis)
             val snapshot = cacheLock.withLock { LinkedHashMap(persisted) }
-            runCatching { store.write(CACHE_FILE_KEY, encodeCache(snapshot)) }
+            runSuspendCatching { store.write(CACHE_FILE_KEY, encodeCache(snapshot)) }
+                .logFailure(TAG, "Failed to persist title cache (${snapshot.size} entries)")
         }
     }
 
@@ -110,7 +125,8 @@ class MetaTubeService(
         job?.cancel()
         val snapshot = cacheLock.withLock { LinkedHashMap(persisted) }
         if (snapshot.isNotEmpty()) {
-            runCatching { store.write(CACHE_FILE_KEY, encodeCache(snapshot)) }
+            runSuspendCatching { store.write(CACHE_FILE_KEY, encodeCache(snapshot)) }
+                .logFailure(TAG, "Failed to flush persisted title cache (${snapshot.size} entries)")
         }
     }
 
@@ -120,10 +136,17 @@ class MetaTubeService(
      */
     suspend fun check(url: String, token: String): Result<MetaTubeCheck> {
         val client = MetaTubeClient(http, url, token)
-        val providers = client.providers().getOrElse { return Result.failure(it) }
+        val providers = client.providers()
+            .logFailure(TAG, "MetaTube connection check failed while fetching /v1/providers")
+            .getOrElse { return Result.failure(it) }
         val probe = client.checkToken()
         val rejected = (probe.exceptionOrNull() as? MetaTubeException)?.status?.value == 401
-        if (probe.isFailure && !rejected) return Result.failure(probe.exceptionOrNull()!!)
+        if (rejected) {
+            PikoLog.w(TAG, "MetaTube connection check: access token rejected (HTTP 401), providers=${providers.size}")
+        } else if (probe.isFailure) {
+            probe.logFailure(TAG, "MetaTube connection check failed while verifying token at /v1/db/version")
+            return Result.failure(probe.exceptionOrNull()!!)
+        }
         return Result.success(MetaTubeCheck(providers.size, tokenAccepted = !rejected))
     }
 
@@ -143,47 +166,103 @@ class MetaTubeService(
         val unique = infos.distinctBy { it.code }
         if (unique.isEmpty()) return MetaTubeTitles(emptyMap(), 0)
         ensureDiskCacheLoaded()
+        val started = TimeSource.Monotonic.markNow()
         var done = 0
         var failed = 0
-        var cacheHits = 0
+        var notFound = 0
+        var positiveCacheHits = 0
+        var negativeCacheHits = 0
+        var coalescedHits = 0
+        var networkRequests = 0
+        var firstFailure: Pair<String, Throwable>? = null
         val progressLock = Mutex()
-        val found = coroutineScope {
-            unique.map { info ->
-                async {
-                    val (result, fromCache) = resolveOne(base, token, client, info)
-                    progressLock.withLock {
-                        done++
-                        if (fromCache) cacheHits++
-                        if (result.isFailure) failed++
-                        result.getOrNull()?.let { onFound(info.code, it) }
-                        onProgress(done, unique.size)
+        val found = try {
+            coroutineScope {
+                unique.map { info ->
+                    async {
+                        val outcome = resolveOne(base, token, client, info)
+                        progressLock.withLock {
+                            done++
+                            when (outcome.source) {
+                                LookupSource.POSITIVE_CACHE -> positiveCacheHits++
+                                LookupSource.NEGATIVE_CACHE -> negativeCacheHits++
+                                LookupSource.COALESCED -> coalescedHits++
+                                LookupSource.NETWORK -> networkRequests++
+                            }
+                            outcome.result.fold(
+                                onSuccess = { title ->
+                                    if (title == null) notFound++ else onFound(info.code, title)
+                                },
+                                onFailure = { err ->
+                                    failed++
+                                    if (firstFailure == null) firstFailure = info.code to err
+                                },
+                            )
+                            onProgress(done, unique.size)
+                        }
+                        outcome.result.getOrNull()?.let { info.code to it }
                     }
-                    result.getOrNull()?.let { info.code to it }
-                }
-            }.awaitAll().filterNotNull().toMap()
+                }.awaitAll().filterNotNull().toMap()
+            }
+        } catch (e: CancellationException) {
+            PikoLog.d(
+                TAG,
+                "MetaTube title lookup cancelled: completed=$done/${unique.size}, failed=$failed, " +
+                    "elapsedMs=${started.elapsedNow().inWholeMilliseconds}",
+            )
+            throw e
         }
-        PikoLog.i(TAG, "查片名：${unique.size} 个番号（缓存命中 $cacheHits 个），查到 ${found.size} 个，出错 $failed 个")
+        val elapsedMs = started.elapsedNow().inWholeMilliseconds
+        firstFailure?.let { (code, err) ->
+            PikoLog.w(
+                TAG,
+                "MetaTube title lookup failed for $failed/${unique.size} codes " +
+                    "(first=$code, detail=${describeLookupError(err)}, elapsedMs=$elapsedMs)",
+                err,
+            )
+        }
+        val level = if (networkRequests == 0 && coalescedHits == 0 && failed == 0) LogLevel.DEBUG else LogLevel.INFO
+        PikoLog.log(
+            level,
+            TAG,
+            "MetaTube title lookup finished: total=${unique.size}, found=${found.size}, notFound=$notFound, " +
+                "failed=$failed, cacheHits=$positiveCacheHits, negativeCacheHits=$negativeCacheHits, " +
+                "coalesced=$coalescedHits, network=$networkRequests, elapsedMs=$elapsedMs",
+        )
         return MetaTubeTitles(found, failed)
     }
+
+    private enum class LookupSource { POSITIVE_CACHE, NEGATIVE_CACHE, COALESCED, NETWORK }
+
+    private class LookupOutcome(val result: Result<String?>, val source: LookupSource)
 
     private suspend fun resolveOne(
         base: String,
         token: String,
         client: MetaTubeClient,
         info: AvInfo,
-    ): Pair<Result<String?>, Boolean> {
+    ): LookupOutcome {
+        // cacheKey 刻意不含 token，使修改令牌后仍可复用已查到的有效片名；
+        // flightKey 必须包含 token，防止用户改对令牌重试时复用到旧错误令牌尚未结束的失败单飞请求。
         val cacheKey = "$base|${info.code}"
         val flightKey = "$base|$token|${info.code}"
+        var joinedExisting = false
         val deferred = cacheLock.withLock {
             if (cacheKey in cache) {
-                return Result.success(cache[cacheKey]) to true
+                val cached = cache[cacheKey]
+                val kind = if (cached == null) LookupSource.NEGATIVE_CACHE else LookupSource.POSITIVE_CACHE
+                return LookupOutcome(Result.success(cached), kind)
             }
-            inFlight[flightKey]?.let { return@withLock it }
+            inFlight[flightKey]?.let {
+                joinedExisting = true
+                return@withLock it
+            }
             val created = serviceScope.async(start = CoroutineStart.LAZY) {
                 try {
                     val fetched = permits.withPermit { lookUp(client, info) }
                     fetched.onSuccess { title ->
                         cacheLock.withLock {
+                            // null 负结果仅缓存在当前进程内存，不写入 persisted 磁盘快照，避免新片次日收录后跨重启仍查不到。
                             cache[cacheKey] = title
                             if (!title.isNullOrBlank()) {
                                 persisted.remove(cacheKey)
@@ -192,6 +271,8 @@ class MetaTubeService(
                                 schedulePersistLocked()
                             }
                         }
+                    }.onFailure { err ->
+                        PikoLog.d(TAG, "MetaTube lookup failed for code=${info.code}: ${describeLookupError(err)}")
                     }
                 } finally {
                     cacheLock.withLock {
@@ -203,7 +284,16 @@ class MetaTubeService(
             created
         }
         deferred.start()
-        return deferred.await() to false
+        return LookupOutcome(
+            result = deferred.await(),
+            source = if (joinedExisting) LookupSource.COALESCED else LookupSource.NETWORK,
+        )
+    }
+
+    private fun describeLookupError(err: Throwable): String = when (err) {
+        is MetaTubeException -> "HTTP ${err.status.value}" + (err.serverMessage?.let { " ($it)" } ?: "")
+        is MetaTubeTimeoutException -> "timeout (${err.timeoutMillis}ms)"
+        else -> err::class.simpleName ?: "error"
     }
 
     /** 片名，查不到时为 null。只认番号对得上的结果，宁可不用也不套上别的片子的名字。 */

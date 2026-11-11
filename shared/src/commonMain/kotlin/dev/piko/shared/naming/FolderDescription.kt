@@ -6,8 +6,9 @@ import dev.piko.shared.naming.av.matchAv
 /**
  * 网盘文件夹行的显示信息。
  *
- * [title] 是作品名的罗马音或英文写法；认不出时为 null，UI 显示原文件夹名。[episodeRange] 形如
- * 「01–24」，保留原文的补零；[extras] 是正片之外包含的分区（SP、剧场版、特典……），按分区顺序。
+ * [title] 是提取出的作品名或片名（剧集目录优先采用内容里的罗马音/英文写法，或剥除站点噪声后的原名，含中日韩文字）；
+ * 认不出时为 null，UI 显示原文件夹名。[episodeRange] 形如「01–24」，保留原文的补零；[extras] 是正片之外包含的分区
+ * （SP、剧场版、特典……），按分区顺序。
  */
 data class FolderDescription(
     val title: String?,
@@ -15,7 +16,7 @@ data class FolderDescription(
     val tags: List<MediaTag>,
     val episodeRange: String?,
     val extras: List<Section>,
-    /** 番号文件夹的番号本身；[title] 是行标题，带着片名，FC2 只有片名。 */
+    /** 番号文件夹的规范番号；此时 [title] 来自 [dev.piko.shared.naming.av.AvInfo.displayTitle]，有片名时仅为纯片名，无片名时为番号显示名。 */
     val code: String? = null,
 ) {
     val recognized: Boolean get() = title != null

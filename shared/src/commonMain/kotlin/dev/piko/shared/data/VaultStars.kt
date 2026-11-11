@@ -1,5 +1,7 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -17,6 +19,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlin.concurrent.Volatile
@@ -368,7 +371,10 @@ class VaultStars internal constructor(
         state.value = AccountStarsState(account = newAccount, ready = !needsLoad, records = emptyMap())
         if (cacheStore == null || newAccount.isNullOrEmpty()) return
         scope.launch {
-            val stored = runCatching { cacheStore.read(keyOf(newAccount))?.let(::decode) }.getOrNull().orEmpty()
+            val raw = runSuspendCatching { cacheStore.read(keyOf(newAccount)) }
+                .logFailure(TAG, "Failed to read vault stars cache (acct=${logAccountSlot(newAccount)})")
+                .getOrNull()
+            val stored = raw?.let(::decode).orEmpty()
             var changed = false
             val touchedFolders = HashSet<String>()
             state.update { cur ->
@@ -393,7 +399,10 @@ class VaultStars internal constructor(
         pendingSave = scope.launch {
             delay(saveDelayMillis)
             val snapshot = state.value
-            if (snapshot.account == owner) cacheStore.write(keyOf(owner), encode(snapshot.records))
+            if (snapshot.account == owner) {
+                runSuspendCatching { cacheStore.write(keyOf(owner), encode(snapshot.records)) }
+                    .logFailure(TAG, "Failed to persist vault stars (acct=${logAccountSlot(owner)})")
+            }
         }
     }
 
@@ -407,12 +416,16 @@ class VaultStars internal constructor(
         val cacheStore = store ?: return
         val owner = previous.account ?: return
         val snapshot = previous.records
-        scope.launch { cacheStore.write(keyOf(owner), encode(snapshot)) }
+        scope.launch {
+            runSuspendCatching { cacheStore.write(keyOf(owner), encode(snapshot)) }
+                .logFailure(TAG, "Failed to flush vault stars on account switch (acct=${logAccountSlot(owner)})")
+        }
     }
 
     private fun keyOf(account: String) = "vault-stars-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
 
     companion object {
+        private const val TAG = "VaultStars"
         private val UNSAFE_KEY_CHARS = Regex("""[^A-Za-z0-9._@-]""")
         private val TOMBSTONE_RETENTION_MS = 90.days.inWholeMilliseconds
         private val json = Json { ignoreUnknownKeys = true }
@@ -426,6 +439,12 @@ class VaultStars internal constructor(
         fun decode(text: String): Map<String, VaultStarRecord>? =
             runCatching {
                 json.decodeFromString(serializer, text).associateBy { it.entryId }
+            }.onFailure { err ->
+                PikoLog.w(
+                    TAG,
+                    "Corrupted vault stars JSON; ignoring snapshot (chars=${text.length}, error=${err::class.simpleName})",
+                    err.takeIf { it !is SerializationException },
+                )
             }.getOrNull()
 
         private val RECORD_ORDER = compareBy<VaultStarRecord>(

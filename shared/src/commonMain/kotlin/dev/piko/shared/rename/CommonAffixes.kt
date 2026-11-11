@@ -53,16 +53,18 @@ class AffixStripRule(private val prefix: String, private val suffix: String) : R
 class BatchRenamePipelineResult(val names: List<String>, val affixes: CommonAffixes)
 
 /**
- * 批量重命名的管线：先查找替换，再去掉此时仍共有的开头与结尾。
+ * 批量重命名的管线：先应用 [base]（如按番号规范命名），再执行 [findReplace] 查找替换，随后按替换后的主名计算 [commonAffixes]
+ * 并经 [AffixStripRule] 去掉此时仍共有的开头与结尾，最后同步同名外挂附件的主名。
  *
- * 顺序这样定，是因为用户写查找时看的是原名：查找「Frieren - 」替换成「第」，指的就是原名里的那一段。
- * 先去共同开头的话，「[SweetSub] Frieren - 」整段已经没了，查找落空，写的替换也跟着消失（出过这个问题）。
+ * 查找替换排在去共同前后缀之前，是因为用户写查找时看的是原名：查找「Frieren - 」替换成「第」，指的就是原名里的那一段；
+ * 若先去共同开头，「[SweetSub] Frieren - 」整段已被剥除，查找落空会导致替换内容一并丢失。
  * 共同部分在替换之后重新识别，开关旁显示的正是此刻会去掉的文字；替换改动了开头时，识别出的共同部分跟着变，
  * 不会去掉一段各名里已不再共有的文字。
  *
- * [findReplace] 为 null 表示正则写错了，此时名称原样进入第二步。
+ * [findReplace] 为 null 表示正则写错了，此时名称原样进入后续步骤。
  *
- * [base] 是整套改写名称的规则（按番号规范命名），排在最前：查找替换接着在它给出的名称上微调。
+ * 当 [base] 为 null 且 [scope] 为 [RenameScope.NAME] 时，同目录同名外挂字幕与音轨（`companionHosts`）会剥离出主序列：
+ * 不单独消耗序号计数器，也不参与共同前后缀统计，最后将主名同步为宿主视频的新主名并保留语言与格式后缀。
  */
 fun runBatchRenamePipeline(
     items: List<RenameSource>,

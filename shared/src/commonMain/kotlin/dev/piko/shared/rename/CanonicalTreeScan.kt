@@ -13,8 +13,11 @@ import dev.piko.shared.data.ScanStop
 import dev.piko.shared.data.ScannedFile
 import dev.piko.shared.data.VaultStore
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.listFiles
+import kotlin.time.TimeSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -103,6 +106,7 @@ class CanonicalTreeScan(
         files = emptyList()
         tree = null
         job = scope.launch {
+            val started = TimeSource.Monotonic.markNow()
             try {
                 val rootEntry = loadRoot()
                 var scanned: List<ScannedFile> = emptyList()
@@ -131,11 +135,30 @@ class CanonicalTreeScan(
                         listings.mapValues { (_, entries) -> entries.filter { it.id !in included && !it.trashed }.mapTo(HashSet()) { it.name } }
                     },
                 )
+                val elapsedMs = started.elapsedNow().inWholeMilliseconds
+                if (scanStop != null || failedFolders > 0) {
+                    PikoLog.w(
+                        TAG,
+                        "Canonical tree scan finished incomplete for ${logFolder(root.id)}: " +
+                            "folders=$scannedFolders, files=$scannedFiles, entries=${files.size}, " +
+                            "failedFolders=$failedFolders, stop=$scanStop, elapsedMs=$elapsedMs",
+                    )
+                } else {
+                    PikoLog.i(
+                        TAG,
+                        "Canonical tree scan finished for ${logFolder(root.id)}: " +
+                            "folders=$scannedFolders, files=$scannedFiles, entries=${files.size}, elapsedMs=$elapsedMs",
+                    )
+                }
                 phase = Phase.DONE
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                PikoLog.w(TAG, "按番号规范命名的扫描失败", e)
+                PikoLog.w(
+                    TAG,
+                    "Canonical tree scan failed for ${logFolder(root.id)} after folders=$scannedFolders, files=$scannedFiles",
+                    e,
+                )
                 errorMessage = e.message ?: dev.piko.shared.i18n.tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류", "未知錯誤")
                 phase = Phase.FAILED
             }
@@ -151,7 +174,9 @@ class CanonicalTreeScan(
     private suspend fun loadRoot(): FileStat? {
         if (root.id.isEmpty()) return null
         driveRepo.knownFile(root.id)?.takeUnless { it.trashed }?.let { return it }
-        val detail = driveRepo.getFileDetail(root.id).getOrNull() ?: return null
+        val detail = driveRepo.getFileDetail(root.id)
+            .logFailure(TAG, "Failed to load root detail for ${logFolder(root.id)}")
+            .getOrNull() ?: return null
         return FileStat(kind = detail.kind, id = detail.id, parentId = detail.parentId, name = detail.name)
     }
 

@@ -50,7 +50,7 @@ internal class RecentFolders(private val store: PikoCacheStore?, private val sco
         save()
     }
 
-    /** 文件夹改了名、被移走或删掉之后按文件夹索引改正各条，见 PikoDriveRepository.normalizeLocations。 */
+    /** 文件夹改了名、被移走或删掉之后按文件夹索引改正各条，见 `DriveWorkspace.refreshFolderReferences`。 */
     fun rewrite(change: (List<List<PikoPathBreadcrumb>>) -> List<List<PikoPathBreadcrumb>>) {
         val before = folders.value
         folders.update { list -> change(list).distinctBy { it.last().id } }

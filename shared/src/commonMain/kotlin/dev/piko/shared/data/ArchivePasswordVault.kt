@@ -60,7 +60,8 @@ class ArchivePasswordVault(
                 flowOf(emptyMap())
             } else {
                 flow {
-                    runSuspendCatching { load(account) }.logFailure(TAG, "读取压缩包密码失败")
+                    runSuspendCatching { load(account) }
+                        .logFailure(TAG, "Failed to load archive passwords (acct=${logAccountSlot(account)})")
                     emitAll(loaded.map { it[account].orEmpty() })
                 }
             }
@@ -75,7 +76,8 @@ class ArchivePasswordVault(
     fun start(scope: CoroutineScope) {
         scope.launch {
             val account = clients.currentClient.filterNotNull().first().account
-            runSuspendCatching { load(account) }.logFailure(TAG, "读取压缩包密码失败")
+            runSuspendCatching { load(account) }
+                .logFailure(TAG, "Failed to load archive passwords on startup (acct=${logAccountSlot(account)})")
         }
     }
 
@@ -114,7 +116,7 @@ class ArchivePasswordVault(
                 val next = pruneArchivePasswords(change(current))
                 if (next != current) write(account, next)
             }
-        }.logFailure(TAG, "保存压缩包密码失败")
+        }.logFailure(TAG, "Failed to save archive passwords (acct=${logAccountSlot(account)})")
     }
 
     private suspend fun load(account: String): Map<String, ArchivePasswordEntry> = lock.withLock { loadLocked(account) }
@@ -140,7 +142,7 @@ class ArchivePasswordVault(
         store.saveArchivePasswords(account, encodeArchivePasswords(merged))
         legacy.clearLegacyArchivePasswords()
         legacyChecked = true
-        PikoLog.i(TAG, "1.1.0 的 ${adopted.size} 个压缩包密码已并入当前账号")
+        PikoLog.i(TAG, "Adopted ${adopted.size} legacy 1.1.0 archive password(s) into acct=${logAccountSlot(account)}")
         return merged
     }
 
@@ -150,7 +152,7 @@ class ArchivePasswordVault(
     }
 
     companion object {
-        private const val TAG = "ArchivePasswords"
+        internal const val TAG = "ArchivePasswords"
 
         /** 挑选时一屏看得完；再旧的多半是一次性的，挤出去也无妨。墓碑另留同样多条。 */
         const val MAX_PASSWORDS = 30
@@ -185,12 +187,18 @@ internal fun encodeArchivePasswords(entries: Map<String, ArchivePasswordEntry>):
 
 /**
  * 1.1.0 存的是最近的在前的密码列表，读成按先后递减的极小时刻：保住原来的顺序，又比之后任何一次真实的记录都旧。
- * 内容损坏时当作空表，不让一份坏数据挡住解压。
+ * 内容损坏时当作空表，不让一份坏数据挡住解压；不将序列化异常消息写入日志，避免 JSON 输入片段泄露明文密码。
  */
 internal fun decodeArchivePasswords(serialized: String): Map<String, ArchivePasswordEntry> {
     if (serialized.isBlank()) return emptyMap()
     runCatching { return json.decodeFromString(entriesSerializer, serialized) }
-    val legacy = runCatching { json.decodeFromString(legacySerializer, serialized) }.getOrDefault(emptyList())
+    val legacy = runCatching { json.decodeFromString(legacySerializer, serialized) }.getOrElse { err ->
+        PikoLog.w(
+            ArchivePasswordVault.TAG,
+            "Corrupted archive password store (${serialized.length} chars, error=${err::class.simpleName}); resetting to empty",
+        )
+        emptyList()
+    }
     return legacy.withIndex().associate { (index, password) -> password to ArchivePasswordEntry((legacy.size - index).toLong()) }
 }
 

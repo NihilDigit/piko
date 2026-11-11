@@ -2,6 +2,8 @@ package dev.piko.shared.data
 
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFile
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -9,6 +11,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -45,6 +48,7 @@ class LocalMediaCache(private val directory: File, private val scope: CoroutineS
     private val generation = AtomicLong(0)
     private val activeJobs = ConcurrentHashMap.newKeySet<Job>()
     private val writeCount = AtomicLong(0)
+    private val writeFailureLogged = AtomicBoolean(false)
     private val lifecycle = Any()
 
     fun cancelPending() = synchronized(lifecycle) {
@@ -89,33 +93,51 @@ class LocalMediaCache(private val directory: File, private val scope: CoroutineS
         }.getOrNull()
     }
     suspend fun probe(file: FileStat, read: suspend (File) -> LocalMediaMetadata?): FileStat = withContext(Dispatchers.IO) {
-        locks[key(file).hashCode() and 63].withLock {
+        val cacheKey = key(file)
+        locks[cacheKey.hashCode() and 63].withLock {
             cached(file)?.let { return@withLock it.apply(file) }
             lanes.withPermit {
-                try { directory.mkdirs() } catch (_: Exception) { throw IllegalStateException("本地媒体缓存不可写") }
+                try {
+                    directory.mkdirs()
+                } catch (err: Exception) {
+                    val cooldown = LocalMediaMetadata(retryAfterMs = System.currentTimeMillis() + FAILED_PROBE_RETRY_MS)
+                    synchronized(memory) { memory[cacheKey] = cooldown }
+                    if (writeFailureLogged.compareAndSet(false, true)) {
+                        PikoLog.w(TAG, "Local media cache directory is not writable (error=${err::class.simpleName})")
+                    }
+                    throw IllegalStateException("本地媒体缓存不可写")
+                }
                 val metadata = try {
-                    read(File(directory, key(file) + ".jpg")) ?: LocalMediaMetadata(retryAfterMs = System.currentTimeMillis() + FAILED_PROBE_RETRY_MS)
+                    read(File(directory, "$cacheKey.jpg")) ?: LocalMediaMetadata(retryAfterMs = System.currentTimeMillis() + FAILED_PROBE_RETRY_MS)
                 } catch (cancel: kotlinx.coroutines.CancellationException) {
                     throw cancel
-                } catch (_: Exception) {
+                } catch (err: Exception) {
+                    PikoLog.d(TAG, "Local media probe failed for ${logFile(file.id, file.name)} (error=${err::class.simpleName})")
                     LocalMediaMetadata(retryAfterMs = System.currentTimeMillis() + FAILED_PROBE_RETRY_MS)
                 }
-                val output = File(directory, key(file) + ".json")
-                val temporary = File(directory, key(file) + ".tmp")
+                synchronized(memory) { memory[cacheKey] = metadata }
+                val output = File(directory, "$cacheKey.json")
+                val temporary = File(directory, "$cacheKey.tmp")
                 currentCoroutineContext().ensureActive()
                 try {
                     temporary.writeText(json.encodeToString(metadata))
                     java.nio.file.Files.move(temporary.toPath(), output.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                } catch (_: Exception) {
+                    writeFailureLogged.set(false)
+                } catch (err: Exception) {
+                    if (writeFailureLogged.compareAndSet(false, true)) {
+                        PikoLog.w(TAG, "Failed to persist local media metadata to disk; retaining in memory (error=${err::class.simpleName})")
+                    }
                     throw IllegalStateException("本地媒体缓存不可写")
                 } finally { runCatching { temporary.delete() } }
-                synchronized(memory) { memory[key(file)] = metadata }
                 if (writeCount.incrementAndGet() % 64 == 0L) scope.launch(Dispatchers.IO) { runCatching { trimDisk() } }
                 metadata.apply(file)
             }
         }
     }
-    private companion object { const val FAILED_PROBE_RETRY_MS = 10 * 60 * 1000L }
+    private companion object {
+        const val TAG = "LocalMediaCache"
+        const val FAILED_PROBE_RETRY_MS = 10 * 60 * 1000L
+    }
 
     fun enrich(file: FileStat, alsoNotifyFolder: String? = null, read: suspend (File) -> LocalMediaMetadata?): FileStat {
         memoryCached(key(file))?.let { return it.apply(file) }

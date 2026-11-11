@@ -65,7 +65,7 @@ class TaskRepository(
             // 新任务已经提交，旧记录删不掉只是多留一条，用户可以手动删，不算重新提交失败
             runSuspendCatching { owner.deleteOfflineTasks(listOf(task.id), deleteFiles = false) }
                 .onSuccess { offlineSubmissions.forgetTasks(owner.account, ids = setOf(task.id)) }
-                .logFailure(TAG, "重新提交后删除旧离线任务 ${task.id} 失败")
+                .logFailure(TAG, "Failed to delete superseded offline task ${task.id} after resubmit")
         }
     }
 
@@ -76,7 +76,9 @@ class TaskRepository(
      */
     private suspend fun resubmitTarget(task: DriveTask, access: DriveWriteAccess): String =
         task.params["parent_folder_id"]?.takeIf { it.isNotEmpty() }
-            ?: driveRepository.getOrCreateMyPacksFolder(access).logFailure(TAG, "取 My Packs 失败，重新提交到根目录").getOrNull()?.id.orEmpty()
+            ?: driveRepository.getOrCreateMyPacksFolder(access)
+                .logFailure(TAG, "Failed to resolve My Packs folder for task ${task.id}; falling back to root")
+                .getOrNull()?.id.orEmpty()
 
     /** 只删任务记录。已完成任务的文件留在网盘里，未完成任务的占位文件由服务端一并清掉。 */
     suspend fun deleteTasks(taskIds: List<String>): Result<Unit> = withContext(Dispatchers.Default) {

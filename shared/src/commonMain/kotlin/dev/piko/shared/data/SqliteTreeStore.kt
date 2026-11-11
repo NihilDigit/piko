@@ -1,6 +1,7 @@
 package dev.piko.shared.data
 
 import dev.piko.data.repository.isPlayableVideo
+import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileTag
@@ -9,9 +10,13 @@ import kotlinx.serialization.json.Json
 /** Disk owns file identities. Heap projections contain folders and caller-requested rows only. */
 internal class SqliteTreeStore(
     private val db: PikoTreeDatabase,
-    ownerAccount: String,
+    private val ownerAccount: String,
     private val locallyCachedManifestIds: () -> Set<String> = ::emptySet,
 ) {
+    private companion object {
+        const val TAG = "SqliteTreeStore"
+    }
+
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
     private var closed = false
     private var revision = 0L
@@ -48,9 +53,19 @@ internal class SqliteTreeStore(
     }
 
     init {
+        val acctSlot = logAccountSlot(ownerAccount)
         db.execute("CREATE TABLE IF NOT EXISTS tree_meta (key TEXT PRIMARY KEY, value TEXT)")
         val owner = scalar("SELECT value FROM tree_meta WHERE key='owner_account'")
-        if (owner != ownerAccount || meta("schema_version") != "1") {
+        val schemaVersion = meta("schema_version")
+        if (owner != ownerAccount || schemaVersion != "1") {
+            if (owner != null || schemaVersion != null) {
+                PikoLog.w(
+                    TAG,
+                    "Resetting SQLite tree store due to metadata mismatch (expectedAcct=$acctSlot, storedAcct=${owner?.let(::logAccountSlot) ?: "none"}, schema=${schemaVersion ?: "none"})",
+                )
+            } else {
+                PikoLog.i(TAG, "Initializing fresh SQLite tree store (acct=$acctSlot)")
+            }
             for (table in listOf("tree_nodes", "tree_content", "tree_instances", "tree_coverage", "tree_vault", "tree_deleted", "tree_aggregate", "tree_sources", "tree_subtree", "tree_restores", "tree_overrides", "tree_vault_revision", "tree_vault_state", "tree_direct_usage", "tree_legacy_sources", "tree_legacy_refs", "tree_legacy_instances", "tree_legacy_content")) db.execute("DROP TABLE IF EXISTS $table")
             db.execute("DELETE FROM tree_meta")
         }
@@ -92,15 +107,22 @@ internal class SqliteTreeStore(
         rows("SELECT key FROM tree_meta WHERE key LIKE 'optimistic_vault:%' AND value='true'") {
             interruptedVaults += it.string(0)!!.removePrefix("optimistic_vault:")
         }
-        if (interruptedVaults.isNotEmpty()) mutate {
-            for (folder in interruptedVaults) clearVault(folder)
-            db.execute("DELETE FROM tree_meta WHERE key LIKE 'optimistic_vault:%'")
+        if (interruptedVaults.isNotEmpty()) {
+            PikoLog.i(
+                TAG,
+                "Clearing ${interruptedVaults.size} interrupted optimistic vault projection(s) on startup (acct=$acctSlot)",
+            )
+            mutate {
+                for (folder in interruptedVaults) clearVault(folder)
+                db.execute("DELETE FROM tree_meta WHERE key LIKE 'optimistic_vault:%'")
+            }
         }
         if (meta("aggregate_version") != "2") {
             rebuildAll = true
             db.transaction { rebuildAggregates() }
         }
         runCatching { db.query("PRAGMA wal_checkpoint(TRUNCATE)").use { while (it.next()) Unit } }
+            .onFailure { err -> PikoLog.w(TAG, "Startup WAL checkpoint (TRUNCATE) failed (acct=$acctSlot)", err) }
     }
 
     private fun scalar(sql: String, args: List<Any?> = emptyList()): String? = db.scalarString(sql, args)
@@ -872,6 +894,7 @@ internal class SqliteTreeStore(
         candidates.clear()
         clearCandidateContentCache()
         runCatching { db.query("PRAGMA wal_checkpoint(PASSIVE)").use { while (it.next()) Unit } }
+            .onFailure { err -> PikoLog.w(TAG, "Post-commit WAL checkpoint (PASSIVE) failed (acct=${logAccountSlot(ownerAccount)})", err) }
         return changed
     }
 

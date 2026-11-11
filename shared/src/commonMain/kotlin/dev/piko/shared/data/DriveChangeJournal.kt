@@ -9,7 +9,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import io.github.nihildigit.pikpak.FileStat
+import io.github.nihildigit.pikpak.InstantContentUnavailableException
 import io.github.nihildigit.pikpak.ResolvedFile
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.channels.BufferOverflow
@@ -350,6 +352,7 @@ class DriveChangeJournal internal constructor(
                 }
                 val resultLock = Mutex()
                 var missing = 0
+                var recreateFailure: Throwable? = null
                 if (change.recreateOnRevert.isNotEmpty()) {
                     coroutineScope {
                         val folderSlots = Semaphore(12)
@@ -381,8 +384,14 @@ class DriveChangeJournal internal constructor(
                                                             restored[entry.id] = entry.toFileStat(folderId).copy(id = id)
                                                         }
                                                     }
-                                                    .onFailure {
-                                                        resultLock.withLock { missing++ }
+                                                    .onFailure { err ->
+                                                        resultLock.withLock {
+                                                            if (err is InstantContentUnavailableException) {
+                                                                missing++
+                                                            } else if (recreateFailure == null) {
+                                                                recreateFailure = err
+                                                            }
+                                                        }
                                                     }
                                             }
                                         }
@@ -410,6 +419,7 @@ class DriveChangeJournal internal constructor(
                         }.awaitAll()
                     }
                 }
+                recreateFailure?.let { throw it }
                 check(missing == 0) { tr("$missing 个文件在云端不可用，已保留在归档中", "${enCount(missing, "file", "files")} unavailable in the cloud; kept in archive", "$missing ファイルはクラウドで利用できないため、アーカイブに保持しました", "파일 ${missing}개를 클라우드에서 사용할 수 없어 보관 상태로 유지했습니다", "$missing 個檔案在雲端無法使用，已保留於歸檔中") }
                 val standaloneReverts = change.reverts.filterKeys { it !in change.untrashByFolder }
                 if (standaloneReverts.isNotEmpty()) {
@@ -439,10 +449,28 @@ class DriveChangeJournal internal constructor(
                 }
             }
         }
-        val kind = change::class.simpleName
+        val desc = describeChange(change)
+        val progress = state.value.undo[change.id]
+        val progressSuffix = buildList {
+            if ((progress?.completedRenameSteps ?: 0) > 0) add("completedRenameSteps=${progress?.completedRenameSteps}")
+            if ((progress?.completedTrashItems ?: 0) > 0) add("completedTrashItems=${progress?.completedTrashItems}")
+        }.joinToString(", ").let { if (it.isEmpty()) "" else " ($it)" }
         // 撤销是反向再做一次；已完成的改动经仓库通知，重命名按目录合并，半途失败也会通知。
-        result.onSuccess { PikoLog.i(TAG, "已撤销：$kind") }.logFailure(TAG, "撤销失败：$kind")
+        result.onSuccess { PikoLog.i(TAG, "Undo completed: $desc") }
+            .logFailure(TAG, "Undo failed: $desc$progressSuffix")
         return result
+    }
+
+    private fun describeChange(change: Change): String = when (change) {
+        is Change.Move -> "Move(id=${change.id}, items=${change.from.size}, target=${logFolder(change.targetId)})"
+        is Change.Trash -> "Trash(id=${change.id}, items=${change.ids.size})"
+        is Change.Rename -> "Rename(id=${change.id}, steps=${change.renames.size})"
+        is Change.Vault -> {
+            val folders = (change.reverts.keys + change.untrashByFolder.keys + change.recreateOnRevert.keys).size
+            val recreate = change.recreateOnRevert.values.sumOf { it.size }
+            val untrash = change.untrashOnRevert.size + change.untrashByFolder.values.sumOf { it.size }
+            "Vault(id=${change.id}, folders=$folders, recreate=$recreate, untrash=$untrash)"
+        }
     }
 
     private companion object {

@@ -1,5 +1,7 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -12,6 +14,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlin.time.Clock
@@ -112,7 +115,10 @@ class PinnedTabs(
         state.value = AccountState(account, ready = cache == null || account.isNullOrEmpty())
         if (cache == null || account.isNullOrEmpty()) return
         scope.launch {
-            val stored = runCatching { cache.read(keyOf(account))?.let(::decode) }.getOrNull().orEmpty()
+            val raw = runSuspendCatching { cache.read(keyOf(account)) }
+                .logFailure(TAG, "Failed to read pinned tabs cache (acct=${logAccountSlot(account)})")
+                .getOrNull()
+            val stored = raw?.let(::decode).orEmpty()
             state.update { current ->
                 if (current.account != account) current
                 else current.copy(ready = true, records = union(stored, current.records))
@@ -127,7 +133,10 @@ class PinnedTabs(
         pendingSave = scope.launch {
             delay(saveDelayMillis)
             val snapshot = state.value
-            if (snapshot.account == owner) cache.write(keyOf(owner), encode(snapshot.records))
+            if (snapshot.account == owner) {
+                runSuspendCatching { cache.write(keyOf(owner), encode(snapshot.records)) }
+                    .logFailure(TAG, "Failed to persist pinned tabs (acct=${logAccountSlot(owner)})")
+            }
         }
     }
 
@@ -139,12 +148,16 @@ class PinnedTabs(
         val cache = store ?: return
         val snapshot = state.value
         val owner = snapshot.account ?: return
-        scope.launch { cache.write(keyOf(owner), encode(snapshot.records)) }
+        scope.launch {
+            runSuspendCatching { cache.write(keyOf(owner), encode(snapshot.records)) }
+                .logFailure(TAG, "Failed to flush pinned tabs on account switch (acct=${logAccountSlot(owner)})")
+        }
     }
 
     private fun keyOf(account: String) = "pinned-tabs-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
 
     companion object {
+        private const val TAG = "PinnedTabs"
         private val UNSAFE_KEY_CHARS = Regex("""[^A-Za-z0-9._@-]""")
         private val json = Json { ignoreUnknownKeys = true }
         private val serializer = ListSerializer(PinnedTabRecord.serializer())
@@ -152,6 +165,12 @@ class PinnedTabs(
         fun encode(records: Map<String, PinnedTabRecord>): String = json.encodeToString(serializer, records.values.sortedBy { it.pinId })
         fun decode(text: String): Map<String, PinnedTabRecord>? = runCatching {
             json.decodeFromString(serializer, text).associateBy { it.pinId }
+        }.onFailure { err ->
+            PikoLog.w(
+                TAG,
+                "Corrupted pinned tabs JSON; ignoring snapshot (chars=${text.length}, error=${err::class.simpleName})",
+                err.takeIf { it !is SerializationException },
+            )
         }.getOrNull()
 
         fun union(a: Map<String, PinnedTabRecord>, b: Map<String, PinnedTabRecord>, nowMs: Long = now()): Map<String, PinnedTabRecord> {

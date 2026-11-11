@@ -3,6 +3,7 @@ package dev.piko.shared.data
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.upload.isUploading
 import io.github.nihildigit.pikpak.ArchiveListing
 import io.github.nihildigit.pikpak.DecompressProgress
@@ -81,19 +82,25 @@ class ArchiveRepository(private val clientManager: PikoClientProvider) {
                     val output = awaitDecompress(current, task.taskId)
                     try {
                         if (awaitTree(current, location.archiveId)) {
-                            PikoLog.i(TAG, "压缩包 ${location.archiveId} 已建出包内文件树：第 ${attempt + 1} 次解压，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
+                            PikoLog.i(
+                                TAG,
+                                "Archive tree built for archive=${location.archiveId} on attempt ${attempt + 1}/$PRIME_ATTEMPTS (elapsedMs=${started.elapsedNow().inWholeMilliseconds})",
+                            )
                             return@runSuspendCatching
                         }
-                        PikoLog.d(TAG, "压缩包 ${location.archiveId} 第 ${attempt + 1} 次解压后仍无文件树")
+                        PikoLog.d(TAG, "Archive tree still absent for archive=${location.archiveId} after attempt ${attempt + 1}/$PRIME_ATTEMPTS")
                     } finally {
                         withContext(NonCancellable) {
                             runSuspendCatching { current.batchDelete(listOf(output)) }
-                                .logFailure(TAG, "删除建树用的解压副本 $output 失败，留在 Piko-Temp 里")
+                                .logFailure(TAG, "Failed to delete temporary prime output $output in ${logFolder(scratchId)}")
                         }
                     }
                 }
                 error(tr("服务端无法读取压缩包内容", "Server could not read archive contents", "サーバーで圧縮ファイルの内容を読み取れませんでした", "서버에서 압축 파일 내용을 읽지 못했습니다", "伺服器無法讀取壓縮檔內容"))
-            }.logFailure(TAG, "为压缩包 ${location.archiveId} 建包内文件树失败，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
+            }.logFailure(
+                TAG,
+                "Failed to build archive tree for archive=${location.archiveId} (scratch=${logFolder(scratchId)}, elapsedMs=${started.elapsedNow().inWholeMilliseconds})",
+            )
         }
 
     private suspend fun awaitDecompress(owner: PikPakClient, taskId: String): String {
@@ -127,8 +134,8 @@ class ArchiveRepository(private val clientManager: PikoClientProvider) {
      */
     suspend fun failureCause(taskId: String): String? = withContext(Dispatchers.Default) {
         runSuspendCatching { client.getTask(taskId).params["media_center_result"] }
-            .onSuccess { PikoLog.d(TAG, "解压任务 $taskId 的失败原因：${it ?: "无"}") }
-            .logFailure(TAG, "查询解压任务 $taskId 的失败原因失败")
+            .onSuccess { PikoLog.d(TAG, "Decompress task $taskId failure cause: ${it ?: "none"}") }
+            .logFailure(TAG, "Failed to query failure cause for decompress task $taskId")
             .getOrNull()?.takeIf { it.isNotEmpty() }
     }
 

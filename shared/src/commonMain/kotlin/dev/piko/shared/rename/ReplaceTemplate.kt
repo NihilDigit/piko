@@ -160,8 +160,8 @@ internal val DATE_TOKENS = listOf(
 )
 
 /**
- * 月份与星期的名称，PowerRename 按系统区域格式化。Piko 的界面只有中文，这里写死 Windows 中文区域的写法：
- * MMMM 为「七月」、MMM 为「7月」、DDDD 为「星期三」、DDD 为「周三」。AM/PM 在 PowerRename 里本来就不随区域。
+ * 月份与星期的名称，PowerRename 按系统区域格式化；此处固定采用中文日历写法（MMMM 为「七月」、MMM 为「7月」、
+ * DDDD 为「星期三」、DDD 为「周三」），使改名结果不随界面语言（PikoLocale）或系统区域漂移。AM/PM 在 PowerRename 里本来就不随区域。
  */
 private fun formatDate(token: String, time: LocalDateTime): String {
     val hour12 = (time.hour % 12).let { if (it == 0) 12 else it }

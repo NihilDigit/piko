@@ -2,6 +2,7 @@ package dev.piko.shared.data
 
 import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.fileCategory
+import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -22,6 +23,7 @@ import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
@@ -254,21 +256,46 @@ internal class FolderContentMemory(
             try {
                 barrier?.join()
                 val recovered = failedSnapshots.value[newAccount]
+                val slot = logAccountSlot(newAccount)
                 val stored = recovered?.memory?.contents?.map { (id, files) ->
                     StoredFolder(id, files.map { StoredFile(it.name, it.category) })
                 } ?: runSuspendCatching {
                     cacheStore.readStream(keyOf(newAccount)) {
                         cacheStore.jsonCodec?.decode(serializer, it) ?: json.decodeFromString(serializer, it.readString())
                     }
+                }.onFailure { err ->
+                    if (err !is CancellationException) {
+                        PikoLog.w(
+                            TAG,
+                            "Corrupted cached folder contents for acct=$slot; ignoring (${err::class.simpleName})",
+                            err.takeIf { it !is SerializationException },
+                        )
+                    }
                 }.getOrNull()
                 val storedVaulted = recovered?.vaulted?.toList() ?: runSuspendCatching {
                     cacheStore.readStream(vaultKeyOf(newAccount)) {
                         cacheStore.jsonCodec?.decode(vaultSerializer, it) ?: json.decodeFromString(vaultSerializer, it.readString())
                     }
+                }.onFailure { err ->
+                    if (err !is CancellationException) {
+                        PikoLog.w(
+                            TAG,
+                            "Corrupted cached vaulted-folder list for acct=$slot; ignoring (${err::class.simpleName})",
+                            err.takeIf { it !is SerializationException },
+                        )
+                    }
                 }.getOrNull()
                 val storedCovers = recovered?.covers ?: runSuspendCatching {
                     cacheStore.readStream(coverKeyOf(newAccount)) {
                         cacheStore.jsonCodec?.decode(coverSerializer, it) ?: json.decodeFromString(coverSerializer, it.readString())
+                    }
+                }.onFailure { err ->
+                    if (err !is CancellationException) {
+                        PikoLog.w(
+                            TAG,
+                            "Corrupted cached vault covers for acct=$slot; ignoring (${err::class.simpleName})",
+                            err.takeIf { it !is SerializationException },
+                        )
                     }
                 }.getOrNull()
                 val loaded = stored.orEmpty().takeLast(MAX_SAVED_FOLDERS).associate { folder ->
@@ -303,9 +330,12 @@ internal class FolderContentMemory(
                         )
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                session.loaded.completeExceptionally(cancelled)
+                throw cancelled
             } catch (failure: Throwable) {
                 session.loaded.completeExceptionally(failure)
-                throw failure
+                PikoLog.w(TAG, "Failed to load folder content memory for acct=${logAccountSlot(newAccount)}", failure)
             } finally {
                 if (session.loaded.complete(Unit)) {
                     val version = session.snapshot.value.version
@@ -338,7 +368,7 @@ internal class FolderContentMemory(
                 throw cancelled
             } catch (failure: Exception) {
                 failedSnapshots.update { it + (session.owner to session.snapshot.value.value) }
-                dev.piko.shared.log.PikoLog.w("FolderContentMemory", "保存旧账号目录缓存失败", failure)
+                PikoLog.w(TAG, "Failed to flush folder content memory for previous account (acct=${logAccountSlot(session.owner)})", failure)
                 Result.failure(failure)
             } finally {
                 session.job.cancel()
@@ -363,6 +393,7 @@ internal class FolderContentMemory(
     private class StoredFile(@SerialName("n") val name: String, @SerialName("c") val category: FileCategory? = null)
 
     private companion object {
+        const val TAG = "FolderContentMemory"
         const val SAVED_FILES_PER_FOLDER = 40
         const val MAX_SAVED_FOLDERS = 2_000
         val UNSAFE_KEY_CHARS = Regex("""[^A-Za-z0-9._@-]""")

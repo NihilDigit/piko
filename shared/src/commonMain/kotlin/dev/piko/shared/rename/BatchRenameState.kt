@@ -11,8 +11,10 @@ import androidx.compose.runtime.setValue
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.naming.av.hasAvCode
 import dev.piko.shared.naming.av.matchAvFolder
 import dev.piko.shared.naming.parseMediaName
@@ -39,6 +41,9 @@ import kotlinx.coroutines.launch
  *
  * [tree] 不为 null 时是按番号规范命名一个文件夹（[CanonicalTreeScan] 扫出的整棵树）：规则固定为按番号规范命名，
  * 不给查找替换，免得与算好的规范名叠在一起改出意外的结果；用户只取消勾选或逐项改新名称（[setOverride]）。
+ *
+ * 线程契约：[scope] 必须绑定单线程主调度器（`Dispatchers.Main`），因为 [updateUseMetaTubeTitles] 的进度回调与收尾协程
+ * 直接读写非同步容器与 Compose `mutableStateOf` 状态。
  */
 class BatchRenameState(
     private val driveRepo: PikoDriveRepository,
@@ -187,7 +192,7 @@ class BatchRenameState(
         private set
 
     /**
-     * 积木条末尾输入框里还没收成积木的文字。它照样参与预览，算作末尾的一块文字积木；
+     * 积木条插入点输入框里还没收成积木的文字。它照样参与预览，算作插在 [findInsertIndex] / [replaceInsertIndex] 处的一块文字积木；
      * 不逐字收成积木，是因为输入法组字时把输入框清空会打断组字。
      */
     var pendingFindText by mutableStateOf("")
@@ -337,7 +342,10 @@ class BatchRenameState(
     }
 
     private fun rememberMode(textMode: Boolean) {
-        scope.launch { preferences.setRenameRegexTextMode(textMode) }
+        scope.launch {
+            runSuspendCatching { preferences.setRenameRegexTextMode(textMode) }
+                .logFailure(TAG, "Failed to save rename textMode=$textMode")
+        }
     }
 
     /** 取出第 [number] 段（从 1 起）的查找积木在 [effectiveFindBlocks] 里的位置，界面据此给替换里的 ①② 配同一种颜色。 */
@@ -498,7 +506,7 @@ class BatchRenameState(
             for (parentId in sources.map { it.parentId }.distinct().filter { it !in names }) {
                 val listing = driveRepo.localRealChildrenIfClean(parentId)
                     ?: driveRepo.listAllFiles(parentId)
-                        .logFailure(TAG, "列出同目录名称失败：文件夹 $parentId")
+                        .logFailure(TAG, "Failed to list sibling names in ${logFolder(parentId)}")
                         .getOrElse {
                             siblingsFailed = true
                             return@launch
@@ -516,23 +524,47 @@ class BatchRenameState(
         if (!canRename) return
         val plan = plan
         // 一棵树没用查找替换，记下的会是一组空的选项
-        if (tree == null) scope.launch { BatchRenameMemory.save(preferences, memory.remember(effectiveOptions)) }
+        if (tree == null) {
+            scope.launch {
+                runSuspendCatching { BatchRenameMemory.save(preferences, memory.remember(effectiveOptions)) }
+                    .logFailure(TAG, "Failed to save batch rename memory")
+            }
+        }
         wasStopped = false
         phase = Phase.RUNNING
+        val affectedFolders = plan.steps.mapTo(HashSet()) { it.source.parentId }.size
+        val mode = when {
+            tree != null -> "canonical-tree"
+            else -> buildString {
+                append(if (textMode) "regex" else "blocks")
+                if (avNaming) append("+canonical-av")
+            }
+        }
         val started = TimeSource.Monotonic.markNow()
-        PikoLog.i(TAG, "开始批量重命名：${plan.changeCount} 项，${plan.steps.size} 步（含经临时名称的 ${plan.steps.size - plan.changeCount} 步），" +
-            "${sources.map { it.parentId }.distinct().size} 个目录，${if (textMode) "正则文本" else "积木"}模式${if (avNaming) "，按番号规范命名" else ""}")
+        PikoLog.i(
+            TAG,
+            "Batch rename started: items=${plan.changeCount}/${sources.size}, steps=${plan.steps.size}, " +
+                "swaps=${plan.steps.size - plan.changeCount}, folders=$affectedFolders, mode=$mode",
+        )
         job = scope.launch {
             try {
                 run.execute(plan)
             } finally {
-                val touched = sources.mapTo(HashSet()) { it.parentId }
-                if (wasStopped || run.failures.isNotEmpty() || run.unconfirmed.isNotEmpty()) {
-                    driveRepo.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(touched))
-                } else {
-                    driveRepo.notifyFoldersRefreshed(touched)
+                val touched = plan.steps.mapTo(HashSet()) { it.source.parentId }
+                if (touched.isNotEmpty()) {
+                    if (wasStopped || run.failures.isNotEmpty() || run.unconfirmed.isNotEmpty()) {
+                        driveRepo.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(touched))
+                    } else {
+                        driveRepo.notifyFoldersRefreshed(touched)
+                    }
                 }
-                PikoLog.i(TAG, "批量重命名结束：${summary()}，成功 ${run.renamed.size} 步，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
+                val succeededCount = processed - failures.size
+                PikoLog.i(
+                    TAG,
+                    "Batch rename finished: succeeded=$succeededCount/${plan.changeCount}, failed=${failures.size}, " +
+                        "unconfirmed=${run.unconfirmed.size}, steps=${run.renamed.size}, swaps=${run.swapsExecuted}, " +
+                        "rolledBack=${run.rolledBack}, stopped=$wasStopped, elapsedMs=${started.elapsedNow().inWholeMilliseconds}",
+                )
                 phase = Phase.DONE
                 // 改成了的记进改动记录，提示带「撤销」；一项也没改成的只报结果
                 if (run.renamed.isNotEmpty()) {

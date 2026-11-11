@@ -53,6 +53,8 @@ class CjkFuzzyMatchTest {
         assertTrue(cjkMatches("進擊的巨人", "進撃"))
         assertTrue(cjkMatches("黒木華_観月ありさ_覚悟.mkv", "黑木华 观月 觉悟"))
         assertTrue(cjkMatches("発車オーライ_黒髪_駅伝.mp4", "发车 黑发 驿传"))
+        assertTrue(cjkMatches("鞏固.mp4", "巩固"))
+        assertTrue(cjkMatches("貰い泣き.mp4", "贳"))
     }
 
     @Test

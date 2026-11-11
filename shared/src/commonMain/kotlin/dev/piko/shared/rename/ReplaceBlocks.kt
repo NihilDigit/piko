@@ -156,7 +156,7 @@ private fun placeholderBlock(content: String): ReplaceBlock? {
     return ReplaceBlock.Counter(start = number(START) ?: 0, increment = number(INCREMENT) ?: 1, padding = number(PADDING) ?: 0)
 }
 
-/** 一块替换积木的中文说明。 */
+/** 一块替换积木的本地化说明（随当前界面语言切换）。 */
 fun ReplaceBlock.describe(): String = when (this) {
     is ReplaceBlock.Piece -> if (number == 0) tr("匹配内容", "Matched text", "一致した文字列", "일치한 텍스트", "符合的內容") else tr("片段", "Capture", "キャプチャ", "캡처", "片段") + circled(number)
     is ReplaceBlock.Text -> "「$text」"

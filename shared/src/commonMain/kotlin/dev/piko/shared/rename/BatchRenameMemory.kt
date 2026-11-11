@@ -1,6 +1,7 @@
 package dev.piko.shared.rename
 
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.shared.log.PikoLog
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -26,13 +27,16 @@ data class BatchRenameMemory(
     )
 
     companion object {
+        private const val TAG = "BatchRename"
         const val MAX_RECENT = 10
 
         // 内容损坏或字段改过时退回默认值，不让一份坏数据挡住重命名
         suspend fun load(preferences: PikoUserPreferences): BatchRenameMemory {
             val serialized = preferences.batchRenameFlow.first()
             if (serialized.isBlank()) return BatchRenameMemory()
-            return runCatching { json.decodeFromString(serializer(), serialized) }.getOrDefault(BatchRenameMemory())
+            return runCatching { json.decodeFromString(serializer(), serialized) }
+                .onFailure { PikoLog.w(TAG, "Corrupted batch rename memory; resetting to defaults", it) }
+                .getOrDefault(BatchRenameMemory())
         }
 
         suspend fun save(preferences: PikoUserPreferences, memory: BatchRenameMemory) {

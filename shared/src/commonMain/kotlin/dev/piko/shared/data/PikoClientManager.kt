@@ -140,11 +140,14 @@ class PikoClientManager(
             val saved = sessionStore.loadAccounts()
             _accounts.value = saved
             val account = saved.current?.takeIf { it.isNotBlank() } ?: run {
-                PikoLog.i(TAG, "启动：没有上次的账号，进登录页，已保存 ${saved.accounts.size} 个账号")
+                PikoLog.i(TAG, "Startup: no active saved account; showing sign-in (savedAccounts=${saved.accounts.size})")
                 return null
             }
             val credentials = credentialsOf(account)
-            PikoLog.i(TAG, "启动：恢复上次的账号，${credentialState(account, credentials?.password != null)}，已保存 ${saved.accounts.size} 个账号")
+            PikoLog.i(
+                TAG,
+                "Startup: restoring previous account (acct=${logAccountSlot(account)}, ${credentialState(account, credentials?.password != null)}, savedAccounts=${saved.accounts.size})",
+            )
             val client = clientFor(account, credentials?.password)
             publishCurrentClient(client)?.takeIf { it !== client }?.close()
             return client
@@ -154,7 +157,7 @@ class PikoClientManager(
     }
 
     private suspend fun validateRestoredClient(client: PikPakClient) {
-        val failure = tryLogin(client, "恢复会话")
+        val failure = tryLogin(client, "restore session")
         switchLock.withLock {
             // 恢复期间可能已经切号或退出，旧鉴权结果不能影响新账号。
             if (_currentClient.value !== client) return
@@ -173,24 +176,31 @@ class PikoClientManager(
 
     suspend fun login(account: String, passwordSupplier: suspend () -> String): Result<PikPakClient> =
         runSuspendCatching {
+            val slot = logAccountSlot(account)
             val password = passwordSupplier()
             val client = clientFor(account, password)
             val started = TimeSource.Monotonic.markNow()
-            PikoLog.i(TAG, "密码登录")
+            PikoLog.i(TAG, "Password sign-in started (acct=$slot)")
             try {
                 client.login()
-                PikoLog.i(TAG, "密码登录成功，用时 ${started.elapsedNow().inWholeMilliseconds} ms")
                 sessionStore.saveCredentials(account, password)
                 switchLock.withLock { adopt(client) }
+                PikoLog.i(TAG, "Password sign-in succeeded (acct=$slot, elapsedMs=${started.elapsedNow().inWholeMilliseconds})")
                 client
             } catch (e: Throwable) {
                 client.close()
                 throw e
             }
-        }.onFailure { PikoLog.w(TAG, "密码登录失败，${describeAuthError(it)}", it) }
+        }.onFailure { err ->
+            if (err !is CancellationException) {
+                PikoLog.w(TAG, "Password sign-in failed (acct=${logAccountSlot(account)}, ${describeAuthError(err)})", err)
+            }
+        }
 
     suspend fun loginWithToken(account: String, token: String, refreshToken: String = ""): Result<PikPakClient> =
         runSuspendCatching {
+            val slot = logAccountSlot(account)
+            val started = TimeSource.Monotonic.markNow()
             val now = currentTimeSeconds()
             sessionStore.save(
                 account,
@@ -202,17 +212,21 @@ class PikoClientManager(
                 ),
             )
             val client = clientFor(account)
-            PikoLog.i(TAG, "令牌登录，${if (refreshToken.isBlank()) "无" else "有"}刷新令牌")
+            PikoLog.i(TAG, "Token sign-in started (acct=$slot, hasRefreshToken=${refreshToken.isNotBlank()})")
             try {
                 client.login()
-                PikoLog.i(TAG, "令牌登录成功")
                 switchLock.withLock { adopt(client) }
+                PikoLog.i(TAG, "Token sign-in succeeded (acct=$slot, elapsedMs=${started.elapsedNow().inWholeMilliseconds})")
                 client
             } catch (e: Throwable) {
                 client.close()
                 throw e
             }
-        }.onFailure { PikoLog.w(TAG, "令牌登录失败，${describeAuthError(it)}", it) }
+        }.onFailure { err ->
+            if (err !is CancellationException) {
+                PikoLog.w(TAG, "Token sign-in failed (acct=${logAccountSlot(account)}, ${describeAuthError(err)})", err)
+            }
+        }
 
     /**
      * 切到已保存的 [account]。本地会话还有效时不发请求，当场换好；断网时照样切过去，后台等网络恢复，与启动时一样。
@@ -222,9 +236,9 @@ class PikoClientManager(
         switchLock.withLock {
             if (_currentClient.value?.account == account) return@withLock
             val credentials = credentialsOf(account)
-            PikoLog.i(TAG, "切换账号，${credentialState(account, credentials?.password != null)}")
+            PikoLog.i(TAG, "Switching account (acct=${logAccountSlot(account)}, ${credentialState(account, credentials?.password != null)})")
             val client = clientFor(account, credentials?.password)
-            val failure = tryLogin(client, "切换账号")
+            val failure = tryLogin(client, "switch account")
             if (failure is LoginFailure.Rejected) {
                 client.close()
                 markExpired(account)
@@ -266,7 +280,7 @@ class PikoClientManager(
     private fun startLogout(): Job = scope.launch {
         switchLock.withLock {
             val leaving = _currentClient.value ?: return@withLock
-            PikoLog.i(TAG, "退出登录")
+            PikoLog.i(TAG, "Signing out (acct=${logAccountSlot(leaving.account)})")
             reconnectJob?.cancel()
             // 先摘下、关掉 client 再清：界面不再拿它发请求；关掉之后它也不会在刷新令牌时把会话写回，
             // 先清后关则可能被这样写回
@@ -276,7 +290,7 @@ class PikoClientManager(
             val next = _accounts.value.accounts.sortedByDescending { it.usedAt }.firstNotNullOfOrNull { candidate ->
                 val credentials = credentialsOf(candidate.account)
                 val client = clientFor(candidate.account, credentials?.password)
-                when (val failure = tryLogin(client, "退出后切换账号")) {
+                when (val failure = tryLogin(client, "switch account after sign-out")) {
                     is LoginFailure.Rejected -> null.also {
                         client.close()
                         markExpired(candidate.account)
@@ -285,7 +299,7 @@ class PikoClientManager(
                 }
             }
             if (next == null) {
-                PikoLog.i(TAG, "没有可用的已保存账号，回登录页")
+                PikoLog.i(TAG, "No usable saved account remaining after sign-out; returning to sign-in")
                 return@withLock
             }
             val (client, failure) = next
@@ -298,7 +312,7 @@ class PikoClientManager(
     fun forget(account: String): Job = scope.launch {
         switchLock.withLock {
             if (_currentClient.value?.account == account) return@withLock
-            PikoLog.i(TAG, "移除已保存的账号")
+            PikoLog.i(TAG, "Removing saved account (acct=${logAccountSlot(account)})")
             forgetStored(account)
         }
     }
@@ -308,7 +322,7 @@ class PikoClientManager(
         runSuspendCatching {
             sessionStore.clearCredentials(account)
             sessionStore.clear(account)
-        }.logFailure(TAG, "清除账号凭据失败")
+        }.logFailure(TAG, "Failed to clear stored credentials (acct=${logAccountSlot(account)})")
         _expiredAccounts.update { it - account }
         if (expiredPrefill == account) expiredPrefill = ""
         editAccounts { it.without(account) }
@@ -324,7 +338,8 @@ class PikoClientManager(
             val next = edit(_accounts.value)
             if (next == _accounts.value) return@withLock
             _accounts.value = next
-            runSuspendCatching { sessionStore.saveAccounts(next) }.logFailure(TAG, "账号列表保存失败")
+            runSuspendCatching { sessionStore.saveAccounts(next) }
+                .logFailure(TAG, "Failed to persist saved accounts list (count=${next.accounts.size})")
         }
     }
 
@@ -355,12 +370,12 @@ class PikoClientManager(
             var attempt = 1
             while (_currentClient.value === client) {
                 delay(backoffMs)
-                when (val failure = tryLogin(client, "第 $attempt 次重连（等了 ${backoffMs / 1000} 秒）")) {
+                when (val failure = tryLogin(client, "reconnect attempt $attempt (waitedMs=$backoffMs)")) {
                     null -> return@launch
                     is LoginFailure.Transient -> backoffMs = (backoffMs * 2).coerceAtMost(RECONNECT_MAX_DELAY_MS)
                     is LoginFailure.Rejected -> {
                         // 网络恢复后才发现会话已不可用。这时回登录页是唯一出路
-                        PikoLog.w(TAG, "重连时会话被拒，回登录页")
+                        PikoLog.w(TAG, "Session rejected during reconnect (acct=${logAccountSlot(client.account)}); returning to sign-in")
                         if (_currentClient.compareAndSet(client, null)) {
                             client.close()
                             markExpired(client.account, returnsToLogin = true)
@@ -387,49 +402,56 @@ class PikoClientManager(
 
     private suspend fun credentialsOf(account: String): PikoCredentials? =
         runSuspendCatching { sessionStore.loadCredentials(account) }
-            .onFailure { PikoLog.w(TAG, "读取保存的密码失败，本次按没有密码处理", it) }
+            .onFailure { err ->
+                if (err !is CancellationException) {
+                    PikoLog.w(TAG, "Failed to load saved password (acct=${logAccountSlot(account)}); proceeding without password", err)
+                }
+            }
             .getOrNull()
 
     /** [step] 写进日志，说明这次登录因何而起：启动恢复、第几次重连。 */
     private suspend fun tryLogin(client: PikPakClient, step: String): LoginFailure? {
+        val slot = logAccountSlot(client.account)
         val started = TimeSource.Monotonic.markNow()
-        fun took() = "用时 ${started.elapsedNow().inWholeMilliseconds} ms"
+        fun took() = "elapsedMs=${started.elapsedNow().inWholeMilliseconds}"
         return try {
             client.login()
-            PikoLog.i(TAG, "$step：会话可用，${took()}")
+            PikoLog.i(TAG, "Auth check [$step]: session valid (acct=$slot, ${took()})")
             null
         } catch (e: CancellationException) {
             throw e
         } catch (e: PasswordRequiredException) {
-            PikoLog.w(TAG, "$step：会话失效且没有保存的密码，回登录页，${took()}", e)
+            PikoLog.w(TAG, "Auth check [$step]: session expired without saved password (acct=$slot, ${took()})", e)
             LoginFailure.Rejected(e)
         } catch (e: PikPakException) {
             // SDK 已经把 429 与 5xx 重试过一轮，到这里仍失败说明服务端暂时不可用，不是会话失效
             val status = e.httpStatus
             if (status != null && (status == 429 || status >= 500)) {
-                PikoLog.w(TAG, "$step：服务端暂时不可用，稍后重试，${describeAuthError(e)}，${took()}", e)
+                PikoLog.w(TAG, "Auth check [$step]: server temporarily unavailable; will retry (acct=$slot, ${describeAuthError(e)}, ${took()})", e)
                 LoginFailure.Transient(e)
             } else {
-                PikoLog.w(TAG, "$step：服务端拒绝，${describeAuthError(e)}，${took()}", e)
+                PikoLog.w(TAG, "Auth check [$step]: rejected by server (acct=$slot, ${describeAuthError(e)}, ${took()})", e)
                 LoginFailure.Rejected(e)
             }
         } catch (e: Throwable) {
-            PikoLog.w(TAG, "$step：网络出错，稍后重试，${describeAuthError(e)}，${took()}", e)
+            PikoLog.w(TAG, "Auth check [$step]: transport failure; will retry (acct=$slot, ${describeAuthError(e)}, ${took()})", e)
             LoginFailure.Transient(e)
         }
     }
 
     /** 登录前本地凭据的样子，不含令牌本身：会话在不在、还剩多久，有没有刷新令牌与保存的密码。 */
     private suspend fun credentialState(account: String, hasPassword: Boolean): String {
-        val session = runSuspendCatching { sessionStore.load(account) }.logFailure(TAG, "读取本地会话失败").getOrNull()
+        val session = runSuspendCatching { sessionStore.load(account) }
+            .logFailure(TAG, "Failed to load local session (acct=${logAccountSlot(account)})")
+            .getOrNull()
         val sessionText = if (session == null) {
-            "无本地会话"
+            "session=none"
         } else {
             val leftMinutes = (session.expiresAt - currentTimeSeconds()) / 60
-            val expiry = if (leftMinutes >= 0) "会话剩余 $leftMinutes 分钟" else "会话已过期 ${-leftMinutes} 分钟"
-            expiry + if (session.refreshToken.isBlank()) "，无刷新令牌" else "，有刷新令牌"
+            val expiry = if (leftMinutes >= 0) "sessionRemainingMin=$leftMinutes" else "sessionExpiredMin=${-leftMinutes}"
+            "$expiry, hasRefreshToken=${session.refreshToken.isNotBlank()}"
         }
-        return "$sessionText，${if (hasPassword) "有" else "无"}保存的密码"
+        return "$sessionText, hasSavedPassword=$hasPassword"
     }
 
     private sealed interface LoginFailure {
@@ -481,13 +503,25 @@ class PikoClientManager(
     }
 }
 
+/**
+ * 脱敏后的稳定短账号槽位标识（8 位十六进制 FNV-1a 摘要），用于关联多账号切换与落盘日志而不泄露邮箱或手机号。
+ */
+internal fun logAccountSlot(account: String?): String {
+    val normalized = account?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return "none"
+    var hash = 0x811c9dc5u
+    for (b in normalized.encodeToByteArray()) {
+        hash = (hash xor b.toUByte().toUInt()) * 0x01000193u
+    }
+    return hash.toString(16).padStart(8, '0')
+}
+
 /** 服务端的错误码与名称比异常文案有用：同一句「登录失败」背后是验证码、限流还是密码错，只看得到这里。 */
 private fun describeAuthError(error: Throwable): String = when (error) {
     is PikPakException -> buildString {
-        append("错误码 ${error.errorCode}（${error.errorMessage}）")
-        error.httpStatus?.let { append("，HTTP $it") }
-        if (error.isCaptchaRequired) append("，要求验证码")
-        error.errorDescription?.takeIf { it.isNotBlank() }?.let { append("，$it") }
+        append("code=${error.errorCode} (${error.errorMessage})")
+        error.httpStatus?.let { append(", http=$it") }
+        if (error.isCaptchaRequired) append(", captchaRequired=true")
+        error.errorDescription?.takeIf { it.isNotBlank() }?.let { append(", detail=$it") }
     }
-    else -> error::class.simpleName ?: "未知异常"
+    else -> error::class.simpleName ?: "unknown"
 }

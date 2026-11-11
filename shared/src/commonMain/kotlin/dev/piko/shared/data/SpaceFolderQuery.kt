@@ -7,7 +7,8 @@ import io.github.nihildigit.pikpak.FileStat
 
 /**
  * 空间分布查询：文件夹骨架与物化 `SubtreeStats` 直接取自内存 `State.sortProjection`（零 JSON 解码），
- * SQLite 模式下直接文件与子目录 Top-16 预览文件仅扫描原始数值/文本索引列，彻底避免反序列化数千份 `StoredTreeEntry`。
+ * SQLite 快速路径下直接文件与子目录 Top-24 预览块仅扫描原始数值/文本索引列（无乐观写叠加时），
+ * 有乐观写或内存树回退路径则解码子节点取 Top-16，彻底避免常规浏览反序列化数千份 `StoredTreeEntry`。
  */
 internal fun spaceFolderSnapshot(
     index: DriveTreeIndex,

@@ -157,9 +157,10 @@ private class BatchAnalyzer(inputs: List<MediaFileInput>) {
     private fun contentVideos() = items.filter { it.isVideoLike && it.secondary == null && it.discRoot == null }
 
     /**
-     * 字幕、外挂音轨、同名封面：名字以「视频名去掉扩展名 + .」开头即配上。多个视频都能配上时取名字最长的；
-     * 同名视频在不同目录时优先同目录。字幕不看目录，有的组把字幕放在 Subs/ 下；音轨与封面只认同目录，
-     * 否则原声 CD 的「01.flac」会挂到别处的「01.mkv」上。
+     * 按视频主干匹配外挂字幕、外挂音轨与同名封面：
+     * - 字幕与外挂音轨：主干等于视频主干，或以「视频主干 + .」开头（多视频同时命中时取主干最长的视频，同名视频跨目录时优先同目录；
+     *   字幕允许跨目录如 `Subs/`，外挂音轨仅限同目录以免原声 CD 的 `01.flac` 误挂到别处的 `01.mkv`）；
+     * - 封面图（[AttachmentKind.COVER]）：仅限同目录且去掉自身扩展名后与视频主干完全相等。
      */
     private fun attachByStem() {
         val byStem = contentVideos().groupBy { it.name.substringBeforeLast('.') }

@@ -1,5 +1,7 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -8,6 +10,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -53,7 +56,10 @@ class VaultTrees internal constructor(
         val cacheStore = store ?: return
         if (newAccount == null) return
         scope.launch {
-            val stored = cacheStore.read(keyOf(newAccount))?.let(::decode) ?: return@launch
+            val raw = runSuspendCatching { cacheStore.read(keyOf(newAccount)) }
+                .logFailure(TAG, "Failed to read vault trees cache (acct=${logAccountSlot(newAccount)})")
+                .getOrNull()
+            val stored = raw?.let(::decode) ?: return@launch
             if (account != newAccount) return@launch
             trees.update { union(stored, it) }
         }
@@ -67,7 +73,10 @@ class VaultTrees internal constructor(
             delay(saveDelayMillis)
             // 先取内容再核对账号，理由同 SourceLedger
             val snapshot = trees.value
-            if (account == owner) cacheStore.write(keyOf(owner), encode(snapshot))
+            if (account == owner) {
+                runSuspendCatching { cacheStore.write(keyOf(owner), encode(snapshot)) }
+                    .logFailure(TAG, "Failed to persist vault trees (acct=${logAccountSlot(owner)})")
+            }
         }
     }
 
@@ -80,12 +89,16 @@ class VaultTrees internal constructor(
         val cacheStore = store ?: return
         val owner = account ?: return
         val snapshot = trees.value
-        scope.launch { cacheStore.write(keyOf(owner), encode(snapshot)) }
+        scope.launch {
+            runSuspendCatching { cacheStore.write(keyOf(owner), encode(snapshot)) }
+                .logFailure(TAG, "Failed to flush vault trees on account switch (acct=${logAccountSlot(owner)})")
+        }
     }
 
     private fun keyOf(account: String) = "vault-trees-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
 
     companion object {
+        private const val TAG = "VaultTrees"
         private val UNSAFE_KEY_CHARS = Regex("""[^A-Za-z0-9._@-]""")
         private val json = Json { ignoreUnknownKeys = true }
         private val serializer = MapSerializer(String.serializer(), ListSerializer(String.serializer()))
@@ -93,7 +106,15 @@ class VaultTrees internal constructor(
         fun encode(trees: Map<String, Set<String>>): String = json.encodeToString(serializer, trees.mapValues { it.value.sorted() })
 
         fun decode(text: String): Map<String, Set<String>>? =
-            runCatching { json.decodeFromString(serializer, text).mapValues { it.value.toSet() } }.getOrNull()
+            runCatching { json.decodeFromString(serializer, text).mapValues { it.value.toSet() } }
+                .onFailure { err ->
+                    PikoLog.w(
+                        TAG,
+                        "Corrupted vault trees JSON; ignoring snapshot (chars=${text.length}, error=${err::class.simpleName})",
+                        err.takeIf { it !is SerializationException },
+                    )
+                }
+                .getOrNull()
 
         fun union(a: Map<String, Set<String>>, b: Map<String, Set<String>>): Map<String, Set<String>> =
             (a.keys + b.keys).associateWith { a[it].orEmpty() + b[it].orEmpty() }

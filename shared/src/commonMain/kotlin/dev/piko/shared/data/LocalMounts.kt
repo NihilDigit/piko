@@ -1,6 +1,8 @@
 package dev.piko.shared.data
 
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFolder
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
@@ -9,6 +11,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
@@ -96,10 +99,22 @@ class LocalMounts(
     private var cached: List<LocalMount>
         get() = state.value
         set(value) { state.value = value }
+    private companion object {
+        const val TAG = "LocalMounts"
+    }
+
     init {
         scope.launch {
             preferences?.localMountsFlow?.collect { raw ->
-                val next = runCatching { json.decodeFromString<List<LocalMount>>(raw.ifBlank { "[]" }) }.getOrDefault(emptyList())
+                val next = runCatching { json.decodeFromString<List<LocalMount>>(raw.ifBlank { "[]" }) }
+                    .onFailure { err ->
+                        PikoLog.w(
+                            TAG,
+                            "Corrupted local mounts preference; resetting mount list (chars=${raw.length}, error=${err::class.simpleName})",
+                            err.takeIf { it !is SerializationException },
+                        )
+                    }
+                    .getOrDefault(emptyList())
                 val old = cached
                 cached = next
                 changed((old + next).filter { it.account == account() }.mapTo(mutableSetOf()) { it.parentFolderId })
@@ -111,8 +126,15 @@ class LocalMounts(
 
     fun cachedRoots(parentId: String): List<FileStat> =
         cached.filter { it.account == account() && it.parentFolderId == parentId }.map(::toRootStat)
-    private suspend fun read(): List<LocalMount> = runCatching {
-        json.decodeFromString<List<LocalMount>>(preferences?.localMountsFlow?.first().orEmpty().ifBlank { "[]" })
+    private suspend fun read(): List<LocalMount> = runSuspendCatching {
+        val raw = preferences?.localMountsFlow?.first().orEmpty()
+        json.decodeFromString<List<LocalMount>>(raw.ifBlank { "[]" })
+    }.onFailure { err ->
+        PikoLog.w(
+            TAG,
+            "Failed to read local mounts preference; falling back to empty list (error=${err::class.simpleName})",
+            err.takeIf { it !is SerializationException },
+        )
     }.getOrDefault(emptyList())
 
     suspend fun all(): List<LocalMount> = read().also { cached = it }.filter { it.account == account() }
@@ -142,16 +164,21 @@ class LocalMounts(
         val entry = LocalMount(Uuid.random().toString(), owner, parentId, path, name, Clock.System.now().toEpochMilliseconds())
         val entries = currentEntries + entry
         check(owner == account())
-        requireNotNull(preferences).saveLocalMounts(json.encodeToString(entries))
+        runSuspendCatching { requireNotNull(preferences).saveLocalMounts(json.encodeToString(entries)) }
+            .onFailure { err -> PikoLog.w(TAG, "Failed to persist new local mount ${entry.mountId} (acct=${logAccountSlot(owner)}, error=${err::class.simpleName})") }
+            .getOrThrow()
         cached = entries
         changed(setOf(parentId))
+        PikoLog.i(TAG, "Mounted local folder (mount=${entry.mountId}, parent=${logFolder(parentId)}, acct=${logAccountSlot(owner)})")
         LocalMountOutcome(entry, alreadyMounted = false)
     }
     suspend fun pin(id: String, pinned: Boolean) = lock.withLock {
         val entry = find(id) ?: return@withLock
         val entries = read().map { if (it.account == entry.account && it.mountId == entry.mountId) it.copy(pinned = pinned) else it }
         if (entry.account != account()) return@withLock
-        preferences?.saveLocalMounts(json.encodeToString(entries))
+        runSuspendCatching { preferences?.saveLocalMounts(json.encodeToString(entries)) }
+            .onFailure { err -> PikoLog.w(TAG, "Failed to persist pin=$pinned for local mount ${entry.mountId} (error=${err::class.simpleName})") }
+            .getOrThrow()
         cached = entries
     }
     fun restoredStack(stack: List<PikoPathBreadcrumb>): List<PikoPathBreadcrumb> {
@@ -162,32 +189,37 @@ class LocalMounts(
         val entry = find(id) ?: return@withLock
         val entries = read().filterNot { it.mountId == entry.mountId && it.account == entry.account }
         if (entry.account != account()) return@withLock
-        preferences?.saveLocalMounts(json.encodeToString(entries))
+        runSuspendCatching { preferences?.saveLocalMounts(json.encodeToString(entries)) }
+            .onFailure { err -> PikoLog.w(TAG, "Failed to persist unmount for ${entry.mountId} (error=${err::class.simpleName})") }
+            .getOrThrow()
         cached = entries
         changed(setOf(entry.parentFolderId, entry.location.id))
+        PikoLog.i(TAG, "Unmounted local folder (mount=${entry.mountId}, parent=${logFolder(entry.parentFolderId)}, acct=${logAccountSlot(entry.account)})")
     }
     suspend fun list(id: String): List<FileStat> {
         val location = requireNotNull(LocalLocation.of(id))
         val mount = find(id) ?: error("本地文件夹已取消挂载")
-        return safeRead { requireNotNull(access).list(mount, location) }
+        return safeRead("list", mount.mountId) { requireNotNull(access).list(mount, location) }
     }
     suspend fun resolve(id: String, subtitle: Boolean = false): String? {
         val location = LocalLocation.of(id) ?: return null
         val mount = find(id) ?: error("本地文件夹已取消挂载")
         val reader = requireNotNull(access) { "本机文件夹不可访问" }
-        return safeRead { if (subtitle) reader.subtitlePath(mount, location) else reader.playbackPath(mount, location) }
+        val op = if (subtitle) "resolve-subtitle" else "resolve-playback"
+        return safeRead(op, mount.mountId) { if (subtitle) reader.subtitlePath(mount, location) else reader.playbackPath(mount, location) }
     }
     suspend fun probe(id: String): FileStat? {
         val location = LocalLocation.of(id) ?: return null
         val mount = find(id) ?: return null
-        return safeRead { access?.probe(mount, location) }
+        return safeRead("probe", mount.mountId) { access?.probe(mount, location) }
     }
-    /** 文件系统异常包含本机路径，跨出访问边界时只传递不含路径的可展示错误。 */
-    private suspend fun <T> safeRead(read: suspend () -> T): T = try {
+    /** 文件系统异常包含本机路径，跨出访问边界时只传递不含路径的可展示错误，诊断日志仅记录挂载槽位与异常类型。 */
+    private suspend fun <T> safeRead(op: String, mountId: String, read: suspend () -> T): T = try {
         read()
     } catch (cancel: kotlinx.coroutines.CancellationException) {
         throw cancel
-    } catch (_: Exception) {
+    } catch (err: Exception) {
+        PikoLog.w(TAG, "Local mount $op failed (mount=$mountId, error=${err::class.simpleName})")
         throw IllegalStateException(dev.piko.shared.i18n.tr("本机文件夹不可访问", "Local folder is unavailable", "ローカルフォルダーにアクセスできません", "로컬 폴더에 액세스할 수 없습니다", "本機資料夾無法存取"))
     }
     suspend fun pathTo(id: String): List<PikoPathBreadcrumb>? {
