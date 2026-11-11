@@ -1,5 +1,6 @@
 package dev.piko.shared.upload
 
+import dev.piko.shared.log.PikoLog
 import kotlinx.io.IOException
 import kotlinx.io.RawSource
 import kotlinx.io.buffered
@@ -49,7 +50,8 @@ class AppDirectoryUploadSources(
         return try {
             val metadata = SystemFileSystem.metadataOrNull(path)?.takeIf { it.isRegularFile } ?: return null
             UploadSourceInfo(path.name, metadata.size, fileAccess.modifiedAtMs(path.toString()))
-        } catch (_: IOException) {
+        } catch (e: IOException) {
+            PikoLog.w(TAG, "Failed to describe app upload source", e)
             null
         }
     }
@@ -85,7 +87,8 @@ class AppDirectoryUploadSources(
                     try {
                         relative(child.name)
                         guard(child)
-                    } catch (_: IllegalArgumentException) {
+                    } catch (e: IllegalArgumentException) {
+                        PikoLog.d(TAG, "Skipped disallowed entry during upload folder scan: ${e.message}")
                         continue
                     }
                     val metadata = SystemFileSystem.metadataOrNull(child) ?: continue
@@ -99,8 +102,9 @@ class AppDirectoryUploadSources(
                 }
             }
             UploadFolder(directory.name, files)
-        } catch (_: IOException) {
+        } catch (e: IOException) {
             // Do not return a silently truncated selection after a directory cannot be enumerated.
+            PikoLog.w(TAG, "Failed to enumerate app upload folder", e)
             null
         }
     }
@@ -129,6 +133,7 @@ class AppDirectoryUploadSources(
     private fun relativeToRoot(path: Path): String = text(path).removePrefix(text(root) + "/")
 
     private companion object {
+        const val TAG = "UploadSources"
         const val PREFIX = "piko-app-upload:"
         fun text(path: Path): String = path.toString().replace('\\', '/').trimEnd('/')
         fun within(path: Path, root: Path): Boolean = text(path).let { it == text(root) || it.startsWith(text(root) + "/") }

@@ -296,7 +296,12 @@ class DownloadPersistenceAndDedupSmokeTest {
             assertEquals(1, server.instantCreates.get())
 
             val resumeBytes = ByteArray(8 * 1024 * 1024) { (it % 251).toByte() }
-            val resumeServer = FakePikPakServer().apply { cdnDelayMs = 200 }
+            val remainingRange = CompletableDeferred<Unit>()
+            val resumeServer = FakePikPakServer().apply {
+                beforeCdnRange = { from ->
+                    if (from >= 4 * 1024 * 1024) remainingRange.await()
+                }
+            }
             val resumeTarget = resumeServer.addFolder("Dramas")
             resumeServer.addFile("owner.mkv", "owner", resumeBytes, "RESUME")
             val resumeDir = Files.createTempDirectory("piko-content-resume").toFile()
@@ -313,7 +318,7 @@ class DownloadPersistenceAndDedupSmokeTest {
                     Json.decodeFromString(serializer, prefs.downloadTasks).singleOrNull()?.let { it.leasedSource && it.status == DownloadStatus.PAUSED } == true
                 }
                 firstScope.cancel()
-                resumeServer.cdnDelayMs = 0
+                remainingRange.complete(Unit)
                 val media = PikoMediaRepository(provider)
                 val restarted = PikoDownloadCoordinator(provider, prefs, DirectoryStorage(resumeDir), scope, mediaRepository = media)
                 awaitUntil("task restored") { restarted.tasks.value[id]?.leasedSource == true }
@@ -326,7 +331,10 @@ class DownloadPersistenceAndDedupSmokeTest {
                 awaitUntil("resumed leased download completed", 20_000) { restarted.tasks.value[id]?.status == DownloadStatus.COMPLETED }
                 assertContentEquals(resumeBytes, resumeDir.resolve("episode.mkv").readBytes())
                 assertTrue(resumeServer.children(resumeTarget.id).isEmpty())
-            } finally { resumeDir.deleteRecursively() }
+            } finally {
+                remainingRange.complete(Unit)
+                resumeDir.deleteRecursively()
+            }
         } finally {
             firstScope.cancel()
             directory.deleteRecursively()

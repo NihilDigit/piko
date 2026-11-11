@@ -14,6 +14,7 @@ import dev.piko.shared.media.cache.fileCacheName
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.update.isNetworkFailure
 import io.github.nihildigit.pikpak.BandwidthLimiter
 import io.github.nihildigit.pikpak.PikPakClient
@@ -119,6 +120,13 @@ class PikoUploadCoordinator(
     val isRestoring = _isRestoring.asStateFlow()
     private val restoreCompleted = CompletableDeferred<Unit>()
     private val persistLock = Mutex()
+    /**
+     * 保护来源授权引用计数与准备队列内存状态（`stateMutex` 角色）。
+     *
+     * 不变量：主线程同步入口（[request]、[clearRequest]、[enqueue]、[pauseBatch]、[resumeBatch]、[removeBatch]、[releaseIfUnused]）
+     * 通过 `runBlocking` 获取这两把锁，因此持锁代码块内**严禁**执行任何挂起 I/O、网络调用或等待子协程，
+     * 且需要同时加锁时禁止反转顺序，以免卡死主线程或发生死锁。
+     */
     private val sourceLock = Mutex()
     private val preparationLock = Mutex()
     private val preparationJobs = mutableMapOf<String, Job>()
@@ -189,7 +197,7 @@ class PikoUploadCoordinator(
         if (selection.isEmpty || !scope.isActive) return UploadEnqueueResult.Rejected(tr("上传会话已结束，或未选择文件", "Upload session ended or no files selected", "アップロードセッションが終了したか、ファイルが選択されていません", "업로드 세션이 종료되었거나 파일을 선택하지 않았습니다", "上傳工作階段已結束，或未選取檔案"))
         val client = clientProvider.currentClient.value
         if (client == null) {
-            PikoLog.w(TAG, "上传入队失败：未登录")
+            PikoLog.w(TAG, "Upload enqueue rejected: not signed in")
             _messages.tryEmit(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入"))
             return UploadEnqueueResult.Rejected(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入"))
         }
@@ -209,7 +217,7 @@ class PikoUploadCoordinator(
             retainSources(keys)
             preparingSources[preparation.id] = keys
         } }
-        PikoLog.i(TAG, "上传准备 ${preparation.id}：接受 ${frozen.count} 项，目标 $parentId")
+        PikoLog.i(TAG, "Upload preparation ${preparation.id} accepted: items=${frozen.count}, target=${logFolder(parentId)}")
         val preparing = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             prepare(client, frozen, preparation)
         }
@@ -251,7 +259,9 @@ class PikoUploadCoordinator(
             work = work.copy(files = work.files + UploadPreparedFile(key, path, task.taskId)); publish()
         }
         suspend fun readFile(key: String, path: String, uri: String, parent: String, name: String): UploadTask? {
-            val task = runSuspendCatching { newTask(client.account, uri, parent, name) }.getOrNull()
+            val task = runSuspendCatching { newTask(client.account, uri, parent, name) }
+                .onFailure { PikoLog.w(TAG, "Upload preparation ${work.id}: failed to inspect source file (key=$key)", it) }
+                .getOrNull()
             currentCoroutineContext().ensureActive()
             if (task == null) issue(key, path, UploadPreparationIssueKind.SOURCE_UNREADABLE)
             return task
@@ -267,7 +277,9 @@ class PikoUploadCoordinator(
             }
             for (uri in selection.folders) {
                 val key = sourceKey(uri, true)
-                val folder = runSuspendCatching { sources.listFolder(uri) }.getOrNull()
+                val folder = runSuspendCatching { sources.listFolder(uri) }
+                    .onFailure { PikoLog.w(TAG, "Upload preparation ${work.id}: failed to enumerate source folder (key=$key)", it) }
+                    .getOrNull()
                 currentCoroutineContext().ensureActive()
                 if (folder == null) { issue(key, "", UploadPreparationIssueKind.SOURCE_UNREADABLE); continue }
                 title(key, folder.name)
@@ -294,7 +306,13 @@ class PikoUploadCoordinator(
                         if (attempted) {
                             val refused = error is PikPakException && error.httpStatus in setOf(400, 401, 403, 404, 409, 422)
                             issue(key, path, if (refused) UploadPreparationIssueKind.DIRECTORY_REFUSED else UploadPreparationIssueKind.DIRECTORY_UNCONFIRMED)
-                            PikoLog.w(TAG, "上传准备 ${work.id}：目录创建${if (refused) "被拒绝" else "待确认"}，父目录 $parent，${error::class.simpleName}")
+                            if (error !is CancellationException) {
+                                PikoLog.w(
+                                    TAG,
+                                    "Upload preparation ${work.id}: folder creation ${if (refused) "refused" else "unconfirmed"} in parent=${logFolder(parent)}, relDepth=${if (path.isEmpty()) 0 else path.count { it == '/' } + 1}",
+                                    error,
+                                )
+                            }
                             driveRepository.applyWriteChange(client.account, DriveChange.ContentsChanged(setOf(parent)))
                         }
                         if (error is CancellationException) throw error
@@ -313,7 +331,7 @@ class PikoUploadCoordinator(
         } catch (error: CancellationException) { stopped = true; throw error }
         catch (error: Exception) {
             unexpected = true
-            PikoLog.w(TAG, "上传准备 ${work.id}异常结束：${error::class.simpleName}")
+            PikoLog.w(TAG, "Upload preparation ${work.id} failed unexpectedly", error)
         }
         finally {
             val completion = when {
@@ -338,7 +356,7 @@ class PikoUploadCoordinator(
                 if (unexpected) add(tr("准备出错，请核对队列中的文件与目标文件夹", "Preparation failed. Check queued files and destination folder", "準備中にエラーが発生しました。キュー内のファイルと保存先フォルダーを確認してください", "준비 중 오류가 발생했습니다. 대기열의 파일과 대상 폴더를 확인해 주세요", "準備發生錯誤，請核對佇列中的檔案與目標資料夾"))
             }.joinToString("，")
             work = work.copy(result = UploadPreparationResult(completion, message, nowMs()))
-            PikoLog.i(TAG, "上传准备 ${work.id}结束：$completion，入队 ${work.files.size} 个文件，创建 ${work.directories.size} 个目录，${work.issues.size} 项问题")
+            PikoLog.i(TAG, "Upload preparation ${work.id} finished: status=$completion, queuedFiles=${work.files.size}, createdDirs=${work.directories.size}, issues=${work.issues.size}")
             if (completion == UploadPreparationCompletion.SUCCEEDED) _preparations.update { all -> all.filterNot { it.id == work.id } }
             else {
                 publish()
@@ -370,58 +388,105 @@ class PikoUploadCoordinator(
     private fun sourceKey(uri: String, folder: Boolean) = fileCacheName("$folder:$uri")
 
     /** 继续暂停的任务，或重试失败的任务：放回队尾，轮到它时从断点接着传。 */
-    fun resume(taskId: String) {
+    fun resume(taskId: String) = resumeInternal(taskId, log = true)
+
+    private fun resumeInternal(taskId: String, log: Boolean) {
+        var resumed = false
         update(taskId) {
             if (it.status == UploadStatus.PAUSED || it.status == UploadStatus.FAILED) {
+                resumed = true
                 it.copy(status = UploadStatus.QUEUED, errorMessage = null, queuedAtMs = nowMs())
             } else {
                 it
             }
         }
+        if (log && resumed) {
+            PikoLog.d(TAG, "Resumed upload task: task=$taskId")
+        }
     }
 
     fun pause(taskId: String) {
-        update(taskId) { if (it.status.isActive) it.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else it }
+        var paused = false
+        var snapshot: UploadTask? = null
+        update(taskId) {
+            if (it.status.isActive) {
+                paused = true
+                snapshot = it
+                it.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L)
+            } else {
+                it
+            }
+        }
+        if (paused) {
+            PikoLog.d(TAG, "Paused upload task: task=$taskId, prevStage=${snapshot?.status}, processed=${snapshot?.processedBytes}/${snapshot?.size} B")
+        }
         cancelRunning(taskId)
     }
 
     fun pauseBatch(batchId: String) {
+        var pausedCount = 0
         val ids = runBlocking { preparationLock.withLock {
             if (batchId in preparationJobs) pausedBatches += batchId
-            pauseBatchTasks(batchId)
+            val pair = pauseBatchTasks(batchId)
+            pausedCount = pair.second
+            pair.first
         } }
+        if (pausedCount > 0) {
+            PikoLog.i(TAG, "Paused upload batch: batch=$batchId, paused=$pausedCount")
+        }
         ids.forEach(::cancelRunning)
     }
 
-    private fun pauseBatchTasks(batchId: String): Set<String> {
+    private fun pauseBatchTasks(batchId: String): Pair<Set<String>, Int> {
         val ids = _tasks.value.values.filter { it.batchId == batchId }.mapTo(HashSet()) { it.taskId }
+        var pausedCount = 0
         _tasks.update { tasks -> tasks.mapValues { (id, task) ->
-            if (id in ids && task.status.isActive) task.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else task
+            if (id in ids && task.status.isActive) {
+                pausedCount++
+                task.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L)
+            } else task
         } }
-        return ids
+        return ids to pausedCount
     }
 
     fun resumeBatch(batchId: String) {
+        var resumedCount = 0
         runBlocking { preparationLock.withLock {
             pausedBatches.remove(batchId)
-            _tasks.value.values.filter { it.batchId == batchId }.forEach { resume(it.taskId) }
+            _tasks.value.values.filter { it.batchId == batchId }.forEach { task ->
+                if (task.status == UploadStatus.PAUSED || task.status == UploadStatus.FAILED) {
+                    resumedCount++
+                    resumeInternal(task.taskId, log = false)
+                }
+            }
         } }
+        if (resumedCount > 0) {
+            PikoLog.i(TAG, "Resumed upload batch: batch=$batchId, resumed=$resumedCount")
+        }
     }
 
     fun removeBatch(batchId: String) {
         val (preparing, ids) = runBlocking { preparationLock.withLock {
             pausedBatches.remove(batchId)
-            preparationJobs.remove(batchId) to pauseBatchTasks(batchId)
+            preparationJobs.remove(batchId) to pauseBatchTasks(batchId).first
         } }
+        PikoLog.i(TAG, "Removing upload batch: batch=$batchId, tasks=${ids.size}, wasPreparing=${preparing != null}")
         preparing?.cancel()
-        ids.forEach(::remove)
+        ids.forEach { removeInternal(it, log = false) }
     }
 
     /** 把所有未完成的任务转为暂停。Android 前台服务被系统叫停时用。 */
     fun pauseAll() {
+        var pausedCount = 0
         _tasks.update { tasks -> tasks.mapValues { (_, task) ->
-            if (task.status.isActive) task.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else task
+            if (task.status.isActive) {
+                pausedCount++
+                task.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L)
+            } else task
         } }
+        if (pausedCount > 0) {
+            PikoLog.i(TAG, "Paused all active uploads: count=$pausedCount")
+        }
         running.value.values.forEach { it.cancel() }
     }
 
@@ -429,20 +494,26 @@ class PikoUploadCoordinator(
      * 移除任务。未完成的一并放弃网盘里那个上传中的文件，否则它会一直挂在目录里；
      * 已完成的只删记录，文件留在网盘里。
      */
-    fun remove(taskId: String) {
+    fun remove(taskId: String) = removeInternal(taskId, log = true)
+
+    private fun removeInternal(taskId: String, log: Boolean) {
         val task = _tasks.value[taskId] ?: return
         val job = cancelRunning(taskId)
         _tasks.update { it - taskId }
         releaseIfUnused(task.sourceUri)
+        if (log) {
+            PikoLog.d(TAG, "Removed upload task: task=$taskId, status=${task.status}, remoteFile=${task.session?.fileId ?: task.fileId ?: "none"}")
+        }
         val session = task.session ?: return
         if (task.status == UploadStatus.COMPLETED) return
         scope.launch(Dispatchers.IO) {
             job?.join()
             val client = clientProvider.currentClient.value?.takeIf { it.account == task.account } ?: run {
-                PikoLog.d(TAG, "移除上传任务 ${task.taskId}：所属账号不在用，网盘里上传中的文件 ${session.fileId} 留着")
+                PikoLog.i(TAG, "Removed upload task $taskId while account is inactive; remote pending file ${session.fileId} left in ${logFolder(task.parentId)}")
                 return@launch
             }
-            runSuspendCatching { client.cancelUpload(session) }.logFailure(TAG, "移除上传任务 ${task.taskId}：放弃上传会话失败，文件 ${session.fileId}")
+            runSuspendCatching { client.cancelUpload(session) }
+                .logFailure(TAG, "Failed to cancel pending upload session on remove: task=$taskId, remoteFile=${session.fileId}")
             driveRepository.applyWriteChange(client.account, DriveChange.ContentsChanged(setOf(task.parentId)))
         }
     }
@@ -450,7 +521,14 @@ class PikoUploadCoordinator(
     /** 清掉当前账号全部已完成的记录。 */
     fun clearCompleted() {
         val account = clientProvider.currentClient.value?.account ?: return
-        _tasks.update { tasks -> tasks.filterValues { it.account != account || it.status != UploadStatus.COMPLETED } }
+        var cleared = 0
+        _tasks.update { tasks ->
+            cleared = tasks.values.count { it.account == account && it.status == UploadStatus.COMPLETED }
+            tasks.filterValues { it.account != account || it.status != UploadStatus.COMPLETED }
+        }
+        if (cleared > 0) {
+            PikoLog.d(TAG, "Cleared $cleared completed upload task(s)")
+        }
     }
 
     private fun newTask(account: String, uri: String, parentId: String, parentName: String): UploadTask? {
@@ -474,7 +552,7 @@ class PikoUploadCoordinator(
     private suspend fun restore() {
         val saved = runSuspendCatching {
             json.decodeFromString(taskListSerializer, preferences.loadUploadTasks())
-        }.logFailure(TAG, "读回上传任务表失败，按空表处理").getOrDefault(emptyList())
+        }.logFailure(TAG, "Failed to decode persisted upload tasks, starting with empty queue").getOrDefault(emptyList())
         if (saved.isEmpty()) return
         // 1.1.0 把凭据随任务表明文存着，读到的照原样用，随后第一次保存就把它们搬进机密存储、从任务表里抹掉
         val withCredentials = saved.map { task ->
@@ -491,8 +569,12 @@ class PikoUploadCoordinator(
                 else -> task.copy(processedBytes = 0L, speedBytesPerSec = 0L)
             }
         }
-        PikoLog.i(TAG, "恢复上传任务 ${restored.size} 个：未完成 ${restored.count { it.status != UploadStatus.COMPLETED }} 个，" +
-            "带会话可续传 ${withCredentials.count { it.session?.credentials != null }} 个，会话凭据缺失 ${withCredentials.count { it.session != null && it.session.credentials == null }} 个")
+        PikoLog.i(
+            TAG,
+            "Restored ${restored.size} upload task(s): incomplete=${restored.count { it.status != UploadStatus.COMPLETED }}, " +
+                "resumableSessions=${withCredentials.count { it.session?.credentials != null }}, " +
+                "missingSessionCredentials=${withCredentials.count { it.session != null && it.session.credentials == null }}",
+        )
         _tasks.update { current -> restored.associateBy { it.taskId } + current }
     }
 
@@ -516,7 +598,7 @@ class PikoUploadCoordinator(
                 saveCredentials(tasks)
                 val withoutCredentials = tasks.values.map { task -> task.copy(session = task.session?.withCredentials(null)) }
                 val serialized = json.encodeToString(taskListSerializer, withoutCredentials)
-                runSuspendCatching { preferences.saveUploadTasks(serialized) }.logFailure(TAG, "保存上传任务表失败")
+                runSuspendCatching { preferences.saveUploadTasks(serialized) }.logFailure(TAG, "Failed to save upload task table")
             }
         }
     }
@@ -531,18 +613,18 @@ class PikoUploadCoordinator(
             if (storedCredentials[taskId] == credentials) continue
             runSuspendCatching { preferences.saveUploadCredentials(taskId, json.encodeToString(OssCredentials.serializer(), credentials)) }
                 .onSuccess { storedCredentials += taskId to credentials }
-                .logFailure(TAG, "上传凭据未能保存")
+                .logFailure(TAG, "Failed to save upload session credentials for task=$taskId")
         }
         for (taskId in storedCredentials.keys - current.keys) {
             runSuspendCatching { preferences.clearUploadCredentials(taskId) }
                 .onSuccess { storedCredentials -= taskId }
-                .logFailure(TAG, "上传凭据未能清除")
+                .logFailure(TAG, "Failed to clear upload session credentials for task=$taskId")
         }
     }
 
     private suspend fun loadCredentials(taskId: String): OssCredentials? =
         runSuspendCatching { preferences.loadUploadCredentials(taskId)?.let { json.decodeFromString(OssCredentials.serializer(), it) } }
-            .logFailure(TAG, "上传凭据未能读取")
+            .logFailure(TAG, "Failed to load upload session credentials for task=$taskId")
             .getOrNull()
 
     /**
@@ -591,16 +673,38 @@ class PikoUploadCoordinator(
             }
         } catch (e: CancellationException) {
             // 暂停后立即继续会重新入队；旧 worker 的取消不能覆盖这次继续。
+            var autoPaused = false
+            var prevStage: UploadStatus? = null
+            var prevSize: Long? = null
             update(taskId) {
-                if (it.status == UploadStatus.HASHING || it.status == UploadStatus.UPLOADING)
-                    it.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L) else it
+                if (it.status == UploadStatus.HASHING || it.status == UploadStatus.UPLOADING) {
+                    autoPaused = true
+                    prevStage = it.status
+                    prevSize = it.size
+                    it.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L)
+                } else {
+                    it
+                }
+            }
+            if (autoPaused) {
+                PikoLog.i(
+                    TAG,
+                    "Upload task auto-paused on session cancellation: task=$taskId, prevStage=$prevStage, processed=${progress.value}/$prevSize B",
+                )
             }
             throw e
         } catch (e: Throwable) {
-            // 上传完成前网盘里还没有这个文件，用任务 ID 指代
+            // 分片会话建立前网盘尚无文件 ID，固定打本地 taskId，已有会话时一并附上远端 fileId
             val task = _tasks.value[taskId]
-            PikoLog.w(TAG, "上传失败：${logFile(taskId, task?.fileName.orEmpty())}，阶段 ${task?.status}，" +
-                "已处理 ${task?.processedBytes}/${task?.size} 字节${if (e is SourceUnavailableException) "，源文件读不出" else ""}", e)
+            val remoteRef = task?.session?.fileId?.let { ", remote=${logFile(it, task.fileName)}" }
+                ?: ", ext=${task?.fileName?.substringAfterLast('.', "")?.lowercase()?.ifBlank { "none" } ?: "none"}"
+            val currentBytes = progress.value.takeIf { it > 0L } ?: task?.processedBytes ?: 0L
+            PikoLog.w(
+                TAG,
+                "Upload failed: task=$taskId$remoteRef, stage=${task?.status}, " +
+                    "processed=$currentBytes/${task?.size} B${if (e is SourceUnavailableException) ", reason=source_unreadable" else ""}",
+                e,
+            )
             update(taskId) { it.copy(status = UploadStatus.FAILED, speedBytesPerSec = 0L, errorMessage = failureMessage(e)) }
         }
     }
@@ -610,60 +714,111 @@ class PikoUploadCoordinator(
         val started = TimeSource.Monotonic.markNow()
         val info = sources.describe(task.sourceUri) ?: throw SourceUnavailableException()
         if (info.size != task.size || info.lastModifiedMs != task.lastModifiedMs) {
-            // 文件改过：记下的 gcid 与已传的分片都属于旧内容
-            PikoLog.w(TAG, "上传 $taskId：源文件已改动（${task.size} → ${info.size} 字节），弃用已算的 gcid 与会话")
-            task.session?.let { abandon(client, it) }
+            // 文件改过：若此前已算过 gcid 或建过分片会话，它们都属于旧内容，必须作废
+            val hadCachedState = task.gcid != null || task.session != null
+            if (hadCachedState) {
+                PikoLog.w(
+                    TAG,
+                    "Upload $taskId: source file changed (size=${task.size}->${info.size}, mtime=${task.lastModifiedMs}->${info.lastModifiedMs}); " +
+                        "discarding cachedGcid=${task.gcid != null}, abandonedRemoteFile=${task.session?.fileId ?: "none"}",
+                )
+            } else {
+                PikoLog.i(
+                    TAG,
+                    "Upload $taskId: source metadata updated before hashing (size=${task.size}->${info.size}, mtime=${task.lastModifiedMs}->${info.lastModifiedMs})",
+                )
+            }
+            task.session?.let { abandon(client, taskId, it) }
             task = updated(taskId) {
                 it.copy(size = info.size, lastModifiedMs = info.lastModifiedMs, gcid = null, session = null, processedBytes = 0L)
             }
         }
 
+        var hashedThisRun = false
+        var hashMs = 0L
         val gcid = task.gcid ?: run {
+            hashedThisRun = true
+            val hashStarted = TimeSource.Monotonic.markNow()
             update(taskId) { it.copy(status = UploadStatus.HASHING, processedBytes = 0L) }
             progress.value = 0L
-            computeGcid(client, task, progress).also { gcid -> update(taskId) { it.copy(gcid = gcid) } }
+            computeGcid(client, task, progress).also { computed ->
+                hashMs = hashStarted.elapsedNow().inWholeMilliseconds
+                update(taskId) { it.copy(gcid = computed) }
+            }
         }
 
         // 凭据过期或没能从机密存储读回的会话只剩放弃一条路；OSS 以 403 拒绝时同理，再开一个会话重传一次
-        var session = task.session?.takeIf { it.canContinue() } ?: run {
+        var session = task.session?.takeIf { it.canContinue(taskId) } ?: run {
             task.session?.let {
-                PikoLog.i(TAG, "上传 $taskId：会话${if (it.credentials == null) "凭据缺失" else "凭据将过期"}，放弃已传分片，重开会话")
-                abandon(client, it)
+                val reason = if (it.credentials == null) "missing_credentials" else "credentials_expired_or_expiring"
+                PikoLog.i(TAG, "Upload $taskId: abandoning previous session (remoteFile=${it.fileId}, reason=$reason)")
+                abandon(client, taskId, it)
             }
-            startSession(client, taskId, task, gcid) ?: run {
-                PikoLog.i(TAG, "上传完成（秒传）：任务 $taskId，${task.size} 字节，历时 ${started.elapsedNow().inWholeMilliseconds} ms")
-                return
+            when (val startedSession = startSession(client, taskId, task, gcid)) {
+                is SessionStartResult.Instant -> {
+                    PikoLog.i(
+                        TAG,
+                        "Upload completed (instant): task=$taskId, remote=${logFile(startedSession.fileId, task.fileName)}, " +
+                            "size=${task.size} B, totalMs=${started.elapsedNow().inWholeMilliseconds}${if (hashedThisRun) ", hashMs=$hashMs" else ""}",
+                    )
+                    return
+                }
+                is SessionStartResult.Pending -> startedSession.session
             }
         }
-        if (session === task.session) PikoLog.d(TAG, "上传 $taskId：续用已有会话，网盘文件 ${session.fileId}")
+        if (session === task.session) {
+            PikoLog.d(TAG, "Upload $taskId: resuming existing multipart session (remote=${logFile(session.fileId, task.fileName)})")
+        }
+        val transmittedBytes = MutableStateFlow(0L)
+        var uploadStarted = TimeSource.Monotonic.markNow()
         var retried = false
         while (true) {
             // 进度归零：此前的数值是校验读过的字节数，continueUpload 随即报出 OSS 已收下的量
             progress.value = 0L
+            transmittedBytes.value = 0L
+            uploadStarted = TimeSource.Monotonic.markNow()
             update(taskId) { it.copy(status = UploadStatus.UPLOADING, session = session, processedBytes = 0L) }
             try {
                 withPartBuffer(session) {
                     client.continueUpload(
                         session,
-                        open = { offset -> ThrottledSource(sources.open(task.sourceUri, offset), limiter) },
+                        open = { offset ->
+                            ThrottledSource(sources.open(task.sourceUri, offset), limiter) { read ->
+                                transmittedBytes.update { it + read }
+                            }
+                        },
                         onProgress = { progress.value = it },
                     )
                 }
                 break
             } catch (e: PikPakException) {
                 if (e.httpStatus != 403 || retried) throw e
-                PikoLog.w(TAG, "OSS 拒绝上传凭据（403），换新会话重传", e)
+                PikoLog.w(TAG, "Upload $taskId: OSS rejected credentials with 403 for remoteFile=${session.fileId}, starting new session", e)
                 retried = true
-                abandon(client, session)
-                session = startSession(client, taskId, task, gcid) ?: run {
-                    PikoLog.i(TAG, "上传完成（重开会话时秒传）：任务 $taskId，${task.size} 字节")
-                    return
+                abandon(client, taskId, session)
+                session = when (val restarted = startSession(client, taskId, task, gcid)) {
+                    is SessionStartResult.Instant -> {
+                        PikoLog.i(
+                            TAG,
+                            "Upload completed (instant on session reopen): task=$taskId, remote=${logFile(restarted.fileId, task.fileName)}, " +
+                                "size=${task.size} B, totalMs=${started.elapsedNow().inWholeMilliseconds}",
+                        )
+                        return
+                    }
+                    is SessionStartResult.Pending -> restarted.session
                 }
             }
         }
-        val elapsed = started.elapsedNow().inWholeMilliseconds
-        PikoLog.i(TAG, "上传完成：任务 $taskId → 文件 ${session.fileId}，${task.size} 字节，历时 $elapsed ms" +
-            "（${task.size * 1000 / elapsed.coerceAtLeast(1) / 1024} KiB/s，含校验）")
+        val uploadMs = uploadStarted.elapsedNow().inWholeMilliseconds
+        val totalMs = started.elapsedNow().inWholeMilliseconds
+        val uploadedNow = transmittedBytes.value
+        val rateSummary = if (uploadedNow > 0L) "${uploadedNow * 1000L / uploadMs.coerceAtLeast(1L) / 1024L} KiB/s" else "all_parts_present"
+        PikoLog.i(
+            TAG,
+            "Upload completed: task=$taskId, remote=${logFile(session.fileId, task.fileName)}, " +
+                "size=${task.size} B, uploadedNow=$uploadedNow B, uploadMs=$uploadMs ($rateSummary), " +
+                "totalMs=$totalMs${if (hashedThisRun) ", hashMs=$hashMs" else ""}",
+        )
         update(taskId) {
             it.copy(
                 status = UploadStatus.COMPLETED,
@@ -675,8 +830,13 @@ class PikoUploadCoordinator(
         }
     }
 
-    /** 开一个上传会话。服务端认得这个 gcid 时直接完成，返回 null。 */
-    private suspend fun startSession(client: PikPakClient, taskId: String, task: UploadTask, gcid: String): UploadSession? {
+    private sealed interface SessionStartResult {
+        data class Instant(val fileId: String) : SessionStartResult
+        data class Pending(val session: UploadSession) : SessionStartResult
+    }
+
+    /** 开一个上传会话。服务端认得这个 gcid 时直接完成（秒传），否则落盘分片会话供后续传输。 */
+    private suspend fun startSession(client: PikPakClient, taskId: String, task: UploadTask, gcid: String): SessionStartResult {
         when (val start = client.startUpload(task.parentId, task.fileName, task.size, gcid)) {
             is UploadStart.Instant -> {
                 update(taskId) {
@@ -689,12 +849,12 @@ class PikoUploadCoordinator(
                         speedBytesPerSec = 0L,
                     )
                 }
-                return null
+                return SessionStartResult.Instant(start.fileId)
             }
             is UploadStart.Pending -> {
                 // 会话先落盘再开始传：这之后进程被杀，下次启动还能接上
                 update(taskId) { it.copy(session = start.session) }
-                return start.session
+                return SessionStartResult.Pending(start.session)
             }
         }
     }
@@ -707,7 +867,7 @@ class PikoUploadCoordinator(
         if (task.size > 0) {
             val cid = XunleiCid.of(task.size) { offset, length -> sources.readAt(task.sourceUri, offset, length) }
             client.gcidByCid(cid, task.size)?.let {
-                PikoLog.d(TAG, "上传 ${task.taskId}：CID 命中索引，免算整份 gcid")
+                PikoLog.d(TAG, "Upload ${task.taskId}: Xunlei CID matched global index, skipped full GCID scan")
                 return it
             }
         }
@@ -721,7 +881,7 @@ class PikoUploadCoordinator(
             }
         }
         return (if (task.size < 256L * 1024) hash() else hashers.withPermit { hash() })
-            .also { PikoLog.d(TAG, "上传 ${task.taskId}：整份计算 gcid，${task.size} 字节，历时 ${started.elapsedNow().inWholeMilliseconds} ms") }
+            .also { PikoLog.d(TAG, "Upload ${task.taskId}: computed full GCID for ${task.size} B in ${started.elapsedNow().inWholeMilliseconds} ms") }
     }
 
     private suspend fun <T> withPartBuffer(session: UploadSession, block: suspend () -> T): T {
@@ -742,24 +902,26 @@ class PikoUploadCoordinator(
             val stillNeeded = preparingSources.values.any { key in it } ||
                 (pending?.files.orEmpty() + pending?.folders.orEmpty()).any { sources.permissionKey(it) == key } ||
                 _tasks.value.values.any { it.status != UploadStatus.COMPLETED && sources.permissionKey(it.sourceUri) == key }
-            if (!stillNeeded) runCatching { sources.release(key) }.logFailure(TAG, "交还源文件读取授权失败")
+            if (!stillNeeded) runCatching { sources.release(key) }.logFailure(TAG, "Failed to release upload source permission")
         } }
     }
 
     private fun retainSources(keys: Set<String>) {
-        keys.forEach { key -> runCatching { sources.retain(key) }.onFailure { PikoLog.w(TAG, "保留来源读取授权失败：${it::class.simpleName}") } }
+        keys.forEach { key -> runCatching { sources.retain(key) }.onFailure { PikoLog.w(TAG, "Failed to retain upload source permission", it) } }
     }
 
     /** 放弃一个会话：尽力而为，失败只意味着网盘里多留一个上传中的文件。 */
-    private suspend fun abandon(client: PikPakClient, session: UploadSession) {
+    private suspend fun abandon(client: PikPakClient, taskId: String, session: UploadSession) {
         withContext(NonCancellable) {
-            runSuspendCatching { client.cancelUpload(session) }.logFailure(TAG, "放弃上传会话失败，网盘里留下上传中的文件 ${session.fileId}")
+            runSuspendCatching { client.cancelUpload(session) }
+                .logFailure(TAG, "Failed to cancel abandoned upload session: task=$taskId, remoteFile=${session.fileId}")
         }
     }
 
     /**
-     * 按固定间隔把进度与速度写进任务表，理由同下载调度器的 reportProgress。速度也照它按最近
-     * [SPEED_WINDOW_MS] 算：只看相邻两次采样的话，分片一块块发出去，读数在 0 与峰值之间来回跳。
+     * 按固定间隔把进度与速度写进任务表（与 [dev.piko.shared.download.PikoDownloadCoordinator] 的定时采样循环一致），
+     * 避免每次分片进度回调都触发任务表整表复制。速度按最近 [SPEED_WINDOW_MS] 滑动窗口计算：只看相邻两次采样的话，
+     * 分片一块块发出去，读数会在 0 与峰值之间来回跳。
      */
     private suspend fun reportProgress(taskId: String, progress: StateFlow<Long>) {
         val clock = TimeSource.Monotonic
@@ -795,9 +957,11 @@ class PikoUploadCoordinator(
         return _tasks.value[taskId] ?: throw CancellationException(tr("任务已移除", "Task removed", "タスクを削除しました", "작업을 삭제했습니다", "任務已移除"))
     }
 
-    private fun UploadSession.canContinue(): Boolean {
+    private fun UploadSession.canContinue(taskId: String): Boolean {
         if (credentials == null) return false
-        val expiresAt = runCatching { Instant.parse(expiration) }.getOrNull() ?: return true
+        val expiresAt = runCatching { Instant.parse(expiration) }
+            .onFailure { PikoLog.w(TAG, "Upload $taskId: invalid session expiration '$expiration', treating as expired", it) }
+            .getOrNull() ?: return false
         return Clock.System.now() <= expiresAt - EXPIRY_MARGIN
     }
 
@@ -826,10 +990,17 @@ class PikoUploadCoordinator(
      * 每次至多读 [CHUNK] 再取额度：按整个分片扣的话，一个分片的请求体会停顿好几秒，容易撞上 OSS 的超时。
      * readAtMostTo 是阻塞调用，没法挂起，只能 runBlocking 等额度；读文件本来就阻塞在这个线程上。
      */
-    private class ThrottledSource(private val inner: RawSource, private val limiter: BandwidthLimiter) : RawSource {
+    private class ThrottledSource(
+        private val inner: RawSource,
+        private val limiter: BandwidthLimiter,
+        private val onRead: (Long) -> Unit = {},
+    ) : RawSource {
         override fun readAtMostTo(sink: Buffer, byteCount: Long): Long {
             val read = inner.readAtMostTo(sink, minOf(byteCount, CHUNK))
-            if (read > 0 && limiter.bytesPerSecond != null) runBlocking { limiter.acquire(read) }
+            if (read > 0) {
+                onRead(read)
+                if (limiter.bytesPerSecond != null) runBlocking { limiter.acquire(read) }
+            }
             return read
         }
 

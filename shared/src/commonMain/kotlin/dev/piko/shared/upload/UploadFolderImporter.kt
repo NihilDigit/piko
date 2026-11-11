@@ -1,5 +1,6 @@
 package dev.piko.shared.upload
 
+import dev.piko.shared.log.PikoLog
 import kotlinx.io.Buffer
 import kotlinx.io.IOException
 import kotlinx.io.RawSource
@@ -88,7 +89,9 @@ class AppDirectoryUploadFolderImporter(managedDirectory: String, stagingDirector
             if (!published) {
                 // 清理失败不能盖掉真正的失败原因；这里只删自己分配的目录
                 runCatching { stagingGuard.uriFor(id); deleteTree(stage) }
+                    .onFailure { PikoLog.w(TAG, "Failed to clean up import staging directory", it) }
                 runCatching { guard.uriFor(relativeDirectory); deleteTree(Path(root, "imports/$id")) }
+                    .onFailure { PikoLog.w(TAG, "Failed to clean up aborted import target directory", it) }
             }
         }
     }
@@ -164,8 +167,9 @@ class AppDirectoryUploadFolderImporter(managedDirectory: String, stagingDirector
         try {
             SystemFileSystem.atomicMove(stage, target)
             return
-        } catch (_: IOException) {
+        } catch (e: IOException) {
             // 跨卷或平台不支持目录原子移动，走逐个文件
+            PikoLog.d(TAG, "Directory atomicMove unsupported, falling back to per-file move: ${e.message}")
         }
         SystemFileSystem.createDirectories(target)
         moveTree(stage, target)
@@ -187,6 +191,7 @@ class AppDirectoryUploadFolderImporter(managedDirectory: String, stagingDirector
     }
 
     private companion object {
+        const val TAG = "UploadImporter"
         const val CHUNK = 64L * 1024
         const val MAX_ENTRIES = 20_000
         const val MAX_DEPTH = 32

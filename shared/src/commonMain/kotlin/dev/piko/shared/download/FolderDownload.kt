@@ -5,6 +5,7 @@ import dev.piko.download.DownloadBatch
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.isPikoInternalFolder
+import dev.piko.shared.log.logFailure
 import dev.piko.shared.upload.isUploading
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.async
@@ -27,7 +28,9 @@ class DriveDownloadFolderSource(private val driveRepo: PikoDriveRepository) : Do
 
     // 会员的 downloadDaily 上限是 0，见 TransferAllowances
     override suspend fun remainingDailyDownload(): Long? =
-        driveRepo.getTransferQuota().getOrNull()?.account?.downloadDaily
+        driveRepo.getTransferQuota()
+            .logFailure("Download", "Failed to fetch transfer quota for folder download")
+            .getOrNull()?.account?.downloadDaily
             ?.takeIf { it.limitBytes > 0 }
             ?.let { (it.limitBytes - it.usedBytes).coerceAtLeast(0L) }
 }
@@ -65,7 +68,7 @@ internal suspend fun planFolderDownload(
     rootName: String = FileNameSanitizer.sanitizeFolderName(folder.name),
     onProgress: (files: Int, bytes: Long) -> Unit,
 ): List<PlannedFile> {
-    require(!dev.piko.shared.data.LocalLocation.isLocal(folder.id)) { "本地文件夹不支持云端下载" }
+    require(!dev.piko.shared.data.LocalLocation.isLocal(folder.id)) { "Local folder cannot be downloaded from cloud" }
     val planned = mutableListOf<PlannedFile>()
     var bytes = 0L
     var level = listOf(folder.id to rootName)

@@ -146,6 +146,9 @@ class FakePikPakServer(
     /** 每个 CDN 分段响应前的等待，用来让下载停在半途。 */
     @Volatile var cdnDelayMs = 0L
 
+    /** 按 Range 起始偏移挂起特定分段响应，确定性地把并发下载停在半途。 */
+    @Volatile var beforeCdnRange: (suspend (Int) -> Unit)? = null
+
     /** 列目录与查详情各自响应前的等待。线上一次约 0.2 到 0.5 秒，逐层遍历的先后由它显出来。 */
     @Volatile var apiDelayMs = 0L
 
@@ -673,9 +676,13 @@ class FakePikPakServer(
         val content = cdnContent[id] ?: return respond("", HttpStatusCode.NotFound)
         if (cdnDelayMs > 0) delay(cdnDelayMs)
         val range = request.headers[HttpHeaders.Range]
-        if (range == null) return respond(ByteReadChannel(content), HttpStatusCode.OK)
+        if (range == null) {
+            beforeCdnRange?.invoke(0)
+            return respond(ByteReadChannel(content), HttpStatusCode.OK)
+        }
         val (fromText, toText) = range.removePrefix("bytes=").split('-')
         val from = fromText.toInt()
+        beforeCdnRange?.invoke(from)
         val to = (toText.toIntOrNull() ?: content.lastIndex).coerceAtMost(content.lastIndex)
         return respond(
             content = ByteReadChannel(content.copyOfRange(from, to + 1)),
