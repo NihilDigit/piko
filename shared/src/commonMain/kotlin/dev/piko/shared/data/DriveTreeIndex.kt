@@ -4,7 +4,7 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.shared.util.PikoLock
 import dev.piko.shared.util.withPikoLock
 import dev.piko.data.repository.NaturalOrder
-import dev.piko.shared.search.cjkFuzzyScore
+import dev.piko.shared.search.prepareCjkQuery
 import io.github.nihildigit.pikpak.FileDetail
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -50,7 +50,10 @@ internal class DriveTreeIndex(
     fun close() = withPikoLock(lock) { closed = true; disk?.close() }
 
     private fun publishDisk() {
-        disk?.let { state.value = it.projection(); lastFullSyncAtMillis = it.syncedAt }
+        val store = disk ?: return
+        if (store.currentRevision == state.value.revision) return
+        state.value = store.projection()
+        lastFullSyncAtMillis = store.syncedAt
     }
 
     private class RetiredMigration : RuntimeException()
@@ -151,7 +154,41 @@ internal class DriveTreeIndex(
         val entryMetadata: Map<String, EntryMetadata> = emptyMap(),
         /** SQLite mode publishes only immutable folder projections, including their captured aggregates. */
         val sortProjection: SortContext? = null,
-    )
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is State) return false
+            if (revision != other.revision || complete != other.complete || lastUsageBytes != other.lastUsageBytes) return false
+            if (entries.size != other.entries.size ||
+                childrenByParent.size != other.childrenByParent.size ||
+                listedFolders.size != other.listedFolders.size ||
+                dirtyFolders.size != other.dirtyFolders.size ||
+                manifestsByFolder.size != other.manifestsByFolder.size ||
+                vaultEntriesByFolder.size != other.vaultEntriesByFolder.size ||
+                contentMetadata.size != other.contentMetadata.size ||
+                entryMetadata.size != other.entryMetadata.size
+            ) return false
+            return entries == other.entries &&
+                childrenByParent == other.childrenByParent &&
+                manifestsByFolder == other.manifestsByFolder &&
+                vaultEntriesByFolder == other.vaultEntriesByFolder &&
+                listedFolders == other.listedFolders &&
+                dirtyFolders == other.dirtyFolders &&
+                contentMetadata == other.contentMetadata &&
+                entryMetadata == other.entryMetadata &&
+                sortProjection == other.sortProjection
+        }
+
+        override fun hashCode(): Int {
+            var result = revision.hashCode()
+            result = 31 * result + complete.hashCode()
+            result = 31 * result + (lastUsageBytes?.hashCode() ?: 0)
+            result = 31 * result + entries.size
+            result = 31 * result + listedFolders.size
+            result = 31 * result + dirtyFolders.size
+            return result
+        }
+    }
 
     private var cachedSortContext: SortContext? = null
     private val canonicalizer = TreeCanonicalizer()
@@ -207,7 +244,9 @@ internal class DriveTreeIndex(
         withPikoLock(lock) {
             if (closed) return
             val current = state.value
-            val next = transform(current).copy(revision = current.revision)
+            val transformed = transform(current)
+            if (transformed === current) return
+            val next = if (transformed.revision == current.revision) transformed else transformed.copy(revision = current.revision)
             if (next != current) {
                 cachedSortContext = null
                 state.value = next.copy(revision = current.revision + 1)
@@ -224,25 +263,45 @@ internal class DriveTreeIndex(
         withPikoLock(lock) { if (closed) return; disk?.let { it.observeContent(key, metadata); publishDisk(); return } }
         val normalized = ContentKey.of(key.gcid, key.sizeBytes) ?: return
         update { current ->
-            val merged = current.contentMetadata[normalized]?.merge(metadata) ?: ContentMetadata().merge(metadata)
-            current.copy(contentMetadata = current.contentMetadata + (normalized to merged))
+            val prev = current.contentMetadata[normalized]
+            val merged = prev?.merge(metadata) ?: ContentMetadata().merge(metadata)
+            if (merged == prev || (prev == null && merged == ContentMetadata())) current
+            else current.copy(contentMetadata = current.contentMetadata + (normalized to merged))
         }
     }
 
     /** Temporary lease identities never enter the physical tree. Only original media supplies dimensions. */
     fun observeDetail(detail: FileDetail) {
-        val key = ContentKey.of(detail.hash, detail.sizeBytes) ?: return
-        val original = detail.medias.firstOrNull { it.isOrigin }?.video
-        val listed = ContentMetadata.of(FileStat(params = detail.params, mimeType = detail.mimeType))
-        observeContentMetadata(key, ContentMetadata(
-            durationMillis = original?.duration?.takeIf { it > 0 }?.let { it.coerceAtMost(Long.MAX_VALUE / 1000) * 1000 } ?: listed.durationMillis,
-            width = original?.width?.takeIf { it > 0 } ?: listed.width,
-            height = original?.height?.takeIf { it > 0 } ?: listed.height,
-            mimeType = listed.mimeType,
-            cid = listed.cid ?: detail.params["cid"],
-            qualityRank = if (original != null) 2 else 1,
-            transcodes = detail.extractTranscodeVariants(),
-        ))
+        val (key, metadata) = detail.toObservedContentMetadata() ?: return
+        observeContentMetadata(key, metadata)
+    }
+
+    fun observeDetails(details: Collection<FileDetail>) {
+        if (details.isEmpty()) return
+        val pairs = details.mapNotNull { it.toObservedContentMetadata() }
+        if (pairs.isEmpty()) return
+        withPikoLock(lock) {
+            if (closed) return
+            disk?.let {
+                it.observeContentBatch(pairs)
+                publishDisk()
+                return
+            }
+        }
+        update { current ->
+            var updatedMap: MutableMap<ContentKey, ContentMetadata>? = null
+            for ((key, incoming) in pairs) {
+                val baseMap = updatedMap ?: current.contentMetadata
+                val prev = baseMap[key]
+                val merged = prev?.merge(incoming) ?: ContentMetadata().merge(incoming)
+                if (merged != prev && !(prev == null && merged == ContentMetadata())) {
+                    val mutable = updatedMap ?: current.contentMetadata.toMutableMap().also { updatedMap = it }
+                    mutable[key] = merged
+                }
+            }
+            val finalMap = updatedMap
+            if (finalMap != null) current.copy(contentMetadata = finalMap) else current
+        }
     }
 
     fun observeTranscodeSize(
@@ -281,7 +340,10 @@ internal class DriveTreeIndex(
 
     fun setEntryMetadata(id: String, metadata: EntryMetadata) {
         withPikoLock(lock) { if (closed) return; disk?.let { it.instance(id, metadata); publishDisk(); return } }
-        update { it.copy(entryMetadata = it.entryMetadata + (id to metadata)) }
+        update { current ->
+            if (current.entryMetadata[id] == metadata) current
+            else current.copy(entryMetadata = current.entryMetadata + (id to metadata))
+        }
     }
 
     /** Capture all sort keys for this caller-owned list under the same tree revision. */
@@ -324,7 +386,7 @@ internal class DriveTreeIndex(
 
     fun setLastUsageBytes(bytes: Long?) {
         withPikoLock(lock) { if (closed) return; disk?.let { it.usage(bytes); publishDisk(); return } }
-        update { it.copy(lastUsageBytes = bytes) }
+        update { current -> if (current.lastUsageBytes == bytes) current else current.copy(lastUsageBytes = bytes) }
     }
 
     fun clear() {
@@ -1157,13 +1219,14 @@ internal class DriveTreeIndex(
         transformFile: (FileStat) -> FileStat = { it },
         skipIds: MutableSet<String>? = null,
     ): List<SearchHit> {
+        val preparedQuery = prepareCjkQuery(query)
         withPikoLock(lock) {
             if (closed) return emptyList()
             disk?.let { store ->
                 val hits = ArrayList<Pair<Int, SearchHit>>()
                 val entries = state.value.entries
                 val nodes = folderIndex.flow.value.nodes
-                store.searchCandidates(query, extraFolderTitle) { score, file ->
+                store.searchCandidates(preparedQuery, extraFolderTitle) { score, file ->
                     if (!isPikoInternalFolder(file, file.parentId) && !VaultStore.looksLikeManifest(file) && !VaultStore.isRecoveryFile(file)) {
                         resolveBreadcrumb(file, parentId, entries, nodes)?.let { hits += score to SearchHit(transformFile(file), it) }
                     }
@@ -1197,9 +1260,9 @@ internal class DriveTreeIndex(
                 skipIds?.add(entry.id)
                 continue
             }
-            val nameScore = cjkFuzzyScore(query, entry.name)
+            val nameScore = preparedQuery.score(entry.name)
             val titleScore = if (nameScore == null && entry.isFolder) {
-                extraFolderTitle(entry)?.let { cjkFuzzyScore(query, it) }
+                extraFolderTitle(entry)?.let(preparedQuery::score)
             } else null
             val score = nameScore ?: titleScore
             if (score == null) {

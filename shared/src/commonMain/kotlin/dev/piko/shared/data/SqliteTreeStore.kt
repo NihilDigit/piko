@@ -15,6 +15,8 @@ internal class SqliteTreeStore(
 ) {
     private companion object {
         const val TAG = "SqliteTreeStore"
+        val EMPTY_COMPLETE_CONTENT = ContentStats(listingComplete = true)
+        val EMPTY_INCOMPLETE_CONTENT = ContentStats(listingComplete = false)
     }
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
@@ -27,9 +29,17 @@ internal class SqliteTreeStore(
     private var rebuildAll = false
     private val canonical = TreeCanonicalizer()
 
+    private class FolderProjection(
+        val folders: Map<String, FileStat>,
+        val childrenByParent: Map<String, Set<String>>,
+        val created: Map<String, Long>,
+        val modified: Map<String, Long>,
+    )
+
     // In-memory hot projections of folder skeleton & materialized subtree aggregates (zero file rows retained).
-    private var cachedFolders: Map<String, FileStat>? = null
-    private var cachedChildrenByParent: Map<String, Set<String>>? = null
+    private var cachedFolderProjection: FolderProjection? = null
+    private var cachedCoverage: Pair<Set<String>, Set<String>>? = null
+    private var cachedManifestRows: Map<String, FileStat>? = null
     private var cachedSubtreeStats: Map<String, SubtreeStats>? = null
     // Bounded ContentMetadata cache active during candidate builds to avoid 120,000+ redundant SELECTs on Android.
     private val candidateContentCache = LinkedHashMap<ContentKey, ContentMetadata>(2048)
@@ -48,8 +58,18 @@ internal class SqliteTreeStore(
     }
 
     private fun invalidateFolderProjection() {
-        cachedFolders = null
-        cachedChildrenByParent = null
+        cachedFolderProjection = null
+    }
+
+    private fun invalidateCoverage() {
+        cachedCoverage = null
+    }
+
+    private fun invalidateAllCaches() {
+        cachedFolderProjection = null
+        cachedCoverage = null
+        cachedManifestRows = null
+        cachedSubtreeStats = null
     }
 
     init {
@@ -128,7 +148,19 @@ internal class SqliteTreeStore(
     private fun scalar(sql: String, args: List<Any?> = emptyList()): String? = db.scalarString(sql, args)
     private inline fun rows(sql: String, args: List<Any?> = emptyList(), consume: (PikoTreeCursor) -> Unit) {
         val c = db.query(sql, args)
-        try { while (c.next()) consume(c) } finally { c.close() }
+        if (c is ManagedPikoTreeDatabase.ManagedCursor) {
+            c.forEachRow(consume = consume)
+        } else {
+            try { while (c.next()) consume(c) } finally { c.close() }
+        }
+    }
+    private inline fun <R> useQuery(sql: String, args: List<Any?> = emptyList(), block: (PikoTreeCursor) -> R): R {
+        val c = db.query(sql, args)
+        return if (c is ManagedPikoTreeDatabase.ManagedCursor) {
+            c.useLocked(block)
+        } else {
+            try { block(c) } finally { c.close() }
+        }
     }
     private fun decode(text: String) = canonical.compact(json.decodeFromString(DriveTreeIndex.StoredTreeEntry.serializer(), text).toFileStat())
     private fun encode(file: FileStat) = json.encodeToString(DriveTreeIndex.StoredTreeEntry.serializer(), DriveTreeIndex.StoredTreeEntry.of(file))
@@ -205,57 +237,91 @@ internal class SqliteTreeStore(
             candidates.clear()
             clearCandidateContentCache()
             canonical.clear()
-            invalidateFolderProjection()
-            cachedSubtreeStats = null
+            invalidateAllCaches()
             db.close()
         }
     }
     private fun mutate(block: () -> Unit) {
         if (closed) return
-        db.transaction {
-            val previousUsage = usage?.takeIf { complete }
-            val previousBytes = if (previousUsage == null) 0L else scalar("SELECT COALESCE(SUM(bytes),0) FROM tree_direct_usage")!!.toLong()
-            sequence++
-            block()
-            val fullReplacement = rebuildAll
-            rebuildAggregates()
-            if (!fullReplacement && previousUsage != null && (meta("usage_seq")?.toLongOrNull() ?: 0L) < sequence) {
-                val nextBytes = scalar("SELECT COALESCE(SUM(bytes),0) FROM tree_direct_usage")!!.toLong()
-                val delta = nextBytes - previousBytes
-                if (delta != 0L) {
-                    val nextUsage = if (delta > 0L && previousUsage > Long.MAX_VALUE - delta) Long.MAX_VALUE else (previousUsage + delta).coerceAtLeast(0)
-                    meta("usage", nextUsage.toString()); meta("usage_seq", sequence.toString())
+        val savedSequence = sequence
+        try {
+            db.transaction {
+                sequence++
+                block()
+                val fullReplacement = rebuildAll
+                val needsAggregateRebuild = fullReplacement || touchedFolders.isNotEmpty() || cachedSubtreeStats == null
+                if (needsAggregateRebuild) {
+                    val previousUsage = if (!fullReplacement) usage?.takeIf { complete } else null
+                    val previousBytes = if (previousUsage == null) 0L else scalar("SELECT COALESCE(SUM(bytes),0) FROM tree_direct_usage")!!.toLong()
+                    rebuildAggregates()
+                    if (previousUsage != null && (meta("usage_seq")?.toLongOrNull() ?: 0L) < sequence) {
+                        val nextBytes = scalar("SELECT COALESCE(SUM(bytes),0) FROM tree_direct_usage")!!.toLong()
+                        val delta = nextBytes - previousBytes
+                        if (delta != 0L) {
+                            val nextUsage = if (delta > 0L && previousUsage > Long.MAX_VALUE - delta) Long.MAX_VALUE else (previousUsage + delta).coerceAtLeast(0)
+                            meta("usage", nextUsage.toString()); meta("usage_seq", sequence.toString())
+                        }
+                    }
                 }
+                meta("sequence", sequence.toString())
             }
-            meta("sequence", sequence.toString())
+            revision++
+        } catch (error: Throwable) {
+            sequence = savedSequence
+            touchedFolders.clear()
+            rebuildAll = false
+            invalidateAllCaches()
+            throw error
         }
-        revision++
     }
     fun clear() = mutate {
         for (table in listOf("tree_nodes", "tree_content", "tree_instances", "tree_coverage", "tree_vault", "tree_deleted", "tree_aggregate", "tree_subtree", "tree_restores", "tree_overrides", "tree_vault_revision", "tree_vault_state", "tree_direct_usage")) db.execute("DELETE FROM $table")
         meta("complete", "false"); meta("usage", null); meta("synced", null); meta("sync_cursor", null); meta("sync_cursor_version", null)
         candidates.clear(); clearCandidateContentCache(); rebuildAll = true
-        invalidateFolderProjection()
-        cachedSubtreeStats = null
+        invalidateAllCaches()
     }
     fun file(id: String, generation: Long = 0): FileStat? {
         if (closed) return null
-        val cursor = db.query("SELECT payload,duration FROM tree_nodes WHERE generation=? AND id=?", listOf(generation, id))
-        return try {
+        return useQuery("SELECT payload,duration FROM tree_nodes WHERE generation=? AND id=?", listOf(generation, id)) { cursor ->
             if (!cursor.next()) null
             else decode(cursor.string(0)!!).enrichWithContentMetadata(null, cursor.long(1))
-        } finally { cursor.close() }
+        }
     }
     /** Nonmatching files never allocate FileStat, params, tags or metadata. */
-    fun searchCandidates(query: String, extraFolderTitle: (FileStat) -> String?, consume: (Int, FileStat) -> Unit) {
+    fun searchCandidates(query: String, extraFolderTitle: (FileStat) -> String?, consume: (Int, FileStat) -> Unit) =
+        searchCandidates(dev.piko.shared.search.prepareCjkQuery(query), extraFolderTitle, consume)
+
+    fun searchCandidates(
+        preparedQuery: dev.piko.shared.search.PreparedCjkQuery,
+        extraFolderTitle: (FileStat) -> String?,
+        consume: (Int, FileStat) -> Unit,
+    ) {
         if (closed) return
+        val matchedFiles = ArrayList<Pair<String, Int>>()
+        val matchedFolders = ArrayList<Pair<String, Int>>()
+        val unmatchedFolders = ArrayList<String>()
         rows("SELECT id,norm_name,folder FROM tree_nodes WHERE generation=0 AND excluded=0") { c ->
-            val nameScore = dev.piko.shared.search.cjkFuzzyScore(query, c.string(1)!!)
-            if (nameScore != null) file(c.string(0)!!)?.let { consume(nameScore, it) }
-            else if (c.long(2) == 1L) {
-                val folder = file(c.string(0)!!) ?: return@rows
-                extraFolderTitle(folder)?.let { dev.piko.shared.search.cjkFuzzyScore(query, it) }?.let { consume(it, folder) }
+            val id = c.string(0)!!
+            val isFolder = c.long(2) == 1L
+            val nameScore = preparedQuery.scoreNormalized(c.string(1)!!)
+            if (nameScore != null) {
+                if (isFolder) matchedFolders += id to nameScore else matchedFiles += id to nameScore
+            } else if (isFolder) {
+                unmatchedFolders += id
             }
+        }
+        if (matchedFolders.isNotEmpty() || unmatchedFolders.isNotEmpty()) {
+            val folders = ensureFolderProjection().folders
+            for ((id, score) in matchedFolders) {
+                (folders[id] ?: file(id))?.let { consume(score, it) }
+            }
+            for (id in unmatchedFolders) {
+                val folder = folders[id] ?: file(id) ?: continue
+                extraFolderTitle(folder)?.let(preparedQuery::score)?.let { consume(it, folder) }
+            }
+        }
+        for ((id, score) in matchedFiles) {
+            file(id)?.let { consume(score, it) }
         }
     }
 
@@ -287,8 +353,10 @@ internal class SqliteTreeStore(
     }
     fun hasPhysicalMissingFrom(ids: Set<String>): Boolean {
         if (closed) return false
-        val cursor = db.query("SELECT id FROM tree_nodes WHERE generation=0 AND virtual=0")
-        return try { while (cursor.next()) if (cursor.string(0)!! !in ids) return true; false } finally { cursor.close() }
+        rows("SELECT id FROM tree_nodes WHERE generation=0 AND virtual=0") { c ->
+            if (c.string(0)!! !in ids) return true
+        }
+        return false
     }
 
     internal data class RawSpaceFile(
@@ -385,23 +453,54 @@ internal class SqliteTreeStore(
         return result
     }
 
-    private fun ensureFolderProjection(): Pair<Map<String, FileStat>, Map<String, Set<String>>> {
-        val existingFolders = cachedFolders
-        val existingChildren = cachedChildrenByParent
-        if (existingFolders != null && existingChildren != null) {
-            return existingFolders to existingChildren
-        }
+    private fun ensureFolderProjection(): FolderProjection {
+        cachedFolderProjection?.let { return it }
         val folders = HashMap<String, FileStat>()
         rows("SELECT payload FROM tree_nodes WHERE generation=0 AND folder=1") {
             val f = decode(it.string(0)!!)
             folders[f.id] = f
         }
-        val children = folders.values.groupBy { it.parentId }.mapValues { (_, fs) -> fs.mapTo(HashSet()) { it.id } as Set<String> }
-        val frozenFolders = folders.toMap()
-        val frozenChildren = children.toMap()
-        cachedFolders = frozenFolders
-        cachedChildrenByParent = frozenChildren
-        return frozenFolders to frozenChildren
+        val children = HashMap<String, MutableSet<String>>()
+        val created = HashMap<String, Long>(folders.size)
+        val modified = HashMap<String, Long>(folders.size)
+        for (folder in folders.values) {
+            children.getOrPut(folder.parentId) { HashSet() }.add(folder.id)
+            treeEpochMillis(folder.createdTime)?.let { created[folder.id] = it }
+            treeEpochMillis(folder.modifiedTime)?.let { modified[folder.id] = it }
+        }
+        val frozenChildren = HashMap<String, Set<String>>(children.size)
+        for ((parentId, ids) in children) frozenChildren[parentId] = ids
+        val built = FolderProjection(
+            folders = folders,
+            childrenByParent = frozenChildren,
+            created = created,
+            modified = modified,
+        )
+        cachedFolderProjection = built
+        return built
+    }
+
+    private fun ensureCoverage(): Pair<Set<String>, Set<String>> {
+        cachedCoverage?.let { return it }
+        val dirty = HashSet<String>()
+        val listed = HashSet<String>()
+        rows("SELECT id,dirty FROM tree_coverage") {
+            if (it.long(1) == 1L) dirty += it.string(0)!! else listed += it.string(0)!!
+        }
+        val built: Pair<Set<String>, Set<String>> = listed to dirty
+        cachedCoverage = built
+        return built
+    }
+
+    private fun ensureManifestRows(): Map<String, FileStat> {
+        cachedManifestRows?.let { return it }
+        val rowsMap = HashMap<String, FileStat>()
+        rows("SELECT payload FROM tree_nodes WHERE generation=0 AND excluded=1 AND name LIKE '.piko-vault-%'") {
+            val f = decode(it.string(0)!!)
+            rowsMap[f.id] = f
+        }
+        cachedManifestRows = rowsMap
+        return rowsMap
     }
 
     private fun ensureSubtreeStats(): Map<String, SubtreeStats> {
@@ -410,41 +509,38 @@ internal class SqliteTreeStore(
         rows("SELECT folder,payload FROM tree_subtree") {
             stats[it.string(0)!!] = json.decodeFromString(SubtreeStats.serializer(), it.string(1)!!)
         }
-        val frozen = stats.toMap()
-        cachedSubtreeStats = frozen
-        return frozen
+        cachedSubtreeStats = stats
+        return stats
     }
 
     fun projection(): DriveTreeIndex.State {
         if (closed) return DriveTreeIndex.State(revision = revision)
-        val (folders, childrenByParent) = ensureFolderProjection()
-        val dirty = HashSet<String>(); val listed = HashSet<String>()
-        rows("SELECT id,dirty FROM tree_coverage") { if (it.long(1) == 1L) dirty += it.string(0)!! else listed += it.string(0)!! }
-        val manifests = HashMap<String, FileStat>()
-        val cachedIds = locallyCachedManifestIds()
-        rows("SELECT payload FROM tree_nodes WHERE generation=0 AND excluded=1 AND name LIKE '.piko-vault-%'") {
-            val f = decode(it.string(0)!!)
-            val winner = VaultStore.winnerOf(listOfNotNull(manifests[f.parentId], f), cachedIds)
-            if (winner != null) manifests[f.parentId] = winner
+        val folderProj = ensureFolderProjection()
+        val (listed, dirty) = ensureCoverage()
+        val manifestRows = ensureManifestRows()
+        val manifests: Map<String, FileStat> = if (manifestRows.isEmpty()) {
+            emptyMap()
+        } else {
+            val cachedIds = locallyCachedManifestIds()
+            val winners = HashMap<String, FileStat>()
+            for (f in manifestRows.values) {
+                val winner = VaultStore.winnerOf(listOfNotNull(winners[f.parentId], f), cachedIds)
+                if (winner != null) winners[f.parentId] = winner
+            }
+            winners
         }
         val stats = ensureSubtreeStats()
-        val created = HashMap<String, Long>(folders.size)
-        val modified = HashMap<String, Long>(folders.size)
-        for (folder in folders.values) {
-            treeEpochMillis(folder.createdTime)?.let { created[folder.id] = it }
-            treeEpochMillis(folder.modifiedTime)?.let { modified[folder.id] = it }
-        }
-        val snapshot = DriveTreeIndex.State(
-            entries = folders,
-            childrenByParent = childrenByParent,
+        return DriveTreeIndex.State(
+            entries = folderProj.folders,
+            childrenByParent = folderProj.childrenByParent,
             manifestsByFolder = manifests,
             listedFolders = listed,
             dirtyFolders = dirty,
             lastUsageBytes = usage,
             complete = complete,
             revision = revision,
+            sortProjection = SortContext(revision, stats, folderProj.created, folderProj.modified, emptyMap()),
         )
-        return snapshot.copy(sortProjection = SortContext(revision, stats, created, modified, emptyMap()))
     }
     private fun lookupContentForWrite(key: ContentKey, generation: Long): ContentMetadata? {
         if (generation != 0L) {
@@ -477,12 +573,22 @@ internal class SqliteTreeStore(
         }
         // Instance time is accepted only through setEntryMetadata or the trusted migration field.
         val clean = clean(file)
+        val looksManifest = VaultStore.looksLikeManifest(clean)
+        val excludedFlag = if (looksManifest || VaultStore.isRecoveryFile(clean)) 1 else 0
         if (generation == 0L) {
             scalar("SELECT parent FROM tree_nodes WHERE generation=0 AND id=?", listOf(clean.id))?.let(touchedFolders::add)
             touchedFolders += clean.parentId
-            if (clean.isFolder) invalidateFolderProjection()
+            if (clean.isFolder) {
+                touchedFolders += clean.id
+                invalidateFolderProjection()
+            } else if (cachedFolderProjection?.folders?.containsKey(clean.id) == true) {
+                invalidateFolderProjection()
+            }
+            if (looksManifest || cachedManifestRows?.containsKey(clean.id) == true) {
+                cachedManifestRows = null
+            }
         }
-        db.execute("INSERT OR REPLACE INTO tree_nodes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", listOf(generation, clean.id, clean.parentId, if (clean.isFolder) 1 else 0, if (VaultEntry.isVaulted(clean.id)) 1 else 0, clean.name, dev.piko.shared.search.normalizeCjk(clean.name), if (VaultStore.looksLikeManifest(clean) || VaultStore.isRecoveryFile(clean)) 1 else 0, clean.sizeBytes.coerceAtLeast(0), key?.gcid, metadata.durationMillis, if (clean.isPlayableVideo()) 1 else 0, encode(clean), if (generation == 0L) sequence else 0L))
+        db.execute("INSERT OR REPLACE INTO tree_nodes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", listOf(generation, clean.id, clean.parentId, if (clean.isFolder) 1 else 0, if (VaultEntry.isVaulted(clean.id)) 1 else 0, clean.name, dev.piko.shared.search.normalizeCjk(clean.name), excludedFlag, clean.sizeBytes.coerceAtLeast(0), key?.gcid, metadata.durationMillis, if (clean.isPlayableVideo()) 1 else 0, encode(clean), if (generation == 0L) sequence else 0L))
         if (generation == 0L) db.execute("DELETE FROM tree_deleted WHERE id=?", listOf(clean.id))
         if (generation == 0L) bindRestoredInstance(clean)
     }
@@ -503,6 +609,8 @@ internal class SqliteTreeStore(
             }
             put(f)
             if (isComplete && f.isFolder) {
+                invalidateCoverage()
+                touchedFolders += f.id
                 db.execute("INSERT OR IGNORE INTO tree_coverage VALUES (?,0,?)", listOf(f.id, sequence))
             }
         }
@@ -536,6 +644,7 @@ internal class SqliteTreeStore(
                 val detached = HashSet<String>()
                 rows("WITH RECURSIVE folders(id) AS (SELECT id FROM tree_nodes WHERE generation=0 AND parent=? AND folder=1 AND id NOT IN (SELECT id FROM tree_observed) UNION SELECT n.id FROM folders f CROSS JOIN tree_nodes n ON n.generation=0 AND n.parent=f.id AND n.folder=1) SELECT id FROM folders", listOf(parent)) { detached += it.string(0)!! }
                 if (detached.isNotEmpty()) invalidateFolderProjection()
+                if (cachedManifestRows?.values?.any { it.parentId == parent } == true) cachedManifestRows = null
                 detached.forEach { coverage(it, true) }
                 db.execute("INSERT OR REPLACE INTO tree_deleted SELECT id,? FROM tree_nodes WHERE generation=0 AND parent=? AND virtual=0 AND id NOT IN (SELECT id FROM tree_observed)", listOf(sequence, parent))
                 db.execute("DELETE FROM tree_nodes WHERE generation=0 AND parent=? AND virtual=0 AND id NOT IN (SELECT id FROM tree_observed)", listOf(parent))
@@ -582,7 +691,7 @@ internal class SqliteTreeStore(
                         updateLiveDuration = generation == 0L,
                         cacheInCandidate = generation != 0L,
                     )
-                    if (generation == 0L) {
+                    if (generation == 0L && previous?.durationMillis != merged.durationMillis) {
                         rows("SELECT DISTINCT parent FROM tree_nodes WHERE generation=0 AND gcid=? AND bytes=?", listOf(key.gcid, key.sizeBytes)) { touchedFolders += it.string(0)!! }
                         db.execute("UPDATE tree_nodes SET duration=? WHERE gcid=? AND bytes=?", listOf(merged.durationMillis, key.gcid, key.sizeBytes))
                     }
@@ -638,38 +747,90 @@ internal class SqliteTreeStore(
             db.execute("UPDATE tree_nodes SET duration=? WHERE gcid=? AND bytes=?", listOf(metadata.durationMillis, key.gcid, key.sizeBytes))
         }
     }
-    fun observeContent(key: ContentKey, value: ContentMetadata) = mutate {
-        val normalized = ContentKey.of(key.gcid, key.sizeBytes) ?: return@mutate
+    fun observeContent(key: ContentKey, value: ContentMetadata) {
+        if (closed) return
+        val normalized = ContentKey.of(key.gcid, key.sizeBytes) ?: return
         val prev = content(normalized)
         val merged = prev?.merge(value) ?: ContentMetadata().merge(value)
-        candidateContentCache.remove(normalized)
-        putContent(normalized, merged, previousKnown = true, previousValue = prev)
-        rows("SELECT DISTINCT parent FROM tree_nodes WHERE generation=0 AND gcid=? AND bytes=?", listOf(normalized.gcid, normalized.sizeBytes)) { touchedFolders += it.string(0)!! }
-        db.execute("UPDATE tree_nodes SET duration=? WHERE gcid=? AND bytes=?", listOf(merged.durationMillis, normalized.gcid, normalized.sizeBytes))
+        if (merged == prev || (prev == null && merged == ContentMetadata())) return
+        mutate {
+            val currentPrev = content(normalized)
+            val currentMerged = currentPrev?.merge(value) ?: ContentMetadata().merge(value)
+            if (currentMerged != currentPrev && !(currentPrev == null && currentMerged == ContentMetadata())) {
+                candidateContentCache.remove(normalized)
+                putContent(normalized, currentMerged, previousKnown = true, previousValue = currentPrev, updateLiveDuration = true)
+            }
+        }
     }
-    fun observeTranscodeSize(key: ContentKey, mediaId: String, streamSizeBytes: Long?, unreadable: Boolean = false) = mutate {
-        val normalized = ContentKey.of(key.gcid, key.sizeBytes) ?: return@mutate
-        val prev = content(normalized) ?: return@mutate
-        val updated = prev.withTranscodeProbe(mediaId, streamSizeBytes, unreadable)
-        if (updated != prev) {
-            candidateContentCache.remove(normalized)
-            putContent(normalized, updated, previousKnown = true, previousValue = prev, updateLiveDuration = false)
+
+    fun observeContentBatch(items: Collection<Pair<ContentKey, ContentMetadata>>) {
+        if (closed || items.isEmpty()) return
+        val incomingByKey = LinkedHashMap<ContentKey, ContentMetadata>(items.size)
+        for ((rawKey, value) in items) {
+            val normalized = ContentKey.of(rawKey.gcid, rawKey.sizeBytes) ?: continue
+            val existing = incomingByKey[normalized]
+            incomingByKey[normalized] = if (existing != null) existing.merge(value) else value
+        }
+        if (incomingByKey.isEmpty()) return
+        val changedEntries = ArrayList<Triple<ContentKey, ContentMetadata?, ContentMetadata>>(incomingByKey.size)
+        for ((key, incoming) in incomingByKey) {
+            val prev = content(key)
+            val merged = prev?.merge(incoming) ?: ContentMetadata().merge(incoming)
+            if (merged != prev && !(prev == null && merged == ContentMetadata())) {
+                changedEntries += Triple(key, prev, merged)
+            }
+        }
+        if (changedEntries.isEmpty()) return
+        mutate {
+            for ((key, prev, merged) in changedEntries) {
+                candidateContentCache.remove(key)
+                putContent(key, merged, previousKnown = true, previousValue = prev, updateLiveDuration = true)
+            }
+        }
+    }
+
+    fun observeTranscodeSize(key: ContentKey, mediaId: String, streamSizeBytes: Long?, unreadable: Boolean = false) {
+        if (closed) return
+        val normalized = ContentKey.of(key.gcid, key.sizeBytes) ?: return
+        val prev = content(normalized) ?: return
+        if (prev.withTranscodeProbe(mediaId, streamSizeBytes, unreadable) == prev) return
+        mutate {
+            val currentPrev = content(normalized) ?: return@mutate
+            val updated = currentPrev.withTranscodeProbe(mediaId, streamSizeBytes, unreadable)
+            if (updated != currentPrev) {
+                candidateContentCache.remove(normalized)
+                putContent(normalized, updated, previousKnown = true, previousValue = currentPrev, updateLiveDuration = false)
+            }
         }
     }
     fun originalCreated(id: String): Long? = if (closed) null else scalar("SELECT original_created FROM tree_instances WHERE id=?", listOf(id))?.toLongOrNull()
-    fun instance(id: String, value: EntryMetadata) = mutate {
-        if (value.originalCreatedAtMillis == null) db.execute("DELETE FROM tree_instances WHERE id=?", listOf(id))
-        else db.execute("INSERT OR REPLACE INTO tree_instances VALUES (?,?)", listOf(id, value.originalCreatedAtMillis))
+    fun instance(id: String, value: EntryMetadata) {
+        if (closed) return
+        if (originalCreated(id) == value.originalCreatedAtMillis) return
+        mutate {
+            if (value.originalCreatedAtMillis == null) db.execute("DELETE FROM tree_instances WHERE id=?", listOf(id))
+            else db.execute("INSERT OR REPLACE INTO tree_instances VALUES (?,?)", listOf(id, value.originalCreatedAtMillis))
+        }
     }
-    private fun coverage(id: String, dirty: Boolean) { touchedFolders += id; db.execute("INSERT OR REPLACE INTO tree_coverage VALUES (?,?,?)", listOf(id, if (dirty) 1 else 0, sequence)) }
+    private fun coverage(id: String, dirty: Boolean) {
+        invalidateCoverage()
+        touchedFolders += id
+        db.execute("INSERT OR REPLACE INTO tree_coverage VALUES (?,?,?)", listOf(id, if (dirty) 1 else 0, sequence))
+    }
     fun markComplete() = mutate { rebuildAll = true; meta("complete", "true") }
-    fun usage(value: Long?) = mutate { meta("usage", value?.toString()); meta("usage_seq", sequence.toString()) }
+    fun usage(value: Long?) {
+        if (closed) return
+        if (candidates.isEmpty() && usage == value) return
+        mutate { meta("usage", value?.toString()); meta("usage_seq", sequence.toString()) }
+    }
     fun canary(files: List<FileStat>, value: Long?) = mutate {
         val isComplete = complete
         files.forEach {
             if (!VaultEntry.isVaulted(it.id)) {
                 put(it)
                 if (isComplete && it.isFolder) {
+                    invalidateCoverage()
+                    touchedFolders += it.id
                     db.execute("INSERT OR IGNORE INTO tree_coverage VALUES (?,0,?)", listOf(it.id, sequence))
                 }
             }
@@ -683,7 +844,12 @@ internal class SqliteTreeStore(
     }
     private fun remove(ids: Collection<String>) {
         if (ids.isEmpty()) return
-        if (ids.any { file(it)?.isFolder == true }) invalidateFolderProjection()
+        val folderProj = cachedFolderProjection
+        if (folderProj == null || ids.any { it in folderProj.folders || it in folderProj.childrenByParent }) {
+            invalidateFolderProjection()
+        }
+        if (cachedManifestRows?.isNotEmpty() == true) cachedManifestRows = null
+        invalidateCoverage()
         val manifestParents = HashMap<String, String?>()
         for (id in ids) file(id)?.takeIf(VaultStore::looksLikeManifest)?.parentId?.let { manifestParents[it] = winner(it)?.id }
         for (batch in ids.chunked(256)) {
@@ -704,24 +870,68 @@ internal class SqliteTreeStore(
             is DriveChange.Renamed -> {
                 db.execute("INSERT OR IGNORE INTO tree_overrides(id) VALUES (?)", listOf(change.id))
                 db.execute("UPDATE tree_overrides SET name=?,name_seq=? WHERE id=?", listOf(change.name, sequence, change.id))
-                file(change.id)?.let { put(it.copy(name = change.name)) }
+                file(change.id)?.let { current ->
+                    if (current.name != change.name) {
+                        val renamed = clean(current.copy(name = change.name))
+                        val oldExcluded = VaultStore.looksLikeManifest(current) || VaultStore.isRecoveryFile(current)
+                        val newExcluded = VaultStore.looksLikeManifest(renamed) || VaultStore.isRecoveryFile(renamed)
+                        val oldVideo = current.isPlayableVideo()
+                        val newVideo = renamed.isPlayableVideo()
+                        val oldInternal = isPikoInternalFolder(current, current.parentId)
+                        val newInternal = isPikoInternalFolder(renamed, renamed.parentId)
+                        if (!oldExcluded && !newExcluded && oldVideo == newVideo && oldInternal == newInternal) {
+                            if (renamed.isFolder) invalidateFolderProjection()
+                            db.execute(
+                                "UPDATE tree_nodes SET name=?,norm_name=?,payload=?,seq=? WHERE generation=0 AND id=?",
+                                listOf(renamed.name, dev.piko.shared.search.normalizeCjk(renamed.name), encode(renamed), sequence, change.id),
+                            )
+                        } else {
+                            if (oldInternal != newInternal) rebuildAll = true
+                            if (oldExcluded || newExcluded) cachedManifestRows = null
+                            val beforeManifest = if (oldExcluded || newExcluded) winner(renamed.parentId)?.id else null
+                            put(renamed)
+                            if ((oldExcluded || newExcluded) && beforeManifest != null && beforeManifest != winner(renamed.parentId)?.id) {
+                                clearVault(renamed.parentId)
+                            }
+                        }
+                    }
+                }
             }
             is DriveChange.Moved -> for (id in change.ids) {
                 db.execute("INSERT OR IGNORE INTO tree_overrides(id) VALUES (?)", listOf(id))
                 db.execute("UPDATE tree_overrides SET parent=?,parent_seq=? WHERE id=?", listOf(change.to, sequence, id))
                 val known = file(id)
-                if (known != null) put(known.copy(parentId = change.to)) else change.folders.orEmpty().forEach { coverage(it, true) }
+                if (known != null) {
+                    if (known.isFolder && isPikoInternalFolder(known, known.parentId) != isPikoInternalFolder(known, change.to)) {
+                        rebuildAll = true
+                    }
+                    put(known.copy(parentId = change.to))
+                } else change.folders.orEmpty().forEach { coverage(it, true) }
             }
             is DriveChange.Trashed -> remove(change.ids)
             is DriveChange.Deleted -> remove(change.ids)
             is DriveChange.Created -> if (change.isFolder) {
                 put(FileStat(id = change.id, parentId = change.parentId, name = change.name, kind = FileKind.FOLDER)); coverage(change.id, false)
             } else if (change.stat != null) put(change.stat) else change.folders.forEach { coverage(it, true) }
-            is DriveChange.Starred -> for (id in change.ids) file(id)?.let { f -> put(f.copy(starred = change.starred, tags = f.tags.filterNot { it.name.equals("STAR", true) } + if (change.starred) listOf(FileTag(id = "STAR", name = "STAR")) else emptyList())) }
+            is DriveChange.Starred -> for (id in change.ids) {
+                val f = file(id) ?: continue
+                val nextTags = f.tags.filterNot { it.name.equals("STAR", true) } +
+                    if (change.starred) listOf(FileTag(id = "STAR", name = "STAR")) else emptyList()
+                val updated = clean(f.copy(starred = change.starred, tags = nextTags))
+                if (updated == clean(f)) continue
+                if (updated.isFolder) invalidateFolderProjection()
+                if (VaultStore.looksLikeManifest(updated)) cachedManifestRows = null
+                db.execute("UPDATE tree_nodes SET payload=?,seq=? WHERE generation=0 AND id=?", listOf(encode(updated), sequence, id))
+            }
             is DriveChange.Copied -> change.folders.orEmpty().forEach { coverage(it, true) }
             is DriveChange.Restored, is DriveChange.ContentsChanged -> {
-                if (change.folders == null) { rebuildAll = true; meta("complete", "false"); candidates.clear(); db.execute("DELETE FROM tree_coverage") }
-                else change.folders.orEmpty().forEach { coverage(it, true) }
+                if (change.folders == null) {
+                    rebuildAll = true
+                    meta("complete", "false")
+                    candidates.clear()
+                    invalidateCoverage()
+                    db.execute("DELETE FROM tree_coverage")
+                } else change.folders.orEmpty().forEach { coverage(it, true) }
             }
         }
     }
@@ -782,12 +992,20 @@ internal class SqliteTreeStore(
     }
     fun finishLegacy(generation: Long, header: DriveTreeIndex.PersistedTreeSnapshot): Boolean {
         if (closed || generation !in candidates || complete) return false
-        db.transaction {
-            commitCandidate(generation, header.lastUsageBytes, header.lastFullSyncAtMillis)
-            db.execute("INSERT OR IGNORE INTO tree_instances SELECT i.id,i.created FROM tree_legacy_instances i JOIN tree_nodes n ON n.generation=0 AND n.id=i.id WHERE i.generation=?", listOf(generation))
-            meta("complete", header.complete.toString())
-            header.dirtyFolders.forEach { coverage(it, true) }
-            rebuildAggregates()
+        try {
+            db.transaction {
+                commitCandidate(generation, header.lastUsageBytes, header.lastFullSyncAtMillis)
+                db.execute("INSERT OR IGNORE INTO tree_instances SELECT i.id,i.created FROM tree_legacy_instances i JOIN tree_nodes n ON n.generation=0 AND n.id=i.id WHERE i.generation=?", listOf(generation))
+                meta("complete", header.complete.toString())
+                header.dirtyFolders.forEach { coverage(it, true) }
+                rebuildAggregates()
+            }
+            revision++
+        } catch (error: Throwable) {
+            touchedFolders.clear()
+            rebuildAll = false
+            invalidateAllCaches()
+            throw error
         }
         return true
     }
@@ -889,6 +1107,8 @@ internal class SqliteTreeStore(
             meta("sync_cursor", syncCursor)
             meta("sync_cursor_version", "2")
             invalidateFolderProjection()
+            invalidateCoverage()
+            cachedManifestRows = null
             rebuildAll = true
         }
         candidates.clear()
@@ -898,8 +1118,81 @@ internal class SqliteTreeStore(
         return changed
     }
 
+    private class UsageAcc(var bytes: Long = 0L, var count: Long = 0L)
+
+    private class FolderStatAcc(
+        var physBytes: Long = 0L,
+        var physCount: Long = 0L,
+        var physDuration: Long = 0L,
+        var physKnown: Long = 0L,
+        var physUnknown: Long = 0L,
+        var physListingComplete: Boolean,
+        var physMetaComplete: Boolean = true,
+        var vaultBytes: Long = 0L,
+        var vaultCount: Long = 0L,
+        var vaultDuration: Long = 0L,
+        var vaultKnown: Long = 0L,
+        var vaultUnknown: Long = 0L,
+        var vaultListingComplete: Boolean,
+        var vaultMetaComplete: Boolean = true,
+        var structuralValid: Boolean = true,
+        var pendingChildren: Int = 0,
+    ) {
+        fun addPhysical(bytes: Long, count: Long, duration: Long, known: Long, unknown: Long) {
+            physBytes = saturatedAdd(physBytes, bytes)
+            physCount = saturatedAdd(physCount, count)
+            physDuration = saturatedAdd(physDuration, duration)
+            physKnown = saturatedAdd(physKnown, known)
+            physUnknown = saturatedAdd(physUnknown, unknown)
+            if (unknown != 0L) physMetaComplete = false
+        }
+
+        fun addVaulted(bytes: Long, count: Long, duration: Long, known: Long, unknown: Long) {
+            vaultBytes = saturatedAdd(vaultBytes, bytes)
+            vaultCount = saturatedAdd(vaultCount, count)
+            vaultDuration = saturatedAdd(vaultDuration, duration)
+            vaultKnown = saturatedAdd(vaultKnown, known)
+            vaultUnknown = saturatedAdd(vaultUnknown, unknown)
+            if (unknown != 0L) vaultMetaComplete = false
+        }
+
+        fun build(): SubtreeStats {
+            val phys = if (physBytes == 0L && physCount == 0L && physDuration == 0L && physKnown == 0L && physUnknown == 0L && physMetaComplete) {
+                if (physListingComplete) EMPTY_COMPLETE_CONTENT else EMPTY_INCOMPLETE_CONTENT
+            } else {
+                ContentStats(
+                    bytes = physBytes,
+                    fileCount = physCount,
+                    durationMillis = physDuration,
+                    knownDurationFiles = physKnown,
+                    unknownDurationFiles = physUnknown,
+                    listingComplete = physListingComplete,
+                    metadataComplete = physMetaComplete,
+                )
+            }
+            val vault = if (vaultBytes == 0L && vaultCount == 0L && vaultDuration == 0L && vaultKnown == 0L && vaultUnknown == 0L && vaultMetaComplete) {
+                if (vaultListingComplete) EMPTY_COMPLETE_CONTENT else EMPTY_INCOMPLETE_CONTENT
+            } else {
+                ContentStats(
+                    bytes = vaultBytes,
+                    fileCount = vaultCount,
+                    durationMillis = vaultDuration,
+                    knownDurationFiles = vaultKnown,
+                    unknownDurationFiles = vaultUnknown,
+                    listingComplete = vaultListingComplete,
+                    metadataComplete = vaultMetaComplete,
+                )
+            }
+            return SubtreeStats(physical = phys, vaulted = vault, structuralValid = structuralValid)
+        }
+
+        companion object {
+            fun saturatedAdd(a: Long, b: Long): Long = if (a > Long.MAX_VALUE - b) Long.MAX_VALUE else a + b
+        }
+    }
+
     private fun rebuildAggregates() {
-        val replaceAll = rebuildAll || cachedFolders == null || cachedSubtreeStats == null
+        val replaceAll = rebuildAll || cachedFolderProjection == null || cachedSubtreeStats == null
         val aggregateSql = "INSERT INTO tree_aggregate SELECT parent,virtual,SUM(bytes),COUNT(*),COALESCE(SUM(duration),0),SUM(CASE WHEN video=1 AND duration>0 THEN 1 ELSE 0 END),SUM(CASE WHEN video=1 AND (duration IS NULL OR duration<=0) THEN 1 ELSE 0 END) FROM tree_nodes WHERE generation=0 AND folder=0 AND excluded=0"
         val usageSql = "INSERT INTO tree_direct_usage SELECT parent,SUM(bytes),COUNT(*) FROM tree_nodes WHERE generation=0 AND folder=0 AND virtual=0"
         if (rebuildAll) {
@@ -913,16 +1206,19 @@ internal class SqliteTreeStore(
             db.execute("$aggregateSql AND parent=? GROUP BY parent,virtual", listOf(folder))
             db.execute("$usageSql AND parent=? GROUP BY parent", listOf(folder))
         }
-        val snapshot = computeFolderStats()
-        val folders = ensureFolderProjection().first
-        val usageByFolder = HashMap<String, Pair<Long, Long>>()
+        val subtreeStats = computeFolderStats()
+        val folders = ensureFolderProjection().folders
+        val usageByFolder = HashMap<String, UsageAcc>(folders.size + 1)
+        val seen = HashSet<String>(16)
         rows("SELECT folder,bytes,count FROM tree_direct_usage") { c ->
             var parent = c.string(0)!!
-            val bytes = c.long(1)!!; val count = c.long(2)!!
-            val seen = HashSet<String>()
+            val bytes = (c.long(1) ?: 0L).coerceAtLeast(0L)
+            val count = (c.long(2) ?: 0L).coerceAtLeast(0L)
+            seen.clear()
             while (seen.add(parent) && (parent.isEmpty() || parent in folders)) {
-                val previous = usageByFolder[parent] ?: (0L to 0L)
-                usageByFolder[parent] = saturated(previous.first, bytes) to saturated(previous.second, count)
+                val acc = usageByFolder.getOrPut(parent) { UsageAcc() }
+                acc.bytes = saturated(acc.bytes, bytes)
+                acc.count = saturated(acc.count, count)
                 if (parent.isEmpty()) break
                 parent = folders.getValue(parent).parentId
             }
@@ -933,46 +1229,100 @@ internal class SqliteTreeStore(
             while (affected.add(id) && id.isNotEmpty()) id = folders[id]?.parentId ?: break
         }
         if (replaceAll) db.execute("DELETE FROM tree_subtree")
-        for ((id, stats) in snapshot.subtreeStats) {
+        for ((id, stats) in subtreeStats) {
             if (!replaceAll && id !in affected) continue
-            val physicalUsage = usageByFolder[id] ?: (0L to 0L)
-            db.execute("INSERT OR REPLACE INTO tree_subtree VALUES (?,?,?,?)", listOf(id, json.encodeToString(SubtreeStats.serializer(), stats), physicalUsage.first, physicalUsage.second))
+            val physicalUsage = usageByFolder[id]
+            db.execute(
+                "INSERT OR REPLACE INTO tree_subtree VALUES (?,?,?,?)",
+                listOf(id, json.encodeToString(SubtreeStats.serializer(), stats), physicalUsage?.bytes ?: 0L, physicalUsage?.count ?: 0L),
+            )
         }
-        cachedSubtreeStats = snapshot.subtreeStats.toMap()
+        cachedSubtreeStats = subtreeStats
         meta("aggregate_version", "2")
         touchedFolders.clear(); rebuildAll = false
     }
     private fun saturated(a: Long, b: Long): Long = if (a > Long.MAX_VALUE - b) Long.MAX_VALUE else a + b
 
-    private fun folderState(): DriveTreeIndex.State {
-        val (folders, childrenByParent) = ensureFolderProjection()
-        val dirty = HashSet<String>(); val listed = HashSet<String>()
-        rows("SELECT id,dirty FROM tree_coverage") { if (it.long(1) == 1L) dirty += it.string(0)!! else listed += it.string(0)!! }
-        return DriveTreeIndex.State(entries = folders, childrenByParent = childrenByParent,
-            complete = complete, dirtyFolders = dirty, listedFolders = listed, revision = revision)
-    }
-    private fun computeFolderStats(): SortContext {
-        val state = folderState()
-        val direct = HashMap<String, SubtreeStats>()
-        rows("SELECT folder,virtual,bytes,count,duration,known,unknown FROM tree_aggregate") { c ->
-            val own = ContentStats(c.long(2)!!, c.long(3)!!, c.long(4)!!, c.long(5)!!, c.long(6)!!, metadataComplete = c.long(6) == 0L)
-            val id = c.string(0)!!
-            direct[id] = (direct[id] ?: SubtreeStats()) + if (c.long(1) == 1L) SubtreeStats(vaulted = own) else SubtreeStats(physical = own)
+    private fun computeFolderStats(): Map<String, SubtreeStats> {
+        val folderProj = ensureFolderProjection()
+        val folders = folderProj.folders
+        val childrenByParent = folderProj.childrenByParent
+        val (listed, dirty) = ensureCoverage()
+        val isComplete = complete
+
+        val excluded = HashSet<String>()
+        val queue = ArrayDeque<String>()
+        for (file in folders.values) if (isPikoInternalFolder(file, file.parentId)) queue.add(file.id)
+        while (queue.isNotEmpty()) {
+            val id = queue.removeFirst()
+            if (excluded.add(id)) queue.addAll(childrenByParent[id].orEmpty())
         }
-        val folders = state.entries
-        val base = SortContext.of(state)
-        val stats = base.subtreeStats.toMutableMap()
-        // Walk only folder ancestry. No file identity is retained in aggregate construction.
-        for ((folder, value) in direct) {
-            var id = folder; val seen = HashSet<String>()
+
+        val accByFolder = HashMap<String, FolderStatAcc>(folders.size + 1)
+        fun addFolder(id: String) {
+            val folderComplete = (isComplete || id in listed) && id !in dirty
+            accByFolder[id] = FolderStatAcc(
+                physListingComplete = folderComplete,
+                vaultListingComplete = folderComplete,
+            )
+        }
+        addFolder("")
+        for (file in folders.values) {
+            if (file.isFolder && file.id !in excluded && !file.trashed) addFolder(file.id)
+        }
+        for (file in folders.values) {
+            if (file.id in excluded || file.trashed || VaultStore.looksLikeManifest(file) || VaultStore.isRecoveryFile(file)) continue
+            val parentAcc = accByFolder[file.parentId]
+            if (parentAcc != null) parentAcc.pendingChildren++
+            else accByFolder[file.id]?.structuralValid = false
+        }
+
+        queue.clear()
+        for ((id, acc) in accByFolder) if (acc.pendingChildren == 0) queue.add(id)
+        val visited = HashSet<String>(accByFolder.size)
+        while (queue.isNotEmpty()) {
+            val id = queue.removeFirst()
+            if (!visited.add(id) || id.isEmpty()) continue
+            val parentId = folders[id]?.parentId ?: continue
+            val parentAcc = accByFolder[parentId] ?: continue
+            val childAcc = accByFolder.getValue(id)
+            if (!childAcc.physListingComplete) parentAcc.physListingComplete = false
+            if (!childAcc.vaultListingComplete) parentAcc.vaultListingComplete = false
+            if (!childAcc.structuralValid) parentAcc.structuralValid = false
+            val remaining = parentAcc.pendingChildren - 1
+            parentAcc.pendingChildren = remaining
+            if (remaining == 0) queue.add(parentId)
+        }
+        // Kahn elimination leaves cycles and their dependent aggregates unprocessed.
+        for ((id, acc) in accByFolder) if (id !in visited) {
+            acc.structuralValid = false
+            acc.physListingComplete = false
+            acc.vaultListingComplete = false
+        }
+
+        // Walk only folder ancestry. No file identity or intermediate ContentStats/SubtreeStats is allocated.
+        val seen = HashSet<String>(16)
+        rows("SELECT folder,virtual,bytes,count,duration,known,unknown FROM tree_aggregate") { c ->
+            var id = c.string(0)!!
+            val isVirtual = c.long(1) == 1L
+            val bytes = (c.long(2) ?: 0L).coerceAtLeast(0L)
+            val count = (c.long(3) ?: 0L).coerceAtLeast(0L)
+            val duration = (c.long(4) ?: 0L).coerceAtLeast(0L)
+            val known = (c.long(5) ?: 0L).coerceAtLeast(0L)
+            val unknown = (c.long(6) ?: 0L).coerceAtLeast(0L)
+            seen.clear()
             while (seen.add(id)) {
-                if (id !in stats) break
-                stats[id] = stats.getValue(id) + value
+                val acc = accByFolder[id] ?: break
+                if (isVirtual) acc.addVaulted(bytes, count, duration, known, unknown)
+                else acc.addPhysical(bytes, count, duration, known, unknown)
                 if (id.isEmpty()) break
                 id = folders[id]?.parentId ?: break
             }
         }
-        return base.copy(subtreeStats = stats)
+
+        val result = HashMap<String, SubtreeStats>(accByFolder.size)
+        for ((id, acc) in accByFolder) result[id] = acc.build()
+        return result
     }
     fun filesByIds(ids: Collection<String>): Map<String, FileStat> {
         if (closed) return emptyMap()
@@ -989,14 +1339,24 @@ internal class SqliteTreeStore(
     fun sortContext(state: DriveTreeIndex.State, folderId: String? = null, files: List<FileStat>? = null, order: PikoFileSortOrder? = null): SortContext {
         if (closed) return SortContext(state.revision, emptyMap(), emptyMap(), emptyMap(), emptyMap())
         val stats = ensureSubtreeStats()
+        if (files == null && folderId == null) {
+            val folderProj = ensureFolderProjection()
+            return SortContext(state.revision, stats, folderProj.created, folderProj.modified, emptyMap())
+        }
+        val folderProj = cachedFolderProjection
         val created = HashMap<String, Long>(); val modified = HashMap<String, Long>()
         val metadataByKey = HashMap<ContentKey, ContentMetadata>()
         fun collect(f: FileStat, original: Long?) {
+            if (f.isFolder && original == null && folderProj != null && f.id in folderProj.folders) {
+                folderProj.created[f.id]?.let { created[f.id] = it }
+                folderProj.modified[f.id]?.let { modified[f.id] = it }
+                return
+            }
             (original ?: treeEpochMillis(f.createdTime))?.let { created[f.id] = it }
             treeEpochMillis(f.modifiedTime)?.let { modified[f.id] = it }
         }
         val requested = files ?: buildList {
-            rows("SELECT payload FROM tree_nodes WHERE generation=0 AND " + if (folderId == null) "folder=1" else "parent=?", if (folderId == null) emptyList() else listOf(folderId)) { add(decode(it.string(0)!!)) }
+            rows("SELECT payload FROM tree_nodes WHERE generation=0 AND parent=?", listOf(folderId)) { add(decode(it.string(0)!!)) }
         }
         val original = HashMap<String, Long>()
         if (order == null || order == PikoFileSortOrder.TIME_ASC || order == PikoFileSortOrder.TIME_DESC) {
@@ -1020,12 +1380,20 @@ internal class SqliteTreeStore(
     }
     fun folderUsage(root: String, state: DriveTreeIndex.State): FolderUsage? {
         if (closed) return null
-        val cursor = db.query("SELECT payload,usage_bytes,usage_count FROM tree_subtree WHERE folder=?", listOf(root))
-        return try {
-            if (!cursor.next()) return null
-            val stats = json.decodeFromString(SubtreeStats.serializer(), cursor.string(0)!!)
+        val memStats = cachedSubtreeStats
+        if (memStats != null) {
+            val stats = memStats[root] ?: return null
             if (!stats.structuralValid || !stats.physical.listingComplete) return null
+            return useQuery("SELECT usage_bytes,usage_count FROM tree_subtree WHERE folder=?", listOf(root)) { cursor ->
+                if (!cursor.next()) null
+                else FolderUsage(cursor.long(1)!!.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), cursor.long(0)!!, FolderUsage.Progress.COMPLETE)
+            }
+        }
+        return useQuery("SELECT payload,usage_bytes,usage_count FROM tree_subtree WHERE folder=?", listOf(root)) { cursor ->
+            if (!cursor.next()) return@useQuery null
+            val stats = json.decodeFromString(SubtreeStats.serializer(), cursor.string(0)!!)
+            if (!stats.structuralValid || !stats.physical.listingComplete) return@useQuery null
             FolderUsage(cursor.long(2)!!.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), cursor.long(1)!!, FolderUsage.Progress.COMPLETE)
-        } finally { cursor.close() }
+        }
     }
 }

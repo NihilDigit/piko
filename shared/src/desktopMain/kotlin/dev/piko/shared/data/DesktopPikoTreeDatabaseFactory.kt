@@ -54,11 +54,53 @@ private class JdbcTreeDatabase(
     private val connection: Connection,
     release: () -> Unit,
 ) : ManagedPikoTreeDatabase(release) {
+    private class CachedQueryStatement(
+        val sql: String,
+        val statement: PreparedStatement,
+        var inUse: Boolean = false,
+        var retired: Boolean = false,
+    )
+
     private val statementCache = object : LinkedHashMap<String, PreparedStatement>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PreparedStatement>): Boolean {
             if (size <= MAX_CACHED_STATEMENTS) return false
             runCatching { eldest.value.close() }
             return true
+        }
+    }
+
+    private val queryCache = LinkedHashMap<String, CachedQueryStatement>(64, 0.75f, true)
+
+    private fun evictQueryCacheIfNeeded() {
+        if (queryCache.size <= MAX_CACHED_STATEMENTS) return
+        val iter = queryCache.entries.iterator()
+        while (queryCache.size > MAX_CACHED_STATEMENTS && iter.hasNext()) {
+            val candidate = iter.next().value
+            if (!candidate.inUse) {
+                iter.remove()
+                runCatching { candidate.statement.close() }
+            }
+        }
+        if (queryCache.size > MAX_CACHED_STATEMENTS) {
+            val fallbackIter = queryCache.entries.iterator()
+            while (queryCache.size > MAX_CACHED_STATEMENTS && fallbackIter.hasNext()) {
+                val active = fallbackIter.next().value
+                active.retired = true
+                fallbackIter.remove()
+            }
+        }
+    }
+
+    private fun clearIdleQueryCache() {
+        val iter = queryCache.entries.iterator()
+        while (iter.hasNext()) {
+            val entry = iter.next().value
+            if (entry.inUse) {
+                entry.retired = true
+            } else {
+                runCatching { entry.statement.close() }
+            }
+            iter.remove()
         }
     }
 
@@ -89,6 +131,12 @@ private class JdbcTreeDatabase(
     }
 
     override fun executeRaw(sql: String, parameters: List<Any?>) {
+        if (sql.startsWith("DROP ") || sql.startsWith("ALTER ")) {
+            val statements = statementCache.values.toList()
+            statementCache.clear()
+            for (statement in statements) runCatching { statement.close() }
+            clearIdleQueryCache()
+        }
         // DDL / PRAGMA / dynamic statements with no bind params may alter schema; cache parameterized DML hot paths.
         if (parameters.isEmpty() && !sql.startsWith("DELETE ") && !sql.startsWith("INSERT ")) {
             prepareUncached(sql, parameters).use { it.execute() }
@@ -104,10 +152,28 @@ private class JdbcTreeDatabase(
     }
 
     override fun queryRaw(sql: String, parameters: List<Any?>): PikoTreeCursor {
-        val statement = prepareUncached(sql, parameters)
+        if (sql.startsWith("PRAGMA ") || sql.startsWith("EXPLAIN ")) {
+            return executeUncachedQuery(sql, parameters)
+        }
+        val existing = queryCache[sql]
+        if (existing != null && existing.inUse) {
+            // Re-entrant / concurrent open cursor on the same SQL: isolate in a temporary statement.
+            return executeUncachedQuery(sql, parameters)
+        }
+        val entry = if (existing != null) {
+            existing.inUse = true
+            existing
+        } else {
+            val created = CachedQueryStatement(sql, connection.prepareStatement(sql), inUse = true)
+            queryCache[sql] = created
+            evictQueryCacheIfNeeded()
+            created
+        }
         try {
-            val result = statement.executeQuery()
+            bindTo(entry.statement, parameters)
+            val result = entry.statement.executeQuery()
             return object : PikoTreeCursor {
+                private var closedCursor = false
                 override fun next() = result.next()
                 override fun string(index: Int): String? = result.getString(index + 1)
                 override fun long(index: Int): Long? {
@@ -115,6 +181,53 @@ private class JdbcTreeDatabase(
                     return if (result.wasNull()) null else value
                 }
                 override fun close() {
+                    if (closedCursor) return
+                    closedCursor = true
+                    var closeError: Throwable? = null
+                    try {
+                        result.close()
+                    } catch (err: Throwable) {
+                        closeError = err
+                    } finally {
+                        entry.inUse = false
+                        if (entry.retired || closeError != null) {
+                            if (queryCache[sql] === entry) queryCache.remove(sql)
+                            runCatching { entry.statement.close() }
+                        } else {
+                            runCatching { entry.statement.clearParameters() }
+                                .onFailure {
+                                    if (queryCache[sql] === entry) queryCache.remove(sql)
+                                    runCatching { entry.statement.close() }
+                                }
+                        }
+                    }
+                    closeError?.let { throw it }
+                }
+            }
+        } catch (error: Throwable) {
+            entry.inUse = false
+            entry.retired = true
+            if (queryCache[sql] === entry) queryCache.remove(sql)
+            runCatching { entry.statement.close() }
+            throw error
+        }
+    }
+
+    private fun executeUncachedQuery(sql: String, parameters: List<Any?>): PikoTreeCursor {
+        val statement = prepareUncached(sql, parameters)
+        try {
+            val result = statement.executeQuery()
+            return object : PikoTreeCursor {
+                private var closedCursor = false
+                override fun next() = result.next()
+                override fun string(index: Int): String? = result.getString(index + 1)
+                override fun long(index: Int): Long? {
+                    val value = result.getLong(index + 1)
+                    return if (result.wasNull()) null else value
+                }
+                override fun close() {
+                    if (closedCursor) return
+                    closedCursor = true
                     try { result.close() } finally { statement.close() }
                 }
             }
@@ -129,6 +242,12 @@ private class JdbcTreeDatabase(
         statementCache.clear()
         for (statement in statements) {
             runCatching { statement.close() }
+        }
+        val queries = queryCache.values.toList()
+        queryCache.clear()
+        for (entry in queries) {
+            entry.retired = true
+            runCatching { entry.statement.close() }
         }
         connection.close()
     }

@@ -365,11 +365,20 @@ open class PikoDriveRepository(
                 if (clientManager.currentClient.value !== owner) null else {
                     val generation = accountGeneration
                     val boundIndex = driveTreeIndex
-                    object : DriveDetailObserver {
+                    object : BatchDriveDetailObserver {
                         override fun observe(originalFileId: String, detail: FileDetail) {
                             withPikoLock(treeStateLock) {
                                 if (clientManager.currentClient.value === owner && generation == accountGeneration) {
                                     boundIndex.observeDetail(detail)
+                                }
+                            }
+                        }
+
+                        override fun observeBatch(details: Collection<FileDetail>) {
+                            if (details.isEmpty()) return
+                            withPikoLock(treeStateLock) {
+                                if (clientManager.currentClient.value === owner && generation == accountGeneration) {
+                                    boundIndex.observeDetails(details)
                                 }
                             }
                         }
@@ -3434,6 +3443,8 @@ open class PikoDriveRepository(
         fun enrichFile(file: FileStat): FileStat =
             if (file.isFolder) withVaultCovers(listOf(file)).first() else sourceLedger.enrich(file)
 
+        val preparedSearchQuery = dev.piko.shared.search.prepareCjkQuery(cleanQuery)
+
         suspend fun emitNewMatches(incrementalSkip: MutableSet<String>? = null, excludeDirty: Boolean = false) {
             val dirtyNow = if (excludeDirty) driveTreeIndex.dirtyFolders else emptySet()
             val hits = driveTreeIndex.searchLocal(
@@ -3447,8 +3458,8 @@ open class PikoDriveRepository(
             val projectedHits = if (!hasPendingOptimisticWrites) hits else {
                 val folders = projectOptimisticFiles(driveTreeIndex.flow.value.entries.values.toList()).associateBy { it.id }
                 projectOptimisticFiles((hits.map { it.file } + optimisticCandidates()).distinctBy { it.id }).mapNotNull { file ->
-                    val score = dev.piko.shared.search.cjkFuzzyScore(cleanQuery, file.name)
-                        ?: extraFolderTitle(file).takeIf { file.isFolder }?.let { dev.piko.shared.search.cjkFuzzyScore(cleanQuery, it) }
+                    val score = preparedSearchQuery.score(file.name)
+                        ?: extraFolderTitle(file).takeIf { file.isFolder }?.let(preparedSearchQuery::score)
                     if (score == null || isPikoInternalFolder(file, file.parentId) || VaultStore.looksLikeManifest(file) || VaultStore.isRecoveryFile(file)) null
                     else DriveTreeIndex.resolveBreadcrumb(file, parentId, folders, folderIndex.flow.value.nodes)?.let {
                         SearchHit(enrichFile(file), it)
@@ -3465,15 +3476,25 @@ open class PikoDriveRepository(
 
         if (driveTreeIndex.isComplete) {
             val dirty = driveTreeIndex.dirtyFolders
-            for (folderId in dirty) {
-                if (clientManager.currentClient.value !== asked) return@flow
-                val listing = runSuspendCatching { fetchListing(folderId, asked) }
-                    .logFailure(TAG, "Search failed to refresh dirty ${logFolder(folderId)}; skipping")
-                    .getOrNull() ?: continue
-                runSuspendCatching {
-                    readAndRecordVaultEntries(folderId, listing, store, asked, logFailure = true, logTagSuffix = " (search dirty refresh)")
+            if (dirty.isNotEmpty()) {
+                var pendingEmit = false
+                var lastEmitMark = TimeSource.Monotonic.markNow()
+                for (folderId in dirty) {
+                    if (clientManager.currentClient.value !== asked) return@flow
+                    val listing = runSuspendCatching { fetchListing(folderId, asked) }
+                        .logFailure(TAG, "Search failed to refresh dirty ${logFolder(folderId)}; skipping")
+                        .getOrNull() ?: continue
+                    runSuspendCatching {
+                        readAndRecordVaultEntries(folderId, listing, store, asked, logFailure = true, logTagSuffix = " (search dirty refresh)")
+                    }
+                    pendingEmit = true
+                    if (lastEmitMark.elapsedNow() >= 250.milliseconds) {
+                        emitNewMatches()
+                        pendingEmit = false
+                        lastEmitMark = TimeSource.Monotonic.markNow()
+                    }
                 }
-                emitNewMatches()
+                if (pendingEmit) emitNewMatches()
             }
             return@flow
         }

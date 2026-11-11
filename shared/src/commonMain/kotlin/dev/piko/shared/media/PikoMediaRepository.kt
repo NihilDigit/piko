@@ -2,6 +2,7 @@ package dev.piko.shared.media
 
 import dev.piko.shared.i18n.tr
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.shared.data.BatchDriveDetailObserver
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.data.LeasedFile
@@ -632,11 +633,17 @@ class PikoMediaRepository(
                         "Batch clip detail probe failed (count=${missingDriveIds.size}), falling back to single-item probes: ${it::class.simpleName}: ${it.message}",
                     )
                 }.getOrDefault(emptyList())
-                for (detail in fetched) {
-                    if (detail.id.isBlank()) continue
-                    observer?.observe(detail.id, detail)
-                    rememberFreshDetail(owner, detail.id, detail)
-                    result[detail.id] = clipProbeOf(detail)
+                val validFetched = fetched.filter { it.id.isNotBlank() }
+                if (validFetched.isNotEmpty()) {
+                    if (observer is BatchDriveDetailObserver) {
+                        observer.observeBatch(validFetched)
+                    } else if (observer != null) {
+                        for (detail in validFetched) observer.observe(detail.id, detail)
+                    }
+                    rememberFreshDetails(owner, validFetched)
+                    for (detail in validFetched) {
+                        result[detail.id] = clipProbeOf(detail)
+                    }
                 }
                 for (id in missingDriveIds) {
                     if (id !in result) {
@@ -703,6 +710,18 @@ class PikoMediaRepository(
             freshDetailsOwner = owner
             freshDetails.entries.removeAll { it.value.second.elapsedNow() > FRESH_DETAIL_FOR }
             freshDetails[fileId] = detail to TimeSource.Monotonic.markNow()
+        }
+    }
+
+    private suspend fun rememberFreshDetails(owner: PikPakClient, details: List<FileDetail>) = freshDetailsLock.withLock {
+        if (clientManager.currentClient.value === owner) {
+            if (freshDetailsOwner !== owner) freshDetails.clear()
+            freshDetailsOwner = owner
+            freshDetails.entries.removeAll { it.value.second.elapsedNow() > FRESH_DETAIL_FOR }
+            val mark = TimeSource.Monotonic.markNow()
+            for (detail in details) {
+                freshDetails[detail.id] = detail to mark
+            }
         }
     }
 

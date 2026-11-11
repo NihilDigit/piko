@@ -61,26 +61,77 @@ internal abstract class ManagedPikoTreeDatabase(private val release: () -> Unit)
         }
     }
 
-    override fun query(sql: String, parameters: List<Any?>): PikoTreeCursor = withPikoLock(lock) {
-        if (closed) return@withPikoLock EmptyTreeCursor
-        val raw = queryRaw(sql, parameters)
-        val cursor = object : PikoTreeCursor {
-            private var cursorClosed = false
-            override fun next(): Boolean = withPikoLock(lock) { !cursorClosed && !closed && raw.next() }
-            override fun string(index: Int): String? = withPikoLock(lock) {
-                if (cursorClosed || closed) null else raw.string(index)
-            }
-            override fun long(index: Int): Long? = withPikoLock(lock) {
-                if (cursorClosed || closed) null else raw.long(index)
-            }
-            override fun close() = withPikoLock(lock) {
-                if (!cursorClosed) {
-                    cursorClosed = true
-                    cursors.remove(this)
-                    raw.close()
-                }
+    internal inner class ManagedCursor(private val raw: PikoTreeCursor) : PikoTreeCursor {
+        private var cursorClosed = false
+
+        @PublishedApi
+        internal val dbLock: PikoLock
+            get() = lock
+
+        @PublishedApi
+        internal val directView: PikoTreeCursor = object : PikoTreeCursor {
+            override fun next(): Boolean = stepUnlocked()
+            override fun string(index: Int): String? = if (cursorClosed || closed) null else raw.string(index)
+            override fun long(index: Int): Long? = if (cursorClosed || closed) null else raw.long(index)
+            override fun close() = closeUnlocked()
+        }
+
+        @PublishedApi
+        internal fun stepUnlocked(): Boolean = !cursorClosed && !closed && raw.next()
+
+        @PublishedApi
+        internal fun isOpenUnlocked(): Boolean = !cursorClosed && !closed
+
+        @PublishedApi
+        internal fun closeUnlocked() {
+            if (!cursorClosed) {
+                cursorClosed = true
+                cursors.remove(this)
+                raw.close()
             }
         }
+
+        override fun next(): Boolean = withPikoLock(lock) { stepUnlocked() }
+        override fun string(index: Int): String? = withPikoLock(lock) { directView.string(index) }
+        override fun long(index: Int): Long? = withPikoLock(lock) { directView.long(index) }
+        override fun close() = withPikoLock(lock) { closeUnlocked() }
+
+        internal inline fun <R> useLocked(block: (PikoTreeCursor) -> R): R = withPikoLock(dbLock) {
+            try {
+                block(directView)
+            } finally {
+                closeUnlocked()
+            }
+        }
+
+        internal inline fun forEachRow(chunkSize: Int = 256, consume: (PikoTreeCursor) -> Unit) {
+            try {
+                while (true) {
+                    val hasMore = withPikoLock(dbLock) {
+                        var count = 0
+                        var advanced = false
+                        while (count < chunkSize) {
+                            if (!stepUnlocked()) {
+                                advanced = false
+                                break
+                            }
+                            consume(directView)
+                            count++
+                            advanced = true
+                        }
+                        advanced && isOpenUnlocked()
+                    }
+                    if (!hasMore) break
+                }
+            } finally {
+                close()
+            }
+        }
+    }
+
+    override fun query(sql: String, parameters: List<Any?>): PikoTreeCursor = withPikoLock(lock) {
+        if (closed) return@withPikoLock EmptyTreeCursor
+        val cursor = ManagedCursor(queryRaw(sql, parameters))
         cursors.add(cursor)
         cursor
     }

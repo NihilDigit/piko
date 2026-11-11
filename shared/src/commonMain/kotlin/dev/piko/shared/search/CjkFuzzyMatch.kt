@@ -37,6 +37,79 @@ fun normalizeCjk(text: String): String {
 fun cjkMatches(text: String, query: String): Boolean = cjkFuzzyScore(query, text) != null
 
 /**
+ * 预归一化的 CJK 搜索查询，供全盘扫描或批量过滤在循环外构建一次后复用。
+ */
+class PreparedCjkQuery internal constructor(
+    private val tokens: Array<PreparedToken>,
+) {
+    internal class PreparedToken(
+        val raw: String,
+        val compact: String,
+        val allowCjkSubsequence: Boolean,
+    )
+
+    val isMatchAll: Boolean get() = tokens.isEmpty()
+
+    fun score(text: String): Int? {
+        if (tokens.isEmpty()) return 0
+        return scoreNormalized(normalizeCjk(text))
+    }
+
+    /**
+     * 对已经过 [normalizeCjk] 归一化的目标文本（如 `tree_nodes.norm_name`）直接评分，避免逐行二次归一化分配。
+     */
+    fun scoreNormalized(normText: String): Int? {
+        if (tokens.isEmpty()) return 0
+        if (normText.isEmpty()) return null
+
+        var totalScore = 0
+        var compactText: String? = null
+        for (token in tokens) {
+            val raw = token.raw
+            val directIdx = normText.indexOf(raw)
+            if (directIdx >= 0) {
+                val wordStart = directIdx == 0 || !normText[directIdx - 1].isLetterOrDigit()
+                totalScore += 1_000 + (if (directIdx == 0) 200 else 0) + (if (wordStart) 30 else 0) - directIdx
+                continue
+            }
+            val compactTok = token.compact
+            if (compactTok.isEmpty()) continue
+            if (!hasOrderedChars(normText, compactTok)) return null
+            val targetCompact = compactText ?: stripSeparators(normText).also { compactText = it }
+            val compactIdx = targetCompact.indexOf(compactTok)
+            if (compactIdx >= 0) {
+                totalScore += 700 + (if (compactIdx == 0) 100 else 0) - compactIdx
+                continue
+            }
+            if (!token.allowCjkSubsequence) return null
+            val subseqScore = cjkSubsequenceScore(compactTok, normText) ?: return null
+            totalScore += subseqScore
+        }
+        return totalScore - normText.length / 4
+    }
+}
+
+private val MATCH_ALL_CJK_QUERY = PreparedCjkQuery(emptyArray())
+
+fun prepareCjkQuery(query: String): PreparedCjkQuery {
+    if (query.isBlank()) return MATCH_ALL_CJK_QUERY
+    val normQuery = normalizeCjk(query).trim()
+    if (normQuery.isEmpty()) return MATCH_ALL_CJK_QUERY
+    val rawTokens = splitTokens(normQuery)
+    if (rawTokens.isEmpty()) return MATCH_ALL_CJK_QUERY
+    val prepared = Array(rawTokens.size) { i ->
+        val tok = rawTokens[i]
+        val compact = stripSeparators(tok)
+        PreparedCjkQuery.PreparedToken(
+            raw = tok,
+            compact = compact,
+            allowCjkSubsequence = compact.length >= 2 && isAllCjkChars(compact),
+        )
+    }
+    return PreparedCjkQuery(prepared)
+}
+
+/**
  * 计算 [query] 对 [text] 的 CJK 模糊匹配得分，不匹配返回 null。
  *
  * - 支持空格切分多个关键词，所有词都命中才算匹配；
@@ -44,37 +117,23 @@ fun cjkMatches(text: String, query: String): Boolean = cjkFuzzyScore(query, text
  * - 忽略连字符/下划线/括号/中点等分隔符后的连续子串次之（如 `ssis123` 命中 `SSIS-123`）；
  * - 对纯 CJK 词（长度 >= 2），允许有界跳跃子序列匹配（如 `进击巨人` 命中 `進擊的巨人`），避免拉丁字母与数字跨词误匹配。
  */
-fun cjkFuzzyScore(query: String, text: String): Int? {
-    if (query.isBlank()) return 0
-    val normQuery = normalizeCjk(query).trim()
-    if (normQuery.isEmpty()) return 0
-    val normText = normalizeCjk(text)
-    if (normText.isEmpty()) return null
+fun cjkFuzzyScore(query: String, text: String): Int? = prepareCjkQuery(query).score(text)
 
-    val tokens = splitTokens(normQuery)
-    if (tokens.isEmpty()) return 0
-
-    var totalScore = 0
-    var compactText: String? = null
-    for (token in tokens) {
-        val directIdx = normText.indexOf(token)
-        if (directIdx >= 0) {
-            val wordStart = directIdx == 0 || !normText[directIdx - 1].isLetterOrDigit()
-            totalScore += 1_000 + (if (directIdx == 0) 200 else 0) + (if (wordStart) 30 else 0) - directIdx
-            continue
-        }
-        val compactTok = stripSeparators(token)
-        if (compactTok.isEmpty()) continue
-        val targetCompact = compactText ?: stripSeparators(normText).also { compactText = it }
-        val compactIdx = targetCompact.indexOf(compactTok)
-        if (compactIdx >= 0) {
-            totalScore += 700 + (if (compactIdx == 0) 100 else 0) - compactIdx
-            continue
-        }
-        val subseqScore = cjkSubsequenceScore(compactTok, normText) ?: return null
-        totalScore += subseqScore
+private fun hasOrderedChars(text: String, subseq: String): Boolean {
+    var pos = 0
+    for (i in 0 until subseq.length) {
+        val found = text.indexOf(subseq[i], pos)
+        if (found < 0) return false
+        pos = found + 1
     }
-    return totalScore - normText.length / 4
+    return true
+}
+
+private fun isAllCjkChars(text: String): Boolean {
+    for (i in 0 until text.length) {
+        if (!isCjkChar(text[i])) return false
+    }
+    return true
 }
 
 private fun splitTokens(text: String): List<String> {

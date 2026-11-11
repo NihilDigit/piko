@@ -21,12 +21,28 @@ internal class OptimisticWrites {
         suspend fun awaitTurn() { predecessors.forEach { it.await() } }
     }
     private val pending = MutableStateFlow<List<Write>>(emptyList())
-    fun candidates(account: String?): List<FileStat> = pending.value.filter { it.account == account }.flatMap { it.before.values }.distinctBy { it.id }
-    fun hasPending(account: String?) = pending.value.any { it.account == account }
+
+    private fun hasPendingIn(all: List<Write>, account: String?): Boolean {
+        for (i in 0 until all.size) {
+            if (all[i].account == account) return true
+        }
+        return false
+    }
+
+    fun candidates(account: String?): List<FileStat> {
+        val all = pending.value
+        if (!hasPendingIn(all, account)) return emptyList()
+        return all.filter { it.account == account }.flatMap { it.before.values }.distinctBy { it.id }
+    }
+
+    fun hasPending(account: String?) = hasPendingIn(pending.value, account)
+
     fun projectFolders(account: String?, state: FolderIndex.State): FolderIndex.State {
+        val all = pending.value
+        if (!hasPendingIn(all, account)) return state
         var nodes = state.nodes
         var gone = state.gone
-        val writes = pending.value.filter { it.account == account }
+        val writes = all.filter { it.account == account }
         for (write in writes) {
             when (val change = write.change) {
                 is DriveChange.Renamed -> nodes[change.id]?.let { nodes = nodes + (change.id to it.copy(name = change.name)) }
@@ -95,8 +111,19 @@ internal class OptimisticWrites {
         account: String?, folder: String?, files: List<FileStat>, trash: Boolean = false,
         parentOf: (String) -> String? = { null },
     ): List<FileStat> {
-        val result = files.associateByTo(LinkedHashMap()) { it.id }
-        val writes = pending.value.filter { it.account == account }
+        val all = pending.value
+        if (!hasPendingIn(all, account)) {
+            if (files.isEmpty()) return files
+            for (i in 0 until files.size) {
+                val file = files[i]
+                if ((folder != null && file.parentId != folder) || file.trashed != trash) {
+                    return files.filter { (folder == null || it.parentId == folder) && it.trashed == trash }
+                }
+            }
+            return files
+        }
+        val result = files.associateByTo(LinkedHashMap(files.size)) { it.id }
+        val writes = all.filter { it.account == account }
         for (write in writes) for ((id, before) in write.before) {
             if ((folder != null || id in result) && id !in result) result[id] = before
         }

@@ -121,15 +121,36 @@ data class ContentMetadata(
     }
 
     companion object {
-        fun of(file: FileStat) = ContentMetadata(
-            durationMillis = file.params["duration"]?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }
+        fun of(file: FileStat) = of(file.params, file.mimeType)
+
+        fun of(params: Map<String, String>, mimeType: String) = ContentMetadata(
+            durationMillis = params["duration"]?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }
                 ?.let { (it * 1000).toLong() },
-            width = file.params["width"]?.toIntOrNull()?.takeIf { it > 0 },
-            height = file.params["height"]?.toIntOrNull()?.takeIf { it > 0 },
-            mimeType = file.mimeType.takeIf { it.isNotBlank() },
-            cid = file.params["piko_vault_cid"],
+            width = params["width"]?.toIntOrNull()?.takeIf { it > 0 },
+            height = params["height"]?.toIntOrNull()?.takeIf { it > 0 },
+            mimeType = mimeType.takeIf { it.isNotBlank() },
+            cid = params["piko_vault_cid"],
         )
     }
+}
+
+internal interface BatchDriveDetailObserver : DriveDetailObserver {
+    fun observeBatch(details: Collection<FileDetail>)
+}
+
+internal fun FileDetail.toObservedContentMetadata(): Pair<ContentKey, ContentMetadata>? {
+    val key = ContentKey.of(hash, sizeBytes) ?: return null
+    val original = medias.firstOrNull { it.isOrigin }?.video
+    val listed = ContentMetadata.of(params, mimeType)
+    return key to ContentMetadata(
+        durationMillis = original?.duration?.takeIf { it > 0 }?.let { it.coerceAtMost(Long.MAX_VALUE / 1000) * 1000 } ?: listed.durationMillis,
+        width = original?.width?.takeIf { it > 0 } ?: listed.width,
+        height = original?.height?.takeIf { it > 0 } ?: listed.height,
+        mimeType = listed.mimeType,
+        cid = listed.cid ?: params["cid"],
+        qualityRank = if (original != null) 2 else 1,
+        transcodes = extractTranscodeVariants(),
+    )
 }
 
 internal fun FileDetail.extractTranscodeVariants(): List<TranscodeVariantMetadata>? {
@@ -192,8 +213,12 @@ internal fun mergeTreeContentMetadata(
 @Serializable
 internal data class EntryMetadata(val originalCreatedAtMillis: Long? = null)
 
-internal fun treeEpochMillis(value: String): Long? =
-    try { Instant.parse(value).toEpochMilliseconds() } catch (_: IllegalArgumentException) { null }
+internal fun treeEpochMillis(value: String): Long? {
+    if (value.length < 10) return null
+    val first = value[0]
+    if (first !in '0'..'9' && first != '+' && first != '-') return null
+    return try { Instant.parse(value).toEpochMilliseconds() } catch (_: IllegalArgumentException) { null }
+}
 
 /** Owns its array and follows AbstractMap's structural equality/hashCode contract. */
 internal class CompactStringMap private constructor(private val cells: Array<String>) : AbstractMap<String, String>() {
