@@ -144,59 +144,133 @@ class PikoDownloadCoordinator(
     private val queueLock = Mutex()
     private val enqueueLock = Mutex()
     private val listingSlots = Semaphore(4)
+    private val partialPlaybackEpoch = MutableStateFlow(0L)
     private var lastGroup: String? = null
     private var batchSequence = 0L
+
+    private fun hasActiveWholeDownload(tasks: Map<String, DownloadTask>): Boolean =
+        tasks.values.any { it.status == DownloadStatus.DOWNLOADING && !it.isSegment }
+
+    private fun hasOpenTrackedCache(
+        tasks: Map<String, DownloadTask>,
+        snapshots: Map<String, PikoFileCachePool.Snapshot>,
+    ): Boolean = snapshots.isNotEmpty() && tasks.values.any {
+        it.sparseCache && !it.isSegment && it.status != DownloadStatus.COMPLETED && it.cacheIdentity in snapshots
+    }
 
     init {
         mediaRepository?.fileCachePool = fileCachePool
         mediaRepository?.partialDownload = { fileId ->
             _tasks.value.values.firstOrNull { it.fileId == fileId && belongsToCurrent(it) &&
                 !it.isSegment && it.mediaId == null && it.status != DownloadStatus.COMPLETED && it.sparseCache }
+                ?.also { partialPlaybackEpoch.update { epoch -> epoch + 1L } }
         }
         // 播放也会补齐暂停的下载。进度与网络速度统一采样，同一缓存的网络字节只统计一次。
         scope.launch {
             val samples = mutableMapOf<String, ArrayDeque<Pair<TimeMark, Long>>>()
-            var previousTick = TimeSource.Monotonic.markNow()
-            var logMark = TimeSource.Monotonic.markNow()
+            var observedPlaybackEpoch = partialPlaybackEpoch.value
             while (true) {
-                delay(PROGRESS_INTERVAL_MS)
-                val snapshots = fileCachePool.progressSnapshot()
-                val speeds = snapshots.mapValues { (path, snapshot) ->
-                    val window = samples.getOrPut(path) { ArrayDeque(listOf(previousTick to 0L)) }
-                    window.addLast(TimeSource.Monotonic.markNow() to snapshot.deliveredBytes)
-                    while (window.size > 2 && window.first().first.elapsedNow().inWholeMilliseconds > SPEED_WINDOW_MS) window.removeFirst()
-                    val (mark, bytes) = window.first()
-                    (snapshot.deliveredBytes - bytes).coerceAtLeast(0) * 1000 / mark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1)
-                }
-                samples.keys.retainAll(snapshots.keys)
-                previousTick = TimeSource.Monotonic.markNow()
-                _tasks.update { tasks ->
-                    // 片段也占着暂存，但它的进度按截到的时间算，字节数是整个源文件的，不往它身上记
-                    val primary = tasks.values.filter { it.status == DownloadStatus.DOWNLOADING && it.sparseCache && !it.isSegment }
-                        .groupBy { it.cacheIdentity }.mapValues { it.value.minBy { task -> task.taskId }.taskId }
-                    val changed = tasks.values.mapNotNull { task ->
-                        if (!task.sparseCache || task.isSegment) return@mapNotNull null
-                        val identity = task.cacheIdentity
-                        val snapshot = snapshots[identity] ?: return@mapNotNull null
-                        if (task.status == DownloadStatus.COMPLETED) return@mapNotNull null
-                        val speed = if (primary[identity] == task.taskId) speeds[identity] ?: 0L else 0L
-                        if (snapshot.heldBytes == task.downloadedBytes && speed == task.speedBytesPerSec) null
-                        else task.taskId to task.copy(downloadedBytes = snapshot.heldBytes, speedBytesPerSec = speed)
+                combine(_tasks, partialPlaybackEpoch) { tasks, epoch ->
+                    hasActiveWholeDownload(tasks) || epoch != observedPlaybackEpoch
+                }.first { it }
+
+                samples.clear()
+                var previousTick = TimeSource.Monotonic.markNow()
+                var logMark = previousTick
+                for ((path, snapshot) in fileCachePool.progressSnapshot()) {
+                    samples[path] = ArrayDeque<Pair<TimeMark, Long>>().apply {
+                        addLast(previousTick to snapshot.deliveredBytes)
                     }
-                    if (changed.isEmpty()) tasks else tasks + changed
                 }
-                if (logMark.elapsedNow().inWholeMilliseconds >= LOG_INTERVAL_MS) {
-                    val activeIdentities = _tasks.value.values
-                        .filter { it.status == DownloadStatus.DOWNLOADING && it.sparseCache && !it.isSegment }
-                        .mapTo(HashSet()) { it.cacheIdentity }
-                    if (activeIdentities.isNotEmpty()) {
-                        val activeSpeed = activeIdentities.sumOf { speeds[it] ?: 0L }
-                        PikoLog.d(
-                            TAG,
-                            "Active downloads: speed=$activeSpeed B/s, activeCaches=${activeIdentities.size}, poolEntries=${snapshots.size}",
-                        )
+                var playbackGraceTicks = if (partialPlaybackEpoch.value != observedPlaybackEpoch) {
+                    observedPlaybackEpoch = partialPlaybackEpoch.value
+                    PLAYBACK_WAKE_GRACE_TICKS
+                } else {
+                    0
+                }
+
+                while (true) {
+                    delay(PROGRESS_INTERVAL_MS)
+                    val latestEpoch = partialPlaybackEpoch.value
+                    if (latestEpoch != observedPlaybackEpoch) {
+                        observedPlaybackEpoch = latestEpoch
+                        playbackGraceTicks = PLAYBACK_WAKE_GRACE_TICKS
+                    } else if (playbackGraceTicks > 0) {
+                        playbackGraceTicks--
                     }
-                    logMark = TimeSource.Monotonic.markNow()
+
+                    val snapshots = fileCachePool.progressSnapshot()
+                    val now = TimeSource.Monotonic.markNow()
+                    val speeds = if (snapshots.isEmpty()) {
+                        emptyMap()
+                    } else {
+                        snapshots.mapValues { (path, snapshot) ->
+                            val window = samples.getOrPut(path) {
+                                ArrayDeque<Pair<TimeMark, Long>>().apply { addLast(previousTick to 0L) }
+                            }
+                            window.addLast(now to snapshot.deliveredBytes)
+                            while (window.size > 2 && window.first().first.elapsedNow().inWholeMilliseconds > SPEED_WINDOW_MS) {
+                                window.removeFirst()
+                            }
+                            val (mark, bytes) = window.first()
+                            (snapshot.deliveredBytes - bytes).coerceAtLeast(0) * 1000 / mark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1)
+                        }
+                    }
+                    samples.keys.retainAll(snapshots.keys)
+                    previousTick = now
+
+                    if (snapshots.isNotEmpty()) {
+                        _tasks.update { tasks ->
+                            // 片段也占着暂存，但它的进度按截到的时间算，字节数是整个源文件的，不往它身上记
+                            val primary = HashMap<String, String>()
+                            for (task in tasks.values) {
+                                if (task.status == DownloadStatus.DOWNLOADING && task.sparseCache && !task.isSegment) {
+                                    val id = task.cacheIdentity
+                                    val existing = primary[id]
+                                    if (existing == null || task.taskId < existing) {
+                                        primary[id] = task.taskId
+                                    }
+                                }
+                            }
+                            var changed: MutableList<Pair<String, DownloadTask>>? = null
+                            for (task in tasks.values) {
+                                if (!task.sparseCache || task.isSegment || task.status == DownloadStatus.COMPLETED) continue
+                                val identity = task.cacheIdentity
+                                val snapshot = snapshots[identity] ?: continue
+                                val speed = if (primary[identity] == task.taskId) speeds[identity] ?: 0L else 0L
+                                if (snapshot.heldBytes != task.downloadedBytes || speed != task.speedBytesPerSec) {
+                                    if (changed == null) changed = ArrayList()
+                                    changed.add(task.taskId to task.copy(downloadedBytes = snapshot.heldBytes, speedBytesPerSec = speed))
+                                }
+                            }
+                            if (changed == null) tasks else tasks + changed
+                        }
+                    }
+
+                    if (logMark.elapsedNow().inWholeMilliseconds >= LOG_INTERVAL_MS) {
+                        val activeIdentities = _tasks.value.values
+                            .filter { it.status == DownloadStatus.DOWNLOADING && it.sparseCache && !it.isSegment }
+                            .mapTo(HashSet()) { it.cacheIdentity }
+                        if (activeIdentities.isNotEmpty()) {
+                            val activeSpeed = activeIdentities.sumOf { speeds[it] ?: 0L }
+                            PikoLog.d(
+                                TAG,
+                                "Active downloads: speed=$activeSpeed B/s, activeCaches=${activeIdentities.size}, poolEntries=${snapshots.size}",
+                            )
+                        }
+                        logMark = TimeSource.Monotonic.markNow()
+                    }
+
+                    val currentTasks = _tasks.value
+                    if (
+                        !hasActiveWholeDownload(currentTasks) &&
+                        !hasOpenTrackedCache(currentTasks, snapshots) &&
+                        playbackGraceTicks == 0 &&
+                        partialPlaybackEpoch.value == observedPlaybackEpoch
+                    ) {
+                        samples.clear()
+                        break
+                    }
                 }
             }
         }
@@ -346,6 +420,14 @@ class PikoDownloadCoordinator(
         return stopped.copy(status = status, downloadedBytes = downloaded, sparseCache = sparseCache)
     }
 
+    private data class TaskPersistenceKey(
+        val status: DownloadStatus,
+        val sparseCache: Boolean,
+        val fileName: String,
+        val mediaId: String?,
+        val fullFileSize: Long,
+    )
+
     /**
      * 任务增删或状态变化时保存整张表。进度每 500 毫秒刷新一次，按它写盘的话，
      * Android 的 DataStore 每次都要整份重写文件。
@@ -357,7 +439,9 @@ class PikoDownloadCoordinator(
         _tasks
             // 暂存的身份（档位与长度）变了也要写：重启时按它登记暂存，记错了暂存会被当成没人要的删掉
             .distinctUntilChangedBy { tasks ->
-                tasks.mapValues { (_, task) -> listOf(task.status, task.sparseCache, task.fileName, task.mediaId, task.fullFileSize) }
+                tasks.mapValues { (_, task) ->
+                    TaskPersistenceKey(task.status, task.sparseCache, task.fileName, task.mediaId, task.fullFileSize)
+                }
             }
             .conflate()
             .collect {
@@ -1335,7 +1419,11 @@ class PikoDownloadCoordinator(
     }
 
     private fun update(taskId: String, transform: (DownloadTask) -> DownloadTask) {
-        _tasks.update { tasks -> tasks[taskId]?.let { tasks + (taskId to transform(it)) } ?: tasks }
+        _tasks.update { tasks ->
+            val current = tasks[taskId] ?: return@update tasks
+            val next = transform(current)
+            if (next == current) tasks else tasks + (taskId to next)
+        }
     }
 
     private companion object {
@@ -1343,6 +1431,7 @@ class PikoDownloadCoordinator(
         val listingLeftAccountMessage: String
             get() = tr("切换账号时中断", "Interrupted by account switch", "アカウント切り替えにより中断されました", "계정 전환으로 중단됨", "切換帳號時中斷")
         const val PROGRESS_INTERVAL_MS = 500L
+        const val PLAYBACK_WAKE_GRACE_TICKS = 10
         const val LOG_INTERVAL_MS = 10_000L
         const val SPEED_WINDOW_MS = 3_000L
         const val PERSIST_INTERVAL_MS = 1_000L

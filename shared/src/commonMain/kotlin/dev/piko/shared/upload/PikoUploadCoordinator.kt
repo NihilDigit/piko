@@ -158,8 +158,13 @@ class PikoUploadCoordinator(
 
     /** 暂停与删除只取消对应文件，换号则取消当前调度器的全部子任务。 */
     private val running = MutableStateFlow<Map<String, Job>>(emptyMap())
+    private val structuralRevision = MutableStateFlow(0L)
     private val hashers = Semaphore(policy.maxHashers)
     private val bufferedPartBytes = MutableStateFlow(0L)
+
+    private fun bumpStructuralRevision() {
+        structuralRevision.update { it + 1L }
+    }
 
     /** 机密存储里眼下存着的凭据，按任务 ID。只在 [restore] 与保存任务表的那个协程里改。 */
     private var storedCredentials = mapOf<String, OssCredentials>()
@@ -256,6 +261,7 @@ class PikoUploadCoordinator(
                 batchParentId = work.parentId, batchParentName = work.parentName, batchIsFolder = selection.folders.isNotEmpty()) else task
             val accepted = if (work.id in pausedBatches) queued.copy(status = UploadStatus.PAUSED) else queued
             _tasks.update { it + (accepted.taskId to accepted) }
+            bumpStructuralRevision()
             work = work.copy(files = work.files + UploadPreparedFile(key, path, task.taskId)); publish()
         }
         suspend fun readFile(key: String, path: String, uri: String, parent: String, name: String): UploadTask? {
@@ -439,13 +445,20 @@ class PikoUploadCoordinator(
 
     private fun pauseBatchTasks(batchId: String): Pair<Set<String>, Int> {
         val ids = _tasks.value.values.filter { it.batchId == batchId }.mapTo(HashSet()) { it.taskId }
+        if (ids.isEmpty()) return ids to 0
         var pausedCount = 0
-        _tasks.update { tasks -> tasks.mapValues { (id, task) ->
-            if (id in ids && task.status.isActive) {
-                pausedCount++
-                task.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L)
-            } else task
-        } }
+        _tasks.update { tasks ->
+            var localPaused = 0
+            val updated = tasks.mapValues { (id, task) ->
+                if (id in ids && task.status.isActive) {
+                    localPaused++
+                    task.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L)
+                } else task
+            }
+            pausedCount = localPaused
+            if (localPaused == 0) tasks else updated
+        }
+        if (pausedCount > 0) bumpStructuralRevision()
         return ids to pausedCount
     }
 
@@ -478,13 +491,19 @@ class PikoUploadCoordinator(
     /** 把所有未完成的任务转为暂停。Android 前台服务被系统叫停时用。 */
     fun pauseAll() {
         var pausedCount = 0
-        _tasks.update { tasks -> tasks.mapValues { (_, task) ->
-            if (task.status.isActive) {
-                pausedCount++
-                task.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L)
-            } else task
-        } }
+        _tasks.update { tasks ->
+            var localPaused = 0
+            val updated = tasks.mapValues { (_, task) ->
+                if (task.status.isActive) {
+                    localPaused++
+                    task.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L)
+                } else task
+            }
+            pausedCount = localPaused
+            if (localPaused == 0) tasks else updated
+        }
         if (pausedCount > 0) {
+            bumpStructuralRevision()
             PikoLog.i(TAG, "Paused all active uploads: count=$pausedCount")
         }
         running.value.values.forEach { it.cancel() }
@@ -499,7 +518,17 @@ class PikoUploadCoordinator(
     private fun removeInternal(taskId: String, log: Boolean) {
         val task = _tasks.value[taskId] ?: return
         val job = cancelRunning(taskId)
-        _tasks.update { it - taskId }
+        var removed = false
+        _tasks.update { tasks ->
+            if (taskId in tasks) {
+                removed = true
+                tasks - taskId
+            } else {
+                removed = false
+                tasks
+            }
+        }
+        if (removed) bumpStructuralRevision()
         releaseIfUnused(task.sourceUri)
         if (log) {
             PikoLog.d(TAG, "Removed upload task: task=$taskId, status=${task.status}, remoteFile=${task.session?.fileId ?: task.fileId ?: "none"}")
@@ -523,10 +552,12 @@ class PikoUploadCoordinator(
         val account = clientProvider.currentClient.value?.account ?: return
         var cleared = 0
         _tasks.update { tasks ->
-            cleared = tasks.values.count { it.account == account && it.status == UploadStatus.COMPLETED }
-            tasks.filterValues { it.account != account || it.status != UploadStatus.COMPLETED }
+            val localCleared = tasks.values.count { it.account == account && it.status == UploadStatus.COMPLETED }
+            cleared = localCleared
+            if (localCleared == 0) tasks else tasks.filterValues { it.account != account || it.status != UploadStatus.COMPLETED }
         }
         if (cleared > 0) {
+            bumpStructuralRevision()
             PikoLog.d(TAG, "Cleared $cleared completed upload task(s)")
         }
     }
@@ -576,7 +607,15 @@ class PikoUploadCoordinator(
                 "missingSessionCredentials=${withCredentials.count { it.session != null && it.session.credentials == null }}",
         )
         _tasks.update { current -> restored.associateBy { it.taskId } + current }
+        bumpStructuralRevision()
     }
+
+    private data class UploadPersistenceKey(
+        val status: UploadStatus,
+        val gcid: String?,
+        val uploadId: String?,
+        val settledBytes: Long,
+    )
 
     /**
      * 状态、gcid 或会话变化时保存整张表。后两者不等状态变化：会话一建好就要落盘，
@@ -585,8 +624,17 @@ class PikoUploadCoordinator(
      * 凭据先存、任务表后存：进程死在两步之间时，任务表里的会话不会缺凭据。
      */
     private suspend fun persistOnStructuralChange() {
-        _tasks
-            .distinctUntilChangedBy { tasks -> tasks.mapValues { Triple(it.value.status, it.value.gcid, it.value.session?.uploadId) } }
+        structuralRevision
+            .distinctUntilChangedBy {
+                _tasks.value.mapValues { (_, task) ->
+                    UploadPersistenceKey(
+                        status = task.status,
+                        gcid = task.gcid,
+                        uploadId = task.session?.uploadId,
+                        settledBytes = if (task.status.isActive) 0L else task.processedBytes,
+                    )
+                }
+            }
             .collect { flushPersistence() }
     }
 
@@ -634,7 +682,7 @@ class PikoUploadCoordinator(
         clientProvider.currentClient.collectLatest { client ->
             if (client == null) return@collectLatest
             coroutineScope {
-                combine(_tasks, running) { _, _ -> Unit }.collect {
+                combine(structuralRevision, running) { _, _ -> Unit }.collect {
                     while (running.value.size < policy.maxFiles) {
                         val next = nextQueued(_tasks.value, client.account) ?: break
                         val job = launch(Dispatchers.IO, start = CoroutineStart.LAZY) { run(client, next.taskId) }
@@ -659,7 +707,9 @@ class PikoUploadCoordinator(
     }
 
     private suspend fun run(client: PikPakClient, taskId: String) {
-        if (_tasks.value[taskId]?.status != UploadStatus.QUEUED) return
+        val initialTask = _tasks.value[taskId]
+        if (initialTask?.status != UploadStatus.QUEUED) return
+        val initialQueuedAtMs = initialTask.queuedAtMs
         val progress = MutableStateFlow(0L)
         try {
             coroutineScope {
@@ -676,20 +726,26 @@ class PikoUploadCoordinator(
             var autoPaused = false
             var prevStage: UploadStatus? = null
             var prevSize: Long? = null
+            val latestProgress = progress.value
             update(taskId) {
-                if (it.status == UploadStatus.HASHING || it.status == UploadStatus.UPLOADING) {
-                    autoPaused = true
-                    prevStage = it.status
-                    prevSize = it.size
-                    it.copy(status = UploadStatus.PAUSED, speedBytesPerSec = 0L)
-                } else {
-                    it
+                val syncedBytes = latestProgress.coerceIn(it.processedBytes, it.size)
+                when {
+                    it.status == UploadStatus.HASHING || it.status == UploadStatus.UPLOADING -> {
+                        autoPaused = true
+                        prevStage = it.status
+                        prevSize = it.size
+                        it.copy(status = UploadStatus.PAUSED, processedBytes = syncedBytes, speedBytesPerSec = 0L)
+                    }
+                    it.status == UploadStatus.PAUSED && it.queuedAtMs == initialQueuedAtMs && syncedBytes != it.processedBytes -> {
+                        it.copy(processedBytes = syncedBytes, speedBytesPerSec = 0L)
+                    }
+                    else -> it
                 }
             }
             if (autoPaused) {
                 PikoLog.i(
                     TAG,
-                    "Upload task auto-paused on session cancellation: task=$taskId, prevStage=$prevStage, processed=${progress.value}/$prevSize B",
+                    "Upload task auto-paused on session cancellation: task=$taskId, prevStage=$prevStage, processed=$latestProgress/$prevSize B",
                 )
             }
             throw e
@@ -698,14 +754,22 @@ class PikoUploadCoordinator(
             val task = _tasks.value[taskId]
             val remoteRef = task?.session?.fileId?.let { ", remote=${logFile(it, task.fileName)}" }
                 ?: ", ext=${task?.fileName?.substringAfterLast('.', "")?.lowercase()?.ifBlank { "none" } ?: "none"}"
-            val currentBytes = progress.value.takeIf { it > 0L } ?: task?.processedBytes ?: 0L
+            val latestProgress = progress.value
+            val currentBytes = latestProgress.takeIf { it > 0L } ?: task?.processedBytes ?: 0L
             PikoLog.w(
                 TAG,
                 "Upload failed: task=$taskId$remoteRef, stage=${task?.status}, " +
                     "processed=$currentBytes/${task?.size} B${if (e is SourceUnavailableException) ", reason=source_unreadable" else ""}",
                 e,
             )
-            update(taskId) { it.copy(status = UploadStatus.FAILED, speedBytesPerSec = 0L, errorMessage = failureMessage(e)) }
+            update(taskId) {
+                it.copy(
+                    status = UploadStatus.FAILED,
+                    processedBytes = latestProgress.coerceIn(it.processedBytes, it.size),
+                    speedBytesPerSec = 0L,
+                    errorMessage = failureMessage(e),
+                )
+            }
         }
     }
 
@@ -926,18 +990,32 @@ class PikoUploadCoordinator(
     private suspend fun reportProgress(taskId: String, progress: StateFlow<Long>) {
         val clock = TimeSource.Monotonic
         val samples = ArrayDeque<Pair<TimeMark, Long>>()
-        samples.addLast(clock.markNow() to progress.value)
+        var lastReportedBytes = progress.value
+        var lastReportedSpeed = 0L
+        samples.addLast(clock.markNow() to lastReportedBytes)
         while (true) {
             delay(PROGRESS_INTERVAL_MS)
             val bytes = progress.value
             // 校验转上传时进度从头算，窗口里的旧读数不再可比，从这一刻重新攒
-            if (bytes < samples.last().second) samples.clear()
+            if (bytes < samples.last().second) {
+                samples.clear()
+                lastReportedBytes = -1L
+            }
             samples.addLast(clock.markNow() to bytes)
             while (samples.size > 2 && samples.first().first.elapsedNow().inWholeMilliseconds > SPEED_WINDOW_MS) samples.removeFirst()
             val (oldestMark, oldestBytes) = samples.first()
             val elapsedMs = oldestMark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1L)
             val speed = ((bytes - oldestBytes).coerceAtLeast(0L) * 1000L) / elapsedMs
-            update(taskId) { if (it.status.isActive) it.copy(processedBytes = bytes, speedBytesPerSec = speed) else it }
+            if (bytes == lastReportedBytes) {
+                if (speed == 0L && lastReportedSpeed != 0L) {
+                    lastReportedSpeed = 0L
+                    updateProgress(taskId, bytes, 0L)
+                }
+                continue
+            }
+            lastReportedBytes = bytes
+            lastReportedSpeed = speed
+            updateProgress(taskId, bytes, speed)
         }
     }
 
@@ -947,8 +1025,36 @@ class PikoUploadCoordinator(
         else -> dev.piko.shared.notice.PikoErrorMapper.failure(tr("上传", "Upload", "アップロード", "업로드", "上傳"), e)
     }
 
+    private fun updateProgress(taskId: String, bytes: Long, speed: Long) {
+        _tasks.update { tasks ->
+            val current = tasks[taskId] ?: return@update tasks
+            if (!current.status.isActive || (current.processedBytes == bytes && current.speedBytesPerSec == speed)) {
+                tasks
+            } else {
+                tasks + (taskId to current.copy(processedBytes = bytes, speedBytesPerSec = speed))
+            }
+        }
+    }
+
     private fun update(taskId: String, transform: (UploadTask) -> UploadTask) {
-        _tasks.update { tasks -> tasks[taskId]?.let { tasks + (taskId to transform(it)) } ?: tasks }
+        var changed = false
+        _tasks.update { tasks ->
+            val current = tasks[taskId]
+            if (current == null) {
+                changed = false
+                tasks
+            } else {
+                val next = transform(current)
+                if (next == current) {
+                    changed = false
+                    tasks
+                } else {
+                    changed = true
+                    tasks + (taskId to next)
+                }
+            }
+        }
+        if (changed) bumpStructuralRevision()
     }
 
     /** 任务在途中被删除时抛出取消，[run] 随之结束。 */

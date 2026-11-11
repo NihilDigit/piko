@@ -159,8 +159,6 @@ private val WEAK_TITLE_WORDS = setOf(
     "gb", "cr", "nf", "web", "ma", "hq", "dd", "remastered", "dubbed", "pcm",
 )
 
-private val RESOLUTION_P = Regex("""^([0-9]{3,4})[pPiI]$""")
-
 // 「NNNp」只认常见的画面高度：合集名里的「200P」「435P」是图片张数
 internal val STANDARD_HEIGHTS = setOf(240, 288, 360, 480, 540, 576, 720, 900, 1080, 1440, 2160, 4320)
 
@@ -168,17 +166,11 @@ internal val STANDARD_HEIGHTS = setOf(240, 288, 360, 480, 540, 576, 720, 900, 10
 // 这样整段方括号才会被当作标签段，从标题里去掉；数字后面的 GB 也就不会被当成简体字幕的 GB
 private val SIZE_OR_COUNT = Regex("""^(?:[0-9]+(?:\.[0-9]+)?[VPGMT]B?)+$""", RegexOption.IGNORE_CASE)
 private val SIZE_UNITS = setOf("gb", "mb", "tb", "g", "m", "t")
-private val RESOLUTION_WXH = Regex("""^([0-9]{3,4})[xX×*]([0-9]{3,4})$""")
-private val CRC = Regex("""^[0-9A-Fa-f]{8}$""")
 private val AUDIO_WITH_CHANNELS = Regex("""^(aac|flac|ac3|eac3|e-ac3|dd|ddp|dd\+|dts|opus|lpcm|pcm|truehd)[0-9.x]+$""", RegexOption.IGNORE_CASE)
 private val CHANNELS = Regex("""^[0-9]\.[0-9](ch)?$|^[0-9]+ch$""", RegexOption.IGNORE_CASE)
-private val FRAME_RATE = Regex("""^([0-9]{2,3})fps$""", RegexOption.IGNORE_CASE)
-private val YEAR = Regex("""^(19[5-9][0-9]|20[0-4][0-9])$""")
-private val DATE_CODE = Regex("""^[0-9]{6}$""")
 private val DATE = Regex("""^(19|20)[0-9]{2}[-./](0?[1-9]|1[0-2]|00)[-./][0-9]{1,2}$""")
-private val VERSION_WORD = Regex("""^[vV][0-9]{1,2}$""")
 
-private class Phrase(val hint: String, val regex: Regex, val replacement: String)
+private class Phrase(val hint: String, val regex: Regex, val replacement: String, val requiresSeparator: Boolean = true)
 
 /**
  * 多词短语先并成一个记号，免得按空白切开后「Dual」「Audio」各自落空。每条带一个小写提示词，
@@ -193,44 +185,219 @@ private val PHRASES = listOf(
     Phrase("jp", Regex("""(?i)\b(cht|chs)[_\s-]+(jp|jpn)\b"""), "$1-jp"),
     Phrase("gb", Regex("""(?i)\bgb[_-]cn\b"""), "gb-cn"),
     Phrase("dts", Regex("""(?i)\bdts[\s_-]+hd(?:[\s_-]*ma)?\b"""), "dts-hd"),
-    Phrase("26", Regex("""(?i)\bh[\s.]?26([45])\b"""), "h26$1"),
+    Phrase("26", Regex("""(?i)\bh[\s.]?26([45])\b"""), "h26$1", requiresSeparator = false),
     Phrase("web", Regex("""(?i)\bweb[\s_]+dl\b"""), "web-dl"),
-    Phrase("hd", Regex("""(?i)\btrue[\s_-]?hd\b"""), "truehd"),
+    Phrase("true", Regex("""(?i)\btrue[\s_-]?hd\b"""), "truehd", requiresSeparator = false),
     Phrase("blu", Regex("""(?i)\bblu[\s_]ray\b"""), "bluray"),
 )
 
 private val TAG_SEPARATORS = Regex("""[\s_+,/|&;]+""")
 
+private val CJK_GROUP_HINTS = arrayOf("组", "組", "社", "部", "屋", "学园", "學園")
+private val CJK_UNCENSORED_HINTS = arrayOf("无码", "無碼", "无修正", "無修正", "破解")
+private val CJK_NOISE_HINTS = arrayOf(
+    "内封", "內封", "内嵌", "內嵌", "外挂", "外掛", "双语", "雙語", "字幕", "合集", "全集", "高清", "自抓",
+    "日文", "日语", "完结", "完結", "修正", "翻新", "双字", "國語", "国语", "粤语", "中文",
+)
+
+private val EMPTY_SINGLE_UNKNOWN_SCAN = TagScan(emptyList(), 0, 1, null)
+
+private fun hasPhraseSeparator(s: String): Boolean {
+    for (i in 0 until s.length) {
+        val c = s[i]
+        if (c <= '\u0020' || c == '_' || c == '-' || c == '&' || c == '+' || c.isWhitespace()) return true
+    }
+    return false
+}
+
 internal fun normalizeTagPhrases(text: String): String {
+    if (text.length < 4) return text
+    val hasSep = hasPhraseSeparator(text)
+    if (!hasSep && !text.contains("26") && !text.contains("true", ignoreCase = true)) return text
     val lower = text.lowercase()
-    return PHRASES.fold(text) { acc, phrase -> if (phrase.hint in lower) phrase.regex.replace(acc, phrase.replacement) else acc }
+    var acc = text
+    for (i in 0 until PHRASES.size) {
+        val phrase = PHRASES[i]
+        if ((hasSep || !phrase.requiresSeparator) && phrase.hint in lower) {
+            acc = phrase.regex.replace(acc, phrase.replacement)
+        }
+    }
+    return acc
+}
+
+private fun isTagTrimPunct(c: Char): Boolean =
+    c == '.' || c == '-' || c == '~' || c == '!' || c == '＋'
+
+private fun trimTagToken(word: String): String {
+    var start = 0
+    var end = word.length
+    while (start < end && word[start].isWhitespace()) start++
+    while (end > start && word[end - 1].isWhitespace()) end--
+    while (start < end && isTagTrimPunct(word[start])) start++
+    while (end > start && isTagTrimPunct(word[end - 1])) end--
+    return if (start == 0 && end == word.length) word else word.substring(start, end)
+}
+
+private fun trimDotDash(word: String): String {
+    var start = 0
+    var end = word.length
+    while (start < end && (word[start] == '.' || word[start] == '-')) start++
+    while (end > start && (word[end - 1] == '.' || word[end - 1] == '-')) end--
+    return if (start == 0 && end == word.length) word else word.substring(start, end)
+}
+
+private fun matchStandardResolutionP(token: String): Int {
+    val len = token.length
+    if (len != 4 && len != 5) return -1
+    val suffix = token[len - 1]
+    if (suffix != 'p' && suffix != 'P' && suffix != 'i' && suffix != 'I') return -1
+    var height = 0
+    for (i in 0 until len - 1) {
+        val d = token[i] - '0'
+        if (d !in 0..9) return -1
+        height = height * 10 + d
+    }
+    return if (height in STANDARD_HEIGHTS) height else -1
+}
+
+private fun isResolutionSeparator(c: Char): Boolean = c == 'x' || c == 'X' || c == '×' || c == '*'
+
+private fun matchResolutionWxH(token: String): Int {
+    val len = token.length
+    if (len !in 7..9) return -1
+    val sep = when {
+        isResolutionSeparator(token[3]) -> 3
+        len >= 8 && isResolutionSeparator(token[4]) -> 4
+        else -> return -1
+    }
+    val rightLen = len - sep - 1
+    if (rightLen != 3 && rightLen != 4) return -1
+    for (i in 0 until sep) {
+        if (token[i] !in '0'..'9') return -1
+    }
+    var height = 0
+    for (i in sep + 1 until len) {
+        val d = token[i] - '0'
+        if (d !in 0..9) return -1
+        height = height * 10 + d
+    }
+    return height
+}
+
+private fun isFrameRateLower(lower: String): Boolean {
+    val len = lower.length
+    if (len != 5 && len != 6) return false
+    if (!lower.endsWith("fps")) return false
+    for (i in 0 until len - 3) {
+        if (lower[i] !in '0'..'9') return false
+    }
+    return true
+}
+
+private fun isTagYear(token: String): Boolean {
+    if (token.length != 4) return false
+    var value = 0
+    for (i in 0 until 4) {
+        val d = token[i] - '0'
+        if (d !in 0..9) return false
+        value = value * 10 + d
+    }
+    return value in 1950..2049
+}
+
+private fun isAsciiDigitsOfLength(s: String, expectedLength: Int): Boolean {
+    if (s.length != expectedLength) return false
+    for (i in 0 until expectedLength) {
+        if (s[i] !in '0'..'9') return false
+    }
+    return true
+}
+
+private fun isVersionWord(s: String): Boolean {
+    val len = s.length
+    if (len != 2 && len != 3) return false
+    if (s[0] != 'v' && s[0] != 'V') return false
+    if (s[1] !in '0'..'9') return false
+    return len == 2 || s[2] in '0'..'9'
+}
+
+private fun isMixedHex8(token: String): Boolean {
+    if (token.length != 8) return false
+    var hasDigit = false
+    var hasHexLetter = false
+    for (i in 0 until 8) {
+        when (token[i]) {
+            in '0'..'9' -> hasDigit = true
+            in 'a'..'f', in 'A'..'F' -> hasHexLetter = true
+            else -> return false
+        }
+    }
+    return hasDigit && hasHexLetter
+}
+
+private fun hasCjk(s: String): Boolean {
+    for (i in 0 until s.length) {
+        if (isCjk(s[i])) return true
+    }
+    return false
 }
 
 /** 一个记号对应的标签；null 表示不认得。 */
 internal fun lookupTagWord(word: String): List<MediaTag>? {
-    val token = word.trim().trim('.', '-', '~', '!', '＋')
+    val token = trimTagToken(word)
     if (token.isEmpty()) return emptyList()
     val lower = token.lowercase()
     WORDS[lower]?.let { return it }
-    RESOLUTION_P.matchEntire(token)?.let { match ->
-        val height = match.groupValues[1].toInt()
-        if (height in STANDARD_HEIGHTS) return listOf(resolutionTag(height))
+
+    val first = lower[0]
+    val last = lower[lower.lastIndex]
+    if (first in '0'..'9') {
+        val heightP = matchStandardResolutionP(token)
+        if (heightP >= 0) return listOf(resolutionTag(heightP))
+        if (token.length >= 2 && (last == 'v' || last == 'p' || last == 'g' || last == 'm' || last == 't' || last == 'b') &&
+            SIZE_OR_COUNT.matches(token)
+        ) {
+            return emptyList()
+        }
+        val heightWxH = matchResolutionWxH(token)
+        if (heightWxH >= 0) return listOf(resolutionTag(heightWxH))
+        if (isFrameRateLower(lower)) return tag(TagKind.FRAME_RATE, lower)
+        if (((token.length in 3..5 && token[1] == '.') || (lower.length >= 3 && last == 'h' && lower[lower.lastIndex - 1] == 'c')) &&
+            CHANNELS.matches(token)
+        ) {
+            return emptyList()
+        }
+        if (isTagYear(token) || isAsciiDigitsOfLength(token, 6)) return emptyList()
+        if (token.length in 8..10 && (first == '1' || first == '2') &&
+            (token[4] == '-' || token[4] == '.' || token[4] == '/') && DATE.matches(token)
+        ) {
+            return emptyList()
+        }
+    } else {
+        if (lower.length >= 3 && (last in '0'..'9' || last == 'x' || last == '.') &&
+            (first == 'a' || first == 'f' || first == 'e' || first == 'd' || first == 'o' || first == 'l' || first == 'p' || first == 't')
+        ) {
+            AUDIO_WITH_CHANNELS.matchEntire(token)?.let { match ->
+                return lookupTagWord(match.groupValues[1]) ?: emptyList()
+            }
+        }
+        if (isVersionWord(token)) return emptyList()
     }
-    if (SIZE_OR_COUNT.matches(token)) return emptyList()
-    RESOLUTION_WXH.matchEntire(token)?.let { return listOf(resolutionTag(it.groupValues[2].toInt())) }
-    FRAME_RATE.matchEntire(token)?.let { return tag(TagKind.FRAME_RATE, "${it.groupValues[1]}fps") }
-    AUDIO_WITH_CHANNELS.matchEntire(token)?.let { match ->
-        return lookupTagWord(match.groupValues[1]) ?: emptyList()
-    }
-    if (CHANNELS.matches(token) || YEAR.matches(token) || VERSION_WORD.matches(token) || DATE.matches(token) || DATE_CODE.matches(token)) return emptyList()
-    if (CRC.matches(token) && token.any { it.isLetter() } && token.any { it in '0'..'9' }) return emptyList()
-    if (token.any(::isCjk)) return cjkTag(token)
+    if (isMixedHex8(token)) return emptyList()
+    if (hasCjk(token)) return cjkTag(token)
     return null
+}
+
+private fun containsAnyHint(token: String, hints: Array<String>): Boolean {
+    for (i in 0 until hints.size) {
+        if (hints[i] in token) return true
+    }
+    return false
 }
 
 private fun cjkTag(token: String): List<MediaTag>? {
     // 「脸肿字幕组」「极影字幕社」「漫之学园资源部」是组名，不能因为含「字幕」就当成标签
-    if (listOf("组", "組", "社", "部", "屋", "学园", "學園").any { it in token }) return null
+    if (containsAnyHint(token, CJK_GROUP_HINTS)) return null
     val found = buildList {
         when {
             "简繁" in token || "簡繁" in token -> add(MediaTag(TagKind.SUBTITLES, "简繁"))
@@ -241,16 +408,12 @@ private fun cjkTag(token: String): List<MediaTag>? {
         }
         if ("中文字幕" in token || "中字" in token) add(MediaTag(TagKind.SUBTITLES, MediaTag.CHINESE_SUBTITLES))
         // 「流出」只在番号上才是无码（见 matchAv）：没有番号的视频说流出只是外传，与有无马赛克无关
-        if (listOf("无码", "無碼", "无修正", "無修正", "破解").any { it in token }) {
+        if (containsAnyHint(token, CJK_UNCENSORED_HINTS)) {
             add(MediaTag(TagKind.CENSORSHIP, MediaTag.UNCENSORED))
         }
     }
     if (found.isNotEmpty()) return found
-    val noise = listOf(
-        "内封", "內封", "内嵌", "內嵌", "外挂", "外掛", "双语", "雙語", "字幕", "合集", "全集", "高清", "自抓",
-        "日文", "日语", "完结", "完結", "修正", "翻新", "双字", "國語", "国语", "粤语", "中文",
-    )
-    return if (noise.any { it in token }) emptyList() else null
+    return if (containsAnyHint(token, CJK_NOISE_HINTS)) emptyList() else null
 }
 
 /** 解析一段标签文本（通常是一对方括号里的内容）。 */
@@ -258,50 +421,137 @@ internal class TagScan(val tags: List<MediaTag>, val known: Int, val unknown: In
     val isTagText: Boolean get() = known > 0 && (unknown == 0 || known >= 2 && known > unknown)
 }
 
+private fun isAsciiTagSeparator(c: Char): Boolean =
+    c == ' ' || c == '\t' || c == '\n' || c == '\u000B' || c == '\u000C' || c == '\r' ||
+        c == '_' || c == '+' || c == ',' || c == '/' || c == '|' || c == '&' || c == ';'
+
+private fun hasNonAsciiWhitespace(s: String): Boolean {
+    for (i in 0 until s.length) {
+        val c = s[i]
+        if (c >= '\u0080' && c.isWhitespace()) return true
+    }
+    return false
+}
+
+private fun isBlankSlice(s: String, start: Int, end: Int): Boolean {
+    for (i in start until end) {
+        if (!s[i].isWhitespace()) return false
+    }
+    return true
+}
+
+private fun addDistinctTags(target: MutableList<MediaTag>?, incoming: List<MediaTag>): MutableList<MediaTag>? {
+    if (incoming.isEmpty()) return target
+    val list = target ?: ArrayList(4)
+    for (i in 0 until incoming.size) {
+        val tag = incoming[i]
+        if (tag !in list) list.add(tag)
+    }
+    return list
+}
+
 internal fun scanTags(text: String): TagScan {
-    val tags = mutableListOf<MediaTag>()
+    val normalized = normalizeTagPhrases(text)
+    var tags: MutableList<MediaTag>? = null
     var known = 0
     var unknown = 0
     var version: String? = null
     var previous: String? = null
-    normalizeTagPhrases(text).split(TAG_SEPARATORS).filter { it.isNotBlank() }.forEach { raw ->
-        val afterNumber = previous?.toDoubleOrNull() != null
+
+    fun processToken(raw: String) {
+        val prev = previous
         previous = raw
-        if (afterNumber && raw.lowercase() in SIZE_UNITS) {
+        if (prev != null && raw.length <= 2 && raw.lowercase() in SIZE_UNITS && prev.toDoubleOrNull() != null) {
             known++
-            return@forEach
+            return
         }
-        if (VERSION_WORD.matches(raw)) {
+        if (isVersionWord(raw)) {
             version = raw.lowercase()
             known++
-            return@forEach
+            return
         }
         val direct = lookupTagWord(raw)
         if (direct != null) {
-            tags += direct
+            tags = addDistinctTags(tags, direct)
             known++
-            return@forEach
+            return
         }
         // HEVC-10bit、AVC-8bit、x264-SRS：按连字符再拆一次。第一段须认得，否则「DBD-Raws」会因为
         // 「Raws」在词表里而被当成标签
-        val pieces = raw.split('-').filter { it.isNotBlank() }.map { lookupTagWord(it) }
-        if (pieces.size > 1 && pieces.first() != null) {
-            pieces.filterNotNull().forEach { tags += it }
+        if ('-' !in raw) {
+            unknown++
+            return
+        }
+        var firstNonBlankTags: List<MediaTag>? = null
+        var extraTags: MutableList<MediaTag>? = null
+        var nonBlankCount = 0
+        var pStart = 0
+        while (pStart <= raw.length) {
+            val dash = raw.indexOf('-', pStart)
+            val pEnd = if (dash < 0) raw.length else dash
+            if (!isBlankSlice(raw, pStart, pEnd)) {
+                val piece = raw.substring(pStart, pEnd)
+                if (nonBlankCount == 0) {
+                    firstNonBlankTags = lookupTagWord(piece)
+                    if (firstNonBlankTags == null) {
+                        nonBlankCount = -1
+                        break
+                    }
+                } else {
+                    lookupTagWord(piece)?.let { found ->
+                        if (found.isNotEmpty()) {
+                            val acc = extraTags ?: ArrayList<MediaTag>(2).also { extraTags = it }
+                            acc.addAll(found)
+                        }
+                    }
+                }
+                nonBlankCount++
+            }
+            if (dash < 0) break
+            pStart = dash + 1
+        }
+        if (nonBlankCount > 1 && firstNonBlankTags != null) {
+            tags = addDistinctTags(tags, firstNonBlankTags)
+            extraTags?.let { tags = addDistinctTags(tags, it) }
             known++
         } else {
             unknown++
         }
     }
-    return TagScan(tags.distinct(), known, unknown, version)
+
+    if (hasNonAsciiWhitespace(normalized)) {
+        val parts = normalized.split(TAG_SEPARATORS)
+        for (i in 0 until parts.size) {
+            val raw = parts[i]
+            if (raw.isNotBlank()) processToken(raw)
+        }
+    } else {
+        var i = 0
+        val len = normalized.length
+        while (i < len) {
+            while (i < len && isAsciiTagSeparator(normalized[i])) i++
+            val start = i
+            while (i < len && !isAsciiTagSeparator(normalized[i])) i++
+            if (start < i && !isBlankSlice(normalized, start, i)) {
+                processToken(if (start == 0 && i == len) normalized else normalized.substring(start, i))
+            }
+        }
+    }
+
+    if (tags == null && known == 0 && unknown == 1 && version == null) return EMPTY_SINGLE_UNKNOWN_SCAN
+    return TagScan(tags ?: emptyList(), known, unknown, version)
 }
 
-internal fun isWeakTagWord(word: String): Boolean = word.lowercase().trim('.', '-') in WEAK_TITLE_WORDS
+internal fun isWeakTagWord(word: String): Boolean {
+    val trimmed = trimDotDash(word)
+    return trimmed.length in 1..10 && trimmed.lowercase() in WEAK_TITLE_WORDS
+}
 
 /** 标题里的一个词能否作为标签段的起点。 */
 internal fun isTitleStoppingTag(word: String): Boolean {
-    val lower = word.lowercase().trim('.', '-')
-    if (lower in WEAK_TITLE_WORDS) return false
-    if (DATE_CODE.matches(lower)) return false
+    val trimmed = trimDotDash(word)
+    if (trimmed.length in 1..10 && trimmed.lowercase() in WEAK_TITLE_WORDS) return false
+    if (isAsciiDigitsOfLength(trimmed, 6)) return false
     val scan = scanTags(word)
     return scan.known > 0 && scan.unknown == 0
 }

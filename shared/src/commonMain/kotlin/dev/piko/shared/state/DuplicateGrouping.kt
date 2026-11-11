@@ -26,7 +26,7 @@ data class DuplicateFile(
     val durationSeconds: Long?,
     val originalCreatedAtMillis: Long? = null,
 ) {
-    val path: String get() = if (folderPath.isEmpty()) name else "$folderPath/$name"
+    val path: String = if (folderPath.isEmpty()) name else "$folderPath/$name"
 }
 
 enum class DuplicateKind {
@@ -55,11 +55,26 @@ data class DuplicateGroup(
     val rows: List<DuplicateRow>,
     val keptId: String?,
 ) {
-    val totalBytes: Long get() = rows.sumOf { it.file.size }
+    val totalBytes: Long
 
     /** 按默认勾选移除后能腾出的空间。版本组默认什么都不勾，为 0。 */
     val reclaimableBytes: Long
-        get() = if (kind == DuplicateKind.IDENTICAL) rows.filter { it.file.id != keptId }.sumOf { it.file.size } else 0L
+
+    init {
+        var total = 0L
+        var reclaimable = 0L
+        val isIdentical = kind == DuplicateKind.IDENTICAL
+        for (i in 0 until rows.size) {
+            val file = rows[i].file
+            val size = file.size
+            total += size
+            if (isIdentical && file.id != keptId) {
+                reclaimable += size
+            }
+        }
+        totalBytes = total
+        reclaimableBytes = reclaimable
+    }
 }
 
 data class DuplicateReport(
@@ -78,28 +93,59 @@ data class DuplicateReport(
  * 起点下的「Title - 03.mkv」要从它得知是第二季。
  */
 fun findDuplicates(files: List<ScannedFile>, rootName: String? = null): DuplicateReport {
-    val all = files.map { it to it.toDuplicateFile() }
-    val identical = identicalGroups(all.map { (scanned, file) -> file to scanned.file.hash })
+    if (files.size < 2) return DuplicateReport.EMPTY
+    val all = ArrayList<Pair<ScannedFile, DuplicateFile>>(files.size)
+    for (i in 0 until files.size) {
+        val scanned = files[i]
+        all.add(scanned to scanned.toDuplicateFile())
+    }
+    val identical = identicalGroups(all)
     val versions = versionGroups(all, identical, rootName)
     return DuplicateReport(identical, versions)
 }
 
 // region 完全相同
 
+private val IDENTICAL_GROUP_ORDER: Comparator<DuplicateGroup> =
+    compareByDescending<DuplicateGroup> { it.reclaimableBytes }.thenBy { it.title }
+
+private val VERSION_GROUP_ORDER: Comparator<DuplicateGroup> =
+    compareByDescending<DuplicateGroup> { it.totalBytes }.thenBy { it.title }
+
 /**
  * 按 gcid 与大小分组。没有 gcid 的（上传中、转码产物）与空文件不参与：空文件的 gcid 全都一样，
  * 但删掉它们腾不出空间，还常是占位用的。
  */
-private fun identicalGroups(files: List<Pair<DuplicateFile, String>>): List<DuplicateGroup> =
-    files.filter { (file, hash) -> hash.isNotBlank() && file.size > 0 }
-        .groupBy({ (file, hash) -> "${hash.uppercase()}:${file.size}" }, { it.first })
-        .filterValues { it.size > 1 }
-        .map { (key, members) ->
-            val kept = members.minWith(KEEP_ORDER)
-            val rows = (listOf(kept) + members.filter { it !== kept }.sortedWith(KEEP_ORDER)).map { DuplicateRow(it) }
-            DuplicateGroup(DuplicateKind.IDENTICAL, key, kept.name, rows, kept.id)
+private fun identicalGroups(files: List<Pair<ScannedFile, DuplicateFile>>): List<DuplicateGroup> {
+    val buckets = LinkedHashMap<String, MutableList<DuplicateFile>>()
+    for (i in 0 until files.size) {
+        val (scanned, file) = files[i]
+        val hash = scanned.file.hash
+        if (hash.isNotBlank() && file.size > 0L) {
+            val key = "${hash.uppercase()}:${file.size}"
+            buckets.getOrPut(key) { ArrayList(2) }.add(file)
         }
-        .sortedWith(compareByDescending<DuplicateGroup> { it.reclaimableBytes }.thenBy { it.title })
+    }
+    val groups = ArrayList<DuplicateGroup>()
+    for ((key, members) in buckets) {
+        if (members.size <= 1) continue
+        val kept = members.minWith(KEEP_ORDER)
+        val rest = ArrayList<DuplicateFile>(members.size - 1)
+        for (i in 0 until members.size) {
+            val candidate = members[i]
+            if (candidate !== kept) rest.add(candidate)
+        }
+        rest.sortWith(KEEP_ORDER)
+        val rows = ArrayList<DuplicateRow>(members.size)
+        rows.add(DuplicateRow(kept))
+        for (i in 0 until rest.size) {
+            rows.add(DuplicateRow(rest[i]))
+        }
+        groups.add(DuplicateGroup(DuplicateKind.IDENTICAL, key, kept.name, rows, kept.id))
+    }
+    groups.sortWith(IDENTICAL_GROUP_ORDER)
+    return groups
+}
 
 /**
  * 默认保留哪一份：名字里副本标记最少的，其次最早存进网盘的，同时存入的取路径最短的。
@@ -118,14 +164,23 @@ internal val KEEP_ORDER: Comparator<DuplicateFile> =
 // 扩展名前的「 (1)」「(2)」「 - Copy」「 - 副本」「 copy」，可以连着好几个
 private val COPY_MARKER = Regex("""\s*\([0-9]{1,3}\)|\s*-\s*(?:copy\b|副本|复制)|\s+copy\b""", RegexOption.IGNORE_CASE)
 
+private fun mayEndWithCopyMarker(stem: String): Boolean {
+    if (stem.length < 3) return false
+    return when (stem[stem.lastIndex]) {
+        ')', 'y', 'Y', '本', '制' -> true
+        else -> false
+    }
+}
+
 internal fun copyMarkerCount(name: String): Int {
     var stem = name.substringBeforeLast('.')
     var count = 0
-    while (true) {
+    while (mayEndWithCopyMarker(stem)) {
         val last = COPY_MARKER.findAll(stem).lastOrNull()?.takeIf { it.range.last == stem.lastIndex } ?: return count
         stem = stem.removeRange(last.range)
         count++
     }
+    return count
 }
 
 private fun parseInstant(text: String): Instant? =
@@ -144,40 +199,103 @@ private class VersionCandidate(val file: DuplicateFile, val hash: String, val pa
  * 解析按目录分批：同目录的兄弟文件能互相印证集号（见 BatchAnalyzer），跨目录只比结果的键。
  * 完全相同的文件只算一份，由该组默认保留的那份代表。
  */
+private val VERSION_CANDIDATE_ORDER: Comparator<VersionCandidate> =
+    compareByDescending<VersionCandidate> { it.file.size }.thenBy { it.file.path }
+
 private fun versionGroups(
     all: List<Pair<ScannedFile, DuplicateFile>>,
     identical: List<DuplicateGroup>,
     rootName: String?,
 ): List<DuplicateGroup> {
-    val representativeOf = HashMap<String, String>()
-    val copiesOf = HashMap<String, Int>()
-    identical.forEach { group ->
-        group.rows.forEach { representativeOf[it.file.id] = group.keptId!! }
-        copiesOf[group.keptId!!] = group.rows.size - 1
+    val representativeOf = HashMap<String, String>(identical.size * 2)
+    val copiesOf = HashMap<String, Int>(identical.size)
+    for (i in 0 until identical.size) {
+        val group = identical[i]
+        val keptId = group.keptId!!
+        val rows = group.rows
+        for (j in 0 until rows.size) {
+            representativeOf[rows[j].file.id] = keptId
+        }
+        copiesOf[keptId] = rows.size - 1
     }
 
-    val candidates = all.groupBy { (scanned, _) -> scanned.folderPath }
-        .filterValues { members -> members.any { it.second.isVideo } }
-        .flatMap { (folderPath, members) -> analyzeFolder(folderPath, members, rootName) }
-        .filter { (representativeOf[it.file.id] ?: it.file.id) == it.file.id }
+    val byFolder = LinkedHashMap<String, MutableList<Pair<ScannedFile, DuplicateFile>>>()
+    for (i in 0 until all.size) {
+        val pair = all[i]
+        byFolder.getOrPut(pair.first.folderPath) { ArrayList() }.add(pair)
+    }
+    val byKey = LinkedHashMap<String, MutableList<VersionCandidate>>()
+    for ((folderPath, members) in byFolder) {
+        var hasVideo = false
+        for (i in 0 until members.size) {
+            if (members[i].second.isVideo) {
+                hasVideo = true
+                break
+            }
+        }
+        if (!hasVideo) continue
+        val analyzed = analyzeFolder(folderPath, members, rootName)
+        for (i in 0 until analyzed.size) {
+            val candidate = analyzed[i]
+            val id = candidate.file.id
+            if ((representativeOf[id] ?: id) == id) {
+                byKey.getOrPut(candidate.key) { ArrayList(2) }.add(candidate)
+            }
+        }
+    }
 
-    return candidates.groupBy { it.key }
-        .values
-        .filter { members -> members.distinctBy { it.hash.ifBlank { it.file.id } }.size > 1 }
-        .map { members ->
-            val sorted = members.sortedWith(compareByDescending<VersionCandidate> { it.file.size }.thenBy { it.file.path })
-            val tagsOf = sorted.associate { it.file.id to versionTags(it.parsed) }
-            val common = tagsOf.values.reduce { acc, tags -> acc.intersect(tags.toSet()).toList() }.toSet()
-            val rows = sorted.map { candidate ->
+    val groups = ArrayList<DuplicateGroup>()
+    for (members in byKey.values) {
+        if (members.size <= 1) continue
+        var distinctHashes = 0
+        var firstHash: String? = null
+        for (i in 0 until members.size) {
+            val h = members[i].hash.ifBlank { members[i].file.id }
+            if (firstHash == null) {
+                firstHash = h
+                distinctHashes = 1
+            } else if (h != firstHash) {
+                distinctHashes = 2
+                break
+            }
+        }
+        if (distinctHashes <= 1) continue
+        val sorted = members.sortedWith(VERSION_CANDIDATE_ORDER)
+        val tagsOf = HashMap<String, List<String>>(sorted.size)
+        for (i in 0 until sorted.size) {
+            val c = sorted[i]
+            tagsOf[c.file.id] = versionTags(c.parsed)
+        }
+        val firstTags = tagsOf.getValue(sorted[0].file.id)
+        val common = HashSet<String>(firstTags.size)
+        for (i in 0 until firstTags.size) {
+            val tag = firstTags[i]
+            var inAll = true
+            for (j in 1 until sorted.size) {
+                if (tag !in tagsOf.getValue(sorted[j].file.id)) {
+                    inAll = false
+                    break
+                }
+            }
+            if (inAll) common.add(tag)
+        }
+        val rows = ArrayList<DuplicateRow>(sorted.size)
+        for (i in 0 until sorted.size) {
+            val candidate = sorted[i]
+            val candidateTags = tagsOf.getValue(candidate.file.id)
+            val details = if (common.isEmpty()) candidateTags else candidateTags.filterNot { it in common }
+            rows.add(
                 DuplicateRow(
                     file = candidate.file,
-                    details = tagsOf.getValue(candidate.file.id).filterNot { it in common },
+                    details = details,
                     sameCopies = copiesOf[candidate.file.id] ?: 0,
-                )
-            }
-            DuplicateGroup(DuplicateKind.VERSIONS, members.first().key, members.first().title, rows, keptId = null)
+                ),
+            )
         }
-        .sortedWith(compareByDescending<DuplicateGroup> { it.totalBytes }.thenBy { it.title })
+        groups.add(DuplicateGroup(DuplicateKind.VERSIONS, members[0].key, members[0].title, rows, keptId = null))
+    }
+    groups.sortWith(VERSION_GROUP_ORDER)
+    return groups
 }
 
 private fun analyzeFolder(
@@ -187,15 +305,32 @@ private fun analyzeFolder(
 ): List<VersionCandidate> {
     val dirs = listOfNotNull(rootName) + folderPath.split('/').filter { it.isNotEmpty() }
     val prefix = dirs.joinToString("/")
-    // 同目录的字幕、图片也一起送进去：广告、样片、附件的判定要看兄弟文件
-    val batch = analyzeMediaBatch(members.map { (scanned, _) -> scanned.file.toMediaFileInput(if (prefix.isEmpty()) scanned.file.name else "$prefix/${scanned.file.name}") })
-    return members.mapIndexedNotNull { index, (scanned, file) ->
-        if (!file.isVideo) return@mapIndexedNotNull null
-        val location = batch.locate(index) ?: return@mapIndexedNotNull null
-        val parsed = batch.parsed[index]
-        val identity = episodeIdentity(parsed, location, dirs, scanned.file.name) ?: return@mapIndexedNotNull null
-        VersionCandidate(file, scanned.file.hash, parsed, identity.first, identity.second)
+    var cachedDirSeasonComputed = false
+    var cachedDirSeason: Int? = null
+    fun folderSeason(): Int? {
+        if (!cachedDirSeasonComputed) {
+            cachedDirSeason = seasonFromDirectories(dirs)
+            cachedDirSeasonComputed = true
+        }
+        return cachedDirSeason
     }
+    // 同目录的字幕、图片也一起送进去：广告、样片、附件的判定要看兄弟文件
+    val inputs = ArrayList<dev.piko.shared.naming.MediaFileInput>(members.size)
+    for (i in 0 until members.size) {
+        val file = members[i].first.file
+        inputs.add(file.toMediaFileInput(if (prefix.isEmpty()) file.name else "$prefix/${file.name}"))
+    }
+    val batch = analyzeMediaBatch(inputs)
+    val result = ArrayList<VersionCandidate>()
+    for (index in 0 until members.size) {
+        val (scanned, file) = members[index]
+        if (!file.isVideo) continue
+        val location = batch.locate(index) ?: continue
+        val parsed = batch.parsed[index]
+        val identity = episodeIdentity(parsed, location, ::folderSeason, scanned.file.name) ?: continue
+        result.add(VersionCandidate(file, scanned.file.hash, parsed, identity.first, identity.second))
+    }
+    return result
 }
 
 /**
@@ -215,7 +350,7 @@ private fun analyzeFolder(
 private fun episodeIdentity(
     parsed: ParsedName,
     location: EntryLocation,
-    dirs: List<String>,
+    folderSeason: () -> Int?,
     fileName: String,
 ): Pair<String, String>? {
     val work = location.work
@@ -223,7 +358,7 @@ private fun episodeIdentity(
     return when (work.kind) {
         WorkKind.AV -> {
             val av = entry.av ?: return null
-            val label = listOfNotNull(av.code, av.part).joinToString(" ")
+            val label = if (av.part == null) av.code else "${av.code} ${av.part}"
             "av|${av.code}|${av.part.orEmpty().uppercase()}" to label
         }
         WorkKind.SERIES -> {
@@ -234,9 +369,9 @@ private fun episodeIdentity(
             val section = location.section.section
             when {
                 parsed.kind == NameKind.EPISODE && episode != null -> {
-                    val season = episode.season ?: seasonFromDirectories(dirs) ?: 1
+                    val season = episode.season ?: folderSeason() ?: 1
                     // v2 是修正版，Beta 这类却可能是另一集（Steins;Gate 的 23β），只有前者算同一集
-                    val variant = episode.version?.takeUnless { REVISION.matches(it) }?.lowercase().orEmpty()
+                    val variant = episode.version?.takeUnless(::isRevisionVersion)?.lowercase().orEmpty()
                     val number = "${episode.number}.${episode.decimal.orEmpty()}${episode.suffix.lowercase()}~${episode.last ?: ""}|$variant"
                     val sectionLabel = if (section == Section.MAIN) "" else "${section.label} "
                     val episodeLabel = if (season == 1) episode.shortText else "S${season.toString().padStart(2, '0')}E${episode.shortText}"
@@ -254,14 +389,23 @@ private fun episodeIdentity(
     }
 }
 
-private val REVISION = Regex("""(?i)v[0-9]+""")
+private fun isRevisionVersion(s: String): Boolean {
+    if (s.length < 2 || (s[0] != 'v' && s[0] != 'V')) return false
+    for (i in 1 until s.length) {
+        if (s[i] !in '0'..'9') return false
+    }
+    return true
+}
 
 // 前后不能紧挨字母或数字：1920x1080 的 1920、2160p、校验码「[AB2019CD]」里的 2019 都不算年份
 private val YEAR = Regex("""(?<![0-9A-Za-z×])((?:19|20)[0-9]{2})(?![0-9A-Za-z×])""")
 
 /** 文件名里最后一个像年份的数。取最后一个：「Blade Runner 2049 (2017)」的年份在后面。 */
-internal fun releaseYear(fileName: String): Int? =
-    YEAR.findAll(fileName.substringBeforeLast('.')).lastOrNull()?.groupValues?.get(1)?.toInt()
+internal fun releaseYear(fileName: String): Int? {
+    val stem = fileName.substringBeforeLast('.')
+    if (stem.length < 4 || ("19" !in stem && "20" !in stem)) return null
+    return YEAR.findAll(stem).lastOrNull()?.groupValues?.get(1)?.toInt()
+}
 
 private val SEASON_PATTERNS = listOf(
     Regex("""(?i)\bseason\s*([0-9]{1,2})\b"""),
@@ -274,9 +418,12 @@ private const val CHINESE_DIGITS = "一二三四五六七八九十"
 
 /** 最近一层写明季号的目录给出的季号。 */
 internal fun seasonFromDirectories(dirs: List<String>): Int? {
-    for (dir in dirs.asReversed()) {
+    for (i in dirs.lastIndex downTo 0) {
+        val dir = dirs[i]
         SEASON_PATTERNS.firstNotNullOfOrNull { it.find(dir)?.groupValues?.get(1)?.toIntOrNull() }?.let { return it }
-        CHINESE_SEASON.find(dir)?.let { return CHINESE_DIGITS.indexOf(it.groupValues[1]) + 1 }
+        if ('第' in dir) {
+            CHINESE_SEASON.find(dir)?.let { return CHINESE_DIGITS.indexOf(it.groupValues[1]) + 1 }
+        }
     }
     return null
 }
@@ -284,7 +431,11 @@ internal fun seasonFromDirectories(dirs: List<String>): Int? {
 /** 行上用于区分版本的标签：字幕组、分辨率、编码、来源、字幕语言与集号版本。 */
 private fun versionTags(parsed: ParsedName): List<String> = buildList {
     parsed.episode?.version?.let { add(it) }
-    parsed.tags.map(MediaTag::text).forEach { if (it !in this) add(it) }
+    val tags = parsed.tags
+    for (i in 0 until tags.size) {
+        val text = tags[i].text
+        if (text !in this) add(text)
+    }
 }
 
 // endregion

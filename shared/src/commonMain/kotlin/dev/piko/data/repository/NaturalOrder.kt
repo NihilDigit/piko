@@ -12,6 +12,7 @@ package dev.piko.data.repository
  */
 object NaturalOrder : Comparator<String> {
     override fun compare(a: String, b: String): Int {
+        if (a === b) return 0
         var i = 0
         var j = 0
         // 数值相等但前导零不同（「2」与「02」）时先记下，名字其余部分都相同才用它定序
@@ -20,11 +21,29 @@ object NaturalOrder : Comparator<String> {
             val ca = a[i]
             val cb = b[j]
             if (ca.isAsciiDigit() && cb.isAsciiDigit()) {
-                val result = compareDigitRuns(a, i, b, j)
-                if (result.order != 0) return result.order
-                if (zeroTieBreak == 0) zeroTieBreak = result.zeroTieBreak
-                i = result.endA
-                j = result.endB
+                val startA = i
+                val startB = j
+                while (i < a.length && a[i] == '0') i++
+                while (j < b.length && b[j] == '0') j++
+                var endA = i
+                while (endA < a.length && a[endA].isAsciiDigit()) endA++
+                var endB = j
+                while (endB < b.length && b[endB].isAsciiDigit()) endB++
+
+                val sigLengthOrder = (endA - i).compareTo(endB - j)
+                if (sigLengthOrder != 0) return sigLengthOrder
+                while (i < endA) {
+                    val order = a[i].compareTo(b[j])
+                    if (order != 0) return order
+                    i++
+                    j++
+                }
+                // 数值相等：前导零少的在前，「1」先于「01」，免得两者比较结果为 0、顺序随输入而变
+                if (zeroTieBreak == 0) {
+                    zeroTieBreak = (endA - startA).compareTo(endB - startB)
+                }
+                i = endA
+                j = endB
             } else {
                 val order = ca.lowercaseChar().compareTo(cb.lowercaseChar())
                 if (order != 0) return order
@@ -34,30 +53,6 @@ object NaturalOrder : Comparator<String> {
         }
         val lengthOrder = (a.length - i).compareTo(b.length - j)
         return if (lengthOrder != 0) lengthOrder else zeroTieBreak
-    }
-
-    private class RunComparison(val order: Int, val endA: Int, val endB: Int, val zeroTieBreak: Int = 0)
-
-    private fun compareDigitRuns(a: String, startA: Int, b: String, startB: Int): RunComparison {
-        var i = startA
-        while (i < a.length && a[i] == '0') i++
-        var j = startB
-        while (j < b.length && b[j] == '0') j++
-        var endA = i
-        while (endA < a.length && a[endA].isAsciiDigit()) endA++
-        var endB = j
-        while (endB < b.length && b[endB].isAsciiDigit()) endB++
-
-        val lengthOrder = (endA - i).compareTo(endB - j)
-        if (lengthOrder != 0) return RunComparison(lengthOrder, endA, endB)
-        while (i < endA) {
-            val order = a[i].compareTo(b[j])
-            if (order != 0) return RunComparison(order, endA, endB)
-            i++
-            j++
-        }
-        // 数值相等：前导零少的在前，「1」先于「01」，免得两者比较结果为 0、顺序随输入而变
-        return RunComparison(0, endA, endB, zeroTieBreak = (endA - startA).compareTo(endB - startB))
     }
 
     private fun Char.isAsciiDigit() = this in '0'..'9'

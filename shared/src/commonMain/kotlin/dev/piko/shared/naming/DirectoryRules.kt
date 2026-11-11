@@ -54,26 +54,72 @@ private val SECONDARY_DIRS: Map<String, SecondaryReason> = buildMap {
 private val NEUTRAL_DIR = Regex(
     """(?i)^(season|s|series|part|vol\.?|volume|disc|disk|box|set|batch|cd)\s*[0-9一二三四五六七八九十]+.*$|^(subs?|subtitles?|字幕|english subtitles|srt subtitles|sub(title)?s? \w+|completed|content|tv|output|[0-9]{3,4}p.*|.*内嵌.*|.*内封.*|chs|cht|gb|big5|720p avc|1080p avc|hevc|avc)$""",
 )
+private val DIR_NUMBER_PREFIX = Regex("""^[0-9]{1,2}(?:[.\s_-]+)""")
+private val DIR_WHITESPACE = Regex("""\s+""")
+private val CREDITLESS_COMBO_DIR = Regex("""\b(ed_op|op_ed|op&ed|ops & eds|nc ?op|nc ?ed)""")
+private val SOUNDTRACK_DIR = Regex("""\b(soundtrack|ost)\b""")
+private val PREVIEW_COMBO_DIR = Regex("""\b(promos?|trailers?|previews?|tv spots?)\b""")
+private val SCANS_OR_SCREENS_DIR = Regex("""^(scans?|screens?|screenshots?)\b""")
+
+private val AUTHORITATIVE_MEANINGS: Map<String, DirectoryMeaning> = AUTHORITATIVE.mapValues { DirectoryMeaning(section = it.value) }
+private val GENERIC_MEANINGS: Map<String, DirectoryMeaning> = GENERIC.mapValues { DirectoryMeaning(section = it.value, authoritative = false) }
+private val SECONDARY_MEANINGS: Map<String, DirectoryMeaning> = SECONDARY_DIRS.mapValues { DirectoryMeaning(secondary = it.value, neutral = true) }
+private val MEANING_CREDITLESS = DirectoryMeaning(section = Section.CREDITLESS)
+private val MEANING_OTHER = DirectoryMeaning(section = Section.OTHER)
+private val MEANING_PREVIEW = DirectoryMeaning(section = Section.PREVIEW)
+private val MEANING_SCANS = DirectoryMeaning(secondary = SecondaryReason.SCANS, neutral = true)
+private val MEANING_SCREENSHOTS = DirectoryMeaning(secondary = SecondaryReason.SCREENSHOTS, neutral = true)
+private val MEANING_NEUTRAL = DirectoryMeaning(neutral = true)
+private val MEANING_UNAUTHORITATIVE = DirectoryMeaning(authoritative = false)
+
+private fun needsWhitespaceCollapse(s: String): Boolean {
+    var prevSpace = false
+    for (i in 0 until s.length) {
+        val c = s[i]
+        if (c == ' ') {
+            if (prevSpace) return true
+            prevSpace = true
+        } else if (c <= '\u0020' || c.isWhitespace()) {
+            return true
+        } else {
+            prevSpace = false
+        }
+    }
+    return false
+}
+
+private fun hasAsciiDigitInDir(s: String): Boolean {
+    for (i in 0 until s.length) {
+        if (s[i] in '0'..'9') return true
+    }
+    return false
+}
 
 internal fun directoryMeaning(rawName: String): DirectoryMeaning {
-    val name = rawName.trim().lowercase()
-        .replace(Regex("""^[0-9]{1,2}(?:[.\s_-]+)"""), "")
-        .replace(Regex("""\s+"""), " ")
-        .trim()
-    AUTHORITATIVE[name]?.let { return DirectoryMeaning(section = it) }
-    GENERIC[name]?.let { return DirectoryMeaning(section = it, authoritative = false) }
-    SECONDARY_DIRS[name]?.let { return DirectoryMeaning(secondary = it, neutral = true) }
+    var name = rawName.trim().lowercase()
+    if (name.isNotEmpty() && name[0] in '0'..'9') {
+        name = name.replace(DIR_NUMBER_PREFIX, "")
+    }
+    if (needsWhitespaceCollapse(name)) {
+        name = name.replace(DIR_WHITESPACE, " ")
+    }
+    name = name.trim()
+    AUTHORITATIVE_MEANINGS[name]?.let { return it }
+    GENERIC_MEANINGS[name]?.let { return it }
+    SECONDARY_MEANINGS[name]?.let { return it }
     // 组合写法：「Creditless OPs & EDs」「Part I ED_OP's」「Soundtrack OST」
-    if ("creditless" in name || Regex("""\b(ed_op|op_ed|op&ed|ops & eds|nc ?op|nc ?ed)""").containsMatchIn(name)) {
-        return DirectoryMeaning(section = Section.CREDITLESS)
+    if ("creditless" in name || (("op" in name || "ed" in name) && CREDITLESS_COMBO_DIR.containsMatchIn(name))) {
+        return MEANING_CREDITLESS
     }
-    if (Regex("""\b(soundtrack|ost)\b""").containsMatchIn(name)) return DirectoryMeaning(section = Section.OTHER)
-    if (Regex("""\b(promos?|trailers?|previews?|tv spots?)\b""").containsMatchIn(name)) return DirectoryMeaning(section = Section.PREVIEW)
-    if (Regex("""^(scans?|screens?|screenshots?)\b""").containsMatchIn(name)) {
-        return DirectoryMeaning(secondary = if (name.startsWith("scan")) SecondaryReason.SCANS else SecondaryReason.SCREENSHOTS, neutral = true)
+    if (("ost" in name || "soundtrack" in name) && SOUNDTRACK_DIR.containsMatchIn(name)) return MEANING_OTHER
+    if (("promo" in name || "trailer" in name || "preview" in name || "tv spot" in name) && PREVIEW_COMBO_DIR.containsMatchIn(name)) {
+        return MEANING_PREVIEW
     }
-    if (NEUTRAL_DIR.matches(name)) return DirectoryMeaning(neutral = true)
-    return DirectoryMeaning(authoritative = false)
+    if (name.startsWith("sc") && SCANS_OR_SCREENS_DIR.containsMatchIn(name)) {
+        return if (name.startsWith("scan")) MEANING_SCANS else MEANING_SCREENSHOTS
+    }
+    if (NEUTRAL_DIR.matches(name)) return MEANING_NEUTRAL
+    return MEANING_UNAUTHORITATIVE
 }
 
 /** 原盘结构目录：路径里出现这些段时，其上一层就是一张盘。 */
@@ -85,7 +131,7 @@ private val DISC_NUMBER = Regex("""(?i)(?:^|[\s_\-.\[(])(?:disc|disk|dvd|bd|vol(
 internal class DiscName(val title: String?, val number: Int?)
 
 internal fun parseDiscName(name: String): DiscName {
-    val match = DISC_NUMBER.findAll(name).lastOrNull()
+    val match = if (hasAsciiDigitInDir(name)) DISC_NUMBER.findAll(name).lastOrNull() else null
     val number = match?.groupValues?.get(1)?.toIntOrNull()
     val rest = if (match != null) name.substring(0, match.range.first) else name
     val title = parseSeriesStem(rest).title

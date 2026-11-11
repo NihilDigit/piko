@@ -76,12 +76,26 @@ private class SceneRelease(val site: String, val label: String, val tags: List<M
 // scene 发布名：站点.YY.MM.DD.演员.标题[.XXX.1080p.MP4-组]。站点后面紧跟的是日期，不是集号
 private val SCENE_STOP_KINDS = setOf(TagKind.RESOLUTION, TagKind.VIDEO_CODEC, TagKind.AUDIO_CODEC, TagKind.SOURCE, TagKind.BIT_DEPTH, TagKind.FRAME_RATE)
 private val SCENE_RELEASE = Regex("""^([A-Za-z][A-Za-z0-9-]*[A-Za-z0-9])\.([0-9]{2})\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])[.\-](.+)$""")
+private val AMBIGUOUS_DASH_LANGUAGES = setOf("sc", "tc", "it", "de", "es", "in", "ja", "ko", "ar", "fr", "ru")
+
+private fun Char.isAsciiLetter(): Boolean = this in 'A'..'Z' || this in 'a'..'z'
+
+private fun mayMatchSceneRelease(stem: String): Boolean {
+    if (stem.length < 13 || !stem[0].isAsciiLetter()) return false
+    val firstDot = stem.indexOf('.')
+    if (firstDot < 2 || firstDot + 10 >= stem.length) return false
+    if (stem[firstDot + 1] !in '0'..'9' || stem[firstDot + 2] !in '0'..'9') return false
+    if (stem[firstDot + 3] != '.' || stem[firstDot + 6] != '.') return false
+    val sep = stem[firstDot + 9]
+    return sep == '.' || sep == '-'
+}
 
 /**
  * 站点是作品，行标题是日期加标题。日期要留在行里：同一演员的几部，标题常常只有演员名。
  * 标题从第一个标签词（XXX、1080p、MP4-KTR）截断
  */
 private fun sceneRelease(stem: String): SceneRelease? {
+    if (!mayMatchSceneRelease(stem)) return null
     val match = SCENE_RELEASE.matchEntire(stem) ?: return null
     val (site, year, month, day, rest) = match.destructured
     val words = rest.split('.', ' ').filter { it.isNotBlank() }
@@ -100,17 +114,17 @@ private fun sceneRelease(stem: String): SceneRelease? {
  */
 private fun splitLanguageSuffix(stem: String, kind: FileKind): Pair<String, String?> {
     val dot = stem.lastIndexOf('.')
-    if (dot > 0) {
+    if (dot > 0 && stem.length - dot - 1 in 2..8) {
         val candidate = stem.substring(dot + 1)
         if (candidate.lowercase() in LANGUAGE_SUFFIXES) return stem.substring(0, dot) to candidate
     }
     if (kind == FileKind.SUBTITLE) {
         val dash = stem.lastIndexOfAny(charArrayOf('-', '_'))
-        if (dash > 0) {
+        if (dash > 0 && stem.length - dash - 1 in 2..8) {
             val candidate = stem.substring(dash + 1)
             val lower = candidate.lowercase()
             // 两个字母的「sc」「it」这类太容易是名字的一部分，横线后缀只认明确的语言代码
-            if (lower in LANGUAGE_SUFFIXES && lower !in setOf("sc", "tc", "it", "de", "es", "in", "ja", "ko", "ar", "fr", "ru")) {
+            if (lower in LANGUAGE_SUFFIXES && lower !in AMBIGUOUS_DASH_LANGUAGES) {
                 return stem.substring(0, dash) to candidate
             }
         }
@@ -149,33 +163,85 @@ private val PARENTHESIZED = Regex("""[(（][^)）]*[)）]""")
 
 private val BRACKET_PAIRS = mapOf('[' to ']', '(' to ')', '【' to '】', '{' to '}', '（' to '）')
 
+private fun normalizeUnicodeDashesAndSpace(raw: String): String {
+    for (i in 0 until raw.length) {
+        val c = raw[i]
+        if (c == '–' || c == '—' || c == '‒' || c == '－' || c == '　') {
+            val sb = StringBuilder(raw.length)
+            sb.append(raw, 0, i)
+            for (j in i until raw.length) {
+                val ch = raw[j]
+                sb.append(
+                    when (ch) {
+                        '–', '—', '‒', '－' -> '-'
+                        '　' -> ' '
+                        else -> ch
+                    },
+                )
+            }
+            return sb.toString()
+        }
+    }
+    return raw
+}
+
+private fun hasAdjacentAsciiDigits(s: String): Boolean {
+    for (i in 0 until s.length - 1) {
+        if (s[i] in '0'..'9' && s[i + 1] in '0'..'9') return true
+    }
+    return false
+}
+
 internal fun normalizeStem(raw: String): String {
-    var s = raw.replace('–', '-').replace('—', '-').replace('‒', '-').replace('－', '-').replace('　', ' ')
-    s = H26_DOTTED.replace(s, "H26$1")
-    s = DOTTED_DATE.replace(s, "$1-$2-$3")
-    s = SCENE_DATE.replace(s, "20$1-$2-$3")
-    s = NAME_DOT_NUMBER.replace(s, "$1 $2")
+    var s = normalizeUnicodeDashesAndSpace(raw)
+    if (".26" in s) s = H26_DOTTED.replace(s, "H26$1")
+    if (s.length >= 10 && ('.' in s || '_' in s) && ("19" in s || "20" in s)) {
+        s = DOTTED_DATE.replace(s, "$1-$2-$3")
+    }
+    if (s.length >= 10 && ('.' in s || ' ' in s) && hasAdjacentAsciiDigits(s)) {
+        s = SCENE_DATE.replace(s, "20$1-$2-$3")
+    }
+    if (s.length >= 5 && s[0].isAsciiLetter() && s[s.lastIndex] in '0'..'9' && '.' in s) {
+        s = NAME_DOT_NUMBER.replace(s, "$1 $2")
+    }
     // 下划线稍后会换成空格，x86_64 得先连成一个词，交给词表认作架构名
-    s = s.replace("x86_64", "x86-64", ignoreCase = true)
-    s = CAMERA_TIMESTAMP.replace(s) { m -> m.groupValues.drop(1).filter(String::isNotEmpty).joinToString("-") }
+    if ("86_64" in s) s = s.replace("x86_64", "x86-64", ignoreCase = true)
+    if (s.length >= 15 && '_' in s && ("19" in s || "20" in s)) {
+        s = CAMERA_TIMESTAMP.replace(s) { m -> m.groupValues.drop(1).filter(String::isNotEmpty).joinToString("-") }
+    }
     // 没有空格（或空格远少于点）的名字才把 _ 与 . 当作空格：「[AonE]_Naruto_198」「Dragon.Ball.Z.S01E19」
     // 「Space.Brothers.S01EP13.3-D Ant.1080p」。空格多时它们多半是名字的一部分，如「Tai-Ari Deshita.」「Beta.Ver」。
     // 两个判断都看原名：先换了下划线，点号那一步就会以为名字里本来有空格
-    val spaces = s.count { it == ' ' }
-    val dots = s.count { it == '.' }
-    val replaceUnderscores = spaces == 0 && '_' in s
+    var spaces = 0
+    var dots = 0
+    var hasUnderscore = false
+    for (i in 0 until s.length) {
+        when (s[i]) {
+            ' ' -> spaces++
+            '.' -> dots++
+            '_' -> hasUnderscore = true
+        }
+    }
+    val replaceUnderscores = spaces == 0 && hasUnderscore
     val replaceDots = dots >= 2 && spaces * 2 < dots
     if (replaceDots) s = dotsToSpaces(s)
     if (replaceUnderscores) s = s.replace('_', ' ')
     // 「Nine O'Clock Woman_01_[3FB0AE7E]」：有空格的名字里，下划线夹着的集号
-    s = UNDERSCORED_NUMBER.replace(s, " $1")
+    if (!replaceUnderscores && hasUnderscore) {
+        s = UNDERSCORED_NUMBER.replace(s, " $1")
+    }
     // 全用连字符连接的网页式短名：「15-bishoujo-hyouryuuki-1-720p」
     if (' ' !in s && '[' !in s && s.count { it == '-' } >= 3) s = s.replace('-', ' ')
-    s = s.replace("_-_", " - ").replace("_[", " [").replace("]_", "] ").replace("_(", " (").replace(")_", ") ")
+    if ('_' in s) {
+        s = s.replace("_-_", " - ").replace("_[", " [").replace("]_", "] ").replace("_(", " (").replace(")_", ") ")
+    }
     return s
 }
 
 private fun Char?.isDigitAscii() = this != null && this in '0'..'9'
+
+private fun isOpenBracket(c: Char): Boolean = c == '[' || c == '(' || c == '【' || c == '{' || c == '（'
+private fun isCloseBracket(c: Char): Boolean = c == ']' || c == ')' || c == '】' || c == '}' || c == '）'
 
 /**
  * 括号外的点换成空格。只有「2.0」「5.1」这种一位数对一位数的声道写法保留：「S01E19.1080p」的点
@@ -184,14 +250,19 @@ private fun Char?.isDigitAscii() = this != null && this in '0'..'9'
 private fun dotsToSpaces(s: String): String {
     val out = StringBuilder(s.length)
     var depth = 0
-    s.forEachIndexed { i, c ->
+    for (i in 0 until s.length) {
+        val c = s[i]
         when {
-            c in BRACKET_PAIRS.keys -> depth++
-            c in BRACKET_PAIRS.values -> depth = maxOf(0, depth - 1)
+            isOpenBracket(c) -> depth++
+            isCloseBracket(c) -> if (depth > 0) depth--
         }
-        val channels = s.getOrNull(i - 1).isDigitAscii() && !s.getOrNull(i - 2).isDigitAscii() &&
-            s.getOrNull(i + 1).isDigitAscii() && !s.getOrNull(i + 2).isDigitAscii()
-        if (c == '.' && depth == 0 && !channels) out.append(' ') else out.append(c)
+        if (c == '.' && depth == 0) {
+            val channels = s.getOrNull(i - 1).isDigitAscii() && !s.getOrNull(i - 2).isDigitAscii() &&
+                s.getOrNull(i + 1).isDigitAscii() && !s.getOrNull(i + 2).isDigitAscii()
+            out.append(if (channels) '.' else ' ')
+        } else {
+            out.append(c)
+        }
     }
     return out.toString()
 }
@@ -318,13 +389,46 @@ private val MARKERS: Map<String, Section> = buildMap {
 
 /** 这些词只在后面紧跟编号时才算标记：「ED」「Images」「Extra」单独出现时多半是普通用词。 */
 private val MARKERS_NEEDING_NUMBER = setOf("op", "ed", "cm", "cf", "film", "spot", "extra", "making", "images")
+private val TWO_WORD_MARKER_HEADS: Set<String> =
+    MARKERS.keys.mapNotNullTo(HashSet()) { key -> key.substringBefore(' ', "").takeIf { it.isNotEmpty() } }
 
 private val MARKER_WITH_NUMBER = Regex(
     """^(game\s?op|game\s?ed|ncop|nced|nc\s?op|nc\s?ed|op|ed|pv|cm|cf|sp|ova|oad|oav|menu|tokuten|special|movie|preview|trailer|teaser|opening|ending|images|extra|interview|m)[\s._-]?([0-9]{1,3})([a-e])?(?:[_-]([0-9]{1,2}))?(?:v[0-9]{1,2})?$""",
     RegexOption.IGNORE_CASE,
 )
 
-private fun markerSection(text: String): Section? = MARKERS[text.lowercase().replace(MARKER_SPACES, " ").trim()]
+private fun hasAsciiDigit(s: String): Boolean {
+    for (i in 0 until s.length) {
+        if (s[i] in '0'..'9') return true
+    }
+    return false
+}
+
+private fun mayMatchMarkerWithNumber(s: String): Boolean {
+    val len = s.length
+    if (len !in 2..20 || !s[0].isAsciiLetter()) return false
+    val last = s[len - 1]
+    if (last !in '0'..'9' && last !in 'a'..'e' && last !in 'A'..'E') return false
+    return hasAsciiDigit(s)
+}
+
+private fun normalizeMarkerKey(text: String): String? {
+    var hasSpecial = false
+    for (i in 0 until text.length) {
+        val c = text[i]
+        if (c == '_' || c <= '\u0020' || c.isWhitespace()) {
+            hasSpecial = true
+            break
+        }
+    }
+    if (!hasSpecial) {
+        return if (text.length in 2..16) text.lowercase() else null
+    }
+    val collapsed = text.lowercase().replace(MARKER_SPACES, " ").trim()
+    return collapsed.takeIf { it.length in 2..16 }
+}
+
+private fun markerSection(text: String): Section? = normalizeMarkerKey(text)?.let(MARKERS::get)
 
 // 访谈：VCB-Studio 写作 IV01、IV02_1
 private val INTERVIEW_ENTRY = Regex("""^IV[0-9]{1,2}(?:[_-][0-9]{1,2})?$""", RegexOption.IGNORE_CASE)
@@ -337,15 +441,26 @@ private val INTERVIEW_ENTRY = Regex("""^IV[0-9]{1,2}(?:[_-][0-9]{1,2})?$""", Reg
 internal fun bracketEntrySection(content: String): Section? {
     bracketHit(content, 0)?.section?.let { return it }
     markerSection(content)?.let { return it }
-    if (INTERVIEW_ENTRY.matches(content.trim())) return Section.BONUS
-    return markerSection(content.trim().split(' ', '_').first())
+    val trimmed = content.trim()
+    if (trimmed.length >= 3 && (trimmed[0] == 'i' || trimmed[0] == 'I') && INTERVIEW_ENTRY.matches(trimmed)) return Section.BONUS
+    val sep = trimmed.indexOfAny(charArrayOf(' ', '_'))
+    return markerSection(if (sep < 0) trimmed else trimmed.substring(0, sep))
 }
 
 /** 一段文字里出现的分区标记词（取第一个），供「Cast & Staff Interview 01」这类描述性条目归类。 */
 private fun sectionMentioned(text: String): Section? =
     text.lowercase().split(MENTION_SEPARATORS).firstNotNullOfOrNull { word -> markerSection(word)?.takeIf { word !in AMBIGUOUS_MARKERS } }
 
-private fun isYearNumber(digits: String): Boolean = digits.length == 4 && digits.all { it in '0'..'9' } && digits.toInt() in 1950..2035
+private fun isYearNumber(digits: String): Boolean {
+    if (digits.length != 4) return false
+    var value = 0
+    for (i in 0 until 4) {
+        val d = digits[i] - '0'
+        if (d !in 0..9) return false
+        value = value * 10 + d
+    }
+    return value in 1950..2035
+}
 
 private fun episodeOf(digits: String, decimal: String? = null, last: String? = null, season: Int? = null, suffix: String = "", version: String? = null) =
     EpisodeNumber(number = digits.toInt(), text = digits, decimal = decimal, lastText = last, season = season, suffix = suffix, version = version?.lowercase())
@@ -355,34 +470,59 @@ private fun plainEpisode(m: MatchResult) =
 
 private fun plainLabel(m: MatchResult) = m.groupValues[1] + m.groupValues[2].let { if (it.isEmpty()) "" else ".$it" } + m.groupValues[4]
 
+private fun isCjkEpisodeSuffix(c: Char): Boolean = c == '话' || c == '話' || c == '集' || c == '回'
+
 /** 方括号内容整体是集号或标记时给出命中。 */
 private fun bracketHit(content: String, index: Int): Hit? {
     val text = content.trim()
-    PLAIN_NUMBER.matchEntire(text)?.let { m ->
-        if (isYearNumber(m.groupValues[1])) return null
-        return Hit(index, index + 1, plainEpisode(m), null, null, plainLabel(m), STRENGTH_BRACKET)
+    if (text.isEmpty()) return null
+    val first = text[0]
+    val last = text[text.lastIndex]
+    if (first in '0'..'9') {
+        if (text.length <= 9) {
+            PLAIN_NUMBER.matchEntire(text)?.let { m ->
+                if (isYearNumber(m.groupValues[1])) return null
+                return Hit(index, index + 1, plainEpisode(m), null, null, plainLabel(m), STRENGTH_BRACKET)
+            }
+        }
+        if (last == ')' && '(' in text) {
+            NUMBER_WITH_SECTION.matchEntire(text)?.let { m ->
+                val section = markerSection(m.groupValues[2]) ?: Section.SPECIAL
+                return Hit(index, index + 1, episodeOf(m.groupValues[1]), section, m.groupValues[2], text.replace(" ", ""), STRENGTH_BRACKET)
+            }
+        }
+        if (isCjkEpisodeSuffix(last)) {
+            CJK_EPISODE.matchEntire(text)?.let { m -> return Hit(index, index + 1, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_BRACKET) }
+        }
+        if ((last in '0'..'9') && ('-' in text || '~' in text)) {
+            RANGE.matchEntire(text)?.let { m ->
+                // 「2017 - 2023」是年份区间，不是集号
+                if (isYearNumber(m.groupValues[1])) return null
+                return Hit(index, index + 1, episodeOf(m.groupValues[1], last = m.groupValues[2]), null, null, "${m.groupValues[1]}-${m.groupValues[2]}", STRENGTH_BRACKET)
+            }
+        }
+        return null
     }
-    NUMBER_WITH_SECTION.matchEntire(text)?.let { m ->
-        val section = markerSection(m.groupValues[2]) ?: Section.SPECIAL
-        return Hit(index, index + 1, episodeOf(m.groupValues[1]), section, m.groupValues[2], text.replace(" ", ""), STRENGTH_BRACKET)
+    if (first == '第' && isCjkEpisodeSuffix(last)) {
+        CJK_EPISODE.matchEntire(text)?.let { m -> return Hit(index, index + 1, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_BRACKET) }
     }
-    CJK_EPISODE.matchEntire(text)?.let { m -> return Hit(index, index + 1, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_BRACKET) }
-    EPISODE_PHRASE.matchEntire(text)?.let { m -> return Hit(index, index + 1, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_BRACKET) }
-    SE.matchEntire(text)?.let { m -> return seHit(m, index, index + 1) }
-    E_PREFIXED.matchEntire(text)?.let { m ->
-        return Hit(index, index + 1, episodeOf(m.groupValues[1], last = m.groupValues[2].ifEmpty { null }, version = m.groupValues[3].ifEmpty { null }),
-            null, null, m.groupValues[1] + m.groupValues[2].let { if (it.isEmpty()) "" else "-$it" }, STRENGTH_BRACKET)
+    if ((first == 'e' || first == 'E') && text.length >= 2 && hasAsciiDigit(text)) {
+        EPISODE_PHRASE.matchEntire(text)?.let { m -> return Hit(index, index + 1, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_BRACKET) }
+        E_PREFIXED.matchEntire(text)?.let { m ->
+            return Hit(index, index + 1, episodeOf(m.groupValues[1], last = m.groupValues[2].ifEmpty { null }, version = m.groupValues[3].ifEmpty { null }),
+                null, null, m.groupValues[1] + m.groupValues[2].let { if (it.isEmpty()) "" else "-$it" }, STRENGTH_BRACKET)
+        }
     }
-    RANGE.matchEntire(text)?.let { m ->
-        // 「2017 - 2023」是年份区间，不是集号
-        if (isYearNumber(m.groupValues[1])) return null
-        return Hit(index, index + 1, episodeOf(m.groupValues[1], last = m.groupValues[2]), null, null, "${m.groupValues[1]}-${m.groupValues[2]}", STRENGTH_BRACKET)
+    if ((first == 's' || first == 'S') && text.length >= 4 && text[1] in '0'..'9') {
+        SE.matchEntire(text)?.let { m -> return seHit(m, index, index + 1) }
     }
-    MARKER_WITH_NUMBER.matchEntire(text)?.let { m ->
-        val word = m.groupValues[1]
-        if (word.equals("m", ignoreCase = true)) return null
-        val section = markerSection(word) ?: return null
-        return Hit(index, index + 1, episodeOf(m.groupValues[2], suffix = m.groupValues[3]), section, word, text, STRENGTH_BRACKET)
+    if (mayMatchMarkerWithNumber(text)) {
+        MARKER_WITH_NUMBER.matchEntire(text)?.let { m ->
+            val word = m.groupValues[1]
+            if (word.equals("m", ignoreCase = true)) return null
+            val section = markerSection(word) ?: return null
+            return Hit(index, index + 1, episodeOf(m.groupValues[2], suffix = m.groupValues[3]), section, word, text, STRENGTH_BRACKET)
+        }
     }
     markerSection(text)?.let { section ->
         if (text.lowercase() in MARKERS_NEEDING_NUMBER) return null
@@ -400,9 +540,8 @@ private fun seHit(m: MatchResult, start: Int, end: Int): Hit {
 
 private fun findHits(tokens: List<NameToken>, bodyStart: Int): List<Hit> {
     val hits = mutableListOf<Hit>()
-    tokens.forEachIndexed { i, token ->
-        if (i < bodyStart) return@forEachIndexed
-        when (token) {
+    for (i in bodyStart until tokens.size) {
+        when (tokens[i]) {
             is NameToken.Bracket -> bracketHits(tokens, i, bodyStart)?.let { hits += it }
             is NameToken.Word -> wordHits(tokens, i, bodyStart, hits)
             NameToken.Dash -> Unit
@@ -417,8 +556,11 @@ private fun bracketHits(tokens: List<NameToken>, i: Int, bodyStart: Int): Hit? {
     val next = tokens.getOrNull(i + 1)
     val section = markerSection(content)
     if (section != null && next is NameToken.Bracket) {
-        PLAIN_NUMBER.matchEntire(next.content.trim())?.let { number ->
-            return Hit(i, i + 2, plainEpisode(number), section, content, "$content ${next.content.trim()}", STRENGTH_BRACKET)
+        val nextTrimmed = next.content.trim()
+        if (nextTrimmed.isNotEmpty() && nextTrimmed[0] in '0'..'9') {
+            PLAIN_NUMBER.matchEntire(nextTrimmed)?.let { number ->
+                return Hit(i, i + 2, plainEpisode(number), section, content, "$content $nextTrimmed", STRENGTH_BRACKET)
+            }
         }
     }
     bracketHit(content, i)?.let { return it }
@@ -426,10 +568,12 @@ private fun bracketHits(tokens: List<NameToken>, i: Int, bodyStart: Int): Hit? {
     // 带编号或提到分区标记的才算条目；什么都不带的是副标题（「[Soumei Eichi no Cognitive Computing]」）
     if (i == bodyStart || (tokens[i] as NameToken.Bracket).tagScan.isTagText || !content.any { it.isLetter() }) return null
     val mentioned = sectionMentioned(content)
-    DESCRIBED_WITH_NUMBER.matchEntire(content)?.let { m ->
-        // 「[Sousou no Frieren Season 2]」：数字是季号，这个方括号是带季号的作品名
-        if (!isYearNumber(m.groupValues[2]) && !SEASON_TAIL.containsMatchIn(content)) {
-            return Hit(i, i + 1, episodeOf(m.groupValues[2]), mentioned ?: Section.OTHER, m.groupValues[1].trim(), content, STRENGTH_DESCRIBED)
+    if (content[content.lastIndex] in '0'..'9') {
+        DESCRIBED_WITH_NUMBER.matchEntire(content)?.let { m ->
+            // 「[Sousou no Frieren Season 2]」：数字是季号，这个方括号是带季号的作品名
+            if (!isYearNumber(m.groupValues[2]) && !SEASON_TAIL.containsMatchIn(content)) {
+                return Hit(i, i + 1, episodeOf(m.groupValues[2]), mentioned ?: Section.OTHER, m.groupValues[1].trim(), content, STRENGTH_DESCRIBED)
+            }
         }
     }
     if (mentioned != null) return Hit(i, i + 1, null, mentioned, content, content, STRENGTH_DESCRIBED)
@@ -438,35 +582,59 @@ private fun bracketHits(tokens: List<NameToken>, i: Int, bodyStart: Int): Hit? {
 
 private fun wordHits(tokens: List<NameToken>, i: Int, bodyStart: Int, hits: MutableList<Hit>) {
     val text = (tokens[i] as NameToken.Word).text
-    SE.matchEntire(text)?.let { hits += seHit(it, i, i + 1) }
-    NXNN.matchEntire(text)?.let { m ->
-        hits += Hit(i, i + 1, episodeOf(m.groupValues[2], season = m.groupValues[1].toInt()), null, null, m.groupValues[2], STRENGTH_SE)
+    if (text.isEmpty()) return
+    val first = text[0]
+    if ((first == 's' || first == 'S') && text.length >= 4 && text[1] in '0'..'9') {
+        SE.matchEntire(text)?.let { hits += seHit(it, i, i + 1) }
     }
-    ABS_NXNN.matchEntire(text)?.let { m -> hits += Hit(i, i + 1, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_DASH) }
-    E_PREFIXED.matchEntire(text)?.let { m ->
-        hits += Hit(i, i + 1, episodeOf(m.groupValues[1], last = m.groupValues[2].ifEmpty { null }, version = m.groupValues[3].ifEmpty { null }),
-            null, null, m.groupValues[1] + m.groupValues[2].let { if (it.isEmpty()) "" else "-$it" }, STRENGTH_PREFIXED)
+    if (first in '0'..'9') {
+        if (text.length in 4..6 && 'x' in text) {
+            NXNN.matchEntire(text)?.let { m ->
+                hits += Hit(i, i + 1, episodeOf(m.groupValues[2], season = m.groupValues[1].toInt()), null, null, m.groupValues[2], STRENGTH_SE)
+            }
+        }
+        if (text.length in 7..11 && '-' in text && 'x' in text) {
+            ABS_NXNN.matchEntire(text)?.let { m -> hits += Hit(i, i + 1, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_DASH) }
+        }
     }
-    HASH.matchEntire(text)?.let { m -> hits += Hit(i, i + 1, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_PREFIXED) }
+    if (first == 'e' || first == 'E') {
+        if (text.length >= 2 && hasAsciiDigit(text)) {
+            E_PREFIXED.matchEntire(text)?.let { m ->
+                hits += Hit(i, i + 1, episodeOf(m.groupValues[1], last = m.groupValues[2].ifEmpty { null }, version = m.groupValues[3].ifEmpty { null }),
+                    null, null, m.groupValues[1] + m.groupValues[2].let { if (it.isEmpty()) "" else "-$it" }, STRENGTH_PREFIXED)
+            }
+        }
+        // 「Episode 74」「EP 140-Goku Gains Speed」
+        if (text.equals("Episode", true) || text.equals("Ep", true) || text.equals("Ep.", true)) {
+            val next = (tokens.getOrNull(i + 1) as? NameToken.Word)?.text.orEmpty()
+            if (next.isNotEmpty() && next[0] in '0'..'9') {
+                LEADING_NUMBER.matchEntire(next)?.let { m ->
+                    hits += Hit(i, i + 2, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_PREFIXED)
+                }
+            }
+        }
+    }
+    if ((first == '#' || first == '＃') && text.length in 2..5) {
+        HASH.matchEntire(text)?.let { m -> hits += Hit(i, i + 1, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_PREFIXED) }
+    }
     // 「第1话「相亲 臭脾气」」：中文集号后面常紧跟不在括号表里的「」
-    CJK_EPISODE_IN_WORD.find(text)?.let { m ->
-        if (m.range.first == 0) hits += Hit(i, i + 1, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_PREFIXED)
-    }
-    // 「Episode 74」「EP 140-Goku Gains Speed」
-    if (text.equals("Episode", true) || text.equals("Ep", true) || text.equals("Ep.", true)) {
-        val next = (tokens.getOrNull(i + 1) as? NameToken.Word)?.text.orEmpty()
-        LEADING_NUMBER.matchEntire(next)?.let { m ->
-            hits += Hit(i, i + 2, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_PREFIXED)
+    if (first == '第' && text.length >= 3 && text[1] in '0'..'9') {
+        CJK_EPISODE_IN_WORD.find(text)?.let { m ->
+            if (m.range.first == 0) hits += Hit(i, i + 1, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_PREFIXED)
         }
     }
     // 「Part.1」「Part 2」：分上下篇的 OVA
-    PART_WORD.matchEntire(text)?.let { m -> hits += Hit(i, i + 1, episodeOf(m.groupValues[1]), null, null, "Part ${m.groupValues[1]}", STRENGTH_PREFIXED) }
-    if (text.equals("Part", true)) {
-        val next = (tokens.getOrNull(i + 1) as? NameToken.Word)?.text.orEmpty()
-        if (SHORT_NUMBER.matches(next)) hits += Hit(i, i + 2, episodeOf(next), null, null, "Part $next", STRENGTH_PREFIXED)
+    if (first == 'p' || first == 'P') {
+        if (text.length in 3..7 && text[text.lastIndex] in '0'..'9') {
+            PART_WORD.matchEntire(text)?.let { m -> hits += Hit(i, i + 1, episodeOf(m.groupValues[1]), null, null, "Part ${m.groupValues[1]}", STRENGTH_PREFIXED) }
+        }
+        if (text.equals("Part", true)) {
+            val next = (tokens.getOrNull(i + 1) as? NameToken.Word)?.text.orEmpty()
+            if (next.length in 1..2 && SHORT_NUMBER.matches(next)) hits += Hit(i, i + 2, episodeOf(next), null, null, "Part $next", STRENGTH_PREFIXED)
+        }
     }
     // 名字以集号开头：「158 - Dende's Dragon」「01. The Evil Spirit」「38 [A] - Pino」
-    if (i == bodyStart && tokens.size > i + 1) {
+    if (first in '0'..'9' && i == bodyStart && tokens.size > i + 1) {
         val next = tokens[i + 1]
         val numbered = text.endsWith('.') && next is NameToken.Word
         if (next == NameToken.Dash || next is NameToken.Bracket || numbered) {
@@ -478,12 +646,14 @@ private fun wordHits(tokens: List<NameToken>, i: Int, bodyStart: Int, hits: Muta
     }
     wordMarkerHit(tokens, i)?.let { hits += it }
     // 「- 12」「- 115v2」「- 12.5」「- 117- Follow Dr Gero」
-    if (tokens.getOrNull(i - 1) == NameToken.Dash && i - 1 > bodyStart) {
+    if (first in '0'..'9' && tokens.getOrNull(i - 1) == NameToken.Dash && i - 1 > bodyStart) {
         PLAIN_NUMBER.matchEntire(text.trimEnd('-'))?.let { m ->
             if (!isYearNumber(m.groupValues[1])) hits += Hit(i - 1, i + 1, plainEpisode(m), null, null, plainLabel(m), STRENGTH_DASH)
         }
-        RANGE.matchEntire(text)?.let { m ->
-            if (!isYearNumber(m.groupValues[1])) hits += Hit(i - 1, i + 1, episodeOf(m.groupValues[1], last = m.groupValues[2]), null, null, text, STRENGTH_DASH)
+        if ('-' in text || '~' in text) {
+            RANGE.matchEntire(text)?.let { m ->
+                if (!isYearNumber(m.groupValues[1])) hits += Hit(i - 1, i + 1, episodeOf(m.groupValues[1], last = m.groupValues[2]), null, null, text, STRENGTH_DASH)
+            }
         }
     }
 }
@@ -491,28 +661,38 @@ private fun wordHits(tokens: List<NameToken>, i: Int, bodyStart: Int, hits: Muta
 /** 词形式的标记：「Opening 06」「ED 002」「PV 01」「NCOP 19b」「Movie 05」「OVA」「BD Menu」「NCOP1」。 */
 private fun wordMarkerHit(tokens: List<NameToken>, i: Int): Hit? {
     val word = (tokens[i] as NameToken.Word).text
-    MARKER_WITH_NUMBER.matchEntire(word)?.let { m ->
-        val w = m.groupValues[1]
-        // 「Z M05」「DBZ M02」：SoM 剧场版合集的 M 编号，只在前面紧跟作品名时才认
-        val isMovieCode = w.equals("m", true)
-        val section = if (isMovieCode) Section.MOVIE else markerSection(w)
-        if (section != null && (!isMovieCode || tokens.getOrNull(i - 1) is NameToken.Word)) {
-            return Hit(i, i + 1, episodeOf(m.groupValues[2], suffix = m.groupValues[3]), section, w, word, STRENGTH_MARKER, fromWords = true)
+    if (mayMatchMarkerWithNumber(word)) {
+        MARKER_WITH_NUMBER.matchEntire(word)?.let { m ->
+            val w = m.groupValues[1]
+            // 「Z M05」「DBZ M02」：SoM 剧场版合集的 M 编号，只在前面紧跟作品名时才认
+            val isMovieCode = w.equals("m", true)
+            val section = if (isMovieCode) Section.MOVIE else markerSection(w)
+            if (section != null && (!isMovieCode || tokens.getOrNull(i - 1) is NameToken.Word)) {
+                return Hit(i, i + 1, episodeOf(m.groupValues[2], suffix = m.groupValues[3]), section, w, word, STRENGTH_MARKER, fromWords = true)
+            }
         }
     }
-    for (span in 2 downTo 1) {
-        val words = (i until i + span).mapNotNull { (tokens.getOrNull(it) as? NameToken.Word)?.text }
-        if (words.size != span) continue
-        val phrase = words.joinToString(" ")
-        val section = markerSection(phrase) ?: continue
-        val next = (tokens.getOrNull(i + span) as? NameToken.Word)?.text
-        val number = next?.let { PLAIN_NUMBER.matchEntire(it) }
-        if (number == null && phrase.lowercase() in MARKERS_NEEDING_NUMBER) continue
-        val end = i + span + (if (number != null) 1 else 0)
-        val label = listOfNotNull(phrase, next?.takeIf { number != null }).joinToString(" ")
-        return Hit(i, end, number?.let(::plainEpisode), section, phrase, label, STRENGTH_MARKER, fromWords = true)
+    val headKey = normalizeMarkerKey(word)
+    val nextWord = (tokens.getOrNull(i + 1) as? NameToken.Word)?.text
+    if (headKey != null && nextWord != null && headKey in TWO_WORD_MARKER_HEADS) {
+        val phrase = "$word $nextWord"
+        val section = markerSection(phrase)
+        if (section != null) {
+            val afterTwo = (tokens.getOrNull(i + 2) as? NameToken.Word)?.text
+            val number = if (afterTwo != null && afterTwo.isNotEmpty() && afterTwo[0] in '0'..'9') PLAIN_NUMBER.matchEntire(afterTwo) else null
+            if (number != null || phrase.lowercase() !in MARKERS_NEEDING_NUMBER) {
+                val end = i + 2 + (if (number != null) 1 else 0)
+                val label = if (number != null) "$phrase $afterTwo" else phrase
+                return Hit(i, end, number?.let(::plainEpisode), section, phrase, label, STRENGTH_MARKER, fromWords = true)
+            }
+        }
     }
-    return null
+    val singleSection = headKey?.let(MARKERS::get) ?: return null
+    val number = if (nextWord != null && nextWord.isNotEmpty() && nextWord[0] in '0'..'9') PLAIN_NUMBER.matchEntire(nextWord) else null
+    if (number == null && word.lowercase() in MARKERS_NEEDING_NUMBER) return null
+    val end = i + 1 + (if (number != null) 1 else 0)
+    val label = if (number != null) "$word $nextWord" else word
+    return Hit(i, end, number?.let(::plainEpisode), singleSection, word, label, STRENGTH_MARKER, fromWords = true)
 }
 
 // endregion
@@ -630,6 +810,12 @@ private fun applyTitleTail(draft: Draft) {
     }
 }
 
+private fun mayMatchVersion(s: String): Boolean {
+    if (s.length !in 2..10) return false
+    val c = s[0]
+    return c == 'v' || c == 'V' || c == 'b' || c == 'B' || c == 'a' || c == 'A'
+}
+
 /** 集号之后：版本限定、绝对集号、更具体的分区、单集标题与标签。 */
 private fun readAfterEpisode(tokens: List<NameToken>, after: Int, chosen: Hit?, draft: Draft) {
     val trailingWords = mutableListOf<String>()
@@ -640,13 +826,29 @@ private fun readAfterEpisode(tokens: List<NameToken>, after: Int, chosen: Hit?, 
         when (val token = tokens[index]) {
             is NameToken.Bracket -> {
                 val content = token.content.trim()
-                val v = VERSION.matchEntire(content)
+                val v = if (draft.episode != null && mayMatchVersion(content)) VERSION.matchEntire(content) else null
                 val followsSeason = index == after && draft.episode?.season != null
-                val sectionHit = if (followsSeason) bracketHit(content, index)?.takeIf { it.section != null && it.episode != null } else null
+                val plainNumberMatch = if (v == null && followsSeason && content.isNotEmpty() && content[0] in '0'..'9') {
+                    PLAIN_NUMBER.matchEntire(content)
+                } else {
+                    null
+                }
+                val sectionHit = if (v == null && plainNumberMatch == null && followsSeason) {
+                    bracketHit(content, index)?.takeIf { it.section != null && it.episode != null }
+                } else {
+                    null
+                }
+                val mentionedSection = if (v == null && plainNumberMatch == null && sectionHit == null &&
+                    followsSeason && draft.episode?.season == 0
+                ) {
+                    sectionMentioned(content)
+                } else {
+                    null
+                }
                 when {
                     v != null && draft.episode != null -> version = versionText(v)
                     // 「S05E27 (137)」：括号里的绝对集号
-                    followsSeason && PLAIN_NUMBER.matches(content) -> absolute = episodeOf(PLAIN_NUMBER.matchEntire(content)!!.groupValues[1])
+                    plainNumberMatch != null -> absolute = episodeOf(plainNumberMatch.groupValues[1])
                     // 「S00E01 (Movie 01)」：括号里的分区标记比季号 0 更具体
                     sectionHit != null -> {
                         draft.section = sectionHit.section
@@ -655,8 +857,8 @@ private fun readAfterEpisode(tokens: List<NameToken>, after: Int, chosen: Hit?, 
                         draft.label = sectionHit.label
                     }
                     // 「S00E05 (OVA - Kuroi Tessaiga)」：季号 0 只说明是特别篇，括号里写了更具体的分区
-                    followsSeason && draft.episode?.season == 0 && sectionMentioned(content) != null -> {
-                        draft.section = sectionMentioned(content)
+                    mentionedSection != null -> {
+                        draft.section = mentionedSection
                         draft.marker = content
                     }
                     // 「16.【原创视频66】描述」：标签段之前、一个标签都认不出的方括号是单集标题的开头，
@@ -675,11 +877,12 @@ private fun readAfterEpisode(tokens: List<NameToken>, after: Int, chosen: Hit?, 
             }
             is NameToken.Word -> {
                 val text = token.text
-                val v = VERSION.matchEntire(text)
+                val v = if (draft.episode != null && version == null && mayMatchVersion(text)) VERSION.matchEntire(text) else null
                 when {
-                    v != null && draft.episode != null && version == null -> version = versionText(v)
+                    v != null -> version = versionText(v)
                     // 「Fairy.Tail.S02E27.075」：SxxEyy 后紧跟的数字是绝对集号
-                    index == after && draft.episode?.season != null && ABSOLUTE_NUMBER.matches(text) && !isYearNumber(text) -> absolute = episodeOf(text)
+                    index == after && draft.episode?.season != null && text.length in 2..4 && text[0] in '0'..'9' &&
+                        ABSOLUTE_NUMBER.matches(text) && !isYearNumber(text) -> absolute = episodeOf(text)
                     else -> {
                         val scan = scanTags(text)
                         if (scan.known > 0 && scan.unknown == 0) {
@@ -694,7 +897,7 @@ private fun readAfterEpisode(tokens: List<NameToken>, after: Int, chosen: Hit?, 
             NameToken.Dash -> Unit
         }
     }
-    val trailing = trailingWords.joinToString(" ").trim(' ', '-').ifEmpty { null }
+    val trailing = if (trailingWords.isEmpty()) null else trailingWords.joinToString(" ").trim(' ', '-').ifEmpty { null }
     // 没有编号的标记条目，后面的词是它的名字（「PV For Film Festival」）；有编号的是单集标题
     if (chosen != null && draft.episode == null && draft.section != null) {
         if (trailing != null) draft.label = "${draft.label} $trailing"
@@ -744,6 +947,9 @@ private fun contentStart(tokens: List<NameToken>, bodyStart: Int): Int {
     return bodyStart
 }
 
+private fun isBetterHit(candidate: Hit, current: Hit): Boolean =
+    candidate.strength > current.strength || (candidate.strength == current.strength && candidate.start < current.start)
+
 /**
  * 从命中里挑一个。同一名字常有多处像集号的地方，「[hchcsen] Yu Yu Hakusho - 098 - S04E04」里
  * 「098」是绝对集号、S04E04 是季内集号：两者并存时取绝对集号，季号丢掉，排序才能跨季连续。
@@ -751,13 +957,26 @@ private fun contentStart(tokens: List<NameToken>, bodyStart: Int): Int {
 private fun chooseHit(tokens: List<NameToken>, hits: List<Hit>, bodyStart: Int, contentStart: Int): Hit? {
     val tagStart = firstTagIndex(tokens, contentStart)
     // 标签段之后的「数字」多半是声道、年份一类，只接受 SxxEyy 与标记
-    val usable = hits.filter { it.start < tagStart || it.strength >= STRENGTH_SE }
-    val best = usable.maxWithOrNull(compareBy<Hit> { it.strength }.thenByDescending { it.start })
-        ?: return weakHit(tokens, bodyStart, tagStart) ?: taggedBracketNumber(tokens, tagStart)
+    var best: Hit? = null
+    for (i in 0 until hits.size) {
+        val hit = hits[i]
+        if (hit.start < tagStart || hit.strength >= STRENGTH_SE) {
+            if (best == null || isBetterHit(hit, best)) {
+                best = hit
+            }
+        }
+    }
+    if (best == null) {
+        return weakHit(tokens, bodyStart, tagStart) ?: taggedBracketNumber(tokens, tagStart)
+    }
     if (best.strength == STRENGTH_SE) {
-        val dash = usable.firstOrNull { it.strength == STRENGTH_DASH && it.start < best.start && it.episode != null }
-        if (dash != null) {
-            return Hit(dash.start, best.end, dash.episode!!.copy(version = best.episode?.version), best.section, best.marker, dash.label, STRENGTH_DASH)
+        for (i in 0 until hits.size) {
+            val hit = hits[i]
+            if ((hit.start < tagStart || hit.strength >= STRENGTH_SE) &&
+                hit.strength == STRENGTH_DASH && hit.start < best.start && hit.episode != null
+            ) {
+                return Hit(hit.start, best.end, hit.episode.copy(version = best.episode?.version), best.section, best.marker, hit.label, STRENGTH_DASH)
+            }
         }
     }
     return best
@@ -768,39 +987,73 @@ private fun chooseHit(tokens: List<NameToken>, hits: List<Hit>, bodyStart: Int, 
  * 取标签段之前、前面至少有一个词的第一个纯数字词。整个名字只有一个数字（「181.mp4」）时集号确定、没有作品名。
  */
 private fun weakHit(tokens: List<NameToken>, bodyStart: Int, tagStart: Int): Hit? {
-    val words = (bodyStart until tagStart).filter { tokens[it] is NameToken.Word }
-    if (words.isEmpty()) return null
-    if (words.size == 1) {
-        val only = words.single()
+    var firstWord = -1
+    var secondWord = -1
+    for (i in bodyStart until tagStart) {
+        if (tokens[i] is NameToken.Word) {
+            if (firstWord < 0) {
+                firstWord = i
+            } else {
+                secondWord = i
+                break
+            }
+        }
+    }
+    if (firstWord < 0) return null
+    if (secondWord < 0) {
+        val only = firstWord
         val text = (tokens[only] as NameToken.Word).text
-        PLAIN_NUMBER.matchEntire(text)?.let { m ->
-            val titleBrackets = (bodyStart until only).any { tokens[it] is NameToken.Bracket && !isTagBracket(tokens[it] as NameToken.Bracket) }
-            if (!isYearNumber(m.groupValues[1])) {
-                return Hit(only, only + 1, plainEpisode(m), null, null, plainLabel(m), if (titleBrackets) STRENGTH_WEAK else STRENGTH_PREFIXED)
+        if (text.isEmpty()) return null
+        val first = text[0]
+        val last = text[text.lastIndex]
+        if (first in '0'..'9') {
+            PLAIN_NUMBER.matchEntire(text)?.let { m ->
+                var titleBrackets = false
+                for (k in bodyStart until only) {
+                    val t = tokens[k]
+                    if (t is NameToken.Bracket && !isTagBracket(t)) {
+                        titleBrackets = true
+                        break
+                    }
+                }
+                if (!isYearNumber(m.groupValues[1])) {
+                    return Hit(only, only + 1, plainEpisode(m), null, null, plainLabel(m), if (titleBrackets) STRENGTH_WEAK else STRENGTH_PREFIXED)
+                }
             }
+            return null
         }
-        GLUED_TITLE_NUMBER.matchEntire(text)?.let { m ->
-            if (m.groupValues[1].any { it.isLetter() }) {
-                return Hit(only, only + 1, episodeOf(m.groupValues[2]), null, null, m.groupValues[2], STRENGTH_WEAK, titleHint = m.groupValues[1])
+        if (last in '0'..'9') {
+            if (text.length >= 4 && '-' in text) {
+                GLUED_TITLE_NUMBER.matchEntire(text)?.let { m ->
+                    if (m.groupValues[1].any { it.isLetter() }) {
+                        return Hit(only, only + 1, episodeOf(m.groupValues[2]), null, null, m.groupValues[2], STRENGTH_WEAK, titleHint = m.groupValues[1])
+                    }
+                }
             }
-        }
-        // 「DBZ153」「DBGT1」：缩写与集号连写。单看一个文件与「Area88」无从区分，交给批量分析按同作品的其他文件核对
-        GLUED_LETTERS_NUMBER.matchEntire(text)?.let { m ->
-            if (lookupTagWord(text) == null) {
-                return Hit(only, only + 1, episodeOf(m.groupValues[2]), null, null, m.groupValues[2], STRENGTH_WEAK, titleHint = m.groupValues[1])
+            // 「DBZ153」「DBGT1」：缩写与集号连写。单看一个文件与「Area88」无从区分，交给批量分析按同作品的其他文件核对
+            if (text.length >= 3 && first.isAsciiLetter()) {
+                GLUED_LETTERS_NUMBER.matchEntire(text)?.let { m ->
+                    if (lookupTagWord(text) == null) {
+                        return Hit(only, only + 1, episodeOf(m.groupValues[2]), null, null, m.groupValues[2], STRENGTH_WEAK, titleHint = m.groupValues[1])
+                    }
+                }
             }
         }
         return null
     }
-    for (position in words.drop(1)) {
-        val text = (tokens[position] as NameToken.Word).text
+    for (position in secondWord until tagStart) {
+        val wordToken = tokens[position] as? NameToken.Word ?: continue
+        val text = wordToken.text
+        if (text.isEmpty() || text[0] !in '0'..'9') continue
         PLAIN_NUMBER.matchEntire(text)?.let { m ->
             if (!isYearNumber(m.groupValues[1])) return Hit(position, position + 1, plainEpisode(m), null, null, plainLabel(m), STRENGTH_WEAK)
         }
         // 「Naruto 26-27」：一个文件两集
-        RANGE.matchEntire(text)?.let { m ->
-            if (!isYearNumber(m.groupValues[1]) && m.groupValues[1].toInt() < m.groupValues[2].toInt()) {
-                return Hit(position, position + 1, episodeOf(m.groupValues[1], last = m.groupValues[2]), null, null, text, STRENGTH_WEAK)
+        if (text[text.lastIndex] in '0'..'9' && ('-' in text || '~' in text)) {
+            RANGE.matchEntire(text)?.let { m ->
+                if (!isYearNumber(m.groupValues[1]) && m.groupValues[1].toInt() < m.groupValues[2].toInt()) {
+                    return Hit(position, position + 1, episodeOf(m.groupValues[1], last = m.groupValues[2]), null, null, text, STRENGTH_WEAK)
+                }
             }
         }
     }
@@ -815,7 +1068,9 @@ private fun weakHit(tokens: List<NameToken>, bodyStart: Int, tagStart: Int): Hit
 private fun taggedBracketNumber(tokens: List<NameToken>, tagStart: Int): Hit? {
     for (i in tagStart until tokens.size) {
         val bracket = tokens[i] as? NameToken.Bracket ?: continue
-        val m = TAGGED_EPISODE.matchEntire(bracket.content.trim()) ?: continue
+        val trimmed = bracket.content.trim()
+        if (trimmed.length < 2 || trimmed[0] !in '0'..'9' || trimmed[1] !in '0'..'9') continue
+        val m = TAGGED_EPISODE.matchEntire(trimmed) ?: continue
         // 「[720]」是分辨率
         if (m.groupValues[1].toInt() in STANDARD_HEIGHTS) continue
         return Hit(i, i + 1, episodeOf(m.groupValues[1]), null, null, m.groupValues[1], STRENGTH_WEAK)
@@ -848,12 +1103,18 @@ private fun isYearOnly(text: String) = isYearNumber(text.trim())
 private fun isYearInProse(tokens: List<NameToken>, i: Int): Boolean {
     val word = (tokens[i] as NameToken.Word).text.trim(',', '.', ';')
     if (!isYearNumber(word)) return false
-    return tokens.drop(i + 1).any { it is NameToken.Word && !isTitleStoppingTag(it.text) && isMeaningfulTitle(it.text) }
+    for (j in i + 1 until tokens.size) {
+        val next = tokens[j]
+        if (next is NameToken.Word && !isTitleStoppingTag(next.text) && isMeaningfulTitle(next.text)) return true
+    }
+    return false
 }
 
 private fun startsMarkerPhrase(tokens: List<NameToken>, i: Int): Boolean {
     val word = (tokens[i] as? NameToken.Word)?.text ?: return false
     val next = (tokens.getOrNull(i + 1) as? NameToken.Word)?.text ?: return false
+    val headKey = normalizeMarkerKey(word) ?: return false
+    if (headKey !in TWO_WORD_MARKER_HEADS) return false
     return markerSection("$word $next") != null
 }
 
@@ -864,14 +1125,20 @@ private fun startsMarkerPhrase(tokens: List<NameToken>, i: Int): Boolean {
  * 有词时，词之前的方括号是合作组名（「[IceBlue][JySzE] Naruto - 028」），不进作品名。
  */
 private fun buildTitle(tokens: List<NameToken>, from: Int, to: Int): Pair<String?, Set<NameToken.Bracket>> {
-    val range = (from until minOf(to, tokens.size)).map { tokens[it] }
+    val end = minOf(to, tokens.size)
     val used = mutableSetOf<NameToken.Bracket>()
-    val firstWord = range.indexOfFirst { it is NameToken.Word }
+    var firstWord = -1
+    for (i in from until end) {
+        if (tokens[i] is NameToken.Word) {
+            firstWord = i
+            break
+        }
+    }
     if (firstWord >= 0) {
         val parts = mutableListOf<String>()
         // 到第一个标签段为止：「Naruto Shippuden [Dual Audio] [Complete]」里 [Complete] 不属于作品名
-        for (token in range.drop(firstWord)) {
-            when (token) {
+        for (i in firstWord until end) {
+            when (val token = tokens[i]) {
                 is NameToken.Word -> parts += token.text
                 is NameToken.Bracket -> when {
                     isYearOnly(token.content) -> used += token
@@ -886,7 +1153,13 @@ private fun buildTitle(tokens: List<NameToken>, from: Int, to: Int): Pair<String
         }
         return parts.joinToString(" ").trim(' ', '-') to used
     }
-    val brackets = range.filterIsInstance<NameToken.Bracket>().filter { !isTagBracket(it) && bracketHit(it.content, 1) == null }
+    val brackets = mutableListOf<NameToken.Bracket>()
+    for (i in from until end) {
+        val token = tokens[i]
+        if (token is NameToken.Bracket && !isTagBracket(token) && bracketHit(token.content, 1) == null) {
+            brackets += token
+        }
+    }
     if (brackets.isEmpty()) return null to used
     used += brackets
     // 「[葬送的芙莉莲 第二季][Sousou no Frieren Season 2]」：中文名与罗马字名各占一个方括号，是同一个名字的两种写法。
@@ -896,8 +1169,10 @@ private fun buildTitle(tokens: List<NameToken>, from: Int, to: Int): Pair<String
     return named.joinToString(" ") { it.content.trim() } to used
 }
 
-private val TITLE_HEAD_MARKERS = listOf("gekijouban", "gekijou-ban", "劇場版", "剧场版", "映画")
-private val TITLE_TAIL_MARKERS = listOf("the movie", "movie", "ova", "oad", "oav", "specials", "special", "sp", "gekijouban")
+private val TITLE_HEAD_MARKERS = setOf("gekijouban", "gekijou-ban", "劇場版", "剧场版", "映画")
+private val TITLE_TAIL_SPECS: List<Pair<String, List<String>>> =
+    listOf("the movie", "movie", "ova", "oad", "oav", "specials", "special", "sp", "gekijouban")
+        .map { it to it.split(' ') }
 
 private fun stripTitleMarker(title: String): Triple<String, Section?, String?> {
     val words = title.split(' ').filter { it.isNotEmpty() }
@@ -905,36 +1180,99 @@ private fun stripTitleMarker(title: String): Triple<String, Section?, String?> {
         val head = words.first()
         if (head.lowercase() in TITLE_HEAD_MARKERS) return Triple(words.drop(1).joinToString(" "), Section.MOVIE, head)
     }
-    for (tail in TITLE_TAIL_MARKERS) {
-        val tailWords = tail.split(' ')
-        if (words.size > tailWords.size && words.takeLast(tailWords.size).map { it.lowercase().trim('-') } == tailWords) {
-            val rest = words.dropLast(tailWords.size).joinToString(" ").trim(' ', '-')
-            val original = words.takeLast(tailWords.size).joinToString(" ")
+    for (i in 0 until TITLE_TAIL_SPECS.size) {
+        val (tail, tailWords) = TITLE_TAIL_SPECS[i]
+        val tailLen = tailWords.size
+        if (words.size <= tailLen) continue
+        val start = words.size - tailLen
+        var matched = true
+        for (j in 0 until tailLen) {
+            if (words[start + j].lowercase().trim('-') != tailWords[j]) {
+                matched = false
+                break
+            }
+        }
+        if (matched) {
+            val rest = words.subList(0, start).joinToString(" ").trim(' ', '-')
+            val original = words.subList(start, words.size).joinToString(" ")
             return Triple(rest, markerSection(tail), original)
         }
     }
     return Triple(title, null, null)
 }
 
-private fun cleanTitle(title: String): String = title
-    .replace(WHITESPACE, " ")
-    .trim(' ', '-', '_', '~', '～', '|', ':', '：', ',')
+private fun needsTitleWhitespaceCollapse(s: String): Boolean {
+    var prevSpace = false
+    for (i in 0 until s.length) {
+        val c = s[i]
+        if (c == ' ') {
+            if (prevSpace) return true
+            prevSpace = true
+        } else if (c <= '\u0020' || c.isWhitespace()) {
+            return true
+        } else {
+            prevSpace = false
+        }
+    }
+    return false
+}
+
+private fun cleanTitle(title: String): String {
+    val collapsed = if (needsTitleWhitespaceCollapse(title)) title.replace(WHITESPACE, " ") else title
+    return collapsed.trim(' ', '-', '_', '~', '～', '|', ':', '：', ',')
+}
 
 // 容器名也不是作品名：「mp4_ (3).avi」这类导出名只剩编号，不该顶着一个叫「mp4」的作品头
 private val NOT_A_TITLE = setOf("episode", "ep", "ep.", "e", "part", "vol", "disc", "track", "mp4", "mkv", "avi", "mov", "wmv", "video", "视频", "img")
 
 /** 纯数字、单个字符、「Episode」这类词或只剩标点的「标题」不算数。 */
 private fun isMeaningfulTitle(title: String): Boolean {
-    if (title.lowercase() in NOT_A_TITLE) return false
-    val letters = title.count { it.isLetter() || isCjk(it) }
-    return letters >= 2 || (letters >= 1 && title.any(::isCjk))
+    if (title.length <= 7 && title.lowercase() in NOT_A_TITLE) return false
+    var letters = 0
+    var anyCjk = false
+    for (i in 0 until title.length) {
+        val c = title[i]
+        if (isCjk(c)) {
+            anyCjk = true
+            letters++
+            if (letters >= 1) return true
+        } else if (c.isLetter()) {
+            letters++
+            if (letters >= 2) return true
+        }
+    }
+    return letters >= 2 || (letters >= 1 && anyCjk)
 }
 
 /** 作品的比较键：忽略大小写、标点与括号里的注释（「(TV)」「(2020)」）。 */
 fun workKeyOf(title: String): String {
-    val withoutParens = title.replace(PARENTHESIZED, " ")
+    val withoutParens = if ('(' in title || '（' in title) title.replace(PARENTHESIZED, " ") else title
     val base = withoutParens.ifBlank { title }
-    return buildString {
-        base.lowercase().forEach { c -> if (c.isLetterOrDigit() || isCjk(c)) append(c) }
+    var hasNonAsciiNonCjk = false
+    for (i in 0 until base.length) {
+        val c = base[i]
+        if (c >= '\u0080' && !isCjk(c)) {
+            hasNonAsciiNonCjk = true
+            break
+        }
+    }
+    if (!hasNonAsciiNonCjk) {
+        return buildString(base.length) {
+            for (i in 0 until base.length) {
+                val c = base[i]
+                if (c in 'A'..'Z') {
+                    append((c.code + 32).toChar())
+                } else if (c in 'a'..'z' || c in '0'..'9' || isCjk(c)) {
+                    append(c)
+                }
+            }
+        }
+    }
+    return buildString(base.length) {
+        val lower = base.lowercase()
+        for (i in 0 until lower.length) {
+            val c = lower[i]
+            if (c.isLetterOrDigit() || isCjk(c)) append(c)
+        }
     }
 }

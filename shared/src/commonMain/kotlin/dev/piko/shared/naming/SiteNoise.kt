@@ -34,31 +34,104 @@ private val CHANNEL_AD = Regex("""[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFFA-Za-z
 
 // 论坛与分享站：短域名后缀，或名字里带数字（98t.la、2048.cc、hhd800.com）。出品方多是完整单词加 .com
 private val FORUM_LIKE = Regex("""(?i)\.(?:la|cc|vip|xyz|top|club|cn)$|[0-9]""")
+private val STRONG_TLD_LIST: List<String> = STRONG_TLD.split('|')
+
+private fun isStrongTldSlice(s: String, start: Int, end: Int): Boolean {
+    val len = end - start
+    if (len < 2) return false
+    for (i in 0 until STRONG_TLD_LIST.size) {
+        val tld = STRONG_TLD_LIST[i]
+        if (tld.length == len && s.regionMatches(start, tld, 0, len, ignoreCase = true)) return true
+    }
+    return false
+}
+
+private fun mayMatchLeadingDomain(s: String): Boolean {
+    if (s.length < 5 || !s[0].isLetterOrDigit()) return false
+    var lastDot = -1
+    for (i in 0 until s.length) {
+        val c = s[i]
+        if (c == '.') {
+            lastDot = i
+        } else if (c == '-') {
+            if (lastDot > 0 && isStrongTldSlice(s, lastDot + 1, i)) return true
+        } else if (c == '_' || c <= '\u0020' || c.isWhitespace()) {
+            return lastDot > 0 && isStrongTldSlice(s, lastDot + 1, i)
+        } else if (!c.isLetterOrDigit()) {
+            return false
+        }
+    }
+    return false
+}
+
+private fun mayMatchTrailingDomain(s: String): Boolean {
+    if (s.length < 4) return false
+    val last = s[s.lastIndex]
+    if (last == '\n' || last == '\r') return '.' in s
+    if (!last.isLetter()) return false
+    val dot = s.lastIndexOf('.')
+    if (dot <= 0) return false
+    return isStrongTldSlice(s, dot + 1, s.length)
+}
+
+private fun hasDotInsideBrackets(s: String): Boolean {
+    var depth = 0
+    for (i in 0 until s.length) {
+        when (s[i]) {
+            '[', '【', '(' -> depth++
+            ']', '】', ')' -> if (depth > 0) depth--
+            '.' -> if (depth > 0) return true
+        }
+    }
+    return false
+}
 
 /** [text] 整段是一个网址，如方括号里的「site.net」。 */
-internal fun isDomainName(text: String): Boolean = WHOLE_DOMAIN.matches(text)
+internal fun isDomainName(text: String): Boolean =
+    '.' in text && text.length >= 4 && text[0].isLetterOrDigit() && WHOLE_DOMAIN.matches(text)
 
 /** 开头不带 @ 的网址前缀「kcf9.com-」：返回网址本身与前缀的长度，没有时为 null。 */
 internal fun leadingDomain(stem: String): Pair<String, Int>? =
-    LEADING.find(stem)?.let { it.groupValues[1] to it.range.last + 1 }
+    if (!mayMatchLeadingDomain(stem)) null else LEADING.find(stem)?.let { it.groupValues[1] to it.range.last + 1 }
 
 /** 主干以网址开头（「example.com_xxx」）或整个就是网址（「example.fun」）：多是宣传文件。 */
-internal fun startsWithDomain(stem: String): Boolean = LEADING.containsMatchIn(stem) || WHOLE_DOMAIN.matches(stem)
+internal fun startsWithDomain(stem: String): Boolean =
+    '.' in stem && stem.length >= 4 && stem[0].isLetterOrDigit() &&
+        ((mayMatchLeadingDomain(stem) && LEADING.containsMatchIn(stem)) || WHOLE_DOMAIN.matches(stem))
 
 internal fun stripSiteNoise(stem: String): String {
-    var s = stem.replace(CHANNEL_AD, "").replace(AT_PREFIX, "").replace(ANYWHERE_AT, "")
-    s = s.replace(LEADING, "")
-    s = s.replace(TRAILING, "")
-    s = BRACKETED.replace(s) { match ->
-        val domain = match.groupValues[1]
-        if (FORUM_LIKE.containsMatchIn(domain.substringBeforeLast('.').removePrefix("www.")) ||
-            FORUM_LIKE.containsMatchIn(".${domain.substringAfterLast('.')}")
-        ) {
-            ""
-        } else {
-            match.value
+    var s = stem
+    if ('@' in s) {
+        s = s.replace(CHANNEL_AD, "")
+        if ('@' in s && '.' in s) {
+            s = s.replace(AT_PREFIX, "")
+            if ('@' in s && '.' in s) {
+                s = s.replace(ANYWHERE_AT, "")
+            }
         }
     }
+    if ('.' in s) {
+        if (mayMatchLeadingDomain(s)) {
+            s = s.replace(LEADING, "")
+        }
+        if (mayMatchTrailingDomain(s)) {
+            s = s.replace(TRAILING, "")
+        }
+        if (hasDotInsideBrackets(s)) {
+            s = BRACKETED.replace(s) { match ->
+                val domain = match.groupValues[1]
+                if (FORUM_LIKE.containsMatchIn(domain.substringBeforeLast('.').removePrefix("www.")) ||
+                    FORUM_LIKE.containsMatchIn(".${domain.substringAfterLast('.')}")
+                ) {
+                    ""
+                } else {
+                    match.value
+                }
+            }
+        }
+    }
+    val trimmed = s.trim()
+    if (s === stem && trimmed.length == stem.length) return stem
     // 洗完只剩空白或标点时保留原名：「hhd800.com@」之后什么都没有的不是网址前缀
-    return s.trim().takeIf { rest -> rest.any { it.isLetterOrDigit() } } ?: stem
+    return trimmed.takeIf { rest -> rest.any { it.isLetterOrDigit() } } ?: stem
 }

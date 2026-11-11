@@ -72,14 +72,41 @@ class DuplicateFinderState(
     private var groupedFiles: List<ScannedFile>? = null
     private var groupedRemoved: Set<String>? = null
 
-    private val statsById: Map<String, FileStat> by derivedStateOf { scanned.associate { it.file.id to it.file } }
+    private val statsById: Map<String, FileStat> by derivedStateOf {
+        val files = scanned
+        if (files.isEmpty()) {
+            emptyMap()
+        } else {
+            HashMap<String, FileStat>(files.size * 4 / 3 + 1).apply {
+                for (i in 0 until files.size) {
+                    val stat = files[i].file
+                    put(stat.id, stat)
+                }
+            }
+        }
+    }
 
     /** 结果里出现的文件，按 ID 取回完整的 [FileStat]，网盘页据此画缩略图、打开与操作。 */
     fun fileStat(id: String): FileStat? = statsById[id]
 
     /** 建议移走的：完全相同的组里，默认保留的那份以外的。版本组不建议，挑哪一版由人定。 */
     val suggestedIds: Set<String> by derivedStateOf {
-        report.identical.flatMapTo(HashSet()) { group -> group.rows.map { it.file.id }.filter { it != group.keptId } }
+        val identical = report.identical
+        if (identical.isEmpty()) {
+            emptySet()
+        } else {
+            val ids = HashSet<String>(identical.size * 2)
+            for (i in 0 until identical.size) {
+                val group = identical[i]
+                val keptId = group.keptId
+                val rows = group.rows
+                for (j in 0 until rows.size) {
+                    val id = rows[j].file.id
+                    if (id != keptId) ids.add(id)
+                }
+            }
+            ids
+        }
     }
 
     /** 还在扫描或比对，结果还没出来。 */
@@ -120,6 +147,8 @@ class DuplicateFinderState(
         report = DuplicateReport.EMPTY
         scanned = emptyList()
         gone = emptySet()
+        groupedFiles = null
+        groupedRemoved = null
         scanJob = scope.launch {
             try {
                 scanner.scan(root.id).collect { event ->
@@ -134,7 +163,7 @@ class DuplicateFinderState(
                             scanStop = event.stop
                             failedFolders = event.failedFolders
                             phase = Phase.ANALYZING
-                            scanned = withContext(Dispatchers.Default) { event.files.map(::enrichScannedFile) }
+                            scanned = withContext(Dispatchers.Default) { enrichScannedFiles(event.files) }
                             regroup()
                             phase = Phase.DONE
                             val summary = "Duplicate scan finished in ${logFolder(root.id)}: folders=$scannedFolders, files=$scannedFiles, " +
@@ -162,21 +191,48 @@ class DuplicateFinderState(
         scanner?.stop()
     }
 
-    private fun enrichScannedFile(item: ScannedFile): ScannedFile {
-        val file = item.file
-        val meta = driveRepo.contentMetadataOf(file)
-        val originalCreated = driveRepo.originalCreatedAtMillis(file.id)
-        val needsWidth = file.params["width"]?.toIntOrNull()?.takeIf { it > 0 } == null && (meta?.width ?: 0) > 0
-        val needsHeight = file.params["height"]?.toIntOrNull()?.takeIf { it > 0 } == null && (meta?.height ?: 0) > 0
-        val needsDuration = file.params["duration"]?.toDoubleOrNull()?.takeIf { it > 0 } == null && (meta?.durationMillis ?: 0L) > 0L
-        val needsCreated = file.params["piko_original_created_at"]?.toLongOrNull() == null && originalCreated != null
-        if (!needsWidth && !needsHeight && !needsDuration && !needsCreated) return item
-        val nextParams = file.params.toMutableMap()
-        if (needsWidth) nextParams["width"] = meta!!.width.toString()
-        if (needsHeight) nextParams["height"] = meta!!.height.toString()
-        if (needsDuration) nextParams["duration"] = (meta!!.durationMillis!! / 1000L).toString()
-        if (needsCreated) nextParams["piko_original_created_at"] = originalCreated.toString()
-        return item.copy(file = file.copy(params = nextParams))
+    private fun enrichScannedFiles(items: List<ScannedFile>): List<ScannedFile> {
+        if (items.isEmpty()) return emptyList()
+        val contentCache = HashMap<String, dev.piko.shared.data.ContentMetadata?>()
+        val enriched = ArrayList<ScannedFile>(items.size)
+        for (i in 0 until items.size) {
+            val item = items[i]
+            val file = item.file
+            val params = file.params
+            val missingWidth = (params["width"]?.toIntOrNull() ?: 0) <= 0
+            val missingHeight = (params["height"]?.toIntOrNull() ?: 0) <= 0
+            val missingDuration = (params["duration"]?.toDoubleOrNull() ?: 0.0) <= 0.0
+            val missingCreated = params["piko_original_created_at"]?.toLongOrNull() == null
+
+            val meta = if ((missingWidth || missingHeight || missingDuration) && file.hash.isNotBlank() && file.sizeBytes >= 0L) {
+                val key = "${file.hash.uppercase()}:${file.sizeBytes}"
+                if (contentCache.containsKey(key)) {
+                    contentCache[key]
+                } else {
+                    driveRepo.contentMetadataOf(file).also { contentCache[key] = it }
+                }
+            } else {
+                null
+            }
+            val originalCreated = if (missingCreated) driveRepo.originalCreatedAtMillis(file.id) else null
+
+            val needsWidth = missingWidth && (meta?.width ?: 0) > 0
+            val needsHeight = missingHeight && (meta?.height ?: 0) > 0
+            val needsDuration = missingDuration && (meta?.durationMillis ?: 0L) > 0L
+            val needsCreated = missingCreated && originalCreated != null
+            if (!needsWidth && !needsHeight && !needsDuration && !needsCreated) {
+                enriched.add(item)
+                continue
+            }
+            val nextParams = LinkedHashMap<String, String>(params.size + 4)
+            nextParams.putAll(params)
+            if (needsWidth) nextParams["width"] = meta!!.width.toString()
+            if (needsHeight) nextParams["height"] = meta!!.height.toString()
+            if (needsDuration) nextParams["duration"] = (meta!!.durationMillis!! / 1000L).toString()
+            if (needsCreated) nextParams["piko_original_created_at"] = originalCreated.toString()
+            enriched.add(item.copy(file = file.copy(params = nextParams)))
+        }
+        return enriched
     }
 
     private suspend fun updateGone(next: Set<String>) {
@@ -188,12 +244,35 @@ class DuplicateFinderState(
 
     private suspend fun regroup() {
         regroupLock.withLock {
-            val visible = driveRepo.projectOptimisticFiles(scanned.map { it.file }).mapTo(HashSet()) { it.id }
-            val removed = gone + scanned.mapNotNull { it.file.id.takeUnless(visible::contains) }
-            if (groupedFiles === scanned && groupedRemoved == removed) return@withLock
-            val present = scanned.filterNot { it.file.id in removed }
-            report = withContext(Dispatchers.Default) { findDuplicates(present, rootName) }
-            groupedFiles = scanned
+            val allScanned = scanned
+            val removed = if (!driveRepo.hasPendingOptimisticWrites) {
+                gone
+            } else {
+                val files = ArrayList<FileStat>(allScanned.size)
+                for (i in 0 until allScanned.size) files.add(allScanned[i].file)
+                val visible = driveRepo.projectOptimisticFiles(files).mapTo(HashSet(allScanned.size * 4 / 3 + 1)) { it.id }
+                val acc = HashSet<String>(gone)
+                for (i in 0 until allScanned.size) {
+                    val id = allScanned[i].file.id
+                    if (id !in visible) acc.add(id)
+                }
+                acc
+            }
+            if (groupedFiles === allScanned && groupedRemoved == removed) return@withLock
+            report = withContext(Dispatchers.Default) {
+                val present = if (removed.isEmpty()) {
+                    allScanned
+                } else {
+                    val filtered = ArrayList<ScannedFile>(allScanned.size)
+                    for (i in 0 until allScanned.size) {
+                        val item = allScanned[i]
+                        if (item.file.id !in removed) filtered.add(item)
+                    }
+                    filtered
+                }
+                findDuplicates(present, rootName)
+            }
+            groupedFiles = allScanned
             groupedRemoved = removed
         }
     }
