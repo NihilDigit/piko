@@ -1,31 +1,32 @@
 package dev.piko.shared.state
 
-
-import dev.piko.shared.i18n.tr
-
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.DriveWriteAccess
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.i18n.tr
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFolder
+import dev.piko.shared.notice.PikoErrorMapper
 import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.TaskPhase
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.getAndUpdate
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlin.time.Clock
 
 private val fileWriteIds = MutableStateFlow(0L)
@@ -107,6 +108,7 @@ class FileWriteSession(
         val job = owner.launch(start = CoroutineStart.LAZY) {
             var work = initial.copy(result = null, phase = FileWritePhase.COPYING)
             val confirmed = initial.result?.confirmed.orEmpty().toMutableSet()
+            var refusalError: Throwable? = null
             fun publish() { _works.update { all -> all.map { if (it.id == work.id) work else it } } }
             try {
                 publish()
@@ -114,16 +116,52 @@ class FileWriteSession(
                     access.copy(command.ids, command.target.id).onSuccess { taskIds ->
                         work = work.copy(copies = taskIds.map { FileCopyTask(it, command.ids) })
                         publish()
-                    }.getOrThrow()
+                    }.getOrElse { error ->
+                        if (error is CancellationException) throw error
+                        if (definiteRefusal(error)) {
+                            refusalError = error
+                            val pikpak = error as? PikPakException
+                            PikoLog.w(
+                                TAG,
+                                "Copy request refused by server (work=${work.id}, items=${command.ids.size}, target=${logFolder(command.target.id)}, status=${pikpak?.httpStatus}, code=${pikpak?.errorMessage})",
+                                error,
+                            )
+                        } else {
+                            PikoLog.w(
+                                TAG,
+                                "Copy request unconfirmed before task creation (work=${work.id}, items=${command.ids.size}, target=${logFolder(command.target.id)})",
+                                error,
+                            )
+                        }
+                        null
+                    } ?: return@launch finishWork(work, command, confirmed, refusalError)
                 }
                 var queryFailures = 0
+                var lastPollError: Throwable? = null
                 while (currentCoroutineContext().isActive) {
                     if (_works.value.firstOrNull { it.id == work.id }?.stopping == true) break
                     var unreadable = false
                     work = work.copy(copies = work.copies.map { copy ->
                         if (copy.phase == TaskPhase.COMPLETE || copy.phase == TaskPhase.ERROR) copy
-                        else access.task(copy.id).getOrNull()?.let { copy.copy(phase = it.phase, progress = it.progress) }
-                            ?: copy.also { unreadable = true }
+                        else {
+                            val taskInfo = access.task(copy.id).getOrElse { pollErr ->
+                                if (pollErr is CancellationException) throw pollErr
+                                unreadable = true
+                                lastPollError = pollErr
+                                null
+                            }
+                            if (taskInfo != null) {
+                                if (taskInfo.phase == TaskPhase.ERROR && copy.phase != TaskPhase.ERROR) {
+                                    PikoLog.w(
+                                        TAG,
+                                        "Remote copy task failed (work=${work.id}, task=${copy.id}, target=${logFolder(command.target.id)}, message=${taskInfo.message.ifBlank { "none" }})",
+                                    )
+                                }
+                                copy.copy(phase = taskInfo.phase, progress = taskInfo.progress)
+                            } else {
+                                copy
+                            }
+                        }
                     })
                     publish()
                     queryFailures = if (unreadable) queryFailures + 1 else 0
@@ -132,36 +170,79 @@ class FileWriteSession(
                         access.publish(DriveChange.Copied(command.ids, command.target.id))
                         break
                     }
-                    if (work.copies.any { it.phase == TaskPhase.ERROR } || queryFailures >= 5) break
+                    if (work.copies.any { it.phase == TaskPhase.ERROR }) break
+                    if (queryFailures >= MAX_POLL_FAILURES) {
+                        PikoLog.w(
+                            TAG,
+                            "Copy status polling aborted after $queryFailures consecutive failures (work=${work.id}, tasks=${work.copies.size}, target=${logFolder(command.target.id)})",
+                            lastPollError,
+                        )
+                        break
+                    }
                     delay(pollMillis)
                 }
                 currentCoroutineContext().ensureActive()
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                dev.piko.shared.log.PikoLog.w("Copy", "复制未完成", error)
+                PikoLog.w(
+                    TAG,
+                    "Copy execution failed (work=${work.id}, recheck=$recheck, items=${command.ids.size}, target=${logFolder(command.target.id)})",
+                    error,
+                )
             } finally {
                 jobs.update { it - initial.id }
             }
-            val complete = confirmed.containsAll(command.ids)
-            val result = FileWriteResult(
-                if (complete) FileWriteCompletion.SUCCEEDED else if (work.copies.any { it.phase == TaskPhase.ERROR }) FileWriteCompletion.FAILED else FileWriteCompletion.UNCONFIRMED,
-                if (complete) tr("复制完成", "Copy completed", "コピー完了", "복사 완료", "複製完成")
-                else tr("复制尚未完成，可重新查询结果", "Copy is incomplete. Check its status again", "コピーは未完了です。状態を再確認できます", "복사가 완료되지 않았습니다. 상태를 다시 확인하세요", "複製尚未完成，可重新查詢結果"),
-                confirmed = confirmed, unconfirmed = command.ids.toSet() - confirmed, finishedAtMs = now(),
-            )
-            work = work.copy(phase = FileWritePhase.FINISHED, result = result)
-            publish()
-            _outcomes.tryEmit(FileWriteOutcome(work.account, work.id, command.title, result))
+            finishWork(work, command, confirmed, refusalError)
         }
         jobs.update { it + (initial.id to job) }
         job.start()
     }
 
+    private fun finishWork(
+        current: FileWriteWork,
+        command: FileWriteCommand.Copy,
+        confirmed: Set<String>,
+        refusalError: Throwable?,
+    ) {
+        val complete = confirmed.containsAll(command.ids)
+        val remaining = command.ids.toSet() - confirmed
+        val refused = refusalError != null && current.copies.isEmpty()
+        val hasTaskError = current.copies.any { it.phase == TaskPhase.ERROR }
+        val completion = when {
+            complete -> FileWriteCompletion.SUCCEEDED
+            refused || hasTaskError -> FileWriteCompletion.FAILED
+            else -> FileWriteCompletion.UNCONFIRMED
+        }
+        val message = when {
+            complete -> tr("复制完成", "Copy completed", "コピー完了", "복사 완료", "複製完成")
+            refused -> PikoErrorMapper.failure(tr("复制", "Copy", "コピー", "복사", "複製"), refusalError)
+            hasTaskError -> tr("复制失败，请刷新后重试", "Copy failed. Refresh and retry", "コピーに失敗しました。更新して再試行してください", "복사에 실패했습니다. 새로고침 후 다시 시도하세요", "複製失敗，請重新整理後重試")
+            else -> tr("复制尚未完成，可重新查询结果", "Copy is incomplete. Check its status again", "コピーは未完了です。状態を再確認できます", "복사가 완료되지 않았습니다. 상태를 다시 확인하세요", "複製尚未完成，可重新查詢結果")
+        }
+        val result = FileWriteResult(
+            completion,
+            message,
+            confirmed = confirmed,
+            unconfirmed = if (refused) emptySet() else remaining,
+            failed = if (refused) remaining else emptySet(),
+            finishedAtMs = now(),
+        )
+        val finished = current.copy(phase = FileWritePhase.FINISHED, result = result)
+        _works.update { all -> all.map { if (it.id == finished.id) finished else it } }
+        _outcomes.tryEmit(FileWriteOutcome(finished.account, finished.id, command.title, result))
+    }
+
+    private fun definiteRefusal(error: Throwable?): Boolean =
+        error is PikPakException && error.httpStatus in setOf(400, 401, 403, 404, 409, 422, 429)
+
     private fun now(): Long = Clock.System.now().toEpochMilliseconds()
 
+    private companion object {
+        const val TAG = "FileCopy"
+        const val MAX_POLL_FAILURES = 5
+    }
 }
-
 
 private fun FileWriteCommand.frozen(): FileWriteCommand = when (this) {
     is FileWriteCommand.CreateFolder -> copy(name = name.trim())

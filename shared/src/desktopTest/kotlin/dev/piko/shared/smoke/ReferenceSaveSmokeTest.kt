@@ -178,7 +178,8 @@ class ReferenceSaveSmokeTest {
         val first = sheet()
         first.updateSaveAsReference(true)
         awaitUntil("persisted") { prefs.saveAsReferenceFlow.value }
-        awaitUntil("restored on new draft") { sheet().saveAsReference }
+        val restored = sheet()
+        awaitUntil("restored on new draft") { restored.saveAsReference }
 
         val links = listOf(
             "ed2k://|file|first.mkv|1024|0123456789ABCDEF0123456789ABCDEF|/",

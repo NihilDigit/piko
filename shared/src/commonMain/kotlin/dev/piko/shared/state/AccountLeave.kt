@@ -1,11 +1,17 @@
 package dev.piko.shared.state
 
 import dev.piko.shared.data.PikoClientProvider
+import dev.piko.shared.log.PikoLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+
+private const val TAG = "AccountLeave"
 
 /**
  * 当前账号变了（换号，或退出到登录页）时调 [onLeave]，参数是离开的那个账号，在这个作用域的线程上调。
@@ -19,6 +25,15 @@ fun CoroutineScope.launchOnAccountLeave(clients: PikoClientProvider, onLeave: (l
     clients.currentClient.map { it?.account }.distinctUntilChanged().collect { account ->
         val left = previous
         previous = account
-        if (left != null) onLeave(left)
+        if (left != null) {
+            try {
+                onLeave(left)
+            } catch (e: CancellationException) {
+                currentCoroutineContext().ensureActive()
+                PikoLog.w(TAG, "Account-leave callback threw CancellationException", e)
+            } catch (e: Throwable) {
+                PikoLog.w(TAG, "Account-leave callback failed", e)
+            }
+        }
     }
 }

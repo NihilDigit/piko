@@ -9,6 +9,7 @@ import androidx.compose.runtime.snapshotFlow
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.DuplicateScanEvent
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.data.DuplicateScanner
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
@@ -31,8 +32,9 @@ import kotlinx.coroutines.sync.withLock
  * 创建即开始扫描。扫描在 [scope] 里进行，调用方结束这一次时取消 scope 即可一并停下。
  * 结果在网盘页的「查找重复」位置里按组列出，勾选与移入回收站都是网盘页的多选与删除，这里不另记勾选。
  *
- * 结果是扫描那一刻的快照。之后经撤销日志（[DriveChangeJournal]）移入回收站的，不管在哪一页删的，都从结果里拿掉
- * 再重新分组：代表版本组那一行的文件被移走后，应由它的相同副本接替，逐行删做不到。撤销回来的照样补回。
+ * 结果基于扫描那一刻的快照，并订阅仓库乐观投影（[PikoDriveRepository.optimisticRevision]）与目录变更
+ * （[PikoDriveRepository.folderChanges]）：移入回收站的文件从结果里拿掉再重新分组，使代表版本组的那一行被移走后
+ * 由相同副本接替；撤销恢复后自动补回。
  */
 class DuplicateFinderState(
     private val clients: PikoClientProvider,
@@ -66,7 +68,6 @@ class DuplicateFinderState(
 
     /** 扫描后移入回收站的。不从 [scanned] 里删：撤销时要按原样补回。 */
     private var gone: Set<String> = emptySet()
-    private var projected: Set<String> = emptySet()
     private val regroupLock = Mutex()
     private var groupedFiles: List<ScannedFile>? = null
     private var groupedRemoved: Set<String>? = null
@@ -136,13 +137,20 @@ class DuplicateFinderState(
                             scanned = withContext(Dispatchers.Default) { event.files.map(::enrichScannedFile) }
                             regroup()
                             phase = Phase.DONE
+                            val summary = "Duplicate scan finished in ${logFolder(root.id)}: folders=$scannedFolders, files=$scannedFiles, " +
+                                "identicalGroups=${report.identical.size}, versionGroups=${report.versions.size}, failedFolders=$failedFolders, stop=${scanStop ?: "none"}"
+                            if (failedFolders > 0) PikoLog.w(TAG, summary) else PikoLog.i(TAG, summary)
                         }
                     }
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                PikoLog.w("Duplicates", "查找重复失败", e)
+                PikoLog.w(
+                    TAG,
+                    "Duplicate scan failed in ${logFolder(root.id)} (phase=$phase, scannedFolders=$scannedFolders, scannedFiles=$scannedFiles)",
+                    e,
+                )
                 errorMessage = e.message ?: tr("未知错误", "Unknown error", "不明なエラー", "알 수 없는 오류", "未知錯誤")
                 phase = Phase.FAILED
             }
@@ -181,12 +189,16 @@ class DuplicateFinderState(
     private suspend fun regroup() {
         regroupLock.withLock {
             val visible = driveRepo.projectOptimisticFiles(scanned.map { it.file }).mapTo(HashSet()) { it.id }
-            val removed = gone + projected + scanned.mapNotNull { it.file.id.takeUnless(visible::contains) }
+            val removed = gone + scanned.mapNotNull { it.file.id.takeUnless(visible::contains) }
             if (groupedFiles === scanned && groupedRemoved == removed) return@withLock
             val present = scanned.filterNot { it.file.id in removed }
             report = withContext(Dispatchers.Default) { findDuplicates(present, rootName) }
             groupedFiles = scanned
             groupedRemoved = removed
         }
+    }
+
+    private companion object {
+        const val TAG = "Duplicates"
     }
 }

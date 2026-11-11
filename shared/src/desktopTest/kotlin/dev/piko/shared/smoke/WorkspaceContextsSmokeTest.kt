@@ -291,7 +291,10 @@ class WorkspaceContextsSmokeTest {
         assertTrue(ws.goForward())
         ws.pushFolder("E", "SPs")
         assertFalse(ws.historyFlow.value.canGoForward)
-        assertEquals(listOf(listOf(root, anime, show, PikoPathBreadcrumb("E", "SPs")), listOf(root, docs)), ws.recentFoldersFlow.value.take(2))
+        assertEquals(
+            listOf(listOf(root, anime, show, PikoPathBreadcrumb("E", "SPs")), listOf(root, anime, show), listOf(root, docs)),
+            ws.recentFoldersFlow.value.take(3),
+        )
 
         ws.openTab(listOf(root, docs))
         ws.flushPersistence()

@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logEntry
 import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.CreatedShare
 import io.github.nihildigit.pikpak.FileStat
@@ -71,12 +72,15 @@ class ShareCreateState(
         }
         scope.launch {
             // 分享 ID 就是链接的一部分，公开分享凭它即可打开，不进日志
-            val summary = "${files.size} 项（文件夹 ${files.count { it.isFolder }} 个），提取码${passCodeMode.label}，" +
-                "有效期 ${if (expirationDays < 0) "永久" else "$expirationDays 天"}"
+            val first = files.first()
+            val summary = "items=${files.size}, folders=${files.count { it.isFolder }}, " +
+                "passCode=${passCodeMode.name.lowercase()}, " +
+                "expireDays=${if (expirationDays < 0) "forever" else expirationDays.toString()}, " +
+                "first=${logEntry(first.id, first.name, first.isFolder)}"
             driveRepo.createShare(files.map { it.id }, passCode, expirationDays)
-                .logFailure(TAG, "创建分享失败：$summary，首项 ${files.first().id}")
+                .logFailure(TAG, "Failed to create share ($summary)")
                 .onSuccess {
-                    PikoLog.i(TAG, "已创建分享：$summary")
+                    PikoLog.i(TAG, "Created share ($summary)")
                     created = it
                 }
                 .onFailure { error = tr("创建失败，请重试", "Failed to create share. Please try again", "共有の作成に失敗しました。もう一度お試しください", "공유 생성 실패. 다시 시도해 주세요", "建立失敗，請重試") }

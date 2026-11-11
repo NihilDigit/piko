@@ -50,7 +50,7 @@ class DriveGalleryActionsTest {
         assertEquals(next.id, state.clipboardFlow.value?.sources?.get(video.id))
         displayed = emptyList()
         state.putOnClipboard(listOf(video.id), cut = true)
-        assertEquals("", state.clipboardFlow.value?.sources?.get(video.id), "图库关闭后不能沿用先前的补充来源")
+        assertEquals(first.id, state.clipboardFlow.value?.sources?.get(video.id), "图库关闭后不能沿用先前的补充来源")
     }
 
     @Test fun descendantVaultRenameAndDeleteEditTheChildManifest() = smoke { scope ->

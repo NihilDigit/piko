@@ -55,7 +55,7 @@ internal class DriveSearchSession(
                 throw e
             } catch (e: Throwable) {
                 flushBuffer()
-                PikoLog.w("DriveSearch", "全盘搜索失败，已找到 ${globalSearchHits.size} 项", e)
+                PikoLog.w(TAG, "Global drive search failed (queryLength=${keyword.length}, hits=${globalSearchHits.size})", e)
                 notify(tr("全盘搜索失败", "Drive search failed", "ドライブ全体の検索に失敗しました", "드라이브 전체 검색에 실패했습니다", "全碟搜尋失敗"))
             } finally {
                 isGlobalSearching = false
@@ -75,4 +75,7 @@ internal class DriveSearchSession(
         globalSearchHits.clear()
     }
 
+    private companion object {
+        const val TAG = "DriveSearch"
+    }
 }

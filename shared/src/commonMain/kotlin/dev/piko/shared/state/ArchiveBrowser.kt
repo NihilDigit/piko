@@ -20,7 +20,9 @@ import io.github.nihildigit.pikpak.PikPakClient
 import kotlinx.coroutines.CancellationException
 import io.github.nihildigit.pikpak.thumbnailUrlOf
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -30,7 +32,7 @@ import kotlinx.coroutines.sync.withLock
  * 进程级，挂在 PikoServices 上：网盘页随压栈页离开组合后重建，密码与列过的层不该跟着丢，
  * 否则从包里播完一个视频回来又要输一遍密码。换账号时 [clear]。
  *
- * 只在主线程上调用；网络请求由 [ArchiveRepository] 切到后台。
+ * 目录与密码缓存使用原子状态映射，支持目录图后台探测与主线程浏览并发访问；网络请求由 [ArchiveRepository] 切到后台。
  */
 class ArchiveBrowser(
     private val clientProvider: PikoClientProvider,
@@ -44,27 +46,29 @@ class ArchiveBrowser(
     val savedPasswords: Flow<List<String>> = vault.passwords
 
     // 按压缩包的文件 ID。没要过密码的包记的是空串
-    private val passwords = mutableMapOf<String, String>()
-    private val listings = mutableMapOf<String, List<FileStat>>()
+    private val passwords = MutableStateFlow<Map<String, String>>(emptyMap())
+    private val listings = MutableStateFlow<Map<String, List<FileStat>>>(emptyMap())
     private val primed = mutableSetOf<String>()
     private val primeLock = Mutex()
+    @Volatile
     private var cacheOwner: PikPakClient? = null
+    @Volatile
     private var generation = 0L
 
     private fun owner(): PikPakClient {
-        val current = clientProvider.currentClient.value ?: throw CancellationException("账号会话已结束")
+        val current = clientProvider.currentClient.value ?: throw CancellationException("Account session ended")
         if (cacheOwner !== current) { clear(); cacheOwner = current }
         return current
     }
 
     private fun ensureOwner(owner: PikPakClient, revision: Long) {
-        if (clientProvider.currentClient.value !== owner || generation != revision) throw CancellationException("账号会话已改变")
+        if (clientProvider.currentClient.value !== owner || generation != revision) throw CancellationException("Account session changed")
     }
 
-    fun password(archiveId: String): String { owner(); return passwords[archiveId].orEmpty() }
+    fun password(archiveId: String): String { owner(); return passwords.value[archiveId].orEmpty() }
 
     /** 列过的这一层，进来时先显示它再刷新，与网盘里的目录相同。 */
-    fun cached(location: ArchiveLocation): List<FileStat>? { owner(); return listings[location.id] }
+    fun cached(location: ArchiveLocation): List<FileStat>? { owner(); return listings.value[location.id] }
 
     /**
      * 列出包里的一层。[password] 为 null 时用这个包上次验证过的；给了就是用户刚输的，通过后记下，
@@ -73,7 +77,7 @@ class ArchiveBrowser(
     suspend fun list(location: ArchiveLocation, password: String? = null): Result<List<FileStat>> {
         val owner = owner()
         val revision = generation
-        val known = password ?: passwords[location.archiveId]
+        val known = password ?: passwords.value[location.archiveId]
         val result = if (known != null) {
             repository.list(location, known, owner).map { known to it }
         } else {
@@ -81,11 +85,11 @@ class ArchiveBrowser(
         }
         return result.map { (used, listing) ->
             ensureOwner(owner, revision)
-            passwords[location.archiveId] = used
+            passwords.update { it + (location.archiveId to used) }
             if (password != null && password.isNotEmpty()) vault.remember(password)
             listing.files.map { it.toFileStat(location) }
                 .sortedWith(compareBy<FileStat> { !it.isFolder }.thenBy(NaturalOrder) { it.name })
-                .also { listings[location.id] = it }
+                .also { items -> listings.update { it + (location.id to items) } }
         }
     }
 
@@ -98,21 +102,32 @@ class ArchiveBrowser(
         ensureOwner(owner, revision)
         val missing = plain.exceptionOrNull() as? ArchivePasswordException ?: return plain.map { "" to it }
         if (missing.incorrect) return plain.map { "" to it }
-        val candidates = savedPasswords.first().take(MAX_SAVED_TRIES)
+        val allSaved = savedPasswords.first()
+        val candidates = allSaved.take(MAX_SAVED_TRIES)
+        val pathTag = if (location.path.isEmpty()) "root" else "subpath"
+        if (candidates.isEmpty()) {
+            PikoLog.d(TAG, "Archive ${location.archiveId} ($pathTag) requires password; no saved passwords available")
+            return plain.map { "" to it }
+        }
         // 只记第几个存过的密码对上，密码本身不记
         for ((index, saved) in candidates.withIndex()) {
             ensureOwner(owner, revision)
             val attempt = repository.list(location, saved, owner)
             if (attempt.isSuccess) {
-                PikoLog.d(TAG, "压缩包 ${location.archiveId} 要密码，存过的第 ${index + 1} 个对上")
+                PikoLog.d(TAG, "Archive ${location.archiveId} ($pathTag) unlocked with saved password #${index + 1} of ${candidates.size}")
                 return attempt.map { saved to it }
             }
             if (attempt.exceptionOrNull() !is ArchivePasswordException) {
-                PikoLog.w(TAG, "压缩包 ${location.archiveId} 试存过的密码时出错，停止尝试", attempt.exceptionOrNull())
+                PikoLog.w(
+                    TAG,
+                    "Failed while probing saved password #${index + 1} for archive ${location.archiveId} ($pathTag); aborting probe",
+                    attempt.exceptionOrNull(),
+                )
                 return attempt.map { saved to it }
             }
         }
-        PikoLog.d(TAG, "压缩包 ${location.archiveId} 要密码，存过的 ${candidates.size} 个都不对，等用户输入")
+        val truncatedNote = if (allSaved.size > candidates.size) " (capped at $MAX_SAVED_TRIES of ${allSaved.size} saved)" else ""
+        PikoLog.d(TAG, "Archive ${location.archiveId} ($pathTag) requires password; none of ${candidates.size} saved passwords matched$truncatedNote")
         return plain.map { "" to it }
     }
 
@@ -128,7 +143,7 @@ class ArchiveBrowser(
         val path = ArchiveEntryId.pathOf(entry.id)?.second ?: error(tr("非压缩包内文件", "Not a file inside an archive", "圧縮ファイル内の項目ではありません", "압축 파일 내 항목이 아닙니다", "非壓縮檔內檔案"))
         val scratch = scratchFolder(owner).getOrThrow()
         ensureOwner(owner, revision)
-        val relisted = listings[location.id]?.firstOrNull {
+        val relisted = listings.value[location.id]?.firstOrNull {
             ArchiveEntryId.pathOf(it.id)?.second == path && ArchiveEntryId.resolvedFileOf(it.id) != null
         }
         val ready = if (ArchiveEntryId.resolvedFileOf(entry.id) != null) {
@@ -140,7 +155,7 @@ class ArchiveBrowser(
             val smallest = siblings.filter { !it.isFolder }.minByOrNull { it.sizeBytes } ?: entry
             prime(location, ArchiveEntryId.pathOf(smallest.id)?.second ?: path, scratch, owner, revision)
             ensureOwner(owner, revision)
-            listings.keys.removeAll { ArchiveLocation.of(it)?.archiveId == location.archiveId }
+            listings.update { all -> all.filterKeys { ArchiveLocation.of(it)?.archiveId != location.archiveId } }
             list(location).getOrThrow().firstOrNull { ArchiveEntryId.pathOf(it.id)?.second == path }
                 ?: error(tr("压缩包内未找到此文件", "File not found in archive", "圧縮ファイル内にこのファイルが見つかりません", "압축 파일에서 이 파일을 찾을 수 없습니다", "壓縮檔內找不到此檔案"))
         }
@@ -161,8 +176,8 @@ class ArchiveBrowser(
     fun clear() {
         generation++
         cacheOwner = null
-        passwords.clear()
-        listings.clear()
+        passwords.value = emptyMap()
+        listings.value = emptyMap()
         primed.clear()
     }
 

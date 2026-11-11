@@ -4,6 +4,8 @@ import dev.piko.shared.i18n.tr
 
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.media.cache.fileCacheName
 import io.github.nihildigit.pikpak.CreateUrlResult
 import io.github.nihildigit.pikpak.DriveTask
@@ -94,7 +96,7 @@ class OfflineSubmitSession(private val clients: PikoClientProvider) {
             }
             when (result) {
                 is CreateUrlResult.Queued -> {
-                    if (result.task.id.isBlank()) throw IllegalStateException(tr("离线下载响应缺少任务 ID", "Cloud download response missing task ID", "クラウドダウンロードの応答にタスクIDが含まれていません", "클라우드 다운로드 응답에 작업 ID가 없습니다", "離線下載回應缺少任務 ID"))
+                    if (result.task.id.isBlank()) throw IllegalStateException("Cloud download response missing task ID")
                     observeTasks(owner.account, listOf(result.task), target.id)
                     _works.update { all -> all.filterNot { it.id == work.id } }
                 }
@@ -102,6 +104,12 @@ class OfflineSubmitSession(private val clients: PikoClientProvider) {
                     val file = result.file
                     // SDK 的无 task 分支并未固定协议；目录根或空响应不能证明整包已保存。
                     if (requiresTask || file == null || file.id.isBlank() || file.isFolder || file.trashed || file.phase != TaskPhase.COMPLETE || file.parentId != target.id) {
+                        PikoLog.w(
+                            TAG,
+                            "Cloud download returned unconfirmed instant result (work=${work.id}, target=${logFolder(target.id)}, " +
+                                "requiresTask=$requiresTask, fileId=${file?.id?.ifBlank { "none" } ?: "none"}, isFolder=${file?.isFolder}, " +
+                                "trashed=${file?.trashed}, phase=${file?.phase}, parent=${file?.parentId?.let(::logFolder) ?: "none"})",
+                        )
                         val message = if (requiresTask && file?.id?.isNotBlank() == true) tr("云端已保存文件，但未返回任务 ID，未执行自动裁剪与重命名", "Files saved in cloud without a task ID; automatic trimming and renaming skipped", "クラウドに保存されましたがタスクIDが返されなかったため、自動整理と名前変更をスキップしました", "클라우드에 파일이 저장되었으나 작업 ID가 반환되지 않아 자동 정리 및 이름 변경을 건너뛰었습니다", "雲端已儲存檔案，但未傳回任務 ID，未執行自動裁剪與重新命名")
                             else tr("离线下载未返回有效任务或文件，请核对云端任务与目标文件夹", "No verifiable task or file returned. Check cloud tasks and destination folder", "有効なタスクまたはファイルが返されませんでした。クラウドタスクと保存先フォルダーを確認してください", "확인 가능한 작업이나 파일이 반환되지 않았습니다. 클라우드 작업과 대상 폴더를 확인해 주세요", "離線下載未傳回有效任務或檔案，請核對雲端任務與目標資料夾")
                         finish(OfflineSubmitStatus.UNCONFIRMED, message, file?.id?.takeIf { it.isNotBlank() })
@@ -112,11 +120,20 @@ class OfflineSubmitSession(private val clients: PikoClientProvider) {
             }
             return Result.success(result)
         } catch (error: CancellationException) {
+            if (sent) {
+                PikoLog.w(TAG, "Cloud download cancelled after request was sent; status unconfirmed (work=${work.id}, target=${logFolder(target.id)})")
+            }
             finish(if (sent) OfflineSubmitStatus.UNCONFIRMED else OfflineSubmitStatus.REFUSED,
                 if (sent) tr("离线下载提交结果待确认，请核对云端任务与目标文件夹", "Cloud download submission unconfirmed. Check cloud tasks and destination folder", "クラウドダウンロードの送信結果が未確認です。クラウドタスクと保存先フォルダーを確認してください", "클라우드 다운로드 제출 결과가 미확인 상태입니다. 클라우드 작업과 대상 폴더를 확인해 주세요", "離線下載提交結果待確認，請核對雲端任務與目標資料夾") else tr("离线下载未提交", "Cloud download not submitted", "クラウドダウンロードは送信されませんでした", "클라우드 다운로드를 제출하지 않았습니다", "離線下載未提交"))
             throw error
         } catch (error: Exception) {
             val refused = error is PikPakException && error.httpStatus in setOf(400, 401, 403, 404, 409, 422)
+            PikoLog.w(
+                TAG,
+                "Cloud download submission ${if (refused) "refused by server" else "unconfirmed"} " +
+                    "(work=${work.id}, target=${logFolder(target.id)}, httpStatus=${(error as? PikPakException)?.httpStatus})",
+                error,
+            )
             val message = if (refused) tr("服务端拒绝了离线下载请求", "Server rejected cloud download request", "サーバーがクラウドダウンロードを拒否しました", "서버에서 클라우드 다운로드 요청을 거부했습니다", "伺服器拒絕了離線下載請求") else tr("离线下载提交结果待确认，请核对云端任务与目标文件夹", "Cloud download submission unconfirmed. Check cloud tasks and destination folder", "クラウドダウンロードの送信結果が未確認です。クラウドタスクと保存先フォルダーを確認してください", "클라우드 다운로드 제출 결과가 미확인 상태입니다. 클라우드 작업과 대상 폴더를 확인해 주세요", "離線下載提交結果待確認，請核對雲端任務與目標資料夾")
             finish(if (refused) OfflineSubmitStatus.REFUSED else OfflineSubmitStatus.UNCONFIRMED, message)
             return Result.failure(OfflineSubmitException(work.id, message, error))
@@ -134,4 +151,8 @@ class OfflineSubmitSession(private val clients: PikoClientProvider) {
     }
     private fun requestKey(url: String): String = fileCacheName(extractLinks(url).singleOrNull()?.infoHash?.let { "magnet:$it" } ?: "url:$url")
     private fun now() = Clock.System.now().toEpochMilliseconds()
+
+    private companion object {
+        const val TAG = "OfflineSubmit"
+    }
 }

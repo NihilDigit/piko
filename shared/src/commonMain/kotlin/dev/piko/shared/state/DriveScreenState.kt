@@ -48,7 +48,7 @@ import io.github.nihildigit.pikpak.DriveEvent
 import io.github.nihildigit.pikpak.EventPage
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
-import dev.piko.shared.log.reportFailure
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
@@ -904,7 +904,7 @@ class DriveScreenState(
                         if (navigateUp()) _messages.tryEmit(tr("文件夹已不存在，已返回上一级", "Folder no longer exists; returned to parent", "フォルダーが存在しないため、上の階層に戻りました", "폴더가 없어 상위 폴더로 돌아갔습니다", "資料夾已不存在，已返回上一層"))
                     }
                     is DriveListingResult.Failure -> {
-                        PikoLog.w(TAG, "读取目录失败", result.error)
+                        PikoLog.w(TAG, "Failed to load drive folder ${logFolder(folderId)} (useCache=$useCache, refresh=$showRefreshing)", result.error)
                         loadError = result.error.message ?: tr("读取网盘失败", "Failed to load drive", "ドライブを読み込めませんでした", "드라이브를 불러오지 못했습니다", "讀取雲端硬碟失敗")
                         isLoading = false
                         isRefreshing = false
@@ -978,7 +978,7 @@ class DriveScreenState(
                     showLibrary(library, listing)
                     loadError = null
                 }
-                .logFailure(TAG, tr("读取${library.title}失败", "Failed to load ${library.title}", "${library.title}を読み込めませんでした", "${library.title} 불러오기 실패", "讀取${library.title}失敗"))
+                .logFailure(TAG, "Failed to load drive library ${library.name}")
                 .onFailure {
                     loadError = it.message ?: tr("读取${library.title}失败", "Failed to load ${library.title}", "${library.title}を読み込めませんでした", "${library.title} 불러오기 실패", "讀取${library.title}失敗")
                     _messages.tryEmit(tr("加载失败", "Failed to load", "読み込みに失敗しました", "불러오지 못했습니다", "載入失敗"))
@@ -1020,6 +1020,7 @@ class DriveScreenState(
             scope.launch {
                 try {
                     draft.leaseForArchiveBrowse(resolved)
+                        .logFailure(TAG, "Failed to lease import-preview archive for browsing (gcid=${file.hash.take(8)}, bytes=${resolved.size})")
                         .onSuccess { leasedFileId ->
                             previewArchiveIds += leasedFileId
                             if (activeFolderId == expectedFolderId && canAcceptAction) {
@@ -1064,7 +1065,11 @@ class DriveScreenState(
                         loadedFolderId = location.id
                         archivePasswordRequest = ArchivePasswordRequest(archiveName(), incorrect = password != null)
                     } else {
-                        PikoLog.w(TAG, tr("读取压缩包失败", "Failed to read archive", "アーカイブを読み込めませんでした", "압축 파일을 읽지 못했습니다", "讀取壓縮檔失敗"), error)
+                        PikoLog.w(
+                            TAG,
+                            "Failed to list archive ${location.archiveId} (${if (location.path.isEmpty()) "root" else "subpath"}, hasPassword=${password != null})",
+                            error,
+                        )
                         if (cached == null) {
                             baseFiles = emptyList()
                             loadedFolderId = location.id
@@ -1097,11 +1102,12 @@ class DriveScreenState(
         preparingEntryId = file.id
         try {
             val location = archiveView
+            val archiveId = ArchiveEntryId.pathOf(file.id)?.first ?: location?.archiveId ?: "unknown"
             return browser.prepare(file, files)
                 .onSuccess {
                     if (location != null && archiveView == location) browser.cached(location)?.let { baseFiles = it }
                 }
-                .logFailure(TAG, tr("准备压缩包里的文件失败", "Failed to prepare files in archive", "アーカイブ内のファイルを準備できませんでした", "압축 파일 내 파일을 준비하지 못했습니다", "準備壓縮檔內的檔案失敗"))
+                .logFailure(TAG, "Failed to prepare entry in archive $archiveId (bytes=${file.sizeBytes})")
                 .onFailure { _messages.tryEmit(tr("无法打开：${archiveFailure(it)}", "Unable to open: ${archiveFailure(it)}", "開けません：${archiveFailure(it)}", "열 수 없습니다: ${archiveFailure(it)}", "無法開啟：${archiveFailure(it)}")) }
                 .getOrNull()
         } finally {
@@ -1204,7 +1210,7 @@ class DriveScreenState(
     fun revealInDrive(file: FileStat) {
         scope.launch {
             driveRepo.locateFolder(file.id)
-                .logFailure(TAG, "定位条目失败")
+                .logFailure(TAG, "Failed to locate containing folder for ${logFile(file.id, file.name)}")
                 .onSuccess { parents ->
                     navigation.navigateThen(parents) {
                         navigation.updateFolderStack(parents)
@@ -1338,6 +1344,9 @@ class DriveScreenState(
                 true
             },
             onFailure = { error ->
+                if (error !is PikoDriveRepository.FolderNotFoundException) {
+                    PikoLog.w(TAG, "Failed to resolve address-bar path (segments=${names.size}, base=${logFolder(addressBase().lastOrNull()?.id)})", error)
+                }
                 _messages.emit(
                     if (error is PikoDriveRepository.FolderNotFoundException) error.message!! else tr("无法打开此路径，请检查网络连接后重试", "Unable to open this path. Check your network connection and retry", "このパスを開けません。ネットワーク接続を確認して再試行してください", "이 경로를 열 수 없습니다. 네트워크 연결을 확인한 후 다시 시도해 주세요", "無法開啟此路徑，請檢查網路連線後重試"),
                 )
@@ -1412,14 +1421,17 @@ class DriveScreenState(
                     }
                 })
             },
-            onFailure = { FolderMapLevel.Failed(tr("无法加载此文件夹，请检查网络连接", "Unable to load this folder. Check your network connection", "このフォルダーを読み込めません。ネットワーク接続を確認して再試行してください", "이 폴더를 불러올 수 없습니다. 네트워크 연결을 확인해 주세요", "無法載入此資料夾，請檢查網路連線")) },
+            onFailure = { error ->
+                PikoLog.w(TAG, "Failed to load folder map level for ${logFolder(id)}", error)
+                FolderMapLevel.Failed(tr("无法加载此文件夹，请检查网络连接", "Unable to load this folder. Check your network connection", "このフォルダーを読み込めません。ネットワーク接続を確認して再試行してください", "이 폴더를 불러올 수 없습니다. 네트워크 연결을 확인해 주세요", "無法載入此資料夾，請檢查網路連線"))
+            },
         )
     }
 
     fun openPinned(folder: PikoPathBreadcrumb) {
         scope.launch {
             driveRepo.locateFolder(folder.id)
-                .logFailure(TAG, "地址栏定位固定的文件夹失败")
+                .logFailure(TAG, "Failed to locate quick-access folder ${logFolder(folder.id)}")
                 .onSuccess { parents -> navigation.updateFolderStack(parents + folder) }
                 .onFailure { _messages.emit(tr("未找到此文件夹，可能已被删除", "Folder not found. It may have been deleted", "フォルダーが見つかりません。削除された可能性があります", "폴더를 찾을 수 없습니다. 삭제되었을 수 있습니다", "找不到此資料夾，可能已被刪除")) }
         }

@@ -22,6 +22,7 @@ sealed interface WorkspaceContext {
 class WorkspaceContexts(initialFileId: Long = 1L) {
     init { require(initialFileId != 0L) }
 
+    /** Leading file browser in [contextsFlow]; callers with pinned tabs skip pinned items first and fall back to this ID. */
     var primaryFileId: Long = initialFileId
         private set
 
@@ -100,7 +101,7 @@ class WorkspaceContexts(initialFileId: Long = 1L) {
         return true
     }
 
-    /** Any file browser can be closed as long as at least one file browser remains. */
+    /** Close any unpinned context, provided at least one file browser remains. */
     fun close(id: Long): WorkspaceContext? {
         if (!canClose(id)) return null
         val current = _contextsFlow.value

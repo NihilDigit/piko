@@ -4,6 +4,9 @@ import dev.piko.shared.data.isVaulted
 import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.runSuspendCatching
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,7 +24,7 @@ import kotlinx.serialization.json.Json
 import kotlin.random.Random
 import kotlin.time.Clock
 
-/** 一次成功的秒传。 */
+/** 一次成功的秒传或引用保存记录。 */
 @Serializable
 data class InstantSaveRecord(
     val id: String,
@@ -37,8 +40,8 @@ data class InstantSaveRecord(
 )
 
 /**
- * 秒传的记录，给传输页列出。秒传当场完成，服务端不留任务，不记下来的话传输页里什么也看不到，
- * 与离线、上传的结果不在一处。
+ * 秒传与引用保存的完成记录及在途回执，供传输页列出与重核。这两类保存当场向网盘写入，服务端不留任务，
+ * 不记下来的话传输页里什么也看不到，与离线、上传的结果不在一处。
  *
  * 存在缓存里而不是偏好里：丢了只是传输页少几行历史，文件本身在网盘里，不值得为它在两端各加一项偏好。
  * 与云端已完成的任务一样只留最近 [RETENTION] 内的。
@@ -94,6 +97,8 @@ class InstantSaveRecords(
         scope.launch {
             try {
                 val receipt = initial.receipt ?: return@launch
+                val prevConfirmed = receipt.confirmed.size
+                val prevUnknownFolder = receipt.unconfirmedFolder != null
                 val folders = receipt.folders.toMutableMap()
                 var unknownFolder = receipt.unconfirmedFolder
                 val pendingFolder = unknownFolder
@@ -101,7 +106,9 @@ class InstantSaveRecords(
                     val prefix = pendingFolder.substringBeforeLast('/', "")
                     val parent = if (initial.containerName == pendingFolder) initial.target.id else folders[prefix]
                     if (parent != null) {
-                        val matches = read(parent).getOrNull().orEmpty().filter { it.isFolder && it.name == pendingFolder.substringAfterLast('/') }
+                        val matches = read(parent)
+                            .onFailure { err -> PikoLog.d(TAG, "Recheck folder lookup failed (attempt=$id, parent=${logFolder(parent)}): ${err.message}") }
+                            .getOrNull().orEmpty().filter { it.isFolder && it.name == pendingFolder.substringAfterLast('/') }
                         if (matches.size == 1) {
                             folders[if (initial.containerName == pendingFolder) "" else pendingFolder] = matches.single().id
                         }
@@ -113,7 +120,9 @@ class InstantSaveRecords(
                 for (file in initial.files.filter { it.path in receipt.unconfirmed || it.path in naming }) {
                     val folder = folders[if (initial.keepStructure) file.path.substringBeforeLast('/', "") else ""]
                         ?: initial.target.id.takeIf { initial.containerName == null && !initial.keepStructure } ?: continue
-                    val actual = contents[folder] ?: read(folder).getOrNull()?.also { contents[folder] = it } ?: continue
+                    val actual = contents[folder] ?: read(folder)
+                        .onFailure { err -> PikoLog.d(TAG, "Recheck folder listing failed (attempt=$id, folder=${logFolder(folder)}): ${err.message}") }
+                        .getOrNull()?.also { contents[folder] = it } ?: continue
                     val expectedName = initial.names[file.path] ?: file.name
                     val matches = actual.filter { !it.isFolder && it.isVaulted == initial.reference && it.name == expectedName && it.sizeBytes == file.size && it.hash.equals(file.gcid, true) }
                     if (matches.size == 1) { confirmed[file.path] = matches.single().id; naming.remove(file.path) }
@@ -123,6 +132,15 @@ class InstantSaveRecords(
                     initial.files.all { it.path in confirmed }) unknownFolder = null
                 val updated = receipt.copy(confirmed = confirmed, unconfirmed = receipt.unconfirmed - confirmed.keys,
                     namingUnconfirmed = naming, folders = folders, unconfirmedFolder = unknownFolder)
+                val newlyConfirmed = confirmed.size - prevConfirmed
+                val folderResolved = prevUnknownFolder && unknownFolder == null
+                if (newlyConfirmed > 0 || folderResolved) {
+                    PikoLog.i(
+                        TAG,
+                        "Recheck updated instant save attempt $id (newlyConfirmed=$newlyConfirmed, confirmed=${confirmed.size}/${initial.files.size}, " +
+                            "unconfirmed=${updated.unconfirmed.size}, namingUnconfirmed=${updated.namingUnconfirmed.size}, folderResolved=$folderResolved)",
+                    )
+                }
                 _attempts.update { all -> all.map { work -> if (work === initial) work.copy(receipt = updated) else work } }
             } finally { checking.update { it - id } }
         }
@@ -217,13 +235,22 @@ class InstantSaveRecords(
         val store = store ?: return
         scope.launch {
             restored.await()
-            writeLock.withLock { store.write(KEY, json.encodeToString(serializer, _records.value)) }
+            writeLock.withLock {
+                runSuspendCatching { store.write(KEY, json.encodeToString(serializer, _records.value)) }
+                    .logFailure(TAG, "Failed to persist instant save records ($KEY)")
+            }
         }
     }
 
     private suspend fun restore() {
-        val raw = store?.read(KEY)?.takeIf { it.isNotBlank() } ?: return
-        val saved = runSuspendCatching { json.decodeFromString(serializer, raw) }.getOrDefault(emptyList())
+        val store = store ?: return
+        val raw = runSuspendCatching { store.read(KEY) }
+            .logFailure(TAG, "Failed to read instant save records ($KEY)")
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() } ?: return
+        val saved = runSuspendCatching { json.decodeFromString(serializer, raw) }
+            .logFailure(TAG, "Failed to decode instant save records ($KEY); ignoring corrupted cache")
+            .getOrDefault(emptyList())
         val cutoff = now() - RETENTION.inWholeMilliseconds
         _records.update { current ->
             val known = current.mapTo(HashSet()) { it.id }
@@ -232,6 +259,8 @@ class InstantSaveRecords(
     }
 
     companion object {
+        private const val TAG = "InstantRecords"
+
         /** 与传输页里云端已完成任务的展示窗口相同。 */
         val RETENTION = TransfersState.COMPLETED_CLOUD_WINDOW
         private const val MAX_RECORDS = 200

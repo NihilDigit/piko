@@ -58,6 +58,7 @@ data class ArchiveJob(
     val password: String = "",
     /** 只解压包里的这几项（包内路径），在压缩包里多选后解压时用；为空是全部。 */
     val paths: List<String> = emptyList(),
+    /** 任务唯一键；[ArchiveExtractSession] 入队时分配递增序号 `"archive-N"`，直接构造时默认回退为 [file] 的 ID。 */
     val id: String = file.id,
     val createdAtMs: Long = Clock.System.now().toEpochMilliseconds(),
     val remoteTaskId: String? = null,
@@ -137,9 +138,11 @@ class ArchiveExtractSession(
         val queued = jobs.map { it.file.id }.toSet()
         val archives = files.filter { it.isExtractableArchive && it.id !in queued }.distinctBy { it.id }
         val volumes = files.count { it.isArchiveVolume }
-        if (volumes > 0 || archives.isEmpty()) {
-            PikoLog.i(TAG, "解压：选了 ${files.size} 个，入队 ${archives.size} 个，分卷跳过 $volumes 个，已在队列 ${files.count { it.id in queued }} 个")
-        }
+        val alreadyQueued = files.count { it.id in queued }
+        PikoLog.i(
+            TAG,
+            "Enqueue archive extraction: selected=${files.size}, enqueued=${archives.size}, skippedVolumes=$volumes, alreadyQueued=$alreadyQueued",
+        )
         if (volumes > 0) _messages.tryEmit(if (volumes == files.size) VOLUME_UNSUPPORTED else tr("已跳过 $volumes 个分卷压缩包：$VOLUME_UNSUPPORTED", "Skipped $volumes multi-volume archives: $VOLUME_UNSUPPORTED", "$volumes 個の分割圧縮ファイルをスキップしました：$VOLUME_UNSUPPORTED", "분할 압축 파일 ${volumes}개 건너뜀: $VOLUME_UNSUPPORTED", "已略過 $volumes 個分割壓縮檔：$VOLUME_UNSUPPORTED"))
         if (archives.isEmpty()) {
             if (volumes == 0 && files.none { it.isExtractableArchive }) _messages.tryEmit(tr("所选项目中无可解压的压缩包", "No extractable archives selected", "解凍可能な圧縮ファイルが選択されていません", "선택한 항목 중 압축 해제 가능한 파일이 없습니다", "所選項目中無可解壓縮的壓縮檔"))
@@ -155,16 +158,23 @@ class ArchiveExtractSession(
      */
     fun extractEntries(archive: FileStat, paths: List<String>, password: String) {
         if (jobs.any { it.file.id == archive.id }) {
+            PikoLog.d(TAG, "Skipped partial extraction for ${logFile(archive.id, archive.name)}: already queued")
             _messages.tryEmit(tr("此压缩包正在解压", "This archive is already being extracted", "この圧縮ファイルは解凍中です", "이미 압축 해제 중인 파일입니다", "此壓縮檔正在解壓縮"))
             return
         }
-        jobs = jobs + newJob(archive, password = password, paths = paths)
+        val added = newJob(archive, password = password, paths = paths)
+        PikoLog.i(
+            TAG,
+            "Enqueued partial archive extraction ${added.id} for ${logFile(archive.id, archive.name)} (paths=${paths.size}, hasPassword=${password.isNotEmpty()})",
+        )
+        jobs = jobs + added
         ensureWorker()
     }
 
     fun submitPassword(jobId: String, password: String) {
         val job = jobs.firstOrNull { it.id == jobId } ?: return
         if (requestedPasswordJobId == jobId) requestedPasswordJobId = null
+        PikoLog.d(TAG, "Submitted password for archive job $jobId (${logFile(job.file.id, job.file.name)})")
         // 排到队首：用户正等着看这个密码对不对
         jobs = listOf(job.copy(status = ArchiveJobStatus.Waiting, password = password, remoteTaskId = null)) + jobs.filterNot { it.id == jobId }
         ensureWorker()
@@ -172,9 +182,13 @@ class ArchiveExtractSession(
 
     /** 放弃一个待输密码的压缩包。 */
     fun skip(jobId: String) {
+        val target = jobs.firstOrNull { it.id == jobId && it.status is ArchiveJobStatus.NeedsPassword }
         if (requestedPasswordJobId == jobId) requestedPasswordJobId = null
         jobs = jobs.filterNot { it.id == jobId && it.status is ArchiveJobStatus.NeedsPassword }
         completedJobs = completedJobs.filterNot { it.id == jobId }
+        if (target != null) {
+            PikoLog.i(TAG, "Skipped archive extraction awaiting password: job=$jobId, file=${logFile(target.file.id, target.file.name)}")
+        }
     }
 
     fun canRecheck(jobId: String): Boolean = completedJobs.any {
@@ -184,6 +198,7 @@ class ArchiveExtractSession(
     fun recheck(jobId: String) {
         val job = completedJobs.firstOrNull { it.id == jobId } ?: return
         if (!canRecheck(jobId)) return
+        PikoLog.i(TAG, "Rechecking unconfirmed archive extraction: job=$jobId, task=${job.remoteTaskId}, file=${logFile(job.file.id, job.file.name)}")
         Snapshot.withMutableSnapshot {
             completedJobs = completedJobs.filterNot { it.id == jobId }
             jobs = jobs + job.copy(status = ArchiveJobStatus.Waiting)
@@ -196,11 +211,15 @@ class ArchiveExtractSession(
      * 不取消 [scope]：它由调用方持有，之后还要复用。
      */
     fun clear() {
+        val cancelledActive = jobs.size
         worker?.cancel()
         worker = null
         requestedPasswordJobId = null
         jobs = emptyList()
         completedJobs = emptyList()
+        if (cancelledActive > 0) {
+            PikoLog.d(TAG, "Cleared archive extraction session ($cancelledActive active/queued jobs dropped)")
+        }
     }
 
     private fun ensureWorker() {
@@ -222,20 +241,37 @@ class ArchiveExtractSession(
         }
         update(job.id) { it.copy(status = ArchiveJobStatus.Submitting) }
         val task = repository.start(job.file, job.password, job.paths).getOrElse { err ->
-            PikoLog.w(TAG, "提交解压失败：${logFile(job.file.id, job.file.name)}", err)
             if (err is ArchivePasswordException) {
-                PikoLog.i(TAG, "解压要密码：${logFile(job.file.id, job.file.name)}，${if (job.password.isEmpty()) "未带密码" else "所带密码被拒"}")
+                PikoLog.i(
+                    TAG,
+                    "Archive extraction requires password for ${logFile(job.file.id, job.file.name)} (job=${job.id}, ${if (job.password.isEmpty()) "empty probe" else "password rejected"})",
+                )
                 // 没带密码时服务端报的是「缺少」；带了还被拒才算输错
                 update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
             } else if (err is ArchiveSubmissionUnconfirmed) {
-                finish(job, tr("无法确认 ${job.file.name} 是否已提交解压，请先核对所在文件夹", "Unable to confirm extraction submission for ${job.file.name}. Check its containing folder first", "${job.file.name} の解凍リクエストを確認できません。先に保存先フォルダーを確認してください", "${job.file.name}의 압축 해제 요청 여부를 확인할 수 없습니다. 먼저 해당 폴더를 확인해 주세요", "無法確認 ${job.file.name} 是否已提交解壓縮，請先核對所在資料夾"), outcome = ArchiveCompletion.UNCONFIRMED)
+                finish(
+                    job = job,
+                    message = tr("无法确认 ${job.file.name} 是否已提交解压，请先核对所在文件夹", "Unable to confirm extraction submission for ${job.file.name}. Check its containing folder first", "${job.file.name} の解凍リクエストを確認できません。先に保存先フォルダーを確認してください", "${job.file.name}의 압축 해제 요청 여부를 확인할 수 없습니다. 먼저 해당 폴더를 확인해 주세요", "無法確認 ${job.file.name} 是否已提交解壓縮，請先核對所在資料夾"),
+                    logMessage = "Archive extraction submission unconfirmed for ${logFile(job.file.id, job.file.name)} (job=${job.id})",
+                    outcome = ArchiveCompletion.UNCONFIRMED,
+                    cause = err,
+                )
             } else {
-                finish(job, tr("${job.file.name} 解压失败：${failureReason(err)}", "Failed to extract ${job.file.name}: ${failureReason(err)}", "${job.file.name} の解凍に失敗しました：${failureReason(err)}", "${job.file.name} 압축 해제 실패: ${failureReason(err)}", "${job.file.name} 解壓縮失敗：${failureReason(err)}"))
+                finish(
+                    job = job,
+                    message = tr("${job.file.name} 解压失败：${failureReason(err)}", "Failed to extract ${job.file.name}: ${failureReason(err)}", "${job.file.name} の解凍に失敗しました：${failureReason(err)}", "${job.file.name} 압축 해제 실패: ${failureReason(err)}", "${job.file.name} 解壓縮失敗：${failureReason(err)}"),
+                    logMessage = "Failed to start archive extraction for ${logFile(job.file.id, job.file.name)} (job=${job.id})",
+                    cause = err,
+                )
             }
             return
         }
-        PikoLog.i(TAG, "已提交解压：${logFile(job.file.id, job.file.name)}，任务 ${task.taskId}，${job.file.sizeBytes} 字节，" +
-            "${if (job.paths.isEmpty()) "整包" else "选 ${job.paths.size} 项"}，${if (job.password.isEmpty()) "无密码" else "带密码"}，队列还有 ${jobs.size - 1} 个")
+        val waitingOthers = jobs.count { it.id != job.id && it.status == ArchiveJobStatus.Waiting }
+        PikoLog.i(
+            TAG,
+            "Submitted archive extraction for ${logFile(job.file.id, job.file.name)} (job=${job.id}, task=${task.taskId}, bytes=${job.file.sizeBytes}, " +
+                "scope=${if (job.paths.isEmpty()) "full" else "paths:${job.paths.size}"}, hasPassword=${job.password.isNotEmpty()}, waitingInQueue=$waitingOthers)",
+        )
         // 服务端收下即说明密码正确，此时就存，不等解压完：下一个待输密码的包马上能选到它
         if (job.password.isNotEmpty()) vault.remember(job.password)
         update(job.id) { it.copy(status = ArchiveJobStatus.Extracting(0), remoteTaskId = task.taskId) }
@@ -246,10 +282,20 @@ class ArchiveExtractSession(
         var failures = 0
         while (true) {
             val progress = repository.progress(taskId).getOrElse { err ->
-                PikoLog.w(TAG, "查询解压进度失败：${logFile(job.file.id, job.file.name)}，第 ${failures + 1} 次", err)
+                PikoLog.w(
+                    TAG,
+                    "Failed to poll archive extraction progress for ${logFile(job.file.id, job.file.name)} (job=${job.id}, task=$taskId, attempt=${failures + 1}/$MAX_POLL_FAILURES)",
+                    err,
+                )
                 failures++
                 if (failures >= MAX_POLL_FAILURES) {
-                    finish(job, tr("无法确认 ${job.file.name} 的解压结果：${failureReason(err)}", "Unable to confirm extraction result for ${job.file.name}: ${failureReason(err)}", "${job.file.name} の解凍結果を確認できません：${failureReason(err)}", "${job.file.name}의 압축 해제 결과를 확인할 수 없습니다: ${failureReason(err)}", "無法確認 ${job.file.name} 的解壓縮結果：${failureReason(err)}"), outcome = ArchiveCompletion.UNCONFIRMED)
+                    finish(
+                        job = job,
+                        message = tr("无法确认 ${job.file.name} 的解压结果：${failureReason(err)}", "Unable to confirm extraction result for ${job.file.name}: ${failureReason(err)}", "${job.file.name} の解凍結果を確認できません：${failureReason(err)}", "${job.file.name}의 압축 해제 결과를 확인할 수 없습니다: ${failureReason(err)}", "無法確認 ${job.file.name} 的解壓縮結果：${failureReason(err)}"),
+                        logMessage = "Archive extraction result unconfirmed after $failures poll failures for ${logFile(job.file.id, job.file.name)} (job=${job.id}, task=$taskId)",
+                        outcome = ArchiveCompletion.UNCONFIRMED,
+                        cause = err,
+                    )
                     return
                 }
                 delay(queryRetryDelay)
@@ -258,7 +304,12 @@ class ArchiveExtractSession(
             failures = 0
             when (progress.phase) {
                 TaskPhase.COMPLETE -> {
-                    finish(job, tr("已解压 ${job.file.name}", "Extracted ${job.file.name}", "${job.file.name} を解凍しました", "${job.file.name} 압축 해제 완료", "已解壓縮 ${job.file.name}"), succeeded = true)
+                    finish(
+                        job = job,
+                        message = tr("已解压 ${job.file.name}", "Extracted ${job.file.name}", "${job.file.name} を解凍しました", "${job.file.name} 압축 해제 완료", "已解壓縮 ${job.file.name}"),
+                        logMessage = "Archive extraction completed for ${logFile(job.file.id, job.file.name)} (job=${job.id}, task=$taskId, outputId=${progress.fileId.ifBlank { "none" }})",
+                        succeeded = true,
+                    )
                     // 从压缩包内部发起解压时占位 FileStat 的 parentId 可能为空；优先用本地已知父级，缺口再查产出根或原压缩包详情
                     val actualParentId = job.file.parentId.takeIf { it.isNotEmpty() }
                         ?: progress.fileId.takeIf { it.isNotBlank() }?.let { id ->
@@ -267,8 +318,14 @@ class ArchiveExtractSession(
                         }
                         ?: driveRepository.knownParentOf(job.file.id)
                         ?: driveRepository.knownFile(job.file.id)?.parentId
-                        ?: progress.fileId.takeIf { it.isNotBlank() }?.let { driveRepository.getFileDetail(it).getOrNull()?.parentId }
-                        ?: driveRepository.getFileDetail(job.file.id).getOrNull()?.parentId
+                        ?: progress.fileId.takeIf { it.isNotBlank() }?.let { id ->
+                            driveRepository.getFileDetail(id)
+                                .onFailure { err -> PikoLog.d(TAG, "Failed to resolve parent of extracted output $id: ${err.message}") }
+                                .getOrNull()?.parentId
+                        }
+                        ?: driveRepository.getFileDetail(job.file.id)
+                            .onFailure { err -> PikoLog.d(TAG, "Failed to resolve parent of archive ${logFile(job.file.id, job.file.name)}: ${err.message}") }
+                            .getOrNull()?.parentId
                         ?: job.file.parentId
                     driveRepository.applyChange(DriveChange.ContentsChanged(setOf(actualParentId)))
                     return
@@ -277,13 +334,24 @@ class ArchiveExtractSession(
                     // 数据加密而文件名未加密的包，列目录不要密码，要到解压时才失败
                     val cause = repository.failureCause(taskId)
                     if (cause == ArchiveRepository.INVALID_PASSWORD) {
-                        PikoLog.i(TAG, "解压任务 $taskId 因密码失败，等用户输入：${logFile(job.file.id, job.file.name)}")
+                        PikoLog.i(
+                            TAG,
+                            "Archive extraction task $taskId failed due to password for ${logFile(job.file.id, job.file.name)} (job=${job.id}); awaiting user input",
+                        )
                         update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
                     } else if (cause == ArchiveRepository.INVALID_FORMAT) {
-                        finish(job, tr("${job.file.name} 解压失败：$INVALID_FORMAT_REASON", "Failed to extract ${job.file.name}: $INVALID_FORMAT_REASON", "${job.file.name} の解凍に失敗しました：$INVALID_FORMAT_REASON", "${job.file.name} 압축 해제 실패: $INVALID_FORMAT_REASON", "${job.file.name} 解壓縮失敗：$INVALID_FORMAT_REASON"))
+                        finish(
+                            job = job,
+                            message = tr("${job.file.name} 解压失败：$INVALID_FORMAT_REASON", "Failed to extract ${job.file.name}: $INVALID_FORMAT_REASON", "${job.file.name} の解凍に失敗しました：$INVALID_FORMAT_REASON", "${job.file.name} 압축 해제 실패: $INVALID_FORMAT_REASON", "${job.file.name} 解壓縮失敗：$INVALID_FORMAT_REASON"),
+                            logMessage = "Archive extraction failed for ${logFile(job.file.id, job.file.name)} (job=${job.id}, task=$taskId, cause=$cause, detail=${progress.errorDescription.ifBlank { "none" }})",
+                        )
                     } else {
                         val reason = dev.piko.shared.notice.PikoErrorMapper.archiveReason(cause, progress.errorDescription)
-                        finish(job, tr("${job.file.name} 解压失败：$reason", "Failed to extract ${job.file.name}: $reason", "${job.file.name} の解凍に失敗しました：$reason", "${job.file.name} 압축 해제 실패: $reason", "${job.file.name} 解壓縮失敗：$reason"))
+                        finish(
+                            job = job,
+                            message = tr("${job.file.name} 解压失败：$reason", "Failed to extract ${job.file.name}: $reason", "${job.file.name} の解凍に失敗しました：$reason", "${job.file.name} 압축 해제 실패: $reason", "${job.file.name} 解壓縮失敗：$reason"),
+                            logMessage = "Archive extraction failed for ${logFile(job.file.id, job.file.name)} (job=${job.id}, task=$taskId, cause=${cause ?: "unknown"}, detail=${progress.errorDescription.ifBlank { "none" }})",
+                        )
                     }
                     return
                 }
@@ -298,8 +366,10 @@ class ArchiveExtractSession(
     private fun finish(
         job: ArchiveJob,
         message: String,
+        logMessage: String,
         succeeded: Boolean = false,
         outcome: ArchiveCompletion = if (succeeded) ArchiveCompletion.SUCCEEDED else ArchiveCompletion.FAILED,
+        cause: Throwable? = null,
     ) {
         val current = jobs.firstOrNull { it.id == job.id } ?: return
         val record = current.copy(password = "", status = ArchiveJobStatus.Finished(outcome, message, Clock.System.now().toEpochMilliseconds()))
@@ -307,9 +377,7 @@ class ArchiveExtractSession(
             jobs = jobs.filterNot { it.id == job.id }
             completedJobs = (completedJobs.filterNot { it.id == job.id } + record).takeLast(100)
         }
-        // 提示里带着压缩包的名字，写进日志前换成 ID
-        val logged = message.replace(job.file.name, logFile(job.file.id, job.file.name))
-        PikoLog.log(if (succeeded) LogLevel.INFO else LogLevel.WARN, TAG, logged, null)
+        PikoLog.log(if (succeeded) LogLevel.INFO else LogLevel.WARN, TAG, logMessage, cause)
         _messages.tryEmit(message)
         _outcomes.tryEmit(ArchiveOutcome(job.file.name, outcome, message))
     }

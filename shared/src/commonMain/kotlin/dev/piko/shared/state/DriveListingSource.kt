@@ -4,7 +4,9 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -21,19 +23,24 @@ internal class DriveListingSource(private val repository: PikoDriveRepository) {
     fun observe(folder: String, order: PikoFileSortOrder, useCache: Boolean): Flow<DriveListingResult> = channelFlow {
         val cached = if (useCache) withContext(Dispatchers.Default) { repository.cachedBrowsable(folder, order) } else null
         if (cached != null) send(DriveListingResult.Content(cached, true)) else send(DriveListingResult.Loading)
-        var painted = cached != null
-        val watcher = if (useCache && !painted) launch {
+        val settled = MutableStateFlow(cached != null)
+        val watcher = if (useCache && !settled.value) launch {
             repository.observeTreeCacheReady().collect {
-                if (!painted) {
+                if (!settled.value) {
                     val late = withContext(Dispatchers.Default) { repository.cachedBrowsable(folder, order) }
-                    if (late != null) {
-                        painted = true
+                    if (late != null && settled.compareAndSet(expect = false, update = true)) {
                         send(DriveListingResult.Content(late, true))
                     }
                 }
             }
         } else null
-        val result = try { repository.listBrowsable(folder, order) } finally { watcher?.cancel() }
+        val result = try {
+            repository.listBrowsable(folder, order)
+        } finally {
+            settled.value = true
+            watcher?.cancel()
+        }
+        watcher?.cancelAndJoin()
         val files = result.getOrNull()
         send(when {
             files == null -> DriveListingResult.Failure(requireNotNull(result.exceptionOrNull()))

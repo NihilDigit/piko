@@ -9,6 +9,7 @@ import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.data.PikoPathBreadcrumb
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
@@ -22,10 +23,10 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 
 /**
- * 目录选择器：逐层浏览文件夹、按页加载、就地新建。
+ * 目录选择器：逐层浏览子目录、就地新建文件夹。
  *
- * 路径栈是自己的，不碰仓库层的 folderStackFlow：那是网盘主界面的全局位置，
- * 选择器里进出目录会把主界面一起带走。
+ * 维护自身独立的路径栈，不直接改动主工作区（[dev.piko.shared.presentation.DriveWorkspace]）的浏览路径栈，
+ * 避免在选择器里进出目录时改动主界面位置。
  */
 class FolderPickerState(
     private val driveRepo: PikoDriveRepository,
@@ -109,7 +110,7 @@ class FolderPickerState(
                         reload()
                     }
                 }
-                .logFailure("FolderPicker", tr("新建文件夹失败", "Failed to create folder", "フォルダーを作成できませんでした", "폴더를 만들지 못했습니다", "新增資料夾失敗"))
+                .logFailure(TAG, "Failed to create folder in ${logFolder(parent.id)}")
                 .onFailure { _messages.tryEmit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("新建文件夹", "Create folder", "フォルダーを作成", "폴더 만들기", "新增資料夾"), it)) }
             isCreatingFolder = false
         }
@@ -125,7 +126,7 @@ class FolderPickerState(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                PikoLog.w("FolderPicker", tr("读取目录失败", "Failed to load folder", "フォルダーを読み込めませんでした", "폴더를 불러오지 못했습니다", "讀取資料夾失敗"), error)
+                PikoLog.w(TAG, "Failed to load subfolders in ${logFolder(parentId)}", error)
                 loadError = dev.piko.shared.notice.PikoErrorMapper.message(error)
                 return
             }
@@ -152,4 +153,8 @@ class FolderPickerState(
     @kotlin.jvm.JvmName("subfoldersFromStats")
     private fun toFolderStats(list: List<FileStat>, parentId: String): List<FileStat> =
         list.filter { it.isFolder && !it.trashed && !isPikoInternalFolder(it, parentId) }
+
+    private companion object {
+        const val TAG = "FolderPicker"
+    }
 }

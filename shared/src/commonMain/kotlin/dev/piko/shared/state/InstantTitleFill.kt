@@ -3,8 +3,11 @@ package dev.piko.shared.state
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.i18n.enCount
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.naming.av.AvInfo
 import dev.piko.shared.rename.RenameRun
 import dev.piko.shared.rename.RenameSource
@@ -28,9 +31,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 
+private const val TAG = "InstantTitleFill"
+
 /**
- * WIP，未接线，没有调用方也没有测试：实测不生效，原因未查明。接回前要查的事与要补的接入点见
- * docs/development/av-naming.md 末节「未上线：添加链接里的 MetaTube 片名」。
+ * 尚未接入主保存链路（待排查项与接入点见 docs/development/av-naming.md 末节「未上线：添加链接里的 MetaTube 片名」）。
  *
  * 添加链接按番号规范命名、配了 MetaTube 时，保存不等片名：先以原名里的片名落盘，片名随后查到再把这次存下的文件
  * （与按番号命名的新建文件夹）改成带 MetaTube 片名的规范名，整批记一条可撤销的改动。
@@ -83,7 +87,7 @@ class InstantTitleFill(
         return scope.launch(accountJob) {
             val titles = withTimeoutOrNull(giveUpAfter) { requests.map { it.lookup.titlesOrEmpty() } }
             if (titles == null) {
-                PikoLog.i(TAG, "片名 ${giveUpAfter.inWholeSeconds} 秒内未查完，放弃补名")
+                PikoLog.i(TAG, "Timed out waiting ${giveUpAfter.inWholeSeconds}s for MetaTube titles; skipping title fill (requests=${requests.size})")
                 requests.forEach { it.lookup.cancel() }
                 return@launch
             }
@@ -109,22 +113,43 @@ class InstantTitleFill(
      * 所以每次读写网盘之前再核对一次账号。
      */
     private suspend fun rename(account: String, wanted: List<Pair<Saved, String>>) {
-        fun accountLeft() = (currentAccount() != account).also { if (it) PikoLog.i(TAG, "账号已变，不补片名") }
+        fun accountLeft() = (currentAccount() != account).also {
+            if (it) PikoLog.i(TAG, "Account switched during MetaTube title fill; aborting (wanted=${wanted.size})")
+        }
         if (accountLeft()) return
         // 现查名字与所在目录：用户可能已改名、移走或删掉，这些不碰
+        var detailFailed = 0
+        var trashed = 0
+        var alreadyRenamed = 0
         val current = wanted.mapNotNull { (saved, name) ->
-            val detail = driveRepo.getFileDetail(saved.id).logFailure(TAG, "补片名前查详情失败，跳过：${saved.id}").getOrNull()
-                ?: return@mapNotNull null
-            if (detail.trashed || detail.name != saved.savedName) return@mapNotNull null
+            val detail = driveRepo.getFileDetail(saved.id)
+                .logFailure(TAG, "Failed to fetch detail before title fill for ${saved.id}; skipping")
+                .getOrNull()
+                ?: run {
+                    detailFailed++
+                    return@mapNotNull null
+                }
+            if (detail.trashed) {
+                trashed++
+                return@mapNotNull null
+            }
+            if (detail.name != saved.savedName) {
+                alreadyRenamed++
+                return@mapNotNull null
+            }
             RenameSource(detail.id, detail.parentId, detail.name, isFolder = detail.kind == FileKind.FOLDER) to name
         }
         if (current.isEmpty()) {
-            PikoLog.i(TAG, "补片名：${wanted.size} 项都已在别处改过，不改")
+            PikoLog.i(
+                TAG,
+                "Skipped MetaTube title fill: no eligible items remaining out of ${wanted.size} " +
+                    "(alreadyRenamed=$alreadyRenamed, trashed=$trashed, detailFailed=$detailFailed)",
+            )
             return
         }
         val ids = current.map { it.first.id }.toSet()
         val siblings = current.map { it.first.parentId }.distinct().associateWith { parentId ->
-            driveRepo.listAllFiles(parentId).logFailure(TAG, "补片名前列目录失败：$parentId").getOrElse { return }
+            driveRepo.listAllFiles(parentId).logFailure(TAG, "Failed to list parent folder ${logFolder(parentId)} before title fill").getOrElse { return }
                 .filter { it.id !in ids }.map { it.name }.toSet()
         }
         // 与同目录已有的名字撞上的，planRenames 标为冲突，不在执行的步骤里
@@ -135,14 +160,25 @@ class InstantTitleFill(
             run.execute(plan)
         } finally {
             if (run.renamed.isNotEmpty()) {
-                driveRepo.changes.record(DriveChangeJournal.Change.Rename(run.renamed.toList(), "已按 MetaTube 补全片名 ${run.succeeded} 项"))
+                driveRepo.changes.record(
+                    DriveChangeJournal.Change.Rename(
+                        run.renamed.toList(),
+                        tr(
+                            "已按 MetaTube 补全片名 ${run.succeeded} 项",
+                            "Filled ${enCount(run.succeeded, "title", "titles")} via MetaTube",
+                            "MetaTube で ${run.succeeded} 件のタイトルを補完しました",
+                            "MetaTube로 제목 ${run.succeeded}개 보완 완료",
+                            "已依 MetaTube 補全片名 ${run.succeeded} 項",
+                        ),
+                    ),
+                )
             }
         }
-        PikoLog.i(TAG, "补片名：${run.succeeded} 项，${plan.problemCount} 项有冲突未改，${run.failures.size} 项失败，${wanted.size - current.size} 项已在别处改过")
-    }
-
-    private companion object {
-        const val TAG = "InstantTitleFill"
+        PikoLog.i(
+            TAG,
+            "MetaTube title fill finished (renamed=${run.succeeded}, conflicts=${plan.problemCount}, failed=${run.failures.size}, " +
+                "alreadyRenamed=$alreadyRenamed, trashed=$trashed, detailFailed=$detailFailed)",
+        )
     }
 }
 
@@ -156,6 +192,6 @@ internal suspend fun Deferred<MetaTubeTitles>.titlesOrEmpty(): Map<String, Strin
     currentCoroutineContext().ensureActive()
     emptyMap()
 } catch (e: Exception) {
-    PikoLog.w("InstantTitleFill", "查片名失败", e)
+    PikoLog.w(TAG, "Failed to query MetaTube titles", e)
     emptyMap()
 }

@@ -1,6 +1,7 @@
 package dev.piko.shared.state
 
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.log.PikoLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -15,6 +16,7 @@ class AccountExecutionScopes(private val repository: PikoDriveRepository, privat
 
     fun forAccount(account: String): CoroutineScope {
         if (repository.currentAccount != account) {
+            PikoLog.d(TAG, "Returning cancelled execution scope: requested account is inactive")
             val cancelled = SupervisorJob(parent.coroutineContext[Job]).also { it.cancel() }
             return CoroutineScope(parent.coroutineContext + cancelled)
         }
@@ -25,8 +27,13 @@ class AccountExecutionScopes(private val repository: PikoDriveRepository, privat
         execution = Execution(account, job, scope)
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             repository.accountChanges.first { it != account }
+            PikoLog.d(TAG, "Cancelled execution scope on account change")
             job.cancel()
         }
         return scope
+    }
+
+    private companion object {
+        const val TAG = "AccountScopes"
     }
 }

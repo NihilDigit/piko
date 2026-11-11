@@ -9,6 +9,7 @@ import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -18,7 +19,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
- * 大窗口侧边栏里的快速访问，照资源管理器：常驻的网盘根目录与 My Pack（秒传与离线下载默认存进它），
+ * 大窗口侧边栏里的快速访问，照资源管理器：常驻的网盘根目录与 My Packs（外部链接保存目标目录失效时的兜底目录），
  * 其后是用户固定的文件夹。点一下直接跳过去，跳转记进浏览历史，后退能回来。
  * 固定的列表在仓库里，见 [PikoDriveRepository.pinnedFoldersFlow]。
  */
@@ -30,7 +31,7 @@ class QuickAccessState(
 ) {
     val pinnedFolders: Flow<List<PikoPathBreadcrumb>> get() = driveRepo.pinnedFoldersFlow
 
-    /** 根目录里的 My Pack；还没找到、没登录或网盘里没有时为 null，侧边栏不列这一项。 */
+    /** 根目录里的 My Packs；还没找到、没登录或网盘里没有时为 null，侧边栏不列这一项。 */
     var myPacks by mutableStateOf<PikoPathBreadcrumb?>(null)
         private set
 
@@ -38,14 +39,14 @@ class QuickAccessState(
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
     /**
-     * 找 My Pack，登录或换号时重找（各账号的文件夹 ID 不同），直到调用方取消。由显示快速访问的界面在
+     * 找 My Packs，登录或换号时重找（各账号的文件夹 ID 不同），直到调用方取消。由显示快速访问的界面在
      * LaunchedEffect 里调：不显示的时候（手机、窄窗口）不必列根目录。
      */
     suspend fun watchMyPacks() {
         clients.currentClient.collectLatest { client ->
             myPacks = null
             if (client == null) return@collectLatest
-            myPacks = driveRepo.findMyPacksFolder().logFailure(TAG, "快速访问找 My Pack 失败").getOrNull()
+            myPacks = driveRepo.findMyPacksFolder().logFailure(TAG, "Failed to locate My Packs folder for quick access").getOrNull()
         }
     }
 
@@ -69,7 +70,7 @@ class QuickAccessState(
     fun locate(folder: PikoPathBreadcrumb, open: (List<PikoPathBreadcrumb>) -> Unit) {
         scope.launch {
             driveRepo.locateFolder(folder.id)
-                .logFailure(TAG, "快速访问定位文件夹失败")
+                .logFailure(TAG, "Failed to locate pinned quick-access ${logFolder(folder.id)}")
                 .onSuccess { parents -> open(parents + folder) }
                 .onFailure { _messages.emit(tr("未找到此文件夹，可能已被删除", "Folder not found. It may have been deleted", "フォルダーが見つかりません。削除された可能性があります", "폴더를 찾을 수 없습니다. 삭제되었을 수 있습니다", "找不到此資料夾，可能已被刪除")) }
         }

@@ -21,7 +21,13 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
-/** 动作规则读取接收任务的已知依赖，不决定业务执行或释放资源。 */
+/**
+ * 动作规则读取接收任务的已知依赖，不决定业务执行或释放资源。
+ *
+ * [targets]、[files] 与 [exclusiveRoots] 内部通过 `revision.let { ... }` 读取 [revision]（Compose Snapshot 状态），
+ * 以便在 Compose 重组或 `derivedStateOf` 中直接求值底层 `StateFlow.value` 时自动注册观察依赖；
+ * 若构造参数 `scope == null`，后台不再订阅 [changes] 自增 [revision]，上述方法退化为非响应式即时快照。
+ */
 class ReceivingActivity(private val instant: InstantSaveRecords, private val uploads: PikoUploadCoordinator,
     private val offline: OfflineSubmitSession? = null, private val extracts: ArchiveExtractSession? = null,
     private val packs: OfflinePackTracker? = null, scope: CoroutineScope? = null) {

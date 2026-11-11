@@ -70,7 +70,7 @@ class MySharesState(
         loadMoreFailed = false
         pageJob = scope.launch {
             driveRepo.myShares()
-                .logFailure(TAG, tr("读取我的分享失败", "Failed to load my shares", "自分の共有を読み込めませんでした", "내 공유를 불러오지 못했습니다", "讀取我的分享失敗"))
+                .logFailure(TAG, "Failed to load my shares (refresh=$refresh)")
                 .onSuccess { page ->
                     shares = withoutCancelling(page.shares)
                     nextPageToken = page.nextPageToken
@@ -93,7 +93,7 @@ class MySharesState(
         val token = nextPageToken
         pageJob = scope.launch {
             driveRepo.myShares(token)
-                .logFailure(TAG, "读取我的分享的下一页失败")
+                .logFailure(TAG, "Failed to load next page of my shares")
                 .onSuccess { page ->
                     val known = shares.mapTo(HashSet()) { it.shareId }
                     shares = shares + withoutCancelling(page.shares).filterNot { it.shareId in known }
@@ -113,13 +113,13 @@ class MySharesState(
     suspend fun loadPreview(share: ShareSummary) {
         if (!share.isOk || share.shareId in previews) return
         previews[share.shareId] = driveRepo.shareInfo(share.shareId, share.passCode)
-            .logFailure(TAG, "打开分享取预览失败")
+            .logFailure(TAG, "Failed to load preview for share ${maskShareId(share.shareId)}")
             .getOrNull()?.files?.firstOrNull()
     }
 
     /**
-     * 分享在网盘里的源文件。只有一项的分享列表里直接给了 file_id；多项的取打开后第一项的 ID，
-     * 它是否就是源文件的 ID 没有实测过，定位不到时由调用方提示。
+     * 分享对应网盘条目的候选 ID：单文件分享由列表直接返回 `fileId`；多条目分享回退取 [previews] 首项 ID，
+     * 无法在当前网盘定位时由调用方提示。
      */
     fun sourceId(share: ShareSummary): String? = share.fileId.ifEmpty { previews[share.shareId]?.id.orEmpty() }.ifEmpty { null }
 
@@ -145,11 +145,11 @@ class MySharesState(
         val ids = selectedIds
         if (ids.isEmpty()) return
         selectedIds = emptySet()
-        cancelShares(ids, done = tr("已取消 ${ids.size} 个分享", "Revoked ${enCount(ids.size, "share", "shares")}", "${ids.size} 件の共有を解除しました", "공유 ${ids.size}개 취소 완료", "已取消 ${ids.size} 個分享"), logMessage = "批量取消分享失败")
+        cancelShares(ids, done = tr("已取消 ${ids.size} 个分享", "Revoked ${enCount(ids.size, "share", "shares")}", "${ids.size} 件の共有を解除しました", "공유 ${ids.size}개 취소 완료", "已取消 ${ids.size} 個分享"))
     }
 
     fun cancel(share: ShareSummary) {
-        cancelShares(setOf(share.shareId), done = tr("已取消分享", "Share revoked", "共有を解除しました", "공유를 취소했습니다", "已取消分享"), logMessage = tr("取消分享失败", "Failed to revoke share", "共有を解除できませんでした", "공유를 취소하지 못했습니다", "取消分享失敗"))
+        cancelShares(setOf(share.shareId), done = tr("已取消分享", "Share revoked", "共有を解除しました", "공유를 취소했습니다", "已取消分享"))
     }
 
     /**
@@ -167,16 +167,17 @@ class MySharesState(
      * 失败时只放回这一次拿掉的几项，不整份换回快照：几次取消先后进行、或期间刷新过时，
      * 快照里还有别的取消已成功的条目，也可能是刷新前的旧数据。
      */
-    private fun cancelShares(ids: Set<String>, done: String, logMessage: String) {
+    private fun cancelShares(ids: Set<String>, done: String) {
         val before = shares
         cancellingIds += ids
         shares = shares.filterNot { it.shareId in ids }
         scope.launch {
-            val result = driveRepo.cancelShares(ids.toList()).logFailure(TAG, "$logMessage（${ids.size} 个）")
+            val masked = ids.joinToString(",") { maskShareId(it) }
+            val result = driveRepo.cancelShares(ids.toList()).logFailure(TAG, "Failed to revoke ${ids.size} share(s) [$masked]")
             cancellingIds -= ids
             result
                 .onSuccess {
-                    PikoLog.i(TAG, tr("已取消 ${ids.size} 个分享", "Revoked ${enCount(ids.size, "share", "shares")}", "${ids.size} 件の共有を解除しました", "공유 ${ids.size}개 취소 완료", "已取消 ${ids.size} 個分享"))
+                    PikoLog.i(TAG, "Revoked ${ids.size} share(s) [$masked]")
                     cancelledIds += ids
                     _messages.tryEmit(done)
                 }
@@ -189,5 +190,7 @@ class MySharesState(
 
     private companion object {
         const val TAG = "Share"
+
+        fun maskShareId(id: String): String = if (id.length <= 6) "***" else "${id.take(4)}…"
     }
 }

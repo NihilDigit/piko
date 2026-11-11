@@ -9,7 +9,9 @@ import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.i18n.enCount
 import dev.piko.shared.i18n.tr
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.runtime.PikoWorkloadGovernor
 import io.github.nihildigit.pikpak.FileStat
@@ -303,7 +305,7 @@ class GallerySession(
     private fun rememberBatch(batch: VideoFolderBatch) {
         discoveredFolders += batch.folderId
         batch.failure?.let { error ->
-            Result.failure<Unit>(error).logFailure("GallerySession", "画廊列目录失败，可重试")
+            PikoLog.w(TAG, "Failed to list gallery folder ${logFolder(batch.folderId)} during discovery (retryable)", error)
             return
         }
         discoveredFolders += batch.files.filter { it.isFolder }.map { it.id }
@@ -360,7 +362,7 @@ class GallerySession(
                             folderVideos[parentId] = media
                             workOf.putAll(batch.workOf)
                             failedFolders = failedFolders - parentId
-                        }.logFailure("GallerySession", "画廊列目录失败，可重试")
+                        }.logFailure(TAG, "Failed to refresh selected gallery parent folder ${logFolder(parentId)}")
                             .onFailure { failedFolders = failedFolders + (parentId to it) }
                     }
                     pendingRefresh.removeAll(targets.toSet())
@@ -410,6 +412,7 @@ class GallerySession(
     }
 
     private companion object {
+        const val TAG = "GallerySession"
         const val FILES_PER_REQUEST = 48
         const val FOLDERS_PER_REQUEST = 16
         const val OPENING_FOLDERS = 6

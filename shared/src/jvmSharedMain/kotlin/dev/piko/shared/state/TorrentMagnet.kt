@@ -1,5 +1,6 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.log.PikoLog
 import java.io.File
 import java.net.URLEncoder
 import java.security.MessageDigest
@@ -12,10 +13,23 @@ import java.security.MessageDigest
  * 所以这里只扫描出 info 值的字节区间，不构建对象。
  */
 object TorrentMagnet {
-    fun fromFile(file: File): String? = runCatching { fromBytes(file.readBytes()) }.getOrNull()
+    private const val TAG = "TorrentMagnet"
 
-    /** 不是种子或内容残缺时返回 null。 */
-    fun fromBytes(bytes: ByteArray): String? = runCatching { parse(bytes) }.getOrNull()
+    fun fromFile(file: File): String? = runCatching { file.readBytes() }
+        .onFailure { PikoLog.w(TAG, "Failed to read torrent file (${it::class.simpleName})", it) }
+        .getOrNull()
+        ?.let(::fromBytes)
+
+    /**
+     * 解析 bencode 种子字节并返回 BitTorrent v1 `urn:btih` 磁力链接；非种子、内容截断或不含 v1 `info` 块时返回 null：
+     * - [Scanner] 不做显式越界检查，截断或损坏数据抛出的 `IndexOutOfBoundsException` / `NoSuchElementException` /
+     *   `NumberFormatException` 由外层 `runCatching` 捕获并转为 null；
+     * - 仅对 `info` 原始字节求 SHA-1（v1 协议），纯 v2 种子无传统 `info` 块时返回 null（v1+v2 混合种子按其 v1 `info` 计算）。
+     */
+    fun fromBytes(bytes: ByteArray): String? = runCatching { parse(bytes) }
+        .onFailure { PikoLog.d(TAG, "Failed to parse torrent (${bytes.size} bytes, ${it::class.simpleName}): ${it.message}") }
+        .getOrNull()
+        .also { if (it == null && bytes.isNotEmpty()) PikoLog.d(TAG, "Torrent did not yield a valid v1 infohash (${bytes.size} bytes)") }
 
     private fun parse(bytes: ByteArray): String? {
         val scanner = Scanner(bytes)

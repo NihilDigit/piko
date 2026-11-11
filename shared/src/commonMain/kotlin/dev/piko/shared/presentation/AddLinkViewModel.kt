@@ -1,6 +1,7 @@
 package dev.piko.shared.presentation
 
 import dev.piko.shared.i18n.tr
+import dev.piko.shared.log.PikoLog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -61,7 +62,9 @@ class AddLinkViewModel private constructor(
     fun rebindTabIfMissing(validTabIds: Set<Long>, fallbackTabId: Long?) {
         val owner = ownerTabId ?: return
         if (state != null && validTabIds.isNotEmpty() && owner !in validTabIds) {
-            ownerTabId = fallbackTabId?.takeIf { it in validTabIds } ?: validTabIds.first()
+            val next = fallbackTabId?.takeIf { it in validTabIds } ?: validTabIds.first()
+            PikoLog.d(TAG, "Rebound add-link panel from stale tab $owner to tab $next")
+            ownerTabId = next
         }
     }
 
@@ -93,5 +96,9 @@ class AddLinkViewModel private constructor(
         }
         rejectedAction = null
         return true
+    }
+
+    companion object {
+        private const val TAG = "AddLink"
     }
 }

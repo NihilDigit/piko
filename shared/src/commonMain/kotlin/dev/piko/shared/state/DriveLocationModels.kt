@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.log.logFailure
 import dev.piko.shared.search.cjkMatches
 import dev.piko.shared.search.normalizeCjk
 import io.github.nihildigit.pikpak.FileStat
@@ -75,6 +76,7 @@ internal fun rankByName(folders: List<PikoPathBreadcrumb>, partial: String): Lis
 }
 
 internal const val MAX_FOLDER_SORT_ENTRIES = 500
+private const val TAG = "DriveLocation"
 private val folderSortJson = Json { ignoreUnknownKeys = true }
 private val folderSortMapSerializer = MapSerializer(String.serializer(), String.serializer())
 
@@ -84,7 +86,9 @@ internal fun encodeFolderSortOrders(orders: Map<String, PikoFileSortOrder>): Str
 
 internal fun decodeFolderSortOrders(serialized: String): Map<String, PikoFileSortOrder> {
     if (serialized.isBlank()) return emptyMap()
-    val raw = runCatching { folderSortJson.decodeFromString(folderSortMapSerializer, serialized) }.getOrDefault(emptyMap())
+    val raw = runCatching { folderSortJson.decodeFromString(folderSortMapSerializer, serialized) }
+        .logFailure(TAG, "Failed to decode saved folder sort orders; resetting to defaults")
+        .getOrDefault(emptyMap())
     return buildMap {
         for ((folderId, name) in raw) {
             val order = PikoFileSortOrder.entries.firstOrNull { it.name == name } ?: continue

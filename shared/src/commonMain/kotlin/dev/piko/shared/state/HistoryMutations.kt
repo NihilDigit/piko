@@ -5,6 +5,7 @@ import io.github.nihildigit.pikpak.PikPakException
 import dev.piko.shared.data.HistoryKind
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.i18n.tr
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.currentCoroutineContext
@@ -39,17 +40,32 @@ class HistoryMutations(private val repository: PikoDriveRepository, scope: Corou
         changed(command.kind)
         executions.forAccount(account).launch {
             try {
+                val actionDesc = when (command) {
+                    is HistoryEditCommand.Remove -> "remove(kind=${command.kind}, items=${command.eventIds.size})"
+                    HistoryEditCommand.ClearPlay -> "clearPlay"
+                }
                 val response = when (command) {
                     is HistoryEditCommand.Remove -> access.remove(command.eventIds)
                     HistoryEditCommand.ClearPlay -> access.clearPlay()
-                }.logFailure("History", "修改历史记录失败")
+                }
                 currentCoroutineContext().ensureActive()
-                val completion = if (response.isSuccess) HistoryEditCompletion.SUCCEEDED else HistoryEditCompletion.FAILED
-                val message = if (response.isSuccess) tr("已移除记录", "History removed", "履歴を削除しました", "기록을 삭제했습니다", "已移除記錄")
-                    else tr("未能修改历史记录，请重试", "Could not update history. Try again", "履歴を更新できませんでした。再試行してください", "기록을 수정하지 못했습니다. 다시 시도하세요", "未能修改歷史記錄，請重試")
-                _outcomes.tryEmit(HistoryEditOutcome(account, id, command.title, if (response.isSuccess) HistoryEditResult(completion, message,
-                    (command as? HistoryEditCommand.Remove)?.eventIds.orEmpty().toSet(), Clock.System.now().toEpochMilliseconds())
-                    else verify(access, command, emptySet(), response.exceptionOrNull())))
+                val editResult = if (response.isSuccess) {
+                    HistoryEditResult(
+                        HistoryEditCompletion.SUCCEEDED,
+                        tr("已移除记录", "History removed", "履歴を削除しました", "기록을 삭제했습니다", "已移除記錄"),
+                        (command as? HistoryEditCommand.Remove)?.eventIds.orEmpty().toSet(),
+                        Clock.System.now().toEpochMilliseconds(),
+                    )
+                } else {
+                    val verified = verify(access, command, emptySet(), response.exceptionOrNull(), id)
+                    if (verified.completion == HistoryEditCompletion.SUCCEEDED) {
+                        PikoLog.i(TAG, "History $actionDesc confirmed after transport failure (work=$id)")
+                    } else {
+                        response.logFailure(TAG, "Failed to update history: $actionDesc (work=$id, completion=${verified.completion})")
+                    }
+                    verified
+                }
+                _outcomes.tryEmit(HistoryEditOutcome(account, id, command.title, editResult))
             } finally {
                 pending.update { it - id }
                 changed(command.kind)
@@ -59,14 +75,23 @@ class HistoryMutations(private val repository: PikoDriveRepository, scope: Corou
     }
 
     fun clear(account: String) { pending.update { all -> all.filterValues { it.first != account } } }
-    private suspend fun verify(access: HistoryWriteAccess, command: HistoryEditCommand, previous: Set<String>, error: Throwable?): HistoryEditResult {
+    private suspend fun verify(
+        access: HistoryWriteAccess,
+        command: HistoryEditCommand,
+        previous: Set<String>,
+        error: Throwable?,
+        workId: Long,
+    ): HistoryEditResult {
         val targets = (command as? HistoryEditCommand.Remove)?.eventIds.orEmpty().toSet() - previous
         val present = mutableSetOf<String>()
         var token = ""
         val tokens = mutableSetOf<String>()
         var complete = false
         repeat(10) {
-            val page = access.list(command.kind, token).getOrNull() ?: return result(targets, present, previous, complete, error)
+            val page = access.list(command.kind, token).getOrElse { listErr ->
+                PikoLog.d(TAG, "History verification list failed (kind=${command.kind}, work=$workId): ${listErr.message}")
+                return result(targets, present, previous, complete, error)
+            }
             if (command == HistoryEditCommand.ClearPlay) {
                 val completion = if (page.events.isEmpty() && page.nextPageToken.isEmpty()) HistoryEditCompletion.SUCCEEDED else failureKind(error)
                 val message = when (completion) {
@@ -102,4 +127,8 @@ class HistoryMutations(private val repository: PikoDriveRepository, scope: Corou
 
     private fun failureKind(error: Throwable?): HistoryEditCompletion = if (error is PikPakException && error.httpStatus in setOf(400, 401, 403, 404, 409, 422)) HistoryEditCompletion.FAILED else HistoryEditCompletion.UNCONFIRMED
     private fun now(): Long = Clock.System.now().toEpochMilliseconds()
+
+    private companion object {
+        const val TAG = "HistoryMutations"
+    }
 }

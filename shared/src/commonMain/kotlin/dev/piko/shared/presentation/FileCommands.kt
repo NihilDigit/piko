@@ -12,6 +12,7 @@ import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.affectedFileIds
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.affectedManifestFolders
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.state.FileWriteCommand
 import dev.piko.shared.state.FileWriteSession
 import androidx.compose.runtime.snapshotFlow
@@ -137,12 +138,19 @@ class FileCommands(
     }
 
     fun undo(changeId: Long): FileCommandResult {
-        val change = repository.changes.state.value.available.firstOrNull { it.id == changeId }
-            ?: return FileCommandResult.Rejected(tr("撤销记录已不可用，或正在撤销", "Undo record is unavailable or already being reverted", "元に戻す記録が無効か、元に戻している途中です", "실행 취소 기록이 없거나 이미 취소 중입니다", "復原記錄已無法使用，或正在復原"))
+        val change = repository.changes.state.value.available.firstOrNull { it.id == changeId } ?: run {
+            PikoLog.d(TAG, "Rejected undo for change $changeId: record unavailable")
+            return FileCommandResult.Rejected(tr("撤销记录已不可用，或正在撤销", "Undo record is unavailable or already being reverted", "元に戻す記録が無効か、元に戻している途中です", "실행 취소 기록이 없거나 이미 취소 중입니다", "復原記錄已無法使用，或正在復原"))
+        }
         return when (val state = undoAvailability(change)) {
-            is ActionAvailability.Blocked -> FileCommandResult.Rejected(state.reason)
-            ActionAvailability.Available -> if (repository.changes.undo(change)) FileCommandResult.Accepted(change.id)
-                else FileCommandResult.Rejected(tr("撤销记录已不可用，或正在撤销", "Undo record is unavailable or already being reverted", "元に戻す記録が無効か、元に戻している途中です", "실행 취소 기록이 없거나 이미 취소 중입니다", "復原記錄已無法使用，或正在復原"))
+            is ActionAvailability.Blocked -> {
+                PikoLog.d(TAG, "Rejected undo for change $changeId (${change::class.simpleName}): blocked by active work")
+                FileCommandResult.Rejected(state.reason)
+            }
+            ActionAvailability.Available -> if (repository.changes.undo(change)) FileCommandResult.Accepted(change.id) else {
+                PikoLog.d(TAG, "Rejected undo for change $changeId (${change::class.simpleName}): already running or consumed")
+                FileCommandResult.Rejected(tr("撤销记录已不可用，或正在撤销", "Undo record is unavailable or already being reverted", "元に戻す記録が無効か、元に戻している途中です", "실행 취소 기록이 없거나 이미 취소 중입니다", "復原記錄已無法使用，或正在復原"))
+            }
         }
     }
 
@@ -170,9 +178,14 @@ class FileCommands(
         if (work.isRunning) work.command else work.command.copy(ids = work.result?.unconfirmed.orEmpty().toList())
 
     fun submit(command: FileWriteCommand): FileCommandResult = when (val state = availability(command)) {
-        is ActionAvailability.Blocked -> FileCommandResult.Rejected(state.reason)
-        ActionAvailability.Available -> session.submit(command)?.let(FileCommandResult::Accepted)
-            ?: FileCommandResult.Rejected(tr("账号已切换，未提交操作", "Account changed; operation not submitted", "アカウントが切り替わったため、操作は送信されませんでした", "계정이 전환되어 작업을 제출하지 않았습니다", "帳號已切換，未提交操作"))
+        is ActionAvailability.Blocked -> {
+            PikoLog.d(TAG, "Rejected file command ${command::class.simpleName} (${command.ids.size} items): blocked by preconditions or active work")
+            FileCommandResult.Rejected(state.reason)
+        }
+        ActionAvailability.Available -> session.submit(command)?.let(FileCommandResult::Accepted) ?: run {
+            PikoLog.d(TAG, "Rejected file command ${command::class.simpleName} (${command.ids.size} items): active account changed")
+            FileCommandResult.Rejected(tr("账号已切换，未提交操作", "Account changed; operation not submitted", "アカウントが切り替わったため、操作は送信されませんでした", "계정이 전환되어 작업을 제출하지 않았습니다", "帳號已切換，未提交操作"))
+        }
     }
 
     private fun contains(ancestor: String, child: String): Boolean = ancestor == child ||
@@ -192,6 +205,10 @@ class FileCommands(
         return sourcesOverlap ||
             (changesTree(a) && b.target?.let { target -> a.ids.any { contains(it, target.id) } } == true) ||
             (changesTree(b) && a.target?.let { target -> b.ids.any { contains(it, target.id) } } == true)
+    }
+
+    companion object {
+        private const val TAG = "FileCommands"
     }
 }
 

@@ -11,7 +11,9 @@ import dev.piko.download.DownloadBatch
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
 import dev.piko.shared.download.FolderListing
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import dev.piko.shared.data.OfflinePackJob
 import dev.piko.shared.data.OfflinePackStage
 import dev.piko.shared.data.OfflinePackTracker
@@ -24,6 +26,7 @@ import dev.piko.shared.upload.PikoUploadCoordinator
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.shared.upload.UploadTask
 import io.github.nihildigit.pikpak.DriveTask
+import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -34,9 +37,9 @@ import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Instant
 
-/** 传输列表中的一项：本地下载、上传、云端离线任务或秒传。 */
+/** 传输列表中的一项：本机下载、上传（含准备批次）、云端离线或整包任务、秒传/引用保存，以及解压、归档与复制。 */
 sealed class TransferItem {
-    /** 列表 key。两类任务的 id 来自不同命名空间，加前缀防撞。 */
+    /** 列表唯一键。不同来源的任务 ID 来自各自命名空间，加类型前缀防撞。 */
     abstract val key: String
     abstract val createdAtMs: Long
     open val children: List<TransferItem> = emptyList()
@@ -128,7 +131,7 @@ sealed class TransferItem {
         val progress: Int get() = if (task?.phase == TaskPhase.RUNNING) task.progress else job.progress
     }
 
-    /** 秒传：当场完成，只出现在「已完成」里。 */
+    /** 秒传或引用保存记录：保存即完成，在 [COMPLETED_CLOUD_WINDOW] 内展示于「已完成」。 */
     data class Instant(val record: InstantSaveRecord) : TransferItem() {
         override val key: String get() = "instant:${record.id}"
         override val createdAtMs: Long get() = record.createdAtMs
@@ -200,10 +203,10 @@ enum class TransferKind(private val labelText: () -> String) {
 }
 
 /**
- * 传输页：本地下载、上传与云端离线任务合并为「进行中」「需要处理」「已完成」分组，可按类型筛选（[filter]），
- * 多选照网盘页（[selectedKeys]）。
+ * 传输页：本机下载、上传、云端离线与文件处理任务合并为「已暂停」「进行中」「需要处理」「已完成」「文件已删除」五个分组，
+ * 可按类型筛选（[filter]），多选照网盘页（[selectedKeys]）。
  *
- * 云端已完成的任务只列出最近 [COMPLETED_CLOUD_WINDOW] 内完成的，本地已完成的始终保留：
+ * 云端已完成的任务与秒传/引用保存记录只列出最近 [COMPLETED_CLOUD_WINDOW] 内完成的，本机下载已完成的始终保留：
  * 后者对应磁盘上的文件，是用户找回下载的入口。
  *
  * 轮询挂在 [whileVisible] 上，由视图在可见期间调用。
@@ -292,7 +295,7 @@ class TransfersState(
     /** 操作失败等提示。本地任务的失败体现在任务状态上，不走这里。 */
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
-    /** 云端列表尚未取回过。此时三段都空也不该显示空状态。 */
+    /** 云端列表尚未取回过。此时各分组都空也不该显示空状态。 */
     val isLoading: Boolean get() = cloud.isLoading
 
     /** 云端列表最近一次拉取失败的原因。 */
@@ -402,8 +405,9 @@ class TransfersState(
     val canResumeAll: Boolean by derivedStateOf { controllableWork.any(::isResumable) }
 
     /**
-     * 「清除已完成」能清掉的记录：云端任务、上传、秒传与整包离线。本地下载不在内：它的记录就是找回
-     * 下载文件的入口，删记录只能连文件一起删，那是逐项的「删除本地文件」，不该混进一键清除。
+     * 「清除已完成」能清掉的记录：已完成的云端离线、上传、秒传与引用保存（含已结清回执）、离线提交回执、
+     * 整包离线、服务端解压、归档任务与远端复制。本地下载不在内：它的记录就是找回下载文件的入口，
+     * 删记录只能连文件一起删，那是逐项的「删除本地文件」，不该混进一键清除。
      */
     val canClearCompleted: Boolean by derivedStateOf {
         allCompleted.any { it !is TransferItem.Local && it !is TransferItem.LocalBatch }
@@ -651,26 +655,44 @@ class TransfersState(
     private suspend fun loadThumbnails(ids: List<String>) {
         val missing = ids.filter { it !in thumbnails }.take(THUMBNAIL_BATCH)
         if (missing.isEmpty()) return
-        val found = mutableMapOf<String, String>()
+        val resolved = mutableMapOf<String, String>()
         for (id in missing) {
-            driveRepo.knownFile(id)?.thumbnailLink?.takeIf { it.isNotBlank() }?.let { found[id] = it }
+            driveRepo.knownFile(id)?.thumbnailLink?.takeIf { it.isNotBlank() }?.let { resolved[id] = it }
         }
-        val unresolved = missing.filter { it !in found }
+        val unresolved = missing.filter { it !in resolved }
         if (unresolved.isNotEmpty()) {
-            val parents = unresolved.associateWith { id ->
-                driveRepo.knownFile(id)?.parentId
-                    ?: driveRepo.knownParentOf(id)
-                    ?: driveRepo.getFileDetail(id).getOrNull()?.parentId
+            val parents = mutableMapOf<String, String>()
+            for (id in unresolved) {
+                val knownParent = driveRepo.knownFile(id)?.parentId ?: driveRepo.knownParentOf(id)
+                if (knownParent != null) {
+                    parents[id] = knownParent
+                } else {
+                    driveRepo.getFileDetail(id)
+                        .onSuccess { detail -> parents[id] = detail.parentId }
+                        .onFailure { err ->
+                            if ((err as? PikPakException)?.httpStatus == 404) {
+                                resolved[id] = ""
+                            } else {
+                                PikoLog.d(TAG, "Deferred thumbnail detail lookup for $id: ${err.message}")
+                            }
+                        }
+                }
             }
-            for (parentId in parents.values.filterNotNull().distinct()) {
-                val listing = driveRepo.listAllFiles(parentId).getOrNull() ?: continue
-                listing.filter { it.id in unresolved }.forEach { found[it.id] = it.thumbnailLink }
+            for (parentId in parents.values.distinct()) {
+                val listing = driveRepo.listAllFiles(parentId)
+                    .onFailure { err -> PikoLog.d(TAG, "Deferred thumbnail folder listing for ${logFolder(parentId)}: ${err.message}") }
+                    .getOrNull() ?: continue
+                val byId = listing.associateBy { it.id }
+                for ((id, pid) in parents) {
+                    if (pid == parentId) resolved[id] = byId[id]?.thumbnailLink.orEmpty()
+                }
             }
         }
-        // 取不到的也记下，免得每次列表变动都重查同一批
-        val loaded = missing.associateWith { found[it].orEmpty() }
-        taskRepo.outputThumbnails.putAll(loaded)
-        thumbnails = thumbnails + loaded
+        // 已成功核对但无缩略图的记为空串免得重复拉取；瞬态网络报错的不写入缓存，留待下次重试
+        if (resolved.isNotEmpty()) {
+            taskRepo.outputThumbnails.putAll(resolved)
+            thumbnails = thumbnails + resolved
+        }
     }
 
     /** 可见期间轮询云端任务，挂起直到调用方的协程被取消。 */
@@ -751,7 +773,9 @@ class TransfersState(
     /** 取消进行中的整包离线，或移除已结束的记录。已完成的文件保留在网盘里。 */
     fun discardPack(taskId: String) {
         scope.launch {
-            packTracker.discard(taskId).onFailure { _messages.tryEmit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("操作", "Operation", "操作", "작업", "操作"), it)) }
+            packTracker.discard(taskId)
+                .logFailure(TAG, "Failed to discard offline pack task $taskId")
+                .onFailure { _messages.tryEmit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("操作", "Operation", "操作", "작업", "操作"), it)) }
         }
     }
 
@@ -775,7 +799,9 @@ class TransfersState(
     /** 清理失败的重做清理，下载失败的以原链接重新离线。 */
     fun retryPack(taskId: String) {
         scope.launch {
-            packTracker.retry(taskId).logFailure("OfflinePack", "重试整包离线任务 $taskId 失败").onFailure { _messages.tryEmit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("重试", "Retry", "再試行", "다시 시도", "重試"), it)) }
+            packTracker.retry(taskId)
+                .logFailure(TAG, "Failed to retry offline pack task $taskId")
+                .onFailure { _messages.tryEmit(dev.piko.shared.notice.PikoErrorMapper.failure(tr("重试", "Retry", "再試行", "다시 시도", "重試"), it)) }
         }
     }
 
@@ -795,10 +821,12 @@ class TransfersState(
                 TransferItem.LocalBatch(batch, tasks, listing[id], tasks.map(::localItem))
             }
         }
+        val prepById = uploadPreparations.associateBy { it.id }
         val uploadGroups = uploadTasks.filter { it.batchId != null }.groupBy { it.batchId!! }
             .filterValues { it.isNotEmpty() }
-        val uploadItems = uploadTasks.filter { it.batchId !in uploadGroups }.map(::uploadItem) +
-            uploadGroups.map { (id, tasks) ->
+        val ownedPrepTaskIds = uploadPreparations.flatMapTo(HashSet()) { prep -> prep.files.map { it.taskId } }
+        val uploadItems = uploadTasks.filter { it.batchId !in uploadGroups && it.taskId !in ownedPrepTaskIds }.map(::uploadItem) +
+            uploadGroups.filterKeys { it !in prepById }.map { (id, tasks) ->
                 val first = tasks.first()
                 val sorted = tasks.sortedBy { it.createdAtMs }
                 itemCache.project("upload-batch:$id", sorted) {
@@ -806,6 +834,13 @@ class TransfersState(
                         first.batchParentName, sorted, first.batchIsFolder, sorted.map(::uploadItem))
                 }
             }
+        val prepItems = uploadPreparations.map { prep ->
+            val children = uploadGroups[prep.id]?.sortedBy { it.createdAtMs }?.map(::uploadItem)
+                ?: uploadTasks.filter { task -> prep.files.any { it.taskId == task.taskId } }.map(::uploadItem)
+            itemCache.project("upload-batch:${prep.id}", prep to children) {
+                TransferItem.UploadPreparing(prep, children)
+            }
+        }
         val tasksById = cloudTasks.associateBy { it.id }
         val serverItems = if (!listsServerWork) emptyList() else {
             (extracts.jobs + extracts.completedJobs).map { itemCache.project("extract:${it.id}", it) { TransferItem.Extract(it) } } +
@@ -815,7 +850,7 @@ class TransfersState(
         }
         // 同一身份的结局优先于在途快照；文件夹里的本机文件只作为批次成员出现。
         val items = resolveWorkIdentities(serverItems + local.filter { it.batch == null }.map(::localItem) + batches +
-            uploadItems + uploadPreparations.map { itemCache.project("upload-prepare:${it.id}", it) { TransferItem.UploadPreparing(it) } } +
+            uploadItems + prepItems +
             cloudTasks.map { itemCache.project("cloud:${it.id}", it) { TransferItem.Cloud(it) } } +
             packs.map {
                 val task = tasksById[it.taskId]
@@ -918,6 +953,8 @@ class TransfersState(
     private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()
 
     companion object {
+        private const val TAG = "Transfers"
+
         /** 一次最多补查多少个产出，已完成列表只列最近一周，通常远不到这个数。 */
         const val THUMBNAIL_BATCH = 40
 

@@ -18,9 +18,13 @@ internal fun resolveWorkIdentities(items: List<TransferItem>): List<TransferItem
         item is TransferItem.UploadBatch && item.batchId in preparations ||
         item is TransferItem.Upload && item.task.taskId in ownedUploads
     }.map { item ->
-        if (item is TransferItem.UploadPreparing) item.copy(children = batches[item.work.id]?.children
-            ?: items.filterIsInstance<TransferItem.Upload>().filter { child -> item.work.files.any { it.taskId == child.task.taskId } })
-        else item
+        if (item is TransferItem.UploadPreparing) {
+            val resolvedChildren = batches[item.work.id]?.children
+                ?: items.filterIsInstance<TransferItem.Upload>().filter { child -> item.work.files.any { it.taskId == child.task.taskId } }
+            if (resolvedChildren.isEmpty() && item.children.isNotEmpty()) item
+            else if (item.children == resolvedChildren) item
+            else item.copy(children = resolvedChildren)
+        } else item
     }
     val remoteIds = owners.flatMapTo(HashSet()) { it.remoteTaskIds }
     return (owners + items.filterIsInstance<TransferItem.Cloud>().filter { it.task.id !in remoteIds })

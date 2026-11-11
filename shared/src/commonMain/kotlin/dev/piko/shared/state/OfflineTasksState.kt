@@ -93,12 +93,12 @@ class OfflineTasksState(
             try {
                 taskRepo.resubmitTask(task)
                     .onSuccess {
-                        PikoLog.i(TAG, "已重新提交离线任务 ${task.id}（原阶段 ${task.phase}）")
+                        PikoLog.i(TAG, "Resubmitted cloud download task ${task.id} (previousPhase=${task.phase})")
                         tasks = tasks.filterNot { it.id == task.id }
                         launchFetch(notifyFailure = false)
                     }
                     .onFailure { err ->
-                        PikoLog.w(TAG, "重新提交离线任务 ${task.id} 失败", err)
+                        PikoLog.w(TAG, "Failed to resubmit cloud download task ${task.id} (phase=${task.phase})", err)
                         _messages.tryEmit((err as? OfflineSubmitException)?.message ?: tr("重新提交失败", "Failed to resubmit", "再追加できませんでした", "다시 추가하지 못했습니다", "重新提交失敗"))
                     }
             } finally { resubmitting.remove(task.id) }
@@ -119,7 +119,7 @@ class OfflineTasksState(
             taskRepo.deleteTasks(ids)
                 .onFailure { err ->
                     if ((err as? PikPakException)?.httpStatus != 404) {
-                        PikoLog.w(TAG, "删除 ${ids.size} 个离线任务失败", err)
+                        PikoLog.w(TAG, "Failed to delete ${ids.size} cloud download task(s) (ids=${ids.take(5).joinToString()})", err)
                         _messages.tryEmit(tr("删除任务失败", "Failed to delete task", "タスクを削除できませんでした", "작업을 삭제하지 못했습니다", "刪除任務失敗"))
                     }
                 }
@@ -142,7 +142,7 @@ class OfflineTasksState(
                     _messages.tryEmit(tr("已清除 $cleared 条记录", "Cleared ${enCount(cleared, "record", "records")}", "$cleared 件の記録を消去しました", "기록 ${cleared}건 삭제 완료", "已清除 $cleared 筆記錄"))
                     launchFetch(notifyFailure = false)
                 }
-                .logFailure(TAG, "清除离线记录失败：阶段 $phases，$cleared 条")
+                .logFailure(TAG, "Failed to clear cloud download records (phases=$phases, count=$cleared)")
                 .onFailure { _messages.tryEmit(tr("清除记录失败", "Failed to clear records", "記録を消去できませんでした", "기록을 지우지 못했습니다", "清除記錄失敗")) }
         }
     }
@@ -159,15 +159,16 @@ class OfflineTasksState(
             taskRepo.getTasks()
                 .onSuccess { response ->
                     if (revision != taskRevision) return@onSuccess
-                    logTransitions(tasks, response.tasks)
-                    if (failedPolls > 0) PikoLog.i(TAG, "离线任务恢复拉取，此前连续失败 $failedPolls 次")
+                    if (hasBaseline) logTransitions(tasks, response.tasks)
+                    hasBaseline = true
+                    if (failedPolls > 0) PikoLog.i(TAG, "Cloud download polling recovered after $failedPolls consecutive failure(s)")
                     failedPolls = 0
                     tasks = response.tasks.filterNot { it.id in deletingIds }
                     loadError = null
                 }
                 .onFailure { err ->
                     // 轮询每几秒一次，断网时只记第一次的堆栈，之后的并进恢复时的那一行
-                    if (failedPolls++ == 0) PikoLog.w(TAG, tr("加载离线任务失败", "Failed to load cloud downloads", "クラウドダウンロードを読み込めませんでした", "클라우드 다운로드를 불러오지 못했습니다", "載入離線任務失敗"), err)
+                    if (failedPolls++ == 0) PikoLog.w(TAG, "Failed to fetch cloud download tasks (notifyFailure=$notifyFailure)", err)
                     val reason = dev.piko.shared.notice.PikoErrorMapper.message(err)
                     loadError = reason
                     if (notifyFailure) _messages.tryEmit(tr("加载离线任务失败", "Failed to load cloud downloads", "クラウドダウンロードを読み込めませんでした", "클라우드 다운로드를 불러오지 못했습니다", "載入離線任務失敗"))
@@ -179,19 +180,25 @@ class OfflineTasksState(
     }
 
     private var failedPolls = 0
+    private var hasBaseline = taskRepo.cachedTasks() != null
 
     /**
      * 两次拉取之间结束了的任务各记一行：离线卡住、失败的原因只在服务端的 message 里，用户反馈时任务记录
-     * 可能已被清掉。任务名是磁力或文件的名字，不记。头一次拉取没有可比的，不记。
+     * 可能已被清掉。任务名是磁力或文件的名字，不记。已有基线后若新任务在单次轮询间隔内直接完成或报错，也一并记录。
      */
     private fun logTransitions(before: List<DriveTask>, after: List<DriveTask>) {
-        if (before.isEmpty()) return
         val previous = before.associate { it.id to it.phase }
         for (task in after) {
-            val was = previous[task.id] ?: continue
-            if (was == task.phase || (task.phase != TaskPhase.COMPLETE && task.phase != TaskPhase.ERROR)) continue
-            PikoLog.i(TAG, "离线任务 ${task.id} $was → ${task.phase}，进度 ${task.progress}%，${task.fileSize} 字节，" +
-                "产出 ${task.fileId.ifEmpty { "无" }}${task.message.takeIf { it.isNotBlank() }?.let { "，服务端说明：${it.take(80)}" } ?: ""}")
+            if (task.phase != TaskPhase.COMPLETE && task.phase != TaskPhase.ERROR) continue
+            val was = previous[task.id]
+            if (was == task.phase) continue
+            val fromPhase = was ?: "NEW"
+            val serverNote = task.message.takeIf { it.isNotBlank() }?.let { ", serverMessage=${it.take(80)}" } ?: ""
+            PikoLog.i(
+                TAG,
+                "Cloud download task ${task.id} $fromPhase -> ${task.phase} (progress=${task.progress}%, bytes=${task.fileSize}, " +
+                    "fileId=${task.fileId.ifEmpty { "none" }}$serverNote)",
+            )
         }
     }
 

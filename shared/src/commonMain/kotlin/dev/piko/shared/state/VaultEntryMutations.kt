@@ -9,16 +9,16 @@ import dev.piko.shared.data.VaultEdits
 import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.data.VaultStore
 import dev.piko.shared.data.VaultWriteUnconfirmed
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.getAndUpdate
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.time.Clock
 
@@ -60,11 +60,14 @@ class VaultEntryMutations(private val repository: PikoDriveRepository, private v
     fun clear(account: String) = Unit
     private fun execute(id: Long, account: String, command: VaultEntryEditCommand, store: VaultStore) {
         executionScopes.forAccount(account).launch {
-            val execution = currentCoroutineContext()[Job]
             val confirmed = mutableMapOf<String, Set<String>>()
             val remaining = command.entries.toMutableMap()
             val before = mutableMapOf<String, List<VaultEntry>>()
             val inverses = mutableListOf<Long>()
+            val opName = when (command) {
+                is VaultEntryEditCommand.Remove -> "remove"
+                is VaultEntryEditCommand.Rename -> "rename"
+            }
             suspend fun check() { currentCoroutineContext().ensureActive(); check(repository.currentAccount == account) }
             fun record(folder: String, ids: Set<String>, before: List<VaultEntry>) {
                 val touched = before.filter { it.id in ids }
@@ -101,43 +104,63 @@ class VaultEntryMutations(private val repository: PikoDriveRepository, private v
                     remaining.remove(folder)
                 } else remaining[folder] = pending
             }
-            try {
-                for ((folder, ids) in command.entries) {
-                    val edit = when (val command = command) {
-                        is VaultEntryEditCommand.Remove -> VaultEdits.remove(ids)
-                        is VaultEntryEditCommand.Rename -> VaultEdits.rename(command.entryId, command.name)
-                    }
-                    val write = store.update(folder, edit).logFailure("VaultEdit", "归档清单编辑未确认，核对实际清单")
-                    check()
-                    if (write.isSuccess) {
-                        val applied = write.getOrThrow()
-                        before[folder] = applied.before.filter { it.id in ids }
-                        confirm(folder, ids, applied.after)
-                    } else {
-                        val attempted = (write.exceptionOrNull() as? VaultWriteUnconfirmed)?.attempted
-                        if (attempted == null) {
-                            break
-                        }
-                        before[folder] = attempted.before.filter { it.id in ids }
-                        store.committed(folder).getOrNull()?.let { after -> check(); confirm(folder, ids, after) }
+            for ((folder, ids) in command.entries) {
+                val edit = when (val command = command) {
+                    is VaultEntryEditCommand.Remove -> VaultEdits.remove(ids)
+                    is VaultEntryEditCommand.Rename -> VaultEdits.rename(command.entryId, command.name)
+                }
+                val write = store.update(folder, edit)
+                check()
+                if (write.isSuccess) {
+                    val applied = write.getOrThrow()
+                    before[folder] = applied.before.filter { it.id in ids }
+                    confirm(folder, ids, applied.after)
+                } else {
+                    val attempted = (write.exceptionOrNull() as? VaultWriteUnconfirmed)?.attempted
+                    if (attempted == null) {
+                        write.logFailure(TAG, "Vault manifest $opName failed in ${logFolder(folder)} (work=$id, items=${ids.size})")
                         break
                     }
+                    before[folder] = attempted.before.filter { it.id in ids }
+                    val committed = store.committed(folder)
+                        .logFailure(TAG, "Failed to recheck committed vault manifest after unconfirmed $opName in ${logFolder(folder)} (work=$id)")
+                        .getOrNull()
+                    if (committed != null) {
+                        check()
+                        confirm(folder, ids, committed)
+                        val left = remaining[folder]?.size ?: 0
+                        if (left == 0) {
+                            PikoLog.i(TAG, "Vault manifest $opName confirmed on recheck in ${logFolder(folder)} (work=$id, items=${ids.size})")
+                        } else {
+                            write.logFailure(
+                                TAG,
+                                "Vault manifest $opName incomplete after recheck in ${logFolder(folder)} (work=$id, remaining=$left/${ids.size})",
+                            )
+                        }
+                    } else {
+                        write.logFailure(TAG, "Vault manifest $opName unconfirmed in ${logFolder(folder)} (work=$id, items=${ids.size})")
+                    }
+                    break
                 }
-                check()
-                val completion = when {
-                    confirmed.isNotEmpty() && remaining.isNotEmpty() -> VaultEntryEditCompletion.PARTIAL
-                    remaining.isNotEmpty() -> VaultEntryEditCompletion.FAILED
-                    else -> VaultEntryEditCompletion.SUCCEEDED
-                }
-                val message = when (completion) {
-                    VaultEntryEditCompletion.SUCCEEDED -> tr("已完成归档条目编辑", "Archive item edits completed", "アーカイブ項目の編集が完了しました", "보관 항목 편집 완료", "已完成歸檔項目編輯")
-                    VaultEntryEditCompletion.PARTIAL -> tr("已完成 ${confirmed.values.sumOf { it.size }} 项，${remaining.values.sumOf { it.size }} 项未完成", "${confirmed.values.sumOf { it.size }} completed, ${remaining.values.sumOf { it.size }} incomplete", "${confirmed.values.sumOf { it.size }} 項目完了、${remaining.values.sumOf { it.size }} 項目未完了", "${confirmed.values.sumOf { it.size }}개 완료, ${remaining.values.sumOf { it.size }}개 미완료", "已完成 ${confirmed.values.sumOf { it.size }} 項，${remaining.values.sumOf { it.size }} 項未完成")
-                    VaultEntryEditCompletion.FAILED -> tr("归档条目编辑失败，请刷新后重试", "Archive item edits failed. Refresh and try again", "アーカイブ項目を編集できませんでした。更新して再試行してください", "보관 항목 편집에 실패했습니다. 새로고침 후 다시 시도해 주세요", "歸檔條目編輯失敗，請重新整理後重試")
-                }
-                val result = VaultEntryEditResult(completion, message, confirmed.toMap(), remaining.toMap(), inverses.toList(), now())
-                _outcomes.tryEmit(VaultEntryEditOutcome(account, id, command.title, result))
-            } finally { }
+            }
+            check()
+            val completion = when {
+                confirmed.isNotEmpty() && remaining.isNotEmpty() -> VaultEntryEditCompletion.PARTIAL
+                remaining.isNotEmpty() -> VaultEntryEditCompletion.FAILED
+                else -> VaultEntryEditCompletion.SUCCEEDED
+            }
+            val message = when (completion) {
+                VaultEntryEditCompletion.SUCCEEDED -> tr("已完成归档条目编辑", "Archive item edits completed", "アーカイブ項目の編集が完了しました", "보관 항목 편집 완료", "已完成歸檔項目編輯")
+                VaultEntryEditCompletion.PARTIAL -> tr("已完成 ${confirmed.values.sumOf { it.size }} 项，${remaining.values.sumOf { it.size }} 项未完成", "${confirmed.values.sumOf { it.size }} completed, ${remaining.values.sumOf { it.size }} incomplete", "${confirmed.values.sumOf { it.size }} 項目完了、${remaining.values.sumOf { it.size }} 項目未完了", "${confirmed.values.sumOf { it.size }}개 완료, ${remaining.values.sumOf { it.size }}개 미완료", "已完成 ${confirmed.values.sumOf { it.size }} 項，${remaining.values.sumOf { it.size }} 項未完成")
+                VaultEntryEditCompletion.FAILED -> tr("归档条目编辑失败，请刷新后重试", "Archive item edits failed. Refresh and try again", "アーカイブ項目を編集できませんでした。更新して再試行してください", "보관 항목 편집에 실패했습니다. 새로고침 후 다시 시도해 주세요", "歸檔條目編輯失敗，請重新整理後重試")
+            }
+            val result = VaultEntryEditResult(completion, message, confirmed.toMap(), remaining.toMap(), inverses.toList(), now())
+            _outcomes.tryEmit(VaultEntryEditOutcome(account, id, command.title, result))
         }
     }
     private fun now() = Clock.System.now().toEpochMilliseconds()
+
+    private companion object {
+        const val TAG = "VaultMutations"
+    }
 }

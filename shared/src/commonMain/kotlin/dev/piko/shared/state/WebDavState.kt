@@ -7,6 +7,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoClientProvider
+import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.log.failureText
 import dev.piko.shared.log.logFailure
 import io.github.nihildigit.pikpak.PikPakClient
@@ -91,7 +92,7 @@ class WebDavState(
         if (refresh) isRefreshing = true else isLoading = true
         loadJob?.cancel()
         loadJob = scope.launch {
-            val result = runCatching { client.getWebDav() }.logFailure(TAG, tr("读取 WebDAV 设置失败", "Failed to load WebDAV settings", "WebDAV設定を読み込めませんでした", "WebDAV 설정을 불러오지 못했습니다", "讀取 WebDAV 設定失敗"))
+            val result = runSuspendCatching { client.getWebDav() }.logFailure(TAG, "Failed to load WebDAV settings (refresh=$refresh)")
             if (!isCurrent(client)) return@launch
             result
                 .onSuccess {
@@ -117,7 +118,7 @@ class WebDavState(
         isToggling = true
         settings = before.copy(enabled = enabled)
         scope.launch {
-            val result = runCatching { client.setWebDavEnabled(enabled) }.logFailure(TAG, "切换 WebDAV 失败")
+            val result = runSuspendCatching { client.setWebDavEnabled(enabled) }.logFailure(TAG, "Failed to set WebDAV enabled=$enabled")
             if (!isCurrent(client)) return@launch
             isToggling = false
             result.onFailure {
@@ -133,7 +134,7 @@ class WebDavState(
         if (trimmed.isEmpty() || isCreating) return
         isCreating = true
         scope.launch {
-            val result = runCatching { client.createWebDavClient(trimmed) }.logFailure(TAG, "添加 WebDAV 应用失败")
+            val result = runSuspendCatching { client.createWebDavClient(trimmed) }.logFailure(TAG, "Failed to create WebDAV client")
             if (!isCurrent(client)) return@launch
             isCreating = false
             result
@@ -150,7 +151,7 @@ class WebDavState(
         val newName = name.trim()
         if (newName.isEmpty() || newName == target.name) return
         mutate(
-            target, action = tr("保存", "Save", "保存", "저장", "儲存"), logMessage = "修改 WebDAV 应用失败",
+            target, action = tr("保存", "Save", "保存", "저장", "儲存"), logMessage = "Failed to rename WebDAV client ${target.id}",
             request = { it.updateWebDavClient(target, name = newName) },
             apply = { _messages.tryEmit(tr("已保存", "Saved", "保存しました", "저장했습니다", "已儲存")) },
         )
@@ -158,7 +159,7 @@ class WebDavState(
 
     fun renewPassword(target: WebDavClient) {
         mutate(
-            target, action = tr("重置密码", "Reset password", "パスワードをリセット", "비밀번호 재설정", "重設密碼"), logMessage = "重置 WebDAV 密码失败",
+            target, action = tr("重置密码", "Reset password", "パスワードをリセット", "비밀번호 재설정", "重設密碼"), logMessage = "Failed to reset password for WebDAV client ${target.id}",
             request = { it.renewWebDavPassword(target) },
             apply = { renewed ->
                 settings = settings?.let { s -> s.copy(clients = s.clients.map { if (it.id == renewed.id) renewed else it }) }
@@ -169,7 +170,7 @@ class WebDavState(
 
     fun delete(target: WebDavClient) {
         mutate(
-            target, action = tr("删除", "Delete", "削除", "삭제", "刪除"), logMessage = "删除 WebDAV 应用失败",
+            target, action = tr("删除", "Delete", "削除", "삭제", "刪除"), logMessage = "Failed to delete WebDAV client ${target.id}",
             request = { it.deleteWebDavClient(target) },
             apply = {
                 settings = settings?.let { s -> s.copy(clients = s.clients.filterNot { it.id == target.id }) }
@@ -197,7 +198,7 @@ class WebDavState(
         if (target.id in busyIds) return
         busyIds = busyIds + target.id
         scope.launch {
-            val result = runCatching { request(client) }.logFailure(TAG, logMessage)
+            val result = runSuspendCatching { request(client) }.logFailure(TAG, logMessage)
             if (!isCurrent(client)) return@launch
             busyIds = busyIds - target.id
             result

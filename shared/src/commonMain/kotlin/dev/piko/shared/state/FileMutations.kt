@@ -4,7 +4,9 @@ import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.i18n.tr
+import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFolder
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Semaphore
@@ -49,7 +51,7 @@ class FileMutations(private val repository: PikoDriveRepository, scope: Coroutin
             try {
                 if (command is FileWriteCommand.CreateFolder) {
                     val response = access.createFolder(command.target.id, command.name)
-                        .logFailure("Mutation", "创建文件夹失败")
+                        .logFailure(TAG, "Failed to create folder in ${logFolder(command.target.id)} (work=$id)")
                     created = response.getOrNull()
                     created?.let {
                         access.publish(DriveChange.Created(command.target.id, it, command.name, true))
@@ -79,13 +81,35 @@ class FileMutations(private val repository: PikoDriveRepository, scope: Coroutin
                                         is FileWriteCommand.Star -> access.star(ids, command.starred)
                                         else -> error("Unsupported mutation")
                                     }
-                                }.logFailure("Mutation", "文件修改失败")
+                                }
                                 ensureActive()
-                                succeededParts[index] = response.isSuccess || (!definiteRefusal(response.exceptionOrNull()) && verifyMutation(command, ids, access))
+                                val verified = if (response.isSuccess) {
+                                    false
+                                } else {
+                                    !definiteRefusal(response.exceptionOrNull()) && verifyMutation(command, ids, access, id)
+                                }
+                                if (!response.isSuccess) {
+                                    if (verified) {
+                                        PikoLog.i(
+                                            TAG,
+                                            "${commandKind(command)} confirmed after transport failure (work=$id, part=${index + 1}/${parts.size}, items=${ids.size}${commandTargetSuffix(command)})",
+                                        )
+                                    } else {
+                                        response.logFailure(
+                                            TAG,
+                                            "Failed to apply ${commandKind(command)} (work=$id, part=${index + 1}/${parts.size}, items=${ids.size}${commandTargetSuffix(command)})",
+                                        )
+                                    }
+                                }
+                                succeededParts[index] = response.isSuccess || verified
                             } catch (error: CancellationException) {
                                 throw error
                             } catch (error: Exception) {
-                                dev.piko.shared.log.PikoLog.w("Mutation", "文件修改未完成", error)
+                                PikoLog.w(
+                                    TAG,
+                                    "Aborted ${commandKind(command)} before completion (work=$id, part=${index + 1}/${parts.size}, items=${ids.size}${commandTargetSuffix(command)})",
+                                    error,
+                                )
                             }
 
                         } }.awaitAll()
@@ -144,15 +168,54 @@ class FileMutations(private val repository: PikoDriveRepository, scope: Coroutin
     private fun definiteRefusal(error: Throwable?): Boolean = error is io.github.nihildigit.pikpak.PikPakException &&
         error.httpStatus in setOf(400, 401, 403, 404, 409, 422)
 
-    private suspend fun verifyMutation(command: FileWriteCommand, ids: List<String>, access: dev.piko.shared.data.DriveWriteAccess): Boolean = when (command) {
-        is FileWriteCommand.Trash -> access.authoritativeTrashFiles().getOrNull()?.map { it.id }?.containsAll(ids) == true
-        is FileWriteCommand.Star -> access.starredIds().getOrNull()?.let { starred -> ids.all { (it in starred) == command.starred } } == true
-        is FileWriteCommand.Rename -> access.detail(command.id).getOrNull()?.name == command.name
-        is FileWriteCommand.Move -> ids.all { access.detail(it).getOrNull()?.let { file -> !file.trashed && file.parentId == command.target.id } == true }
-        is FileWriteCommand.Restore -> ids.all { access.detail(it).getOrNull()?.trashed == false }
-        is FileWriteCommand.Delete -> ids.all { (access.detail(it).exceptionOrNull() as? io.github.nihildigit.pikpak.PikPakException)?.errorMessage == "file_not_found" }
-        else -> false
+    private suspend fun verifyMutation(
+        command: FileWriteCommand,
+        ids: List<String>,
+        access: dev.piko.shared.data.DriveWriteAccess,
+        workId: Long,
+    ): Boolean {
+        fun logVerifyError(err: Throwable) {
+            PikoLog.d(TAG, "Verification lookup failed for ${commandKind(command)} (work=$workId): ${err.message}")
+        }
+        return when (command) {
+            is FileWriteCommand.Trash -> access.authoritativeTrashFiles()
+                .onFailure(::logVerifyError)
+                .getOrNull()?.map { it.id }?.containsAll(ids) == true
+            is FileWriteCommand.Star -> access.starredIds()
+                .onFailure(::logVerifyError)
+                .getOrNull()?.let { starred -> ids.all { (it in starred) == command.starred } } == true
+            is FileWriteCommand.Rename -> access.detail(command.id)
+                .onFailure(::logVerifyError)
+                .getOrNull()?.name == command.name
+            is FileWriteCommand.Move -> ids.all {
+                access.detail(it).onFailure(::logVerifyError).getOrNull()?.let { file -> !file.trashed && file.parentId == command.target.id } == true
+            }
+            is FileWriteCommand.Restore -> ids.all {
+                access.detail(it).onFailure(::logVerifyError).getOrNull()?.trashed == false
+            }
+            is FileWriteCommand.Delete -> ids.all { id ->
+                val err = access.detail(id).exceptionOrNull()
+                val notFound = (err as? io.github.nihildigit.pikpak.PikPakException)?.errorMessage == "file_not_found"
+                if (err != null && !notFound) logVerifyError(err)
+                notFound
+            }
+            else -> false
+        }
     }
+
+    private fun commandKind(command: FileWriteCommand): String = when (command) {
+        is FileWriteCommand.CreateFolder -> "createFolder"
+        is FileWriteCommand.Rename -> "rename"
+        is FileWriteCommand.Move -> "move"
+        is FileWriteCommand.Copy -> "copy"
+        is FileWriteCommand.Trash -> "trash"
+        is FileWriteCommand.Restore -> "restore"
+        is FileWriteCommand.Delete -> "delete"
+        is FileWriteCommand.Star -> if (command.starred) "star" else "unstar"
+    }
+
+    private fun commandTargetSuffix(command: FileWriteCommand): String =
+        command.target?.let { ", target=${logFolder(it.id)}" }.orEmpty()
 
     fun clear(account: String?) {
         accounts.filterValues { account == null || it == account }.keys.toList().forEach { id ->
@@ -162,4 +225,8 @@ class FileMutations(private val repository: PikoDriveRepository, scope: Coroutin
     }
 
     suspend fun awaitResult(id: Long): FileWriteResult? = results[id]?.await()
+
+    private companion object {
+        const val TAG = "FileMutations"
+    }
 }
