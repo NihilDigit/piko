@@ -47,6 +47,7 @@ import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -65,6 +66,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
@@ -128,9 +130,13 @@ class PreparedPlayback internal constructor(
     private val stream: ProxyStream?,
     /** 当前变体（原画或转码流）按其实际流长度或编码码率估算的平均字节消耗率（字节/秒）。 */
     val estimatedBytesPerSecond: Long? = null,
-    val defaultBufferBudget: BufferBudget = BufferBudget.DEFAULT,
+    val defaultBufferBudget: BufferBudget = playbackBufferBudget(),
     internal val demand: TransferDemand = TransferDemand(),
 ) : dev.piko.shared.media.player.PlaybackTransport {
+    @Volatile internal var prewarmJob: Job? = null
+    @Volatile private var boundPlaybackEpoch: Long = -1L
+    @Volatile private var prewarmCancelled: Boolean = false
+
     /** 本机代理的地址。handle 建不起来（例如没有 gcid）时为 null，只能读直链。 */
     val proxyUrl: String? get() = stream?.url
 
@@ -140,18 +146,63 @@ class PreparedPlayback internal constructor(
     /** 底层云端文件是否正处于冷存唤醒等待中。 */
     val isReactivating: StateFlow<Boolean> get() = stream?.isReactivating ?: InactivePlaybackReactivation
 
-    fun submitIntent(intent: ConsumerIntent): Boolean = demand.submitIntent(intent)
+    internal fun attachPrewarmJob(job: Job) {
+        if (prewarmCancelled || demand.isClosed) {
+            job.cancel()
+            return
+        }
+        prewarmJob = job
+        if (prewarmCancelled || demand.isClosed) {
+            cancelPrewarm()
+        }
+    }
 
-    fun updateIntent(transform: (ConsumerIntent) -> ConsumerIntent): Boolean = demand.updateIntent(transform)
+    fun cancelPrewarm() {
+        prewarmCancelled = true
+        prewarmJob?.cancel()
+        prewarmJob = null
+    }
+
+    private fun onIntentUpdated(intent: ConsumerIntent) {
+        if (intent.service == ServiceIntent.PAUSED || intent.bufferBudget.maxReadAheadBytes <= 0L) {
+            cancelPrewarm()
+            return
+        }
+        if (intent.epoch > 0L) {
+            val prevBound = boundPlaybackEpoch
+            if (prevBound < 0L) {
+                boundPlaybackEpoch = intent.epoch
+            } else if (intent.epoch > prevBound) {
+                boundPlaybackEpoch = intent.epoch
+                cancelPrewarm()
+            }
+        }
+    }
+
+    fun submitIntent(intent: ConsumerIntent): Boolean {
+        val updated = demand.submitIntent(intent)
+        onIntentUpdated(demand.intent)
+        return updated
+    }
+
+    fun updateIntent(transform: (ConsumerIntent) -> ConsumerIntent): Boolean {
+        val updated = demand.updateIntent(transform)
+        onIntentUpdated(demand.intent)
+        return updated
+    }
 
     fun reportPlaybackBuffer(snapshot: PlaybackBufferSnapshot): Boolean =
         demand.reportPlaybackBuffer(
             snapshot.copy(mediaBytesPerSecond = snapshot.mediaBytesPerSecond ?: estimatedBytesPerSecond),
         )
 
-    fun withdrawSpeculation() = demand.withdrawSpeculation()
+    fun withdrawSpeculation() {
+        cancelPrewarm()
+        demand.withdrawSpeculation()
+    }
 
     override fun withdrawTransport() {
+        cancelPrewarm()
         stream?.withdrawTransport()
         demand.close()
     }
@@ -300,11 +351,12 @@ class PikoMediaRepository(
         startPositionMillis: Long = 0L,
     ): Result<PreparedPlayback> {
         val accountClient = client
+        val initialBudget = playbackBufferBudget()
         val owner = accountClient.openTransferDemand(
             ConsumerIntent(
                 epoch = 0L,
                 service = ServiceIntent.WAITING,
-                bufferBudget = BufferBudget.DEFAULT,
+                bufferBudget = initialBudget,
             ),
         )
         var created: PreparedPlayback? = null
@@ -340,7 +392,9 @@ class PikoMediaRepository(
                             currentResolution = ORIGINAL_QUALITY, sizeBytes = task.totalBytes)
                         val stream = registerProxy(source, task.fileName.substringAfterLast('/'), fileLabel, owner)
                             ?: error(tr("无法创建本地播放会话", "Unable to create local playback session", "ローカル再生セッションを作成できません", "로컬 재생 세션을 만들 수 없습니다", "無法建立本機播放工作階段"))
-                        return@runSuspendCatching PreparedPlayback(info, stream, demand = owner)
+                        val partialBudget = playbackBufferBudget()
+                        owner.updateIntent { it.copy(bufferBudget = partialBudget) }
+                        return@runSuspendCatching PreparedPlayback(info, stream, defaultBufferBudget = partialBudget, demand = owner)
                     }
                 }
                 val detail = takeFreshDetail(client, fileId)
@@ -364,17 +418,9 @@ class PikoMediaRepository(
                     durationSeconds = durationSeconds,
                     bitRateBitsPerSecond = resolved.video?.bitRate,
                 )
-                val defaultBudget = if (estimatedRate != null) {
-                    BufferBudget(
-                        maxReadAheadBytes = (estimatedRate * 8L).coerceIn(
-                            12L * 1024 * 1024,
-                            PikPakStreamReader.DEFAULT_READ_AHEAD_BYTES,
-                        ),
-                    )
-                } else {
-                    BufferBudget.DEFAULT
-                }
+                val defaultBudget = playbackBufferBudget(estimatedRate)
                 owner.updateIntent { it.copy(bufferBudget = defaultBudget) }
+                val prepared = PreparedPlayback(resolvedInfo, stream, estimatedRate, defaultBudget, owner)
                 // 完整播放器必读偏移 0 识别容器与编解码头；MPEG-TS 转码流从中途续播或切换画质时，
                 // FFmpeg 打开无索引 TS 还需读末尾 PCR 计算总时长并向比例偏移跳读定位，并发预热首尾与估计落点可省去串行往返。
                 if (stream != null && stream.size > 0L) {
@@ -384,7 +430,7 @@ class PikoMediaRepository(
                         startPositionMillis = startPositionMillis,
                         durationMillis = durationSeconds * 1000L,
                     )
-                    backgroundScope.launch {
+                    val prewarm = backgroundScope.launch {
                         runCatching { stream.prefetch(prewarmRanges, StreamRole.FOREGROUND, PikPakStreamReader.BLOCKING_PRIORITY) }
                             .onFailure {
                                 if (it !is CancellationException) {
@@ -392,8 +438,9 @@ class PikoMediaRepository(
                                 }
                             }
                     }
+                    prepared.attachPrewarmJob(prewarm)
                 }
-                PreparedPlayback(resolvedInfo, stream, estimatedRate, defaultBudget, owner)
+                prepared
             }
         }
 
@@ -1593,6 +1640,30 @@ private const val KEYFRAME_SCAN_CHUNK = 188 * 1394
 
 // 关键帧扫描打开 4 个连续 256 KiB 分块（headSlot..headSlot+3，共约 1 MiB）并发预读窗口，一次性条带化拉回
 internal const val CLIP_SCAN_READ_AHEAD_BYTES = 3L * 256 * 1024L
+
+// 全屏起播与拖动定位在 WAITING 阶段尚未跨块证明顺序消费时，对开放式前景读取直接放行有界突发窗口，
+// 使高 RTT 线路在首包阶段即并行建连拉取首段 GOP，同时对单分块短探测保持零投机。
+internal const val PLAYBACK_WAITING_READ_AHEAD_FLOOR_BYTES = 10L * 256 * 1024L
+internal const val PLAYBACK_WAITING_READ_AHEAD_MAX_BYTES = 4L * 1024 * 1024L
+
+internal fun playbackBufferBudget(estimatedBytesPerSecond: Long? = null): BufferBudget =
+    if (estimatedBytesPerSecond != null) {
+        BufferBudget(
+            maxReadAheadBytes = (estimatedBytesPerSecond * 8L).coerceIn(
+                12L * 1024 * 1024,
+                PikPakStreamReader.DEFAULT_READ_AHEAD_BYTES,
+            ),
+            waitingReadAheadBytes = (estimatedBytesPerSecond * 3L).coerceIn(
+                PLAYBACK_WAITING_READ_AHEAD_FLOOR_BYTES,
+                PLAYBACK_WAITING_READ_AHEAD_MAX_BYTES,
+            ),
+        )
+    } else {
+        BufferBudget(
+            maxReadAheadBytes = PikPakStreamReader.DEFAULT_READ_AHEAD_BYTES,
+            waitingReadAheadBytes = PLAYBACK_WAITING_READ_AHEAD_FLOOR_BYTES,
+        )
+    }
 
 // 关键帧扫描窗口覆盖 15 秒峰值码率（保底 2 MiB、上限扩展至 6 MiB），足以跨过 10s+ 长 GOP 高码率动作段
 private const val VERIFIED_KEYFRAME_WINDOW_MS = 15_000L

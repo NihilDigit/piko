@@ -395,6 +395,39 @@ class PlayerScreenStateSmokeTest {
         leavePlayer(state)
     }
 
+    @Test
+    fun preparePlaybackConfiguresWaitingBurstBudgetAndCancelsPrewarmOnSeek() = runBlocking {
+        backend.simulateNativeGenerations = true
+        val state = newState()
+        backend.awaitOpens(1)
+        val active = assertNotNull(state.prepared)
+
+        assertTrue(
+            active.defaultBufferBudget.waitingReadAheadBytes >= dev.piko.shared.media.PLAYBACK_WAITING_READ_AHEAD_FLOOR_BYTES,
+            "全屏播放应配置至少 2.5 MiB 的 WAITING 突发预读窗口，实际为 ${active.defaultBufferBudget.waitingReadAheadBytes}",
+        )
+        assertEquals(
+            active.defaultBufferBudget.waitingReadAheadBytes,
+            active.demand.intent.bufferBudget.waitingReadAheadBytes,
+        )
+
+        val syntheticPrewarm = kotlinx.coroutines.Job()
+        active.attachPrewarmJob(syntheticPrewarm)
+        assertTrue(syntheticPrewarm.isActive, "初始绑定后挂载的预热任务应保持存活")
+
+        withContext(stateThread) {
+            state.seekTo(120_000L)
+            Snapshot.sendApplyNotifications()
+        }
+        assertTrue(syntheticPrewarm.isCancelled, "用户 seek 推进世代后必须立即取消启动预热任务")
+        assertEquals(
+            active.defaultBufferBudget.waitingReadAheadBytes,
+            active.demand.intent.bufferBudget.waitingReadAheadBytes,
+            "seek 后的 WAITING 意图必须继续携带 waitingReadAheadBytes 突发窗口",
+        )
+        leavePlayer(state)
+    }
+
     private fun java.net.HttpURLConnection.useCode(): Int = try {
         responseCode
     } finally {

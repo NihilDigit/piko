@@ -210,6 +210,6 @@ internal class ProxySession(
 
     private companion object {
         const val TAG = "MediaProxy"
-        const val STREAM_BUFFER_BYTES = 64 * 1024
+        const val STREAM_BUFFER_BYTES = 16 * 1024
     }
 }

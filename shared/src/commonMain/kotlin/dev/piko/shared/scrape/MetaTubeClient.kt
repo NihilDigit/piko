@@ -3,14 +3,16 @@ package dev.piko.shared.scrape
 import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.i18n.tr
 import io.ktor.client.HttpClient
-import io.ktor.client.request.get
+import io.ktor.client.plugins.expectSuccess
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
-import io.ktor.client.statement.HttpResponse
+import io.ktor.client.request.prepareGet
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.encodeURLPathPart
 import io.ktor.http.isSuccess
+import io.ktor.utils.io.cancel
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -68,13 +70,19 @@ class MetaTubeClient(
     ): Result<T> = runSuspendCatching {
         // 超时要当失败返回，不能用 withTimeout：它抛的是 CancellationException，会被当成调用方自己被取消而一路抛上去
         val body = withTimeoutOrNull(timeoutMillis) {
-            val response: HttpResponse = http.get(base + path) {
+            http.prepareGet(base + path) {
+                expectSuccess = false
                 if (token.isNotBlank()) header("Authorization", "Bearer ${token.trim()}")
                 params()
+            }.execute { response ->
+                try {
+                    val text = response.bodyAsText()
+                    if (!response.status.isSuccess()) throw MetaTubeException(response.status, errorMessageOf(text))
+                    text
+                } finally {
+                    runCatching { response.bodyAsChannel().cancel(null) }
+                }
             }
-            val text = response.bodyAsText()
-            if (!response.status.isSuccess()) throw MetaTubeException(response.status, errorMessageOf(text))
-            text
         } ?: throw MetaTubeTimeoutException(timeoutMillis)
         parse(body)
     }

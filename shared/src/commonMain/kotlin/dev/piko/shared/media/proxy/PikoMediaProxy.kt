@@ -274,7 +274,7 @@ class PikoMediaProxy(
     private companion object {
         const val TAG = "MediaProxy"
         const val LOOPBACK = "127.0.0.1"
-        const val LOOPBACK_SEND_BUFFER_BYTES = 32 * 1024
+        const val LOOPBACK_SEND_BUFFER_BYTES = 16 * 1024
     }
 }
 

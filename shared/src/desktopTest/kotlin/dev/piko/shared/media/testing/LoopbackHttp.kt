@@ -52,7 +52,12 @@ internal fun request(url: String, method: String = "GET", range: String? = null)
     val open = openRequest(url, method, range)
     open.socket.use {
         val length = if (method == "HEAD") 0 else open.headers["content-length"]?.toInt() ?: 0
-        return HttpResponse(open.status, open.headers, open.body.readNBytes(length))
+        val body = open.body.readNBytes(length)
+        if (method != "HEAD") {
+            // 等待服务端 Connection: close 的 FIN（在 session.stream 的 finally 释放票据之后发出）
+            open.body.read()
+        }
+        return HttpResponse(open.status, open.headers, body)
     }
 }
 

@@ -569,6 +569,7 @@ class PlayerScreenState(
         intentEpoch = nextEpoch
         seeking = true
         prepared?.let { active ->
+            active.cancelPrewarm()
             val freshSample = PlaybackBufferSnapshot(
                 generation = nextEpoch,
                 bufferedDuration = null,
@@ -679,6 +680,7 @@ class PlayerScreenState(
         intentEpoch = nextEpoch
         seeking = true
         prepared?.let { active ->
+            active.cancelPrewarm()
             submitPlaybackIntent(
                 active,
                 WorkPhase.Urgent,
