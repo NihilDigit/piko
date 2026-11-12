@@ -83,7 +83,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x gradlew
-          ./gradlew :shared:iosSimulatorArm64Test :ui:iosSimulatorArm64Test --no-daemon --console=plain --stacktrace
+          ./gradlew :shared:iosSimulatorArm64Test :ui:iosSimulatorArm64Test --build-cache --no-daemon --console=plain --stacktrace
 
       - name: Build iOS 15 host
         shell: bash
@@ -102,6 +102,28 @@ jobs:
           MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")
           test "$MIN_OS" = '15.0'
           xcrun vtool -show-build "$APP/Piko" | tee "$RUNNER_TEMP/piko-ios-deployment.txt"
+          # CODE_SIGNING_ALLOWED=NO 跳过签名导致包内缺少 application-identifier / keychain-access-groups，
+          # 模拟器 securityd 会以 OSStatus=-34018 (errSecMissingEntitlement) 拒绝 Keychain 访问；
+          # 对模拟器产物由内向外补上带标准访问组声明的 ad-hoc 签名，无需开发者证书即可通过模拟器鉴权。
+          cat > "$RUNNER_TEMP/sim-entitlements.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>application-identifier</key>
+            <string>0000000000.dev.piko.pikpak.ios</string>
+            <key>keychain-access-groups</key>
+            <array>
+              <string>0000000000.dev.piko.pikpak.ios</string>
+            </array>
+            <key>get-task-allow</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+          find "$APP" -type f \( -name "*.dylib" -o -path "*/Frameworks/*" \) -exec codesign --force --sign - {} +
+          codesign --force --sign - --entitlements "$RUNNER_TEMP/sim-entitlements.plist" "$APP"
+          codesign --verify --deep --strict "$APP"
 
       - name: Launch simulator host
         shell: bash
@@ -159,6 +181,9 @@ jobs:
             ps -p "$APP_PID" -o pid=,etime=,rss=,command=
             xcrun simctl spawn "$PIKO_SIMULATOR_ID" launchctl list | awk -v pid="$APP_PID" '$1 == pid && /dev\.piko\.pikpak\.ios/ { ok=1 } END { exit !ok }'
           done
+          grep -q "App started:" "$RUNNER_TEMP/piko-sim-stdout.log"
+          grep -q "showing sign-in" "$RUNNER_TEMP/piko-sim-stdout.log"
+          ! grep -q "Uncaught exception" "$RUNNER_TEMP/piko-sim-stdout.log"
           xcrun simctl io "$PIKO_SIMULATOR_ID" screenshot "$RUNNER_TEMP/piko-sim-screen.png" || true
 
       - name: Collect simulator diagnostics
