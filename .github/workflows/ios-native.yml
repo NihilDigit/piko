@@ -25,6 +25,8 @@ jobs:
   simulator-tests:
     runs-on: macos-15
     timeout-minutes: 90
+    env:
+      GRADLE_OPTS: '-Dorg.gradle.daemon=false'
     steps:
       - uses: actions/checkout@v5
 
@@ -105,6 +107,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # 释放前序构建与单测可能残留的 JVM/Kotlin 进程和已启动模拟器，避免 7GB runner 双开模拟器引发内存抖动。
+          ./gradlew --stop || true
+          pkill -f KotlinCompileDaemon || true
+          xcrun simctl shutdown all || true
+          {
+            echo "=== pre-boot memory ==="
+            vm_stat || true
+            sysctl vm.swapusage || true
+          } > "$RUNNER_TEMP/piko-sim-env.log"
           python3 - <<'PY'
           import json, os, subprocess
           runtimes = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'runtimes', '--json']))['runtimes']
@@ -118,11 +129,10 @@ jobs:
                       choices.append((tuple(int(x) for x in runtime['version'].split('.') if x.isdigit()), runtime, device))
           assert choices, 'No available iPhone simulator'
           _, runtime, device = min(choices, key=lambda item: item[0])
-          print('Selected simulator runtime:', runtime['version'])
+          print('Selected simulator runtime:', runtime['version'], 'device:', device['name'], device['udid'])
           with open(os.environ['GITHUB_ENV'], 'a') as output:
               output.write(f"PIKO_SIMULATOR_ID={device['udid']}\n")
-          if device['state'] != 'Booted':
-              subprocess.run(['xcrun', 'simctl', 'boot', device['udid']], check=True)
+          subprocess.run(['xcrun', 'simctl', 'boot', device['udid']], check=True)
           PY
 
       - name: Verify simulator launch
@@ -130,18 +140,54 @@ jobs:
         run: |
           set -euo pipefail
           xcrun simctl bootstatus "$PIKO_SIMULATOR_ID" -b
+          {
+            echo "=== post-boot memory ==="
+            vm_stat || true
+            sysctl vm.swapusage || true
+          } >> "$RUNNER_TEMP/piko-sim-env.log"
           xcrun simctl install "$PIKO_SIMULATOR_ID" "$RUNNER_TEMP/piko-ios/Build/Products/Debug-iphonesimulator/Piko.app"
-          xcrun simctl launch --terminate-running-process "$PIKO_SIMULATOR_ID" dev.piko.pikpak.ios
-          sleep 3
-          found=0
-          for _ in $(seq 1 15); do
-            if xcrun simctl spawn "$PIKO_SIMULATOR_ID" launchctl list | awk '$1 ~ /^[0-9]+$/ && /dev\.piko\.pikpak\.ios/ { ok=1 } END { exit !ok }'; then
-              found=1
-              break
-            fi
-            sleep 1
+          LAUNCH_OUT=$(xcrun simctl launch --terminate-running-process \
+            --stdout="$RUNNER_TEMP/piko-sim-stdout.log" \
+            --stderr="$RUNNER_TEMP/piko-sim-stderr.log" \
+            "$PIKO_SIMULATOR_ID" dev.piko.pikpak.ios)
+          echo "$LAUNCH_OUT"
+          APP_PID=$(awk '{print $NF}' <<< "$LAUNCH_OUT" | tr -d '\r')
+          test -n "$APP_PID"
+          # 连续观察 18 秒确认同一次启动的进程持续存活，不因瞬时存活误判通过，也不自动重启掩盖崩溃。
+          for check in 1 2 3 4 5 6; do
+            sleep 3
+            ps -p "$APP_PID" -o pid=,etime=,rss=,command=
+            xcrun simctl spawn "$PIKO_SIMULATOR_ID" launchctl list | awk -v pid="$APP_PID" '$1 == pid && /dev\.piko\.pikpak\.ios/ { ok=1 } END { exit !ok }'
           done
-          test "$found" -eq 1
+          xcrun simctl io "$PIKO_SIMULATOR_ID" screenshot "$RUNNER_TEMP/piko-sim-screen.png" || true
+
+      - name: Collect simulator diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          DIAG="$RUNNER_TEMP/piko-sim-diag"
+          mkdir -p "$DIAG/host-crashes" "$DIAG/sim-crashes" "$DIAG/app-logs"
+          {
+            echo "=== failure memory & processes ==="
+            vm_stat || true
+            sysctl vm.swapusage || true
+            ps -axo pid,ppid,rss,%cpu,etime,command | head -n 80 || true
+            echo "=== simctl devices ==="
+            xcrun simctl list devices booted || true
+          } > "$DIAG/host-state.txt" 2>&1
+          if [ -n "${PIKO_SIMULATOR_ID:-}" ]; then
+            xcrun simctl spawn "$PIKO_SIMULATOR_ID" launchctl list | grep -Ei 'PID|piko' > "$DIAG/launchctl-piko.txt" 2>&1 || true
+            xcrun simctl spawn "$PIKO_SIMULATOR_ID" log show --last 3m --style compact \
+              --predicate 'process == "Piko" OR eventMessage CONTAINS[c] "dev.piko.pikpak.ios" OR process == "SpringBoard" OR process == "runningboardd"' \
+              > "$DIAG/sim-unified.log" 2>&1 || true
+            DATA_DIR=$(xcrun simctl get_app_container "$PIKO_SIMULATOR_ID" dev.piko.pikpak.ios data 2>/dev/null || true)
+            if [ -n "$DATA_DIR" ] && [ -d "$DATA_DIR/Library/Application Support/logs" ]; then
+              cp -R "$DATA_DIR/Library/Application Support/logs/." "$DIAG/app-logs/" 2>/dev/null || true
+            fi
+            SIM_CR="$HOME/Library/Developer/CoreSimulator/Devices/$PIKO_SIMULATOR_ID/data/Library/Logs/DiagnosticReports"
+            [ -d "$SIM_CR" ] && cp -R "$SIM_CR/." "$DIAG/sim-crashes/" 2>/dev/null || true
+          fi
+          [ -d "$HOME/Library/Logs/DiagnosticReports" ] && cp -R "$HOME/Library/Logs/DiagnosticReports/." "$DIAG/host-crashes/" 2>/dev/null || true
 
       - name: Upload test results
         if: failure()
@@ -155,5 +201,8 @@ jobs:
             ui/build/test-results/
             ${{ runner.temp }}/piko-ios-build.log
             ${{ runner.temp }}/piko-ios-deployment.txt
+            ${{ runner.temp }}/piko-sim-*.log
+            ${{ runner.temp }}/piko-sim-screen.png
+            ${{ runner.temp }}/piko-sim-diag/**
           if-no-files-found: ignore
           retention-days: 7
