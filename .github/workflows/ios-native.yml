@@ -92,37 +92,23 @@ jobs:
           command -v xcodegen >/dev/null || brew install xcodegen
           cd iosApp
           xcodegen generate
+          # 模拟器不能传 CODE_SIGNING_ALLOWED=NO：那会跳过 ProcessProductPackaging，导致二进制缺少
+          # __TEXT,__entitlements 段而在启动读 Keychain 时报 OSStatus=-34018；也不能事后用 codesign
+          # 直接写入受限受权（macOS AMFI 会以 error=162 拒绝启动）。显式指定模拟器原生 ad-hoc 签名
+          # （CODE_SIGN_IDENTITY="-" 且清空团队），由 Xcode 将模拟受权写入 __TEXT,__entitlements 段。
           xcodebuild -project Piko.xcodeproj -scheme Piko -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/piko-ios" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO build 2>&1 | tee "$RUNNER_TEMP/piko-ios-build.log"
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="-" \
+            PROVISIONING_PROFILE_SPECIFIER="" DEVELOPMENT_TEAM="" PIKO_TEAM_ID="" \
+            build 2>&1 | tee "$RUNNER_TEMP/piko-ios-build.log"
           APP="$RUNNER_TEMP/piko-ios/Build/Products/Debug-iphonesimulator/Piko.app"
           test -f "$APP/Piko"
           MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")
           test "$MIN_OS" = '15.0'
           xcrun vtool -show-build "$APP/Piko" | tee "$RUNNER_TEMP/piko-ios-deployment.txt"
-          # CODE_SIGNING_ALLOWED=NO 跳过签名导致包内缺少 application-identifier / keychain-access-groups，
-          # 模拟器 securityd 会以 OSStatus=-34018 (errSecMissingEntitlement) 拒绝 Keychain 访问；
-          # 对模拟器产物由内向外补上带标准访问组声明的 ad-hoc 签名，无需开发者证书即可通过模拟器鉴权。
-          cat > "$RUNNER_TEMP/sim-entitlements.plist" <<'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>application-identifier</key>
-            <string>0000000000.dev.piko.pikpak.ios</string>
-            <key>keychain-access-groups</key>
-            <array>
-              <string>0000000000.dev.piko.pikpak.ios</string>
-            </array>
-            <key>get-task-allow</key>
-            <true/>
-          </dict>
-          </plist>
-          PLIST
-          find "$APP" -type f \( -name "*.dylib" -o -path "*/Frameworks/*" \) -exec codesign --force --sign - {} +
-          codesign --force --sign - --entitlements "$RUNNER_TEMP/sim-entitlements.plist" "$APP"
+          otool -l "$APP/Piko" | grep -A3 "__entitlements"
           codesign --verify --deep --strict "$APP"
 
       - name: Launch simulator host
