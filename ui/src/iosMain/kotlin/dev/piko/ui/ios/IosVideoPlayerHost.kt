@@ -7,7 +7,7 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 import dev.piko.shared.media.PreparedPlayback
-import dev.piko.shared.notice.failureText
+import dev.piko.shared.notice.PikoErrorMapper
 import dev.piko.shared.state.launchOnAccountLeave
 import dev.piko.ui.PikoServices
 import dev.piko.ui.VideoPlayerHost
@@ -108,7 +108,7 @@ private class PlayerSession(private val services: PikoServices, private val scop
                             PikoLog.w(TAG, "No playable URL available for $targetLog")
                         }
                         val message = result.exceptionOrNull()?.let {
-                            failureText(tr("播放", "Play", "再生", "재생", "播放"), it)
+                            PikoErrorMapper.failure(tr("播放", "Play", "再生", "재생", "播放"), it)
                         } ?: tr("无法播放此文件", "Unable to play this file", "このファイルを再生できません", "이 파일을 재생할 수 없습니다", "無法播放此檔案")
                         presentPlaybackError(message)
                         return@launch
