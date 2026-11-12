@@ -5,25 +5,23 @@
 <h1 align="center">Piko</h1>
 
 <p align="center">
-<a href="#安装"><img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-306EFF?style=flat-square&logo=android&logoColor=white"></a>
-<a href="#安装"><img alt="Windows 10+ x64" src="https://img.shields.io/badge/Windows-10%2B%20x64-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0yIDJoOS41djkuNUgyek0xMi41IDJIMjJ2OS41aC05LjV6TTIgMTIuNWg5LjVWMjJIMnpNMTIuNSAxMi41SDIyVjIyaC05LjV6Ii8+PC9zdmc+"></a>
-<a href="#安装"><img alt="Windows 11+ arm64" src="https://img.shields.io/badge/Windows-11%2B%20arm64-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0yIDJoOS41djkuNUgyek0xMi41IDJIMjJ2OS41aC05LjV6TTIgMTIuNWg5LjVWMjJIMnpNMTIuNSAxMi41SDIyVjIyaC05LjV6Ii8+PC9zdmc+"></a>
-<a href="#安装"><img alt="macOS 12+ arm64" src="https://img.shields.io/badge/macOS-12%2B%20arm64-306EFF?style=flat-square&logo=apple&logoColor=white"></a>
-<a href="#安装"><img alt="Linux x64" src="https://img.shields.io/badge/Linux-x64-306EFF?style=flat-square&logo=linux&logoColor=white"></a>
-<br>
+<b>高性能、跨平台的 PikPak 客户端</b><br>
+<sub>支持 Android、Windows、macOS、Linux、iOS 与 iPadOS</sub>
+</p>
+
+<p align="center">
 <a href="https://github.com/NihilDigit/piko/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/NihilDigit/piko?style=flat-square&color=306EFF&label=Release&logo=github&logoColor=white"></a>
 <a href="https://github.com/NihilDigit/piko/attestations"><img alt="SLSA Build L3" src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/badges/slsa-l3.svg"></a>
-<a href="LICENSE"><img alt="License AGPL-3.0-or-later" src="https://img.shields.io/badge/License-AGPL--3.0--or--later-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDIxdi0yaDEwVjcuODI1UTEwLjM1IDcuNiA5Ljg3NSA3LjEyNVQ5LjE3NSA2SDZsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQ1LjUgMTZxLTEuNDUgMC0yLjQ3NS0uODc1VDIgMTNsMy03SDNWNGg2LjE3NXEuMy0uODc1IDEuMDc1LTEuNDM3VDEyIDJxLjk3NSAwIDEuNzUuNTYzVDE0LjgyNSA0SDIxdjJoLTJsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQxOC41IDE2cS0xLjQ1IDAtMi40NzUtLjg3NVQxNSAxM2wzLTdoLTMuMTc1cS0uMjI1LjY1LS43IDEuMTI1VDEzIDcuODI1VjE5aDEwdjJIMVptMTUuNjI1LThoMy43NUwxOC41IDguNjUgMTYuNjI1IDEzWm0tMTMgMGgzLjc1TDUuNSA4LjY1IDMuNjI1IDEzWk0xMiA2cS40MjUgMCAuNzEzLS4yODhUMTMgNXEwLS40MjUtLjI4OC0uNzEzVDEyIDRxLS40MjUgMC0uNzEzLjI4OFQxMSA1cTAgLjQyNS4yODguNzEzVDEyIDZaIi8+PC9zdmc+Cg=="></a></p>
+<a href="LICENSE"><img alt="License AGPL-3.0-or-later" src="https://img.shields.io/badge/License-AGPL--3.0-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDIxdi0yaDEwVjcuODI1UTEwLjM1IDcuNiA5Ljg3NSA3LjEyNVQ5LjE3NSA2SDZsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQ1LjUgMTZxLTEuNDUgMC0yLjQ3NS0uODc1VDIgMTNsMy03SDNWNGg2LjE3NXEuMy0uODc1IDEuMDc1LTEuNDM3VDEyIDJxLjk3NSAwIDEuNzUuNTYzVDE0LjgyNSA0SDIxdjJoLTJsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQxOC41IDE2cS0xLjQ1IDAtMi40NzUtLjg3NVQxNSAxM2wzLTdoLTMuMTc1cS0uMjI1LjY1LS43IDEuMTI1VDEzIDcuODI1VjE5aDEwdjJIMVptMTUuNjI1LThoMy43NUwxOC41IDguNjUgMTYuNjI1IDEzWm0tMTMgMGgzLjc1TDUuNSA4LjY1IDMuNjI1IDEzWk0xMiA2cS40MjUgMCAuNzEzLS4yODhUMTMgNXEwLS40MjUtLjI4OC0uNzEzVDEyIDRxLS40MjUgMC0uNzEzLjI4OFQxMSA1cTAgLjQyNS4yODguNzEzVDEyIDZaIi8+PC9zdmc+Cg=="></a>
+</p>
 
-<p align="center"><b>高性能、多平台的 PikPak 客户端</b></p>
-
-<p align="center">开发进展与更新日志发布在 Telegram 频道 <a href="https://t.me/piko_dev">@piko_dev</a></p>
+<p align="center">Telegram 更新频道 <a href="https://t.me/piko_dev">@piko_dev</a> ｜ <a href="https://t.me/+mTkqVFyYnjszMjA1">交流群</a></p>
 
 <p align="center"><a href="https://trendshift.io/repositories/263280?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-263280" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/263280/weekly?language=Kotlin" alt="Trendshift: NihilDigit/piko" width="250" height="53"/></a></p>
 
 ## 自适应布局
 
-桌面端贴合键鼠操作，移动端简洁易用。支持多标签工作区、瀑布流视频与图片浏览，以及将本地文件夹只读挂载至当前网盘目录统一查看。界面提供简体中文、繁体中文、韩语、日语与英语。
+桌面端贴合键鼠操作，移动端简洁易用。支持多标签与固定文件夹、瀑布流看视频与图片，以及只读挂载本地文件夹统一查看。
 
 <p align="center">
 <picture>
@@ -45,9 +43,9 @@
 </picture>
 </p>
 
-## 链接与文件名解析
+## 链接与压缩包
 
-解析磁力链接、种子、下载地址与分享链接，保存前可完整预览、按文件挑选，或以不占网盘空间的引用形式保存。文件按作品与集数整理，收起样片与花絮。
+解析磁力、种子、ed2k、thunder、直链与分享链接，保存前可预览挑选或以引用形式免空间保存；云端压缩包免解压直接浏览。剧集自动归组，收起样片与花絮。
 
 <p align="center">
 <picture>
@@ -56,9 +54,9 @@
 </picture>
 </p>
 
-## 传输
+## 播放与传输
 
-多连接并发，自动绕开缓慢或无响应的节点，优化高延迟与弱网下的播放和下载体验。蜗牛模式限速，不影响播放。
+多连接并发绕开慢节点，优化高延迟与代理线路下的播放和下载；内置硬解播放器，也可调用外部播放器。蜗牛模式独立限速，不影响播放。
 
 <p align="center">
 <picture>
@@ -69,7 +67,7 @@
 
 ## 文件处理
 
-本地目录树支持全盘即时模糊搜索，支持归档释放网盘空间、截取视频片段、批量重命名与跨目录查找重复文件。
+本地目录树支持全盘秒搜与空间分布图，提供归档释放空间、无损截取片段、刮削批量重命名与跨目录查重。
 
 <p align="center">
 <picture>
@@ -78,14 +76,19 @@
 </picture>
 </p>
 
+## 账号与同步
+
+支持密码与 Google 登录、多账号切换。设置、固定标签与星标通过网盘自动跨设备同步，压缩包密码与刮削配置支持独立口令加密。
+
 ## 安装
 
-前往 [Releases](https://github.com/NihilDigit/piko/releases/latest) 下载。安装包均由 GitHub Actions 从源码构建，Release 页面按设备列出应下载的文件。
+前往 [Releases](https://github.com/NihilDigit/piko/releases/latest) 下载。安装包均由 GitHub Actions 从源码构建，桌面与 Android 端均支持应用内更新。
 
-- **Android**：Android 8.0 及以上。按设备架构选择 APK，无法确定时选 `universal`。
-- **Windows**：x64 需 Windows 10 及以上，arm64 需 Windows 11 及以上。`.msi` 为安装版，`.7z` 为便携版；Windows 11 可在资源管理器中直接解压，Windows 10 可用 [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) 或 7-Zip 解压。
-- **macOS**（实验性）：macOS 12 及以上，仅 Apple 芯片。安装包未经公证，首次打开需在「系统设置」→「隐私与安全性」中放行。
-- **Linux**（实验性）：x64，需 glibc 2.38 及以上（Ubuntu 24.04、Debian 13、Fedora 39 或更新）。AppImage 添加执行权限后运行。
+- **Android**：Android 8.0 及以上，按架构选 APK，不确定时选 `universal`。
+- **Windows**：x64 需 Windows 10+，arm64 需 Windows 11+。`.msi` 为安装版，`.7z` 为便携版（Win10 可用 [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) 或 7-Zip 解压）。
+- **macOS**（实验性）：macOS 12+（Apple 芯片），首次打开需在「系统设置 → 隐私与安全性」中放行。
+- **Linux**（实验性）：x64，需 glibc 2.38+（Ubuntu 24.04、Debian 13、Fedora 39+），AppImage 添加执行权限后运行。
+- **iOS / iPadOS**（实验性）：iOS 15+，未签名 `.ipa`，通过 AltStore、SideStore、Sideloadly 或 TrollStore 自签侧载。
 
 ## 贡献
 

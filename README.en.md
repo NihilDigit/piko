@@ -5,28 +5,23 @@
 <h1 align="center">Piko</h1>
 
 <p align="center">
-<a href="#install"><img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-306EFF?style=flat-square&logo=android&logoColor=white"></a>
-<a href="#install"><img alt="Windows 10+ x64" src="https://img.shields.io/badge/Windows-10%2B%20x64-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0yIDJoOS41djkuNUgyek0xMi41IDJIMjJ2OS41aC05LjV6TTIgMTIuNWg5LjVWMjJIMnpNMTIuNSAxMi41SDIyVjIyaC05LjV6Ii8+PC9zdmc+"></a>
-<a href="#install"><img alt="Windows 11+ arm64" src="https://img.shields.io/badge/Windows-11%2B%20arm64-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0yIDJoOS41djkuNUgyek0xMi41IDJIMjJ2OS41aC05LjV6TTIgMTIuNWg5LjVWMjJIMnpNMTIuNSAxMi41SDIyVjIyaC05LjV6Ii8+PC9zdmc+"></a>
-<a href="#install"><img alt="macOS 12+ arm64" src="https://img.shields.io/badge/macOS-12%2B%20arm64-306EFF?style=flat-square&logo=apple&logoColor=white"></a>
-<a href="#install"><img alt="Linux x64" src="https://img.shields.io/badge/Linux-x64-306EFF?style=flat-square&logo=linux&logoColor=white"></a>
-<br>
+<b>A fast, cross-platform PikPak client</b><br>
+<sub>Available on Android, Windows, macOS, Linux, iOS, and iPadOS</sub>
+</p>
+
+<p align="center">
 <a href="https://github.com/NihilDigit/piko/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/NihilDigit/piko?style=flat-square&color=306EFF&label=Release&logo=github&logoColor=white"></a>
 <a href="https://github.com/NihilDigit/piko/attestations"><img alt="SLSA Build L3" src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/badges/slsa-l3.svg"></a>
-<a href="LICENSE"><img alt="License AGPL-3.0-or-later" src="https://img.shields.io/badge/License-AGPL--3.0--or--later-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDIxdi0yaDEwVjcuODI1UTEwLjM1IDcuNiA5Ljg3NSA3LjEyNVQ5LjE3NSA2SDZsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQ1LjUgMTZxLTEuNDUgMC0yLjQ3NS0uODc1VDIgMTNsMy03SDNWNGg2LjE3NXEuMy0uODc1IDEuMDc1LTEuNDM3VDEyIDJxLjk3NSAwIDEuNzUuNTYzVDE0LjgyNSA0SDIxdjJoLTJsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQxOC41IDE2cS0xLjQ1IDAtMi40NzUtLjg3NVQxNSAxM2wzLTdoLTMuMTc1cS0uMjI1LjY1LS43IDEuMTI1VDEzIDcuODI1VjE5aDEwdjJIMVptMTUuNjI1LThoMy43NUwxOC41IDguNjUgMTYuNjI1IDEzWm0tMTMgMGgzLjc1TDUuNSA4LjY1IDMuNjI1IDEzWk0xMiA2cS40MjUgMCAuNzEzLS4yODhUMTMgNXEwLS40MjUtLjI4OC0uNzEzVDEyIDRxLS40MjUgMC0uNzEzLjI4OFQxMSA1cTAgLjQyNS4yODguNzEzVDEyIDZaIi8+PC9zdmc+Cg=="></a></p>
+<a href="LICENSE"><img alt="License AGPL-3.0-or-later" src="https://img.shields.io/badge/License-AGPL--3.0-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDIxdi0yaDEwVjcuODI1UTEwLjM1IDcuNiA5Ljg3NSA3LjEyNVQ5LjE3NSA2SDZsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQ1LjUgMTZxLTEuNDUgMC0yLjQ3NS0uODc1VDIgMTNsMy03SDNWNGg2LjE3NXEuMy0uODc1IDEuMDc1LTEuNDM3VDEyIDJxLjk3NSAwIDEuNzUuNTYzVDE0LjgyNSA0SDIxdjJoLTJsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQxOC41IDE2cS0xLjQ1IDAtMi40NzUtLjg3NVQxNSAxM2wzLTdoLTMuMTc1cS0uMjI1LjY1LS43IDEuMTI1VDEzIDcuODI1VjE5aDEwdjJIMVptMTUuNjI1LThoMy43NUwxOC41IDguNjUgMTYuNjI1IDEzWm0tMTMgMGgzLjc1TDUuNSA4LjY1IDMuNjI1IDEzWk0xMiA2cS40MjUgMCAuNzEzLS4yODhUMTMgNXEwLS40MjUtLjI4OC0uNzEzVDEyIDRxLS40MjUgMC0uNzEzLjI4OFQxMSA1cTAgLjQyNS4yODguNzEzVDEyIDZaIi8+PC9zdmc+Cg=="></a>
+</p>
 
-<p align="center"><b>A fast, cross-platform PikPak client</b></p>
-
-<p align="center">Development updates and changelogs are posted to the Telegram channel <a href="https://t.me/piko_dev">@piko_dev</a></p>
+<p align="center">Telegram Channel <a href="https://t.me/piko_dev">@piko_dev</a> | <a href="https://t.me/+mTkqVFyYnjszMjA1">Chat Group</a></p>
 
 <p align="center"><a href="https://trendshift.io/repositories/263280?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-263280" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/263280/weekly?language=Kotlin" alt="Trendshift: NihilDigit/piko" width="250" height="53"/></a></p>
 
 ## Adaptive layout
 
-Built for mouse and keyboard on the desktop, clean and simple on the phone. Supports multi-tab
-workspaces, video and photo browsing in Gallery, and mounting local folders read-only directly inside
-the current cloud folder. The interface is available in Simplified Chinese, Traditional Chinese,
-Korean, Japanese, and English.
+Built for mouse and keyboard on desktop, clean and intuitive on mobile. Supports multi-tab workspaces, pinned folders, Gallery browsing for videos and photos, and read-only mounting of local folders inside cloud directories.
 
 <p align="center">
 <picture>
@@ -37,8 +32,7 @@ Korean, Japanese, and English.
 
 ## Feed
 
-Plays random clips from the current folder or selected videos. Swipe up or down to switch, with
-optional auto-extend and auto-advance.
+Plays random clips from the current folder or selected videos. Swipe up or down to switch, with optional auto-extend and auto-advance.
 
 <p align="center">
 <picture>
@@ -49,11 +43,9 @@ optional auto-extend and auto-advance.
 </picture>
 </p>
 
-## Link and file name parsing
+## Links and archives
 
-Parses magnet links, torrents, download URLs, and share links, with a full preview and per-file
-selection before saving, or saving as zero-quota references. Files are grouped by work and episode,
-with samples and extras folded away.
+Parses magnet, torrent, ed2k, thunder, direct download, and share links—preview and pick files before saving, or save as zero-quota references. Browse cloud archives directly without extracting. Episodes are grouped automatically with samples and extras folded away.
 
 <p align="center">
 <picture>
@@ -62,10 +54,9 @@ with samples and extras folded away.
 </picture>
 </p>
 
-## Transfers
+## Playback and transfers
 
-Parallel connections that route around slow or unresponsive nodes for smooth playback and downloads
-over high-latency or poor networks. Snail mode caps transfer speed without affecting playback.
+Parallel connections route around slow nodes for responsive streaming and downloads over high-latency or proxy networks, with a built-in hardware-accelerated player and external player handoff. Snail mode caps background transfers without affecting playback.
 
 <p align="center">
 <picture>
@@ -76,8 +67,7 @@ over high-latency or poor networks. Snail mode caps transfer speed without affec
 
 ## File tools
 
-Instant drive-wide fuzzy search backed by a local directory tree, zero-quota archiving, video clip
-extraction, batch renaming, and cross-folder duplicate detection.
+Local directory tree for instant drive-wide search and a drill-down space map, plus zero-quota archiving, lossless clip extraction, metadata-driven batch renaming, and cross-folder duplicate detection.
 
 <p align="center">
 <picture>
@@ -86,44 +76,37 @@ extraction, batch renaming, and cross-folder duplicate detection.
 </picture>
 </p>
 
+## Accounts and sync
+
+Sign in with password or Google and switch accounts anytime. Settings, pinned tabs, and stars sync automatically across devices through your drive, while archive passwords and scraper configs use an optional independent passphrase.
+
 ## Install
 
-Download from [Releases](https://github.com/NihilDigit/piko/releases/latest). Every package is built
-from source by GitHub Actions, and the release page lists which file to download for each device.
+Download from [Releases](https://github.com/NihilDigit/piko/releases/latest). Every package is built from source by GitHub Actions, with in-app updates on desktop and Android.
 
-- **Android**: Android 8.0 or later. Pick the APK for your device's architecture, or `universal` if
-  unsure.
-- **Windows**: Windows 10 or later on x64, Windows 11 or later on arm64. `.msi` is the installer, `.7z` the portable build;
-  Windows 11 extracts it in File Explorer, and on Windows 10 use
-  [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) or 7-Zip.
-- **macOS** (experimental): macOS 12 or later, Apple silicon only. The package is not notarized;
-  allow it once under System Settings → Privacy & Security.
-- **Linux** (experimental): x64, glibc 2.38 or later (Ubuntu 24.04, Debian 13, Fedora 39 or newer).
-  Make the AppImage executable after downloading it.
+- **Android**: Android 8.0+, pick the APK for your architecture (`universal` if unsure).
+- **Windows**: Windows 10+ on x64, Windows 11+ on arm64. `.msi` installer or `.7z` portable build (use [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) or 7-Zip on Windows 10).
+- **macOS** (experimental): macOS 12+ on Apple silicon; allow once under System Settings → Privacy & Security.
+- **Linux** (experimental): x64 with glibc 2.38+ (Ubuntu 24.04, Debian 13, Fedora 39+); make the AppImage executable and run.
+- **iOS / iPadOS** (experimental): iOS 15+, unsigned `.ipa` for sideloading via AltStore, SideStore, Sideloadly, or TrollStore.
 
 ## Contributing
 
 The roadmap is in [#10](https://github.com/NihilDigit/piko/issues/10).
 
-Issues and pull requests are welcome. Small bug fixes, crash reports and documentation fixes can go
-straight in as a pull request.
+Issues and pull requests are welcome. Small bug fixes, crash reports and documentation fixes can go straight in as a pull request.
 
-For a new feature or an architectural change, open an issue first describing the use case and the
-approach, so the direction is agreed before the work starts.
+For a new feature or an architectural change, open an issue first describing the use case and the approach, so the direction is agreed before the work starts.
 
-If you write code with the help of an LLM, make sure you understand what it adds and test it on a
-real device.
+If you write code with the help of an LLM, make sure you understand what it adds and test it on a real device.
 
-Pull requests require signing the [Contributor License Agreement](CLA.md) once, by replying to the
-bot on the pull request; see [CONTRIBUTING.md](CONTRIBUTING.md).
+Pull requests require signing the [Contributor License Agreement](CLA.md) once, by replying to the bot on the pull request; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License and credits
 
-- The source code is under the [AGPL-3.0-or-later](LICENSE) license. Version 1.1.0 and earlier
-  were released under the MIT license. The Android packages bundle GPLv3 builds of mpv and FFmpeg.
+- The source code is under the [AGPL-3.0-or-later](LICENSE) license. Version 1.1.0 and earlier were released under the MIT license. The Android packages bundle GPLv3 builds of mpv and FFmpeg.
 - The PikPak API implementation draws on [52funny/pikpakcli](https://github.com/52funny/pikpakcli).
-- Several features are modelled on the PikPak web enhancement script
-  [digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master).
+- Several features are modelled on the PikPak web enhancement script [digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master).
 - Zero-copy mpv rendering on Windows is provided by [MediaMP](https://github.com/open-ani/mediamp).
 
 ## Star History

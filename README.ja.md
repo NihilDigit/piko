@@ -5,25 +5,23 @@
 <h1 align="center">Piko</h1>
 
 <p align="center">
-<a href="#インストール"><img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-306EFF?style=flat-square&logo=android&logoColor=white"></a>
-<a href="#インストール"><img alt="Windows 10+ x64" src="https://img.shields.io/badge/Windows-10%2B%20x64-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0yIDJoOS41djkuNUgyek0xMi41IDJIMjJ2OS41aC05LjV6TTIgMTIuNWg5LjVWMjJIMnpNMTIuNSAxMi41SDIyVjIyaC05LjV6Ii8+PC9zdmc+"></a>
-<a href="#インストール"><img alt="Windows 11+ arm64" src="https://img.shields.io/badge/Windows-11%2B%20arm64-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0yIDJoOS41djkuNUgyek0xMi41IDJIMjJ2OS41aC05LjV6TTIgMTIuNWg5LjVWMjJIMnpNMTIuNSAxMi41SDIyVjIyaC05LjV6Ii8+PC9zdmc+"></a>
-<a href="#インストール"><img alt="macOS 12+ arm64" src="https://img.shields.io/badge/macOS-12%2B%20arm64-306EFF?style=flat-square&logo=apple&logoColor=white"></a>
-<a href="#インストール"><img alt="Linux x64" src="https://img.shields.io/badge/Linux-x64-306EFF?style=flat-square&logo=linux&logoColor=white"></a>
-<br>
+<b>高速なクロスプラットフォームの PikPak クライアント</b><br>
+<sub>Android、Windows、macOS、Linux、iOS、iPadOS に対応</sub>
+</p>
+
+<p align="center">
 <a href="https://github.com/NihilDigit/piko/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/NihilDigit/piko?style=flat-square&color=306EFF&label=Release&logo=github&logoColor=white"></a>
 <a href="https://github.com/NihilDigit/piko/attestations"><img alt="SLSA Build L3" src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/badges/slsa-l3.svg"></a>
-<a href="LICENSE"><img alt="License AGPL-3.0-or-later" src="https://img.shields.io/badge/License-AGPL--3.0--or--later-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDIxdi0yaDEwVjcuODI1UTEwLjM1IDcuNiA5Ljg3NSA3LjEyNVQ5LjE3NSA2SDZsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQ1LjUgMTZxLTEuNDUgMC0yLjQ3NS0uODc1VDIgMTNsMy03SDNWNGg2LjE3NXEuMy0uODc1IDEuMDc1LTEuNDM3VDEyIDJxLjk3NSAwIDEuNzUuNTYzVDE0LjgyNSA0SDIxdjJoLTJsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQxOC41IDE2cS0xLjQ1IDAtMi40NzUtLjg3NVQxNSAxM2wzLTdoLTMuMTc1cS0uMjI1LjY1LS43IDEuMTI1VDEzIDcuODI1VjE5aDEwdjJIMVptMTUuNjI1LThoMy43NUwxOC41IDguNjUgMTYuNjI1IDEzWm0tMTMgMGgzLjc1TDUuNSA4LjY1IDMuNjI1IDEzWk0xMiA2cS40MjUgMCAuNzEzLS4yODhUMTMgNXEwLS40MjUtLjI4OC0uNzEzVDEyIDRxLS40MjUgMC0uNzEzLjI4OFQxMSA1cTAgLjQyNS4yODguNzEzVDEyIDZaIi8+PC9zdmc+Cg=="></a></p>
+<a href="LICENSE"><img alt="License AGPL-3.0-or-later" src="https://img.shields.io/badge/License-AGPL--3.0-306EFF?style=flat-square&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDIxdi0yaDEwVjcuODI1UTEwLjM1IDcuNiA5Ljg3NSA3LjEyNVQ5LjE3NSA2SDZsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQ1LjUgMTZxLTEuNDUgMC0yLjQ3NS0uODc1VDIgMTNsMy03SDNWNGg2LjE3NXEuMy0uODc1IDEuMDc1LTEuNDM3VDEyIDJxLjk3NSAwIDEuNzUuNTYzVDE0LjgyNSA0SDIxdjJoLTJsMyA3cTAgMS4yNS0xLjAyNSAyLjEyNVQxOC41IDE2cS0xLjQ1IDAtMi40NzUtLjg3NVQxNSAxM2wzLTdoLTMuMTc1cS0uMjI1LjY1LS43IDEuMTI1VDEzIDcuODI1VjE5aDEwdjJIMVptMTUuNjI1LThoMy43NUwxOC41IDguNjUgMTYuNjI1IDEzWm0tMTMgMGgzLjc1TDUuNSA4LjY1IDMuNjI1IDEzWk0xMiA2cS40MjUgMCAuNzEzLS4yODhUMTMgNXEwLS40MjUtLjI4OC0uNzEzVDEyIDRxLS40MjUgMC0uNzEzLjI4OFQxMSA1cTAgLjQyNS4yODguNzEzVDEyIDZaIi8+PC9zdmc+Cg=="></a>
+</p>
 
-<p align="center"><b>高速なクロスプラットフォームの PikPak クライアント</b></p>
-
-<p align="center">開発状況と更新履歴は Telegram チャンネル <a href="https://t.me/piko_dev">@piko_dev</a> で公開しています</p>
+<p align="center">Telegram 更新チャンネル <a href="https://t.me/piko_dev">@piko_dev</a> ｜ <a href="https://t.me/+mTkqVFyYnjszMjA1">チャットグループ</a></p>
 
 <p align="center"><a href="https://trendshift.io/repositories/263280?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-263280" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/263280/weekly?language=Kotlin" alt="Trendshift: NihilDigit/piko" width="250" height="53"/></a></p>
 
 ## アダプティブレイアウト
 
-デスクトップではマウスとキーボードの操作に最適化し、モバイルでは簡潔に扱えます。マルチタブのワークスペース、ギャラリーでの動画と画像の閲覧、ローカルフォルダーを現在のドライブフォルダー内に読み取り専用でマウントして統合閲覧する機能に対応しています。インターフェースは簡体字中国語、繁体字中国語、韓国語、日本語、英語に対応しています。
+デスクトップではマウスとキーボードに最適化し、モバイルでは簡潔に扱えます。マルチタブとフォルダー固定、ギャラリーでの動画と画像の閲覧、ローカルフォルダーの読み取り専用マウントに対応しています。
 
 <p align="center">
 <picture>
@@ -45,9 +43,9 @@
 </picture>
 </p>
 
-## リンクとファイル名の解析
+## リンクとアーカイブ
 
-マグネットリンク、トレント、ダウンロード URL、共有リンクを解析し、保存前にプレビューして必要なファイルだけを選ぶか、ドライブ容量を消費しない参照として保存できます。ファイルは作品と話数ごとに整理され、サンプルや特典映像は折りたたまれます。
+マグネット、トレント、ed2k、thunder、直リンク、共有リンクを解析し、保存前に選択するか容量消費なしの参照として保存できます。クラウド上の圧縮ファイルは展開せずそのまま閲覧でき、エピソードの自動整理とサンプル類の折りたたみに対応しています。
 
 <p align="center">
 <picture>
@@ -56,9 +54,9 @@
 </picture>
 </p>
 
-## 転送
+## 再生と転送
 
-複数接続の並列スケジューリングにより遅いノードや無応答のノードを自動で回避し、高遅延や不安定な回線でも安定した再生とダウンロードを実現します。低速モードによる速度制限は再生に影響しません。
+並列接続で遅いノードを自動回避し、高遅延やプロキシ経由でも快適な再生とダウンロードを実現します。ハードウェアデコード内蔵プレーヤーと外部プレーヤー連携を備え、低速モードは再生に影響しません。
 
 <p align="center">
 <picture>
@@ -69,7 +67,7 @@
 
 ## ファイル処理
 
-ローカルのディレクトリツリーによる即時の全体あいまい検索に対応し、空き容量を確保するアーカイブ、動画クリップの切り出し、一括リネーム、フォルダーをまたぐ重複ファイル検出を備えています。
+ローカルツリーによる即時の全体検索と容量マップに対応し、空き容量を確保するアーカイブ、無劣化での動画切り出し、メタデータ取得による一括リネーム、フォルダー横断の重複検出を備えています。
 
 <p align="center">
 <picture>
@@ -78,14 +76,19 @@
 </picture>
 </p>
 
+## アカウントと同期
+
+パスワードと Google ログイン、複数アカウントの切り替えに対応。設定、ピン留めタブ、スターはドライブ経由で自動同期され、書庫パスワードとメタデータ設定は独立パスフレーズで暗号化できます。
+
 ## インストール
 
-[Releases](https://github.com/NihilDigit/piko/releases/latest) からダウンロードしてください。すべてのパッケージは GitHub Actions でソースからビルドされ、リリースページに端末ごとの対象ファイルが記載されています。
+[Releases](https://github.com/NihilDigit/piko/releases/latest) からダウンロードしてください。すべて GitHub Actions でソースからビルドされ、デスクトップ版と Android 版はアプリ内更新に対応しています。
 
-- **Android**：Android 8.0 以降。端末のアーキテクチャに合った APK を選択してください。不明な場合は `universal` を選んでください。
-- **Windows**：x64 は Windows 10 以降、arm64 は Windows 11 以降。`.msi` はインストーラー版、`.7z` はポータブル版です。Windows 11 はエクスプローラーで直接展開でき、Windows 10 では [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) または 7-Zip を使用してください。
-- **macOS**（実験的）：macOS 12 以降、Apple シリコン専用。公証されていないため、初回起動時は「システム設定」→「プライバシーとセキュリティ」から許可してください。
-- **Linux**（実験的）：x64、glibc 2.38 以降（Ubuntu 24.04、Debian 13、Fedora 39 以降）。ダウンロード後に AppImage へ実行権限を付与して起動してください。
+- **Android**：Android 8.0 以降。アーキテクチャに合った APK（不明な場合は `universal`）を選択してください。
+- **Windows**：x64 は Windows 10 以降、arm64 は Windows 11 以降。`.msi` はインストーラー版、`.7z` はポータブル版です（Windows 10 では [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) または 7-Zip で展開）。
+- **macOS**（実験的）：macOS 12 以降（Apple シリコン）。初回起動時は「システム設定 → プライバシーとセキュリティ」から許可してください。
+- **Linux**（実験的）：x64、glibc 2.38 以降（Ubuntu 24.04、Debian 13、Fedora 39 以降）。AppImage に実行権限を付与して起動してください。
+- **iOS / iPadOS**（実験的）：iOS 15 以降。未署名 `.ipa` を AltStore、SideStore、Sideloadly、TrollStore 等でサイドロードしてください。
 
 ## コントリビューション
 
