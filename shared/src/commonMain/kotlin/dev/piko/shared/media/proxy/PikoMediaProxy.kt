@@ -130,8 +130,14 @@ class PikoMediaProxy(
                 // 每个响应都带 Connection: close，客户端之后不会再发数据，
                 // 读端结束就是对方断开了：立刻取消响应，结束当前请求的 ReadTicket
                 val watcher = launch {
-                    input.discard()
-                    response.cancel()
+                    try {
+                        input.discard()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
+                        // 客户端携带未读接收缓冲直接关闭 socket 时（如 Windows TCP RST），读端抛 IO 异常同样代表客户端已断开
+                    }
+                    response.cancel(ProxySession.ClientDisconnectedCancellation())
                 }
                 response.join()
                 watcher.cancel()

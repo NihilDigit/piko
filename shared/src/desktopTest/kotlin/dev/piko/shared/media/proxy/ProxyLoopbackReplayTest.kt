@@ -334,8 +334,6 @@ class ProxyLoopbackReplayTest {
         val holdBlock9At64K = CompletableDeferred<Unit>()
         val lookAheadEntered = CompletableDeferred<Unit>()
         val lookAheadGate = CompletableDeferred<Unit>()
-        val staleBlock10ParkedAt64K = CompletableDeferred<Unit>()
-        val staleBlock10TailGate = CompletableDeferred<Unit>()
         val preHeaderEntered = CompletableDeferred<Unit>()
         val preHeaderGate = CompletableDeferred<Unit>()
         val midBodyParked = CompletableDeferred<Unit>()
@@ -362,10 +360,6 @@ class ProxyLoopbackReplayTest {
                         } finally {
                             speculativeInFlight.decrementAndGet()
                         }
-                    }
-                    offset == oldOffset + 2L * blockBytes + 64L * 1024L -> {
-                        staleBlock10ParkedAt64K.complete(Unit)
-                        staleBlock10TailGate.await()
                     }
                     offset == withdrawPreHeaderOffset.toLong() -> {
                         preHeaderEntered.complete(Unit)
@@ -418,26 +412,28 @@ class ProxyLoopbackReplayTest {
             assertFalse(lookAheadGate.isCompleted)
             assertEquals(1, harness.activeCdnRequests.get(), "旧连接当前正在读的单块 Required 不得被误杀")
 
-            // 放行旧流继续跨块读取：旧 206 连接平滑送达后续字节（零提前 EOF），且跨入下一块时不再派生任何新 LookAhead
+            // 放行旧流收完当前在途块（slot 9 剩余 224,288B）：平滑送达后续字节（零提前 EOF），且在未跨入新块前不派生任何 LookAhead
             lookAheadGate.complete(Unit)
             val lookAheadCountBeforeContinue = harness.cdnRanges.count {
-                it.first in (oldOffset + 3L * blockBytes) until (oldOffset + 6L * blockBytes)
+                it.first in (oldOffset + 2L * blockBytes) until (oldOffset + 6L * blockBytes)
             }
             holdBlock9At64K.complete(Unit)
-            val continued250K = withTimeout(5_000) { withContext(Dispatchers.IO) { openedOld.body.readNBytes(250_000) } }
+            val remainingInSlot9 = (2L * blockBytes - 300_000L).toInt()
+            val continuedSlot9 = withTimeout(5_000) {
+                withContext(Dispatchers.IO) { openedOld.body.readNBytes(remainingInSlot9) }
+            }
             assertContentEquals(
-                payload.copyOfRange(oldOffset.toInt() + 300_000, oldOffset.toInt() + 550_000),
-                continued250K,
+                payload.copyOfRange(oldOffset.toInt() + 300_000, oldOffset.toInt() + 300_000 + remainingInSlot9),
+                continuedSlot9,
             )
-            withTimeout(5_000) { staleBlock10ParkedAt64K.await() }
             delay(50)
             assertEquals(
                 lookAheadCountBeforeContinue,
-                harness.cdnRanges.count { it.first in (oldOffset + 3L * blockBytes) until (oldOffset + 6L * blockBytes) },
-                "过期 epoch 的残余连接仅允许单块 Required，严禁再触发后续块 LookAhead: ${harness.cdnRanges}",
+                harness.cdnRanges.count { it.first in (oldOffset + 2L * blockBytes) until (oldOffset + 6L * blockBytes) },
+                "epoch 推进重置连续证据后，当前块收尾期间严禁派生后续块 LookAhead: ${harness.cdnRanges}",
             )
 
-            // 3. 新世代 hr-seek 落点请求并发秒回 206；随后客户端主动关闭旧 socket 时，allowFinishInFlight=false 立即取消旧尾块
+            // 3. 新世代 hr-seek 落点请求并发秒回 206；随后客户端关闭旧 socket 时无残留请求
             val fresh = withTimeout(5_000) {
                 request(stream.url, range = "bytes=$newEpochOffset-${newEpochOffset + 8191}")
             }
@@ -445,10 +441,9 @@ class ProxyLoopbackReplayTest {
             assertContentEquals(payload.copyOfRange(newEpochOffset, newEpochOffset + 8192), fresh.body)
 
             openedOld.socket.close()
-            awaitUntil("旧世代客户端断开后不保留 FinishInFlight，在途尾块立即归零") {
+            awaitUntil("旧连接关闭且新请求完成后在途 CDN 请求归零") {
                 harness.activeCdnRequests.get() == 0
             }
-            assertFalse(staleBlock10TailGate.isCompleted)
             assertFalse(stream.session.isWithdrawn)
             assertFalse(stream.session.isClosed)
 
@@ -502,7 +497,6 @@ class ProxyLoopbackReplayTest {
         } finally {
             holdBlock9At64K.complete(Unit)
             lookAheadGate.complete(Unit)
-            staleBlock10TailGate.complete(Unit)
             preHeaderGate.complete(Unit)
             midBodyGate.complete(Unit)
             runCatching { oldConn?.socket?.close() }
@@ -613,9 +607,249 @@ class ProxyLoopbackReplayTest {
         }
     }
 
+    @Test
+    fun usNodeHighTtfb11KibChunkedDualConnectionSeekCompletesOldBlockInSingleUpstreamRequest() = runBlocking {
+        val virtualFileSize = 3_000_000_000L
+        val blockBytes = PikPakStreamReader.DEFAULT_BLOCK_SIZE
+        val oldStartOffset = 1_101_070L
+        val oldSlotStart = (oldStartOffset / blockBytes) * blockBytes // 1_048_576L (slot 4)
+        val oldSlotEndExclusive = oldSlotStart + blockBytes // 1_310_720L
+        val newSeekOffset = 2_571_108_352L
+        val chunkSize = 11 * 1024
+
+        val harness = ChunkedPikPakHarness(
+            payload = null,
+            totalSize = virtualFileSize,
+            chunkBytes = chunkSize,
+            ttfbMillis = 1_100L,
+            chunkDelayMillis = 8L,
+            connectionBudget = 4,
+        )
+        val demand = harness.client.openTransferDemand(
+            ConsumerIntent(
+                epoch = 0L,
+                service = ServiceIntent.PLAYING,
+                bufferBudget = BufferBudget(maxReadAheadBytes = 2L * 1024 * 1024),
+            ),
+        )
+        val stream = proxy.register(harness.byteSource, "us-node-seek.mkv", demand)
+        var oldConn: dev.piko.shared.media.testing.OpenResponse? = null
+        var newConn: dev.piko.shared.media.testing.OpenResponse? = null
+        try {
+            // 1. 客户端打开 Range: bytes=1101070-，经历 1.1s TTFB 后先读出 2 个 11 KiB 分片
+            val openedOld = withTimeout(10_000) {
+                openRequest(stream.url, range = "bytes=$oldStartOffset-").also {
+                    it.socket.soTimeout = 10_000
+                    oldConn = it
+                }
+            }
+            assertEquals(206, openedOld.status)
+            val initialReadLen = 2 * chunkSize
+            val initialBytes = withTimeout(10_000) {
+                withContext(Dispatchers.IO) { openedOld.body.readNBytes(initialReadLen) }
+            }
+            assertEquals(initialReadLen, initialBytes.size)
+            assertContentEquals(harness.expectedBytes(oldStartOffset, initialReadLen), initialBytes)
+
+            // 2. UI 发起 Seek 推进 epoch=1 (WAITING)，但 FFmpeg http_seek_internal 仍保持旧连接读取当前 256 KiB 块剩余分片，
+            //    同时并发建立新 Range: bytes=2571108352- 连接（双连接并存 + 11 KiB 分片间隔期间 ReadWaiter 反复卸下转为 Continuation）
+            demand.submitIntent(
+                ConsumerIntent(
+                    epoch = 1L,
+                    service = ServiceIntent.WAITING,
+                    bufferBudget = BufferBudget(maxReadAheadBytes = 2L * 1024 * 1024),
+                ),
+            )
+
+            val remainingInOldSlot = (oldSlotEndExclusive - (oldStartOffset + initialReadLen)).toInt()
+            val drainOldSlot = async(Dispatchers.IO) {
+                val out = ByteArray(remainingInOldSlot)
+                var copied = 0
+                while (copied < remainingInOldSlot) {
+                    val step = minOf(chunkSize, remainingInOldSlot - copied)
+                    val got = openedOld.body.readNBytes(step)
+                    assertEquals(step, got.size, "旧连接在当前 256 KiB 块内严禁出现提前 EOF (copied=$copied/$remainingInOldSlot)")
+                    got.copyInto(out, destinationOffset = copied)
+                    copied += got.size
+                    if (copied < remainingInOldSlot) delay(4)
+                }
+                out
+            }
+
+            val newSeekStartMark = kotlin.time.TimeSource.Monotonic.markNow()
+            val fetchNewRange = async(Dispatchers.IO) {
+                val openedNew = openRequest(stream.url, range = "bytes=$newSeekOffset-").also {
+                    it.socket.soTimeout = 10_000
+                    newConn = it
+                }
+                assertEquals(206, openedNew.status)
+                openedNew.body.readNBytes(64 * 1024)
+            }
+
+            val newPrefix = withTimeout(8_000) { fetchNewRange.await() }
+            val newSeekElapsedMs = newSeekStartMark.elapsedNow().inWholeMilliseconds
+            val restOfOldSlot = withTimeout(8_000) { drainOldSlot.await() }
+
+            openedOld.socket.close()
+            newConn?.socket?.close()
+
+            assertEquals(64 * 1024, newPrefix.size)
+            assertContentEquals(harness.expectedBytes(newSeekOffset, 64 * 1024), newPrefix)
+            assertContentEquals(
+                harness.expectedBytes(oldStartOffset + initialReadLen, remainingInOldSlot),
+                restOfOldSlot,
+            )
+            assertTrue(
+                newSeekElapsedMs < 6_000L,
+                "新落点请求不应受旧块自杀重试拖累: elapsed=${newSeekElapsedMs}ms",
+            )
+            val slot4Requests = harness.cdnRanges.filter { it.first in oldSlotStart until oldSlotEndExclusive }
+            assertEquals(
+                1,
+                slot4Requests.size,
+                "旧 256 KiB 块必须由单次上游 HTTP 请求连续收完（严禁 11 KiB Withdrawn 自取消循环）: all=${harness.cdnRanges}",
+            )
+        } finally {
+            runCatching { oldConn?.socket?.close() }
+            runCatching { newConn?.socket?.close() }
+            stream.close()
+            harness.close()
+        }
+    }
+
+    @Test
+    fun idleOpenRangeBytesZeroAfter11KibReadCapsAtSingleInitial256KibBlock() = runBlocking {
+        val payload = FakePikPakCloud.payload(8 * 1024 * 1024)
+        val chunkSize = 11 * 1024
+        val harness = ChunkedPikPakHarness(
+            payload = payload,
+            chunkBytes = chunkSize,
+            chunkDelayMillis = 2L,
+            connectionBudget = 4,
+        )
+        val demand = harness.client.openTransferDemand(
+            ConsumerIntent(
+                epoch = 0L,
+                service = ServiceIntent.WAITING,
+                bufferBudget = BufferBudget(maxReadAheadBytes = 2L * 1024 * 1024),
+            ),
+        )
+        val stream = proxy.register(harness.byteSource, "idle-open-zero.mp4", demand)
+        var openConn: dev.piko.shared.media.testing.OpenResponse? = null
+        try {
+            // 客户端打开无界 Range: bytes=0-，仅读取 11 KiB 后保持 socket 打开但彻底停读
+            val opened = openRequest(stream.url, range = "bytes=0-", receiveBufferSize = 16 * 1024).also {
+                it.socket.soTimeout = 5_000
+                openConn = it
+            }
+            assertEquals(206, opened.status)
+            val first11K = withTimeout(5_000) {
+                withContext(Dispatchers.IO) { opened.body.readNBytes(chunkSize) }
+            }
+            assertContentEquals(payload.copyOfRange(0, chunkSize), first11K)
+
+            // Continuation 最多收完当前单个 256 KiB 块即自然停在块边界，严禁向后续块失控拉穿至 EOF
+            awaitUntil("首块收尾完成且在途请求归零") {
+                harness.deliveredCdnBytes.get() >= chunkSize && harness.activeCdnRequests.get() == 0
+            }
+            delay(200)
+            assertEquals(0, harness.activeCdnRequests.get())
+            assertEquals(
+                1,
+                harness.cdnRanges.size,
+                "空闲开放 Range: bytes=0- 停读后仅允许请求首个 256 KiB 块: ${harness.cdnRanges}",
+            )
+            assertTrue(
+                harness.cdnRanges.none { it.first >= PikPakStreamReader.DEFAULT_BLOCK_SIZE },
+                "未建立跨块读取证据前严禁派发后续块请求: ${harness.cdnRanges}",
+            )
+            assertTrue(
+                harness.deliveredCdnBytes.get() <= PikPakStreamReader.DEFAULT_BLOCK_SIZE,
+                "上游总交付字节不得超过单个 256 KiB 块: delivered=${harness.deliveredCdnBytes.get()}",
+            )
+        } finally {
+            runCatching { openConn?.socket?.close() }
+            stream.close()
+            harness.close()
+        }
+    }
+
+    @Test
+    fun cachedSeekOnSameOpen206SocketReestablishesBoundedLookAheadUnderNewEpoch() = runBlocking {
+        val payload = FakePikPakCloud.payload(16 * 1024 * 1024)
+        val blockBytes = PikPakStreamReader.DEFAULT_BLOCK_SIZE
+        val harness = ChunkedPikPakHarness(
+            payload = payload,
+            chunkBytes = 11 * 1024,
+            chunkDelayMillis = 1L,
+            connectionBudget = 4,
+        )
+        val demand = harness.client.openTransferDemand(
+            ConsumerIntent(
+                epoch = 0L,
+                service = ServiceIntent.PLAYING,
+                bufferBudget = BufferBudget(maxReadAheadBytes = 1024L * 1024),
+            ),
+        )
+        val stream = proxy.register(harness.byteSource, "cached-seek-reuse.mkv", demand)
+        var openConn: dev.piko.shared.media.testing.OpenResponse? = null
+        try {
+            val conn = openRequest(stream.url, range = "bytes=0-").also {
+                it.socket.soTimeout = 10_000
+                openConn = it
+            }
+            assertEquals(206, conn.status)
+
+            // 1. epoch=0 下读取 300 KiB（跨过首块边界），建立首轮顺序预读并等待其静默
+            val firstRead = 300_000
+            val part1 = withTimeout(10_000) {
+                withContext(Dispatchers.IO) { conn.body.readNBytes(firstRead) }
+            }
+            assertContentEquals(payload.copyOfRange(0, firstRead), part1)
+            awaitUntil("epoch=0 预读窗口稳定") { harness.activeCdnRequests.get() == 0 }
+
+            // 2. mpv 在解复用内部缓存内完成小范围 Seek（不关闭原 HTTP 206 连接），UI 推进 epoch: 0 -> 1
+            demand.submitIntent(
+                ConsumerIntent(
+                    epoch = 1L,
+                    service = ServiceIntent.PLAYING,
+                    bufferBudget = BufferBudget(maxReadAheadBytes = 1024L * 1024),
+                ),
+            )
+            delay(60)
+            val rangesRightAfterEpochBump = harness.cdnRanges.size
+
+            // 3. 客户端继续沿同一条 HTTP 206 连接顺序跨块读取至 1.6 MiB（落入 slot 6）：
+            //    原连接在新 epoch=1 下重新挂载 ReadLane 并重建有界 LookAhead（预取 slot 7+），同时不越过 1 MiB 预算上限
+            val secondRead = 1_300_000
+            val totalRead = firstRead + secondRead // 1_600_000 (slot 6: 1_572_864..1_835_007)
+            val part2 = withTimeout(10_000) {
+                withContext(Dispatchers.IO) { conn.body.readNBytes(secondRead) }
+            }
+            assertContentEquals(payload.copyOfRange(firstRead, totalRead), part2)
+
+            val slot7Start = 7L * blockBytes // 1_835_008 > totalRead (1_600_000)
+            awaitUntil("同一 206 连接在 epoch=1 下跨块读取后重建顺序 LookAhead (slot 7+)") {
+                harness.cdnRanges.size > rangesRightAfterEpochBump &&
+                    harness.cdnRanges.any { it.last >= slot7Start }
+            }
+            awaitUntil("epoch=1 重建的 LookAhead 在预算边界内收尾") { harness.activeCdnRequests.get() == 0 }
+            assertTrue(
+                harness.cdnRanges.none { it.first >= totalRead.toLong() + 2L * 1024 * 1024 },
+                "复用旧连接重建的 LookAhead 仍须严格受单一 owner 预算钳制: ${harness.cdnRanges}",
+            )
+        } finally {
+            runCatching { openConn?.socket?.close() }
+            stream.close()
+            harness.close()
+        }
+    }
+
     private class ChunkedPikPakHarness(
-        private val payload: ByteArray,
+        private val payload: ByteArray? = null,
+        private val totalSize: Long = payload?.size?.toLong() ?: error("payload or totalSize is required"),
         private val chunkBytes: Int = 4 * 1024,
+        private val ttfbMillis: Long = 0L,
         private val chunkDelayMillis: Long = 0L,
         connectionBudget: Int = 4,
         private val beforeChunk: (suspend (Long) -> Unit)? = null,
@@ -643,22 +877,30 @@ class ProxyLoopbackReplayTest {
         private val handle = PikPakFileHandle(
             client = client,
             gcid = "GCIDREPLAY0001",
-            size = payload.size.toLong(),
+            size = totalSize,
             name = "replay.mp4",
             initialFileId = "f1",
             connectionBudget = connectionBudget,
-            streamSize = payload.size.toLong(),
+            streamSize = totalSize,
         )
 
         private val cache = client.fileCache(
             source = handle,
-            size = payload.size.toLong(),
+            size = totalSize,
             storeKey = handle.contentKey,
             connectionBudget = connectionBudget,
             coroutineContext = Dispatchers.IO,
         )
 
         val byteSource: ProxyByteSource = PikPakByteSource(handle, cache)
+
+        fun expectedBytes(start: Long, length: Int): ByteArray {
+            val backing = payload
+            if (backing != null) {
+                return backing.copyOfRange(start.toInt(), start.toInt() + length)
+            }
+            return ByteArray(length) { idx -> virtualByteAt(start + idx) }
+        }
 
         private suspend fun MockRequestHandleScope.handleRequest(request: HttpRequestData): HttpResponseData {
             val path = request.url.encodedPath
@@ -671,7 +913,7 @@ class ProxyLoopbackReplayTest {
                 request.method == HttpMethod.Get && path.contains("/drive/v1/files/") -> {
                     val url = "https://$CDN_HOST/origin/f1"
                     json(
-                        """{"kind":"drive#file","id":"f1","parent_id":"root","name":"replay.mp4","size":"${payload.size}",
+                        """{"kind":"drive#file","id":"f1","parent_id":"root","name":"replay.mp4","size":"$totalSize",
                             "phase":"PHASE_TYPE_COMPLETE","hash":"GCIDREPLAY0001","mime_type":"video/mp4",
                             "links":{"application/octet-stream":{"url":"$url","expire":""}},
                             "medias":[{"media_id":"morigin","media_name":"Original","is_origin":true,
@@ -683,63 +925,96 @@ class ProxyLoopbackReplayTest {
             }
         }
 
-        private fun MockRequestHandleScope.serveChunkedCdn(request: HttpRequestData): HttpResponseData {
+        private suspend fun MockRequestHandleScope.serveChunkedCdn(request: HttpRequestData): HttpResponseData {
             val spec = request.headers[HttpHeaders.Range]?.removePrefix("bytes=")
             val start = spec?.substringBefore('-')?.toLong() ?: 0L
-            val endInclusive = spec?.substringAfter('-')?.toLongOrNull()?.coerceAtMost(payload.size - 1L)
-                ?: (payload.size - 1L)
+            val endInclusive = spec?.substringAfter('-')?.toLongOrNull()?.coerceAtMost(totalSize - 1L)
+                ?: (totalSize - 1L)
             cdnRanges.add(start..endInclusive)
-            val length = (endInclusive - start + 1L).toInt()
-            val channel = ByteChannel(autoFlush = true)
+            val contentLength = endInclusive - start + 1L
             activeCdnRequests.incrementAndGet()
-            val producerJob = streamScope.launch {
-                try {
-                    var offset = start.toInt()
-                    val endExclusive = endInclusive.toInt() + 1
-                    while (offset < endExclusive && !channel.isClosedForWrite && !channel.isClosedForRead) {
-                        while (channel.availableForRead > 0 && !channel.isClosedForWrite && !channel.isClosedForRead) {
-                            yield()
-                        }
-                        if (channel.isClosedForWrite || channel.isClosedForRead) break
-                        beforeChunk?.invoke(offset.toLong())
-                        if (chunkDelayMillis > 0L) delay(chunkDelayMillis)
-                        if (channel.isClosedForWrite || channel.isClosedForRead) break
-                        val n = minOf(chunkBytes, endExclusive - offset)
-                        channel.writeFully(payload, offset, offset + n)
-                        deliveredCdnBytes.addAndGet(n.toLong())
-                        offset += n
+            var streamingStarted = false
+            try {
+                if (ttfbMillis > 0L) {
+                    val sleepJob = streamScope.launch { delay(ttfbMillis) }
+                    val cancelHandle = request.executionContext.invokeOnCompletion { cause ->
+                        if (cause != null) sleepJob.cancel(kotlinx.coroutines.CancellationException("request cancelled", cause))
                     }
-                    channel.close()
-                } catch (t: Throwable) {
-                    channel.close(t)
-                } finally {
+                    try {
+                        sleepJob.join()
+                        if (!request.executionContext.isActive) {
+                            throw kotlinx.coroutines.CancellationException("request cancelled during TTFB")
+                        }
+                    } finally {
+                        cancelHandle.dispose()
+                        sleepJob.cancel()
+                    }
+                }
+                val channel = ByteChannel(autoFlush = true)
+                val scratch = if (payload == null) ByteArray(chunkBytes) else null
+                streamingStarted = true
+                val producerJob = streamScope.launch {
+                    try {
+                        var offset = start
+                        val endExclusive = endInclusive + 1L
+                        while (offset < endExclusive && !channel.isClosedForWrite && !channel.isClosedForRead) {
+                            while (channel.availableForRead > 0 && !channel.isClosedForWrite && !channel.isClosedForRead) {
+                                yield()
+                            }
+                            if (channel.isClosedForWrite || channel.isClosedForRead) break
+                            beforeChunk?.invoke(offset)
+                            if (chunkDelayMillis > 0L) delay(chunkDelayMillis)
+                            if (channel.isClosedForWrite || channel.isClosedForRead) break
+                            val n = minOf(chunkBytes.toLong(), endExclusive - offset).toInt()
+                            val backing = payload
+                            if (backing != null) {
+                                channel.writeFully(backing, offset.toInt(), offset.toInt() + n)
+                            } else {
+                                val buf = scratch!!
+                                for (i in 0 until n) {
+                                    buf[i] = virtualByteAt(offset + i)
+                                }
+                                channel.writeFully(buf, 0, n)
+                            }
+                            deliveredCdnBytes.addAndGet(n.toLong())
+                            offset += n
+                        }
+                        channel.close()
+                    } catch (t: Throwable) {
+                        channel.close(t)
+                    } finally {
+                        activeCdnRequests.decrementAndGet()
+                    }
+                }
+                val completionHandle = request.executionContext.invokeOnCompletion { cause ->
+                    if (cause != null) {
+                        channel.cancel(cause)
+                        producerJob.cancel()
+                    }
+                }
+                producerJob.invokeOnCompletion { completionHandle.dispose() }
+                streamScope.launch {
+                    while (producerJob.isActive && !channel.isClosedForWrite && !channel.isClosedForRead) {
+                        delay(5)
+                    }
+                    if (producerJob.isActive && (channel.isClosedForWrite || channel.isClosedForRead)) {
+                        producerJob.cancel()
+                    }
+                }
+                return respond(
+                    content = channel,
+                    status = HttpStatusCode.PartialContent,
+                    headers = headersOf(
+                        HttpHeaders.ContentRange to listOf("bytes $start-$endInclusive/$totalSize"),
+                        HttpHeaders.ContentLength to listOf(contentLength.toString()),
+                        HttpHeaders.ContentType to listOf("application/octet-stream"),
+                    ),
+                )
+            } finally {
+                if (!streamingStarted) {
                     activeCdnRequests.decrementAndGet()
                 }
             }
-            val completionHandle = request.executionContext.invokeOnCompletion { cause ->
-                if (cause != null) {
-                    channel.cancel(cause)
-                    producerJob.cancel()
-                }
-            }
-            producerJob.invokeOnCompletion { completionHandle.dispose() }
-            streamScope.launch {
-                while (producerJob.isActive && !channel.isClosedForWrite && !channel.isClosedForRead) {
-                    delay(5)
-                }
-                if (producerJob.isActive && (channel.isClosedForWrite || channel.isClosedForRead)) {
-                    producerJob.cancel()
-                }
-            }
-            return respond(
-                content = channel,
-                status = HttpStatusCode.PartialContent,
-                headers = headersOf(
-                    HttpHeaders.ContentRange to listOf("bytes $start-$endInclusive/${payload.size}"),
-                    HttpHeaders.ContentLength to listOf(length.toString()),
-                    HttpHeaders.ContentType to listOf("application/octet-stream"),
-                ),
-            )
         }
 
         private fun MockRequestHandleScope.json(body: String) = respond(
@@ -756,6 +1031,8 @@ class ProxyLoopbackReplayTest {
 
         private companion object {
             const val CDN_HOST = "cdn.replay.test"
+
+            fun virtualByteAt(offset: Long): Byte = (((offset * 31L) + (offset / 251L)) and 0xFFL).toByte()
         }
     }
 }

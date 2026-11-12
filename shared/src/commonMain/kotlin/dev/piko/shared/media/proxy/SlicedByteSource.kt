@@ -2,9 +2,11 @@ package dev.piko.shared.media.proxy
 
 import dev.piko.shared.util.PikoLock
 import dev.piko.shared.util.withPikoLock
+import io.github.nihildigit.pikpak.ReadEndReason
 import io.github.nihildigit.pikpak.ReadTicket
 import io.github.nihildigit.pikpak.StreamRole
 import io.github.nihildigit.pikpak.TransferDemand
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.concurrent.Volatile
@@ -242,7 +244,7 @@ internal class SlicedByteSource(
                 val got = try {
                     readTicketFully(hdrTicket, headerScratch, 0, 3)
                 } finally {
-                    hdrTicket.endRead(allowFinishInFlight = false)
+                    hdrTicket.endRead(ReadEndReason.Cancelled)
                 }
                 val mask = got == 3 && isTargetVideoHeader(headerScratch[0], headerScratch[1], headerScratch[2])
                 if (got == 3) recordDecision(pktIndex, mask)
@@ -281,8 +283,8 @@ internal class SlicedByteSource(
             return total
         }
 
-        override fun endRead(allowFinishInFlight: Boolean) {
-            innerTicket.endRead(allowFinishInFlight)
+        override fun endRead(reason: ReadEndReason) {
+            innerTicket.endRead(reason)
         }
     }
 

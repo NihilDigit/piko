@@ -21,6 +21,7 @@ import io.github.nihildigit.pikpak.BufferBudget
 import io.github.nihildigit.pikpak.ConsumerIntent
 import dev.piko.shared.media.cache.PikoFileCachePool
 import dev.piko.download.DownloadTask
+import io.github.nihildigit.pikpak.ReadEndReason
 import io.github.nihildigit.pikpak.ServiceIntent
 import io.github.nihildigit.pikpak.TransferDemand
 import io.github.nihildigit.pikpak.PikPakStreamReader
@@ -886,6 +887,7 @@ class PikoMediaRepository(
             }
             val owner = contextOwner ?: tempOwner!!
             val ticket = beginRead(owner, startOffset, startOffset + maxAvailable)
+            var endReason = ReadEndReason.Cancelled
             try {
                 var scanned = 0L
                 val scratch = ByteArray(minOf(KEYFRAME_SCAN_CHUNK.toLong(), maxAvailable).toInt())
@@ -897,8 +899,15 @@ class PikoMediaRepository(
                     scanner.feed(chunk, startOffset + scanned)?.let { return it }
                     scanned += filled
                 }
+                endReason = ReadEndReason.RangeCompleted
+            } catch (e: CancellationException) {
+                endReason = ReadEndReason.Cancelled
+                throw e
+            } catch (e: Exception) {
+                endReason = ReadEndReason.SourceFailed
+                throw e
             } finally {
-                ticket.endRead(allowFinishInFlight = false)
+                ticket.endRead(endReason)
                 tempOwner?.close()
             }
             return scanner.finish()

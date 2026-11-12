@@ -5,6 +5,7 @@ import dev.piko.shared.util.withPikoLock
 import io.github.nihildigit.pikpak.PikPakFileCache
 import io.github.nihildigit.pikpak.PikPakFileHandle
 import io.github.nihildigit.pikpak.PikPakStreamReader
+import io.github.nihildigit.pikpak.ReadEndReason
 import io.github.nihildigit.pikpak.ReadTicket
 import io.github.nihildigit.pikpak.StreamRole
 import io.github.nihildigit.pikpak.TransferDemand
@@ -134,7 +135,7 @@ private class ReaderBackedReadTicket(
         return got
     }
 
-    override fun endRead(allowFinishInFlight: Boolean) {
+    override fun endRead(reason: ReadEndReason) {
         val toClose = withPikoLock(lock) {
             if (ended) return
             ended = true

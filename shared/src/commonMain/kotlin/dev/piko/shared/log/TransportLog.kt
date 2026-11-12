@@ -38,14 +38,13 @@ fun logRangeAttempt(attempt: RangeAttempt) {
 
     val level = when (attempt.outcome) {
         RangeAttempt.Outcome.Rejected -> LogLevel.WARN
-        RangeAttempt.Outcome.Failed -> {
-            if (attempt.endReason == RangeAttempt.EndReason.Preempted ||
-                attempt.endReason == RangeAttempt.EndReason.DemandDeadline
-            ) {
-                LogLevel.DEBUG
-            } else {
-                LogLevel.WARN
-            }
+        RangeAttempt.Outcome.Failed -> when (attempt.endReason) {
+            RangeAttempt.EndReason.Preempted,
+            RangeAttempt.EndReason.Withdrawn,
+            RangeAttempt.EndReason.BoundaryStop,
+            RangeAttempt.EndReason.OptimizedReplacement,
+            -> LogLevel.DEBUG
+            else -> LogLevel.WARN
         }
         else -> LogLevel.DEBUG
     }

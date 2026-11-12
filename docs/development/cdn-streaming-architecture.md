@@ -114,16 +114,16 @@
 
 ---
 
-## 四、重构后的四层需求所有权正交取流架构
+## 四、重构后的四层需求所有权与 VFS 流式正交架构
 
-基于「需求所有权（Demand Ownership）+ 真实读取证据驱动块计划 + 纯 HTTP 票据桥接」的正交原则与上述 CDN 实测定律，整体架构收敛为职责严格解耦的四层，彻底废除跨层猜测性布尔状态：
+基于「需求所有权（Demand Ownership）+ VFS 读取器生命周期 + 证据驱动多块条带 + 安全点 ETA 换流」的正交原则，我们将**「已有读取如何继续」「还能生产多少字节」「何时值得更换执行路径」**拆成三个互不越界的决定，收敛为职责严格解耦的四层，彻底废除跨层猜测性布尔状态与固定时钟盲切：
 
 ```mermaid
 flowchart TD
     L1["1. 消费意图与所有权层 (PlayerScreenState / ClipStreams -> TransferDemand)"]
-    L2["2. 纯协议与确定性字节视图层 (PikoMediaProxy / ProxySession / SlicedByteSource)"]
-    L3["3. 证据驱动计划与块缓存层 (BlockCache.planLocked + ReadLane)"]
-    L4["4. 共享节点池与传输层 (HostHealth / RangeReader / ActiveResponseGuard)"]
+    L2["2. 纯协议事实与确定性字节视图层 (PikoMediaProxy / ProxySession / ReadEndReason / SlicedByteSource)"]
+    L3["3. VFS 读取器、五类字节诉求与多块条带层 (BlockCache: OpenReader + Continuation + Fair-Share Striping)"]
+    L4["4. 共享节点池、安全点 ETA 换流与门控交接层 (HostHealth / RecoveryPolicy / RangeReader / SignedUrlGates)"]
 
     L1 --> L3
     L2 --> L3
@@ -133,25 +133,45 @@ flowchart TD
 ### 1. 消费意图与所有权层（`PlayerScreenState` / `ClipStreams` → `TransferDemand`）
 - 每个播放会话、信息流片段或预热流程持有唯一 `TransferDemand`，通过不可变快照 `ConsumerIntent(epoch, service, bufferBudget, playbackSample)` 原子声明消费意图：
   - **`ServiceIntent`**：`WAITING`（首帧前、定位恢复或缓冲欠载）、`PLAYING`（稳态连续播放）、`PREFETCH`（信息流离屏邻页预渲染与后台预热）、`PAUSED`（暂停或工作区挂起，配搭 `BufferBudget.NONE`）。
-  - **`epoch` 与码率溯源隔离**：定位或重绑播放器时单调递增 `epoch`，丢弃旧世代缓冲读数（未知缓冲严格保持 `bufferedDuration = null`，绝不伪造 `0ms` 假紧急截止期）；单持有者当前世代的采样码率（`ownerMediaRateLocked`）仅作用于该持有者自身并随 `epoch` 推进自动复位，不污染共享缓存上其他持有者的文件基准码率。
+  - **`epoch` 仅撤回投机与码率溯源隔离**：定位或重绑播放器时单调递增 `epoch`，仅撤回旧世代的投机状态并丢弃旧世代缓冲读数（未知缓冲严格保持 `bufferedDuration = null`），绝不主动掐断仍在读取的开放票据；单持有者当前世代的采样码率（`ownerMediaRateLocked`）仅作用于该持有者自身并随 `epoch` 推进自动复位，不污染共享缓存上其他持有者的文件基准码率。
 - `ClipStreams` 以单一权威 `ClipDisplayDemand` 投影焦点页、等待候选页与预渲染邻页，冷启动与末页探索从详情获取、切片准备到字节拉取全程原地复用并提权同一 `TransferDemand`。
 - 无活跃字节诉求的空闲 `TransferDemand` 恒定占用 `0` 连接、发起 `0` 请求，彻底移除全局饥饿广播（`isAccountHungry`）以及 `updatePhase(urgent, steady)`、`ClipStreamPhase` 等散落布尔状态。
 
-### 2. 纯协议与确定性字节视图层（`ProxySession` / `SlicedByteSource`）
-- **`ProxySession` + `ReadTicket`**：纯粹的 `HTTP Range ⇄ ReadTicket`（`beginRead` / `readSome` / `endRead`）无策略适配器，彻底删除 `entry.streaming` 跨块猜流、`configureReaders()` 策略计算与 `1500ms` 连接池保活定时器；单次 HTTP 响应完成或客户端断开连接时立即在 `finally` 中调用 `endRead` 释放该票据，而会话级 `TransferDemand` 存活至 `withdrawTransport()` / `close()`。
-- **`reconnect=0` 会话内 `hr-seek` 世代规则**：由于本机回环 `127.0.0.1` 显式禁用 FFmpeg 自动重连（`reconnect=0`），会话内拖动推进 `owner.intent.epoch` 时，缓存层在 `0ms` 内立即撤回旧世代的投机状态（`ReadLane`、`LookAhead`、`FinishInFlight` 与旧截止期），但**保留仍在读取的旧世代 `206` 票据不断流**（旧票据在客户端自行关闭旧连接前仅发出当前 `readSome` 所需的单块 `Required`，`0` `LookAhead`，且客户端断开时由 `ProxySession` 传入 `allowFinishInFlight = false` 立即取消残余块），防止 FFmpeg 报 `Stream ends prematurely` 假死；仅在 `withdrawTransport()`（`owner.isClosed`）或缓存关闭时才立即切断所有在途连接（未发响应头连接以 `0` 字节干净 EOF 收尾，绝不误回 `502`）。
+### 2. 纯协议事实与确定性字节视图层（`PikoMediaProxy` / `ProxySession` / `SlicedByteSource`）
+- **`ProxySession` + 纯事实型 `ReadEndReason`**：纯粹的 `HTTP Range ⇄ ReadTicket`（`beginRead` / `readSome` / `endRead`）无策略适配器，彻底删除 `ProxySession` 对 `ticket.epoch` 与 `allowFinishInFlight` 的越界策略判断（同步删除 `PikPakStreamReader` 因 `ticket.epoch < owner.intent.epoch` 自毁重建票据的耦合）。每次读取退出时仅向底层如实上报五种协议事实之一：
+  - `RangeCompleted`：请求区间 `[startOffset, endExclusive)` 完整交付；
+  - `ConsumerClosed`：回环 HTTP 客户端提前关闭连接（含写出端 `ClientGone` 与读取挂起期间客户端套接字 EOF/RST 触发的 `ClientDisconnectedCancellation`）或调用方 `close()`；
+  - `Repositioned`：随机访问或流式读取器显式 `seekTo` 跳变偏移；
+  - `Cancelled`：会话显式 `withdrawTransport()` 或父协程取消；
+  - `SourceFailed`：上游数据源读取异常。
+- **诚实 `epoch` 契约：兼容双连接重叠 Seek 与同连接缓存内 Seek**：
+  - 本机回环 `127.0.0.1` 禁用 FFmpeg 自动重连（`reconnect=0`）。当会话内 Seek 推进 `owner.intent.epoch` 时，`BlockCache` 仅撤回旧 `LookAhead` / `FinishInFlight` 并清空连续读取证据（`contiguousBytesRead = 0`、`crossedBlockBoundary = false`）与主车道身份，**完整保留所有开放 `ReadTicket`（`OpenReader`）、挂起中的 `ReadWaiter` 以及当前在途块的 `Continuation`**。
+  - 在高 RTT 节点（如 `1.1s TTFB` + `11 KiB` 分片）下，FFmpeg `http_seek_internal` 在建立新落点连接的同时排空旧连接当前块，旧块由同一次上游 HTTP 请求一气呵成收完（零 `11 KiB` `Withdrawn` 自取消循环、零提前 EOF）；若 `mpv` 在内部解复用缓冲内完成小范围 Seek 并继续沿原 HTTP `206` 连接跨块读取，该连接会自动在新 `epoch` 下重新挂载 `ReadLane` 并从零重建受单一 `owner` 总预算约束的 `LookAhead`。
 - **`SlicedByteSource` 确定性视图掩码**：对 MPEG-TS 切片前导区间 `[0, nullVideoBeforeOffset)` 纯粹按逻辑包偏移 `k * 188` 确定性地将目标视频 PID 改写为 `0x1FFF` 空包，跨任意 `1..3` 字节跨包头分片读取、随机 `seekTo` 与并发票据输出字节完全一致，且零拷贝污染底层共享缓存块。
 
-### 3. 证据驱动计划与块缓存层（`BlockCache.planLocked()` + `ReadLane`）
-- `BlockCache.planLocked()` 每次在锁下由活跃票据、读取车道与持久任务纯函数汇总四类正交字节诉求（彻底删除 `Cursor.seeking/urgent/hungry` 与 `Fetch.consumed` 整段免死金牌）：
-  - **`Required`**：活跃 `ReadTicket` 当前阻塞等待的槽位，绑定单调不回拨、每槽位单次触发的字节截止期（`SlotDeadlineEpisode` → `ByteDeadline`）。
-  - **`LookAhead`**：每个 `TransferDemand` 维护最多 4 条自校正 `ReadLane`（MP4 音视频双偏移交错读取各自成道，互不驱逐）。任何车道在连续顺序读取未满 `256 KiB`（`contiguousBytesRead < blockSize`）前恒为 **`0` 预读**；跨过门槛后按 `contiguousBytesRead * 2` 几何爬坡至预算上限。在 `ServiceIntent.WAITING` 下，常规码率流上限为 `2 MiB`（`8` 块），高码率流（`>= 3 MiB/s`，如 4K Blu-ray REMUX）上限自动扩展至 `maxOf(2 MiB, 1s 码率字节数)`，驱动并行 `1 MiB` Worker 喂饱大 GOP 顺序解码。
-  - **`FinishInFlight`**：客户端读完短区间断开后，仅允许已发出的当前单个 `<= 256 KiB` 在途块在空闲工作槽下顺带收尾（每个持有者最多 4 个槽位，优先级 `-1`，`0` 新 HTTP 请求、`0` 重试，受 `lastReadSpeculationStamp == speculationRevision` 守护防止撤回后复活，且工作槽满时可被任意 `>= 0` 诉求 `0ms` 抢占并保留 `partials` 已收前缀）。
-  - **`StoreRange` 与跨文件后台下载即刻退让**：承载显式 `prefetch` 预热与持久化后台下载。当前台流激活（`foregroundStreams.active > 0`）进入 `downloadsThrottled()` 时，跨文件或同文件的后台持久化下载在 `0ms` 内立即抢占回收超出配额（`<= 2` 路）的在途 Worker（保留 `partials`），存活的多块后台流也在下一个 `256 KiB` 块边界处立即退回单块模式，确保前台播放瞬时获得带宽。
+### 3. VFS 读取器生命周期、五类字节诉求与自适应多块条带（`BlockCache`）
+- **拆开 `OpenReader`、`ReadWaiter` 与 `Continuation`**：`BlockCache.planLocked()` 在锁下由开放票据、活跃等待者、读取车道与持久任务纯函数汇总五类正交 `ByteClaim`：
+  - **`Required`**：正在 `readSome` 内挂起等待的 `ReadWaiter`，可启动新 HTTP 请求与失败重试，并为紧迫前台槽位设定有限目标终点 `recoveryGoalEndOffset`。
+  - **`Continuation`**：未关闭 `OpenReader`（`!ended && position < effectiveEnd`）在两次 `readSome` 调用间隙对当前槽位已发出 `exchangeId` 的单块续传权——**`0` 新 HTTP 请求、`0` 失败重试、无后续诉求时严格在当前单块边界 `(curSlot + 1) * blockSize` 封顶**。这既消除了 `readSome` 每返回 `11 KiB` 分片就丢失所有权引发的自取消循环，又保证客户端打开 `Range: bytes=0-` 读 `11 KiB` 后停读时最多收完首个 `256 KiB` 块即彻底静默（绝不拉穿至 EOF）。
+  - **`LookAhead`**：顺序预读窗口右边界**仅随真实消费者读取推进，绝不随后台 `Fetch` 完成自滚**；暂停（`PAUSED`）或撤回投机时立即清零。在 `WAITING` / `PREFETCH` 启动阶段，只要顺序读取**实际跨越一次 `256 KiB` 块边界**（`crossedBlockBoundary || contiguousBytesRead >= blockSize`），即刻解锁有界并行预读（起步保底 `2 * blockSize`），使距离块尾仅数 KiB 的 MP4 `moov` 探针跨入下一块时立即并发铺开后续块，省去一整轮串行高 RTT 等待。
+  - **`FinishInFlight`**：仅在 `OpenReader` 已结束且 `reason.allowsFinishInFlight == true`（`RangeCompleted` / `ConsumerClosed`）时，允许当前已收部分字节的在途单块在空闲工作槽下顺带收尾（每持有者至多 4 槽、优先级 `-1`、`0` 新请求、`0` 重试，可被任意更高诉求 `0ms` 抢占并保留 `partials` 前缀）。
+  - **`StoreRange`**：承载显式 `prefetch` 预热与持久化后台下载；前台流激活进入 `downloadsThrottled()` 时，`0ms` 抢占回收超出配额（`<= 2` 路）的后台 Worker，存活多块后台流在下一个 `256 KiB` 块边界处退回单块模式。
+- **排队优先级与单块执行量子解耦（防单 Worker 双连接乒乓）**：
+  - 准入排队顺序：`Required > Continuation > LookAhead > FinishInFlight`。
+  - 在途单块量子（`inBlockQuantum`）：受 `Required` 或健康 `Continuation` 保护的当前块拥有单块执行量子，同服务等级的另一条 `OpenReader` 不会因前一条刚返回 `11 KiB` 就中途掐断它（在 `256 KiB` 块边界平滑交接）；仅更高服务等级、容量硬回收或显式撤回可 `0ms` 中途抢占，且 `BlockCache` 与 `SignedUrlGates` 执行完全一致的抢占判据。
+- **三边界 `Fetch` 与按剩余可用 Worker 公平切分条带（`256 KiB -> 512 KiB -> 1 MiB`）**：
+  - 拆分 `plannedEndSlot`（未发请求前可裁剪）、`issuedEndSlot`（发出后不可篡改请求头语义）与 `allowedProductionEndOffset`（块边界安全点停止线，预算收缩或暂停时写完当前块即以 `BoundaryStop` 干净收尾）。
+  - 修复 `TransferScheduler.spanFor` 非串行上限至 `4` 块（`1 MiB`），按**当前剩余可用 Worker 数**公平切分连续缺口：随机新起点首波近端缺口采用 **`1` 块（`256 KiB`）** 4 路并排抢出首帧前缀；近端推进后升至 **`2` 块（`512 KiB`）**；近端窗口就绪或大跨度交付健康且预算充足时升至 **`4` 块（`1 MiB`）**，摊薄高 RTT 线路每次请求的 `TTFB` 税。当多块在途流的后续槽位出现更高优 `Required`（`tailRequiredSlot`）时，先原地提权并比较「顺流穿过剩余字节」与「取消重开」的 ETA，不再盲目砍死即将送达的在途流。
 
-### 4. 共享节点池与传输层（`HostHealth` / `RangeReader` / `ActiveResponseGuard`）
-- **打通 `dl-z01a-*` 同集群全节点池**：`HostHealth.observe(detail)` 将 `octetStream`、`webContentLink` 与所有 `medias` 中的同集群节点合并入统一候选池，不再按 `download` / `original` / `transcoded` 隔离。
-- **慢节点快速逃逸与零 `ResponseBody` 泄漏**：前台必需块在 `ByteDeadline` 到期并经 `authorizeFetchDeadline` 原子确权后立即切往候选池中的健康节点（如 `0041..0050`）；`RangeStreamEndpoint` 全校验/异常分支与 `HttpEngine` 的 `ActiveResponseGuard`（配合 OkHttp 拦截器）闭环覆盖响应头到达瞬间的取消竞态，杜绝连接体泄漏并保持 HTTP/1.1 Keep-Alive 复用。
+### 4. 共享节点池、安全点 ETA 换流与健康度净化（`HostHealth` / `RecoveryPolicy` / `RangeReader` / `SignedUrlGates`）
+- **整块移除 `ByteDeadline` / `DemandDeadline` 与伪 `BodySilence`**：废除固定墙钟截止期盲切与「仍在收字节却因平均速率低于常数抛静默异常」的误杀逻辑（仅保留真实零字节超时 `bodyWatchdog`），彻底杜绝在健康高 RTT 节点仅剩十余 KiB 时误杀断流。
+- **基于实测 ETA 的唯一优化性换流（`RecoveryPolicy`）与一次性 Permit 原位交接**：
+  - 对存在有限紧迫目标终点 $G$、已确认写入下游连续边界 $F$（严格在 `sink.writeFully + flush` 安全点后推进，零字节跳漏或重复）的活跃流，基于排除下游背压（`sinkWait`）后的短窗口净正文速率 $R_a$ 与 `HostHealth` 同池候选节点的保守首字节 `TTFB`（$L_b$）及正文速率（$R_b$），计算：
+    $$T_{\text{keep}} = \frac{G - F}{R_a}, \qquad T_{\text{replace}} = C + Q_b + L_b + \frac{G - F}{R_b}$$
+  - 仅当 $T_{\text{keep}} - T_{\text{replace}} \ge \max(500\text{ ms},\, 0.25\,T_{\text{keep}})$ **连续两次观测成立**时，在安全点触发每目标版本至多一次的 `OptimizedReplacement`，并通过 `SignedUrlGates` 同文件同签名**一次性 Permit 原位交接**在旧响应关闭瞬间无缝切至目标快节点（剩余 `18 KiB @ 300 KiB/s` 天然保留，剩余 `200 KiB @ 25 KiB/s` 果断换往快节点）。
+- **打通 `dl-z01a-*` 共享节点池与 `HostHealth` 证据净化**：
+  - `HostHealth.observe(detail)` 将 `octetStream`、`webContentLink` 与所有 `medias` 中的同集群节点合并入统一候选池，单独记录真实首字节 `TTFB` 与受控正文速率样本（严守 `dl-a10b` 不跨池改写规则）。
+  - 将「记录健康事实」与「选择下一路由」彻底解耦：`Complete`、`Withdrawn`、`Preempted`、`BoundaryStop`、`OptimizedReplacement` 一律零负样本惩罚；`BodySilence` 仅记正文停滞（按真实耗时计算 `stalled`，不叠加响应头静默）；reroute 失败仅按实际请求的 `attemptUrl` 记账一次，绝不误罚未执行的原始直链域名；同时由 `RangeStreamEndpoint` 与 `ActiveResponseGuard` 闭环守护零 `ResponseBody` 泄漏。
 
 ---
 
@@ -185,8 +205,8 @@ flowchart TD
 1. **`256 KiB` 槽位对齐 + 4 路条带化并发（`1 MiB` 窗口）**：
    - `PikPakStreamReader.DEFAULT_BLOCK_SIZE` 设为 **`256 KiB`（`256 * 1024`）**，`BlockCache` 默认 `readAheadConcurrency = 4`。
    - 4 个并发 Worker 紧贴播放头同时拉取 4 个连续 `256 KiB` 槽位，恰好构成 **`1 MiB` 条带化滑窗**——既处于单次 HTTP Range 请求的突发免掐流窗口内，又能在单轮 RTT（专线 `~400–800 ms`）内完整取回一个包含至少 1 个 IDR 关键帧与百余组 `PAT/PMT` 的 **`1 MiB` 超轻量 TS 切片**。
-2. **全偏移统一连续读取证据门控（Evidence-Gated `ReadLane` Ramp）**：
-   - 无需对 `offset == 0L` 硬编码首部防抖特判：无论读取发生在首部容器探测（MP4 `ftyp`/`moov`、MKV `EBML` 头）、文件尾部（`Cues` 索引）还是片中任意跳点，每条 `ReadLane` 在累计连续顺序读取未满 `1` 个槽位（`contiguousBytesRead < 256 KiB`）之前恒定保持 **`0` 槽位 `LookAhead`**，仅拉取 `ReadTicket` 当前阻塞请求的 `Required` 单槽位（短读断开时至多留下单个 `<= 256 KiB` 的低优 `FinishInFlight` 收尾块）；直至顺序读取真正跨过 `256 KiB` 门槛后，才按 `contiguousBytesRead * 2` 几何爬坡放开条带化并发滑窗（常规流 `WAITING` 上限 `2 MiB`，`>= 3 MiB/s` 高码率流自动扩展至 `1s` 码率字节数），从根源上消除起播探测、断点续播与 `hr-seek` 全场景的无效连接风暴。
+2. **全偏移统一连续跨块证据门控与渐进条带（Evidence-Gated `ReadLane` Ramp & Fair-Share Striping）**：
+   - 无需对 `offset == 0L` 硬编码首部防抖特判：无论读取发生在首部容器探测（MP4 `ftyp`/`moov`、MKV `EBML` 头）、文件尾部（`Cues`/`moov` 索引）还是片中任意跳点，每条 `ReadLane` 在未跨越 `256 KiB` 块边界前恒定保持 **`0` 槽位 `LookAhead`**，仅由 `Required` / `Continuation` 拉取当前单个 `256 KiB` 槽位（客户端停读或短读断开时最多收完当前单块，绝不触发后续请求）；一旦顺序读取跨越块边界（`crossedBlockBoundary || contiguousBytesRead >= 256 KiB`），立即按剩余可用 Worker 公平切分连续缺口并沿 `256 KiB -> 512 KiB -> 1 MiB` 阶梯条带爬坡至持有者预算上限，从根源上兼顾探针静默、尾部 `moov` 快速首帧与高 RTT 持续吞吐。
 3. **转码流跨节点 Host 改写（Cross-Host URL Rewriting for Transcodes）**：
    - `PikPakFileHandle` 为转码流（`mediaId != null`）构建候选直链列表时，自动提取同一 `FileDetail` 中 `links["application/octet-stream"]`（及 `octetStream`、`webContentLink`、其他健康 `medias`）的节点 Host。
    - 利用同集群（`dl-z01a-*`、`dl-a10b-*`）共享 `/download/?fid=...` 转码路径与签名校验的特性，将改写至高速 `octet-stream` 节点（`0041..0050`）的转码 URL **排在默认拥塞转码节点（`0026`/`0027`/`0051`..`0055`/`0063`..`0064`）之前**，同时保留原始转码 URL 作为兜底回退项。

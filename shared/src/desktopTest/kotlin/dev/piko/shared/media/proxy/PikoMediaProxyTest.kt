@@ -2,6 +2,7 @@ package dev.piko.shared.media.proxy
 
 import dev.piko.shared.media.testing.openRequest
 import dev.piko.shared.media.testing.request
+import io.github.nihildigit.pikpak.ReadEndReason
 import io.github.nihildigit.pikpak.ReadTicket
 import io.github.nihildigit.pikpak.StreamRole
 import io.github.nihildigit.pikpak.TransferDemand
@@ -9,6 +10,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -49,16 +51,37 @@ class PikoMediaProxyTest {
             assertSame(demand, recorded.owner)
             assertEquals(4096L, recorded.startOffset)
             assertEquals(12_288L, recorded.endExclusive)
+            assertEquals(ReadEndReason.RangeCompleted, recorded.endReason)
             assertEquals(true, recorded.allowFinishInFlightOnEnd)
 
             session.stream(2L * 1024 * 1024, 2L * 1024 * 1024 + 2048L) { _, _, _ ->
                 assertEquals(1, source.activeTickets.get())
-                // 会话内 seek 推进 epoch 时不断开当前流，但流结束时禁止再留下旧世代 FinishInFlight
+                // 会话内 seek 推进 epoch 时不断开当前流；ProxySession 纯粹上报协议层 RangeCompleted 事实，由底层缓存按 epoch 决定收尾策略
                 demand.updateIntent { it.copy(epoch = it.epoch + 1L) }
             }
             assertEquals(0, source.activeTickets.get())
             assertEquals(2, source.ticketHistory.size)
-            assertEquals(false, source.ticketHistory.last().allowFinishInFlightOnEnd)
+            assertEquals(ReadEndReason.RangeCompleted, source.ticketHistory.last().endReason)
+            assertFalse(demand.isClosed)
+
+            assertFailsWith<ProxySession.ClientGone> {
+                session.stream(3L * 1024 * 1024, 3L * 1024 * 1024 + 64L * 1024L) { _, _, _ ->
+                    throw IllegalStateException("simulated socket write failure")
+                }
+            }
+            assertEquals(ReadEndReason.ConsumerClosed, source.ticketHistory.last().endReason)
+
+            val sinkEntered = CompletableDeferred<Unit>()
+            val holdSink = CompletableDeferred<Unit>()
+            val cancelledJob = async {
+                session.stream(4L * 1024 * 1024, 4L * 1024 * 1024 + 64L * 1024L) { _, _, _ ->
+                    sinkEntered.complete(Unit)
+                    holdSink.await()
+                }
+            }
+            withTimeout(5_000) { sinkEntered.await() }
+            cancelledJob.cancelAndJoin()
+            assertEquals(ReadEndReason.Cancelled, source.ticketHistory.last().endReason)
             assertFalse(demand.isClosed)
         } finally {
             session.close()
@@ -88,6 +111,7 @@ class PikoMediaProxyTest {
 
         stream.withdrawTransport()
         assertEquals(0, source.activeTickets.get(), "withdrawTransport 必须立即撤销在途 ReadTicket")
+        assertEquals(ReadEndReason.Cancelled, source.ticketHistory.single().endReason)
         assertEquals(false, source.ticketHistory.single().allowFinishInFlightOnEnd)
         assertTrue(demand.isClosed)
         assertEquals(200, request(stream.url, "HEAD").status)
@@ -111,6 +135,7 @@ class PikoMediaProxyTest {
                 session.stream(0L, 4096L) { _, _, _ -> }
             }
             assertEquals(0, source.activeTickets.get())
+            assertEquals(ReadEndReason.SourceFailed, source.ticketHistory.single().endReason)
             assertEquals(false, source.ticketHistory.single().allowFinishInFlightOnEnd)
         } finally {
             session.close()
@@ -182,10 +207,11 @@ class PikoMediaProxyTest {
         val dropped = openRequest(url, range = "bytes=0-")
         dropped.body.readNBytes(50_000)
         dropped.socket.close()
-        // 断开之后读端的看门协程应当取消响应，票据立即结束，不再有人读
+        // 断开之后读端的看门协程应当取消响应，票据立即以 ConsumerClosed 结束，不再有人读
         withTimeout(5_000) {
             while (source.activeReads.get() > 0 || source.activeTickets.get() > 0) delay(10)
         }
+        assertEquals(ReadEndReason.ConsumerClosed, source.ticketHistory.first().endReason)
 
         val next = request(url, range = "bytes=100-199")
         assertContentEquals(source.expected(100, 200), next.body)
@@ -266,7 +292,10 @@ class PikoMediaProxyTest {
         val endExclusive: Long,
     ) {
         @Volatile
-        var allowFinishInFlightOnEnd: Boolean? = null
+        var endReason: ReadEndReason? = null
+
+        val allowFinishInFlightOnEnd: Boolean?
+            get() = endReason?.allowsFinishInFlight
     }
 
     private class FakeSource(
@@ -337,9 +366,9 @@ class PikoMediaProxyTest {
                     }
                 }
 
-                override fun endRead(allowFinishInFlight: Boolean) {
+                override fun endRead(reason: ReadEndReason) {
                     if (ended.compareAndSet(0, 1)) {
-                        record.allowFinishInFlightOnEnd = allowFinishInFlight
+                        record.endReason = reason
                         activeTickets.decrementAndGet()
                     }
                 }

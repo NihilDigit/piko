@@ -5,6 +5,7 @@ import dev.piko.shared.util.PikoLock
 import dev.piko.shared.util.withPikoLock
 import io.github.nihildigit.pikpak.BufferBudget
 import io.github.nihildigit.pikpak.ConsumerIntent
+import io.github.nihildigit.pikpak.ReadEndReason
 import io.github.nihildigit.pikpak.ReadTicket
 import io.github.nihildigit.pikpak.ServiceIntent
 import io.github.nihildigit.pikpak.StreamRole
@@ -114,7 +115,7 @@ internal class ProxySession(
                 tickets.add(created)
             }
         }
-        var broken = false
+        var endReason = ReadEndReason.Cancelled
         try {
             val buffer = ByteArray(STREAM_BUFFER_BYTES)
             var position = start
@@ -133,22 +134,30 @@ internal class ProxySession(
                 }
                 position += count
             }
+            endReason = if (isWithdrawn) ReadEndReason.Cancelled else ReadEndReason.RangeCompleted
         } catch (e: CancellationException) {
+            endReason = if (!isWithdrawn && e.isClientDisconnect()) {
+                ReadEndReason.ConsumerClosed
+            } else {
+                ReadEndReason.Cancelled
+            }
             throw e
         } catch (e: Exception) {
-            if (e !is ClientGone) {
-                broken = true
+            if (e is ClientGone) {
+                endReason = if (isWithdrawn) ReadEndReason.Cancelled else ReadEndReason.ConsumerClosed
+            } else {
                 if (isWithdrawn) {
+                    endReason = ReadEndReason.Cancelled
                     throw CancellationException("transport withdrawn", e)
                 }
+                endReason = ReadEndReason.SourceFailed
                 val rangeDesc = "bytes $start..${endExclusive - 1}/$size"
                 PikoLog.w(TAG, "Proxy stream read failed: session=$label, range=$rangeDesc", e)
             }
             throw e
         } finally {
             withPikoLock(lock) { tickets.remove(ticket) }
-            val currentEpoch = ticket.epoch >= ticket.owner.intent.epoch
-            ticket.endRead(allowFinishInFlight = !broken && !isWithdrawn && currentEpoch)
+            ticket.endRead(endReason)
         }
     }
 
@@ -177,7 +186,7 @@ internal class ProxySession(
         activeWarms.forEach { it.cancel() }
         bound?.close()
         fallback?.close()
-        activeTickets.forEach { it.endRead(allowFinishInFlight = false) }
+        activeTickets.forEach { it.endRead(ReadEndReason.Cancelled) }
     }
 
     override fun close() {
@@ -188,6 +197,16 @@ internal class ProxySession(
     }
 
     internal class ClientGone(cause: Exception) : Exception("Client disconnected", cause)
+    internal class ClientDisconnectedCancellation : CancellationException("Client disconnected")
+
+    private fun Throwable.isClientDisconnect(): Boolean {
+        var cur: Throwable? = this
+        while (cur != null) {
+            if (cur is ClientDisconnectedCancellation || cur is ClientGone) return true
+            cur = cur.cause
+        }
+        return false
+    }
 
     private companion object {
         const val TAG = "MediaProxy"

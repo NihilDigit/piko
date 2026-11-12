@@ -3,9 +3,11 @@ package dev.piko.shared.media
 import dev.piko.shared.media.proxy.ProxyByteSource
 import io.github.nihildigit.pikpak.BufferBudget
 import io.github.nihildigit.pikpak.ConsumerIntent
+import io.github.nihildigit.pikpak.ReadEndReason
 import io.github.nihildigit.pikpak.ReadTicket
 import io.github.nihildigit.pikpak.ServiceIntent
 import io.github.nihildigit.pikpak.TransferDemand
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -24,8 +26,8 @@ interface RandomAccessMediaSource : AutoCloseable {
 }
 
 /**
- * 在一张有界 [ReadTicket] 上实现按偏移读：位置连续时直接顺延复用，位置跳变时收尾当前块并换新票据。
- * 随机读取声明 [BufferBudget.NONE]（零跨块投机预读）；已开始的当前缓存块仍可完成并与下载共用。
+ * 在一张有界 [ReadTicket] 上实现按偏移读：位置连续时直接顺延复用，位置跳变时以 [ReadEndReason.Repositioned] 结束旧票据并换新票据。
+ * 随机读取声明 [BufferBudget.NONE]（零跨块投机预读）；当前票据活跃块可与共享下载缓存共用。
  */
 internal class ReaderRandomAccessSource(
     private val source: ProxyByteSource,
@@ -47,21 +49,25 @@ internal class ReaderRandomAccessSource(
         val current = if (existing != null && existing.position == position) {
             existing
         } else {
-            existing?.endRead(allowFinishInFlight = true)
+            existing?.endRead(ReadEndReason.Repositioned)
             source.beginRead(demand, position, size).also { ticket = it }
         }
         try {
             current.readSome(buffer, offset, length)
+        } catch (e: CancellationException) {
+            current.endRead(ReadEndReason.Cancelled)
+            if (ticket === current) ticket = null
+            throw e
         } catch (e: Exception) {
             // 读失败的票据不再复用，下一次读取重新开启
-            current.endRead(allowFinishInFlight = false)
+            current.endRead(ReadEndReason.SourceFailed)
             if (ticket === current) ticket = null
             throw e
         }
     }
 
     override fun close() {
-        ticket?.endRead(allowFinishInFlight = false)
+        ticket?.endRead(ReadEndReason.ConsumerClosed)
         ticket = null
         demand.close()
         source.close()
