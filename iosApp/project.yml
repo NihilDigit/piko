@@ -29,7 +29,7 @@ targets:
       base:
         PRODUCT_NAME: Piko
         # 版本号与 Android 侧的 versionName 同步改；Kotlin 侧读 CFBundleShortVersionString 当 appVersion
-        MARKETING_VERSION: "1.4.0"
+        MARKETING_VERSION: "1.5.0"
         CURRENT_PROJECT_VERSION: "1"
         PRODUCT_BUNDLE_IDENTIFIER: "$(PIKO_BUNDLE_ID)"
         DEVELOPMENT_TEAM: "$(PIKO_TEAM_ID)"

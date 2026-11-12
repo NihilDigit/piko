@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.concurrent.Volatile
 
 /**
  * 把压缩包当文件夹看（见 [ArchiveLocation]）：列包里的一层、记住这次输过的密码、为打开包里的文件做准备。

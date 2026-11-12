@@ -28,6 +28,11 @@ import platform.UIKit.UIAlertControllerStyleAlert
 import platform.UIKit.UIApplication
 import platform.UIKit.UIModalPresentationFullScreen
 import platform.UIKit.UIViewController
+import platform.UIKit.UIViewControllerAnimatedTransitioningProtocol
+import platform.UIKit.UIViewControllerTransitioningDelegateProtocol
+import platform.UIKit.transitionCoordinator
+import platform.UIKit.transitioningDelegate
+import platform.darwin.NSObject
 import kotlin.coroutines.resume
 
 /** The process-owned session serializes UIKit state on the main dispatcher. */
@@ -47,7 +52,8 @@ private class PlayerSession(private val services: PikoServices, private val scop
     private var generation = 0L
     private var preparing: Job? = null
     private var playback: PreparedPlayback? = null
-    private var controller: ClosingPlayerController? = null
+    private var controller: AVPlayerViewController? = null
+    private var dismissalObserver: PlayerDismissalObserver? = null
 
     fun isActive(): Boolean = controller != null || preparing?.isActive == true
 
@@ -59,10 +65,12 @@ private class PlayerSession(private val services: PikoServices, private val scop
     }
 
     /** Detach the native input before closing the proxy it was reading. */
-    private fun releasePlayer(): ClosingPlayerController? {
+    private fun releasePlayer(): AVPlayerViewController? {
         val previous = controller
         controller = null
-        previous?.onClosed = null
+        dismissalObserver?.onClosed = null
+        dismissalObserver = null
+        previous?.transitioningDelegate = null
         previous?.player?.pause()
         previous?.player?.replaceCurrentItemWithPlayerItem(null)
         previous?.player = null
@@ -119,16 +127,18 @@ private class PlayerSession(private val services: PikoServices, private val scop
                     PikoLog.w(TAG, "Cannot present player for $targetLog: no active UIViewController")
                     return@launch
                 }
-                val next = ClosingPlayerController()
+                val next = AVPlayerViewController()
                 next.player = AVPlayer.playerWithURL(url)
                 next.modalPresentationStyle = UIModalPresentationFullScreen
-                next.onClosed = {
+                val observer = PlayerDismissalObserver {
                     if (controller === next) {
                         generation++
                         releasePlayer()
                     }
                 }
+                next.transitioningDelegate = observer
                 controller = next
+                dismissalObserver = observer
                 playback = prepared
                 prepared = null
                 host.presentViewController(next, animated = true, completion = null)
@@ -143,12 +153,25 @@ private class PlayerSession(private val services: PikoServices, private val scop
     }
 }
 
-private class ClosingPlayerController : AVPlayerViewController() {
-    var onClosed: (() -> Unit)? = null
-
-    override fun viewDidDisappear(animated: Boolean) {
-        super.viewDidDisappear(animated)
-        onClosed?.invoke()
+/**
+ * Observe modal dismissal without subclassing [AVPlayerViewController] (Apple forbids subclassing it,
+ * and Kotlin/Native rejects calling its non-designated parameterless initializer as a super constructor).
+ */
+private class PlayerDismissalObserver(
+    var onClosed: (() -> Unit)?,
+) : NSObject(), UIViewControllerTransitioningDelegateProtocol {
+    override fun animationControllerForDismissedController(
+        dismissed: UIViewController,
+    ): UIViewControllerAnimatedTransitioningProtocol? {
+        val coordinator = dismissed.transitionCoordinator
+        if (coordinator != null) {
+            coordinator.animateAlongsideTransition(animation = null) { context ->
+                if (context?.isCancelled() != true) onClosed?.invoke()
+            }
+        } else {
+            onClosed?.invoke()
+        }
+        return null
     }
 }
 

@@ -263,7 +263,14 @@ private fun SingleDetails(
                         resolution != null -> add(DetailRow.Single(resolution))
                     }
                     if (transcodeQualities.isNotEmpty()) {
-                        add(DetailRow.Single(DetailField(tr("转码画质", "Transcode qualities", "トランスコード画質", "트랜스코드 화질", "轉碼畫質"), transcodeQualities.joinToString(" · "))))
+                        add(
+                            DetailRow.Single(
+                                DetailField(
+                                    tr("转码画质", "Transcode qualities", "トランスコード画質", "트랜스코드 화질", "轉碼畫質"),
+                                    transcodeQualities.joinToString(tr("、", ", ", "、", ", ", "、")),
+                                ),
+                            ),
+                        )
                     }
                 }
             }
