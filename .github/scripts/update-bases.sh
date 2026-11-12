@@ -46,7 +46,7 @@ published=$(jq -r --arg arch "$arch" --arg self "$version" '
     select($v != $self and (($v | split(".")[0] | tonumber? // 0) >= 1)) |
     select(any(.assets[]; .name == "piko-windows-\($arch)-\($v)-files.json")) |
     $v
-' <<< "$releases_json")
+' <<< "$releases_json" | tr -d '\r')
 
 for base in $published; do
     dir=$out

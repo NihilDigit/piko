@@ -95,7 +95,9 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Locate Android SDK and ensure compileSdk
+      # KMP 模块配置阶段仅需 sdk.dir 指向存在的 Android SDK 目录；iOS link 不触发任何 Android 编译任务，
+      # 无需调用 sdkmanager 拉取特定预览版 compileSdk（如 37.1），与 ios-native.yml 保持一致。
+      - name: Locate Android SDK
         shell: bash
         run: |
           set -euo pipefail
@@ -106,13 +108,6 @@ jobs:
             echo "ANDROID_HOME=$SDK"
           } >> "$GITHUB_ENV"
           printf 'sdk.dir=%s\n' "$SDK" > local.properties
-          if [ ! -d "$SDK/platforms/android-37" ]; then
-            SM="$SDK/cmdline-tools/latest/bin/sdkmanager"
-            [ -x "$SM" ] || SM="$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | tail -1)"
-            yes | "$SM" --licenses > "$RUNNER_TEMP/licenses.log" 2>&1 || true
-            "$SM" --install "platforms;android-37" > "$RUNNER_TEMP/sdk-install.log" 2>&1
-          fi
-          test -d "$SDK/platforms/android-37"
 
       - name: Use pikpak-kotlin from source
         if: env.PIKPAK_REF != ''

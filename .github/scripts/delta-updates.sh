@@ -39,7 +39,7 @@ retry() {
 }
 
 if [ -n "${PIKO_DELTA_BASES:-}" ]; then
-    bases=$PIKO_DELTA_BASES
+    bases=$(tr -d '\r' <<< "$PIKO_DELTA_BASES")
 else
     IFS=. read -r major minor _ <<< "$version"
     releases_json=$(retry gh api --paginate "repos/$GITHUB_REPOSITORY/releases")
@@ -47,7 +47,7 @@ else
     published=$(jq -r --arg self "$version" '
         .[] | select(.draft | not) | select(.prerelease | not) |
         .tag_name | ltrimstr("v") | select(. != $self)
-    ' <<< "$releases_json")
+    ' <<< "$releases_json" | tr -d '\r')
     # 原规则之外再并上最近三个已公开的版本，不限主版本：连续发大版本、次版本跳得快时，原规则选出的旧版太少，
     # 发 2.0.0 时只剩 2.0.x，甚至一个都没有，刚升到上一版的用户就都得下完整的补丁包
     bases=$( {
@@ -89,7 +89,7 @@ delta() {
     local out="$out_dir/$prefix-$version-from-$base.zip"
     mkdir -p "$dir/old" "$dir/out"
     local assets
-    assets=$(retry gh release view "v$base" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+    assets=$(retry gh release view "v$base" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | tr -d '\r')
     if ! grep -qxF "$prefix-$base-files.json" <<< "$assets" || ! grep -qxF "$prefix-$base-app.zip" <<< "$assets"; then
         echo "v$base 没有 $arch 的补丁包，跳过"
         return 0
