@@ -218,6 +218,7 @@ jobs:
           xcodebuild -project Piko.xcodeproj -scheme Piko -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/piko-ios" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO build 2>&1 | tee "$RUNNER_TEMP/piko-ios-build.log"
           APP="$RUNNER_TEMP/piko-ios/Build/Products/Debug-iphonesimulator/Piko.app"
           MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")
@@ -238,7 +239,7 @@ jobs:
                   continue
               for device in devices.get(runtime['identifier'], []):
                   if device.get('isAvailable') and device['name'].startswith('iPhone'):
-                      choices.append((tuple(map(int, runtime['version'].split('.'))), runtime, device))
+                      choices.append((tuple(int(x) for x in runtime['version'].split('.') if x.isdigit()), runtime, device))
           assert choices, 'No available iPhone simulator'
           _, runtime, device = min(choices, key=lambda item: item[0])
           print('Selected simulator runtime:', runtime['version'])
@@ -255,9 +256,10 @@ jobs:
           xcrun simctl bootstatus "$PIKO_SIMULATOR_ID" -b
           xcrun simctl install "$PIKO_SIMULATOR_ID" "$RUNNER_TEMP/piko-ios/Build/Products/Debug-iphonesimulator/Piko.app"
           xcrun simctl launch --terminate-running-process "$PIKO_SIMULATOR_ID" dev.piko.pikpak.ios
+          sleep 3
           found=0
           for _ in $(seq 1 15); do
-            if xcrun simctl spawn "$PIKO_SIMULATOR_ID" launchctl list | awk '$1 ~ /^[0-9]+$/ && /dev.piko.pikpak.ios/ { exit 0 } END { exit 1 }'; then
+            if xcrun simctl spawn "$PIKO_SIMULATOR_ID" launchctl list | awk '$1 ~ /^[0-9]+$/ && /dev\.piko\.pikpak\.ios/ { ok=1 } END { exit !ok }'; then
               found=1
               break
             fi
@@ -571,7 +573,7 @@ jobs:
           mkdir -p "$shim"
           printf '#!/bin/sh\nexec python "%s" "$@"\n' "$PWD/desktopApp/package/package-smoke/zip_stored.py" > "$shim/zip"
           chmod +x "$shim/zip"
-          PATH="$shim:$PATH" RUNNER_TEMP=$(cygpath -u "$RUNNER_TEMP") bash .github/scripts/delta-updates.sh 9.9.1 legacy-next x64
+          PATH="$shim:$PATH" RUNNER_TEMP=$(cygpath -u "$RUNNER_TEMP") PIKO_DELTA_BASES=1.1.0 bash .github/scripts/delta-updates.sh 9.9.1 legacy-next x64
           test -f legacy-next/piko-windows-x64-9.9.1-from-1.1.0.zip
 
       - name: Old releases update to this build

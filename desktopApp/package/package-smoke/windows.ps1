@@ -652,9 +652,12 @@ try {
         if (-not (Test-Path -LiteralPath (Join-Path $portableDir 'portable'))) { Fail 'the portable marker is gone' }
         $imageName = "piko-windows-$Arch-$NextVersion-image.zip"
         $imageSize = (Get-Item -LiteralPath (Asset $Next $NextVersion '-image.zip')).Length
+        $patchSize = (Get-Item -LiteralPath (Asset $Next $NextVersion '-app.zip')).Length
         $fetched = (@(Get-Content -LiteralPath (Join-Path $releases 'bytes.log') | Where-Object { $_ -like "$imageName *" } |
             ForEach-Object { [long] ($_ -split ' ')[1] }) | Measure-Object -Sum).Sum
-        if ($ranged -and $fetched -ge $imageSize / 2) { Fail "image.zip by Range fetched $fetched of $imageSize bytes" }
+        # Range 只取变了的条目（与 app.zip 集合外加那一个弄坏的说明文件和中央目录相当），跳过未变的 JRE 与原生运行库
+        $maxRanged = [Math]::Min($patchSize + 2MB, $imageSize - 40MB)
+        if ($ranged -and $fetched -gt $maxRanged) { Fail "image.zip by Range fetched $fetched of $imageSize bytes (limit $maxRanged, patch $patchSize)" }
         if (-not $ranged -and $fetched -lt $imageSize) { Fail "image.zip without Range fetched only $fetched of $imageSize bytes" }
         Write-Summary "Portable update through image.zip $(if ($ranged) { 'by Range' } else { 'without Range' }): $fetched of $imageSize bytes."
         EndStep

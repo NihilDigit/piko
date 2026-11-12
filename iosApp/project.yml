@@ -37,7 +37,7 @@ targets:
         INFOPLIST_FILE: Piko/Info.plist
         # Kotlin 框架由下面的构建脚本产出到这个目录，名字见 ui/build.gradle.kts 的 baseName
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../ui/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)"
-        OTHER_LDFLAGS: "$(inherited) -framework PikoKit"
+        OTHER_LDFLAGS: "$(inherited) -framework PikoKit -lsqlite3"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

@@ -55,6 +55,7 @@ jobs:
           xcodebuild -project Piko.xcodeproj -scheme Piko -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/piko-ios" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO build 2>&1 | tee "$RUNNER_TEMP/piko-ios-build.log"
           APP="$RUNNER_TEMP/piko-ios/Build/Products/Debug-iphonesimulator/Piko.app"
           MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")
@@ -74,7 +75,7 @@ jobs:
                   continue
               for device in devices.get(runtime['identifier'], []):
                   if device.get('isAvailable') and device['name'].startswith('iPhone'):
-                      choices.append((tuple(map(int, runtime['version'].split('.'))), runtime, device))
+                      choices.append((tuple(int(x) for x in runtime['version'].split('.') if x.isdigit()), runtime, device))
           assert choices, 'No available iPhone simulator'
           _, runtime, device = min(choices, key=lambda item: item[0])
           print('Selected simulator runtime:', runtime['version'])
@@ -90,9 +91,16 @@ jobs:
           xcrun simctl bootstatus "$PIKO_SIMULATOR_ID" -b
           xcrun simctl install "$PIKO_SIMULATOR_ID" "$RUNNER_TEMP/piko-ios/Build/Products/Debug-iphonesimulator/Piko.app"
           xcrun simctl launch --terminate-running-process "$PIKO_SIMULATOR_ID" dev.piko.pikpak.ios
-          sleep 5
-          xcrun simctl spawn "$PIKO_SIMULATOR_ID" launchctl list | \
-            awk '$1 ~ /^[0-9]+$/ && /dev.piko.pikpak.ios/ { found=1 } END { exit !found }'
+          sleep 3
+          found=0
+          for _ in $(seq 1 15); do
+            if xcrun simctl spawn "$PIKO_SIMULATOR_ID" launchctl list | awk '$1 ~ /^[0-9]+$/ && /dev\.piko\.pikpak\.ios/ { ok=1 } END { exit !ok }'; then
+              found=1
+              break
+            fi
+            sleep 1
+          done
+          test "$found" -eq 1
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4

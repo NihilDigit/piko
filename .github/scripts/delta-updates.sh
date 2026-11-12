@@ -21,17 +21,21 @@ work="${RUNNER_TEMP:-/tmp}/piko-delta"
 rm -rf "$work"
 mkdir -p "$work"
 
-IFS=. read -r major minor _ <<< "$version"
-# 接口按发布先后从新到旧列出
-published=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
-    --jq '.[] | select(.draft | not) | select(.prerelease | not) | .tag_name | ltrimstr("v")' |
-    awk -v self="$version" '$0 != self')
-# 原规则之外再并上最近三个已公开的版本，不限主版本：连续发大版本、次版本跳得快时，原规则选出的旧版太少，
-# 发 2.0.0 时只剩 2.0.x，甚至一个都没有，刚升到上一版的用户就都得下完整的补丁包
-bases=$( {
-    awk -F. -v M="$major" -v m="$minor" '$1 == M && ($2 == m || $2 == m - 1)' <<< "$published"
-    head -n 3 <<< "$published"
-} | awk 'NF && !seen[$0]++')
+if [ -n "${PIKO_DELTA_BASES:-}" ]; then
+    bases=$PIKO_DELTA_BASES
+else
+    IFS=. read -r major minor _ <<< "$version"
+    # 接口按发布先后从新到旧列出
+    published=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+        --jq '.[] | select(.draft | not) | select(.prerelease | not) | .tag_name | ltrimstr("v")' |
+        awk -v self="$version" '$0 != self')
+    # 原规则之外再并上最近三个已公开的版本，不限主版本：连续发大版本、次版本跳得快时，原规则选出的旧版太少，
+    # 发 2.0.0 时只剩 2.0.x，甚至一个都没有，刚升到上一版的用户就都得下完整的补丁包
+    bases=$( {
+        awk -F. -v M="$major" -v m="$minor" '$1 == M && ($2 == m || $2 == m - 1)' <<< "$published"
+        head -n 3 <<< "$published"
+    } | awk 'NF && !seen[$0]++')
+fi
 
 for arch in $arches; do
     mkdir -p "$work/new-$arch"
