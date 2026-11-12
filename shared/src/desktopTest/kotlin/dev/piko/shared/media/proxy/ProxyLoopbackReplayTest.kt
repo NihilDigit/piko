@@ -386,7 +386,7 @@ class ProxyLoopbackReplayTest {
         var midBodyConn: dev.piko.shared.media.testing.OpenResponse? = null
         try {
             // 1. libmpv (reconnect=0) 在 epoch=0 建立开放 206 流并跨过首块边界，触发后续块的投机 LookAhead
-            val openedOld = openRequest(stream.url, range = "bytes=$oldOffset-").also {
+            val openedOld = openRequest(stream.url, range = "bytes=$oldOffset-", receiveBufferSize = 16 * 1024).also {
                 it.socket.soTimeout = 5_000
                 oldConn = it
             }
@@ -412,19 +412,22 @@ class ProxyLoopbackReplayTest {
             assertFalse(lookAheadGate.isCompleted)
             assertEquals(1, harness.activeCdnRequests.get(), "旧连接当前正在读的单块 Required 不得被误杀")
 
-            // 放行旧流收完当前在途块（slot 9 剩余 224,288B）：平滑送达后续字节（零提前 EOF），且在未跨入新块前不派生任何 LookAhead
+            // 放行旧流继续读取当前在途块（越过 64 KiB 门控但留在 slot 9 内）：平滑送达后续字节（零提前 EOF），且在未跨入新块前不派生任何 LookAhead
             lookAheadGate.complete(Unit)
             val lookAheadCountBeforeContinue = harness.cdnRanges.count {
                 it.first in (oldOffset + 2L * blockBytes) until (oldOffset + 6L * blockBytes)
             }
+            val slot11PlusCountBeforeContinue = harness.cdnRanges.count {
+                it.first in (oldOffset + 3L * blockBytes) until (oldOffset + 6L * blockBytes)
+            }
             holdBlock9At64K.complete(Unit)
-            val remainingInSlot9 = (2L * blockBytes - 300_000L).toInt()
-            val continuedSlot9 = withTimeout(5_000) {
-                withContext(Dispatchers.IO) { openedOld.body.readNBytes(remainingInSlot9) }
+            val midSlot9Read = 96_000
+            val continuedMidSlot9 = withTimeout(5_000) {
+                withContext(Dispatchers.IO) { openedOld.body.readNBytes(midSlot9Read) }
             }
             assertContentEquals(
-                payload.copyOfRange(oldOffset.toInt() + 300_000, oldOffset.toInt() + 300_000 + remainingInSlot9),
-                continuedSlot9,
+                payload.copyOfRange(oldOffset.toInt() + 300_000, oldOffset.toInt() + 300_000 + midSlot9Read),
+                continuedMidSlot9,
             )
             delay(50)
             assertEquals(
@@ -433,12 +436,29 @@ class ProxyLoopbackReplayTest {
                 "epoch 推进重置连续证据后，当前块收尾期间严禁派生后续块 LookAhead: ${harness.cdnRanges}",
             )
 
-            // 3. 新世代 hr-seek 落点请求并发秒回 206；随后客户端关闭旧 socket 时无残留请求
+            // 3. 新世代 hr-seek 落点请求并发秒回 206；此后即便旧连接继续把 slot 9 剩余字节读到底，也不会再重建任何旧偏移 LookAhead
             val fresh = withTimeout(5_000) {
                 request(stream.url, range = "bytes=$newEpochOffset-${newEpochOffset + 8191}")
             }
             assertEquals(206, fresh.status)
             assertContentEquals(payload.copyOfRange(newEpochOffset, newEpochOffset + 8192), fresh.body)
+
+            val restOfSlot9 = (2L * blockBytes - 300_000L - midSlot9Read).toInt()
+            val tailSlot9 = withTimeout(5_000) {
+                withContext(Dispatchers.IO) { openedOld.body.readNBytes(restOfSlot9) }
+            }
+            assertContentEquals(
+                payload.copyOfRange(
+                    oldOffset.toInt() + 300_000 + midSlot9Read,
+                    oldOffset.toInt() + 300_000 + midSlot9Read + restOfSlot9,
+                ),
+                tailSlot9,
+            )
+            assertEquals(
+                slot11PlusCountBeforeContinue,
+                harness.cdnRanges.count { it.first in (oldOffset + 3L * blockBytes) until (oldOffset + 6L * blockBytes) },
+                "新世代票据建立后，已取代旧连接即便跨入下一块（slot 10 单块 Required）也严禁派生后续 LookAhead: ${harness.cdnRanges}",
+            )
 
             openedOld.socket.close()
             awaitUntil("旧连接关闭且新请求完成后在途 CDN 请求归零") {

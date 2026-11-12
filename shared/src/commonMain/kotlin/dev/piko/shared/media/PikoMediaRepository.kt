@@ -366,8 +366,8 @@ class PikoMediaRepository(
                 )
                 val defaultBudget = if (estimatedRate != null) {
                     BufferBudget(
-                        maxReadAheadBytes = (estimatedRate * 3L).coerceIn(
-                            8L * 1024 * 1024,
+                        maxReadAheadBytes = (estimatedRate * 8L).coerceIn(
+                            12L * 1024 * 1024,
                             PikPakStreamReader.DEFAULT_READ_AHEAD_BYTES,
                         ),
                     )

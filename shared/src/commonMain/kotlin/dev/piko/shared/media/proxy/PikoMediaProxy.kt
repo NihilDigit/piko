@@ -9,14 +9,10 @@ import io.ktor.network.sockets.Socket
 import io.ktor.network.sockets.aSocket
 import io.ktor.network.sockets.isClosed
 import io.ktor.network.sockets.openReadChannel
-import io.ktor.network.sockets.openWriteChannel
 import io.ktor.network.sockets.port
 import io.ktor.utils.io.ByteReadChannel
-import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.discard
 import io.ktor.utils.io.readLineStrict
-import io.ktor.utils.io.writeFully
-import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineName
@@ -93,11 +89,11 @@ class PikoMediaProxy(
         val bound = aSocket(manager).tcp().bind(LOOPBACK, 0)
         server = bound
         PikoLog.i(TAG, "Loopback proxy listening on $LOOPBACK:${bound.port}")
-        scope.launch { acceptLoop(bound) }
+        scope.launch { acceptLoop(bound, manager) }
         bound.port
     }
 
-    private suspend fun acceptLoop(bound: ServerSocket) {
+    private suspend fun acceptLoop(bound: ServerSocket, manager: SelectorManager) {
         while (true) {
             val socket = try {
                 bound.accept()
@@ -116,15 +112,15 @@ class PikoMediaProxy(
                 }
                 return
             }
-            scope.launch { serveConnection(socket) }
+            scope.launch { serveConnection(socket, manager) }
         }
     }
 
-    private suspend fun serveConnection(socket: Socket) {
+    private suspend fun serveConnection(socket: Socket, manager: SelectorManager) {
         try {
             coroutineScope {
                 val input = socket.openReadChannel()
-                val output = socket.openWriteChannel(autoFlush = false)
+                val output = openLoopbackSocketWriter(socket, manager, LOOPBACK_SEND_BUFFER_BYTES)
                 val request = readRequest(input) ?: return@coroutineScope
                 val response = launch { respond(request, output) }
                 // 每个响应都带 Connection: close，客户端之后不会再发数据，
@@ -151,7 +147,7 @@ class PikoMediaProxy(
         }
     }
 
-    private suspend fun respond(request: ProxyRequest, output: ByteWriteChannel) {
+    private suspend fun respond(request: ProxyRequest, output: LoopbackSocketWriter) {
         val isHead = request.method == "HEAD"
         val token = request.target.removePrefix("/").substringBefore('/').substringBefore('?')
         val shortToken = token.take(8).ifEmpty { "empty" }
@@ -220,8 +216,7 @@ class PikoMediaProxy(
                             headSent = true
                             sendSuccessHead()
                         }
-                        output.writeFully(buffer, offset, offset + length)
-                        output.flush()
+                        output.writeFully(buffer, offset, length)
                     }
                     if (!headSent) {
                         sendSuccessHead()
@@ -279,6 +274,7 @@ class PikoMediaProxy(
     private companion object {
         const val TAG = "MediaProxy"
         const val LOOPBACK = "127.0.0.1"
+        const val LOOPBACK_SEND_BUFFER_BYTES = 32 * 1024
     }
 }
 
@@ -349,13 +345,13 @@ private suspend fun readRequest(input: ByteReadChannel): ProxyRequest? {
     return null
 }
 
-private suspend fun ByteWriteChannel.writeHead(status: Int, reason: String, headers: List<Pair<String, String>>) {
+private suspend fun LoopbackSocketWriter.writeHead(status: Int, reason: String, headers: List<Pair<String, String>>) {
     val head = buildString {
         append("HTTP/1.1 ").append(status).append(' ').append(reason).append("\r\n")
         headers.forEach { (name, value) -> append(name).append(": ").append(value).append("\r\n") }
         append("Connection: close\r\n\r\n")
     }
-    writeStringUtf8(head)
+    writeUtf8(head)
 }
 
 internal sealed interface ByteRange {
