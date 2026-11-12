@@ -1,26 +1,8 @@
 name: iOS Native validation
 
+# 日常推送、PR 与发版门控已并入 test.yml 的 ios-simulator；本文件仅保留手动独立验证入口。
 on:
   workflow_dispatch:
-  push:
-    branches: ["main"]
-    paths:
-      - 'shared/**'
-      - 'ui/**'
-      - 'iosApp/**'
-      - 'gradle/**'
-      - '*.gradle.kts'
-      - 'gradle.properties'
-      - '.github/workflows/ios-native.yml'
-  pull_request:
-    paths:
-      - 'shared/**'
-      - 'ui/**'
-      - 'iosApp/**'
-      - 'gradle/**'
-      - '*.gradle.kts'
-      - 'gradle.properties'
-      - '.github/workflows/ios-native.yml'
 
 permissions:
   contents: read

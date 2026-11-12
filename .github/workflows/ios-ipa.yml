@@ -26,9 +26,6 @@ on:
         description: "Xcode 版本（latest-stable 或具体如 16.4）"
         type: string
         default: latest-stable
-  push:
-    tags:
-      - "ios-v*"
 
 permissions:
   contents: read
