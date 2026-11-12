@@ -49,6 +49,28 @@ object PikoBrandIcons {
         }.build()
     }
 
+    /** Google 官方四色 G 标志（24dp 视口），用于「使用 Google 继续」登录按钮。 */
+    val Google: ImageVector by lazy {
+        ImageVector.Builder("GoogleG", 24.dp, 24.dp, 24f, 24f).apply {
+            addPath(
+                addPathNodes("M22.56,12.25 C22.56,11.47 22.49,10.72 22.36,10.0 L12.0,10.0 L12.0,14.26 L17.92,14.26 C17.66,15.63 16.88,16.79 15.71,17.57 L15.71,20.34 L19.28,20.34 C21.36,18.42 22.56,15.6 22.56,12.25 Z"),
+                fill = SolidColor(Color(0xFF4285F4)),
+            )
+            addPath(
+                addPathNodes("M12.0,23.0 C14.97,23.0 17.46,22.02 19.28,20.34 L15.71,17.57 C14.73,18.23 13.48,18.63 12.0,18.63 C9.14,18.63 6.71,16.7 5.84,14.1 L2.18,14.1 L2.18,16.94 C3.99,20.53 7.7,23.0 12.0,23.0 Z"),
+                fill = SolidColor(Color(0xFF34A853)),
+            )
+            addPath(
+                addPathNodes("M5.84,14.09 C5.62,13.43 5.49,12.73 5.49,12.0 C5.49,11.27 5.62,10.57 5.84,9.91 L5.84,7.07 L2.18,7.07 C1.43,8.55 1.0,10.22 1.0,12.0 C1.0,13.78 1.43,15.45 2.18,16.93 L5.84,14.09 Z"),
+                fill = SolidColor(Color(0xFFFBBC05)),
+            )
+            addPath(
+                addPathNodes("M12.0,5.38 C13.62,5.38 15.06,5.94 16.21,7.02 L19.36,3.87 C17.45,2.09 14.97,1.0 12.0,1.0 C7.7,1.0 3.99,3.47 2.18,7.07 L5.84,9.91 C6.71,7.31 9.14,5.38 12.0,5.38 Z"),
+                fill = SolidColor(Color(0xFFEA4335)),
+            )
+        }.build()
+    }
+
     private fun ImageVector.Builder.cat(color: Color) {
         val brush = SolidColor(color)
         addPath(addPathNodes(EAR_LEFT), fill = brush)

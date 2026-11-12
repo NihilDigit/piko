@@ -1,5 +1,6 @@
 package dev.piko.shared.data
 
+import dev.piko.shared.i18n.tr
 import io.github.nihildigit.pikpak.AccountSnapshot
 import io.github.nihildigit.pikpak.QuotaInfo
 import io.github.nihildigit.pikpak.QuotaResponse
@@ -9,8 +10,16 @@ import io.github.nihildigit.pikpak.TransferQuota
 import io.github.nihildigit.pikpak.UserProfile
 import kotlinx.serialization.Serializable
 
+/** 最近一次完成登录的方式，用于会话过期重登引导（不代表本机是否另存了密码，密码是否存在由 [PikoSessionStore.loadCredentials] 判定）。 */
+@Serializable
+enum class AccountAuthMethod {
+    Password,
+    Google,
+    Token,
+}
+
 /**
- * 登录态的持久化，两端各有实现。会话（SDK 的 [SessionStore]）、密码与压缩包密码是机密，按账号分开存、落盘前加密；
+ * 登录态的持久化，两端各有实现。会话（SDK 的 [SessionStore]）、密码、同步口令与压缩包密码是机密，按账号分开存、落盘前加密；
  * 账号列表（[SavedAccounts]）只有账号名与资料，不含机密。
  */
 interface PikoSessionStore : SessionStore, ArchivePasswordStore {
@@ -19,6 +28,11 @@ interface PikoSessionStore : SessionStore, ArchivePasswordStore {
     suspend fun loadCredentials(account: String): PikoCredentials?
     suspend fun saveCredentials(account: String, password: String)
     suspend fun clearCredentials(account: String)
+
+    /** 独立设置的跨设备加密同步口令（用于无密码 Google 登录账号或密码变更后的加密同步），未设置时返回 null。 */
+    suspend fun loadSyncSecret(account: String): String? = null
+    suspend fun saveSyncSecret(account: String, secret: String) = Unit
+    suspend fun clearSyncSecret(account: String) = Unit
 
     override suspend fun loadAccountSnapshot(account: String): AccountSnapshot? =
         runCatching { loadAccounts().find(account)?.toAccountSnapshot() }.getOrNull()
@@ -54,6 +68,10 @@ data class SavedAccounts(
 ) {
     fun find(account: String): SavedAccount? = accounts.firstOrNull { it.account == account }
 
+    /** 按服务端确认的 PikPak 用户主键 `sub` 查找已有本地槽位，避免同一账号在密码登录与 Google 登录间拆成两份目录树与任务。 */
+    fun findBySub(sub: String): SavedAccount? =
+        if (sub.isBlank()) null else accounts.firstOrNull { it.effectiveSub == sub }
+
     /** 加进 [account] 或更新它，保持原来的位置。 */
     fun upsert(account: SavedAccount): SavedAccounts {
         val at = accounts.indexOfFirst { it.account == account.account }
@@ -70,6 +88,7 @@ data class SavedAccounts(
  */
 @Serializable
 data class SavedAccount(
+    /** 本机持久化主键（storageKey），用于关联会话、目录树 SQLite、工作区、下载上传任务与同步账本。 */
     val account: String,
     val name: String = "",
     val avatarUrl: String = "",
@@ -81,9 +100,36 @@ data class SavedAccount(
     val quota: QuotaResponse? = null,
     val transferQuota: TransferQuota? = null,
     val userProfile: UserProfile? = null,
+    /** 经服务端校验确认的 PikPak 用户唯一标识（`/v1/user/me` 的 `sub`）。 */
+    val sub: String = "",
+    /** 密码登录用的真实用户名（邮箱/手机号）；当 [account] 为 `pikpak:<sub>` 内部存储键时供密码登录与预填使用。 */
+    val loginAccount: String = "",
+    val authMethod: AccountAuthMethod = AccountAuthMethod.Password,
+    /** 设备授权流生成并持久化的 32 位十六进制 `device_id`；为空时沿用旧版 `MD5(account)`。 */
+    val deviceId: String = "",
 ) {
-    /** 界面上的名字：昵称，没有时是账号本身。 */
-    val displayName: String get() = name.ifBlank { account }
+    val isInternalStorageKey: Boolean get() = account.startsWith(INTERNAL_ACCOUNT_PREFIX)
+
+    /** 可信的 PikPak 用户 `sub`（优先显式字段，回退已落盘的 [userProfile] 或内部 `pikpak:<sub>` 键后缀）。 */
+    val effectiveSub: String
+        get() = sub
+            .ifBlank { userProfile?.sub.orEmpty() }
+            .ifBlank { if (isInternalStorageKey) account.removePrefix(INTERNAL_ACCOUNT_PREFIX) else "" }
+
+    /** 可向用户展示或填入账号输入框的公开登录名；内部 `pikpak:<sub>` 存储键绝不外露。 */
+    val publicAccountHandle: String?
+        get() = loginAccount.ifBlank { if (isInternalStorageKey) "" else account }.ifBlank { null }
+
+    /** 界面上的名字：昵称 -> 脱敏邮箱 -> 公开登录名 -> 兜底文案，绝不展示内部 `pikpak:<sub>` 键。 */
+    val displayName: String
+        get() = name.ifBlank { email }
+            .ifBlank { publicAccountHandle.orEmpty() }
+            .ifBlank { tr("PikPak 用户", "PikPak user", "PikPakユーザー", "PikPak 사용자", "PikPak 使用者") }
+
+    companion object {
+        const val INTERNAL_ACCOUNT_PREFIX = "pikpak:"
+        fun storageKeyForSub(sub: String): String = "$INTERNAL_ACCOUNT_PREFIX$sub"
+    }
 
     fun toAccountSnapshot(): AccountSnapshot? {
         val resolvedQuota = quota ?: if (usageBytes >= 0L && limitBytes > 0L) {
@@ -129,6 +175,7 @@ data class SavedAccount(
             quota = q,
             transferQuota = tq,
             userProfile = p,
+            sub = p?.sub?.ifEmpty { sub } ?: sub,
         )
     }
 }

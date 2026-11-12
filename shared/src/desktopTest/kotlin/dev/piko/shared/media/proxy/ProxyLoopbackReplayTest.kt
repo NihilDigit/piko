@@ -1007,10 +1007,8 @@ class ProxyLoopbackReplayTest {
                     }
                 }
                 val completionHandle = request.executionContext.invokeOnCompletion { cause ->
-                    if (cause != null) {
-                        channel.cancel(cause)
-                        producerJob.cancel()
-                    }
+                    channel.cancel(cause)
+                    producerJob.cancel()
                 }
                 producerJob.invokeOnCompletion { completionHandle.dispose() }
                 streamScope.launch {

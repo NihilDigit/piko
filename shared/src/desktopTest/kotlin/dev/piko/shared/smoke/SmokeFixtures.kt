@@ -172,6 +172,14 @@ class MemorySessionStore : PikoSessionStore {
     override suspend fun clearCredentials(account: String) {
         passwords.remove(account)
     }
+    val syncSecrets = ConcurrentHashMap<String, String>()
+    override suspend fun loadSyncSecret(account: String): String? = syncSecrets[account]
+    override suspend fun saveSyncSecret(account: String, secret: String) {
+        if (secret.isEmpty()) syncSecrets.remove(account) else syncSecrets[account] = secret
+    }
+    override suspend fun clearSyncSecret(account: String) {
+        syncSecrets.remove(account)
+    }
     val archivePasswords = ConcurrentHashMap<String, String>()
     override suspend fun loadArchivePasswords(account: String): String = archivePasswords[account].orEmpty()
     override suspend fun saveArchivePasswords(account: String, serialized: String) {

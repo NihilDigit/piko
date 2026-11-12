@@ -66,6 +66,13 @@ class DesktopSessionStore(
     override suspend fun saveArchivePasswords(account: String, serialized: String) =
         update(account) { it.copy(archivePasswords = serialized.ifEmpty { null }) }
 
+    override suspend fun loadSyncSecret(account: String): String? = secrets(account).syncSecret?.takeIf { it.isNotEmpty() }
+
+    override suspend fun saveSyncSecret(account: String, secret: String) =
+        update(account) { it.copy(syncSecret = secret.ifEmpty { null }) }
+
+    override suspend fun clearSyncSecret(account: String) = update(account) { it.copy(syncSecret = null) }
+
     override suspend fun loadAccounts(): SavedAccounts = locked { readAccountsFile() ?: legacyAccounts ?: SavedAccounts() }
 
     override suspend fun saveAccounts(accounts: SavedAccounts) = locked {
@@ -218,14 +225,15 @@ class DesktopSessionStore(
     }
 }
 
-/** 退出登录只清 [session] 与 [password]，[archivePasswords] 留着，这一份随之不为空、不删。 */
+/** 退出登录清 [session]、[password] 与 [syncSecret]，[archivePasswords] 留着，这一份随之不为空、不删。 */
 @Serializable
 internal data class AccountSecrets(
     val session: Session? = null,
     val password: String? = null,
     val archivePasswords: String? = null,
+    val syncSecret: String? = null,
 ) {
-    val isEmpty: Boolean get() = session == null && password == null && archivePasswords == null
+    val isEmpty: Boolean get() = session == null && password == null && archivePasswords == null && syncSecret == null
 }
 
 /** 账号名可能是邮箱或手机号，不直接进文件名与钥匙串属性，取其摘要。 */

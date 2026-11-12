@@ -137,6 +137,34 @@ class FakePikPakServer(
      */
     val unheldHashes: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
+    data class FakeUser(
+        val sub: String,
+        val name: String,
+        val email: String,
+        val providerId: String = "password",
+    )
+
+    val usersByUsername = java.util.concurrent.ConcurrentHashMap<String, FakeUser>()
+    private val usersByToken = java.util.concurrent.ConcurrentHashMap<String, FakeUser>()
+
+    /** Google 设备授权流（RFC 8628）确认后返回的账号。 */
+    @Volatile
+    var deviceLoginUser = FakeUser(
+        sub = "UID-GOOGLE",
+        name = "Google User",
+        email = "g***@gmail.com",
+        providerId = "google.com",
+    )
+
+    /** 设备授权轮询前几次返回 400 `authorization_pending`（`error_code=4050`）。 */
+    val deviceAuthPendingPolls = AtomicInteger(0)
+
+    /** 为真时 refresh_token 交换返回 400 `invalid_grant`（`error_code=4126`）。 */
+    @Volatile var rejectRefresh = false
+
+    /** 为真时业务接口（`/drive/v1/`）返回 401 `unauthenticated`，模拟运行期 access_token 被服务端吊销。 */
+    @Volatile var rejectAccessTokens = false
+
     /** 为真时密码登录被服务端拒绝。 */
     @Volatile var rejectSignIn = false
 
@@ -265,13 +293,17 @@ class FakePikPakServer(
         return when {
             path.endsWith("/v1/shield/captcha/init") ->
                 json("""{"captcha_token":"CAP","expires_in":300,"url":""}""")
+            path.endsWith("/v1/auth/device/code") -> deviceCodeResponse()
             path.endsWith("/v1/auth/signin") ->
                 if (rejectSignIn) {
                     json("""{"error_code":4002,"error":"invalid_account_or_password"}""", HttpStatusCode.BadRequest)
                 } else {
-                    tokenResponse()
+                    signInResponse(request)
                 }
-            path.endsWith("/v1/auth/token") -> tokenResponse()
+            path.endsWith("/v1/auth/token") -> tokenEndpointResponse(request)
+            path.endsWith("/v1/user/me") -> userMeResponse(request)
+            path.contains("/drive/v1/") && rejectAccessTokens ->
+                json("""{"error_code":16,"error":"unauthenticated"}""", HttpStatusCode.Unauthorized)
             path.endsWith("/drive/v1/share/restore") -> restoreShare(request)
             path.endsWith("/drive/v1/share") -> {
                 val ids = shares[request.url.parameters["share_id"]].orEmpty()
@@ -480,8 +512,122 @@ class FakePikPakServer(
         put("file_size", "0")
     }
 
-    private fun MockRequestHandleScope.tokenResponse() =
-        json("""{"access_token":"AT","refresh_token":"RT","sub":"UID","expires_in":3600}""")
+    private fun MockRequestHandleScope.deviceCodeResponse(): HttpResponseData {
+        val codeId = newId()
+        return json(
+            buildJsonObject {
+                put("device_code", "DC-$codeId")
+                put("user_code", "UCOD-1234")
+                put("verification_uri", "https://mypikpak.com/drive/qr-login")
+                put("expires_in", 600)
+                put("interval", 1)
+            }.toString(),
+        )
+    }
+
+    private fun MockRequestHandleScope.signInResponse(request: HttpRequestData): HttpResponseData {
+        val body = runCatching { Json.parseToJsonElement(request.body.text()).jsonObject }.getOrNull()
+        val username = body?.get("username")?.jsonPrimitive?.content?.trim().orEmpty()
+        val user = usersByUsername[username] ?: FakeUser(
+            sub = if (username.isEmpty() || username == "smoke@piko.dev") "UID" else "UID-$username",
+            name = username.substringBefore('@').ifBlank { "Smoke" },
+            email = username.ifBlank { "smoke@piko.dev" },
+            providerId = "password",
+        )
+        val at = if (user.sub == "UID") "AT" else "AT-${user.sub}"
+        val rt = if (user.sub == "UID") "RT" else "RT-${user.sub}"
+        usersByToken[at] = user
+        usersByToken[rt] = user
+        return json(
+            buildJsonObject {
+                put("access_token", at)
+                put("refresh_token", rt)
+                put("sub", user.sub)
+                put("expires_in", 3600)
+            }.toString(),
+        )
+    }
+
+    private fun MockRequestHandleScope.tokenEndpointResponse(request: HttpRequestData): HttpResponseData {
+        val body = runCatching { Json.parseToJsonElement(request.body.text()).jsonObject }.getOrNull()
+        val grantType = body?.get("grant_type")?.jsonPrimitive?.content.orEmpty()
+        if (grantType == "urn:ietf:params:oauth:grant-type:device_code") {
+            val remaining = deviceAuthPendingPolls.getAndUpdate { if (it > 0) it - 1 else 0 }
+            if (remaining > 0) {
+                return json(
+                    """{"error":"authorization_pending","error_code":4050,"error_description":"Waiting for user confirmation"}""",
+                    HttpStatusCode.BadRequest,
+                )
+            }
+            val user = deviceLoginUser
+            val at = "AT-DEV-${user.sub}"
+            val rt = "RT-DEV-${user.sub}"
+            usersByToken[at] = user
+            usersByToken[rt] = user
+            return json(
+                buildJsonObject {
+                    put("access_token", at)
+                    put("refresh_token", rt)
+                    put("sub", user.sub)
+                    put("scope", "user pan offline")
+                    put("expires_in", 7200)
+                }.toString(),
+            )
+        }
+        if (rejectRefresh) {
+            return json(
+                """{"error":"invalid_grant","error_code":4126,"error_description":"Refresh token revoked"}""",
+                HttpStatusCode.BadRequest,
+            )
+        }
+        val rt = body?.get("refresh_token")?.jsonPrimitive?.content.orEmpty()
+        val user = usersByToken[rt]
+        if (user == null) {
+            return json("""{"access_token":"AT","refresh_token":"RT","sub":"UID","expires_in":3600}""")
+        }
+        val nextAt = if (user.sub == "UID") "AT" else "AT-${user.sub}"
+        val nextRt = if (user.sub == "UID") "RT" else "RT-${user.sub}"
+        usersByToken[nextAt] = user
+        usersByToken[nextRt] = user
+        return json(
+            buildJsonObject {
+                put("access_token", nextAt)
+                put("refresh_token", nextRt)
+                put("sub", user.sub)
+                put("scope", "user pan offline")
+                put("expires_in", 3600)
+            }.toString(),
+        )
+    }
+
+    private fun MockRequestHandleScope.userMeResponse(request: HttpRequestData): HttpResponseData {
+        val bearer = request.headers[HttpHeaders.Authorization]?.removePrefix("Bearer ")?.trim().orEmpty()
+        val user = usersByToken[bearer] ?: FakeUser(sub = "UID", name = "Smoke", email = "smoke@piko.dev")
+        return json(
+            buildJsonObject {
+                put("sub", user.sub)
+                put("name", user.name)
+                put("email", user.email)
+                put("picture", "")
+                put("password", if (user.providerId == "password") "SET" else "")
+                put("status", "ACTIVE")
+                put(
+                    "providers",
+                    buildJsonArray {
+                        if (user.providerId != "password") {
+                            add(
+                                buildJsonObject {
+                                    put("id", user.providerId)
+                                    put("provider_user_id", "prov-${user.sub}")
+                                    put("name", "Google")
+                                },
+                            )
+                        }
+                    },
+                )
+            }.toString(),
+        )
+    }
 
     private fun MockRequestHandleScope.fileDetail(id: String): HttpResponseData {
         val node = node(id) ?: return json("""{"error_code":3,"error":"file_not_found"}""", HttpStatusCode.NotFound)

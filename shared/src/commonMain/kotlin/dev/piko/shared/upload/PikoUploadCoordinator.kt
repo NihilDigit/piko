@@ -581,8 +581,10 @@ class PikoUploadCoordinator(
      * 读回上次保存的任务表。进行中与排队的重新入队，所属账号可用后自动续传；手动暂停的保持暂停。
      */
     private suspend fun restore() {
+        val raw = preferences.loadUploadTasks()
+        if (raw.isBlank()) return
         val saved = runSuspendCatching {
-            json.decodeFromString(taskListSerializer, preferences.loadUploadTasks())
+            json.decodeFromString(taskListSerializer, raw)
         }.logFailure(TAG, "Failed to decode persisted upload tasks, starting with empty queue").getOrDefault(emptyList())
         if (saved.isEmpty()) return
         // 1.1.0 把凭据随任务表明文存着，读到的照原样用，随后第一次保存就把它们搬进机密存储、从任务表里抹掉

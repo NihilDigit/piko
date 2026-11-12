@@ -21,10 +21,19 @@ class MetaTubeSyncTest {
     private class MemoryRemote : RemoteSettingsStore {
         var text: String? = null
         var writes = 0
+        var lastStamp = 0L
+        val writeStamps = mutableListOf<Long>()
+        val backups = mutableListOf<String>()
         override suspend fun read(account: String) = text
+        override suspend fun latestStamp(account: String) = lastStamp
         override suspend fun write(account: String, text: String, stamp: Long) {
             this.text = text
+            this.lastStamp = maxOf(this.lastStamp, stamp)
+            writeStamps += stamp
             writes++
+        }
+        override suspend fun writeBackup(account: String, text: String, stamp: Long) {
+            backups += text
         }
     }
 
@@ -131,22 +140,87 @@ class MetaTubeSyncTest {
     }
 
     @Test
-    fun passwordChangeReencryptsLocalValuesForOtherDevices() = scenario { scope ->
+    fun keyMismatchPreservesRemoteUntilExplicitResetWithBackup() = scenario { scope ->
         val remote = MemoryRemote()
         var password = "before"
         val a = Device(remote, scope) { password }
         a.prefs.setMetaTubeUrl("https://retained.example")
         a.prefs.setMetaTubeToken("retained-token")
         assertTrue(a.sync.syncNow())
-        val oldCiphertext = remote.text
+        val oldCiphertext = assertNotNull(remote.text)
+
         password = "after"
         assertTrue(a.sync.syncNow())
+        assertEquals(EncryptedSyncStatus.LockedKeyMismatch, a.sync.status.value)
+        assertEquals(oldCiphertext, remote.text, "密钥变化时不得自动覆盖云端密文")
+        assertEquals(1, remote.writes)
+        assertTrue(remote.backups.isEmpty())
+
+        assertTrue(a.sync.resetRemoteWithCurrentKey())
+        assertEquals(listOf(oldCiphertext), remote.backups)
         assertFalse(remote.text == oldCiphertext)
-        assertEquals(3, a.cipher.derives, "新密码先尝试旧 salt，恢复重写时再派生新 salt 的密钥")
+        assertEquals(EncryptedSyncStatus.Unlocked, a.sync.status.value)
+
         val b = Device(remote, scope) { "after" }
         assertTrue(b.sync.syncNow())
         assertEquals("https://retained.example", b.prefs.metaTubeUrlFlow.value)
         assertEquals("retained-token", b.prefs.metaTubeTokenFlow.value)
         assertEquals(2, remote.writes)
+    }
+
+    @Test
+    fun losslessPassphraseRotationUpgradesV1ToV2AndNeverDowngradesBackToV1() = scenario { scope ->
+        val remote = MemoryRemote()
+        val provider = FakePikPakServer().provider()
+        val account = provider.currentClient.value!!.account
+        var activeKey = dev.piko.shared.data.EncryptedSyncKey("pw-v1", isPassphrase = false)
+        val prefsA = MemoryPreferences()
+        val cacheA = Cache()
+        val syncA = MetaTubeSync(
+            clients = provider,
+            remote = remote,
+            preferences = prefsA,
+            cacheStore = cacheA,
+            keyProvider = SyncKeyProvider { activeKey },
+            cipher = JvmSyncCipher(),
+            scope = scope,
+            enabled = flowOf(true),
+            now = { 10_000L },
+        )
+        prefsA.setMetaTubeUrl("https://metatube.example")
+        prefsA.setMetaTubeToken("token-v1")
+        assertTrue(syncA.syncNow())
+        assertTrue("\"version\":1" in assertNotNull(remote.text))
+
+        val prevKey = activeKey
+        activeKey = dev.piko.shared.data.EncryptedSyncKey("rotated-pass", isPassphrase = true)
+        assertEquals(EncryptedSyncApplyOutcome.UNLOCKED, syncA.checkPassphrase(account, "rotated-pass", prevKey))
+        assertEquals(EncryptedSyncApplyOutcome.UNLOCKED, syncA.applyPassphrase(account, "rotated-pass", prevKey))
+        assertTrue("\"version\":2" in assertNotNull(remote.text))
+
+        // 另一台以相同字符串作为账号密码的设备更新 token 时保持 v2，不降级回 v1
+        val prefsB = MemoryPreferences()
+        val cacheB = Cache()
+        val syncB = MetaTubeSync(
+            clients = provider,
+            remote = remote,
+            preferences = prefsB,
+            cacheStore = cacheB,
+            keyProvider = SyncKeyProvider { dev.piko.shared.data.EncryptedSyncKey("rotated-pass", isPassphrase = false) },
+            cipher = JvmSyncCipher(),
+            scope = scope,
+            enabled = flowOf(true),
+            now = { 20_000L },
+        )
+        assertTrue(syncB.syncNow())
+        assertEquals("https://metatube.example", prefsB.metaTubeUrlFlow.value)
+        prefsB.setMetaTubeToken("token-v2")
+        assertTrue(syncB.syncNow())
+        assertTrue("\"version\":2" in assertNotNull(remote.text))
+
+        remote.lastStamp = 500_000L
+        assertFalse(syncA.resetRemoteWithCurrentKey("other@piko.dev"))
+        assertTrue(syncA.resetRemoteWithCurrentKey(account))
+        assertEquals(500_001L, remote.writeStamps.last())
     }
 }

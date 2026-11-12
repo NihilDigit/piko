@@ -47,7 +47,12 @@ class PikoAccountRepository(
                     if (quota == null && transferQuota == null && profile == null) return@collect
                     val confirmedQuota = quota?.takeUnless { driveRepository.hasPendingOptimisticWritesFor(account) }
                     clientManager.updateAccount(account) { saved ->
+                        val verifiedSub = profile?.sub?.takeIf { it.isNotBlank() }
+                        if (verifiedSub != null && saved.effectiveSub.isNotBlank() && saved.effectiveSub != verifiedSub) {
+                            return@updateAccount saved
+                        }
                         saved.copy(
+                            sub = verifiedSub ?: saved.sub,
                             name = profile?.name?.ifEmpty { saved.name } ?: saved.name,
                             avatarUrl = profile?.avatarUrl?.ifEmpty { null } ?: saved.avatarUrl,
                             email = profile?.email?.ifEmpty { saved.email } ?: saved.email,
@@ -69,7 +74,12 @@ class PikoAccountRepository(
         runSuspendCatching {
             client.getUserProfile(maxAge).also { profile ->
                 clientManager.updateAccount(client.account) {
+                    val verifiedSub = profile.sub.takeIf { s -> s.isNotBlank() }
+                    if (verifiedSub != null && it.effectiveSub.isNotBlank() && it.effectiveSub != verifiedSub) {
+                        return@updateAccount it
+                    }
                     it.copy(
+                        sub = verifiedSub ?: it.sub,
                         name = profile.name.ifEmpty { it.name },
                         avatarUrl = profile.avatarUrl?.ifEmpty { null } ?: it.avatarUrl,
                         email = profile.email.ifEmpty { it.email },

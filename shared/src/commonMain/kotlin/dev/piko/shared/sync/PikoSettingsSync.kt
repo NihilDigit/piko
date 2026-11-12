@@ -1,6 +1,7 @@
 package dev.piko.shared.sync
 
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.shared.data.EncryptedSyncKey
 import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
@@ -273,6 +274,35 @@ class PikoSettingsSync(
     }
 }
 
+/** 提供指定账号的加密同步密钥；与旧版 `suspend (String) -> String?` 构造器区分 JVM 擦除签名。 */
+fun interface SyncKeyProvider {
+    suspend fun keyFor(account: String): EncryptedSyncKey?
+}
+
+/** 加密同步（解压密码与 MetaTube 配置）的当前密钥与远端密文状态。 */
+enum class EncryptedSyncStatus {
+    /** 尚未同步或已退出。 */
+    Idle,
+    /** 密钥可用，远端尚无密文或已正常解密合并。 */
+    Unlocked,
+    /** 当前账号无已保存密码且未配置独立同步口令（如纯 Google 登录尚未设置同步口令）。 */
+    LockedNoKey,
+    /** 远端存在加密同步文件，但当前密钥无法解开（改过账号密码或使用了独立同步口令）；绝不自动覆盖远端。 */
+    LockedKeyMismatch,
+    /** 远端同步文件损坏或格式版本高于当前客户端支持上限。 */
+    CorruptOrUnsupported,
+}
+
+/** 更改或清除独立加密同步口令后单次校验/无损轮换的结果。 */
+enum class EncryptedSyncApplyOutcome {
+    /** 已成功解密、合并或完成无损重加密。 */
+    UNLOCKED,
+    /** 远端存在无法用新口令或旧密钥解密的密文（绝不覆盖远端）。 */
+    KEY_MISMATCH,
+    /** 网络暂不可达、钥匙串锁定或当前无可用密钥，本轮延后。 */
+    DEFERRED,
+}
+
 /** 同步文件放在哪。网盘里的实现是 [DriveSettingsStore]，测试换成内存里的。 */
 interface RemoteSettingsStore {
     /** 最新的一份，没有时为 null。 */
@@ -280,6 +310,14 @@ interface RemoteSettingsStore {
 
     /** 写一份新的，[stamp] 是这一次同步的时刻。 */
     suspend fun write(account: String, text: String, stamp: Long)
+
+    /** 最新已完成同步文件的时间戳（毫秒），不存在时为 0L；用于重置时单调递增压过时钟偏差文件。 */
+    suspend fun latestStamp(account: String): Long = 0L
+
+    /** 显式重置远端加密同步前保存一份旧密文备份（不纳入常规清理前缀）；未实现的存储必须拒绝重置。 */
+    suspend fun writeBackup(account: String, text: String, stamp: Long) {
+        throw UnsupportedOperationException("RemoteSettingsStore.writeBackup is required before resetting encrypted sync")
+    }
 }
 
 /**
@@ -340,9 +378,26 @@ class DriveSettingsStore(
             .logFailure(tag, "Failed to list .piko after writing $name; stale $filePrefix files will be cleaned up next run")
             .getOrNull().orEmpty().filter { it.isSettingsFile() && it.stamp() < stamp }
         if (stale.isNotEmpty()) {
+            requireCurrent(account)
             driveRepo.delete(stale.map { it.id })
                 .logFailure(tag, "Failed to delete ${stale.size} stale $filePrefix files")
         }
+    }
+
+    override suspend fun latestStamp(account: String): Long {
+        val (_, entries) = folderAndEntriesOf(account)
+        requireCurrent(account)
+        return entries
+            .filter { it.isSettingsFile() && it.phase == TaskPhase.COMPLETE }
+            .maxOfOrNull { it.stamp() } ?: 0L
+    }
+
+    override suspend fun writeBackup(account: String, text: String, stamp: Long) {
+        val folder = folderOf(account)
+        val name = "backup-$filePrefix$stamp$FILE_SUFFIX"
+        requireCurrent(account)
+        driveRepo.uploadBytes(folder, name, text.encodeToByteArray()).getOrThrow()
+        PikoLog.i(tag, "Saved encrypted sync backup before reset: $name")
     }
 
     // 记着的文件夹可能已被删掉或移走：列不出来就忘掉它，重新找一次。多个同步器在登录后并发启动，

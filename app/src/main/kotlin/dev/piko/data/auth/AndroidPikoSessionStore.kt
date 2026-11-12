@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import dev.piko.shared.auth.VaultUnavailableException
 import dev.piko.shared.data.PikoCredentials
 import dev.piko.shared.data.PikoSessionStore
 import dev.piko.shared.data.SavedAccount
@@ -24,6 +25,7 @@ class AndroidPikoSessionStore(private val context: Context) : PikoSessionStore {
 
     private fun sessionKey(account: String) = stringPreferencesKey("pikpak_session_$account")
     private fun passwordKey(account: String) = stringPreferencesKey("pikpak_password_$account")
+    private fun syncSecretKey(account: String) = stringPreferencesKey("pikpak_sync_secret_$account")
     private fun archivePasswordsKey(account: String) = stringPreferencesKey("pikpak_archive_passwords_$account")
 
     override suspend fun load(account: String): Session? {
@@ -36,21 +38,24 @@ class AndroidPikoSessionStore(private val context: Context) : PikoSessionStore {
         } else {
             stored
         }
+        // SerializationException 消息可能截出含明文 token 的 JSON 片段，仅记录异常类名
         val session = runCatching { json.decodeFromString(Session.serializer(), raw) }
-            .onFailure { PikoLog.w(TAG, "Failed to deserialize saved session", it) }
+            .onFailure { PikoLog.w(TAG, "Failed to deserialize saved session (${it::class.simpleName})") }
             .getOrNull() ?: return null
         // 旧版本存的是明文，读到就地换成密文
-        if (!CredentialCipher.isEncrypted(stored)) save(account, session)
+        if (!CredentialCipher.isEncrypted(stored)) {
+            runCatching { save(account, session) }
+                .onFailure { PikoLog.w(TAG, "Failed to re-seal legacy plaintext session (${it::class.simpleName})") }
+        }
         return session
     }
 
     override suspend fun save(account: String, session: Session) {
         val raw = json.encodeToString(Session.serializer(), session)
-        // 密钥库不可用时仍存明文：会话每次刷新都要写，存不下就等于每次启动都要重新登录。
-        // 密码不同，见 saveCredentials
+        // 密钥库不可用时 fail-closed 抛出，不回退明文落盘（SDK 已先更新内存态 session，本次运行不受阻；避免泄露 refresh_token）
         val sealed = runCatching { CredentialCipher.encrypt(raw) }
-            .onFailure { PikoLog.w(TAG, "Failed to encrypt session; falling back to plaintext storage", it) }
-            .getOrDefault(raw)
+            .onFailure { PikoLog.w(TAG, "Failed to encrypt session (${it::class.simpleName})") }
+            .getOrThrow()
         context.dataStore.edit { it[sessionKey(account)] = sealed }
     }
 
@@ -62,7 +67,7 @@ class AndroidPikoSessionStore(private val context: Context) : PikoSessionStore {
         val prefs = context.dataStore.data.first()
         prefs[ACCOUNTS]?.let { text ->
             return runCatching { json.decodeFromString(SavedAccounts.serializer(), text) }
-                .onFailure { PikoLog.w(TAG, "Failed to deserialize saved accounts list; resetting to empty", it) }
+                .onFailure { PikoLog.w(TAG, "Failed to deserialize saved accounts list (${it::class.simpleName}); resetting to empty") }
                 .getOrDefault(SavedAccounts())
         }
         // 有多账号之前只记上次的账号，昵称与头像另存一份在偏好里（连同令牌的明文副本）。
@@ -120,6 +125,30 @@ class AndroidPikoSessionStore(private val context: Context) : PikoSessionStore {
 
     override suspend fun clearCredentials(account: String) {
         context.dataStore.edit { it.remove(passwordKey(account)) }
+    }
+
+    override suspend fun loadSyncSecret(account: String): String? {
+        val stored = context.dataStore.data.first()[syncSecretKey(account)] ?: return null
+        if (stored.isEmpty()) return null
+        return CredentialCipher.decrypt(stored)?.takeIf { it.isNotEmpty() } ?: run {
+            PikoLog.w(TAG, "Failed to decrypt sync passphrase; reporting vault unavailable")
+            throw VaultUnavailableException("Android KeyStore failed to decrypt sync passphrase")
+        }
+    }
+
+    override suspend fun saveSyncSecret(account: String, secret: String) {
+        if (secret.isEmpty()) {
+            clearSyncSecret(account)
+            return
+        }
+        val sealed = runCatching { CredentialCipher.encrypt(secret) }
+            .onFailure { PikoLog.w(TAG, "Failed to encrypt sync passphrase (${it::class.simpleName}); keeping existing entry") }
+            .getOrThrow()
+        context.dataStore.edit { it[syncSecretKey(account)] = sealed }
+    }
+
+    override suspend fun clearSyncSecret(account: String) {
+        context.dataStore.edit { it.remove(syncSecretKey(account)) }
     }
 
     // 解不开多半是密钥已不在（恢复了备份、清过密钥库），以后也解不开，当作没有，不让它挡住之后的记录

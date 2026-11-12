@@ -54,6 +54,9 @@ private const val USAGE = """piko-cli：Piko 开发工具
   sync-probe
       创建隔离空目录实测同步分页水位，结束后移入回收站。
 
+  login [--no-browser]
+      使用第一方 Android 设备授权流（RFC 8628）在系统默认浏览器完成 Google / 网页登录，会话写入 ~/.piko-dev。
+
   account [--cached]
       通过 SDK 统一状态机查询当前账号资料、会员等级、网盘容量、回收站占用、流量配额与每日离线次数（--cached 优先复用本机缓存快照）。
 
@@ -229,6 +232,34 @@ private fun runCli(args: Array<String>) {
                 describeShare(appClient(), url, passCode).forEach(::println)
             }
         }
+        "login" -> runBlocking {
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+            val store = dev.piko.shared.auth.DesktopSessionStore()
+            val manager = dev.piko.shared.data.PikoClientManager(store, scope)
+            try {
+                while (manager.isInitializing.value) kotlinx.coroutines.delay(20)
+                val tx = manager.startGoogleDeviceLogin().getOrThrow()
+                println("设备验证码: ${tx.authorization.userCode}")
+                println("Google 登录入口: ${tx.googleAuthUrl}")
+                println("手动确认页面:   ${tx.qrLoginUrl}")
+                if ("--no-browser" !in options.flags) {
+                    runCatching {
+                        if (java.awt.Desktop.isDesktopSupported()) {
+                            java.awt.Desktop.getDesktop().browse(java.net.URI(tx.googleAuthUrl))
+                            println("已在默认浏览器打开登录页面，请在浏览器中完成确认…")
+                        }
+                    }.onFailure {
+                        println("未能自动调起默认浏览器，请手动复制上方链接到浏览器中打开。")
+                    }
+                }
+                val client = manager.awaitGoogleDeviceLogin(tx).getOrThrow()
+                val saved = manager.accounts.value.find(client.account)
+                println("登录成功: ${saved?.displayName ?: "PikPak 用户"}")
+                client.close()
+            } finally {
+                scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+            }
+        }
         "account" -> runBlocking {
             val client = appClient()
             try {
@@ -300,6 +331,6 @@ private class Options(args: List<String>) {
 
     companion object {
         // 不带值的开关
-        val FLAGS = setOf("--visited", "--restore", "--sequential", "--playing", "--background-first", "--combined", "--cached")
+        val FLAGS = setOf("--visited", "--restore", "--sequential", "--playing", "--background-first", "--combined", "--cached", "--no-browser")
     }
 }

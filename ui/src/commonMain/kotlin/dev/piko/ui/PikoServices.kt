@@ -1,6 +1,8 @@
 package dev.piko.ui
 
 import dev.piko.shared.sync.ArchivePasswordSync
+import dev.piko.shared.sync.EncryptedSyncApplyOutcome
+import dev.piko.shared.sync.EncryptedSyncStatus
 import dev.piko.shared.sync.PikoSettingsSync
 import dev.piko.shared.sync.PinnedTabSync
 import dev.piko.shared.sync.SyncCipher
@@ -41,10 +43,13 @@ import dev.piko.shared.net.PikPakDomainSelector
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.scrape.MetaTubeService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -232,6 +237,109 @@ class PikoServices(
             .also { sync -> sync.start() }
     }
 
+    /** 解压密码与 MetaTube 加密同步的综合状态（供设置页提示配置口令或处理密钥不匹配）。 */
+    val encryptedSyncStatus: StateFlow<EncryptedSyncStatus> =
+        if (archivePasswordSync != null && metaTubeSync != null) {
+            kotlinx.coroutines.flow.combine(archivePasswordSync.status, metaTubeSync.status) { a, b ->
+                when {
+                    a == EncryptedSyncStatus.LockedKeyMismatch || b == EncryptedSyncStatus.LockedKeyMismatch ->
+                        EncryptedSyncStatus.LockedKeyMismatch
+                    a == EncryptedSyncStatus.CorruptOrUnsupported || b == EncryptedSyncStatus.CorruptOrUnsupported ->
+                        EncryptedSyncStatus.CorruptOrUnsupported
+                    a == EncryptedSyncStatus.LockedNoKey || b == EncryptedSyncStatus.LockedNoKey ->
+                        EncryptedSyncStatus.LockedNoKey
+                    a == EncryptedSyncStatus.Unlocked || b == EncryptedSyncStatus.Unlocked ->
+                        EncryptedSyncStatus.Unlocked
+                    else -> EncryptedSyncStatus.Idle
+                }
+            }.let { combined ->
+                kotlinx.coroutines.flow.MutableStateFlow(EncryptedSyncStatus.Idle).also { out ->
+                    backgroundScope.launch { combined.collect { out.value = it } }
+                }
+            }
+        } else {
+            MutableStateFlow(EncryptedSyncStatus.Idle)
+        }
+
+    val supportsEncryptedSync: Boolean get() = archivePasswordSync != null
+
+    suspend fun hasSyncPassphraseForCurrentAccount(): Boolean {
+        val account = clientManager.currentClient.value?.account ?: return false
+        return clientManager.hasSyncPassphrase(account)
+    }
+
+    suspend fun updateSyncPassphrase(passphrase: String): PassphraseUpdateResult {
+        val account = clientManager.currentClient.value?.account ?: return PassphraseUpdateResult.Failed
+        return try {
+            if (passphrase.isEmpty()) {
+                clientManager.setSyncPassphrase(account, "")
+                val (archiveOut, metaTubeOut) = coroutineScope {
+                    val a = async { archivePasswordSync?.applyPassphrase(account, "", null) ?: EncryptedSyncApplyOutcome.UNLOCKED }
+                    val m = async { metaTubeSync?.applyPassphrase(account, "", null) ?: EncryptedSyncApplyOutcome.UNLOCKED }
+                    a.await() to m.await()
+                }
+                return if (archiveOut == EncryptedSyncApplyOutcome.UNLOCKED && metaTubeOut == EncryptedSyncApplyOutcome.UNLOCKED) {
+                    PassphraseUpdateResult.SavedAndSynced
+                } else {
+                    PassphraseUpdateResult.SavedOffline
+                }
+            }
+
+            val previousPassphrase = clientManager.rawSyncPassphrase(account)
+            val previousKey = clientManager.syncKeyFor(account)
+            val isKeyRotation = previousKey != null && previousKey.secret != passphrase
+            val (archiveCheck, metaTubeCheck) = coroutineScope {
+                val a = async { archivePasswordSync?.checkPassphrase(account, passphrase, previousKey) ?: EncryptedSyncApplyOutcome.UNLOCKED }
+                val m = async { metaTubeSync?.checkPassphrase(account, passphrase, previousKey) ?: EncryptedSyncApplyOutcome.UNLOCKED }
+                a.await() to m.await()
+            }
+            if (archiveCheck == EncryptedSyncApplyOutcome.KEY_MISMATCH || metaTubeCheck == EncryptedSyncApplyOutcome.KEY_MISMATCH) {
+                return PassphraseUpdateResult.KeyMismatch
+            }
+            // 从已有密钥轮换到新口令时，若离线或远端不可达（DEFERRED），不得覆盖本机旧密钥，否则重启后将丢失自动迁移能力
+            if (isKeyRotation && (archiveCheck != EncryptedSyncApplyOutcome.UNLOCKED || metaTubeCheck != EncryptedSyncApplyOutcome.UNLOCKED)) {
+                return PassphraseUpdateResult.Failed
+            }
+
+            clientManager.setSyncPassphrase(account, passphrase)
+            val archiveOut = archivePasswordSync?.applyPassphrase(account, passphrase, previousKey) ?: EncryptedSyncApplyOutcome.UNLOCKED
+            if (isKeyRotation && archiveOut != EncryptedSyncApplyOutcome.UNLOCKED) {
+                clientManager.setSyncPassphrase(account, previousPassphrase.orEmpty())
+                return if (archiveOut == EncryptedSyncApplyOutcome.KEY_MISMATCH) {
+                    PassphraseUpdateResult.KeyMismatch
+                } else {
+                    PassphraseUpdateResult.Failed
+                }
+            }
+            val metaTubeOut = metaTubeSync?.applyPassphrase(account, passphrase, previousKey) ?: EncryptedSyncApplyOutcome.UNLOCKED
+            when {
+                archiveOut == EncryptedSyncApplyOutcome.KEY_MISMATCH || metaTubeOut == EncryptedSyncApplyOutcome.KEY_MISMATCH -> {
+                    if (archiveOut != EncryptedSyncApplyOutcome.UNLOCKED && metaTubeOut != EncryptedSyncApplyOutcome.UNLOCKED) {
+                        clientManager.setSyncPassphrase(account, previousPassphrase.orEmpty())
+                    }
+                    PassphraseUpdateResult.KeyMismatch
+                }
+                archiveOut == EncryptedSyncApplyOutcome.DEFERRED || metaTubeOut == EncryptedSyncApplyOutcome.DEFERRED ->
+                    PassphraseUpdateResult.SavedOffline
+                else -> PassphraseUpdateResult.SavedAndSynced
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            PikoLog.w(TAG, "Failed to update sync passphrase: ${e::class.simpleName}")
+            PassphraseUpdateResult.Failed
+        }
+    }
+
+    suspend fun resetEncryptedSyncRemote(): Boolean {
+        val account = clientManager.currentClient.value?.account ?: return false
+        return coroutineScope {
+            val archiveOk = async { archivePasswordSync?.resetRemoteWithCurrentKey(account) ?: true }
+            val metaTubeOk = async { metaTubeSync?.resetRemoteWithCurrentKey(account) ?: true }
+            archiveOk.await() && metaTubeOk.await()
+        }
+    }
+
     /** API 走哪个根域名：用户固定的，或登录后测速自动挑的（冷启动先沿用上次测通的域名），见 PikPakDomainSelector。 */
     val domainSelector = PikPakDomainSelector(clientManager, preferences, backgroundScope, cacheStore).also { it.start() }
 
@@ -380,6 +488,13 @@ class PikoServices(
 }
 
 private const val TAG = "Services"
+
+enum class PassphraseUpdateResult {
+    SavedAndSynced,
+    KeyMismatch,
+    SavedOffline,
+    Failed,
+}
 
 val LocalPikoServices = staticCompositionLocalOf<PikoServices> {
     error("PikoServices 未提供，入口要用 PikoApp 包一层")

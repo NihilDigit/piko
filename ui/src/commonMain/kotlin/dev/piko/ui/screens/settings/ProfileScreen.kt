@@ -138,7 +138,7 @@ fun ProfileScreen(
     // 内容。副标题在收起态也在（flexible 顶栏的 subtitle 同时用作收起态的小副标题），只放一行短字，
     // 头像与会员期留在下面的账号卡里
     val topBarScrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-    val accountLabel = saved?.email?.ifBlank { null } ?: saved?.account?.takeIf { it != saved.displayName }
+    val accountLabel = saved?.email?.ifBlank { null } ?: saved?.publicAccountHandle?.takeIf { it != saved.displayName }
     PikoScaffold(
         modifier = modifier
             .fillMaxSize()

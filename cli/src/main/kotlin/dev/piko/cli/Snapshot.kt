@@ -79,11 +79,12 @@ internal suspend fun resolvePath(client: PikPakClient, path: String): String {
  * 新会话必须写回开发版读的同一处，否则开发版手里那份作废，下次打开要重新登录。
  */
 class AppSessionStore(private val store: DesktopSessionStore = DesktopSessionStore()) : SessionStore by store {
-    fun account(): String = runBlocking { store.loadAccounts().current }
-        ?: error("~/.piko 下没有登录信息，先在桌面端登录一次")
+    fun savedAccounts() = runBlocking { store.loadAccounts() }
 
-    suspend fun password(account: String): String = store.loadCredentials(account)?.password
-        ?: error("没有保存这个账号的密码，先在桌面端重新登录一次")
+    fun account(): String = savedAccounts().current
+        ?: error("~/.piko-dev 下没有登录信息，请先运行 `piko-cli login` 或在桌面开发版登录一次")
+
+    fun savedPasswordOrNull(account: String): String? = runBlocking { store.loadCredentials(account)?.password }
 
     // 会话失效时 SDK 会调它；这里不删，留给桌面端自己处理重新登录
     override suspend fun clear(account: String) = Unit
@@ -100,8 +101,28 @@ class AppSessionStore(private val store: DesktopSessionStore = DesktopSessionSto
     }
 }
 
-fun appClient(rateLimiter: io.github.nihildigit.pikpak.RateLimiter = io.github.nihildigit.pikpak.RateLimiter.default(), httpClient: io.ktor.client.HttpClient? = null): PikPakClient {
+fun appClient(
+    rateLimiter: io.github.nihildigit.pikpak.RateLimiter = io.github.nihildigit.pikpak.RateLimiter.default(),
+    httpClient: io.ktor.client.HttpClient? = null,
+    transportMemoryBudgetBytes: Long = 64L * 1024 * 1024,
+): PikPakClient {
     val store = AppSessionStore()
-    val account = store.account()
-    return PikPakClient(account, passwordSupplier = { store.password(account) }, sessionStore = store, rateLimiter = rateLimiter, httpClient = httpClient)
+    val saved = store.savedAccounts()
+    val account = saved.current ?: error("~/.piko-dev 下没有登录信息，请先运行 `piko-cli login` 或在桌面开发版登录一次")
+    val entry = saved.find(account)
+    val password = store.savedPasswordOrNull(account)
+    val loginUsername = entry?.loginAccount?.ifBlank { null }
+        ?: account.takeUnless { it.startsWith(dev.piko.shared.data.SavedAccount.INTERNAL_ACCOUNT_PREFIX) }.orEmpty()
+    val explicitDeviceId = entry?.deviceId?.takeIf { it.isNotBlank() }
+    val supplier: (suspend () -> String)? = if (password == null || loginUsername.isBlank()) null else ({ password })
+    return PikPakClient(
+        account = account,
+        passwordSupplier = supplier,
+        sessionStore = store,
+        rateLimiter = rateLimiter,
+        httpClient = httpClient,
+        loginUsername = loginUsername,
+        explicitDeviceId = explicitDeviceId,
+        transportMemoryBudgetBytes = transportMemoryBudgetBytes,
+    )
 }

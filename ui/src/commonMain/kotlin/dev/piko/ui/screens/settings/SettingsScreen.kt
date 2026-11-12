@@ -44,6 +44,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Lan
 import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Minimize
 import androidx.compose.material.icons.outlined.Palette
@@ -103,8 +104,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.data.auth.SnailMode
 import dev.piko.shared.net.ProxySetting
+import dev.piko.shared.sync.EncryptedSyncStatus
 import dev.piko.shared.sync.PikoSettingsSync
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.PassphraseUpdateResult
 import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.adaptive.readableWidth
 import dev.piko.ui.components.IslandHeaderSpace
@@ -191,6 +194,15 @@ fun SettingsScreen(
     val archivePasswordVault = services.archivePasswords
     val archivePasswords by archivePasswordVault.passwords.collectAsStateWithLifecycle(initialValue = emptyList())
     var showArchivePasswords by remember { mutableStateOf(false) }
+    val encryptedSyncStatus by services.encryptedSyncStatus.collectAsStateWithLifecycle()
+    val activeClient by services.clientManager.currentClient.collectAsStateWithLifecycle()
+    var hasSyncPassphrase by remember(activeClient?.account) { mutableStateOf(false) }
+    var showEncryptedSyncDialog by remember { mutableStateOf(false) }
+    var encryptedSyncBusy by remember { mutableStateOf(false) }
+    var encryptedSyncMismatchError by remember(activeClient?.account) { mutableStateOf<String?>(null) }
+    LaunchedEffect(activeClient?.account, showEncryptedSyncDialog) {
+        hasSyncPassphrase = services.hasSyncPassphraseForCurrentAccount()
+    }
     var showPlaybackQuality by remember { mutableStateOf(false) }
     val playbackMaxHeight by sessionManager.playbackMaxHeightFlow.collectAsStateWithLifecycle(initialValue = 0)
     var showDownloadQuality by remember { mutableStateOf(false) }
@@ -626,6 +638,62 @@ fun SettingsScreen(
                                 onClick = { showArchivePasswords = true },
                                 trailingIcon = null,
                             )
+                            if (services.supportsEncryptedSync) {
+                                val syncPassphraseSummary = when (encryptedSyncStatus) {
+                                    EncryptedSyncStatus.LockedKeyMismatch -> tr(
+                                        "云端密文与当前密钥不匹配，已暂停覆盖，点击输入口令或重置",
+                                        "Cloud data encrypted with another key; paused to protect data. Tap to unlock or reset.",
+                                        "クラウドの暗号化データとキーが一致しません。タップして解除またはリセット",
+                                        "클라우드 암호문과 키가 일치하지 않아 보호 중. 탭하여 잠금 해제 또는 초기화",
+                                        "雲端密文與目前金鑰不符，已暫停覆寫，點選輸入口令或重設",
+                                    )
+                                    EncryptedSyncStatus.LockedNoKey -> tr(
+                                        "未设置（Google 登录账号设置后可跨设备加密同步密码与配置）",
+                                        "Not set (set a passphrase to encrypt and sync passwords & MetaTube on Google accounts)",
+                                        "未設定（設定すると解凍パスワードやMetaTubeを端末間で暗号化同期できます）",
+                                        "미설정 (설정 시 압축 해제 비밀번호 및 MetaTube를 기기 간 암호화 동기화)",
+                                        "尚未設定（Google 登入帳號設定後可跨裝置加密同步密碼與設定）",
+                                    )
+                                    EncryptedSyncStatus.CorruptOrUnsupported -> tr(
+                                        "云端同步文件需要更新版本或已损坏，已跳过同步以保护数据",
+                                        "Cloud sync file requires a newer version or is damaged; skipped to preserve data",
+                                        "クラウドの同期ファイルが新しいバージョン用か破損しているためスキップしました",
+                                        "클라우드 동기화 파일이 최신 버전용이거나 손상되어 건너뛰었습니다",
+                                        "雲端同步檔案需要較新版本或已損壞，已略過同步以保護資料",
+                                    )
+                                    EncryptedSyncStatus.Idle, EncryptedSyncStatus.Unlocked -> if (hasSyncPassphrase) {
+                                        tr(
+                                            "已启用独立同步口令",
+                                            "Custom sync passphrase enabled",
+                                            "独自の同期パスフレーズを使用中",
+                                            "별도 동기화 암호문구 사용 중",
+                                            "已啟用獨立同步口令",
+                                        )
+                                    } else {
+                                        tr(
+                                            "默认使用登录密码加密，点击可设置独立同步口令",
+                                            "Encrypted with account password by default; tap to set a custom passphrase",
+                                            "既定ではログインパスワードを使用。タップして独自パスフレーズを設定",
+                                            "기본적으로 로그인 비밀번호 사용. 탭하여 별도 암호문구 설정",
+                                            "預設使用登入密碼加密，點選可設定獨立同步口令",
+                                        )
+                                    }
+                                }
+                                SettingsRow(
+                                    icon = Icons.Outlined.Lock,
+                                    title = tr("加密同步口令", "Encrypted sync passphrase", "暗号化同期パスフレーズ", "암호화 동기화 암호문구", "加密同步口令"),
+                                    supporting = syncPassphraseSummary,
+                                    supportingColor = if (encryptedSyncStatus == EncryptedSyncStatus.LockedKeyMismatch) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        Color.Unspecified
+                                    },
+                                    onClick = {
+                                        encryptedSyncMismatchError = null
+                                        showEncryptedSyncDialog = true
+                                    },
+                                )
+                            }
                             // WebDAV 仅限会员，免费账号与等级未取到时不出现
                             if (isFreeAccount == false) {
                                 SettingsNavigationRow(
@@ -725,6 +793,115 @@ fun SettingsScreen(
             passwords = archivePasswords,
             onDelete = { scope.launch { archivePasswordVault.forget(it) } },
             onDismiss = { showArchivePasswords = false },
+        )
+    }
+
+    if (showEncryptedSyncDialog) {
+        EncryptedSyncSettingsDialog(
+            status = encryptedSyncStatus,
+            hasPassphrase = hasSyncPassphrase,
+            busy = encryptedSyncBusy,
+            mismatchError = encryptedSyncMismatchError,
+            onClearMismatchError = { encryptedSyncMismatchError = null },
+            onSavePassphrase = { passphrase ->
+                encryptedSyncBusy = true
+                encryptedSyncMismatchError = null
+                scope.launch {
+                    try {
+                        val outcome = services.updateSyncPassphrase(passphrase)
+                        hasSyncPassphrase = services.hasSyncPassphraseForCurrentAccount()
+                        when (outcome) {
+                            PassphraseUpdateResult.SavedAndSynced -> {
+                                showEncryptedSyncDialog = false
+                                snackbarHostState.showSnackbar(
+                                    tr(
+                                        "已保存同步口令并完成加密同步",
+                                        "Sync passphrase saved and synced",
+                                        "同期パスフレーズを保存して同期しました",
+                                        "동기화 암호문구를 저장하고 동기화했습니다",
+                                        "已儲存同步口令並完成加密同步",
+                                    ),
+                                    withDismissAction = true,
+                                )
+                            }
+                            PassphraseUpdateResult.SavedOffline -> {
+                                showEncryptedSyncDialog = false
+                                snackbarHostState.showSnackbar(
+                                    tr(
+                                        "已保存同步口令，待网络恢复后自动同步",
+                                        "Sync passphrase saved; will sync when online",
+                                        "同期パスフレーズを保存しました（オンライン時に同期）",
+                                        "동기화 암호문구 저장됨 (온라인 상태 시 동기화)",
+                                        "已儲存同步口令，待網路恢復後自動同步",
+                                    ),
+                                    withDismissAction = true,
+                                )
+                            }
+                            PassphraseUpdateResult.KeyMismatch -> {
+                                encryptedSyncMismatchError = tr(
+                                    "口令无法解开云端密文，请核对原口令或在上方备份重置",
+                                    "Passphrase does not match cloud ciphertext; check it or reset above",
+                                    "パスフレーズがクラウドの暗号化データと一致しません",
+                                    "암호문구가 클라우드 암호문과 일치하지 않습니다",
+                                    "口令無法解開雲端密文，請核對原口令或在上方備份重設",
+                                )
+                            }
+                            PassphraseUpdateResult.Failed -> {
+                                showEncryptedSyncDialog = false
+                                snackbarHostState.showSnackbar(
+                                    tr(
+                                        "同步口令保存失败",
+                                        "Failed to save sync passphrase",
+                                        "同期パスフレーズの保存に失敗しました",
+                                        "동기화 암호문구 저장 실패",
+                                        "同步口令儲存失敗",
+                                    ),
+                                    withDismissAction = true,
+                                )
+                            }
+                        }
+                    } finally {
+                        encryptedSyncBusy = false
+                    }
+                }
+            },
+            onClearPassphrase = {
+                encryptedSyncBusy = true
+                encryptedSyncMismatchError = null
+                scope.launch {
+                    try {
+                        services.updateSyncPassphrase("")
+                        hasSyncPassphrase = services.hasSyncPassphraseForCurrentAccount()
+                        showEncryptedSyncDialog = false
+                    } finally {
+                        encryptedSyncBusy = false
+                    }
+                }
+            },
+            onResetCloud = {
+                encryptedSyncBusy = true
+                encryptedSyncMismatchError = null
+                scope.launch {
+                    try {
+                        val ok = services.resetEncryptedSyncRemote()
+                        showEncryptedSyncDialog = false
+                        val msg = if (ok) {
+                            tr("已备份旧云端密文并用本机数据重置", "Backed up old ciphertext and reset cloud copy", "旧暗号化データをバックアップしてリセットしました", "기존 암호문을 백업하고 클라우드 데이터를 초기화했습니다", "已備份舊雲端密文並以本機資料重設")
+                        } else {
+                            tr("云端重置未完成，请检查网络或先设置口令", "Cloud reset failed. Check connection or set a passphrase first.", "リセットできませんでした。通信環境またはパスフレーズを確認してください", "초기화하지 못했습니다. 네트워크 또는 암호문구를 확인해 주세요", "雲端重設未完成，請檢查網路或先設定口令")
+                        }
+                        snackbarHostState.showSnackbar(msg, withDismissAction = true)
+                    } finally {
+                        encryptedSyncBusy = false
+                    }
+                }
+            },
+            onDismiss = {
+                if (!encryptedSyncBusy) {
+                    encryptedSyncMismatchError = null
+                    showEncryptedSyncDialog = false
+                }
+            },
         )
     }
 

@@ -152,15 +152,8 @@ private suspend fun runNodeBench(
     val clipCacheDir = File(tempRoot, "clip-cache").apply { mkdirs() }
     val benchScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    val store = AppSessionStore()
-    val account = store.account()
     val transportBudget = 256L * 1024 * 1024
-    val client = PikPakClient(
-        account = account,
-        passwordSupplier = { store.password(account) },
-        sessionStore = store,
-        transportMemoryBudgetBytes = transportBudget,
-    )
+    val client = appClient(transportMemoryBudgetBytes = transportBudget)
     val clientProvider = object : PikoClientProvider {
         private val flow = MutableStateFlow<PikPakClient?>(client)
         override val currentClient: StateFlow<PikPakClient?> = flow.asStateFlow()

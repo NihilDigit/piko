@@ -2,6 +2,7 @@
 
 `:cli` 是面向开发与协议实测的内部命令行工具，不随正式客户端分发。执行 `./gradlew :cli:installDist` 后，通过 `cli/build/install/piko-cli/bin/piko-cli` 调用（进程启动时自动将 `piko.home` 指向 `~/.piko-dev`，与桌面开发版 `:desktopApp:run` 共用登录会话与令牌轮换写回，绝不触碰系统中已安装正式版的 `~/.piko`，防止双方各自轮换 `refresh_token` 导致正式版登录态失效）：
 
+- `login [--no-browser]`：通过第一方 Android 设备授权流（RFC 8628）完成 Google / 浏览器交互式登录，并将账号会话与资料写入 `~/.piko-dev`（与 `:desktopApp:run` 共享）。默认自动调用系统默认浏览器打开 `https://mypikpak.com/auth?type=google&init=1&origin=...`；无图形界面的 SSH / 容器环境可加 `--no-browser` 打印确认链接与 `user_code`，在任意已登录浏览器确认后自动落盘。
 - `snapshot -o <文件> [--root <路径>] [--depth <层数>] [--deep <目录名,…>]`：只读遍历网盘目录树并将目录结构保存为本地 JSON 快照（仅记录文件名、类型与字节大小）。默认从根目录 `/` 起遍历 `1` 层，列在 `--deep` 中的直属子目录则递归遍历到底。
 - `dryrun <快照> [--path <路径前缀>] [--visited] [-o <文件>]`：在完全离线的状态下对本地快照运行网盘页的文件名解析与折叠分组流水线（直接调用 `DriveScreenState` 所用的 `analyzeDriveFolder`、`buildDriveItems` 与 `describeDriveFolder`），逐行输出原始文件名与界面展示结构；`--visited` 模拟各子目录均已被浏览过，以子目录内部文件推导外层文件夹作品标题。修改解析规则后重跑 `dryrun` 对比输出差异即可，无需反复请求线上网盘。
 - `score <快照>`：以快照中已人工整理规范的文件夹名称作为标准标注，统计子视频文件的番号识别准确率并列出误判样本。

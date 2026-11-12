@@ -40,6 +40,10 @@ class VaultSessionStore(private val vault: SecretVault) : PikoSessionStore {
     override suspend fun loadArchivePasswords(account: String): String = locked { readSecrets(account).archivePasswords.orEmpty() }
     override suspend fun saveArchivePasswords(account: String, serialized: String) =
         update(account) { it.copy(archivePasswords = serialized.ifEmpty { null }) }
+    override suspend fun loadSyncSecret(account: String): String? = locked { readSecrets(account).syncSecret?.takeIf { it.isNotEmpty() } }
+    override suspend fun saveSyncSecret(account: String, secret: String) =
+        update(account) { it.copy(syncSecret = secret.ifEmpty { null }) }
+    override suspend fun clearSyncSecret(account: String) = update(account) { it.copy(syncSecret = null) }
 
     override suspend fun loadAccounts(): SavedAccounts = locked {
         val bytes = vault.read(ACCOUNTS_KEY) ?: return@locked SavedAccounts()
@@ -114,8 +118,9 @@ class VaultSessionStore(private val vault: SecretVault) : PikoSessionStore {
         val session: Session? = null,
         val password: String? = null,
         val archivePasswords: String? = null,
+        val syncSecret: String? = null,
     ) {
-        val isEmpty: Boolean get() = session == null && password == null && archivePasswords == null
+        val isEmpty: Boolean get() = session == null && password == null && archivePasswords == null && syncSecret == null
     }
 
     private companion object {
