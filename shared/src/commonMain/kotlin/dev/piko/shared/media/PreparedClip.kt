@@ -2,15 +2,16 @@ package dev.piko.shared.media
 
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.proxy.ProxyStream
+import dev.piko.shared.util.PikoLock
+import dev.piko.shared.util.withPikoLock
 import io.github.nihildigit.pikpak.PikPakStreamReader
-import io.github.nihildigit.pikpak.TransferDemand
+import io.github.nihildigit.pikpak.PlaybackBufferSnapshot
 import io.github.nihildigit.pikpak.StreamRole
+import io.github.nihildigit.pikpak.TransferDemand
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import dev.piko.shared.util.PikoLock
-import dev.piko.shared.util.withPikoLock
 import kotlin.concurrent.Volatile
 
 private val InactiveClipReactivation: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow()
@@ -28,7 +29,7 @@ class PreparedClip internal constructor(
     private val fallbackUrl: String?,
     val sliced: Boolean,
     clipStartMs: Long,
-    /** 这条流每毫秒视频的平均字节数。预取与预读的深度都按它折算。 */
+    /** 这条流每毫秒视频的平均字节数。预取与缓冲预算深度都按它折算。 */
     private val bytesPerMs: Double,
     /** 切片允许扩展到的最大窗口时长（毫秒）；预取后按实测切片首尾 PTS 校准，原画整流不设切片上限，为 null。 */
     maxWindowMs: Long? = null,
@@ -66,16 +67,24 @@ class PreparedClip internal constructor(
             if (release) stream?.close()
         }
     }
-    private var demand: TransferDemand? = null
-    internal fun bindDemand(owner: TransferDemand) { demand = owner; stream?.demand = owner }
 
-    fun updatePhase(urgent: Boolean, steady: Boolean) {
-        stream?.urgent = urgent
-        stream?.steady = steady
+    private var demand: TransferDemand? = null
+
+    internal fun bindDemand(owner: TransferDemand) {
+        demand = owner
+        stream?.bindDemand(owner)
     }
 
-    fun reportPlaybackBuffer(snapshot: io.github.nihildigit.pikpak.PlaybackBufferSnapshot) {
-        stream?.reportPlaybackBuffer(snapshot.copy(mediaBytesPerSecond = (bytesPerMs * 1000).toLong().takeIf { it > 0 }))
+    internal val estimatedBytesPerSecond: Long?
+        get() = (bytesPerMs * 1000.0).toLong().takeIf { it > 0L }
+
+    internal fun readAheadBytesFor(seconds: Int, minBytes: Long = MIN_AHEAD_BYTES): Long =
+        maxOf((bytesPerMs * seconds * 1000 * BITRATE_MARGIN).toLong(), minBytes)
+
+    fun reportPlaybackBuffer(snapshot: PlaybackBufferSnapshot) {
+        demand?.reportPlaybackBuffer(
+            snapshot.copy(mediaBytesPerSecond = snapshot.mediaBytesPerSecond ?: estimatedBytesPerSecond),
+        )
     }
 
     /** 这一段从全片哪一刻开始。切片在 [prefetch] 读过时间戳后改成实际的起点。 */
@@ -101,51 +110,26 @@ class PreparedClip internal constructor(
     /** 底层云端文件是否正在执行冷存唤醒轮询。 */
     val isReactivating: StateFlow<Boolean> get() = stream?.isReactivating ?: InactiveClipReactivation
 
-    var role: StreamRole
-        get() = stream?.role ?: StreamRole.FOREGROUND
-        set(value) {
-            stream?.role = value
-        }
-
-    /** 有人正等着这一段：拖动后、卡在缓冲上、翻到时还没出画面。见 ProxyStream.urgent。 */
-    var urgent: Boolean
-        get() = stream?.urgent ?: false
-        set(value) {
-            stream?.urgent = value
-        }
-
     /** 播放器时钟上的位置对应全片的哪一刻。 */
     fun videoMs(playerMs: Long): Long = playerMs - startOnPlayer + clipStartMs
 
     /**
-     * 开播这一段要读的字节，以 [role] 预取它们，全部到手才返回。
+     * 开播这一段要读的字节，经会话绑定的 [TransferDemand] 预取它们，全部到手才返回。
      *
-     * 切片只要开头 [SLICE_PREFETCH_SECONDS] 秒：切片从关键帧切起，TS 顺序播，这几秒就是开播与刚开始看的那一截。
-     * 刷的时候大多几秒就翻走，每段只取这么多，同样的带宽能多备几段；真看起来的段再往后取，
-     * 见 [extendReadAhead]。原先取 13 秒再乘余量，一段 6 MB 上下，快翻时八段一齐取，前面的迟迟取不完。
-     * 再加上切片末尾：FFmpeg 打开 TS 时读末尾的时间戳估时长。
-     * 这两截落盘（见 ClipCache），下次同一段从盘上读，预取立即完成。
+     * 切片只要开头 [SLICE_PREFETCH_SECONDS] 秒与末尾 [SLICE_TAIL_BYTES]：切片从关键帧切起，TS 顺序播，
+     * 开头几秒就是开播与刚开始看的那一截，末尾供 FFmpeg 读流尾时间戳估算总时长；真看起来的段再通过
+     * [TransferDemand] 的缓冲预算往后扩展预读。这两截落盘（见 ClipCache），下次同一段从盘上直出。
      *
-     * 原画要文件头（容器头，faststart 的 MP4 连索引在内）、文件尾（MKV 的 Cues、非 faststart 的 MP4 的 moov），
-     * 以及起点起至少 [PREFETCH_SECONDS] 秒。起点的字节位置按时长比例折算，码率不均时会偏，
-     * 实测一个 4.3 GB 的文件偏了 9 MB，约 0.2%，所以起点前后按比例再留一截，但有上限：
-     * 按比例留，4 GB 的文件前后各 12 MB，几段一起就占满账号的连接。估偏了只是轮到它时补读一次。
-     *
-     * 原画比转码的开头低一档：它一段六七 MB 起，同一档里排在前面，有转码的段就被它拖慢。
-     * 不改用一次只取一段原画：排在最前的那段直链坏了，SDK 换主机重试近二十秒才判定失败，
-     * 其余原画全堵在它后面，等待页停了十九秒（2026-09-28）。低一档只是让出连接，谁也不等谁
+     * 原画要文件头、文件尾以及起点附近至少 [PREFETCH_SECONDS] 秒，优先级比转码开头低一档，免得大体积原画拖慢转码段。
      */
-    suspend fun prefetch(role: StreamRole) {
+    suspend fun prefetch(role: StreamRole = StreamRole.BACKGROUND) {
         val proxy = stream ?: return
         if (!sliced) {
             proxy.prefetch(originalRanges(proxy.size), role, priority = PikPakStreamReader.WARM_PRIORITY - 1)
             return
         }
-        // 预取切片开头几秒与整个开放切片的真正流尾：FFmpeg 打开 TS 时会读流最末尾 250 KB 的 PTS 估算总时长，
-        // 缺少流尾 PTS 会导致 duration 未知、进度条无法按时间 seek。
         proxy.prefetch(sliceRanges(proxy.size, bytesPerMs), role)
         resolveStart?.let { resolve ->
-            // 读不出来就沿用按码率估的起点：偏几秒，不值得为此让这一段放不了
             try {
                 resolve()?.let { clipStartMs = it }
             } catch (e: CancellationException) {
@@ -176,24 +160,6 @@ class PreparedClip internal constructor(
         val drift = minOf((streamBytes * DRIFT_FRACTION).toLong(), MAX_DRIFT_BYTES)
         val ahead = maxOf((bytesPerMs * PREFETCH_SECONDS * 1000 * BITRATE_MARGIN).toLong(), MIN_AHEAD_BYTES)
         add((estimate - drift - MIN_BEFORE_BYTES).coerceAtLeast(0) until estimate + drift + ahead)
-    }
-
-    /**
-     * 代理这一层不往读位置之后多取，只剩 SDK 的下限一块。还没真看起来的段（刚翻到的、停在第一帧的前后两段）
-     * 读的都是预取好的开头，不必再往后要；要了就以前台预读的档位压过别段开头的预取。
-     * 默认稳态预读深度（8 MiB 起，完整播放器按码率调整）是给整部片子的。
-     */
-    fun holdReadAhead() {
-        stream?.steady = false
-        stream?.readAheadLimit = 0
-    }
-
-    /**
-     * 真在看这一段了：往后读 [seconds] 秒（不少于 [minBytes]），以前台预读的档位排在所有段的预取之前。
-     * 代理预读窗口应显著大于播放器的缓冲时长（cache-secs），避免播放器读游标顶在窗口前沿导致退化为单块阻塞请求。
-     */
-    fun extendReadAhead(seconds: Int, minBytes: Long = MIN_AHEAD_BYTES) {
-        stream?.readAheadLimit = maxOf((bytesPerMs * seconds * 1000 * BITRATE_MARGIN).toLong(), minBytes)
     }
 
     override fun close() {

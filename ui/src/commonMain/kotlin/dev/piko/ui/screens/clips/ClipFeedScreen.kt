@@ -80,8 +80,10 @@ import dev.piko.shared.media.player.PlaybackBackendEvent
 import dev.piko.shared.media.player.PlaybackTarget
 import dev.piko.shared.state.CLIP_LENGTH_MS
 import dev.piko.shared.state.Clip
+import dev.piko.shared.state.ClipDisplayDemand
 import dev.piko.shared.state.ClipFeedSession
 import dev.piko.shared.state.ClipStreams
+import dev.piko.shared.state.FocusPlaybackState
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.MediaLoadingIndicator
 import dev.piko.ui.components.rememberMediaLoadingSpeedText
@@ -181,7 +183,9 @@ fun ClipFeedScreen(
             val readyAhead = if (started) READY_AHEAD else COLD_START_CLIPS
             session.upcoming.take((prepareAhead - ready).coerceAtLeast(0)) to (readyAhead - ready).coerceAtLeast(0)
         }.collect { (ahead, fetchCount) ->
-            // 先让要取的段以前台身份建起会话，再为其余的提前备会话；反过来的话它们已以后台身份建好
+            if (session.clips.isEmpty()) {
+                streams.setAwaitingClip(ahead.firstOrNull())
+            }
             streams.ripen(ahead.take(fetchCount))
             ahead.forEach { streams.get(it) }
         }
@@ -589,19 +593,41 @@ private fun ClipPager(
     }
 
     // 停在末尾时后面接上了新取好的段，也装进播放器预渲染，不等翻过去。当前段走起来之后才装，见 neighboursFor；
-    // 邻居段仅在预渲染出首帧前借用前台角色，出过首帧停稳后即退回后台，避免桌面端与独立播放窗同开时长期挂着三路前台流
+    // 邻居段仅在预渲染出首帧前纳入展示需求，出过首帧停稳后即回落为后台预取；停在等待页或冷启动攒段期间则将首个候补段标为等待焦点
     val renderedSnapshot = rendered.toList()
-    LaunchedEffect(settled, clips.size, warmUpDone, neighboursFor, renderedSnapshot) {
-        if (!warmUpDone || current == null) return@LaunchedEffect
+    val firstUpcoming = upcoming.firstOrNull()
+    LaunchedEffect(settled, clips.size, firstUpcoming, warmUpDone, neighboursFor, renderedSnapshot) {
+        if (!warmUpDone || current == null) {
+            streams.updateDisplayDemand(
+                ClipDisplayDemand(
+                    focusClip = current,
+                    focusState = FocusPlaybackState.Waiting,
+                    awaitingClip = firstUpcoming,
+                ),
+            )
+            return@LaunchedEffect
+        }
         val prerenderingNeighbours = if (neighboursFor == current) {
-            NEIGHBOURS.mapNotNull { delta ->
+            NEIGHBOURS.mapNotNullTo(LinkedHashSet()) { delta ->
                 val page = settled + delta
                 clips.getOrNull(page)?.takeIf { rendered[slotOf(page)] != it }
             }
         } else {
-            emptyList()
+            emptySet()
         }
-        streams.bringToFront(setOf(current) + prerenderingNeighbours)
+        val focusState = if (streams.displayDemand.focusClip == current) {
+            streams.displayDemand.focusState
+        } else {
+            FocusPlaybackState.Waiting
+        }
+        streams.updateDisplayDemand(
+            ClipDisplayDemand(
+                focusClip = current,
+                focusState = focusState,
+                awaitingClip = null,
+                prerenderingNeighbours = prerenderingNeighbours,
+            ),
+        )
         if (neighboursFor != current) return@LaunchedEffect
         NEIGHBOURS.forEach { load(settled + it) }
     }
@@ -627,8 +653,13 @@ private fun ClipPager(
         val visible = latestClips
         val window = visible.subList((settled - KEPT_BEHIND).coerceIn(0, visible.size), visible.size) + latestUpcoming
         streams.sync(window.toSet())
-        // 刚翻到当前段时只将当前段升为前台；前后相邻段等当前段走起来（neighboursFor == current）且尚未出首帧时再临时升为前台预渲染
-        streams.bringToFront(setOf(current))
+        // 刚翻到当前段时只将当前段作为等待焦点；前后相邻段等当前段走起来（neighboursFor == current）且尚未出首帧时再临时预渲染
+        streams.updateDisplayDemand(
+            ClipDisplayDemand(
+                focusClip = current,
+                focusState = FocusPlaybackState.Waiting,
+            ),
+        )
         // 翻走的那段若升过档，降回来：停在第一帧的段不该再以最高档往后读
         players.forEachIndexed { slot, player ->
             if (slot != slotOf(settled)) {
@@ -724,8 +755,13 @@ private fun ClipPager(
                     seekPending = 0
                 }
             }
-            snapshotFlow { (rendered[slotOf(settled)] != current || currentPlayer.isBuffering) to currentPlayer.isPlaying }
-                .collect { (waiting, playing) -> streams.setUrgent(current, waiting, playing) }
+            snapshotFlow {
+                when {
+                    rendered[slotOf(settled)] != current || currentPlayer.isBuffering || seekPending > 0 -> FocusPlaybackState.Waiting
+                    currentPlayer.isPlaying -> FocusPlaybackState.Playing
+                    else -> FocusPlaybackState.Paused
+                }
+            }.collect { state -> streams.updateFocusState(current, state) }
         }
         launch {
             snapshotFlow { currentPlayer.bufferSnapshot }.collect { snapshot ->

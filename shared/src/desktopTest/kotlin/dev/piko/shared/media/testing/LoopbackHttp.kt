@@ -15,9 +15,18 @@ internal class OpenResponse(val socket: Socket, val status: Int, val headers: Ma
     val body: InputStream get() = socket.getInputStream()
 }
 
-internal fun openRequest(url: String, method: String = "GET", range: String? = null): OpenResponse {
+internal fun openRequest(
+    url: String,
+    method: String = "GET",
+    range: String? = null,
+    receiveBufferSize: Int? = null,
+): OpenResponse {
     val uri = URI(url)
-    val socket = Socket(uri.host, uri.port)
+    val socket = Socket()
+    if (receiveBufferSize != null) {
+        socket.receiveBufferSize = receiveBufferSize
+    }
+    socket.connect(java.net.InetSocketAddress(uri.host, uri.port))
     val request = buildString {
         append("$method ${uri.rawPath} HTTP/1.1\r\nHost: ${uri.host}\r\nConnection: close\r\n")
         if (range != null) append("Range: $range\r\n")

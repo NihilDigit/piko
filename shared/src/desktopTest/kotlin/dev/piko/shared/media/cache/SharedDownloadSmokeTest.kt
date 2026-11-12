@@ -37,20 +37,39 @@ class SharedDownloadSmokeTest {
     @Test
     fun ownedPreparationPreemptsDownloadAndSteadyPlaybackRestoresIt() = smoke { scope ->
         val release = kotlinx.coroutines.CompletableDeferred<Unit>()
-        val payload = ByteArray(1024 * 1024) { it.toByte() }
-        val cloud = FakePikPakCloud(payload, beforeCdnResponse = { release.await() })
+        val allowPreemptedSlot = java.util.concurrent.atomic.AtomicBoolean(false)
+        val payload = ByteArray(4 * 1024 * 1024) { it.toByte() }
+        val cloud = FakePikPakCloud(
+            payload,
+            beforeCdnRange = { start ->
+                if (start != 262_144L || !allowPreemptedSlot.get()) release.await()
+            },
+        )
         val root = Files.createTempDirectory("piko-priority").toFile()
         val repository = PikoMediaRepository(cloud.provider)
         val coordinator = PikoDownloadCoordinator(cloud.provider, MemoryPreferences(), DirectoryStorage(root), scope,
             mediaRepository = repository)
         coordinator.enqueue(FileStat(id = "f1", name = "movie.mkv", size = payload.size.toString(), hash = "GCIDFAKE0001"))
-        awaitUntil("后台请求已开始") { cloud.activeCdnRequests > 0 }
+        awaitUntil("后台多块 StoreRange 占满单文件连接预算") {
+            cloud.activeCdnRequests == 8 && cloud.cdnRanges.any { 0L in it && 262_144L in it }
+        }
         val playback = repository.preparePlayback("f1").getOrThrow()
         try {
-            awaitUntil("准备租约撤回后台请求") { cloud.activeCdnRequests == 0 }
-            val requests = cloud.cdnRequests.get()
-            playback.updatePhase(urgent = false, steady = true)
-            awaitUntil("稳定播放立即归还容量") { cloud.activeCdnRequests > 0 && cloud.cdnRequests.get() > requests }
+            // 0 活跃 ByteClaim 的空闲 DemandOwner 占用 0 连接、发起 0 请求，绝不盲杀在途后台请求
+            kotlinx.coroutines.delay(150)
+            assertEquals(8, cloud.activeCdnRequests)
+            assertEquals(8, cloud.cdnRequests.get())
+
+            // 真实 Required 字节诉求到达时 0ms 抢占包含目标块（slot 1 = 262,144 B）的挂起 StoreRange 请求
+            allowPreemptedSlot.set(true)
+            val preempted = dev.piko.shared.media.testing.request(
+                requireNotNull(playback.proxyUrl),
+                range = "bytes=262144-263167",
+            )
+            assertEquals(206, preempted.status)
+            assertContentEquals(payload.copyOfRange(262_144, 263_168), preempted.body)
+            assertTrue(!release.isCompleted)
+
             playback.withdrawTransport()
             release.complete(Unit)
             awaitUntil("下载完成", 20_000) { coordinator.tasks.value["f1"]?.status == DownloadStatus.COMPLETED }

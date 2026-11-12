@@ -176,17 +176,17 @@ internal class FakePikPakCloud(
             val length = (endInclusive - start + 1).toInt()
             val channel = ByteChannel(autoFlush = true)
             streaming = true
-            streamScope.launch {
+            val producerJob = streamScope.launch {
                 try {
                     var offset = start.toInt()
                     val endExclusive = endInclusive.toInt() + 1
-                    while (offset < endExclusive && !channel.isClosedForWrite) {
-                        while (channel.availableForRead > 0 && !channel.isClosedForWrite) {
+                    while (offset < endExclusive && !channel.isClosedForWrite && !channel.isClosedForRead) {
+                        while (channel.availableForRead > 0 && !channel.isClosedForWrite && !channel.isClosedForRead) {
                             kotlinx.coroutines.yield()
                         }
-                        if (channel.isClosedForWrite) break
+                        if (channel.isClosedForWrite || channel.isClosedForRead) break
                         beforeCdnChunk?.invoke(offset.toLong())
-                        if (channel.isClosedForWrite) break
+                        if (channel.isClosedForWrite || channel.isClosedForRead) break
                         val chunk = minOf(STREAM_CHUNK_BYTES, endExclusive - offset)
                         channel.writeFully(body, offset, offset + chunk)
                         deliveredCdnBytes.addAndGet(chunk.toLong())
@@ -199,6 +199,13 @@ internal class FakePikPakCloud(
                     inFlight.decrementAndGet()
                 }
             }
+            val completionHandle = request.executionContext.invokeOnCompletion { cause ->
+                if (cause != null) {
+                    channel.cancel(cause)
+                    producerJob.cancel()
+                }
+            }
+            producerJob.invokeOnCompletion { completionHandle.dispose() }
             return respond(
                 content = channel,
                 status = HttpStatusCode.PartialContent,

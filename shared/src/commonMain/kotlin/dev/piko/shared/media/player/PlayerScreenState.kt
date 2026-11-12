@@ -6,6 +6,7 @@ import dev.piko.shared.i18n.tr
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -22,7 +23,10 @@ import dev.piko.shared.media.proxy.ProxyStream
 import dev.piko.shared.runtime.PikoWorkloadGovernor
 import dev.piko.shared.runtime.WorkPhase
 import dev.piko.shared.runtime.WorkPurpose
+import io.github.nihildigit.pikpak.BufferBudget
+import io.github.nihildigit.pikpak.ConsumerIntent
 import io.github.nihildigit.pikpak.PlaybackBufferSnapshot
+import io.github.nihildigit.pikpak.ServiceIntent
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.CancellationException
@@ -245,7 +249,8 @@ class PlayerScreenState(
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
-    private var prepared: PreparedPlayback? = null
+    internal var prepared by mutableStateOf<PreparedPlayback?>(null)
+        private set
 
     // 拖动之后、画面重新走起来之前，至多 SEEK_WATCH_MS，见 watchSeek。init 里就要读，声明在它前面
     private var seeking by mutableStateOf(false)
@@ -275,14 +280,16 @@ class PlayerScreenState(
     private var preferDirectLink = false
     private var directLinkTried = false
     private var stableJob: Job? = null
-    private var startedThisAttempt = false
+    private var startedThisAttempt by mutableStateOf(false)
     private var openStartedAt = TimeSource.Monotonic.markNow()
     private var retryAttempt = 0
+    private var intentEpoch by mutableLongStateOf(0L)
+    private var acceptedNativeGeneration = Long.MIN_VALUE
 
     // 出错瞬间后端的位置可能已经归零，重连与持久化都用这个
     private var lastKnownPositionMillis = 0L
     private val playbackTransition = Mutex()
-    private var released = false
+    private var released by mutableStateOf(false)
     private val workloadLease = PikoWorkloadGovernor.Shared.register(
         WorkPurpose.Playback,
         if (initialLocalPath != null) WorkPhase.Paused else WorkPhase.Urgent,
@@ -308,21 +315,23 @@ class PlayerScreenState(
         }
         scope.launch { persistLoop() }
         scope.launch {
-            snapshotFlow { backend.playbackGeneration to backend.isBuffering }.collect { (_, waiting) ->
+            snapshotFlow { backend.playbackGeneration to backend.isBuffering }.collect { (gen, waiting) ->
+                if (acceptedNativeGeneration != Long.MIN_VALUE && gen > acceptedNativeGeneration) {
+                    acceptedNativeGeneration = gen
+                    intentEpoch = maxOf(intentEpoch + 1L, gen)
+                }
                 if (!waiting) seeking = false
             }
         }
         scope.launch {
             snapshotFlow {
-                prepared to when {
-                    released || isLocalPlayback || isImage || failure != null -> WorkPhase.Paused
-                    isPreparing || isRecovering || backend.isBuffering || seeking -> WorkPhase.Urgent
-                    backend.isPlaying -> WorkPhase.Steady
-                    else -> WorkPhase.Paused
-                }
-            }.collect { (active, phase) ->
+                val phase = currentWorkPhase()
+                Triple(prepared, phase, intentEpoch)
+            }.collect { (active, phase, epoch) ->
                 workloadLease.updatePhase(phase)
-                active?.updatePhase(phase == WorkPhase.Urgent, phase == WorkPhase.Steady)
+                if (active != null) {
+                    submitPlaybackIntent(active, phase, epoch)
+                }
             }
         }
         scope.launch {
@@ -357,9 +366,27 @@ class PlayerScreenState(
             }
         }
         scope.launch {
-            snapshotFlow { prepared to backend.bufferSnapshot }.collect { (active, snapshot) ->
-                if (active != null && snapshot != null && usingProxy && !isImage) {
-                    active.reportPlaybackBuffer(snapshot.copy(mediaBytesPerSecond = active.estimatedBytesPerSecond))
+            snapshotFlow { Triple(prepared, isPreparing, backend.bufferSnapshot) }.collect { (active, preparingNow, snapshot) ->
+                if (active != null && !preparingNow && snapshot != null && usingProxy && !isImage) {
+                    if (acceptedNativeGeneration != Long.MIN_VALUE && snapshot.generation < acceptedNativeGeneration) {
+                        return@collect
+                    }
+                    val wasUnset = acceptedNativeGeneration == Long.MIN_VALUE
+                    if (snapshot.generation > acceptedNativeGeneration) {
+                        acceptedNativeGeneration = snapshot.generation
+                        if (!wasUnset) {
+                            intentEpoch = maxOf(intentEpoch + 1L, snapshot.generation)
+                        }
+                    }
+                    val remapped = snapshot.copy(
+                        generation = intentEpoch,
+                        mediaBytesPerSecond = snapshot.mediaBytesPerSecond ?: active.estimatedBytesPerSecond,
+                    )
+                    if (!wasUnset && active.demand.intent.epoch != intentEpoch) {
+                        submitPlaybackIntent(active, currentWorkPhase(), intentEpoch, remapped)
+                    } else {
+                        active.reportPlaybackBuffer(remapped)
+                    }
                 }
             }
         }
@@ -492,15 +519,64 @@ class PlayerScreenState(
 
     fun pause() = backend.pause()
 
+    private fun currentWorkPhase(): WorkPhase = when {
+        released || isLocalPlayback || isImage || failure != null -> WorkPhase.Paused
+        isPreparing || isRecovering || backend.isBuffering || seeking -> WorkPhase.Urgent
+        backend.isPlaying && !startedThisAttempt -> WorkPhase.Urgent
+        backend.isPlaying -> WorkPhase.Steady
+        else -> WorkPhase.Paused
+    }
+
+    private fun submitPlaybackIntent(
+        active: PreparedPlayback,
+        phase: WorkPhase,
+        epoch: Long,
+        explicitSample: PlaybackBufferSnapshot? = null,
+    ) {
+        val service = when (phase) {
+            WorkPhase.Urgent -> ServiceIntent.WAITING
+            WorkPhase.Steady -> ServiceIntent.PLAYING
+            WorkPhase.Paused, WorkPhase.Active -> ServiceIntent.PAUSED
+        }
+        val budget = if (service == ServiceIntent.PAUSED) BufferBudget.NONE else active.defaultBufferBudget
+        val sample = explicitSample?.copy(
+            generation = epoch,
+            mediaBytesPerSecond = explicitSample.mediaBytesPerSecond ?: active.estimatedBytesPerSecond,
+        ) ?: active.demand.intent.playbackSample?.takeIf { it.generation == epoch }
+        val prevService = active.demand.intent.service
+        active.submitIntent(
+            ConsumerIntent(
+                epoch = epoch,
+                service = service,
+                bufferBudget = budget,
+                playbackSample = sample,
+            ),
+        )
+        if (service == ServiceIntent.PAUSED && prevService != ServiceIntent.PAUSED) {
+            active.withdrawSpeculation()
+        }
+    }
+
     fun seekTo(positionMillis: Long) {
         val upper = durationMillis.takeIf { it > 0L } ?: Long.MAX_VALUE
         val clamped = positionMillis.coerceIn(0L, upper)
         val beforeSeek = backend.positionMillis
         resumePositionVerified = true
         if (clamped > 0L) lastKnownPositionMillis = clamped
+        val expectedNativeGen = backend.playbackGeneration + 1L
+        acceptedNativeGeneration = expectedNativeGen
+        val nextEpoch = maxOf(intentEpoch + 1L, expectedNativeGen)
+        intentEpoch = nextEpoch
         seeking = true
-        prepared?.updatePhase(urgent = true, steady = false)
-        prepared?.reportPlaybackBuffer(PlaybackBufferSnapshot(backend.playbackGeneration + 1, null, TimeSource.Monotonic.markNow()))
+        prepared?.let { active ->
+            val freshSample = PlaybackBufferSnapshot(
+                generation = nextEpoch,
+                bufferedDuration = null,
+                sampledAt = TimeSource.Monotonic.markNow(),
+                mediaBytesPerSecond = active.estimatedBytesPerSecond,
+            )
+            submitPlaybackIntent(active, WorkPhase.Urgent, nextEpoch, freshSample)
+        }
         backend.seekTo(clamped)
         watchSeek(beforeSeek = beforeSeek, targetMillis = clamped)
     }
@@ -597,6 +673,19 @@ class PlayerScreenState(
         val targetLog = logFile(fileId, title)
         resumePositionVerified = true
         lastKnownPositionMillis = 0L
+        val expectedNativeGen = backend.playbackGeneration + 1L
+        acceptedNativeGeneration = expectedNativeGen
+        val nextEpoch = maxOf(intentEpoch + 1L, expectedNativeGen)
+        intentEpoch = nextEpoch
+        seeking = true
+        prepared?.let { active ->
+            submitPlaybackIntent(
+                active,
+                WorkPhase.Urgent,
+                nextEpoch,
+                PlaybackBufferSnapshot(nextEpoch, null, TimeSource.Monotonic.markNow(), active.estimatedBytesPerSecond),
+            )
+        }
         backend.seekTo(0L)
         resumedFromMillis = null
         if (key.isNotBlank() && !isImage) {
@@ -787,9 +876,17 @@ class PlayerScreenState(
                     startPositionMillis = prewarmStartHint,
                 ).getOrThrow()
                 val prepareMillis = playbackStarted.elapsedNow().inWholeMilliseconds
-                // 出第一帧前就有人在等；之后由 init 里按缓冲状态接管
-                playback.urgent = true
-                playback.reportPlaybackBuffer(0.milliseconds, playback.estimatedBytesPerSecond)
+                // 出第一帧前直接提交 WAITING 意图（未知缓冲保持 bufferedDuration = null，绝不伪装成 0s），
+                // 并预先对齐 backend.open 内部的 generation 递增，防止开播探测中途二次递增 epoch。
+                acceptedNativeGeneration = Long.MIN_VALUE
+                val initialEpoch = maxOf(intentEpoch + 1L, backend.playbackGeneration + 1L)
+                intentEpoch = initialEpoch
+                submitPlaybackIntent(
+                    playback,
+                    WorkPhase.Urgent,
+                    initialEpoch,
+                    PlaybackBufferSnapshot(initialEpoch, null, TimeSource.Monotonic.markNow(), playback.estimatedBytesPerSecond),
+                )
                 prepared = playback
                 mediaInfo = playback.info
                 // 按实际打开的那一档标：没点选过时由设置的上限挑，点选的档位没有时 SDK 退回原画
@@ -951,6 +1048,15 @@ class PlayerScreenState(
                     PikoLog.i(TAG, "Cloud reactivation succeeded, reopening proxy stream: ${logFile(fileId, title)}")
                     val subs = openSubtitles()
                     if (released || prepared !== activePrepared) return@launch
+                    acceptedNativeGeneration = Long.MIN_VALUE
+                    val reopenEpoch = maxOf(intentEpoch + 1L, backend.playbackGeneration + 1L)
+                    intentEpoch = reopenEpoch
+                    submitPlaybackIntent(
+                        activePrepared,
+                        WorkPhase.Urgent,
+                        reopenEpoch,
+                        PlaybackBufferSnapshot(reopenEpoch, null, TimeSource.Monotonic.markNow(), activePrepared.estimatedBytesPerSecond),
+                    )
                     openStartedAt = TimeSource.Monotonic.markNow()
                     backend.open(PlaybackTarget.Url(proxyUrl), attemptStartMillis, subtitles = subs)
                     sessionSpeed?.let(backend::setSpeed)

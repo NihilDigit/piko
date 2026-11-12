@@ -321,6 +321,80 @@ class PlayerScreenStateSmokeTest {
         assertTrue(backend.stopCalls >= 2)
     }
 
+    @Test
+    fun openKeepsUnknownBufferNullWithoutMidOpenEpochBumpAndSeekDropsStaleFeedback() = runBlocking {
+        backend.simulateNativeGenerations = true
+        val state = newState()
+        backend.awaitOpens(1)
+        val active = assertNotNull(state.prepared)
+
+        // 1. 开播尚未采样到真实缓冲前 bufferedDuration 必须为 null（绝不能伪装成 0ms），且 backend.open 内部 generation 0->1 不触发二次递增
+        val initialIntent = active.demand.intent
+        assertEquals(1L, initialIntent.epoch)
+        assertEquals(io.github.nihildigit.pikpak.ServiceIntent.WAITING, initialIntent.service)
+        kotlin.test.assertNull(assertNotNull(initialIntent.playbackSample).bufferedDuration)
+
+        // 2. 出首帧进入稳态播放并上报 native generation=1 的真实缓冲读数，重映射到同一 epoch=1
+        backend.emit(PlaybackBackendEvent.Ready)
+        backend.progress(positionMillis = 5_000L, durationMillis = 600_000L)
+        val clock = kotlin.time.TestTimeSource()
+        backend.publishBuffer(
+            io.github.nihildigit.pikpak.PlaybackBufferSnapshot(
+                generation = 1L,
+                bufferedDuration = kotlin.time.Duration.parse("4s"),
+                sampledAt = clock.markNow(),
+            ),
+        )
+        eventually("首帧后稳态意图与缓冲样本生效") {
+            val cur = active.demand.intent
+            cur.service == io.github.nihildigit.pikpak.ServiceIntent.PLAYING &&
+                cur.playbackSample?.bufferedDuration == kotlin.time.Duration.parse("4s")
+        }
+        assertEquals(1L, active.demand.intent.epoch)
+
+        // 3. 用户主动 seekTo：立即递增至 epoch=2、清空旧缓冲读数为 null，并丢弃迟到的 generation=1 旧样本
+        withContext(stateThread) {
+            state.seekTo(240_000L)
+            Snapshot.sendApplyNotifications()
+        }
+        assertEquals(2L, active.demand.intent.epoch)
+        assertEquals(io.github.nihildigit.pikpak.ServiceIntent.WAITING, active.demand.intent.service)
+        kotlin.test.assertNull(assertNotNull(active.demand.intent.playbackSample).bufferedDuration)
+
+        backend.publishBuffer(
+            io.github.nihildigit.pikpak.PlaybackBufferSnapshot(
+                generation = 1L,
+                bufferedDuration = kotlin.time.Duration.parse("15s"),
+                sampledAt = clock.markNow(),
+            ),
+        )
+        kotlin.test.assertNull(assertNotNull(active.demand.intent.playbackSample).bufferedDuration, "定位前的过期缓冲样本必须被丢弃")
+
+        // 4. 定位后的新世代 generation=2 样本干净映射到 epoch=2，不产生额外 epoch 抖动；暂停时立即收起投机预算
+        backend.publishBuffer(
+            io.github.nihildigit.pikpak.PlaybackBufferSnapshot(
+                generation = 2L,
+                bufferedDuration = kotlin.time.Duration.parse("3s"),
+                sampledAt = clock.markNow(),
+            ),
+        )
+        eventually("定位后新世代缓冲样本被接纳") {
+            active.demand.intent.playbackSample?.bufferedDuration == kotlin.time.Duration.parse("3s")
+        }
+        assertEquals(2L, active.demand.intent.epoch)
+
+        withContext(stateThread) {
+            backend.positionMillis = 241_000L
+            backend.isPlaying = false
+            Snapshot.sendApplyNotifications()
+        }
+        eventually("暂停后切换为 PAUSED 且清零缓冲预算") {
+            active.demand.intent.service == io.github.nihildigit.pikpak.ServiceIntent.PAUSED &&
+                active.demand.intent.bufferBudget.maxReadAheadBytes == 0L
+        }
+        leavePlayer(state)
+    }
+
     private fun java.net.HttpURLConnection.useCode(): Int = try {
         responseCode
     } finally {
@@ -336,11 +410,13 @@ class PlayerScreenStateSmokeTest {
 
     /** 按脚本回事件的假后端。位置变化后手动发快照通知，替代 Compose 帧时钟。 */
     private inner class FakeBackend : PlaybackBackend {
+        override var playbackGeneration by mutableLongStateOf(0L)
+        override var bufferSnapshot by mutableStateOf<io.github.nihildigit.pikpak.PlaybackBufferSnapshot?>(null)
         override var positionMillis by mutableLongStateOf(0L)
         override var durationMillis by mutableLongStateOf(0L)
         override val bufferedPositionMillis: Long = 0L
         override var isPlaying by mutableStateOf(true)
-        override val isBuffering: Boolean = false
+        override var isBuffering by mutableStateOf(false)
         override val speed: Float = 1f
         override val supportsSpeed: Boolean = true
         override val aspectRatio: PlayerAspectRatio = PlayerAspectRatio.Fit
@@ -352,12 +428,24 @@ class PlayerScreenStateSmokeTest {
 
         val opens = CopyOnWriteArrayList<Opened>()
         var onOpen: suspend FakeBackend.() -> Unit = {}
+        var simulateNativeGenerations: Boolean = false
         override var requiresAsyncStopDrain: Boolean = false
         @Volatile var stopCalls: Int = 0
         var onStopDrain: suspend () -> Unit = {}
 
         fun emit(event: PlaybackBackendEvent) {
             check(_events.tryEmit(event))
+        }
+
+        suspend fun publishBuffer(snapshot: io.github.nihildigit.pikpak.PlaybackBufferSnapshot?) {
+            withContext(stateThread) {
+                if (simulateNativeGenerations && snapshot?.bufferedDuration != null && snapshot.generation == playbackGeneration) {
+                    isBuffering = false
+                }
+                bufferSnapshot = snapshot
+                Snapshot.sendApplyNotifications()
+            }
+            delay(50)
         }
 
         suspend fun progress(positionMillis: Long, durationMillis: Long) {
@@ -383,6 +471,15 @@ class PlayerScreenStateSmokeTest {
         ) {
             opens += Opened(target, startMillis)
             positionMillis = 0L
+            if (simulateNativeGenerations) {
+                playbackGeneration += 1L
+                bufferSnapshot = io.github.nihildigit.pikpak.PlaybackBufferSnapshot(
+                    generation = playbackGeneration,
+                    bufferedDuration = null,
+                    sampledAt = kotlin.time.TimeSource.Monotonic.markNow(),
+                )
+                Snapshot.sendApplyNotifications()
+            }
             onOpen()
         }
 
@@ -399,10 +496,23 @@ class PlayerScreenStateSmokeTest {
             withContext(stateThread) { stop() }
             onStopDrain()
         }
-        override fun play() = Unit
-        override fun pause() = Unit
+        override fun play() {
+            isPlaying = true
+        }
+        override fun pause() {
+            isPlaying = false
+        }
         override fun seekTo(positionMillis: Long) {
             this.positionMillis = positionMillis
+            if (simulateNativeGenerations) {
+                playbackGeneration += 1L
+                isBuffering = true
+                bufferSnapshot = io.github.nihildigit.pikpak.PlaybackBufferSnapshot(
+                    generation = playbackGeneration,
+                    bufferedDuration = null,
+                    sampledAt = kotlin.time.TimeSource.Monotonic.markNow(),
+                )
+            }
         }
         override fun setSpeed(speed: Float) = Unit
         override fun setAspectRatio(mode: PlayerAspectRatio) = Unit

@@ -1,20 +1,32 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.media.CLIP_SCAN_READ_AHEAD_BYTES
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.PreparedClip
-import dev.piko.shared.media.transcodeName
 import dev.piko.shared.media.testing.FakePikPakCloud
+import dev.piko.shared.media.transcodeName
+import dev.piko.shared.smoke.awaitUntil
+import dev.piko.shared.smoke.smoke
 import io.github.nihildigit.pikpak.PikPakStreamReader
+import io.github.nihildigit.pikpak.PlaybackBufferSnapshot
+import io.github.nihildigit.pikpak.ServiceIntent
+import io.github.nihildigit.pikpak.TransferDemand
 import io.github.nihildigit.pikpak.getFile
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import dev.piko.shared.smoke.smoke
-import dev.piko.shared.smoke.awaitUntil
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertSame
+import kotlin.test.assertTrue
+import kotlin.time.Duration
+import kotlin.time.TestTimeSource
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ClipPreparationTest {
-    @Test fun downloadDetailsDoNotHideAvailableClipTranscodes() = smoke { _ ->
+    @Test
+    fun downloadDetailsDoNotHideAvailableClipTranscodes() = smoke { _ ->
         val cloud = FakePikPakCloud(ByteArray(1024), transcode = ByteArray(188 * 100), transcodeName = "720P")
         val client = cloud.provider.currentClient.value!!
         val repository = PikoMediaRepository(cloud.provider)
@@ -24,19 +36,26 @@ class ClipPreparationTest {
             repository.preparePlayback("f1", "720P").getOrThrow().use { playback ->
                 assertEquals("720P", playback.info.transcodeName)
             }
-        } finally { client.close() }
+        } finally {
+            client.close()
+        }
     }
 
-    @Test fun readAheadIntentSurvivesPreparationAndPauseButNotNeighbourHold() = smoke { _ ->
+    @Test
+    fun readAheadIntentSurvivesPreparationAndPauseButNotNeighbourHold() = smoke { _ ->
         val cloud = FakePikPakCloud(ByteArray(64))
         val ready = CompletableDeferred<Unit>()
-        val session = dev.piko.shared.media.proxy.ProxySession(object : dev.piko.shared.media.proxy.ProxyByteSource {
-            override val size = 64L
-            override suspend fun openReader(): dev.piko.shared.media.proxy.ProxyReader = error("no reads")
-            override fun close() = Unit
-        })
+        val session = dev.piko.shared.media.proxy.ProxySession(
+            object : dev.piko.shared.media.proxy.ProxyByteSource {
+                override val size = 64L
+                override suspend fun openReader(): dev.piko.shared.media.proxy.ProxyReader = error("no reads")
+                override fun close() = Unit
+            },
+        )
         val proxy = dev.piko.shared.media.proxy.ProxyStream("test", session) { session.close() }
+        var clipDemand: TransferDemand? = null
         val streams = ClipStreams(PikoMediaRepository(cloud.provider), {}, {}, coroutineContext) { _, _, owner ->
+            clipDemand = owner
             ready.await()
             Result.success(PreparedClip(proxy, null, false, 0, 1.0).also { it.bindDemand(owner) })
         }
@@ -45,26 +64,44 @@ class ClipPreparationTest {
             streams.bringToFront(setOf(clip))
             val preparing = streams.get(clip, forPlayer = true)
             streams.boost(clip, 10, 2L * 1024 * 1024)
+            awaitUntil("准备阶段持有关键帧扫描预读上限") {
+                clipDemand?.intent?.bufferBudget?.maxReadAheadBytes == CLIP_SCAN_READ_AHEAD_BYTES
+            }
+            val demand = assertNotNull(clipDemand)
             ready.complete(Unit)
             preparing.await()
-            assertEquals(2L * 1024 * 1024, session.readAheadLimit)
+            assertEquals(2L * 1024 * 1024, demand.intent.bufferBudget.maxReadAheadBytes)
+
             streams.setSuspended(true)
-            assertEquals(0L, session.readAheadLimit)
+            assertEquals(ServiceIntent.PAUSED, demand.intent.service)
+            assertEquals(0L, demand.intent.bufferBudget.maxReadAheadBytes)
+
             streams.setSuspended(false)
-            assertEquals(2L * 1024 * 1024, session.readAheadLimit)
-            streams.setUrgent(clip, false, playing = false)
-            assertEquals(0L, session.readAheadLimit)
-            streams.setUrgent(clip, false, playing = true)
-            assertEquals(2L * 1024 * 1024, session.readAheadLimit)
+            assertEquals(ServiceIntent.WAITING, demand.intent.service)
+            assertEquals(2L * 1024 * 1024, demand.intent.bufferBudget.maxReadAheadBytes)
+
+            streams.updateFocusState(clip, FocusPlaybackState.Paused)
+            assertEquals(ServiceIntent.PAUSED, demand.intent.service)
+            assertEquals(0L, demand.intent.bufferBudget.maxReadAheadBytes)
+
+            streams.updateFocusState(clip, FocusPlaybackState.Playing)
+            assertEquals(ServiceIntent.PLAYING, demand.intent.service)
+            assertEquals(2L * 1024 * 1024, demand.intent.bufferBudget.maxReadAheadBytes)
+
             streams.holdAllBut(clip.copy(fileId = "another"))
             streams.bringToFront(setOf(clip))
-            assertEquals(0L, session.readAheadLimit)
-        } finally { ready.complete(Unit); streams.closeAll(); cloud.provider.currentClient.value?.close() }
+            assertEquals(0L, demand.intent.bufferBudget.maxReadAheadBytes)
+        } finally {
+            ready.complete(Unit)
+            streams.closeAll()
+            cloud.provider.currentClient.value?.close()
+        }
     }
 
-    @Test fun neighbourChangesPreserveUrgentPhaseAndSuspensionRestoresIt() = smoke { _ ->
+    @Test
+    fun neighbourChangesPreserveUrgentPhaseAndSuspensionRestoresIt() = smoke { _ ->
         val cloud = FakePikPakCloud(ByteArray(64))
-        val owners = mutableMapOf<Clip, io.github.nihildigit.pikpak.TransferDemand>()
+        val owners = mutableMapOf<Clip, TransferDemand>()
         val streams = ClipStreams(PikoMediaRepository(cloud.provider), {}, {}, coroutineContext) { clip, _, owner ->
             owners[clip] = owner
             Result.success(PreparedClip(null, "", false, 0, 0.0))
@@ -75,67 +112,148 @@ class ClipPreparationTest {
             streams.get(current, forPlayer = true).await()
             streams.get(neighbour).await()
             streams.bringToFront(setOf(current))
-            streams.setUrgent(current, true)
+            streams.updateFocusState(current, FocusPlaybackState.Waiting)
             streams.bringToFront(setOf(current, neighbour))
             assertEquals(PikPakStreamReader.BLOCKING_PRIORITY, owners.getValue(current).priority)
+            assertEquals(ServiceIntent.PREFETCH, owners.getValue(neighbour).intent.service)
+            assertEquals(PikPakStreamReader.WARM_PRIORITY, owners.getValue(neighbour).priority)
+            assertEquals(0L, owners.getValue(neighbour).intent.bufferBudget.maxReadAheadBytes)
+
             streams.bringToFront(setOf(current))
             assertEquals(PikPakStreamReader.BLOCKING_PRIORITY, owners.getValue(current).priority)
+            assertEquals(PikPakStreamReader.WARM_PRIORITY, owners.getValue(neighbour).priority)
+
             streams.setSuspended(true)
-            assertEquals(PikPakStreamReader.WARM_PRIORITY, owners.getValue(current).priority)
+            assertEquals(ServiceIntent.PAUSED, owners.getValue(current).intent.service)
+            assertEquals(PikPakStreamReader.BACKGROUND_READ_AHEAD_PRIORITY, owners.getValue(current).priority)
+
             streams.setSuspended(false)
             assertEquals(PikPakStreamReader.BLOCKING_PRIORITY, owners.getValue(current).priority)
-            streams.setUrgent(current, false)
+
+            streams.updateFocusState(current, FocusPlaybackState.Playing)
             assertEquals(PikPakStreamReader.STREAMING_PRIORITY, owners.getValue(current).priority)
+
             streams.bringToFront(setOf(neighbour))
             assertEquals(PikPakStreamReader.WARM_PRIORITY, owners.getValue(current).priority)
-        } finally { streams.closeAll(); cloud.provider.currentClient.value?.close() }
+        } finally {
+            streams.closeAll()
+            cloud.provider.currentClient.value?.close()
+        }
     }
 
-    @Test fun reusedClipRemapsPlayerGenerationsAndRejectsDetachedPlayerFeedback() = smoke { _ ->
+    @Test
+    fun reusedClipRemapsPlayerGenerationsAndRejectsDetachedPlayerFeedback() = smoke { _ ->
         val cloud = FakePikPakCloud(ByteArray(64))
-        val snapshots = mutableListOf<io.github.nihildigit.pikpak.PlaybackBufferSnapshot>()
         val source = object : dev.piko.shared.media.proxy.ProxyByteSource {
             override val size = 64L
             override suspend fun openReader() = object : dev.piko.shared.media.proxy.ProxyReader {
                 override var position = 0L
-                override suspend fun seekTo(position: Long) { this.position = position }
-                override suspend fun read(buffer: ByteArray, offset: Int, length: Int): Int { position += length; return length }
-                override fun reportPlaybackBuffer(snapshot: io.github.nihildigit.pikpak.PlaybackBufferSnapshot) { snapshots.add(snapshot) }
+                override suspend fun seekTo(position: Long) {
+                    this.position = position
+                }
+                override suspend fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    position += length
+                    return length
+                }
                 override fun close() = Unit
             }
             override fun close() = Unit
         }
         val session = dev.piko.shared.media.proxy.ProxySession(source)
         val proxy = dev.piko.shared.media.proxy.ProxyStream("test", session) { session.close() }
+        lateinit var clipDemand: TransferDemand
         val streams = ClipStreams(PikoMediaRepository(cloud.provider), {}, {}, coroutineContext) { _, _, owner ->
+            clipDemand = owner
             Result.success(PreparedClip(proxy, "", false, 0, 1.0).also { it.bindDemand(owner) })
         }
         val clip = Clip("f", "movie.mkv", "", 0, 60_000)
         val firstPlayer = Any()
         val nextPlayer = Any()
-        val clock = kotlin.time.TestTimeSource()
-        val sample = io.github.nihildigit.pikpak.PlaybackBufferSnapshot(9, kotlin.time.Duration.parse("2s"), clock.markNow())
+        val clock = TestTimeSource()
+        val sample = PlaybackBufferSnapshot(9, Duration.parse("2s"), clock.markNow())
         try {
             streams.get(clip).await()
             streams.bindPlayback(clip, firstPlayer)
             session.stream(0, 1) { _, _, _ -> }
             streams.reportPlaybackBuffer(clip, firstPlayer, sample)
-            val oldGeneration = snapshots.last().generation
+            val firstAccepted = assertNotNull(clipDemand.intent.playbackSample)
+            val oldGeneration = firstAccepted.generation
+            assertEquals(Duration.parse("2s"), firstAccepted.bufferedDuration)
+            assertEquals(1000L, firstAccepted.mediaBytesPerSecond)
+
             streams.bindPlayback(clip, nextPlayer)
-            assertNull(snapshots.last().bufferedDuration)
+            assertNull(assertNotNull(clipDemand.intent.playbackSample).bufferedDuration)
+            assertTrue(clipDemand.intent.epoch > oldGeneration)
+
             streams.reportPlaybackBuffer(clip, firstPlayer, sample.copy(generation = 100))
-            assertNull(snapshots.last().bufferedDuration)
-            clock += kotlin.time.Duration.parse("1s")
+            assertNull(assertNotNull(clipDemand.intent.playbackSample).bufferedDuration)
+
+            clock += Duration.parse("1s")
             streams.reportPlaybackBuffer(clip, nextPlayer, sample.copy(generation = 1))
-            assertTrue(snapshots.last().generation > oldGeneration)
-            assertEquals(kotlin.time.Duration.parse("1s"), snapshots.last().sampledAt.elapsedNow())
-            val accepted = snapshots.last()
+            val accepted = assertNotNull(clipDemand.intent.playbackSample)
+            assertTrue(accepted.generation > oldGeneration)
+            assertEquals(Duration.parse("1s"), accepted.sampledAt.elapsedNow())
+
             streams.reportPlaybackBuffer(clip, nextPlayer, sample.copy(generation = 0))
-            assertSame(accepted, snapshots.last())
-        } finally { streams.closeAll(); cloud.provider.currentClient.value?.close() }
+            assertSame(accepted, clipDemand.intent.playbackSample)
+        } finally {
+            streams.closeAll()
+            cloud.provider.currentClient.value?.close()
+        }
     }
 
-    @Test fun queuedCandidateIsPromotedWithoutReplacingItsDeferredOrRestartingPreparation() = smoke { scope ->
+    @Test
+    fun coldStartAndWaitingPagePromoteAwaitingCandidateInPlaceAcrossPrepareAndPrefetch() = smoke { _ ->
+        val cloud = FakePikPakCloud(ByteArray(64))
+        val gate0 = CompletableDeferred<Unit>()
+        val gate1 = CompletableDeferred<Unit>()
+        val owners = mutableMapOf<Clip, TransferDemand>()
+        val readyClips = mutableListOf<Clip>()
+        val streams = ClipStreams(
+            PikoMediaRepository(cloud.provider),
+            onReady = { readyClips += it },
+            onDead = { error("unexpected dead clip: $it") },
+            coroutineContext = coroutineContext,
+        ) { clip, _, owner ->
+            owners[clip] = owner
+            if (clip.fileId == "c0") gate0.await() else gate1.await()
+            Result.success(PreparedClip(null, "", false, 0, 1.0).also { it.bindDemand(owner) })
+        }
+        val c0 = Clip("c0", "ep0.mp4", "", 0, 60_000)
+        val c1 = Clip("c1", "ep1.mp4", "", 0, 60_000)
+        try {
+            // Cold-start before first page is published: awaitingClip gets WAITING + scan budget, c1 stays PREFETCH
+            streams.setAwaitingClip(c0)
+            streams.ripen(listOf(c0, c1))
+            awaitUntil("两个候补均已登记需求") { owners.size == 2 }
+            val demand0 = owners.getValue(c0)
+            val demand1 = owners.getValue(c1)
+            assertEquals(ServiceIntent.WAITING, demand0.intent.service)
+            assertEquals(CLIP_SCAN_READ_AHEAD_BYTES, demand0.intent.bufferBudget.maxReadAheadBytes)
+            assertEquals(ServiceIntent.PREFETCH, demand1.intent.service)
+            assertEquals(0L, demand1.intent.bufferBudget.maxReadAheadBytes)
+
+            // Once c0 finishes ripening while user is on waiting page (focusClip == null), c1 promotes in-place on the SAME TransferDemand
+            gate0.complete(Unit)
+            awaitUntil("首段就绪后下一候补原地晋升为 WAITING") {
+                c0 in readyClips && demand1.intent.service == ServiceIntent.WAITING
+            }
+            assertSame(demand1, owners.getValue(c1))
+            assertEquals(PikPakStreamReader.BLOCKING_PRIORITY, demand1.priority)
+            assertEquals(CLIP_SCAN_READ_AHEAD_BYTES, demand1.intent.bufferBudget.maxReadAheadBytes)
+
+            gate1.complete(Unit)
+            awaitUntil("次段完成预取") { c1 in readyClips }
+        } finally {
+            gate0.complete(Unit)
+            gate1.complete(Unit)
+            streams.closeAll()
+            cloud.provider.currentClient.value?.close()
+        }
+    }
+
+    @Test
+    fun queuedCandidateIsPromotedWithoutReplacingItsDeferredOrRestartingPreparation() = smoke { _ ->
         val cloud = FakePikPakCloud(ByteArray(64))
         val repository = PikoMediaRepository(cloud.provider)
         val release = CompletableDeferred<Unit>()
@@ -164,12 +282,20 @@ class ClipPreparationTest {
             assertEquals(listOf("a", "b", "c", "d", "current"), started)
             assertEquals(PikPakStreamReader.BLOCKING_PRIORITY, priorities.last())
             release.complete(Unit)
-            a.await(); b.await(); c.await(); d.await()
+            a.await()
+            b.await()
+            c.await()
+            d.await()
             assertEquals(5, started.size)
-        } finally { release.complete(Unit); streams.closeAll(); cloud.provider.currentClient.value?.close() }
+        } finally {
+            release.complete(Unit)
+            streams.closeAll()
+            cloud.provider.currentClient.value?.close()
+        }
     }
 
-    @Test fun receivedBytesTrackPreparationAndStayMonotonicAcrossRetirement() = smoke { _ ->
+    @Test
+    fun receivedBytesTrackPreparationAndStayMonotonicAcrossRetirement() = smoke { _ ->
         val cloud = FakePikPakCloud(ByteArray(64))
         var firstBytes = 0L
         var secondBytes = 0L

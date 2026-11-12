@@ -1,7 +1,11 @@
 package dev.piko.shared.media
 
 import dev.piko.shared.media.proxy.ProxyByteSource
-import dev.piko.shared.media.proxy.ProxyReader
+import io.github.nihildigit.pikpak.BufferBudget
+import io.github.nihildigit.pikpak.ConsumerIntent
+import io.github.nihildigit.pikpak.ReadTicket
+import io.github.nihildigit.pikpak.ServiceIntent
+import io.github.nihildigit.pikpak.TransferDemand
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -20,36 +24,46 @@ interface RandomAccessMediaSource : AutoCloseable {
 }
 
 /**
- * 在一个 [ProxyReader] 上实现按偏移读：位置不连续时先 seek。reader 在首次读取时才开，
- * 随机读取不声明连续预读窗口；已开始的缓存块仍可完成，并与下载共用。
+ * 在一张有界 [ReadTicket] 上实现按偏移读：位置连续时直接顺延复用，位置跳变时收尾当前块并换新票据。
+ * 随机读取声明 [BufferBudget.NONE]（零跨块投机预读）；已开始的当前缓存块仍可完成并与下载共用。
  */
 internal class ReaderRandomAccessSource(
     private val source: ProxyByteSource,
 ) : RandomAccessMediaSource {
     private val lock = Mutex()
-    private var reader: ProxyReader? = null
+    private val demand = TransferDemand(
+        ConsumerIntent(
+            service = ServiceIntent.WAITING,
+            bufferBudget = BufferBudget.NONE,
+        ),
+    )
+    private var ticket: ReadTicket? = null
 
     override val size: Long get() = source.size
 
     override suspend fun readAt(position: Long, buffer: ByteArray, offset: Int, length: Int): Int = lock.withLock {
         if (position >= size) return@withLock -1
-        val current = reader ?: source.openReader().also {
-            it.readAheadLimit = 0
-            reader = it
+        val existing = ticket
+        val current = if (existing != null && existing.position == position) {
+            existing
+        } else {
+            existing?.endRead(allowFinishInFlight = true)
+            source.beginRead(demand, position, size).also { ticket = it }
         }
         try {
-            if (current.position != position) current.seekTo(position)
-            current.read(buffer, offset, length)
+            current.readSome(buffer, offset, length)
         } catch (e: Exception) {
-            // 读失败的 reader 不再复用，下一次读取重新开一个
-            current.close()
-            reader = null
+            // 读失败的票据不再复用，下一次读取重新开启
+            current.endRead(allowFinishInFlight = false)
+            if (ticket === current) ticket = null
             throw e
         }
     }
 
     override fun close() {
-        reader?.close()
+        ticket?.endRead(allowFinishInFlight = false)
+        ticket = null
+        demand.close()
         source.close()
     }
 }

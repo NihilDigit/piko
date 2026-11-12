@@ -2,6 +2,7 @@ package dev.piko.shared.media.proxy
 
 import dev.piko.shared.log.PikoLog
 import io.github.nihildigit.pikpak.StreamRole
+import io.github.nihildigit.pikpak.TransferDemand
 import io.ktor.network.selector.SelectorManager
 import io.ktor.network.sockets.ServerSocket
 import io.ktor.network.sockets.Socket
@@ -32,7 +33,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
-import kotlin.time.Duration
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
@@ -40,7 +40,7 @@ import kotlin.uuid.Uuid
  * 本机回环 HTTP 代理：把 PikPak 文件包装成一个 http URL 交给播放器。
  *
  * 两端播放器都只认 URL，而直链会过期、单链接有 8 连接上限、拖动需要块缓存与优先级，
- * 这些都在 SDK 的 reader 里；代理让 mpv 读 reader，而不是直接读 CDN。
+ * 这些都在 SDK 的块缓存与 [TransferDemand] 里；代理只负责 HTTP/1.1 协议适配与独立 [io.github.nihildigit.pikpak.ReadTicket] 转发。
  *
  * 只实现播放器用得到的 HTTP/1.1 子集：GET/HEAD、单段 Range、416，每个响应后关闭连接。
  * 没用 ktor-server：它的路由、管线与引擎配置对两个方法的服务都是负担，
@@ -51,7 +51,7 @@ class PikoMediaProxy(
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + dispatcher + CoroutineName("PikoMediaProxy"))
 
-    /** reader 的 worker 挂在代理的作用域下，代理关闭时一并结束。 */
+    /** 底层缓存 worker 挂在代理的作用域下，代理关闭时一并结束。 */
     internal val readerContext: CoroutineContext get() = scope.coroutineContext
 
     private val startLock = Mutex()
@@ -64,16 +64,19 @@ class PikoMediaProxy(
     private val sessions = HashMap<String, ProxySession>()
 
     /**
-     * 登记一个媒体会话，返回播放器可读的 URL。关闭返回值即释放 reader 与 handle。
+     * 登记一个媒体会话，返回播放器可读的 URL。关闭返回值即释放票据、需求租约与来源。
      *
-     * [fileName] 只用来给 URL 带上扩展名，FFmpeg 探测格式时会参考它。[role] 是会话的初始角色，
-     * 为之后预热的会话以后台建起，第一个 reader 就不会与正在放的抢连接。
+     * [fileName] 只用来给 URL 带上扩展名，FFmpeg 探测格式时会参考它。
      */
-    suspend fun register(source: ProxyByteSource, fileName: String?, role: StreamRole = StreamRole.FOREGROUND): ProxyStream {
+    suspend fun register(
+        source: ProxyByteSource,
+        fileName: String?,
+        demand: TransferDemand? = null,
+    ): ProxyStream {
         val port = ensureStarted()
         val token = newToken()
         val pathName = pathNameOf(fileName)
-        val session = ProxySession(source, scope, label = "${token.take(8)}/$pathName").also { it.role = role }
+        val session = ProxySession(source, demand = demand, label = "${token.take(8)}/$pathName")
         sessionsLock.withLock { sessions[token] = session }
         return ProxyStream(url = "http://$LOOPBACK:$port/$token/$pathName", session = session) {
             session.close()
@@ -125,7 +128,7 @@ class PikoMediaProxy(
                 val request = readRequest(input) ?: return@coroutineScope
                 val response = launch { respond(request, output) }
                 // 每个响应都带 Connection: close，客户端之后不会再发数据，
-                // 读端结束就是对方断开了：立刻取消响应，把 reader 让给下一个请求
+                // 读端结束就是对方断开了：立刻取消响应，结束当前请求的 ReadTicket
                 val watcher = launch {
                     input.discard()
                     response.cancel()
@@ -273,10 +276,10 @@ class PikoMediaProxy(
     }
 }
 
-/** 代理里的一个可播放 URL。关闭后同一 URL 回 404。 */
+/** 代理里的一个可播放 URL。撤回传输后回 503，关闭后同一 URL 回 404。 */
 class ProxyStream internal constructor(
     val url: String,
-    private val session: ProxySession,
+    internal val session: ProxySession,
     private val onClose: () -> Unit,
 ) : dev.piko.shared.media.player.PlaybackTransport {
     @Volatile
@@ -291,47 +294,21 @@ class ProxyStream internal constructor(
     /** 底层文件是否正在执行云端冷存唤醒轮询。 */
     val isReactivating: kotlinx.coroutines.flow.StateFlow<Boolean> get() = session.isReactivating
 
-    var demand: io.github.nihildigit.pikpak.TransferDemand?
-        get() = session.demand
-        set(value) { session.demand = value }
-    var steady: Boolean
-        get() = session.steady
-        set(value) { session.steady = value }
+    internal val demand: TransferDemand get() = session.demand
+
+    internal fun bindDemand(owner: TransferDemand) = session.bindDemand(owner)
+
     override fun withdrawTransport() = session.withdrawTransport()
-    fun reportPlaybackBuffer(snapshot: io.github.nihildigit.pikpak.PlaybackBufferSnapshot) = session.reportPlaybackBuffer(snapshot)
-
-    /** 前台或后台，见 [ProxySession.role]。 */
-    var role: StreamRole
-        get() = session.role
-        set(value) {
-            session.role = value
-        }
-
-    /** 预读深度，见 [ProxySession.readAheadLimit]。 */
-    var readAheadLimit: Long?
-        get() = session.readAheadLimit
-        set(value) {
-            session.readAheadLimit = value
-        }
-
-    /** 有人正等着，见 [ProxySession.urgent]。 */
-    var urgent: Boolean
-        get() = session.urgent
-        set(value) {
-            session.urgent = value
-        }
-
-    /** 上报播放器实时缓冲余量与媒体字节速率，供底层流读取器按期限救援停滞的播放头请求。 */
-    fun reportPlaybackBuffer(bufferedDuration: Duration, mediaBytesPerSecond: Long? = null) {
-        session.reportPlaybackBuffer(bufferedDuration, mediaBytesPerSecond)
-    }
 
     /**
      * 先把 [ranges] 取进这个会话的缓存，播放器之后读到时直接命中，不再等 CDN。
      * 不占读位置：播放器正在读别处也照样进行，互不取消。全部到手才返回。
-     * [role] 缺省为会话的角色；为之后要放的段取开头时可以单独以前台身份取，会话本身仍是后台。
      */
-    suspend fun prefetch(ranges: List<LongRange>, role: StreamRole = this.role, priority: Int? = null) = session.prefetch(ranges, role, priority)
+    suspend fun prefetch(
+        ranges: List<LongRange>,
+        role: StreamRole = StreamRole.BACKGROUND,
+        priority: Int? = null,
+    ) = session.prefetch(ranges, role, priority)
 
     override fun close() {
         if (closed) return
