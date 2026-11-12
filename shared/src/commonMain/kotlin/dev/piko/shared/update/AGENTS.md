@@ -48,4 +48,4 @@ Android 与桌面端均支持应用内检查与安装更新。跨平台版本检
 桌面安装包冒烟脚本位于 `desktopApp/package/package-smoke/`，本机与 CI 均可直接运行：
 
 - **沙箱隔离身份（`ShellIdentity`）**：携带 `-Dpiko.update.auto=true` 启动的被测包在查到假服务端（`fake_release.py`）的新版后自动下载安装。测试构建通过 `pikoDesktopUpgradeUuid` 与 `pikoDesktopPackageName` 生成独立的 MSI 产品 UUID 与包名，写入 `HKCU` 的通知 AUMID、协议关联 `ProgID`、`Capabilities` 与 `RegisteredApplications` 均随测试包名独立隔离并在测试卸载时干净清除，绝不污染或误删宿主机已安装的正式版 Piko（仅 `magnet` 与 `.torrent` 顶层键为系统共用，`LinkRegistration` 仅在键不存在时创建，已有 `UserChoice` 的机器上 `windows.ps1` 自动跳过默认打开方式断言）。
-- **历史真包升级回归（`package-smoke/legacy.ps1`）**：CI 的 `windows-package-legacy` 拉取真实的 `v1.0.0` 与 `v1.1.0` 已发布便携包及 MSI 安装包直接升级至当次构建，逐一断言：`1.1.0` 成功走常规补丁与 `-from-1.1.0.zip` zstd 差分升级、`1.0.0` MSI 成功退回 `msiexec` 整包升级、`1.0.0` 便携版补丁判定失配，且升级及执行一次 MSI 修复后应用均能正常启动、版本号匹配、用户数据完整保留。
+- **历史真包升级回归（`package-smoke/legacy.ps1`）**：CI 的 `windows-legacy-upgrade` 拉取真实的 `v1.0.0` 与 `v1.1.0` 已发布便携包及 MSI 安装包直接升级至当次构建，逐一断言：`1.1.0` 成功走常规补丁与 `-from-1.1.0.zip` zstd 差分升级、`1.0.0` MSI 成功退回 `msiexec` 整包升级、`1.0.0` 便携版补丁判定失配，且升级及执行一次 MSI 修复后应用均能正常启动、版本号匹配、用户数据完整保留；另有 `windows-2022-portable` 复用 `windows-package` 产物验证 Windows Server 2022 便携版兼容性。

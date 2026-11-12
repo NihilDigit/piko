@@ -24,7 +24,7 @@ Windows 上的 metadata、Android 和 Desktop 验证不等于 Apple 原生链接
 ./gradlew :shared:iosSimulatorArm64Test :ui:iosSimulatorArm64Test
 ```
 
-主干推送、Pull Request 与发版前测试门控统一由 `.github/workflows/test.yml` 的 `ios-simulator` 执行；正式版本由 `.github/workflows/release.yml` 的 `ios` 产出 `piko-ios-arm64-<version>.ipa` 并纳入校验和与构建来源证明。`.github/workflows/ios-native.yml` 与 `.github/workflows/ios-ipa.yml` 保留为手动（`workflow_dispatch`）独立调试入口。签名所需团队、证书、描述文件不保存在源码中；未签名 IPA 需自签侧载安装。
+`.github/workflows/ios-native.yml` 与 `.github/workflows/ios-ipa.yml` 为可复用工作流（`workflow_call` + `workflow_dispatch`），既支持手动独立调试，也分别由 `.github/workflows/test.yml` 的 `ios-simulator`（主干推送、Pull Request 按路径过滤触发，手动与发版全量运行）与 `.github/workflows/release.yml` 的 `ios`（产出 `piko-ios-arm64-<version>.ipa` 并纳入校验和与构建来源证明）直接调用。签名所需团队、证书、描述文件不保存在源码中；未签名 IPA 需自签侧载安装。
 
 原生 CI 还构建最低部署目标为 15.0 的 Swift 宿主，检查产物的 `MinimumOSVersion`，并在 runner 已安装的最旧可用 iPhone 模拟器上启动。现代 Xcode 的模拟器运行时不一定包含 iOS 15；部署目标检查和较新模拟器通过不能替代 iOS 15 真机验收。最低版本验收需覆盖冷启动、登录、目录浏览、文件选择、上传下载、外部播放器跳转和前后台恢复。
 

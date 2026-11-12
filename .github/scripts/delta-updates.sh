@@ -9,26 +9,45 @@
 #
 # 旧版清单里没有 zstd 的 DLL，说明它的客户端还不会用差分，跳过。跨度更大的升级走完整的 app.zip。
 #
-# 用法：delta-updates.sh <新版本> <dist 目录> [架构...]。dist 里要已有这些架构的 -app.zip，不写架构时是 x64 与 arm64；
-# 需要 GH_TOKEN。test.yml 的 windows-package-legacy 只给 x64 出差分，验 1.1.0 客户端真能用它
+# 用法：delta-updates.sh <新版本> <输入 dist 目录> [架构...]。输入目录里要已有这些架构的 -app.zip，
+# 不写架构时是 x64 与 arm64；可选 PIKO_DELTA_OUT 指定独立输出目录（默认写回输入 dist 目录）；需要 GH_TOKEN。
 set -euo pipefail
 
 version=$1
 dist=$(cd "$2" && pwd)
+mkdir -p "${PIKO_DELTA_OUT:-$dist}"
+out_dir=$(cd "${PIKO_DELTA_OUT:-$dist}" && pwd)
 shift 2
 arches=${*:-x64 arm64}
-work="${RUNNER_TEMP:-/tmp}/piko-delta"
-rm -rf "$work"
-mkdir -p "$work"
+work=$(mktemp -d "${RUNNER_TEMP:-/tmp}/piko-delta.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+
+retry() {
+    local attempt out_file
+    out_file=$(mktemp "$work/retry.XXXXXX")
+    for attempt in 1 2 3; do
+        if "$@" > "$out_file"; then
+            cat "$out_file"
+            rm -f "$out_file"
+            return 0
+        fi
+        echo "重试 ($attempt/3): $*" >&2
+        sleep $((attempt * 2))
+    done
+    rm -f "$out_file"
+    return 1
+}
 
 if [ -n "${PIKO_DELTA_BASES:-}" ]; then
     bases=$PIKO_DELTA_BASES
 else
     IFS=. read -r major minor _ <<< "$version"
+    releases_json=$(retry gh api --paginate "repos/$GITHUB_REPOSITORY/releases")
     # 接口按发布先后从新到旧列出
-    published=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
-        --jq '.[] | select(.draft | not) | select(.prerelease | not) | .tag_name | ltrimstr("v")' |
-        awk -v self="$version" '$0 != self')
+    published=$(jq -r --arg self "$version" '
+        .[] | select(.draft | not) | select(.prerelease | not) |
+        .tag_name | ltrimstr("v") | select(. != $self)
+    ' <<< "$releases_json")
     # 原规则之外再并上最近三个已公开的版本，不限主版本：连续发大版本、次版本跳得快时，原规则选出的旧版太少，
     # 发 2.0.0 时只剩 2.0.x，甚至一个都没有，刚升到上一版的用户就都得下完整的补丁包
     bases=$( {
@@ -67,13 +86,16 @@ delta() {
     local prefix="piko-windows-$arch"
     local dir="$work/$arch-$base"
     local new="$work/new-$arch"
-    local out="$dist/$prefix-$version-from-$base.zip"
+    local out="$out_dir/$prefix-$version-from-$base.zip"
     mkdir -p "$dir/old" "$dir/out"
-    if ! gh release download "v$base" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
-        -p "$prefix-$base-files.json" -p "$prefix-$base-app.zip"; then
+    local assets
+    assets=$(retry gh release view "v$base" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+    if ! grep -qxF "$prefix-$base-files.json" <<< "$assets" || ! grep -qxF "$prefix-$base-app.zip" <<< "$assets"; then
         echo "v$base 没有 $arch 的补丁包，跳过"
         return 0
     fi
+    retry gh release download "v$base" --repo "$GITHUB_REPOSITORY" --dir "$dir" --clobber \
+        -p "$prefix-$base-files.json" -p "$prefix-$base-app.zip"
     if ! grep -q '"app/resources/zstd/' "$dir/$prefix-$base-files.json"; then
         echo "v$base 的客户端不会用差分，跳过"
         return 0
@@ -97,12 +119,12 @@ delta() {
     (cd "$dir/out" && zip -q -r -D -0 "$out" .)
     echo "v$base -> v$version ($arch): $(stat -c %s "$out") 字节"
 }
-export -f delta base_of
-export version dist work
+export -f delta base_of retry
+export version dist out_dir work
 
 # 每份差分里 AOT 缓存那一个文件就要压约一分钟，按核数并行
 for base in $bases; do
     for arch in $arches; do
         echo "$arch $base"
     done
-done | xargs -r -P "$(nproc)" -L 1 bash -c 'delta "$0" "$1"'
+done | xargs -r -P "$(nproc)" -L 1 bash -euo pipefail -c 'delta "$0" "$1"'

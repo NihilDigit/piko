@@ -3,11 +3,10 @@ name: Release
 # 打 tag 发版。安装包只在这里构建：本机不产出、也拿不到签名密钥，所以「这个安装包是从这份
 # 源码编出来的」有据可查。
 #
-# 先在 version 校验五种语言的更新日志，再由 test 跑完全部测试（test.yml：各平台的单测与冒烟，含 iOS 模拟器以及 Windows、macOS 与 Linux 的安装和应用内更新），全绿后
-# android、windows（x64 与 arm64）、macos、linux、ios 五个 job 并行构建，只产出、不发布；产物交给 release
-# 统一算校验和、生成构建来源证明，再建一个草稿 release。附件先齐、后公开：此前各平台各自往一个
-# 已公开的 Release 上挂附件，中间有一段时间 Release 已可见而附件不全，应用内更新可能看到缺了
-# 自己平台安装包的版本。
+# 先在 version 校验五种语言的更新日志，随后全量测试（test.yml：各平台的单测与真机安装/更新冒烟）与
+# android、windows（x64 与 arm64 + 紧随其后的 windows-deltas 差分生成）、macos、linux、ios 五端正式打包
+# 同时并行启动，只产出 workflow 产物、不发布；仅当全部测试与全部构建 100% 绿灯后，才由 release job
+# 汇总产物、计算校验和、生成构建来源证明并创建草稿 release。附件先齐、后公开。
 #
 # 两份构建来源证明：release job 里的 attest-build-provenance（GitHub 自己核，快），以及
 # provenance job 经 slsa-github-generator 出的 SLSA Build L3 证明。后者跑在隔离的可复用
@@ -84,8 +83,7 @@ jobs:
           if [[ "$DRY_RUN" != 'true' ]]; then args+=(--require-all); fi
           python3 .github/scripts/render-changelog.py "${args[@]}"
 
-  # 发版前把全部测试在真机器上跑一遍：JVM 与各平台的单测，Android 模拟器、Windows 与 macOS 上的原生行为冒烟
-  # （含全新安装与应用内更新），并行跑，全绿才开始打正式包。用已发布的 SDK，与下面的正式构建一致
+  # 全套测试与五端构建并行启动，结果统一在汇总发布的 release job 处硬性把关。用已发布的 SDK，与正式构建一致。
   test:
     needs: [version]
     if: github.event_name != 'workflow_dispatch' || !inputs.windows-only
@@ -93,11 +91,12 @@ jobs:
     with:
       desktop: true
       sdk-main: false
+      full: true
 
   # 签名密钥只进这个 job，负责汇总发布的 release 不碰它。
   android:
     if: github.event_name != 'workflow_dispatch' || !inputs.windows-only
-    needs: [version, test]
+    needs: [version]
     runs-on: ubuntu-latest
     env:
       ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/piko-release.jks
@@ -156,12 +155,12 @@ jobs:
         with:
           name: android-dist
           path: dist/*
+          compression-level: 0
           if-no-files-found: error
           retention-days: 7
 
   windows:
-    needs: [version, test]
-    if: ${{ !cancelled() && needs.version.result == 'success' && (needs.test.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.windows-only)) }}
+    needs: [version]
     permissions:
       contents: read
       actions: read
@@ -192,23 +191,32 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v5
 
-      # test 在 x64 上已跑过；这里在每个架构的打包机上再跑一遍，arm64 的 WinRT 与原生库问题只有这里暴露
+      # 常规发版时 x64 已由并行的 test / desktop-unit 跑过；这里仅在 arm64（暴露 ARM64 WinRT 与原生库问题）
+      # 或 windows-only 单独演练时运行。
       - name: Test
+        id: test
+        if: matrix.arch == 'arm64' || (github.event_name == 'workflow_dispatch' && inputs.windows-only)
         shell: pwsh
         run: |
           .\gradlew.bat :desktopApp:desktopTest --stacktrace
           if ($LASTEXITCODE -ne 0) {
-            Write-Warning "desktopTest failed on first attempt (exit $LASTEXITCODE), retrying..."
+            Write-Warning "desktopTest failed on first attempt (exit $LASTEXITCODE), archiving report and retrying..."
+            "retried=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            if (Test-Path desktopApp/build/reports/tests) {
+              Copy-Item desktopApp/build/reports/tests desktopApp/build/reports/tests-attempt1 -Recurse -Force
+            }
             .\gradlew.bat :desktopApp:desktopTest --stacktrace --rerun-tasks
           }
 
-      # arm64 的问题只在这里暴露，失败时要能看到具体异常
       - name: Upload test report
-        if: failure()
+        if: failure() || steps.test.outputs.retried == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: desktop-test-report-${{ matrix.arch }}
-          path: desktopApp/build/reports/tests
+          path: |
+            desktopApp/build/reports/tests
+            desktopApp/build/reports/tests-attempt1
+          if-no-files-found: ignore
           retention-days: 7
 
       - name: Install WiX Toolset
@@ -344,13 +352,45 @@ jobs:
         with:
           name: windows-${{ matrix.arch }}-dist
           path: dist/*
+          compression-level: 0
           if-no-files-found: error
+          retention-days: 7
+
+  # Windows 构建一完成即并行压出多版本 zstd 差分包（约 5 分钟），将这段耗时隐藏在 iOS 与冒烟测试之内。
+  windows-deltas:
+    if: github.event_name != 'workflow_dispatch' || !inputs.windows-only
+    needs: [version, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: 'windows-{x64,arm64}-dist'
+          path: in-dist
+          merge-multiple: true
+
+      - name: Build zstd delta packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PIKO_DELTA_OUT: deltas
+        run: |
+          mkdir -p deltas
+          bash .github/scripts/delta-updates.sh "${{ needs.version.outputs.name }}" in-dist
+          ls -lh deltas
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows-deltas-dist
+          path: deltas/*
+          compression-level: 0
+          if-no-files-found: ignore
           retention-days: 7
 
   # Apple 芯片。jpackage 不能交叉构建，Intel Mac 要另起 macos-15-intel runner，暂不出
   macos:
     if: github.event_name != 'workflow_dispatch' || !inputs.windows-only
-    needs: [version, test]
+    needs: [version]
     runs-on: macos-15
     env:
       ORG_GRADLE_PROJECT_pikoDesktopVersion: ${{ needs.version.outputs.name }}
@@ -386,6 +426,7 @@ jobs:
         with:
           name: macos-dist
           path: dist/*
+          compression-level: 0
           if-no-files-found: error
           retention-days: 7
 
@@ -393,7 +434,7 @@ jobs:
   # 打包时的 AOT 训练要开窗，套一层 xvfb-run；appimagetool 与运行时的版本和摘要钉在 build-appimage.sh 里
   linux:
     if: github.event_name != 'workflow_dispatch' || !inputs.windows-only
-    needs: [version, test]
+    needs: [version]
     runs-on: ubuntu-24.04
     env:
       ORG_GRADLE_PROJECT_pikoDesktopVersion: ${{ needs.version.outputs.name }}
@@ -409,9 +450,8 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v5
 
-      # zsync 出 .zsync，appstream 校验 AppStream 元数据，desktop-file-utils 校验 .desktop
-      - name: Install packaging tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsync appstream desktop-file-utils xvfb
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsync appstream desktop-file-utils xvfb xauth
 
       - name: Build
         run: xvfb-run -a ./gradlew :desktopApp:packageReleaseAppImage --no-daemon --stacktrace
@@ -423,240 +463,34 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          # 名字由 packageReleaseAppImage 定好：piko-linux-x64-<版本>.AppImage、.AppImage.zsync 与 .tar.gz
-          cp desktopApp/build/compose/binaries/main-release/appimage/piko-linux-x64-"$VERSION".* dist/
-          ls -l dist
-          test -x "dist/piko-linux-x64-$VERSION.AppImage"
+          cp desktopApp/build/compose/binaries/main-release/appimage/piko-linux-x64-"$VERSION".AppImage* dist/
+          # 供发行版打包（AUR、nix 等）取用，不作自动更新目标；名字与其它平台一致用小写 piko-
+          (cd desktopApp/build/compose/binaries/main-release/app &&
+            tar --transform='s,^Piko,piko,' -czf - Piko) > "dist/piko-linux-x64-$VERSION.tar.gz"
+          ls -lh dist
 
       - uses: actions/upload-artifact@v6
         with:
           name: linux-dist
           path: dist/*
+          compression-level: 0
           if-no-files-found: error
           retention-days: 7
 
-  # iOS / iPadOS 15+ arm64 IPA（未配置 Apple 签名密钥时出无签名侧载包，配置后自动签名导出）。
-  # Release 静态框架链接峰值超过 5 GiB，沿用 14 GiB 内存的 macos-15-intel runner。
+  # iOS / iPadOS 15+ Release IPA（复用 ios-ipa.yml）
   ios:
     if: github.event_name != 'workflow_dispatch' || !inputs.windows-only
-    needs: [version, test]
-    runs-on: macos-15-intel
-    timeout-minutes: 120
-    env:
-      VERSION: ${{ needs.version.outputs.name }}
-      VERSION_CODE: ${{ needs.version.outputs.code }}
-      PIKO_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      PIKO_BUNDLE_ID: ${{ secrets.APPLE_BUNDLE_ID }}
-      HAS_SIGNING: ${{ secrets.APPLE_TEAM_ID != '' && secrets.APPLE_CERT_P12_BASE64 != '' }}
-      PIKO_SKIP_KOTLIN_BUILD: 'NO'
-      GRADLE_OPTS: '-Dorg.gradle.daemon=false'
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Configure native linker memory
-        run: |
-          python3 - <<'PYCODE'
-          from pathlib import Path
-          path = Path("gradle.properties")
-          text = path.read_text()
-          overrides = {
-              "org.gradle.jvmargs": "-Xmx8192m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8",
-              "kotlin.daemon.jvmargs": "-Xmx5120m -XX:MaxMetaspaceSize=1024m",
-              "kotlin.native.jvmArgs": "-Xmx8g",
-              "org.gradle.workers.max": "2",
-          }
-          lines = [line for line in text.splitlines() if line.split("=", 1)[0] not in overrides]
-          lines.extend(f"{key}={value}" for key, value in overrides.items())
-          path.write_text("\n".join(lines) + "\n")
-          PYCODE
-
-      - uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Locate Android SDK
-        run: |
-          set -euo pipefail
-          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
-          test -d "$SDK"
-          {
-            echo "ANDROID_SDK_ROOT=$SDK"
-            echo "ANDROID_HOME=$SDK"
-            echo "SDKMANAGER=$SDK/cmdline-tools/latest/bin/sdkmanager"
-          } >> "$GITHUB_ENV"
-          printf 'sdk.dir=%s\n' "$SDK" > local.properties
-
-      - name: Ensure Android compileSdk
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          SM="$SDKMANAGER"
-          [ -x "$SM" ] || SM="$(ls -d "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | tail -1)"
-          yes | "$SM" --licenses > "$RUNNER_TEMP/licenses.log" 2>&1 || true
-          "$SM" --install "platforms;android-37" "build-tools;37.0.0" > "$RUNNER_TEMP/sdk-install.log" 2>&1 || true
-
-      - uses: gradle/actions/setup-gradle@v5
-
-      - name: Install XcodeGen
-        run: |
-          set -euo pipefail
-          brew install xcodegen
-          xcodegen --version
-
-      - name: Import signing identity
-        if: ${{ env.HAS_SIGNING == 'true' }}
-        env:
-          CERT_P12: ${{ secrets.APPLE_CERT_P12_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-          PROFILE: ${{ secrets.APPLE_PROVISION_PROFILE_BASE64 }}
-        run: |
-          set -euo pipefail
-          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
-          KEYCHAIN_PASSWORD="$(uuidgen)"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          printf '%s' "$CERT_P12" | openssl base64 -d -A -out "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
-          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
-          security find-identity -v -p codesigning "$KEYCHAIN"
-          if [ -n "${PROFILE:-}" ]; then
-            printf '%s' "$PROFILE" | openssl base64 -d -A -out "$RUNNER_TEMP/profile.mobileprovision"
-            UUID_VALUE="$(security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" | plutil -extract UUID raw -)"
-            mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-            cp "$RUNNER_TEMP/profile.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID_VALUE.mobileprovision"
-          fi
-          rm -f "$RUNNER_TEMP/cert.p12"
-
-      - name: Generate Xcode project
-        working-directory: iosApp
-        run: |
-          set -euo pipefail
-          xcodegen generate
-          ls -d Piko.xcodeproj
-
-      - name: Warm up Gradle
-        run: |
-          set -euo pipefail
-          chmod +x gradlew
-          ./gradlew :ui:compileKotlinIosArm64 --no-daemon --stacktrace
-
-      - name: Archive (signed)
-        id: signed
-        continue-on-error: true
-        if: ${{ env.HAS_SIGNING == 'true' }}
-        working-directory: iosApp
-        run: |
-          set -euo pipefail
-          xcodebuild archive \
-            -project Piko.xcodeproj \
-            -scheme Piko \
-            -configuration Release \
-            -destination "generic/platform=iOS" \
-            -archivePath "$RUNNER_TEMP/Piko.xcarchive" \
-            -allowProvisioningUpdates \
-            "MARKETING_VERSION=$VERSION" \
-            "CURRENT_PROJECT_VERSION=$VERSION_CODE" \
-            "PIKO_TEAM_ID=$PIKO_TEAM_ID" \
-            "PIKO_BUNDLE_ID=${PIKO_BUNDLE_ID:-dev.piko.pikpak.ios}" \
-            2>&1 | tee "$RUNNER_TEMP/archive-signed.log"
-
-      - name: Export signed IPA
-        if: ${{ steps.signed.outcome == 'success' }}
-        run: |
-          set -euo pipefail
-          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key><string>ad-hoc</string>
-            <key>signingStyle</key><string>automatic</string>
-            <key>stripSwiftSymbols</key><true/>
-            <key>compileBitcode</key><false/>
-            <key>destination</key><string>export</string>
-            <key>teamID</key><string>$PIKO_TEAM_ID</string>
-          </dict>
-          </plist>
-          PLIST
-          plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
-          rm -rf "$RUNNER_TEMP/export"
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/Piko.xcarchive" \
-            -exportPath "$RUNNER_TEMP/export" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -allowProvisioningUpdates \
-            2>&1 | tee "$RUNNER_TEMP/export.log"
-
-      - name: Archive (unsigned)
-        if: ${{ env.HAS_SIGNING != 'true' || steps.signed.outcome != 'success' }}
-        working-directory: iosApp
-        run: |
-          set -euo pipefail
-          xcodebuild archive \
-            -project Piko.xcodeproj \
-            -scheme Piko \
-            -configuration Release \
-            -destination "generic/platform=iOS" \
-            -archivePath "$RUNNER_TEMP/Piko-unsigned.xcarchive" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY= \
-            "MARKETING_VERSION=$VERSION" \
-            "CURRENT_PROJECT_VERSION=$VERSION_CODE" \
-            "PIKO_BUNDLE_ID=${PIKO_BUNDLE_ID:-dev.piko.pikpak.ios}" \
-            2>&1 | tee "$RUNNER_TEMP/archive-unsigned.log"
-
-      - name: Collect and verify IPA
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          OUT="dist/piko-ios-arm64-$VERSION.ipa"
-          shopt -s nullglob
-          signed_ipas=("$RUNNER_TEMP"/export/*.ipa)
-          if [ "${#signed_ipas[@]}" -gt 0 ]; then
-            cp "${signed_ipas[0]}" "$OUT"
-          else
-            APP="$RUNNER_TEMP/Piko-unsigned.xcarchive/Products/Applications/Piko.app"
-            test -d "$APP"
-            rm -rf "$RUNNER_TEMP/unsigned"
-            mkdir -p "$RUNNER_TEMP/unsigned/Payload"
-            cp -R "$APP" "$RUNNER_TEMP/unsigned/Payload/"
-            (cd "$RUNNER_TEMP/unsigned" && zip -qry "$GITHUB_WORKSPACE/$OUT" Payload)
-          fi
-          test -s "$OUT"
-          unzip -p "$OUT" "Payload/Piko.app/Info.plist" > "$RUNNER_TEMP/ipa-Info.plist"
-          test "$(plutil -extract MinimumOSVersion raw "$RUNNER_TEMP/ipa-Info.plist")" = "15.0"
-          test "$(plutil -extract CFBundleShortVersionString raw "$RUNNER_TEMP/ipa-Info.plist")" = "$VERSION"
-          ls -lh dist
-
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v6
-        with:
-          name: ios-release-logs
-          path: |
-            ${{ runner.temp }}/*.log
-            shared/build/reports/**
-            ui/build/reports/**
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: ios-dist
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 7
+    needs: [version]
+    uses: ./.github/workflows/ios-ipa.yml
+    with:
+      version: ${{ needs.version.outputs.name }}
+      version-code: ${{ needs.version.outputs.code }}
+      artifact-name: ios-dist
+    secrets: inherit
 
   release:
-    needs: [version, android, windows, macos, linux, ios]
+    # 全部测试与全部正式包均成功后才进入汇总与草稿创建；任一测试失败直接阻断发布。
+    needs: [version, test, android, windows, windows-deltas, macos, linux, ios]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -669,18 +503,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # 只合并六份正式产物，排除 test job 上传的 windows-smoke-dist
+      # 合并六端正式产物与提前构建好的 Windows 差分包，排除 test job 上传的 windows-smoke-dist
       - uses: actions/download-artifact@v7
         with:
-          pattern: '{android,windows-x64,windows-arm64,macos,linux,ios}-dist'
+          pattern: '{android,windows-x64,windows-arm64,windows-deltas,macos,linux,ios}-dist'
           path: dist
           merge-multiple: true
-
-      # 要在算校验和与做证明之前，差分包才一并算上
-      - name: Delta updates
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/delta-updates.sh "${{ needs.version.outputs.name }}" dist
 
       - name: Checksums and SLSA subjects
         run: |
@@ -696,11 +524,12 @@ jobs:
       - name: Render release notes
         env:
           VERSION: ${{ needs.version.outputs.name }}
+          DRY_RUN: ${{ needs.version.outputs.dry-run }}
         run: |
           git fetch origin main --depth=1 || true
-          python3 .github/scripts/render-changelog.py --version "$VERSION" \
-            --template .github/release-notes.md --out-release-notes release-notes.md \
-            --out-notes-json localized-notes.json
+          args=(--version "$VERSION" --template .github/release-notes.md --out-release-notes release-notes.md --out-notes-json localized-notes.json)
+          if [[ "$DRY_RUN" != 'true' ]]; then args+=(--require-all); fi
+          python3 .github/scripts/render-changelog.py "${args[@]}"
 
       # 检查更新的备用来源：GitHub API 被限流（匿名按出口 IP 每小时 60 次）或连不上时，应用改取
       # releases/latest/download/release.json，见 GithubReleaseClient.LATEST_RELEASE_SOURCES。与 API 的
@@ -750,6 +579,7 @@ jobs:
         with:
           name: dry-run-dist
           path: dist/*
+          compression-level: 0
           retention-days: 3
 
       - name: Share SLSA subjects

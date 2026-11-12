@@ -61,8 +61,8 @@ gh workflow run release.yml -f version=9.9.9      # 发版演练：完整执行�
 
 ### 测试、构建来源证明与草稿公开
 
-1. `release.yml` 通过前置校验后，首先调用 `test.yml` 在真实系统环境运行全套单元测试与安装包冒烟测试（含 Windows、macOS、Linux 全新安装与应用内更新，固定使用已发布的 SDK）。修改发版脚本或工作流后，须先通过 `gh workflow run release.yml -f version=9.9.9` 执行一次演练（完整运行测试、打包与汇总并保留 workflow 产物，跳过创建 Release 与构建来源证明）。
-2. 全量测试通过后，Android、Windows（x64、arm64）、macOS（arm64）与 Linux（x64）并行构建正式包并执行 JVM 字节码校验（`VerifyClasses.java`），汇总至 `release` job 生成 Windows zstd 差分包、计算 `SHA256SUMS.txt`、生成 `release.json`，并出具两份构建来源证明：GitHub 原生 `attest-build-provenance` 与隔离上下文 `slsa-github-generator` 生成的 SLSA Build L3 证明（`multiple.intoto.jsonl`）。
+1. `release.yml` 通过前置校验后，同时并行启动 `test.yml` 全量测试（在真实系统环境运行全套单元测试与安装包冒烟测试，含 Windows、macOS、Linux 全新安装与应用内更新及 iOS 模拟器原生测试，固定使用已发布的 SDK）与各平台正式包构建。修改发版脚本或工作流后，须先通过 `gh workflow run release.yml -f version=9.9.9` 执行一次演练（完整运行测试、打包与汇总并保留 workflow 产物，跳过创建 Release 与构建来源证明）。
+2. Android、Windows（x64、arm64）、macOS（arm64）、Linux（x64）与 iOS（arm64，调用可复用工作流 `ios-ipa.yml`）并行构建正式包并执行 JVM 字节码校验（`VerifyClasses.java`），`windows` 完成后紧接在 `windows-deltas` job 生成 Windows zstd 差分包；待 `test` 与全部平台构建均通过后汇总至 `release` job 计算 `SHA256SUMS.txt`、生成 `release.json`，并出具两份构建来源证明：GitHub 原生 `attest-build-provenance` 与隔离上下文 `slsa-github-generator` 生成的 SLSA Build L3 证明（`multiple.intoto.jsonl`）。
 3. `release` job 将 `# zh-Hans` 段落拼接在 `.github/release-notes.md`（自 `## 下载` 起的设备附件表与校验说明）之前作为 GitHub Release 页面正文，同时将 `zh-Hans` 写入 `release.json` 的 `body` 字段，并将全部五种语言写入 `release.json` 的 `localized_notes` 字段，最终创建**草稿（Draft）** Release。草稿对 `releases/latest` 不可见，应用内更新在草稿公开前不会触发提示。应用内更新弹窗读取 GitHub Release 正文时在 `## 下载` 处截断（`GithubReleases.kt` 的 `updateNotesOf`，由 `ReleaseNotesTest` 守护），修改该标题须同步更新代码与模板；客户端同时按 `PikoLocale.effectiveLanguage` 优先展示匹配语言的更新说明（详见 `shared/src/commonMain/kotlin/dev/piko/shared/update/AGENTS.md`）。
 4. 核对草稿附件与正文无误后，执行 `gh release edit <tag> --draft=false` 正式公开。按 tag 查询的 GitHub REST 接口不返回草稿；若 `gh` 按 tag 无法定位草稿，可通过 `gh api repos/NihilDigit/piko/releases` 列表接口按 `tag_name` 取得 Release ID。若需手动执行 `gh release edit --notes-file` 修改正文，必须先读回原正文再写入，因为 `--notes-file` 会整段替换正文，直接覆盖会导致附件表丢失。
 
@@ -173,11 +173,11 @@ Piko 源码以 `AGPL-3.0-or-later` 许可证发布（1.1.0 及更早版本为 MI
 
 ### 持续集成与冒烟测试（`test.yml`）
 
-`.github/workflows/test.yml` 分层验证跨平台行为：
+`.github/workflows/test.yml` 按变更路径智能筛选目标（`workflow_dispatch` 与发版门控固定全量执行）并分层验证跨平台行为：
 
-- **JVM 单元测试**：Linux runner 执行 `:shared:desktopTest` 与 `:ui:desktopTest`；Windows runner 执行 `:desktopApp:desktopTest` 与 Android `:app:testDebugUnitTest`。
-- **Android 模拟器真机冒烟**：x86_64 模拟器（API 34）执行 `:app:connectedDebugAndroidTest`，走真实 `libmpv` 与回环代理，以 Ktor `MockEngine` 模拟 PikPak 服务端。注意：`connectedDebugAndroidTest` 执行完毕后会自动卸载 `dev.piko.debug`（连同本地登录态与下载任务表一并清除），在日常联调使用的物理真机上运行前必须先征得用户确认，或改用模拟器。
-- **桌面安装包与更新冒烟**：`windows-package`、`windows-package-legacy`、`macos-package` 与 `linux-package`（日常 push 不触发，手动触发 `test.yml` 或正式发版时运行）打包真实安装包并验证全新安装、老版本升级、默认协议关联、在系统文件管理器中定位及内置硬件播放自检（`SelfTest.kt`，详见 `shared/src/commonMain/kotlin/dev/piko/shared/update/AGENTS.md`）。
+- **JVM 单元测试**：Linux runner 执行 `:shared:desktopTest` 与 `:ui:desktopTest`；Windows runner 执行 `:desktopApp:desktopTest` 与 Android `:app:testDebugUnitTest`；macOS runner 执行钥匙串测试 `macos-keychain`。
+- **移动端真机/模拟器冒烟**：Android x86_64 模拟器（API 34）执行 `:app:connectedDebugAndroidTest`，走真实 `libmpv` 与回环代理，以 Ktor `MockEngine` 模拟 PikPak 服务端；iOS 模拟器调用 `ios-native.yml` 执行 `:shared:iosSimulatorArm64Test`、`:ui:iosSimulatorArm64Test` 与 iOS 15 部署目标宿主启动验证。注意：`connectedDebugAndroidTest` 执行完毕后会自动卸载 `dev.piko.debug`（连同本地登录态与下载任务表一并清除），在日常联调使用的物理真机上运行前必须先征得用户确认，或改用模拟器。
+- **桌面安装包与更新冒烟**：`windows-package`、`windows-legacy-upgrade`、`windows-2022-portable`、`macos-package` 与 `linux-package`（日常 push 不触发，手动触发 `test.yml -f desktop=true` 或正式发版时运行）并行打包真实安装包并验证全新安装、老版本升级、默认协议关联、在系统文件管理器中定位及内置硬件播放自检（`SelfTest.kt`，详见 `shared/src/commonMain/kotlin/dev/piko/shared/update/AGENTS.md`）。
 - **Android ICU 正则兼容性防线**：HotSpot JVM 正则引擎与 Android ICU 正则引擎存在致命差异：
   1. ICU 不支持 `\p{IsHan}` 等 Java 专有字符类写法，在 Android 8 上编译正则即直接崩溃（1.0.0 曾发生），汉字脚本类必须统一写为 `\p{script=Han}`。
   2. ICU 的 `\d` 会匹配全部 Unicode 十进制数字字符（如数学粗体数字 `𝟐`、全角数字），提取后直接调用 `toInt()` 会抛出 `NumberFormatException`（1.1.0 信息流曾因此闪退），匹配 ASCII 数字必须统一写为 `[0-9]`。

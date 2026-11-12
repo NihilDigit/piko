@@ -21,17 +21,39 @@ mkdir -p "$out" "$retired_out"
 
 RETIRED="1.0.0"
 
-published=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
-    --jq '.[] | select(.draft | not) | select(.prerelease | not) | .tag_name | ltrimstr("v")' |
-    awk -F. -v self="$version" '$0 != self && $1 >= 1')
+retry() {
+    local attempt out_file
+    out_file=$(mktemp "${RUNNER_TEMP:-/tmp}/piko-retry.XXXXXX")
+    for attempt in 1 2 3; do
+        if "$@" > "$out_file"; then
+            cat "$out_file"
+            rm -f "$out_file"
+            return 0
+        fi
+        echo "重试 ($attempt/3): $*" >&2
+        sleep $((attempt * 2))
+    done
+    rm -f "$out_file"
+    return 1
+}
+
+# 先从 release 列表精确筛出确实带有该架构 files.json 的版本：真正缺少该架构清单的旧版跳过，
+# 而已存在附件若因网络抖动或限流下载失败则重试后报错，绝不静默漏掉基准版本。
+releases_json=$(retry gh api --paginate "repos/$GITHUB_REPOSITORY/releases")
+published=$(jq -r --arg arch "$arch" --arg self "$version" '
+    .[] | select(.draft | not) | select(.prerelease | not) |
+    (.tag_name | ltrimstr("v")) as $v |
+    select($v != $self and (($v | split(".")[0] | tonumber? // 0) >= 1)) |
+    select(any(.assets[]; .name == "piko-windows-\($arch)-\($v)-files.json")) |
+    $v
+' <<< "$releases_json")
 
 for base in $published; do
     dir=$out
     for retired in $RETIRED; do
         [ "$base" != "$retired" ] || dir=$retired_out
     done
-    # 旧版可能没有这个架构的清单，跳过
-    gh release download "v$base" --repo "$GITHUB_REPOSITORY" --dir "$dir" -p "piko-windows-$arch-$base-files.json" ||
-        echo "v$base 没有 $arch 的清单，跳过"
+    retry gh release download "v$base" --repo "$GITHUB_REPOSITORY" --dir "$dir" --clobber \
+        -p "piko-windows-$arch-$base-files.json"
 done
 ls -l "$out" "$retired_out"

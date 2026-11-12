@@ -1,21 +1,20 @@
 name: Test
 
-# 全部测试，发版之前必须全绿：release.yml 的第一个 job 就是调这里，通过后才开始打正式包。
+# 全部测试。日常提交按改动路径精准触发受影响模块；手动触发与发版（workflow_call）强制跑全量。
 #
 # 两类：
-# - 业务逻辑的单测放在 JVM 上：shared 的 desktop 测试（解析、代理、同步、更新来源等，Linux 上跑得最快）、
-#   desktopApp 的测试（WinRT、窗口过程、更新清单，只能在 Windows 上跑）、Android 的单测。
-# - 原生行为的冒烟在真机器上：Android 模拟器上的真实 libmpv 与回环代理；iOS 模拟器上的原生单测、Swift 宿主链接与冷启动；
-#   Windows、macOS 与 Linux 上真装、真启动、真的应用内更新，再验依赖系统真实行为的（默认打开方式、在资源管理器中显示），
-#   断言落到磁盘与系统上的结果（windows-package、macos-package、linux-package）。
+# - 业务逻辑的单测放在 JVM 上：shared 与 ui 的 desktop 测试（Linux 上最快）、
+#   desktopApp 的原生单测（WinRT、窗口过程、更新清单，Windows 专属）、Android 单测、macOS 钥匙串实测。
+# - 原生行为与安装包冒烟在真系统上：Android 模拟器（libmpv 与回环代理）；iOS 模拟器（原生单测、Swift 宿主链接与冷启动）；
+#   Windows、macOS 与 Linux 上真装、真启动、真应用内更新及系统集成（windows-package、windows-legacy-upgrade、
+#   windows-2022-portable、macos-package、linux-package）。
 #
-# 推送与 PR 时不跑三个桌面冒烟：它们要打两遍安装包，一次二十来分钟。手动触发与发版时都跑。
+# 分支开发由 pull_request 触发，合并或直推由 main 的 push 触发，避免同一提交触发 push + PR 双跑；
+# 桌面三端安装包冒烟仅在手动触发或发版门控时运行。
 
 on:
   push:
-    # cla-signatures 只存 CLA 签名（cla.yml），每签一次就是一次推送，不是代码。
-    # 同一事件不能同时写 branches 与 branches-ignore，排除用 ! 写进同一个列表
-    branches: ['**', '!cla-signatures']
+    branches: ['main']
   pull_request:
   workflow_dispatch:
     inputs:
@@ -32,25 +31,127 @@ on:
       desktop:
         type: boolean
         default: true
-      # 发版时用 libs.versions.toml 里已发布的 SDK，与正式构建一致。平时用 SDK main 的源码，见
-      # settings.gradle.kts 的复合构建：SDK 在 Piko 发版之前才发，两次发版之间 Piko 会用到它还没发布的改动。
-      # 各步骤按 format('{0}', inputs.sdk-main) != 'false' 判断：push 与 PR 没有这个输入，值为 null，
-      # 而表达式里 null 与 false 宽松比较相等，直接写 inputs.sdk-main != false 会把平时的构建也换成已发布的 SDK
+      # 发版时用 libs.versions.toml 里已发布的 SDK，与正式构建一致；日常开发用 SDK main 源码做复合构建。
+      # 各步骤按 format('{0}', inputs.sdk-main) != 'false' 判断，兼容 push / PR 下 inputs.sdk-main 为 null 的情形。
       sdk-main:
+        type: boolean
+        default: true
+      full:
         type: boolean
         default: true
 
 concurrency:
-  group: test-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-test-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
+  # 发版与手动触发无条件全开；日常 push / PR 识别纯文档或单端改动，跳过无关平台的重型队列（尤其是 macOS）。
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      jvm: ${{ steps.filter.outputs.jvm }}
+      desktop_unit: ${{ steps.filter.outputs.desktop_unit }}
+      macos_keychain: ${{ steps.filter.outputs.macos_keychain }}
+      ios: ${{ steps.filter.outputs.ios }}
+      android: ${{ steps.filter.outputs.android }}
+    steps:
+      - uses: actions/checkout@v5
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+
+      - name: Detect affected targets
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE_FULL: ${{ inputs.full == true }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          enable_all() {
+            for key in jvm desktop_unit macos_keychain ios android; do
+              echo "$key=true" >> "$GITHUB_OUTPUT"
+            done
+            exit 0
+          }
+          if [[ "$EVENT_NAME" != 'push' && "$EVENT_NAME" != 'pull_request' ]] || [[ "$FORCE_FULL" == 'true' ]]; then
+            enable_all
+          fi
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            enable_all
+          fi
+          if ! git fetch --no-tags --depth=1 origin "$BASE_SHA" 2>/dev/null; then
+            enable_all
+          fi
+          CHANGED=$(git diff --no-renames --name-only "$BASE_SHA" HEAD || true)
+          if [[ -z "$CHANGED" ]]; then
+            enable_all
+          fi
+          echo "Changed files:"
+          echo "$CHANGED"
+          CHANGED_FILES="$CHANGED" python3 - <<'PY'
+          import fnmatch, os
+
+          files = [line.strip() for line in os.environ["CHANGED_FILES"].splitlines() if line.strip()]
+          doc_patterns = (
+              "README*.md", "LICENSE", "CLA.md", "docs/*", "docs/**", "AGENTS.md", "*/AGENTS.md", "**/AGENTS.md",
+              ".github/changelogs/*", ".github/release-notes.md", ".github/ISSUE_TEMPLATE/*",
+              ".github/PULL_REQUEST_TEMPLATE*", ".github/workflows/cla.yml",
+              ".github/workflows/release.yml", ".github/workflows/ios-ipa.yml", ".github/scripts/render-changelog.py",
+          )
+          global_patterns = (
+              "gradle/*", "gradle/**", "gradlew*", "build.gradle.kts", "settings.gradle.kts",
+              "gradle.properties", ".github/workflows/test.yml",
+          )
+
+          def matches(path, patterns):
+              return any(fnmatch.fnmatch(path, pat) for pat in patterns)
+
+          flags = {k: False for k in ("jvm", "desktop_unit", "macos_keychain", "ios", "android")}
+          for f in files:
+              if matches(f, doc_patterns) or f.endswith("/AGENTS.md"):
+                  continue
+              if matches(f, global_patterns):
+                  for k in flags:
+                      flags[k] = True
+                  break
+              if f.startswith(("iosApp/", "shared/src/iosMain/", "shared/src/nativeInterop/", "ui/src/iosMain/")) or f == ".github/workflows/ios-native.yml":
+                  flags["ios"] = True
+              elif f.startswith(("app/", "shared/src/androidMain/", "ui/src/androidMain/")):
+                  flags["android"] = True
+              elif f.startswith("desktopApp/"):
+                  flags["jvm"] = True
+                  flags["desktop_unit"] = True
+              elif f.startswith("shared/src/desktopMain/"):
+                  flags["jvm"] = True
+                  flags["desktop_unit"] = True
+                  flags["macos_keychain"] = True
+              elif f.startswith("ui/src/desktopMain/") or f.startswith(("cli/", "shots/")):
+                  flags["jvm"] = True
+                  flags["desktop_unit"] = True
+              elif f.startswith("shared/src/jvmSharedMain/"):
+                  flags["jvm"] = True
+                  flags["desktop_unit"] = True
+                  flags["macos_keychain"] = True
+                  flags["android"] = True
+              else:
+                  for k in flags:
+                      flags[k] = True
+                  break
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              for k, v in flags.items():
+                  line = f"{k}={'true' if v else 'false'}"
+                  print(" ->", line)
+                  out.write(line + "\n")
+          PY
+
   jvm:
-    # 代理与共用 state holder 的冒烟、以及大部分业务逻辑的单测都在 shared 的 desktop 测试里，
-    # 不依赖 Windows，放 Linux 上跑得最快
+    needs: [changes]
+    if: needs.changes.outputs.jvm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -89,6 +190,8 @@ jobs:
 
   # WinRT、窗口过程、更新清单与 Windows 原生库的用例只能在 Windows 上跑
   desktop-unit:
+    needs: [changes]
+    if: needs.changes.outputs.desktop_unit == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -114,24 +217,34 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
 
       - name: Test
+        id: test
         shell: pwsh
         run: |
           .\gradlew.bat :desktopApp:desktopTest --stacktrace
           if ($LASTEXITCODE -ne 0) {
-            Write-Warning "desktopTest failed on first attempt (exit $LASTEXITCODE), retrying..."
+            Write-Warning "desktopTest failed on first attempt (exit $LASTEXITCODE), archiving report and retrying..."
+            "retried=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            if (Test-Path desktopApp/build/reports/tests) {
+              Copy-Item desktopApp/build/reports/tests desktopApp/build/reports/tests-attempt1 -Recurse -Force
+            }
             .\gradlew.bat :desktopApp:desktopTest --stacktrace --rerun-tasks
           }
 
       - name: Upload test report
-        if: failure()
+        if: failure() || steps.test.outputs.retried == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: desktop-test-report
-          path: desktopApp/build/reports/tests
+          path: |
+            desktopApp/build/reports/tests
+            desktopApp/build/reports/tests-attempt1
+          if-no-files-found: ignore
           retention-days: 7
 
-  # 凭据存进钥匙串的行为（-U 覆盖、-i 的行长上限、锁着时的退出码）只能在真实的 macOS 上验，本地没有 Mac
+  # 凭据存进钥匙串的行为（-U 覆盖、-i 的行长上限、锁着时的退出码）只能在真实的 macOS 上验
   macos-keychain:
+    needs: [changes]
+    if: needs.changes.outputs.macos_keychain == 'true'
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -163,126 +276,17 @@ jobs:
         if: always()
         run: cat shared/build/test-results/desktopTest/TEST-*MacKeychainVaultTest*.xml || true
 
-  # iOS 原生编译链接、SQLite 系统库绑定、模拟器单测与 iOS 15 部署目标宿主冷启动
+  # iOS 原生编译链接、SQLite 系统库绑定、模拟器单测与 iOS 15 部署目标宿主冷启动（复用 ios-native.yml）
   ios-simulator:
-    runs-on: macos-15
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/checkout@v5
-        if: format('{0}', inputs.sdk-main) != 'false'
-        with:
-          repository: NihilDigit/pikpak-kotlin
-          path: pikpak-kotlin
-
-      - uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Locate Android SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
-          test -d "$SDK"
-          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-          printf 'sdk.dir=%s\n' "$SDK" > local.properties
-          if [ -d pikpak-kotlin ]; then
-            printf 'pikpak.sdk.dir=pikpak-kotlin\n' >> local.properties
-            printf 'sdk.dir=%s\n' "$SDK" > pikpak-kotlin/local.properties
-          fi
-
-      - uses: gradle/actions/setup-gradle@v5
-
-      - name: Run iOS simulator tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          chmod +x gradlew
-          ./gradlew :shared:iosSimulatorArm64Test :ui:iosSimulatorArm64Test --no-daemon --stacktrace
-
-      - name: Build iOS 15 host
-        shell: bash
-        run: |
-          set -euo pipefail
-          brew install xcodegen
-          cd iosApp
-          xcodegen generate
-          xcodebuild -project Piko.xcodeproj -scheme Piko -configuration Debug \
-            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/piko-ios" \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO build 2>&1 | tee "$RUNNER_TEMP/piko-ios-build.log"
-          APP="$RUNNER_TEMP/piko-ios/Build/Products/Debug-iphonesimulator/Piko.app"
-          MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")
-          test "$MIN_OS" = '15.0'
-          xcrun vtool -show-build "$APP/Piko" | tee "$RUNNER_TEMP/piko-ios-deployment.txt"
-
-      - name: Launch simulator host
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, os, subprocess
-          runtimes = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'runtimes', '--json']))['runtimes']
-          devices = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available', '--json']))['devices']
-          choices = []
-          for runtime in runtimes:
-              if not runtime.get('isAvailable') or not runtime['identifier'].startswith('com.apple.CoreSimulator.SimRuntime.iOS-'):
-                  continue
-              for device in devices.get(runtime['identifier'], []):
-                  if device.get('isAvailable') and device['name'].startswith('iPhone'):
-                      choices.append((tuple(int(x) for x in runtime['version'].split('.') if x.isdigit()), runtime, device))
-          assert choices, 'No available iPhone simulator'
-          _, runtime, device = min(choices, key=lambda item: item[0])
-          print('Selected simulator runtime:', runtime['version'])
-          with open(os.environ['GITHUB_ENV'], 'a') as output:
-              output.write(f"PIKO_SIMULATOR_ID={device['udid']}\n")
-          if device['state'] != 'Booted':
-              subprocess.run(['xcrun', 'simctl', 'boot', device['udid']], check=True)
-          PY
-
-      - name: Verify simulator launch
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcrun simctl bootstatus "$PIKO_SIMULATOR_ID" -b
-          xcrun simctl install "$PIKO_SIMULATOR_ID" "$RUNNER_TEMP/piko-ios/Build/Products/Debug-iphonesimulator/Piko.app"
-          xcrun simctl launch --terminate-running-process "$PIKO_SIMULATOR_ID" dev.piko.pikpak.ios
-          sleep 3
-          found=0
-          for _ in $(seq 1 15); do
-            if xcrun simctl spawn "$PIKO_SIMULATOR_ID" launchctl list | awk '$1 ~ /^[0-9]+$/ && /dev\.piko\.pikpak\.ios/ { ok=1 } END { exit !ok }'; then
-              found=1
-              break
-            fi
-            sleep 1
-          done
-          test "$found" -eq 1
-
-      - name: Upload test results
-        if: failure()
-        uses: actions/upload-artifact@v6
-        with:
-          name: ios-simulator-test-results
-          path: |
-            shared/build/reports/tests/
-            shared/build/test-results/
-            ui/build/reports/tests/
-            ui/build/test-results/
-            ${{ runner.temp }}/piko-ios-build.log
-            ${{ runner.temp }}/piko-ios-deployment.txt
-          if-no-files-found: ignore
-          retention-days: 7
+    needs: [changes]
+    if: needs.changes.outputs.ios == 'true'
+    uses: ./.github/workflows/ios-native.yml
+    with:
+      sdk-main: ${{ format('{0}', inputs.sdk-main) != 'false' }}
 
   android-unit:
+    needs: [changes]
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -320,6 +324,8 @@ jobs:
   android:
     # 模拟器是 x86_64，验证的是 libmpv 的 x86_64 .so；arm64 与 x86_64 出自同一套构建脚本，
     # 打包或格式覆盖出问题时两者一起坏，差异只在机型硬解，这部分 CI 本来就测不到。
+    needs: [changes]
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -406,6 +412,8 @@ jobs:
     if: inputs.desktop == true
     runs-on: windows-latest
     timeout-minutes: 90
+    outputs:
+      dist-uploaded: ${{ steps.upload-dist.outputs.artifact-id != '' }}
     env:
       SMOKE_UPGRADE_CODE: 5f3c2b1e-7a4d-4c9e-9b8a-2d6e0f1a3c55
       SMOKE_PACKAGE: PikoSmoke
@@ -423,7 +431,6 @@ jobs:
         shell: bash
         run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
 
-      # 与 release.yml 相同用 Zulu：打包的 jlink 与 ProGuard 要 jmods
       - uses: actions/setup-java@v5
         with:
           java-version: '25'
@@ -435,14 +442,15 @@ jobs:
         continue-on-error: true
         run: choco install wixtoolset -y --no-progress
 
+      # 造一份运行时也变了的场景：打完 9.9.0 后把它的清单里 runtime/release 的摘要改掉，9.9.1 拿这份改过的清单作
+      # -PpikoUpdateBases，UpdateArtifactsTask 就把 runtime/release 也标进补丁包——便携版遇到运行时变更照样走补丁。
+      # 真的 9.9.0 安装包与清单不动，装到磁盘上的仍是原文件
       - name: Build two versions
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $binaries = 'desktopApp/build/compose/binaries/main-release'
-          # 9.9.1 对照的旧版清单：9.9.0 的那份，把 runtime\release 的摘要改掉。两次构建的运行时逐字节相同，
-          # 这样 9.9.1 才把一个运行时文件当成变了、装进补丁包，冒烟验得到「运行时变了照样走补丁」（update-bases.sh 同理）
-          $bases = 'smoke-bases'
+          $bases = "$env:RUNNER_TEMP/smoke-bases"
           foreach ($version in @('9.9.0', '9.9.1')) {
             $extra = @(if ($version -eq '9.9.1') { "-PpikoUpdateBases=$bases" })
             .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace `
@@ -465,11 +473,13 @@ jobs:
             }
           }
 
-      # windows-2022 那个 job 拿同一份包，不再打一遍
-      - uses: actions/upload-artifact@v6
+      # windows-2022-portable 拿同一份包，不再重打
+      - id: upload-dist
+        uses: actions/upload-artifact@v6
         with:
           name: windows-smoke-dist
           path: smoke-dist
+          compression-level: 0
           retention-days: 3
 
       - name: Install, update and system integration
@@ -487,23 +497,14 @@ jobs:
           path: ${{ runner.temp }}/package-smoke/logs
           if-no-files-found: ignore
 
-  # 旧一代 Windows 上的便携版更新：Windows Server 2022（build 20348）与 Windows 10 21H2/22H2 同一代内核与系统组件，
-  # GitHub 托管的镜像里没有 Windows 10，拿它近似。并不等价：桌面组件、资源管理器与 tar.exe 的版本未必与 Win10 相同，
-  # 真正的 Win10 要 self-hosted runner。验的是便携版更新全程不依赖 7z：补丁包带着变了的运行时文件照样走补丁，
-  # 补丁对不上时干净地退回下载页；系统 tar.exe 能不能解便携包 .7z 记进 job 摘要（只关系到用户手动解压）。
-  # 包取自 windows-package，不再打一遍；那边的冒烟失败不挡这里。
-  # 另验已发布的 1.0.0、1.1.0（便携 zip 与 MSI）升级到这次构建：见 package-smoke/legacy.ps1。为此以正式的包名与
-  # UpgradeCode 另打一个 9.9.1（含 MSI），与 release.yml 经 update-bases.sh 的打法相同：1.1.0 的清单作对照
-  # （-PpikoUpdateBases），1.0.0 的只作核对（-PpikoUpdateRetired）。1.1.0 走补丁，另用 delta-updates.sh 出一份
-  # -from-1.1.0.zip 验 1.1.0 的差分；1.0.0 的 MSI 版走 msiexec，便携版只给下载页
-  windows-package-legacy:
-    if: inputs.desktop == true && !cancelled()
-    needs: windows-package
+  # 已发布的 1.0.0、1.1.0（便携 zip 与 MSI）直接升级到这次构建：见 package-smoke/legacy.ps1。
+  # 以正式包名与 UpgradeCode 独立构建 9.9.1（不依赖 windows-package，开场即并行启动，消除 16 分钟串行等待）：
+  # 1.1.0 的清单作对照（-PpikoUpdateBases），1.0.0 只作核对（-PpikoUpdateRetired），并出 -from-1.1.0.zip 验差分升级；
+  # 1.0.0 的 MSI 版走 msiexec，便携版只给下载页。
+  windows-legacy-upgrade:
+    if: inputs.desktop == true
     runs-on: windows-2022
     timeout-minutes: 90
-    env:
-      SMOKE_UPGRADE_CODE: 5f3c2b1e-7a4d-4c9e-9b8a-2d6e0f1a3c55
-      SMOKE_PACKAGE: PikoSmoke
     steps:
       # legacy.ps1 从 git 取 v1.0.0 的更新脚本，要有 tag
       - uses: actions/checkout@v5
@@ -548,7 +549,6 @@ jobs:
         continue-on-error: true
         run: choco install wixtoolset -y --no-progress
 
-      # 1.0.0 的 MSI 版走 msiexec，要真的 MSI
       - name: Build 9.9.1 against the old releases
         shell: pwsh
         run: |
@@ -583,6 +583,27 @@ jobs:
           -Next legacy-next -NextVersion 9.9.1
           -Old old-releases -Work "$env:RUNNER_TEMP/legacy-smoke" -Delta
 
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-legacy-upgrade-smoke-logs
+          path: ${{ runner.temp }}/legacy-smoke/logs
+          if-no-files-found: ignore
+
+  # 旧一代 Windows（Server 2022，与 Win10 21H2/22H2 同代内核）上的便携版更新：直接复用 windows-package 已构建的
+  # windows-smoke-dist，无需配置 JDK 或 Gradle，约 3 分钟验完无 7z 依赖的补丁、Range 与回滚路径。
+  windows-2022-portable:
+    if: inputs.desktop == true && !cancelled() && needs.windows-package.outputs.dist-uploaded == 'true'
+    needs: [windows-package]
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      SMOKE_UPGRADE_CODE: 5f3c2b1e-7a4d-4c9e-9b8a-2d6e0f1a3c55
+      SMOKE_PACKAGE: PikoSmoke
+    steps:
+      - uses: actions/checkout@v5
+
       - uses: actions/download-artifact@v7
         with:
           name: windows-smoke-dist
@@ -606,10 +627,8 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: windows-package-legacy-smoke-logs
-          path: |
-            ${{ runner.temp }}/package-smoke/logs
-            ${{ runner.temp }}/legacy-smoke/logs
+          name: windows-2022-portable-smoke-logs
+          path: ${{ runner.temp }}/package-smoke/logs
           if-no-files-found: ignore
 
   # macOS 同样打两个 DMG，从 DMG 装进 ~/Applications，再让它整包换成新的；装好之后同样验默认打开方式
