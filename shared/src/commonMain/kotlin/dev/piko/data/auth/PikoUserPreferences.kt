@@ -287,6 +287,11 @@ interface PikoUserPreferences {
     suspend fun setPlayerBoostSpeed(speed: Float)
 
     /** 信息流 30 秒片段播完后自动顺延续播当前视频后续内容，默认开启。跟着设置同步。 */
+    /** Device-local clip volume and mute state, stored together. */
+    var clipAudioSettings: String
+        get() = "1.0,false"
+        set(value) {}
+
     val clipAutoExtendFlow: Flow<Boolean>
     suspend fun setClipAutoExtend(enabled: Boolean)
 
