@@ -555,6 +555,8 @@ private val PlayContainerSize = DpSize(64.dp, 56.dp)
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun PlayerBottomBar(
+    isPlaying: Boolean,
+    onPlayPause: () -> Unit,
     isLandscape: Boolean,
     isFullscreen: Boolean,
     thumbOnHoverOnly: Boolean,
@@ -624,6 +626,13 @@ internal fun PlayerBottomBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                PlayerIconButton(
+                    icon = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    label = if (isPlaying) tr("暂停", "Pause", "一時停止", "일시 중지", "暫停") else tr("播放", "Play", "再生", "재생", "播放"),
+                    onClick = onPlayPause,
+                    shortcut = "Space",
+                )
+                Spacer(Modifier.width(8.dp))
                 // 换集在时间前面，照多数播放器底栏的排法。没有上一集或下一集时禁用而不是隐藏，时间不会左右跳
                 if (showEpisodeSkip) {
                     PlayerIconButton(icon = Icons.Filled.SkipPrevious, label = tr("上一集", "Previous episode", "前のエピソード", "이전 에피소드", "上一集"), onClick = onPrevious, enabled = hasPrevious, shortcut = "PageUp")

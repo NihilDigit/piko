@@ -259,6 +259,7 @@ fun FileListItem(
         supporting = {
             Column {
                 FileItemInformation(item, showMetadata = tags.isEmpty() || !file.isFolder)
+                FileAddedTime(file)
                 if (!locationLabel.isNullOrEmpty()) {
                     // 路径从头截断：离命中项最近的几级目录最有辨识度
                     Text(

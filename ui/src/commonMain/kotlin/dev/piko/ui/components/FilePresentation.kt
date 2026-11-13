@@ -250,3 +250,21 @@ internal fun fileItemLongPress(action: (() -> Unit)?): (() -> Unit)? {
         }
     }
 }
+
+@Composable
+internal fun FileAddedTime(file: FileStat) {
+    val time = remember(file.createdTime) {
+        runCatching {
+            java.time.OffsetDateTime.parse(file.createdTime)
+                .atZoneSameInstant(java.time.ZoneId.systemDefault())
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+        }.getOrNull()
+    } ?: return
+    Text(
+        text = tr("加入时间：", "Added: ", "追加日時：", "추가 시간: ", "加入時間：") + time,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
