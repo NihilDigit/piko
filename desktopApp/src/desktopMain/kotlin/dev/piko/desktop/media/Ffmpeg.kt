@@ -156,13 +156,16 @@ internal class Ffmpeg private constructor(avutil: SymbolLookup, avcodec: SymbolL
 internal class FfmpegException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /**
- * Windows 上按完整路径载入 DLL 时，系统只在程序目录、系统目录与 PATH 里找它的依赖，不找它所在的目录；
+ * Windows 上按完整路径载入 DLL 时，系统默认只在程序目录、系统目录与 PATH 里找它的依赖，不找它所在的目录；
  * avformat 依赖同目录的 avcodec、zlib 等，SymbolLookup.libraryLookup 直接载会报找不到模块。
- * 先以 LOAD_WITH_ALTERED_SEARCH_PATH 载一次，依赖就从 DLL 所在目录找；之后 libraryLookup 拿到的是已载入的同一个模块。
+ * 先以 LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32 载一次，把依赖搜索限定在 DLL 所在目录与
+ * System32（同时避免从未知当前目录或 PATH 查找）；之后 libraryLookup 拿到的是已载入的同一个模块。
  * 不靠 mediamp 设的 SetDllDirectoryW：转封装可能先于播放器用到这些库，测试进程里也没有它。
  */
 private object WindowsDllLoader {
-    private const val LOAD_WITH_ALTERED_SEARCH_PATH = 0x00000008
+    private const val LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR = 0x00000100
+    private const val LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800
+    private const val LOAD_FLAGS = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR or LOAD_LIBRARY_SEARCH_SYSTEM32
     private val callStateLayout = Linker.Option.captureStateLayout()
     private val lastErrorOffset = callStateLayout.byteOffset(MemoryLayout.PathElement.groupElement("GetLastError"))
 
@@ -178,10 +181,10 @@ private object WindowsDllLoader {
     fun load(file: File) {
         Arena.ofConfined().use { arena ->
             val capturedState = arena.allocate(callStateLayout)
-            val path = file.absolutePath + "\u0000"
+            val path = file.canonicalFile.absolutePath + "\u0000"
             val wide = arena.allocate(path.length * 2L)
             path.forEachIndexed { index, char -> wide.setAtIndex(JAVA_CHAR, index.toLong(), char) }
-            val module = loadLibraryEx.invokeWithArguments(capturedState, wide, MemorySegment.NULL, LOAD_WITH_ALTERED_SEARCH_PATH) as MemorySegment
+            val module = loadLibraryEx.invokeWithArguments(capturedState, wide, MemorySegment.NULL, LOAD_FLAGS) as MemorySegment
             if (module == MemorySegment.NULL) {
                 val lastError = capturedState.get(JAVA_INT, lastErrorOffset)
                 throw FfmpegException("Failed to load ${file.name} (Win32 error $lastError)")

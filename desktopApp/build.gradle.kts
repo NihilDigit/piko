@@ -205,6 +205,14 @@ val bundledAppResources by tasks.registering(Sync::class) {
             eachFile { path = "jna/$name" }
             includeEmptyDirs = false
         }
+        val sqliteJar = configurations.named("desktopRuntimeClasspath").map { classpath ->
+            classpath.filter { Regex("""sqlite-jdbc-[0-9][0-9.]*\.jar""").matches(it.name) }
+        }
+        from({ sqliteJar.get().map { zipTree(it) } }) {
+            include("org/sqlite/native/Windows/${if (hostArch == "arm64") "aarch64" else "x86_64"}/sqlitejdbc.dll")
+            eachFile { path = "sqlite/$name" }
+            includeEmptyDirs = false
+        }
     }
     // Toast 的 AUMID 登记要一个磁盘上的图标文件，exe 里内嵌的那份用不上；.torrent 关联另用独立文档图标
     from("src/desktopMain/resources/app-icon.png")
@@ -382,6 +390,7 @@ tasks.withType<Test> {
     if (isWindowsHost) {
         dependsOn(bundledAppResources)
         systemProperty("piko.test.zstd", bundledAppResources.get().destinationDir.resolve("zstd").absolutePath)
+        systemProperty("piko.test.sqlite", bundledAppResources.get().destinationDir.resolve("sqlite").absolutePath)
     }
 }
 tasks.withType<JavaExec> {

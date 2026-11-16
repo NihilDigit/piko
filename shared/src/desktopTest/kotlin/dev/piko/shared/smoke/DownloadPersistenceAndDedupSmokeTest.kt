@@ -340,4 +340,81 @@ class DownloadPersistenceAndDedupSmokeTest {
             directory.deleteRecursively()
         }
     }
+
+    @Test
+    fun `cancelling active download clears sparse cache without creating target folder or deleting download target`() = smoke { scope ->
+        val directory = Files.createTempDirectory("piko-cancel-safe").toFile()
+        val blockedRange = CompletableDeferred<Unit>()
+        try {
+            val largeBytes = ByteArray(4 * 1024 * 1024) { (it % 251).toByte() }
+            val smallBytes = ByteArray(64 * 1024) { (it % 199).toByte() }
+            val server = FakePikPakServer().apply {
+                beforeCdnRange = { from ->
+                    if (from >= 2 * 1024 * 1024) blockedRange.await()
+                }
+            }
+            val showFolder = server.addFolder("Show")
+            server.addFile("episode.mkv", showFolder.id, content = largeBytes, hash = "SHOWEP1")
+            val flatNode = server.addFile("after-enqueue.bin", content = largeBytes, hash = "FLAT1")
+            val completedNode = server.addFile("completed.bin", content = smallBytes, hash = "SMALL1")
+            val provider = server.provider()
+            val prefs = MemoryPreferences()
+            val drive = PikoDriveRepository(provider, prefs)
+            val storage = DirectoryStorage(directory)
+            val coordinator = PikoDownloadCoordinator(provider, prefs, storage, scope)
+            val cacheDir = directory.resolve(".piko-cache")
+
+            // 子文件夹任务在 DOWNLOADING 阶段取消：必须删掉 .piko-cache，且不得新建 Show/ 子目录
+            val rootFiles = drive.listAllFiles().getOrThrow()
+            coordinator.enqueueFolders(rootFiles.filter { it.id == showFolder.id }, DriveDownloadFolderSource(drive))
+            awaitUntil("subfolder task downloading") {
+                val task = coordinator.tasks.value.values.singleOrNull()
+                task?.status == DownloadStatus.DOWNLOADING &&
+                    task.downloadedBytes in 1L until largeBytes.size &&
+                    cacheDir.listFiles()?.isNotEmpty() == true
+            }
+            assertFalse(directory.resolve("Show").exists())
+            val subfolderTaskId = coordinator.tasks.value.keys.single()
+            coordinator.cancelDownload(subfolderTaskId)?.join()
+            awaitUntil("subfolder cache cleaned") {
+                coordinator.tasks.value.isEmpty() && (cacheDir.listFiles()?.isEmpty() ?: true)
+            }
+            assertFalse(directory.resolve("Show").exists())
+
+            // 单文件任务在 DOWNLOADING 阶段取消：不得删除入队后写入下载目录的同名无关文件
+            coordinator.enqueueFiles(rootFiles.filter { it.id == flatNode.id })
+            awaitUntil("flat task downloading") {
+                val task = coordinator.tasks.value.values.singleOrNull()
+                task?.status == DownloadStatus.DOWNLOADING &&
+                    task.downloadedBytes in 1L until largeBytes.size &&
+                    cacheDir.listFiles()?.isNotEmpty() == true
+            }
+            val userFile = directory.resolve("after-enqueue.bin").apply { writeText("keep-user-file") }
+            val flatTaskId = coordinator.tasks.value.keys.single()
+            coordinator.cancelDownload(flatTaskId)?.join()
+            awaitUntil("flat cache cleaned") {
+                coordinator.tasks.value.isEmpty() && (cacheDir.listFiles()?.isEmpty() ?: true)
+            }
+            assertTrue(userFile.exists())
+            assertEquals("keep-user-file", userFile.readText())
+
+            // 已完成任务取消时仍正常删除已交付的 destinationPath
+            coordinator.enqueueFiles(rootFiles.filter { it.id == completedNode.id })
+            awaitUntil("small task completed") {
+                coordinator.tasks.value.values.singleOrNull()?.status == DownloadStatus.COMPLETED
+            }
+            val delivered = directory.resolve("completed.bin")
+            assertTrue(delivered.exists())
+            assertContentEquals(smallBytes, delivered.readBytes())
+            val completedTaskId = coordinator.tasks.value.keys.single()
+            coordinator.cancelDownload(completedTaskId)?.join()
+            assertFalse(delivered.exists())
+            awaitUntil("completed cache cleaned") {
+                coordinator.tasks.value.isEmpty() && (cacheDir.listFiles()?.isEmpty() ?: true)
+            }
+        } finally {
+            blockedRange.complete(Unit)
+            directory.deleteRecursively()
+        }
+    }
 }

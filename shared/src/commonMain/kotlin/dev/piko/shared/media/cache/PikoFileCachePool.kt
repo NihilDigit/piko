@@ -64,7 +64,10 @@ class PikoFileCachePool(
         val path = pathOf(key)
         paths.update { it + (key to path) }
         owners.getOrPut(key) { mutableSetOf() }.add(owner)
-        entries[key]?.retained = true
+        entries[key]?.let {
+            it.retained = true
+            it.store.setDurable(true)
+        }
     }
 
     class Entry internal constructor(
@@ -112,8 +115,9 @@ class PikoFileCachePool(
             if (old != null && old.client !== client) {
                 check(old.references == 0) { tr("正在切换账号，请稍后重试", "Switching account. Try again shortly", "アカウントを切り替え中です。しばらくしてから再試行してください", "계정을 전환 중입니다. 잠시 후 다시 시도해 주세요", "正在切換帳號，請稍後重試") }
             }
+            val willRetain = retained || key in paths.value || owners[key]?.isNotEmpty() == true
             val entry = old ?: run {
-                val store = persistentFileStore(pathOf(key), key, streamSize, scope)
+                val store = persistentFileStore(pathOf(key), key, streamSize, scope, durable = willRetain)
                 val handle = if (detail != null) {
                     client.fileHandle(detail, mediaId = mediaId, streamSize = streamSize, leased = leased, onRangeAttempt = ::logRangeAttempt)
                 } else {
@@ -140,7 +144,10 @@ class PikoFileCachePool(
                 entry.cache.updateMediaBytesPerSecond(mediaBytesPerSecond)
             }
             entry.references++
-            entry.retained = entry.retained || retained || key in paths.value
+            if (willRetain) {
+                entry.retained = true
+                entry.store.setDurable(true)
+            }
             if (retained) {
                 paths.update { it + (key to entry.store.path) }
                 owners.getOrPut(key) { mutableSetOf() }.add(owner)
@@ -166,7 +173,9 @@ class PikoFileCachePool(
 
     suspend fun complete(lease: Lease, owner: String) = lock.withLock {
         unpin(lease.entry.key, owner)
-        lease.entry.retained = owners[lease.entry.key]?.isNotEmpty() == true
+        val stillRetained = owners[lease.entry.key]?.isNotEmpty() == true
+        lease.entry.retained = stillRetained
+        lease.entry.store.setDurable(stillRetained)
     }
 
     /** 正在播放的缓存延迟到最后一个读者释放再删。 */
@@ -175,9 +184,12 @@ class PikoFileCachePool(
         lock.withLock {
             unpin(key, owner)
             if (owners[key]?.isNotEmpty() == true) return
-            entries[key]?.let { it.retained = false; return }
-            val store = persistentFileStore(pathOf(key), key, size, scope)
-            store.delete()
+            entries[key]?.let {
+                it.retained = false
+                it.store.setDurable(false)
+                return
+            }
+            deleteCacheFiles(pathOf(key))
         }
     }
 

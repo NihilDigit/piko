@@ -1,11 +1,14 @@
 package dev.piko.desktop
 
+import dev.piko.shared.PikoHome
+import dev.piko.shared.data.DesktopPikoTreeDatabaseFactory
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -20,7 +23,8 @@ class DesktopPikoDownloadStorageTest {
         val cache = root.resolve("cache")
         val storage = DesktopPikoDownloadStorage(cache) { root.resolve("Downloads") }
         val target = File(storage.cacheTarget("content"))
-        assertEquals(cache.resolve("content.data").canonicalFile, target.canonicalFile)
+        val expectedExt = if (System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)) "pack" else "data"
+        assertEquals(cache.resolve("content.$expectedExt").canonicalFile, target.canonicalFile)
         assertTrue(cache.isDirectory)
         root.deleteRecursively()
     }
@@ -46,5 +50,151 @@ class DesktopPikoDownloadStorageTest {
         storage.pruneEmptyFolders("Show")
         assertNull(storage.locate("Show"))
         root.deleteRecursively()
+    }
+
+    @Test
+    fun `bundled sqlite library opens WAL database without extracting a fresh native dll`() {
+        val osName = System.getProperty("os.name") ?: ""
+        if (!osName.startsWith("Windows", ignoreCase = true)) return
+
+        val sqliteDirPath = System.getProperty("piko.test.sqlite")
+        assertNotNull(sqliteDirPath, "Expected piko.test.sqlite to be set on Windows")
+        val sqliteDir = File(sqliteDirPath)
+        assertTrue(sqliteDir.resolve("sqlitejdbc.dll").isFile, "Missing bundled sqlitejdbc.dll in $sqliteDir")
+
+        val prevResourcesDir = System.getProperty("compose.application.resources.dir")
+        val prevLibPath = System.getProperty("org.sqlite.lib.path")
+        val prevLibName = System.getProperty("org.sqlite.lib.name")
+        val tempDbDir = Files.createTempDirectory("piko-bundled-sqlite-test").toFile()
+        try {
+            System.setProperty("compose.application.resources.dir", sqliteDir.parentFile.absolutePath)
+            useBundledSqlite()
+            assertEquals(sqliteDir.absolutePath, System.getProperty("org.sqlite.lib.path"))
+            assertEquals("sqlitejdbc.dll", System.getProperty("org.sqlite.lib.name"))
+
+            val nativesDir = PikoHome.root.resolve("cache/natives").toFile()
+            val beforeDlls = nativesDir.listFiles()
+                ?.map { it.name }
+                ?.filter { it.endsWith("sqlitejdbc.dll", ignoreCase = true) }
+                ?.toSet()
+                .orEmpty()
+
+            DesktopPikoTreeDatabaseFactory(tempDbDir).open("bundled-test").use { db ->
+                db.query("PRAGMA journal_mode").use { cursor ->
+                    assertTrue(cursor.next())
+                    assertEquals("wal", cursor.string(0)?.lowercase())
+                }
+                db.query("SELECT 1").use { cursor ->
+                    assertTrue(cursor.next())
+                    assertEquals(1L, cursor.long(0))
+                }
+            }
+
+            val afterDlls = nativesDir.listFiles()
+                ?.map { it.name }
+                ?.filter { it.endsWith("sqlitejdbc.dll", ignoreCase = true) }
+                ?.toSet()
+                .orEmpty()
+            // SQLiteJDBCLoader.cleanup() 会清理之前残留的旧 DLL，因此只需断言期间没有新释放的 DLL
+            assertEquals(emptySet(), afterDlls - beforeDlls)
+        } finally {
+            tempDbDir.deleteRecursively()
+            restoreProperty("compose.application.resources.dir", prevResourcesDir)
+            restoreProperty("org.sqlite.lib.path", prevLibPath)
+            restoreProperty("org.sqlite.lib.name", prevLibName)
+        }
+    }
+
+    @Test
+    fun `windows default download cache moves to LocalAppData while preserving legacy partial caches`() = runBlocking<Unit> {
+        val tempRoot = Files.createTempDirectory("piko-cache-loc").toFile()
+        try {
+            val homeRoot = tempRoot.resolve("home/.piko").toPath()
+            val localAppData = tempRoot.resolve("Local").absolutePath
+            val overrideDir = tempRoot.resolve("custom-cache")
+
+            // Windows 默认安装版走 LocalAppData\PikoCache\download-cache
+            assertEquals(
+                tempRoot.resolve("Local/PikoCache/download-cache").toPath().toAbsolutePath().normalize(),
+                PikoHome.resolveDownloadCacheRoot(
+                    isDefault = true,
+                    root = homeRoot,
+                    osName = "Windows 11",
+                    localAppData = localAppData,
+                    overridePath = null,
+                ),
+            )
+            // 非默认根目录（piko.home / 便携版）与 macOS / Linux 沿用 root/download-cache
+            assertEquals(
+                homeRoot.resolve("download-cache"),
+                PikoHome.resolveDownloadCacheRoot(
+                    isDefault = false,
+                    root = homeRoot,
+                    osName = "Windows 11",
+                    localAppData = localAppData,
+                    overridePath = null,
+                ),
+            )
+            assertEquals(
+                homeRoot.resolve("download-cache"),
+                PikoHome.resolveDownloadCacheRoot(
+                    isDefault = true,
+                    root = homeRoot,
+                    osName = "Linux",
+                    localAppData = localAppData,
+                    overridePath = null,
+                ),
+            )
+            // 显式覆盖路径优先级最高
+            assertEquals(
+                overrideDir.toPath().toAbsolutePath().normalize(),
+                PikoHome.resolveDownloadCacheRoot(
+                    isDefault = true,
+                    root = homeRoot,
+                    osName = "Windows 11",
+                    localAppData = localAppData,
+                    overridePath = overrideDir.absolutePath,
+                ),
+            )
+
+            // Windows 使用 .pack 且不触碰旧目录中的稀疏 .data 文件；非 Windows 稀疏模式保留旧目录续传兜底
+            val primaryCache = tempRoot.resolve("primary-cache")
+            val legacyCache = tempRoot.resolve("legacy-cache")
+            legacyCache.mkdirs()
+            val legacyData = legacyCache.resolve("legacy-a.data").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+            val legacyBlocksOnly = legacyCache.resolve("legacy-b.data").also {
+                File("${it.path}.blocks").writeBytes(byteArrayOf(4, 5))
+            }
+            val legacyPack = legacyCache.resolve("legacy-p.pack").apply { writeBytes(byteArrayOf(6, 7, 8)) }
+
+            val winStorage = DesktopPikoDownloadStorage(
+                cacheDirectory = primaryCache,
+                legacyCacheDirectory = legacyCache,
+                usePackCache = true,
+                directoryProvider = { tempRoot.resolve("Downloads") },
+            )
+            assertEquals(primaryCache.resolve("legacy-a.pack").canonicalFile, File(winStorage.cacheTarget("legacy-a")).canonicalFile)
+            assertEquals(legacyPack.canonicalFile, File(winStorage.cacheTarget("legacy-p")).canonicalFile)
+            assertEquals(primaryCache.resolve("fresh.pack").canonicalFile, File(winStorage.cacheTarget("fresh")).canonicalFile)
+            assertEquals(primaryCache.resolve("probe.pack").canonicalFile, File(winStorage.cacheTarget("probe")).canonicalFile)
+            assertTrue(legacyData.isFile)
+
+            val posixStorage = DesktopPikoDownloadStorage(
+                cacheDirectory = primaryCache,
+                legacyCacheDirectory = legacyCache,
+                usePackCache = false,
+                directoryProvider = { tempRoot.resolve("Downloads") },
+            )
+            assertEquals(legacyData.canonicalFile, File(posixStorage.cacheTarget("legacy-a")).canonicalFile)
+            assertEquals(legacyBlocksOnly.canonicalFile, File(posixStorage.cacheTarget("legacy-b")).canonicalFile)
+            assertEquals(primaryCache.resolve("fresh.data").canonicalFile, File(posixStorage.cacheTarget("fresh")).canonicalFile)
+            assertTrue(primaryCache.isDirectory)
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    private fun restoreProperty(key: String, value: String?) {
+        if (value == null) System.clearProperty(key) else System.setProperty(key, value)
     }
 }

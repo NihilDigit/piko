@@ -1,5 +1,6 @@
 package dev.piko.shared.media.cache
 
+import dev.piko.shared.media.RandomAccessMediaSource
 import io.github.nihildigit.pikpak.DurableBlockStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
@@ -9,13 +10,16 @@ interface PersistentFileStore : DurableBlockStore {
     val path: String
     val heldBytes: StateFlow<Long>
     val size: Long
+    fun setDurable(durable: Boolean) {}
     suspend fun importPrefix(source: String)
+    suspend fun exportTo(destination: String) = copyCachedFile(path, destination)
+    fun logicalSourceFactory(): (() -> RandomAccessMediaSource)? = null
     suspend fun flush()
     suspend fun close()
     suspend fun delete()
 }
 
-expect fun persistentFileStore(path: String, key: String, size: Long, scope: CoroutineScope): PersistentFileStore
+expect fun persistentFileStore(path: String, key: String, size: Long, scope: CoroutineScope, durable: Boolean = true): PersistentFileStore
 expect fun fileCacheName(key: String): String
 expect suspend fun copyCachedFile(source: String, destination: String)
 expect suspend fun persistedFileBytes(path: String, key: String, size: Long): Long

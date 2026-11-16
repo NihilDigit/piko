@@ -8,14 +8,45 @@ import java.io.File
 
 /** 下载目录每次现取：设置页改了位置之后，新任务直接落到新目录，不必重建下载调度器。 */
 class DesktopPikoDownloadStorage(
-    private val cacheDirectory: File = PikoHome.root.resolve("download-cache").toFile(),
+    private val cacheDirectory: File = PikoHome.downloadCacheRoot.toFile(),
+    private val legacyCacheDirectory: File? = PikoHome.root.resolve("download-cache").toFile()
+        .takeIf { it.toPath().toAbsolutePath().normalize() != cacheDirectory.toPath().toAbsolutePath().normalize() },
+    private val usePackCache: Boolean = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true),
     private val directoryProvider: () -> File,
 ) : PikoDownloadStorage {
+    constructor(
+        cacheDirectory: File,
+        directoryProvider: () -> File,
+    ) : this(
+        cacheDirectory = cacheDirectory,
+        legacyCacheDirectory = null,
+        usePackCache = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true),
+        directoryProvider = directoryProvider,
+    )
+
     override suspend fun cacheTarget(name: String): String = withContext(Dispatchers.IO) {
-        // 放在下载目录以外，目录大小与用户看到的文件不包含暂存数据。
-        val root = cacheDirectory
-        if (!root.isDirectory) root.mkdirs()
-        root.resolve("$name.data").absolutePath
+        // Windows 统一使用顺序追加块包（.pack），且绝不回指旧目录里的稀疏 .data 文件，避免取消或清理时删除旧稀疏文件触发误报；
+        // macOS 与 Linux 继续使用稀疏文件（.data）。
+        if (usePackCache) {
+            val primary = cacheDirectory.resolve("$name.pack")
+            if (!primary.exists()) {
+                val legacyPack = legacyCacheDirectory?.resolve("$name.pack")
+                if (legacyPack != null && legacyPack.isFile) {
+                    return@withContext legacyPack.absolutePath
+                }
+            }
+            if (!cacheDirectory.isDirectory) cacheDirectory.mkdirs()
+            return@withContext primary.absolutePath
+        }
+        val primary = cacheDirectory.resolve("$name.data")
+        if (!primary.exists() && !File("${primary.path}.blocks").exists()) {
+            val legacy = legacyCacheDirectory?.resolve("$name.data")
+            if (legacy != null && (legacy.isFile || File("${legacy.path}.blocks").isFile)) {
+                return@withContext legacy.absolutePath
+            }
+        }
+        if (!cacheDirectory.isDirectory) cacheDirectory.mkdirs()
+        primary.absolutePath
     }
     private val directory: File get() = directoryProvider()
 

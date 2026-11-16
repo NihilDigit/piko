@@ -55,8 +55,8 @@ actual fun fileCacheName(key: String): String {
     }
 }
 
-actual fun persistentFileStore(path: String, key: String, size: Long, scope: CoroutineScope): PersistentFileStore =
-    IosSparseFileStore(path, key, size, scope)
+actual fun persistentFileStore(path: String, key: String, size: Long, scope: CoroutineScope, durable: Boolean): PersistentFileStore =
+    IosSparseFileStore(path, key, size, scope, durable = durable)
 
 actual suspend fun persistedFileBytes(path: String, key: String, size: Long): Long = withContext(Dispatchers.IO) {
     val bits = readBits(path, key, size)
@@ -129,22 +129,29 @@ internal class IosSparseFileStore(
     private val key: String,
     override val size: Long,
     scope: CoroutineScope,
+    durable: Boolean = true,
     private val syncData: (Int) -> Unit = ::syncFd,
 ) : PersistentFileStore {
     private val lock = NSLock()
     private val bits = readBits(path, key, size)
     private var descriptor = -1
     private var dirty = false
+    private var isDurable = durable
     private var snapshotRetired = false
     private var closed = false
     private val progress = MutableStateFlow(bits.indices.sumOf { if (bits[it]) blockLength(size, it) else 0L })
     override val heldBytes: StateFlow<Long> get() = progress
+
+    override fun setDurable(durable: Boolean) = lock.locked {
+        isDurable = durable
+    }
 
     private var lastFlushWarn: TimeMark? = null
 
     private val persistence = scope.launch(Dispatchers.IO) {
         while (true) {
             delay(2_000)
+            if (!lock.locked { isDurable && !closed }) continue
             try { flush() } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (e: IOException) {
@@ -239,7 +246,9 @@ internal class IosSparseFileStore(
         persistence.cancelAndJoin()
         lock.locked {
             if (!closed) {
-                try { flushLocked() } finally {
+                try {
+                    if (isDurable) flushLocked()
+                } finally {
                     closed = true
                     if (descriptor >= 0) platform.posix.close(descriptor)
                     descriptor = -1
@@ -249,8 +258,16 @@ internal class IosSparseFileStore(
     }
 
     override suspend fun delete(): Unit = withContext(NonCancellable + Dispatchers.IO) {
-        // Even a failed final sync must not leave resources open or prevent explicit deletion.
-        try { close() } finally { lock.locked { deleteFiles(path) } }
+        persistence.cancelAndJoin()
+        lock.locked {
+            closed = true
+            dirty = false
+            if (descriptor >= 0) {
+                platform.posix.close(descriptor)
+                descriptor = -1
+            }
+            deleteFiles(path)
+        }
     }
 
     private fun flushLocked() {

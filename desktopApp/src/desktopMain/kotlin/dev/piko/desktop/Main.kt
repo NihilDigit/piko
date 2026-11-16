@@ -133,8 +133,9 @@ private const val BACKGROUND_HINT_SHOWN_KEY = "window.backgroundHintShown"
 
 fun main(args: Array<String>) {
     PikoLocale.bindSystemLocale(Locale.getDefault().toLanguageTag())
-    // 最先做：之后任何一处碰到 JNA 都会让它按当时的属性初始化
+    // 最先做：之后任何一处碰到 JNA / SQLite JDBC 都会让它们按当时的属性初始化
     useBundledJnaDispatch()
+    useBundledSqlite()
     // 走系统代理：JVM 默认只认 http.proxyHost 一类属性，不看 Windows 与 macOS 设置里的代理，
     // 在系统里开了代理（例如代理软件的「系统代理」模式）也照样直连。这个属性在 ProxySelector
     // 首次初始化时读取，所以放在一切网络请求之前。Android 不用设，系统会把网络的代理同步给进程

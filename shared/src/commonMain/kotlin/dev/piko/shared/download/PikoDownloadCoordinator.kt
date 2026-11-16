@@ -24,8 +24,8 @@ import io.github.nihildigit.pikpak.BandwidthLimiter
 import io.github.nihildigit.pikpak.FileStat
 import dev.piko.shared.upload.isUploading
 import io.github.nihildigit.pikpak.PikPakFileHandle
+import dev.piko.shared.media.cache.PersistentFileStore
 import dev.piko.shared.media.cache.PikoFileCachePool
-import dev.piko.shared.media.cache.copyCachedFile
 import dev.piko.shared.data.PikoCacheStore
 import kotlinx.serialization.Serializable
 import kotlinx.coroutines.CompletableDeferred
@@ -57,7 +57,6 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import io.github.nihildigit.pikpak.StreamRole
-import io.github.nihildigit.pikpak.PikPakStreamReader
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlin.time.Clock
@@ -953,10 +952,22 @@ class PikoDownloadCoordinator(
                 retained = true, owner = taskId,
                 mediaId = task.mediaId, streamSize = task.totalBytes)
             val entry = lease.entry
+            val importLegacyPrefix = !task.sparseCache && task.mediaId == null && task.downloadedBytes > 0L
+            task = task.copy(
+                account = client.account,
+                sparseCache = true,
+                downloadedBytes = entry.store.heldBytes.value,
+                status = DownloadStatus.DOWNLOADING,
+                errorMessage = null,
+            )
             update(taskId) { it.copy(account = client.account, sparseCache = true, downloadedBytes = entry.store.heldBytes.value,
                 status = DownloadStatus.DOWNLOADING, errorMessage = null) }
             // 旧版本顺序下载的前缀只可能是原画；转码档的文件名指的是转封装的产物
-            if (!task.sparseCache && task.mediaId == null) entry.store.importPrefix(storage.downloadTarget(task.fileName))
+            if (importLegacyPrefix) {
+                val legacyPath = storage.locate(task.fileName)?.takeUnless { it.startsWith("content:") }
+                    ?: if (storage.existingLength(task.fileName) > 0L) storage.downloadTarget(task.fileName) else null
+                if (legacyPath != null) entry.store.importPrefix(legacyPath)
+            }
             val heldAtStart = entry.store.heldBytes.value
             // 文件夹下载里的小文件成百上千，逐个记会把日志刷满，它们只进整批完成的那一行；失败照样逐个记
             val logEach = task.batch == null || task.totalBytes >= BATCH_LOG_MIN_BYTES
@@ -990,7 +1001,7 @@ class PikoDownloadCoordinator(
                 val exportStarted = TimeSource.Monotonic.markNow()
                 entry.store.flush()
                 val target = storage.downloadTarget(task.fileName)
-                if (task.mediaId == null) copyCachedFile(entry.store.path, target) else convertTranscode(task, entry.store.path, target)
+                if (task.mediaId == null) entry.store.exportTo(target) else convertTranscode(task, entry.store, target)
                 val destination = storage.commit(task.fileName, target)
                 val exportMs = exportStarted.elapsedNow().inWholeMilliseconds
                 // 转码档存下的是转封装出的 MP4，长度与转码流不同；完成的任务按文件长度核对，见 restoreTask
@@ -1068,11 +1079,14 @@ class PikoDownloadCoordinator(
             }
         } finally {
             val currentLease = lease
-            currentLease?.release()
             if (currentLease != null) {
-                withContext(NonCancellable) {
-                    runCatching { currentLease.entry.store.flush() }
-                        .logFailure(TAG, "Failed to flush sparse cache bitmap on exit: task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}")
+                val shouldPersistProgress = _tasks.value[taskId] != null && currentLease.entry.retained
+                currentLease.release()
+                if (shouldPersistProgress && currentLease.entry.retained) {
+                    withContext(NonCancellable) {
+                        runCatching { currentLease.entry.store.flush() }
+                            .logFailure(TAG, "Failed to flush sparse cache bitmap on exit: task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}")
+                    }
                 }
             }
         }
@@ -1160,21 +1174,26 @@ class PikoDownloadCoordinator(
     }
 
     /** 把下完的转码流（MPEG-TS）在本机转封装成 MP4 写到 [target]，任务显示为「转换中」。 */
-    private suspend fun convertTranscode(task: DownloadTask, source: String, target: String) {
+    private suspend fun convertTranscode(task: DownloadTask, store: PersistentFileStore, target: String) {
         val converter = segmentDownloader ?: error(tr("当前平台不支持转封装", "Remuxing is not supported on this platform", "このプラットフォームでは再多重化に対応していません", "이 플랫폼에서는 리먹싱을 지원하지 않습니다", "目前平台不支援轉封裝"))
         update(task.taskId) { it.copy(converting = true, progressFraction = 0f, speedBytesPerSec = 0L) }
         val started = TimeSource.Monotonic.markNow()
-        converter.remux(PikoRemuxRequest(source, target, durationMillis = task.endMs)) { fraction ->
+        val logicalOpen = store.logicalSourceFactory()?.let { open -> suspend { open() } }
+        converter.remux(
+            PikoRemuxRequest(
+                sourcePath = store.path,
+                destinationPath = target,
+                durationMillis = task.endMs,
+                openRandomAccess = logicalOpen,
+            ),
+        ) { fraction ->
             update(task.taskId) { it.copy(progressFraction = fraction) }
         }.getOrThrow()
         PikoLog.d(TAG, "Remuxed transcode stream to MP4: task=${logTask(task.taskId)}, ${logFile(task.fileId, task.fileName)}, elapsedMs=${started.elapsedNow().inWholeMilliseconds}")
     }
 
-    private fun downloadOrder(size: Long): List<LongRange> {
-        val head = minOf(size, 2L * 1024 * 1024)
-        val tail = maxOf(head, ((size - 512L * 1024).coerceAtLeast(0) / PikPakStreamReader.DEFAULT_BLOCK_SIZE) * PikPakStreamReader.DEFAULT_BLOCK_SIZE)
-        return listOf(0L until head, tail until size, head until tail).filterNot { it.isEmpty() }
-    }
+    private fun downloadOrder(size: Long): List<LongRange> =
+        if (size > 0L) listOf(0L until size) else emptyList()
 
     fun enqueueSegment(
         file: FileStat,
@@ -1361,22 +1380,26 @@ class PikoDownloadCoordinator(
         if (log) {
             PikoLog.d(TAG, "Cancelled download: task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}, status=${task.status}")
         }
-        // 先等下载协程真正退出再删文件：cancel 只是发出请求，协程可能还在写最后一块，
-        // 抢先删掉的话它会把文件重新建出来
+        // 先解除保留并置为非持久化，阻止协程收尾时再次落盘刷新；等下载协程真正退出后再幂等清理稀疏缓存，
+        // 抢先删除底层文件的话协程收尾前仍可能重建。未完成任务仅在缓存池内下载，不触碰下载目标目录
         return scope.launch(Dispatchers.IO) {
-            runSuspendCatching { job?.cancelAndJoin() }
-                .logFailure(TAG, "Error while awaiting cancelled download job: task=${logTask(taskId)}")
-            if (task.sparseCache) {
+            suspend fun discardCache() {
                 runSuspendCatching { fileCachePool.discard(task.account, task.gcid, task.cacheSize, task.taskId, task.cacheMediaId) }
                     .logFailure(TAG, "Failed to discard sparse cache for cancelled task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}")
             }
-            runSuspendCatching {
-                if (task.status == DownloadStatus.COMPLETED || task.isSegment) {
-                    if (task.destinationPath.isNotBlank()) storage.delete(task.destinationPath)
-                } else {
-                    storage.delete(storage.downloadTarget(task.fileName))
-                }
-            }.logFailure(TAG, "Failed to delete local target for cancelled task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}")
+            if (task.sparseCache) {
+                discardCache()
+            }
+            runSuspendCatching { job?.cancelAndJoin() }
+                .logFailure(TAG, "Error while awaiting cancelled download job: task=${logTask(taskId)}")
+            if (task.sparseCache || !task.isSegment) {
+                discardCache()
+            }
+            if (task.status == DownloadStatus.COMPLETED && task.destinationPath.isNotBlank()) {
+                runSuspendCatching {
+                    storage.delete(task.destinationPath)
+                }.logFailure(TAG, "Failed to delete local target for cancelled task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}")
+            }
         }
     }
 

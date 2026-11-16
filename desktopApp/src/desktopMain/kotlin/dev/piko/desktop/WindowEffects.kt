@@ -84,20 +84,50 @@ fun TitleBarThemeEffect(window: Window, dark: Boolean) {
 @Composable
 fun TaskbarDownloadProgress(window: Window, downloads: PikoDownloadCoordinator) {
     LaunchedEffect(window, downloads) {
+        var lastMode = 0
+        var lastPermille = -1
+        var lastUpdateNanos = 0L
+        var lastDockPercent: Int? = -1
         downloads.tasks.collect { tasks ->
             val active = tasks.values.filter { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING }
             val total = active.sumOf { it.totalBytes }
             if (isMacOs) {
-                MacOs.setDockProgress(if (active.isEmpty() || total <= 0) null else (active.sumOf { it.downloadedBytes } * 100 / total).toInt())
+                val percent = if (active.isEmpty() || total <= 0) null else (active.sumOf { it.downloadedBytes } * 100 / total).toInt()
+                if (percent != lastDockPercent) {
+                    lastDockPercent = percent
+                    MacOs.setDockProgress(percent)
+                }
                 return@collect
             }
             when {
-                active.isEmpty() -> TaskbarProgress.clear(window)
+                active.isEmpty() -> {
+                    if (lastMode != 0) {
+                        TaskbarProgress.clear(window)
+                        lastMode = 0
+                        lastPermille = -1
+                    }
+                }
                 // 总大小未知，给不出百分比
-                total <= 0 -> TaskbarProgress.setState(window, TaskbarProgress.State.INDETERMINATE)
+                total <= 0 -> {
+                    if (lastMode != 1) {
+                        TaskbarProgress.setState(window, TaskbarProgress.State.INDETERMINATE)
+                        lastMode = 1
+                        lastPermille = -1
+                    }
+                }
                 else -> {
-                    TaskbarProgress.setState(window, TaskbarProgress.State.NORMAL)
-                    TaskbarProgress.setProgress(window, active.sumOf { it.downloadedBytes }, total)
+                    val completed = active.sumOf { it.downloadedBytes }.coerceIn(0L, total)
+                    val permille = (completed * 1000L / total).toInt()
+                    val now = System.nanoTime()
+                    if (lastMode != 2) {
+                        TaskbarProgress.setState(window, TaskbarProgress.State.NORMAL)
+                        lastMode = 2
+                    }
+                    if (permille != lastPermille && (lastPermille < 0 || permille == 1000 || now - lastUpdateNanos >= 250_000_000L)) {
+                        TaskbarProgress.setProgress(window, completed, total)
+                        lastPermille = permille
+                        lastUpdateNanos = now
+                    }
                 }
             }
         }

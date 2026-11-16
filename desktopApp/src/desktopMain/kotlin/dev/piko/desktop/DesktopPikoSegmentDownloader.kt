@@ -41,7 +41,12 @@ class DesktopPikoSegmentDownloader internal constructor(private val ffmpeg: () -
     override suspend fun remux(
         request: PikoRemuxRequest,
         onProgress: suspend (Float) -> Unit,
-    ): Result<String> = produce(request.destinationPath, range = null, open = { localSource(request.sourcePath) }, onProgress)
+    ): Result<String> = produce(
+        request.destinationPath,
+        range = null,
+        open = request.openRandomAccess ?: { localSource(request.sourcePath) },
+        onProgress,
+    )
 
     private suspend fun produce(
         destinationPath: String,

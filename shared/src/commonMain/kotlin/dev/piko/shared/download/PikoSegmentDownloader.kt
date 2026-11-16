@@ -22,6 +22,8 @@ data class PikoRemuxRequest(
     val destinationPath: String,
     /** 源的时长，读不出时长的平台据此报进度；不知道时为 0。 */
     val durationMillis: Long = 0L,
+    /** 非平面容器缓存（如 Windows 顺序追加块包）通过逻辑随机读提供字节流；缺省时直接按 [sourcePath] 读本机文件。 */
+    val openRandomAccess: (suspend () -> RandomAccessMediaSource)? = null,
 )
 
 /** 片段截取与转封装的平台实现。两者都写目标旁的 .part，完成后替换目标，失败与取消不留下半截文件。 */
