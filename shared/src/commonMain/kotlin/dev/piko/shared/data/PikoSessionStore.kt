@@ -116,13 +116,17 @@ data class SavedAccount(
             .ifBlank { userProfile?.sub.orEmpty() }
             .ifBlank { if (isInternalStorageKey) account.removePrefix(INTERNAL_ACCOUNT_PREFIX) else "" }
 
+    /** 服务端返回的脱敏联系方式（优先邮箱，无邮箱时回退手机号）。 */
+    val maskedContact: String
+        get() = email.ifBlank { userProfile?.phoneNumber.orEmpty() }
+
     /** 可向用户展示或填入账号输入框的公开登录名；内部 `pikpak:<sub>` 存储键绝不外露。 */
     val publicAccountHandle: String?
         get() = loginAccount.ifBlank { if (isInternalStorageKey) "" else account }.ifBlank { null }
 
-    /** 界面上的名字：昵称 -> 脱敏邮箱 -> 公开登录名 -> 兜底文案，绝不展示内部 `pikpak:<sub>` 键。 */
+    /** 界面上的名字：昵称 -> 脱敏邮箱/手机号 -> 公开登录名 -> 兜底文案，绝不展示内部 `pikpak:<sub>` 键。 */
     val displayName: String
-        get() = name.ifBlank { email }
+        get() = name.ifBlank { maskedContact }
             .ifBlank { publicAccountHandle.orEmpty() }
             .ifBlank { tr("PikPak 用户", "PikPak user", "PikPakユーザー", "PikPak 사용자", "PikPak 使用者") }
 

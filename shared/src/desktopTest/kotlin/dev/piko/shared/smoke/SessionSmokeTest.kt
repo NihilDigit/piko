@@ -1,8 +1,10 @@
 package dev.piko.shared.smoke
 
+import dev.piko.shared.data.AccountAuthMethod
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.data.SavedAccount
 import dev.piko.shared.data.SavedAccounts
+import dev.piko.shared.state.LoginAccountMode
 import dev.piko.shared.state.LoginState
 import io.github.nihildigit.pikpak.Session
 import kotlinx.coroutines.CoroutineScope
@@ -289,5 +291,64 @@ class SessionSmokeTest {
         }
         assertEquals(googleKey, manager.expiredPrefill)
         assertNull(manager.accounts.value.current)
+    }
+
+    @Test
+    fun `phone mode formats pasted international number, validates length, and prefills expired phone reauth`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val store = MemorySessionStore()
+        val manager = PikoClientManager(store, scope, server.httpClient())
+        awaitUntil("restore finished") { !manager.isInitializing.value }
+
+        val login = LoginState(manager, scope)
+        login.selectAccountMode(LoginAccountMode.PHONE)
+        login.updateDialCode("86")
+        login.updatePhoneNumber("13800")
+        login.updatePassword("pw-phone")
+        login.login()
+        assertFalse(login.isLoggingIn)
+        assertNotNull(login.errorMessage)
+        assertEquals(0, server.count("POST /v1/auth/signin"))
+
+        login.updatePhoneNumber("\u202A+86 138-0013-8000\u202C")
+        assertEquals("86", login.dialCode)
+        assertEquals("13800138000", login.phoneNumber)
+        assertEquals("+8613800138000", login.effectiveAccount)
+        assertNull(login.errorMessage)
+
+        login.login()
+        awaitUntil("phone login succeeded") { manager.currentClient.value != null }
+        assertEquals("+8613800138000", manager.currentClient.value?.account)
+        val saved = assertNotNull(manager.accounts.value.find("+8613800138000"))
+        assertEquals("+8613800138000", saved.loginAccount)
+        assertEquals("UID-+8613800138000", saved.sub)
+
+        manager.beginAddingAccount("+8613800138000")
+        val reauth = LoginState(manager, scope, manager.addingPrefill)
+        assertEquals(LoginAccountMode.PHONE, reauth.accountMode)
+        assertEquals("86", reauth.dialCode)
+        assertEquals("13800138000", reauth.phoneNumber)
+        assertTrue(reauth.needsPasswordOnly)
+        assertEquals(AccountAuthMethod.Password, reauth.reauthContext?.authMethod)
+    }
+
+    @Test
+    fun `rejected phone sign-in surfaces localized guidance without raw error code`() = smoke { scope ->
+        val server = FakePikPakServer().apply { rejectSignIn = true }
+        val store = MemorySessionStore()
+        val manager = PikoClientManager(store, scope, server.httpClient())
+        awaitUntil("restore finished") { !manager.isInitializing.value }
+
+        val login = LoginState(manager, scope)
+        login.selectAccountMode(LoginAccountMode.PHONE)
+        login.updateDialCode("86")
+        login.updatePhoneNumber("13800138000")
+        login.updatePassword("wrong")
+        login.login()
+        awaitUntil("phone login rejected") { !login.isLoggingIn && login.errorMessage != null }
+
+        val message = assertNotNull(login.errorMessage)
+        assertFalse("error_code=" in message, "Raw server error should not be shown to user: $message")
+        assertTrue("Google" in message, "Phone credential refusal should mention setting password or Google fallback: $message")
     }
 }

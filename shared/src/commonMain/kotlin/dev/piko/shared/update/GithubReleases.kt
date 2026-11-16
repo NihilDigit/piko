@@ -201,6 +201,9 @@ class GithubReleaseClient(
                         val read = channel.readAvailable(buffer)
                         if (read < 0) break
                         if (read == 0) continue
+                        check(asset.size <= 0 || written + read <= asset.size) {
+                            "Asset download exceeded expected size for ${asset.name}: ${written + read} > ${asset.size} bytes"
+                        }
                         onChunk(buffer, read)
                         written += read
                         val progress = if (asset.size > 0) (written.toFloat() / asset.size).coerceIn(0f, 1f) else 0f

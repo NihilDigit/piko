@@ -1,3 +1,10 @@
+import com.android.build.gradle.tasks.ProcessApplicationManifest
+import com.android.build.gradle.tasks.ProcessPackagedManifestTask
+import org.gradle.api.file.DirectoryProperty
+import javax.xml.parsers.DocumentBuilderFactory
+import org.w3c.dom.Document
+import org.w3c.dom.Element
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -178,4 +185,162 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     // 冒烟里要一个真实 Activity 挂 SurfaceView；它把 ComponentActivity 声明进 debug 清单
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+}
+
+/**
+ * 防止无意间因库模块缺少 minSdk/targetSdk 声明或第三方传递依赖升级而自动注入高危敏感权限或放开不安全的清单属性。
+ */
+abstract class VerifyMergedManifestPermissionsTask : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val manifestFile: RegularFileProperty
+
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val packagedManifestsDir: DirectoryProperty
+
+    @get:Input
+    abstract val applicationId: Property<String>
+
+    @get:Input
+    abstract val allowDebuggable: Property<Boolean>
+
+    @TaskAction
+    fun verify() {
+        val packagedFiles = packagedManifestsDir.get().asFile.walkTopDown()
+            .filter { it.isFile && it.name == "AndroidManifest.xml" }
+            .sortedBy { it.invariantSeparatorsPath }
+            .toList()
+        if (packagedFiles.isEmpty()) {
+            throw GradleException("No packaged AndroidManifest.xml found under ${packagedManifestsDir.get().asFile}")
+        }
+        val appId = applicationId.get()
+        val dynamicReceiverPermission = "$appId.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+        val expectedPermissions = setOf(
+            "android.permission.INTERNET",
+            "android.permission.ACCESS_NETWORK_STATE",
+            "android.permission.POST_NOTIFICATIONS",
+            "android.permission.FOREGROUND_SERVICE",
+            "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+            "android.permission.REQUEST_INSTALL_PACKAGES",
+            dynamicReceiverPermission,
+        )
+        val allowDebug = allowDebuggable.get()
+        val builder = DocumentBuilderFactory.newInstance()
+            .apply { isNamespaceAware = true }
+            .newDocumentBuilder()
+        val allManifests = listOf(manifestFile.get().asFile) + packagedFiles
+        for (file in allManifests) {
+            val doc = builder.parse(file)
+            verifySingleManifest(doc, file.path, appId, dynamicReceiverPermission, expectedPermissions, allowDebug)
+        }
+    }
+
+    private fun verifySingleManifest(
+        doc: Document,
+        sourcePath: String,
+        appId: String,
+        dynamicReceiverPermission: String,
+        expectedPermissions: Set<String>,
+        allowDebug: Boolean,
+    ) {
+        val usesPermissions = collectNames(doc, "uses-permission")
+        if (usesPermissions != expectedPermissions) {
+            val unexpected = (usesPermissions - expectedPermissions).sorted()
+            val missing = (expectedPermissions - usesPermissions).sorted()
+            throw GradleException(
+                "Manifest uses-permission mismatch for $appId ($sourcePath): " +
+                    "unexpected=$unexpected, missing=$missing",
+            )
+        }
+        val sdk23Permissions = collectNames(doc, "uses-permission-sdk-23")
+        if (sdk23Permissions.isNotEmpty()) {
+            throw GradleException(
+                "Unexpected uses-permission-sdk-23 entries for $appId ($sourcePath): " +
+                    sdk23Permissions.sorted(),
+            )
+        }
+        val customPermissions = doc.getElementsByTagName("permission")
+        val declaredCustom = linkedSetOf<String>()
+        for (i in 0 until customPermissions.length) {
+            val element = customPermissions.item(i) as? Element ?: continue
+            val name = androidAttr(element, "name")
+            if (name != dynamicReceiverPermission) {
+                throw GradleException(
+                    "Unexpected <permission> declaration for $appId ($sourcePath): $name",
+                )
+            }
+            val protectionLevel = androidAttr(element, "protectionLevel")
+            if (protectionLevel != "signature") {
+                throw GradleException(
+                    "Permission $name must use protectionLevel=\"signature\" for $appId ($sourcePath), found \"$protectionLevel\"",
+                )
+            }
+            declaredCustom += name
+        }
+        if (dynamicReceiverPermission !in declaredCustom) {
+            throw GradleException(
+                "Missing <permission android:name=\"$dynamicReceiverPermission\"> for $appId ($sourcePath)",
+            )
+        }
+        val apps = doc.getElementsByTagName("application")
+        for (i in 0 until apps.length) {
+            val app = apps.item(i) as? Element ?: continue
+            if (androidAttr(app, "usesCleartextTraffic") == "true") {
+                throw GradleException("Disallowed android:usesCleartextTraffic=\"true\" for $appId ($sourcePath)")
+            }
+            if (!allowDebug && androidAttr(app, "debuggable") == "true") {
+                throw GradleException("Disallowed android:debuggable=\"true\" in release manifest for $appId ($sourcePath)")
+            }
+        }
+    }
+
+    private fun collectNames(doc: Document, tagName: String): Set<String> = buildSet {
+        val nodes = doc.getElementsByTagName(tagName)
+        for (i in 0 until nodes.length) {
+            val element = nodes.item(i) as? Element ?: continue
+            val name = androidAttr(element, "name")
+            if (name.isNotEmpty()) add(name)
+        }
+    }
+
+    private fun androidAttr(element: Element, attrName: String): String =
+        element.getAttributeNS("http://schemas.android.com/apk/res/android", attrName)
+            .ifEmpty { element.getAttribute("android:$attrName") }
+}
+
+val verifyDebugManifestPermissions = tasks.register<VerifyMergedManifestPermissionsTask>(
+    "verifyDebugManifestPermissions",
+) {
+    manifestFile.set(
+        tasks.named<ProcessApplicationManifest>("processDebugMainManifest").flatMap { it.mergedManifest },
+    )
+    packagedManifestsDir.set(
+        tasks.named<ProcessPackagedManifestTask>("processDebugManifestForPackage").flatMap { it.packageManifests },
+    )
+    applicationId.set("dev.piko.debug")
+    allowDebuggable.set(true)
+}
+
+val verifyReleaseManifestPermissions = tasks.register<VerifyMergedManifestPermissionsTask>(
+    "verifyReleaseManifestPermissions",
+) {
+    manifestFile.set(
+        tasks.named<ProcessApplicationManifest>("processReleaseMainManifest").flatMap { it.mergedManifest },
+    )
+    packagedManifestsDir.set(
+        tasks.named<ProcessPackagedManifestTask>("processReleaseManifestForPackage").flatMap { it.packageManifests },
+    )
+    applicationId.set("dev.piko")
+    allowDebuggable.set(false)
+}
+
+tasks.matching { it.name == "check" }.configureEach {
+    dependsOn(verifyDebugManifestPermissions, verifyReleaseManifestPermissions)
+}
+tasks.matching { it.name == "assembleDebug" }.configureEach {
+    dependsOn(verifyDebugManifestPermissions)
+}
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+    dependsOn(verifyReleaseManifestPermissions)
 }

@@ -3,6 +3,7 @@ package dev.piko.shared.data
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.state.PhoneLoginFormat
 import dev.piko.shared.util.PikoLock
 import dev.piko.shared.util.withPikoLock
 import io.github.nihildigit.pikpak.AuthClientProfile
@@ -288,7 +289,7 @@ class PikoClientManager(
         passwordSupplier: suspend () -> String,
     ): Result<PikPakClient> = runSuspendCatching {
         cancelGoogleDeviceLogin()
-        val trimmedInput = account.trim()
+        val trimmedInput = PhoneLoginFormat.normalizeAccountInput(account)
         require(trimmedInput.isNotEmpty()) {
             tr("请输入邮箱或手机号", "Please enter your email or phone number", "メールアドレスまたは電話番号を入力してください", "이메일 또는 전화번호를 입력해 주세요", "請輸入信箱或手機號碼")
         }
@@ -335,7 +336,7 @@ class PikoClientManager(
         val verifiedSub = profile?.sub?.trim()?.takeIf { it.isNotEmpty() } ?: session.sub.trim()
         if (expectedSub.isNotEmpty() && verifiedSub.isNotEmpty() && verifiedSub != expectedSub) {
             val expectedLabel = expectedSaved?.displayName ?: expectedAccount.orEmpty()
-            val actualLabel = profile?.email?.ifBlank { trimmedInput } ?: trimmedInput
+            val actualLabel = profile?.email?.ifBlank { profile.phoneNumber }?.ifBlank { trimmedInput } ?: trimmedInput
             throw AccountMismatchException(expectedLabel = expectedLabel, actualLabel = actualLabel)
         }
         if (expectedAccount != null && expectedSub.isEmpty() && expectedSaved != null) {
@@ -490,7 +491,7 @@ class PikoClientManager(
                         errorDescription = "Token subject does not match /v1/user/me",
                     )
                 }
-                val actualLabel = profile.email.ifBlank { profile.name.ifBlank { "Google" } }
+                val actualLabel = profile.email.ifBlank { profile.phoneNumber.ifBlank { profile.name.ifBlank { "Google" } } }
                 if (tx.expectedAccount != null && tx.expectedSub.isEmpty()) {
                     val expectedLabel = _accounts.value.find(tx.expectedAccount)?.displayName ?: tx.expectedAccount
                     throw AccountMismatchException(expectedLabel = expectedLabel, actualLabel = actualLabel)

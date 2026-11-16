@@ -180,10 +180,10 @@ internal fun LogoutButton(onLoggedOut: () -> Unit) {
     }
 }
 
-/** 账号行的第二行：邮箱与上次记下的空间用量，缺哪样略去哪样。 */
+/** 账号行的第二行：邮箱或手机号与上次记下的空间用量，缺哪样略去哪样。 */
 private fun accountLine(saved: SavedAccount): String? {
     val usage = saved.takeIf { it.limitBytes > 0 }?.let { "${it.usageBytes.toReadableSize()} / ${it.limitBytes.toReadableSize()}" }
-    return listOfNotNull(saved.email.ifBlank { null }, usage).joinToString("，").ifEmpty { null }
+    return listOfNotNull(saved.maskedContact.ifBlank { null }, usage).joinToString("，").ifEmpty { null }
 }
 
 @Composable

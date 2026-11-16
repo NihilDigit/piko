@@ -53,12 +53,20 @@ import dev.piko.ui.theme.appearanceFlow
 import dev.piko.ui.theme.isDark
 import dev.piko.platform.installMotionScale
 import dev.piko.util.PikPakAppLink
+import java.io.InputStream
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 
 /**
  * Main application entry activity using Single Activity architecture.
@@ -70,6 +78,8 @@ import kotlinx.coroutines.withContext
  * - Material 3 Motion: m3-material-mirror/pages/styles/motion.md
  */
 class MainActivity : ComponentActivity() {
+
+    private var openTorrentJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val systemLocale = android.content.res.Resources.getSystem().configuration.locales.get(0) ?: Locale.getDefault()
@@ -179,10 +189,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun isOwnFileProviderUri(uri: Uri): Boolean =
+        uri.authority.equals("${packageName}.fileprovider", ignoreCase = true)
+
     /** 打开的 .torrent 文件。按类型认而不按扩展名：content: URI 的路径多半不带文件名。 */
     private fun torrentUri(intent: Intent): Uri? {
         if (intent.action != Intent.ACTION_VIEW) return null
-        val uri = intent.data?.takeIf { it.scheme == ContentResolver.SCHEME_CONTENT } ?: return null
+        val uri = intent.data?.takeIf { it.scheme == ContentResolver.SCHEME_CONTENT && !isOwnFileProviderUri(it) } ?: return null
         val mimeType = intent.type ?: runCatching { contentResolver.getType(uri) }
             .onFailure { PikoLog.w("IncomingLink", "Failed to query MIME type for incoming URI (authority=${uri.authority})", it) }
             .getOrNull()
@@ -192,20 +205,41 @@ class MainActivity : ComponentActivity() {
     /** 与桌面端拖进种子相同，在本地换算成磁力链接。读取放在后台：文档提供者可能现从网络取内容。 */
     private fun openTorrent(uri: Uri) {
         val app = PikoApplication.instance
-        app.appScope.launch(Dispatchers.IO) {
+        openTorrentJob?.cancel()
+        openTorrentJob = app.appScope.launch {
             val magnet = try {
-                val bytes = app.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                if (bytes == null) {
-                    PikoLog.w("IncomingLink", "ContentResolver returned null stream for .torrent URI (authority=${uri.authority})")
-                    null
-                } else {
-                    TorrentMagnet.fromBytes(bytes).also { parsed ->
-                        if (parsed == null) {
-                            PikoLog.w("IncomingLink", "Failed to parse .torrent payload (${bytes.size} bytes)")
+                withTimeout(TORRENT_READ_TIMEOUT_MS) {
+                    val streamRef = AtomicReference<InputStream?>(null)
+                    val readJob = async(Dispatchers.IO) {
+                        runInterruptible {
+                            app.contentResolver.openInputStream(uri)?.use { stream ->
+                                streamRef.set(stream)
+                                TorrentMagnet.readBoundedBytes(stream, TorrentMagnet.MAX_TORRENT_BYTES)
+                            }
+                        }
+                    }
+                    val bytes = try {
+                        readJob.await()
+                    } finally {
+                        streamRef.getAndSet(null)?.let { stream -> runCatching { stream.close() } }
+                        readJob.cancel()
+                    }
+                    when {
+                        bytes == null -> {
+                            PikoLog.w("IncomingLink", "Unavailable or oversized .torrent URI (authority=${uri.authority})")
+                            null
+                        }
+                        else -> withContext(Dispatchers.Default) { TorrentMagnet.fromBytes(bytes) }.also { parsed ->
+                            if (parsed == null) {
+                                PikoLog.w("IncomingLink", "Failed to parse .torrent payload (${bytes.size} bytes)")
+                            }
                         }
                     }
                 }
-            } catch (cancel: kotlinx.coroutines.CancellationException) {
+            } catch (timeout: TimeoutCancellationException) {
+                PikoLog.w("IncomingLink", "Timed out reading .torrent URI (authority=${uri.authority})", timeout)
+                null
+            } catch (cancel: CancellationException) {
                 throw cancel
             } catch (e: Exception) {
                 PikoLog.w("IncomingLink", "Failed to read or parse .torrent URI (authority=${uri.authority})", e)
@@ -227,8 +261,8 @@ class MainActivity : ComponentActivity() {
                 IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
             else -> emptyList()
         }
-        // AndroidPikoUploadSources 只认 content: URI
-        return uris.filter { it.scheme == ContentResolver.SCHEME_CONTENT }
+        // AndroidPikoUploadSources 只认外部提供的 content: URI，拒绝自身 FileProvider URI 避免回环读取私有目录
+        return uris.filter { it.scheme == ContentResolver.SCHEME_CONTENT && !isOwnFileProviderUri(it) }
     }
 
     /**
@@ -290,6 +324,7 @@ private fun AskForNotificationsOnFirstWork(services: PikoServices) {
 }
 
 private const val TORRENT_MIME_TYPE = "application/x-bittorrent"
+private const val TORRENT_READ_TIMEOUT_MS = 15_000L
 
 /**
  * 窗口高度 compact（横握的手机）时收起状态栏，下滑临时唤出；导航条不动。整个应用一个入口，按窗口高度生效。

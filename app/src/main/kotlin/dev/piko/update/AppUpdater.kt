@@ -3,7 +3,10 @@ package dev.piko.update
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
 import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
+import android.content.pm.Signature
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -51,6 +54,11 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
     checksOnStartup = !BuildConfig.DEBUG,
     log = { message, cause -> PikoLog.w("Update", message, cause) },
 ) {
+    private class ActiveInstall(val sessionId: Int, val update: AvailableUpdate)
+
+    @Volatile
+    private var activeInstall: ActiveInstall? = null
+
     override suspend fun resolve(release: LatestRelease): AndroidUpdate? {
         val apk = pickApk(release) ?: return null
         return AndroidUpdate(
@@ -89,13 +97,28 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
             return
         }
         PikoLog.i(TAG, "Update APK downloaded and verified: ${own.apk.name} (${file.length()} bytes)")
-        runCatching { withContext(Dispatchers.IO) { install(file) } }
-            .onSuccess { status = UpdateStatus.Installing(update) }
-            .onFailure {
-                if (it is CancellationException) throw it
-                PikoLog.w(TAG, "Failed to commit PackageInstaller session for ${own.apk.name}", it)
-                status = UpdateStatus.Failed(tr("无法启动安装", "Unable to start installation", "インストールを開始できません", "설치를 시작할 수 없습니다", "無法啟動安裝"), update)
+        try {
+            withContext(Dispatchers.IO) { install(file, update) }
+        } catch (e: CancellationException) {
+            if (status is UpdateStatus.Downloading) {
+                status = UpdateStatus.Available(update)
             }
+            throw e
+        } catch (e: SecurityException) {
+            PikoLog.w(TAG, "Downloaded update APK failed identity verification for ${own.apk.name}", e)
+            status = UpdateStatus.Failed(
+                tr("安装包校验未通过，请从下载页获取", "Package verification failed. Use the download page", "パッケージの検証に失敗しました。ダウンロードページから取得してください", "설치 패키지 검증에 실패했습니다. 다운로드 페이지에서 받으세요", "安裝套件驗證未通過，請從下載頁取得"),
+                update,
+            )
+        } catch (e: Exception) {
+            PikoLog.w(TAG, "Failed to commit PackageInstaller session for ${own.apk.name}", e)
+            if (status !is UpdateStatus.Failed) {
+                status = UpdateStatus.Failed(
+                    tr("无法启动安装", "Unable to start installation", "インストールを開始できません", "설치를 시작할 수 없습니다", "無法啟動安裝"),
+                    update,
+                )
+            }
+        }
     }
 
     private suspend fun download(update: AndroidUpdate): File = withContext(Dispatchers.IO) {
@@ -103,15 +126,20 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
         val dir = File(context.cacheDir, UPDATE_DIR).apply { deleteRecursively(); mkdirs() }
         val target = File(dir, update.apk.name)
         val digest = MessageDigest.getInstance("SHA-256")
-        target.outputStream().use { out ->
-            releases.download(
-                update.apk,
-                onChunk = { buffer, length ->
-                    out.write(buffer, 0, length)
-                    digest.update(buffer, 0, length)
-                },
-                onProgress = { status = UpdateStatus.Downloading(update, it) },
-            )
+        try {
+            target.outputStream().use { out ->
+                releases.download(
+                    update.apk,
+                    onChunk = { buffer, length ->
+                        out.write(buffer, 0, length)
+                        digest.update(buffer, 0, length)
+                    },
+                    onProgress = { status = UpdateStatus.Downloading(update, it) },
+                )
+            }
+        } catch (t: Throwable) {
+            target.delete()
+            throw t
         }
         val actual = digest.digest().joinToString("") { "%02x".format(it) }
         if (actual != expected) {
@@ -121,30 +149,149 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
         target
     }
 
-    private fun install(apk: File) {
+    private fun install(apk: File, update: AvailableUpdate) {
+        try {
+            verifyDownloadedApk(apk)
+        } catch (e: Throwable) {
+            apk.delete()
+            throw e
+        }
         val installer = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(context.packageName)
+            setSize(apk.length())
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
+            }
         }
         val sessionId = installer.createSession(params)
-        installer.openSession(sessionId).use { session ->
-            session.openWrite("piko.apk", 0, apk.length()).use { out ->
-                apk.inputStream().use { it.copyTo(out, INSTALL_COPY_BUFFER_BYTES) }
-                session.fsync(out)
+        var committed = false
+        try {
+            installer.openSession(sessionId).use { session ->
+                session.openWrite("piko.apk", 0, apk.length()).use { out ->
+                    apk.inputStream().use { it.copyTo(out, INSTALL_COPY_BUFFER_BYTES) }
+                    session.fsync(out)
+                }
+                val callback = Intent(context, UpdateInstallReceiver::class.java).setPackage(context.packageName)
+                // 系统要往回调 Intent 里填状态与确认页，必须可变
+                val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                    (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0)
+                val pending = PendingIntent.getBroadcast(context, sessionId, callback, flags)
+                activeInstall = ActiveInstall(sessionId, update)
+                status = UpdateStatus.Installing(update)
+                session.commit(pending.intentSender)
+                committed = true
             }
-            val callback = Intent(context, UpdateInstallReceiver::class.java).setPackage(context.packageName)
-            // 系统要往回调 Intent 里填状态与确认页，必须可变
-            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
-                (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0)
-            val pending = PendingIntent.getBroadcast(context, sessionId, callback, flags)
-            session.commit(pending.intentSender)
+        } finally {
+            apk.delete()
+            if (!committed) {
+                if (activeInstall?.sessionId == sessionId) {
+                    activeInstall = null
+                }
+                runCatching { installer.abandonSession(sessionId) }
+            }
         }
     }
 
-    internal fun onInstallFailed(userMessage: String, logReason: String, cause: Throwable? = null) {
-        PikoLog.w(TAG, "System package installation did not complete: $logReason", cause)
-        val update = (status as? UpdateStatus.Installing)?.update
-        status = UpdateStatus.Failed(tr("安装未完成", "Installation incomplete", "インストールが未完了です", "설치 미완료", "安裝未完成"), update)
+    /** 提交 PackageInstaller 会话前核对包名、版本号与签名证书，防止镜像或异常构件越权替换或降级安装。 */
+    private fun verifyDownloadedApk(apk: File) {
+        val pm = context.packageManager
+        val flags = packageSigningFlags()
+        val installedInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(flags.toLong()))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getPackageInfo(context.packageName, flags)
+        }
+        val archiveInfo = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.getPackageArchiveInfo(apk.absolutePath, PackageManager.PackageInfoFlags.of(flags.toLong()))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getPackageArchiveInfo(apk.absolutePath, flags)
+        }) ?: throw SecurityException("Unable to parse downloaded APK archive: ${apk.name}")
+
+        val installedSigners = extractSigners(installedInfo)
+        val archiveSigners = extractSigners(archiveInfo)
+        verifyArchiveIdentity(
+            expectedPackageName = context.packageName,
+            installedVersionCode = packageVersionCode(installedInfo),
+            installedSigners = installedSigners,
+            archivePackageName = archiveInfo.packageName,
+            archiveVersionCode = packageVersionCode(archiveInfo),
+            archiveSigners = archiveSigners,
+        )
+    }
+
+    private fun packageSigningFlags(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            // Android 9-12 (b/136784845) 在仅传 GET_SIGNING_CERTIFICATES 时 getPackageArchiveInfo 的 signingInfo 可能返回 null
+            @Suppress("DEPRECATION")
+            PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES
+        } else {
+            @Suppress("DEPRECATION")
+            PackageManager.GET_SIGNATURES
+        }
+
+    private fun packageVersionCode(info: PackageInfo): Long =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
+        }
+
+    private fun extractSigners(info: PackageInfo): PackageSigners {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val signingInfo = info.signingInfo
+            if (signingInfo != null) {
+                if (signingInfo.hasMultipleSigners()) {
+                    val active = signingInfo.apkContentsSigners.orEmpty().mapTo(linkedSetOf(), ::signatureSha256)
+                    if (active.isNotEmpty()) return PackageSigners(activeSigners = active)
+                } else {
+                    val history = signingInfo.signingCertificateHistory.orEmpty().map(::signatureSha256)
+                    val contents = signingInfo.apkContentsSigners.orEmpty().mapTo(linkedSetOf(), ::signatureSha256)
+                    val active = contents.ifEmpty { history.lastOrNull()?.let(::setOf).orEmpty() }
+                    if (active.isNotEmpty()) {
+                        return PackageSigners(activeSigners = active, rotationLineage = history)
+                    }
+                }
+            }
+        }
+        @Suppress("DEPRECATION")
+        val legacy = info.signatures.orEmpty().mapTo(linkedSetOf(), ::signatureSha256)
+        return PackageSigners(activeSigners = legacy)
+    }
+
+    private fun signatureSha256(signature: Signature): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(signature.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+
+    internal fun isActiveSession(sessionId: Int): Boolean =
+        sessionId != -1 && activeInstall?.sessionId == sessionId
+
+    internal fun onInstallSucceeded(sessionId: Int) {
+        if (activeInstall?.sessionId == sessionId) {
+            activeInstall = null
+        }
+    }
+
+    internal fun onInstallFailed(
+        sessionId: Int,
+        userMessage: String,
+        logReason: String,
+        cause: Throwable? = null,
+    ) {
+        val active = activeInstall?.takeIf { it.sessionId == sessionId } ?: run {
+            PikoLog.w(TAG, "Ignoring PackageInstaller failure for non-active sessionId=$sessionId: $logReason", cause)
+            return
+        }
+        activeInstall = null
+        PikoLog.w(TAG, "System package installation did not complete (sessionId=$sessionId): $logReason", cause)
+        status = UpdateStatus.Failed(
+            tr("安装未完成", "Installation incomplete", "インストールが未完了です", "설치 미완료", "安裝未完成"),
+            active.update,
+        )
         mutableMessages.tryEmit(userMessage)
     }
 
@@ -156,5 +303,45 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
         const val TAG = "Update"
         const val UPDATE_DIR = "updates"
         const val INSTALL_COPY_BUFFER_BYTES = 256 * 1024
+    }
+}
+
+internal data class PackageSigners(
+    val activeSigners: Set<String>,
+    val rotationLineage: List<String> = emptyList(),
+)
+
+/** 核对归档 APK 的包名、版本号（禁止降级）与活跃签名证书（及正向密钥轮换链）是否与当前已安装应用一致。 */
+internal fun verifyArchiveIdentity(
+    expectedPackageName: String,
+    installedVersionCode: Long,
+    installedSigners: PackageSigners,
+    archivePackageName: String?,
+    archiveVersionCode: Long,
+    archiveSigners: PackageSigners,
+) {
+    if (archivePackageName != expectedPackageName) {
+        throw SecurityException(
+            "Update APK package mismatch: expected=$expectedPackageName, actual=$archivePackageName",
+        )
+    }
+    if (archiveVersionCode < installedVersionCode) {
+        throw SecurityException(
+            "Update APK version downgrade rejected: installed=$installedVersionCode, archive=$archiveVersionCode",
+        )
+    }
+    if (installedSigners.activeSigners.isEmpty() || archiveSigners.activeSigners.isEmpty()) {
+        throw SecurityException(
+            "Missing signing certificates: installed=${installedSigners.activeSigners.size}, archive=${archiveSigners.activeSigners.size}",
+        )
+    }
+    val exactActiveMatch = archiveSigners.activeSigners == installedSigners.activeSigners
+    val validForwardRotation = installedSigners.activeSigners.size == 1 &&
+        archiveSigners.activeSigners.size == 1 &&
+        archiveSigners.rotationLineage.size >= 2 &&
+        archiveSigners.rotationLineage.last() == archiveSigners.activeSigners.single() &&
+        installedSigners.activeSigners.single() in archiveSigners.rotationLineage
+    if (!(exactActiveMatch || validForwardRotation)) {
+        throw SecurityException("Update APK signing certificate does not match installed app")
     }
 }

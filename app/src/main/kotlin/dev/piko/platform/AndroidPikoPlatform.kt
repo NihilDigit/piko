@@ -187,13 +187,13 @@ class AndroidPikoPlatform(
 
         override fun requestUnrestricted() {
             val packageUri = Uri.parse("package:${context.packageName}")
-            val requested = runCatching {
+            val opened = runCatching {
                 context.startActivity(
-                    Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, packageUri)
+                    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
             }.isSuccess
-            if (!requested) {
+            if (!opened) {
                 startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             }
         }
@@ -474,7 +474,7 @@ class AndroidPikoPlatform(
             startActivity(
                 Intent(Intent.ACTION_VIEW)
                     .setDataAndType(uri, "vnd.android.document/directory")
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION),
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
             )
         }
 
@@ -511,7 +511,7 @@ class AndroidPikoPlatform(
             startActivity(
                 Intent(Intent.ACTION_VIEW)
                     .setDataAndType(uri, "vnd.android.document/directory")
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION),
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
             )
         }
 

@@ -2,8 +2,6 @@ package dev.piko.download
 
 import dev.piko.shared.i18n.tr
 
-import android.app.AlarmManager
-import android.os.SystemClock
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import android.app.Notification
@@ -97,7 +95,7 @@ class PikoDownloadService : Service() {
         }
 
         startObservingDownloadsIfNeeded()
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     /**
@@ -138,14 +136,6 @@ class PikoDownloadService : Service() {
         )
         runBlocking {
             withTimeoutOrNull(800) { flushes.joinAll() }
-        }
-        if (services.hasBackgroundWork()) {
-            runCatching {
-                val pending = PendingIntent.getService(this, RESTART_REQUEST_CODE,
-                    Intent(this, PikoDownloadService::class.java),
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                getSystemService(AlarmManager::class.java).set(AlarmManager.ELAPSED_REALTIME, SystemClock.elapsedRealtime() + 1000L, pending)
-            }.onFailure { PikoLog.w(TAG, "Failed to schedule background transfer restart alarm on task removal", it) }
         }
         super.onTaskRemoved(rootIntent)
     }
@@ -286,7 +276,6 @@ class PikoDownloadService : Service() {
         }
 
         private const val PAUSE_REQUEST_CODE = 2
-        private const val RESTART_REQUEST_CODE = 3
         private const val TAG = "DownloadService"
         private const val NOTIFICATION_ID = 9527
         private const val OPEN_TRANSFERS_REQUEST_CODE = 1

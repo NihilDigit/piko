@@ -91,6 +91,26 @@ class ReleaseSourceFallbackTest {
     }
 
     @Test
+    fun `download aborts before writing chunk that exceeds expected asset size`() {
+        val client = client(MockEngine {
+            @OptIn(DelicateCoroutinesApi::class)
+            val body = GlobalScope.writer {
+                channel.writeFully(byteArrayOf(1, 2, 3))
+                channel.flush()
+                delay(100)
+                channel.writeFully(byteArrayOf(4, 5))
+                channel.flush()
+            }.channel
+            respond(body)
+        })
+        val bytes = ByteArrayOutputStream()
+        assertFailsWith<IllegalStateException> {
+            runBlocking { client.download(asset(), onChunk = { buffer, length -> bytes.write(buffer, 0, length) }, onProgress = {}) }
+        }
+        assertEquals(3, bytes.size())
+    }
+
+    @Test
     fun `api supplements five languages from verified manifest through mirror`(): Unit = runBlocking {
         checkSupplementaryManifest(tampered = false, unavailable = false)
     }

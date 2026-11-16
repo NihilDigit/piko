@@ -1,5 +1,7 @@
 package dev.piko.ui.screens.auth
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -16,22 +19,28 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextObfuscationMode
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -41,9 +50,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedSecureTextField
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ToggleButton
+import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -63,6 +75,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -75,12 +88,16 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.net.ProxySetting
 import dev.piko.shared.state.BrowserAuthState
+import dev.piko.shared.state.LoginAccountMode
 import dev.piko.shared.state.LoginState
+import dev.piko.shared.state.PhoneRegions
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.IslandTabBarHeight
 import dev.piko.ui.components.PikoBrandIcons
+import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.connectedToggleShapes
 import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.LocalWindowCaption
@@ -187,6 +204,7 @@ private fun LoginForm(
 ) {
     val platform = LocalPikoPlatform.current
     var passwordVisible by remember { mutableStateOf(false) }
+    var showDialCodeDialog by remember { mutableStateOf(false) }
     val passwordFocus = remember { FocusRequester() }
     val passwordField = rememberTextFieldState(state.password)
     LaunchedEffect(passwordField) {
@@ -197,6 +215,7 @@ private fun LoginForm(
     val errorMessage = state.errorMessage
     val reauthContext = state.reauthContext
     LaunchedEffect(Unit) { if (state.needsPasswordOnly) passwordFocus.requestFocus() }
+    LaunchedEffect(isBusy) { if (isBusy) showDialCodeDialog = false }
 
     Column(
         modifier = modifier
@@ -340,23 +359,145 @@ private fun LoginForm(
                     )
                     HorizontalDivider(Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant)
                 }
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(16.dp))
 
-                OutlinedTextField(
-                    value = state.account,
-                    onValueChange = state::updateAccount,
-                    label = { Text(stringResource(Res.string.text_email_or_username)) },
-                    leadingIcon = { Icon(Icons.Outlined.Person, contentDescription = null) },
-                    singleLine = true,
-                    enabled = !isBusy,
-                    isError = errorMessage != null,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .semantics { contentType = ContentType.Username + ContentType.EmailAddress },
-                    shape = MaterialTheme.shapes.largeIncreased,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+                val accountModes = remember { listOf(LoginAccountMode.EMAIL, LoginAccountMode.PHONE) }
+                val toggleColors = ToggleButtonDefaults.toggleButtonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                 )
+                Row(
+                    modifier = Modifier.fillMaxWidth().selectableGroup(),
+                    horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
+                ) {
+                    accountModes.forEachIndexed { index, mode ->
+                        ToggleButton(
+                            checked = state.accountMode == mode,
+                            onCheckedChange = { state.selectAccountMode(mode) },
+                            enabled = !isBusy,
+                            shapes = connectedToggleShapes(index, accountModes.size),
+                            colors = toggleColors,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text(
+                                text = when (mode) {
+                                    LoginAccountMode.EMAIL -> tr("邮箱", "Email", "メール", "이메일", "信箱")
+                                    LoginAccountMode.PHONE -> tr("手机号", "Phone", "電話番号", "전화번호", "手機號碼")
+                                },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
+
+                when (state.accountMode) {
+                    LoginAccountMode.EMAIL -> {
+                        OutlinedTextField(
+                            value = state.account,
+                            onValueChange = state::updateAccount,
+                            label = { Text(stringResource(Res.string.text_email_or_username)) },
+                            leadingIcon = { Icon(Icons.Outlined.Person, contentDescription = null) },
+                            singleLine = true,
+                            enabled = !isBusy,
+                            isError = errorMessage != null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .semantics { contentType = ContentType.Username + ContentType.EmailAddress },
+                            shape = MaterialTheme.shapes.largeIncreased,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+                            keyboardActions = KeyboardActions(onNext = { passwordFocus.requestFocus() }),
+                        )
+                    }
+                    LoginAccountMode.PHONE -> {
+                        val contentAlpha = if (isBusy) 0.38f else 1f
+                        OutlinedTextField(
+                            value = state.phoneNumber,
+                            onValueChange = state::updatePhoneNumber,
+                            label = { Text(tr("手机号码", "Phone number", "電話番号", "휴대폰 번호", "手機號碼")) },
+                            leadingIcon = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(start = 6.dp),
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .heightIn(min = 38.dp)
+                                            .clip(MaterialTheme.shapes.medium)
+                                            .clickable(
+                                                enabled = !isBusy,
+                                                role = Role.Button,
+                                                onClickLabel = tr(
+                                                    "选择国家或地区区号",
+                                                    "Select country or region code",
+                                                    "国・地域コードを選択",
+                                                    "국가/지역 번호 선택",
+                                                    "選擇國家或地區區碼",
+                                                ),
+                                            ) { showDialCodeDialog = true }
+                                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    ) {
+                                        Text(
+                                            text = "+${state.dialCode}",
+                                            style = MaterialTheme.typography.titleSmall.copy(fontFeatureSettings = "tnum"),
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha),
+                                            maxLines = 1,
+                                        )
+                                        Spacer(Modifier.width(2.dp))
+                                        Icon(
+                                            imageVector = Icons.Outlined.ArrowDropDown,
+                                            contentDescription = tr("选择区号", "Select country code", "国番号を選択", "국가 번호 선택", "選擇區碼"),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = contentAlpha),
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                    Spacer(Modifier.width(4.dp))
+                                    Box(
+                                        Modifier
+                                            .width(1.dp)
+                                            .height(22.dp)
+                                            .background(MaterialTheme.colorScheme.outlineVariant),
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                }
+                            },
+                            trailingIcon = if (state.phoneNumber.isNotEmpty() && !isBusy) {
+                                {
+                                    IconButton(onClick = { state.updatePhoneNumber("") }) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Close,
+                                            contentDescription = tr("清除", "Clear", "クリア", "지우기", "清除"),
+                                        )
+                                    }
+                                }
+                            } else {
+                                null
+                            },
+                            singleLine = true,
+                            enabled = !isBusy,
+                            isError = errorMessage != null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .semantics { contentType = ContentType.PhoneNumber + ContentType.Username },
+                            shape = MaterialTheme.shapes.largeIncreased,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Next),
+                            keyboardActions = KeyboardActions(onNext = { passwordFocus.requestFocus() }),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                val passwordSupporting = errorMessage ?: if (state.accountMode == LoginAccountMode.PHONE) {
+                    tr(
+                        "需已在 PikPak 设置登录密码；支持直接粘贴含区号号码",
+                        "Requires a password set in PikPak; pasting numbers with country code is supported",
+                        "PikPak で設定済みのパスワードが必要です（国番号付きの貼り付けに対応）",
+                        "PikPak에 설정된 비밀번호가 필요합니다 (국가 번호 포함 붙여넣기 지원)",
+                        "需已於 PikPak 設定登入密碼；支援直接貼上含區碼號碼",
+                    )
+                } else {
+                    null
+                }
                 OutlinedSecureTextField(
                     state = passwordField,
                     label = { Text(stringResource(Res.string.text_password)) },
@@ -376,7 +517,7 @@ private fun LoginForm(
                     },
                     enabled = !isBusy,
                     isError = errorMessage != null,
-                    supportingText = errorMessage?.let { msg -> { Text(msg) } },
+                    supportingText = passwordSupporting?.let { msg -> { Text(msg) } },
                     modifier = Modifier
                         .fillMaxWidth()
                         .focusRequester(passwordFocus)
@@ -415,7 +556,213 @@ private fun LoginForm(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = tr(
+                    "Piko 是 PikPak 第三方非官方客户端，与 PikPak 官方无关",
+                    "Piko is an unofficial third-party client and is not affiliated with PikPak",
+                    "Piko は PikPak の非公式サードパーティクライアントであり、公式とは関係ありません",
+                    "Piko는 PikPak 비공식 서드파티 클라이언트로, 공식 서비스와 무관합니다",
+                    "Piko 是 PikPak 第三方非官方用戶端，與 PikPak 官方無關",
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
         }
+    }
+
+    if (showDialCodeDialog) {
+        DialCodePickerDialog(
+            currentDialCode = state.dialCode,
+            onSelect = { code ->
+                state.updateDialCode(code)
+                showDialCodeDialog = false
+            },
+            onDismiss = { showDialCodeDialog = false },
+        )
+    }
+}
+
+@Composable
+private fun DialCodePickerDialog(
+    currentDialCode: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    val filtered = remember(query) { PhoneRegions.filter(query) }
+    val customCode = remember(query, filtered) {
+        PhoneRegions.customDialCodeCandidate(query)?.takeUnless { candidate ->
+            filtered.any { it.dialCode == candidate }
+        }
+    }
+    val showCurrentCustom = query.isBlank() && PhoneRegions.all.none { it.dialCode == currentDialCode }
+
+    PikoDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.Public, contentDescription = null) },
+        title = {
+            Text(
+                tr(
+                    "选择国家或地区区号",
+                    "Select country or region code",
+                    "国・地域コードを選択",
+                    "국가/지역 번호 선택",
+                    "選擇國家或地區區碼",
+                ),
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+                    trailingIcon = if (query.isNotEmpty()) {
+                        {
+                            IconButton(onClick = { query = "" }) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Close,
+                                    contentDescription = tr("清除", "Clear", "クリア", "지우기", "清除"),
+                                )
+                            }
+                        }
+                    } else {
+                        null
+                    },
+                    placeholder = {
+                        Text(
+                            text = tr(
+                                "搜索地区或输入区号（如 31）",
+                                "Search region or enter code (e.g. 31)",
+                                "地域を検索または番号を入力（例: 31）",
+                                "지역 검색 또는 번호 입력 (예: 31)",
+                                "搜尋地區或輸入區碼（如 31）",
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    shape = MaterialTheme.shapes.largeIncreased,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            val target = when {
+                                filtered.size == 1 && customCode == null -> filtered.single().dialCode
+                                filtered.isEmpty() && customCode != null -> customCode
+                                else -> null
+                            }
+                            if (target != null) onSelect(target)
+                        },
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(300.dp)
+                        .verticalScroll(rememberScrollState())
+                        .selectableGroup(),
+                ) {
+                    if (showCurrentCustom) {
+                        DialCodeOptionRow(
+                            label = tr(
+                                "当前区号 +$currentDialCode",
+                                "Current code +$currentDialCode",
+                                "現在の国番号 +$currentDialCode",
+                                "현재 국가 번호 +$currentDialCode",
+                                "目前區碼 +$currentDialCode",
+                            ),
+                            dialCode = currentDialCode,
+                            selected = true,
+                            onClick = { onSelect(currentDialCode) },
+                        )
+                    }
+                    filtered.forEach { region ->
+                        DialCodeOptionRow(
+                            label = region.localizedName,
+                            dialCode = region.dialCode,
+                            selected = region.dialCode == currentDialCode,
+                            onClick = { onSelect(region.dialCode) },
+                        )
+                    }
+                    if (customCode != null) {
+                        DialCodeOptionRow(
+                            label = tr(
+                                "使用区号 +$customCode",
+                                "Use dial code +$customCode",
+                                "国番号 +$customCode を使用",
+                                "국가 번호 +$customCode 사용",
+                                "使用區碼 +$customCode",
+                            ),
+                            dialCode = customCode,
+                            selected = customCode == currentDialCode,
+                            onClick = { onSelect(customCode) },
+                        )
+                    }
+                    if (filtered.isEmpty() && customCode == null && !showCurrentCustom) {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp, horizontal = 12.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = tr(
+                                    "没有匹配的地区；可直接输入 1~4 位国际区号",
+                                    "No matching region. Enter a 1–4 digit dial code.",
+                                    "一致する地域がありません。1〜4桁の国番号を入力できます",
+                                    "일치하는 지역이 없습니다. 1~4자리 국가 번호를 직접 입력할 수 있습니다",
+                                    "沒有符合的地區；可直接輸入 1~4 位國際區碼",
+                                ),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(Res.string.common_close))
+            }
+        },
+    )
+}
+
+@Composable
+private fun DialCodeOptionRow(
+    label: String,
+    dialCode: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clip(MaterialTheme.shapes.medium)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = null, modifier = Modifier.padding(horizontal = 12.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = "+$dialCode",
+            style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier.padding(start = 12.dp, end = 12.dp),
+        )
     }
 }
 

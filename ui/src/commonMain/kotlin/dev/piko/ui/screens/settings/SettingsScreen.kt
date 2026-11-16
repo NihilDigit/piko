@@ -565,9 +565,15 @@ fun SettingsScreen(
                                     icon = Icons.Outlined.PowerSettingsNew,
                                     title = tr("后台持续传输", "Unrestricted background transfers", "バックグラウンド継続転送", "백그라운드 지속 전송", "背景持續傳輸"),
                                     supporting = if (isBackgroundUnrestricted) {
-                                        tr("已允许在后台不受省电限制持续下载与上传", "Allowed to transfer in the background without battery restrictions", "省電力制限なしでバックグラウンド転送が許可されています", "배터리 제한 없이 백그라운드 전송이 허용됨", "已允許在背景不受省電限制持續下載與上傳")
+                                        tr(
+                                            "已将系统电池优化设为「无限制」",
+                                            "System battery optimization set to Unrestricted",
+                                            "システムのバッテリー最適化が「制限なし」に設定されています",
+                                            "시스템 배터리 최적화가 '제한 없음'으로 설정됨",
+                                            "已將系統電池最佳化設為「無限制」",
+                                        )
                                     } else {
-                                        tr("受系统电池优化限制，切到后台可能被暂停，点击前往允许", "Restricted by system battery optimization; tap to allow background transfers", "システムのバッテリー最適化により制限されています。タップして許可", "시스템 배터리 최적화로 제한됨. 탭하여 백그라운드 전송 허용", "受系統電池最佳化限制，切至背景可能被暫停，點擊前往允許")
+                                        tr("受系统电池优化限制，切到后台可能被暂停，点击前往应用设置将电池设为「无限制」", "Restricted by system battery optimization; tap to set battery usage to Unrestricted in app settings", "システムのバッテリー最適化により制限されています。タップしてアプリ設定からバッテリーを「制限なし」に変更", "시스템 배터리 최적화로 제한됨. 탭하여 앱 설정에서 배터리를 '제한 없음'으로 변경", "受系統電池最佳化限制，切至背景可能被暫停，點擊前往應用程式設定將電池設為「無限制」")
                                     },
                                     onClick = { backgroundTransferAccess.requestUnrestricted() },
                                     trailingIcon = if (isBackgroundUnrestricted) Icons.Outlined.Check else null,

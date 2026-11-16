@@ -114,5 +114,9 @@ class MagnetLinkTextTest {
         )
         assertNull(TorrentMagnet.fromBytes("hello".toByteArray()))
         assertNull(TorrentMagnet.fromBytes(torrent.copyOf(40)))
+        assertNull(TorrentMagnet.fromBytes("d4:infod4:name2147483647:aee".toByteArray()))
+        assertNull(TorrentMagnet.fromBytes("d4:infod4:name-1:aee".toByteArray()))
+        assertNull(TorrentMagnet.fromBytes(("d1:a".repeat(80) + "i1e" + "e".repeat(80)).toByteArray()))
+        assertNull(TorrentMagnet.fromBytes(ByteArray(TorrentMagnet.MAX_TORRENT_BYTES + 1)))
     }
 }

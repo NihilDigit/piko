@@ -9,13 +9,16 @@ import dev.piko.shared.data.AccountMismatchException
 import dev.piko.shared.data.ExpiredAuthContext
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.i18n.tr
+import dev.piko.shared.notice.PikoErrorMapper
 import io.github.nihildigit.pikpak.DeviceAuthorizationException
 import io.github.nihildigit.pikpak.DeviceAuthorizationFailureReason
+import io.github.nihildigit.pikpak.PikPakException
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.io.IOException
 
 /** 系统默认浏览器 Google 设备授权流的界面阶段。 */
 sealed interface BrowserAuthState {
@@ -42,11 +45,31 @@ class LoginState(
     initialAccount: String = "",
 ) {
     private val initialContext: ExpiredAuthContext? = clientManager.resolvePrefillContext(initialAccount)
+    private val initialParsedPhone: ParsedPhone? = initialContext?.loginAccount
+        ?.takeIf { it.isNotBlank() }
+        ?.let(PhoneLoginFormat::splitInternationalPhone)
 
     var reauthContext by mutableStateOf(initialContext)
         private set
 
-    var account by mutableStateOf(initialContext?.loginAccount.orEmpty())
+    var accountMode by mutableStateOf(
+        if (initialParsedPhone != null) LoginAccountMode.PHONE else LoginAccountMode.EMAIL,
+    )
+        private set
+
+    var account by mutableStateOf(
+        if (initialParsedPhone == null) initialContext?.loginAccount.orEmpty() else "",
+    )
+        private set
+
+    var dialCode by mutableStateOf(
+        initialParsedPhone?.dialCode ?: PhoneLoginFormat.defaultDialCode(),
+    )
+        private set
+
+    var phoneNumber by mutableStateOf(
+        initialParsedPhone?.nationalNumber.orEmpty(),
+    )
         private set
 
     var password by mutableStateOf("")
@@ -57,6 +80,8 @@ class LoginState(
 
     var browserAuth by mutableStateOf<BrowserAuthState>(BrowserAuthState.Idle)
         private set
+
+    private var isReauthNotice = initialContext != null
 
     /** 带着失效的账号进来时一开始就按上次登录方式说明如何续期。 */
     var errorMessage by mutableStateOf(
@@ -78,50 +103,131 @@ class LoginState(
         isLoggingIn || browserAuth !is BrowserAuthState.Idle
     }
 
+    val effectiveAccount: String by derivedStateOf {
+        when (accountMode) {
+            LoginAccountMode.EMAIL -> PhoneLoginFormat.normalizeAccountInput(account)
+            LoginAccountMode.PHONE -> {
+                if (dialCode.isBlank() || phoneNumber.isBlank()) {
+                    ""
+                } else {
+                    PhoneLoginFormat.formatE164(dialCode, phoneNumber)
+                }
+            }
+        }
+    }
+
     val canSubmit: Boolean by derivedStateOf {
-        !isBusy && account.isNotBlank() && password.isNotEmpty()
+        !isBusy && effectiveAccount.isNotBlank() && password.isNotEmpty()
+    }
+
+    fun selectAccountMode(mode: LoginAccountMode) {
+        if (mode == accountMode) return
+        if (mode == LoginAccountMode.PHONE && phoneNumber.isBlank() && account.isNotBlank()) {
+            val parsed = PhoneLoginFormat.splitInternationalPhone(account)
+            when {
+                parsed != null -> {
+                    dialCode = parsed.dialCode
+                    phoneNumber = parsed.nationalNumber.take(15)
+                    account = ""
+                }
+                PhoneLoginFormat.isDigitsAndSeparatorsOnly(account) -> {
+                    phoneNumber = PhoneLoginFormat.sanitizeNationalInput(account)
+                    account = ""
+                }
+            }
+        }
+        accountMode = mode
+        clearNonReauthError()
+        syncReauthTarget()
+    }
+
+    fun updateDialCode(code: String) {
+        val cleaned = code.filter(Char::isDigit).dropWhile { it == '0' }.take(4)
+        if (cleaned.isEmpty()) return
+        dialCode = cleaned
+        clearNonReauthError()
+        syncReauthTarget()
+    }
+
+    fun updatePhoneNumber(value: String) {
+        val parsed = PhoneLoginFormat.splitInternationalPhone(value)
+        if (parsed != null) {
+            dialCode = parsed.dialCode
+            phoneNumber = parsed.nationalNumber.take(15)
+        } else {
+            phoneNumber = PhoneLoginFormat.sanitizeNationalInput(value)
+        }
+        clearNonReauthError()
+        syncReauthTarget()
     }
 
     fun updateAccount(value: String) {
         account = value
-        val ctx = reauthContext
-        if (ctx != null && ctx.loginAccount.isNotBlank() && !ctx.loginAccount.equals(value.trim(), ignoreCase = true)) {
-            reauthContext = null
-        }
+        clearNonReauthError()
+        syncReauthTarget()
     }
 
     fun updatePassword(value: String) {
+        if (value == password) return
         password = value
+        clearNonReauthError()
     }
 
     fun dismissError() {
         errorMessage = null
+        isReauthNotice = false
     }
 
     /** 解除续期目标账号锁定，允许改登其他账号。 */
     fun clearReauthTarget() {
         reauthContext = null
         errorMessage = null
+        isReauthNotice = false
+    }
+
+    private fun clearNonReauthError() {
+        if (!isReauthNotice) {
+            errorMessage = null
+        }
+    }
+
+    private fun syncReauthTarget() {
+        val ctx = reauthContext ?: return
+        if (ctx.loginAccount.isBlank()) return
+        val expected = PhoneLoginFormat.normalizeAccountInput(ctx.loginAccount)
+        if (!expected.equals(effectiveAccount, ignoreCase = true)) {
+            reauthContext = null
+            errorMessage = null
+            isReauthNotice = false
+        }
     }
 
     fun login() {
         if (!canSubmit) return
+        val currentMode = accountMode
+        if (currentMode == LoginAccountMode.PHONE && !PhoneLoginFormat.isValidPhone(dialCode, phoneNumber)) {
+            isReauthNotice = false
+            errorMessage = tr(
+                "请输入有效的手机号码",
+                "Please enter a valid phone number",
+                "有効な電話番号を入力してください",
+                "유효한 전화번호를 입력해 주세요",
+                "請輸入有效的手機號碼",
+            )
+            return
+        }
         isLoggingIn = true
+        isReauthNotice = false
         errorMessage = null
-        val submittedAccount = account.trim()
+        val submittedAccount = effectiveAccount
         val submittedPassword = password
         val expectedAccount = reauthContext?.storageKey
         scope.launch {
             try {
                 clientManager.login(submittedAccount, expectedAccount = expectedAccount) { submittedPassword }
                     .onFailure {
-                        errorMessage = it.message ?: tr(
-                            "登录失败，请检查账号密码",
-                            "Sign-in failed. Check your account and password",
-                            "ログインに失敗しました。アカウントとパスワードを確認してください",
-                            "로그인 실패. 계정과 비밀번호를 확인해 주세요",
-                            "登入失敗，請檢查帳號密碼",
-                        )
+                        isReauthNotice = false
+                        errorMessage = friendlyPasswordError(it, currentMode)
                     }
             } finally {
                 isLoggingIn = false
@@ -132,6 +238,7 @@ class LoginState(
     /** 申请设备授权码并在系统默认浏览器中打开官方 Google 登录页，随后在后台轮询确认结果。 */
     fun startGoogleLogin(openUrl: (String) -> Unit) {
         if (isBusy) return
+        isReauthNotice = false
         errorMessage = null
         browserAuth = BrowserAuthState.Starting
         val expectedAccount = reauthContext?.storageKey
@@ -140,6 +247,7 @@ class LoginState(
             val tx = clientManager.startGoogleDeviceLogin(expectedAccount = expectedAccount).getOrElse { err ->
                 if (err !is CancellationException) {
                     browserAuth = BrowserAuthState.Idle
+                    isReauthNotice = false
                     errorMessage = friendlyGoogleError(err)
                 }
                 return@launch
@@ -153,6 +261,7 @@ class LoginState(
                 expiresAtEpochSec = nowSec + tx.authorization.expiresInSeconds,
             )
             runCatching { openUrl(tx.googleAuthUrl) }.onFailure {
+                isReauthNotice = false
                 errorMessage = tr(
                     "未能自动打开浏览器，请点击「复制登录链接」到系统浏览器中打开",
                     "Could not open the browser automatically. Copy the sign-in link and open it in your browser.",
@@ -168,6 +277,7 @@ class LoginState(
                 .onFailure { err ->
                     if (err !is CancellationException) {
                         browserAuth = BrowserAuthState.Idle
+                        isReauthNotice = false
                         errorMessage = friendlyGoogleError(err)
                     }
                 }
@@ -185,6 +295,64 @@ class LoginState(
         googleAuthJob = null
         clientManager.cancelGoogleDeviceLogin(waiting?.txId)
         browserAuth = BrowserAuthState.Idle
+    }
+
+    private fun friendlyPasswordError(err: Throwable, mode: LoginAccountMode): String = when (err) {
+        is AccountMismatchException, is IllegalArgumentException -> err.message ?: defaultPasswordError()
+        is PikPakException -> {
+            val serverMsg = err.errorMessage.lowercase()
+            when {
+                err.isCaptchaRequired || "captcha" in serverMsg -> tr(
+                    "需要完成安全验证，请稍后重试或使用 Google 继续",
+                    "Security verification is required. Try again shortly or continue with Google.",
+                    "セキュリティ確認が必要です。しばらくしてから再試行するか Google で続行してください",
+                    "보안 인증이 필요합니다. 잠시 후 다시 시도하거나 Google로 계속해 주세요",
+                    "需要完成安全驗證，請稍後重試或使用 Google 繼續",
+                )
+                err.httpStatus == 429 || "too_many" in serverMsg || "rate_limit" in serverMsg || "frequent" in serverMsg -> tr(
+                    "尝试次数过多，请稍后再试",
+                    "Too many attempts. Please try again later.",
+                    "試行回数が多すぎます。しばらくしてから再試行してください",
+                    "시도 횟수가 너무 많습니다. 잠시 후 다시 시도해 주세요",
+                    "嘗試次數過多，請稍後再試",
+                )
+                (err.httpStatus ?: 0) >= 500 -> tr(
+                    "PikPak 服务暂时不可用，请稍后重试",
+                    "PikPak service is temporarily unavailable. Please try again later.",
+                    "PikPak サービスが一時的に利用できません。しばらくしてから再試行してください",
+                    "PikPak 서비스를 일시적으로 이용할 수 없습니다. 잠시 후 다시 시도해 주세요",
+                    "PikPak 服務暫時無法使用，請稍後重試",
+                )
+                err.errorCode == 4002 || serverMsg in CREDENTIAL_ERROR_CODES -> {
+                    if (mode == LoginAccountMode.PHONE) {
+                        tr(
+                            "手机号或密码不正确；若该手机号尚未设置密码，请先在 PikPak 官方客户端设置密码或使用 Google 登录",
+                            "Incorrect phone number or password. If this number has no password set yet, set one in the official PikPak app or continue with Google.",
+                            "電話番号またはパスワードが正しくありません。パスワード未設定の場合は公式アプリで設定するか Google でログインしてください",
+                            "전화번호 또는 비밀번호가 올바르지 않습니다. 비밀번호를 설정하지 않았다면 공식 앱에서 설정하거나 Google로 로그인해 주세요",
+                            "手機號碼或密碼不正確；若該門號尚未設定密碼，請先於 PikPak 官方應用程式設定密碼或使用 Google 登入",
+                        )
+                    } else {
+                        tr(
+                            "账号或密码不正确，请核对后重试",
+                            "Incorrect account or password. Please check and try again.",
+                            "アカウントまたはパスワードが正しくありません",
+                            "계정 또는 비밀번호가 올바르지 않습니다. 다시 확인해 주세요",
+                            "帳號或密碼不正確，請核對後重試",
+                        )
+                    }
+                }
+                else -> PikoErrorMapper.reason(err.errorMessage) ?: defaultPasswordError()
+            }
+        }
+        is IOException -> tr(
+            "网络连接失败，请检查网络或代理设置后重试",
+            "Network connection failed. Check your connection or proxy settings and try again.",
+            "ネットワーク接続に失敗しました。接続またはプロキシ設定を確認して再試行してください",
+            "네트워크 연결에 실패했습니다. 네트워크 또는 프록시 설정을 확인한 후 다시 시도해 주세요",
+            "網路連線失敗，請檢查網路或代理設定後重試",
+        )
+        else -> defaultPasswordError()
     }
 
     private fun friendlyGoogleError(err: Throwable): String = when (err) {
@@ -210,6 +378,23 @@ class LoginState(
     }
 
     private companion object {
+        val CREDENTIAL_ERROR_CODES = setOf(
+            "invalid_account_or_password",
+            "invalid_credentials",
+            "password_error",
+            "invalid_password",
+            "account_not_found",
+            "user_not_found",
+        )
+
+        fun defaultPasswordError() = tr(
+            "登录失败，请检查账号密码",
+            "Sign-in failed. Check your account and password",
+            "ログインに失敗しました。アカウントとパスワードを確認してください",
+            "로그인 실패. 계정과 비밀번호를 확인해 주세요",
+            "登入失敗，請檢查帳號密碼",
+        )
+
         fun expiredPasswordMessage() = tr(
             "登录已失效，请重新输入密码或使用 Google 登录",
             "Session expired. Enter your password again or continue with Google.",

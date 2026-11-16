@@ -12,6 +12,7 @@ kotlin {
         compileSdk {
             version = release(37) { minorApiLevel = 1 }
         }
+        minSdk = 26
     }
     jvm("desktop")
     listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
