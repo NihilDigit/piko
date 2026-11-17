@@ -468,6 +468,8 @@ fun MobilePlayerControls(
                 }
                 Box(Modifier.fillMaxSize()) {
                     PlayerBottomBar(
+                        isPlaying = isPlaying,
+                        onPlayPause = { ui.interacted(); onPlayPause() },
                         isLandscape = isLandscape,
                         isFullscreen = isFullscreen,
                         thumbOnHoverOnly = seekThumbOnHoverOnly,
@@ -544,12 +546,12 @@ fun MobilePlayerControls(
             )
 
             PlayerCenterControls(
-                visible = centerVisible,
+                visible = centerVisible && (isLoading || centerIndicator != null),
                 isPlaying = isPlaying,
                 isLoading = isLoading,
                 indicator = centerIndicator,
                 loadingSpeedText = loadingSpeedText,
-                modifier = Modifier.align(Alignment.Center),
+                modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 120.dp),
                 onPlayPause = {
                     if (chromeVisible) {
                         ui.interacted()

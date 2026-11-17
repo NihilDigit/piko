@@ -37,6 +37,8 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.produceState
+import dev.piko.ui.LocalPikoServices
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -118,6 +120,15 @@ internal fun PosterCard(
     /** 文件夹里直接放着归档条目，见 itemMarks。 */
     folderHasVault: Boolean = false,
 ) {
+    val repository = LocalPikoServices.current.driveRepository
+    val durationSeconds by produceState<Long?>(initialValue = null, file, repository) {
+        value = repository.previewDurationSeconds(file)
+    }
+    val durationLabel = durationSeconds?.takeIf { it > 0 }?.let { seconds ->
+        val minutes = (seconds % 3600 / 60).toString().padStart(2, '0')
+        val remainder = (seconds % 60).toString().padStart(2, '0')
+        if (seconds >= 3600) "${seconds / 3600}:$minutes:$remainder" else "$minutes:$remainder"
+    }
     val item = file.filePresentation(title, original, tags, code, resolution, folderHasVault, isEmptyFolder)
     val hover = fileItemHover()
     val coverShape = MaterialTheme.shapes.medium
@@ -157,7 +168,7 @@ internal fun PosterCard(
                         .wrapContentSize(Alignment.TopEnd),
                 )
             }
-            if (code != null || resolution != null) {
+            if (code != null || resolution != null || durationLabel != null) {
                 // 左右两角放在同一行：窄卡片上长番号会碰到清晰度，同一行里番号先让出位置
                 Row(
                     modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(6.dp),
@@ -168,6 +179,7 @@ internal fun PosterCard(
                         if (code != null) MediaTag(code, onMedia = true, emphasized = true)
                     }
                     if (resolution != null) MediaTag(resolution, onMedia = true)
+                    if (durationLabel != null) MediaTag(durationLabel, onMedia = true)
                 }
             }
         }
@@ -186,6 +198,7 @@ internal fun PosterCard(
                 Column(Modifier.weight(1f)) {
                     FileItemTitle(item.name, style = MaterialTheme.typography.bodyMedium, maxLines = TITLE_LINES)
                     FileItemOriginal(item.name)
+                    dev.piko.ui.components.FileAddedTime(file)
                 }
             }
             if (trailingShown && !isSelectionMode) {

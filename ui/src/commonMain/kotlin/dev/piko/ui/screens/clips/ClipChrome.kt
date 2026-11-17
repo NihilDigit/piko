@@ -55,6 +55,9 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Surface
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.TooltipAnchorPosition
@@ -139,6 +142,8 @@ internal fun ClipFeedTopBar(
     onHideChrome: (() -> Unit)? = null,
     landscapeLocked: Boolean? = null,
     onToggleLandscape: () -> Unit = {},
+    volume: Float = 1f,
+    onVolumeChange: (Float) -> Unit = {},
 ) {
     val buttonSize = if (compact) 40.dp else 48.dp
     // 在主窗口里全屏或停在右侧一栏时，这一行贴着窗口右上角，窗口按钮接在关闭后面
@@ -187,14 +192,28 @@ internal fun ClipFeedTopBar(
                     shortcut = "A",
                 )
             }
-            ChromeIconButton(
-                icon = if (muted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                label = if (muted) tr("取消静音", "Unmute", "ミュートを解除", "음소거 해제", "取消靜音") else tr("静音", "Mute", "ミュート", "음소거", "靜音"),
-                onClick = onToggleMute,
-                size = buttonSize,
-                tooltip = true,
-                shortcut = "M",
-            )
+            Box {
+                var showVolume by remember { mutableStateOf(false) }
+                ChromeIconButton(
+                    icon = if (muted || volume == 0f) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                    label = tr("音量", "Volume", "音量", "음량", "音量"),
+                    onClick = { showVolume = !showVolume },
+                    size = buttonSize,
+                    tooltip = true,
+                    shortcut = "M",
+                )
+                DropdownMenu(expanded = showVolume, onDismissRequest = { showVolume = false }) {
+                    Column(Modifier.widthIn(min = 200.dp, max = 240.dp).padding(horizontal = 16.dp)) {
+                        Text(tr("音量", "Volume", "音量", "음량", "音量") + " ${(volume * 100).toInt()}%")
+                        Slider(value = volume, onValueChange = onVolumeChange, valueRange = 0f..1f)
+                        TextButton(onClick = {
+                            if (muted && volume == 0f) onVolumeChange(1f) else onToggleMute()
+                        }) {
+                            Text(if (muted) tr("取消静音", "Unmute", "ミュートを解除", "음소거 해제", "取消靜音") else tr("静音", "Mute", "ミュート", "음소거", "靜音"))
+                        }
+                    }
+                }
+            }
             if (onDock != null) {
                 // 置顶与播放窗口同一个按钮：一边刷一边浏览网盘时，独立窗口一点主窗口就被盖到后面
                 val window = LocalFramelessWindow.current

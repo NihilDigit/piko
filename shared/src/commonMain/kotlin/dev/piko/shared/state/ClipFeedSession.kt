@@ -82,6 +82,7 @@ class ClipFeedSession(
     private val media: PikoMediaRepository,
     private val cacheStore: PikoCacheStore?,
     private val scope: CoroutineScope,
+    private val audioPreferences: dev.piko.data.auth.PikoUserPreferences? = null,
 ) {
     var root by mutableStateOf<PikoPathBreadcrumb?>(null)
         private set
@@ -134,7 +135,28 @@ class ClipFeedSession(
         private set
 
     /** 静音。放在会话上而不是页面上：打开完整播放器或换到独立窗口时页面会重建，静音要跟着走。 */
-    var muted by mutableStateOf(false)
+    private val savedAudio = audioPreferences?.clipAudioSettings?.split(",").orEmpty()
+    var muted by mutableStateOf(savedAudio.getOrNull(1) == "true")
+        private set
+
+    var volume by mutableStateOf(savedAudio.firstOrNull()?.toFloatOrNull()?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f)
+        private set
+
+    private fun saveAudio() {
+        audioPreferences?.clipAudioSettings = "$volume,$muted"
+    }
+
+    fun toggleMute() {
+        if (muted && volume == 0f) volume = 1f
+        muted = !muted
+        saveAudio()
+    }
+
+    fun updateVolume(value: Float) {
+        volume = value.coerceIn(0f, 1f)
+        muted = volume == 0f
+        saveAudio()
+    }
 
     /** 控件连同顶栏全部藏起。与 [muted] 同理放在会话上，关掉信息流时清零，不存盘。 */
     var immersive by mutableStateOf(false)

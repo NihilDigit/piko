@@ -2151,6 +2151,34 @@ open class PikoDriveRepository(
         emit(FolderUsage(files, bytes, FolderUsage.Progress.COMPLETE))
     }.flowOn(Dispatchers.Default)
 
+    private val previewDurationFetches = Semaphore(2)
+    private val previewDurations = LinkedHashMap<String, Long?>()
+
+    /** Only visible video cards request details; successful metadata is also stored by fetchDetail. */
+    suspend fun previewDurationSeconds(file: FileStat): Long? {
+        if (!file.isPlayableVideo() || file.isFolder) return null
+        contentMetadataOf(file)?.durationMillis?.takeIf { it > 0 }?.let { return it / 1000 }
+        file.params["duration"]?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 1 }?.let { return it.toLong() }
+        if (LocalLocation.isLocal(file.id) || file.isVaulted || file.id.startsWith("import-")) return null
+        val owner = clientManager.currentClient.value ?: return null
+        val key = "${owner.account}:${file.id}"
+        return previewDurationFetches.withPermit {
+            synchronized(previewDurations) {
+                if (previewDurations.containsKey(key)) return@withPermit previewDurations[key]
+            }
+            if (clientManager.currentClient.value !== owner) return@withPermit null
+            val detail = runSuspendCatching { fetchDetail(file.id, owner) }.getOrNull() ?: return@withPermit null
+            val seconds = detail.params["duration"]?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 1 }?.toLong()
+                ?: detail.medias.firstOrNull { it.isOrigin }?.video?.duration?.takeIf { it > 0 }
+                ?: detail.medias.firstNotNullOfOrNull { it.video?.duration?.takeIf { d -> d > 0 } }
+            synchronized(previewDurations) {
+                previewDurations[key] = seconds
+                if (previewDurations.size > 512) previewDurations.remove(previewDurations.keys.first())
+            }
+            seconds
+        }
+    }
+
     suspend fun getFileDetail(fileId: String): Result<FileDetail> = withContext(Dispatchers.Default) {
         runSuspendCatching { fetchDetail(fileId, client) }
     }

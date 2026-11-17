@@ -39,6 +39,10 @@ class StoredPikoPreferences(
         this.language.value = language
     }
 
+    override var clipAudioSettings: String
+        get() = settings.get("player.clipAudio", "1.0,false")
+        set(value) { settings.set("player.clipAudio", value) }
+
     private val clipAutoExtend = MutableStateFlow(settings.get("player.clipAutoExtend", "true").toBoolean())
     override val clipAutoExtendFlow: Flow<Boolean> = clipAutoExtend.asStateFlow()
     override suspend fun setClipAutoExtend(enabled: Boolean) {

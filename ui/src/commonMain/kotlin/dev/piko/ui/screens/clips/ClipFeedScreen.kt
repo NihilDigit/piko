@@ -234,7 +234,9 @@ fun ClipFeedScreen(
         ClipFeedTopBar(
             title = session.scopeLabel,
             muted = session.muted,
-            onToggleMute = { session.muted = !session.muted },
+            volume = session.volume,
+            onVolumeChange = session::updateVolume,
+            onToggleMute = { session.toggleMute() },
             onClose = { if (inLandscape) session.landscape = false else onBackClick() },
             compact = compact,
             autoAdvance = session.autoAdvance,
@@ -384,6 +386,8 @@ private fun ClipPager(
     val chromeAlpha by animateFloatAsState(if (scrubbing) 0f else 1f, motion.defaultEffectsSpec())
     val muted = session.muted
     val latestMuted by rememberUpdatedState(muted)
+    val volume = session.volume
+    val latestVolume by rememberUpdatedState(volume)
     // 开播前先缓存好的段数；到 WARM_UP_CLIPS 或超时才开播
     var warmed by remember { mutableIntStateOf(0) }
     var warmUpDone by remember { mutableStateOf(false) }
@@ -508,7 +512,7 @@ private fun ClipPager(
                     playWhenReady = false,
                 )
                 // 换文件后音量是否沿用看后端，静音时每次装完都再设一遍
-                if (latestMuted) players[slot].setVolume(0f)
+                players[slot].setVolume(if (latestMuted) 0f else latestVolume)
                 openMs = openStarted.elapsedNow().inWholeMilliseconds
             } catch (e: CancellationException) {
                 throw e
@@ -547,7 +551,7 @@ private fun ClipPager(
         if (!pointerSource.isTouchLike) runCatching { focusRequester.requestFocus() }
     }
     LaunchedEffect(pagerState) { snapshotFlow { latestSettled }.collect(session::moveTo) }
-    LaunchedEffect(muted) { players.forEach { it.setVolume(if (muted) 0f else 1f) } }
+    LaunchedEffect(muted, volume) { players.forEach { it.setVolume(if (muted) 0f else volume) } }
     // 手指还按着就翻走了，松手的事件落不到这一页
     LaunchedEffect(settled) { stopBoost() }
 
@@ -989,7 +993,7 @@ private fun ClipPager(
                     Key.Spacebar, Key.MediaPlayPause -> if (!repeat) togglePause()
                     Key.MediaPlay -> if (!repeat && paused) togglePause()
                     Key.MediaPause, Key.MediaStop -> if (!repeat && !paused) togglePause()
-                    Key.M -> if (!repeat) session.muted = !session.muted
+                    Key.M -> if (!repeat) session.toggleMute()
                     Key.A -> if (!repeat) onToggleAutoAdvance()
                     else -> return@onPreviewKeyEvent false
                 }
