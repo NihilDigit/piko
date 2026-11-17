@@ -16,8 +16,8 @@ import kotlin.test.assertTrue
 import org.junit.Assume
 
 /**
- * 真跑 apply-update.ps1（Windows PowerShell 5.1，与用户机器上同一个），对着临时目录里的假安装目录。
- * 只在 Windows 上跑。重启应用用一个 .cmd 顶替，它留下 started.txt。
+ * 真跑 Windows 独立更新器（`WindowsUpdateApplier`，经 `DesktopAppUpdater.launchWindowsApplier` 启动），
+ * 对着临时目录里的假安装目录验证补丁事务、占用退避、回滚恢复与竞争锁。只在 Windows 上跑。
  */
 class ApplyUpdateScriptTest {
     private val root: File = Files.createTempDirectory("piko-apply").toFile()
@@ -60,30 +60,26 @@ class ApplyUpdateScriptTest {
     }
 
     private fun run(mode: String = "patch", processId: Long = exitedPid(), waitSeconds: Int = 120): Int {
-        val script = root.resolve("apply-update.ps1")
-        javaClass.getResourceAsStream("/update/apply-update.ps1")!!.use { input -> script.outputStream().use { input.copyTo(it) } }
         val checksums = staging.resolve("staged.sha256")
         val keep = staging.resolve("keep.txt")
         if (mode == "patch") {
+            checksums.parentFile.mkdirs()
             checksums.writeText(files.walkTopDown().filter { it.isFile }.joinToString("") { "${sha256(it)}  files/${it.relativeTo(files).invariantSeparatorsPath}\n" })
             keep.writeText("app/a.jar\napp/b-2.jar\napp/Piko.cfg\n")
         }
-        val process = ProcessBuilder(
-            "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-File", script.absolutePath,
-            "-ProcessId", processId.toString(),
-            "-InstallDir", shortPath(install),
-            "-Mode", mode,
-            "-Source", files.absolutePath,
-            "-Executable", "relaunch.cmd",
-            "-LogFile", staging.resolve("update.log").absolutePath,
-            "-Checksums", checksums.absolutePath,
-            "-KeepList", keep.absolutePath,
-            "-WaitSeconds", waitSeconds.toString(),
-        ).redirectErrorStream(true).start()
-        val output = process.inputStream.bufferedReader().readText()
+        val process = DesktopAppUpdater.launchWindowsApplier(
+            mode = mode,
+            installDir = File(shortPath(install)),
+            exe = install.resolve("relaunch.cmd"),
+            staging = staging,
+            source = if (mode == "patch") files else null,
+            checksums = checksums.takeIf { it.isFile },
+            keep = keep.takeIf { it.isFile },
+            watchedProcessSpecs = listOf("$processId:-1"),
+            waitSeconds = waitSeconds,
+        )
         val code = process.waitFor()
-        println(output)
+        staging.resolve("applier.log").takeIf { it.isFile }?.let { println(it.readText()) }
         staging.resolve("update.log").takeIf { it.isFile }?.let { println(it.readText()) }
         return code
     }
@@ -191,5 +187,21 @@ class ApplyUpdateScriptTest {
         assertTrue(failed.isFile)
         waitForStart()
         assertTrue(started.isFile)
+    }
+
+    @Test
+    fun competingRecoverExitsQuietlyWhileJournalIsLocked() {
+        journal.writeText("staging\t${staging.absolutePath}\n~\tapp\\a.jar\n")
+        java.nio.channels.FileChannel.open(
+            journal.toPath(),
+            java.nio.file.StandardOpenOption.READ,
+            java.nio.file.StandardOpenOption.WRITE,
+        ).use { ch ->
+            ch.lock().use {
+                assertEquals(0, run(mode = "recover"))
+                assertTrue(journal.isFile, "被独占锁定的日志不该被竞争进程删除")
+                assertFalse(started.isFile, "竞争进程不该抢先拉起应用")
+            }
+        }
     }
 }

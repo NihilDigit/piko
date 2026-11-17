@@ -1,6 +1,6 @@
 # 应用内更新
 
-Android 与桌面端均支持应用内检查与安装更新。跨平台版本检查、多语言更新说明解析与分段下载位于本目录（`GithubReleaseClient`、`GithubReleases.kt`），具体安装落地由各平台分别实现：Android 移交系统 `PackageInstaller`；macOS 经 `apply-update-mac.sh` 整包替换 `Piko.app`；Linux 仅针对 AppImage 执行纯 Kotlin `.zsync` 块级差分替换（详见 `../../../../../../../../desktopApp/AGENTS.md`）；Windows 由 `DesktopAppUpdater` 与 `apply-update.ps1` 执行带事务回滚的补丁替换、便携版 `image.zip` 按需 Range 提取或 MSI 整包重装。
+Android 与桌面端均支持应用内检查与安装更新。跨平台版本检查、多语言更新说明解析与分段下载位于本目录（`GithubReleaseClient`、`GithubReleases.kt`），具体安装落地由各平台分别实现：Android 移交系统 `PackageInstaller`；macOS 经 `apply-update-mac.sh` 整包替换 `Piko.app`；Linux 仅针对 AppImage 执行纯 Kotlin `.zsync` 块级差分替换（详见 `../../../../../../../../desktopApp/AGENTS.md`）；Windows 由 `DesktopAppUpdater` 复制随包 JRE 至临时目录并以 `javaw.exe -jar` 启动纯 `java.base` 更新器 `WindowsUpdateApplier`（彻底避免调用 `powershell.exe -ExecutionPolicy Bypass` 引发安全软件 LOLBin 行为误报），执行带事务回滚的补丁替换、便携版 `image.zip` 按需 Range 提取或 MSI 整包重装。
 
 ## 版本检查、安全边界与多语言更新说明
 
@@ -40,8 +40,8 @@ Android 与桌面端均支持应用内检查与安装更新。跨平台版本检
 
 ### Windows 补丁事务日志、回滚与 MSI 修复兼容
 
-- **崩溃一致性事务（`apply-update.ps1`）**：脚本等待启动器与 JVM 子进程双双退出（超时未退则写入失败标记并重新拉起旧版；安装目录无写权限如便携版置于 `Program Files` 下时客户端直接仅提供下载页），在改动任何文件前先在安装目录落盘并独占锁定 `.piko-update.journal` 事务日志。文件操作严格遵循 `新增文件 -> 替换既有文件 -> 最后更新 Piko.cfg` 的顺序（遇杀毒软件或系统索引器短暂占用文件句柄时退避重试约 `7 秒`），提交完成后删除日志；若中途断电或脚本被强杀，下次启动时 `DesktopAppUpdater.create` 检测到未被独占锁定的残留 `.piko-update.journal`，立即以 `-Mode recover` 移交脚本并自行退出，由脚本依据日志完整回滚至旧版、记录失败提示后重启旧版（日志存在期间 `.old` 与 `.new` 备份绝不当作普通残留清理）。该机制由真跑 PowerShell 的 `ApplyUpdateScriptTest` 与 `package-smoke/windows.ps1` 场景 7 端到端验证。
-- **MSI 就地补丁与 Windows Installer 修复（Repair）兼容**：MSI 安装版同样优先采用就地打补丁以节省流量与时间。Windows Installer 执行修复（控制面板「修复」或默认 `msiexec /f` 即 `omus` 模式）时，对于无 PE 版本号的文件（如 `.jar`、`app.aot`），只要其**创建时间早于修改时间**即视为用户修改过的文件而予以保留；对于带 PE 版本号的 `Piko.exe`，高版本不会被旧版覆盖。因此 `apply-update.ps1` 在替换补丁文件后显式继承原文件的创建时间（`1.1.0` 旧脚本升级那一跳则依赖 Windows 默认开启的 NTFS 15 秒文件名隧道机制自动继承创建时间），并按清单将类路径 jar 的修改时间还原至与 `-Dpiko.classpath-mtime` 一致的构建时刻，确保修复操作要么完好保留补丁，要么在强制全量重装（`/fa`）时干净退回可正常启动并再次提示更新的旧版，绝不损坏安装镜像（注意：就地补丁不修改 Windows「已安装应用」列表中登记的初始 MSI 版本号）。
+- **崩溃一致性事务（`WindowsUpdateApplier`）**：更新器先将随包 `runtime/` 独立拷贝至临时目录并完成 `ready` 文件握手确认后再通知主进程退出（防止拷贝的运行时不可用时主进程白白退出；已完成更新遗留的临时辅助目录由下次启动后台线程按属主 PID 存活态安全回收），随后按 `<pid>:<startEpochMillis>` 等待启动器与 JVM 子进程双双退出（超时未退则写入失败标记并重新拉起旧版；安装目录无写权限如便携版置于 `Program Files` 下时客户端直接仅提供下载页），在改动任何文件前先在安装目录落盘并以强制文件锁（`FileChannel.tryLock`）独占锁定 `.piko-update.journal` 事务日志。文件操作严格遵循 `新增文件 -> 替换既有文件 -> 最后更新 Piko.cfg` 的顺序（遇杀毒软件或系统索引器短暂占用文件句柄时退避重试约 `7 秒`），提交完成后删除日志；若中途断电或进程被强杀，下次启动时 `DesktopAppUpdater.create` 检测到未被独占锁定的残留 `.piko-update.journal`，立即以 `recover` 模式移交更新器并自行退出，依据日志完整回滚至旧版、记录失败提示后重启旧版（日志存在期间 `.old` 与 `.new` 备份绝不当作普通残留清理）。该机制由 `ApplyUpdateScriptTest` 与 `package-smoke/windows.ps1` 场景 7 端到端验证。
+- **MSI 就地补丁与 Windows Installer 修复（Repair）兼容**：MSI 安装版同样优先采用就地打补丁以节省流量与时间。Windows Installer 执行修复（控制面板「修复」或默认 `msiexec /f` 即 `omus` 模式）时，对于无 PE 版本号的文件（如 `.jar`、`app.aot`），只要其**创建时间早于修改时间**即视为用户修改过的文件而予以保留；对于带 PE 版本号的 `Piko.exe`，高版本不会被旧版覆盖。因此 `WindowsUpdateApplier` 在替换补丁文件后显式继承原文件的创建时间（`1.1.0` 旧脚本升级那一跳则依赖 Windows 默认开启的 NTFS 15 秒文件名隧道机制自动继承创建时间），并按清单将类路径 jar 的修改时间还原至与 `-Dpiko.classpath-mtime` 一致的构建时刻，确保修复操作要么完好保留补丁，要么在强制全量重装（`/fa`）时干净退回可正常启动并再次提示更新的旧版，绝不损坏安装镜像（注意：就地补丁不修改 Windows「已安装应用」列表中登记的初始 MSI 版本号）。
 
 ## 端到端安装与历史升级冒烟测试
 

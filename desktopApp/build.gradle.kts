@@ -14,7 +14,9 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 import org.gradle.api.tasks.JavaExec
+import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.testing.Test
+import org.gradle.jvm.tasks.Jar
 import org.jetbrains.compose.desktop.application.dsl.AotMode
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.compose.desktop.application.tasks.AbstractCheckNativeDistributionRuntime
@@ -220,6 +222,36 @@ val bundledAppResources by tasks.registering(Sync::class) {
         from("package/windows/torrent.ico")
     }
     into(layout.buildDirectory.dir("appResources/common"))
+}
+
+// Windows 应用内更新器：纯 java.base 单类打包为独立可执行 jar 并以 .bin 资源名塞进类路径，
+// 既彻底消除运行期释放 .ps1 调 powershell.exe -ExecutionPolicy Bypass，又避免 ProGuard 过滤嵌套 .jar。
+val compileWindowsUpdateApplier by tasks.registering(JavaCompile::class) {
+    source = fileTree("updaterHelper/src/main/java") { include("**/*.java") }
+    classpath = files()
+    destinationDirectory.set(layout.buildDirectory.dir("updaterHelper/classes"))
+    javaCompiler.set(javaToolchains.compilerFor { languageVersion = JavaLanguageVersion.of(25) })
+    options.encoding = "UTF-8"
+    options.release.set(21)
+}
+
+val packageWindowsUpdateApplier by tasks.registering(Jar::class) {
+    dependsOn(compileWindowsUpdateApplier)
+    from(compileWindowsUpdateApplier.map { it.destinationDirectory })
+    manifest {
+        attributes("Main-Class" to "dev.piko.updater.WindowsUpdateApplier")
+    }
+    destinationDirectory.set(layout.buildDirectory.dir("updaterHelper/resources/update"))
+    archiveFileName.set("piko-update-applier.bin")
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+}
+
+kotlin.sourceSets.named("desktopMain") {
+    resources.srcDir(packageWindowsUpdateApplier.map { layout.buildDirectory.dir("updaterHelper/resources") })
+}
+tasks.matching { it.name == "desktopProcessResources" || it.name == "assembleDesktopMainResources" }.configureEach {
+    dependsOn(packageWindowsUpdateApplier)
 }
 
 // 升级唯一标识：换了它，已安装版本会被当成另一个产品。切勿修改。

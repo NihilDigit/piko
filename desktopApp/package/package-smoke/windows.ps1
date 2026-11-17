@@ -5,7 +5,7 @@
 # 包名打（build.gradle.kts 的 pikoDesktopUpgradeUuid、pikoDesktopPackageName），本机跑时不碰已装的 Piko。
 #
 # 应用经 JAVA_TOOL_OPTIONS 指向本脚本起的假 Release（fake_release.py），并带 piko.update.auto：
-# 开屏查到新版即自动下载、退出、交给 apply-update.ps1，不需要有人点。
+# 开屏查到新版即自动下载、退出、交给独立 Java 更新器 WindowsUpdateApplier，不需要有人点。
 #
 # 场景，依次：
 #   1. 全新安装 MSI，启动后存活，没有新版时不动

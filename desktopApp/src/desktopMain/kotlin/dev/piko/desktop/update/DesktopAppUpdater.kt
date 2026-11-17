@@ -110,9 +110,9 @@ sealed interface DesktopUpdatePlan {
  * 走整包重装，便携版从整个应用目录的 image.zip 里只取不同的文件。增量更新时若有以本机版本为基准的差分包（CI 为最近几个版本各出一份），
  * 改下差分包。两个架构的更新同一条路，附件名按架构区分。
  *
- * 替换文件要先退出自己：下载校验完停在 [UpdateStatus.ReadyToRestart]，用户同意后写一个
- * PowerShell 脚本、脱离本进程启动，由它等本进程退出、替换或跑 msiexec、再启动新版本，见
- * resources/update/apply-update.ps1。本进程经 [exitRequests] 请入口退出。
+ * 替换文件要先退出自己：下载校验完停在 [UpdateStatus.ReadyToRestart]，用户同意后将随包 JRE 复制至临时工作目录
+ * 并以 `javaw.exe -jar` 启动纯 `java.base` 更新器 `WindowsUpdateApplier`（macOS 为 `apply-update-mac.sh`），
+ * 由它等本进程退出、替换文件或跑 `msiexec`、再启动新版本。本进程经 [exitRequests] 请入口退出。
  */
 class DesktopAppUpdater private constructor(
     private val installation: Installation?,
@@ -458,9 +458,6 @@ class DesktopAppUpdater private constructor(
         if (plan is DesktopUpdatePlan.MacBundle) return launchMacScript(update, plan, installation)
         if (plan is DesktopUpdatePlan.AppImage) return installAppImage(update, plan)
         val staging = stagingDir(update)
-        val script = staging.resolve("apply-update.ps1")
-        val resource = checkNotNull(javaClass.getResourceAsStream("/update/apply-update.ps1")) { "Missing bundled apply-update.ps1 resource" }
-        resource.use { input -> script.outputStream().use { input.copyTo(it) } }
         val (mode, source) = when (plan) {
             is DesktopUpdatePlan.Patch, is DesktopUpdatePlan.Delta, is DesktopUpdatePlan.Image -> "patch" to staging.resolve(PATCH_DIR)
             is DesktopUpdatePlan.Installer -> "msi" to staging.resolve(plan.msi.name)
@@ -468,28 +465,18 @@ class DesktopAppUpdater private constructor(
         }
         val checksums = staging.resolve(CHECKSUMS_FILE)
         checksums.writeText(stagedChecksums(update.plan).joinToString("") { (sha256, path) -> "$sha256  $path\n" })
-        // 新版应用目录的全部文件。换完之后 app 与 runtime 下不在其中的即旧版留下的，脚本删掉；MSI 模式用不上
+        // 新版应用目录的全部文件。换完之后 app 与 runtime 下不在其中的即旧版留下的，更新器删掉；MSI 模式用不上
         val keep = staging.resolve(KEEP_FILE)
         manifestOf(update.plan)?.let { manifest -> keep.writeText(manifest.files.joinToString("") { "${it.path}\n" }) }
-        // JDK 在 Windows 上以 CREATE_NO_WINDOW 创建子进程，控制台程序不会闪出窗口；
-        // 子进程不随父进程退出，脚本在本进程退出后接着跑
-        ProcessBuilder(
-            "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-File", script.absolutePath,
-            "-ProcessId", appProcessIds(installation.exe).joinToString(","),
-            "-InstallDir", installation.dir.absolutePath,
-            "-Mode", mode,
-            "-Source", source.absolutePath,
-            "-Executable", installation.exe.name,
-            "-LogFile", staging.resolve("update.log").absolutePath,
-            "-Checksums", checksums.absolutePath,
-            "-KeepList", if (keep.isFile) keep.absolutePath else "",
+        launchWindowsApplier(
+            mode = mode,
+            installDir = installation.dir,
+            exe = installation.exe,
+            staging = staging,
+            source = source,
+            checksums = checksums,
+            keep = keep.takeIf { it.isFile },
         )
-            .directory(staging)
-            // 脚本自己的日志之外，PowerShell 的解析错误之类只会出现在标准输出里
-            .redirectErrorStream(true)
-            .redirectOutput(staging.resolve("powershell.log"))
-            .start()
     }
 
     /**
@@ -623,7 +610,7 @@ class DesktopAppUpdater private constructor(
         }.onFailure { log("Failed to preserve previous update script logs", it) }
     }
 
-    // apply-update.ps1（Windows）与 apply-update-mac.sh（macOS）失败时在暂存目录留下这个文件；暂存目录要到下一次下载才清
+    // WindowsUpdateApplier（Windows）与 apply-update-mac.sh（macOS）失败时在暂存目录留下这个文件；暂存目录要到下一次下载才清
     override fun takePreviousFailure(version: String): Boolean {
         val marker = stagingRoot.resolve(version).resolve("failed")
         if (!marker.isFile) return false
@@ -643,7 +630,7 @@ class DesktopAppUpdater private constructor(
         private const val KEEP_FILE = "keep.txt"
         private const val HISTORY_LOG = "update-history.log"
         private const val HISTORY_LIMIT = 1024 * 1024
-        private val SCRIPT_LOGS = listOf("update.log", "powershell.log", "bash.log", "msiexec.log", "relaunch.log")
+        private val SCRIPT_LOGS = listOf("update.log", "applier.log", "powershell.log", "bash.log", "msiexec.log", "relaunch.log")
 
         fun exportHistoryLog(): String = runCatching {
             val root = stagingRoot()
@@ -715,7 +702,7 @@ class DesktopAppUpdater private constructor(
             return bytes.copyOfRange(start, bytes.size)
         }
 
-        /** 补丁的事务记录，在安装目录下，由 apply-update.ps1 写，同名常量在脚本里。 */
+        /** 补丁的事务记录，在安装目录下，由 WindowsUpdateApplier 读写（兼容旧版 apply-update.ps1 格式）。 */
         private const val JOURNAL_FILE = ".piko-update.journal"
 
         /**
@@ -727,10 +714,20 @@ class DesktopAppUpdater private constructor(
             PikoHome.root.resolve("update").toFile().let { runCatching { it.canonicalFile }.getOrDefault(it) }
 
         /**
-         * 脚本要等退出的进程：本进程，以及拉起它的启动器 [exe]。jpackage 的 Windows 启动器会另起一个同名的
-         * 子进程跑 JVM，自己留着等它结束（实测进程树里是两个 Piko.exe，父子关系）。只等本进程的话，
-         * JVM 退出的那一刻启动器还在，替换 exe 删不掉旧的那份，msiexec 则撞上占用中的文件。
+         * 更新器要等退出的进程（格式 `<pid>:<startEpochMillis>`）：本进程，以及拉起它的启动器 [exe]。
+         * 带上启动时刻防止进程退出后 PID 被系统迅速复用于无关进程导致误等。
          */
+        private fun appProcessSpecs(exe: File): List<String> {
+            val self = ProcessHandle.current()
+            val launcher = self.parent().orElse(null)?.takeIf { parent ->
+                parent.info().command().map { File(it).canonicalFile == exe.canonicalFile }.orElse(false)
+            }
+            return listOfNotNull(self, launcher).map { handle ->
+                val startMs = handle.info().startInstant().map { it.toEpochMilli() }.orElse(-1L)
+                "${handle.pid()}:$startMs"
+            }
+        }
+
         private fun appProcessIds(exe: File): List<Long> {
             val self = ProcessHandle.current()
             val launcher = self.parent().orElse(null)?.takeIf { parent ->
@@ -739,45 +736,217 @@ class DesktopAppUpdater private constructor(
             return listOfNotNull(self.pid(), launcher?.pid())
         }
 
+        private const val APPLIER_RESOURCE = "/update/piko-update-applier.bin"
+        private const val HELPER_DIR_PREFIX = "piko-update-helper-"
+        private val FORWARDED_RELAUNCH_PROPS = listOf(
+            "piko.home",
+            API_OVERRIDE_PROPERTY,
+            AUTO_INSTALL_PROPERTY,
+            "piko.download-cache",
+        )
+        private val SANITIZED_HELPER_ENV = listOf(
+            "JAVA_TOOL_OPTIONS",
+            "JDK_JAVA_OPTIONS",
+            "_JAVA_OPTIONS",
+            "CLASSPATH",
+            "_JPACKAGE_LAUNCHER",
+        )
+
+        private fun copyDirectoryTree(source: java.nio.file.Path, target: java.nio.file.Path) {
+            java.nio.file.Files.walk(source).use { stream ->
+                val it = stream.iterator()
+                while (it.hasNext()) {
+                    val p = it.next()
+                    val rel = source.relativize(p)
+                    val dst = target.resolve(rel)
+                    if (java.nio.file.Files.isDirectory(p)) {
+                        java.nio.file.Files.createDirectories(dst)
+                    } else {
+                        dst.parent?.let { java.nio.file.Files.createDirectories(it) }
+                        java.nio.file.Files.copy(p, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    }
+                }
+            }
+        }
+
+        /**
+         * 将随包 `runtime/` 独立复制至临时工作目录并以 `javaw.exe -jar` 启动纯 Java 更新器，
+         * 既避免锁定安装目录内的 `runtime/`（支持运行时变更与 MSI 整包升级），又彻底移除 `powershell.exe -ExecutionPolicy Bypass`。
+         * 必须等子进程写出 `ready` 握手文件后才返回，确保复制运行时损坏或启动被拦时应用留在前台报错而不白白退出。
+         */
+        internal fun launchWindowsApplier(
+            mode: String,
+            installDir: File,
+            exe: File,
+            staging: File,
+            source: File?,
+            checksums: File?,
+            keep: File?,
+            watchedProcessSpecs: List<String> = appProcessSpecs(exe),
+            waitSeconds: Int = 120,
+        ): Process {
+            staging.mkdirs()
+            val helperDir = java.nio.file.Files.createTempDirectory(HELPER_DIR_PREFIX).toFile()
+            var launchedOk = false
+            try {
+                val installedRuntime = installDir.resolve("runtime")
+                val javaBin = if (installedRuntime.resolve("bin/javaw.exe").isFile) {
+                    val copiedRuntime = helperDir.resolve("runtime")
+                    copyDirectoryTree(installedRuntime.toPath(), copiedRuntime.toPath())
+                    copiedRuntime.resolve("bin/javaw.exe").also {
+                        check(it.isFile) { "Copied updater runtime missing javaw.exe" }
+                    }
+                } else {
+                    val currentHome = File(System.getProperty("java.home"))
+                    currentHome.resolve("bin/javaw.exe").takeIf { it.isFile }
+                        ?: currentHome.resolve("bin/java.exe")
+                }
+                val applierJar = helperDir.resolve("piko-update-applier.jar")
+                val resource = checkNotNull(DesktopAppUpdater::class.java.getResourceAsStream(APPLIER_RESOURCE)) {
+                    "Missing bundled $APPLIER_RESOURCE resource"
+                }
+                resource.use { input -> applierJar.outputStream().use { input.copyTo(it) } }
+
+                val readyFile = helperDir.resolve("ready")
+                val ownerPidFile = helperDir.resolve("owner.pid")
+                val requestFile = helperDir.resolve("request.properties")
+                val props = java.util.Properties().apply {
+                    setProperty("mode", mode)
+                    setProperty("pids", watchedProcessSpecs.joinToString(","))
+                    setProperty("installDir", installDir.absolutePath)
+                    setProperty("executable", exe.name)
+                    setProperty("logFile", staging.resolve("update.log").absolutePath)
+                    setProperty("source", source?.absolutePath.orEmpty())
+                    setProperty("checksums", checksums?.absolutePath.orEmpty())
+                    setProperty("keepList", keep?.absolutePath.orEmpty())
+                    setProperty("waitSeconds", waitSeconds.toString())
+                    setProperty("readyFile", readyFile.absolutePath)
+                    setProperty("ownerPidFile", ownerPidFile.absolutePath)
+                    for (propName in FORWARDED_RELAUNCH_PROPS) {
+                        System.getProperty(propName)?.takeIf { it.isNotEmpty() }?.let { propVal ->
+                            setProperty("relaunchProp.$propName", propVal)
+                        }
+                    }
+                }
+                requestFile.writer(Charsets.UTF_8).use { props.store(it, null) }
+
+                val pb = ProcessBuilder(
+                    javaBin.absolutePath,
+                    "-jar",
+                    applierJar.absolutePath,
+                    requestFile.absolutePath,
+                )
+                    .directory(helperDir)
+                    .redirectErrorStream(true)
+                    .redirectOutput(staging.resolve("applier.log"))
+                val env = pb.environment()
+                val keysToDrop = env.keys.filter { k -> SANITIZED_HELPER_ENV.any { it.equals(k, ignoreCase = true) } }
+                keysToDrop.forEach(env::remove)
+
+                val proc = pb.start()
+                val deadline = System.nanoTime() + 15_000_000_000L
+                while (!readyFile.isFile) {
+                    if (!proc.isAlive) {
+                        val errOut = staging.resolve("applier.log").takeIf { it.isFile }?.readText().orEmpty().trim()
+                        error("Windows update applier exited prematurely (code=${proc.exitValue()}): $errOut")
+                    }
+                    if (System.nanoTime() >= deadline) {
+                        proc.destroyForcibly()
+                        error("Timed out waiting for Windows update applier readiness handshake")
+                    }
+                    Thread.sleep(50L)
+                }
+                launchedOk = true
+                return proc
+            } finally {
+                if (!launchedOk) {
+                    runCatching { helperDir.deleteRecursively() }
+                }
+            }
+        }
+
+        private fun cleanupFinishedHelpers() {
+            val tmpRoot = File(System.getProperty("java.io.tmpdir"))
+            val dirs = tmpRoot.listFiles { f -> f.isDirectory && f.name.startsWith(HELPER_DIR_PREFIX) } ?: return
+            val staleCutoffMs = System.currentTimeMillis() - 10 * 60 * 1000L
+            for (dir in dirs) {
+                runCatching {
+                    val ownerFile = dir.resolve("owner.pid")
+                    val stillRunning = if (ownerFile.isFile) {
+                        val parts = ownerFile.readText(Charsets.UTF_8).trim().split(':')
+                        val pid = parts.getOrNull(0)?.toLongOrNull()
+                        val expectedStart = parts.getOrNull(1)?.toLongOrNull() ?: -1L
+                        if (pid == null) {
+                            false
+                        } else {
+                            val handle = ProcessHandle.of(pid).orElse(null)
+                            if (handle == null || !handle.isAlive) {
+                                false
+                            } else {
+                                val actualStart = handle.info().startInstant().map { it.toEpochMilli() }.orElse(-1L)
+                                expectedStart <= 0L || actualStart <= 0L || kotlin.math.abs(actualStart - expectedStart) <= 5_000L
+                            }
+                        }
+                    } else {
+                        dir.lastModified() > staleCutoffMs
+                    }
+                    if (!stillRunning) {
+                        dir.deleteRecursively()
+                    }
+                }
+            }
+        }
+
         /** 真建一个文件试，与 PikoHome 判断便携目录可写同法。 */
         private fun isWritableDir(dir: File): Boolean = runCatching {
             File.createTempFile(".write-probe", null, dir).delete()
         }.getOrDefault(false)
 
         /**
-         * 上次的补丁没做完（断电、脚本被杀）时留下事务记录。换文件的顺序保证这时仍启动得起来，但 jar 已是新旧混杂，
-         * 本进程正开着它们，换不回去：把更新脚本以 recover 模式交出去，由它等本进程退出、按记录回滚、再拉起旧版。
-         * 返回 true 表示已交出，调用方随即退出。记录被独占打开说明脚本还在干活（更新中途又点开了 Piko），不管它。
+         * 上次的补丁没做完（断电、更新进程被杀）时留下事务记录。换文件的顺序保证这时仍启动得起来，但 jar 已是新旧混杂，
+         * 本进程正开着它们，换不回去：把更新器以 recover 模式交出去，由它等本进程退出、按记录回滚、再拉起旧版。
+         * 返回 true 表示已交出，调用方随即退出。记录被独占锁定说明更新器还在干活（更新中途又点开了 Piko），不管它。
          */
         private fun handOverInterruptedUpdate(installDir: File, exe: File): Boolean {
             val journal = installDir.resolve(JOURNAL_FILE)
             if (!journal.isFile) return false
             val staging = try {
-                journal.bufferedReader().use { it.readLine() }
-                    ?.takeIf { it.startsWith("staging\t") }?.substringAfter('\t')?.let(::File)
-                    ?: stagingRoot().resolve("recover")
+                java.nio.channels.FileChannel.open(
+                    journal.toPath(),
+                    java.nio.file.StandardOpenOption.READ,
+                    java.nio.file.StandardOpenOption.WRITE,
+                ).use { ch ->
+                    val lock = try {
+                        ch.tryLock()
+                    } catch (_: java.nio.channels.OverlappingFileLockException) {
+                        null
+                    }
+                    if (lock == null) {
+                        PikoLog.i("Update", "Update script is currently holding journal lock; skipping interrupted-update recovery")
+                        return false
+                    }
+                    lock.use {
+                        java.nio.channels.Channels.newReader(ch, Charsets.UTF_8).buffered().readLine()
+                            ?.takeIf { it.startsWith("staging\t") }?.substringAfter('\t')?.let(::File)
+                            ?: stagingRoot().resolve("recover")
+                    }
+                }
+            } catch (_: java.nio.file.NoSuchFileException) {
+                return false
             } catch (e: java.io.IOException) {
                 PikoLog.i("Update", "Update script is currently holding journal lock; skipping interrupted-update recovery")
                 return false
             }
             return runCatching {
-                staging.mkdirs()
-                val script = staging.resolve("apply-update.ps1")
-                val resource = checkNotNull(DesktopAppUpdater::class.java.getResourceAsStream("/update/apply-update.ps1")) { "Missing bundled apply-update.ps1 resource" }
-                resource.use { input -> script.outputStream().use { input.copyTo(it) } }
-                ProcessBuilder(
-                    "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                    "-File", script.absolutePath,
-                    "-ProcessId", appProcessIds(exe).joinToString(","),
-                    "-InstallDir", installDir.absolutePath,
-                    "-Mode", "recover",
-                    "-Executable", exe.name,
-                    "-LogFile", staging.resolve("update.log").absolutePath,
+                launchWindowsApplier(
+                    mode = "recover",
+                    installDir = installDir,
+                    exe = exe,
+                    staging = staging,
+                    source = null,
+                    checksums = null,
+                    keep = null,
                 )
-                    .directory(staging)
-                    .redirectErrorStream(true)
-                    .redirectOutput(staging.resolve("powershell.log"))
-                    .start()
                 PikoLog.w("Update", "Interrupted update detected; handing over to update script for rollback and restart")
             }.onFailure { PikoLog.w("Update", "Failed to launch recovery script for interrupted update", it) }.isSuccess
         }
@@ -857,7 +1026,15 @@ class DesktopAppUpdater private constructor(
                         runBlocking { PikoLog.flush() }
                         exitProcess(0)
                     }
-                    if (!dir.resolve(JOURNAL_FILE).exists()) removeUpdateLeftovers(dir)
+                    if (!dir.resolve(JOURNAL_FILE).exists()) {
+                        removeUpdateLeftovers(dir)
+                        if (!isMacOs) {
+                            Thread(::cleanupFinishedHelpers, "Piko-UpdateHelper-Cleanup").apply {
+                                isDaemon = true
+                                start()
+                            }
+                        }
+                    }
                 }
             }
             val releases = GithubReleaseClient(
