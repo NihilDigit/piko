@@ -515,7 +515,7 @@ private fun SpeedDialStrip(
                         displacement = Offset.Zero
                     },
                     onDragEnd = {
-                        if (owned) controller.finish()
+                        if (owned) controller.releaseHoldDrag()
                         owned = false
                     },
                     onDragCancel = {

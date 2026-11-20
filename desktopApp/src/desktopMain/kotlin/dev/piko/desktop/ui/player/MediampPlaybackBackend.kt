@@ -566,9 +566,14 @@ internal class MediampPlaybackBackend(
 
     override fun setSpeed(speed: Float) {
         if (closing) return
-        speedFeature?.set(speed)
+        val clamped = speed.coerceAtLeast(0.1f)
+        speedFeature?.set(clamped)
+        // MediaMP 0.5.3 的 AbstractMediampPlayer.machinePlaybackSpeed 在暂停或缓冲态（!state.isPlaying）下
+        // 会跳过 setRateImpl，且恢复播放时若 desiredRate == 1f 也不会补发 setRateImpl(1f)，导致暂停进入速览
+        // 或暂停期间切回 1x 后底层 libmpv 仍停留在 3x/3.5x；直接同步写入 mpv speed 属性确保任意播放态都即时生效。
+        mpv?.let { handle -> runCatching { handle.setPropertyDouble("speed", clamped.toDouble()) } }
         // 读数经 mpv 属性流异步回报会滞后一拍，先行更新以消除长按起速/松手回落时的状态错位
-        currentSpeed = speed
+        currentSpeed = clamped
     }
 
     override fun setVolume(volume: Float) {

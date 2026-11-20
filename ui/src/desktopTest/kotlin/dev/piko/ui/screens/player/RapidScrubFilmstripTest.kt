@@ -4,6 +4,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TestTimeSource
 
 class RapidScrubFilmstripTest {
     @Test
@@ -200,5 +202,172 @@ class RapidScrubFilmstripTest {
         assertFalse(controller.selection?.choices.orEmpty().contains(RAPID_SCRUB_VALUE))
         controller.finish(cancel = false)
         assertEquals(1.0f, currentSpeed)
+    }
+
+    @Test
+    fun draggingThrough3xIntoRapidScrubAndClosingForceRestores1xAndIgnoresStaleEchoes() {
+        val timeSource = TestTimeSource()
+        var playing = true
+        var currentSpeed = 1.0f
+        var effectiveNativeSpeed = 1.0f
+        val events = mutableListOf<String>()
+        val writtenSpeeds = mutableListOf<Float>()
+
+        val controller = PlaybackSpeedController(
+            readSpeed = { currentSpeed },
+            writeSpeed = { next ->
+                currentSpeed = next
+                // 模拟 MediaMP 0.5.3 在暂停态会忽略 setRateImpl 的行为：验证进入速览时 1x 必须在 pause 之前写入
+                if (playing) effectiveNativeSpeed = next
+                writtenSpeeds += next
+                events += "speed:$next"
+            },
+            defaultHoldSpeed = 2.0f,
+            readPositionMillis = { 30_000L },
+            readDurationMillis = { 600_000L },
+            allowRapidScrub = { true },
+            readIsPlaying = { playing },
+            onPauseForRapidScrub = {
+                playing = false
+                events += "pause"
+            },
+            onResumeAfterRapidScrub = {
+                playing = true
+                events += "resume"
+            },
+            timeSource = timeSource,
+        )
+
+        fun dragToRapidScrub() {
+            controller.open(temporary = true, showDial = true)
+            assertTrue(controller.beginDrag(vertical = true))
+            var alongDp = 0f
+            // 沿拨盘持续向下拖动：2.0x -> 2.5x -> 3.0x -> 3.5x -> ∞ 速览
+            repeat(12) {
+                alongDp += 20f
+                controller.move(alongDp = alongDp, acrossDp = 0f)
+            }
+            assertTrue(controller.isRapidScrubActive, "Drag must reach rapid scrub slot")
+            controller.releaseHoldDrag()
+            assertTrue(controller.rapidScrubBrowseMode)
+        }
+
+        // 1. 拖经 2x -> 2.5x -> 3x -> 3.5x -> 速览 -> 松手进入浏览态 -> cancel() 关闭：
+        //    - 进入速览时先写 1.0x 再暂停，确保原生播放器不滞留在 3x/3.5x
+        //    - cancel() 退出时必须强制再次写入 1.0x（即使 lastWrittenSpeed 已为 1.0x）
+        dragToRapidScrub()
+        assertTrue(writtenSpeeds.contains(3.0f), "Expected 3.0x during drag, got $writtenSpeeds")
+        assertTrue(writtenSpeeds.contains(3.5f), "Expected 3.5x during drag, got $writtenSpeeds")
+        assertEquals(1.0f, effectiveNativeSpeed, "Native speed must be restored to 1.0x BEFORE pausing for rapid scrub")
+        val pauseIdx = events.lastIndexOf("pause")
+        val prePauseRestoreIdx = events.lastIndexOf("speed:1.0")
+        assertTrue(prePauseRestoreIdx in 0 until pauseIdx, "1.0x write must precede pause: $events")
+
+        val writesBeforeCancel = writtenSpeeds.size
+        controller.cancel()
+        assertFalse(controller.active)
+        assertTrue(playing)
+        assertEquals(1.0f, controller.speed)
+        assertEquals(1.0f, currentSpeed)
+        assertEquals(writesBeforeCancel + 1, writtenSpeeds.size, "cancel() MUST force-write 1.0x on exit")
+        assertEquals(1.0f, writtenSpeeds.last())
+
+        // 2. 退出后 400ms 稳定窗内，即使先收到乐观 1.0x 再收到 libmpv/MediaMP 滞后的 3.0x / 3.5x 回声，
+        //    也绝不能污染 controller.speed 或 baseSpeed
+        timeSource += 16.milliseconds
+        controller.sync(1.0f)
+        timeSource += 40.milliseconds
+        controller.sync(3.0f)
+        assertEquals(1.0f, controller.speed)
+        timeSource += 40.milliseconds
+        controller.sync(3.5f)
+        assertEquals(1.0f, controller.speed)
+
+        // 3. 稳定窗内若后端 readSpeed 暂被过期回声污染为 3.0x，立刻再次长按并松手仍须回到 1.0x
+        currentSpeed = 3.0f
+        controller.open(temporary = true, showDial = true)
+        controller.releaseHoldDrag()
+        assertEquals(1.0f, controller.speed)
+        assertEquals(1.0f, currentSpeed)
+
+        // 4. 拖经 3x/3.5x -> 速览 -> commitRapidScrub() 跳转确认：同样强制写回 1.0x 并抵御 3.0x 回声
+        timeSource += 450.milliseconds
+        writtenSpeeds.clear()
+        events.clear()
+        dragToRapidScrub()
+        val writesBeforeCommit = writtenSpeeds.size
+        controller.commitRapidScrub(180_000L)
+        assertFalse(controller.active)
+        assertTrue(playing)
+        assertEquals(1.0f, controller.speed)
+        assertEquals(1.0f, currentSpeed)
+        assertEquals(writesBeforeCommit + 1, writtenSpeeds.size, "commitRapidScrub() MUST force-write 1.0x on exit")
+        assertEquals(1.0f, writtenSpeeds.last())
+
+        timeSource += 50.milliseconds
+        controller.sync(3.0f)
+        assertEquals(1.0f, controller.speed)
+
+        // 5. 显式 applySpeed 立即清除稳定窗并强制写入目标倍速；超时 400ms 后外部 sync 恢复正常生效
+        controller.applySpeed(1.5f)
+        assertEquals(1.5f, controller.speed)
+        assertEquals(1.5f, currentSpeed)
+        currentSpeed = 1.25f
+        controller.sync(1.25f)
+        assertEquals(1.25f, controller.speed)
+
+        controller.open(temporary = true, showDial = true)
+        controller.releaseHoldDrag()
+        assertEquals(1.25f, controller.speed)
+        timeSource += 450.milliseconds
+        currentSpeed = 1.0f
+        controller.sync(1.0f)
+        assertEquals(1.0f, controller.speed)
+    }
+
+    @Test
+    fun choosingRapidScrubDirectlyAndClosingAlwaysForceRestores1x() {
+        var currentSpeed = 1.0f
+        var playing = true
+        val writtenSpeeds = mutableListOf<Float>()
+
+        val controller = PlaybackSpeedController(
+            readSpeed = { currentSpeed },
+            writeSpeed = { next ->
+                currentSpeed = next
+                writtenSpeeds += next
+            },
+            defaultHoldSpeed = 2.0f,
+            readPositionMillis = { 20_000L },
+            readDurationMillis = { 600_000L },
+            allowRapidScrub = { true },
+            readIsPlaying = { playing },
+            onPauseForRapidScrub = { playing = false },
+            onResumeAfterRapidScrub = { playing = true },
+        )
+
+        // 通过 choose(RAPID_SCRUB_VALUE) 进入速览 -> cancel() 退出强制写回 1.0x
+        controller.open(temporary = true, showDial = true)
+        controller.choose(RAPID_SCRUB_VALUE)
+        assertTrue(controller.isRapidScrubActive)
+        assertTrue(controller.rapidScrubBrowseMode)
+        val countBeforeCancel = writtenSpeeds.size
+        controller.cancel()
+        assertEquals(1.0f, currentSpeed)
+        assertEquals(1.0f, controller.speed)
+        assertTrue(playing)
+        assertEquals(countBeforeCancel + 1, writtenSpeeds.size)
+        assertEquals(1.0f, writtenSpeeds.last())
+
+        // 通过 choose(RAPID_SCRUB_VALUE) 进入速览 -> commitRapidScrub() 退出强制写回 1.0x
+        controller.open(temporary = true, showDial = true)
+        controller.choose(RAPID_SCRUB_VALUE)
+        val countBeforeCommit = writtenSpeeds.size
+        controller.commitRapidScrub(90_000L)
+        assertEquals(1.0f, currentSpeed)
+        assertEquals(1.0f, controller.speed)
+        assertTrue(playing)
+        assertEquals(countBeforeCommit + 1, writtenSpeeds.size)
+        assertEquals(1.0f, writtenSpeeds.last())
     }
 }

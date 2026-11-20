@@ -39,6 +39,7 @@ import java.util.Locale
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
 /**
@@ -150,6 +151,10 @@ internal class MpvPlaybackBackend(
     @Volatile private var lastLoadTarget: PlaybackTarget? = null
     @Volatile private var lastLoadPlayWhenReady: Boolean = true
     @Volatile private var lastLoadSubtitles: List<ExternalSubtitle> = emptyList()
+    @Volatile private var targetSpeed: Float = 1f
+    private val speedWriteSeq = AtomicLong(0L)
+    @Volatile private var speedAppliedSeq: Long = 0L
+    @Volatile private var speedSettleDeadlineNanos: Long = 0L
 
     init {
         val configDir = MpvConfig.prepare(context)
@@ -432,8 +437,16 @@ internal class MpvPlaybackBackend(
 
     override fun setSpeed(speed: Float) {
         if (released) return
-        currentSpeed = speed
-        onMpv { mpv.setPropertyDouble("speed", speed.toDouble()) }
+        val clamped = speed.coerceAtLeast(0.1f)
+        targetSpeed = clamped
+        currentSpeed = clamped
+        val seq = speedWriteSeq.incrementAndGet()
+        speedSettleDeadlineNanos = System.nanoTime() + SPEED_SETTLE_NANOS
+        onMpv {
+            mpv.setPropertyDouble("speed", clamped.toDouble())
+            speedAppliedSeq = seq
+            speedSettleDeadlineNanos = System.nanoTime() + SPEED_SETTLE_NANOS
+        }
     }
 
     override fun setAspectRatio(mode: PlayerAspectRatio) {
@@ -768,7 +781,14 @@ internal class MpvPlaybackBackend(
                     bufferedPositionMillis = millis
                 }
             }
-            "speed" -> currentSpeed = value.toFloat()
+            "speed" -> {
+                val observed = value.toFloat()
+                val stillPending = speedAppliedSeq < speedWriteSeq.get()
+                val inSettleWindow = System.nanoTime() < speedSettleDeadlineNanos
+                if ((!stillPending && !inSettleWindow) || abs(observed - targetSpeed) <= 0.005f) {
+                    currentSpeed = observed
+                }
+            }
             "volume" -> currentVolume = (value / 100).toFloat().coerceIn(0f, 1f)
             "video-params/aspect" -> {
                 rawAspect = value
@@ -940,6 +960,7 @@ internal class MpvPlaybackBackend(
 
         // 够盖住一组交替刷的句子，又不至于把隔了很久再出现的同一个问题也吞掉
         const val RECENT_MPV_LINES = 16
+        const val SPEED_SETTLE_NANOS = 400_000_000L
     }
 }
 

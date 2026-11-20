@@ -16,8 +16,12 @@ import androidx.compose.ui.platform.LocalWindowInfo
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sign
+import kotlin.time.ComparableTimeMark
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeSource
 
 internal const val SpeedHorizontalBlockStepDp = 76f
+private val SPEED_SETTLE_WINDOW = 400.milliseconds
 internal const val SpeedVerticalBlockStepDp = 46f
 internal const val SpeedVerticalDragStepDp = 36f
 internal const val SpeedHorizontalDragStepDp = 56f
@@ -201,6 +205,7 @@ internal class PlaybackSpeedController(
     private val onPauseForRapidScrub: () -> Unit = {},
     private val onResumeAfterRapidScrub: () -> Unit = {},
     var onDialSpeedWrite: (Float) -> Unit = {},
+    private val timeSource: TimeSource.WithComparableMarks = TimeSource.Monotonic,
 ) {
     var selection by mutableStateOf<SpeedSelection?>(null)
         private set
@@ -240,29 +245,38 @@ internal class PlaybackSpeedController(
     private var drag: SpeedSelectionDrag? = null
     private var wasPlayingBeforeScrub = false
     private var resumeQueuedByScrub = false
+    private var settleUntil: ComparableTimeMark? = null
 
     fun sync(speed: Float) {
-        if (!active) {
-            resumeQueuedByScrub = false
-            this.speed = speed
-            lastWrittenSpeed = speed
-            if (lockedByHold && abs(speed - lockedHoldSpeed) > 0.005f) {
-                lockedByHold = false
-                baseSpeed = speed
-            } else if (!lockedByHold) {
-                baseSpeed = speed
+        if (active) return
+        resumeQueuedByScrub = false
+        val until = settleUntil
+        if (until != null) {
+            if (timeSource.markNow() < until) {
+                if (abs(speed - lastWrittenSpeed) > 0.005f) return
+            } else {
+                settleUntil = null
             }
+        }
+        this.speed = speed
+        lastWrittenSpeed = speed
+        if (lockedByHold && abs(speed - lockedHoldSpeed) > 0.005f) {
+            lockedByHold = false
+            baseSpeed = speed
+        } else if (!lockedByHold) {
+            baseSpeed = speed
         }
     }
 
     /** 设置面板或快捷键显式修改常驻倍速：清除长按锁定态并以新倍速作为基准原速。 */
     fun applySpeed(target: Float) {
         if (active) cancel()
+        settleUntil = null
         lockedByHold = false
         lockedHint = null
         baseSpeed = target
         speed = target
-        flush(target, fromDial = false)
+        flush(target, fromDial = false, force = true)
     }
 
     fun open(
@@ -273,7 +287,13 @@ internal class PlaybackSpeedController(
     ) {
         if (active) finish(cancel = true)
         resumeQueuedByScrub = false
-        val currentActual = readSpeed()
+        val observed = readSpeed()
+        val settling = settleUntil?.let { timeSource.markNow() < it } == true
+        val currentActual = if (settling && abs(observed - lastWrittenSpeed) > 0.005f) {
+            lastWrittenSpeed
+        } else {
+            observed
+        }
         preOpenSpeed = currentActual
         preOpenLocked = lockedByHold
         lastWrittenSpeed = currentActual
@@ -440,7 +460,8 @@ internal class PlaybackSpeedController(
         dragging = false
         drag = null
         speed = finalSpeed
-        flush(finalSpeed, fromDial = true)
+        settleUntil = timeSource.markNow() + SPEED_SETTLE_WINDOW
+        flush(finalSpeed, fromDial = true, force = true)
         if (!cancel && wasRapidScrub) {
             onCommitRapidScrub(commitPosition)
         } else if (!cancel && current.locked) {
@@ -478,6 +499,9 @@ internal class PlaybackSpeedController(
             val playingNow = readIsPlaying() || resumeQueuedByScrub
             resumeQueuedByScrub = false
             wasPlayingBeforeScrub = playingNow
+            // 进入速览前先切回基准倍速再暂停，避免暂停态下后端忽略降速或残留 3x/3.5x
+            speed = baseSpeed
+            flush(baseSpeed, fromDial = true, force = true)
             if (playingNow) {
                 onPauseForRapidScrub()
             }
@@ -487,9 +511,11 @@ internal class PlaybackSpeedController(
             coarseStepRevision++
         }
         if (next.isRapidScrub) {
-            // 进入速览时不以 3.5x 继续拉高带宽消耗，切回基准倍速
+            // 进入速览时不以 3.5x 继续拉高带宽消耗，保持基准倍速
             speed = baseSpeed
-            flush(baseSpeed, fromDial = true)
+            if (!enteredRapidScrub) {
+                flush(baseSpeed, fromDial = true)
+            }
         } else {
             speed = next.speed
             flush(next.speed, fromDial = true)
