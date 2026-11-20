@@ -11,11 +11,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Folder
+import dev.piko.ui.components.FolderListLeadingVisual
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -84,7 +82,7 @@ fun UploadRequestHost(uploads: PikoUploadCoordinator, saveTarget: SaveTargetCont
             Column {
                 Text(stringResource(Res.string.text_save_to), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.Folder, contentDescription = null)
+                    FolderListLeadingVisual(name = target.second, size = 32.dp)
                     Spacer(Modifier.width(12.dp))
                     Text(
                         text = target.second,

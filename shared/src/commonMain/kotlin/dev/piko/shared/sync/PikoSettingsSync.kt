@@ -1,12 +1,15 @@
 package dev.piko.shared.sync
 
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.shared.data.DriveAppearancePrefs
 import dev.piko.shared.data.EncryptedSyncKey
 import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.media.player.decodePlayerLayoutPrefs
+import dev.piko.shared.media.player.encodePlayerLayoutPrefs
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlin.time.Clock
@@ -61,6 +64,7 @@ val SyncedSettings: List<SyncedSetting> = listOf(
     // 空串是「跟随系统」。设置接口没有写回跟随系统的入口，远端的空值不往本机写
     SyncedSetting("themeMode", { prefs -> prefs.themeModeFlow.map { it.orEmpty() } }, { prefs, value -> if (value.isNotEmpty()) prefs.setThemeMode(value) }),
     SyncedSetting("themeSeed", { prefs -> prefs.themeSeedFlow.map { it.orEmpty() } }, { prefs, value -> prefs.setThemeSeed(value.ifEmpty { null }) }),
+    bool("pureBlack", { it.pureBlackFlow }) { setPureBlack(it) },
     SyncedSetting("driveViewMode", { it.driveViewModeFlow }, { prefs, value -> prefs.setDriveViewMode(value) }),
     // 最近移动到的目录：换一台设备也用得上
     SyncedSetting("recentMoveTargets", { it.recentMoveTargetsFlow }, { prefs, value -> prefs.saveRecentMoveTargets(value) }),
@@ -80,7 +84,18 @@ val SyncedSettings: List<SyncedSetting> = listOf(
         { prefs, value -> value.toFloatOrNull()?.let { prefs.setPlayerBoostSpeed(it) } },
     ),
     bool("clipAutoExtend", { it.clipAutoExtendFlow }) { setClipAutoExtend(it) },
+    SyncedSetting(
+        "playerLayout",
+        { prefs -> prefs.playerLayoutPrefsFlow.map(::encodePlayerLayoutPrefs) },
+        { prefs, value -> prefs.setPlayerLayoutPrefs(decodePlayerLayoutPrefs(value)) },
+    ),
+    SyncedSetting(
+        "driveAppearance",
+        { prefs -> prefs.driveAppearancePrefsFlow.map(DriveAppearancePrefs::encodeJson) },
+        { prefs, value -> prefs.setDriveAppearancePrefs(DriveAppearancePrefs.decodeJson(value)) },
+    ),
     bool("galleryShowImages", { it.galleryShowImagesFlow }) { setGalleryShowImages(it) },
+    bool("skipFeedExitConfirm", { it.skipFeedExitConfirmFlow }) { setSkipFeedExitConfirm(it) },
 )
 
 /**

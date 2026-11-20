@@ -64,6 +64,7 @@ import dev.piko.desktop.ui.player.MpvLogBridge
 import dev.piko.desktop.update.DesktopAppUpdater
 import dev.piko.desktop.update.WindowsInstaller
 import dev.piko.desktop.winrt.WinRTSupport
+import dev.piko.desktop.winrt.WindowsEfficiencyMode
 import dev.piko.desktop.winrt.WindowsLinkAssociation
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
@@ -102,6 +103,7 @@ import dev.piko.ui.components.LocalDiagonalResizeCursor
 import dev.piko.ui.components.LocalHorizontalResizeCursor
 import dev.piko.ui.components.LocalVerticalResizeCursor
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.theme.LocalWindowVisible
 import dev.piko.ui.theme.PikoTheme
 import dev.piko.ui.theme.frame
 import androidx.compose.ui.platform.LocalDensity
@@ -109,6 +111,7 @@ import dev.piko.ui.theme.appearanceFlow
 import dev.piko.ui.theme.isDark
 import java.awt.Dimension
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.system.exitProcess
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -116,6 +119,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -133,9 +139,13 @@ private const val BACKGROUND_HINT_SHOWN_KEY = "window.backgroundHintShown"
 
 fun main(args: Array<String>) {
     PikoLocale.bindSystemLocale(Locale.getDefault().toLanguageTag())
+    dev.piko.shared.media.player.SubtitleEncoding.install(dev.piko.shared.media.player.JvmSubtitleTextTranscoder)
     // 最先做：之后任何一处碰到 JNA / SQLite JDBC 都会让它们按当时的属性初始化
     useBundledJnaDispatch()
     useBundledSqlite()
+    val sqliteNativesDir = PikoHome.root.resolve("cache/natives").toFile()
+    sqliteNativesDir.mkdirs()
+    System.setProperty("org.sqlite.tmpdir", sqliteNativesDir.absolutePath)
     // 走系统代理：JVM 默认只认 http.proxyHost 一类属性，不看 Windows 与 macOS 设置里的代理，
     // 在系统里开了代理（例如代理软件的「系统代理」模式）也照样直连。这个属性在 ProxySelector
     // 首次初始化时读取，所以放在一切网络请求之前。Android 不用设，系统会把网络的代理同步给进程
@@ -313,8 +323,17 @@ fun main(args: Array<String>) {
         LaunchedEffect(Unit) {
             invalidTorrentNotices.collect { showInvalidTorrentDialog = true }
         }
+        val exitWatchdogStarted = remember { AtomicBoolean(false) }
+        val armExitWatchdog = remember {
+            {
+                if (exitWatchdogStarted.compareAndSet(false, true)) {
+                    startExitWatchdog()
+                }
+            }
+        }
         val quitNow = remember(services, settings) {
             {
+                armExitWatchdog()
                 runCatching { settings.flush() }
                     .onFailure { PikoLog.w("Settings", "Failed to flush desktop settings before exit", it) }
                 runBlocking {
@@ -393,15 +412,30 @@ fun main(args: Array<String>) {
         }
 
         val mainWindowState = rememberRememberedWindowState(settings, "main", DpSize(1120.dp, 760.dp))
+        val mainWindowVisible = !isInBackground && !mainWindowState.isMinimized
         // Detached playback/feed windows keep the process visible even when the main window is hidden.
-        val memoryVisible = (!isInBackground && !mainWindowState.isMinimized) || players.isNotEmpty() || clipFeed != null
+        val memoryVisible = mainWindowVisible || players.isNotEmpty() || clipFeed != null
         LaunchedEffect(memoryVisible) {
             PikoMemoryGovernor.Shared.onVisibilityChanged(memoryVisible)
         }
+        // Windows 进程能效模式（EcoQoS）：仅在主窗最小化/藏入托盘，且无独立窗口、无在途传输、无活跃信息流会话时启用，
+        // 避免拖慢后台下载/上传/转封装或副屏停靠信息流播放。
+        val clipFeedActive = clipFeed != null || services.clipFeedSession.root != null
+        val shouldUseEfficiencyMode = !mainWindowVisible && !hasDetachedWindows && !hasActiveTransfers && !clipFeedActive
+        LaunchedEffect(shouldUseEfficiencyMode) {
+            WindowsEfficiencyMode.setEnabled(shouldUseEfficiencyMode)
+        }
+        DisposableEffect(Unit) {
+            onDispose { WindowsEfficiencyMode.setEnabled(false) }
+        }
         PikoWindow(
             onCloseRequest = closeMainWindow,
-            onFatalClose = ::exitApplication,
+            onFatalClose = {
+                armExitWatchdog()
+                exitApplication()
+            },
             visible = !isInBackground,
+            windowVisible = mainWindowVisible,
             title = "Piko",
             icon = appIcon,
             state = mainWindowState,
@@ -431,6 +465,7 @@ fun main(args: Array<String>) {
             // 标题栏在 PikoApp 之外，主题要自己再套一层；PikoTheme 读平台字体，平台也要先提供
             CompositionLocalProvider(
                 LocalPikoPlatform provides platform,
+                LocalWindowVisible provides mainWindowVisible,
                 LocalHorizontalResizeCursor provides HorizontalResizeCursor,
                 LocalVerticalResizeCursor provides VerticalResizeCursor,
                 LocalDiagonalResizeCursor provides DiagonalResizeCursor,
@@ -614,6 +649,38 @@ fun main(args: Array<String>) {
     exitProcess(0)
 }
 
+private const val EXIT_WATCHDOG_GRACE_MILLIS = 5_000L
+private const val EXIT_WATCHDOG_HALT_DELAY_MILLIS = 3_000L
+
+/**
+ * 退出看门狗：在应用主动退出或更新器请求重启时启动守护线程，防止残留 mpv JNI 销毁或阻塞的 shutdown hook
+ * 拖死进程退出（尤其是 Windows 更新器 `WindowsUpdateApplier` 等待本进程退出时）。
+ */
+private fun startExitWatchdog() {
+    Thread(
+        {
+            runCatching { Thread.sleep(EXIT_WATCHDOG_GRACE_MILLIS) }
+            PikoLog.w("App", "Process did not exit within ${EXIT_WATCHDOG_GRACE_MILLIS}ms; forcing exit")
+            runCatching { runBlocking { withTimeoutOrNull(300) { PikoLog.flush() } } }
+            Thread(
+                {
+                    runCatching { Thread.sleep(EXIT_WATCHDOG_HALT_DELAY_MILLIS) }
+                    Runtime.getRuntime().halt(0)
+                },
+                "Piko-Exit-Halt",
+            ).apply {
+                isDaemon = true
+                start()
+            }
+            exitProcess(0)
+        },
+        "Piko-Exit-Watchdog",
+    ).apply {
+        isDaemon = true
+        start()
+    }
+}
+
 @Composable
 private fun ApplicationScope.BackgroundSystemTray(
     services: PikoServices,
@@ -777,32 +844,63 @@ private fun createServices(settings: DesktopSettingsStore, preferences: DesktopP
             delay(5_000)
         }
     }
+    val clipCache = FileClipCache(PikoHome.root.resolve("cache/clip-cache").toFile())
     val mediaRepository = PikoMediaRepository(
         clientManager,
         preferences,
-        clipCache = FileClipCache(PikoHome.root.resolve("cache/clip-cache").toFile()),
+        clipCache = clipCache,
     )
     val cacheStore = FilePikoCacheStore(
         PikoHome.root.resolve("cache").toString(),
         jsonCodec = DesktopCacheJson.streamingCodec(),
     )
+    val storyboardCache = dev.piko.shared.media.storyboard.FileStoryboardCache(
+        PikoHome.root.resolve("cache/storyboards").toString(),
+    )
+    val downloadManager = PikoDownloadCoordinator(
+        clientManager,
+        preferences,
+        DesktopPikoDownloadStorage { settings.downloadDirectory },
+        appScope,
+        segmentDownloader = DesktopPikoSegmentDownloader(),
+        mediaRepository = mediaRepository,
+        cacheStore = cacheStore,
+    )
+    val initialCacheSnapshot = preferences.currentSnapshot
+    val cacheManager = dev.piko.shared.media.cache.createJvmCacheManager(
+        scope = appScope,
+        imageCacheDir = PikoHome.root.resolve("cache/images").toFile(),
+        fileCachePool = downloadManager.fileCachePool,
+        storyboardCache = storyboardCache,
+        clipCache = clipCache,
+        treeIndexDir = PikoHome.root.resolve("cache/trees").toFile(),
+        initialPolicy = dev.piko.shared.media.cache.CachePolicy(
+            maxTotalBytes = initialCacheSnapshot.cacheMaxBytes,
+            maxAgeDays = initialCacheSnapshot.cacheMaxAgeDays,
+        ),
+        onClearImages = {
+            val loader = coil3.SingletonImageLoader.get(coil3.PlatformContext.INSTANCE)
+            loader.memoryCache?.clear()
+            loader.diskCache?.clear()
+        },
+    )
+    appScope.launch {
+        combine(preferences.cacheMaxBytesFlow, preferences.cacheMaxAgeDaysFlow) { cap, days -> cap to days }
+            .distinctUntilChanged()
+            .drop(1)
+            .collect { (cap, days) -> cacheManager.applyPolicy(cap, days) }
+    }
     return PikoServices(
         platformPreferences = preferences,
         clientManager = clientManager,
         mediaRepository = mediaRepository,
-        downloadManager = PikoDownloadCoordinator(
-            clientManager,
-            preferences,
-            DesktopPikoDownloadStorage { settings.downloadDirectory },
-            appScope,
-            segmentDownloader = DesktopPikoSegmentDownloader(),
-            mediaRepository = mediaRepository,
-            cacheStore = cacheStore,
-        ),
+        downloadManager = downloadManager,
         uploadSources = DesktopPikoUploadSources(),
         localFileAccess = { changed -> DesktopLocalFileAccess(appScope, changed) },
         cacheStore = cacheStore,
         treeDatabaseFactory = dev.piko.shared.data.DesktopPikoTreeDatabaseFactory(),
+        storyboardCache = storyboardCache,
+        cacheManager = cacheManager,
         syncCipher = JvmSyncCipher(),
         metaTube = MetaTubeService(preferences, cacheStore = cacheStore, scope = appScope) {
             HttpClient(OkHttp) {

@@ -214,10 +214,40 @@ internal fun mergeTreeContentMetadata(
 internal data class EntryMetadata(val originalCreatedAtMillis: Long? = null)
 
 internal fun treeEpochMillis(value: String): Long? {
-    if (value.length < 10) return null
-    val first = value[0]
+    val trimmed = value.trim()
+    if (trimmed.length < 19) return null
+    val first = trimmed[0]
     if (first !in '0'..'9' && first != '+' && first != '-') return null
-    return try { Instant.parse(value).toEpochMilliseconds() } catch (_: IllegalArgumentException) { null }
+    val normalized = normalizeIsoTimestamp(trimmed)
+    return try { Instant.parse(normalized).toEpochMilliseconds() } catch (_: IllegalArgumentException) { null }
+}
+
+private fun normalizeIsoTimestamp(value: String): String {
+    var result = if (value.length > 10 && value[10] == ' ') {
+        buildString(value.length) {
+            append(value, 0, 10)
+            append('T')
+            append(value, 11, value.length)
+        }
+    } else value
+    val len = result.length
+    if (len >= 24) {
+        val signIndex = len - 5
+        val sign = result[signIndex]
+        if ((sign == '+' || sign == '-') &&
+            result[signIndex + 1] in '0'..'9' &&
+            result[signIndex + 2] in '0'..'9' &&
+            result[signIndex + 3] in '0'..'9' &&
+            result[signIndex + 4] in '0'..'9'
+        ) {
+            result = buildString(len + 1) {
+                append(result, 0, signIndex + 3)
+                append(':')
+                append(result, signIndex + 3, len)
+            }
+        }
+    }
+    return result
 }
 
 /** Owns its array and follows AbstractMap's structural equality/hashCode contract. */

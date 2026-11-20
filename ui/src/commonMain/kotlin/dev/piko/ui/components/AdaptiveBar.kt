@@ -276,7 +276,7 @@ fun OverflowMenu(expanded: Boolean, onDismiss: () -> Unit, actions: List<SheetAc
             DropdownMenuItem(
                 text = { Text(action.label, color = tint) },
                 leadingIcon = { Icon(action.icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp)) },
-                trailingIcon = if (action.checked == true) {
+                trailingContent = if (action.checked == true) {
                     { Icon(Icons.Outlined.Check, contentDescription = tr("当前", "Current", "現在", "현재", "目前"), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) }
                 } else {
                     null

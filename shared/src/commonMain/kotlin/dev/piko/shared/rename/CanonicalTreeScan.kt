@@ -51,7 +51,14 @@ class CanonicalTreeScan(
     constructor(clients: PikoClientProvider, driveRepo: PikoDriveRepository, scope: CoroutineScope, root: PikoPathBreadcrumb) : this(
         listFolder = { folderId ->
             val client = clients.currentClient.value ?: error("Not logged in")
-            driveRepo.scanRealChildren(folderId, client)
+            val real = driveRepo.scanRealChildren(folderId, client)
+            if (real.any(VaultStore::looksLikeManifest)) {
+                val entries = driveRepo.driveTreeIndex.vaultEntries(folderId)
+                    ?: driveRepo.vault.read(folderId, real).getOrDefault(emptyList())
+                real + entries.filter { it.isArchived }.map { it.toFileStat(folderId) }
+            } else {
+                real
+            }
         },
         driveRepo = driveRepo,
         scope = scope,

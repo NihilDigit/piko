@@ -13,14 +13,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import dev.piko.data.repository.isPlayableVideo
+import dev.piko.data.repository.isPlayableMedia
 import dev.piko.shared.state.InstantSaveRecord
 import dev.piko.ui.components.ItemDetailsContent
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.toReadableSize
 
 internal val InstantSaveRecord.canPlayVideo: Boolean
-    get() = locateId.isNotEmpty() && name.isPlayableVideo()
+    get() = locateId.isNotEmpty() && name.isPlayableMedia()
 
 internal fun InstantSaveRecord.details(): List<String> = buildList {
     // 一个视频连同字幕时文件数大于 1，只存一个文件时不必再说「1 个文件」

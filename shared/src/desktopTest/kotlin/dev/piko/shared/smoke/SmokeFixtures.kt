@@ -1,8 +1,12 @@
 package dev.piko.shared.smoke
 
+import dev.piko.data.auth.CachePolicyDefaults
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.data.auth.SnailMode
+import dev.piko.shared.data.DriveAppearancePrefs
+import dev.piko.shared.media.player.PlayerLayoutPrefs
 import dev.piko.shared.net.ProxySetting
 import dev.piko.shared.data.PikoCredentials
 import dev.piko.shared.data.PikoSessionStore
@@ -34,7 +38,7 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun getPlaybackPosition(fileId: String): Long = positions[fileId] ?: 0L
     override suspend fun saveLastFolder(folderId: String, folderName: String, stackSerialized: String) = Unit
     override suspend fun getLastFolder(): Triple<String, String, String> = Triple("", "我的网盘", "")
-    override val spoilerBlurFlow: Flow<Boolean> = MutableStateFlow(true)
+    override val spoilerBlurFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setSpoilerBlurEnabled(enabled: Boolean) = Unit
     override val autoCheckUpdatesFlow: Flow<Boolean> = MutableStateFlow(true)
     override suspend fun setAutoCheckUpdates(enabled: Boolean) = Unit
@@ -44,7 +48,7 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setReduceMotion(enabled: Boolean) = Unit
     override val hardwareDecodingFlow: Flow<Boolean> = MutableStateFlow(true)
     override suspend fun setHardwareDecoding(enabled: Boolean) = Unit
-    override val playbackMaxHeightFlow: Flow<Int> = MutableStateFlow(0)
+    override val playbackMaxHeightFlow: Flow<Int> = MutableStateFlow(PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT)
     override suspend fun setPlaybackMaxHeight(height: Int) = Unit
     override val downloadMaxHeightFlow = MutableStateFlow<Int?>(null)
     override suspend fun setDownloadMaxHeight(height: Int?) { downloadMaxHeightFlow.value = height }
@@ -54,6 +58,16 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setPlayerBoostSpeed(speed: Float) = Unit
     override val clipAutoExtendFlow = MutableStateFlow(true)
     override suspend fun setClipAutoExtend(enabled: Boolean) { clipAutoExtendFlow.value = enabled }
+    override val playerLayoutPrefsFlow = MutableStateFlow(PlayerLayoutPrefs.Default)
+    override suspend fun setPlayerLayoutPrefs(prefs: PlayerLayoutPrefs) { playerLayoutPrefsFlow.value = prefs.sanitize() }
+    override val driveAppearancePrefsFlow = MutableStateFlow(DriveAppearancePrefs.DEFAULT)
+    override suspend fun setDriveAppearancePrefs(prefs: DriveAppearancePrefs) { driveAppearancePrefsFlow.value = prefs }
+    override val skipFeedExitConfirmFlow = MutableStateFlow(false)
+    override suspend fun setSkipFeedExitConfirm(skip: Boolean) { skipFeedExitConfirmFlow.value = skip }
+    override val cacheMaxBytesFlow = MutableStateFlow(CachePolicyDefaults.DEFAULT_MAX_BYTES)
+    override suspend fun setCacheMaxBytes(bytes: Long) { cacheMaxBytesFlow.value = bytes.coerceAtLeast(0L) }
+    override val cacheMaxAgeDaysFlow = MutableStateFlow(CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS)
+    override suspend fun setCacheMaxAgeDays(days: Int) { cacheMaxAgeDaysFlow.value = days.coerceAtLeast(0) }
     override val folderMapOpenFlow: Flow<Boolean> = MutableStateFlow(false)
     override suspend fun setFolderMapOpen(open: Boolean) = Unit
     override val folderMapPinnedFlow: Flow<Boolean> = MutableStateFlow(false)
@@ -74,6 +88,8 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setThemeMode(mode: String) = Unit
     override val themeSeedFlow: Flow<String?> = MutableStateFlow(null)
     override suspend fun setThemeSeed(seed: String?) = Unit
+    override val pureBlackFlow = MutableStateFlow(false)
+    override suspend fun setPureBlack(enabled: Boolean) { pureBlackFlow.value = enabled }
     override val driveViewModeFlow: Flow<String> = MutableStateFlow("LIST")
     override suspend fun setDriveViewMode(mode: String) = Unit
     override fun driveTileSizeFlow(view: String): Flow<String> = MutableStateFlow("")

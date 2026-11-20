@@ -16,6 +16,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.concurrent.Volatile
+import kotlin.time.TimeSource
 
 /**
  * 纯 HTTP 区间传输会话适配器：不计算预读策略、不猜测流式状态、不维护 1500ms 连接池生命周期耦合。
@@ -33,6 +34,23 @@ internal class ProxySession(
     val receivedBytes: Long get() = source.receivedBytes
     val isReactivating: StateFlow<Boolean> get() = source.isReactivating
 
+    private val transferLock = PikoLock()
+    private var accumulatedActiveBytes = 0L
+    private var accumulatedActiveNanos = 0L
+
+    /** 仅统计活跃网络拉取期间的累计字节与耗时，排除解复用缓存已满时的空闲间隔，供 Dual-EWMA ABR 测速。 */
+    internal fun activeTransferSnapshot(): Pair<Long, Long> = withPikoLock(transferLock) {
+        accumulatedActiveBytes to accumulatedActiveNanos
+    }
+
+    private fun recordActiveTransfer(bytes: Long, nanos: Long) {
+        if (bytes <= 0L || nanos <= 0L) return
+        withPikoLock(transferLock) {
+            accumulatedActiveBytes += bytes
+            accumulatedActiveNanos += nanos
+        }
+    }
+
     @Volatile
     var isClosed = false
         private set
@@ -49,6 +67,13 @@ internal class ProxySession(
     @Volatile
     private var externalDemand: TransferDemand? = demand
     private var fallbackDemand: TransferDemand? = null
+
+    @Volatile
+    private var onReadActivity: (() -> Unit)? = null
+
+    internal fun setOnReadActivity(callback: (() -> Unit)?) {
+        onReadActivity = callback
+    }
 
     val demand: TransferDemand
         get() = externalDemand ?: withPikoLock(lock) { activeDemandLocked() }
@@ -96,7 +121,13 @@ internal class ProxySession(
             if (isWithdrawn) warm.cancel() else warms.add(warm)
         }
         try {
+            val beforeReceived = source.receivedBytes
+            val startMark = TimeSource.Monotonic.markNow()
             warm.await()
+            val deltaBytes = source.receivedBytes - beforeReceived
+            if (deltaBytes > 0L) {
+                recordActiveTransfer(deltaBytes, startMark.elapsedNow().inWholeNanoseconds)
+            }
         } finally {
             warm.cancel()
             withPikoLock(lock) { warms.remove(warm) }
@@ -108,6 +139,7 @@ internal class ProxySession(
             if (isWithdrawn) throw CancellationException("transport withdrawn")
             return
         }
+        onReadActivity?.invoke()
         val ticket = withPikoLock(lock) {
             if (isWithdrawn) throw CancellationException("transport withdrawn")
             val owner = activeDemandLocked()
@@ -119,11 +151,19 @@ internal class ProxySession(
         try {
             val buffer = ByteArray(STREAM_BUFFER_BYTES)
             var position = start
+            var bytesSinceActivityPing = 0L
             while (position < endExclusive) {
                 currentCoroutineContext().ensureActive()
                 if (isWithdrawn) throw CancellationException("transport withdrawn")
                 val maxChunk = minOf(buffer.size.toLong(), endExclusive - position).toInt()
+                val beforeReceived = source.receivedBytes
+                val readMark = TimeSource.Monotonic.markNow()
                 val count = ticket.readSome(buffer, 0, maxChunk)
+                val readNanos = readMark.elapsedNow().inWholeNanoseconds
+                val netDelta = source.receivedBytes - beforeReceived
+                if (netDelta > 0L) {
+                    recordActiveTransfer(netDelta, readNanos)
+                }
                 check(count > 0) { "source ended at $position before $endExclusive" }
                 try {
                     sink(buffer, 0, count)
@@ -133,6 +173,11 @@ internal class ProxySession(
                     throw ClientGone(e)
                 }
                 position += count
+                bytesSinceActivityPing += count
+                if (bytesSinceActivityPing >= ACTIVITY_PING_BYTES) {
+                    bytesSinceActivityPing = 0L
+                    onReadActivity?.invoke()
+                }
             }
             endReason = if (isWithdrawn) ReadEndReason.Cancelled else ReadEndReason.RangeCompleted
         } catch (e: CancellationException) {
@@ -211,5 +256,6 @@ internal class ProxySession(
     private companion object {
         const val TAG = "MediaProxy"
         const val STREAM_BUFFER_BYTES = 16 * 1024
+        const val ACTIVITY_PING_BYTES = 512L * 1024L
     }
 }

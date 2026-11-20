@@ -1,5 +1,6 @@
 package dev.piko.shared.state
 
+import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.i18n.tr
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -64,27 +65,15 @@ class DuplicateFinderState(
     var report by mutableStateOf(DuplicateReport.EMPTY)
         private set
 
-    private var scanned by mutableStateOf<List<ScannedFile>>(emptyList())
+    /** 仅保留进入首次重复报告（相同组/版本组）的文件完整 [FileStat]，扫描完成后立即释放全部非重复项内存。 */
+    private var initialReport: DuplicateReport = DuplicateReport.EMPTY
+    private var statsById by mutableStateOf<Map<String, FileStat>>(emptyMap())
 
-    /** 扫描后移入回收站的。不从 [scanned] 里删：撤销时要按原样补回。 */
+    /** 扫描后移入回收站的。不从 [initialReport] 里删：撤销时要按原样补回。 */
     private var gone: Set<String> = emptySet()
     private val regroupLock = Mutex()
-    private var groupedFiles: List<ScannedFile>? = null
+    private var groupedInitial: DuplicateReport? = null
     private var groupedRemoved: Set<String>? = null
-
-    private val statsById: Map<String, FileStat> by derivedStateOf {
-        val files = scanned
-        if (files.isEmpty()) {
-            emptyMap()
-        } else {
-            HashMap<String, FileStat>(files.size * 4 / 3 + 1).apply {
-                for (i in 0 until files.size) {
-                    val stat = files[i].file
-                    put(stat.id, stat)
-                }
-            }
-        }
-    }
 
     /** 结果里出现的文件，按 ID 取回完整的 [FileStat]，网盘页据此画缩略图、打开与操作。 */
     fun fileStat(id: String): FileStat? = statsById[id]
@@ -145,9 +134,10 @@ class DuplicateFinderState(
         failedFolders = 0
         errorMessage = null
         report = DuplicateReport.EMPTY
-        scanned = emptyList()
+        initialReport = DuplicateReport.EMPTY
+        statsById = emptyMap()
         gone = emptySet()
-        groupedFiles = null
+        groupedInitial = null
         groupedRemoved = null
         scanJob = scope.launch {
             try {
@@ -163,7 +153,27 @@ class DuplicateFinderState(
                             scanStop = event.stop
                             failedFolders = event.failedFolders
                             phase = Phase.ANALYZING
-                            scanned = withContext(Dispatchers.Default) { enrichScannedFiles(event.files) }
+                            val (builtReport, retainedStats) = withContext(Dispatchers.Default) {
+                                val enriched = enrichScannedFiles(event.files)
+                                val computed = findDuplicates(enriched, rootName)
+                                val retainedIds = HashSet<String>((computed.identical.size + computed.versions.size) * 3)
+                                for (i in 0 until computed.identical.size) {
+                                    val rows = computed.identical[i].rows
+                                    for (j in 0 until rows.size) retainedIds.add(rows[j].file.id)
+                                }
+                                for (i in 0 until computed.versions.size) {
+                                    val rows = computed.versions[i].rows
+                                    for (j in 0 until rows.size) retainedIds.add(rows[j].file.id)
+                                }
+                                val keptStats = HashMap<String, FileStat>(retainedIds.size * 4 / 3 + 1)
+                                for (i in 0 until enriched.size) {
+                                    val stat = enriched[i].file
+                                    if (stat.id in retainedIds) keptStats[stat.id] = stat
+                                }
+                                computed to keptStats
+                            }
+                            initialReport = builtReport
+                            statsById = retainedStats
                             regroup()
                             phase = Phase.DONE
                             val summary = "Duplicate scan finished in ${logFolder(root.id)}: folders=$scannedFolders, files=$scannedFiles, " +
@@ -192,29 +202,62 @@ class DuplicateFinderState(
     }
 
     private fun enrichScannedFiles(items: List<ScannedFile>): List<ScannedFile> {
-        if (items.isEmpty()) return emptyList()
-        val contentCache = HashMap<String, dev.piko.shared.data.ContentMetadata?>()
+        if (items.size < 2) return items
+        // 先 O(N) 统计同内容桶计数：非视频且无同哈希候选的唯一文件绝不会进入任何重复组，直接跳过元数据批查
+        val bucketCounts = HashMap<String, Int>(items.size)
+        for (i in 0 until items.size) {
+            val file = items[i].file
+            if (file.hash.isNotBlank() && file.sizeBytes > 0L) {
+                val key = "${file.hash.uppercase()}:${file.sizeBytes}"
+                bucketCounts[key] = (bucketCounts[key] ?: 0) + 1
+            }
+        }
+        val neededContentKeys = HashSet<dev.piko.shared.data.ContentKey>()
+        val neededCreatedIds = ArrayList<String>()
+        val candidateFlags = BooleanArray(items.size)
+        for (i in 0 until items.size) {
+            val file = items[i].file
+            val hasIdenticalPeer = file.hash.isNotBlank() && file.sizeBytes > 0L &&
+                (bucketCounts["${file.hash.uppercase()}:${file.sizeBytes}"] ?: 0) > 1
+            val isCandidate = hasIdenticalPeer || file.isPlayableVideo()
+            if (!isCandidate) continue
+            candidateFlags[i] = true
+            val params = file.params
+            val missingWidth = (params["width"]?.toIntOrNull() ?: 0) <= 0
+            val missingHeight = (params["height"]?.toIntOrNull() ?: 0) <= 0
+            val missingDuration = (params["duration"]?.toDoubleOrNull() ?: 0.0) <= 0.0
+            val missingCreated = params["piko_original_created_at"]?.toLongOrNull() == null
+            if (missingWidth || missingHeight || missingDuration) {
+                dev.piko.shared.data.ContentKey.of(file)?.let(neededContentKeys::add)
+            }
+            if (missingCreated && hasIdenticalPeer) {
+                neededCreatedIds.add(file.id)
+            }
+        }
+        if (neededContentKeys.isEmpty() && neededCreatedIds.isEmpty()) return items
+        val contentByKey = if (neededContentKeys.isNotEmpty()) driveRepo.contentMetadataBatch(neededContentKeys) else emptyMap()
+        val createdById = if (neededCreatedIds.isNotEmpty()) driveRepo.originalCreatedAtMillisBatch(neededCreatedIds) else emptyMap()
+        if (contentByKey.isEmpty() && createdById.isEmpty()) return items
+
         val enriched = ArrayList<ScannedFile>(items.size)
         for (i in 0 until items.size) {
             val item = items[i]
+            if (!candidateFlags[i]) {
+                enriched.add(item)
+                continue
+            }
             val file = item.file
             val params = file.params
             val missingWidth = (params["width"]?.toIntOrNull() ?: 0) <= 0
             val missingHeight = (params["height"]?.toIntOrNull() ?: 0) <= 0
             val missingDuration = (params["duration"]?.toDoubleOrNull() ?: 0.0) <= 0.0
             val missingCreated = params["piko_original_created_at"]?.toLongOrNull() == null
-
-            val meta = if ((missingWidth || missingHeight || missingDuration) && file.hash.isNotBlank() && file.sizeBytes >= 0L) {
-                val key = "${file.hash.uppercase()}:${file.sizeBytes}"
-                if (contentCache.containsKey(key)) {
-                    contentCache[key]
-                } else {
-                    driveRepo.contentMetadataOf(file).also { contentCache[key] = it }
-                }
+            val meta = if (missingWidth || missingHeight || missingDuration) {
+                dev.piko.shared.data.ContentKey.of(file)?.let(contentByKey::get)
             } else {
                 null
             }
-            val originalCreated = if (missingCreated) driveRepo.originalCreatedAtMillis(file.id) else null
+            val originalCreated = if (missingCreated) createdById[file.id] else null
 
             val needsWidth = missingWidth && (meta?.width ?: 0) > 0
             val needsHeight = missingHeight && (meta?.height ?: 0) > 0
@@ -244,35 +287,29 @@ class DuplicateFinderState(
 
     private suspend fun regroup() {
         regroupLock.withLock {
-            val allScanned = scanned
-            val removed = if (!driveRepo.hasPendingOptimisticWrites) {
+            val base = initialReport
+            val retainedStats = statsById
+            val removed = if (!driveRepo.hasPendingOptimisticWrites || retainedStats.isEmpty()) {
                 gone
             } else {
-                val files = ArrayList<FileStat>(allScanned.size)
-                for (i in 0 until allScanned.size) files.add(allScanned[i].file)
-                val visible = driveRepo.projectOptimisticFiles(files).mapTo(HashSet(allScanned.size * 4 / 3 + 1)) { it.id }
+                val retainedList = retainedStats.values.toList()
+                val visible = driveRepo.projectOptimisticFiles(retainedList)
+                    .mapTo(HashSet(retainedList.size * 4 / 3 + 1)) { it.id }
                 val acc = HashSet<String>(gone)
-                for (i in 0 until allScanned.size) {
-                    val id = allScanned[i].file.id
+                for (id in retainedStats.keys) {
                     if (id !in visible) acc.add(id)
                 }
                 acc
             }
-            if (groupedFiles === allScanned && groupedRemoved == removed) return@withLock
-            report = withContext(Dispatchers.Default) {
-                val present = if (removed.isEmpty()) {
-                    allScanned
-                } else {
-                    val filtered = ArrayList<ScannedFile>(allScanned.size)
-                    for (i in 0 until allScanned.size) {
-                        val item = allScanned[i]
-                        if (item.file.id !in removed) filtered.add(item)
-                    }
-                    filtered
+            if (groupedInitial === base && groupedRemoved == removed) return@withLock
+            report = if (removed.isEmpty()) {
+                base
+            } else {
+                withContext(Dispatchers.Default) {
+                    filterDuplicateReport(base, removed)
                 }
-                findDuplicates(present, rootName)
             }
-            groupedFiles = allScanned
+            groupedInitial = base
             groupedRemoved = removed
         }
     }

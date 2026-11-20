@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.theme.LocalStatusColors
+import dev.piko.ui.theme.tabular
 import kotlinx.coroutines.delay
 
 internal data class DetailAction(
@@ -126,7 +127,7 @@ private fun DetailFieldCell(field: DetailField, modifier: Modifier = Modifier) {
                             style = if (field.monospace) {
                                 MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
                             } else {
-                                MaterialTheme.typography.bodyMedium
+                                MaterialTheme.typography.bodyMedium.tabular
                             },
                             color = colors.onSurface,
                             maxLines = field.maxLines,

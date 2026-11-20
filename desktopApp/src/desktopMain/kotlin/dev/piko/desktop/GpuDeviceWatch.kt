@@ -10,28 +10,23 @@ import java.awt.Container
 import java.awt.Window
 import java.lang.foreign.MemorySegment
 import java.lang.foreign.ValueLayout.ADDRESS
+import java.lang.ref.WeakReference
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.util.WeakHashMap
 import org.jetbrains.skiko.SkiaLayer
 
 /**
- * 显卡设备失效（device removed）时重建窗口，而不是等 skiko 崩掉整个进程。
+ * 显卡设备失效（device removed）时重建窗口，而不是等 Skiko 崩掉整个进程。
  *
- * 驱动复位 GPU 引擎（NVIDIA 的 nvlddmkm 事件 153、TDR）、升级或崩溃时，系统把所有进程的 D3D 设备一律判为失效。
- * skiko 0.150 的 Direct3DRedrawer 不检查 HRESULT：失效后普通帧的失败被吞掉，画面冻住；下一次改窗口尺寸时
- * makeDirectXSurface 里 GetBuffer 失败留下空指针，接着解引用，JVM 直接崩溃（hs_err 里是 skiko-windows-x64.dll
- * 的 EXCEPTION_ACCESS_VIOLATION，栈顶 makeDirectXSurface）。升级 skiko 修不了：master 仍不检查，且升级被 MediaMP 卡住。
+ * 驱动复位 GPU 引擎（NVIDIA 事件 153、Windows TDR）、热升级或休眠异常时，系统把当前进程的 D3D12 设备
+ * 判为失效。Skiko 的 Direct3DRenderer 不检查 HRESULT：失效后普通帧失败被吞掉、画面冻住；下一次改尺寸时
+ * 交换链调整失败可能触发空指针崩溃。
  *
- * 做法：问 skiko 手里那个 ID3D12Device 的 GetDeviceRemovedReason。失效了就不再碰这块画布，把 [generation] 加一，
- * [PikoWindow] 以它为 key 整个丢掉窗口再建，新窗口建新设备。skiko 公开的重建只有 SkiaLayer 的
- * removeNotify / addNotify，ComposeWindow 拆装面板的副作用没核实过，重建整个窗口更稳。
- * 两处问：改尺寸之前（[PixelAlignedContentEffect] 的布局里，正是崩溃的那一步）与每秒一次（[PikoWindow]），
- * 后者在画面冻住、用户还没去拉窗口时就发现。
- *
- * 取设备的路子与 MediaMP 的 SkiaDirectXInterop 相同：SkiaLayer.getRedrawer$skiko 取 redrawer，
- * Direct3DRedrawer.device 是 skiko 原生 DirectXDevice 结构体的指针，结构体里 ID3D12Device 在第 6 个指针槽
- * （skiko 0.150.1 directXRedrawer.cc：hWnd、GrD3DBackendContext 占 5 槽，之后是 device、swapChain）。
- * 这些是 skiko 的内部布局，升级 skiko 时要对照源码核对。
+ * 在 Skiko 0.156.1 上从 `SkiaLayer.getFrameDriver$org_jetbrains_skiko_skiko()` → `FrameDriver.getRenderer()`
+ * 取出 `Direct3DRenderer.device`，读取第 2 个指针槽（`+0x10`）上的 `ID3D12Device*`，经缓存的 FFM 虚表句柄
+ * 调用第 37 项 `GetDeviceRemovedReason`。一旦返回非 0（非 `S_OK`），递增 [generation] 驱动 [PikoWindow]
+ * 重建窗口与新设备。
  */
 internal object GpuDeviceWatch {
     /** 设备失效一次加一。所有窗口共用：GPU 复位时各窗口的设备一起失效。 */
@@ -44,10 +39,18 @@ internal object GpuDeviceWatch {
     // 反射或读内存出错一次就不再问，免得每次布局都抛；只影响这个兜底，不影响绘制
     private var disabled = !WinRTSupport.isWindows
 
-    private val getRedrawer: Method by lazy { SkiaLayer::class.java.getMethod("getRedrawer\$skiko") }
-    private val deviceField: Field by lazy {
-        Class.forName(D3D_REDRAWER).getDeclaredField("device").apply { isAccessible = true }
+    private val getFrameDriver: Method by lazy {
+        SkiaLayer::class.java.getMethod("getFrameDriver\$org_jetbrains_skiko_skiko")
     }
+    private val getRenderer: Method by lazy {
+        Class.forName(FRAME_DRIVER).getDeclaredMethod("getRenderer").apply { isAccessible = true }
+    }
+    private val deviceField: Field by lazy {
+        Class.forName(D3D_RENDERER).getDeclaredField("device").apply { isAccessible = true }
+    }
+
+    // 缓存每个窗口对应的 SkiaLayer 弱引用，避免 1Hz 定时检查与窗口缩放布局反复遍历 AWT 组件树
+    private val layerCache = WeakHashMap<Window, WeakReference<SkiaLayer>>()
 
     /** 这个窗口的显卡设备失效了没有。失效时顺带报告，由调用方决定不再碰画布。 */
     fun checkLost(window: Window?): Boolean {
@@ -80,16 +83,25 @@ internal object GpuDeviceWatch {
 
     /** GetDeviceRemovedReason 的返回值，S_OK 为 0；拿不到 D3D12 设备（别的渲染后端、还没建好）时为 null。 */
     private fun removedReason(window: Window): Int? {
-        val layer = findSkiaLayer(window) ?: return null
-        val redrawer = getRedrawer.invoke(layer) ?: return null
-        if (redrawer.javaClass.name != D3D_REDRAWER) return null
-        val devicePtr = deviceField.getLong(redrawer)
+        val layer = cachedSkiaLayer(window) ?: return null
+        val driver = getFrameDriver.invoke(layer) ?: return null
+        val renderer = getRenderer.invoke(driver) ?: return null
+        if (renderer.javaClass.name != D3D_RENDERER) return null
+        val devicePtr = deviceField.getLong(renderer)
         if (devicePtr == 0L) return null
         val d3d12 = MemorySegment.ofAddress(devicePtr)
             .reinterpret(ADDRESS.byteSize() * (DEVICE_SLOT + 1))
             .getAtIndex(ADDRESS, DEVICE_SLOT.toLong())
         if (d3d12.address() == 0L) return null
-        return ComInterop.hresult(ComInterop.vtable(d3d12, GET_DEVICE_REMOVED_REASON, ComInterop.callThis), d3d12)
+        return ComInterop.invokeVtable(d3d12, GET_DEVICE_REMOVED_REASON, ComInterop.callThis, d3d12)
+    }
+
+    private fun cachedSkiaLayer(window: Window): SkiaLayer? {
+        val cached = synchronized(layerCache) { layerCache[window]?.get() }
+        if (cached != null && cached.isDisplayable) return cached
+        val found = findSkiaLayer(window) ?: return null
+        synchronized(layerCache) { layerCache[window] = WeakReference(found) }
+        return found
     }
 
     private fun findSkiaLayer(container: Container): SkiaLayer? {
@@ -101,8 +113,9 @@ internal object GpuDeviceWatch {
     }
 
     private const val TAG = "Gpu"
-    private const val D3D_REDRAWER = "org.jetbrains.skiko.redrawer.Direct3DRedrawer"
-    private const val DEVICE_SLOT = 6
+    private const val FRAME_DRIVER = "org.jetbrains.skiko.renderer.FrameDriver"
+    private const val D3D_RENDERER = "org.jetbrains.skiko.renderer.Direct3DRenderer"
+    private const val DEVICE_SLOT = 2
 
     // ID3D12Device 虚表：IUnknown 3 项、ID3D12Object 4 项，之后数到 CreateFence 是 36，GetDeviceRemovedReason 是 37
     private const val GET_DEVICE_REMOVED_REASON = 37

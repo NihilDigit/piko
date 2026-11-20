@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.unit.dp
+import dev.piko.data.repository.isPlayableMedia
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.download.DownloadBatch
 import dev.piko.download.DownloadStatus
@@ -48,6 +49,7 @@ import dev.piko.shared.upload.UploadStatus
 import dev.piko.ui.PikoServices
 import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.ContextMenuArea
+import dev.piko.ui.components.FolderListLeadingVisual
 import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.ListLeadingMedia
 import dev.piko.ui.components.LocalPointerSource
@@ -122,7 +124,7 @@ internal fun buildTransferPlayAction(
     is TransferItem.Cloud -> if (item.task.canPlayVideo) ({ ctx.onPlayCloud(item.task.fileId, item.task.displayName) }) else null
     is TransferItem.Instant -> if (item.record.canPlayVideo) ({ ctx.onPlayCloud(item.record.locateId, item.record.name) }) else null
     is TransferItem.Upload -> if (item.task.canPlayVideo) ({ ctx.onPlayCloud(requireNotNull(item.task.fileId), item.task.fileName) }) else null
-    is TransferItem.Pack -> if (item.job.canOpen && item.job.folderName.isPlayableVideo()) ({ ctx.onPlayCloud(item.job.outputId, item.job.folderName) }) else null
+    is TransferItem.Pack -> if (item.job.canOpen && item.job.folderName.isPlayableMedia()) ({ ctx.onPlayCloud(item.job.outputId, item.job.folderName) }) else null
     else -> null
 }
 
@@ -370,7 +372,7 @@ internal fun buildTransferQuickAction(
             else -> pauseOrResumeActionOf(item, ctx)
         }
         is TransferItem.Pack -> when {
-            item.job.canOpen && item.job.folderName.isPlayableVideo() -> SheetAction(Icons.Outlined.PlayCircle, tr("播放", "Play", "再生", "재생", "播放"), { ctx.onPlayCloud(item.job.outputId, item.job.folderName) })
+            item.job.canOpen && item.job.folderName.isPlayableMedia() -> SheetAction(Icons.Outlined.PlayCircle, tr("播放", "Play", "再生", "재생", "播放"), { ctx.onPlayCloud(item.job.outputId, item.job.folderName) })
             item.job.canOpen -> SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { ctx.onOpenCloudFileById(item.job.outputId, item.job.folderName) })
             !item.isBusy && item.job.stage == OfflinePackStage.FAILED -> SheetAction(Icons.Outlined.Refresh, tr("重试", "Retry", "再試行", "다시 시도", "重試"), { state.retryPack(item.job.taskId) })
             else -> null
@@ -413,7 +415,7 @@ internal fun buildTransferExtraAction(
         is TransferItem.Upload -> if (item.task.canPlayVideo) {
             SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { ctx.onOpenCloudFileById(requireNotNull(item.task.fileId), item.task.fileName) })
         } else null
-        is TransferItem.Pack -> if (item.job.canOpen && item.job.folderName.isPlayableVideo()) {
+        is TransferItem.Pack -> if (item.job.canOpen && item.job.folderName.isPlayableMedia()) {
             SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { ctx.onOpenCloudFileById(item.job.outputId, item.job.folderName) })
         } else null
         else -> null
@@ -455,21 +457,41 @@ internal fun TransferItemLeadingVisual(
             isSpoilerBlurred = isBlurred,
             showPlayOverlay = item.task.canPlayVideo,
         )
-        is TransferItem.Pack -> ListLeadingMedia(
-            thumbnail = state.thumbnailOf(item.job.outputId),
-            fallback = { TaskFolderVisual(item.job.folderName) },
-            isSpoilerBlurred = isBlurred,
-            showPlayOverlay = item.job.canOpen && item.job.folderName.isPlayableVideo(),
-        )
-        is TransferItem.Instant -> ListLeadingMedia(
-            thumbnail = state.thumbnailOf(item.record.locateId),
-            fallback = {
-                if (item.record.fileCount > 1 && !item.record.name.contains('.')) TaskFolderVisual(item.record.name)
-                else TaskFileTypeIcon(item.record.name, Icons.Outlined.Bolt)
-            },
-            isSpoilerBlurred = isBlurred,
-            showPlayOverlay = item.record.canPlayVideo,
-        )
+        is TransferItem.Pack -> {
+            val packThumb = state.thumbnailOf(item.job.outputId)
+            if (item.job.folderName.isPlayableMedia()) {
+                ListLeadingMedia(
+                    thumbnail = packThumb,
+                    fallback = { TaskFileTypeIcon(item.job.folderName, Icons.Outlined.CloudDownload) },
+                    isSpoilerBlurred = isBlurred,
+                    showPlayOverlay = item.job.canOpen,
+                )
+            } else {
+                FolderListLeadingVisual(
+                    name = item.job.folderName,
+                    thumbnail = packThumb,
+                    isSpoilerBlurred = isBlurred,
+                )
+            }
+        }
+        is TransferItem.Instant -> {
+            val instantThumb = state.thumbnailOf(item.record.locateId)
+            val isFolderRecord = item.record.fileCount > 1 && !item.record.name.contains('.')
+            if (isFolderRecord) {
+                FolderListLeadingVisual(
+                    name = item.record.name,
+                    thumbnail = instantThumb,
+                    isSpoilerBlurred = isBlurred,
+                )
+            } else {
+                ListLeadingMedia(
+                    thumbnail = instantThumb,
+                    fallback = { TaskFileTypeIcon(item.record.name, Icons.Outlined.Bolt) },
+                    isSpoilerBlurred = isBlurred,
+                    showPlayOverlay = item.record.canPlayVideo,
+                )
+            }
+        }
         is TransferItem.Extract -> TaskFileTypeIcon(item.job.file.name, Icons.Outlined.Unarchive)
         is TransferItem.Vault -> TaskFolderVisual(item.folderName)
         else -> ListLeadingIcon(taskPresenter.present(item).icon)

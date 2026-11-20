@@ -6,6 +6,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.CallMerge
+import androidx.compose.material.icons.outlined.CallSplit
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentCut
@@ -125,6 +127,22 @@ internal object DriveActions {
 
     // 叠放的文件夹，与「移动到…」的文件夹箭头成对；ContentCopy 留给放进剪贴板的「复制」，同在一个菜单里只看图标分不清
     fun copyTo(onClick: () -> Unit) = SheetAction(Icons.Outlined.FolderCopy, tr("复制到…", "Copy to…", "コピー先…", "복사 위치…", "複製至…"), onClick, group = ActionGroup.Organize)
+
+    fun unwrapOrFlatten(onClick: () -> Unit) = SheetAction(
+        Icons.Outlined.CallSplit,
+        tr("拆开 / 铺开…", "Unwrap / Flatten…", "展開 / フラット化…", "풀기 / 평탄화…", "拆開 / 鋪平…"),
+        onClick,
+        group = ActionGroup.Organize,
+        shortLabel = tr("拆开", "Unwrap", "展開", "풀기", "拆開"),
+    )
+
+    fun mergeFolders(onClick: () -> Unit) = SheetAction(
+        Icons.Outlined.CallMerge,
+        tr("合并文件夹…", "Merge folders…", "フォルダーを統合…", "폴더 병합…", "合併資料夾…"),
+        onClick,
+        group = ActionGroup.Organize,
+        shortLabel = tr("合并", "Merge", "統合", "병합", "合併"),
+    )
 
     // 开着的样子用实心图钉，与侧边栏里固定的文件夹一致
     fun pin(pinned: Boolean, onClick: () -> Unit) = SheetAction(

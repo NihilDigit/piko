@@ -109,11 +109,11 @@ object TaskbarProgress {
         val list = taskbarList() ?: return
         val hwnd = Win32Window.handleOf(window) ?: return
         request.state?.let { state ->
-            ComInterop.hresult(ComInterop.vtable(list, 10, setProgressStateDescriptor), list, hwnd, state.flag)
+            ComInterop.invokeVtable(list, 10, setProgressStateDescriptor, list, hwnd, state.flag)
         }
         if (request.hasValue) {
-            ComInterop.hresult(
-                ComInterop.vtable(list, 9, setProgressValueDescriptor),
+            ComInterop.invokeVtable(
+                list, 9, setProgressValueDescriptor,
                 list, hwnd, request.completed, request.total,
             )
         }
@@ -149,6 +149,7 @@ internal object ComInterop {
     private const val RPC_E_CHANGED_MODE = 0x80010106.toInt()
 
     private val linker = Linker.nativeLinker()
+    private val virtualDowncalls = ConcurrentHashMap<FunctionDescriptor, MethodHandle>()
 
     // 全部延迟：guid 会触发本对象初始化，非 Windows 上找不到 ole32，不能让它在初始化时就抛出
     private val ole32 by lazy { SymbolLookup.libraryLookup("ole32", Arena.global()) }
@@ -192,11 +193,26 @@ internal object ComInterop {
         coTaskMemFree.invokeWithArguments(pointer)
     }
 
-    /** 取 COM 对象虚表的第 [index] 项。对象指针所指的第一个字就是虚表地址。 */
-    fun vtable(obj: MemorySegment, index: Int, descriptor: FunctionDescriptor): MethodHandle {
+    /** 按 FunctionDescriptor 缓存无绑定虚表下调句柄，避免每次调用重编译本地 downcall 桩。 */
+    private fun virtualDowncall(descriptor: FunctionDescriptor): MethodHandle =
+        virtualDowncalls.computeIfAbsent(descriptor) { linker.downcallHandle(it) }
+
+    private fun vtableEntry(obj: MemorySegment, index: Int): MemorySegment {
         val table = obj.reinterpret(ADDRESS.byteSize()).get(ADDRESS, 0)
-        val function = table.reinterpret(ADDRESS.byteSize() * (index + 1)).getAtIndex(ADDRESS, index.toLong())
-        return linker.downcallHandle(function, descriptor)
+        return table.reinterpret(ADDRESS.byteSize() * (index + 1)).getAtIndex(ADDRESS, index.toLong())
+    }
+
+    /** 取 COM 对象虚表的第 [index] 项。对象指针所指的第一个字就是虚表地址。 */
+    fun vtable(obj: MemorySegment, index: Int, descriptor: FunctionDescriptor): MethodHandle =
+        virtualDowncall(descriptor).bindTo(vtableEntry(obj, index))
+
+    /** 热点路径直调 COM 虚表：复用了缓存的无绑定下调句柄，零动态桩编译、零 bindTo 分配。 */
+    fun invokeVtable(obj: MemorySegment, index: Int, descriptor: FunctionDescriptor, vararg args: Any): Int {
+        val function = vtableEntry(obj, index)
+        val combined = arrayOfNulls<Any>(args.size + 1)
+        combined[0] = function
+        System.arraycopy(args, 0, combined, 1, args.size)
+        return virtualDowncall(descriptor).invokeWithArguments(*combined) as Int
     }
 
     // invokeWithArguments 的理由同 WindowsToast：invokeExact 要求调用点静态类型与描述符逐位一致

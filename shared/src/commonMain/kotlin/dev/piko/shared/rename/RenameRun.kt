@@ -8,6 +8,10 @@ import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.DriveWriteAccess
 import dev.piko.shared.data.DriveChange
+import dev.piko.shared.data.VaultEdit
+import dev.piko.shared.data.VaultEdits
+import dev.piko.shared.data.VaultEntry
+import dev.piko.shared.data.VaultWriteUnconfirmed
 import io.github.nihildigit.pikpak.PikPakException
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logEntry
@@ -53,6 +57,9 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
     val renamed = mutableListOf<DriveChangeJournal.Renamed>()
     val unconfirmed = mutableListOf<DriveChangeJournal.Renamed>()
 
+    /** 已确认写入的归档清单批量改名反向编辑，按目录归并。 */
+    val vaultReverts = linkedMapOf<String, VaultEdit>()
+
     private enum class StepPhase(val label: String) {
         SWAP("swap"),
         FINAL("final"),
@@ -61,6 +68,10 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
 
     suspend fun execute(plan: RenamePlan) {
         val targets = plan.rows.associateBy { it.source.id }
+        val vaultedRows = plan.rows.filter { it.isChanged && it.problem == null && VaultEntry.isVaulted(it.source.id) }
+        val realWaves = plan.waves.mapNotNull { wave ->
+            wave.steps.filterNot { VaultEntry.isVaulted(it.source.id) }.takeIf { it.isNotEmpty() }?.let(::RenameWave)
+        }
         total = plan.changeCount
         processed = 0
         swapsExecuted = 0
@@ -68,13 +79,14 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
         failures.clear()
         renamed.clear()
         unconfirmed.clear()
+        vaultReverts.clear()
         val failedIds = mutableSetOf<String>()
         val completedIds = mutableSetOf<String>()
         val occupied = mutableSetOf<Pair<String, String>>()
         val currentNames = plan.rows.associate { it.source.id to (it.source.parentId to it.source.name) }.toMutableMap()
         val limit = Semaphore(16)
         try {
-            for (wave in plan.waves) {
+            for (wave in realWaves) {
                 // Workers report progress immediately; results commit in plan order, including on cancellation.
                 val outcomes = arrayOfNulls<StepResult>(wave.steps.size)
                 val waveStartProcessed = processed
@@ -166,7 +178,10 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
                     }
                 }
                 if (access != null && unconfirmed.isNotEmpty()) {
-                    val skipped = plan.rows.filter { it.isChanged && it.problem == null && it.source.id !in completedIds && it.source.id !in failedIds }
+                    val skipped = plan.rows.filter {
+                        it.isChanged && it.problem == null && !VaultEntry.isVaulted(it.source.id) &&
+                            it.source.id !in completedIds && it.source.id !in failedIds
+                    }
                     failures += skipped
                     processed = completedIds.size + failures.size
                     PikoLog.w(
@@ -176,20 +191,107 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
                     break
                 }
             }
+            if (vaultedRows.isNotEmpty()) {
+                val store = access?.vault ?: driveRepo.vault
+                val ownerAccount = access?.account ?: driveRepo.currentAccount
+                val vaultedByFolder = vaultedRows.groupBy { it.source.parentId }
+                for ((folderId, folderRows) in vaultedByFolder) {
+                    val rowsByEntryId = LinkedHashMap<String, RenameRow>(folderRows.size)
+                    val targetNames = LinkedHashMap<String, String>(folderRows.size)
+                    val invalidRows = ArrayList<RenameRow>()
+                    for (row in folderRows) {
+                        val entryId = VaultEntry.entryIdOf(row.source.id)
+                        if (entryId == null) {
+                            invalidRows += row
+                        } else {
+                            rowsByEntryId[entryId] = row
+                            targetNames[entryId] = row.newName
+                        }
+                    }
+                    if (invalidRows.isNotEmpty()) {
+                        failures += invalidRows
+                        processed += invalidRows.size
+                    }
+                    if (targetNames.isEmpty()) continue
+                    val write = store.update(folderId, VaultEdits.renameAll(targetNames))
+                    if (write.isSuccess) {
+                        val applied = write.getOrThrow()
+                        val beforeById = applied.before.associateBy { it.id }
+                        val afterById = applied.after.associateBy { it.id }
+                        val prevNames = LinkedHashMap<String, String>()
+                        val confirmedStars = LinkedHashMap<String, String>()
+                        for ((entryId, row) in rowsByEntryId) {
+                            val afterEntry = afterById[entryId]
+                            if (afterEntry != null && afterEntry.name == row.newName) {
+                                completedIds += row.source.id
+                                confirmedStars[entryId] = row.newName
+                                val oldName = beforeById[entryId]?.name ?: row.source.name
+                                if (oldName != row.newName) prevNames[entryId] = oldName
+                            } else {
+                                failures += row
+                            }
+                            processed++
+                        }
+                        if (confirmedStars.isNotEmpty()) {
+                            driveRepo.vaultStars.renameEntries(confirmedStars, expectedAccount = ownerAccount)
+                        }
+                        if (prevNames.isNotEmpty()) {
+                            vaultReverts[folderId] = VaultEdits.renameAll(prevNames)
+                        }
+                    } else {
+                        val attempted = (write.exceptionOrNull() as? VaultWriteUnconfirmed)?.attempted
+                        val committed = if (attempted != null) {
+                            store.committed(folderId)
+                                .logFailure(tag, "Failed to recheck committed vault manifest after unconfirmed batch rename in ${logFolder(folderId)}")
+                                .getOrNull()
+                        } else null
+                        if (committed != null && attempted != null) {
+                            val beforeById = attempted.before.associateBy { it.id }
+                            val afterById = committed.associateBy { it.id }
+                            val prevNames = LinkedHashMap<String, String>()
+                            val confirmedStars = LinkedHashMap<String, String>()
+                            for ((entryId, row) in rowsByEntryId) {
+                                val afterEntry = afterById[entryId]
+                                if (afterEntry != null && afterEntry.name == row.newName) {
+                                    completedIds += row.source.id
+                                    confirmedStars[entryId] = row.newName
+                                    val oldName = beforeById[entryId]?.name ?: row.source.name
+                                    if (oldName != row.newName) prevNames[entryId] = oldName
+                                } else {
+                                    failures += row
+                                }
+                                processed++
+                            }
+                            if (confirmedStars.isNotEmpty()) {
+                                driveRepo.vaultStars.renameEntries(confirmedStars, expectedAccount = ownerAccount)
+                            }
+                            if (prevNames.isNotEmpty()) {
+                                vaultReverts[folderId] = VaultEdits.renameAll(prevNames)
+                            }
+                        } else {
+                            write.logFailure(tag, "Vault batch rename failed in ${logFolder(folderId)} (items=${targetNames.size})")
+                            failures += rowsByEntryId.values
+                            processed += rowsByEntryId.size
+                        }
+                    }
+                }
+            }
         } finally {
             val strandedSwaps = currentNames.count { (id, loc) ->
                 val row = targets[id]
-                row != null && loc.second != row.source.name && loc.second != row.newName
+                row != null && !VaultEntry.isVaulted(id) && loc.second != row.source.name && loc.second != row.newName
             }
             if (strandedSwaps > 0) {
                 PikoLog.w(tag, "Rename run ended with $strandedSwaps item(s) still holding temporary swap names")
             }
             if (access == null && renamed.isNotEmpty()) {
-                val touched = plan.rows.mapTo(HashSet()) { it.source.parentId }
-                if (unconfirmed.isEmpty() && failures.isEmpty()) {
-                    driveRepo.notifyFoldersRefreshed(touched)
-                } else {
-                    driveRepo.applyChange(DriveChange.ContentsChanged(touched))
+                val touched = plan.rows.filterNot { VaultEntry.isVaulted(it.source.id) }.mapTo(HashSet()) { it.source.parentId }
+                if (touched.isNotEmpty()) {
+                    if (unconfirmed.isEmpty() && failures.isEmpty()) {
+                        driveRepo.notifyFoldersRefreshed(touched)
+                    } else {
+                        driveRepo.applyChange(DriveChange.ContentsChanged(touched))
+                    }
                 }
             }
         }

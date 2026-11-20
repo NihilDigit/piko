@@ -18,9 +18,14 @@ import dev.piko.shared.storage.IosAppDirectories
 import dev.piko.shared.upload.importIosUploadDocument
 import dev.piko.shared.upload.importIosUploadFolder
 import dev.piko.ui.adaptive.FormFactor
+import dev.piko.ui.screens.clips.BackdropBlurKernel
 import dev.piko.ui.theme.MotionStyle
 import dev.piko.ui.theme.PikoMotionScale
 import dev.piko.update.AppUpdateService
+import org.jetbrains.skia.Bitmap
+import org.jetbrains.skia.ColorAlphaType
+import org.jetbrains.skia.ColorType
+import org.jetbrains.skia.ImageInfo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -270,6 +275,39 @@ class IosPikoPlatform(
 
     @Composable
     override fun ListScrollbar(state: LazyGridState, modifier: Modifier) = Unit
+
+    override fun blurCoilBitmap(input: Bitmap, radiusPx: Int): Bitmap? {
+        val w = input.width
+        val h = input.height
+        if (w <= 0 || h <= 0) return null
+        val info = ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.UNPREMUL)
+        val rawBytes = input.readPixels(info, w * 4, 0, 0) ?: return null
+        val argb = IntArray(w * h) { idx ->
+            val o = idx * 4
+            val b = rawBytes[o].toInt() and 0xFF
+            val g = rawBytes[o + 1].toInt() and 0xFF
+            val r = rawBytes[o + 2].toInt() and 0xFF
+            val a = rawBytes[o + 3].toInt() and 0xFF
+            (a shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        val blurred = BackdropBlurKernel.blurArgb(argb, w, h, radiusPx)
+        val outBytes = ByteArray(w * h * 4)
+        for (idx in blurred.indices) {
+            val c = blurred[idx]
+            val o = idx * 4
+            outBytes[o] = (c and 0xFF).toByte()
+            outBytes[o + 1] = ((c ushr 8) and 0xFF).toByte()
+            outBytes[o + 2] = ((c ushr 16) and 0xFF).toByte()
+            outBytes[o + 3] = ((c ushr 24) and 0xFF).toByte()
+        }
+        val outBitmap = Bitmap()
+        if (!outBitmap.installPixels(info, outBytes, w * 4)) {
+            outBitmap.close()
+            return null
+        }
+        outBitmap.setImmutable()
+        return outBitmap
+    }
 }
 
 /** 文件选择器的回调对象；选择器给的 URL 只在回调期间有效，导入在回调里立刻开始。 */

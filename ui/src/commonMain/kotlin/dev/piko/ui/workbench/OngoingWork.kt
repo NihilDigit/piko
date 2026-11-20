@@ -5,8 +5,8 @@ import dev.piko.ui.i18n.stringResource
 
 import dev.piko.shared.i18n.tr
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
@@ -39,6 +39,7 @@ import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.screens.instant.summary
 import dev.piko.ui.theme.LocalPikoMotion
+import dev.piko.ui.theme.tabular
 
 internal data class WorkspaceSurface(val contextId: Long, val minimize: () -> Unit)
 internal val LocalWorkspaceSurface = staticCompositionLocalOf<WorkspaceSurface?> { null }
@@ -55,7 +56,7 @@ internal fun WorkspaceControls(compact: Boolean = false) {
     val reduced = LocalPikoMotion.current.reduced
     val scale by animateFloatAsState(
         targetValue = if (model.tabButtonEmphasized && !reduced) 1.18f else 1f,
-        animationSpec = tween(durationMillis = 180),
+        animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
         label = "tabBadgeScale",
     )
     val colors = MaterialTheme.colorScheme
@@ -95,7 +96,7 @@ internal fun WorkspaceControls(compact: Boolean = false) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
                         text = "$count",
-                        style = MaterialTheme.typography.labelMedium,
+                        style = MaterialTheme.typography.labelMedium.tabular,
                         fontWeight = if (hasMultiple) FontWeight.Bold else FontWeight.Medium,
                         textAlign = TextAlign.Center,
                     )
@@ -111,6 +112,7 @@ internal fun workspaceTitle(model: WorkspaceViewModel, context: WorkspaceContext
     is WorkspaceContext.ImportDraft -> model.importModels[context.id]?.state?.summary()?.title ?: tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結")
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) {
     val wide = isDesktopLayout()
@@ -128,13 +130,26 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                 Modifier.fillMaxWidth().then(caption.modifier).padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(tr("${contexts.size} 个标签页", "${contexts.size} tabs", "${contexts.size} タブ", "탭 ${contexts.size}개", "${contexts.size} 個分頁"), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                Text(
+                    text = tr("${contexts.size} 个标签页", "${contexts.size} tabs", "${contexts.size} タブ", "탭 ${contexts.size}개", "${contexts.size} 個分頁"),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleLargeEmphasized.tabular,
+                    maxLines = 1,
+                )
                 TooltipIconButton(Icons.Outlined.Close, tr("关闭标签总览", "Close tab overview", "タブ一覧を閉じる", "탭 개요 닫기", "關閉分頁總覽"), onDismiss)
                 caption.buttons?.invoke()
             }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { model.newFileContext(); onDismiss() }) {
-                    Icon(Icons.Outlined.Add, null); Spacer(Modifier.width(8.dp)); Text(stringResource(Res.string.text_new_tab_alt))
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilledTonalButton(
+                    onClick = { model.newFileContext(); onDismiss() },
+                    contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
+                ) {
+                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(Res.string.text_new_tab_alt))
                 }
                 Spacer(Modifier.weight(1f))
                 TextButton(
@@ -160,12 +175,22 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                         is WorkspaceContext.ImportDraft -> Icons.Outlined.Link
                     }
                     val canClose = !pinned && model.canCloseContext(context.id)
+                    val cardBorderColor by animateColorAsState(
+                        targetValue = if (isActive) colors.primary else colors.outlineVariant.copy(alpha = 0.5f),
+                        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+                        label = "tab_card_border",
+                    )
+                    val cardColor by animateColorAsState(
+                        targetValue = if (isActive) colors.secondaryContainer else colors.surfaceContainerHighest,
+                        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+                        label = "tab_card_bg",
+                    )
                     val cardContent: @Composable () -> Unit = {
                         Surface(
                             onClick = { model.activateContext(context.id); onDismiss() },
-                            shape = RoundedCornerShape(20.dp),
-                            border = if (isActive) BorderStroke(2.5.dp, colors.primary) else BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.5f)),
-                            color = if (isActive) colors.secondaryContainer else colors.surfaceContainerHighest,
+                            shape = MaterialTheme.shapes.largeIncreased,
+                            border = BorderStroke(if (isActive) 2.5.dp else 1.dp, cardBorderColor),
+                            color = cardColor,
                         ) {
                             Column {
                                 Row(
@@ -182,7 +207,7 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                                     Text(
                                         text = title,
                                         modifier = Modifier.weight(1f),
-                                        style = MaterialTheme.typography.titleSmall,
+                                        style = MaterialTheme.typography.titleSmallEmphasized,
                                         color = if (isActive) colors.onSecondaryContainer else colors.onSurface,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,

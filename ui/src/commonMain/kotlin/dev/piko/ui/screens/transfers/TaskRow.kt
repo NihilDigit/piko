@@ -2,8 +2,10 @@ package dev.piko.ui.screens.transfers
 
 import dev.piko.shared.i18n.tr
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -23,6 +25,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import dev.piko.ui.WorkMeter
 import dev.piko.ui.components.*
+import dev.piko.ui.theme.tabular
 
 internal data class TaskRowLayout(
     val wide: Boolean,
@@ -68,11 +71,10 @@ internal fun TaskFileTypeIcon(name: String, fallbackIcon: ImageVector? = null) {
     }
 }
 
-/** 文件夹批次前导块：与网盘列表文件夹一致的 56.dp 图标。 */
+/** 文件夹批次前导块：与网盘列表文件夹一致的前导视觉组件。 */
 @Composable
-internal fun TaskFolderVisual(name: String) {
-    val visual = remember(name) { FileVisual(name, isFolder = true) }
-    FileArtwork(visual, FileArtworkFormat.Leading)
+internal fun TaskFolderVisual(name: String, size: Dp = ListLeadingSize) {
+    FolderListLeadingVisual(name = name, size = size)
 }
 
 @Composable
@@ -97,25 +99,30 @@ internal fun TaskRow(
     val pointers = LocalPointerSource.current
     val shownExtraAction = extraAction
     val rowShape = MaterialTheme.shapes.medium
-    SegmentedListItem(
-        onClick = { if (selection.active) onToggle() else if (pointers.isTouchLike) onOpen() },
-        // 按触发长按时的输入来源判断，避免首个触摸事件切换回调后取消正在进行的手势。
-        onLongClick = { if (pointers.isTouchLike) selection.onLongClick?.invoke() },
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp).heightIn(min = if (completed) 72.dp else 80.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        shapes = ListItemDefaults.shapes(
-            shape = rowShape,
-            selectedShape = rowShape,
-            pressedShape = rowShape,
-            focusedShape = rowShape,
-            hoveredShape = rowShape,
-            draggedShape = rowShape,
-        ),
-        colors = ListItemDefaults.segmentedColors(
-            containerColor = if (selection.selected) colors.secondaryContainer else colors.surfaceContainerLow,
-            contentColor = if (selection.selected) colors.onSecondaryContainer else colors.onSurface,
-        ),
-        leadingContent = {
+    val containerColor = if (selection.selected) colors.secondaryContainer else colors.surfaceContainerLow
+    val contentColor = if (selection.selected) colors.onSecondaryContainer else colors.onSurface
+    @OptIn(ExperimentalFoundationApi::class)
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        shape = rowShape,
+        color = containerColor,
+        contentColor = contentColor,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(
+                    onClick = { if (selection.active) onToggle() else if (pointers.isTouchLike) onOpen() },
+                    // 按触发长按时的输入来源判断，避免首个触摸事件切换回调后取消正在进行的手势。
+                    onLongClick = { if (pointers.isTouchLike) selection.onLongClick?.invoke() },
+                )
+                .heightIn(min = if (completed) 72.dp else 80.dp)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
             Box(
                 modifier = Modifier
                     .size(ListLeadingSize)
@@ -136,10 +143,8 @@ internal fun TaskRow(
                     ListLeadingIcon(model.icon)
                 }
             }
-        },
-        content = {
             if (completed) {
-                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
                         model.title,
                         style = MaterialTheme.typography.titleSmall,
@@ -163,42 +168,70 @@ internal fun TaskRow(
                     }
                 }
             } else {
-                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                val meterColor = when {
+                    attention -> colors.error
+                    item is TransferItem.Local || item is TransferItem.LocalBatch -> colors.primary
+                    item is TransferItem.Upload || item is TransferItem.UploadBatch -> colors.secondary
+                    else -> colors.tertiary
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
                         model.title,
                         style = MaterialTheme.typography.titleSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    TaskProgressCell(model, attention, Modifier.fillMaxWidth(), showDetail = true)
+                    TaskProgressCell(model, attention, meterColor, Modifier.fillMaxWidth(), showDetail = true)
                 }
             }
-        },
-        trailingContent = if (quickAction != null || shownExtraAction != null) ({
-            Row(horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                quickAction?.let { TooltipIconButton(it.icon, it.label, it.onClick) }
-                shownExtraAction?.let { TooltipIconButton(it.icon, it.label, it.onClick) }
+            if (quickAction != null || shownExtraAction != null) {
+                Row(horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                    quickAction?.let { TooltipIconButton(it.icon, it.label, it.onClick) }
+                    shownExtraAction?.let { TooltipIconButton(it.icon, it.label, it.onClick) }
+                }
             }
-        }) else null,
-    )
+        }
+    }
 }
 
 @Composable
 private fun TaskMetric(value: String?, modifier: Modifier = Modifier) {
-    Text(value?.takeIf { it.isNotBlank() } ?: "—", modifier, style = MaterialTheme.typography.bodySmall,
+    Text(value?.takeIf { it.isNotBlank() } ?: "—", modifier, style = MaterialTheme.typography.bodySmall.tabular,
         color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
 }
 
 @Composable
-private fun TaskProgressCell(model: TaskRowModel, attention: Boolean, modifier: Modifier, showDetail: Boolean = false) {
+private fun TaskProgressCell(
+    model: TaskRowModel,
+    attention: Boolean,
+    meterColor: androidx.compose.ui.graphics.Color,
+    modifier: Modifier,
+    showDetail: Boolean = false,
+) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(model.status, style = MaterialTheme.typography.bodySmall, color = if (attention) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = if (attention) 2 else 1, overflow = TextOverflow.Ellipsis)
-        if (model.meter != WorkMeter.None) WorkMeterBar(model.meter, tr("任务进度：${model.title}", "Task progress: ${model.title}", "タスクの進捗：${model.title}", "작업 진행 상황: ${model.title}", "任務進度：${model.title}"), Modifier.fillMaxWidth())
+        Text(
+            model.status,
+            style = MaterialTheme.typography.bodySmall.tabular,
+            color = if (attention) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = if (attention) 2 else 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (model.meter != WorkMeter.None) {
+            WorkMeterBar(
+                meter = model.meter,
+                label = tr("任务进度：${model.title}", "Task progress: ${model.title}", "タスクの進捗：${model.title}", "작업 진행 상황: ${model.title}", "任務進度：${model.title}"),
+                modifier = Modifier.fillMaxWidth(),
+                color = meterColor,
+            )
+        }
         if (showDetail) model.detail?.takeIf { it.isNotBlank() && it != model.status }?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall,
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall.tabular,
                 color = if (attention) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = if (attention) 2 else 1, overflow = TextOverflow.Ellipsis)
+                maxLines = if (attention) 2 else 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

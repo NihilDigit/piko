@@ -48,16 +48,19 @@ internal class Ffmpeg private constructor(avutil: SymbolLookup, avcodec: SymbolL
     val sideDataGet = avcodec.function("av_packet_side_data_get", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT))
     val frameAlloc = avutil.function("av_frame_alloc", FunctionDescriptor.of(ADDRESS))
     val frameFree = avutil.function("av_frame_free", FunctionDescriptor.ofVoid(ADDRESS))
+    val frameUnref = avutil.function("av_frame_unref", FunctionDescriptor.ofVoid(ADDRESS))
     val decoderAlloc = avcodec.function("avcodec_alloc_context3", FunctionDescriptor.of(ADDRESS, ADDRESS))
     val decoderFree = avcodec.function("avcodec_free_context", FunctionDescriptor.ofVoid(ADDRESS))
     val parametersToContext = avcodec.function("avcodec_parameters_to_context", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     val decoderOpen = avcodec.function("avcodec_open2", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS))
+    val flushBuffers = avcodec.function("avcodec_flush_buffers", FunctionDescriptor.ofVoid(ADDRESS))
     val sendPacket = avcodec.function("avcodec_send_packet", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     val receiveFrame = avcodec.function("avcodec_receive_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
 
     val packetAlloc = avcodec.function("av_packet_alloc", FunctionDescriptor.of(ADDRESS))
     val packetFree = avcodec.function("av_packet_free", FunctionDescriptor.ofVoid(ADDRESS))
     val packetUnref = avcodec.function("av_packet_unref", FunctionDescriptor.ofVoid(ADDRESS))
+    val packetNew = avcodec.function("av_new_packet", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT))
     val parametersCopy = avcodec.function("avcodec_parameters_copy", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
 
     val allocContext = avformat.function("avformat_alloc_context", FunctionDescriptor.of(ADDRESS))
@@ -240,6 +243,8 @@ internal object FfmpegLayout {
     // AVPacket
     const val PACKET_PTS = 8L
     const val PACKET_DTS = 16L
+    const val PACKET_DATA = 24L
+    const val PACKET_DATA_SIZE = 32L
     const val PACKET_STREAM_INDEX = 36L
     const val PACKET_FLAGS = 40L
     const val PACKET_DURATION = 64L

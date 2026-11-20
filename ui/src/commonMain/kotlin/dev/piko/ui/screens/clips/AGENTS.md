@@ -7,7 +7,7 @@
 - **自适应呈现与独立窗口**：当主窗口横向内容容量充足时，信息流作为文件列表右侧的并列侧栏展示（桌面端与宽屏 Android 平板均适用）；容量不足时切换为完整页面展示，并支持主动进入全屏模式；在支持多窗口的桌面平台上还可弹出为独立窗口（`ClipFeedWindow`）。链接导入草稿已独立为工作区上下文标签（`WorkspaceContexts`），不再与信息流争用网盘页右栏；切换文件标签、往返宽窄布局或在主窗口与独立窗口间停靠/弹出时，均复用同一个进程级 `ClipFeedSession` 及其已预取的 `ClipStreams` 资源，同一时刻仅在当前激活的展示宿主内解码播放。严禁增设范围下拉菜单或「订阅」入口。
 - **定位文件与挂起恢复**：
   - 在并列右栏模式下点击「在网盘中显示」，当前片段自动暂停并保留右栏，左侧文件区直接定位并高亮目标文件，同时保留返回来源。
-  - 在全屏或紧凑单栏模式下点击「在网盘中显示」，信息流进入**挂起**状态（进程级队列与当前页码完整保留，仅退出画面组合），出发位置记入 `DriveLocation`（宽窗口有标签栏时，临时定位浏览固定在专用的第三色信息流图标标签 `feedDetourTab` 中打开，重复定位始终复用该单一定位标签；紧凑布局下压入独立浏览页），网盘页底部显示 `FeedResumeBar` 提供「继续浏览」（调用 `returnTo` 连同历史回到出发点）与「关闭信息流」。仅显式点击关闭（`ClipFeedSession.close`）或切换/退出账号（`endAccount`）才清空队列。
+  - 在全屏或紧凑单栏模式下点击「在网盘中显示」，信息流进入**挂起**状态（进程级队列与当前页码完整保留，仅退出画面组合），出发位置记入 `DriveLocation`（宽窗口有标签栏时，临时定位浏览固定在专用的第三色信息流图标标签 `feedDetourTab` 中打开，重复定位始终复用该单一定位标签；紧凑布局下压入独立浏览页），网盘页底部显示 `FeedResumeBar` 提供「继续浏览」（调用 `returnTo` 连同历史回到出发点）与「关闭信息流」。仅显式点击关闭（`ClipFeedSession.close`）或切换/退出账号（`endAccount`）才清空队列；信息流与瀑布流共用跨设备同步的「退出不确认」偏好（`skipFeedExitConfirmFlow`）及退出确认框内的 `FeedExitConfirmCheckbox`「不再提醒」，开启后关闭直接退出不再弹窗。
   - 普通文件夹队列按 `clip-feed-<账号>-<文件夹ID>` 持久化至本地缓存（每个账号保留最近使用的 `8` 个文件夹，保存当前位置前后窗口、候选池、已验证转码状态及所用目录父级链；切换账号后是否随设备开关重开由 `ClipFeedSession.reopensFor` 严格按同账号判定）。定位路径优先由仓库唯一权威 `FolderIndex`（重开时以 `seedFolders` 补齐未遍历缺口）经 `ClipFeedSession.pathTo` 在本地即时拼出；仅当本地父级链存在缺口时才向服务端逐级反查，反查期间全窗覆盖 `LocatingOverlay` 拦截输入，防止晚到的跳转覆盖用户后续操作。
 
 ## 选段分散算法（`ClipFeedSelection.kt`）
@@ -26,7 +26,7 @@
 
 - **有界紧致切片窗口（`CLIP_SLICE_MS = 180 秒`）**：PikPak 的 `720P` 转码流为无头部索引表的 MPEG-TS（包长 `188` 字节整数倍；非 TS 流自动回退原画），若将整条数百 MB 残余流直接暴露给播放器，FFmpeg 打开或定位时会在未缓存公网区间发起十余次串行二分跳读（实测耗时 `4~18 秒`），且片尾存在 PTS 跳变时会导致 `av_seek_frame` 失败。`PikoMediaRepository.prepareClip` 按平均码率估算起点后，通过跨分块保持解析状态的 `TsTimestamps.VerifiedSliceScanner` 定位首个同时具备**完整前导 `PAT + PMT`、无连续性断层的带内参数集（HEVC 为 `VPS + SPS + PPS`，H.264 为 `SPS + PPS`，校验宽高大于 0 且引用链匹配）与独立关键帧**的安全接入点并回退至该 `PAT` 包边界（严禁在未找到安全接入点时按估算偏移半路裸切，否则会因缺参数集导致 Android `MediaCodec` 初始化失败并静默回退 CPU 软解发热；未找到安全接入点时回退完整流），截取一段约 `180 秒` 的有界 `SlicedByteSource` 作为从 `0` 时刻顺序起播的独立短流交给回环代理。
 - **首尾预取与 PTS 时长实测校准**：`PreparedClip.prefetch` 对 TS 切片仅预取**开头 `5 秒`**（至少 `512 KiB`）与**切片流尾 `512 KiB`** 两截（`sliceRanges`），随后在前台优先级下读取整条转码流首包 PTS 与切片关键帧 PTS 计算该段对应全片的精确毫秒起点（`resolveStart` 修正 `clipStartMs`，使点击「观看完整视频」时画面帧级无缝衔接），并读取切片流尾最后一个视频 PES 的 PTS 校准该切片实际覆盖的可播放时长（`resolveWindowDuration` 修正 `maxWindowMs`，防止高码率段落实际不足 180 秒却向界面承诺 180 秒）。
-- **磁盘切片缓存（`FileClipCache`，`FORMAT = 5`）**：通过 `RangeLimitedStore` 仅将切片开头与流尾两截块写入磁盘（默认上限 `300 MiB`，超限时按文件修改时间 LRU 一次性淘汰至 `80%` 水位以避免逐块全目录扫描锁竞争；记录上限 `4096` 条），并在预热完成后持久化包含实测 `sliceStartMs`、`sliceDurationMs` 以及关键帧偏移 `keyframeOffset` 与视频 `videoPid` 的 `ClipRecord`（键名带 `_v5`）。`SlicedByteSource` 按 `188` 字节包边界确定性将关键帧之前的视频包重写为 `0x1FFF` 空包字节视图（任意切块读取、随机定位与并发 `ReadTicket` 均字节一致，且绝不改动底层缓存块），同一片段再次命中时直接从磁盘重建句柄并秒开首帧，无需再次请求文件详情。
+- **磁盘切片缓存（`FileClipCache`，`FORMAT = 5`）**：通过 `RangeLimitedStore` 仅将切片开头与流尾两截块写入磁盘（默认上限 `300 MiB`，超限时按文件修改时间 LRU 一次性淘汰至 `80%` 水位以避免逐块全目录扫描锁竞争；记录上限 `4096` 条），并在预热完成后持久化包含实测 `sliceStartMs`、`sliceDurationMs` 以及关键帧偏移 `keyframeOffset` 与视频 `videoPid` 的 `ClipRecord`（键名带 `_v5`）。`FileClipCache.asCacheBackend()`（及 iOS `IosClipCache`）已接入 `PikoCacheManager` 的 `CacheCategory.CLIPS`，在设置页「存储与缓存」统一纳入容量统计、手动清理与 TTL/LRU 自动淘汰。`SlicedByteSource` 按 `188` 字节包边界确定性将关键帧之前的视频包重写为 `0x1FFF` 空包字节视图（任意切块读取、随机定位与并发 `ReadTicket` 均字节一致，且绝不改动底层缓存块），同一片段再次命中时直接从磁盘重建句柄并秒开首帧，无需再次请求文件详情。
 
 ### 并发车道、缓冲预算与定位优先级（`ClipStreams`）
 
@@ -37,8 +37,8 @@
 
 - **三层解耦渲染架构**：
   1. **底层常驻画面层**：`POOL_SIZE = 3` 个 `PreviewBackend` 实例按 `page % 3` 轮换分配给上一段、当前段与下一段（当前段画面走起来或至多等待 `800ms` 后再装入下一段与上一段并停在首帧，避免手机端起步解码争抢耗时），三个视频渲染表面常驻在 `VerticalPager` 下方，滑动中仅在绘制阶段通过 `graphicsLayer` 硬件层 `translationY` 跟随页偏移矩阵平移（完全移出视口时置 `alpha = 0f` 消除三层全屏纹理混合 Overdraw），绝不随翻页销毁重建 `Surface`；同时对容器尺寸变化施加 `250ms` 防抖（`SURFACE_RESIZE_SETTLE`），规避 MediaMP 0.5.0 D3D11 `MpvSurfaceRing` 连续改尺寸时的渲染锁死。
-  2. **中层透明翻页器（`VerticalPager`）**：按整数下标作 key（末尾存在未就绪候补时多出一页加载等待页，候补就绪后原地无缝变为视频页而不触发页面跳动），仅绘制未出首帧前或留边时的预模糊封面背景（`ClipBackdrop`，小缩略图在后台按 `Crop` 倍率做一次性边缘钳位盒式预模糊并有界缓存，避免播放期常驻全屏实时 `Modifier.blur` 离屏渲染目标）、超过 `300ms` 的缓冲指示器、暂停图标与双击点赞星爆动效。
-  3. **顶层固定控件层**：顶栏、左下角文件与目录说明、右侧动作栏及底边独立重组隔离的进度条（`ActiveClipProgressBar`）固定在翻页器上方，不随页面上下滑走，换段时以 `Crossfade` 就地切换，拖动进度条时说明与动作栏自动淡出让出画面。
+  2. **中层透明翻页器（`VerticalPager`）**：按整数下标作 key（末尾存在未就绪候补时多出一页加载等待页，候补就绪后原地无缝变为视频页而不触发页面跳动），仅绘制未出首帧前或留边时的预模糊封面背景（`ClipBackdrop`，小缩略图按 `64px` 桶对齐目标尺寸并在后台做一次性边缘钳位盒式预模糊与有界缓存，避免窗口缩放期反复重算及全屏实时 `Modifier.blur` 离屏渲染目标）、超过 `300ms` 的缓冲指示器、暂停图标与双击点赞星爆动效。
+  3. **顶层固定控件层（`ClipChrome` 与 `PlayerLayoutPrefs`）**：顶栏、底部 4 段平滑渐变遮罩（`BottomScrim`）、左下角文件与目录说明（`ClipCaption`）、右侧动作栏（`ClipActionRail`）、桌面鼠标悬停显现的悬浮上下切换胶囊（`ClipNavButtons`，仅非触屏显示并避让动作栏）以及在绘制阶段读取进度的底边进度条（`ActiveClipProgressBar`，零组合阶段帧刷新）固定在翻页器上方，不随页面上下滑走，换段时以 `Crossfade` 就地切换，拖动进度条时说明与动作栏自动淡出让出画面；动作顺序、顶栏/侧栏显隐与底色容器均遵循 `LocalPlayerLayoutPrefs` 中独立的 `ClipsLandscape` 与 `ClipsPortrait` 两态配置（独立窗口 `ClipFeedWindow` 同样注入 `LocalPlayerLayoutPrefs`），按 `A` 切换自动连刷通过瞬态 `PlayerHud` 胶囊反馈（不再弹出顶部 Snackbar）。
 - **回滑进度记忆、自动续播与自动连刷**：
   - **回滑记忆（`rememberedPositions` 与 `rememberedLengths`）**：切出槽位前及播放途中持续记录每个 `Clip` 已扩展的窗口长度与当前相对进度（距全片可用末尾不足 `5 秒` 或已播完则归零）；往回翻过多个槽位重新装入时，自动放开代理预读并直接定位至上次离开的进度与窗口长度，首帧未出前进度条亦保持该读数不闪回 `0`。
   - **自动续播与自动连刷模式**：未开启自动连刷时，若跨设备同步偏好「信息流自动续播」（`clipAutoExtendFlow`，默认开启）为真，当前 `30 秒` 窗口播完（或拖动/快进至距当前窗口末尾 `2 秒` 以内）且尚未到达有界切片/全片上限时，自动顺延扩展 `30 秒` 无缝续播并同步延长进度条，到达上限后单段循环重播；若关闭 `clipAutoExtendFlow`，则固定在 `30 秒` 窗口内循环重播。开启会话级**自动连刷模式**（`ClipFeedSession.autoAdvance`，顶栏按钮或快捷键 `A` 切换，关闭信息流时清零）后，不再自动顺延窗口，播完当前片段即自动翻至下一段（若下一段仍在预取中则挂起 `pendingAdvanceClip` 等待其就绪后立即翻页，绝不翻向黑屏）。

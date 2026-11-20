@@ -53,11 +53,16 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.piko.shared.search.fuzzyScore
+import dev.piko.ui.theme.tabular
 
 /**
  * 命令面板的一项：跳到一个文件夹，或做一件事。[keywords] 是标题之外也能搜到它的词（英文名、别称），
@@ -221,7 +226,7 @@ fun CommandPalette(items: List<PaletteItem>, onDismiss: () -> Unit) {
                                         modifier = Modifier.padding(start = 20.dp, top = if (index == 0) 4.dp else 12.dp, bottom = 4.dp),
                                     )
                                 }
-                                PaletteRow(item, selected = index == selected, onClick = { runAt(index) })
+                                PaletteRow(item, query = query, selected = index == selected, onClick = { runAt(index) })
                             }
                         }
                     }
@@ -232,13 +237,25 @@ fun CommandPalette(items: List<PaletteItem>, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun PaletteRow(item: PaletteItem, selected: Boolean, onClick: () -> Unit) {
+private fun PaletteRow(item: PaletteItem, query: String, selected: Boolean, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val enabled = item.disabledReason == null
     // M3 的停用态：内容 38% 不透明
     val iconColor = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant
     val titleColor = if (selected) colors.onSecondaryContainer else colors.onSurface
+    val highlightColor = if (selected) colors.onSecondaryContainer else colors.primary
     val detail = item.disabledReason ?: item.detail
+    val isShortcut = item.disabledReason == null && detail != null && looksLikeShortcut(detail)
+    val highlightedTitle = remember(item.title, query, highlightColor, enabled) {
+        highlightQueryMatch(
+            text = item.title,
+            query = query,
+            highlightStyle = SpanStyle(
+                color = if (enabled) highlightColor else highlightColor.copy(alpha = DisabledAlpha),
+                fontWeight = FontWeight.SemiBold,
+            ),
+        )
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -256,7 +273,7 @@ private fun PaletteRow(item: PaletteItem, selected: Boolean, onClick: () -> Unit
             modifier = Modifier.size(20.dp),
         )
         Text(
-            item.title,
+            highlightedTitle,
             style = MaterialTheme.typography.bodyLarge,
             color = if (enabled) titleColor else titleColor.copy(alpha = DisabledAlpha),
             maxLines = 1,
@@ -264,14 +281,95 @@ private fun PaletteRow(item: PaletteItem, selected: Boolean, onClick: () -> Unit
             modifier = Modifier.weight(1f).padding(start = 12.dp),
         )
         if (detail != null) {
-            Text(
-                detail,
-                style = MaterialTheme.typography.labelMedium,
-                color = colors.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.StartEllipsis,
-                modifier = Modifier.padding(start = 12.dp).widthIn(max = 240.dp),
-            )
+            if (isShortcut) {
+                ShortcutKeycaps(
+                    shortcut = detail,
+                    selected = selected,
+                    modifier = Modifier.padding(start = 12.dp),
+                )
+            } else {
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = colors.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.StartEllipsis,
+                    modifier = Modifier.padding(start = 12.dp).widthIn(max = 240.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShortcutKeycaps(shortcut: String, selected: Boolean, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.colorScheme
+    val tokens = remember(shortcut) {
+        shortcut.split('+').map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { listOf(shortcut) }
+    }
+    val keyBg = if (selected) colors.onSecondaryContainer.copy(alpha = 0.14f) else colors.surfaceContainerHighest
+    val keyFg = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        tokens.forEach { key ->
+            Surface(
+                shape = MaterialTheme.shapes.extraSmall,
+                color = keyBg,
+                contentColor = keyFg,
+            ) {
+                Text(
+                    text = key,
+                    style = MaterialTheme.typography.labelSmall.tabular,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+        }
+    }
+}
+
+private fun looksLikeShortcut(detail: String): Boolean {
+    if (detail.length > 24 || '/' in detail || '\\' in detail || '›' in detail || '·' in detail) return false
+    if ('+' in detail) return true
+    return detail.startsWith("Ctrl") || detail.startsWith("Alt") || detail.startsWith("Shift") ||
+        detail.startsWith("⌘") || detail.startsWith("⌥") || detail.startsWith("⇧") ||
+        detail in setOf("Esc", "Tab", "Enter", "Delete", "Del", "Space", "Backspace", "F1", "F2", "F5", "F11")
+}
+
+private fun highlightQueryMatch(text: String, query: String, highlightStyle: SpanStyle): AnnotatedString {
+    val needle = query.trim()
+    if (needle.isEmpty()) return AnnotatedString(text)
+    val lowerText = text.lowercase()
+    val lowerNeedle = needle.lowercase()
+    val directIdx = lowerText.indexOf(lowerNeedle)
+    if (directIdx >= 0) {
+        return buildAnnotatedString {
+            append(text)
+            addStyle(highlightStyle, directIdx, directIdx + needle.length)
+        }
+    }
+    // 模糊子序列高亮（与 fuzzyScore 一致）
+    val matched = IntArray(lowerNeedle.length)
+    var pos = 0
+    for (i in lowerNeedle.indices) {
+        val ch = lowerNeedle[i]
+        if (ch.isWhitespace()) {
+            matched[i] = -1
+            continue
+        }
+        val found = lowerText.indexOf(ch, pos)
+        if (found < 0) return AnnotatedString(text)
+        matched[i] = found
+        pos = found + 1
+    }
+    return buildAnnotatedString {
+        append(text)
+        for (idx in matched) {
+            if (idx >= 0) addStyle(highlightStyle, idx, idx + 1)
         }
     }
 }

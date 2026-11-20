@@ -2,15 +2,15 @@ package dev.piko.ui.screens.player
 
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.systemGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -18,15 +18,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalHapticFeedback
-import kotlin.math.abs
-import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.systemGestures
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.unit.dp
+import dev.piko.shared.media.player.MAX_DOUBLE_TAP_ZONE_FRACTION
+import dev.piko.shared.media.player.MAX_VERTICAL_ZONE_FRACTION
+import dev.piko.shared.media.player.MIN_DOUBLE_TAP_ZONE_FRACTION
+import dev.piko.shared.media.player.MIN_VERTICAL_ZONE_FRACTION
+import dev.piko.shared.media.player.PlayerGestureConfig
+import dev.piko.shared.media.player.VerticalSwipeAction
+import kotlin.math.abs
 
 /**
  * 竖滑手势与上下方向键调节的一路电平，取值 0 到 1。由平台实现：Android 的亮度是窗口属性、
@@ -45,33 +53,49 @@ internal enum class VerticalAdjust {
     Volume,
 }
 
-/**
- * 双击落点分区。两侧各三成五是快退与快进，中间三成是播放/暂停：快进快退靠的是
- * 手指落在哪半边，判据放宽到 35% 仍然分得清，而中间留出一块专门给播放控制。
- */
+/** 双击落点分区：两侧为快退/快进，中间为播放/暂停。 */
 internal enum class DoubleTapZone { Rewind, PlayPause, Forward }
 
 internal sealed interface PlayerGesture {
-    /** [cancelled]：手指往上挪开了，松手不跳，见 SEEK_CANCEL_DISTANCE。 */
-    data class Seek(val startPositionMillis: Long, val deltaMillis: Long, val cancelled: Boolean = false) : PlayerGesture {
+    /** 横划进退；[cancelled] 为真时松手取消（拖入顶部两角取消区）。 */
+    data class Seek(
+        val startPositionMillis: Long,
+        val deltaMillis: Long,
+        val cancelled: Boolean = false,
+    ) : PlayerGesture {
         fun targetMillis(durationMillis: Long): Long =
             if (cancelled) startPositionMillis
             else (startPositionMillis + deltaMillis).coerceIn(0L, durationMillis.coerceAtLeast(0L))
     }
 
-    data class Adjust(val kind: VerticalAdjust, val fraction: Float) : PlayerGesture
+    /** 纵划或滚轮/按键调节的亮度或音量；[dockEnd] 决定贴靠右侧还是左侧（触屏纵划时贴对侧避开手指）。 */
+    data class Adjust(
+        val kind: VerticalAdjust,
+        val fraction: Float,
+        val dockEnd: Boolean = true,
+    ) : PlayerGesture
+
+    /** 纵划切集手势：direction 1 = 上滑下一集，-1 = 下滑上一集，0 = 未定方向。 */
+    data class EpisodeSwipe(
+        val direction: Int,
+        val armed: Boolean,
+    ) : PlayerGesture
+}
+
+private sealed interface SurfaceGestureRace {
+    data object Ended : SurfaceGestureRace
+    data class DragStarted(val change: PointerInputChange) : SurfaceGestureRace
 }
 
 /**
- * 覆盖整个播放区域的手势层。
+ * 覆盖整个播放区域的统一手势层（移植自 Bilby `PlayerShell` + `SpeedSelectionGestures`）：
  *
- * 单击显隐控件，双击两侧快退/快进（之后读数还在时单点即可接着进退）、中间播放暂停，长按加速，横滑 seek，
- * 左右半屏竖滑调亮度/音量；平台没有亮度时整个宽度都调音量，两样都没有时竖滑不起作用。
- * 锁定时只保留单击，其余手势一律不识别。鼠标的点击与拖动也走这里，不另写一套。
- *
- * 方向判定只做一次：detectDragGestures 已经等过系统 touchSlop，越过 slop 的那一刻
- * 按位移的主方向锁定，之后不再切换。旧实现在 slop 之后又叠了 24px 的固定阈值，
- * 这个像素值随屏幕密度变化，高密度屏上手势起步明显发粘。
+ * - **互斥状态机**：单个 `awaitEachGesture` 内在 `touchSlop` 与 `longPressTimeoutMillis` 之间二选一，
+ *   拖拽（横划 seek / 纵划亮度·音量·切集）与长按倍速选档严格互斥，绝不串扰；
+ * - **手势自定义**：完整响应 [PlayerGestureConfig]（双击进退开关与区域占比、长按倍速与拨盘开关、
+ *   横划进退开关·灵敏度·顶部两角取消区、左右侧纵划动作与区域占比）；
+ * - **连点续进退**：双击进退后在读数停留期间单点同侧继续累加步进，与现有移动端单测契约完全兼容；
+ * - **边缘礼让**：从系统返回手势区起手的拖动不消费，交还系统导航。
  */
 @Composable
 internal fun PlayerGestureLayer(
@@ -80,97 +104,86 @@ internal fun PlayerGestureLayer(
     positionProvider: () -> Long,
     brightness: PlayerLevelControl?,
     volume: PlayerLevelControl?,
+    speedController: PlaybackSpeedController?,
+    speedSupported: Boolean,
+    gestureConfig: PlayerGestureConfig,
+    canPrevious: Boolean,
+    canNext: Boolean,
     onGestureChange: (PlayerGesture?) -> Unit,
     onToggleControls: () -> Unit,
     onSeekTo: (Long) -> Unit,
     onDoubleTap: (zone: DoubleTapZone) -> Unit,
-    onSpeedBoost: (active: Boolean) -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onSpeedStart: () -> Unit,
     modifier: Modifier = Modifier,
     // 为 true 时两侧的单点也交给 onDoubleTap，不等第二下：双击进退之后，读数还在就接着点
     seekTapActive: () -> Boolean = { false },
 ) {
     val haptic = LocalHapticFeedback.current
-    // pointerInput 只以 isLocked 为 key，其余入参走 rememberUpdatedState，
-    // 否则播放位置每变一次都会重建手势检测协程，拖拽会被打断
+    val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
+    val window = LocalWindowInfo.current.containerSize
+    val verticalDial = window.width > window.height
+
     val duration by rememberUpdatedState(durationMillis)
     val readPosition by rememberUpdatedState(positionProvider)
     val gestureChanged by rememberUpdatedState(onGestureChange)
     val toggleControls by rememberUpdatedState(onToggleControls)
     val seekTo by rememberUpdatedState(onSeekTo)
     val doubleTap by rememberUpdatedState(onDoubleTap)
-    val speedBoost by rememberUpdatedState(onSpeedBoost)
-    val seekTapActive by rememberUpdatedState(seekTapActive)
+    val prevCallback by rememberUpdatedState(onPrevious)
+    val nextCallback by rememberUpdatedState(onNext)
+    val speedStart by rememberUpdatedState(onSpeedStart)
+    val seekTapActiveState by rememberUpdatedState(seekTapActive)
     val brightnessControl by rememberUpdatedState(brightness)
     val volumeControl by rememberUpdatedState(volume)
+    val currentGestures by rememberUpdatedState(gestureConfig)
+    val currentSpeedSupported by rememberUpdatedState(speedSupported)
+    val currentCanPrevious by rememberUpdatedState(canPrevious)
+    val currentCanNext by rememberUpdatedState(canNext)
 
-    var gesture by remember { mutableStateOf<PlayerGesture?>(null) }
-    var dragTotal by remember { mutableStateOf(Offset.Zero) }
-    var dragOrigin by remember { mutableStateOf(Offset.Zero) }
-    var adjustBaseValue by remember { mutableFloatStateOf(0f) }
-    var boosting by remember { mutableStateOf(false) }
-
-    // 系统返回手势占着的左右两条：从这里起手的拖动交给系统，不当作进退、调音量亮度。
-    // 三键导航与桌面上宽度为 0，不受影响。点按不在此列：系统只拦从边缘起手的滑动
     val gestureInsets = WindowInsets.systemGestures
-    val density = LocalDensity.current
-    val layoutDirection = LocalLayoutDirection.current
     val edgeLeft by rememberUpdatedState(gestureInsets.getLeft(density, layoutDirection))
     val edgeRight by rememberUpdatedState(gestureInsets.getRight(density, layoutDirection))
-    // 按下点的横坐标。onDragStart 给的是越过 slop 时的位置，判断是不是从边缘起手要看按下点
-    var pressX by remember { mutableFloatStateOf(0f) }
+    val episodeSwipeMinPx = with(density) { 48.dp.toPx() }
+
+    var activeGesture by remember { mutableStateOf<PlayerGesture?>(null) }
 
     fun publish(next: PlayerGesture?) {
-        gesture = next
+        activeGesture = next
         gestureChanged(next)
     }
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .pointerInput(isLocked) {
+            // 外层点按/双击/连点续进退：放在互斥拖拽与长按状态机之前，PointerEventPass.Main 为链尾优先，
+            // 仅当后面的状态机未消费（非拖拽、非长按倍速）时这里才收到干净的抬手事件。
+            .pointerInput(isLocked, speedController) {
                 if (isLocked) {
                     detectTapGestures(onTap = { toggleControls() })
                     return@pointerInput
                 }
-                // 不用 detectTapGestures：它只分单击与双击，进退中连点三下会拆成一次双击加一次单击，
-                // 多出的单击把控件唤出来，想连进几步只能两下两下地点
-                fun zoneAt(x: Float) = when {
-                    x < size.width * SIDE_ZONE_FRACTION -> DoubleTapZone.Rewind
-                    x > size.width * (1f - SIDE_ZONE_FRACTION) -> DoubleTapZone.Forward
-                    else -> DoubleTapZone.PlayPause
+                fun zoneAt(x: Float): DoubleTapZone {
+                    if (!currentGestures.doubleTapSeekEnabled) return DoubleTapZone.PlayPause
+                    val zoneFraction = currentGestures.doubleTapZoneFraction.coerceIn(
+                        MIN_DOUBLE_TAP_ZONE_FRACTION,
+                        MAX_DOUBLE_TAP_ZONE_FRACTION,
+                    )
+                    return when {
+                        x <= size.width * zoneFraction -> DoubleTapZone.Rewind
+                        x >= size.width * (1f - zoneFraction) -> DoubleTapZone.Forward
+                        else -> DoubleTapZone.PlayPause
+                    }
                 }
                 awaitEachGesture {
-                    val down = awaitFirstDown()
-                    down.consume()
+                    val down = awaitFirstDown(requireUnconsumed = true)
+                    if (speedController?.active == true) return@awaitEachGesture
                     val zone = zoneAt(down.position.x)
-                    // 在按下时就判定：等抬起时读数可能刚好收起，这一下就变成了等双击
-                    val continuesSeek = zone != DoubleTapZone.PlayPause && seekTapActive()
+                    val continuesSeek = zone != DoubleTapZone.PlayPause && seekTapActiveState()
 
-                    // 拖动层越过 slop 后消费事件，这里随之得到 null，这一下不算点按
-                    var cancelled = false
-                    val up = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
-                        waitForUpOrCancellation().also { if (it == null) cancelled = true }
-                    }
-                    if (cancelled) return@awaitEachGesture
-                    if (up == null) {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        boosting = true
-                        speedBoost(true)
-                        // finally：按着时锁定画面，pointerInput 以 isLocked 为 key 重启，这个协程被取消，
-                        // 等不到松开，不收尾的话临时倍速留着，拖动手势也一直被当成长按里的挪动而忽略
-                        try {
-                            do {
-                                val event = awaitPointerEvent()
-                                event.changes.forEach { it.consume() }
-                            } while (event.changes.any { it.pressed })
-                        } finally {
-                            if (boosting) {
-                                boosting = false
-                                speedBoost(false)
-                            }
-                        }
-                        return@awaitEachGesture
-                    }
+                    val up = waitForUpOrCancellation() ?: return@awaitEachGesture
                     up.consume()
 
                     if (continuesSeek) {
@@ -178,102 +191,338 @@ internal fun PlayerGestureLayer(
                         doubleTap(zone)
                         return@awaitEachGesture
                     }
-                    val secondDown = withTimeoutOrNull(viewConfiguration.doubleTapTimeoutMillis) { awaitFirstDown() }
+                    val secondDown = withTimeoutOrNull(viewConfiguration.doubleTapTimeoutMillis) {
+                        awaitFirstDown(requireUnconsumed = true)
+                    }
                     if (secondDown == null) {
                         toggleControls()
                         return@awaitEachGesture
                     }
-                    secondDown.consume()
                     val secondUp = waitForUpOrCancellation()
                     if (secondUp == null) {
-                        toggleControls()
-                    } else {
-                        secondUp.consume()
-                        haptic.performHapticFeedback(HapticFeedbackType.ContextClick)
-                        doubleTap(zoneAt(secondUp.position.x))
+                        // 第二下演变成了拖拽或长按，不补发单击
+                        return@awaitEachGesture
+                    }
+                    secondUp.consume()
+                    haptic.performHapticFeedback(HapticFeedbackType.ContextClick)
+                    doubleTap(zoneAt(secondUp.position.x))
+                }
+            }
+            // 内层（链尾优先）：统一互斥的拖拽（横划 seek / 纵划亮度·音量·切集）与长按倍速选档状态机
+            .pointerInput(isLocked, speedController, verticalDial) {
+                if (isLocked) return@pointerInput
+                var speedOwned = false
+                var dragActive = false
+                try {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = true)
+                        if (speedController?.active == true) return@awaitEachGesture
+
+                        val pointerId = down.id
+                        val startPosition = down.position
+                        var lastPosition = startPosition
+                        val touchSlop = viewConfiguration.touchSlop
+                        val longPressTimeout = viewConfiguration.longPressTimeoutMillis
+                        val canSpeedDial = currentGestures.longPressSpeedEnabled &&
+                            currentSpeedSupported &&
+                            speedController != null
+
+                        var dragStartChange: PointerInputChange? = null
+                        var enterSpeedDial = false
+
+                        if (canSpeedDial) {
+                            val outcome: SurfaceGestureRace? = withTimeoutOrNull(longPressTimeout) {
+                                var result: SurfaceGestureRace = SurfaceGestureRace.Ended
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Main)
+                                    val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                                    if (change.isConsumed || !change.pressed) break
+                                    lastPosition = change.position
+                                    if ((change.position - startPosition).getDistance() > touchSlop) {
+                                        result = SurfaceGestureRace.DragStarted(change)
+                                        break
+                                    }
+                                }
+                                result
+                            }
+                            when (outcome) {
+                                null -> enterSpeedDial = true
+                                SurfaceGestureRace.Ended -> return@awaitEachGesture
+                                is SurfaceGestureRace.DragStarted -> dragStartChange = outcome.change
+                            }
+                        } else {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val change = event.changes.firstOrNull { it.id == pointerId }
+                                    ?: return@awaitEachGesture
+                                if (change.isConsumed || !change.pressed) {
+                                    return@awaitEachGesture
+                                }
+                                lastPosition = change.position
+                                if ((change.position - startPosition).getDistance() > touchSlop) {
+                                    dragStartChange = change
+                                    break
+                                }
+                            }
+                        }
+
+                        if (enterSpeedDial) {
+                            val controller = speedController ?: return@awaitEachGesture
+                            if (!currentGestures.longPressSpeedEnabled || controller.active) return@awaitEachGesture
+                            val dial = currentGestures.longPressSpeedDialEnabled
+                            val dockEnd = dial && verticalDial && lastPosition.x < size.width / 2f
+                            val dockTop = dial && !verticalDial && lastPosition.y >= size.height / 2f
+                            controller.open(temporary = true, dockEnd = dockEnd, dockTop = dockTop, showDial = dial)
+                            speedOwned = controller.beginDrag(vertical = verticalDial)
+                            var displacement = Offset.Zero
+                            var rapidExitAccumDp = 0f
+                            publish(null)
+                            speedStart()
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val change = event.changes.firstOrNull { it.id == pointerId }
+                                if (change == null) {
+                                    if (speedOwned) controller.cancel()
+                                    speedOwned = false
+                                    break
+                                }
+                                if (!change.pressed) {
+                                    change.consume()
+                                    if (speedOwned) {
+                                        if (change.changedToUpIgnoreConsumed()) {
+                                            controller.releaseHoldDrag()
+                                        } else {
+                                            controller.cancel()
+                                        }
+                                    }
+                                    speedOwned = false
+                                    break
+                                }
+                                val amount = change.positionChange()
+                                change.consume()
+                                if (!speedOwned || !currentGestures.longPressSpeedDialEnabled || amount == Offset.Zero) continue
+                                if (controller.isRapidScrubActive) {
+                                    // 进入 ∞ 粗剪速览后：横向滑动直接扫过整片时间轴，横屏大幅上滑可退回 3.5x
+                                    val viewportW = size.width.toFloat().coerceAtLeast(1f)
+                                    if (amount.x != 0f) {
+                                        controller.scrubRapidByFraction(amount.x / viewportW)
+                                    }
+                                    if (verticalDial && amount.y < 0f && abs(amount.y) > abs(amount.x) * 1.4f) {
+                                        rapidExitAccumDp += -amount.y / density.density
+                                        if (rapidExitAccumDp >= 44f) {
+                                            rapidExitAccumDp = 0f
+                                            controller.exitRapidScrubToMaxSpeed()
+                                            displacement = Offset.Zero
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        }
+                                    } else {
+                                        rapidExitAccumDp = 0f
+                                    }
+                                    continue
+                                }
+                                rapidExitAccumDp = 0f
+                                displacement += amount
+                                val before = controller.selection
+                                val acrossPx = when {
+                                    !verticalDial && dockTop -> -displacement.y
+                                    !verticalDial -> displacement.y
+                                    dockEnd -> displacement.x
+                                    else -> -displacement.x
+                                }
+                                controller.move(
+                                    alongDp = (if (verticalDial) displacement.y else displacement.x) / density.density,
+                                    acrossDp = acrossPx / density.density,
+                                )
+                                val after = controller.selection
+                                if (after?.locked != before?.locked || after?.isRapidScrub != before?.isRapidScrub) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                                }
+                            }
+                            return@awaitEachGesture
+                        }
+
+                        val firstChange = dragStartChange ?: return@awaitEachGesture
+                        // 从系统返回手势区起手的拖动不消费，礼让系统导航
+                        if (startPosition.x < edgeLeft || startPosition.x > size.width - edgeRight) {
+                            return@awaitEachGesture
+                        }
+
+                        val width = size.width.toFloat().coerceAtLeast(1f)
+                        val height = size.height.toFloat().coerceAtLeast(1f)
+                        val startXFraction = startPosition.x / width
+                        var accumulated = firstChange.position - startPosition
+                        var adjustBaseValue = 0f
+                        // 起手就在取消区里则本次不启用取消，避免横屏拇指搭在角上误触发取消
+                        var seekCancelArmed: Boolean? =
+                            if (!currentGestures.swipeSeekCancelZone || inSeekCancelZone(startPosition, width, height)) {
+                                null
+                            } else {
+                                false
+                            }
+
+                        dragActive = true
+                        firstChange.consume()
+
+                        val horizontal = abs(accumulated.x) >= abs(accumulated.y)
+                        val started: PlayerGesture? = if (horizontal) {
+                            if (currentGestures.swipeSeekEnabled && duration > 0L) {
+                                PlayerGesture.Seek(readPosition(), 0L, cancelled = false)
+                            } else {
+                                null
+                            }
+                        } else if (currentGestures.swipeBrightnessVolumeEnabled) {
+                            val zoneFraction = currentGestures.verticalZoneFraction.coerceIn(
+                                MIN_VERTICAL_ZONE_FRACTION,
+                                MAX_VERTICAL_ZONE_FRACTION,
+                            )
+                            val action = when {
+                                startXFraction < zoneFraction -> currentGestures.leftVerticalSwipe
+                                startXFraction > 1f - zoneFraction -> currentGestures.rightVerticalSwipe
+                                else -> VerticalSwipeAction.None
+                            }
+                            val dockEnd = startXFraction < 0.5f
+                            when (action) {
+                                VerticalSwipeAction.Brightness -> brightnessControl?.let { ctrl ->
+                                    adjustBaseValue = ctrl.current()
+                                    PlayerGesture.Adjust(VerticalAdjust.Brightness, adjustBaseValue, dockEnd = dockEnd)
+                                }
+                                VerticalSwipeAction.Volume -> volumeControl?.let { ctrl ->
+                                    adjustBaseValue = ctrl.current()
+                                    PlayerGesture.Adjust(VerticalAdjust.Volume, adjustBaseValue, dockEnd = dockEnd)
+                                }
+                                VerticalSwipeAction.Episode -> if (currentCanPrevious || currentCanNext) {
+                                    PlayerGesture.EpisodeSwipe(direction = 0, armed = false)
+                                } else {
+                                    null
+                                }
+                                VerticalSwipeAction.None -> null
+                            }
+                        } else {
+                            null
+                        }
+
+                        if (started != null) {
+                            haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                            publish(started)
+                        }
+
+                        fun updateDrag(position: Offset, w: Float, h: Float) {
+                            if (seekCancelArmed != null) {
+                                val inZone = inSeekCancelZone(position, w, h)
+                                if (inZone && seekCancelArmed == false) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                                }
+                                seekCancelArmed = inZone
+                            }
+                            when (val current = activeGesture) {
+                                is PlayerGesture.Seek -> {
+                                    val dur = duration
+                                    val baseSpan = if (dur <= 60_000L) {
+                                        dur.coerceAtLeast(1L)
+                                    } else {
+                                        (dur / 4L).coerceIn(60_000L, 300_000L)
+                                    }
+                                    val span = (baseSpan * currentGestures.swipeSeekSensitivity.spanMultiplier)
+                                        .toLong()
+                                        .coerceAtLeast(1L)
+                                    val delta = (accumulated.x / w * span).toLong()
+                                    val cancelled = seekCancelArmed == true
+                                    publish(current.copy(deltaMillis = delta, cancelled = cancelled))
+                                }
+
+                                is PlayerGesture.Adjust -> {
+                                    val requested = (adjustBaseValue - accumulated.y / (h * ADJUST_TRAVEL_RATIO))
+                                        .coerceIn(0f, 1f)
+                                    val applied = levelFor(current.kind, brightnessControl, volumeControl)?.set(requested)
+                                        ?: requested
+                                    if (applied != current.fraction && (applied == 0f || applied == 1f)) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                                    }
+                                    publish(current.copy(fraction = applied))
+                                }
+
+                                is PlayerGesture.EpisodeSwipe -> {
+                                    val thresholdPx = (h * EPISODE_SWIPE_THRESHOLD_FRACTION)
+                                        .coerceAtLeast(episodeSwipeMinPx)
+                                    val dy = accumulated.y
+                                    val dir = when {
+                                        dy < -8f -> 1
+                                        dy > 8f -> -1
+                                        else -> 0
+                                    }
+                                    val canTrigger = when (dir) {
+                                        1 -> currentCanNext
+                                        -1 -> currentCanPrevious
+                                        else -> false
+                                    }
+                                    val armed = canTrigger && abs(dy) >= thresholdPx
+                                    if (armed && !current.armed) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                                    }
+                                    publish(PlayerGesture.EpisodeSwipe(direction = dir, armed = armed))
+                                }
+
+                                null -> Unit
+                            }
+                        }
+
+                        if (accumulated != Offset.Zero) {
+                            updateDrag(firstChange.position, width, height)
+                        }
+
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Main)
+                            val change = event.changes.firstOrNull { it.id == pointerId }
+                            if (change == null || !change.pressed) {
+                                val committed = change != null && change.changedToUpIgnoreConsumed()
+                                if (committed) {
+                                    change?.consume()
+                                    when (val finished = activeGesture) {
+                                        is PlayerGesture.Seek -> if (!finished.cancelled) {
+                                            seekTo(finished.targetMillis(duration))
+                                        }
+                                        is PlayerGesture.EpisodeSwipe -> if (finished.armed) {
+                                            when (finished.direction) {
+                                                1 -> nextCallback()
+                                                -1 -> prevCallback()
+                                            }
+                                        }
+                                        else -> Unit
+                                    }
+                                }
+                                dragActive = false
+                                publish(null)
+                                break
+                            }
+                            if (change.isConsumed) {
+                                dragActive = false
+                                publish(null)
+                                break
+                            }
+                            val delta = change.positionChange()
+                            change.consume()
+                            if (delta != Offset.Zero) {
+                                accumulated += delta
+                                updateDrag(
+                                    change.position,
+                                    size.width.toFloat().coerceAtLeast(1f),
+                                    size.height.toFloat().coerceAtLeast(1f),
+                                )
+                            }
+                        }
+                    }
+                } finally {
+                    if (speedOwned) {
+                        speedController?.cancel()
+                        speedOwned = false
+                    }
+                    if (dragActive) {
+                        dragActive = false
+                        publish(null)
                     }
                 }
-            }
-            // 只观察不消费，Initial 阶段先于下面的拖动检测拿到按下点
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    pressX = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial).position.x
-                }
-            }
-            .pointerInput(isLocked) {
-                if (isLocked) return@pointerInput
-                // 方向只判一次；竖滑而平台没有对应电平时，这次拖动整个忽略
-                var directionDecided = false
-                // 从系统返回手势区起手的这次拖动整个不理会，也不消费，系统照常接走
-                var yieldedToSystem = false
-                detectDragGestures(
-                    onDragStart = { offset ->
-                        yieldedToSystem = pressX < edgeLeft || pressX > size.width - edgeRight
-                        dragOrigin = offset
-                        dragTotal = Offset.Zero
-                        directionDecided = false
-                        publish(null)
-                    },
-                    onDragEnd = {
-                        (gesture as? PlayerGesture.Seek)?.takeUnless { it.cancelled }?.let { seek -> seekTo(seek.targetMillis(duration)) }
-                        publish(null)
-                    },
-                    onDragCancel = { publish(null) },
-                    onDrag = { change, dragAmount ->
-                        // 长按加速时手指难免移动，这时的位移不算拖动手势
-                        if (boosting || yieldedToSystem) return@detectDragGestures
-                        change.consume()
-                        dragTotal += dragAmount
-
-                        if (!directionDecided) {
-                            directionDecided = true
-                            val started = if (abs(dragTotal.x) >= abs(dragTotal.y)) {
-                                PlayerGesture.Seek(readPosition(), 0L)
-                            } else {
-                                val leftSide = dragOrigin.x < size.width / 2
-                                val kind = if (leftSide && brightnessControl != null) {
-                                    VerticalAdjust.Brightness
-                                } else {
-                                    VerticalAdjust.Volume
-                                }
-                                levelFor(kind, brightnessControl, volumeControl)?.let { control ->
-                                    adjustBaseValue = control.current()
-                                    PlayerGesture.Adjust(kind, adjustBaseValue)
-                                }
-                            }
-                            if (started != null) {
-                                haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
-                                publish(started)
-                            }
-                        }
-
-                        when (val active = gesture) {
-                            // 照 Animeko 的做法：划过整个宽度固定是 SEEK_FULL_WIDTH_MILLIS，与片长无关，同样一寸总是走同样多的秒数。
-                            // 试过按片长等比（划满一屏即整部片长）：二十几分钟的片子随手一划就是几分钟，进度条一碰就飞；
-                            // 更早按片长缩放量程再按手速加速，同样一寸走多远随片子与手速变，估不准落点。
-                            // 往上挪开 SEEK_CANCEL_DISTANCE 即取消，挪回来又恢复
-                            is PlayerGesture.Seek -> {
-                                val delta = (dragTotal.x / size.width.coerceAtLeast(1) * SEEK_FULL_WIDTH_MILLIS).toLong()
-                                val cancelled = -dragTotal.y > SEEK_CANCEL_DISTANCE.toPx()
-                                if (cancelled != active.cancelled) haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
-                                publish(active.copy(deltaMillis = delta, cancelled = cancelled))
-                            }
-
-                            is PlayerGesture.Adjust -> {
-                                val requested = (adjustBaseValue - dragTotal.y / (size.height * ADJUST_TRAVEL_RATIO))
-                                    .coerceIn(0f, 1f)
-                                val applied = levelFor(active.kind, brightnessControl, volumeControl)?.set(requested)
-                                    ?: requested
-                                if (applied != active.fraction && (applied == 0f || applied == 1f)) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
-                                }
-                                publish(active.copy(fraction = applied))
-                            }
-
-                            null -> Unit
-                        }
-                    },
-                )
             },
     )
 }
@@ -284,14 +533,14 @@ private fun levelFor(
     volume: PlayerLevelControl?,
 ): PlayerLevelControl? = if (kind == VerticalAdjust.Brightness) brightness else volume
 
-internal const val SIDE_ZONE_FRACTION = 0.35f
+/** 手指在顶部左上或右上 15% 区域内即触发「松手取消进退」（移植自 Bilby）。 */
+private fun inSeekCancelZone(point: Offset, width: Float, height: Float): Boolean {
+    val inTop = point.y <= height * SEEK_CANCEL_ZONE_FRACTION
+    val nearSide = point.x <= width * SEEK_CANCEL_ZONE_FRACTION ||
+        point.x >= width * (1f - SEEK_CANCEL_ZONE_FRACTION)
+    return inTop && nearSide
+}
 
-// 划过整个宽度跳的时长。Animeko 取 97 秒，为的是划满一屏刚好跳过番剧 90 秒的片头片尾；网盘里放的多是电影，
-// 两个小时的片子一屏只走一分半太慢，取 5 分钟
-private const val SEEK_FULL_WIDTH_MILLIS = 300_000L
-
-// 横滑途中手指往上挪开多远取消这次进退，同取 Animeko 的值
-private val SEEK_CANCEL_DISTANCE = 144.dp
-
-// 竖向划过手势层高度的 75% 对应亮度或音量的全量程
+private const val SEEK_CANCEL_ZONE_FRACTION = 0.15f
+private const val EPISODE_SWIPE_THRESHOLD_FRACTION = 0.14f
 private const val ADJUST_TRAVEL_RATIO = 0.75f

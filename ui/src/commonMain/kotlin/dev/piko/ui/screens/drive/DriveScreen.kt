@@ -44,6 +44,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.PathBreadcrumb
+import dev.piko.data.repository.isPlayableAudio
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.ArchiveEntryId
@@ -75,6 +76,7 @@ import dev.piko.shared.state.DriveScreenState
 import dev.piko.shared.state.DuplicateKeepRule
 import dev.piko.shared.state.DuplicateKind
 import dev.piko.shared.state.DuplicateSession
+import dev.piko.shared.state.FolderStructureMode
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.shared.state.GallerySession
 import dev.piko.shared.state.InstantSheetState
@@ -208,6 +210,7 @@ private class DriveViewEvents(
     val onTogglePinFolder: (FileStat) -> Unit,
     val onRevealLocalInFileManager: (String) -> Unit,
     val onUnmountLocalFolder: (String) -> Unit,
+    val onRequestFolderStructure: (List<FileStat>, FolderStructureMode) -> Unit,
 )
 
 @Stable
@@ -627,6 +630,7 @@ fun DriveScreen(
         onTogglePinFolder = { viewModel.togglePinFolder(it, pinnedFolders) },
         onRevealLocalInFileManager = viewModel::revealLocalInFileManager,
         onUnmountLocalFolder = viewModel::unmountLocalFolder,
+        onRequestFolderStructure = { folders, mode -> viewModel.requestFolderStructure(activeFolderId, folders, mode) },
     )
 
     DriveScreenContent(
@@ -643,11 +647,14 @@ fun DriveScreen(
         vaultSession = services.folderVaultSession,
         metaTube = services.metaTube,
         activeFolderId = activeFolderId,
+        activeFolderName = activeFolder.localizedName,
         displayedFiles = displayedFiles,
         onDismiss = viewModel::dismissDialog,
         onConfirmNewFolder = viewModel::confirmNewFolder,
         onConfirmSingleRename = viewModel::confirmSingleRename,
         onBatchRenameFinished = viewModel::onBatchRenameFinished,
+        onFolderStructureAvailability = { folders -> viewModel.folderStructureBlockReason(activeFolderId, folders) },
+        onFolderStructureFinished = viewModel::onFolderStructureFinished,
         onShareCopied = viewModel::onShareCopied,
         onConfirmMove = viewModel::confirmMove,
         onConfirmCopy = viewModel::confirmCopy,
@@ -945,6 +952,7 @@ private fun DriveScreenContent(
         onRevealFromGalleryOrLibrary = ::revealFromGalleryOrLibrary,
         onRevealLocalInFileManager = events.onRevealLocalInFileManager,
         onUnmountLocal = events.onUnmountLocalFolder,
+        onFolderStructure = events.onRequestFolderStructure,
     )
     val latestIntents by rememberUpdatedState(actionIntents)
     val latestEvents by rememberUpdatedState(events)
@@ -973,6 +981,10 @@ private fun DriveScreenContent(
             file.isPlayableVideo() -> latestEvents.onNavigateToPlayer(
                 file,
                 if (latestIntents.galleryActive) emptyList() else currentFiles.filter { it.isPlayableVideo() && (!it.isImportPreview || it.hash.isNotBlank()) },
+            )
+            file.isPlayableAudio() -> latestEvents.onNavigateToPlayer(
+                file,
+                if (latestIntents.galleryActive) emptyList() else currentFiles.filter { it.isPlayableAudio() && (!it.isImportPreview || it.hash.isNotBlank()) },
             )
             file.isPreviewableImage() && file.previewImageCoverUrl().isNotBlank() -> latestEvents.onRequestImagePreview(file)
             file.isLocal -> platform.localFiles.openExternally(file.params["local_path"].orEmpty(), false)
@@ -1167,7 +1179,7 @@ private fun DriveScreenContent(
 
     val placePrimaryAction: SheetAction? = when {
         state.isSelectionMode && !pathInTopBar -> null
-        inDuplicates -> suggestedDuplicateIds.takeIf { it.isNotEmpty() }?.let { suggested ->
+        inDuplicates -> suggestedDuplicateIds.takeIf { it.isNotEmpty() && selectedIdSet != it }?.let { suggested ->
             val count = suggested.size
             SheetAction(Icons.Outlined.Checklist, tr("选择建议清理的 $count 项", "Select $count suggested items to clean up", "整理推奨の $count 項目を選択", "정리 권장 ${count}개 항목 선택", "選取建議清理的 $count 個項目"), { state.selectOnly(suggested) })
         }
@@ -1385,7 +1397,6 @@ private fun DriveScreenContent(
                             hasFeedEntry = events.onFeedShownChange != null,
                             tileSize = snapshot.tileSize,
                             onSelectAll = ::selectAllDisplayed,
-                            onOpenSelectionActions = events.onOpenSelectionSheet,
                             onCloseSearch = state::closeSearch,
                             onJumpToSection = ::jumpToSection,
                             onCloseContext = events.onCloseContext,
@@ -1398,18 +1409,6 @@ private fun DriveScreenContent(
                             onFeedShownChange = changeFeedShown,
                             onTileSizeChange = events.onSelectTileSize,
                             onGalleryShowImagesChange = events.onSetGalleryShowImages,
-                        )
-                    }
-                },
-                bottomBar = {
-                    if (!pathInTopBar && state.isSelectionMode) {
-                        DriveCompactSelectionBar(
-                            inTrash = inTrash,
-                            hasTargets = commandTargets.isNotEmpty(),
-                            availableActions = if (commandTargets.isNotEmpty()) {
-                                buildDriveOperations(state, commandTargets.first(), commandTargets, actionIntents)
-                            } else emptyList(),
-                            onOpenSelectionActions = events.onOpenSelectionSheet,
                         )
                     }
                 },
@@ -1447,6 +1446,20 @@ private fun DriveScreenContent(
                     onLocateFromProperties = ::revealFromGalleryOrLibrary,
                     onOpenSourceLink = events.onOpenLink,
                     contentFrame = contentFrame,
+                    selectionToolbar = {
+                        val toolbarActions = if (state.isSelectionMode && commandTargets.isNotEmpty()) {
+                            buildDriveOperations(state, commandTargets.first(), commandTargets, actionIntents)
+                        } else emptyList()
+                        DriveSelectionFloatingToolbar(
+                            visible = state.isSelectionMode && commandTargets.isNotEmpty(),
+                            inTrash = inTrash,
+                            inDuplicates = inDuplicates,
+                            applyNavBarsPadding = !pathInTopBar,
+                            availableActions = toolbarActions,
+                            onOpenSelectionActions = events.onOpenSelectionSheet,
+                            modifier = Modifier.align(androidx.compose.ui.Alignment.BottomCenter),
+                        )
+                    },
                 ) { listAreaWidth ->
                     DriveContentBody(
                         state = state,

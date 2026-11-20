@@ -11,6 +11,10 @@ import androidx.compose.ui.unit.sp
 import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.i18n.PikoLocale
 
+/** 等宽数字特性，用于进度百分比、速率、配额、时长与计数，避免数字跳动时引起横向抖动。 */
+val TextStyle.tabular: TextStyle
+    get() = copy(fontFeatureSettings = "tnum")
+
 private val cjkLineHeightStyle = LineHeightStyle(
     alignment = LineHeightStyle.Alignment.Center,
     trim = LineHeightStyle.Trim.None,

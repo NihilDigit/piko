@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="updater_download_in_background">백그라운드 다운로드</string>
+    <string name="updater_open_download_page">다운로드 페이지 열기</string>
+    <string name="updater_later">나중에 다시 시작</string>
+    <string name="updater_stage_downloading">다운로드 중</string>
+    <string name="updater_stage_verifying">패키지 검증 중…</string>
+    <string name="updater_stage_staging">업데이트 준비 중…</string>
+    <string name="updater_no_release_notes">이 버전의 업데이트 정보가 없습니다</string>
+    <string name="updater_ready_short">업데이트 준비됨</string>
+    <string name="updater_checking">업데이트 확인 중</string>
+    <string name="updater_up_to_date">최신 버전입니다</string>
+    <string name="updater_available_version">새 버전 %1$s 사용 가능</string>
+    <string name="updater_ready_to_restart_desc">다운로드 및 검증 완료. 다시 시작하면 업데이트됩니다</string>
+    <string name="updater_view_update">업데이트 보기</string>
+    <string name="updater_view_progress">진행 상황 보기</string>
+    <string name="updater_check_for_updates">업데이트 확인</string>
+    <string name="updater_version_label">버전 %1$s</string>
+    <string name="updater_remaining_eta">%1$s 남음</string>
+    <string name="updater_background_downloading_tooltip">백그라운드에서 업데이트 다운로드 중 (%1$d%%)</string>
+    <string name="updater_dialog_title">Piko 업데이트</string>
+    <string name="updater_updating_to">%1$s(으)로 업데이트 중</string>
+</resources>

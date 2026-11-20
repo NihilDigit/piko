@@ -5,10 +5,8 @@ import dev.piko.shared.i18n.tr
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.selection.triStateToggleable
-import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
-import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -52,6 +50,7 @@ internal data class FileVisual(
     val isEmptyFolder: Boolean = false,
     val isLocalMount: Boolean = false,
     val category: FileCategory = name.fileCategory(),
+    val stableId: String? = null,
 )
 
 internal enum class FileItemMark { Starred, Vaulted, ContainsVault, ImportPreview, LocalMount }
@@ -81,7 +80,15 @@ internal fun FileStat.fileVisual(emptyFolder: Boolean = false): FileVisual {
         }
     }
     return FileVisual(
-        name, isFolder, cover.takeIf { it.isNotEmpty() }, isVideo, emptyFolder, isLocalMountRoot, fileCategory(),
+        name = name,
+        isFolder = isFolder,
+        thumbnail = cover.takeIf { it.isNotEmpty() },
+        isVideo = isVideo,
+        isEmptyFolder = emptyFolder,
+        isLocalMount = isLocalMountRoot,
+        category = fileCategory(),
+        // 文件夹没有内容 GCID，封面可能随子项变更；严禁把文件夹容器 ID 当作内容 stableId，否则换封面后会命中旧缓存
+        stableId = hash.takeIf { it.isNotBlank() } ?: id.takeUnless { isFolder }?.takeIf { it.isNotBlank() },
     )
 }
 
@@ -165,9 +172,9 @@ internal class FileItemHover(val modifier: Modifier, val mouseHovered: Boolean)
 
 @Composable
 internal fun fileItemHover(): FileItemHover {
-    val interactions = remember { MutableInteractionSource() }
-    val hovered by interactions.collectIsHoveredAsState()
-    return FileItemHover(Modifier.hoverable(interactions), hovered && !LocalPointerSource.current.isTouchLike)
+    var hovered by remember { mutableStateOf(false) }
+    val modifier = remember { Modifier.onPointerHover { hovered = it } }
+    return FileItemHover(modifier, hovered && !LocalPointerSource.current.isTouchLike)
 }
 
 @Composable

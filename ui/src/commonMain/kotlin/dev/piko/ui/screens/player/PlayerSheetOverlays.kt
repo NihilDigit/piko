@@ -39,7 +39,9 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.media.ORIGINAL_QUALITY
 import dev.piko.shared.media.player.MediaTrack
+import dev.piko.shared.media.player.OriginalSubtitleTrackInfo
 import dev.piko.shared.media.player.PlaybackStatsSection
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlaylistEntry
@@ -89,10 +91,23 @@ internal fun PlayerSheetsOverlay(
     onPickLocalSubtitle: (() -> Unit)?,
     onPickDriveSubtitle: ((FileStat) -> Unit)?,
     playbackStats: (() -> List<PlaybackStatsSection>)?,
+    hasTracks: Boolean = false,
+    hasSettings: Boolean = true,
+    originalSubtitleHints: List<OriginalSubtitleTrackInfo> = emptyList(),
 ) {
+    val availableTabs = remember(playlist.size > 1, hasTracks, hasSettings, playbackStats != null) {
+        buildList {
+            if (playlist.size > 1) add(PlayerSheet.Episodes)
+            if (hasTracks) add(PlayerSheet.Tracks)
+            if (hasSettings) add(PlayerSheet.Settings)
+            if (playbackStats != null) add(PlayerSheet.Stats)
+        }
+    }
     PlayerSheetHost(
         sheet = openSheet,
         isLandscape = isLandscape,
+        availableTabs = availableTabs,
+        onSelectTab = onOpenSheet,
         onDismiss = onDismiss,
     ) { sheet ->
         when (sheet) {
@@ -146,6 +161,15 @@ internal fun PlayerSheetsOverlay(
                 onSelectSubtitle = onSelectSubtitleTrack,
                 onPickLocalSubtitle = onPickLocalSubtitle,
                 onPickDriveSubtitle = onPickDriveSubtitle?.let { { onOpenSheet(PlayerSheet.DriveSubtitles) } },
+                originalSubtitleHints = originalSubtitleHints,
+                onSwitchToOriginalQuality = if (originalSubtitleHints.isNotEmpty() && ORIGINAL_QUALITY in qualityOptions) {
+                    {
+                        onDismiss()
+                        onQualityChange(ORIGINAL_QUALITY)
+                    }
+                } else {
+                    null
+                },
             )
             PlayerSheet.DriveSubtitles -> DriveSubtitlePanel(
                 videoFileId = currentFileId,
@@ -156,6 +180,20 @@ internal fun PlayerSheetsOverlay(
                 modifier = Modifier.weight(1f),
             )
             PlayerSheet.Stats -> playbackStats?.let { PlaybackStatsPanel(read = it) }
+            PlayerSheet.Speed -> playbackSpeed?.let { speed ->
+                ExpandedSpeedPanel(
+                    speed = speed,
+                    onSpeedChange = onSpeedChange,
+                    fillHeight = isLandscape,
+                )
+            }
+            PlayerSheet.Quality -> if (qualityOptions.isNotEmpty()) {
+                QualityPickerPanel(
+                    qualityOptions = qualityOptions,
+                    currentQuality = currentQuality,
+                    onQualityChange = onQualityChange,
+                )
+            }
         }
     }
 }

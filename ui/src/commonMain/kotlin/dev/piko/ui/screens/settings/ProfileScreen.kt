@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.add
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -57,6 +58,7 @@ import androidx.compose.material.icons.filled.Settings
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -83,8 +85,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -105,6 +110,8 @@ import io.github.nihildigit.pikpak.TransferAllowances
 import dev.piko.ui.format.dailyQuotaResetLabel as formatDailyQuotaResetLabel
 import dev.piko.ui.format.formatOffsetDate
 import dev.piko.ui.format.monthlyQuotaResetLabel
+import dev.piko.ui.theme.islandBorderColor
+import dev.piko.ui.theme.tabular
 import kotlinx.coroutines.launch
 import dev.piko.shared.data.SavedAccount
 import androidx.compose.ui.unit.Dp
@@ -150,11 +157,14 @@ fun ProfileScreen(
             IslandHeaderSpace()
         }),
         topBar = {
-            // 宽窗口里下面的内容收在居中的一栏，标题与返回一起缩进同样的量，底色仍铺满
-            BoxWithConstraints {
-                val sideInset = readableSidePadding(maxWidth)
-                // 桌面端手机宽度的窗口里这一行贴着右上角，窗口按钮接在动作的位置上
-                val caption = rememberCaptionSlot()
+            // 宽窗口里下面的内容收在居中的一栏，标题与返回一起缩进同样的量，底色仍铺满。
+            // 使用 Box + onSizeChanged 而非 BoxWithConstraints，规避桌面端弹层/提示在 SubcomposeLayout 下的销毁崩溃。
+            val density = LocalDensity.current
+            var topBarWidth by remember { mutableStateOf(0.dp) }
+            val sideInset = if (topBarWidth > 0.dp) readableSidePadding(topBarWidth) else 0.dp
+            // 桌面端手机宽度的窗口里这一行贴着右上角，窗口按钮接在动作的位置上
+            val caption = rememberCaptionSlot()
+            Box(Modifier.fillMaxWidth().onSizeChanged { topBarWidth = with(density) { it.width.toDp() } }) {
                 MediumFlexibleTopAppBar(
                     modifier = caption.modifier,
                     actions = { caption.buttons?.invoke() },
@@ -389,10 +399,12 @@ internal fun AccountCard(
     val allowances = account.allowances
     val allowancesError = account.allowancesError
     // 圆角与设置的分组相同：桌面设置页里它与下面的账号列表是同一套卡片
+    val borderColor = MaterialTheme.colorScheme.islandBorderColor
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = settingsStyle().groupShape,
         color = MaterialTheme.colorScheme.surfaceContainer,
+        border = borderColor?.let { BorderStroke(1.dp, it) },
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             // 头像、会员期与空间并成一行：名字挪到顶栏之后，头像旁边只剩一枚会员期，单独占一行太空。
@@ -476,6 +488,7 @@ private fun TierChip(tier: String, modifier: Modifier = Modifier) {
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun StorageSection(
     quota: QuotaSnapshot,
@@ -516,13 +529,13 @@ private fun StorageSection(
         Row(modifier = Modifier.fillMaxWidth()) {
             Text(
                 text = quota.usageBytes.toReadableSize(),
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleMediumEmphasized.tabular,
                 modifier = Modifier.alignByBaseline(),
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = "/ ${quota.limitBytes.toReadableSize()}",
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodySmall.tabular,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.alignByBaseline(),
             )
@@ -530,7 +543,7 @@ private fun StorageSection(
             if (quota.limitBytes > 0) {
                 Text(
                     text = tr("剩余 ${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()}", "${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()} remaining", "残り ${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()}", "남은 공간 ${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()}", "剩餘 ${(quota.limitBytes - quota.usageBytes).coerceAtLeast(0).toReadableSize()}"),
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodySmall.tabular,
                     color = if (nearlyFull) accent else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.alignByBaseline(),
                 )
@@ -540,6 +553,8 @@ private fun StorageSection(
         LinearProgressIndicator(
             progress = { fraction },
             color = accent,
+            trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+            strokeCap = StrokeCap.Round,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(6.dp),
@@ -594,7 +609,7 @@ private fun UsageSection(title: String, usages: List<Usage>, resetLabel: () -> S
                     usedFraction(tightest.usedBytes, tightest.limitBytes) >= NEARLY_FULL_FRACTION
                 Text(
                     text = summary,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodySmall.tabular,
                     color = if (nearlyFull) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
@@ -700,6 +715,7 @@ private const val NEARLY_FULL_FRACTION = 0.95f
 private fun usedFraction(usedBytes: Long, limitBytes: Long): Float =
     if (limitBytes > 0) (usedBytes.toFloat() / limitBytes).coerceIn(0f, 1f) else 0f
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun UsageTile(usage: Usage, modifier: Modifier = Modifier) {
     Surface(
@@ -716,13 +732,13 @@ private fun UsageTile(usage: Usage, modifier: Modifier = Modifier) {
             )
             Text(
                 text = usage.format(usage.usedBytes),
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleMediumEmphasized.tabular,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = "/ ${usage.format(usage.limitBytes)}",
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodySmall.tabular,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -730,7 +746,9 @@ private fun UsageTile(usage: Usage, modifier: Modifier = Modifier) {
             Spacer(modifier = Modifier.height(6.dp))
             LinearProgressIndicator(
                 progress = { usedFraction(usage.usedBytes, usage.limitBytes) },
-                modifier = Modifier.fillMaxWidth(),
+                trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                strokeCap = StrokeCap.Round,
+                modifier = Modifier.fillMaxWidth().height(5.dp),
             )
         }
     }

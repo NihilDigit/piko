@@ -15,6 +15,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.input.key.*
 
@@ -28,6 +29,8 @@ internal fun WorkspaceTreeRow(
     leading: @Composable RowScope.() -> Unit = {}, trailing: @Composable RowScope.() -> Unit = {},
     supporting: String? = null,
     item: FilePresentation? = null,
+    visual: FileVisual? = item?.visual,
+    visualSize: Dp = 32.dp,
     actions: FileItemActions? = null,
     reserveExpandSpace: Boolean = true,
 ) {
@@ -46,7 +49,8 @@ internal fun WorkspaceTreeRow(
                 Modifier.size(18.dp).rotate(if (expanded) 90f else 0f))
         } else if (reserveExpandSpace) Spacer(Modifier.width(36.dp))
         leading()
-        if (item != null) FileArtwork(item.visual, FileArtworkFormat.Leading, modifier = Modifier.size(32.dp))
+        val resolvedVisual = visual ?: item?.visual
+        if (resolvedVisual != null) FileListLeadingVisual(file = resolvedVisual, size = visualSize)
         else Icon(icon, null, Modifier.size(20.dp), tint = if (emphasized) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f).padding(vertical = 6.dp)) {

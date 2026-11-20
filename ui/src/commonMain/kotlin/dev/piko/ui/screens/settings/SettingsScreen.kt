@@ -4,16 +4,21 @@ import dev.piko.data.auth.AppLanguage
 import androidx.compose.material.icons.outlined.Language
 import dev.piko.shared.i18n.tr
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -22,8 +27,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentPaste
+import androidx.compose.material.icons.outlined.Contrast
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Sort
@@ -38,6 +46,7 @@ import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Info
@@ -52,8 +61,11 @@ import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Router
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.SearchOff
 import androidx.compose.material.icons.outlined.SlowMotionVideo
 import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.SwapVerticalCircle
 import androidx.compose.material.icons.outlined.SwipeVertical
@@ -71,18 +83,24 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Router
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.SwapVerticalCircle
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -91,9 +109,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -110,11 +134,14 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.PassphraseUpdateResult
 import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.adaptive.readableWidth
+import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.IslandHeaderSpace
 import dev.piko.ui.components.IslandPage
 import dev.piko.ui.components.IslandTitle
+import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoScaffold
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.PinnedPriority
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.LinkAssociation
@@ -124,10 +151,12 @@ import dev.piko.ui.screens.archive.SavedArchivePasswordsDialog
 import dev.piko.ui.screens.drive.SidebarItem
 import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.LocalFramed
 import dev.piko.ui.theme.SeedTheme
 import dev.piko.ui.theme.ThemeMode
 import dev.piko.ui.theme.effectiveSeed
 import dev.piko.ui.theme.isDark
+import dev.piko.ui.theme.isEInk
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.roundToInt
 import kotlin.time.Instant
@@ -148,6 +177,8 @@ import kotlinx.datetime.toLocalDateTime
 fun SettingsScreen(
     onBackClick: (() -> Unit)?,
     onOpenWebDav: () -> Unit,
+    onOpenPlayerCustomization: () -> Unit = {},
+    onOpenDriveAppearanceCustomization: () -> Unit = {},
     modifier: Modifier = Modifier,
     /** 账号一类的内容（[dev.piko.ui.workbench.AccountSettings]）。桌面没有「我的」页，账号放在设置的最前；移动端为 null。 */
     account: (@Composable ColumnScope.() -> Unit)? = null,
@@ -157,7 +188,9 @@ fun SettingsScreen(
     val services = LocalPikoServices.current
     val platform = LocalPikoPlatform.current
     val sessionManager = services.preferences
-    val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(
+        initialValue = sessionManager.currentSnapshot.spoilerBlurEnabled,
+    )
     val isHeuristicFilterEnabled by sessionManager.heuristicFilterFlow.collectAsStateWithLifecycle(initialValue = true)
     val isNameParsingEnabled by sessionManager.nameParsingFlow.collectAsStateWithLifecycle(initialValue = true)
     val foldersFirst by sessionManager.foldersFirstFlow.collectAsStateWithLifecycle(initialValue = true)
@@ -166,6 +199,9 @@ fun SettingsScreen(
     val isAutoCleanNamesEnabled by sessionManager.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
     val isHardwareDecodingEnabled by sessionManager.hardwareDecodingFlow.collectAsStateWithLifecycle(initialValue = true)
     val isClipAutoExtendEnabled by sessionManager.clipAutoExtendFlow.collectAsStateWithLifecycle(initialValue = true)
+    val skipFeedExitConfirm by sessionManager.skipFeedExitConfirmFlow.collectAsStateWithLifecycle(
+        initialValue = sessionManager.currentSnapshot.skipFeedExitConfirm,
+    )
     val isSyncPlayHistoryEnabled by sessionManager.syncPlayHistoryFlow.collectAsStateWithLifecycle(initialValue = true)
     val isSettingsSyncEnabled by sessionManager.settingsSyncFlow.collectAsStateWithLifecycle(initialValue = true)
     val settingsSync = services.settingsSync
@@ -204,7 +240,9 @@ fun SettingsScreen(
         hasSyncPassphrase = services.hasSyncPassphraseForCurrentAccount()
     }
     var showPlaybackQuality by remember { mutableStateOf(false) }
-    val playbackMaxHeight by sessionManager.playbackMaxHeightFlow.collectAsStateWithLifecycle(initialValue = 0)
+    val playbackMaxHeight by sessionManager.playbackMaxHeightFlow.collectAsStateWithLifecycle(
+        initialValue = sessionManager.currentSnapshot.playbackMaxHeight,
+    )
     var showDownloadQuality by remember { mutableStateOf(false) }
     val downloadMaxHeight by sessionManager.downloadMaxHeightFlow.collectAsStateWithLifecycle(initialValue = null)
 
@@ -263,9 +301,11 @@ fun SettingsScreen(
     // 各类在滚动内容里的起点，目录据此跳转与高亮
     val sectionOffsets = remember { mutableStateMapOf<SettingsSection, Int>() }
     var pinned by remember { mutableStateOf<PinnedSection?>(null) }
-    val headingSlack = with(LocalDensity.current) { SectionHeadingSlack.roundToPx() }
-    // 以 sections 为键：目录变了（账号或关于出现）时换一份，否则一直按首次组合时的目录算
-    val currentSection by remember(sections, headingSlack) {
+    val density = LocalDensity.current
+    val headingSlack = with(density) { SectionHeadingSlack.roundToPx() }
+    // 不在 SettingsScreen 顶层解构读取 currentSection，而是把 provider 传给 SettingsIndex，
+    // 避免滚动切换高亮章节时整页 1,200 行设置项随之重组。
+    val currentSectionState = remember(sections, headingSlack) {
         derivedStateOf {
             activeSettingsSection(
                 sections = sections,
@@ -277,7 +317,16 @@ fun SettingsScreen(
             )
         }
     }
+    var searchQuery by remember { mutableStateOf("") }
+    var mobileSearchOpen by remember { mutableStateOf(false) }
+    val searching = searchQuery.isNotBlank()
     val desktop = isDesktopLayout()
+    val windowWidthPx = LocalWindowInfo.current.containerSize.width
+    var contentWidthPx by remember(windowWidthPx) { mutableIntStateOf(windowWidthPx) }
+    val contentWidthDp = with(density) { contentWidthPx.toDp() }
+    // 左侧目录随宽窗口布局出现（>= 600×480dp 且内容区宽度不低于 SettingsIndexMinWidth，大屏平板同样适用）；窄窗保持单列列表
+    val framed = LocalFramed.current
+    val withIndex = desktop && contentWidthDp >= SettingsIndexMinWidth
 
     PikoScaffold(
         modifier = modifier.fillMaxSize(),
@@ -286,6 +335,13 @@ fun SettingsScreen(
         island = IslandPage(header = {
             IslandTitle(tr("设置", "Settings", "設定", "설정", "設定"))
             IslandHeaderSpace()
+            if (!withIndex) {
+                SettingsSearchField(
+                    query = searchQuery,
+                    onQueryChange = { searchQuery = it },
+                    modifier = Modifier.width(220.dp),
+                )
+            }
         }),
         topBar = {
             PikoTopBar(
@@ -297,18 +353,48 @@ fun SettingsScreen(
                         }
                     }
                 },
+                actions = if (!withIndex) {
+                    listOf(
+                        BarItem(key = "settingsSearch", priority = PinnedPriority) {
+                            TooltipIconButton(
+                                icon = if (mobileSearchOpen || searching) Icons.Outlined.Close else Icons.Outlined.Search,
+                                label = if (mobileSearchOpen || searching) {
+                                    tr("关闭搜索", "Close search", "検索を閉じる", "검색 닫기", "關閉搜尋")
+                                } else {
+                                    tr("搜索设置", "Search settings", "設定を検索", "설정 검색", "搜尋設定")
+                                },
+                                onClick = {
+                                    if (mobileSearchOpen || searching) {
+                                        searchQuery = ""
+                                        mobileSearchOpen = false
+                                    } else {
+                                        mobileSearchOpen = true
+                                    }
+                                },
+                            )
+                        },
+                    )
+                } else {
+                    emptyList()
+                },
             )
         },
     ) { innerPadding ->
-        BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            // 左侧目录随宽窗口布局出现（>= 600×480dp 且内容区宽度不低于 SettingsIndexMinWidth，大屏平板同样适用）；窄窗保持单列列表
-            val withIndex = desktop && maxWidth >= SettingsIndexMinWidth
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .onSizeChanged { if (it.width > 0) contentWidthPx = it.width },
+        ) {
             Row(modifier = Modifier.fillMaxSize()) {
                 if (withIndex) {
                     SettingsIndex(
                         sections = sections,
-                        current = currentSection,
+                        currentSectionProvider = { currentSectionState.value },
+                        searchQuery = searchQuery,
+                        onSearchQueryChange = { searchQuery = it },
                         onSelect = { section ->
+                            if (searching) searchQuery = ""
                             val target = (sectionOffsets[section] ?: 0).coerceAtMost(scrollState.maxValue)
                             val pin = PinnedSection(section, target)
                             pinned = pin
@@ -336,386 +422,602 @@ fun SettingsScreen(
                         .padding(bottom = 24.dp)
                         .readableWidth(),
                 ) {
+                    if (!framed && !withIndex && (mobileSearchOpen || searching)) {
+                        val mobileSearchFocus = remember { FocusRequester() }
+                        LaunchedEffect(Unit) { runCatching { mobileSearchFocus.requestFocus() } }
+                        SettingsSearchField(
+                            query = searchQuery,
+                            onQueryChange = { searchQuery = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 12.dp, bottom = 4.dp)
+                                .focusRequester(mobileSearchFocus),
+                        )
+                    }
+
+                    fun match(vararg terms: String): Boolean = matchesSettingsQuery(searchQuery, *terms)
+
+                    var renderedSections = 0
+
                     @Composable
                     fun section(section: SettingsSection, content: @Composable ColumnScope.() -> Unit) {
+                        val isFirst = renderedSections == 0
+                        renderedSections += 1
                         SettingsSectionBlock(
                             section = section,
-                            first = section == sections.first(),
-                            onPositioned = { sectionOffsets[section] = it },
+                            first = isFirst,
+                            onPositioned = { if (!searching) sectionOffsets[section] = it },
                             content = content,
                         )
                     }
 
-                    if (account != null) section(SettingsSection.Account) { account() }
+                    if (account != null && match(SettingsSection.Account.title, "account", "账号", "退出", "切换", "会员", "sign out", "storage")) {
+                        section(SettingsSection.Account) { account() }
+                    }
 
-                    section(SettingsSection.Appearance) {
-                        SettingsGroup(null) {
-                            SettingsNavigationRow(
-                                icon = Icons.Outlined.Language,
-                                title = tr("语言", "Language", "言語", "언어", "語言"),
-                                supporting = if (appLanguage == AppLanguage.SYSTEM) systemLanguageLabel else appLanguage.nativeLabel,
-                                onClick = { showLanguage = true },
-                            )
-                            val appearance = LocalAppearance.current
-                            ThemeModeRow(
-                                mode = appearance.mode,
-                                onModeChange = { scope.launch { sessionManager.setThemeMode(it.name) } },
-                            )
-                            ThemeColorRow(
-                                appearance = appearance,
-                                onSeedChange = { scope.launch { sessionManager.setThemeSeed(it?.name) } },
-                            )
-                            platform.launchAtStartup?.let { startup ->
-                                var enabled by remember { mutableStateOf(false) }
-                                var busy by remember { mutableStateOf(true) }
-                                val focused = LocalWindowInfo.current.isWindowFocused
-                                LaunchedEffect(startup, focused) {
-                                    if (focused) {
-                                        enabled = startup.isEnabled()
-                                        busy = false
+                    val appearance = LocalAppearance.current
+                    val motionScale = platform.motionScale
+                    val matchLang = match("语言", "Language", "言語", "언어", "語言", systemLanguageLabel, appLanguage.nativeLabel)
+                    val matchThemeMode = match("深色模式", "Theme mode", "dark", "light", "system", "テーマモード", "테마 모드")
+                    val matchPureBlack = !appearance.isEInk && appearance.mode != ThemeMode.LIGHT && match("纯黑深色模式", "Pure black", "OLED", "amoled", "true black", "ピュアブラック", "순수 블랙", "純黑")
+                    val matchThemeColor = match("主题色", "Theme color", "dynamic", "accent", "color", "水墨屏", "e-ink", "eink", "テーマカラー", "테마 색상", "主題色", appearance.effectiveSeed?.label.orEmpty())
+                    val matchStartup = platform.launchAtStartup != null && match("开机自动启动", "Launch at startup", "autostart", "Windows", "ログイン時に起動", "시작 시 실행", "開機自動啟動")
+                    val matchTray = platform.closeToTray != null && match("关闭时最小化到托盘", "Minimize to tray on close", "tray", "トレイ", "트레이", "系統匣")
+                    val matchCompactBar = platform.compactTitleBar != null && match("紧凑标题栏", "Compact title bar", "titlebar", "タイトルバー", "제목 표시줄", "精簡標題列")
+                    val matchMotion = match("减少动画", "Reduce motion", "animation", "アニメーション", "애니메이션", "減少動畫")
+                    if (matchLang || matchThemeMode || matchPureBlack || matchThemeColor || matchStartup || matchTray || matchCompactBar || matchMotion) {
+                        section(SettingsSection.Appearance) {
+                            SettingsGroup(null) {
+                                if (matchLang) {
+                                    SettingsNavigationRow(
+                                        icon = Icons.Outlined.Language,
+                                        title = tr("语言", "Language", "言語", "언어", "語言"),
+                                        supporting = if (appLanguage == AppLanguage.SYSTEM) systemLanguageLabel else appLanguage.nativeLabel,
+                                        onClick = { showLanguage = true },
+                                    )
+                                }
+                                if (matchThemeMode) {
+                                    ThemeModeRow(
+                                        mode = appearance.mode,
+                                        onModeChange = { scope.launch { sessionManager.setThemeMode(it.name) } },
+                                    )
+                                }
+                                if (matchPureBlack) {
+                                    DependentRow(visible = !appearance.isEInk && appearance.mode != ThemeMode.LIGHT) {
+                                        SettingsSwitchRow(
+                                            icon = Icons.Outlined.Contrast,
+                                            title = tr("纯黑深色模式", "Pure black (OLED)", "ピュアブラック（OLED）", "순수 블랙 (OLED)", "純黑深色模式"),
+                                            supporting = tr("深色模式下使用纯黑背景以节省 OLED 屏幕功耗", "Use true black surfaces in dark theme for OLED displays", "ダークテーマで完全な黒背景を使用します（OLED向け）", "다크 테마에서 OLED 화면용 순수 블랙 배경 사용", "深色模式下使用純黑背景以節省 OLED 螢幕功耗"),
+                                            checked = appearance.pureBlack,
+                                            onCheckedChange = { scope.launch { sessionManager.setPureBlack(it) } },
+                                        )
                                     }
                                 }
-                                SettingsSwitchRow(
-                                    icon = Icons.Outlined.PowerSettingsNew,
-                                    title = tr("开机自动启动", "Launch at startup", "ログイン時に起動", "시작 시 실행", "開機自動啟動"),
-                                    supporting = tr("登录 Windows 后打开 Piko", "Open Piko after signing in to Windows", "Windowsへのログイン時にPikoを開く", "Windows 로그인 후 Piko 실행", "登入 Windows 後開啟 Piko"),
-                                    checked = enabled,
-                                    onCheckedChange = { value ->
-                                        if (!busy) scope.launch {
-                                            busy = true
-                                            if (!startup.setEnabled(value)) snackbarHostState.showSnackbar(tr("无法更改开机启动设置", "Unable to change startup setting", "起動設定を変更できません", "시작 설정을 변경할 수 없습니다", "無法變更開機啟動設定"))
-                                            enabled = startup.isEnabled()
-                                            busy = false
+                                if (matchThemeColor) {
+                                    ThemeColorRow(
+                                        appearance = appearance,
+                                        onSeedChange = { scope.launch { sessionManager.setThemeSeed(it?.name) } },
+                                    )
+                                }
+                                if (matchStartup) {
+                                    platform.launchAtStartup?.let { startup ->
+                                        var enabled by remember { mutableStateOf(false) }
+                                        var busy by remember { mutableStateOf(true) }
+                                        val focused = LocalWindowInfo.current.isWindowFocused
+                                        LaunchedEffect(startup, focused) {
+                                            if (focused) {
+                                                enabled = startup.isEnabled()
+                                                busy = false
+                                            }
                                         }
-                                    },
-                                )
+                                        SettingsSwitchRow(
+                                            icon = Icons.Outlined.PowerSettingsNew,
+                                            title = tr("开机自动启动", "Launch at startup", "ログイン時に起動", "시작 시 실행", "開機自動啟動"),
+                                            supporting = tr("登录 Windows 后打开 Piko", "Open Piko after signing in to Windows", "Windowsへのログイン時にPikoを開く", "Windows 로그인 후 Piko 실행", "登入 Windows 後開啟 Piko"),
+                                            checked = enabled,
+                                            onCheckedChange = { value ->
+                                                if (!busy) scope.launch {
+                                                    busy = true
+                                                    if (!startup.setEnabled(value)) snackbarHostState.showSnackbar(tr("无法更改开机启动设置", "Unable to change startup setting", "起動設定を変更できません", "시작 설정을 변경할 수 없습니다", "無法變更開機啟動設定"))
+                                                    enabled = startup.isEnabled()
+                                                    busy = false
+                                                }
+                                            },
+                                        )
+                                    }
+                                }
+                                if (matchTray) {
+                                    platform.closeToTray?.let { toggle ->
+                                        val enabled by toggle.enabled.collectAsState()
+                                        SettingsSwitchRow(
+                                            icon = Icons.Outlined.Minimize,
+                                            title = tr("关闭时最小化到托盘", "Minimize to tray on close", "閉じるときにトレイへ最小化", "닫을 때 트레이로 최소화", "關閉時最小化至系統匣"),
+                                            supporting = tr("点击关闭按钮时最小化至系统托盘，不退出应用", "Minimize to the system tray instead of quitting when clicking Close", "閉じるボタンをクリックした際、終了せずにシステムトレイへ格納します", "닫기 버튼을 누를 때 종료하지 않고 시스템 트레이로 최소화합니다", "點擊關閉按鈕時最小化至系統匣，不結束應用程式"),
+                                            checked = enabled,
+                                            onCheckedChange = toggle::set,
+                                        )
+                                    }
+                                }
+                                if (matchCompactBar) {
+                                    platform.compactTitleBar?.let { compactTitleBar ->
+                                        val compact by compactTitleBar.enabled.collectAsState()
+                                        SettingsSwitchRow(
+                                            icon = Icons.Outlined.WebAsset,
+                                            title = tr("紧凑标题栏", "Compact title bar", "コンパクトなタイトルバー", "간결한 제목 표시줄", "精簡標題列"),
+                                            supporting = tr("窗口按钮并入界面右上角", "Integrate window controls into the top right corner", "ウィンドウボタンを画面右上に統合", "창 버튼을 화면 오른쪽 위에 통합", "視窗按鈕整合至介面右上角"),
+                                            checked = compact,
+                                            onCheckedChange = compactTitleBar::set,
+                                        )
+                                    }
+                                }
+                                if (matchMotion) {
+                                    // 与系统设置及水墨屏模式取或，见 PikoMotionScale 与 PikoTheme。
+                                    SettingsSwitchRow(
+                                        icon = Icons.Outlined.Animation,
+                                        title = tr("减少动画", "Reduce motion", "アニメーションを減らす", "애니메이션 줄이기", "減少動畫"),
+                                        supporting = when {
+                                            appearance.isEInk -> tr("水墨屏主题已自动关闭过渡动画", "Transitions are disabled automatically in E-Ink theme", "E-Inkテーマではアニメーションが自動的に無効になります", "E-Ink 테마에서는 전환 애니메이션이 자동으로 꺼집니다", "水墨螢幕主題已自動關閉轉場動畫")
+                                            motionScale.systemScale == 0f -> tr("系统已关闭动画", "Animations disabled by system", "システムでアニメーションが無効です", "시스템에서 애니메이션을 껐습니다", "系統已關閉動畫")
+                                            else -> tr("界面切换不播放过渡", "Disable transition animations", "画面切り替えのアニメーションを無効にする", "화면 전환 애니메이션 끄기", "切換介面時不播放轉場動畫")
+                                        },
+                                        checked = motionScale.appReduced || appearance.isEInk,
+                                        enabled = !appearance.isEInk,
+                                        onCheckedChange = { scope.launch { sessionManager.setReduceMotion(it) } },
+                                    )
+                                }
                             }
-                            platform.closeToTray?.let { toggle ->
-                                val enabled by toggle.enabled.collectAsState()
-                                SettingsSwitchRow(
-                                    icon = Icons.Outlined.Minimize,
-                                    title = tr("关闭时最小化到托盘", "Minimize to tray on close", "閉じるときにトレイへ最小化", "닫을 때 트레이로 최소화", "關閉時最小化至系統匣"),
-                                    supporting = tr("点击关闭按钮时最小化至系统托盘，不退出应用", "Minimize to the system tray instead of quitting when clicking Close", "閉じるボタンをクリックした際、終了せずにシステムトレイへ格納します", "닫기 버튼을 누를 때 종료하지 않고 시스템 트레이로 최소화합니다", "點擊關閉按鈕時最小化至系統匣，不結束應用程式"),
-                                    checked = enabled,
-                                    onCheckedChange = toggle::set,
-                                )
-                            }
-                            platform.compactTitleBar?.let { compactTitleBar ->
-                                val compact by compactTitleBar.enabled.collectAsState()
-                                SettingsSwitchRow(
-                                    icon = Icons.Outlined.WebAsset,
-                                    title = tr("紧凑标题栏", "Compact title bar", "コンパクトなタイトルバー", "간결한 제목 표시줄", "精簡標題列"),
-                                    supporting = tr("窗口按钮并入界面右上角", "Integrate window controls into the top right corner", "ウィンドウボタンを画面右上に統合", "창 버튼을 화면 오른쪽 위에 통합", "視窗按鈕整合至介面右上角"),
-                                    checked = compact,
-                                    onCheckedChange = compactTitleBar::set,
-                                )
-                            }
-                            // 与系统设置取或，见 PikoMotionScale。系统已关掉动画时这里开不开都一样，写明免得以为开关失灵
-                            val motionScale = platform.motionScale
-                            SettingsSwitchRow(
-                                icon = Icons.Outlined.Animation,
-                                title = tr("减少动画", "Reduce motion", "アニメーションを減らす", "애니메이션 줄이기", "減少動畫"),
-                                supporting = if (motionScale.systemScale == 0f) tr("系统已关闭动画", "Animations disabled by system", "システムでアニメーションが無効です", "시스템에서 애니메이션을 껐습니다", "系統已關閉動畫") else tr("界面切换不播放过渡", "Disable transition animations", "画面切り替えのアニメーションを無効にする", "화면 전환 애니메이션 끄기", "切換介面時不播放轉場動畫"),
-                                checked = motionScale.appReduced,
-                                onCheckedChange = { scope.launch { sessionManager.setReduceMotion(it) } },
-                            )
                         }
                     }
 
-                    section(SettingsSection.Browse) {
-                        SettingsGroup(tr("文件", "Files", "ファイル", "파일", "檔案")) {
-                            SettingsSwitchRow(
-                                icon = Icons.Outlined.TextFields,
-                                title = tr("文件名解析", "Parse file names", "ファイル名を解析", "파일 이름 분석", "檔案名稱解析"),
-                                supporting = tr("按作品、分区与集数整理，标出发布组与清晰度", "Organize by title, section and episode; show release groups and quality", "作品・区分・話数で整理し、リリースグループと画質を表示", "작품, 분류, 회차별로 정리하고 배포 그룹 및 화질 표시", "依作品、分區與集數整理，標示發布群組與畫質"),
-                                checked = isNameParsingEnabled,
-                                onCheckedChange = { scope.launch { sessionManager.setNameParsingEnabled(it) } },
-                            )
-                            // 只在解析开着时有意义，关掉解析就收起，不留一行灰掉的开关
-                            DependentRow(visible = isNameParsingEnabled) {
-                                SettingsSwitchRow(
-                                    icon = Icons.Outlined.AutoFixHigh,
-                                    title = tr("启发式折叠", "Smart grouping", "不要な項目を折りたたむ", "스마트 접기", "智慧摺疊"),
-                                    supporting = tr("收起广告、样片、说明文件等次要项", "Collapse ads, samples, readme files and other extras", "広告・サンプル・説明ファイルなどを折りたたむ", "광고, 샘플, 설명 파일 등 부가 항목 접기", "收合廣告、樣片、說明檔案等次要項目"),
-                                    checked = isHeuristicFilterEnabled,
-                                    onCheckedChange = { scope.launch { sessionManager.setHeuristicFilterEnabled(it) } },
-                                )
+                    val matchDriveAppearance = match("自定义", "Customize", "カスタマイズ", "사용자 지정", "自訂", "文件外观", "File appearance", "card", "grid", "list", "gallery", "列表", "网格", "瀑布流", "角标", "文件夹样式", "ファイル外観", "파일 모양", "檔案外觀")
+                    val matchPlayerCustom = match("自定义", "Customize", "カスタマイズ", "사용자 지정", "自訂", "播放器外观", "播放器自定义", "Player appearance", "Player customization", "layout", "gesture", "手势", "听音频", "プレーヤー", "플레이어", "播放器外觀", "播放器自訂")
+                    if (matchDriveAppearance || matchPlayerCustom) {
+                        section(SettingsSection.Customize) {
+                            SettingsGroup(null) {
+                                if (matchDriveAppearance) {
+                                    SettingsNavigationRow(
+                                        icon = Icons.Outlined.GridView,
+                                        title = tr("文件外观", "File appearance", "ファイル外観", "파일 모양", "檔案外觀"),
+                                        supporting = tr("列表、网格与瀑布流的文件夹样式、角标与详情字段", "Folder style, corner badges, and detail fields across views", "リスト、グリッド、ギャラリーのフォルダー外観とバッジ", "목록, 격자, 갤러리의 폴더 스타일, 배지 및 상세 필드", "清單、網格與瀑布流的資料夾樣式、角標與詳情欄位"),
+                                        onClick = onOpenDriveAppearanceCustomization,
+                                    )
+                                }
+                                if (matchPlayerCustom) {
+                                    SettingsNavigationRow(
+                                        icon = Icons.Outlined.Tune,
+                                        title = tr("播放器外观", "Player appearance", "プレーヤー外観", "플레이어 모양", "播放器外觀"),
+                                        supporting = tr("横竖屏视频、信息流、听音频与手势", "Video, clips, audio listen mode, and gestures", "動画、フィード、音声再生とジェスチャー", "동영상, 피드, 오디오 듣기 및 제스처", "橫直螢幕影片、資訊流、聽音訊與手勢"),
+                                        onClick = onOpenPlayerCustomization,
+                                    )
+                                }
                             }
-                            SettingsSwitchRow(
-                                icon = Icons.Outlined.VisibilityOff,
-                                title = tr("缩略图防窥", "Blur thumbnails", "サムネイルをぼかす", "미리 보기 흐리게", "縮圖防窺"),
-                                supporting = tr("模糊显示缩略图与封面", "Blur thumbnails and covers", "サムネイルとカバーをぼかして表示", "미리 보기 및 표지 흐리게 표시", "模糊顯示縮圖與封面"),
-                                checked = isSpoilerBlurEnabled,
-                                onCheckedChange = { scope.launch { sessionManager.setSpoilerBlurEnabled(it) } },
-                            )
-                            SettingsSwitchRow(
-                                icon = Icons.AutoMirrored.Outlined.Sort,
-                                title = tr("文件夹置顶", "Folders on top", "フォルダーを上部に固定", "폴더 상단 고정", "資料夾置頂"),
-                                supporting = tr("关闭后文件夹与文件按所选顺序混合排列", "Turn off to mix folders and files together in sort order", "オフにするとフォルダーとファイルを混在して並べ替えます", "끄면 폴더와 파일을 선택한 정렬 순서대로 함께 배열합니다", "關閉後資料夾與檔案依所選順序混合排列"),
-                                checked = foldersFirst,
-                                onCheckedChange = { scope.launch { sessionManager.setFoldersFirst(it) } },
-                            )
-                            SettingsSwitchRow(
-                                icon = Icons.AutoMirrored.Outlined.Sort,
-                                title = tr("各文件夹独立排序", "Sort each folder separately", "フォルダーごとに並べ替え", "폴더별 정렬", "各資料夾獨立排序"),
-                                supporting = tr("为每个文件夹分别保存排序方式", "Save sort order independently for each folder", "フォルダーごとに並び順を個別に保存します", "폴더마다 정렬 방식을 개별적으로 저장합니다", "為每個資料夾分別儲存排序方式"),
-                                checked = isPerFolderSortEnabled,
-                                onCheckedChange = { scope.launch { sessionManager.setPerFolderSort(it) } },
-                            )
                         }
-                        SettingsGroup(tr("播放", "Play", "再生", "재생", "播放")) {
-                            SettingsNavigationRow(
-                                icon = Icons.Outlined.HighQuality,
-                                title = tr("播放画质", "Playback quality", "再生画質", "재생 화질", "播放畫質"),
-                                supporting = playbackQualitySummary(playbackMaxHeight),
-                                onClick = { showPlaybackQuality = true },
-                                trailingIcon = null,
-                            )
-                            SettingsSwitchRow(
-                                icon = Icons.Outlined.Memory,
-                                title = tr("硬件解码", "Hardware decoding", "ハードウェアデコード", "하드웨어 디코딩", "硬體解碼"),
-                                supporting = tr("画面异常或卡顿时可关闭，改用软件解码", "Disable to use software decoding if video artifacts or freezes occur", "映像の乱れや停止が発生する場合は無効にしてソフトウェアデコードを使用します", "화면 깨짐이나 멈춤이 발생하면 끄고 소프트웨어 디코딩을 사용하세요", "畫面異常或停頓時可關閉，改用軟體解碼"),
-                                checked = isHardwareDecodingEnabled,
-                                onCheckedChange = { scope.launch { sessionManager.setHardwareDecoding(it) } },
-                            )
-                            SettingsSwitchRow(
-                                icon = Icons.Outlined.SwipeVertical,
-                                title = tr("信息流自动续播", "Auto-extend feed clips", "フィードの自動延長再生", "피드 클립 자동 연장", "資訊流自動續播"),
-                                supporting = tr("30 秒片段播完后自动顺延播放当前视频后续内容；关闭后循环播放当前片段", "Continue playing subsequent segments of the video after 30 seconds; loop the current clip when disabled", "30秒の再生後に同じ動画の続きを自動再生します。無効時は現在のクリップをループ再生します", "30초 재생 후 현재 동영상의 다음 구간을 이어서 재생하며, 끄면 현재 클립을 반복 재생합니다", "30 秒片段播完後自動順延播放目前影片後續內容；關閉後循環播放目前片段"),
-                                checked = isClipAutoExtendEnabled,
-                                onCheckedChange = { scope.launch { sessionManager.setClipAutoExtend(it) } },
-                            )
+                    }
+
+                    val matchParse = match("文件名解析", "Parse file names", "ファイル名を解析", "파일 이름 분석", "檔案名稱解析")
+                    val matchHeuristic = isNameParsingEnabled && match("启发式折叠", "Smart grouping", "不要な項目を折りたたむ", "스마트 접기", "智慧摺疊")
+                    val matchBlur = match("缩略图防窥", "Blur thumbnails", "spoiler", "サムネイルをぼかす", "미리 보기 흐리게", "縮圖防窺")
+                    val matchFoldersFirst = match("文件夹置顶", "Folders on top", "sort", "フォルダーを上部に固定", "폴더 상단 고정", "資料夾置頂")
+                    val matchPerFolderSort = match("各文件夹独立排序", "Sort each folder separately", "フォルダーごとに並べ替え", "폴더별 정렬", "各資料夾獨立排序")
+                    val matchFilesGroup = matchParse || matchHeuristic || matchBlur || matchFoldersFirst || matchPerFolderSort
+                    val matchPlayQuality = match("播放画质", "Playback quality", "resolution", "再生画質", "재생 화질", "播放畫質")
+                    val matchHwDec = match("硬件解码", "Hardware decoding", "mpv", "hwdec", "ハードウェアデコード", "하드웨어 디코딩", "硬體解碼")
+                    val matchClipAuto = match("信息流自动续播", "Auto-extend feed clips", "clips", "feed", "フィード", "피드 클립", "資訊流自動續播")
+                    val matchExitConfirm = match("退出瀑布流与信息流时确认", "Confirm before exiting", "gallery", "clips", "feed", "瀑布流", "信息流", "退出确认", "終了時に確認", "종료 시 확인", "結束時確認")
+                    val matchPlayGroup = matchPlayQuality || matchHwDec || matchClipAuto || matchExitConfirm
+                    if (matchFilesGroup || matchPlayGroup) {
+                        section(SettingsSection.Browse) {
+                            if (matchFilesGroup) {
+                                SettingsGroup(tr("文件", "Files", "ファイル", "파일", "檔案")) {
+                                    if (matchParse) {
+                                        SettingsSwitchRow(
+                                            icon = Icons.Outlined.TextFields,
+                                            title = tr("文件名解析", "Parse file names", "ファイル名を解析", "파일 이름 분석", "檔案名稱解析"),
+                                            supporting = tr("按作品、分区与集数整理，标出发布组与清晰度", "Organize by title, section and episode; show release groups and quality", "作品・区分・話数で整理し、リリースグループと画質を表示", "작품, 분류, 회차별로 정리하고 배포 그룹 및 화질 표시", "依作品、分區與集數整理，標示發布群組與畫質"),
+                                            checked = isNameParsingEnabled,
+                                            onCheckedChange = { scope.launch { sessionManager.setNameParsingEnabled(it) } },
+                                        )
+                                    }
+                                    if (matchHeuristic) {
+                                        // 只在解析开着时有意义，关掉解析就收起，不留一行灰掉的开关
+                                        DependentRow(visible = isNameParsingEnabled) {
+                                            SettingsSwitchRow(
+                                                icon = Icons.Outlined.AutoFixHigh,
+                                                title = tr("启发式折叠", "Smart grouping", "不要な項目を折りたたむ", "스마트 접기", "智慧摺疊"),
+                                                supporting = tr("收起广告、样片、说明文件等次要项", "Collapse ads, samples, readme files and other extras", "広告・サンプル・説明ファイルなどを折りたたむ", "광고, 샘플, 설명 파일 등 부가 항목 접기", "收合廣告、樣片、說明檔案等次要項目"),
+                                                checked = isHeuristicFilterEnabled,
+                                                onCheckedChange = { scope.launch { sessionManager.setHeuristicFilterEnabled(it) } },
+                                            )
+                                        }
+                                    }
+                                    if (matchBlur) {
+                                        SettingsSwitchRow(
+                                            icon = Icons.Outlined.VisibilityOff,
+                                            title = tr("缩略图防窥", "Blur thumbnails", "サムネイルをぼかす", "미리 보기 흐리게", "縮圖防窺"),
+                                            supporting = tr("模糊显示缩略图与封面", "Blur thumbnails and covers", "サムネイルとカバーをぼかして表示", "미리 보기 및 표지 흐리게 표시", "模糊顯示縮圖與封面"),
+                                            checked = isSpoilerBlurEnabled,
+                                            onCheckedChange = { scope.launch { sessionManager.setSpoilerBlurEnabled(it) } },
+                                        )
+                                    }
+                                    if (matchFoldersFirst) {
+                                        SettingsSwitchRow(
+                                            icon = Icons.AutoMirrored.Outlined.Sort,
+                                            title = tr("文件夹置顶", "Folders on top", "フォルダーを上部に固定", "폴더 상단 고정", "資料夾置頂"),
+                                            supporting = tr("关闭后文件夹与文件按所选顺序混合排列", "Turn off to mix folders and files together in sort order", "オフにするとフォルダーとファイルを混在して並べ替えます", "끄면 폴더와 파일을 선택한 정렬 순서대로 함께 배열합니다", "關閉後資料夾與檔案依所選順序混合排列"),
+                                            checked = foldersFirst,
+                                            onCheckedChange = { scope.launch { sessionManager.setFoldersFirst(it) } },
+                                        )
+                                    }
+                                    if (matchPerFolderSort) {
+                                        SettingsSwitchRow(
+                                            icon = Icons.AutoMirrored.Outlined.Sort,
+                                            title = tr("各文件夹独立排序", "Sort each folder separately", "フォルダーごとに並べ替え", "폴더별 정렬", "各資料夾獨立排序"),
+                                            supporting = tr("为每个文件夹分别保存排序方式", "Save sort order independently for each folder", "フォルダーごとに並び順を個別に保存します", "폴더마다 정렬 방식을 개별적으로 저장합니다", "為每個資料夾分別儲存排序方式"),
+                                            checked = isPerFolderSortEnabled,
+                                            onCheckedChange = { scope.launch { sessionManager.setPerFolderSort(it) } },
+                                        )
+                                    }
+                                }
+                            }
+                            if (matchPlayGroup) {
+                                SettingsGroup(tr("播放", "Play", "再生", "재생", "播放")) {
+                                    if (matchPlayQuality) {
+                                        SettingsNavigationRow(
+                                            icon = Icons.Outlined.HighQuality,
+                                            title = tr("播放画质", "Playback quality", "再生画質", "재생 화질", "播放畫質"),
+                                            supporting = playbackQualitySummary(playbackMaxHeight),
+                                            onClick = { showPlaybackQuality = true },
+                                            trailingIcon = null,
+                                        )
+                                    }
+                                    if (matchHwDec) {
+                                        SettingsSwitchRow(
+                                            icon = Icons.Outlined.Memory,
+                                            title = tr("硬件解码", "Hardware decoding", "ハードウェアデコード", "하드웨어 디코딩", "硬體解碼"),
+                                            supporting = tr("画面异常或卡顿时可关闭，改用软件解码", "Disable to use software decoding if video artifacts or freezes occur", "映像の乱れや停止が発生する場合は無効にしてソフトウェアデコードを使用します", "화면 깨짐이나 멈춤이 발생하면 끄고 소프트웨어 디코딩을 사용하세요", "畫面異常或停頓時可關閉，改用軟體解碼"),
+                                            checked = isHardwareDecodingEnabled,
+                                            onCheckedChange = { scope.launch { sessionManager.setHardwareDecoding(it) } },
+                                        )
+                                    }
+                                    if (matchClipAuto) {
+                                        SettingsSwitchRow(
+                                            icon = Icons.Outlined.SwipeVertical,
+                                            title = tr("信息流自动续播", "Auto-extend feed clips", "フィードの自動延長再生", "피드 클립 자동 연장", "資訊流自動續播"),
+                                            supporting = tr("30 秒片段播完后自动顺延播放当前视频后续内容；关闭后循环播放当前片段", "Continue playing subsequent segments of the video after 30 seconds; loop the current clip when disabled", "30秒の再生後に同じ動画の続きを自動再生します。無効時は現在のクリップをループ再生します", "30초 재생 후 현재 동영상의 다음 구간을 이어서 재생하며, 끄면 현재 클립을 반복 재생합니다", "30 秒片段播完後自動順延播放目前影片後續內容；關閉後循環播放目前片段"),
+                                            checked = isClipAutoExtendEnabled,
+                                            onCheckedChange = { scope.launch { sessionManager.setClipAutoExtend(it) } },
+                                        )
+                                    }
+                                    if (matchExitConfirm) {
+                                        SettingsSwitchRow(
+                                            icon = Icons.Outlined.Close,
+                                            title = tr("退出瀑布流与信息流时确认", "Confirm before exiting Gallery & Clips", "ギャラリーやフィード終了時に確認", "갤러리 및 피드 종료 시 확인", "結束瀑布流與資訊流時確認"),
+                                            supporting = tr("关闭后退出瀑布流或信息流不再弹窗提醒", "Exit Gallery or Clips directly without a confirmation dialog when off", "オフにすると確認ダイアログなしで直接終了します", "끄면 확인 창 없이 바로 종료합니다", "關閉後結束瀑布流或資訊流不再跳出確認視窗"),
+                                            checked = !skipFeedExitConfirm,
+                                            onCheckedChange = { confirm -> scope.launch { sessionManager.setSkipFeedExitConfirm(!confirm) } },
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
 
                     // 存进网盘时的处理：链接由谁打开、带不带字幕、存成什么名字。原来分在「网盘」与「下载」两处，
                     // 而配套字幕只在添加链接时起作用，与本机下载无关
-                    section(SettingsSection.Saving) {
-                        SettingsGroup(null) {
-                            val detectClipboard by sessionManager.autoDetectClipboardLinksFlow.collectAsStateWithLifecycle(initialValue = false)
-                            SettingsSwitchRow(
-                                icon = Icons.Outlined.ContentPaste,
-                                title = tr("自动检测剪贴板链接", "Detect clipboard links", "クリップボードのリンクを検出", "클립보드 링크 자동 감지", "自動偵測剪貼簿連結"),
-                                supporting = tr("回到前台时提示磁力或 PikPak 分享链接，确认后解析", "Offer to open magnet or PikPak share links when returning to Piko", "復帰時にマグネットやPikPak共有リンクを検出し、確認後に解析", "앱으로 돌아오면 마그넷 또는 PikPak 공유 링크를 감지하고 확인 후 분석", "回到前景時提示磁力或 PikPak 分享連結，確認後解析"),
-                                checked = detectClipboard,
-                                onCheckedChange = { scope.launch { sessionManager.setAutoDetectClipboardLinks(it) } },
-                            )
-                            if (linkAssociation != null) {
-                                LinkAssociationRow(
-                                    association = linkAssociation,
-                                    state = linkAssociationState,
-                                    onStateChange = { linkAssociationState = it },
-                                    onFailure = { message -> scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) } },
-                                )
-                            }
-                            if (platform.openAppLinkSettings != null) {
-                                SettingsNavigationRow(
-                                    icon = Icons.Outlined.Link,
-                                    title = tr("默认打开分享与深链", "Open shares and deep links by default", "共有とディープリンクを既定で開く", "공유 및 딥 링크 기본 열기", "預設開啟分享與深層連結"),
-                                    supporting = tr("在系统设置中添加支持的链接域名，点击 PikPak 分享或跳转链接时直接用 Piko 打开", "Enable supported link domains in system settings to open PikPak shares and deep links in Piko", "システム設定で対応ドメインを有効にすると、PikPakの共有やディープリンクをPikoで開けます", "시스템 설정에서 지원 도메인을 추가하면 PikPak 공유 및 딥 링크를 Piko에서 바로 엽니다", "在系統設定中新增支援的連結網域，點選 PikPak 分享或跳轉連結時直接用 Piko 開啟"),
-                                    onClick = platform.openAppLinkSettings!!,
-                                )
-                            }
-                            // 这一项靠文件名解析认出字幕。解析在另一类，关掉时留着并写明原因，收起的话人找不到它去了哪
-                            SettingsSwitchRow(
-                                icon = Icons.Outlined.Subtitles,
-                                title = tr("保存配套字幕", "Save matching subtitles", "対応する字幕も保存", "관련 자막 함께 저장", "儲存對應字幕"),
-                                supporting = if (isNameParsingEnabled) tr("保存视频时一并保存外挂字幕", "Save external subtitles with videos", "動画の保存時に外部字幕も保存", "동영상 저장 시 외부 자막 함께 저장", "儲存影片時一併儲存外掛字幕") else tr("需先开启文件名解析", "Enable file name parsing first", "先にファイル名の解析を有効にしてください", "먼저 파일 이름 분석을 켜 주세요", "需先開啟檔案名稱解析"),
-                                checked = isBundleSubtitlesEnabled,
-                                onCheckedChange = { scope.launch { sessionManager.setBundleSubtitlesEnabled(it) } },
-                                enabled = isNameParsingEnabled,
-                            )
-                            SettingsSwitchRow(
-                                icon = Icons.Outlined.CleaningServices,
-                                title = tr("自动修正名称", "Clean names automatically", "名前を自動修正", "이름 자동 수정", "自動修正名稱"),
-                                supporting = tr("新建或重命名时自动移除不受支持的字符", "Automatically remove unsupported characters when creating or renaming", "新規作成や名前変更時に使用できない文字を自動除去します", "새로 만들거나 이름을 변경할 때 지원하지 않는 문자를 자동으로 제거합니다", "新增或重新命名時自動移除不支援的字元"),
-                                checked = isAutoCleanNamesEnabled,
-                                onCheckedChange = { scope.launch { sessionManager.setAutoCleanNamesEnabled(it) } },
-                            )
-                            if (metaTube != null) {
-                                SettingsNavigationRow(
-                                    icon = Icons.Outlined.TravelExplore,
-                                    title = "MetaTube",
-                                    supporting = metaTubeUrl.ifBlank { tr("未配置，按番号命名时不包含片名", "Not configured; titles omitted when naming by catalog code", "未設定（作品番号での命名時にタイトルを含めません）", "미설정 (품번으로 이름 정리 시 제목 제외)", "尚未設定，依番號命名時不包含片名") },
-                                    onClick = { showMetaTubeDialog = true },
-                                    trailingIcon = null,
-                                )
+                    val matchClipboard = match("自动检测剪贴板链接", "Detect clipboard links", "magnet", "clipboard", "クリップボード", "클립보드", "剪貼簿")
+                    val matchLinkAssoc = linkAssociation != null && match("磁力链接与种子文件", "Magnet links and torrent files", "torrent", "magnet", "マグネットリンク", "마그넷 링크", "磁力連結")
+                    val matchAppLinks = platform.openAppLinkSettings != null && match("默认打开分享与深链", "Open shares and deep links by default", "deep link", "ディープリンク", "딥 링크", "深層連結")
+                    val matchSubtitles = match("保存配套字幕", "Save matching subtitles", "subtitle", "字幕", "자막")
+                    val matchCleanNames = match("自动修正名称", "Clean names automatically", "rename", "名前を自動修正", "이름 자동 수정", "自動修正名稱")
+                    val matchMetaTube = metaTube != null && match("MetaTube", "番号", "catalog", "刮削", "作品番号", "품번")
+                    if (matchClipboard || matchLinkAssoc || matchAppLinks || matchSubtitles || matchCleanNames || matchMetaTube) {
+                        section(SettingsSection.Saving) {
+                            SettingsGroup(null) {
+                                if (matchClipboard) {
+                                    val detectClipboard by sessionManager.autoDetectClipboardLinksFlow.collectAsStateWithLifecycle(initialValue = false)
+                                    SettingsSwitchRow(
+                                        icon = Icons.Outlined.ContentPaste,
+                                        title = tr("自动检测剪贴板链接", "Detect clipboard links", "クリップボードのリンクを検出", "클립보드 링크 자동 감지", "自動偵測剪貼簿連結"),
+                                        supporting = tr("回到前台时提示磁力或 PikPak 分享链接，确认后解析", "Offer to open magnet or PikPak share links when returning to Piko", "復帰時にマグネットやPikPak共有リンクを検出し、確認後に解析", "앱으로 돌아오면 마그넷 또는 PikPak 공유 링크를 감지하고 확인 후 분석", "回到前景時提示磁力或 PikPak 分享連結，確認後解析"),
+                                        checked = detectClipboard,
+                                        onCheckedChange = { scope.launch { sessionManager.setAutoDetectClipboardLinks(it) } },
+                                    )
+                                }
+                                if (matchLinkAssoc && linkAssociation != null) {
+                                    LinkAssociationRow(
+                                        association = linkAssociation,
+                                        state = linkAssociationState,
+                                        onStateChange = { linkAssociationState = it },
+                                        onFailure = { message -> scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) } },
+                                    )
+                                }
+                                if (matchAppLinks && platform.openAppLinkSettings != null) {
+                                    SettingsNavigationRow(
+                                        icon = Icons.Outlined.Link,
+                                        title = tr("默认打开分享与深链", "Open shares and deep links by default", "共有とディープリンクを既定で開く", "공유 및 딥 링크 기본 열기", "預設開啟分享與深層連結"),
+                                        supporting = tr("在系统设置中添加支持的链接域名，点击 PikPak 分享或跳转链接时直接用 Piko 打开", "Enable supported link domains in system settings to open PikPak shares and deep links in Piko", "システム設定で対応ドメインを有効にすると、PikPakの共有やディープリンクをPikoで開けます", "시스템 설정에서 지원 도메인을 추가하면 PikPak 공유 및 딥 링크를 Piko에서 바로 엽니다", "在系統設定中新增支援的連結網域，點選 PikPak 分享或跳轉連結時直接用 Piko 開啟"),
+                                        onClick = platform.openAppLinkSettings!!,
+                                    )
+                                }
+                                if (matchSubtitles) {
+                                    // 这一项靠文件名解析认出字幕。解析在另一类，关掉时留着并写明原因，收起的话人找不到它去了哪
+                                    SettingsSwitchRow(
+                                        icon = Icons.Outlined.Subtitles,
+                                        title = tr("保存配套字幕", "Save matching subtitles", "対応する字幕も保存", "관련 자막 함께 저장", "儲存對應字幕"),
+                                        supporting = if (isNameParsingEnabled) tr("保存视频时一并保存外挂字幕", "Save external subtitles with videos", "動画の保存時に外部字幕も保存", "동영상 저장 시 외부 자막 함께 저장", "儲存影片時一併儲存外掛字幕") else tr("需先开启文件名解析", "Enable file name parsing first", "先にファイル名の解析を有効にしてください", "먼저 파일 이름 분석을 켜 주세요", "需先開啟檔案名稱解析"),
+                                        checked = isBundleSubtitlesEnabled,
+                                        onCheckedChange = { scope.launch { sessionManager.setBundleSubtitlesEnabled(it) } },
+                                        enabled = isNameParsingEnabled,
+                                    )
+                                }
+                                if (matchCleanNames) {
+                                    SettingsSwitchRow(
+                                        icon = Icons.Outlined.CleaningServices,
+                                        title = tr("自动修正名称", "Clean names automatically", "名前を自動修正", "이름 자동 수정", "自動修正名稱"),
+                                        supporting = tr("新建或重命名时自动移除不受支持的字符", "Automatically remove unsupported characters when creating or renaming", "新規作成や名前変更時に使用できない文字を自動除去します", "새로 만들거나 이름을 변경할 때 지원하지 않는 문자를 자동으로 제거합니다", "新增或重新命名時自動移除不支援的字元"),
+                                        checked = isAutoCleanNamesEnabled,
+                                        onCheckedChange = { scope.launch { sessionManager.setAutoCleanNamesEnabled(it) } },
+                                    )
+                                }
+                                if (matchMetaTube && metaTube != null) {
+                                    SettingsNavigationRow(
+                                        icon = Icons.Outlined.TravelExplore,
+                                        title = "MetaTube",
+                                        supporting = metaTubeUrl.ifBlank { tr("未配置，按番号命名时不包含片名", "Not configured; titles omitted when naming by catalog code", "未設定（作品番号での命名時にタイトルを含めません）", "미설정 (품번으로 이름 정리 시 제목 제외)", "尚未設定，依番號命名時不包含片名") },
+                                        onClick = { showMetaTubeDialog = true },
+                                        trailingIcon = null,
+                                    )
+                                }
                             }
                         }
                     }
 
-                    section(SettingsSection.Transfer) {
-                        SettingsGroup(tr("下载", "Downloads", "ダウンロード", "다운로드", "下載")) {
-                            SettingsNavigationRow(
-                                icon = Icons.Outlined.FolderOpen,
-                                title = tr("下载位置", "Download location", "ダウンロード先", "다운로드 위치", "下載位置"),
-                                supporting = resolvedDownloadPath,
-                                onClick = { showDownloadDirDialog = true },
-                                trailingIcon = null,
-                            )
-                            SettingsNavigationRow(
-                                icon = Icons.Outlined.HighQuality,
-                                title = tr("默认下载画质", "Default download quality", "既定のダウンロード画質", "기본 다운로드 화질", "預設下載畫質"),
-                                supporting = downloadQualitySummary(downloadMaxHeight),
-                                onClick = { showDownloadQuality = true },
-                                trailingIcon = null,
-                            )
-                            if (backgroundTransferAccess != null) {
-                                SettingsNavigationRow(
-                                    icon = Icons.Outlined.PowerSettingsNew,
-                                    title = tr("后台持续传输", "Unrestricted background transfers", "バックグラウンド継続転送", "백그라운드 지속 전송", "背景持續傳輸"),
-                                    supporting = if (isBackgroundUnrestricted) {
-                                        tr(
-                                            "已将系统电池优化设为「无限制」",
-                                            "System battery optimization set to Unrestricted",
-                                            "システムのバッテリー最適化が「制限なし」に設定されています",
-                                            "시스템 배터리 최적화가 '제한 없음'으로 설정됨",
-                                            "已將系統電池最佳化設為「無限制」",
+                    val matchDlDir = match("下载位置", "Download location", "folder", "path", "ダウンロード先", "다운로드 위치", "下載位置", resolvedDownloadPath)
+                    val matchDlQuality = match("默认下载画质", "Default download quality", "ダウンロード画質", "기본 다운로드 화질", "預設下載畫質")
+                    val matchBgTransfer = backgroundTransferAccess != null && match("后台持续传输", "Unrestricted background transfers", "battery", "バックグラウンド", "백그라운드", "背景持續傳輸")
+                    val matchDlGroup = matchDlDir || matchDlQuality || matchBgTransfer
+                    val matchSnail = match("蜗牛模式", "Snail mode", "speed limit", "限速", "低速モード", "저속 모드", "蝸牛模式")
+                    val matchSnailLimit = snailMode.enabled && match("速度上限", "Speed limit", "速度上限", "속도 한도")
+                    val matchSnailGroup = matchSnail || matchSnailLimit
+                    if (matchDlGroup || matchSnailGroup) {
+                        section(SettingsSection.Transfer) {
+                            if (matchDlGroup) {
+                                SettingsGroup(tr("下载", "Downloads", "ダウンロード", "다운로드", "下載")) {
+                                    if (matchDlDir) {
+                                        SettingsNavigationRow(
+                                            icon = Icons.Outlined.FolderOpen,
+                                            title = tr("下载位置", "Download location", "ダウンロード先", "다운로드 위치", "下載位置"),
+                                            supporting = resolvedDownloadPath,
+                                            onClick = { showDownloadDirDialog = true },
+                                            trailingIcon = null,
                                         )
-                                    } else {
-                                        tr("受系统电池优化限制，切到后台可能被暂停，点击前往应用设置将电池设为「无限制」", "Restricted by system battery optimization; tap to set battery usage to Unrestricted in app settings", "システムのバッテリー最適化により制限されています。タップしてアプリ設定からバッテリーを「制限なし」に変更", "시스템 배터리 최적화로 제한됨. 탭하여 앱 설정에서 배터리를 '제한 없음'으로 변경", "受系統電池最佳化限制，切至背景可能被暫停，點擊前往應用程式設定將電池設為「無限制」")
-                                    },
-                                    onClick = { backgroundTransferAccess.requestUnrestricted() },
-                                    trailingIcon = if (isBackgroundUnrestricted) Icons.Outlined.Check else null,
-                                )
+                                    }
+                                    if (matchDlQuality) {
+                                        SettingsNavigationRow(
+                                            icon = Icons.Outlined.HighQuality,
+                                            title = tr("默认下载画质", "Default download quality", "既定のダウンロード画質", "기본 다운로드 화질", "預設下載畫質"),
+                                            supporting = downloadQualitySummary(downloadMaxHeight),
+                                            onClick = { showDownloadQuality = true },
+                                            trailingIcon = null,
+                                        )
+                                    }
+                                    if (matchBgTransfer && backgroundTransferAccess != null) {
+                                        SettingsNavigationRow(
+                                            icon = Icons.Outlined.PowerSettingsNew,
+                                            title = tr("后台持续传输", "Unrestricted background transfers", "バックグラウンド継続転送", "백그라운드 지속 전송", "背景持續傳輸"),
+                                            supporting = if (isBackgroundUnrestricted) {
+                                                tr(
+                                                    "已将系统电池优化设为「无限制」",
+                                                    "System battery optimization set to Unrestricted",
+                                                    "システムのバッテリー最適化が「制限なし」に設定されています",
+                                                    "시스템 배터리 최적화가 '제한 없음'으로 설정됨",
+                                                    "已將系統電池最佳化設為「無限制」",
+                                                )
+                                            } else {
+                                                tr("受系统电池优化限制，切到后台可能被暂停，点击前往应用设置将电池设为「无限制」", "Restricted by system battery optimization; tap to set battery usage to Unrestricted in app settings", "システムのバッテリー最適化により制限されています。タップしてアプリ設定からバッテリーを「制限なし」に変更", "시스템 배터리 최적화로 제한됨. 탭하여 앱 설정에서 배터리를 '제한 없음'으로 변경", "受系統電池最佳化限制，切至背景可能被暫停，點擊前往應用程式設定將電池設為「無限制」")
+                                            },
+                                            onClick = { backgroundTransferAccess.requestUnrestricted() },
+                                            trailingIcon = if (isBackgroundUnrestricted) Icons.Outlined.Check else null,
+                                        )
+                                    }
+                                }
                             }
-                        }
-                        SettingsGroup(tr("限速", "Speed limits", "速度制限", "속도 제한", "限速")) {
-                            SettingsSwitchRow(
-                                icon = Icons.Outlined.SlowMotionVideo,
-                                title = tr("蜗牛模式", "Snail mode", "低速モード", "저속 모드", "蝸牛模式"),
-                                supporting = tr("限制下载与上传速度，不影响在线播放", "Limit transfer speeds without affecting streaming", "ダウンロードとアップロードの速度を制限。ストリーミングには影響しません", "다운로드 및 업로드 속도를 제한하며 스트리밍에는 영향 없음", "限制下載與上傳速度，不影響線上播放"),
-                                checked = snailMode.enabled,
-                                onCheckedChange = { scope.launch { sessionManager.setSnailMode(snailMode.copy(enabled = it)) } },
-                            )
-                            DependentRow(visible = snailMode.enabled) {
-                                SettingsNavigationRow(
-                                    icon = Icons.Outlined.Tune,
-                                    title = tr("速度上限", "Speed limit", "速度上限", "속도 한도", "速度上限"),
-                                    supporting = snailMode.limitSummary(),
-                                    onClick = { showSnailDialog = true },
-                                    trailingIcon = null,
-                                )
+                            if (matchSnailGroup) {
+                                SettingsGroup(tr("限速", "Speed limits", "速度制限", "속도 제한", "限速")) {
+                                    if (matchSnail) {
+                                        SettingsSwitchRow(
+                                            icon = Icons.Outlined.SlowMotionVideo,
+                                            title = tr("蜗牛模式", "Snail mode", "低速モード", "저속 모드", "蝸牛模式"),
+                                            supporting = tr("限制下载与上传速度，不影响在线播放", "Limit transfer speeds without affecting streaming", "ダウンロードとアップロードの速度を制限。ストリーミングには影響しません", "다운로드 및 업로드 속도를 제한하며 스트리밍에는 영향 없음", "限制下載與上傳速度，不影響線上播放"),
+                                            checked = snailMode.enabled,
+                                            onCheckedChange = { scope.launch { sessionManager.setSnailMode(snailMode.copy(enabled = it)) } },
+                                        )
+                                    }
+                                    if (matchSnailLimit) {
+                                        DependentRow(visible = snailMode.enabled) {
+                                            SettingsNavigationRow(
+                                                icon = Icons.Outlined.Tune,
+                                                title = tr("速度上限", "Speed limit", "速度上限", "속도 한도", "速度上限"),
+                                                supporting = snailMode.limitSummary(),
+                                                onClick = { showSnailDialog = true },
+                                                trailingIcon = null,
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
-                    section(SettingsSection.Network) {
-                        SettingsGroup(null) {
-                            SettingsNavigationRow(
-                                icon = Icons.Outlined.Public,
-                                title = tr("网络代理", "Network proxy", "ネットワークプロキシ", "네트워크 프록시", "網路代理"),
-                                supporting = proxySetting.summary(),
-                                onClick = { showProxyDialog = true },
-                                trailingIcon = null,
+                    val matchStorage = match(
+                        SettingsSection.Storage.title,
+                        "存储", "缓存", "清理", "缩略图", "播放缓存", "进度条预览图", "预览图", "信息流", "索引",
+                        "storage", "cache", "clear", "cleanup", "thumbnail", "playback", "seekbar", "preview", "ttl", "limit",
+                        "ストレージ", "キャッシュ", "消去", "シークバープレビュー", "저장공간", "캐시", "정리", "탐색 미리보기", "儲存", "快取", "進度條預覽圖",
+                    )
+                    if (matchStorage) {
+                        section(SettingsSection.Storage) {
+                            CacheSectionContent(
+                                cacheManager = services.cacheManager,
+                                preferences = sessionManager,
+                                snackbarHostState = snackbarHostState,
                             )
-                            SettingsNavigationRow(
-                                icon = Icons.Outlined.Dns,
-                                title = tr("服务器域名", "Server domain", "サーバードメイン", "서버 도메인", "伺服器網域"),
-                                supporting = domainSummary(domainChoice, activeDomain, domainProbes),
-                                onClick = { showDomainDialog = true },
-                                trailingIcon = null,
-                            )
+                        }
+                    }
+
+                    val matchProxy = match("网络代理", "Network proxy", "socks", "http", "proxy", "プロキシ", "프록시", "網路代理")
+                    val matchDomain = match("服务器域名", "Server domain", "dns", "host", "ドメイン", "도메인", "伺服器網域")
+                    if (matchProxy || matchDomain) {
+                        section(SettingsSection.Network) {
+                            SettingsGroup(null) {
+                                if (matchProxy) {
+                                    SettingsNavigationRow(
+                                        icon = Icons.Outlined.Public,
+                                        title = tr("网络代理", "Network proxy", "ネットワークプロキシ", "네트워크 프록시", "網路代理"),
+                                        supporting = proxySetting.summary(),
+                                        onClick = { showProxyDialog = true },
+                                        trailingIcon = null,
+                                    )
+                                }
+                                if (matchDomain) {
+                                    SettingsNavigationRow(
+                                        icon = Icons.Outlined.Dns,
+                                        title = tr("服务器域名", "Server domain", "サーバードメイン", "서버 도메인", "伺服器網域"),
+                                        supporting = domainSummary(domainChoice, activeDomain, domainProbes),
+                                        onClick = { showDomainDialog = true },
+                                        trailingIcon = null,
+                                    )
+                                }
+                            }
                         }
                     }
 
                     // 这一类都挂在账号上、随账号切换，不放进「网络」：那里是这台设备自己的连接设置
-                    section(SettingsSection.Data) {
-                        SettingsGroup(tr("同步", "Sync", "同期", "동기화", "同步")) {
-                            SettingsSyncRow(
-                                enabled = isSettingsSyncEnabled,
-                                status = syncStatusText(syncStatus, lastSynced),
-                                onEnabledChange = { scope.launch { sessionManager.setSettingsSyncEnabled(it) } },
-                                onSyncNow = { scope.launch { services.syncAllNow() } },
-                            )
-                            SettingsSwitchRow(
-                                icon = Icons.Outlined.History,
-                                title = tr("同步播放记录", "Sync playback history", "再生履歴を同期", "재생 기록 동기화", "同步播放記錄"),
-                                supporting = tr("与 PikPak 官方客户端共用播放历史与续播进度", "Share playback history and resume positions with official PikPak apps", "PikPak公式アプリと再生履歴・再開位置を共有", "PikPak 공식 앱과 재생 기록 및 이어보기 위치 공유", "與 PikPak 官方用戶端共用播放歷史與續播進度"),
-                                checked = isSyncPlayHistoryEnabled,
-                                onCheckedChange = { scope.launch { sessionManager.setSyncPlayHistoryEnabled(it) } },
-                            )
-                        }
-                        SettingsGroup(tr("密码与凭据", "Passwords and credentials", "パスワードと認証情報", "비밀번호 및 인증 정보", "密碼與憑證")) {
-                            SettingsNavigationRow(
-                                icon = Icons.Outlined.Key,
-                                title = tr("解压密码", "Archive password", "解凍パスワード", "압축 해제 비밀번호", "解壓縮密碼"),
-                                supporting = if (archivePasswords.isEmpty()) tr("尚无保存的密码", "No saved passwords", "保存済みパスワードはありません", "저장된 비밀번호가 없습니다", "尚無儲存的密碼") else tr("已保存 ${archivePasswords.size} 个", "${archivePasswords.size} saved", "${archivePasswords.size} 件保存済み", "${archivePasswords.size}개 저장됨", "已儲存 ${archivePasswords.size} 個"),
-                                onClick = { showArchivePasswords = true },
-                                trailingIcon = null,
-                            )
-                            if (services.supportsEncryptedSync) {
-                                val syncPassphraseSummary = when (encryptedSyncStatus) {
-                                    EncryptedSyncStatus.LockedKeyMismatch -> tr(
-                                        "云端密文与当前密钥不匹配，已暂停覆盖，点击输入口令或重置",
-                                        "Cloud data encrypted with another key; paused to protect data. Tap to unlock or reset.",
-                                        "クラウドの暗号化データとキーが一致しません。タップして解除またはリセット",
-                                        "클라우드 암호문과 키가 일치하지 않아 보호 중. 탭하여 잠금 해제 또는 초기화",
-                                        "雲端密文與目前金鑰不符，已暫停覆寫，點選輸入口令或重設",
-                                    )
-                                    EncryptedSyncStatus.LockedNoKey -> tr(
-                                        "未设置（Google 登录账号设置后可跨设备加密同步密码与配置）",
-                                        "Not set (set a passphrase to encrypt and sync passwords & MetaTube on Google accounts)",
-                                        "未設定（設定すると解凍パスワードやMetaTubeを端末間で暗号化同期できます）",
-                                        "미설정 (설정 시 압축 해제 비밀번호 및 MetaTube를 기기 간 암호화 동기화)",
-                                        "尚未設定（Google 登入帳號設定後可跨裝置加密同步密碼與設定）",
-                                    )
-                                    EncryptedSyncStatus.CorruptOrUnsupported -> tr(
-                                        "云端同步文件需要更新版本或已损坏，已跳过同步以保护数据",
-                                        "Cloud sync file requires a newer version or is damaged; skipped to preserve data",
-                                        "クラウドの同期ファイルが新しいバージョン用か破損しているためスキップしました",
-                                        "클라우드 동기화 파일이 최신 버전용이거나 손상되어 건너뛰었습니다",
-                                        "雲端同步檔案需要較新版本或已損壞，已略過同步以保護資料",
-                                    )
-                                    EncryptedSyncStatus.Idle, EncryptedSyncStatus.Unlocked -> if (hasSyncPassphrase) {
-                                        tr(
-                                            "已启用独立同步口令",
-                                            "Custom sync passphrase enabled",
-                                            "独自の同期パスフレーズを使用中",
-                                            "별도 동기화 암호문구 사용 중",
-                                            "已啟用獨立同步口令",
+                    val matchSyncSettings = match("同步设置", "Sync settings", "sync", "設定を同期", "설정 동기화", "同步設定")
+                    val matchSyncHistory = match("同步播放记录", "Sync playback history", "history", "再生履歴", "재생 기록", "播放記錄")
+                    val matchSyncGroup = matchSyncSettings || matchSyncHistory
+                    val matchArchivePw = match("解压密码", "Archive password", "zip", "rar", "解凍パスワード", "압축 해제 비밀번호", "解壓縮密碼")
+                    val matchEncSync = services.supportsEncryptedSync && match("加密同步口令", "Encrypted sync passphrase", "passphrase", "encrypt", "暗号化同期", "암호화 동기화")
+                    val matchWebDav = isFreeAccount == false && match("WebDAV", "dav", "挂载", "播放器")
+                    val matchCredGroup = matchArchivePw || matchEncSync || matchWebDav
+                    if (matchSyncGroup || matchCredGroup) {
+                        section(SettingsSection.Data) {
+                            if (matchSyncGroup) {
+                                SettingsGroup(tr("同步", "Sync", "同期", "동기화", "同步")) {
+                                    if (matchSyncSettings) {
+                                        SettingsSyncRow(
+                                            enabled = isSettingsSyncEnabled,
+                                            status = syncStatusText(syncStatus, lastSynced),
+                                            onEnabledChange = { scope.launch { sessionManager.setSettingsSyncEnabled(it) } },
+                                            onSyncNow = { scope.launch { services.syncAllNow() } },
                                         )
-                                    } else {
-                                        tr(
-                                            "默认使用登录密码加密，点击可设置独立同步口令",
-                                            "Encrypted with account password by default; tap to set a custom passphrase",
-                                            "既定ではログインパスワードを使用。タップして独自パスフレーズを設定",
-                                            "기본적으로 로그인 비밀번호 사용. 탭하여 별도 암호문구 설정",
-                                            "預設使用登入密碼加密，點選可設定獨立同步口令",
+                                    }
+                                    if (matchSyncHistory) {
+                                        SettingsSwitchRow(
+                                            icon = Icons.Outlined.History,
+                                            title = tr("同步播放记录", "Sync playback history", "再生履歴を同期", "재생 기록 동기화", "同步播放記錄"),
+                                            supporting = tr("与 PikPak 官方客户端共用播放历史与续播进度", "Share playback history and resume positions with official PikPak apps", "PikPak公式アプリと再生履歴・再開位置を共有", "PikPak 공식 앱과 재생 기록 및 이어보기 위치 공유", "與 PikPak 官方用戶端共用播放歷史與續播進度"),
+                                            checked = isSyncPlayHistoryEnabled,
+                                            onCheckedChange = { scope.launch { sessionManager.setSyncPlayHistoryEnabled(it) } },
                                         )
                                     }
                                 }
-                                SettingsRow(
-                                    icon = Icons.Outlined.Lock,
-                                    title = tr("加密同步口令", "Encrypted sync passphrase", "暗号化同期パスフレーズ", "암호화 동기화 암호문구", "加密同步口令"),
-                                    supporting = syncPassphraseSummary,
-                                    supportingColor = if (encryptedSyncStatus == EncryptedSyncStatus.LockedKeyMismatch) {
-                                        MaterialTheme.colorScheme.error
-                                    } else {
-                                        Color.Unspecified
-                                    },
-                                    onClick = {
-                                        encryptedSyncMismatchError = null
-                                        showEncryptedSyncDialog = true
-                                    },
-                                )
                             }
-                            // WebDAV 仅限会员，免费账号与等级未取到时不出现
-                            if (isFreeAccount == false) {
-                                SettingsNavigationRow(
-                                    icon = Icons.Outlined.Lan,
-                                    title = "WebDAV",
-                                    supporting = tr("供播放器、文件管理器等应用读取网盘", "Access the drive from media players and file managers", "プレーヤーやファイルマネージャーからドライブにアクセス", "플레이어 및 파일 관리자에서 드라이브 접근", "供播放器、檔案管理員等應用程式讀取雲端硬碟"),
-                                    onClick = onOpenWebDav,
-                                )
+                            if (matchCredGroup) {
+                                SettingsGroup(tr("密码与凭据", "Passwords and credentials", "パスワードと認証情報", "비밀번호 및 인증 정보", "密碼與憑證")) {
+                                    if (matchArchivePw) {
+                                        SettingsNavigationRow(
+                                            icon = Icons.Outlined.Key,
+                                            title = tr("解压密码", "Archive password", "解凍パスワード", "압축 해제 비밀번호", "解壓縮密碼"),
+                                            supporting = if (archivePasswords.isEmpty()) tr("尚无保存的密码", "No saved passwords", "保存済みパスワードはありません", "저장된 비밀번호가 없습니다", "尚無儲存的密碼") else tr("已保存 ${archivePasswords.size} 个", "${archivePasswords.size} saved", "${archivePasswords.size} 件保存済み", "${archivePasswords.size}개 저장됨", "已儲存 ${archivePasswords.size} 個"),
+                                            onClick = { showArchivePasswords = true },
+                                            trailingIcon = null,
+                                        )
+                                    }
+                                    if (matchEncSync && services.supportsEncryptedSync) {
+                                        val syncPassphraseSummary = when (encryptedSyncStatus) {
+                                            EncryptedSyncStatus.LockedKeyMismatch -> tr(
+                                                "云端密文与当前密钥不匹配，已暂停覆盖，点击输入口令或重置",
+                                                "Cloud data encrypted with another key; paused to protect data. Tap to unlock or reset.",
+                                                "クラウドの暗号化データとキーが一致しません。タップして解除またはリセット",
+                                                "클라우드 암호문과 키가 일치하지 않아 보호 중. 탭하여 잠금 해제 또는 초기화",
+                                                "雲端密文與目前金鑰不符，已暫停覆寫，點選輸入口令或重設",
+                                            )
+                                            EncryptedSyncStatus.LockedNoKey -> tr(
+                                                "未设置（Google 登录账号设置后可跨设备加密同步密码与配置）",
+                                                "Not set (set a passphrase to encrypt and sync passwords & MetaTube on Google accounts)",
+                                                "未設定（設定すると解凍パスワードやMetaTubeを端末間で暗号化同期できます）",
+                                                "미설정 (설정 시 압축 해제 비밀번호 및 MetaTube를 기기 간 암호화 동기화)",
+                                                "尚未設定（Google 登入帳號設定後可跨裝置加密同步密碼與設定）",
+                                            )
+                                            EncryptedSyncStatus.CorruptOrUnsupported -> tr(
+                                                "云端同步文件需要更新版本或已损坏，已跳过同步以保护数据",
+                                                "Cloud sync file requires a newer version or is damaged; skipped to preserve data",
+                                                "クラウドの同期ファイルが新しいバージョン用か破損しているためスキップしました",
+                                                "클라우드 동기화 파일이 최신 버전용이거나 손상되어 건너뛰었습니다",
+                                                "雲端同步檔案需要較新版本或已損壞，已略過同步以保護資料",
+                                            )
+                                            EncryptedSyncStatus.Idle, EncryptedSyncStatus.Unlocked -> if (hasSyncPassphrase) {
+                                                tr(
+                                                    "已启用独立同步口令",
+                                                    "Custom sync passphrase enabled",
+                                                    "独自の同期パスフレーズを使用中",
+                                                    "별도 동기화 암호문구 사용 중",
+                                                    "已啟用獨立同步口令",
+                                                )
+                                            } else {
+                                                tr(
+                                                    "默认使用登录密码加密，点击可设置独立同步口令",
+                                                    "Encrypted with account password by default; tap to set a custom passphrase",
+                                                    "既定ではログインパスワードを使用。タップして独自パスフレーズを設定",
+                                                    "기본적으로 로그인 비밀번호 사용. 탭하여 별도 암호문구 설정",
+                                                    "預設使用登入密碼加密，點選可設定獨立同步口令",
+                                                )
+                                            }
+                                        }
+                                        SettingsRow(
+                                            icon = Icons.Outlined.Lock,
+                                            title = tr("加密同步口令", "Encrypted sync passphrase", "暗号化同期パスフレーズ", "암호화 동기화 암호문구", "加密同步口令"),
+                                            supporting = syncPassphraseSummary,
+                                            supportingColor = if (encryptedSyncStatus == EncryptedSyncStatus.LockedKeyMismatch) {
+                                                MaterialTheme.colorScheme.error
+                                            } else {
+                                                Color.Unspecified
+                                            },
+                                            onClick = {
+                                                encryptedSyncMismatchError = null
+                                                showEncryptedSyncDialog = true
+                                            },
+                                        )
+                                    }
+                                    // WebDAV 仅限会员，免费账号与等级未取到时不出现
+                                    if (matchWebDav && isFreeAccount == false) {
+                                        SettingsNavigationRow(
+                                            icon = Icons.Outlined.Lan,
+                                            title = "WebDAV",
+                                            supporting = tr("供播放器、文件管理器等应用读取网盘", "Access the drive from media players and file managers", "プレーヤーやファイルマネージャーからドライブにアクセス", "플레이어 및 파일 관리자에서 드라이브 접근", "供播放器、檔案管理員等應用程式讀取雲端硬碟"),
+                                            onClick = onOpenWebDav,
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
 
-                    if (showAbout) {
+                    if (showAbout && match(SettingsSection.About.title, "about", "update", "version", "更新", "版本", "日志", "telegram", "关于")) {
                         section(SettingsSection.About) {
                             AboutSection(snackbarHostState)
                         }
+                    }
+
+                    if (searching && renderedSections == 0) {
+                        PikoEmptyState(
+                            icon = Icons.Outlined.SearchOff,
+                            title = tr("未找到匹配的设置项", "No matching settings", "一致する設定が見つかりません", "일치하는 설정이 없습니다", "找不到相符的設定項目"),
+                            actionText = tr("清除搜索", "Clear search", "検索をクリア", "검색 지우기", "清除搜尋"),
+                            onActionClick = { searchQuery = "" },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 48.dp),
+                        )
                     }
                 }
             }
@@ -781,6 +1083,7 @@ fun SettingsScreen(
             maxHeight = playbackMaxHeight,
             onSelect = { height -> if (height != null) scope.launch { sessionManager.setPlaybackMaxHeight(height) } },
             onDismiss = { showPlaybackQuality = false },
+            showAutoOption = true,
         )
     }
 
@@ -966,10 +1269,12 @@ private fun DownloadLocationDialog(
 internal enum class SettingsSection(private val titleText: () -> String, val icon: ImageVector, val selectedIcon: ImageVector) {
     Account({ tr("账号", "Account", "アカウント", "계정", "帳號") }, Icons.Outlined.AccountCircle, Icons.Filled.AccountCircle),
     Appearance({ tr("外观", "Appearance", "外観", "모양", "外觀") }, Icons.Outlined.Palette, Icons.Filled.Palette),
+    Customize({ tr("自定义", "Customize", "カスタマイズ", "사용자 지정", "自訂") }, Icons.Outlined.Tune, Icons.Filled.Tune),
     Browse({ tr("浏览与播放", "Browsing & playback", "閲覧と再生", "탐색 및 재생", "瀏覽與播放") }, Icons.Outlined.PlayCircle, Icons.Filled.PlayCircle),
     Saving({ tr("保存与命名", "Saving & naming", "保存と命名", "저장 및 이름 지정", "儲存與命名") }, Icons.Outlined.DriveFileRenameOutline, Icons.Filled.DriveFileRenameOutline),
     // 与导航的「传输」同一款图标
     Transfer({ tr("下载与传输", "Downloads & transfers", "ダウンロードと転送", "다운로드 및 전송", "下載與傳輸") }, Icons.Outlined.SwapVerticalCircle, Icons.Filled.SwapVerticalCircle),
+    Storage({ tr("存储与缓存", "Storage & cache", "ストレージとキャッシュ", "저장공간 및 캐시", "儲存與快取") }, Icons.Outlined.Storage, Icons.Filled.Storage),
     Network({ tr("网络", "Network", "ネットワーク", "네트워크", "網路") }, Icons.Outlined.Router, Icons.Filled.Router),
     Data({ tr("同步与数据", "Sync & data", "同期とデータ", "동기화 및 데이터", "同步與資料") }, Icons.Outlined.CloudSync, Icons.Filled.CloudSync),
     About({ tr("关于", "About", "このアプリについて", "정보", "關於") }, Icons.Outlined.Info, Icons.Filled.Info),
@@ -1040,20 +1345,106 @@ private fun SettingsSectionBlock(
     }
 }
 
-/** 桌面左侧的分类目录，行的样式与应用侧边栏相同。 */
+/** 桌面左侧的分类目录，行的样式与应用侧边栏相同；顶置实时搜索框。 */
 @Composable
-private fun SettingsIndex(sections: List<SettingsSection>, current: SettingsSection, onSelect: (SettingsSection) -> Unit, modifier: Modifier = Modifier) {
+private fun SettingsIndex(
+    sections: List<SettingsSection>,
+    currentSectionProvider: () -> SettingsSection,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    onSelect: (SettingsSection) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val current = currentSectionProvider()
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        SettingsSearchField(
+            query = searchQuery,
+            onQueryChange = onSearchQueryChange,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+        )
         sections.forEach { section ->
             SidebarItem(
                 icon = section.icon,
                 selectedIcon = section.selectedIcon,
                 label = section.title,
-                selected = section == current,
+                selected = searchQuery.isBlank() && section == current,
                 onClick = { onSelect(section) },
             )
         }
     }
+}
+
+@Composable
+private fun SettingsSearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        modifier = modifier.height(38.dp),
+        shape = CircleShape,
+        color = colors.surfaceContainerHigh,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Search,
+                contentDescription = null,
+                tint = colors.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                if (query.isEmpty()) {
+                    Text(
+                        text = tr("搜索设置", "Search settings", "設定を検索", "설정 검색", "搜尋設定"),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQueryChange,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = colors.onSurface),
+                    cursorBrush = SolidColor(colors.primary),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            if (query.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .clickable(
+                            role = Role.Button,
+                            onClickLabel = tr("清除", "Clear", "クリア", "지우기", "清除"),
+                            onClick = { onQueryChange("") },
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Close,
+                        contentDescription = null,
+                        tint = colors.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun matchesSettingsQuery(query: String, vararg fields: String): Boolean {
+    val trimmed = query.trim()
+    if (trimmed.isEmpty()) return true
+    val tokens = trimmed.lowercase().split(' ').filter { it.isNotEmpty() }
+    if (tokens.isEmpty()) return true
+    return tokens.all { token -> fields.any { it.contains(token, ignoreCase = true) } }
 }
 
 /**
@@ -1158,8 +1549,7 @@ private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> 
                 if (platform.supportsDynamicColor) {
                     val scheme = platform.dynamicColorScheme(dark)
                     ColorSwatch(
-                        color = scheme.primary,
-                        onColor = scheme.onPrimary,
+                        scheme = scheme,
                         label = tr("系统取色", "System color", "システムの色", "시스템 색상", "系統取色"),
                         selected = appearance.seed == null,
                         idleIcon = Icons.Outlined.Wallpaper,
@@ -1169,11 +1559,11 @@ private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> 
                 SeedTheme.entries.forEach { theme ->
                     val scheme = if (dark) theme.dark else theme.light
                     ColorSwatch(
-                        color = scheme.primary,
-                        onColor = scheme.onPrimary,
+                        scheme = scheme,
                         label = theme.label,
                         selected = appearance.effectiveSeed == theme,
                         onClick = { onSeedChange(theme) },
+                        isEInkSwatch = theme == SeedTheme.EINK,
                     )
                 }
             }
@@ -1181,16 +1571,21 @@ private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> 
     )
 }
 
+/**
+ * Material 3 Expressive 三段色板预览球：上半圆展示 `primary`，左下四分之一展示 `primaryContainer`，
+ * 右下四分之一展示 `tertiary`，选中时配外环与对勾徽章。
+ */
 @Composable
 private fun ColorSwatch(
-    color: Color,
-    onColor: Color,
+    scheme: ColorScheme,
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
     idleIcon: ImageVector? = null,
+    isEInkSwatch: Boolean = false,
 ) {
     val style = settingsStyle()
+    val ringColor = MaterialTheme.colorScheme.primary
     Box(
         modifier = Modifier
             .size(style.swatchTarget)
@@ -1202,12 +1597,97 @@ private fun ColorSwatch(
         Box(
             modifier = Modifier
                 .size(style.swatchSize)
-                .clip(CircleShape)
-                .background(color),
+                .then(
+                    when {
+                        selected -> Modifier
+                            .border(2.dp, ringColor, CircleShape)
+                            .padding(3.dp)
+                        isEInkSwatch -> Modifier.border(1.dp, Color.Black, CircleShape)
+                        else -> Modifier
+                    },
+                )
+                .clip(CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            val icon = if (selected) Icons.Outlined.Check else idleIcon
-            if (icon != null) Icon(icon, contentDescription = null, tint = onColor, modifier = Modifier.size(18.dp))
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val diameter = size.minDimension
+                val topLeft = Offset((size.width - diameter) / 2f, (size.height - diameter) / 2f)
+                val arcSize = Size(diameter, diameter)
+                if (isEInkSwatch) {
+                    drawArc(
+                        color = Color.Black,
+                        startAngle = 180f,
+                        sweepAngle = 180f,
+                        useCenter = true,
+                        topLeft = topLeft,
+                        size = arcSize,
+                    )
+                    drawArc(
+                        color = Color.White,
+                        startAngle = 0f,
+                        sweepAngle = 180f,
+                        useCenter = true,
+                        topLeft = topLeft,
+                        size = arcSize,
+                    )
+                } else {
+                    drawArc(
+                        color = scheme.primary,
+                        startAngle = 180f,
+                        sweepAngle = 180f,
+                        useCenter = true,
+                        topLeft = topLeft,
+                        size = arcSize,
+                    )
+                    drawArc(
+                        color = scheme.primaryContainer,
+                        startAngle = 90f,
+                        sweepAngle = 90f,
+                        useCenter = true,
+                        topLeft = topLeft,
+                        size = arcSize,
+                    )
+                    drawArc(
+                        color = scheme.tertiary,
+                        startAngle = 0f,
+                        sweepAngle = 90f,
+                        useCenter = true,
+                        topLeft = topLeft,
+                        size = arcSize,
+                    )
+                }
+            }
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .size(18.dp)
+                        .clip(CircleShape)
+                        .background(scheme.primary),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Check,
+                        contentDescription = null,
+                        tint = scheme.onPrimary,
+                        modifier = Modifier.size(13.dp),
+                    )
+                }
+            } else if (idleIcon != null) {
+                Box(
+                    modifier = Modifier
+                        .size(18.dp)
+                        .clip(CircleShape)
+                        .background(scheme.surface.copy(alpha = 0.82f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = idleIcon,
+                        contentDescription = null,
+                        tint = scheme.onSurface,
+                        modifier = Modifier.size(12.dp),
+                    )
+                }
+            }
         }
     }
 }

@@ -176,8 +176,13 @@ private fun BatchRowItem(
                     overflow = TextOverflow.Ellipsis,
                 )
             } else if (status == InstantBatchRowStatus.READY) {
+                val summaryParts = if (sheet.isLazyShareMode) {
+                    listOfNotNull(sheet.shareTree?.selectedSummaryText)
+                } else {
+                    listOf(tr("已选 ${sheet.selectedEntryCount} / ${sheet.entryCount}", "Selected ${sheet.selectedEntryCount} / ${sheet.entryCount}", "選択済み ${sheet.selectedEntryCount} / ${sheet.entryCount}", "${sheet.selectedEntryCount} / ${sheet.entryCount}개 선택됨", "已選 ${sheet.selectedEntryCount} / ${sheet.entryCount}"), row.selectedBytes.toReadableSize())
+                }
                 MetaRow(
-                    parts = listOf(tr("已选 ${sheet.selectedEntryCount} / ${sheet.entryCount}", "Selected ${sheet.selectedEntryCount} / ${sheet.entryCount}", "選択済み ${sheet.selectedEntryCount} / ${sheet.entryCount}", "${sheet.selectedEntryCount} / ${sheet.entryCount}개 선택됨", "已選 ${sheet.selectedEntryCount} / ${sheet.entryCount}"), row.selectedBytes.toReadableSize()),
+                    parts = summaryParts,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

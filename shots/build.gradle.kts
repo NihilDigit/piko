@@ -13,6 +13,10 @@ kotlin {
     jvmToolchain(25)
 }
 
+composeCompiler {
+    stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("compose-stability.conf"))
+}
+
 // Skia 的原生库按宿主取。与 desktopApp 不同，这里也要能在 Linux 上跑：没有显示器的机器（CI、云端容器）
 // 正是最需要看截图的地方
 val hostOs = System.getProperty("os.name").let {
@@ -57,10 +61,22 @@ configurations.runtimeClasspath {
     exclude(group = "org.jetbrains.compose.runtime", module = "runtime-desktop")
 }
 
-// runtime-saveable-desktop 同样是转发到 androidx 的同名空壳。装出来的副本供跑整套用：gradle run 直接读各模块的
-// build/classes，跑的半小时里别处重新编译界面，进程就在下一次加载类时 NoClassDefFoundError
+// CMP 1.13+ 引入了多个与 androidx.* 同名的 org.jetbrains.androidx.* 转发壳（lifecycle、navigationevent、
+// savedstate 等），平铺到 lib/ 时若仅按 basename 复制并用 EXCLUDE 去重，空转发壳会吞掉真正的 androidx jar。
+// 按父目录路径哈希为 lib/ 下的 jar 附加唯一后缀，确保所有同名不同组的依赖全部保留，renderAll 按同一规则拼类路径。
+fun distJarName(file: java.io.File): String {
+    val tag = (file.absoluteFile.parent ?: "").hashCode().toUInt().toString(16)
+    val ext = file.extension
+    return if (ext.isEmpty()) "${file.name}-$tag" else "${file.nameWithoutExtension}-$tag.$ext"
+}
+
 tasks.named<Sync>("installDist") {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    eachFile {
+        if (relativePath.segments.firstOrNull() == "lib") {
+            name = distJarName(file)
+        }
+    }
 }
 
 // 一条命令出整套：先 installDist，再用装出来的 jar 跑 all，--jobs 拉起的子进程沿用同一份类路径。
@@ -76,7 +92,7 @@ tasks.register<JavaExec>("renderAll") {
     val runtime = configurations.runtimeClasspath
     classpath = files(install.map { dist ->
         val lib = dist.destinationDir.resolve("lib")
-        (listOf(jar.get().archiveFile.get().asFile) + runtime.get().files).map { lib.resolve(it.name) }.distinct()
+        (listOf(jar.get().archiveFile.get().asFile) + runtime.get().files).map { lib.resolve(distJarName(it)) }.distinct()
     })
     mainClass = "dev.piko.shots.MainKt"
     // Gradle 按 UTF-8 读进程输出，不设的话中文按控制台的代码页写出来，转发后成了乱码

@@ -2,8 +2,10 @@ package dev.piko.ui.screens.drive
 
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -76,7 +78,9 @@ import dev.piko.ui.theme.FrameCardShape
 import dev.piko.ui.theme.IslandCorner
 import dev.piko.ui.theme.IslandGap
 import dev.piko.ui.theme.IslandInnerCorner
+import dev.piko.ui.theme.islandBorderColor
 import dev.piko.ui.theme.islandHeader
+import dev.piko.ui.theme.islandSurface
 import io.github.nihildigit.pikpak.FileStat
 
 // 列表页眉那一行（排序与视图切换）的高度，骨架据此空出位置。与 DriveListHeader 的最小行高一致
@@ -160,6 +164,7 @@ internal fun DriveWorkspaceArea(
     onLocateFromProperties: (FileStat) -> Unit,
     onOpenSourceLink: (String) -> Unit,
     contentFrame: @Composable (content: @Composable () -> Unit) -> Unit,
+    selectionToolbar: (@Composable BoxScope.() -> Unit)? = null,
     content: @Composable (listAreaWidth: Dp?) -> Unit,
 ) {
     val density = LocalDensity.current
@@ -199,6 +204,9 @@ internal fun DriveWorkspaceArea(
                         avoid = { propertyDetails.panel.bounds },
                         onActivate = { propertiesOnTop = false },
                     )
+                }
+                selectionToolbar?.let { toolbar ->
+                    Box(Modifier.fillMaxSize().zIndex(1.5f)) { toolbar() }
                 }
                 DetailHost(
                     state = propertyDetails,
@@ -286,6 +294,14 @@ internal fun DriveContentBody(
         }
     }
 
+    val colors = MaterialTheme.colorScheme
+    val islandShape = RoundedCornerShape(
+        topStart = IslandInnerCorner,
+        topEnd = IslandInnerCorner,
+        bottomStart = if (addLinkSideOpen) IslandInnerCorner else IslandCorner,
+        bottomEnd = if (addLinkSideOpen) IslandInnerCorner else IslandCorner,
+    )
+    val islandBorder = colors.islandBorderColor
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -298,20 +314,14 @@ internal fun DriveContentBody(
                                 bottomEnd = if (addLinkSideOpen) 0.dp else IslandCorner,
                             ),
                         )
-                        .background(MaterialTheme.colorScheme.islandHeader)
+                        .background(colors.islandHeader)
                         .padding(
                             start = if (addLinkSideOpen) 8.dp else 0.dp,
                             bottom = if (addLinkSideOpen) 8.dp else 0.dp,
                         )
-                        .clip(
-                            RoundedCornerShape(
-                                topStart = IslandInnerCorner,
-                                topEnd = IslandInnerCorner,
-                                bottomStart = if (addLinkSideOpen) IslandInnerCorner else IslandCorner,
-                                bottomEnd = if (addLinkSideOpen) IslandInnerCorner else IslandCorner,
-                            ),
-                        )
-                        .background(MaterialTheme.colorScheme.surface)
+                        .clip(islandShape)
+                        .background(colors.islandSurface)
+                        .then(if (islandBorder != null) Modifier.border(1.dp, islandBorder, islandShape) else Modifier)
                 } else {
                     Modifier
                 },

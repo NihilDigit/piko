@@ -7,7 +7,11 @@ import dev.piko.shared.i18n.tr
 
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,6 +23,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
@@ -26,17 +31,20 @@ import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.Role
@@ -51,11 +59,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.isImportPreview
+import dev.piko.shared.i18n.PikoLocale
 import dev.piko.ui.adaptive.isDesktopLayout
+import dev.piko.ui.screens.drive.LocalDriveAppearancePrefs
+import dev.piko.ui.theme.LocalPikoMotion
 import io.github.nihildigit.pikpak.FileStat
 
 /** M3 列表的前导图像尺寸（ItemLeadingImage 56x56dp）。 */
 val ListLeadingSize = 56.dp
+
+/** 紧凑列表密度下的前导图像尺寸。 */
+private val CompactListLeadingSize = 44.dp
 
 /** 前导图标尺寸（ItemLeadingIconSize）。 */
 val ListLeadingIconSize = 24.dp
@@ -63,6 +77,7 @@ val ListLeadingIconSize = 24.dp
 // 前导 56dp 加上下各 8dp 即 72dp，正是 M3 两行列表项的高度。原先按扫读密度降到 64dp，
 // 前提是 48dp 的前导；前导改用规范的 56dp 后，64dp 放不下它加上下内边距。
 private val RowMinHeight = 72.dp
+private val CompactRowMinHeight = 56.dp
 
 // 外侧留 4dp，让按压与选中时变圆的容器不贴屏幕边缘；内侧起始 12dp，
 // 两者相加使内容仍落在紧凑窗口 16dp 的页边距上。末端为 0，让尾部 48dp 图标按钮
@@ -72,6 +87,7 @@ private val RowOuterPadding = 4.dp
 /** 上下两行之间的缝，M3 容器化列表的分段间隙（lists.md 的 Gaps & dividers）。 */
 private val RowGap = 4.dp
 private val RowContentPadding = PaddingValues(start = 12.dp, end = 0.dp, top = 8.dp, bottom = 8.dp)
+private val CompactRowContentPadding = PaddingValues(start = 12.dp, end = 0.dp, top = 4.dp, bottom = 4.dp)
 
 /** 禁用态内容的不透明度，用于弱化显示的行。 */
 private const val DIMMED_ALPHA = 0.38f
@@ -94,6 +110,7 @@ private const val DIMMED_ALPHA = 0.38f
  * 鼠标副键菜单由外面的 ContextMenuArea 提供。[dimmed] 把行内各槽位降到
  * 禁用态的不透明度，行本身仍可点击。
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun FileListItem(
     headline: String,
@@ -114,45 +131,50 @@ fun FileListItem(
     isHighlighted: Boolean = false,
     isImportPreview: Boolean = false,
     dimmed: Boolean = false,
+    compactDensity: Boolean = false,
 ) {
     val longClick = fileItemLongPress(onLongClick)
     val hover = fileItemHover()
-    val colors = if (isSelectionMode && isSelected) {
-        ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-    } else if (isHighlighted) {
-        ListItemDefaults.colors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-        )
-    } else if (isImportPreview) {
-        ListItemDefaults.colors(
-            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.28f),
-        )
-    } else {
-        ListItemDefaults.colors()
+    val colorScheme = MaterialTheme.colorScheme
+    val reducedMotion = LocalPikoMotion.current.reduced
+    val leadingSize = if (compactDensity) CompactListLeadingSize else ListLeadingSize
+    val rowMinHeight = if (compactDensity) CompactRowMinHeight else RowMinHeight
+    val rowContentPadding = if (compactDensity) CompactRowContentPadding else RowContentPadding
+    val leadingGap = if (compactDensity) 12.dp else 16.dp
+    val targetContainerColor = when {
+        isSelectionMode && isSelected -> colorScheme.secondaryContainer
+        isHighlighted -> colorScheme.primaryContainer.copy(alpha = 0.45f)
+        isImportPreview -> colorScheme.secondaryContainer.copy(alpha = 0.28f)
+        hover.mouseHovered -> colorScheme.surfaceContainerLow
+        else -> Color.Transparent
     }
-    // 各状态同一个圆角，行与行之间留一道缝。库的默认是平时直角、选中换大圆角：相邻两行都选中时底色连成一片，
-    // 看不出是几项；选中与取消时形状还要变形，与连体按钮一样有算出负圆角的风险（见 connectedToggleShapes）
-    val rowShape = MaterialTheme.shapes.medium
-    val shapes = ListItemDefaults.shapes(
-        shape = rowShape,
-        selectedShape = rowShape,
-        pressedShape = rowShape,
-        focusedShape = rowShape,
-        hoveredShape = rowShape,
-        draggedShape = rowShape,
+    val containerColor by animateColorAsState(
+        targetValue = targetContainerColor,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "file_row_bg",
     )
+    val contentColor = if (isSelectionMode && isSelected) colorScheme.onSecondaryContainer else colorScheme.onSurface
+    val supportingColor = if (isSelectionMode && isSelected) colorScheme.onSecondaryContainer else colorScheme.onSurfaceVariant
+    // 直接基于 Surface + Row + combinedClickable 排版，规避 M3 1.5.0-rc01 InteractiveListItemMeasurePolicy
+    // 无条件查询 supportingContent[FirstBaseline] 在 LookaheadScope 下的潜在 NPE；
+    // 选中态圆角在 12dp 与 16dp 之间正向平滑变形（coerced >= 0dp，绝不产生负圆角）。
+    val cornerRadius by animateDpAsState(
+        targetValue = if (isSelectionMode && isSelected && !reducedMotion) 16.dp else 12.dp,
+        animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
+        label = "file_row_corner",
+    )
+    val rowShape = RoundedCornerShape(cornerRadius.coerceAtLeast(0.dp))
     val itemModifier = modifier
         .then(hover.modifier)
         .fillMaxWidth()
         .padding(horizontal = RowOuterPadding, vertical = RowGap / 2)
-        .heightIn(min = RowMinHeight)
         .focusIndication(rowShape, showPointerFocus = !isSelectionMode)
         .locateHighlight(isHighlighted, rowShape)
     // 弱化加在各槽位上而不是整行：整行降透明度会连按压的状态层一起变淡
     val slotModifier = if (dimmed) Modifier.alpha(DIMMED_ALPHA) else Modifier
 
     val leadingSlot: @Composable () -> Unit = {
-        Box(slotModifier.size(ListLeadingSize), contentAlignment = Alignment.Center) {
+        Box(slotModifier.size(leadingSize), contentAlignment = Alignment.Center) {
             if (isSelectionMode || (hover.mouseHovered && onStartSelection != null)) {
                 FileItemSelectionControl(FileItemSelection(
                     if (isSelected) androidx.compose.ui.state.ToggleableState.On else androidx.compose.ui.state.ToggleableState.Off,
@@ -179,25 +201,56 @@ fun FileListItem(
         }
     }
 
-    ListItem(
-        onClick = { if (isSelectionMode) onSelectToggle(!isSelected) else onClick() },
-        modifier = itemModifier.semantics {
-            if (isSelectionMode) {
-                role = Role.Checkbox
-                toggleableState = if (isSelected) ToggleableState.On else ToggleableState.Off
+    @OptIn(ExperimentalFoundationApi::class)
+    Surface(
+        modifier = itemModifier,
+        shape = rowShape,
+        color = containerColor,
+        contentColor = contentColor,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics {
+                    if (isSelectionMode) {
+                        role = Role.Checkbox
+                        toggleableState = if (isSelected) ToggleableState.On else ToggleableState.Off
+                    }
+                }
+                .combinedClickable(
+                    onClick = { if (isSelectionMode) onSelectToggle(!isSelected) else onClick() },
+                    onLongClick = longClick,
+                    onLongClickLabel = if (longClick != null) tr("操作", "Actions", "操作", "작업", "操作") else null,
+                )
+                .heightIn(min = rowMinHeight)
+                .padding(rowContentPadding),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            leadingSlot()
+            Spacer(Modifier.width(leadingGap))
+            Column(modifier = Modifier.weight(1f)) {
+                val headlineStyle = if (headlineFontWeight == FontWeight.Medium) {
+                    MaterialTheme.typography.bodyLargeEmphasized
+                } else {
+                    MaterialTheme.typography.bodyLarge
+                }
+                ProvideTextStyle(headlineStyle) {
+                    headlineSlot()
+                }
+                if (supportingSlot != null) {
+                    CompositionLocalProvider(LocalContentColor provides supportingColor) {
+                        ProvideTextStyle(MaterialTheme.typography.bodyMedium) {
+                            supportingSlot()
+                        }
+                    }
+                }
             }
-        },
-        verticalAlignment = Alignment.CenterVertically,
-        leadingContent = leadingSlot,
-        trailingContent = { if (isSelectionMode) Spacer(Modifier.width(48.dp)) else Box(slotModifier) { trailing() } },
-        supportingContent = supportingSlot,
-        onLongClick = longClick,
-        onLongClickLabel = if (longClick != null) tr("操作", "Actions", "操作", "작업", "操作") else null,
-        colors = colors,
-        shapes = shapes,
-        contentPadding = RowContentPadding,
-        content = headlineSlot,
-    )
+            Spacer(Modifier.width(12.dp))
+            CompositionLocalProvider(LocalContentColor provides supportingColor) {
+                if (isSelectionMode) Spacer(Modifier.width(48.dp)) else Box(slotModifier) { trailing() }
+            }
+        }
+    }
 }
 
 /**
@@ -218,6 +271,7 @@ fun ListMoreButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
  * 给出 [title] 时是解析后的短标题（「01」、罗马音作品名），只占一行，[tags] 整行排在其下，
  * 放不下的从尾部丢弃；文件在标签下仍有类型与大小，文件夹的类型已由图标表明，不再写。
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun FileListItem(
     file: FileStat,
@@ -243,34 +297,83 @@ fun FileListItem(
     code: String? = null,
     /** 文件夹里直接放着归档条目，见 [itemMarks]。 */
     folderHasVault: Boolean = false,
+    /** 列过、确实是空的文件夹，拟物模式下不画纸。 */
+    isEmptyFolder: Boolean = false,
+    /** 文件夹递归条目数、总时长与总大小，供列表详情行按 [LocalDriveAppearancePrefs] 显示。 */
+    folderItemCount: Int? = null,
+    folderDurationMillis: Long? = null,
+    folderSizeBytes: Long? = null,
 ) {
-    val item = file.filePresentation(title, original, tags, code, folderHasVault = folderHasVault)
-    val listMarks = item.marks - FileItemMark.LocalMount
+    val listPrefs = LocalDriveAppearancePrefs.current.list
+    val leadingSize = if (listPrefs.compactDensity) CompactListLeadingSize else ListLeadingSize
+    val shownTags = if (listPrefs.showParsedTags) tags else emptyList()
+    val shownCode = if (listPrefs.showParsedTags) code else null
+    val item = file.filePresentation(
+        title = title,
+        original = original,
+        tags = shownTags,
+        code = shownCode,
+        folderHasVault = folderHasVault,
+        emptyFolder = isEmptyFolder,
+    )
+    val detailParts = remember(
+        file, listPrefs.detailFields, listPrefs.showParsedTags, tags,
+        folderItemCount, folderDurationMillis, folderSizeBytes, folderHasVault, PikoLocale.effectiveLanguage,
+    ) {
+        file.detailLineParts(
+            fields = listPrefs.detailFields,
+            tags = tags,
+            folderItemCount = folderItemCount,
+            folderDurationMillis = folderDurationMillis,
+            folderSizeBytes = folderSizeBytes,
+            folderHasVault = folderHasVault,
+            includeParsedTags = !listPrefs.showParsedTags,
+        )
+    }
+    val displayItem = remember(item, detailParts) { item.copy(metadata = detailParts) }
+    val listMarks = displayItem.marks - FileItemMark.LocalMount
+    val hasSupporting = (listPrefs.showSecondaryName && displayItem.name.original != null) ||
+        displayItem.tags.isNotEmpty() || displayItem.code != null ||
+        detailParts.isNotEmpty() || displayItem.status != null ||
+        !locationLabel.isNullOrEmpty()
     FileListItem(
-        headline = item.name.title,
-        headlineMaxLines = if (title != null) 1 else 2,
+        headline = displayItem.name.title,
+        headlineMaxLines = if (title != null || listPrefs.compactDensity) 1 else 2,
         headlineFontWeight = if (file.isFolder) FontWeight.Medium else null,
-        leading = { FileArtwork(item.visual, FileArtworkFormat.Leading, isSpoilerBlurred) },
+        leading = {
+            FileListLeadingVisual(
+                file = displayItem.visual,
+                size = leadingSize,
+                isSpoilerBlurred = isSpoilerBlurred,
+                folderStyle = listPrefs.folderStyle,
+            )
+        },
         onClick = onClick,
         onMoreClick = onMoreClick,
         trailing = { if (moreButton) ListMoreButton(onClick = onMoreClick, modifier = Modifier.ownsClicks()) },
         modifier = modifier,
         badge = if (listMarks.isEmpty()) null else ({ FileItemMarks(listMarks) }),
-        supporting = {
-            Column {
-                FileItemInformation(item, showMetadata = tags.isEmpty() || !file.isFolder)
-                if (!locationLabel.isNullOrEmpty()) {
-                    // 路径从头截断：离命中项最近的几级目录最有辨识度
-                    Text(
-                        text = locationLabel,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
-                        overflow = TextOverflow.StartEllipsis,
+        supporting = if (hasSupporting) {
+            {
+                Column {
+                    FileItemInformation(
+                        item = displayItem,
+                        showMetadata = detailParts.isNotEmpty(),
+                        showOriginal = listPrefs.showSecondaryName,
                     )
+                    if (!locationLabel.isNullOrEmpty()) {
+                        // 路径从头截断：离命中项最近的几级目录最有辨识度
+                        Text(
+                            text = locationLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.StartEllipsis,
+                        )
+                    }
                 }
             }
-        },
+        } else null,
         onLongClick = onLongClick,
         onStartSelection = onStartSelection,
         isSelectionMode = isSelectionMode,
@@ -278,6 +381,7 @@ fun FileListItem(
         onSelectToggle = onSelectToggle,
         isHighlighted = isHighlighted,
         isImportPreview = file.isImportPreview,
+        compactDensity = listPrefs.compactDensity,
     )
 }
 
@@ -296,11 +400,13 @@ fun ListLeadingMedia(
     isSpoilerBlurred: Boolean = false,
     showPlayOverlay: Boolean = false,
     size: Dp = ListLeadingSize,
+    stableId: String? = null,
+    shape: Shape = MaterialTheme.shapes.small,
 ) {
     Box(
         modifier = modifier
             .size(size)
-            .clip(MaterialTheme.shapes.small),
+            .clip(shape),
         contentAlignment = Alignment.Center,
     ) {
         // 本地文件与 SAF 地址也走 SpoilerThumbnail：传输列表的缩略图可能来自已下载的文件，
@@ -316,6 +422,7 @@ fun ListLeadingMedia(
                 blur = ListSpoilerBlur,
                 modifier = Modifier.fillMaxSize(),
                 onError = { coverFailed = true },
+                stableId = stableId,
             )
         }
         // 遮蔽时 SpoilerThumbnail 已画了遮蔽图标，再叠播放键就是两个图标摞在一起
@@ -331,7 +438,7 @@ fun ListLeadingMedia(
                     imageVector = Icons.Filled.PlayArrow,
                     contentDescription = null,
                     tint = fixed.OnMedia,
-                    modifier = Modifier.size(ListLeadingIconSize),
+                    modifier = Modifier.size(leadingIconSizeFor(size)),
                 )
             }
         }

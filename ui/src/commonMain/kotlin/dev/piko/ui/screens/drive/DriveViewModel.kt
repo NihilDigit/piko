@@ -33,6 +33,7 @@ import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.state.ArchiveExtractSession
 import dev.piko.shared.state.DriveScreenState
 import dev.piko.shared.state.DuplicateSession
+import dev.piko.shared.state.FolderStructureMode
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.shared.state.GallerySession
 import dev.piko.shared.state.InstantSession
@@ -50,12 +51,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 
 /** 网盘页互斥的用户触发模态对话框状态（Screen UI State）。 */
 @Stable
@@ -90,6 +89,11 @@ internal sealed interface DriveDialog {
     data class CloseGalleryConfirm(val nextViewMode: DriveViewMode?) : DriveDialog
 
     data class ImagePreview(val initialFile: FileStat) : DriveDialog
+
+    data class FolderStructure(
+        val folders: List<FileStat>,
+        val initialMode: FolderStructureMode,
+    ) : DriveDialog
 }
 
 /** 网盘页底部/侧边操作面板状态（Screen UI State）。 */
@@ -163,18 +167,20 @@ internal class DriveViewModel(
     )
     val effects: SharedFlow<DriveUiEffect> = _effects.asSharedFlow()
 
+    private val initialPrefs = preferences.currentSnapshot
+
     val isSpoilerBlurEnabled: StateFlow<Boolean> = preferences.spoilerBlurFlow
-        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, initialPrefs.spoilerBlurEnabled)
 
     val galleryShowImages: StateFlow<Boolean> = preferences.galleryShowImagesFlow
-        .stateIn(viewModelScope, SharingStarted.Eagerly, runBlocking { preferences.galleryShowImagesFlow.first() })
+        .stateIn(viewModelScope, SharingStarted.Eagerly, initialPrefs.galleryShowImages)
 
     val viewMode: StateFlow<DriveViewMode> = preferences.driveViewModeFlow
         .map(DriveViewMode::of)
         .stateIn(
             viewModelScope,
             SharingStarted.Eagerly,
-            DriveViewMode.of(runBlocking { preferences.driveViewModeFlow.first() }),
+            DriveViewMode.of(initialPrefs.driveViewMode),
         )
 
     private val galleryTileSize: StateFlow<TileSize> = preferences.driveTileSizeFlow(GALLERY_TILE_PREF_KEY)
@@ -182,7 +188,7 @@ internal class DriveViewModel(
         .stateIn(
             viewModelScope,
             SharingStarted.Eagerly,
-            TileSize.of(runBlocking { preferences.driveTileSizeFlow(GALLERY_TILE_PREF_KEY).first() }),
+            TileSize.of(preferences.currentTileSize(GALLERY_TILE_PREF_KEY)),
         )
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -191,7 +197,7 @@ internal class DriveViewModel(
         .stateIn(
             viewModelScope,
             SharingStarted.Eagerly,
-            TileSize.of(runBlocking { preferences.driveTileSizeFlow(viewMode.value.name).first() }),
+            TileSize.of(preferences.currentTileSize(viewMode.value.name)),
         )
 
     fun tileSizeFlow(galleryActive: Boolean): StateFlow<TileSize> =
@@ -340,6 +346,30 @@ internal class DriveViewModel(
         activeDialog = DriveDialog.ImagePreview(file)
     }
 
+    fun folderStructureBlockReason(activeFolderId: String, folders: List<FileStat>): String? {
+        (state.fileActions.receivingAvailability(activeFolderId) as? ActionAvailability.Blocked)?.let { return it.reason }
+        for (folder in folders) {
+            (state.fileActions.receivingAvailability(folder.id) as? ActionAvailability.Blocked)?.let { return it.reason }
+        }
+        return null
+    }
+
+    fun requestFolderStructure(activeFolderId: String, folders: List<FileStat>, initialMode: FolderStructureMode) {
+        if (folders.isEmpty()) return
+        val blocked = folderStructureBlockReason(activeFolderId, folders)
+        if (blocked != null) {
+            _effects.tryEmit(DriveUiEffect.ShowSnackbar(blocked))
+            return
+        }
+        activeDialog = DriveDialog.FolderStructure(folders, initialMode)
+    }
+
+    fun onFolderStructureFinished(message: String) {
+        activeDialog = null
+        if (state.isSelectionMode) state.exitSelection()
+        if (message.isNotBlank()) _effects.tryEmit(DriveUiEffect.ShowSnackbar(message))
+    }
+
     fun openSingleItemActions(file: FileStat, displayedFiles: List<FileStat>) {
         if (state.isSelectionMode && file.id in state.selectedFileIds) {
             openSelectionActions(displayedFiles)
@@ -369,7 +399,11 @@ internal class DriveViewModel(
 
     fun selectViewMode(mode: DriveViewMode, galleryActive: Boolean) {
         if (galleryActive) {
-            activeDialog = DriveDialog.CloseGalleryConfirm(mode)
+            if (skipFeedExitConfirm) {
+                confirmCloseGallery(mode)
+            } else {
+                activeDialog = DriveDialog.CloseGalleryConfirm(mode)
+            }
         } else {
             viewModelScope.launch { preferences.setDriveViewMode(mode.name) }
         }
@@ -377,10 +411,22 @@ internal class DriveViewModel(
 
     fun requestCloseGallery(galleryActive: Boolean, targetMode: DriveViewMode? = null) {
         if (galleryActive) {
-            activeDialog = DriveDialog.CloseGalleryConfirm(targetMode)
+            if (skipFeedExitConfirm) {
+                confirmCloseGallery(targetMode)
+            } else {
+                activeDialog = DriveDialog.CloseGalleryConfirm(targetMode)
+            }
         } else {
             gallery.close()
             if (targetMode != null) viewModelScope.launch { preferences.setDriveViewMode(targetMode.name) }
+        }
+    }
+
+    private var skipFeedExitConfirm: Boolean = preferences.currentSnapshot.skipFeedExitConfirm
+
+    init {
+        viewModelScope.launch {
+            preferences.skipFeedExitConfirmFlow.collect { skipFeedExitConfirm = it }
         }
     }
 

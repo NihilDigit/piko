@@ -8,8 +8,10 @@ import dev.piko.ui.i18n.stringResource
 
 import dev.piko.shared.i18n.tr
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -20,21 +22,31 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.FileCopy
-import androidx.compose.material.icons.outlined.TaskAlt
-import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.FileCopy
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.TaskAlt
+import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedToggleButton
+import androidx.compose.material3.OutlinedToggleButtonDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.ButtonGroupDefaults
-import androidx.compose.material3.TonalToggleButton
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -43,6 +55,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.ScanStop
 import dev.piko.shared.state.DuplicateFinderState
@@ -54,25 +67,54 @@ import kotlin.concurrent.Volatile
 import dev.piko.shared.presentation.DuplicateReportViewModel
 import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.PinnedPriority
+import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.ActionGroup
+import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.components.connectedToggleShapes
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoErrorState
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.toReadableSize
+import dev.piko.ui.theme.LocalPikoMotion
+import dev.piko.ui.theme.LocalWindowVisible
+import dev.piko.ui.theme.tabular
+
+private class CachedDuplicateLocations(
+    val report: dev.piko.shared.state.DuplicateReport,
+    val rootName: String,
+    val map: Map<String, String>,
+)
+
+@Volatile
+private var lastDuplicateLocations: CachedDuplicateLocations? = null
 
 /**
  * 查重行的位置相对扫描起点；保留建议由组内排序后的行标签呈现，避免与当前策略冲突。
  */
 internal fun duplicateLocations(finder: DuplicateFinderState?): Map<String, String> {
     val report = finder?.report ?: return emptyMap()
-    return (report.identical + report.versions).flatMap { it.rows }.associate { row ->
-        val folder = row.file.folderPath
-        val location = if (folder.isEmpty()) finder.root.localizedName else "${finder.root.localizedName}/$folder"
-        row.file.id to location
+    if (report.identical.isEmpty() && report.versions.isEmpty()) return emptyMap()
+    val rootName = finder.root.localizedName
+    val cached = lastDuplicateLocations
+    if (cached != null && cached.report === report && cached.rootName == rootName) return cached.map
+    val estimatedSize = (report.identical.size + report.versions.size) * 3
+    val map = HashMap<String, String>(estimatedSize * 4 / 3 + 1)
+    fun fill(groups: List<DuplicateGroup>) {
+        for (i in 0 until groups.size) {
+            val rows = groups[i].rows
+            for (j in 0 until rows.size) {
+                val file = rows[j].file
+                val folder = file.folderPath
+                map[file.id] = if (folder.isEmpty()) rootName else "$rootName/$folder"
+            }
+        }
     }
+    fill(report.identical)
+    fill(report.versions)
+    lastDuplicateLocations = CachedDuplicateLocations(report, rootName, map)
+    return map
 }
 
 private class CachedDuplicateGroupStats(
@@ -110,6 +152,7 @@ internal fun duplicatesTab(finder: DuplicateFinderState): SessionTab {
     return SessionTab(tr("查重：$rootName", "Duplicates: $rootName", "重複検索：$rootName", "중복 검색: $rootName", "查重：$rootName"), tooltip, busy = finder.isScanning, icon = Icons.Outlined.FileCopy)
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 internal fun duplicateCommandBarLeading(
     finder: DuplicateFinderState,
     selectedKind: DuplicateKind,
@@ -131,16 +174,25 @@ internal fun duplicateCommandBarLeading(
     }
     return buildList {
         add(BarItem("dupKind", PinnedPriority) {
+            val colors = MaterialTheme.colorScheme
+            val toggleColors = OutlinedToggleButtonDefaults.colors(
+                containerColor = Color.Transparent,
+                contentColor = colors.onSurfaceVariant,
+                checkedContainerColor = colors.secondaryContainer,
+                checkedContentColor = colors.onSecondaryContainer,
+            )
             Row(
                 Modifier.selectableGroup(),
                 horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
             ) {
                 DuplicateKind.entries.forEachIndexed { index, kind ->
-                    TonalToggleButton(
+                    OutlinedToggleButton(
                         checked = selectedKind == kind,
                         onCheckedChange = { if (selectedKind != kind) onKindChange(kind) },
                         shapes = connectedToggleShapes(index, DuplicateKind.entries.size),
-                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        colors = toggleColors,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                        modifier = Modifier.height(36.dp),
                     ) {
                         Text(if (kind == DuplicateKind.IDENTICAL) tr("相同文件", "Identical files", "同一ファイル", "동일한 파일", "相同檔案") else tr("不同版本", "Different versions", "異なるバージョン", "다른 버전", "不同版本"), maxLines = 1)
                     }
@@ -165,13 +217,24 @@ internal fun duplicateCommandBarLeading(
                 var ruleMenu by remember { mutableStateOf(false) }
                 val keepRuleLabel = reportView.keepRule.label
                 Box {
-                    TextButton(onClick = { ruleMenu = true }) {
+                    TextButton(
+                        onClick = { ruleMenu = true },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        modifier = Modifier.height(36.dp),
+                    ) {
                         Text(tr("规则：$keepRuleLabel ▾", "Rule: $keepRuleLabel ▾", "ルール：$keepRuleLabel ▾", "규칙: $keepRuleLabel ▾", "規則：$keepRuleLabel ▾"), maxLines = 1)
                     }
-                    DropdownMenu(expanded = ruleMenu, onDismissRequest = { ruleMenu = false }) {
-                        DuplicateKeepRule.entries.forEach { rule ->
+                    PikoDropdownMenu(expanded = ruleMenu, onDismissRequest = { ruleMenu = false }) {
+                        val rules = DuplicateKeepRule.entries
+                        rules.forEachIndexed { index, rule ->
+                            val current = reportView.keepRule == rule
                             DropdownMenuItem(
-                                text = { Text(rule.label) },
+                                text = { Text(rule.label, color = if (current) MaterialTheme.colorScheme.primary else Color.Unspecified) },
+                                trailingContent = if (current) ({
+                                    Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                }) else null,
+                                shape = menuItemShape(index, rules.size),
                                 onClick = { reportView.selectKeepRule(rule); ruleMenu = false },
                             )
                         }
@@ -183,7 +246,12 @@ internal fun duplicateCommandBarLeading(
                 priority = 65,
                 overflow = listOf(SheetAction(Icons.Outlined.FileCopy, tr("反选", "Invert selection", "選択を反転", "선택 반전", "反向選取"), { onSelectIds(reportView.invertSelectionIds(finder, selectedIds)) }, group = ActionGroup.Select)),
             ) {
-                TextButton(onClick = { onSelectIds(reportView.invertSelectionIds(finder, selectedIds)) }) {
+                TextButton(
+                    onClick = { onSelectIds(reportView.invertSelectionIds(finder, selectedIds)) },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                    modifier = Modifier.height(36.dp),
+                ) {
                     Text(stringResource(Res.string.text_invert_selection), maxLines = 1)
                 }
             })
@@ -191,7 +259,7 @@ internal fun duplicateCommandBarLeading(
         add(BarItem("dupSummary", 25) {
             Text(
                 summary,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelMedium.tabular,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 modifier = Modifier.padding(horizontal = 8.dp),
@@ -200,6 +268,7 @@ internal fun duplicateCommandBarLeading(
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun DuplicatesBanner(
     finder: DuplicateFinderState,
@@ -232,16 +301,25 @@ internal fun DuplicatesBanner(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                val bannerColors = MaterialTheme.colorScheme
+                val bannerToggleColors = OutlinedToggleButtonDefaults.colors(
+                    containerColor = Color.Transparent,
+                    contentColor = bannerColors.onSurfaceVariant,
+                    checkedContainerColor = bannerColors.secondaryContainer,
+                    checkedContentColor = bannerColors.onSecondaryContainer,
+                )
                 Row(
                     Modifier.selectableGroup(),
                     horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
                 ) {
                     DuplicateKind.entries.forEachIndexed { index, kind ->
-                        TonalToggleButton(
+                        OutlinedToggleButton(
                             checked = selectedKind == kind,
                             onCheckedChange = { if (selectedKind != kind) onKindChange(kind) },
                             shapes = connectedToggleShapes(index, DuplicateKind.entries.size),
-                            contentPadding = PaddingValues(horizontal = 12.dp),
+                            colors = bannerToggleColors,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                            modifier = Modifier.height(36.dp),
                         ) {
                             Text(if (kind == DuplicateKind.IDENTICAL) tr("相同文件", "Identical files", "同一ファイル", "동일한 파일", "相同檔案") else tr("不同版本", "Different versions", "異なるバージョン", "다른 버전", "不同版本"), maxLines = 1)
                         }
@@ -256,10 +334,16 @@ internal fun DuplicatesBanner(
                         ) {
                             Text(tr("规则：$keepRuleLabel ▾", "Rule: $keepRuleLabel ▾", "ルール：$keepRuleLabel ▾", "규칙: $keepRuleLabel ▾", "規則：$keepRuleLabel ▾"), maxLines = 1)
                         }
-                        DropdownMenu(expanded = ruleMenu, onDismissRequest = { ruleMenu = false }) {
-                            DuplicateKeepRule.entries.forEach { rule ->
+                        PikoDropdownMenu(expanded = ruleMenu, onDismissRequest = { ruleMenu = false }) {
+                            val rules = DuplicateKeepRule.entries
+                            rules.forEachIndexed { index, rule ->
+                                val current = reportView.keepRule == rule
                                 DropdownMenuItem(
-                                    text = { Text(rule.label) },
+                                    text = { Text(rule.label, color = if (current) MaterialTheme.colorScheme.primary else Color.Unspecified) },
+                                    trailingContent = if (current) ({
+                                        Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                    }) else null,
+                                    shape = menuItemShape(index, rules.size),
                                     onClick = { reportView.selectKeepRule(rule); ruleMenu = false },
                                 )
                             }
@@ -277,7 +361,7 @@ internal fun DuplicatesBanner(
                 val stats = remember(groups, identical) { summaryStatsOf(groups, identical) }
                 val groupCount = groups.size
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.End) {
-                    Text(tr("$groupCount 组", enCount(groupCount, "group", "groups"), "$groupCount 組", "${groupCount}개 그룹", "$groupCount 組"), style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                    Text(tr("$groupCount 组", enCount(groupCount, "group", "groups"), "$groupCount 組", "${groupCount}개 그룹", "$groupCount 組"), style = MaterialTheme.typography.titleSmall.tabular, maxLines = 1)
                     Text(
                         if (identical) {
                             val reclaimableText = stats.reclaimableText
@@ -286,28 +370,47 @@ internal fun DuplicatesBanner(
                             val versionCount = stats.versionCount
                             tr("$versionCount 个版本", "$versionCount versions", "$versionCount バージョン", "${versionCount}개 버전", "$versionCount 個版本")
                         },
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.labelSmall.tabular,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                     )
                 }
                 Box {
                     TooltipIconButton(Icons.Outlined.MoreVert, tr("查重选项", "Duplicate search options", "重複検索のオプション", "중복 검색 옵션", "查重選項"), { menuOpen = true })
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(text = { Text(stringResource(Res.string.text_scan_again)) }, onClick = { menuOpen = false; finder.rescan() })
-                        DropdownMenuItem(text = { Text(stringResource(Res.string.text_end_duplicate_search)) }, onClick = { menuOpen = false; onEnd() })
+                    PikoDropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(text = { Text(stringResource(Res.string.text_scan_again)) }, shape = menuItemShape(0, 2), onClick = { menuOpen = false; finder.rescan() })
+                        DropdownMenuItem(text = { Text(stringResource(Res.string.text_end_duplicate_search)) }, shape = menuItemShape(1, 2), onClick = { menuOpen = false; onEnd() })
                     }
                 }
             }
         }
         if (hasWarning) {
             val failedFolders = finder.failedFolders
-            Text(
-                listOfNotNull(warning, if (failedFolders > 0) tr("$failedFolders 个文件夹读取失败", "${enCount(failedFolders, "folder", "folders")} failed to load", "$failedFolders フォルダーの読み込みに失敗", "폴더 ${failedFolders}개 불러오기 실패", "$failedFolders 個資料夾讀取失敗") else null).joinToString("，"),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = if (controlsInCommandBar) 0.dp else 4.dp),
-            )
+            val warningText = listOfNotNull(
+                warning,
+                if (failedFolders > 0) tr("$failedFolders 个文件夹读取失败", "${enCount(failedFolders, "folder", "folders")} failed to load", "$failedFolders フォルダーの読み込みに失敗", "폴더 ${failedFolders}개 불러오기 실패", "$failedFolders 個資料夾讀取失敗") else null,
+            ).joinToString("，")
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = if (controlsInCommandBar) 4.dp else 8.dp, end = 8.dp),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(Icons.Outlined.WarningAmber, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text(
+                        text = warningText,
+                        style = MaterialTheme.typography.bodySmall.tabular,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
         }
     }
 }
@@ -316,6 +419,7 @@ internal fun DuplicatesBanner(
  * 没有可列的组时整页的样子：还在扫、扫失败、扫完没有重复，或这一次已经结束（重启后停在这里、或别处结束了它）。
  * 结束了的拿不回结果：结果只是扫描那一刻的快照，不存盘。
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun DuplicatesEmptyState(finder: DuplicateFinderState?, onLeave: () -> Unit, canLeave: Boolean, modifier: Modifier = Modifier, cleaning: Boolean = false, selectedKind: DuplicateKind = DuplicateKind.IDENTICAL) {
     Column(
@@ -333,21 +437,46 @@ internal fun DuplicatesEmptyState(finder: DuplicateFinderState?, onLeave: () -> 
                 TextButton(onClick = onLeave) { Text(stringResource(Res.string.text_back_to_drive)) }
             }
             Phase.SCANNING, Phase.ANALYZING -> {
-                // 要等几分钟、总量事先不知道：不确定的线性进度条，与窄窗口 sheet 里的同一种（progress-indicators.md）
-                LinearProgressIndicator(Modifier.widthIn(max = 240.dp).fillMaxWidth())
+                // 要等几分钟、总量事先不知道：不确定的线性进度条，减少动画或窗口不可见时降级为静态轨道以停止无限帧循环
+                val staticMode = LocalPikoMotion.current.reduced || !LocalWindowVisible.current
+                val colors = MaterialTheme.colorScheme
+                if (staticMode) {
+                    Box(
+                        modifier = Modifier
+                            .widthIn(max = 240.dp)
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(CircleShape)
+                            .background(colors.surfaceContainerHighest),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(0.45f)
+                                .height(6.dp)
+                                .clip(CircleShape)
+                                .background(colors.primary.copy(alpha = 0.55f)),
+                        )
+                    }
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier.widthIn(max = 240.dp).fillMaxWidth().height(6.dp),
+                        strokeCap = StrokeCap.Round,
+                        trackColor = colors.surfaceContainerHighest,
+                    )
+                }
                 Spacer(Modifier.height(16.dp))
                 val rootName = finder.root.localizedName
                 val scannedFolders = finder.scannedFolders
                 val scannedFiles = finder.scannedFiles
                 Text(
                     text = if (finder.phase == Phase.ANALYZING) tr("正在比对", "Comparing", "照合中", "비교 중", "正在比對") else tr("正在扫描「$rootName」", "Scanning “$rootName”", "「$rootName」を検索中", "“$rootName” 검색 중", "正在掃描「$rootName」"),
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleMediumEmphasized,
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
                     // 窄窗口里离开即结束查找，见 TaskSlot
                     text = tr("已扫描 $scannedFolders 个文件夹、$scannedFiles 个文件", "Scanned ${enCount(scannedFolders, "folder", "folders")} and ${enCount(scannedFiles, "file", "files")}", "$scannedFolders フォルダー、$scannedFiles ファイルを検索済み", "폴더 ${scannedFolders}개, 파일 ${scannedFiles}개 검색 완료", "已掃描 $scannedFolders 個資料夾、$scannedFiles 個檔案") + if (canLeave) tr("，离开此页后继续", "; continues after leaving this page", "。この画面を離れても続行します", ". 이 페이지를 나가도 계속합니다", "，離開此頁後繼續") else "",
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodyMedium.tabular,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (finder.phase == Phase.SCANNING) {

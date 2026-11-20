@@ -11,6 +11,8 @@ import androidx.compose.runtime.setValue
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.VaultEntry
+import dev.piko.shared.data.VaultStore
 import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
@@ -501,6 +503,7 @@ class BatchRenameState(
     fun loadSiblings() {
         siblingsFailed = false
         val selectedIds = sources.map { it.id }.toSet()
+        val selectedVaultEntryIds = sources.mapNotNullTo(HashSet()) { VaultEntry.entryIdOf(it.id) }
         scope.launch {
             val names = tree?.siblingNames.orEmpty().toMutableMap()
             for (parentId in sources.map { it.parentId }.distinct().filter { it !in names }) {
@@ -511,7 +514,13 @@ class BatchRenameState(
                             siblingsFailed = true
                             return@launch
                         }
-                names[parentId] = listing.filter { it.id !in selectedIds }.map { it.name }.toSet()
+                val visibleReal = listing.filterNot { VaultStore.looksLikeManifest(it) || VaultStore.isRecoveryFile(it) }
+                val vaultedSiblings = if (listing.any(VaultStore::looksLikeManifest)) {
+                    val entries = driveRepo.driveTreeIndex.vaultEntries(parentId)
+                        ?: driveRepo.vault.read(parentId, listing).getOrDefault(emptyList())
+                    entries.filter { it.isArchived && it.id !in selectedVaultEntryIds }.map { it.name }
+                } else emptyList()
+                names[parentId] = visibleReal.filter { it.id !in selectedIds }.mapTo(HashSet()) { it.name } + vaultedSiblings
             }
             siblingNames = names
             // 片名还在查时等查完再做，规范名还会变
@@ -550,7 +559,7 @@ class BatchRenameState(
             try {
                 run.execute(plan)
             } finally {
-                val touched = plan.steps.mapTo(HashSet()) { it.source.parentId }
+                val touched = plan.steps.filterNot { VaultEntry.isVaulted(it.source.id) }.mapTo(HashSet()) { it.source.parentId }
                 if (touched.isNotEmpty()) {
                     if (wasStopped || run.failures.isNotEmpty() || run.unconfirmed.isNotEmpty()) {
                         driveRepo.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(touched))
@@ -562,16 +571,23 @@ class BatchRenameState(
                 PikoLog.i(
                     TAG,
                     "Batch rename finished: succeeded=$succeededCount/${plan.changeCount}, failed=${failures.size}, " +
-                        "unconfirmed=${run.unconfirmed.size}, steps=${run.renamed.size}, swaps=${run.swapsExecuted}, " +
-                        "rolledBack=${run.rolledBack}, stopped=$wasStopped, elapsedMs=${started.elapsedNow().inWholeMilliseconds}",
+                        "unconfirmed=${run.unconfirmed.size}, steps=${run.renamed.size}, vaultFolders=${run.vaultReverts.size}, " +
+                        "swaps=${run.swapsExecuted}, rolledBack=${run.rolledBack}, stopped=$wasStopped, elapsedMs=${started.elapsedNow().inWholeMilliseconds}",
                 )
                 phase = Phase.DONE
                 // 改成了的记进改动记录，提示带「撤销」；一项也没改成的只报结果
-                if (run.renamed.isNotEmpty()) {
-                    driveRepo.changes.record(DriveChangeJournal.Change.Rename(run.renamed.toList(), summary()))
-                    _messages.tryEmit("")
-                } else {
-                    _messages.tryEmit(summary())
+                when {
+                    run.renamed.isNotEmpty() -> {
+                        driveRepo.changes.record(
+                            DriveChangeJournal.Change.Rename(run.renamed.toList(), summary(), vaultReverts = run.vaultReverts.toMap()),
+                        )
+                        _messages.tryEmit("")
+                    }
+                    run.vaultReverts.isNotEmpty() -> {
+                        driveRepo.changes.record(DriveChangeJournal.Change.Vault(run.vaultReverts.toMap(), summary()))
+                        _messages.tryEmit("")
+                    }
+                    else -> _messages.tryEmit(summary())
                 }
             }
         }

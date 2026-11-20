@@ -14,7 +14,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import dev.piko.data.repository.isPlayableVideo
+import dev.piko.data.repository.isPlayableMedia
 import dev.piko.shared.state.isOutputDeleted
 import dev.piko.ui.components.ItemDetailsContent
 import dev.piko.ui.components.SheetAction
@@ -34,7 +34,7 @@ internal val DriveTask.canOpen: Boolean
     get() = phase == TaskPhase.COMPLETE && fileId.isNotEmpty()
 
 internal val DriveTask.canPlayVideo: Boolean
-    get() = canOpen && (fileName.isPlayableVideo() || name.isPlayableVideo())
+    get() = canOpen && (fileName.isPlayableMedia() || name.isPlayableMedia())
 
 internal val DriveTask.displayName: String
     get() = name.ifEmpty { fileName.ifEmpty { tr("离线任务", "Cloud download task", "クラウドダウンロードタスク", "클라우드 다운로드 작업", "離線任務") } }

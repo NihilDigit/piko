@@ -3,7 +3,6 @@ package dev.piko.ui.components
 import dev.piko.shared.i18n.tr
 
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.ui.Alignment
@@ -24,9 +23,15 @@ import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -83,8 +88,13 @@ fun PikoTopBar(
     persistentActions: (@Composable () -> Unit)? = null,
 ) {
     if (alignToReadableWidth) {
-        BoxWithConstraints(modifier) {
-            PikoTopBarContent(title, Modifier, navigationIcon, onBackClick, actions, moreActions, scrollBehavior, colors, readableSidePadding(maxWidth), persistentActions)
+        val density = LocalDensity.current
+        val initialWidthPx = LocalWindowInfo.current.containerSize.width
+        var barWidthPx by remember(initialWidthPx) { mutableIntStateOf(initialWidthPx) }
+        val barWidth = with(density) { barWidthPx.toDp() }
+        // 不用 BoxWithConstraints：PikoTopBarContent 内的 AdaptiveBar 承载工具提示与溢出菜单弹层
+        Box(modifier.onSizeChanged { if (it.width > 0) barWidthPx = it.width }) {
+            PikoTopBarContent(title, Modifier, navigationIcon, onBackClick, actions, moreActions, scrollBehavior, colors, readableSidePadding(barWidth), persistentActions)
         }
     } else {
         PikoTopBarContent(title, modifier, navigationIcon, onBackClick, actions, moreActions, scrollBehavior, colors, 0.dp, persistentActions)

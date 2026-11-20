@@ -82,3 +82,7 @@ if (providers.gradleProperty("pikoTestLowHeap").isPresent) {
         systemProperty("piko.test.lowheap", "true")
     }
 }
+
+composeCompiler {
+    stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("compose-stability.conf"))
+}

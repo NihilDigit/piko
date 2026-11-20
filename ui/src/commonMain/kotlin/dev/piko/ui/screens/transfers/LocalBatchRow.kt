@@ -145,7 +145,7 @@ internal fun LocalBatchDetails(item: TransferItem.LocalBatch, actions: List<Shee
     val listing = item.listing
     ItemDetailsContent(modifier = modifier, showIcon = false,
         title = item.batch.folderName,
-        headerIcon = { ListLeadingIcon(Icons.Outlined.Folder) },
+        headerIcon = { TaskFolderVisual(item.batch.folderName) },
         actions = actions,
         metaParts = listOfNotNull(item.statusLabel()) + item.statusDetails(),
         extraLines = {

@@ -633,7 +633,70 @@ enum class SeedTheme(private val labelText: () -> String, val seed: Color, val l
             onTertiaryFixedVariant = Color(0xFF6E541F),
         ),
     ),
+    /**
+     * 水墨屏主题（Anx Reader 风格）：纯白底面、纯黑墨迹、清晰 1dp 描边、零灰阶浑浊与零阴影，
+     * 选中后自动等效开启减少动画以贴合电子墨水屏刷新特性。
+     */
+    EINK(
+        labelText = { tr("水墨屏", "E-Ink", "E-Ink", "E-Ink", "水墨螢幕") },
+        seed = Color(0xFF000000),
+        light = EInkColorScheme,
+        dark = EInkColorScheme,
+    ),
     ;
 
     val label: String get() = labelText()
 }
+
+private val EInkColorScheme = lightColorScheme(
+    primary = Color(0xFF000000),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFF000000),
+    onPrimaryContainer = Color(0xFFFFFFFF),
+    inversePrimary = Color(0xFFFFFFFF),
+    secondary = Color(0xFF000000),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFEBEBEB),
+    onSecondaryContainer = Color(0xFF000000),
+    tertiary = Color(0xFF1A1A1A),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFEDEDED),
+    onTertiaryContainer = Color(0xFF000000),
+    background = Color(0xFFFFFFFF),
+    onBackground = Color(0xFF000000),
+    surface = Color(0xFFFFFFFF),
+    onSurface = Color(0xFF000000),
+    surfaceVariant = Color(0xFFFFFFFF),
+    onSurfaceVariant = Color(0xFF222222),
+    surfaceTint = Color.Transparent,
+    inverseSurface = Color(0xFF000000),
+    inverseOnSurface = Color(0xFFFFFFFF),
+    error = Color(0xFF000000),
+    onError = Color(0xFFFFFFFF),
+    errorContainer = Color(0xFFE6E6E6),
+    onErrorContainer = Color(0xFF000000),
+    outline = Color(0xFF000000),
+    outlineVariant = Color(0xFF222222),
+    scrim = Color(0x99000000),
+    surfaceBright = Color(0xFFFFFFFF),
+    // Subtle neutral ink tint so M3E unchecked ToggleButtons (defaulting to surfaceContainer)
+    // remain distinct on #FFFFFF dialogs (surfaceContainerHigh) without gray muddiness.
+    surfaceContainer = Color(0xFFF2F2F2),
+    surfaceContainerHigh = Color(0xFFFFFFFF),
+    surfaceContainerHighest = Color(0xFFF2F2F2),
+    surfaceContainerLow = Color(0xFFFFFFFF),
+    surfaceContainerLowest = Color(0xFFFFFFFF),
+    surfaceDim = Color(0xFFFFFFFF),
+    primaryFixed = Color(0xFF000000),
+    primaryFixedDim = Color(0xFF222222),
+    onPrimaryFixed = Color(0xFFFFFFFF),
+    onPrimaryFixedVariant = Color(0xFFFFFFFF),
+    secondaryFixed = Color(0xFFEBEBEB),
+    secondaryFixedDim = Color(0xFFDCDCDC),
+    onSecondaryFixed = Color(0xFF000000),
+    onSecondaryFixedVariant = Color(0xFF222222),
+    tertiaryFixed = Color(0xFFEDEDED),
+    tertiaryFixedDim = Color(0xFFDDDDDD),
+    onTertiaryFixed = Color(0xFF000000),
+    onTertiaryFixedVariant = Color(0xFF222222),
+)

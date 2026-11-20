@@ -1,10 +1,14 @@
 package dev.piko.ui.screens.auth
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -21,6 +25,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextObfuscationMode
@@ -32,6 +37,7 @@ import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Public
@@ -41,7 +47,9 @@ import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -74,6 +82,7 @@ import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentType
@@ -85,6 +94,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.net.ProxySetting
 import dev.piko.shared.state.BrowserAuthState
@@ -92,12 +102,16 @@ import dev.piko.shared.state.LoginAccountMode
 import dev.piko.shared.state.LoginState
 import dev.piko.shared.state.PhoneRegions
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.adaptive.WidthClass
+import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.IslandTabBarHeight
 import dev.piko.ui.components.PikoBrandIcons
 import dev.piko.ui.components.PikoDialog
+import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.connectedToggleShapes
+import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.LocalWindowCaption
@@ -105,6 +119,9 @@ import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.resources.*
 import dev.piko.ui.screens.settings.ProxySettingsDialog
+import dev.piko.ui.theme.frame
+import dev.piko.ui.theme.islandBorderColor
+import dev.piko.ui.theme.islandSurface
 import kotlin.time.Clock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -129,8 +146,11 @@ fun LoginScreen(
     DisposableEffect(state) {
         onDispose { state.cancelGoogleLogin() }
     }
-    val proxySetting by preferences.proxySettingFlow.collectAsState(ProxySetting())
+    val initialSnapshot = remember(preferences) { preferences.currentSnapshot }
+    val proxySetting by preferences.proxySettingFlow.collectAsState(initialSnapshot.proxySetting)
+    val appLanguage by preferences.appLanguageFlow.collectAsState(initialSnapshot.appLanguage)
     var showProxyDialog by remember { mutableStateOf(false) }
+    val wideSplit = currentWidthClass() == WidthClass.Expanded
     val handleBack: (() -> Unit)? = when {
         state.browserAuth is BrowserAuthState.AwaitingConfirmation -> state::cancelGoogleLogin
         onCancel != null -> {
@@ -146,7 +166,11 @@ fun LoginScreen(
     val windowCaption = LocalWindowCaption.current
     windowCaption?.Host()
     val caption = rememberCaptionSlot()
-    Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        modifier = modifier.fillMaxSize(),
+        color = if (wideSplit) colors.frame else colors.surface,
+    ) {
         Column(Modifier.fillMaxSize()) {
             if (windowCaption != null) {
                 Row(
@@ -157,25 +181,82 @@ fun LoginScreen(
                     caption.buttons?.invoke()
                 }
             }
-            Box(Modifier.weight(1f).fillMaxWidth().safeDrawingPadding()) {
-                LoginForm(
-                    state = state,
-                    adding = onCancel != null,
-                    proxySummary = proxySetting.summary(),
-                    onOpenProxy = { showProxyDialog = true },
-                    modifier = Modifier.align(Alignment.Center),
-                )
-                if (onCancel != null) {
-                    TooltipIconButton(
-                        Icons.Outlined.Close,
-                        tr("取消", "Cancel", "キャンセル", "취소", "取消"),
-                        onClick = {
-                            state.cancelGoogleLogin()
-                            onCancel()
+            if (wideSplit) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .safeDrawingPadding()
+                        .padding(start = 24.dp, end = 24.dp, top = if (windowCaption != null) 4.dp else 16.dp, bottom = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(24.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    LoginBrandCanvas(
+                        appLanguage = appLanguage,
+                        onSelectLanguage = { lang -> scope.launch { preferences.setAppLanguage(lang) } },
+                        proxySummary = proxySetting.summary(),
+                        onOpenProxy = { showProxyDialog = true },
+                        isLoggingIn = state.isLoggingIn,
+                        onCancel = onCancel?.let { cancel ->
+                            {
+                                state.cancelGoogleLogin()
+                                cancel()
+                            }
                         },
-                        enabled = !state.isLoggingIn,
-                        modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
                     )
+                    Box(
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        val borderColor = colors.islandBorderColor
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = colors.islandSurface,
+                            border = borderColor?.let { BorderStroke(1.dp, it) },
+                            shadowElevation = 2.dp,
+                            modifier = Modifier
+                                .widthIn(max = 468.dp)
+                                .fillMaxWidth(),
+                        ) {
+                            LoginForm(
+                                state = state,
+                                adding = onCancel != null,
+                                proxySummary = proxySetting.summary(),
+                                appLanguage = appLanguage,
+                                onSelectLanguage = { lang -> scope.launch { preferences.setAppLanguage(lang) } },
+                                onOpenProxy = { showProxyDialog = true },
+                                showHeroLogo = false,
+                                showUtilityBar = false,
+                            )
+                        }
+                    }
+                }
+            } else {
+                Box(Modifier.weight(1f).fillMaxWidth().safeDrawingPadding()) {
+                    LoginForm(
+                        state = state,
+                        adding = onCancel != null,
+                        proxySummary = proxySetting.summary(),
+                        appLanguage = appLanguage,
+                        onSelectLanguage = { lang -> scope.launch { preferences.setAppLanguage(lang) } },
+                        onOpenProxy = { showProxyDialog = true },
+                        showHeroLogo = true,
+                        showUtilityBar = true,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                    if (onCancel != null) {
+                        TooltipIconButton(
+                            Icons.Outlined.Close,
+                            tr("取消", "Cancel", "キャンセル", "취소", "取消"),
+                            onClick = {
+                                state.cancelGoogleLogin()
+                                onCancel()
+                            },
+                            enabled = !state.isLoggingIn,
+                            modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
+                        )
+                    }
                 }
             }
         }
@@ -193,13 +274,163 @@ fun LoginScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LoginBrandCanvas(
+    appLanguage: AppLanguage,
+    onSelectLanguage: (AppLanguage) -> Unit,
+    proxySummary: String,
+    onOpenProxy: () -> Unit,
+    isLoggingIn: Boolean,
+    onCancel: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.colorScheme
+    val gradient = Brush.verticalGradient(
+        colors = listOf(
+            colors.primaryContainer.copy(alpha = 0.34f),
+            colors.tertiaryContainer.copy(alpha = 0.18f),
+            colors.surfaceContainerLow.copy(alpha = 0.55f),
+        ),
+    )
+    val borderColor = colors.islandBorderColor
+    Box(
+        modifier = modifier
+            .clip(MaterialTheme.shapes.extraLarge)
+            .background(gradient)
+            .then(
+                if (borderColor != null) {
+                    Modifier.border(1.dp, borderColor, MaterialTheme.shapes.extraLarge)
+                } else {
+                    Modifier
+                },
+            ),
+    ) {
+        if (onCancel != null) {
+            TooltipIconButton(
+                icon = Icons.Outlined.Close,
+                label = tr("取消", "Cancel", "キャンセル", "취소", "取消"),
+                onClick = onCancel,
+                enabled = !isLoggingIn,
+                modifier = Modifier.align(Alignment.TopStart).padding(12.dp),
+            )
+        }
+        Column(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .widthIn(max = 360.dp)
+                .fillMaxWidth()
+                .padding(horizontal = 36.dp, vertical = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(24.dp),
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    imageVector = PikoBrandIcons.Logo,
+                    contentDescription = null,
+                    tint = Color.Unspecified,
+                    modifier = Modifier.size(72.dp).clip(MaterialTheme.shapes.extraLarge),
+                )
+                Text(
+                    text = "Piko",
+                    style = MaterialTheme.typography.displaySmall,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.onSurface,
+                )
+            }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                LanguageQuickPill(
+                    current = appLanguage,
+                    enabled = !isLoggingIn,
+                    onSelect = onSelectLanguage,
+                )
+                FilledTonalButton(
+                    onClick = onOpenProxy,
+                    enabled = !isLoggingIn,
+                    contentPadding = ButtonDefaults.ContentPadding,
+                ) {
+                    Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = tr("代理：$proxySummary", "Proxy: $proxySummary", "プロキシ：$proxySummary", "프록시: $proxySummary", "代理：$proxySummary"),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LanguageQuickPill(
+    current: AppLanguage,
+    enabled: Boolean,
+    onSelect: (AppLanguage) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val systemLabel = tr("跟随系统", "System", "システムに従う", "시스템 설정", "跟隨系統")
+    val currentLabel = if (current == AppLanguage.SYSTEM) systemLabel else current.nativeLabel
+    Box {
+        FilledTonalButton(
+            onClick = { expanded = true },
+            enabled = enabled,
+            contentPadding = ButtonDefaults.ContentPadding,
+        ) {
+            Icon(Icons.Outlined.Language, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(currentLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.width(2.dp))
+            Icon(Icons.Outlined.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
+        }
+        PikoDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            val languages = AppLanguage.entries
+            languages.forEachIndexed { index, language ->
+                val selected = language == current
+                val label = if (language == AppLanguage.SYSTEM) systemLabel else language.nativeLabel
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            label,
+                            color = if (selected) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                        )
+                    },
+                    trailingContent = if (selected) ({
+                        Icon(
+                            Icons.Outlined.Check,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }) else null,
+                    shape = menuItemShape(index, languages.size),
+                    onClick = {
+                        expanded = false
+                        onSelect(language)
+                    },
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun LoginForm(
     state: LoginState,
     adding: Boolean,
     proxySummary: String,
+    appLanguage: AppLanguage,
+    onSelectLanguage: (AppLanguage) -> Unit,
     onOpenProxy: () -> Unit,
+    showHeroLogo: Boolean,
+    showUtilityBar: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val platform = LocalPikoPlatform.current
@@ -222,17 +453,19 @@ private fun LoginForm(
             .fillMaxWidth()
             .imePadding()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 40.dp),
+            .padding(horizontal = if (showHeroLogo) 24.dp else 32.dp, vertical = if (showHeroLogo) 40.dp else 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Column(modifier = Modifier.widthIn(max = FormMaxWidth).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                imageVector = PikoBrandIcons.Logo,
-                contentDescription = null,
-                tint = Color.Unspecified,
-                modifier = Modifier.size(72.dp).clip(MaterialTheme.shapes.extraLarge),
-            )
-            Spacer(Modifier.height(24.dp))
+            if (showHeroLogo) {
+                Icon(
+                    imageVector = PikoBrandIcons.Logo,
+                    contentDescription = null,
+                    tint = Color.Unspecified,
+                    modifier = Modifier.size(72.dp).clip(MaterialTheme.shapes.extraLarge),
+                )
+                Spacer(Modifier.height(24.dp))
+            }
             Text(
                 text = when {
                     reauthContext != null -> tr("重新登录", "Sign in again", "再ログイン", "다시 로그인", "重新登入")
@@ -362,7 +595,7 @@ private fun LoginForm(
                 Spacer(Modifier.height(16.dp))
 
                 val accountModes = remember { listOf(LoginAccountMode.EMAIL, LoginAccountMode.PHONE) }
-                val toggleColors = ToggleButtonDefaults.toggleButtonColors(
+                val toggleColors = ToggleButtonDefaults.colors(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                 )
                 Row(
@@ -546,17 +779,29 @@ private fun LoginForm(
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
-            TextButton(onClick = onOpenProxy, enabled = !state.isLoggingIn) {
-                Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    tr("网络代理：$proxySummary", "Proxy: $proxySummary", "プロキシ：$proxySummary", "프록시: $proxySummary", "網路代理：$proxySummary"),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            if (showUtilityBar) {
+                Spacer(Modifier.height(24.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    LanguageQuickPill(
+                        current = appLanguage,
+                        enabled = !state.isLoggingIn,
+                        onSelect = onSelectLanguage,
+                    )
+                    TextButton(onClick = onOpenProxy, enabled = !state.isLoggingIn) {
+                        Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            tr("网络代理：$proxySummary", "Proxy: $proxySummary", "プロキシ：$proxySummary", "프록시: $proxySummary", "網路代理：$proxySummary"),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(if (showUtilityBar) 12.dp else 20.dp))
             Text(
                 text = tr(
                     "Piko 是 PikPak 第三方非官方客户端，与 PikPak 官方无关",
@@ -878,11 +1123,11 @@ private fun GoogleConfirmationCard(
                 InlineLoadingIndicator()
                 Text(
                     text = tr(
-                        "等待确认中 · 有效剩余 $mins:$secs",
-                        "Waiting for confirmation · $mins:$secs left",
-                        "確認待機中 · 残り $mins:$secs",
-                        "확인 대기 중 · 남은 시간 $mins:$secs",
-                        "等待確認中 · 有效剩餘 $mins:$secs",
+                        "等待确认中，有效剩余 $mins:$secs",
+                        "Waiting for confirmation ($mins:$secs left)",
+                        "確認待機中（残り $mins:$secs）",
+                        "확인 대기 중 (남은 시간 $mins:$secs)",
+                        "等待確認中，有效剩餘 $mins:$secs",
                     ),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

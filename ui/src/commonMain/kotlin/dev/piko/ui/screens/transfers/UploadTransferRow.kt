@@ -15,7 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import dev.piko.data.repository.isPlayableVideo
+import dev.piko.data.repository.isPlayableMedia
 import dev.piko.shared.upload.UploadStatus
 import dev.piko.shared.upload.UploadTask
 import dev.piko.ui.components.ItemDetailsContent
@@ -52,7 +52,7 @@ internal val UploadTask.canOpen: Boolean
     get() = status == UploadStatus.COMPLETED && !fileId.isNullOrEmpty()
 
 internal val UploadTask.canPlayVideo: Boolean
-    get() = canOpen && fileName.isPlayableVideo()
+    get() = canOpen && fileName.isPlayableMedia()
 
 internal fun UploadTask.failureReason(): String = errorMessage?.takeIf { it.isNotBlank() } ?: tr("网络中断", "Network interrupted", "ネットワークが切断されました", "네트워크 연결이 끊어졌습니다", "網路中斷")
 

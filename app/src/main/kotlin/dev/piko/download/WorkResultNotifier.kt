@@ -79,7 +79,8 @@ internal class WorkResultNotifier(
                 services.downloadManager.tasks,
                 services.uploadManager.tasks,
                 services.fileWorkChanges(),
-            ) { _, _, _, _ -> services.hasBackgroundWork() }
+                dev.piko.shared.media.proxy.ExternalPlayerStreams.active,
+            ) { _, _, _, _, _ -> services.hasBackgroundWork() }
             AppVisibility.visible
                 .flatMapLatest { visible -> if (visible) flowOf(false) else busy }
                 .distinctUntilChanged()

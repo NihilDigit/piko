@@ -8,7 +8,10 @@ import dev.piko.ui.i18n.stringResource
 import dev.piko.shared.i18n.tr
 import androidx.compose.material.icons.outlined.Image
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -39,11 +42,19 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.OutlinedToggleButton
+import androidx.compose.material3.OutlinedToggleButtonDefaults
 import androidx.compose.material3.PlainTooltip
-import androidx.compose.material3.TonalToggleButton
+import androidx.compose.material3.SplitButtonDefaults
+import androidx.compose.material3.SplitButtonLayout
+import androidx.compose.material3.Surface
+import androidx.compose.ui.graphics.graphicsLayer
+import dev.piko.ui.theme.tabular
 import dev.piko.ui.components.connectedToggleShapes
 import dev.piko.ui.components.AdaptiveBar
 import dev.piko.ui.components.BarItem
@@ -197,6 +208,11 @@ internal fun ExplorerSearchField(
         }
     }
     val textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface)
+    val focusBorderColor by animateColorAsState(
+        targetValue = if (focused) colors.primary else Color.Transparent,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "search_focus_ring",
+    )
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -205,6 +221,7 @@ internal fun ExplorerSearchField(
             .releasesFocusOnOutsidePress()
             .clip(CircleShape)
             .background(colors.headerFieldColor)
+            .border(1.5.dp, focusBorderColor, CircleShape)
             .padding(start = 12.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -242,10 +259,36 @@ internal fun ExplorerSearchField(
         when {
             isGlobalSearching -> {
                 InlineLoadingIndicator()
-                TextButton(onClick = onCancelGlobalSearch, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(stringResource(Res.string.text_stop)) }
+                Spacer(Modifier.width(4.dp))
+                Surface(
+                    onClick = onCancelGlobalSearch,
+                    shape = CircleShape,
+                    color = colors.errorContainer,
+                    contentColor = colors.onErrorContainer,
+                ) {
+                    Text(
+                        text = stringResource(Res.string.text_stop),
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                }
             }
-            query.isNotBlank() && !isGlobalSearchActive ->
-                TextButton(onClick = onStartGlobalSearch, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(stringResource(Res.string.text_entire_drive)) }
+            query.isNotBlank() && !isGlobalSearchActive -> {
+                Surface(
+                    onClick = onStartGlobalSearch,
+                    shape = CircleShape,
+                    color = colors.secondaryContainer,
+                    contentColor = colors.onSecondaryContainer,
+                ) {
+                    Text(
+                        text = stringResource(Res.string.text_entire_drive),
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                }
+            }
         }
         // 取消一直在，与 Esc 相同：有字时清空，没字时收起（让出焦点即收回成搜索图标）
         if (query.isNotEmpty()) {
@@ -299,13 +342,13 @@ internal fun ExplorerCommandBar(
     val leading = buildList {
         if (selectedCount > 0) {
             add(BarItem("exit", PinnedPriority) { TooltipIconButton(Icons.Outlined.Close, tr("退出多选", "Exit selection", "選択モードを終了", "선택 모드 종료", "結束多選"), onExitSelection, shortcut = "Esc") })
-            add(BarItem("selected", PinnedPriority) { Text(pluralStringResource(Res.plurals.selected_count, selectedCount, selectedCount), style = MaterialTheme.typography.labelLarge, maxLines = 1) })
+            add(BarItem("selected", PinnedPriority) { Text(pluralStringResource(Res.plurals.selected_count, selectedCount, selectedCount), style = MaterialTheme.typography.labelLarge.tabular, maxLines = 1) })
             // 合计大小只是说明，放不下就不写，不进「更多」
             if (selectedBytes > 0) {
                 add(BarItem("selectedBytes", 10) {
                     Text(
                         tr("，共 ${selectedBytes.toReadableSize()}", ", ${selectedBytes.toReadableSize()} total", "、合計 ${selectedBytes.toReadableSize()}", ", 총 ${selectedBytes.toReadableSize()}", "，共 ${selectedBytes.toReadableSize()}"),
-                        style = MaterialTheme.typography.labelLarge,
+                        style = MaterialTheme.typography.labelLarge.tabular,
                         maxLines = 1,
                         modifier = Modifier.padding(end = 8.dp),
                     )
@@ -314,8 +357,8 @@ internal fun ExplorerCommandBar(
         }
         if (customLeading.isNotEmpty()) {
             addAll(customLeading)
-        } else if (selectedCount == 0 && commands.create) {
-            add(BarItem("new", PinnedPriority, newActions) { MenuTextButton(Icons.Outlined.Add, tr("新建", "New", "新規", "새로 만들기", "新增"), newActions) })
+        } else if (selectedCount == 0 && commands.create && newActions.isNotEmpty()) {
+            add(BarItem("new", PinnedPriority, newActions) { NewActionSplitButton(newActions) })
         }
         // 左段一律是图标加文字的文字按钮：原先图标按钮与文字按钮混排，两种按钮的内边距不同，字形之间的空隙忽大忽小。
         // 同组之间只隔 BarItemGap，组与组之间多一段 GroupGap
@@ -368,7 +411,7 @@ internal fun ExplorerCommandBar(
         if (primaryAction != null) {
             // 常驻在右端，不收在菜单里；窗口窄到连它也放不下时才进「更多」
             add(BarItem("primary", 90, listOf(primaryAction)) {
-                PrimaryActionButton(primaryAction, Modifier.padding(horizontal = 6.dp))
+                PrimaryActionButton(primaryAction, Modifier.padding(start = 4.dp))
             })
         }
     }
@@ -392,14 +435,20 @@ internal fun ExplorerCommandBar(
 
 private fun barDivider(key: String) = BarItem(key, PinnedPriority, isDivider = true) { BarDivider() }
 
-/** 命令栏左段的一项：图标加文字，与新建、排序、筛选同一种按钮，快捷键写在悬停提示里。 */
+/** 命令栏左段的一项（Tier 3 低强调文字命令）：与 36dp 分体按钮和视图开关对齐，快捷键写在悬停提示里。 */
 @Composable
 internal fun BarTextButton(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, onClick: () -> Unit, shortcut: String? = null) {
+    val colors = MaterialTheme.colorScheme
     val button = @Composable {
-        TextButton(onClick = onClick) {
+        TextButton(
+            onClick = onClick,
+            colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurfaceVariant),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+            modifier = Modifier.height(CommandBarControlHeight),
+        ) {
             Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
-            Text(text)
+            Text(text, maxLines = 1)
         }
     }
     if (shortcut == null) {
@@ -413,15 +462,17 @@ internal fun BarTextButton(icon: androidx.compose.ui.graphics.vector.ImageVector
     }
 }
 
+private val CommandBarControlHeight = 36.dp
 private val BarItemGap = 4.dp
 private val SectionJumperMinWidth = 72.dp
 
 
 
 /**
- * 命令栏右端「怎么看这个文件夹」的连体按钮：左段是当前视图，点开在列表与海报墙间换并挑卡片大小；
- * 中段与右段是两种跨子目录探索方式——瀑布流（封面画布）与信息流（随机片段）。
+ * 命令栏右端「怎么看这个文件夹」的连体切换组（M3 Expressive Outlined Connected Button Group）：
+ * 未激活时保持低视觉重量的描边形态，仅在激活时填充 tonal（secondaryContainer），避免与右端唯一的高强调主操作竞争视觉焦点。
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun ViewSwitcher(
     viewMode: DriveViewMode,
@@ -438,6 +489,13 @@ internal fun ViewSwitcher(
     galleryShowImages: Boolean = true,
     onGalleryShowImagesChange: ((Boolean) -> Unit)? = null,
 ) {
+    val colors = MaterialTheme.colorScheme
+    val toggleColors = OutlinedToggleButtonDefaults.colors(
+        containerColor = Color.Transparent,
+        contentColor = colors.onSurfaceVariant,
+        checkedContainerColor = colors.secondaryContainer,
+        checkedContentColor = colors.onSecondaryContainer,
+    )
     var menuOpen by remember { mutableStateOf(false) }
     val count = 1 + (if (onGalleryShownChange != null) 1 else 0) + (if (onFeedShownChange != null) 1 else 0)
     var buttonIndex = 0
@@ -449,12 +507,13 @@ internal fun ViewSwitcher(
                 tooltip = { PlainTooltip { Text(if (galleryShown) tr("瀑布流尺寸：${tileSize.label}", "Gallery size: ${tileSize.label}", "ギャラリーのサイズ：${tileSize.label}", "갤러리 크기: ${tileSize.label}", "瀑布流尺寸：${tileSize.label}") else tr("视图：${viewMode.label}", "View: ${viewMode.label}", "表示：${viewMode.label}", "보기: ${viewMode.label}", "檢視：${viewMode.label}")) } },
                 state = rememberTooltipState(),
             ) {
-                TonalToggleButton(
+                OutlinedToggleButton(
                     checked = menuOpen,
                     onCheckedChange = { menuOpen = it },
                     shapes = connectedToggleShapes(viewIndex, count),
-                    contentPadding = PaddingValues(start = 12.dp, end = 8.dp),
-                    modifier = Modifier.heightIn(min = 40.dp),
+                    colors = toggleColors,
+                    contentPadding = PaddingValues(start = 10.dp, end = 6.dp, top = 0.dp, bottom = 0.dp),
+                    modifier = Modifier.height(CommandBarControlHeight),
                 ) {
                     Icon(
                         if (galleryShown) Icons.Filled.PhotoLibrary else viewMode.icon(selected = true),
@@ -479,7 +538,7 @@ internal fun ViewSwitcher(
                                     modifier = Modifier.size(20.dp),
                                 )
                             },
-                            trailingIcon = if (current) ({
+                            trailingContent = if (current) ({
                                 Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                             }) else null,
                             shape = menuItemShape(index, modes.size),
@@ -496,7 +555,7 @@ internal fun ViewSwitcher(
                     val current = tileSize == size
                     DropdownMenuItem(
                         text = { Text(tr("${size.label}尺寸", "${size.label} size", "${size.label}サイズ", "${size.label} 크기", "${size.label}尺寸"), color = if (current) MaterialTheme.colorScheme.primary else Color.Unspecified) },
-                        trailingIcon = if (current) ({
+                        trailingContent = if (current) ({
                             Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                         }) else null,
                         shape = menuItemShape(index, sizes.size),
@@ -523,7 +582,7 @@ internal fun ViewSwitcher(
                                 modifier = Modifier.size(20.dp),
                             )
                         },
-                        trailingIcon = if (galleryShowImages) ({
+                        trailingContent = if (galleryShowImages) ({
                             Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                         }) else null,
                         shape = menuItemShape(0, 1),
@@ -537,12 +596,13 @@ internal fun ViewSwitcher(
         }
         if (onGalleryShownChange != null) {
             val galleryIndex = buttonIndex++
-            TonalToggleButton(
+            OutlinedToggleButton(
                 checked = galleryShown,
                 onCheckedChange = onGalleryShownChange,
                 shapes = connectedToggleShapes(galleryIndex, count),
-                contentPadding = PaddingValues(start = 12.dp, end = if (count == galleryIndex + 1) 16.dp else 12.dp),
-                modifier = Modifier.heightIn(min = 40.dp),
+                colors = toggleColors,
+                contentPadding = PaddingValues(start = 10.dp, end = if (count == galleryIndex + 1) 14.dp else 10.dp, top = 0.dp, bottom = 0.dp),
+                modifier = Modifier.height(CommandBarControlHeight),
             ) {
                 Icon(
                     imageVector = if (galleryShown) Icons.Filled.PhotoLibrary else Icons.Outlined.PhotoLibrary,
@@ -550,19 +610,20 @@ internal fun ViewSwitcher(
                     modifier = Modifier.size(18.dp),
                 )
                 Spacer(Modifier.width(6.dp))
-                Text(stringResource(Res.string.text_masonry))
+                Text(stringResource(Res.string.text_masonry), maxLines = 1)
             }
         }
         if (onFeedShownChange != null) {
             val feedIndex = buttonIndex
             val feedButton: @Composable () -> Unit = {
-                TonalToggleButton(
+                OutlinedToggleButton(
                     checked = feedShown,
                     onCheckedChange = onFeedShownChange,
                     enabled = feedBlockedReason == null,
                     shapes = connectedToggleShapes(feedIndex, count),
-                    contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
-                    modifier = Modifier.heightIn(min = 40.dp),
+                    colors = toggleColors,
+                    contentPadding = PaddingValues(start = 10.dp, end = 14.dp, top = 0.dp, bottom = 0.dp),
+                    modifier = Modifier.height(CommandBarControlHeight),
                 ) {
                     // 挂起的信息流（离开了它的文件夹、队列还在）在图标上点一个小圆点，点开就是接着刷。
                     // 原来另在命令栏右端的「收着的东西」里放一项「继续刷信息流」，与这个按钮是同一件事的两个入口
@@ -574,7 +635,7 @@ internal fun ViewSwitcher(
                         )
                     }
                     Spacer(Modifier.width(6.dp))
-                    Text(stringResource(Res.string.text_feed))
+                    Text(stringResource(Res.string.text_feed), maxLines = 1)
                 }
             }
             // 置灰而不藏起来：藏起来时人找不到它，也不知道为什么没了
@@ -628,25 +689,68 @@ internal fun viewOverflowActions(
     }
 }
 
-// 组与组之间只留一段空白，不画竖线：竖线在岛的页眉色上显得碎，分组靠间距已经读得出
+/** 组间 1dp 竖向细分隔线（AdaptiveBar 自动剥除首尾与连续重复分隔线），清晰区分新建/编辑/整理命令组。 */
 @Composable
 private fun BarDivider() {
-    Spacer(Modifier.width(GroupGap))
+    Box(
+        modifier = Modifier
+            .padding(horizontal = 4.dp)
+            .width(1.dp)
+            .height(18.dp)
+            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+    )
 }
 
-private val GroupGap = 12.dp
-
+/**
+ * M3 Expressive 分体式新建按钮：主段一键触发首项动作（新建文件夹），尾段箭头展开其余创建/上传/挂载选项，
+ * 避免同一动作在主按钮与下拉菜单中重复出现。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun MenuTextButton(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, actions: List<SheetAction>) {
+private fun NewActionSplitButton(actions: List<SheetAction>) {
+    val primary = actions.first()
+    val secondary = remember(actions) { actions.drop(1) }
+    if (secondary.isEmpty()) {
+        BarTextButton(primary.icon, primary.label, primary.onClick)
+        return
+    }
     var expanded by remember { mutableStateOf(false) }
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "new_split_chevron",
+    )
     Box {
-        TextButton(onClick = { expanded = true }) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(6.dp))
-            Text(text)
-            Icon(Icons.Outlined.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
-        }
-        OverflowMenu(expanded, { expanded = false }, actions)
+        SplitButtonLayout(
+            leadingButton = {
+                SplitButtonDefaults.TonalLeadingButton(
+                    onClick = primary.onClick,
+                    contentPadding = PaddingValues(start = 12.dp, end = 10.dp),
+                    modifier = Modifier.height(36.dp),
+                ) {
+                    Icon(primary.icon, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(primary.label, maxLines = 1)
+                }
+            },
+            trailingButton = {
+                SplitButtonDefaults.TonalTrailingButton(
+                    checked = expanded,
+                    onCheckedChange = { expanded = it },
+                    contentPadding = PaddingValues(horizontal = 8.dp),
+                    modifier = Modifier.height(36.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.ArrowDropDown,
+                        contentDescription = tr("更多新建选项", "More create options", "その他の新規作成オプション", "추가 생성 옵션", "更多新增選項"),
+                        modifier = Modifier
+                            .size(18.dp)
+                            .graphicsLayer { rotationZ = chevronRotation },
+                    )
+                }
+            },
+        )
+        OverflowMenu(expanded, { expanded = false }, secondary)
     }
 }
 

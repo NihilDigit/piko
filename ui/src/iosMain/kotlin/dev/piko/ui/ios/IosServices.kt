@@ -19,6 +19,10 @@ import dev.piko.shared.sync.PortableSyncCipher
 import dev.piko.shared.upload.createIosUploadSources
 import dev.piko.ui.PikoServices
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.launch
 
 /**
  * iOS 入口拼一份 [PikoServices]，与桌面 `createServices` 同构：会话存 Keychain，切片缓存落
@@ -36,28 +40,54 @@ fun createIosServices(
 ): PikoServices {
     val preferences = createIosPreferences(directories, "$keychainService.preferences")
     val clientManager = PikoClientManager(createIosSessionStore(keychainService), appScope)
+    val clipCache = IosClipCache(SandboxPaths.resolveDirectory(directories.caches, "clip-cache"))
     val mediaRepository = PikoMediaRepository(
         clientManager,
         preferences,
-        clipCache = IosClipCache(SandboxPaths.resolveDirectory(directories.caches, "clip-cache")),
+        clipCache = clipCache,
     )
     val cacheStore: PikoCacheStore = FilePikoCacheStore(SandboxPaths.resolveDirectory(directories.caches, "cache"))
+    val storyboardCache = dev.piko.shared.media.storyboard.FileStoryboardCache(
+        SandboxPaths.resolveDirectory(directories.caches, "storyboards"),
+    )
+    val downloadManager = PikoDownloadCoordinator(
+        clientManager,
+        preferences,
+        createIosDownloadStorage(directories),
+        appScope,
+        segmentDownloader = IosPikoSegmentDownloader(),
+        mediaRepository = mediaRepository,
+        cacheStore = cacheStore,
+    )
+    val initialCacheSnapshot = preferences.currentSnapshot
+    val cacheManager = dev.piko.shared.media.cache.createIosCacheManager(
+        scope = appScope,
+        imageCacheDir = SandboxPaths.resolveDirectory(directories.caches, "image_cache"),
+        fileCachePool = downloadManager.fileCachePool,
+        storyboardCache = storyboardCache,
+        clipCache = clipCache,
+        treeIndexDir = SandboxPaths.resolveDirectory(directories.caches, "drive-tree"),
+        initialPolicy = dev.piko.shared.media.cache.CachePolicy(
+            maxTotalBytes = initialCacheSnapshot.cacheMaxBytes,
+            maxAgeDays = initialCacheSnapshot.cacheMaxAgeDays,
+        ),
+    )
+    appScope.launch {
+        combine(preferences.cacheMaxBytesFlow, preferences.cacheMaxAgeDaysFlow) { cap, days -> cap to days }
+            .distinctUntilChanged()
+            .drop(1)
+            .collect { (cap, days) -> cacheManager.applyPolicy(cap, days) }
+    }
     return PikoServices(
         platformPreferences = preferences,
         clientManager = clientManager,
         mediaRepository = mediaRepository,
-        downloadManager = PikoDownloadCoordinator(
-            clientManager,
-            preferences,
-            createIosDownloadStorage(directories),
-            appScope,
-            segmentDownloader = IosPikoSegmentDownloader(),
-            mediaRepository = mediaRepository,
-            cacheStore = cacheStore,
-        ),
+        downloadManager = downloadManager,
         uploadSources = createIosUploadSources(directories),
         cacheStore = cacheStore,
         treeDatabaseFactory = IosPikoTreeDatabaseFactory(SandboxPaths.resolveDirectory(directories.caches, "drive-tree")),
+        storyboardCache = storyboardCache,
+        cacheManager = cacheManager,
         syncCipher = PortableSyncCipher(),
         metaTube = MetaTubeService(preferences, cacheStore, appScope) { createIosAuxiliaryHttpClient() },
     )

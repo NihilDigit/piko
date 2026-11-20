@@ -15,7 +15,11 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import dev.piko.shared.data.DriveAppearancePrefs
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.media.player.PlayerLayoutPrefs
+import dev.piko.shared.media.player.decodePlayerLayoutPrefs
+import dev.piko.shared.media.player.encodePlayerLayoutPrefs
 import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -126,6 +130,45 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     internal fun currentHardwareDecoding(): Boolean =
         preloadMainPreferences()[PreferencesKeys.HARDWARE_DECODING] ?: true
 
+    override val currentSnapshot: PikoPreferencesSnapshot
+        get() {
+            val prefs = cachedMainPreferences ?: return PikoPreferencesSnapshot()
+            val driveView = prefs[PreferencesKeys.DRIVE_VIEW_MODE]
+                ?: if (prefs[PreferencesKeys.WATERFALL_VIEW_ENABLED] ?: true) "POSTER" else "LIST"
+            val tileSizes = buildMap<String, String> {
+                for ((key, value) in prefs.asMap()) {
+                    val name = key.name
+                    if (name.startsWith("drive_tile_size_") && value is String) {
+                        put(name.removePrefix("drive_tile_size_"), value)
+                    }
+                }
+            }
+            return PikoPreferencesSnapshot(
+                appLanguage = AppLanguage.fromStorage(prefs[appLanguageKey]),
+                themeMode = prefs[PreferencesKeys.THEME_MODE],
+                themeSeed = prefs[PreferencesKeys.THEME_SEED],
+                pureBlack = prefs[PreferencesKeys.PURE_BLACK] ?: false,
+                spoilerBlurEnabled = prefs[PreferencesKeys.SPOILER_BLUR_ENABLED] ?: false,
+                reduceMotion = prefs[PreferencesKeys.REDUCE_MOTION] ?: false,
+                hardwareDecoding = prefs[PreferencesKeys.HARDWARE_DECODING] ?: true,
+                playbackMaxHeight = prefs[PreferencesKeys.PLAYBACK_MAX_HEIGHT] ?: PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT,
+                driveViewMode = driveView,
+                galleryShowImages = prefs[PreferencesKeys.GALLERY_SHOW_IMAGES] ?: true,
+                sidebarCollapsed = prefs[PreferencesKeys.SIDEBAR_COLLAPSED] ?: false,
+                showExtensions = prefs[PreferencesKeys.SHOW_EXTENSIONS] ?: false,
+                proxySetting = ProxySetting.decode(prefs[PreferencesKeys.PROXY_SETTING].orEmpty()),
+                tileSizes = tileSizes,
+                playerLayout = decodePlayerLayoutPrefs(prefs[PreferencesKeys.PLAYER_LAYOUT]),
+                driveAppearance = DriveAppearancePrefs.decodeJson(prefs[PreferencesKeys.DRIVE_APPEARANCE]),
+                skipFeedExitConfirm = prefs[PreferencesKeys.SKIP_FEED_EXIT_CONFIRM] ?: false,
+                cacheMaxBytes = (prefs[PreferencesKeys.CACHE_MAX_BYTES] ?: CachePolicyDefaults.DEFAULT_MAX_BYTES).coerceAtLeast(0L),
+                cacheMaxAgeDays = (prefs[PreferencesKeys.CACHE_MAX_AGE_DAYS] ?: CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS).coerceAtLeast(0),
+            )
+        }
+
+    override fun currentTileSize(view: String): String =
+        cachedMainPreferences?.get(PreferencesKeys.driveTileSize(view)).orEmpty()
+
     private val appLanguageKey = stringPreferencesKey("app_language")
     override val appLanguageFlow: Flow<AppLanguage> = preference { AppLanguage.fromStorage(it[appLanguageKey]) }
     override suspend fun setAppLanguage(language: AppLanguage) {
@@ -146,6 +189,11 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val PLAYER_SEEK_STEP_SECONDS = intPreferencesKey("player_seek_step_seconds")
         val PLAYER_BOOST_SPEED = floatPreferencesKey("player_boost_speed")
         val CLIP_AUTO_EXTEND = booleanPreferencesKey("clip_auto_extend")
+        val PLAYER_LAYOUT = stringPreferencesKey("player_layout")
+        val DRIVE_APPEARANCE = stringPreferencesKey("drive_appearance")
+        val SKIP_FEED_EXIT_CONFIRM = booleanPreferencesKey("skip_feed_exit_confirm")
+        val CACHE_MAX_BYTES = longPreferencesKey("cache_max_bytes")
+        val CACHE_MAX_AGE_DAYS = intPreferencesKey("cache_max_age_days")
         val FOLDER_MAP_OPEN = booleanPreferencesKey("folder_map_open")
         val FOLDER_MAP_PINNED = booleanPreferencesKey("folder_map_pinned")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
@@ -167,6 +215,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val SNAIL_UPLOAD_KIBPS = intPreferencesKey("snail_upload_kibps")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val THEME_SEED = stringPreferencesKey("theme_seed")
+        val PURE_BLACK = booleanPreferencesKey("pure_black")
         val LAST_FOLDER_ID = stringPreferencesKey("last_folder_id")
         val LAST_FOLDER_NAME = stringPreferencesKey("last_folder_name")
         val LAST_FOLDER_STACK_SERIALIZED = stringPreferencesKey("last_folder_stack")
@@ -235,11 +284,11 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     }
 
     override val spoilerBlurFlow: Flow<Boolean> = preference { preferences ->
-        preferences[PreferencesKeys.SPOILER_BLUR_ENABLED] ?: true // 默认开启 Spoiler 遮蔽
+        preferences[PreferencesKeys.SPOILER_BLUR_ENABLED] ?: false
     }
 
     override suspend fun setSpoilerBlurEnabled(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
+        cachedMainPreferences = context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.SPOILER_BLUR_ENABLED] = enabled
         }
     }
@@ -263,7 +312,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override val reduceMotionFlow: Flow<Boolean> = preference { it[PreferencesKeys.REDUCE_MOTION] ?: false }
 
     override suspend fun setReduceMotion(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
+        cachedMainPreferences = context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.REDUCE_MOTION] = enabled
         }
     }
@@ -276,10 +325,12 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val playbackMaxHeightFlow: Flow<Int> = preference { it[PreferencesKeys.PLAYBACK_MAX_HEIGHT] ?: 0 }
+    override val playbackMaxHeightFlow: Flow<Int> = preference {
+        it[PreferencesKeys.PLAYBACK_MAX_HEIGHT] ?: PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT
+    }
 
     override suspend fun setPlaybackMaxHeight(height: Int) {
-        context.dataStore.edit { preferences ->
+        cachedMainPreferences = context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.PLAYBACK_MAX_HEIGHT] = height
         }
     }
@@ -319,11 +370,60 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
+    override val playerLayoutPrefsFlow: Flow<PlayerLayoutPrefs> =
+        preference { decodePlayerLayoutPrefs(it[PreferencesKeys.PLAYER_LAYOUT]) }
+
+    override suspend fun setPlayerLayoutPrefs(prefs: PlayerLayoutPrefs) {
+        val encoded = encodePlayerLayoutPrefs(prefs)
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYER_LAYOUT] = encoded
+        }
+    }
+
+    override val driveAppearancePrefsFlow: Flow<DriveAppearancePrefs> =
+        preference { DriveAppearancePrefs.decodeJson(it[PreferencesKeys.DRIVE_APPEARANCE]) }
+
+    override suspend fun setDriveAppearancePrefs(prefs: DriveAppearancePrefs) {
+        val encoded = prefs.encodeJson()
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.DRIVE_APPEARANCE] = encoded
+        }
+    }
+
+    override val skipFeedExitConfirmFlow: Flow<Boolean> =
+        preference { it[PreferencesKeys.SKIP_FEED_EXIT_CONFIRM] ?: false }
+
+    override suspend fun setSkipFeedExitConfirm(skip: Boolean) {
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SKIP_FEED_EXIT_CONFIRM] = skip
+        }
+    }
+
+    override val cacheMaxBytesFlow: Flow<Long> =
+        preference { (it[PreferencesKeys.CACHE_MAX_BYTES] ?: CachePolicyDefaults.DEFAULT_MAX_BYTES).coerceAtLeast(0L) }
+
+    override suspend fun setCacheMaxBytes(bytes: Long) {
+        val clamped = bytes.coerceAtLeast(0L)
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.CACHE_MAX_BYTES] = clamped
+        }
+    }
+
+    override val cacheMaxAgeDaysFlow: Flow<Int> =
+        preference { (it[PreferencesKeys.CACHE_MAX_AGE_DAYS] ?: CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS).coerceAtLeast(0) }
+
+    override suspend fun setCacheMaxAgeDays(days: Int) {
+        val clamped = days.coerceAtLeast(0)
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.CACHE_MAX_AGE_DAYS] = clamped
+        }
+    }
+
     override val galleryShowImagesFlow: Flow<Boolean> =
         preference { it[PreferencesKeys.GALLERY_SHOW_IMAGES] ?: true }
 
     override suspend fun setGalleryShowImages(show: Boolean) {
-        context.dataStore.edit { preferences ->
+        cachedMainPreferences = context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.GALLERY_SHOW_IMAGES] = show
         }
     }
@@ -408,15 +508,23 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override val themeModeFlow: Flow<String?> = preference { it[PreferencesKeys.THEME_MODE] }
 
     override suspend fun setThemeMode(mode: String) {
-        context.dataStore.edit { it[PreferencesKeys.THEME_MODE] = mode }
+        cachedMainPreferences = context.dataStore.edit { it[PreferencesKeys.THEME_MODE] = mode }
     }
 
     /** 内置主题的名字，null 表示系统取色。 */
     override val themeSeedFlow: Flow<String?> = preference { it[PreferencesKeys.THEME_SEED] }
 
     override suspend fun setThemeSeed(seed: String?) {
-        context.dataStore.edit { preferences ->
+        cachedMainPreferences = context.dataStore.edit { preferences ->
             if (seed == null) preferences.remove(PreferencesKeys.THEME_SEED) else preferences[PreferencesKeys.THEME_SEED] = seed
+        }
+    }
+
+    override val pureBlackFlow: Flow<Boolean> = preference { it[PreferencesKeys.PURE_BLACK] ?: false }
+
+    override suspend fun setPureBlack(enabled: Boolean) {
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PURE_BLACK] = enabled
         }
     }
 
@@ -427,7 +535,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     }
 
     override suspend fun setDriveViewMode(mode: String) {
-        context.dataStore.edit { preferences ->
+        cachedMainPreferences = context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.DRIVE_VIEW_MODE] = mode
         }
     }
@@ -435,7 +543,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override fun driveTileSizeFlow(view: String): Flow<String> = preference { it[PreferencesKeys.driveTileSize(view)].orEmpty() }
 
     override suspend fun setDriveTileSize(view: String, size: String) {
-        context.dataStore.edit { preferences ->
+        cachedMainPreferences = context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.driveTileSize(view)] = size
         }
     }
@@ -443,7 +551,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override val sidebarCollapsedFlow: Flow<Boolean> = preference { it[PreferencesKeys.SIDEBAR_COLLAPSED] ?: false }
 
     override suspend fun setSidebarCollapsed(collapsed: Boolean) {
-        context.dataStore.edit { preferences ->
+        cachedMainPreferences = context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.SIDEBAR_COLLAPSED] = collapsed
         }
     }
@@ -451,7 +559,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override val showExtensionsFlow: Flow<Boolean> = preference { it[PreferencesKeys.SHOW_EXTENSIONS] ?: false }
 
     override suspend fun setShowExtensions(show: Boolean) {
-        context.dataStore.edit { preferences ->
+        cachedMainPreferences = context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.SHOW_EXTENSIONS] = show
         }
     }

@@ -8,8 +8,10 @@ import dev.piko.shared.i18n.tr
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -23,10 +25,9 @@ import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -35,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -197,23 +199,47 @@ private fun SavedPasswordRow(
     onClick: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
 ) {
-    ListItem(
-        modifier = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier,
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        headlineContent = {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+                .heightIn(min = 56.dp)
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             // 等宽字体：l 与 1、O 与 0 这类密码里常见的混淆一眼能分清
-            Text(password, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        },
-        trailingContent = when {
-            onDelete != null -> {
-                { TooltipIconButton(icon = Icons.Outlined.Delete, label = tr("删除", "Delete", "削除", "삭제", "刪除"), onClick = onDelete) }
+            Text(
+                text = password,
+                style = MaterialTheme.typography.bodyLarge,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            when {
+                onDelete != null -> {
+                    TooltipIconButton(
+                        icon = Icons.Outlined.Delete,
+                        label = tr("删除", "Delete", "削除", "삭제", "刪除"),
+                        onClick = onDelete,
+                    )
+                }
+                selected -> {
+                    Icon(
+                        Icons.Outlined.Check,
+                        contentDescription = tr("已选", "Selected", "選択済み", "선택됨", "已選取"),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
-            selected -> {
-                { Icon(Icons.Outlined.Check, contentDescription = tr("已选", "Selected", "選択済み", "선택됨", "已選取"), tint = MaterialTheme.colorScheme.primary) }
-            }
-            else -> null
-        },
-    )
+        }
+    }
 }
 
 /** 设置页里管理已保存的解压密码，只能查看与删除；新密码只在服务端验证通过时记下。 */

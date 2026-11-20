@@ -8,6 +8,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Box
@@ -29,6 +30,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ShortNavigationBarDefaults
@@ -48,6 +50,7 @@ import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.screens.drive.withoutSavedState
+import dev.piko.ui.theme.islandBorderColor
 
 /** [PikoSheet] 内容所在的作用域。 */
 interface PikoSheetScope : ColumnScope {
@@ -113,6 +116,7 @@ fun PikoSheet(
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = sheetState,
+        shape = BottomSheetDefaults.ExpandedShape,
         // 与底部导航栏同色：sheet 从导航栏的位置升起，两者连成一片，而不是另一块颜色压在上面
         containerColor = ShortNavigationBarDefaults.containerColor,
         contentWindowInsets = bottomSheetInsets,
@@ -133,6 +137,7 @@ fun PikoSheet(
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ModalSideSheet(
     onDismissRequest: () -> Unit,
@@ -163,9 +168,12 @@ private fun ModalSideSheet(
                 exit = slideOutHorizontally(MaterialTheme.motionScheme.fastSpatialSpec()) { it } + fadeOut(),
                 modifier = Modifier.align(Alignment.CenterEnd),
             ) {
+                val borderColor = MaterialTheme.colorScheme.islandBorderColor
                 Surface(
-                    shape = MaterialTheme.shapes.large,
+                    shape = MaterialTheme.shapes.largeIncreased,
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = borderColor?.let { BorderStroke(1.dp, it) },
+                    shadowElevation = 6.dp,
                     modifier = Modifier
                         .windowInsetsPadding(WindowInsets.safeDrawing)
                         .padding(16.dp)
@@ -173,11 +181,14 @@ private fun ModalSideSheet(
                         .fillMaxHeight(),
                 ) {
                     Column(modifier = Modifier.fillMaxHeight().wheelStaysInSheet()) {
-                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, end = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             if (title != null) {
                                 Text(
                                     text = title,
-                                    style = MaterialTheme.typography.titleLarge,
+                                    style = MaterialTheme.typography.titleLargeEmphasized,
                                     modifier = Modifier.weight(1f).padding(start = 24.dp),
                                 )
                             } else {

@@ -4,9 +4,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import dev.piko.data.auth.PikoUserPreferences
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 开屏检查一次新版本，有就弹 [UpdateDialog]。
@@ -32,8 +34,10 @@ fun StartupUpdatePrompt(
         onDismiss = updater::dismissStartupUpdate,
         onIgnore = {
             updater.dismissStartupUpdate()
-            // 对话框随即离开组合，写盘不能跟着它的作用域一起取消
-            scope.launch(NonCancellable) { preferences.setIgnoredUpdateVersion(update.version) }
+            // 对话框随即离开组合，使用 UNDISPATCHED + NonCancellable 确保写盘不受组合离开中断
+            scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                withContext(NonCancellable) { preferences.setIgnoredUpdateVersion(update.version) }
+            }
         },
     )
 }

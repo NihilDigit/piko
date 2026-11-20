@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -39,6 +40,7 @@ import androidx.compose.ui.focus.focusTarget
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.key
@@ -52,15 +54,19 @@ import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
 import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.shared.i18n.tr
+import dev.piko.shared.media.player.DEFAULT_DOUBLE_TAP_SEEK_SECONDS
 import dev.piko.shared.media.player.MediaTrack
+import dev.piko.shared.media.player.OriginalSubtitleTrackInfo
 import dev.piko.shared.media.player.PlaybackStatsSection
 import dev.piko.shared.media.player.PlayerAspectRatio
+import dev.piko.shared.media.player.PlayerControlId
 import dev.piko.shared.media.player.PlaylistEntry
 import dev.piko.shared.media.player.VideoCropRegion
 import dev.piko.ui.components.LocalPointerSource
@@ -70,15 +76,15 @@ import dev.piko.ui.platform.LocalFramelessWindow
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.math.abs
 
-private val HUD_TOP_PADDING = 88.dp
 private val COMPACT_WIDTH = 600.dp
 private const val SUBTITLE_LABEL_MAX_LENGTH = 16
 private val PLAIN_EPISODE = Regex("""[0-9]+(\.[0-9]+)?""")
 
 /**
  * 播放器的完整控件层，叠在视频画面之上（Android 与桌面共用）：
- * 业务状态单向来自 `PlayerScreenState`，控件显隐、手势进退与瞬态读数由纯 UI 元素状态持有者
- * [PlayerControlsUiState] 管理，各栏与侧面板由顶层无状态组件渲染。
+ * - 完整移植 Bilby 的中央 5 槽位控件簇、四态可自定义顶/底栏渲染（含 `showBackground` 与自动去重）、
+ *   贴边长按倍速拨盘与跨轴锁定、顶部两角横划取消区、对侧贴边音量/亮度竖条与双击侧边胶囊；
+ * - 保留 Piko 原生特性：桌面无边框窗口控制、画质切换、音轨与字幕、画面旋转、区域裁剪编辑与 `?` 快捷键浮层。
  */
 @Composable
 fun MobilePlayerControls(
@@ -117,7 +123,7 @@ fun MobilePlayerControls(
     onPrevious: () -> Unit = {},
     onNext: () -> Unit = {},
     onSelectEntry: (PlaylistEntry) -> Unit = {},
-    hideEpisodeThumbnails: Boolean = true,
+    hideEpisodeThumbnails: Boolean = false,
     audioTracks: List<MediaTrack> = emptyList(),
     selectedAudioTrackId: String? = null,
     onSelectAudioTrack: (MediaTrack) -> Unit = {},
@@ -143,15 +149,31 @@ fun MobilePlayerControls(
     registerKeyFallback: (((KeyEvent) -> Boolean)?) -> Unit = {},
     positionMillisProvider: (() -> Long)? = null,
     bufferedPositionMillisProvider: (() -> Long)? = null,
+    windowActions: PlayerWindowActions? = null,
+    onSwitchToListen: (() -> Unit)? = null,
+    autoResolvedQuality: String? = null,
+    scrubFrameCache: ScrubFrameCache? = null,
+    originalSubtitleHints: List<OriginalSubtitleTrackInfo> = emptyList(),
+    onPausePlayback: (() -> Unit)? = null,
+    onResumePlayback: (() -> Unit)? = null,
 ) {
     val windowInfo = LocalWindowInfo.current
     val windowSize = windowInfo.containerSize
     val windowFocused = windowInfo.isWindowFocused
     val compactWidth = with(LocalDensity.current) { windowSize.width.toDp() } < COMPACT_WIDTH
     val isLandscape = windowSize.width > windowSize.height
+    val layoutPrefs = LocalPlayerLayoutPrefs.current
+    val activeLayout = layoutPrefs.videoLayout(isLandscape = isLandscape)
+    val effectiveSeekStepSeconds = if (layoutPrefs.effectiveDoubleTapSeekSeconds != DEFAULT_DOUBLE_TAP_SEEK_SECONDS) {
+        layoutPrefs.effectiveDoubleTapSeekSeconds
+    } else {
+        seekStepSeconds
+    }
+
     val focusRequester = remember { FocusRequester() }
     val pointerSource = LocalPointerSource.current
     val framelessWindow = LocalFramelessWindow.current
+    val haptic = LocalHapticFeedback.current
     var subtreeHasFocus by remember { mutableStateOf(false) }
     var rootSelfFocused by remember { mutableStateOf(false) }
 
@@ -163,6 +185,32 @@ fun MobilePlayerControls(
     val controlsHover = remember { MutableInteractionSource() }
     val isHoveringControls by controlsHover.collectIsHoveredAsState()
 
+    val latestIsPlaying by rememberUpdatedState(isPlaying)
+    val latestOnPausePlayback by rememberUpdatedState(onPausePlayback)
+    val latestOnResumePlayback by rememberUpdatedState(onResumePlayback)
+    val latestOnRapidScrubPlayPause by rememberUpdatedState(onPlayPause)
+    val latestOnRapidScrubSeek by rememberUpdatedState(onSeek)
+    val speedController = rememberPlaybackSpeedController(
+        mediaKey = currentFileId,
+        playbackSpeed = playbackSpeed,
+        defaultHoldSpeed = longPressSpeed,
+        onSpeedChange = onSpeedChange,
+        readPositionMillis = readPositionMillis,
+        readDurationMillis = { durationMillis },
+        onCommitRapidScrub = { target -> latestOnRapidScrubSeek(target) },
+        allowRapidScrub = { scrubFrameCache != null },
+        readIsPlaying = { latestIsPlaying },
+        onPauseForRapidScrub = {
+            latestOnPausePlayback?.invoke() ?: run {
+                if (latestIsPlaying) latestOnRapidScrubPlayPause()
+            }
+        },
+        onResumeAfterRapidScrub = {
+            latestOnResumePlayback?.invoke() ?: run {
+                if (!latestIsPlaying) latestOnRapidScrubPlayPause()
+            }
+        },
+    )
     val ui = rememberPlayerControlsUiState(
         currentFileId = currentFileId,
         isPlaying = isPlaying,
@@ -172,9 +220,28 @@ fun MobilePlayerControls(
         rotationDegrees = rotationDegrees,
         longPressSpeed = longPressSpeed,
         errorMessage = errorMessage,
-        onSpeedChange = onSpeedChange,
+        onSpeedChange = { target -> speedController.applySpeed(target) },
+        isSpeedDialActive = speedController.active || speedController.lockedHint != null,
     )
+    val applyExplicitSpeed: (Float) -> Unit = remember(speedController, ui) {
+        { target ->
+            ui.clearDialSpeedSuppression()
+            speedController.applySpeed(target)
+        }
+    }
+    LaunchedEffect(windowFocused, speedController) {
+        if (!windowFocused && speedController.active) {
+            speedController.cancel()
+        }
+    }
     SideEffect {
+        speedController.onDialSpeedWrite = ui::markDialSpeedWrite
+        ui.onStartHoldBoost = {
+            speedController.open(temporary = true, showDial = false)
+        }
+        ui.onEndHoldBoost = {
+            if (speedController.active) speedController.finish(cancel = false)
+        }
         ui.currentPositionProvider = readPositionMillis
         if (positionMillisProvider == null) {
             ui.currentPositionMillis = positionMillis
@@ -184,7 +251,7 @@ fun MobilePlayerControls(
         ui.currentRotationDegrees = rotationDegrees
         ui.currentIsPlaying = isPlaying
         ui.currentIsFullscreen = isFullscreen
-        ui.currentSeekStepMillis = seekStepSeconds * 1000L
+        ui.currentSeekStepMillis = effectiveSeekStepSeconds * 1_000L
         ui.currentLongPressSpeed = longPressSpeed
         ui.currentVolumeControl = volume
         ui.currentAudioTracks = audioTracks
@@ -194,12 +261,12 @@ fun MobilePlayerControls(
         ui.currentHasPrevious = hasPrevious
         ui.currentHasNext = hasNext
         ui.currentHasStats = playbackStats != null
-        ui.currentIsAlwaysOnTop = framelessWindow?.isAlwaysOnTop
+        ui.currentIsAlwaysOnTop = windowActions?.isAlwaysOnTop ?: framelessWindow?.isAlwaysOnTop
     }
 
     val latestOnPlayPause by rememberUpdatedState(onPlayPause)
     val latestOnSeek by rememberUpdatedState(onSeek)
-    val latestOnSpeedChange by rememberUpdatedState(onSpeedChange)
+    val latestOnSpeedChange by rememberUpdatedState(applyExplicitSpeed)
     val latestOnAspectRatioChange by rememberUpdatedState(onAspectRatioChange)
     val latestOnToggleFullscreen by rememberUpdatedState(onToggleFullscreen)
     val latestOnRotationChange by rememberUpdatedState(onRotationChange)
@@ -208,6 +275,7 @@ fun MobilePlayerControls(
     val latestOnPrevious by rememberUpdatedState(onPrevious)
     val latestOnNext by rememberUpdatedState(onNext)
     val latestFramelessWindow by rememberUpdatedState(framelessWindow)
+    val latestWindowActions by rememberUpdatedState(windowActions)
     val latestRegisterKeyFallback by rememberUpdatedState(registerKeyFallback)
 
     val dispatchPlayerKey: (KeyEvent, Boolean) -> Boolean = remember(ui) {
@@ -224,7 +292,8 @@ fun MobilePlayerControls(
                 onPrevious = latestOnPrevious,
                 onNext = latestOnNext,
                 onSelectAudioTrack = latestOnSelectAudioTrack,
-                onToggleAlwaysOnTop = latestFramelessWindow?.let { fw -> { fw.setAlwaysOnTop(!fw.isAlwaysOnTop) } },
+                onToggleAlwaysOnTop = latestWindowActions?.onToggleAlwaysOnTop
+                    ?: latestFramelessWindow?.let { fw -> { fw.setAlwaysOnTop(!fw.isAlwaysOnTop) } },
                 letFocusedControlHandleSpace = letFocusedControlHandleSpace,
             )
         }
@@ -234,7 +303,7 @@ fun MobilePlayerControls(
         onDispose { latestRegisterKeyFallback(null) }
     }
 
-    val holdControls = ui.shouldHoldControls(isPlaying, errorMessage, isHoveringControls)
+    val holdControls = ui.shouldHoldControls(isPlaying, errorMessage, isHoveringControls) || speedController.active
     val currentHoldControls by rememberUpdatedState(holdControls)
 
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
@@ -247,11 +316,14 @@ fun MobilePlayerControls(
         }
     }
 
-    val hudIndicator = ui.computeHudIndicator(durationMillis)
+    val activeLevel = ui.computeActiveLevel()
+    val activeSeekGesture = ui.activeGesture as? PlayerGesture.Seek
+    val activeEpisodeSwipe = ui.activeGesture as? PlayerGesture.EpisodeSwipe
     val centerIndicator = ui.flashIndicator
-    val seekPreviewMillis = (ui.activeGesture as? PlayerGesture.Seek)?.targetMillis(durationMillis) ?: ui.settledSeekMillis
+    val seekPreviewMillis = activeSeekGesture?.targetMillis(durationMillis) ?: ui.settledSeekMillis
+    var barScrubPositionMillis by remember { mutableStateOf<Long?>(null) }
 
-    val chromeVisible = ui.controlsVisible && !ui.isLocked && !ui.isEditingCropRegion
+    val chromeVisible = ui.controlsVisible && !ui.isLocked && !ui.isEditingCropRegion && !speedController.active
     var stalledLoading by remember { mutableStateOf(false) }
     LaunchedEffect(isLoading) {
         stalledLoading = false
@@ -260,11 +332,29 @@ fun MobilePlayerControls(
             stalledLoading = true
         }
     }
-    val bottomBarVisible = (chromeVisible || seekPreviewMillis != null) && !ui.isEditingCropRegion
-    val centerVisible = ((chromeVisible && !ui.isBoosting) || (isLoading && (chromeVisible || stalledLoading)) || centerIndicator != null) && errorMessage == null && !ui.isEditingCropRegion
 
-    BackHandler(enabled = isFullscreen && !ui.isEditingCropRegion && !ui.isSpeedPopupOpen && ui.openSheet == null, onBack = onToggleFullscreen)
+    // 遵循 Bilby 规则：触屏且开启中央控件时由中央 5 槽位承载播放/切集/步进，
+    // 键鼠或关闭触控中央控件时整组播放簇自动迁至顶/底栏 PlayPause 槽位，严格单入口不重复。
+    val centerControlsActive = layoutPrefs.isCenterControlsActive(pointerSource.isTouchLike)
+    val transportInCenter = centerControlsActive && activeLayout.center.showCenterPlay
+    val transportInAnyBar = !transportInCenter && (
+        activeLayout.hasInBottomBar(PlayerControlId.PlayPause) ||
+            activeLayout.hasInTopBar(PlayerControlId.PlayPause)
+        )
+
+    val bottomBarVisible = (chromeVisible || seekPreviewMillis != null) && !ui.isEditingCropRegion && !speedController.active
+    val showCenterCluster = transportInCenter && chromeVisible && !ui.isBoosting && errorMessage == null
+    val centerVisible = (
+        showCenterCluster ||
+            (isLoading && (chromeVisible || stalledLoading)) ||
+            centerIndicator != null
+        ) && errorMessage == null && !ui.isEditingCropRegion &&
+        activeSeekGesture == null && activeEpisodeSwipe == null && !speedController.active
+
+    BackHandler(enabled = isFullscreen && !ui.isEditingCropRegion && !ui.isSpeedPopupOpen && !ui.isQualityPopupOpen && !ui.isShortcutsOverlayOpen && !speedController.active && ui.openSheet == null, onBack = onToggleFullscreen)
+    BackHandler(enabled = ui.isShortcutsOverlayOpen) { ui.isShortcutsOverlayOpen = false }
     BackHandler(enabled = ui.isSpeedPopupOpen && !ui.isEditingCropRegion) { ui.isSpeedPopupOpen = false }
+    BackHandler(enabled = ui.isQualityPopupOpen && !ui.isEditingCropRegion) { ui.isQualityPopupOpen = false }
     BackHandler(enabled = ui.isEditingCropRegion) { ui.cancelCropEdit(onAspectRatioChange) }
 
     LaunchedEffect(
@@ -273,10 +363,16 @@ fun MobilePlayerControls(
         chromeVisible,
         ui.openSheet,
         ui.isSpeedPopupOpen,
+        ui.isQualityPopupOpen,
+        ui.isShortcutsOverlayOpen,
         ui.isEditingCropRegion,
+        speedController.active,
         pointerSource.isTouchLike,
     ) {
-        if (!pointerSource.isTouchLike && windowFocused && !subtreeHasFocus && ui.openSheet == null && !ui.isSpeedPopupOpen) {
+        if (!pointerSource.isTouchLike && windowFocused && !subtreeHasFocus &&
+            ui.openSheet == null && !ui.isSpeedPopupOpen && !ui.isQualityPopupOpen &&
+            !ui.isShortcutsOverlayOpen && !speedController.active
+        ) {
             withFrameNanos {}
             if (!subtreeHasFocus && !pointerSource.isTouchLike) {
                 runCatching { focusRequester.requestFocus() }
@@ -286,14 +382,31 @@ fun MobilePlayerControls(
 
     val hasPlaylist = playlist.size > 1
     val hasTracksEntry = subtitleTracks.isNotEmpty() || audioTracks.size > 1 ||
+        originalSubtitleHints.isNotEmpty() ||
         onPickLocalSubtitle != null || onPickDriveSubtitle != null
+    val hasSettingsEntry = hasTracksEntry || fileActions.isNotEmpty() || playbackSpeed != null ||
+        qualityOptions.isNotEmpty() || aspectRatio != null || onSeekStepChange != null
     val episodeLabel = playlist.find { it.fileId == currentFileId }
         ?.takeIf { hasPlaylist && it.label.length <= SUBTITLE_LABEL_MAX_LENGTH }
         ?.label
         ?.let { if (it.matches(PLAIN_EPISODE)) tr("第 $it 集", "Episode $it", "第 $it 話", "에피소드 $it", "第 $it 集") else it }
 
-    val hideCursor = idleCursor != null && ui.isMouseIdle && !ui.controlsVisible && isPlaying
+    val hideCursor = idleCursor != null && ui.isMouseIdle && !ui.controlsVisible && isPlaying && !speedController.active
 
+    // 保留上次电平条停靠边，确保滑出退场与入场同侧一致
+    var lastLevelDockEnd by remember { mutableStateOf(true) }
+    if (activeLevel != null) lastLevelDockEnd = activeLevel.dockEnd
+    val levelDockEnd = activeLevel?.dockEnd ?: lastLevelDockEnd
+
+    // 保留上次双击方向，确保退场滑出与入场同侧一致
+    var lastDoubleTapForward by remember { mutableStateOf(true) }
+    if (ui.doubleTapVisible) lastDoubleTapForward = ui.doubleTapForward
+    val doubleTapForwardSide = if (ui.doubleTapVisible) ui.doubleTapForward else lastDoubleTapForward
+
+    CompositionLocalProvider(
+        LocalAutoResolvedQuality provides autoResolvedQuality,
+        LocalScrubFrameCache provides scrubFrameCache,
+    ) {
     PlayerTheme {
         val motion = MaterialTheme.motionScheme
         Box(
@@ -301,11 +414,17 @@ fun MobilePlayerControls(
                 .fillMaxSize()
                 .onSizeChanged { viewportSize = it }
                 .onPreviewKeyEvent { event ->
-                    if (event.key == Key.Escape) false
+                    val dialCapturesKeys = speedController.active &&
+                        layoutPrefs.gestures.longPressSpeedDialEnabled &&
+                        speedController.selection?.showDial != false
+                    if (event.key == Key.Escape || dialCapturesKeys) false
                     else dispatchPlayerKey(event, subtreeHasFocus && !rootSelfFocused && isKeyboardModality)
                 }
                 .onKeyEvent { event ->
-                    if (event.key == Key.Escape) dispatchPlayerKey(event, false) else false
+                    val dialCapturesKeys = speedController.active &&
+                        layoutPrefs.gestures.longPressSpeedDialEnabled &&
+                        speedController.selection?.showDial != false
+                    if (event.key == Key.Escape && !dialCapturesKeys) dispatchPlayerKey(event, false) else false
                 }
                 .onFocusChanged { state ->
                     subtreeHasFocus = state.hasFocus
@@ -313,19 +432,18 @@ fun MobilePlayerControls(
                 }
                 .focusRequester(focusRequester)
                 .then(if (!pointerSource.isTouchLike) Modifier.focusTarget() else Modifier)
-                .pointerInput(Unit) {
+                .pointerInput(speedController) {
                     var lastMousePosition: Offset? = null
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (speedController.active) continue
                             val mouse = event.changes.firstOrNull { it.type == PointerType.Mouse }
                             val hovering = event.type == PointerEventType.Move && mouse != null && !mouse.pressed &&
                                 lastMousePosition.let { it != null && it != mouse.position }
                             if (mouse != null) lastMousePosition = if (event.type == PointerEventType.Exit) null else mouse.position
                             if (hovering) {
-                                ui.controlsVisible = true
-                                ui.interacted()
-                                ui.mouseMoveCount += 1
+                                ui.recordMouseMove()
                             }
                             val left = event.type == PointerEventType.Exit && mouse != null &&
                                 !Rect(Offset.Zero, size.toSize()).contains(mouse.position)
@@ -341,6 +459,11 @@ fun MobilePlayerControls(
                 positionProvider = readPositionMillis,
                 brightness = brightness,
                 volume = volume,
+                speedController = speedController,
+                speedSupported = playbackSpeed != null,
+                gestureConfig = layoutPrefs.gestures,
+                canPrevious = hasPrevious,
+                canNext = hasNext,
                 onGestureChange = { ui.activeGesture = it },
                 onToggleControls = {
                     if (pointerSource.isTouchLike) {
@@ -372,14 +495,26 @@ fun MobilePlayerControls(
                         else -> ui.stepSeek(forward = zone == DoubleTapZone.Forward, onSeek = onSeek, byTap = true)
                     }
                 },
+                onPrevious = {
+                    ui.interacted()
+                    onPrevious()
+                },
+                onNext = {
+                    ui.interacted()
+                    onNext()
+                },
+                onSpeedStart = {
+                    ui.controlsVisible = false
+                    ui.activeGesture = null
+                    ui.interacted()
+                },
                 seekTapActive = { ui.doubleTapVisible && ui.tapSeekRound && pointerSource.isTouchLike },
-                onSpeedBoost = { active -> if (active) ui.startBoost(onSpeedChange) else ui.endBoost(onSpeedChange) },
-                modifier = Modifier.pointerInput(ui.isLocked, ui.isEditingCropRegion) {
+                modifier = Modifier.pointerInput(ui.isLocked, ui.isEditingCropRegion, speedController) {
                     if (ui.isLocked || ui.isEditingCropRegion) return@pointerInput
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
-                            if (event.type != PointerEventType.Scroll) continue
+                            if (event.type != PointerEventType.Scroll || speedController.active) continue
                             val change = event.changes.firstOrNull() ?: continue
                             val dy = change.scrollDelta.y
                             if (dy == 0f) continue
@@ -405,7 +540,8 @@ fun MobilePlayerControls(
                     )
                 }
                 FullscreenPromptButton(
-                    visible = !isFullscreen && !ui.isLocked && !isLandscape && isLandscapeVideo == true &&
+                    visible = layoutPrefs.showPortraitFullscreenPrompt && !isFullscreen && !ui.isLocked &&
+                        !isLandscape && isLandscapeVideo == true &&
                         errorMessage == null && !ui.isEditingCropRegion && !isSeeking,
                     onClick = onToggleFullscreen,
                 )
@@ -418,6 +554,152 @@ fun MobilePlayerControls(
                 )
             }
 
+            val volumeLevel = volume?.let { control ->
+                ui.volumeRevision
+                control.current()
+            }
+            val barEnv = PlayerBarEnvironment(
+                layout = activeLayout,
+                transportInCenter = transportInCenter,
+                transportInAnyBar = transportInAnyBar,
+                seekButtonSeconds = layoutPrefs.seekButtonSeconds,
+                title = title,
+                episodeLabel = episodeLabel,
+                isLocalPlayback = isLocalPlayback,
+                isLandscape = isLandscape,
+                isFullscreen = isFullscreen,
+                isLocked = ui.isLocked,
+                isPlaying = isPlaying,
+                compactWidth = compactWidth,
+                positionMillisProvider = readPositionMillis,
+                scrubPositionMillis = barScrubPositionMillis,
+                previewPositionMillis = seekPreviewMillis,
+                durationMillis = durationMillis,
+                playbackSpeed = playbackSpeed,
+                showEpisodes = hasPlaylist,
+                hasPrevious = hasPrevious,
+                hasNext = hasNext,
+                isSpeedPopupOpen = ui.isSpeedPopupOpen,
+                qualityOptions = qualityOptions,
+                currentQuality = currentQuality,
+                isQualityPopupOpen = ui.isQualityPopupOpen,
+                aspectRatio = aspectRatio,
+                volume = volumeLevel,
+                windowActions = windowActions,
+                onBackClick = onBack,
+                onPlayPause = {
+                    ui.interacted()
+                    onPlayPause()
+                },
+                onPrevious = {
+                    ui.interacted()
+                    onPrevious()
+                },
+                onNext = {
+                    ui.interacted()
+                    onNext()
+                },
+                onSeekDeltaMillis = { deltaMillis ->
+                    ui.interacted()
+                    ui.stepSeek(
+                        forward = deltaMillis >= 0L,
+                        onSeek = onSeek,
+                        stepMillis = abs(deltaMillis),
+                    )
+                },
+                onSpeedPopupOpenChange = {
+                    ui.interacted()
+                    if (it) {
+                        ui.isQualityPopupOpen = false
+                        ui.openSheet = null
+                    }
+                    ui.isSpeedPopupOpen = it
+                },
+                onSpeedChange = {
+                    ui.interacted()
+                    applyExplicitSpeed(it)
+                },
+                onQualityPopupOpenChange = {
+                    ui.interacted()
+                    if (it) {
+                        ui.isSpeedPopupOpen = false
+                        ui.openSheet = null
+                    }
+                    ui.isQualityPopupOpen = it
+                },
+                onQualityChange = {
+                    ui.interacted()
+                    onQualityChange(it)
+                },
+                onEpisodesClick = {
+                    ui.interacted()
+                    ui.isSpeedPopupOpen = false
+                    ui.isQualityPopupOpen = false
+                    ui.openSheet = PlayerSheet.Episodes
+                },
+                onTracksClick = {
+                    ui.interacted()
+                    ui.isSpeedPopupOpen = false
+                    ui.isQualityPopupOpen = false
+                    ui.openSheet = PlayerSheet.Tracks
+                }.takeIf { hasTracksEntry },
+                onStatsClick = {
+                    ui.interacted()
+                    ui.isSpeedPopupOpen = false
+                    ui.isQualityPopupOpen = false
+                    ui.openSheet = PlayerSheet.Stats
+                }.takeIf { playbackStats != null },
+                onSettingsClick = {
+                    ui.interacted()
+                    ui.isSpeedPopupOpen = false
+                    ui.isQualityPopupOpen = false
+                    ui.openSheet = PlayerSheet.Settings
+                }.takeIf { hasSettingsEntry },
+                onSwitchToListen = onSwitchToListen?.let { switch ->
+                    {
+                        ui.interacted()
+                        switch()
+                    }
+                },
+                onRotate = rotationDegrees?.let { degrees ->
+                    {
+                        ui.interacted()
+                        onRotationChange((degrees + 90) % 360)
+                    }
+                },
+                onCycleAspectRatio = aspectRatio?.let { current ->
+                    {
+                        ui.interacted()
+                        val next = when (current) {
+                            PlayerAspectRatio.Fit -> PlayerAspectRatio.Crop
+                            PlayerAspectRatio.Crop -> PlayerAspectRatio.Stretch
+                            PlayerAspectRatio.Stretch, PlayerAspectRatio.RegionCrop -> PlayerAspectRatio.Fit
+                        }
+                        onAspectRatioChange(next)
+                    }
+                },
+                onToggleLock = {
+                    haptic.performHapticFeedback(
+                        if (ui.isLocked) HapticFeedbackType.ToggleOff else HapticFeedbackType.ToggleOn,
+                    )
+                    ui.isLocked = !ui.isLocked
+                    ui.interacted()
+                },
+                onToggleFullscreen = {
+                    ui.interacted()
+                    onToggleFullscreen()
+                },
+                onVolumeChange = {
+                    ui.interacted()
+                    ui.setVolume(it)
+                },
+                onToggleMute = {
+                    ui.interacted()
+                    ui.toggleMute(showHud = false)
+                },
+                onVolumeDraggingChange = { ui.isDraggingVolume = it },
+            )
+
             AnimatedVisibility(
                 visible = chromeVisible,
                 enter = fadeIn(motion.defaultEffectsSpec()),
@@ -425,26 +707,8 @@ fun MobilePlayerControls(
                 modifier = Modifier.fillMaxSize(),
             ) {
                 Box(Modifier.fillMaxSize()) {
-                    PlayerTopBar(
-                        title = title,
-                        episodeLabel = episodeLabel,
-                        isLocalPlayback = isLocalPlayback,
-                        onBackClick = onBack,
-                        onTracksClick = {
-                            ui.interacted()
-                            ui.openSheet = PlayerSheet.Tracks
-                        }.takeIf { hasTracksEntry },
-                        onStatsClick = {
-                            ui.interacted()
-                            ui.openSheet = PlayerSheet.Stats
-                        }.takeIf { playbackStats != null },
-                        onSettingsClick = {
-                            ui.interacted()
-                            ui.openSheet = PlayerSheet.Settings
-                        }.takeIf {
-                            hasTracksEntry || fileActions.isNotEmpty() || playbackSpeed != null ||
-                                qualityOptions.isNotEmpty() || aspectRatio != null || onSeekStepChange != null
-                        },
+                    CustomizablePlayerTopBar(
+                        env = barEnv,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .hoverable(controlsHover)
@@ -462,68 +726,17 @@ fun MobilePlayerControls(
                 exit = fadeOut(motion.fastEffectsSpec()),
                 modifier = Modifier.fillMaxSize(),
             ) {
-                val volumeLevel = volume?.let { control ->
-                    ui.volumeRevision
-                    control.current()
-                }
                 Box(Modifier.fillMaxSize()) {
-                    PlayerBottomBar(
-                        isLandscape = isLandscape,
-                        isFullscreen = isFullscreen,
+                    CustomizablePlayerBottomBar(
+                        env = barEnv,
                         thumbOnHoverOnly = seekThumbOnHoverOnly,
-                        positionMillisProvider = readPositionMillis,
-                        previewPositionMillis = seekPreviewMillis,
-                        durationMillis = durationMillis,
                         bufferedPositionMillisProvider = readBufferedPositionMillis,
-                        playbackSpeed = playbackSpeed,
-                        showEpisodes = hasPlaylist,
-                        showEpisodeSkip = hasPlaylist && !compactWidth,
-                        compactWidth = compactWidth,
-                        hasPrevious = hasPrevious,
-                        hasNext = hasNext,
-                        onPrevious = {
-                            ui.interacted()
-                            onPrevious()
-                        },
-                        onNext = {
-                            ui.interacted()
-                            onNext()
-                        },
                         onSeek = {
                             ui.interacted()
                             onSeek(it)
                         },
-                        isSpeedPopupOpen = ui.isSpeedPopupOpen,
-                        onSpeedPopupOpenChange = {
-                            ui.interacted()
-                            ui.isSpeedPopupOpen = it
-                        },
-                        onSpeedChange = {
-                            ui.interacted()
-                            onSpeedChange(it)
-                        },
-                        onEpisodesClick = { ui.openSheet = PlayerSheet.Episodes },
-                        onRotate = rotationDegrees?.let { degrees ->
-                            {
-                                ui.interacted()
-                                onRotationChange((degrees + 90) % 360)
-                            }
-                        },
-                        onToggleFullscreen = {
-                            ui.interacted()
-                            onToggleFullscreen()
-                        },
+                        onScrubPositionChange = { barScrubPositionMillis = it },
                         onScrubbingChange = { ui.isScrubbing = it },
-                        volume = volumeLevel,
-                        onVolumeChange = {
-                            ui.interacted()
-                            ui.setVolume(it)
-                        },
-                        onToggleMute = {
-                            ui.interacted()
-                            ui.toggleMute(showHud = false)
-                        },
-                        onVolumeDraggingChange = { ui.isDraggingVolume = it },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .hoverable(controlsHover)
@@ -535,21 +748,61 @@ fun MobilePlayerControls(
                 }
             }
 
-            PlayerHud(
-                indicator = if (ui.isEditingCropRegion) null else hudIndicator,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
-                    .padding(top = HUD_TOP_PADDING),
+            // Bilby 三分式手势 HUD：横划进退（含取消态）居中、音量/亮度贴对侧边缘、双击快进/快退贴同侧边缘
+            SeekHudOverlay(
+                seek = if (ui.isEditingCropRegion) null else activeSeekGesture,
+                durationMillis = durationMillis,
+                modifier = Modifier.align(Alignment.Center),
             )
 
-            PlayerCenterControls(
-                visible = centerVisible,
+            EpisodeSwipeHud(
+                visible = !ui.isEditingCropRegion && activeEpisodeSwipe != null,
+                direction = activeEpisodeSwipe?.direction ?: 0,
+                armed = activeEpisodeSwipe?.armed == true,
+                available = if ((activeEpisodeSwipe?.direction ?: 1) > 0) hasNext else hasPrevious,
+                modifier = Modifier.align(Alignment.Center),
+            )
+
+            PlayerLevelEdgeBar(
+                adjust = if (ui.isEditingCropRegion) null else activeLevel,
+                dockEnd = levelDockEnd,
+                large = isLandscape || !compactWidth,
+                modifier = Modifier
+                    .align(if (levelDockEnd) Alignment.CenterEnd else Alignment.CenterStart)
+                    .windowInsetsPadding(
+                        WindowInsets.safeDrawing.only(
+                            if (levelDockEnd) WindowInsetsSides.End else WindowInsetsSides.Start,
+                        ),
+                    )
+                    .padding(horizontal = 16.dp),
+            )
+
+            DoubleTapSeekHint(
+                visible = !ui.isEditingCropRegion && ui.doubleTapVisible,
+                forward = doubleTapForwardSide,
+                seconds = ui.doubleTapSeconds,
+                modifier = Modifier
+                    .align(if (doubleTapForwardSide) Alignment.CenterEnd else Alignment.CenterStart)
+                    .windowInsetsPadding(
+                        WindowInsets.safeDrawing.only(
+                            if (doubleTapForwardSide) WindowInsetsSides.End else WindowInsetsSides.Start,
+                        ),
+                    )
+                    .padding(horizontal = 16.dp),
+            )
+
+            PlayerCenterCluster(
+                config = activeLayout.center,
+                centerVisible = centerVisible,
+                showSideButtons = showCenterCluster && !isLoading,
                 isPlaying = isPlaying,
                 isLoading = isLoading,
                 indicator = centerIndicator,
+                large = isLandscape || !compactWidth,
+                canPrevious = hasPrevious,
+                canNext = hasNext,
+                allowSeek = durationMillis > 0L,
                 loadingSpeedText = loadingSpeedText,
-                modifier = Modifier.align(Alignment.Center),
                 onPlayPause = {
                     if (chromeVisible) {
                         ui.interacted()
@@ -558,23 +811,58 @@ fun MobilePlayerControls(
                         ui.controlsVisible = true
                     }
                 },
+                onPrevious = {
+                    ui.interacted()
+                    onPrevious()
+                },
+                onNext = {
+                    ui.interacted()
+                    onNext()
+                },
+                onSeekDeltaMillis = { deltaMillis ->
+                    ui.interacted()
+                    ui.stepSeek(
+                        forward = deltaMillis >= 0L,
+                        onSeek = onSeek,
+                        stepMillis = abs(deltaMillis),
+                    )
+                },
+                modifier = Modifier.align(Alignment.Center).hoverable(controlsHover),
             )
 
+            // 锁屏键：若用户已在顶/底栏放置 Lock 则未锁定时不重复显示悬浮锁（严格 DRY）；已锁定时常驻右侧解锁入口
             AnimatedVisibility(
-                visible = ui.controlsVisible && errorMessage == null && !ui.isEditingCropRegion,
+                visible = ui.controlsVisible && errorMessage == null && !ui.isEditingCropRegion &&
+                    !speedController.active &&
+                    (ui.isLocked || (pointerSource.isTouchLike && !activeLayout.hasControl(PlayerControlId.Lock))) &&
+                    !(activeLevel != null && levelDockEnd),
                 enter = fadeIn(motion.defaultEffectsSpec()),
                 exit = fadeOut(motion.fastEffectsSpec()),
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.End))
-                    .padding(end = 16.dp),
+                    .padding(end = 16.dp)
+                    .hoverable(controlsHover),
             ) {
                 LockToggle(
                     isLocked = ui.isLocked,
                     onToggle = {
+                        haptic.performHapticFeedback(
+                            if (ui.isLocked) HapticFeedbackType.ToggleOff else HapticFeedbackType.ToggleOn,
+                        )
                         ui.isLocked = !ui.isLocked
                         ui.interacted()
                     },
+                )
+            }
+
+            if (!ui.isEditingCropRegion && playbackSpeed != null) {
+                SpeedDialOverlay(
+                    controller = speedController,
+                    isFullscreen = isFullscreen,
+                    showDial = layoutPrefs.gestures.longPressSpeedDialEnabled,
+                    durationMillis = durationMillis,
+                    modifier = Modifier.fillMaxSize(),
                 )
             }
 
@@ -603,8 +891,13 @@ fun MobilePlayerControls(
                 )
             }
 
+            val effectiveOpenSheet = when {
+                ui.isSpeedPopupOpen -> PlayerSheet.Speed
+                ui.isQualityPopupOpen -> PlayerSheet.Quality
+                else -> ui.openSheet
+            }
             PlayerSheetsOverlay(
-                openSheet = ui.openSheet,
+                openSheet = effectiveOpenSheet,
                 isLandscape = isLandscape,
                 title = title,
                 playlist = playlist,
@@ -615,16 +908,24 @@ fun MobilePlayerControls(
                 qualityOptions = qualityOptions,
                 currentQuality = currentQuality,
                 aspectRatio = aspectRatio,
-                seekStepSeconds = seekStepSeconds,
+                seekStepSeconds = effectiveSeekStepSeconds,
                 longPressSpeed = longPressSpeed,
                 audioTracks = audioTracks,
                 selectedAudioTrackId = selectedAudioTrackId,
                 subtitleTracks = subtitleTracks,
                 selectedSubtitleTrackId = selectedSubtitleTrackId,
-                onDismiss = { ui.openSheet = null },
-                onOpenSheet = { ui.openSheet = it },
+                onDismiss = {
+                    ui.isSpeedPopupOpen = false
+                    ui.isQualityPopupOpen = false
+                    ui.openSheet = null
+                },
+                onOpenSheet = {
+                    ui.isSpeedPopupOpen = false
+                    ui.isQualityPopupOpen = false
+                    ui.openSheet = it
+                },
                 onSelectEntry = onSelectEntry,
-                onSpeedChange = onSpeedChange,
+                onSpeedChange = applyExplicitSpeed,
                 onQualityChange = onQualityChange,
                 onAspectRatioChange = onAspectRatioChange,
                 onBeginCropEdit = { ui.beginCropEdit(aspectRatio, onAspectRatioChange) },
@@ -635,7 +936,17 @@ fun MobilePlayerControls(
                 onPickLocalSubtitle = onPickLocalSubtitle,
                 onPickDriveSubtitle = onPickDriveSubtitle,
                 playbackStats = playbackStats,
+                hasTracks = hasTracksEntry,
+                hasSettings = hasSettingsEntry,
+                originalSubtitleHints = originalSubtitleHints,
+            )
+
+            PlayerShortcutsOverlay(
+                visible = ui.isShortcutsOverlayOpen,
+                compactWidth = compactWidth,
+                onDismiss = { ui.isShortcutsOverlayOpen = false },
             )
         }
+    }
     }
 }

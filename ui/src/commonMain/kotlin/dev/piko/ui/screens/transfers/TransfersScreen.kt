@@ -114,6 +114,7 @@ import dev.piko.ui.resources.text_clear_completed_alt
 import dev.piko.ui.resources.text_file_deleted
 import dev.piko.ui.serverWorkNotices
 import dev.piko.ui.theme.LocalFramed
+import dev.piko.ui.theme.tabular
 import dev.piko.ui.workbench.LocalWorkspaceContexts
 import kotlinx.coroutines.launch
 
@@ -150,7 +151,9 @@ fun TransfersScreen(
         }
     }
 
-    val isSpoilerBlurEnabled by services.preferences.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isSpoilerBlurEnabled by services.preferences.spoilerBlurFlow.collectAsStateWithLifecycle(
+        initialValue = services.preferences.currentSnapshot.spoilerBlurEnabled,
+    )
     val revealedKeys = rememberSaveable(saver = listSaver({ it.toList() }, { it.toMutableStateList() })) {
         mutableStateListOf<String>()
     }
@@ -232,13 +235,32 @@ fun TransfersScreen(
     val completedExpansion = remember { mutableStateMapOf<TransferKind, Boolean>() }
     fun completedExpanded(kind: TransferKind, sections: TransferSections) = completedExpansion[kind]
         ?: (sections.needsAttention.isEmpty() && sections.inProgress.isEmpty())
-    val visibleOrder by remember(state, currentSections, deletedExpanded, expandedBatches) {
+    val visibleOrder by remember(state, selectionActive, deletedExpanded, expandedBatches) {
         derivedStateOf {
-            (currentSections.paused + currentSections.needsAttention + currentSections.inProgress +
-                (if (completedExpanded(state.filter, currentSections)) currentSections.completed else emptyList()) +
-                if (deletedExpanded) currentSections.outputDeleted else emptyList())
-                .withBatchChildren(expandedBatches)
-                .map { it.key }
+            val activeKind = state.filter
+            if (!selectionActive && expandedBatches.isEmpty()) {
+                val keys = state.sectionKeysOf(activeKind)
+                val showCompleted = completedExpansion[activeKind]
+                    ?: (keys.needsAttention.isEmpty() && keys.inProgress.isEmpty())
+                buildList(
+                    keys.paused.size + keys.needsAttention.size + keys.inProgress.size +
+                        (if (showCompleted) keys.completed.size else 0) +
+                        (if (deletedExpanded) keys.outputDeleted.size else 0),
+                ) {
+                    addAll(keys.paused)
+                    addAll(keys.needsAttention)
+                    addAll(keys.inProgress)
+                    if (showCompleted) addAll(keys.completed)
+                    if (deletedExpanded) addAll(keys.outputDeleted)
+                }
+            } else {
+                val sections = frozenOrder?.apply(state.sectionsOf(activeKind)) ?: state.sectionsOf(activeKind)
+                (sections.paused + sections.needsAttention + sections.inProgress +
+                    (if (completedExpanded(activeKind, sections)) sections.completed else emptyList()) +
+                    if (deletedExpanded) sections.outputDeleted else emptyList())
+                    .withBatchChildren(expandedBatches)
+                    .map { it.key }
+            }
         }
     }
 
@@ -316,9 +338,9 @@ fun TransfersScreen(
         ctx
     }
 
-    val rowSections by remember(state) { derivedStateOf { state.sectionsOf(TransferKind.ALL) } }
-    val completedKeys by remember(state) { derivedStateOf { (rowSections.completed + rowSections.outputDeleted).mapTo(HashSet()) { it.key } } }
-    val attentionKeys by remember(state) { derivedStateOf { rowSections.needsAttention.mapTo(HashSet()) { it.key } } }
+    // 复用 TransfersState 缓存的结构化键集合，避免每 500ms 进度刷新重建 HashSet
+    val completedKeys = state.completedKeys
+    val attentionKeys = state.attentionKeys
 
     val renderItem: @Composable (TransferItem, Modifier, Int, Int) -> Unit = { item, itemModifier, index, count ->
         TransferItemRowSlot(
@@ -366,12 +388,8 @@ fun TransfersScreen(
 
     BackHandler(enabled = selectionActive) { state.clearSelection() }
 
-    val detailsItem = detailsKey?.let { key ->
-        sequenceOf(state.paused, state.inProgress, state.needsAttention, state.completed, state.outputDeleted)
-            .flatten()
-            .flatMap { item -> sequenceOf(item) + item.children }
-            .firstOrNull { it.key == key }
-    }
+    // O(1) 哈希索引查找详情项，避免每 500ms 线性扫描 5 个分组
+    val detailsItem = detailsKey?.let(state::findItemByKey)
     LaunchedEffect(detailsKey, detailsItem) {
         if (detailsKey != null && detailsItem == null) detailState.close()
     }
@@ -622,15 +640,33 @@ private fun LazyGridScope.transferItems(
     expanded: Set<String>,
     renderItem: @Composable (TransferItem, Modifier, Int, Int) -> Unit,
 ) {
+    if (expanded.isEmpty() || items.none { it.key in expanded && it.children.isNotEmpty() }) {
+        itemsIndexed(
+            items = items,
+            key = { _, item -> item.key },
+            contentType = { _, item -> item::class },
+        ) { index, item ->
+            renderItem(item, Modifier.animateItem(), index, items.size)
+        }
+        return
+    }
     items.forEachIndexed { index, item ->
         if (item.key in expanded && item.children.isNotEmpty()) {
-            fullLineItem(key = item.key) { renderItem(item, Modifier.animateItem(), index, items.size) }
-            itemsIndexed(item.children, key = { _, child -> child.key }) { childIndex, child ->
+            fullLineItem(key = item.key, contentType = item::class) {
+                renderItem(item, Modifier.animateItem(), index, items.size)
+            }
+            itemsIndexed(
+                items = item.children,
+                key = { _, child -> child.key },
+                contentType = { _, child -> child::class },
+            ) { childIndex, child ->
                 renderItem(child, Modifier.animateItem().padding(start = 16.dp), childIndex, item.children.size)
             }
-            fullLineItem(key = "${item.key}:end") { Spacer(Modifier.height(4.dp)) }
+            fullLineItem(key = "${item.key}:end", contentType = "batch_spacer") { Spacer(Modifier.height(4.dp)) }
         } else {
-            item(key = item.key) { renderItem(item, Modifier.animateItem(), index, items.size) }
+            item(key = item.key, contentType = item::class) {
+                renderItem(item, Modifier.animateItem(), index, items.size)
+            }
         }
     }
 }
@@ -682,7 +718,7 @@ private fun LazyGridScope.transferSection(
                 ) {
                     Text(
                         text = tr("$title（${items.size}）", "$title (${items.size})", "$title（${items.size}）", "$title (${items.size})", "$title（${items.size}）"),
-                        style = MaterialTheme.typography.titleSmall,
+                        style = MaterialTheme.typography.titleSmall.tabular,
                         modifier = Modifier.padding(horizontal = if (attention) 10.dp else 0.dp, vertical = 6.dp),
                     )
                 }
@@ -734,7 +770,7 @@ private fun LazyGridScope.deletedOutputSection(
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = "${items.size}",
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelMedium.tabular,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(modifier = Modifier.weight(1f))
@@ -747,7 +783,11 @@ private fun LazyGridScope.deletedOutputSection(
         }
     }
     if (expanded) {
-        itemsIndexed(items, key = { _, item -> item.key }) { index, item ->
+        itemsIndexed(
+            items = items,
+            key = { _, item -> item.key },
+            contentType = { _, item -> item::class },
+        ) { index, item ->
             renderItem(item, Modifier.animateItem(), index, items.size)
         }
     }

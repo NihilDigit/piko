@@ -37,7 +37,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.openani.mediamp.MediampPlayer
-import org.openani.mediamp.compose.MediampPlayerSurface
+import dev.piko.desktop.ui.player.PikoMpvVideoSurface
 import org.openani.mediamp.mpv.MpvMediampPlayer
 
 /**
@@ -128,7 +128,7 @@ internal fun playbackSelfTest(file: File, holdMillis: Long, report: (String) -> 
                                 }
                             }
                         }
-                        MediampPlayerSurface(backend.player, Modifier.fillMaxSize().background(Color.Black))
+                        PikoMpvVideoSurface(backend.player, Modifier.fillMaxSize().background(Color.Black))
                         LaunchedEffect(backend) {
                             var failure: String? = null
                             val errors = launch(start = CoroutineStart.UNDISPATCHED) {

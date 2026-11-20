@@ -29,6 +29,12 @@ sealed interface Screen : NavKey {
     data object WebDav : Screen
 
     @Serializable
+    data object PlayerCustomization : Screen
+
+    @Serializable
+    data object DriveAppearanceCustomization : Screen
+
+    @Serializable
     data object MyShares : Screen
 
     @Serializable

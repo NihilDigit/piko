@@ -11,10 +11,16 @@ Piko 是 PikPak 的第三方跨平台客户端。Android、Windows、macOS 与 L
 | `ui/src/commonMain/kotlin/dev/piko/ui/screens/clips/AGENTS.md` | 信息流：作用域、选段分散算法、挂起与恢复、TS 有界切片与 PTS 校准、取流预取调度、三播放器图层与交互 |
 | `desktopApp/AGENTS.md` | 桌面端：依赖版本锁定、Release 打包与 AOT 缓存、原生库与 FFmpeg FFM 转封装、GPU 设备失效恢复、弹层销毁规避、数据目录、单实例与原生托盘、自绘标题栏、Windows 触摸桥、模态文件框隔离、macOS 与 Linux 打包及更新 |
 | `shared/src/commonMain/kotlin/dev/piko/shared/update/AGENTS.md` | 应用内更新：多语言更新说明、版本检查与镜像降级、Windows 事务补丁与 `image.zip` 按需拉取、老客户端兼容契约、跨平台更新冒烟 |
-| `shared/src/commonMain/kotlin/dev/piko/shared/download/AGENTS.md` | 下载：共享稀疏暂存池、转码档探测与画质匹配、FFmpeg / MediaMuxer 转封装与片段截取 |
+| `shared/src/commonMain/kotlin/dev/piko/shared/download/AGENTS.md` | 下载与缓存：共享稀疏暂存池与持久化播放缓存、统一缓存管理、转码档探测与画质匹配、缓存感知自动画质、外部播放器保活、转封装与片段截取 |
 | `shared/src/desktopMain/kotlin/dev/piko/shared/auth/AGENTS.md` | 桌面端机密存储：DPAPI、macOS 登录钥匙串、Linux Secret Service 与分层回退提升策略 |
 | `cli/AGENTS.md` | 开发用命令行工具 `piko-cli` |
 | `shots/AGENTS.md` | 无头截图与自适应交互回归工具 `:shots` |
+
+## 界面设计规范、DRY 与文档演进原则
+
+- **以 `/expressive-ui`（`rtx`）为单一权威依据**：凡涉及界面设计、组件选型、Compose Multiplatform / Material 3 Expressive API、设计 Token、桌面渲染互操作或界面文案的修改，须优先使用 `/expressive-ui`（`rtx spec`、`rtx component`、`rtx api`、`rtx source`、`rtx token`、`rtx copy`）核对上游规范与源码后再实现，不凭记忆猜测组件形态、默认参数或交互模式。若环境中尚未安装 `rtx`，可从 https://github.com/NihilDigit/the-road-to-expressive 获取并安装。
+- **界面与文案 DRY 原则（单一入口、不重复表意）**：在同一个界面内，严禁为同一功能提供两个重复的可见入口（遵循单一权威入口原则），亦不得在相近位置用两段文字重复表达同一含义（如标题与副标题、状态行与按钮文案、页眉与图例之间重复表述同一状态或数值）。
+- **`AGENTS.md` 随现状演进（非不可推翻教条）**：各目录 `AGENTS.md` 用于记录当前现状与已知边界，并非不可推翻的死规则；凡存在更优实现或与 `/expressive-ui` 等官方文档冲突的内容，均可基于充分依据予以推翻，并须在完工后同步更新受影响的 `AGENTS.md` 以匹配最新现状。
 
 ## 常用命令
 
@@ -35,7 +41,7 @@ gh workflow run release.yml -f version=9.9.9      # 发版演练：完整执行�
 
 `./gradlew :desktopApp:run` 直接从 `build/classes` 加载类文件；桌面开发版运行期间若重新编译其已加载的模块，运行中的进程会在下一次类加载时抛出 `NoClassDefFoundError`。重新编译前须先终止桌面开发版进程，编译完成后可在后台重新启动 `:desktopApp:run`；关闭用户系统中已安装的正式版 Piko 前仍须先征得用户确认。
 
-修改 `shared` 或 `ui` 后必须同时执行 `:app:compileDebugKotlin` 与 `:desktopApp:compileKotlinDesktop` 验证双端编译：`ui` 在桌面端与 Android 端链接的 Material 3 版本不同（详见 `desktopApp/AGENTS.md`），同一处 API 调用可能仅在其中一端编译失败。
+修改 `shared` 或 `ui` 后必须同时执行 `:app:compileDebugKotlin` 与 `:desktopApp:compileKotlinDesktop` 验证双端编译（双端现已统一至 Material 3 `1.5.0-rc01` / CMP `1.13.0-rc01`，详见 `desktopApp/AGENTS.md`，但仍须验证平台特有差异）。
 
 应用版本号读取环境变量 `PIKO_VERSION_NAME` 与 `PIKO_VERSION_CODE`，本地未设置时自动回退至默认值，无需额外配置。
 
@@ -99,14 +105,14 @@ Windows 触摸与手写笔接入 Compose Desktop 的桥接库独立发布于 `de
 
 **多语言本地化（`PikoLocale`）**：客户端支持跟随系统及五种显式语言（`System -> zh-Hans -> zh-Hant -> ko-KR -> ja-JP -> en`），共享层与界面层统一读取 `PikoLocale.effectiveLanguage` 切换文案、字幕回退字体及多语言更新说明。
 
-**新增偏好设置项须同步修改三处**：`PikoUserPreferences` 接口、`SessionManager`（Android DataStore 实现）与 `DesktopPikoPreferences`（桌面 `DesktopSettingsStore` 实现）。若该设置需跨设备同步，再将其加入 `shared/.../shared/sync/PikoSettingsSync.kt` 的 `SyncedSettings`；窗口尺寸、下载目录、网络代理、减少动画、蜗牛模式等设备本地属性不得加入同步。设置同步文件位于网盘根目录 `.piko/settings-<时间戳>.json`（`DriveSettingsStore`，`.piko` 目录在网盘浏览列表中隐藏），按字段记录修改时间戳执行逐项合并，当前设备从未修改过的项视为最旧。机密数据严禁放入普通设置同步（1.1.0 曾明文同步压缩包密码，已停用并清理）；压缩包密码使用账号密码派生的密钥加密后独立存放于 `.piko/archive-passwords-<时间戳>.json`（`ArchivePasswordSync`），新增其他跨设备机密同步须沿用此加密方案。
+**新增偏好设置项须同步修改三处**：`PikoUserPreferences` 接口、`SessionManager`（Android DataStore 实现）与 `StoredPikoPreferences`（桌面/iOS 共用实现，以及启动无锁快照 `PikoPreferencesSnapshot` / `currentSnapshot`）。若该设置需跨设备同步（如水墨屏主题 `SeedTheme.EINK` 经 `themeSeed` 同步、纯黑深色模式 `pureBlackFlow`、瀑布流/信息流统一退出不确认 `skipFeedExitConfirmFlow`、四态播放器布局 `playerLayoutPrefsFlow` 与三视图文件外观 `driveAppearancePrefsFlow` 含 `thumbnailScale`/`thumbnailClarity`），再将其加入 `shared/.../shared/sync/PikoSettingsSync.kt` 的 `SyncedSettings`；窗口尺寸、下载目录、本地缓存上限与过期天数（`cacheMaxBytesFlow`、`cacheMaxAgeDaysFlow`）、网络代理、减少动画、蜗牛模式等设备本地属性不得加入同步。设置同步文件位于网盘根目录 `.piko/settings-<时间戳>.json`（`DriveSettingsStore`，`.piko` 目录在网盘浏览列表中隐藏），按字段记录修改时间戳执行逐项合并，当前设备从未修改过的项视为最旧。机密数据严禁放入普通设置同步（1.1.0 曾明文同步压缩包密码，已停用并清理）；压缩包密码使用账号密码派生的密钥加密后独立存放于 `.piko/archive-passwords-<时间戳>.json`（`ArchivePasswordSync`），新增其他跨设备机密同步须沿用此加密方案。Compose 编译器稳定性白名单统一维护于根目录 `compose-stability.conf`（涵盖 `pikpak-kotlin`、`DriveAppearancePrefs`、`PlayerLayoutPrefs`、`PlayerSystemStatusInfo` 等不可变模型与跨模块只读值类，由 `:ui`、`:desktopApp`、`:app` 与 `:shots` 共享加载）。
 
 MetaTube 地址与访问令牌经 `MetaTubeSync` 使用账号密码派生的密钥加密后同步至 `.piko/metatube-<时间戳>.json`，逐字段按修改时刻合并，本机同步账本只存 SHA-256 摘要。「以引用保存」勾选由 `saveAsReferenceFlow` 仅在当前设备记忆，不加入 `SyncedSettings`。
 
 ### 索引、目录树与变更收口
 
 - **文件夹索引（`FolderIndex`）**：文件夹名称与父级关系在仓库的 `FolderIndex` 中维护唯一权威副本，列目录、查详情及客户端自身写操作均实时写入。路径栈、文件标签、浏览历史、最近访问与快速访问均自动跟随索引修正名称与父级（目录重命名时即时更新显示名，移动时更新上级，删除时自动回退至有效祖先）；持久化的 `PikoPathBreadcrumb.name` 仅在索引尚未收录该节点时作为回退值。按文件夹 ID 反查完整路径统一调用 `locateFolder`（优先查本地索引，缺口再向服务端逐级补齐）；资料库虚拟根与压缩包内部层级不进入索引（`isDriveFolderId`），压缩包本身按其文件 ID 记录。
-- **本地全盘树索引（`DriveTreeIndex` 与 SQLite WAL）**：按账号独立维护带 SHA-256 后缀与 `owner_account` 双重校验的原生 SQLite WAL 库（Android 使用系统 `SQLiteDatabase`，Desktop 使用 `sqlite-jdbc`，原生解压定向至 `PikoHome/cache/natives`；无歧义旧版 `drive-tree-*.json` 首次启动流式迁入并清理）。Java 堆仅常驻文件夹骨架与物化子树聚合表（`SubtreeStats`，分别维护物理配额与归档虚拟体量/时长，驱动文件夹按递归大小与时长精确排序及 `Screen.SpaceMap` 空间分布图），不再将全盘数万至数十万文件对象常驻堆内；物理远端事实、文件实例原始存入时间（含归档取回后跨目录移动保留）与按 `GCID + size` 共享的内容媒体元数据三层分离，全盘拉取按分页候选代流式写库，全盘搜索经预归一化 `norm_name` 轻量游标完成 CJK 模糊匹配。重型流式落盘与内存水位统一受 `PikoMemoryGovernor` 协调。
+- **本地全盘树索引（`DriveTreeIndex` 与 SQLite WAL）**：按账号独立维护带 SHA-256 后缀与 `owner_account` 双重校验的原生 SQLite WAL 库（Android 使用系统 `SQLiteDatabase`，Desktop 使用 `sqlite-jdbc`，原生解压定向至 `PikoHome/cache/natives`；无歧义旧版 `drive-tree-*.json` 首次启动流式迁入并清理）。全部 SQL 须严格兼容 **SQLite 3.22（Android 10）**，严禁使用窗口函数、`RETURNING` 与 `ON CONFLICT` 子句（如空间预览查询复用 `tree_space_files` 索引按父目录执行 `LIMIT` 查询）。Java 堆仅常驻文件夹骨架与物化子树聚合表（`SubtreeStats`，分别维护物理配额与归档虚拟体量/时长，驱动文件夹按递归大小与时长精确排序及 `Screen.SpaceMap` 空间分布图），不再将全盘数万至数十万文件对象常驻堆内；物理远端事实、文件实例原始存入时间（含归档取回后跨目录移动保留）与按 `GCID + size` 共享的内容媒体元数据三层分离。初次全盘构建在 `appendCandidate` 事务内原子落盘可续扫检查点（`candidate_resume_*`），进程被杀或冷重启后自动续接而不重置重扫（仅首续页遇服务端明确拒绝如过期游标或确定 4xx 才自动回退重新全扫）；`PikoDriveRepository.ensureTreeSync` 以有界 `Channel(4)` 流水线并行重叠分页网络拉取与 SQLite 写库（按页批量预取 `tree_content`），全盘搜索经预归一化 `norm_name` 轻量游标完成 CJK 模糊匹配。重型流式落盘与内存水位统一受 `PikoMemoryGovernor` 协调。
 - **变更统一收口**：一切修改网盘目录结构或文件状态的入口必须调用 `driveRepository.applyChange(DriveChange)`，统一完成 `FolderIndex` 与 `DriveTreeIndex` 原地更新、列表缓存失效及 `folderChanges` 广播；禁止各业务处自行清理缓存或单独通知视图。`DriveScreenState` 与目录图已订阅 `folderChanges` 并仅重列受影响层级，视图层无需重复订阅。
 - **普通写操作的乐观投影**：`OptimisticWrites` 按账号保存待提交操作，界面、路径、搜索与资料库在已确认数据上叠加投影；`DriveScreenState` 保留基础列表供失败回滚。整批选择先投影，同一文件的请求按接受顺序执行，成功经 `applyChange` 写回基础数据，失败仅移除自身投影。撤销基线在前序请求结束后重取，撤销记录先于后序请求放行。成功响应直接确认结果；响应丢失时用绑定账号的原始接口核对，不能用乐观投影证明服务端已执行。复制仍跟随服务端任务。`VaultStore` 按目录排队保存纯函数编辑，完成或失败只移除自己的编辑，再将其余编辑应用于已确认清单。
 - **持久树增量同步**：完整扫描和后续对账使用 SDK `consumeFileChanges`，在全部分页成功后保存末页服务端水位（2026-11-10 跨页实测：水位随 `db_modify_time` 扫描推进，分页期间已读条目的更新会在后续页重现；详见 `docs/development/backend-demand-consistency.md`）。增量页先暂存，全部读取成功后在同一 SQLite 事务中提交数据与游标；切号、在途乐观操作或扫描期间的本地变更使本轮暂存作废。移动先于删除落库，确保已移出的子树保留；清单胜出者变化时清除旧虚拟条目，尚未读取的清单在后续对账继续重试。没有游标或服务端报告游标过期时建立完整基线。
@@ -154,11 +160,11 @@ MetaTube 地址与访问令牌经 `MetaTubeSync` 使用账号密码派生的密�
 
 ## 播放器与自适应流式传输
 
-双端视频解码均基于 `libmpv`，实现 `commonMain` 的统一薄接口 `PlaybackBackend`，播放控制界面共用无状态的 `MobilePlayerControls`（按窗口宽高比自动切换横竖屏布局，桌面窗口自然获得横屏布局，复用触屏手势并叠加鼠标悬停显隐与键盘快捷键，垂直手势调节能力由平台 `PlayerLevelControl` 提供）：
+双端音视频解码均基于 `libmpv`，实现 `commonMain` 的统一薄接口 `PlaybackBackend`，播放控制界面共用无状态的 `MobilePlayerControls`（支持四态 `PlayerLayoutPrefs` 自定义：`VideoLandscape`、`VideoPortrait`、`ClipsLandscape`、`ClipsPortrait` 与 `ListenLayoutConfig` / `PlayerGestureConfig` / `PlayerStatusBarConfig`，经 `LocalPlayerLayoutPrefs` 注入并跨设备同步；提供半透明微光胶囊控件簇、可按项自定义时钟/网络/电量/图标的全屏系统状态胶囊 `PlayerSystemStatusCapsule`、长按/拖拽边缘锁定的倍速转盘 `SpeedDialOverlay` 及 `∞` 快速拖览预览 `RapidScrubPreview`、绘制阶段读取的 `PlayerSeekBar` 与随倍速联动的可选 30fps 波浪轨道及悬停/拖动共享缩略图缓存 `ScrubFrameCache`、零高频重组的 `LongArray(1)` 鼠标活跃计时、统一多标签 `PlayerSideSheet` 选集/轨道/设置/统计面板与一键复制诊断信息；遵循单一入口原则按宽窄与触屏/键鼠分流播放键与设置入口，垂直手势调节能力由平台 `PlayerLevelControl` 提供）以及面向音频文件（`isPlayableAudio()`）与「听视频」模式的 `ListenScreen`（黑胶转盘旋转拖动定位、30fps 惯性停转受 `LocalWindowVisible` 与减少动画门控、睡眠定时与双栏/抽屉队列）：
 
-- **Android 端**：采用预编译的 `dev.jdtech.mpv:libmpv`，适配层为 `MpvPlaybackBackend` 与 `MpvVideoSurface`，以应用内压栈页 `VideoPlayerHost.InApp` 承载，系统亮度、媒体音量、屏幕方向与系统栏控制位于 `PlayerSystemControls`。（不使用 MediaMP 的 Android mpv 后端：其 Compose 渲染表面为空实现且未发布 `.so` 原生库。）
-- **桌面端**：采用 MediaMP 0.5.0 的 mpv 后端（`MediampPlaybackBackend`），利用其 D3D11 零拷贝接入 Skia 的硬件渲染表面，以独立窗口 `VideoPlayerWindow`（`VideoPlayerHost.Detached`）承载，支持边播放边浏览网盘。
-- **取流策略与选集**：`PlayerScreenState` 按 `本地已完成副本 → 本机回环 HTTP 代理 → 新取直链 → 转码流` 顺序尝试，仅在首帧渲染前失败才降级至下一来源，播放中途断流按退避策略重连；续播进度每 5 秒落盘，播至片尾归零。选集列表由文件名解析器划分为作品与分区（`buildPlaylist`），上一集、下一集与自动连播不跨分区；解析总开关关闭时退回按文件名自然排序（`buildRawPlaylist`）。
+- **Android 端**：采用预编译的 `dev.jdtech.mpv:libmpv`，适配层为 `MpvPlaybackBackend` 与 `MpvVideoSurface`，以应用内压栈页 `VideoPlayerHost.InApp` 承载，系统亮度、媒体音量、屏幕方向与系统栏控制位于 `PlayerSystemControls`，全屏电量/网络状态由 `AndroidSystemStatus` 冷流按需采集。进入音频/听视频模式时调用 `MpvPlaybackBackend.setAudioOnlyMode(true)` 切为纯音频输出（`vid=no`、`vo=null`），释放 `FLAG_KEEP_SCREEN_ON` 并在 `ON_STOP` 锁屏息屏时保持后台续播。（不使用 MediaMP 的 Android mpv 后端：其 Compose 渲染表面为空实现且未发布 `.so` 原生库。）
+- **桌面端**：采用 MediaMP `0.5.3` 的 mpv 后端（`MediampPlaybackBackend`）配自研 `PikoMpvVideoSurface` 经 Skiko `0.156.1` `FrameDriver` / `Direct3DRenderer` 零拷贝渲染（含软件回退），以独立窗口 `VideoPlayerWindow`（`VideoPlayerHost.Detached`，集成最小化/最大化/置顶/关闭顶栏、macOS 无双标题栏适配、Windows `WindowsSmtcSession` 系统媒体控制与 `WindowsSystemStatus` 全屏状态采集，并受 `Main.kt` 守护 `startExitWatchdog()` 保护以防原生卸载卡死退出）承载，支持边播放边浏览网盘；悬停/拖动缩略图预览由桌面端 FFM `PreviewFrameDecoder` 解码并复用于 `ScrubFrameCache`。
+- **取流策略、自动画质、原画内封字幕探测与选集回退**：`PlayerScreenState` 按 `本地已完成副本 → 本机回环 HTTP 代理 → 新取直链 → 转码流`（纯音频直走流媒体不转码）顺序尝试，仅在首帧渲染前失败才降级至下一来源，播放中途断流按退避策略重连；支持「自动（Auto）」动态画质循环（`autoQualityLoop`，基于吞吐与缓冲迟滞自动在原画与转码档间切换）及转码播放期间经 `OriginalSubtitleExtractor`（MP4 `tx3g`/MKV EBML `Long` 空间边界安全解析）探测并按需提取原画内封字幕或于轨道面板提示一键切回原画；续播进度每 5 秒落盘，播至片尾归零。字幕识别（`MediaTracks.kt` / `MpvTracks.kt`）精确区分简繁中文变体（`ChineseSubtitleVariant`，涵盖内封语言/标题与外挂 `external-filename`）并随 `PikoLocale.effectiveLanguage` 动态匹配 `slang` 与默认字幕。选集列表由文件名解析器划分为作品与分区（`buildPlaylist`），当解析后当前分区或列表仅剩单条而同目录存在多个可播放文件时，自动经 `normalizePlaylistForCurrentFile` 回退至自然排序的同目录媒体队列（音频按 `isPlayableAudio()` 独立成列）并保留外挂字幕匹配；解析总开关关闭时退回 `buildRawPlaylist`。
 - **本机回环代理与自适应传输（`pikpak-kotlin 2.4.1+`）**：所有网盘媒体流（含外挂字幕）均经 `shared/.../media/proxy/` 暴露为 `http://127.0.0.1` 的 HTTP Range 地址，直链过期重取、连接预算与分块预读均由 SDK 的 `PikPakFileHandle` / `PikPakStreamReader` 管理。同一 handle 派生的多个 reader 共享块缓存并各自维护独立游标，mpv 拖动定位时新旧连接重叠或交错较差的 MP4 前后跳读均互不取消。SDK 2.4.1+ 将 HTTP Range 网络流跨度与常驻内存解耦（受 `transportMemoryBudgetBytes` 约束，桌面端按最大堆的 1/8 限制在 `128~512 MiB`，Android 端响应 `onTrimMemory` 动态收缩），支持子块前缀即刻交付、多工作协程公平份额跨度、尾部块拆分以及播放缓冲头部救援（`reportPlaybackBuffer`）。关闭或切换播放源前必须调用 `PlaybackBackend.stopAndAwaitIdle()` 排空 mpv 异步输入线程，随后再关闭回环代理会话，防止底层在流关闭后继续读取引发卡顿或异常。
 
 ## 开源许可与贡献者协议
@@ -169,7 +175,7 @@ Piko 源码以 `AGPL-3.0-or-later` 许可证发布（1.1.0 及更早版本为 MI
 
 ### 截图基础设施（`:shots`）
 
-`:shots` 的 `standardSet` 覆盖 `docs/development/ui-states.md` 中的可达界面状态，用法详见 `shots/AGENTS.md`。由于全套渲染耗时较长且尚不支持按改动增量重绘（后续规划见 `docs/development/shots-roadmap.md`），**日常界面修改不要求同步补充截图步骤或假服务端接口，亦不要求收尾时跑图审查**；仅在明确要求或运行特定自适应交互验证（如 `verify-adaptive-workspace`、`verify-file-building-blocks`）时执行 `:shots`。常规界面改动在双端编译通过后直接重启桌面开发版或安装至 Android 真机供手测验收；无头截图不包含原生窗口外框与真实视频解码，无法替代真机交互与时序手测。
+`:shots` 的 `standardSet` 覆盖 `docs/development/ui-states.md` 中的可达界面状态，用法详见 `shots/AGENTS.md`（`shots/build.gradle.kts` 对重名传递依赖 jar 做了去重归档命名以兼容全量分发打包）。由于全套渲染耗时较长且尚不支持按改动增量重绘（后续规划见 `docs/development/shots-roadmap.md`），**日常界面修改不要求同步补充截图步骤或假服务端接口，亦不要求收尾时跑图审查**；仅在明确要求或运行特定自适应交互验证（如 `verify-adaptive-workspace`、`verify-file-building-blocks`）时执行 `:shots`。常规界面改动在双端编译通过后直接重启桌面开发版或安装至 Android 真机供手测验收；无头截图不包含原生窗口外框与真实视频解码，无法替代真机交互与时序手测。
 
 ### 持续集成与冒烟测试（`test.yml`）
 

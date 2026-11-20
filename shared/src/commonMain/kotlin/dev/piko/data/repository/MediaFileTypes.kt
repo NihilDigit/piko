@@ -10,7 +10,10 @@ private val VIDEO_EXTENSIONS = setOf(
     "ts", "vob", "webm", "wmv", "wtv",
 )
 private val IMAGE_EXTENSIONS = setOf("avif", "bmp", "gif", "heic", "jpeg", "jpg", "png", "webp")
-private val AUDIO_EXTENSIONS = setOf("mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "ape", "mka")
+private val AUDIO_EXTENSIONS = setOf(
+    "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "ape", "mka",
+    "wma", "aiff", "alac", "wv", "dsf", "dff", "tta", "ac3", "dts",
+)
 private val ARCHIVE_EXTENSIONS = setOf("zip", "rar", "7z", "tar", "gz", "xz", "bz2")
 // 种子里常夹带字幕，单列一类，不与 nfo、txt 一起算作文档
 private val SUBTITLE_EXTENSIONS = setOf("srt", "ass", "ssa", "vtt", "sub", "sup", "idx", "smi", "sami")
@@ -43,6 +46,10 @@ fun String.fileCategory(): FileCategory {
 
 fun String.isPlayableVideo(): Boolean = substringAfterLast('.', "").lowercase() in VIDEO_EXTENSIONS
 
+fun String.isPlayableAudio(): Boolean = substringAfterLast('.', "").lowercase() in AUDIO_EXTENSIONS
+
+fun String.isPlayableMedia(): Boolean = isPlayableVideo() || isPlayableAudio()
+
 fun String.isPreviewableImage(): Boolean = substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
 
 /**
@@ -56,6 +63,14 @@ fun FileStat.isPlayableVideo(): Boolean = !isFolder && (
         (params.containsKey("duration") && params.containsKey("width"))
     )
 
+fun FileStat.isPlayableAudio(): Boolean = !isFolder && (
+    name.isPlayableAudio() ||
+        mimeType.startsWith("audio/") ||
+        (params.containsKey("duration") && !params.containsKey("width") && !isPlayableVideo() && !isPreviewableImage())
+    )
+
+fun FileStat.isPlayableMedia(): Boolean = isPlayableVideo() || isPlayableAudio()
+
 /**
  * 网盘文件的大类。除扩展名外还认服务端的 mime 与元数据（见 [isPlayableVideo]），扩展名非标时
  * 也能归对类；磁力解析出的文件只有名字，用 String 的版本。对文件夹无意义，调用方先分开。
@@ -64,7 +79,7 @@ fun FileStat.fileCategory(): FileCategory {
     val byName = name.fileCategory()
     return when {
         isPlayableVideo() -> FileCategory.VIDEO
-        byName == FileCategory.AUDIO -> FileCategory.AUDIO
+        isPlayableAudio() -> FileCategory.AUDIO
         isPreviewableImage() -> FileCategory.IMAGE
         else -> byName
     }

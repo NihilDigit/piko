@@ -45,9 +45,9 @@ val isWindowsHost = hostOs == "windows"
 val isLinuxHost = hostOs == "linux"
 val hostArch = if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
 val hostPlatform = "$hostOs-$hostArch"
-// MediaMP 0.5.0 的 mpv 运行库只有 linux-x64，没有 linux-arm64，Linux 只出 x64
+// MediaMP 0.5.3 的 mpv 运行库只有 linux-x64，没有 linux-arm64，Linux 只出 x64
 val hostMpvRuntime = "org.openani.mediamp:mediamp-mpv-runtime-$hostPlatform:${libs.versions.mediamp.get()}"
-// 等同 compose.desktop.currentOs，但版本跟界面库走，而不是跟打包插件走（两者版本不同，见 libs.versions.toml）
+// 桌面运行库按宿主架构取，版本与界面库一致（CMP 1.13.0-rc01）
 val composeDesktopRuntime = "org.jetbrains.compose.desktop:desktop-jvm-$hostPlatform:${libs.versions.composeMultiplatform.get()}"
 // 应用内差分更新要的 libzstd。只取 zstd-jni 按平台的 jar 里那个原生库捆进资源目录，解码经 FFM 直调它的
 // C API（update/ZstdPatch.kt），运行时不依赖 zstd-jni 的类。只有 Windows 的更新用 zstd 差分，
@@ -272,11 +272,26 @@ val desktopPackageVersion = releaseVersion.getOrElse("1.0.0")
 // 没有这个包，启动时会打一行警告
 val linuxJvmArgs = if (isLinuxHost) listOf("--add-opens=java.desktop/sun.awt.X11=ALL-UNNAMED") else emptyList()
 
+composeCompiler {
+    stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("compose-stability.conf"))
+}
+
+compose {
+    dependencyCompatibility {
+        // Coil 3.6.3 与 ZoomImage 1.7.0 传递声明旧版 Skiko，由 CMP 1.13.0-rc01 统一解析到 Skiko 0.156.1。
+        exclude("io.coil-kt.coil3")
+        exclude("io.github.panpf.zoomimage")
+    }
+}
+
 compose.desktop {
     application {
         mainClass = "dev.piko.desktop.MainKt"
         // 写进 exe/.cfg 启动器：跟 run/test 的 jvmArgs 对齐，否则 FFM 受限方法告警。
         jvmArgs += "--enable-native-access=ALL-UNNAMED"
+        // Skiko FrameWatcher 在连续出帧期间每 30 秒主动调 System.gc() 催收原生 Skia 对象；
+        // 默认触发整堆 STW G1Full（约 50ms 停顿），改为并发收集周期避免长停顿。
+        jvmArgs += "-XX:+ExplicitGCInvokesConcurrent"
         // 应用内更新据此在 Windows Installer 的登记里认出自己是不是 MSI 装的，见 DesktopAppUpdater
         jvmArgs += "-Dpiko.upgrade-code=$msiUpgradeUuid"
         if (shellId != "Piko") jvmArgs += "-Dpiko.shell-id=$shellId"
@@ -711,6 +726,7 @@ rootProject.allprojects {
 project.afterEvaluate {
     tasks.named<JavaExec>("run") {
         jvmArgs("--enable-native-access=ALL-UNNAMED")
+        jvmArgs("-XX:+ExplicitGCInvokesConcurrent")
         jvmArgs(linuxJvmArgs)
         // 开发版的数据放在 ~/.piko-dev，与安装版的 ~/.piko 分开，见 PikoHome。不放进 build 目录：clean 一次就要重新登录
         jvmArgs("-Dpiko.home=" + devHomeDir.path)

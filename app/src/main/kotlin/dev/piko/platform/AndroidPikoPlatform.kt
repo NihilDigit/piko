@@ -49,17 +49,22 @@ import dev.piko.data.auth.SessionManager
 import dev.piko.shared.log.PikoLog
 import java.util.concurrent.ConcurrentHashMap
 import dev.piko.shared.media.player.PlaybackBackend
+import dev.piko.shared.media.storyboard.StoryboardIdrDecoder
 import kotlinx.coroutines.CancellationException
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.platform.BackgroundTransferAccess
 import dev.piko.ui.platform.DownloadLocationPicker
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import dev.piko.ui.platform.ExternalVideoPlayer
 import dev.piko.ui.platform.LandscapeLock
 import dev.piko.ui.platform.LinkAssociation
 import dev.piko.ui.platform.LocalFileActions
 import dev.piko.ui.platform.PikoPlatform
+import dev.piko.ui.platform.PlayerNetworkType
+import dev.piko.ui.platform.PlayerSystemStatusInfo
 import dev.piko.ui.platform.PreviewBackend
 import dev.piko.ui.platform.UploadPicker
 import dev.piko.ui.platform.VideoPreviewSupport
@@ -72,8 +77,12 @@ import dev.piko.ui.screens.player.findActivity
 import dev.piko.update.AppUpdateService
 import java.io.File
 import android.graphics.Bitmap
+import android.media.MediaDataSource
+import android.media.MediaMetadataRetriever
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import coil3.BitmapImage
 import coil3.SingletonImageLoader
 import coil3.request.CachePolicy
@@ -122,6 +131,21 @@ class AndroidPikoPlatform(
     }
 
     override val supportsBlur: Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+
+    override fun observeSystemStatus(): Flow<PlayerSystemStatusInfo?> =
+        AndroidSystemStatus.observe(context).map { snapshot ->
+            PlayerSystemStatusInfo(
+                batteryPercent = snapshot.batteryPercent,
+                isCharging = snapshot.isCharging,
+                networkType = when (snapshot.networkKind) {
+                    AndroidNetworkKind.Wifi -> PlayerNetworkType.Wifi
+                    AndroidNetworkKind.Ethernet -> PlayerNetworkType.Ethernet
+                    AndroidNetworkKind.Cellular -> PlayerNetworkType.Cellular
+                    AndroidNetworkKind.Offline -> PlayerNetworkType.Offline
+                    AndroidNetworkKind.Unknown -> null
+                },
+            )
+        }
 
     override fun openUrl(url: String) {
         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
@@ -236,6 +260,88 @@ class AndroidPikoPlatform(
             PikoLog.w(TAG, "Failed to query domain verification state", e)
             false
         }
+    }
+
+    private val previewDecodeSemaphore = Semaphore(2)
+
+    override suspend fun decodeVideoPreviewFrame(bytes: ByteArray, maxWidthPx: Int): ImageBitmap? {
+        if (bytes.size < 376) return null
+        return previewDecodeSemaphore.withPermit {
+            withContext(Dispatchers.IO) {
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(object : MediaDataSource() {
+                        override fun getSize(): Long = bytes.size.toLong()
+                        override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+                            if (position < 0L || position >= bytes.size) return -1
+                            val start = position.toInt()
+                            val count = minOf(size, bytes.size - start)
+                            bytes.copyInto(buffer, destinationOffset = offset, startIndex = start, endIndex = start + count)
+                            return count
+                        }
+                        override fun close() = Unit
+                    })
+                    extractScaledFrame(retriever, timeUs = 0L, maxWidthPx = maxWidthPx)
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (_: Throwable) {
+                    null
+                } finally {
+                    runCatching { retriever.release() }
+                }
+            }
+        }
+    }
+
+    override suspend fun decodeLocalVideoPreviewFrame(path: String, positionMillis: Long, maxWidthPx: Int): ImageBitmap? {
+        if (path.isBlank()) return null
+        return previewDecodeSemaphore.withPermit {
+            withContext(Dispatchers.IO) {
+                val retriever = MediaMetadataRetriever()
+                try {
+                    if (path.startsWith("content://")) {
+                        retriever.setDataSource(context, Uri.parse(path))
+                    } else {
+                        retriever.setDataSource(path)
+                    }
+                    extractScaledFrame(retriever, timeUs = positionMillis.coerceAtLeast(0L) * 1_000L, maxWidthPx = maxWidthPx)
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (_: Throwable) {
+                    null
+                } finally {
+                    runCatching { retriever.release() }
+                }
+            }
+        }
+    }
+
+    override fun createStoryboardIdrDecoder(): StoryboardIdrDecoder = AndroidStoryboardIdrDecoder()
+
+    override fun decodeEncodedImageBitmap(bytes: ByteArray): ImageBitmap? =
+        AndroidStoryboardIdrDecoder.decodeEncodedImage(bytes)
+
+    private fun extractScaledFrame(retriever: MediaMetadataRetriever, timeUs: Long, maxWidthPx: Int): ImageBitmap? {
+        val targetMax = maxWidthPx.coerceIn(64, 640)
+        val raw = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, targetMax, targetMax)
+                ?: retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, targetMax, targetMax)
+        } else {
+            retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+        } ?: return null
+        val maxSide = maxOf(raw.width, raw.height)
+        val finalBitmap = if (maxSide > targetMax && maxSide > 0) {
+            val scale = targetMax.toFloat() / maxSide
+            val w = (raw.width * scale).toInt().coerceAtLeast(2)
+            val h = (raw.height * scale).toInt().coerceAtLeast(2)
+            val scaled = Bitmap.createScaledBitmap(raw, w, h, true)
+            if (scaled !== raw) raw.recycle()
+            scaled
+        } else {
+            raw
+        }
+        return finalBitmap.asImageBitmap()
     }
 
     override fun dismissAppLinkPrompt() {
@@ -388,6 +494,25 @@ class AndroidPikoPlatform(
             throw cancel
         } catch (_: Exception) {
             null
+        }
+    }
+
+    override fun blurCoilBitmap(input: Bitmap, radiusPx: Int): Bitmap? {
+        val w = input.width
+        val h = input.height
+        if (w <= 0 || h <= 0) return null
+        val readable = if (input.config == Bitmap.Config.ARGB_8888) {
+            input
+        } else {
+            input.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+        }
+        return try {
+            val pixels = IntArray(w * h)
+            readable.getPixels(pixels, 0, w, 0, 0, w, h)
+            val blurred = BackdropBlurKernel.blurArgb(pixels, w, h, radiusPx)
+            Bitmap.createBitmap(blurred, w, h, Bitmap.Config.ARGB_8888)
+        } finally {
+            if (readable !== input) readable.recycle()
         }
     }
 

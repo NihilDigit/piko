@@ -27,6 +27,8 @@ data class DuplicateFile(
     val originalCreatedAtMillis: Long? = null,
 ) {
     val path: String = if (folderPath.isEmpty()) name else "$folderPath/$name"
+    internal val copyMarkers: Int = copyMarkerCount(name)
+    internal val effectiveCreatedAtMillis: Long? = originalCreatedAtMillis ?: parseInstant(createdTime)?.toEpochMilliseconds()
 }
 
 enum class DuplicateKind {
@@ -104,6 +106,103 @@ fun findDuplicates(files: List<ScannedFile>, rootName: String? = null): Duplicat
     return DuplicateReport(identical, versions)
 }
 
+/**
+ * 基于首次全量分组结果 [initial] 按已移入回收站的 [removedIds] 做 O(重复行数) 增量过滤，
+ * 避免删除/撤销时重新跑全盘正则命名解析与大对象重建；同时保持版本组代表被移走时由同内容存活副本接替的契约。
+ */
+internal fun filterDuplicateReport(initial: DuplicateReport, removedIds: Set<String>): DuplicateReport {
+    if (removedIds.isEmpty()) return initial
+    val nextIdentical = ArrayList<DuplicateGroup>(initial.identical.size)
+    // 记录旧代表 ID -> 同一相同组里最新存活代表与剩余额外副本数，供版本组代表接替使用
+    val replacementByOldKept = HashMap<String, Pair<DuplicateFile, Int>>()
+    val removedGroupOldKepts = HashSet<String>()
+    for (i in 0 until initial.identical.size) {
+        val group = initial.identical[i]
+        val oldKeptId = group.keptId ?: continue
+        val rows = group.rows
+        var anyRemoved = false
+        for (j in 0 until rows.size) {
+            if (rows[j].file.id in removedIds) {
+                anyRemoved = true
+                break
+            }
+        }
+        if (!anyRemoved) {
+            nextIdentical.add(group)
+            continue
+        }
+        val surviving = ArrayList<DuplicateRow>(rows.size)
+        for (j in 0 until rows.size) {
+            val row = rows[j]
+            if (row.file.id !in removedIds) surviving.add(row)
+        }
+        if (surviving.isEmpty()) {
+            removedGroupOldKepts.add(oldKeptId)
+            continue
+        }
+        val newKept = surviving[0].file
+        val extraCopies = surviving.size - 1
+        replacementByOldKept[oldKeptId] = newKept to extraCopies
+        if (surviving.size >= 2) {
+            nextIdentical.add(
+                DuplicateGroup(
+                    kind = DuplicateKind.IDENTICAL,
+                    key = group.key,
+                    title = newKept.name,
+                    rows = surviving,
+                    keptId = newKept.id,
+                ),
+            )
+        }
+    }
+    nextIdentical.sortWith(IDENTICAL_GROUP_ORDER)
+
+    val nextVersions = ArrayList<DuplicateGroup>(initial.versions.size)
+    for (i in 0 until initial.versions.size) {
+        val group = initial.versions[i]
+        val rows = group.rows
+        var changed = false
+        for (j in 0 until rows.size) {
+            val id = rows[j].file.id
+            if (id in removedIds || id in replacementByOldKept || id in removedGroupOldKepts) {
+                changed = true
+                break
+            }
+        }
+        if (!changed) {
+            nextVersions.add(group)
+            continue
+        }
+        val surviving = ArrayList<DuplicateRow>(rows.size)
+        for (j in 0 until rows.size) {
+            val row = rows[j]
+            val id = row.file.id
+            val replacement = replacementByOldKept[id]
+            when {
+                replacement != null -> {
+                    val (repFile, extraCopies) = replacement
+                    surviving.add(row.copy(file = repFile, sameCopies = extraCopies))
+                }
+                id !in removedIds -> surviving.add(row)
+            }
+        }
+        if (surviving.size >= 2) {
+            surviving.sortWith(compareByDescending<DuplicateRow> { it.file.size }.thenBy { it.file.path })
+            nextVersions.add(
+                DuplicateGroup(
+                    kind = DuplicateKind.VERSIONS,
+                    key = group.key,
+                    title = group.title,
+                    rows = surviving,
+                    keptId = null,
+                ),
+            )
+        }
+    }
+    nextVersions.sortWith(VERSION_GROUP_ORDER)
+    return DuplicateReport(nextIdentical, nextVersions)
+}
+
 // region 完全相同
 
 private val IDENTICAL_GROUP_ORDER: Comparator<DuplicateGroup> =
@@ -155,8 +254,8 @@ private fun identicalGroups(files: List<Pair<ScannedFile, DuplicateFile>>): List
  * 手动放置的，深路径多是种子或分享自带的目录结构。时间解析失败的排在最后。
  */
 internal val KEEP_ORDER: Comparator<DuplicateFile> =
-    compareBy<DuplicateFile> { copyMarkerCount(it.name) }
-        .thenBy(nullsLast()) { it.originalCreatedAtMillis ?: parseInstant(it.createdTime)?.toEpochMilliseconds() }
+    compareBy<DuplicateFile> { it.copyMarkers }
+        .thenBy(nullsLast()) { it.effectiveCreatedAtMillis }
         .thenBy { it.path.length }
         .thenBy { it.path }
         .thenBy { it.id }

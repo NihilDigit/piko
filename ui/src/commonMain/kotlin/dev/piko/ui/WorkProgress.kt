@@ -167,10 +167,29 @@ fun ArchiveJob.workProgress(): WorkProgress {
 }
 
 fun PikoServices.runningWork(): List<WorkProgress> {
-    if (driveRepository.currentAccount == null) return emptyList()
+    val externalWork = if (dev.piko.shared.media.proxy.ExternalPlayerStreams.active.value) {
+        listOf(
+            WorkProgress(
+                kind = WorkKind.FILES,
+                title = tr(
+                    "正在为外部播放器提供串流",
+                    "Streaming to external player",
+                    "外部プレーヤーへストリーミング中",
+                    "외부 플레이어로 스트리밍 중",
+                    "正在為外部播放器提供串流",
+                ),
+                meter = WorkMeter.None,
+                status = dev.piko.shared.media.proxy.ExternalPlayerStreams.activeFileName.value
+                    ?: tr("本地代理运行中", "Local proxy active", "ローカルプロキシ稼働中", "로컬 프록시 활성", "本機代理程式運作中"),
+            ),
+        )
+    } else {
+        emptyList()
+    }
+    if (driveRepository.currentAccount == null) return externalWork
     val state = taskCenter
     val presenter = dev.piko.ui.screens.transfers.TaskPresenter(state, folderVaultSession)
-    return state.activity.active.map { item ->
+    val transferWork = state.activity.active.map { item ->
         val row = presenter.present(item)
         val kind = when {
             dev.piko.shared.state.TransferKind.DOWNLOAD.matches(item) -> WorkKind.DOWNLOAD
@@ -179,6 +198,7 @@ fun PikoServices.runningWork(): List<WorkProgress> {
         }
         WorkProgress(kind, row.title, row.meter, row.status, row.detail)
     }
+    return transferWork + externalWork
 }
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -186,8 +206,9 @@ fun PikoServices.fileWorkChanges(): Flow<Unit> = clientManager.currentClient.fla
     if (client == null) flowOf(Unit) else snapshotFlow { taskCenter.activity }.map { Unit }
 }
 
-fun PikoServices.hasBackgroundWork(): Boolean = driveRepository.currentAccount != null &&
-    taskCenter.activity.executionRequired
+fun PikoServices.hasBackgroundWork(): Boolean =
+    dev.piko.shared.media.proxy.ExternalPlayerStreams.active.value ||
+        (driveRepository.currentAccount != null && taskCenter.activity.executionRequired)
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 fun PikoServices.backgroundWorkChanges(): Flow<Boolean> = clientManager.currentClient.flatMapLatest { client ->

@@ -293,12 +293,17 @@ class ProxyStream internal constructor(
     /** 底层缓存已从网络收到的累计字节数（单调递增）。 */
     val receivedBytes: Long get() = session.receivedBytes
 
+    /** 活跃网络拉取期间累计的 `(activeBytes, activeNanos)`，排除播放器缓冲满载时的空闲间隔。 */
+    internal fun activeTransferSnapshot(): Pair<Long, Long> = session.activeTransferSnapshot()
+
     /** 底层文件是否正在执行云端冷存唤醒轮询。 */
     val isReactivating: kotlinx.coroutines.flow.StateFlow<Boolean> get() = session.isReactivating
 
     internal val demand: TransferDemand get() = session.demand
 
     internal fun bindDemand(owner: TransferDemand) = session.bindDemand(owner)
+
+    internal fun setOnReadActivity(callback: (() -> Unit)?) = session.setOnReadActivity(callback)
 
     override fun withdrawTransport() = session.withdrawTransport()
 

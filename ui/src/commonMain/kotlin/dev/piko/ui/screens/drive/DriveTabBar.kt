@@ -33,13 +33,15 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.SwipeVertical
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ColorScheme
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
@@ -50,6 +52,7 @@ import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
@@ -87,12 +90,15 @@ import dev.piko.shared.data.DriveLibrary
 import dev.piko.shared.presentation.DriveTab
 import androidx.compose.ui.graphics.vector.ImageVector
 import dev.piko.ui.components.ContextMenuArea
+import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.IslandTab
 import dev.piko.ui.components.IslandTabBarHeight
 import androidx.compose.foundation.layout.Spacer
+import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.fileDropTarget
+import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.platform.windowDragArea
@@ -148,13 +154,22 @@ internal fun DriveTabBar(
             .roundToInt().coerceIn(0, latestTabs.lastIndex)
         if (target != current) latestMove?.invoke(id, target)
     }
-    val center = startIndex * tabWidthPx - startScroll + travel + tabWidthPx / 2
-    val edge = when {
-        draggingId == null || viewportWidth <= 0f -> 0
-        center < tabWidthPx / 4 -> -1
-        center > viewportWidth - tabWidthPx / 4 -> 1
-        else -> 0
+    // 把拖拽边缘判断收进 derivedStateOf：拖拽每像素更新 travel 时只在 graphicsLayer 与此处生效，不触发整个标签栏重组
+    val edge by remember(tabWidthPx) {
+        derivedStateOf {
+            if (draggingId == null || viewportWidth <= 0f) {
+                0
+            } else {
+                val center = startIndex * tabWidthPx - startScroll + travel + tabWidthPx / 2
+                when {
+                    center < tabWidthPx / 4 -> -1
+                    center > viewportWidth - tabWidthPx / 4 -> 1
+                    else -> 0
+                }
+            }
+        }
     }
+    val tabsOverflow by remember { derivedStateOf { scroll.maxValue > 0 } }
     LaunchedEffect(draggingId, edge) {
         if (edge == 0) return@LaunchedEffect
         while (draggingId != null) {
@@ -241,7 +256,8 @@ internal fun DriveTabBar(
             },
             actionsContent = {
                 val canCloseOtherTabs = onCloseOthers != null && tabs.any { it.id != activeId && !isPinned(it.id) && canClose(it.id) }
-                // 标签高度为 36dp 且贴着 44dp 标签栏下沿；操作按钮行同样取 36dp 并贴底摆放，使「+」「×」与标签文字严格处于同一水平中线
+                var overflowMenuOpen by remember { mutableStateOf(false) }
+                // 标签高度为 36dp 且贴着 44dp 标签栏下沿；操作按钮行同样取 36dp 并贴底摆放，使「+」「⌄」「×」与标签文字严格处于同一水平中线
                 Row(
                     modifier = Modifier.height(TabActionBandHeight).padding(start = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -253,6 +269,74 @@ internal fun DriveTabBar(
                         onClick = onNewTab,
                         shortcut = newTabShortcut,
                     )
+                    if (tabsOverflow) {
+                        Box {
+                            TabBarIconButton(
+                                icon = Icons.Outlined.ExpandMore,
+                                label = tr("所有标签页", "All tabs", "すべてのタブ", "모든 탭", "所有分頁"),
+                                onClick = { overflowMenuOpen = true },
+                            )
+                            PikoDropdownMenu(
+                                expanded = overflowMenuOpen,
+                                onDismissRequest = { overflowMenuOpen = false },
+                            ) {
+                                tabs.forEachIndexed { index, tab ->
+                                    val isActive = tab.id == activeId
+                                    val tabSession = sessionTab(tab)
+                                    val tabLibrary = tab.stack.firstOrNull()?.let { DriveLibrary.of(it.id) }
+                                    val tabIcon = tabSession?.icon ?: tabLibrary?.icon
+                                        ?: if (tab.id == feedTabId) Icons.Outlined.SwipeVertical else Icons.Outlined.Folder
+                                    val tabPinned = isPinned(tab.id)
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = tabSession?.title ?: tab.title,
+                                                color = if (isActive) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = tabIcon,
+                                                contentDescription = null,
+                                                tint = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                        },
+                                        trailingContent = {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                            ) {
+                                                if (tabPinned) {
+                                                    Icon(
+                                                        imageVector = Icons.Filled.PushPin,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(14.dp),
+                                                    )
+                                                }
+                                                if (isActive) {
+                                                    Icon(
+                                                        imageVector = Icons.Outlined.Check,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(16.dp),
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        shape = menuItemShape(index, tabs.size),
+                                        onClick = {
+                                            overflowMenuOpen = false
+                                            onSelect(tab.id)
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
                     if (canCloseOtherTabs) {
                         TabBarIconButton(
                             icon = Icons.Outlined.Close,
@@ -472,9 +556,21 @@ private fun TabChip(
                         }
                     },
             ) {
-                Spacer(Modifier.width(10.dp))
+                if (pinned) {
+                    Box(
+                        Modifier
+                            .padding(start = 6.dp)
+                            .width(2.5.dp)
+                            .height(14.dp)
+                            .clip(CircleShape)
+                            .drawBehind { drawRect(colors.primary.copy(alpha = if (active) 1f else 0.72f)) },
+                    )
+                    Spacer(Modifier.width(6.dp))
+                } else {
+                    Spacer(Modifier.width(10.dp))
+                }
                 if (session?.busy == true) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    InlineLoadingIndicator(modifier = Modifier.size(18.dp))
                 } else {
                     // 信息流的标签换成信息流的图标，用第三色：它停着的是普通文件夹，标题与别的标签没有分别
                     Icon(
@@ -482,7 +578,7 @@ private fun TabChip(
                         contentDescription = null,
                         tint = when {
                             fromFeed -> colors.tertiary
-                            active -> colors.primary
+                            active || pinned -> colors.primary
                             else -> colors.onSurfaceVariant
                         },
                         modifier = Modifier.size(16.dp),
@@ -501,7 +597,7 @@ private fun TabChip(
                         Icon(
                             Icons.Filled.PushPin,
                             contentDescription = null,
-                            tint = if (active) colors.primary else colors.onSurfaceVariant,
+                            tint = colors.primary.copy(alpha = if (active) 1f else 0.78f),
                             modifier = Modifier.size(15.dp),
                         )
                     } else if (onClose != null && (active || hovered)) {

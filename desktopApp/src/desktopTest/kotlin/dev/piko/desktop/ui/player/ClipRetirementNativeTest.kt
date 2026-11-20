@@ -17,7 +17,6 @@ import dev.piko.shared.media.player.PlaybackTarget
 import dev.piko.shared.media.proxy.*
 import kotlinx.coroutines.*
 import org.openani.mediamp.MediampPlayer
-import org.openani.mediamp.compose.MediampPlayerSurface
 import java.io.File
 import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicBoolean
@@ -39,7 +38,7 @@ class ClipRetirementNativeTest {
                     val player = remember { MediampPlayer(Unit, scope.coroutineContext) }
                     val backend = remember { MediampPlaybackBackend(player, scope, preview = true).also { it.setVolume(0f) } }
                     val binding = remember { ClipPlaybackBinding(backend) }
-                    MediampPlayerSurface(player, Modifier.fillMaxSize())
+                    PikoMpvVideoSurface(player, Modifier.fillMaxSize())
                     LaunchedEffect(Unit) {
                         outcome = runCatching {
                             withTimeout(45_000) {

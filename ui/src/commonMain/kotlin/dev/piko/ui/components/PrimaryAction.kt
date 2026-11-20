@@ -24,19 +24,19 @@ import androidx.compose.ui.unit.dp
  * 都看不出是这一页要做的事。
  */
 
-/** 宽窗口：命令栏右端有底色的按钮。 */
+/** 宽窗口：命令栏右端有底色的按钮（Tier 1 高强调唯一主操作）。 */
 @Composable
 fun PrimaryActionButton(action: SheetAction, modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
     Button(
         onClick = action.onClick,
         colors = if (action.destructive) ButtonDefaults.buttonColors(containerColor = colors.error, contentColor = colors.onError) else ButtonDefaults.buttonColors(),
-        contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
-        modifier = modifier.heightIn(min = 40.dp),
+        contentPadding = PaddingValues(start = 12.dp, end = 16.dp, top = 0.dp, bottom = 0.dp),
+        modifier = modifier.heightIn(min = 36.dp),
     ) {
         PendingBadge(shown = action.pending) { Icon(action.icon, contentDescription = null, modifier = Modifier.size(18.dp)) }
         Spacer(Modifier.width(6.dp))
-        Text(action.label)
+        Text(action.label, maxLines = 1)
     }
 }
 

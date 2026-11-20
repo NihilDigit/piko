@@ -2,10 +2,15 @@ package dev.piko.ui.screens.clips
 
 import dev.piko.shared.i18n.tr
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -33,9 +38,15 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.ViewSidebar
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StayCurrentLandscape
 import androidx.compose.material.icons.filled.SwipeVertical
@@ -48,6 +59,11 @@ import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.SwipeVertical
+import dev.piko.shared.media.player.PlayerControlId
+import dev.piko.shared.media.player.PlayerFormFactorLayout
+import dev.piko.shared.media.player.PlayerPanelItem
+import dev.piko.ui.screens.player.LocalPlayerLayoutPrefs
+import dev.piko.ui.screens.player.PlayerSystemStatusCapsule
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
@@ -74,6 +90,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -101,14 +118,21 @@ import dev.piko.shared.naming.FileKind
 import dev.piko.shared.naming.parseMediaName
 import dev.piko.shared.state.Clip
 import dev.piko.ui.components.formatTimeMs
+import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.platform.LocalFramelessWindow
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.resolveCoilModel
 import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.platform.rememberCaptionSlot
+import dev.piko.ui.resources.Res
+import dev.piko.ui.resources.player_next_clip
+import dev.piko.ui.resources.player_previous_clip
 import dev.piko.ui.screens.player.PlayerSeekBar
 import dev.piko.ui.screens.player.formatSpeedPreset
 import dev.piko.ui.screens.player.handCursor
+import dev.piko.ui.theme.FixedColors
+import dev.piko.ui.theme.LocalFixedColors
+import dev.piko.ui.theme.tabular
 import kotlin.math.roundToInt
 
 /**
@@ -139,10 +163,19 @@ internal fun ClipFeedTopBar(
     onHideChrome: (() -> Unit)? = null,
     landscapeLocked: Boolean? = null,
     onToggleLandscape: () -> Unit = {},
+    landscapeLayout: Boolean = landscapeLocked == true,
+    layout: PlayerFormFactorLayout? = null,
+    paused: Boolean = false,
+    onTogglePause: (() -> Unit)? = null,
 ) {
     val buttonSize = if (compact) 40.dp else 48.dp
-    // 在主窗口里全屏或停在右侧一栏时，这一行贴着窗口右上角，窗口按钮接在关闭后面
     val caption = rememberCaptionSlot()
+    val resolvedLayout = layout ?: LocalPlayerLayoutPrefs.current.clipsLayout(isLandscape = landscapeLayout)
+    val items = resolvedLayout.topBar
+    val hasSpacer = items.any { it == PlayerPanelItem.Spacer }
+    val framelessWindow = LocalFramelessWindow.current
+    val pinInLayout = items.any { it is PlayerPanelItem.Control && it.id == PlayerControlId.PinOnTop }
+
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -150,91 +183,180 @@ internal fun ClipFeedTopBar(
             .background(Brush.verticalGradient(TopScrim))
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top))
             .padding(horizontal = if (compact) 4.dp else 8.dp, vertical = if (compact) 4.dp else 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 文件夹名靠左，按钮组靠右、按自身宽度排，不分摊剩余空间：放不下时只截断文件夹名，不压按钮。
-        // 原先全屏时文件夹名居中、两侧各占一半，手机上四个按钮挤不进右半边，关闭被压扁
-        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-            ScopeTitle(title, compact)
-            // 文件夹名后面的空白兼做窗口的拖动区；拖动区盖住按钮就点不动了，所以只登记这一段
-            Spacer(Modifier.weight(1f).height(buttonSize).windowDragArea())
-        }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 横屏时不再并排一个「退出横屏」：× 就是回到竖屏，见下面的关闭
-            if (landscapeLocked == false) {
-                ChromeIconButton(
-                    icon = Icons.Filled.StayCurrentLandscape,
-                    label = tr("横屏", "Landscape", "横向き", "가로 화면", "橫向螢幕"),
-                    onClick = onToggleLandscape,
-                    size = buttonSize,
-                    tooltip = true,
+        items.forEach { item ->
+            when (item) {
+                PlayerPanelItem.Spacer -> Spacer(
+                    Modifier.weight(1f).height(buttonSize).windowDragArea(),
                 )
-            }
-            if (onHideChrome != null) {
-                ChromeIconButton(Icons.Filled.VisibilityOff, tr("隐藏控件", "Hide controls", "操作ボタンを隠す", "컨트롤 숨기기", "隱藏控制項"), onHideChrome, buttonSize, tooltip = true)
-            }
-            if (onToggleAutoAdvance != null) {
-                ChromeIconButton(
-                    icon = if (autoAdvance) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
-                    label = if (autoAdvance) tr("关闭自动连刷", "Disable auto-advance", "自動送りをオフ", "자동 넘김 끄기", "關閉自動連刷") else tr("自动连刷", "Auto-advance", "自動送り", "자동 넘김", "自動連刷"),
-                    onClick = onToggleAutoAdvance,
-                    size = buttonSize,
-                    selected = autoAdvance,
-                    tooltip = true,
-                    shortcut = "A",
-                )
-            }
-            ChromeIconButton(
-                icon = if (muted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                label = if (muted) tr("取消静音", "Unmute", "ミュートを解除", "음소거 해제", "取消靜音") else tr("静音", "Mute", "ミュート", "음소거", "靜音"),
-                onClick = onToggleMute,
-                size = buttonSize,
-                tooltip = true,
-                shortcut = "M",
-            )
-            if (onDock != null) {
-                // 置顶与播放窗口同一个按钮：一边刷一边浏览网盘时，独立窗口一点主窗口就被盖到后面
-                val window = LocalFramelessWindow.current
-                if (window != null) {
-                    val onTop = window.isAlwaysOnTop
-                    ChromeIconButton(
-                        icon = if (onTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
-                        label = if (onTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제", "取消置頂") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시", "置頂"),
-                        onClick = { window.setAlwaysOnTop(!onTop) },
+
+                is PlayerPanelItem.Control -> when (item.id) {
+                    PlayerControlId.Title -> {
+                        ScopeTitle(title, compact, showBackground = item.showBackground)
+                        if (!hasSpacer) {
+                            Spacer(Modifier.weight(1f).height(buttonSize).windowDragArea())
+                        }
+                    }
+
+                    PlayerControlId.SystemStatus -> if (landscapeLayout) {
+                        PlayerSystemStatusCapsule(showBackground = item.showBackground)
+                    }
+
+                    PlayerControlId.Rotate -> if (landscapeLocked == false) {
+                        ChromeIconButton(
+                            icon = Icons.Filled.StayCurrentLandscape,
+                            label = tr("横屏", "Landscape", "横向き", "가로 화면", "橫向螢幕"),
+                            onClick = onToggleLandscape,
+                            size = buttonSize,
+                            tooltip = true,
+                            showBackground = item.showBackground,
+                        )
+                    }
+
+                    PlayerControlId.HideChrome -> if (onHideChrome != null) {
+                        ChromeIconButton(
+                            icon = Icons.Filled.VisibilityOff,
+                            label = tr("隐藏控件", "Hide controls", "操作ボタンを隠す", "컨트롤 숨기기", "隱藏控制項"),
+                            onClick = onHideChrome,
+                            size = buttonSize,
+                            tooltip = true,
+                            showBackground = item.showBackground,
+                        )
+                    }
+
+                    PlayerControlId.AutoAdvance -> if (onToggleAutoAdvance != null) {
+                        ChromeIconButton(
+                            icon = if (autoAdvance) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
+                            label = if (autoAdvance) tr("关闭自动连刷", "Disable auto-advance", "自動送りをオフ", "자동 넘김 끄기", "關閉自動連刷") else tr("自动连刷", "Auto-advance", "自動送り", "자동 넘김", "自動連刷"),
+                            onClick = onToggleAutoAdvance,
+                            size = buttonSize,
+                            selected = autoAdvance,
+                            tooltip = true,
+                            shortcut = "A",
+                            showBackground = item.showBackground,
+                        )
+                    }
+
+                    PlayerControlId.Volume -> ChromeIconButton(
+                        icon = if (muted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                        label = if (muted) tr("取消静音", "Unmute", "ミュートを解除", "음소거 해제", "取消靜音") else tr("静音", "Mute", "ミュート", "음소거", "靜音"),
+                        onClick = onToggleMute,
                         size = buttonSize,
                         tooltip = true,
+                        shortcut = "M",
+                        showBackground = item.showBackground,
                     )
-                }
-                // 独立窗口与普通播放窗口一样，右上角只有一个 ×：关窗即是收回主窗口，信息流回到侧栏接着刷。
-                // 关掉信息流在主窗口里做，这里不再并排一个关闭与一个收回
-                ChromeIconButton(Icons.Filled.Close, tr("收回主窗口", "Dock to main window", "メインウィンドウに格納", "메인 창으로 복귀", "收回主視窗"), onDock, buttonSize, tooltip = true, minTouchTarget = true)
-            } else {
-                if (onToggleFullscreen != null) ChromeIconButton(Icons.Filled.Fullscreen, if (compact) tr("全屏信息流", "Fullscreen feed", "フィードを全画面表示", "전체 화면 피드", "全螢幕資訊流") else tr("返回文件与信息流", "Back to files and feed", "ファイルとフィードに戻る", "파일 및 피드로 돌아가기", "返回檔案與資訊流"), onToggleFullscreen, buttonSize, tooltip = true)
-                if (onPopOut != null) ChromeIconButton(Icons.AutoMirrored.Outlined.OpenInNew, tr("在独立窗口播放", "Play in separate window", "別ウィンドウで再生", "별도 창에서 재생", "在獨立視窗播放"), onPopOut, buttonSize, tooltip = true)
-                // 侧栏里按钮画小一号，关闭仍占足最小触控尺寸
-                if (onClose != null) {
-                    val label = if (landscapeLocked == true) tr("返回竖屏", "Return to portrait", "縦向きに戻る", "세로 화면으로 돌아가기", "返回直向螢幕") else tr("关闭信息流", "Close feed", "フィードを閉じる", "피드 닫기", "關閉資訊流")
-                    ChromeIconButton(Icons.Filled.Close, label, onClose, buttonSize, tooltip = true, minTouchTarget = true)
+
+                    PlayerControlId.PinOnTop -> if (onDock != null && framelessWindow != null) {
+                        val onTop = framelessWindow.isAlwaysOnTop
+                        ChromeIconButton(
+                            icon = if (onTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                            label = if (onTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제", "取消置頂") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시", "置頂"),
+                            onClick = { framelessWindow.setAlwaysOnTop(!onTop) },
+                            size = buttonSize,
+                            tooltip = true,
+                            showBackground = item.showBackground,
+                        )
+                    }
+
+                    PlayerControlId.Fullscreen -> if (onDock == null && onToggleFullscreen != null) {
+                        ChromeIconButton(
+                            icon = Icons.Filled.Fullscreen,
+                            label = if (compact) tr("全屏信息流", "Fullscreen feed", "フィードを全画面表示", "전체 화면 피드", "全螢幕資訊流") else tr("返回文件与信息流", "Back to files and feed", "ファイルとフィードに戻る", "파일 및 피드로 돌아가기", "返回檔案與資訊流"),
+                            onClick = onToggleFullscreen,
+                            size = buttonSize,
+                            tooltip = true,
+                            showBackground = item.showBackground,
+                        )
+                    }
+
+                    PlayerControlId.PlayPause -> if (onTogglePause != null) {
+                        ChromeIconButton(
+                            icon = if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                            label = if (paused) tr("播放", "Play", "再生", "재생", "播放") else tr("暂停", "Pause", "一時停止", "일시 중지", "暫停"),
+                            onClick = onTogglePause,
+                            size = buttonSize,
+                            tooltip = true,
+                            shortcut = "Space",
+                            showBackground = item.showBackground,
+                        )
+                    }
+
+                    PlayerControlId.Back -> {
+                        if (onDock != null) {
+                            if (!pinInLayout && framelessWindow != null) {
+                                val onTop = framelessWindow.isAlwaysOnTop
+                                ChromeIconButton(
+                                    icon = if (onTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                                    label = if (onTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제", "取消置頂") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시", "置頂"),
+                                    onClick = { framelessWindow.setAlwaysOnTop(!onTop) },
+                                    size = buttonSize,
+                                    tooltip = true,
+                                    showBackground = item.showBackground,
+                                )
+                            }
+                            ChromeIconButton(
+                                icon = Icons.Filled.Close,
+                                label = tr("收回主窗口", "Dock to main window", "メインウィンドウに格納", "메인 창으로 복귀", "收回主視窗"),
+                                onClick = onDock,
+                                size = buttonSize,
+                                tooltip = true,
+                                minTouchTarget = true,
+                                showBackground = item.showBackground,
+                            )
+                        } else {
+                            if (onPopOut != null) {
+                                ChromeIconButton(
+                                    icon = Icons.AutoMirrored.Outlined.OpenInNew,
+                                    label = tr("在独立窗口播放", "Play in separate window", "別ウィンドウで再生", "별도 창에서 재생", "在獨立視窗播放"),
+                                    onClick = onPopOut,
+                                    size = buttonSize,
+                                    tooltip = true,
+                                    showBackground = item.showBackground,
+                                )
+                            }
+                            if (onClose != null) {
+                                val label = if (landscapeLocked == true) tr("返回竖屏", "Return to portrait", "縦向きに戻る", "세로 화면으로 돌아가기", "返回直向螢幕") else tr("关闭信息流", "Close feed", "フィードを閉じる", "피드 닫기", "關閉資訊流")
+                                ChromeIconButton(
+                                    icon = Icons.Filled.Close,
+                                    label = label,
+                                    onClick = onClose,
+                                    size = buttonSize,
+                                    tooltip = true,
+                                    minTouchTarget = true,
+                                    showBackground = item.showBackground,
+                                )
+                            }
+                        }
+                    }
+
+                    else -> Unit
                 }
             }
-            caption.buttons?.invoke()
         }
+        caption.buttons?.invoke()
     }
 }
 
 @Composable
-private fun ScopeTitle(title: String, compact: Boolean) {
+internal fun ScopeTitle(
+    title: String,
+    compact: Boolean,
+    showBackground: Boolean = true,
+    modifier: Modifier = Modifier,
+) {
+    val fixed = LocalFixedColors.current
     Surface(
         shape = CircleShape,
-        color = chromeContainer(),
-        contentColor = Color.White,
-        modifier = Modifier.widthIn(max = if (compact) 180.dp else 260.dp),
+        color = if (showBackground) chromeContainer() else Color.Transparent,
+        contentColor = fixed.OnMedia,
+        border = if (showBackground) BorderStroke(1.dp, fixed.HudSpecularBorder) else null,
+        modifier = modifier.widthIn(max = if (compact) 180.dp else 260.dp),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = if (showBackground) 14.dp else 6.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -242,7 +364,8 @@ private fun ScopeTitle(title: String, compact: Boolean) {
             Text(
                 text = title,
                 style = (if (compact) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium)
-                    .copy(fontWeight = FontWeight.SemiBold),
+                    .copy(fontWeight = FontWeight.SemiBold)
+                    .let { if (showBackground) it else it.withShadow() },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -253,8 +376,8 @@ private fun ScopeTitle(title: String, compact: Boolean) {
 /**
  * 底部的说明与操作，属于一段：控件层换段时整块淡出淡入。
  *
- * 竖屏时说明在左下、操作栏在右侧竖排，照短视频应用。[landscape] 时操作栏改为右下横排：横握的手机只有
- * 三百多 dp 高，竖着的一列连同标签要占去一半多；说明限宽，不在宽画面上拉成一长行。
+ * 竖屏时说明在左下、操作栏在右侧竖排；[landscape] 时操作栏改为右下横排，
+ * 操作栏按钮顺序与底色容器均遵循四态 `PlayerLayoutPrefs`（`ClipsLandscape` / `ClipsPortrait`）。
  */
 @Composable
 internal fun ClipControls(
@@ -268,7 +391,17 @@ internal fun ClipControls(
     compact: Boolean,
     landscape: Boolean,
     modifier: Modifier = Modifier,
+    layout: PlayerFormFactorLayout? = null,
+    paused: Boolean = false,
+    onTogglePause: (() -> Unit)? = null,
+    canPrevious: Boolean = false,
+    canNext: Boolean = false,
+    onPreviousClip: (() -> Unit)? = null,
+    onNextClip: (() -> Unit)? = null,
+    seekStepMillis: Long = 10_000L,
+    onSeekByMillis: ((Long) -> Unit)? = null,
 ) {
+    val resolvedLayout = layout ?: LocalPlayerLayoutPrefs.current.clipsLayout(isLandscape = landscape)
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -294,39 +427,140 @@ internal fun ClipControls(
             },
         )
         ClipActionRail(
+            items = resolvedLayout.bottomBar,
             starred = starred,
             onToggleStar = onToggleStar,
             onPlayFull = onPlayFull,
             onLocate = onLocate,
             compact = compact,
             horizontal = landscape,
+            paused = paused,
+            onTogglePause = onTogglePause,
+            canPrevious = canPrevious,
+            canNext = canNext,
+            onPreviousClip = onPreviousClip,
+            onNextClip = onNextClip,
+            seekStepMillis = seekStepMillis,
+            onSeekByMillis = onSeekByMillis,
         )
     }
 }
 
-/**
- * 操作栏：收藏、看完整、在网盘中显示。图标在上、短标签在下，照短视频应用的样子常驻；[horizontal] 时横排。
- * 分享与下载不在这里，在完整播放器的顶栏：刷的时候只管收藏与去看，真要留下或发给别人时多半已点进来看完整了。
- */
 @Composable
 private fun ClipActionRail(
+    items: List<PlayerPanelItem>,
     starred: Boolean,
     onToggleStar: () -> Unit,
     onPlayFull: () -> Unit,
     onLocate: () -> Unit,
     compact: Boolean,
     horizontal: Boolean,
+    paused: Boolean,
+    onTogglePause: (() -> Unit)?,
+    canPrevious: Boolean,
+    canNext: Boolean,
+    onPreviousClip: (() -> Unit)?,
+    onNextClip: (() -> Unit)?,
+    seekStepMillis: Long,
+    onSeekByMillis: ((Long) -> Unit)?,
 ) {
     val actions: @Composable () -> Unit = {
-        RailAction(
-            icon = if (starred) Icons.Filled.Star else Icons.Outlined.StarOutline,
-            label = if (starred) tr("已收藏", "Favorited", "お気に入り登録済み", "즐겨찾기 추가됨", "已收藏") else tr("收藏", "Favorite", "お気に入り", "즐겨찾기", "收藏"),
-            onClick = onToggleStar,
-            compact = compact,
-            tint = if (starred) MaterialTheme.colorScheme.tertiary else Color.Unspecified,
-        )
-        RailAction(Icons.Outlined.OpenInFull, tr("播放全片", "Play full video", "本編を再生", "전체 재생", "播放全片"), onPlayFull, compact)
-        RailAction(Icons.Outlined.FolderOpen, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), onLocate, compact)
+        items.forEach { item ->
+            val control = item as? PlayerPanelItem.Control ?: return@forEach
+            val renderAction: @Composable (ImageVector, String, () -> Unit, Color) -> Unit = { icon, label, onClick, tint ->
+                if (horizontal) {
+                    // 横屏右下横排与视频播放器底栏一致：仅圆形图标 + 悬停 Tooltip，不叠放下方文字挤占标题宽度
+                    ChromeIconButton(
+                        icon = icon,
+                        label = label,
+                        onClick = onClick,
+                        size = if (compact) 40.dp else 48.dp,
+                        iconSize = if (compact) 22.dp else 26.dp,
+                        tint = tint,
+                        tooltip = true,
+                        showBackground = control.showBackground,
+                    )
+                } else {
+                    RailAction(
+                        icon = icon,
+                        label = label,
+                        onClick = onClick,
+                        compact = compact,
+                        tint = tint,
+                        showBackground = control.showBackground,
+                    )
+                }
+            }
+            when (control.id) {
+                PlayerControlId.Star -> renderAction(
+                    if (starred) Icons.Filled.Star else Icons.Outlined.StarOutline,
+                    if (starred) tr("已收藏", "Favorited", "お気に入り登録済み", "즐겨찾기 추가됨", "已收藏") else tr("收藏", "Favorite", "お気に入り", "즐겨찾기", "收藏"),
+                    onToggleStar,
+                    if (starred) MaterialTheme.colorScheme.tertiary else Color.Unspecified,
+                )
+
+                PlayerControlId.OpenFull -> renderAction(
+                    Icons.Outlined.OpenInFull,
+                    tr("播放全片", "Play full video", "本編を再生", "전체 재생", "播放全片"),
+                    onPlayFull,
+                    Color.Unspecified,
+                )
+
+                PlayerControlId.OpenFolder -> renderAction(
+                    Icons.Outlined.FolderOpen,
+                    tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"),
+                    onLocate,
+                    Color.Unspecified,
+                )
+
+                PlayerControlId.PlayPause -> if (onTogglePause != null) {
+                    renderAction(
+                        if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                        if (paused) tr("播放", "Play", "再生", "재생", "播放") else tr("暂停", "Pause", "一時停止", "일시 중지", "暫停"),
+                        onTogglePause,
+                        Color.Unspecified,
+                    )
+                }
+
+                PlayerControlId.Previous -> if (onPreviousClip != null && canPrevious) {
+                    renderAction(
+                        Icons.Filled.SkipPrevious,
+                        stringResource(Res.string.player_previous_clip),
+                        onPreviousClip,
+                        Color.Unspecified,
+                    )
+                }
+
+                PlayerControlId.Next -> if (onNextClip != null && canNext) {
+                    renderAction(
+                        Icons.Filled.SkipNext,
+                        stringResource(Res.string.player_next_clip),
+                        onNextClip,
+                        Color.Unspecified,
+                    )
+                }
+
+                PlayerControlId.SeekBackward -> if (onSeekByMillis != null) {
+                    renderAction(
+                        Icons.Filled.FastRewind,
+                        tr("快退", "Rewind", "巻き戻し", "되감기", "倒轉"),
+                        { onSeekByMillis(-seekStepMillis) },
+                        Color.Unspecified,
+                    )
+                }
+
+                PlayerControlId.SeekForward -> if (onSeekByMillis != null) {
+                    renderAction(
+                        Icons.Filled.FastForward,
+                        tr("快进", "Forward", "早送り", "앞으로", "快轉"),
+                        { onSeekByMillis(seekStepMillis) },
+                        Color.Unspecified,
+                    )
+                }
+
+                else -> Unit
+            }
+        }
     }
     if (horizontal) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Bottom) { actions() }
@@ -339,7 +573,14 @@ private fun ClipActionRail(
 }
 
 @Composable
-private fun RailAction(icon: ImageVector, label: String, onClick: () -> Unit, compact: Boolean, tint: Color = Color.Unspecified) {
+private fun RailAction(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    compact: Boolean,
+    tint: Color = Color.Unspecified,
+    showBackground: Boolean = true,
+) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         ChromeIconButton(
             icon = icon,
@@ -348,6 +589,7 @@ private fun RailAction(icon: ImageVector, label: String, onClick: () -> Unit, co
             size = if (compact) 40.dp else 48.dp,
             iconSize = if (compact) 22.dp else 26.dp,
             tint = tint,
+            showBackground = showBackground,
         )
         Text(
             text = label,
@@ -377,6 +619,7 @@ private fun ChromeIconButton(
     tooltip: Boolean = false,
     shortcut: String? = null,
     minTouchTarget: Boolean = false,
+    showBackground: Boolean = true,
 ) {
     if (tooltip) {
         TooltipBox(
@@ -384,11 +627,15 @@ private fun ChromeIconButton(
             tooltip = { PlainTooltip { Text(if (shortcut != null) "$label ($shortcut)" else label) } },
             state = rememberTooltipState(),
         ) {
-            ChromeIconButton(icon, label, onClick, size, iconSize, tint, selected = selected, minTouchTarget = minTouchTarget)
+            ChromeIconButton(icon, label, onClick, size, iconSize, tint, selected = selected, minTouchTarget = minTouchTarget, showBackground = showBackground)
         }
         return
     }
-    val containerColor = if (selected) MaterialTheme.colorScheme.primary else chromeContainer()
+    val containerColor = when {
+        selected -> MaterialTheme.colorScheme.primary
+        showBackground -> chromeContainer()
+        else -> Color.Transparent
+    }
     val contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White
     FilledTonalIconButton(
         onClick = onClick,
@@ -441,8 +688,8 @@ internal fun ClipCaption(clip: Clip, startMs: Long, folderName: String?, compact
         }
         Text(
             text = tr("自 ${formatTimeMs(startMs)} 起", "From ${formatTimeMs(startMs)}", "${formatTimeMs(startMs)} から", "${formatTimeMs(startMs)}부터", "自 ${formatTimeMs(startMs)} 起"),
-            style = typography.labelMedium.copy(fontFeatureSettings = "tnum").withShadow(),
-            color = Color.White.copy(alpha = 0.72f),
+            style = typography.labelMedium.tabular.withShadow(),
+            color = Color.White.copy(alpha = 0.78f),
             maxLines = 1,
             modifier = Modifier.padding(top = 2.dp),
         )
@@ -466,14 +713,104 @@ private fun captionOf(name: String): Caption {
 }
 
 /**
+ * 桌面鼠标悬停在信息流右侧时浮现的上一条 / 下一条切换胶囊：高光描边半透明容器，
+ * 仅用于非触控输入，避免在手机上与上下滑动手势重复。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ClipNavButtons(
+    canPrevious: Boolean,
+    canNext: Boolean,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    compact: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val fixed = LocalFixedColors.current
+    val buttonSize = if (compact) 36.dp else 40.dp
+    Surface(
+        shape = CircleShape,
+        color = fixed.ScrimOnMedia,
+        contentColor = fixed.OnMedia,
+        border = BorderStroke(1.dp, fixed.HudSpecularBorder),
+        modifier = modifier,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            ClipNavIconButton(
+                icon = Icons.Filled.KeyboardArrowUp,
+                label = stringResource(Res.string.player_previous_clip),
+                shortcut = "↑",
+                enabled = canPrevious,
+                size = buttonSize,
+                onClick = onPrevious,
+            )
+            ClipNavIconButton(
+                icon = Icons.Filled.KeyboardArrowDown,
+                label = stringResource(Res.string.player_next_clip),
+                shortcut = "↓",
+                enabled = canNext,
+                size = buttonSize,
+                onClick = onNext,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ClipNavIconButton(
+    icon: ImageVector,
+    label: String,
+    shortcut: String,
+    enabled: Boolean,
+    size: Dp,
+    onClick: () -> Unit,
+) {
+    val hoverSource = remember { MutableInteractionSource() }
+    val hovered by hoverSource.collectIsHoveredAsState()
+    val bg by animateColorAsState(
+        targetValue = if (hovered && enabled) Color.White.copy(alpha = 0.16f) else Color.Transparent,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+    )
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Left),
+        tooltip = { PlainTooltip { Text("$label ($shortcut)") } },
+        state = rememberTooltipState(),
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(bg)
+                .hoverable(hoverSource, enabled = enabled)
+                .clickable(enabled = enabled, onClickLabel = label, onClick = onClick)
+                .handCursor(enabled),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (enabled) LocalFixedColors.current.OnMedia else LocalFixedColors.current.OnMedia.copy(alpha = 0.35f),
+                modifier = Modifier.size(22.dp),
+            )
+        }
+    }
+}
+
+/**
  * 底边的进度条，只管这一段本身，不是整条流：切片比一段长，后面那截是留的余量，拖到那里的画面放不了多久就被自动翻页带走。
- * 平时是一条细线，手指按下或鼠标悬停时变粗、出现手柄，由 PlayerSeekBar 负责。
+ * 平时是一条细线，手指按下或鼠标悬停时变粗、出现手柄，由 PlayerSeekBar 负责；高频进度读数通过 provider 推迟到绘制阶段读取。
  */
 @Composable
 internal fun ClipProgressBar(
-    positionMillis: Long,
+    positionMillisProvider: () -> Long,
     lengthMillis: Long,
-    bufferedPositionMillis: Long,
+    bufferedPositionMillisProvider: () -> Long,
+    isPlaying: Boolean,
     onSeek: (Long) -> Unit,
     onScrubbingChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
@@ -481,9 +818,11 @@ internal fun ClipProgressBar(
     var scrubbing by remember { mutableStateOf(false) }
     val isTouchLike = dev.piko.ui.components.LocalPointerSource.current.isTouchLike
     PlayerSeekBar(
-        positionMillis = positionMillis,
+        positionMillisProvider = positionMillisProvider,
         durationMillis = lengthMillis,
-        bufferedPositionMillis = bufferedPositionMillis,
+        bufferedPositionMillisProvider = bufferedPositionMillisProvider,
+        isPlaying = isPlaying,
+        wavy = false,
         onSeek = onSeek,
         // 触屏也只在按下时出现手柄：常驻的圆点在短视频的画面上太抢眼，按下即跳到该处，本来就看得出能拖
         thumbOnHoverOnly = true,
@@ -515,7 +854,14 @@ internal fun ClipBackdrop(thumbnail: String?, modifier: Modifier = Modifier) {
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
     Box(
         modifier
-            .onSizeChanged { containerSize = it }
+            .onSizeChanged {
+                // 量化到 64px 桶，避免窗口拖拽缩放时每像素触发重组与预模糊查询
+                val bucketed = IntSize(
+                    ((it.width + 63) / 64 * 64).coerceAtLeast(64),
+                    ((it.height + 63) / 64 * 64).coerceAtLeast(64),
+                )
+                if (containerSize != bucketed) containerSize = bucketed
+            }
             .clipToBounds()
             .background(Brush.verticalGradient(listOf(base, Color.Black))),
     ) {
@@ -591,14 +937,24 @@ internal fun PausedMark(compact: Boolean, modifier: Modifier = Modifier) {
 /** 长按期间顶部的倍速提示。 */
 @Composable
 internal fun BoostPill(speed: Float, modifier: Modifier = Modifier) {
-    Surface(shape = CircleShape, color = chromeContainer(), contentColor = Color.White, modifier = modifier) {
+    val fixed = LocalFixedColors.current
+    Surface(
+        shape = CircleShape,
+        color = fixed.ScrimOnMedia,
+        contentColor = fixed.OnMedia,
+        border = BorderStroke(1.dp, fixed.HudSpecularBorder),
+        modifier = modifier,
+    ) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Icon(Icons.Filled.FastForward, contentDescription = null, modifier = Modifier.size(18.dp))
-            Text(tr("${formatSpeedPreset(speed)} 倍速", "${formatSpeedPreset(speed)} speed", "${formatSpeedPreset(speed)} 倍速", "${formatSpeedPreset(speed)}배속", "${formatSpeedPreset(speed)} 倍速"), style = MaterialTheme.typography.labelLarge)
+            Text(
+                tr("${formatSpeedPreset(speed)} 倍速", "${formatSpeedPreset(speed)} speed", "${formatSpeedPreset(speed)} 倍速", "${formatSpeedPreset(speed)}배속", "${formatSpeedPreset(speed)} 倍速"),
+                style = MaterialTheme.typography.labelLarge.tabular,
+            )
         }
     }
 }
@@ -648,23 +1004,24 @@ internal fun BoxScope.StarBursts(bursts: List<StarBurst>, onFinished: (StarBurst
 }
 
 @Composable
-private fun chromeContainer(): Color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = CHROME_CONTAINER_ALPHA)
+internal fun chromeContainer(): Color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = CHROME_CONTAINER_ALPHA)
 
 /** 文字直接压在画面上，加一层淡投影，亮画面上也读得出。 */
 private fun TextStyle.withShadow(): TextStyle = copy(shadow = TextShadow)
 
 private val TextShadow = Shadow(color = Color.Black.copy(alpha = 0.6f), offset = Offset(0f, 1f), blurRadius = 6f)
 
-// 顶栏与底部说明区的遮罩，与播放器相同的深浅
-private val TopScrim = listOf(
-    Color.Black.copy(alpha = 0.55f),
+// 顶栏与底部说明区的平滑渐变遮罩：底部采用四段过渡至 FixedColors.ScrimOnMediaStrong，过亮底画面仍保持高对比度
+internal val TopScrim = listOf(
+    FixedColors.ScrimOnMedia,
     Color.Black.copy(alpha = 0.2f),
     Color.Transparent,
 )
 internal val BottomScrim = listOf(
     Color.Transparent,
-    Color.Black.copy(alpha = 0.35f),
-    Color.Black.copy(alpha = 0.7f),
+    Color.Black.copy(alpha = 0.16f),
+    FixedColors.ScrimOnMedia,
+    FixedColors.ScrimOnMediaStrong,
 )
 
 /** 浮在画面上的按钮比播放器的更透一些：它们常驻，不能整块挡住画面。 */

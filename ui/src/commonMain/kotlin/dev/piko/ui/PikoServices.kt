@@ -78,6 +78,8 @@ class PikoServices(
     val metaTube: MetaTubeService? = null,
     localFileAccess: (((String) -> Unit) -> dev.piko.shared.data.LocalFileAccess)? = null,
     treeDatabaseFactory: PikoTreeDatabaseFactory? = null,
+    val storyboardCache: dev.piko.shared.media.storyboard.StoryboardCache = dev.piko.shared.media.storyboard.InMemoryStoryboardCache(),
+    cacheManager: dev.piko.shared.media.cache.PikoCacheManager? = null,
 ) {
     val memoryGovernor = dev.piko.shared.memory.PikoMemoryGovernor.Shared
     val workloadGovernor = dev.piko.shared.runtime.PikoWorkloadGovernor.Shared
@@ -91,6 +93,16 @@ class PikoServices(
 
     // 不随任何界面结束的后台工作：离线任务的跟踪与 Piko-Temp 的清理
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** 统一缓存管理引擎（图片、播放分块、雪碧图、信息流、目录树统计与 LRU+TTL 自动清理）。 */
+    val cacheManager: dev.piko.shared.media.cache.PikoCacheManager = cacheManager
+        ?: dev.piko.shared.media.cache.PikoCacheManager(
+            backends = mapOf(
+                dev.piko.shared.media.cache.CacheCategory.PLAYBACK to downloadManager.fileCachePool.asCacheBackend(),
+                dev.piko.shared.media.cache.CacheCategory.STORYBOARD to storyboardCache.asCacheBackend(),
+            ),
+            scope = backgroundScope,
+        )
 
     /** 平台偏好，其中记着文件夹 ID 的几项换成按账号存的，见 AccountScopedPreferences。 */
     val preferences: PikoUserPreferences =
@@ -146,6 +158,7 @@ class PikoServices(
         mediaRepository.leaseFolder = { owner -> previewTempFolder.folderId(owner).getOrThrow() }
         // 绑定默认文件夹下载源，使在递归列目录（Listing）阶段退出的文件夹下载可在下次冷启动后自动接续展开
         downloadManager.bindDefaultFolderSource(DriveDownloadFolderSource(driveRepository))
+        this.cacheManager.startPeriodicMaintenance()
     }
 
     val vaultStore: VaultStore get() = driveRepository.vault
@@ -470,6 +483,7 @@ class PikoServices(
             segmentSession.end()
             clipFeedSession.endAccount(left)
             folderVaultSession.cancel()
+            dev.piko.shared.media.proxy.ExternalPlayerStreams.closeAll()
         }
         backgroundScope.launch {
             val cleanedAccounts = mutableSetOf<String>()

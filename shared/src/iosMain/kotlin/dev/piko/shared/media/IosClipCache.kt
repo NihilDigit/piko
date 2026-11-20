@@ -3,6 +3,9 @@
 package dev.piko.shared.media
 
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.media.cache.CacheCategory
+import dev.piko.shared.media.cache.CacheCategoryBackend
+import dev.piko.shared.media.cache.CacheCategoryStats
 import io.github.nihildigit.pikpak.BlockStore
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
@@ -183,6 +186,124 @@ class IosClipCache(
     /** 刷新「最近用过」：淘汰按修改时间排，读到就要把它挪到队尾。 */
     private fun touch(path: String) {
         files.setAttributes(mapOf(NSFileModificationDate to NSDate()), ofItemAtPath = path, error = null)
+    }
+
+    /** 扫描 iOS 信息流缓存的磁盘占用与文件数。 */
+    suspend fun scanStats(): CacheCategoryStats = withContext(Dispatchers.IO) {
+        lock.withLock {
+            var bytes = 0L
+            var count = 0
+            for (bucket in files.contentsOfDirectoryAtPath(blockDirectory, error = null)?.filterIsInstance<String>() ?: emptyList()) {
+                val bucketPath = "$blockDirectory/$bucket"
+                for (name in files.contentsOfDirectoryAtPath(bucketPath, error = null)?.filterIsInstance<String>() ?: emptyList()) {
+                    if (name.endsWith(".tmp")) continue
+                    bytes += sizeOfFile("$bucketPath/$name")
+                    count++
+                }
+            }
+            for (name in files.contentsOfDirectoryAtPath(recordDirectory, error = null)?.filterIsInstance<String>() ?: emptyList()) {
+                if (name.endsWith(".tmp")) continue
+                bytes += sizeOfFile("$recordDirectory/$name")
+                count++
+            }
+            CacheCategoryStats(
+                category = CacheCategory.CLIPS,
+                bytes = bytes,
+                fileCount = count,
+                clearable = true,
+            )
+        }
+    }
+
+    /** 清理全部 iOS 信息流缓存块与切片记录，返回释放字节数。 */
+    suspend fun clearAll(): Long = withContext(Dispatchers.IO) {
+        lock.withLock {
+            var freed = 0L
+            for (bucket in files.contentsOfDirectoryAtPath(blockDirectory, error = null)?.filterIsInstance<String>() ?: emptyList()) {
+                val bucketPath = "$blockDirectory/$bucket"
+                for (name in files.contentsOfDirectoryAtPath(bucketPath, error = null)?.filterIsInstance<String>() ?: emptyList()) {
+                    val path = "$bucketPath/$name"
+                    val size = sizeOfFile(path)
+                    if (files.removeItemAtPath(path, error = null)) freed += size
+                }
+                files.removeItemAtPath(bucketPath, error = null)
+            }
+            for (name in files.contentsOfDirectoryAtPath(recordDirectory, error = null)?.filterIsInstance<String>() ?: emptyList()) {
+                val path = "$recordDirectory/$name"
+                val size = sizeOfFile(path)
+                if (files.removeItemAtPath(path, error = null)) freed += size
+            }
+            storedBytes = 0L
+            freed
+        }
+    }
+
+    /** 按 TTL（[maxAgeMillis] > 0）与上限（[targetMaxBytes] >= 0）执行 iOS 信息流缓存 LRU 淘汰。 */
+    suspend fun prune(maxAgeMillis: Long, targetMaxBytes: Long): Long = withContext(Dispatchers.IO) {
+        lock.withLock {
+            val nowSec = NSDate().timeIntervalSince1970
+            val maxAgeSec = maxAgeMillis / 1_000.0
+            var freed = 0L
+
+            val blocks = mutableListOf<Triple<String, Long, Double>>()
+            for (bucket in files.contentsOfDirectoryAtPath(blockDirectory, error = null)?.filterIsInstance<String>() ?: emptyList()) {
+                val bucketPath = "$blockDirectory/$bucket"
+                for (name in files.contentsOfDirectoryAtPath(bucketPath, error = null)?.filterIsInstance<String>() ?: emptyList()) {
+                    if (name.endsWith(".tmp")) continue
+                    val path = "$bucketPath/$name"
+                    blocks += Triple(path, sizeOfFile(path), modifiedAt(path))
+                }
+            }
+
+            val remainingBlocks = ArrayList<Triple<String, Long, Double>>(blocks.size)
+            for (entry in blocks) {
+                val (path, size, mtimeSec) = entry
+                if (maxAgeMillis > 0L && (nowSec - mtimeSec) > maxAgeSec) {
+                    if (files.removeItemAtPath(path, error = null)) freed += size else remainingBlocks += entry
+                } else {
+                    remainingBlocks += entry
+                }
+            }
+
+            if (maxAgeMillis > 0L) {
+                for (name in files.contentsOfDirectoryAtPath(recordDirectory, error = null)?.filterIsInstance<String>() ?: emptyList()) {
+                    if (name.endsWith(".tmp")) continue
+                    val path = "$recordDirectory/$name"
+                    val size = sizeOfFile(path)
+                    if ((nowSec - modifiedAt(path)) > maxAgeSec && files.removeItemAtPath(path, error = null)) {
+                        freed += size
+                    }
+                }
+            }
+
+            var remainingBlockBytes = remainingBlocks.sumOf { it.second }
+            if (targetMaxBytes >= 0L && remainingBlockBytes > targetMaxBytes) {
+                for ((path, size, _) in remainingBlocks.sortedBy { it.third }) {
+                    if (remainingBlockBytes <= targetMaxBytes) break
+                    if (files.removeItemAtPath(path, error = null)) {
+                        remainingBlockBytes -= size
+                        freed += size
+                    }
+                }
+            }
+
+            for (bucket in files.contentsOfDirectoryAtPath(blockDirectory, error = null)?.filterIsInstance<String>() ?: emptyList()) {
+                val bucketPath = "$blockDirectory/$bucket"
+                val left = files.contentsOfDirectoryAtPath(bucketPath, error = null)?.filterIsInstance<String>().orEmpty()
+                if (left.isEmpty()) files.removeItemAtPath(bucketPath, error = null)
+            }
+            storedBytes = remainingBlockBytes
+            freed
+        }
+    }
+
+    fun asCacheBackend(): CacheCategoryBackend = object : CacheCategoryBackend {
+        override val category: CacheCategory = CacheCategory.CLIPS
+        override val clearable: Boolean = true
+        override suspend fun scan(): CacheCategoryStats = scanStats()
+        override suspend fun clear(): Long = clearAll()
+        override suspend fun prune(maxAgeMillis: Long, targetMaxBytes: Long): Long =
+            this@IosClipCache.prune(maxAgeMillis = maxAgeMillis, targetMaxBytes = targetMaxBytes)
     }
 
     private companion object {

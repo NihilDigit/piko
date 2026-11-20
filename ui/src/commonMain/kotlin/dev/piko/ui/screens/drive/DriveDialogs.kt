@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -36,6 +37,7 @@ import dev.piko.shared.state.DriveScreenState
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.CopyTargetDialog
+import dev.piko.ui.components.FeedExitConfirmCheckbox
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.MoveTargetDialog
 import dev.piko.ui.components.PikoDialog
@@ -65,6 +67,7 @@ import dev.piko.ui.screens.rename.MetaTubeTitleRow
 import dev.piko.ui.screens.share.ShareDialog
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
 
 /**
  * 网盘页用户触发对话框宿主：仅当 `dialog != null` 时渲染对应对话框；
@@ -77,11 +80,14 @@ internal fun DriveDialogHost(
     vaultSession: FolderVaultSession,
     metaTube: MetaTubeService?,
     activeFolderId: String,
+    activeFolderName: String,
     displayedFiles: List<FileStat>,
     onDismiss: () -> Unit,
     onConfirmNewFolder: (String) -> Unit,
     onConfirmSingleRename: (id: String, newName: String) -> Unit,
     onBatchRenameFinished: (String) -> Unit,
+    onFolderStructureAvailability: (List<FileStat>) -> String?,
+    onFolderStructureFinished: (String) -> Unit,
     onShareCopied: () -> Unit,
     onConfirmMove: (ids: List<String>, targetId: String, targetName: String) -> Boolean,
     onConfirmCopy: (ids: List<String>, targetId: String, targetName: String) -> Boolean,
@@ -179,15 +185,31 @@ internal fun DriveDialogHost(
             )
         }
         is DriveDialog.CloseGalleryConfirm -> {
+            val preferences = LocalPikoServices.current.preferences
+            val scope = rememberCoroutineScope()
+            var dontAskAgain by remember { mutableStateOf(false) }
             PikoDialog(
                 onDismissRequest = onDismiss,
                 title = { Text(stringResource(Res.string.text_close_gallery)) },
-                text = { Text(stringResource(Res.string.text_closing_exits_the_gallery_and_clears_browsing_progress)) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(stringResource(Res.string.text_closing_exits_the_gallery_and_clears_browsing_progress))
+                        FeedExitConfirmCheckbox(
+                            checked = dontAskAgain,
+                            onCheckedChange = { dontAskAgain = it },
+                        )
+                    }
+                },
                 confirmButton = {
                     PikoDialogConfirm(
                         tr("关闭", "Close", "閉じる", "닫기", "關閉"),
                         destructive = true,
-                        onClick = { onConfirmCloseGallery(dialog.nextViewMode) },
+                        onClick = {
+                            if (dontAskAgain) {
+                                scope.launch { preferences.setSkipFeedExitConfirm(true) }
+                            }
+                            onConfirmCloseGallery(dialog.nextViewMode)
+                        },
                     )
                 },
                 dismissButton = {
@@ -209,6 +231,17 @@ internal fun DriveDialogHost(
                     onDismiss = onDismiss,
                 )
             }
+        }
+        is DriveDialog.FolderStructure -> {
+            FolderStructureDialog(
+                workingFolderId = activeFolderId,
+                workingFolderName = activeFolderName,
+                selectedFolders = dialog.folders,
+                initialMode = dialog.initialMode,
+                availabilityCheck = { onFolderStructureAvailability(dialog.folders) },
+                onDismiss = onDismiss,
+                onFinished = onFolderStructureFinished,
+            )
         }
     }
 }

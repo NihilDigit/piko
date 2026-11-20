@@ -1,16 +1,21 @@
 package dev.piko.ui.components
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.LoadingIndicatorDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
@@ -24,9 +29,13 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Constraints
@@ -34,6 +43,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.media.player.observeLoadingSpeed
 import dev.piko.ui.adaptive.isDesktopLayout
+import dev.piko.ui.theme.LocalPikoMotion
+import dev.piko.ui.theme.LocalWindowVisible
 import kotlinx.coroutines.delay
 
 /*
@@ -53,13 +64,51 @@ fun PikoLoadingIndicator(
     size: Dp = 48.dp,
     color: Color = MaterialTheme.colorScheme.primary,
 ) {
+    val staticMode = LocalPikoMotion.current.reduced || !LocalWindowVisible.current
     Box(
         modifier = modifier,
         contentAlignment = Alignment.Center,
     ) {
-        LoadingIndicator(
-            modifier = Modifier.size(size),
+        if (staticMode) {
+            StaticLoadingRing(size = size, color = color)
+        } else {
+            LoadingIndicator(
+                modifier = Modifier.size(size),
+                color = color,
+            )
+        }
+    }
+}
+
+/**
+ * 减少动画开启或窗口不可见时的静态等待指示器：避免形变 `LoadingIndicator` 在 `MotionDurationScale = 0` 下
+ * 停留在任意中间多边形畸变帧，同时在最小化窗口期间停止无限循环帧调度。
+ */
+@Composable
+private fun StaticLoadingRing(size: Dp, color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier.size(size)) {
+        val strokeWidth = (size.toPx() * 0.11f).coerceIn(2.dp.toPx(), 4.dp.toPx())
+        val inset = strokeWidth * 1.6f
+        val diameter = (this.size.minDimension - inset * 2f).coerceAtLeast(1f)
+        val topLeft = Offset((this.size.width - diameter) / 2f, (this.size.height - diameter) / 2f)
+        val arcSize = Size(diameter, diameter)
+        drawArc(
+            color = color.copy(alpha = 0.24f),
+            startAngle = 0f,
+            sweepAngle = 360f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
+        )
+        drawArc(
             color = color,
+            startAngle = -90f,
+            sweepAngle = 250f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
         )
     }
 }
@@ -193,11 +242,30 @@ fun MediaLoadingIndicator(
     appearImmediate: Boolean = false,
 ) {
     if (!appearImmediate && !rememberLoadingVisible()) return
+    val staticMode = LocalPikoMotion.current.reduced || !LocalWindowVisible.current
+    val indicator: @Composable (Modifier) -> Unit = { indicatorModifier ->
+        if (staticMode) {
+            Box(
+                modifier = indicatorModifier
+                    .size(LoadingIndicatorDefaults.ContainerWidth, LoadingIndicatorDefaults.ContainerHeight)
+                    .clip(LoadingIndicatorDefaults.containerShape)
+                    .background(LoadingIndicatorDefaults.containedContainerColor),
+                contentAlignment = Alignment.Center,
+            ) {
+                StaticLoadingRing(
+                    size = 32.dp,
+                    color = LoadingIndicatorDefaults.containedIndicatorColor,
+                )
+            }
+        } else {
+            ContainedLoadingIndicator(modifier = indicatorModifier)
+        }
+    }
     if (title.isNullOrBlank() && subtitle.isNullOrBlank()) {
-        ContainedLoadingIndicator(modifier = modifier)
+        indicator(modifier)
     } else {
         Box(modifier = modifier, contentAlignment = Alignment.Center) {
-            ContainedLoadingIndicator()
+            indicator(Modifier)
             MediaLoadingCaption(
                 anchorHalfHeight = 24.dp,
                 title = title,
@@ -238,6 +306,7 @@ fun RefreshBox(
     content: @Composable BoxScope.() -> Unit,
 ) {
     val state = rememberPullToRefreshState()
+    val staticMode = LocalPikoMotion.current.reduced || !LocalWindowVisible.current
     PullToRefreshBox(
         isRefreshing = isRefreshing,
         onRefresh = onRefresh,
@@ -245,14 +314,48 @@ fun RefreshBox(
         state = state,
         enabled = LocalPointerSource.current.isTouchLike,
         indicator = {
-            PullToRefreshDefaults.LoadingIndicator(
-                state = state,
-                isRefreshing = isRefreshing,
-                modifier = Modifier.align(Alignment.TopCenter),
-            )
+            if (staticMode) {
+                StaticRefreshIndicator(
+                    isRefreshing = isRefreshing,
+                    distanceFraction = state.distanceFraction,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
+            } else {
+                PullToRefreshDefaults.LoadingIndicator(
+                    state = state,
+                    isRefreshing = isRefreshing,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
+            }
         },
         content = content,
     )
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun StaticRefreshIndicator(
+    isRefreshing: Boolean,
+    distanceFraction: Float,
+    modifier: Modifier = Modifier,
+) {
+    val progress = if (isRefreshing) 1f else distanceFraction.coerceIn(0f, 1f)
+    if (progress <= 0.01f) return
+    Surface(
+        modifier = modifier
+            .padding(top = (16f * progress).dp)
+            .size(LoadingIndicatorDefaults.ContainerWidth, LoadingIndicatorDefaults.ContainerHeight),
+        shape = LoadingIndicatorDefaults.containerShape,
+        color = LoadingIndicatorDefaults.containedContainerColor,
+        shadowElevation = 3.dp,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            StaticLoadingRing(
+                size = 24.dp,
+                color = LoadingIndicatorDefaults.containedIndicatorColor,
+            )
+        }
+    }
 }
 
 /**

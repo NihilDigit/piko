@@ -13,6 +13,8 @@ import dev.piko.shared.update.LatestRelease
 import dev.piko.shared.update.ReleaseAsset
 import dev.piko.update.AvailableUpdate
 import dev.piko.update.GithubUpdateService
+import dev.piko.update.UpdateProgressTracker
+import dev.piko.update.UpdateStage
 import dev.piko.update.UpdateStatus
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
@@ -48,6 +50,24 @@ data class DesktopUpdate(
             is DesktopUpdatePlan.Manual -> plan.download.size
         }
     override val canInstallInApp: Boolean get() = plan !is DesktopUpdatePlan.Manual
+    override val modeLabel: String
+        get() = when (plan) {
+            is DesktopUpdatePlan.Delta -> tr("zstd 差分", "zstd delta", "zstd 差分", "zstd 델타", "zstd 差分")
+            is DesktopUpdatePlan.Patch -> tr("增量补丁", "Patch", "差分パッチ", "증분 패치", "增量修補")
+            is DesktopUpdatePlan.Image -> if (plan.catalog != null) {
+                tr("按需提取", "On-demand image", "オンデマンド取得", "필요 항목만 받기", "按需擷取")
+            } else {
+                tr("完整镜像", "Full image", "フルイメージ", "전체 이미지", "完整映像")
+            }
+            is DesktopUpdatePlan.Installer -> tr("MSI 安装包", "MSI installer", "MSI インストーラー", "MSI 설치 관리자", "MSI 安裝套件")
+            is DesktopUpdatePlan.MacBundle -> tr("DMG 整包", "DMG package", "DMG パッケージ", "DMG 패키지", "DMG 完整封裝")
+            is DesktopUpdatePlan.AppImage -> if (plan.delta != null) {
+                tr("AppImage 差分", "AppImage delta", "AppImage 差分", "AppImage 델타", "AppImage 差分")
+            } else {
+                "AppImage"
+            }
+            is DesktopUpdatePlan.Manual -> tr("手动下载", "Manual download", "手動ダウンロード", "수동 다운로드", "手動下載")
+        }
 }
 
 sealed interface DesktopUpdatePlan {
@@ -225,16 +245,12 @@ class DesktopAppUpdater private constructor(
         if (catalog != null) {
             try {
                 val total = plan.downloadBytes.coerceAtLeast(1)
-                var fetched = 0L
-                var reported = 0f
+                val mode = tr("按需提取", "On-demand image", "オンデマンド取得", "필요 항목만 받기", "按需擷取")
+                val tracker = UpdateProgressTracker(total) { progress, downloaded, totalBytes, bytesPerSec ->
+                    reportDownloadProgress(update, progress, downloaded, totalBytes, bytesPerSec, mode)
+                }
                 fetchImageEntries(catalog, plan.files, target, range = { range, onChunk -> releases.downloadRange(plan.image, range, onChunk) }) { length ->
-                    fetched += length
-                    // 每涨 1% 才改一次状态，同 GithubReleaseClient.download
-                    val progress = (fetched.toFloat() / total).coerceIn(0f, 1f)
-                    if (progress - reported >= 0.01f) {
-                        reported = progress
-                        status = UpdateStatus.Downloading(update, progress)
-                    }
+                    tracker.onBytes(length.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
                 }
                 return
             } catch (e: CancellationException) {
@@ -244,10 +260,24 @@ class DesktopAppUpdater private constructor(
             } catch (e: Exception) {
                 log("Range download from image.zip failed; falling back to full archive download", e)
                 target.deleteRecursively()
-                status = UpdateStatus.Downloading(update, 0f)
+                val fullMode = tr("完整镜像", "Full image", "フルイメージ", "전체 이미지", "完整映像")
+                transitionDownloadStage(
+                    update = update,
+                    stage = UpdateStage.Downloading,
+                    totalBytes = plan.image.size,
+                    modeLabel = fullMode,
+                    resetProgress = true,
+                )
             }
         }
-        val zip = download(plan.image, staging.resolve(plan.image.name), update)
+        val fullMode = tr("完整镜像", "Full image", "フルイメージ", "전체 이미지", "完整映像")
+        val zip = download(plan.image, staging.resolve(plan.image.name), update, modeLabel = fullMode)
+        transitionDownloadStage(
+            update = update,
+            stage = UpdateStage.Staging,
+            totalBytes = plan.image.size,
+            modeLabel = fullMode,
+        )
         readImageEntries(zip, plan.files, target)
         zip.delete()
     }
@@ -286,12 +316,11 @@ class DesktopAppUpdater private constructor(
         super.check(silent)
     }
 
-    override suspend fun downloadAndInstall(update: AvailableUpdate) {
-        val own = update.own()
-        if (!own.canInstallInApp || isStagingOrLaunched()) return
-        status = UpdateStatus.Downloading(update, 0f)
+    override fun prepareDownload(update: DesktopUpdate): Boolean = !isStagingOrLaunched()
+
+    override suspend fun performDownloadAndInstall(update: DesktopUpdate) {
         status = try {
-            withContext(Dispatchers.IO) { stage(own) }
+            withContext(Dispatchers.IO) { stage(update) }
             UpdateStatus.ReadyToRestart(update)
         } catch (e: CancellationException) {
             status = UpdateStatus.Available(update)
@@ -308,23 +337,38 @@ class DesktopAppUpdater private constructor(
         staging.deleteRecursively()
         staging.mkdirs()
         when (val plan = update.plan) {
-            is DesktopUpdatePlan.Patch -> stagePatch(plan, staging, update)
+            is DesktopUpdatePlan.Patch -> stagePatch(plan, staging, update, modeLabel = update.modeLabel)
             is DesktopUpdatePlan.Delta -> {
-                val zip = download(plan.delta, staging.resolve(plan.delta.name), update)
+                val deltaMode = update.modeLabel
+                val zip = download(plan.delta, staging.resolve(plan.delta.name), update, modeLabel = deltaMode)
                 val installDir = checkNotNull(installation).dir
+                transitionDownloadStage(
+                    update = update,
+                    stage = UpdateStage.Staging,
+                    totalBytes = plan.delta.size,
+                    modeLabel = deltaMode,
+                )
                 try {
                     applyDelta(zip, plan.fallback.manifest, installDir, staging.resolve(PATCH_DIR), plan.zstd)
                 } catch (e: ChecksumMismatchException) {
                     // 本机的 jar 或 AOT 缓存被改动过、不是差分所基于的那一版，或者 zstd 解不开，退回完整补丁包
                     log("Delta patch reconstruction failed; falling back to full app.zip patch", e)
                     staging.resolve(PATCH_DIR).deleteRecursively()
-                    stagePatch(plan.fallback, staging, update)
+                    val patchMode = tr("增量补丁", "Patch", "差分パッチ", "증분 패치", "增量修補")
+                    transitionDownloadStage(
+                        update = update,
+                        stage = UpdateStage.Downloading,
+                        totalBytes = plan.fallback.zip.size,
+                        modeLabel = patchMode,
+                        resetProgress = true,
+                    )
+                    stagePatch(plan.fallback, staging, update, modeLabel = patchMode)
                 }
                 zip.delete()
             }
-            is DesktopUpdatePlan.Installer -> download(plan.msi, staging.resolve(plan.msi.name), update)
+            is DesktopUpdatePlan.Installer -> download(plan.msi, staging.resolve(plan.msi.name), update, modeLabel = update.modeLabel)
             is DesktopUpdatePlan.Image -> stageImage(plan, staging, update)
-            is DesktopUpdatePlan.MacBundle -> download(plan.dmg, staging.resolve(plan.dmg.name), update)
+            is DesktopUpdatePlan.MacBundle -> download(plan.dmg, staging.resolve(plan.dmg.name), update, modeLabel = update.modeLabel)
             is DesktopUpdatePlan.AppImage -> stageAppImage(plan, update)
             is DesktopUpdatePlan.Manual -> error("Manual download-only update plan cannot be installed in-app")
         }
@@ -341,23 +385,25 @@ class DesktopAppUpdater private constructor(
         if (delta != null) {
             try {
                 val expected = plan.appImage.sha256 ?: throw ChecksumMismatchException("Release did not publish SHA-256 checksum for ${plan.appImage.name}")
+                val deltaMode = tr("AppImage 差分", "AppImage delta", "AppImage 差分", "AppImage 델타", "AppImage 差分")
                 var fetched = 0L
-                var reported = 0f
-                val progressLock = Any()
+                val total = delta.plan.downloadBytes.coerceAtLeast(1)
+                val tracker = UpdateProgressTracker(total) { progress, downloaded, totalBytes, bytesPerSec ->
+                    fetched = downloaded
+                    reportDownloadProgress(update, progress, downloaded, totalBytes, bytesPerSec, deltaMode)
+                }
                 assembleZsync(delta.plan, plan.target, staged) { range, onChunk ->
                     releases.downloadRange(plan.appImage, range) { buffer, length ->
                         onChunk(buffer, length)
-                        // 几段同时在下；每涨 1% 才改一次状态，同 GithubReleaseClient.download
-                        synchronized(progressLock) {
-                            fetched += length
-                            val progress = (fetched.toFloat() / delta.plan.downloadBytes.coerceAtLeast(1)).coerceIn(0f, 1f)
-                            if (progress - reported >= 0.01f) {
-                                reported = progress
-                                status = UpdateStatus.Downloading(update, progress)
-                            }
-                        }
+                        tracker.onBytes(length)
                     }
                 }
+                transitionDownloadStage(
+                    update = update,
+                    stage = UpdateStage.Verifying,
+                    totalBytes = total,
+                    modeLabel = deltaMode,
+                )
                 val actual = staged.inputStream().use(::sha256Hex)
                 if (actual != expected) throw ChecksumMismatchException("${plan.appImage.name} (zsync assembled): $actual != $expected")
                 PikoLog.i("Update", "Assembled AppImage via zsync: downloaded=${fetched}B, fullSize=${plan.appImage.size}B")
@@ -370,10 +416,16 @@ class DesktopAppUpdater private constructor(
                 // 本机的 AppImage 被改过、镜像不认 Range、半路断网：都退回整包下载，整包也下不来才算失败
                 log("zsync delta assembly failed; falling back to full AppImage download", e)
                 staged.delete()
-                status = UpdateStatus.Downloading(update, 0f)
+                transitionDownloadStage(
+                    update = update,
+                    stage = UpdateStage.Downloading,
+                    totalBytes = plan.appImage.size,
+                    modeLabel = "AppImage",
+                    resetProgress = true,
+                )
             }
         }
-        download(plan.appImage, staged, update)
+        download(plan.appImage, staged, update, modeLabel = "AppImage")
         makeExecutable(staged)
     }
 
@@ -381,25 +433,41 @@ class DesktopAppUpdater private constructor(
         check(file.setExecutable(true, false)) { "Failed to mark ${file.name} executable" }
     }
 
-    private suspend fun stagePatch(plan: DesktopUpdatePlan.Patch, staging: File, update: DesktopUpdate) {
-        val zip = download(plan.zip, staging.resolve(plan.zip.name), update)
+    private suspend fun stagePatch(plan: DesktopUpdatePlan.Patch, staging: File, update: DesktopUpdate, modeLabel: String) {
+        val zip = download(plan.zip, staging.resolve(plan.zip.name), update, modeLabel = modeLabel)
+        transitionDownloadStage(
+            update = update,
+            stage = UpdateStage.Staging,
+            totalBytes = plan.zip.size,
+            modeLabel = modeLabel,
+        )
         extractPatch(zip, plan.manifest, staging.resolve(PATCH_DIR))
         zip.delete()
     }
 
-    private suspend fun download(asset: ReleaseAsset, target: File, update: DesktopUpdate): File {
+    private suspend fun download(asset: ReleaseAsset, target: File, update: DesktopUpdate, modeLabel: String): File {
         val expected = asset.sha256 ?: throw ChecksumMismatchException("Release did not publish SHA-256 checksum for ${asset.name}")
         val digest = MessageDigest.getInstance("SHA-256")
+        val tracker = UpdateProgressTracker(asset.size) { progress, downloaded, totalBytes, bytesPerSec ->
+            reportDownloadProgress(update, progress, downloaded, totalBytes, bytesPerSec, modeLabel)
+        }
         target.outputStream().use { out ->
             releases.download(
                 asset,
                 onChunk = { buffer, length ->
                     out.write(buffer, 0, length)
                     digest.update(buffer, 0, length)
+                    tracker.onBytes(length)
                 },
-                onProgress = { status = UpdateStatus.Downloading(update, it) },
+                onProgress = {},
             )
         }
+        transitionDownloadStage(
+            update = update,
+            stage = UpdateStage.Verifying,
+            totalBytes = asset.size,
+            modeLabel = modeLabel,
+        )
         val actual = digest.digest().toHex()
         if (actual != expected) {
             target.delete()

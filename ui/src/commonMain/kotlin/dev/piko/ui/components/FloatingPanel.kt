@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
@@ -66,6 +67,9 @@ import dev.piko.ui.components.LocalAntiDiagonalResizeCursor
 import dev.piko.ui.components.LocalDiagonalResizeCursor
 import dev.piko.ui.components.LocalHorizontalResizeCursor
 import dev.piko.ui.components.LocalVerticalResizeCursor
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
+import dev.piko.ui.theme.islandBorderColor
 
 enum class DockSide { Left, Right }
 
@@ -154,6 +158,7 @@ internal class FloatingPanelState(width: Dp, followsEnd: Boolean = true) {
  * 用普通 Layout 而不是 Popup：不抢焦点的 Popup 收不到键盘，目录图的方向键与过滤框都用不了。
  * 也不是 BoxWithConstraints：里面有提示气泡这类弹层，测量时组合的布局在桌面端会撞上弹层销毁的崩溃（desktopApp/AGENTS.md）。
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun FloatingPanel(
     state: FloatingPanelState,
@@ -284,14 +289,15 @@ internal fun FloatingPanel(
                 }
                 .semantics { paneTitle = title },
         ) {
+            val isEInk = LocalAppearance.current.isEInk
             Surface(
                 modifier = Modifier
                     .padding(outset)
                     .onSizeChanged { size = with(density) { DpSize(it.width.toDp(), it.height.toDp()) } },
-                shape = MaterialTheme.shapes.large,
+                shape = MaterialTheme.shapes.largeIncreased,
                 color = colors.surfaceContainerLow,
-                border = BorderStroke(1.dp, colors.outlineVariant),
-                shadowElevation = 3.dp,
+                border = BorderStroke(1.dp, colors.islandBorderColor ?: colors.outlineVariant),
+                shadowElevation = if (isEInk) 0.dp else 6.dp,
             ) {
                 PanelFrame(
                     state = state,
@@ -342,6 +348,7 @@ internal fun FloatingPanel(
 private class ResizeEdges(val start: Boolean = false, val end: Boolean = false, val top: Boolean = false, val bottom: Boolean = false)
 
 /** 面板里的东西：标题行与内容。 */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun PanelFrame(
     state: FloatingPanelState,
@@ -382,7 +389,7 @@ private fun PanelFrame(
                 .padding(start = 16.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(title, style = MaterialTheme.typography.titleSmall, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
+            Text(title, style = MaterialTheme.typography.titleSmallEmphasized, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
             headerActions()
             PanelHeaderToggle(Icons.Outlined.Close, Icons.Outlined.Close, closeLabel, checked = false, onClick = onClose)
         }

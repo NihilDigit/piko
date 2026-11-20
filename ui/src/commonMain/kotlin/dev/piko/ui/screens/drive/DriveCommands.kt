@@ -6,6 +6,7 @@ import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.isExtractableArchive
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.data.isImportPreview
+import dev.piko.shared.state.FolderStructureOps
 import dev.piko.shared.upload.isUploading
 import dev.piko.data.repository.isPlayableVideo
 import io.github.nihildigit.pikpak.FileStat
@@ -115,6 +116,13 @@ internal class ItemCommands(
     val unvault: Boolean,
     /** 单个真实云端文件夹（排除本地挂载、回收站、压缩包、导入预览）可查看子树空间分布。 */
     val viewSpaceMap: Boolean = false,
+    /** 归档条目与普通文件均可移动与剪切；复制与分享仍仅限实体文件。 */
+    val moveTo: Boolean = moveCopyTo,
+    val cut: Boolean = cutCopy,
+    /** 当前真实云端目录中选中 1 个及以上普通云端文件夹时可拆开/铺平。 */
+    val unwrapOrFlatten: Boolean = false,
+    /** 当前真实云端目录中选中 2 个及以上普通云端文件夹时可合并。 */
+    val mergeFolders: Boolean = false,
 )
 
 internal fun itemCommands(place: CommandPlace, targets: List<FileStat>, fullyVaultedFolders: Set<String> = emptySet()): ItemCommands {
@@ -122,17 +130,22 @@ internal fun itemCommands(place: CommandPlace, targets: List<FileStat>, fullyVau
     val inArchive = place == CommandPlace.ARCHIVE
     val eventLog = place == CommandPlace.RECENT || place == CommandPlace.HISTORY
     val hasTargets = targets.isNotEmpty()
-    // 上传中的文件改名、移动、分享都会失败，作用对象里有它就不给这几样；归档条目与压缩包里的条目在网盘里没有文件，同理
+    // 上传中、压缩包内、导入预览和本地只读条目不能写入；归档条目与普通文件同等支持重命名、移动、剪切、星标与移除
     val local = place == CommandPlace.LOCAL || targets.any { dev.piko.shared.data.LocalLocation.isLocal(it.id) }
-    val settled = hasTargets && !local && !inArchive && targets.none { it.isUploading || it.isVaulted || it.isImportPreview }
+    val editable = hasTargets && !local && !inArchive && targets.none { it.isUploading || it.isImportPreview }
+    val settled = editable && targets.none { it.isVaulted }
     val vaultContext = settled && (place == CommandPlace.ROOT || place == CommandPlace.FOLDER || place == CommandPlace.SEARCH)
+    val inRealFolder = place == CommandPlace.ROOT || place == CommandPlace.FOLDER
+    val allEligibleFolders = inRealFolder && settled && targets.all(FolderStructureOps::isEligibleCloudFolder)
     return ItemCommands(
         cutCopy = settled && !inTrash,
-        rename = settled && !inTrash,
+        rename = editable && !inTrash,
         share = settled && !inTrash,
         moveToTrash = hasTargets && !local && !inTrash && !inArchive,
         restoreOrDelete = hasTargets && !local && inTrash,
         moveCopyTo = settled && !inTrash,
+        moveTo = editable && !inTrash,
+        cut = editable && !inTrash,
         // 文件夹整个下载，见 PikoDownloadCoordinator.enqueueFolders；压缩包里的文件夹不在网盘里，列不出内容，只下文件
         download = hasTargets && !local && !inTrash && targets.any { !it.isUploading && !(inArchive && it.isFolder) && (!it.isImportPreview || it.isFolder || it.hash.isNotBlank()) },
         downloadAtQuality = hasTargets && !local && !inTrash && !inArchive && targets.any {
@@ -151,6 +164,8 @@ internal fun itemCommands(place: CommandPlace, targets: List<FileStat>, fullyVau
                 it.isFolder && !it.trashed && !it.isUploading && !it.isVaulted && !it.isImportPreview &&
                     !ArchiveEntryId.isEntry(it.id) && isDriveFolderId(it.id)
             },
+        unwrapOrFlatten = allEligibleFolders,
+        mergeFolders = allEligibleFolders && targets.size >= 2,
     )
 }
 

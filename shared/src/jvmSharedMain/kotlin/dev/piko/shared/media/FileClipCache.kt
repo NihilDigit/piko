@@ -1,6 +1,9 @@
 package dev.piko.shared.media
 
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.media.cache.CacheCategory
+import dev.piko.shared.media.cache.CacheCategoryBackend
+import dev.piko.shared.media.cache.CacheCategoryStats
 import io.github.nihildigit.pikpak.BlockStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -147,6 +150,119 @@ class FileClipCache(
 
     private fun sizeOf(directory: File): Long =
         directory.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+
+    /** 扫描信息流块与记录缓存的磁盘占用与文件数。 */
+    suspend fun scanStats(): CacheCategoryStats = withContext(Dispatchers.IO) {
+        lock.withLock {
+            var bytes = 0L
+            var count = 0
+            for (dir in listOf(blockDirectory, recordDirectory)) {
+                if (!dir.isDirectory) continue
+                for (file in dir.walkTopDown()) {
+                    if (file.isFile && !file.name.endsWith(".tmp")) {
+                        bytes += file.length()
+                        count++
+                    }
+                }
+            }
+            CacheCategoryStats(
+                category = CacheCategory.CLIPS,
+                bytes = bytes,
+                fileCount = count,
+                clearable = true,
+            )
+        }
+    }
+
+    /** 清理全部信息流缓存块与切片记录，返回释放字节数。 */
+    suspend fun clearAll(): Long = withContext(Dispatchers.IO) {
+        lock.withLock {
+            var freed = 0L
+            for (dir in listOf(blockDirectory, recordDirectory)) {
+                if (!dir.isDirectory) continue
+                for (file in dir.walkBottomUp()) {
+                    if (file == dir) continue
+                    val size = if (file.isFile) file.length() else 0L
+                    if (file.delete() && size > 0L) {
+                        freed += size
+                    }
+                }
+            }
+            storedBytes = 0L
+            freed
+        }
+    }
+
+    /** 按 TTL（[maxAgeMillis] > 0）与上限（[targetMaxBytes] >= 0）执行信息流缓存 LRU 淘汰，返回释放字节数。 */
+    suspend fun prune(
+        maxAgeMillis: Long,
+        targetMaxBytes: Long,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): Long = withContext(Dispatchers.IO) {
+        lock.withLock {
+            var freed = 0L
+            val blocks = if (blockDirectory.isDirectory) {
+                blockDirectory.walkTopDown()
+                    .filter { it.isFile && !it.name.endsWith(".tmp") }
+                    .map { Triple(it, it.length(), it.lastModified()) }
+                    .toList()
+            } else {
+                emptyList()
+            }
+            val records = if (recordDirectory.isDirectory) {
+                recordDirectory.listFiles { f -> f.isFile && !f.name.endsWith(".tmp") }
+                    ?.map { Triple(it, it.length(), it.lastModified()) }
+                    .orEmpty()
+            } else {
+                emptyList()
+            }
+
+            // 1. TTL expiry
+            val remainingBlocks = ArrayList<Triple<File, Long, Long>>(blocks.size)
+            for (entry in blocks) {
+                val (file, size, mtime) = entry
+                if (maxAgeMillis > 0L && (nowMillis - mtime) > maxAgeMillis) {
+                    if (file.delete()) freed += size else remainingBlocks += entry
+                } else {
+                    remainingBlocks += entry
+                }
+            }
+            if (maxAgeMillis > 0L) {
+                for ((file, size, mtime) in records) {
+                    if ((nowMillis - mtime) > maxAgeMillis && file.delete()) {
+                        freed += size
+                    }
+                }
+            }
+
+            // 2. LRU cap eviction
+            var remainingBlockBytes = remainingBlocks.sumOf { it.second }
+            if (targetMaxBytes >= 0L && remainingBlockBytes > targetMaxBytes) {
+                for ((file, size, _) in remainingBlocks.sortedBy { it.third }) {
+                    if (remainingBlockBytes <= targetMaxBytes) break
+                    if (file.delete()) {
+                        remainingBlockBytes -= size
+                        freed += size
+                    }
+                }
+            }
+
+            if (blockDirectory.isDirectory) {
+                blockDirectory.listFiles()?.filter { it.isDirectory && it.list()?.isEmpty() == true }?.forEach { it.delete() }
+            }
+            storedBytes = remainingBlockBytes
+            freed
+        }
+    }
+
+    fun asCacheBackend(): CacheCategoryBackend = object : CacheCategoryBackend {
+        override val category: CacheCategory = CacheCategory.CLIPS
+        override val clearable: Boolean = true
+        override suspend fun scan(): CacheCategoryStats = scanStats()
+        override suspend fun clear(): Long = clearAll()
+        override suspend fun prune(maxAgeMillis: Long, targetMaxBytes: Long): Long =
+            this@FileClipCache.prune(maxAgeMillis = maxAgeMillis, targetMaxBytes = targetMaxBytes)
+    }
 
     private fun writeAtomically(target: File, body: (DataOutputStream) -> Unit) {
         val parent = target.parentFile

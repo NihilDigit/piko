@@ -53,9 +53,13 @@ data class SubtitleRef(val fileId: String, val name: String, val language: Strin
  * [subtitles] 是同目录的字幕文件，与视频一起交给解析器，由它按集号与文件名挂到视频上；
  * 它们本身不进播放列表。
  */
-fun buildPlaylist(files: List<PlaylistEntry>, subtitles: List<SubtitleRef> = emptyList()): List<PlaylistEntry> {
+fun buildPlaylist(
+    files: List<PlaylistEntry>,
+    subtitles: List<SubtitleRef> = emptyList(),
+    currentFileId: String? = null,
+): List<PlaylistEntry> {
     if (files.isEmpty()) return emptyList()
-    // 进播放列表的都是视频，名字没有扩展名的也照视频解析
+    // 进播放列表的都是可播媒体，名字没有扩展名的也照视频解析
     val inputs = files.map { MediaFileInput(path = it.name, size = it.size, kind = FileKind.VIDEO) } +
         subtitles.map { MediaFileInput(path = it.name, size = 0) }
     val batch = analyzeMediaBatch(inputs)
@@ -80,7 +84,7 @@ fun buildPlaylist(files: List<PlaylistEntry>, subtitles: List<SubtitleRef> = emp
             // 同一内容的几个版本成一组，组里体积最大的排在最前；编号相同而内容不同的文件各自成组
             for (sectionEntry in workSection.entries) {
                 // 配不上视频的字幕，解析器照网盘页的需要当正文，自成条目或与同名视频并成一条。
-                // 播放列表只收视频：序号不小于 files.size 的是字幕，先剔掉再分组
+                // 播放列表只收媒体：序号不小于 files.size 的是字幕，先剔掉再分组
                 val videoFiles = sectionEntry.files.filter { it.index < files.size }
                 if (videoFiles.isEmpty()) continue
                 val entry = sectionEntry.copy(files = videoFiles)
@@ -109,7 +113,58 @@ fun buildPlaylist(files: List<PlaylistEntry>, subtitles: List<SubtitleRef> = emp
     }
     val rest = files.indices.filter { it !in placed }.map { files[it] }
     ordered += buildRawPlaylist(rest).map { it.copy(sectionKey = OTHER_SECTION_KEY, sectionLabel = Section.OTHER.label) }
-    return ordered
+    return applySingleItemFolderFallback(
+        parsed = ordered,
+        folderFiles = files,
+        currentFileId = currentFileId,
+    )
+}
+
+/**
+ * 单条目队列退回当前文件夹规则：
+ * 只要当前文件夹有超过 1 个可播媒体文件，而解析结果会让队列只剩单一文件（例如整个目录均为单部电影/番号，
+ * 或当前打开的文件所在分区仅有 1 组条目，或解析过滤后总计不足 2 项），一律退回显示当前文件夹的全部可播文件
+ * （自然排序、统一队列、保留已匹配的外挂字幕），确保队列面板与上一集/下一集始终可用。
+ */
+fun normalizePlaylistForCurrentFile(
+    playlist: List<PlaylistEntry>,
+    currentFileId: String?,
+): List<PlaylistEntry> = applySingleItemFolderFallback(
+    parsed = playlist,
+    folderFiles = playlist,
+    currentFileId = currentFileId,
+)
+
+private fun applySingleItemFolderFallback(
+    parsed: List<PlaylistEntry>,
+    folderFiles: List<PlaylistEntry>,
+    currentFileId: String?,
+): List<PlaylistEntry> {
+    if (folderFiles.size <= 1) return parsed
+    val sectionGroupCounts = parsed
+        .groupBy { it.sectionKey }
+        .mapValues { (_, items) -> items.map { it.groupKey }.distinct().size }
+    val shouldFallback = when {
+        parsed.size <= 1 -> true
+        currentFileId != null -> {
+            val currentSection = parsed.firstOrNull { it.fileId == currentFileId }?.sectionKey
+            currentSection == null || (sectionGroupCounts[currentSection] ?: 0) <= 1
+        }
+        else -> sectionGroupCounts.values.all { it <= 1 }
+    }
+    if (!shouldFallback) return parsed
+    val matchedSubtitles = parsed.associate { it.fileId to it.subtitles }
+    val normalizedSource = folderFiles.map { entry ->
+        entry.copy(
+            sectionKey = "",
+            sectionLabel = "",
+            groupKey = entry.fileId,
+            versionLabel = "",
+            primary = true,
+            subtitles = matchedSubtitles[entry.fileId] ?: entry.subtitles,
+        )
+    }
+    return buildRawPlaylist(normalizedSource)
 }
 
 /**

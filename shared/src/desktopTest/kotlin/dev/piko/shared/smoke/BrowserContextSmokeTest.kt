@@ -3,6 +3,7 @@ package dev.piko.shared.smoke
 import dev.piko.data.repository.FileCategory
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.PikoCacheStore
 import dev.piko.shared.data.ScrollAnchor
@@ -73,6 +74,8 @@ class BrowserContextSmokeTest {
             }
             val first = rig.browsers.forTab(rig.workspace.activeTabId.value)
             val second = rig.browsers.forTab(rig.workspace.openTab(listOf(PikoDriveRepository.ROOT_BREADCRUMB)))
+            first.state.changeSortOrder(PikoFileSortOrder.NAME_ASC)
+            second.state.changeSortOrder(PikoFileSortOrder.NAME_ASC)
             first.state.load()
             second.state.load()
             awaitUntil("两份结构化列表就绪") {

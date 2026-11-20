@@ -124,7 +124,9 @@ fun MySharesScreen(
     val services = LocalPikoServices.current
     val platform = LocalPikoPlatform.current
     val state = remember { MySharesState(services.driveRepository, scope) }
-    val isSpoilerBlurEnabled by services.preferences.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isSpoilerBlurEnabled by services.preferences.spoilerBlurFlow.collectAsStateWithLifecycle(
+        initialValue = services.preferences.currentSnapshot.spoilerBlurEnabled,
+    )
     val gridState = rememberLazyGridState()
     var confirmCancel by remember { mutableStateOf<ShareSummary?>(null) }
 

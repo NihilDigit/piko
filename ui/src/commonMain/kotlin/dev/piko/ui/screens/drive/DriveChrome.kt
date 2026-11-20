@@ -1,17 +1,26 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -21,6 +30,8 @@ import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.CallMerge
+import androidx.compose.material.icons.outlined.CallSplit
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.CreateNewFolder
@@ -33,6 +44,7 @@ import androidx.compose.material.icons.outlined.DriveFolderUpload
 import androidx.compose.material.icons.outlined.FileCopy
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.PieChart
 import androidx.compose.material.icons.outlined.Refresh
@@ -42,17 +54,27 @@ import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.material.icons.outlined.Tab
 import androidx.compose.material.icons.outlined.UploadFile
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FloatingActionButtonMenu
 import androidx.compose.material3.FloatingActionButtonMenuItem
+import androidx.compose.material3.FloatingToolbarDefaults
+import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleFloatingActionButton
 import androidx.compose.material3.ToggleFloatingActionButtonDefaults.animateIcon
+import androidx.compose.material3.TooltipAnchorPosition
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBarScrollBehavior
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.derivedStateOf
@@ -374,7 +396,6 @@ internal fun DriveCompactHeader(
     hasFeedEntry: Boolean,
     tileSize: TileSize,
     onSelectAll: () -> Unit,
-    onOpenSelectionActions: () -> Unit,
     onCloseSearch: () -> Unit,
     onJumpToSection: (Int) -> Unit,
     onCloseContext: (() -> Unit)?,
@@ -400,7 +421,6 @@ internal fun DriveCompactHeader(
                 selectedCount = selectedCount,
                 onExit = state::exitSelection,
                 onSelectAll = onSelectAll.takeIf { commands.selectAll },
-                onActions = onOpenSelectionActions,
             )
             isSearchOpen -> DriveSearchTopBar(
                 query = state.searchQuery,
@@ -518,45 +538,130 @@ internal fun DriveCompactHeader(
     }
 }
 
+/**
+ * 多选上下文浮动工具栏：遵循 M3 Expressive Toolbars（Vibrant Floating Toolbar）规范，
+ * 选中至少一项时从底部中央升起（覆盖手机、平板与桌面全形态），保留 16dp 边缘净距（FloatingToolbarDefaults.ScreenOffset），
+ * 仅承载作用于选中条目的高频批量动作与「更多」溢出入口，不与顶栏/命令栏重复。
+ * 查重与回收站内将破坏性删除提升为高对比度带文案错误色药丸按钮，确保平板与触摸屏去重后一键触达删除。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalMaterial3Api::class)
 @Composable
-internal fun DriveCompactSelectionBar(
+internal fun DriveSelectionFloatingToolbar(
+    visible: Boolean,
     inTrash: Boolean,
-    hasTargets: Boolean,
+    inDuplicates: Boolean = false,
+    applyNavBarsPadding: Boolean,
     availableActions: List<SheetAction>,
     onOpenSelectionActions: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    val coreIcons = if (inTrash) {
-        listOf(Icons.Outlined.RestoreFromTrash, Icons.Outlined.DeleteForever)
+    val nonDestructiveIcons = if (inTrash) {
+        listOf(Icons.Outlined.RestoreFromTrash)
+    } else if (inDuplicates) {
+        listOf(Icons.Outlined.DriveFileMove, Icons.Outlined.Download)
     } else {
-        listOf(Icons.Outlined.Download, Icons.Outlined.DriveFileMove, Icons.Outlined.DriveFileRenameOutline, Icons.Outlined.Delete)
+        listOf(
+            Icons.Outlined.Download,
+            Icons.Outlined.DriveFileMove,
+            Icons.Outlined.CallSplit,
+            Icons.Outlined.CallMerge,
+            Icons.Outlined.Inventory2,
+            Icons.Outlined.DriveFileRenameOutline,
+        )
     }
-    val coreActions = coreIcons.mapNotNull { icon -> availableActions.firstOrNull { it.icon == icon } }
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        modifier = Modifier.fillMaxWidth(),
+    val nonDestructiveActions = remember(inTrash, inDuplicates, availableActions) {
+        nonDestructiveIcons.mapNotNull { icon ->
+            availableActions.firstOrNull { !it.destructive && it.icon == icon }
+        }
+    }
+    val destructiveAction = remember(inTrash, availableActions) {
+        val preferredIcon = if (inTrash) Icons.Outlined.DeleteForever else Icons.Outlined.Delete
+        availableActions.firstOrNull { it.destructive && it.icon == preferredIcon }
+            ?: availableActions.firstOrNull { it.destructive && (it.icon == Icons.Outlined.Delete || it.icon == Icons.Outlined.DeleteForever) }
+    }
+    val motion = MaterialTheme.motionScheme
+    val colors = MaterialTheme.colorScheme
+    AnimatedVisibility(
+        visible = visible,
+        enter = slideInVertically(motion.fastSpatialSpec()) { it / 2 } + fadeIn(motion.fastEffectsSpec()),
+        exit = slideOutVertically(motion.fastSpatialSpec()) { it / 2 } + fadeOut(motion.fastEffectsSpec()),
+        modifier = modifier
+            .then(if (applyNavBarsPadding) Modifier.navigationBarsPadding() else Modifier)
+            .padding(
+                horizontal = FloatingToolbarDefaults.ScreenOffset,
+                vertical = FloatingToolbarDefaults.ScreenOffset,
+            ),
     ) {
-        Row(
-            Modifier.fillMaxWidth().navigationBarsPadding().height(56.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        HorizontalFloatingToolbar(
+            expanded = true,
+            colors = FloatingToolbarDefaults.vibrantFloatingToolbarColors(),
         ) {
-            if (hasTargets) {
-                (coreActions + SheetAction(Icons.Outlined.MoreHoriz, tr("更多", "More", "その他", "더 보기", "更多"), onOpenSelectionActions)).forEach { action ->
-                    TextButton(
-                        onClick = action.onClick,
-                        modifier = Modifier.weight(1f).height(56.dp),
-                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp),
+            val contentTint = LocalContentColor.current
+            nonDestructiveActions.forEach { action ->
+                TooltipIconButton(
+                    icon = action.icon,
+                    label = action.shortLabel,
+                    onClick = action.onClick,
+                    tint = contentTint,
+                )
+            }
+            if (destructiveAction != null) {
+                if (inDuplicates || inTrash) {
+                    Spacer(Modifier.width(4.dp))
+                    Surface(
+                        onClick = destructiveAction.onClick,
+                        shape = CircleShape,
+                        color = colors.error,
+                        contentColor = colors.onError,
                     ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            val tint = if (action.destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
-                            Icon(action.icon, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp))
-                            Text(action.shortLabel, color = tint, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                            Icon(
+                                imageVector = destructiveAction.icon,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = destructiveAction.shortLabel,
+                                style = MaterialTheme.typography.labelLarge,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(2.dp))
+                } else {
+                    TooltipBox(
+                        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+                        tooltip = { PlainTooltip { Text(destructiveAction.shortLabel) } },
+                        state = rememberTooltipState(),
+                    ) {
+                        Surface(
+                            onClick = destructiveAction.onClick,
+                            shape = CircleShape,
+                            color = colors.errorContainer,
+                            contentColor = colors.onErrorContainer,
+                            modifier = Modifier.padding(horizontal = 2.dp).size(40.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = destructiveAction.icon,
+                                    contentDescription = destructiveAction.shortLabel,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
                         }
                     }
                 }
             }
+            TooltipIconButton(
+                icon = Icons.Outlined.MoreHoriz,
+                label = tr("更多操作", "More actions", "その他の操作", "추가 작업", "更多操作"),
+                onClick = onOpenSelectionActions,
+                tint = contentTint,
+            )
         }
     }
 }

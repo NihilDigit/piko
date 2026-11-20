@@ -14,7 +14,13 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.SwipeVertical
+import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -85,12 +91,18 @@ import dev.piko.shared.state.ClipFeedSession
 import dev.piko.shared.state.ClipStreams
 import dev.piko.shared.state.FocusPlaybackState
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.MediaLoadingIndicator
 import dev.piko.ui.components.rememberMediaLoadingSpeedText
 import dev.piko.ui.components.pageFocusTarget
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PreviewBackend
+import dev.piko.shared.media.player.DEFAULT_DOUBLE_TAP_SEEK_SECONDS
+import dev.piko.shared.media.player.PlayerFormFactorLayout
+import dev.piko.ui.screens.player.CenterIndicator
+import dev.piko.ui.screens.player.LocalPlayerLayoutPrefs
+import dev.piko.ui.screens.player.PlayerHud
 import dev.piko.ui.screens.player.PlayerTheme
 import dev.piko.data.auth.PlayerGestureDefaults
 import io.github.nihildigit.pikpak.FileStat
@@ -216,44 +228,57 @@ fun ClipFeedScreen(
     // 横屏时 × 与返回都先回到竖屏，第二次才关掉信息流；后登记的先收到，压在外层的返回之上
     val inLandscape = landscapeLock != null && session.landscape
     BackHandler(enabled = inLandscape) { session.landscape = false }
+    var autoAdvanceHud by remember { mutableStateOf<CenterIndicator?>(null) }
+    var autoAdvanceHudSeq by remember { mutableIntStateOf(0) }
+    LaunchedEffect(autoAdvanceHudSeq) {
+        if (autoAdvanceHud != null) {
+            delay(1_400L)
+            autoAdvanceHud = null
+        }
+    }
+    val autoAdvanceOnText = stringResource(Res.string.player_auto_advance_on)
+    val autoAdvanceOffText = stringResource(Res.string.player_auto_advance_off)
     val toggleAutoAdvance: () -> Unit = {
         val next = !session.autoAdvance
         session.autoAdvance = next
-        scope.launch {
-            snackbarHostState.currentSnackbarData?.dismiss()
-            snackbarHostState.showSnackbar(
-                if (next) {
-                    tr("已开启自动连刷：播完当前片段自动翻到下一条", "Auto-advance enabled: advancing after each clip", "自動送りオン：再生後に次のクリップへ移動します", "자동 넘김 켜짐: 클립 재생 후 다음으로 이동합니다", "已開啟自動連刷：播完目前片段自動切換至下一條")
-                } else {
-                    tr("已关闭自动连刷", "Auto-advance disabled", "自動送りをオフにしました", "자동 넘김을 껐습니다", "已關閉自動連刷")
-                },
+        val label = if (next) autoAdvanceOnText else autoAdvanceOffText
+        autoAdvanceHud = CenterIndicator(
+            icon = if (next) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
+            text = label,
+            description = label,
+        )
+        autoAdvanceHudSeq += 1
+    }
+    val layoutPrefs = LocalPlayerLayoutPrefs.current
+    val topBar: @Composable BoxScope.(onHideChrome: (() -> Unit)?, landscapeLayout: Boolean, paused: Boolean, onTogglePause: (() -> Unit)?) -> Unit =
+        { onHideChrome, landscapeLayout, paused, onTogglePause ->
+            ClipFeedTopBar(
+                title = session.scopeLabel,
+                muted = session.muted,
+                onToggleMute = { session.muted = !session.muted },
+                onClose = { if (inLandscape) session.landscape = false else onBackClick() },
+                compact = compact,
+                autoAdvance = session.autoAdvance,
+                onToggleAutoAdvance = if (onHideChrome != null) toggleAutoAdvance else null,
+                onPopOut = onPopOut,
+                onDock = onDock,
+                onToggleFullscreen = onToggleFullscreen,
+                onHideChrome = onHideChrome,
+                landscapeLocked = if (landscapeLock != null && !compact) session.landscape else null,
+                onToggleLandscape = { session.landscape = !session.landscape },
+                landscapeLayout = landscapeLayout,
+                layout = layoutPrefs.clipsLayout(isLandscape = landscapeLayout),
+                paused = paused,
+                onTogglePause = onTogglePause,
+                modifier = Modifier.align(Alignment.TopCenter),
             )
         }
-    }
-    val topBar: @Composable BoxScope.(onHideChrome: (() -> Unit)?) -> Unit = { onHideChrome ->
-        ClipFeedTopBar(
-            title = session.scopeLabel,
-            muted = session.muted,
-            onToggleMute = { session.muted = !session.muted },
-            onClose = { if (inLandscape) session.landscape = false else onBackClick() },
-            compact = compact,
-            autoAdvance = session.autoAdvance,
-            onToggleAutoAdvance = if (onHideChrome != null) toggleAutoAdvance else null,
-            onPopOut = onPopOut,
-            onDock = onDock,
-            onToggleFullscreen = onToggleFullscreen,
-            onHideChrome = onHideChrome,
-            landscapeLocked = if (landscapeLock != null && !compact) session.landscape else null,
-            onToggleLandscape = { session.landscape = !session.landscape },
-            modifier = Modifier.align(Alignment.TopCenter),
-        )
-    }
 
     // 控件照播放器的样式，固定深色
     PlayerTheme {
         Box(modifier = modifier.fillMaxSize().background(Color.Black)) {
             when {
-                videoPreview == null -> FeedMessage(tr("此平台暂不支持信息流", "Feed is not supported on this platform yet", "このプラットフォームではフィードにまだ対応していません", "이 플랫폼은 아직 피드를 지원하지 않습니다", "此平台尚不支援資訊流"), null, topBar)
+                videoPreview == null -> FeedMessage(tr("此平台暂不支持信息流", "Feed is not supported on this platform yet", "このプラットフォームではフィードにまだ対応していません", "이 플랫폼은 아직 피드를 지원하지 않습니다", "此平台尚不支援資訊流"), null) { topBar(null, inLandscape, false, null) }
                 clips.isEmpty() && !session.isEmpty -> {
                     Box(Modifier.fillMaxSize()) {
                         ClipLoadingStateIndicator(
@@ -263,10 +288,10 @@ fun ClipFeedScreen(
                             isReactivating = streams::anyReactivating,
                             modifier = Modifier.align(Alignment.Center),
                         )
-                        topBar(null)
+                        topBar(null, inLandscape, false, null)
                     }
                 }
-                clips.isEmpty() -> FeedMessage(tr("当前范围无可播放视频", "No playable videos", "再生可能な動画がありません", "재생 가능한 동영상이 없습니다", "目前範圍無可播放影片"), tr("仅包含时长超过 1 分钟的正片视频（含子文件夹）", "Includes main videos over 1 minute, including subfolders", "サブフォルダーを含む1分以上の本編動画が対象です", "하위 폴더를 포함하여 1분 이상의 본편 동영상만 포함됩니다", "僅包含時長超過 1 分鐘的正片影片（含子資料夾）"), topBar)
+                clips.isEmpty() -> FeedMessage(tr("当前范围无可播放视频", "No playable videos", "再生可能な動画がありません", "재생 가능한 동영상이 없습니다", "目前範圍無可播放影片"), tr("仅包含时长超过 1 分钟的正片视频（含子文件夹）", "Includes main videos over 1 minute, including subfolders", "サブフォルダーを含む1分以上の本編動画が対象です", "하위 폴더를 포함하여 1분 이상의 본편 동영상만 포함됩니다", "僅包含時長超過 1 分鐘的正片影片（含子資料夾）")) { topBar(null, inLandscape, false, null) }
                 // 换了范围就是另一条队列，页码、播放器与各段的装载状态都不再对得上，整个重建
                 else -> key(scopeVersion) {
                     ClipPager(
@@ -286,6 +311,13 @@ fun ClipFeedScreen(
                     )
                 }
             }
+            PlayerHud(
+                indicator = autoAdvanceHud,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+                    .padding(top = if (compact) 52.dp else 68.dp),
+            )
             SnackbarHost(
                 snackbarHostState,
                 Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)).padding(top = 64.dp),
@@ -296,10 +328,10 @@ fun ClipFeedScreen(
 }
 
 @Composable
-private fun FeedMessage(title: String, description: String?, topBar: @Composable BoxScope.(onHideChrome: (() -> Unit)?) -> Unit) {
+private fun FeedMessage(title: String, description: String?, topBar: @Composable BoxScope.() -> Unit) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         PikoEmptyState(title = title, description = description)
-        topBar(null)
+        topBar()
     }
 }
 
@@ -318,20 +350,26 @@ private fun ClipPager(
     onToggleAutoAdvance: () -> Unit,
     /** 头一段画面走起来了，冷开的限制可以放开。 */
     onStarted: () -> Unit,
-    /** 顶栏，传进去的是进入沉浸；沉浸时整条藏起。 */
-    overlay: @Composable BoxScope.(onHideChrome: (() -> Unit)?) -> Unit,
+    /** 顶栏，传进去的是进入沉浸、当前是否横屏布局、暂停状态与播放切换；沉浸时整条藏起。 */
+    overlay: @Composable BoxScope.(onHideChrome: (() -> Unit)?, landscapeLayout: Boolean, paused: Boolean, onTogglePause: (() -> Unit)?) -> Unit,
 ) {
     val videoPreview = LocalPikoPlatform.current.videoPreview ?: return
     val scope = rememberCoroutineScope()
-    // 与播放器共用播放设置里的长按倍速与进退步长
+    // 与播放器共用播放设置里的长按倍速、进退步长与四态自定义配置
     val preferences = LocalPikoServices.current.preferences
+    val layoutPrefs = LocalPlayerLayoutPrefs.current
     val boostSpeed by preferences.playerBoostSpeedFlow.collectAsState(initial = PlayerGestureDefaults.BOOST_SPEED)
     val seekStepSeconds by preferences.playerSeekStepSecondsFlow.collectAsState(initial = PlayerGestureDefaults.SEEK_STEP_SECONDS)
     val clipAutoExtend by preferences.clipAutoExtendFlow.collectAsState(initial = true)
     val latestAutoExtend by rememberUpdatedState(clipAutoExtend)
     val autoAdvance = session.autoAdvance
     val latestAutoAdvance by rememberUpdatedState(autoAdvance)
-    val seekStepMillis = seekStepSeconds * 1000L
+    val effectiveSeekStepSeconds = if (layoutPrefs.effectiveDoubleTapSeekSeconds != DEFAULT_DOUBLE_TAP_SEEK_SECONDS) {
+        layoutPrefs.effectiveDoubleTapSeekSeconds
+    } else {
+        seekStepSeconds
+    }
+    val seekStepMillis = effectiveSeekStepSeconds * 1000L
     // 末尾多一页等待页：下一段还没取好时翻得过去看它转圈，再往后翻不动；候补一取好，这一页就原地变成那一段
     val pageCount = clips.size + if (upcoming.isNotEmpty()) 1 else 0
     val safeInitialPage = session.currentIndex.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
@@ -542,7 +580,7 @@ private fun ClipPager(
     DisposableEffect(Unit) {
         onDispose { playbackBindings.forEachIndexed { slot, binding -> binding.retire { players[slot].release() } } }
     }
-    val pointerSource = dev.piko.ui.components.LocalPointerSource.current
+    val pointerSource = LocalPointerSource.current
     LaunchedEffect(pointerSource.isTouchLike) {
         if (!pointerSource.isTouchLike) runCatching { focusRequester.requestFocus() }
     }
@@ -953,6 +991,8 @@ private fun ClipPager(
     }
 
     val latestSeekClip by rememberUpdatedState(::seekClip)
+    val feedHoverSource = remember { MutableInteractionSource() }
+    val feedHovered by feedHoverSource.collectIsHoveredAsState()
 
     fun seekClipBy(deltaMillis: Long) {
         val page = latestSettled
@@ -972,6 +1012,7 @@ private fun ClipPager(
     Box(
         Modifier
             .fillMaxSize()
+            .hoverable(feedHoverSource)
             .onPreviewKeyEvent { event ->
                 if (event.type == KeyEventType.KeyUp) {
                     if (event.key == heldKey) heldKey = null
@@ -1090,17 +1131,18 @@ private fun ClipPager(
             val onLongPress by rememberUpdatedState { if (active) startBoost() }
             val onRelease by rememberUpdatedState { stopBoost() }
 
+            val longPressEnabled = layoutPrefs.gestures.longPressSpeedEnabled
             Box(
                 Modifier
                     .fillMaxSize()
                     .clipToBounds()
                     // 单击要等过了双击的间隔才认，暂停因此慢一拍，与短视频应用一致。
                     // 沉浸时不认双击，点一下当场叫回控件，不必等那一拍
-                    .pointerInput(immersive) {
+                    .pointerInput(immersive, longPressEnabled) {
                         detectTapGestures(
                             onTap = { onTap() },
                             onDoubleTap = if (immersive) null else { at -> onDoubleTap(at) },
-                            onLongPress = { onLongPress() },
+                            onLongPress = if (longPressEnabled) { { onLongPress() } } else null,
                             onPress = {
                                 tryAwaitRelease()
                                 onRelease()
@@ -1185,6 +1227,7 @@ private fun ClipPager(
                     val slot = slotOf(page)
                     val player = players[slot]
                     val videoStart = if (loaded[slot] == clip) clipStartMs[slot] else clip.startMs
+                    val clipsLayout: PlayerFormFactorLayout = layoutPrefs.clipsLayout(isLandscape = landscape)
                     ClipControls(
                         clip = clip,
                         startMs = videoStart,
@@ -1201,6 +1244,15 @@ private fun ClipPager(
                         onLocate = { currentPlayer.pause(); paused = true; onLocate(clip.file) },
                         compact = compact,
                         landscape = landscape,
+                        layout = clipsLayout,
+                        paused = paused,
+                        onTogglePause = ::togglePause,
+                        canPrevious = pagerState.currentPage > 0,
+                        canNext = pagerState.currentPage < pageCount - 1,
+                        onPreviousClip = { go(-1) },
+                        onNextClip = { go(1) },
+                        seekStepMillis = seekStepMillis,
+                        onSeekByMillis = { seekClipBy(it) },
                     )
                 }
                 if (current != null) {
@@ -1211,11 +1263,29 @@ private fun ClipPager(
                         rememberedPosition = { rememberedPositions[current] ?: 0L },
                         currentStart = currentStart,
                         currentLength = currentLength,
+                        isPlaying = !paused && !pausedByHost && seekable,
                         onSeek = { latestSeekClip(it) },
                         onScrubbingChange = { scrubbing = it },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)),
+                    )
+                }
+                AnimatedVisibility(
+                    visible = !pointerSource.isTouchLike && feedHovered && !scrubbing && pageCount > 1,
+                    enter = fadeIn(motion.fastEffectsSpec()),
+                    exit = fadeOut(motion.fastEffectsSpec()),
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.End))
+                        .padding(end = if (compact) 8.dp else 16.dp, bottom = if (landscape) 0.dp else 120.dp),
+                ) {
+                    ClipNavButtons(
+                        canPrevious = pagerState.currentPage > 0,
+                        canNext = pagerState.currentPage < pageCount - 1,
+                        onPrevious = { go(-1) },
+                        onNext = { go(1) },
+                        compact = compact,
                     )
                 }
             }
@@ -1227,7 +1297,7 @@ private fun ClipPager(
             exit = fadeOut(motion.defaultEffectsSpec()),
             modifier = Modifier.align(Alignment.TopCenter),
         ) {
-            Box(Modifier.fillMaxWidth()) { overlay { immersive = true } }
+            Box(Modifier.fillMaxWidth()) { overlay({ immersive = true }, landscape, paused, ::togglePause) }
         }
         AnimatedVisibility(
             visible = boosting,
@@ -1243,7 +1313,7 @@ private fun ClipPager(
     }
 }
 
-/** 独立隔离高频变化的播放位置与缓冲读数，避免每 250ms 触发外层 ClipPager 整树重组。 */
+/** 独立隔离高频变化的播放位置与缓冲读数，通过 provider 推迟到绘制阶段读取，零重组。 */
 @Composable
 private fun ActiveClipProgressBar(
     clip: Clip,
@@ -1252,20 +1322,30 @@ private fun ActiveClipProgressBar(
     rememberedPosition: () -> Long,
     currentStart: Long,
     currentLength: Long,
+    isPlaying: Boolean,
     onSeek: (Long) -> Unit,
     onScrubbingChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val pos = if (isRendered()) {
-        (player.positionMillis - currentStart).coerceIn(0L, currentLength)
-    } else {
-        rememberedPosition().coerceIn(0L, currentLength)
+    val latestIsRendered by rememberUpdatedState(isRendered)
+    val latestRemembered by rememberUpdatedState(rememberedPosition)
+    val positionProvider = remember(player, currentStart, currentLength) {
+        {
+            if (latestIsRendered()) {
+                (player.positionMillis - currentStart).coerceIn(0L, currentLength)
+            } else {
+                latestRemembered().coerceIn(0L, currentLength)
+            }
+        }
     }
-    val buffered = (player.bufferedPositionMillis - currentStart).coerceIn(0L, currentLength)
+    val bufferedProvider = remember(player, currentStart, currentLength) {
+        { (player.bufferedPositionMillis - currentStart).coerceIn(0L, currentLength) }
+    }
     ClipProgressBar(
-        positionMillis = pos,
+        positionMillisProvider = positionProvider,
         lengthMillis = currentLength,
-        bufferedPositionMillis = buffered,
+        bufferedPositionMillisProvider = bufferedProvider,
+        isPlaying = isPlaying,
         onSeek = onSeek,
         onScrubbingChange = onScrubbingChange,
         modifier = modifier,

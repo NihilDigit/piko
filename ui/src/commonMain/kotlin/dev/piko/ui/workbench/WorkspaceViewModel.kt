@@ -41,17 +41,21 @@ import kotlinx.coroutines.delay
 
 /** 界面重建和隐藏窗口不销毁浏览上下文；账号退出或工作区释放才清除。 */
 internal class WorkspaceViewModel(private val services: PikoServices, private val account: String) : ViewModel() {
-    private var closed = false
     private val repository = services.driveRepository
+    private val boundToWorkspace = repository.currentAccount == account
+    private var closed = !boundToWorkspace
     private val available: Boolean get() = !closed && repository.currentAccount == account
     val fileCommands = dev.piko.shared.presentation.FileCommands(repository, services.fileWrites, account, services.folderVaultSession, services.receivingActivity) {
         !closed && repository.currentAccount == account
     }
     init {
-        check(services.driveRepository.currentAccount == account)
-        repository.enterAccount(account)
+        if (boundToWorkspace) {
+            repository.enterAccount(account)
+        } else {
+            dev.piko.shared.log.PikoLog.w("Workspace", "Skipped WorkspaceViewModel initialization for stale account during switch")
+        }
     }
-    val driveWorkspace = services.driveWorkspace.also { it.enterAccount(account) }
+    val driveWorkspace = services.driveWorkspace.also { if (boundToWorkspace) it.enterAccount(account) }
     val fileWorkspace: FileWorkspace get() = driveWorkspace
     val contexts = driveWorkspace.contexts
     var tabCreationRevision by mutableStateOf(0L)
@@ -348,10 +352,14 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         services.clipFeedSession::open, services.clipFeedSession::close,
         { !closed && repository.currentAccount == account },
     )
-    private val releaseSaveTarget = services.saveTargets.bind(account, dev.piko.shared.state.SaveTargetContext(
-        fileWorkspace.saveTargetContext.currentFolder, fileWorkspace.saveTargetContext.folders,
-        fileCommands::receivingAvailability, fileCommands.receivingChanges,
-    ))
+    private val releaseSaveTarget: () -> Unit = if (boundToWorkspace) {
+        services.saveTargets.bind(account, dev.piko.shared.state.SaveTargetContext(
+            fileWorkspace.saveTargetContext.currentFolder, fileWorkspace.saveTargetContext.folders,
+            fileCommands::receivingAvailability, fileCommands.receivingChanges,
+        ))
+    } else {
+        {}
+    }
     private fun createBrowser(library: DriveLibrary?, path: List<PikoPathBreadcrumb>?, navigation: DriveNavigation?, duplicates: DuplicateSession = services.duplicateSession): DriveBrowserSession {
         check(!closed && services.driveRepository.currentAccount == account) { "工作区已释放或账号已改变" }
         return DriveBrowserSession(
@@ -378,20 +386,22 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
         result
     }
     init {
-        driveWorkspace.onContextClosed = { releaseContext(it.id) }
-        contexts.onCreated = {
-            tabCountBeforeCreation = (contexts.contextsFlow.value.size - 1).coerceAtLeast(1)
-            tabCreationRevision++
-            tabButtonEmphasized = true
-            tabEmphasisJob?.cancel()
-            tabEmphasisJob = viewModelScope.launch {
-                delay(700)
-                tabButtonEmphasized = false
+        if (boundToWorkspace) {
+            driveWorkspace.onContextClosed = { releaseContext(it.id) }
+            contexts.onCreated = {
+                tabCountBeforeCreation = (contexts.contextsFlow.value.size - 1).coerceAtLeast(1)
+                tabCreationRevision++
+                tabButtonEmphasized = true
+                tabEmphasisJob?.cancel()
+                tabEmphasisJob = viewModelScope.launch {
+                    delay(700)
+                    tabButtonEmphasized = false
+                }
             }
-        }
-        viewModelScope.launch {
-            snapshotFlow { services.instantSession.drafts.toList() }.collect { live ->
-                importDrafts.toMap().filterValues { it !in live }.keys.forEach(::closeContext)
+            viewModelScope.launch {
+                snapshotFlow { services.instantSession.drafts.toList() }.collect { live ->
+                    importDrafts.toMap().filterValues { it !in live }.keys.forEach(::closeContext)
+                }
             }
         }
     }
@@ -417,9 +427,11 @@ internal class WorkspaceViewModel(private val services: PikoServices, private va
 
     override fun onCleared() {
         closed = true
-        contexts.onCreated = null
-        contexts.contextsFlow.value.filter { it !is WorkspaceContext.File }.toList().forEach { closeContext(it.id) }
-        driveWorkspace.onContextClosed = {}
+        if (boundToWorkspace) {
+            contexts.onCreated = null
+            contexts.contextsFlow.value.filter { it !is WorkspaceContext.File }.toList().forEach { closeContext(it.id) }
+            driveWorkspace.onContextClosed = {}
+        }
         releaseSaveTarget()
         cancelPathLookup()
         tabViewModelStores.values.forEach(ViewModelStore::clear)

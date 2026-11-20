@@ -1,22 +1,30 @@
 package dev.piko.ui.components
 
+import androidx.compose.foundation.border
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
+import dev.piko.ui.adaptive.isDesktopLayout
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 
 /**
- * 应用里的对话框，参数与 AlertDialog 相同。标题比 M3 的基本对话框小一号（titleLarge），圆角收到 16dp。
+ * 应用里的对话框，参数与 AlertDialog 相同。遵循 M3 Expressive 对话框容器色（`surfaceContainerHigh`）
+ * 与强调标题（`titleLargeEmphasized`），桌面端收紧圆角至 `largeIncreased`（20dp），移动端保持
+ * M3E 标准的 `extraLarge`（28dp），同时维持零跳动定高与清晰的主次按钮层级。
  *
- * M3 的基本对话框按触屏设计：24sp 的大标题、28dp 的圆角、无底色的文字按钮，在宽窗口里像一张漂在中间的手机卡片，
- * 按钮看着像链接。执行动作的对话框用 [PikoDialogConfirm] 作确认，取消仍是文字按钮；只是告知、只有「知道了」
- * 一个按钮的，不必有底色，没有要执行的动作。两端一个样子：有底色的按钮在手机上同样成立，没有按平台分开的理由。
+ * 执行动作的对话框用 [PikoDialogConfirm] 作确认，取消仍是文字按钮；只是告知、只有「知道了」
+ * 一个按钮的，不必有底色，没有要执行的动作。
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun PikoDialog(
     onDismissRequest: () -> Unit,
@@ -28,15 +36,24 @@ fun PikoDialog(
     text: (@Composable () -> Unit)? = null,
     properties: DialogProperties = DialogProperties(),
 ) {
+    val shapes = MaterialTheme.shapes
+    val dialogShape = if (isDesktopLayout()) shapes.largeIncreased else shapes.extraLarge
+    val isEInk = LocalAppearance.current.isEInk
     AlertDialog(
         onDismissRequest = onDismissRequest,
         confirmButton = confirmButton,
-        modifier = modifier,
+        modifier = if (isEInk) {
+            modifier.border(1.dp, MaterialTheme.colorScheme.outline, dialogShape)
+        } else {
+            modifier
+        },
         dismissButton = dismissButton,
         icon = icon,
-        title = title?.let { content -> { ProvideTextStyle(MaterialTheme.typography.titleLarge) { content() } } },
+        title = title?.let { content -> { ProvideTextStyle(MaterialTheme.typography.titleLargeEmphasized) { content() } } },
         text = text,
-        shape = MaterialTheme.shapes.large,
+        shape = dialogShape,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = if (isEInk) 0.dp else androidx.compose.material3.AlertDialogDefaults.TonalElevation,
         properties = properties,
     )
 }

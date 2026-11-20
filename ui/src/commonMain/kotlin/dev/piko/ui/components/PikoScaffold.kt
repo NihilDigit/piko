@@ -2,6 +2,7 @@ package dev.piko.ui.components
 
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,7 +32,9 @@ import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.theme.IslandCorner
 import dev.piko.ui.theme.IslandGap
 import dev.piko.ui.theme.IslandInnerCorner
+import dev.piko.ui.theme.islandBorderColor
 import dev.piko.ui.theme.islandHeader
+import dev.piko.ui.theme.islandSurface
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.dp
@@ -87,13 +90,15 @@ fun PikoScaffold(
         // 卡片上下都让开：顶栏与底栏都落在外框色上，卡片夹在中间。没有底栏的页，卡片离窗口底边留一截外框色，
         // 不贴着窗口边缘截断；有底栏的不再多留，否则底栏被垫高，与侧边栏底部的账号行对不齐
         val bottom = innerPadding.calculateBottomPadding().takeIf { it > 0.dp } ?: FrameCardBottomMargin
+        val borderColor = colors.islandBorderColor
         Box(
             Modifier
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding(), end = IslandGap, bottom = bottom)
                 .consumeWindowInsets(innerPadding)
                 .clip(cardShape)
-                .background(colors.surface),
+                .background(colors.islandSurface)
+                .then(if (borderColor != null) Modifier.border(1.dp, borderColor, cardShape) else Modifier),
         ) {
             content(PaddingValues())
         }
@@ -130,35 +135,49 @@ internal fun IslandSurface(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
+    val colors = MaterialTheme.colorScheme
+    val outerShape = RoundedCornerShape(
+        topStart = if (connection == IslandConnection.FirstTab) 0.dp else IslandCorner,
+        topEnd = IslandCorner,
+        bottomStart = IslandCorner,
+        bottomEnd = IslandCorner,
+    )
+    val innerShape = RoundedCornerShape(
+        topStart = IslandInnerCorner,
+        topEnd = IslandInnerCorner,
+        bottomStart = IslandCorner,
+        bottomEnd = IslandCorner,
+    )
+    val borderColor = colors.islandBorderColor
     Column(
         modifier
-            .clip(
-                RoundedCornerShape(
-                    topStart = if (connection == IslandConnection.FirstTab) 0.dp else IslandCorner,
-                    topEnd = IslandCorner,
-                    bottomStart = IslandCorner,
-                    bottomEnd = IslandCorner,
-                ),
-            )
-            .background(MaterialTheme.colorScheme.islandHeader),
+            .clip(outerShape)
+            .background(colors.islandHeader)
+            .then(if (borderColor != null) Modifier.border(1.dp, borderColor, outerShape) else Modifier),
     ) {
         header()
         Box(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(topStart = IslandInnerCorner, topEnd = IslandInnerCorner, bottomStart = IslandCorner, bottomEnd = IslandCorner))
-                .background(MaterialTheme.colorScheme.surface),
+                .clip(innerShape)
+                .background(colors.islandSurface),
         ) {
             content()
         }
     }
 }
 
-/** 没有标签的页写在页眉开头的页名。 */
+/** 没有标签的页写在页眉开头的页名。与 `PikoTopBar` 对齐使用 `titleLargeEmphasized`，高于页内二级分类标题。 */
 @Composable
 fun IslandTitle(title: String, modifier: Modifier = Modifier) {
-    Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, modifier = modifier)
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleLargeEmphasized,
+        color = MaterialTheme.colorScheme.onSurface,
+        maxLines = 1,
+        modifier = modifier,
+    )
 }
 
 @Composable

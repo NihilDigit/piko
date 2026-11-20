@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -89,15 +90,39 @@ internal fun FullscreenPromptButton(
         enter = fadeIn(motion.defaultEffectsSpec()) + slideInVertically(motion.defaultSpatialSpec()) { it / 2 },
         exit = fadeOut(motion.fastEffectsSpec()) + slideOutVertically(motion.fastSpatialSpec()) { it / 2 },
     ) {
-        Button(onClick = onClick, shapes = ButtonDefaults.shapes()) {
-            Icon(
-                imageVector = Icons.Filled.Fullscreen,
-                contentDescription = null,
-                modifier = Modifier.size(ButtonDefaults.IconSize),
+        FullscreenPromptButtonContent(onClick = onClick)
+    }
+}
+
+/** 竖屏全屏悬浮入口按钮本体，由真实播放页与 `PlayerCustomizationPage` 共用，保持外观 1:1 一致。 */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+internal fun FullscreenPromptButtonContent(
+    onClick: () -> Unit,
+    muted: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    val fixed = dev.piko.ui.theme.LocalFixedColors.current
+    Button(
+        onClick = onClick,
+        shapes = ButtonDefaults.shapes(),
+        colors = if (!muted) {
+            ButtonDefaults.buttonColors()
+        } else {
+            ButtonDefaults.buttonColors(
+                containerColor = playerContainerColor().copy(alpha = 0.55f),
+                contentColor = fixed.OnMedia.copy(alpha = 0.55f),
             )
-            Spacer(Modifier.width(ButtonDefaults.IconSpacing))
-            Text(stringResource(Res.string.text_play_fullscreen))
-        }
+        },
+        modifier = modifier,
+    ) {
+        Icon(
+            imageVector = if (!muted) Icons.Filled.Fullscreen else Icons.Filled.VisibilityOff,
+            contentDescription = null,
+            modifier = Modifier.size(ButtonDefaults.IconSize),
+        )
+        Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+        Text(stringResource(Res.string.text_play_fullscreen), maxLines = 1)
     }
 }
 

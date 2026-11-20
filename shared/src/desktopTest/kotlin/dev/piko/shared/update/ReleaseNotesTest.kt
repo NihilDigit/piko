@@ -162,4 +162,29 @@ class ReleaseNotesTest {
             releaseNoteBlocks(updateNotesOf(body)),
         )
     }
+
+    @Test
+    fun subheadingsAndNestedBulletsPreserveHierarchy() {
+        val body = """
+            |## 变化
+            |### 播放器
+            |- 主条目
+            |  - 子条目一，
+            |    续行内容
+            |    - 三级条目
+            |	- Tab 缩进子条目
+        """.trimMargin()
+
+        assertEquals(
+            listOf(
+                ReleaseNoteBlock.Heading("变化", level = 2),
+                ReleaseNoteBlock.Heading("播放器", level = 3),
+                ReleaseNoteBlock.Bullet("主条目", depth = 0),
+                ReleaseNoteBlock.Bullet("子条目一，续行内容", depth = 1),
+                ReleaseNoteBlock.Bullet("三级条目", depth = 2),
+                ReleaseNoteBlock.Bullet("Tab 缩进子条目", depth = 1),
+            ),
+            releaseNoteBlocks(body),
+        )
+    }
 }

@@ -48,14 +48,19 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.time.ComparableTimeMark
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeSource
 
 private const val CONTROLS_HIDE_DELAY_MILLIS = 4_500L
 private const val CURSOR_HIDE_DELAY_MILLIS = CONTROLS_HIDE_DELAY_MILLIS
+private const val AUTO_HIDE_POLL_STEP_MILLIS = 500L
 private const val RESUME_TIP_DURATION_MILLIS = 5_000L
 private const val DOUBLE_TAP_FEEDBACK_MILLIS = 700L
 private const val SEEK_PEEK_MILLIS = 900L
 private const val KEY_VOLUME_HUD_MILLIS = 800L
 private const val INDICATOR_FLASH_MILLIS = 1_200L
+private val DIAL_SPEED_FLASH_SUPPRESS_WINDOW = 400.milliseconds
 internal const val VOLUME_KEY_STEP = 0.05f
 private const val UNMUTE_FALLBACK_VOLUME = 0.5f
 private const val LONG_SEEK_STEP_MILLIS = 60_000L
@@ -80,6 +85,7 @@ internal class PlayerControlsUiState(
     initialSpeed: Float?,
     initialRotation: Int?,
     initialBoostSpeed: Float,
+    private val timeSource: TimeSource.WithComparableMarks = TimeSource.Monotonic,
 ) {
     var controlsVisible by mutableStateOf(true)
     var isLocked by mutableStateOf(false)
@@ -90,9 +96,13 @@ internal class PlayerControlsUiState(
     var isEditingCropRegion by mutableStateOf(false)
     var aspectBeforeEdit by mutableStateOf<PlayerAspectRatio?>(null)
     var isSpeedPopupOpen by mutableStateOf(false)
-    var mouseMoveCount by mutableIntStateOf(0)
+    var isQualityPopupOpen by mutableStateOf(false)
+    var isShortcutsOverlayOpen by mutableStateOf(false)
     var isMouseIdle by mutableStateOf(false)
-    var interactionCount by mutableIntStateOf(0)
+
+    // 纯数组计数：125–1000Hz 鼠标移动与频繁交互只写普通数组，零 Compose 重组、零协程取消风暴
+    private val interactionSeq = LongArray(1)
+    private val mouseMoveSeq = LongArray(1)
 
     var doubleTapVisible by mutableStateOf(false)
     var doubleTapForward by mutableStateOf(true)
@@ -103,9 +113,10 @@ internal class PlayerControlsUiState(
 
     var isBoosting by mutableStateOf(false)
     private var speedBeforeBoost by mutableFloatStateOf(1f)
-    private var activeBoostSpeed by mutableFloatStateOf(initialBoostSpeed)
     var skipSpeedFlash by mutableStateOf(false)
-    var boostReadout by mutableStateOf<CenterIndicator?>(null)
+    private var dialSuppressUntil: ComparableTimeMark? = null
+    var onStartHoldBoost: (() -> Unit)? = null
+    var onEndHoldBoost: (() -> Unit)? = null
 
     var flashIndicator by mutableStateOf<CenterIndicator?>(null)
     var flashCount by mutableIntStateOf(0)
@@ -152,8 +163,19 @@ internal class PlayerControlsUiState(
     var currentIsAlwaysOnTop: Boolean? = null
 
     fun interacted() {
-        interactionCount += 1
+        interactionSeq[0] += 1L
     }
+
+    fun readInteractionSeq(): Long = interactionSeq[0]
+
+    fun recordMouseMove() {
+        interactionSeq[0] += 1L
+        mouseMoveSeq[0] += 1L
+        if (isMouseIdle) isMouseIdle = false
+        if (!controlsVisible) controlsVisible = true
+    }
+
+    fun readMouseMoveSeq(): Long = mouseMoveSeq[0]
 
     fun flash(indicator: CenterIndicator) {
         flashIndicator = indicator
@@ -228,27 +250,58 @@ internal class PlayerControlsUiState(
         }
     }
 
+    fun markDialSpeedWrite(@Suppress("UNUSED_PARAMETER") target: Float) {
+        dialSuppressUntil = timeSource.markNow() + DIAL_SPEED_FLASH_SUPPRESS_WINDOW
+    }
+
+    fun clearDialSpeedSuppression() {
+        dialSuppressUntil = null
+    }
+
+    internal fun consumeObservedSpeedFlash(
+        previous: Float?,
+        speed: Float,
+        isSpeedDialActive: Boolean,
+    ): Boolean {
+        val until = dialSuppressUntil
+        val suppressedByWindow = until != null && timeSource.markNow() < until
+        if (until != null && !suppressedByWindow) {
+            dialSuppressUntil = null
+        }
+        if (previous == null || previous == speed || isBoosting || isSpeedDialActive) return false
+        if (suppressedByWindow) return false
+        if (skipSpeedFlash) {
+            skipSpeedFlash = false
+            return false
+        }
+        return true
+    }
+
     fun startBoost(onSpeedChange: (Float) -> Unit) {
         val current = currentPlaybackSpeed ?: return
         if (isBoosting) return
-        val speed = currentLongPressSpeed
+        val speed = currentLongPressSpeed.takeIf { it.isFinite() && it > 1.0f + 0.005f } ?: LONG_PRESS_BOOST_SPEED
         speedBeforeBoost = current
-        activeBoostSpeed = speed
         isBoosting = true
         controlsVisible = false
-        onSpeedChange(speed)
-        boostReadout = CenterIndicator(
-            Icons.Filled.FastForward,
-            formatSpeedMultiplier(speed),
-            tr("倍速 ${formatSpeedPreset(speed)}", "Speed ${formatSpeedPreset(speed)}", "再生速度 ${formatSpeedPreset(speed)}", "재생 속도 ${formatSpeedPreset(speed)}", "倍速 ${formatSpeedPreset(speed)}"),
-        )
+        val unified = onStartHoldBoost
+        if (unified != null) {
+            unified()
+        } else {
+            onSpeedChange(speed)
+        }
     }
 
     fun endBoost(onSpeedChange: (Float) -> Unit) {
         if (!isBoosting) return
         isBoosting = false
-        skipSpeedFlash = speedBeforeBoost != activeBoostSpeed
-        onSpeedChange(speedBeforeBoost)
+        val unified = onEndHoldBoost
+        if (unified != null) {
+            unified()
+        } else {
+            skipSpeedFlash = speedBeforeBoost != currentLongPressSpeed
+            onSpeedChange(speedBeforeBoost)
+        }
     }
 
     fun abandonArrowHold(onSpeedChange: (Float) -> Unit) {
@@ -276,8 +329,16 @@ internal class PlayerControlsUiState(
             cancelCropEdit(onAspectRatioChange)
             true
         }
+        isShortcutsOverlayOpen -> {
+            isShortcutsOverlayOpen = false
+            true
+        }
         isSpeedPopupOpen -> {
             isSpeedPopupOpen = false
+            true
+        }
+        isQualityPopupOpen -> {
+            isQualityPopupOpen = false
             true
         }
         openSheet == PlayerSheet.DriveSubtitles -> {
@@ -439,8 +500,17 @@ internal class PlayerControlsUiState(
         }
         if (isEditingCropRegion) return false
 
+        // `?` (Shift + /) 切换播放器快捷键速查浮层，与全局 F1 / Ctrl+/ 互不冲突
+        if (event.key == Key.Slash && shift) {
+            if (!heldKeys.add(Key.Slash)) return true
+            isShortcutsOverlayOpen = !isShortcutsOverlayOpen
+            interacted()
+            return true
+        }
+        if (isShortcutsOverlayOpen) return false
+
         // 侧边/底部面板打开时，常规方向键与空格留给面板内部控件导航与激活；仅保留专用媒体键与面板自身开关
-        if (openSheet != null) {
+        if (openSheet != null || isSpeedPopupOpen || isQualityPopupOpen) {
             when (event.key) {
                 Key.I -> if (!shift && currentHasStats && openSheet == PlayerSheet.Stats) {
                     if (!heldKeys.add(Key.I)) return true
@@ -538,51 +608,12 @@ internal class PlayerControlsUiState(
         errorMessage: String?,
         isHoveringControls: Boolean,
     ): Boolean = !isPlaying || isScrubbing || isDraggingVolume || openSheet != null ||
-        isSpeedPopupOpen || errorMessage != null || isHoveringControls || isEditingCropRegion
+        isSpeedPopupOpen || isQualityPopupOpen || isShortcutsOverlayOpen || errorMessage != null || isHoveringControls || isEditingCropRegion
 
-    fun computeHudIndicator(durationMillis: Long): CenterIndicator? {
-        val gesture = activeGesture ?: keyVolume?.let { PlayerGesture.Adjust(VerticalAdjust.Volume, it) }
-        return when {
-            gesture is PlayerGesture.Adjust -> {
-                val percent = (gesture.fraction * 100).roundToInt()
-                val brightnessGesture = gesture.kind == VerticalAdjust.Brightness
-                CenterIndicator(
-                    icon = when {
-                        brightnessGesture -> Icons.Filled.BrightnessMedium
-                        gesture.fraction <= 0f -> Icons.AutoMirrored.Filled.VolumeOff
-                        else -> Icons.AutoMirrored.Filled.VolumeUp
-                    },
-                    text = "$percent",
-                    textTemplate = "100",
-                    description = if (brightnessGesture) tr("亮度 $percent", "Brightness $percent", "明るさ $percent", "밝기 $percent", "亮度 $percent") else tr("音量 $percent", "Volume $percent", "音量 $percent", "볼륨 $percent", "音量 $percent"),
-                    progress = gesture.fraction,
-                )
-            }
-            gesture is PlayerGesture.Seek && gesture.cancelled ->
-                CenterIndicator(Icons.Filled.Close, tr("松开取消", "Release to cancel", "離すとキャンセル", "놓으면 취소", "放開以取消"), tr("松开取消跳转", "Release to cancel seeking", "離すとシークをキャンセル", "놓으면 탐색 취소", "放開以取消跳轉"))
-            gesture is PlayerGesture.Seek -> {
-                val target = gesture.targetMillis(durationMillis)
-                val forward = target >= gesture.startPositionMillis
-                CenterIndicator(
-                    icon = if (forward) Icons.Filled.FastForward else Icons.Filled.FastRewind,
-                    text = formatTime(abs(target - gesture.startPositionMillis)),
-                    description = tr("跳到 ${formatTime(target)}", "Seek to ${formatTime(target)}", "${formatTime(target)} に移動", "${formatTime(target)}(으)로 이동", "跳至 ${formatTime(target)}"),
-                    textTemplate = "00:00",
-                )
-            }
-            doubleTapVisible -> {
-                val sign = if (doubleTapForward) "+" else "−"
-                CenterIndicator(
-                    icon = if (doubleTapForward) Icons.Filled.FastForward else Icons.Filled.FastRewind,
-                    text = tr("$sign$doubleTapSeconds 秒", "$sign$doubleTapSeconds sec", "$sign$doubleTapSeconds 秒", "$sign${doubleTapSeconds}초", "$sign$doubleTapSeconds 秒"),
-                    description = if (doubleTapForward) tr("快进 $doubleTapSeconds 秒", "Forward $doubleTapSeconds sec", "$doubleTapSeconds 秒早送り", "${doubleTapSeconds}초 앞으로", "快轉 $doubleTapSeconds 秒") else tr("快退 $doubleTapSeconds 秒", "Back $doubleTapSeconds sec", "$doubleTapSeconds 秒巻き戻し", "${doubleTapSeconds}초 뒤로", "倒轉 $doubleTapSeconds 秒"),
-                    textTemplate = "+${widestDigits((durationMillis / 1000).coerceAtLeast(doubleTapSeconds.toLong()).toString())} 秒",
-                )
-            }
-            isBoosting -> boostReadout
-            else -> null
-        }
-    }
+    /** 侧边精简电平条读数（亮度 / 音量），滚轮/键盘默认停靠右侧。 */
+    fun computeActiveLevel(): PlayerGesture.Adjust? =
+        (activeGesture as? PlayerGesture.Adjust)
+            ?: keyVolume?.let { PlayerGesture.Adjust(VerticalAdjust.Volume, it, dockEnd = true) }
 }
 
 @Composable
@@ -596,6 +627,7 @@ internal fun rememberPlayerControlsUiState(
     longPressSpeed: Float,
     errorMessage: String?,
     onSpeedChange: (Float) -> Unit,
+    isSpeedDialActive: Boolean = false,
 ): PlayerControlsUiState {
     val scope = rememberCoroutineScope()
     val accessibilityManager = LocalAccessibilityManager.current
@@ -630,16 +662,40 @@ internal fun rememberPlayerControlsUiState(
         }
     }
 
-    LaunchedEffect(state.controlsVisible, holdControls, state.interactionCount, hideDelayMillis) {
-        if (state.controlsVisible && !holdControls && hideDelayMillis != Long.MAX_VALUE) {
-            delay(hideDelayMillis)
-            state.controlsVisible = false
+    LaunchedEffect(state.controlsVisible, holdControls, hideDelayMillis) {
+        if (!state.controlsVisible || holdControls || hideDelayMillis == Long.MAX_VALUE) return@LaunchedEffect
+        var seen = state.readInteractionSeq()
+        var idleMs = 0L
+        val stepMs = hideDelayMillis.coerceAtMost(AUTO_HIDE_POLL_STEP_MILLIS)
+        while (idleMs < hideDelayMillis) {
+            val waitMs = (hideDelayMillis - idleMs).coerceAtMost(stepMs)
+            delay(waitMs)
+            val current = state.readInteractionSeq()
+            if (current != seen) {
+                seen = current
+                idleMs = 0L
+            } else {
+                idleMs += waitMs
+            }
         }
+        state.controlsVisible = false
     }
 
-    LaunchedEffect(state.mouseMoveCount) {
-        state.isMouseIdle = false
-        delay(CURSOR_HIDE_DELAY_MILLIS)
+    LaunchedEffect(state.isMouseIdle) {
+        if (state.isMouseIdle) return@LaunchedEffect
+        var seen = state.readMouseMoveSeq()
+        var idleMs = 0L
+        while (idleMs < CURSOR_HIDE_DELAY_MILLIS) {
+            val waitMs = (CURSOR_HIDE_DELAY_MILLIS - idleMs).coerceAtMost(AUTO_HIDE_POLL_STEP_MILLIS)
+            delay(waitMs)
+            val current = state.readMouseMoveSeq()
+            if (current != seen) {
+                seen = current
+                idleMs = 0L
+            } else {
+                idleMs += waitMs
+            }
+        }
         state.isMouseIdle = true
     }
 
@@ -693,11 +749,7 @@ internal fun rememberPlayerControlsUiState(
         val previous = state.lastObservedSpeed
         state.lastObservedSpeed = playbackSpeed
         val speed = playbackSpeed ?: return@LaunchedEffect
-        if (previous == null || previous == speed || state.isBoosting) return@LaunchedEffect
-        if (state.skipSpeedFlash) {
-            state.skipSpeedFlash = false
-            return@LaunchedEffect
-        }
+        if (!state.consumeObservedSpeedFlash(previous, speed, isSpeedDialActive)) return@LaunchedEffect
         state.flash(
             CenterIndicator(
                 Icons.Outlined.Speed,

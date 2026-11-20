@@ -26,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import dev.piko.ui.theme.LocalPikoMotion
+import dev.piko.ui.theme.LocalWindowVisible
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Shape
@@ -55,8 +56,9 @@ private val LocalSkeletonAlpha = compositionLocalOf<State<Float>> { mutableFloat
  */
 @Composable
 fun SkeletonGroup(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    // 减少动画时不脉动。只靠时长缩放为 0 的话，无限动画会跳到终点停住，整片停在半透明的那一档
-    val alpha = if (LocalPikoMotion.current.reduced) {
+    // 减少动画或窗口不可见时不脉动。只靠时长缩放为 0 的话，无限动画会跳到终点停住，整片停在半透明的那一档
+    val paused = LocalPikoMotion.current.reduced || !LocalWindowVisible.current
+    val alpha = if (paused) {
         remember { mutableFloatStateOf(1f) }
     } else {
         rememberInfiniteTransition(label = "skeleton").animateFloat(
@@ -74,10 +76,10 @@ fun SkeletonGroup(modifier: Modifier = Modifier, content: @Composable () -> Unit
 /** 一块占位色块。颜色取容器色阶里比页面高一档的那一格，深浅两套主题都看得出轮廓又不刺眼。 */
 @Composable
 fun SkeletonBlock(modifier: Modifier = Modifier, shape: Shape = MaterialTheme.shapes.extraSmall) {
-    val alpha by LocalSkeletonAlpha.current
+    val alphaState = LocalSkeletonAlpha.current
     Box(
         modifier = modifier
-            .graphicsLayer { this.alpha = alpha }
+            .graphicsLayer { alpha = alphaState.value }
             .background(MaterialTheme.colorScheme.surfaceContainerHighest, shape),
     )
 }

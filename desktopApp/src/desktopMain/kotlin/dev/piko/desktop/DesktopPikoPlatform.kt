@@ -36,6 +36,7 @@ import org.jetbrains.skia.ImageInfo
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import dev.piko.desktop.media.PreviewFrameDecoder
 import dev.piko.desktop.ui.player.MediampPlaybackBackend
 import dev.piko.desktop.update.DesktopAppUpdater
 import dev.piko.desktop.winrt.FolderPickResult
@@ -44,15 +45,23 @@ import dev.piko.desktop.winrt.SaveFilePicker
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.desktop.winrt.WindowsExternalPlayer
 import dev.piko.desktop.winrt.WindowsLinkAssociation
+import dev.piko.desktop.winrt.WindowsNetworkKind
+import dev.piko.desktop.winrt.WindowsSystemStatus
 import dev.piko.shared.media.player.PlaybackBackend
+import dev.piko.shared.media.storyboard.StoryboardIdrDecoder
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.platform.DownloadLocationPicker
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import dev.piko.ui.platform.ExternalVideoPlayer
 import dev.piko.ui.platform.LinkAssociation
 import dev.piko.ui.platform.LocalFileActions
 import dev.piko.ui.platform.PikoPlatform
+import dev.piko.ui.platform.PlayerNetworkType
+import dev.piko.ui.platform.PlayerSystemStatusInfo
 import dev.piko.ui.platform.PlatformToggle
 import dev.piko.ui.platform.DiskSpace
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -76,7 +85,7 @@ import java.net.URI
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.openani.mediamp.compose.MediampPlayerSurface
+import dev.piko.desktop.ui.player.PikoMpvVideoSurface
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import org.openani.mediamp.MediampPlayer
@@ -157,6 +166,23 @@ class DesktopPikoPlatform(
     override val deviceSummary: String =
         "${System.getProperty("os.name")} ${System.getProperty("os.version")}，${System.getProperty("os.arch")}，Java ${System.getProperty("java.version")}"
 
+    override fun observeSystemStatus(): Flow<PlayerSystemStatusInfo?> {
+        if (!WinRTSupport.isWindows) return emptyFlow()
+        return WindowsSystemStatus.observe().map { snapshot ->
+            PlayerSystemStatusInfo(
+                batteryPercent = snapshot.batteryPercent,
+                isCharging = snapshot.isCharging,
+                networkType = when (snapshot.networkKind) {
+                    WindowsNetworkKind.Wifi -> PlayerNetworkType.Wifi
+                    WindowsNetworkKind.Ethernet -> PlayerNetworkType.Ethernet
+                    WindowsNetworkKind.Cellular -> PlayerNetworkType.Cellular
+                    WindowsNetworkKind.Offline -> PlayerNetworkType.Offline
+                    WindowsNetworkKind.Unknown -> null
+                },
+            )
+        }
+    }
+
     /**
      * 系统的保存框，默认放在下载目录。Windows 上用原生保存框，放在单独的线程上：AWT 的 FileDialog
      * 会让界面在对话框开着时停止重绘，见 SaveFilePicker。原生框不可用或 macOS / Linux 上才用 FileDialog。
@@ -214,33 +240,54 @@ class DesktopPikoPlatform(
             val w = skiaBitmap.width
             val h = skiaBitmap.height
             if (w <= 0 || h <= 0) return@runCatching null
-            val info = ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.UNPREMUL)
-            val rawBytes = skiaBitmap.readPixels(info, w * 4, 0, 0) ?: return@runCatching null
-            val argb = IntArray(w * h) { idx ->
-                val o = idx * 4
-                val b = rawBytes[o].toInt() and 0xFF
-                val g = rawBytes[o + 1].toInt() and 0xFF
-                val r = rawBytes[o + 2].toInt() and 0xFF
-                val a = rawBytes[o + 3].toInt() and 0xFF
-                (a shl 24) or (r shl 16) or (g shl 8) or b
-            }
             val radius = BackdropBlurKernel.equivalentRadiusPx(w, h, containerWidthPx, containerHeightPx, targetBlurPx)
-            val blurred = BackdropBlurKernel.blurArgb(argb, w, h, radius)
-            val outBytes = ByteArray(w * h * 4)
-            for (idx in blurred.indices) {
-                val c = blurred[idx]
-                val o = idx * 4
-                outBytes[o] = (c and 0xFF).toByte()
-                outBytes[o + 1] = ((c ushr 8) and 0xFF).toByte()
-                outBytes[o + 2] = ((c ushr 16) and 0xFF).toByte()
-                outBytes[o + 3] = ((c ushr 24) and 0xFF).toByte()
-            }
-            val outBitmap = Bitmap()
-            outBitmap.allocPixels(info)
-            outBitmap.installPixels(info, outBytes, w * 4)
-            outBitmap.setImmutable()
-            outBitmap.asComposeImageBitmap()
+            blurCoilBitmap(skiaBitmap, radius)?.asComposeImageBitmap()
         }.getOrNull()
+    }
+
+    override suspend fun decodeVideoPreviewFrame(bytes: ByteArray, maxWidthPx: Int): ImageBitmap? =
+        PreviewFrameDecoder.decodeFromBytes(bytes, maxWidthPx)
+
+    override suspend fun decodeLocalVideoPreviewFrame(path: String, positionMillis: Long, maxWidthPx: Int): ImageBitmap? =
+        PreviewFrameDecoder.decodeFromLocalFile(path, positionMillis, maxWidthPx)
+
+    override fun createStoryboardIdrDecoder(): StoryboardIdrDecoder? =
+        PreviewFrameDecoder.createPersistentHevcDecoder()
+
+    override fun decodeEncodedImageBitmap(bytes: ByteArray): ImageBitmap? =
+        PreviewFrameDecoder.decodeEncodedImage(bytes)
+
+    override fun blurCoilBitmap(input: Bitmap, radiusPx: Int): Bitmap? {
+        val w = input.width
+        val h = input.height
+        if (w <= 0 || h <= 0) return null
+        val info = ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.UNPREMUL)
+        val rawBytes = input.readPixels(info, w * 4, 0, 0) ?: return null
+        val argb = IntArray(w * h) { idx ->
+            val o = idx * 4
+            val b = rawBytes[o].toInt() and 0xFF
+            val g = rawBytes[o + 1].toInt() and 0xFF
+            val r = rawBytes[o + 2].toInt() and 0xFF
+            val a = rawBytes[o + 3].toInt() and 0xFF
+            (a shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        val blurred = BackdropBlurKernel.blurArgb(argb, w, h, radiusPx)
+        val outBytes = ByteArray(w * h * 4)
+        for (idx in blurred.indices) {
+            val c = blurred[idx]
+            val o = idx * 4
+            outBytes[o] = (c and 0xFF).toByte()
+            outBytes[o + 1] = ((c ushr 8) and 0xFF).toByte()
+            outBytes[o + 2] = ((c ushr 16) and 0xFF).toByte()
+            outBytes[o + 3] = ((c ushr 24) and 0xFF).toByte()
+        }
+        val outBitmap = Bitmap()
+        if (!outBitmap.installPixels(info, outBytes, w * 4)) {
+            outBitmap.close()
+            return null
+        }
+        outBitmap.setImmutable()
+        return outBitmap
     }
 
     override fun readClipboardText(): String? = runCatching {
@@ -392,7 +439,7 @@ class DesktopPikoPlatform(
 
         @Composable
         override fun Surface(backend: PreviewBackend, modifier: Modifier) {
-            MediampPlayerSurface((backend as MediampPreviewBackend).inner.player, modifier)
+            PikoMpvVideoSurface((backend as MediampPreviewBackend).inner.player, modifier)
         }
     }
 

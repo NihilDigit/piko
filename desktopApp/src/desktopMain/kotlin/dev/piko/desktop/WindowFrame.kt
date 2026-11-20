@@ -116,7 +116,9 @@ fun FrameWindowScope.WindowFrame(
                         private val areas = HashMap<Any, Rect>()
 
                         override fun updateDragArea(key: Any, bounds: Rect?) {
-                            if (bounds == null) areas.remove(key) else areas[key] = bounds
+                            val normalized = bounds?.takeUnless { it.isEmpty }
+                            if (areas[key] == normalized) return
+                            if (normalized == null) areas.remove(key) else areas[key] = normalized
                             if (showTitleBar && areas.isNotEmpty()) caption.updateLayout(areas.values.toList(), emptyMap()) else caption.clearLayout()
                         }
 
@@ -222,9 +224,13 @@ private fun FrameWindowScope.WindowsTitleBar(
             .fillMaxWidth()
             .height(TitleBarHeight)
             .background(colors.container)
-            .onGloballyPositioned {
-                bounds.bar = it.boundsInWindow()
-                publish()
+            .onGloballyPositioned { coordinates ->
+                if (!coordinates.isAttached) return@onGloballyPositioned
+                val next = coordinates.boundsInWindow()
+                if (bounds.bar != next) {
+                    bounds.bar = next
+                    publish()
+                }
             },
     ) {
         Spacer(Modifier.width(16.dp))
@@ -247,9 +253,13 @@ private fun FrameWindowScope.WindowsTitleBar(
                 hovered = caption.hovered == button,
                 pressed = caption.pressed == button && caption.hovered == button,
                 contentColor = contentColor,
-                modifier = Modifier.onGloballyPositioned {
-                    bounds.buttons[button] = it.boundsInWindow()
-                    publish()
+                modifier = Modifier.onGloballyPositioned { coordinates ->
+                    if (!coordinates.isAttached) return@onGloballyPositioned
+                    val next = coordinates.boundsInWindow()
+                    if (bounds.buttons[button] != next) {
+                        bounds.buttons[button] = next
+                        publish()
+                    }
                 },
             )
         }
@@ -311,9 +321,14 @@ private class CompactCaption(private val caption: WindowsCaption) : WindowCaptio
                     hovered = caption.hovered == button,
                     pressed = caption.pressed == button && caption.hovered == button,
                     contentColor = color,
-                    modifier = Modifier.onGloballyPositioned {
-                        buttons[key] = (buttons[key] ?: emptyMap()) + (button to it.boundsInWindow())
-                        publish()
+                    modifier = Modifier.onGloballyPositioned { coordinates ->
+                        if (!coordinates.isAttached) return@onGloballyPositioned
+                        val next = coordinates.boundsInWindow()
+                        val current = buttons[key]
+                        if (current?.get(button) != next) {
+                            buttons[key] = (current ?: emptyMap()) + (button to next)
+                            publish()
+                        }
                     },
                 )
             }
@@ -321,7 +336,9 @@ private class CompactCaption(private val caption: WindowsCaption) : WindowCaptio
     }
 
     override fun setDragArea(key: Any, bounds: Rect?) {
-        if (bounds == null) dragAreas.remove(key) else dragAreas[key] = bounds
+        val normalized = bounds?.takeUnless { it.isEmpty }
+        if (dragAreas[key] == normalized) return
+        if (normalized == null) dragAreas.remove(key) else dragAreas[key] = normalized
         publish()
     }
 

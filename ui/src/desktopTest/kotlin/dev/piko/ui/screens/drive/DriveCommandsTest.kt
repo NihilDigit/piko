@@ -4,6 +4,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.ArchiveEntryId
 import dev.piko.shared.data.ImportPreviewLocation
 import dev.piko.shared.data.LocalLocation
+import dev.piko.shared.data.VaultEntry
 import dev.piko.ui.adaptive.WidthClass
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
@@ -181,5 +182,52 @@ class DriveCommandsTest {
             assertEquals(place in allowed, itemCommands(place, listOf(full, partial), fullIds).vault, "$place")
             assertEquals(place in allowed, itemCommands(place, listOf(full, file), fullIds).vault, "$place")
         }
+    }
+
+    @Test
+    fun `vaulted single multi-select and mixed selections enable rename move and cut while gating share and copy`() {
+        val vaulted1 = VaultEntry.create("ABC-123.mkv", 1024, "GCID1", null, 0).toFileStat("folder-1")
+        val vaulted2 = VaultEntry.create("DEF-456.mkv", 2048, "GCID2", null, 0).toFileStat("folder-1")
+        val normal = FileStat(kind = FileKind.FILE, id = "real-1", parentId = "folder-1", name = "GHI-789.mkv")
+
+        for (targets in listOf(listOf(vaulted1), listOf(vaulted1, vaulted2), listOf(vaulted1, normal))) {
+            val cmds = itemCommands(CommandPlace.FOLDER, targets)
+            assertTrue(cmds.rename, "Vaulted & mixed selections must allow rename")
+            assertTrue(cmds.moveTo, "Vaulted & mixed selections must allow move")
+            assertTrue(cmds.cut, "Vaulted & mixed selections must allow cut")
+            assertTrue(cmds.moveToTrash, "Vaulted & mixed selections must allow remove/trash")
+            assertFalse(cmds.share, "Vaulted entries cannot be shared directly")
+            assertFalse(cmds.moveCopyTo, "Copy-to remains gated to real files")
+            assertFalse(cmds.cutCopy, "Copy remains gated to real files")
+        }
+
+        val trashCmds = itemCommands(CommandPlace.TRASH, listOf(vaulted1, vaulted2))
+        assertFalse(trashCmds.rename)
+        assertFalse(trashCmds.moveTo)
+        assertFalse(trashCmds.cut)
+    }
+
+    @Test
+    fun `folder structure commands require real cloud folders in a real folder context`() {
+        val folder1 = FileStat(kind = FileKind.FOLDER, id = "cloud-dir-1", name = "A")
+        val folder2 = FileStat(kind = FileKind.FOLDER, id = "cloud-dir-2", name = "B")
+        val file = FileStat(kind = FileKind.FILE, id = "cloud-file-1", name = "a.mkv")
+        val localFolder = FileStat(kind = FileKind.FOLDER, id = LocalLocation("mount-1").id, name = "Local")
+
+        val single = itemCommands(CommandPlace.FOLDER, listOf(folder1))
+        assertTrue(single.unwrapOrFlatten)
+        assertFalse(single.mergeFolders)
+
+        val multi = itemCommands(CommandPlace.ROOT, listOf(folder1, folder2))
+        assertTrue(multi.unwrapOrFlatten)
+        assertTrue(multi.mergeFolders)
+
+        // Mixed folder + file, search results, trash, archive, or local mounts must disable both.
+        assertFalse(itemCommands(CommandPlace.FOLDER, listOf(folder1, file)).unwrapOrFlatten)
+        assertFalse(itemCommands(CommandPlace.FOLDER, listOf(folder1, file)).mergeFolders)
+        assertFalse(itemCommands(CommandPlace.SEARCH, listOf(folder1, folder2)).unwrapOrFlatten)
+        assertFalse(itemCommands(CommandPlace.TRASH, listOf(folder1, folder2)).unwrapOrFlatten)
+        assertFalse(itemCommands(CommandPlace.ARCHIVE, listOf(folder1, folder2)).unwrapOrFlatten)
+        assertFalse(itemCommands(CommandPlace.FOLDER, listOf(localFolder)).unwrapOrFlatten)
     }
 }

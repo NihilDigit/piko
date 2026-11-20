@@ -1,13 +1,19 @@
 package dev.piko.shared.preferences
 
 import dev.piko.data.auth.AppLanguage
+import dev.piko.data.auth.CachePolicyDefaults
+import dev.piko.data.auth.PikoPreferencesSnapshot
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.data.auth.SnailMode
 import dev.piko.shared.auth.SecretVault
+import dev.piko.shared.data.DriveAppearancePrefs
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.media.player.PlayerLayoutPrefs
+import dev.piko.shared.media.player.decodePlayerLayoutPrefs
+import dev.piko.shared.media.player.encodePlayerLayoutPrefs
 import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -46,6 +52,48 @@ class StoredPikoPreferences(
         clipAutoExtend.value = enabled
     }
 
+    private val playerLayout = MutableStateFlow(decodePlayerLayoutPrefs(settings.get(KEY_PLAYER_LAYOUT)))
+    override val playerLayoutPrefsFlow: Flow<PlayerLayoutPrefs> = playerLayout.asStateFlow()
+    override suspend fun setPlayerLayoutPrefs(prefs: PlayerLayoutPrefs) {
+        val sanitized = prefs.sanitize()
+        settings.set(KEY_PLAYER_LAYOUT, encodePlayerLayoutPrefs(sanitized))
+        playerLayout.value = sanitized
+    }
+
+    private val driveAppearance = MutableStateFlow(DriveAppearancePrefs.decodeJson(settings.get(KEY_DRIVE_APPEARANCE)))
+    override val driveAppearancePrefsFlow: Flow<DriveAppearancePrefs> = driveAppearance.asStateFlow()
+    override suspend fun setDriveAppearancePrefs(prefs: DriveAppearancePrefs) {
+        settings.set(KEY_DRIVE_APPEARANCE, prefs.encodeJson())
+        driveAppearance.value = prefs
+    }
+
+    private val skipFeedExitConfirm = MutableStateFlow(settings.get(KEY_SKIP_FEED_EXIT_CONFIRM) == "true")
+    override val skipFeedExitConfirmFlow: Flow<Boolean> = skipFeedExitConfirm.asStateFlow()
+    override suspend fun setSkipFeedExitConfirm(skip: Boolean) {
+        settings.set(KEY_SKIP_FEED_EXIT_CONFIRM, skip.toString())
+        skipFeedExitConfirm.value = skip
+    }
+
+    private val cacheMaxBytes = MutableStateFlow(
+        settings.get(KEY_CACHE_MAX_BYTES).toLongOrNull()?.coerceAtLeast(0L) ?: CachePolicyDefaults.DEFAULT_MAX_BYTES,
+    )
+    override val cacheMaxBytesFlow: Flow<Long> = cacheMaxBytes.asStateFlow()
+    override suspend fun setCacheMaxBytes(bytes: Long) {
+        val clamped = bytes.coerceAtLeast(0L)
+        settings.set(KEY_CACHE_MAX_BYTES, clamped.toString())
+        cacheMaxBytes.value = clamped
+    }
+
+    private val cacheMaxAgeDays = MutableStateFlow(
+        settings.get(KEY_CACHE_MAX_AGE_DAYS).toIntOrNull()?.coerceAtLeast(0) ?: CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS,
+    )
+    override val cacheMaxAgeDaysFlow: Flow<Int> = cacheMaxAgeDays.asStateFlow()
+    override suspend fun setCacheMaxAgeDays(days: Int) {
+        val clamped = days.coerceAtLeast(0)
+        settings.set(KEY_CACHE_MAX_AGE_DAYS, clamped.toString())
+        cacheMaxAgeDays.value = clamped
+    }
+
     private val perFolderSort = MutableStateFlow(settings.get("drive.perFolderSort") == "true")
     override val perFolderSortFlow: Flow<Boolean> = perFolderSort.asStateFlow()
     override suspend fun setPerFolderSort(enabled: Boolean) {
@@ -74,12 +122,14 @@ class StoredPikoPreferences(
         localMounts.value = serialized
     }
 
-    private val spoiler = MutableStateFlow(settings.get(KEY_SPOILER, "true").toBoolean())
+    private val spoiler = MutableStateFlow(settings.get(KEY_SPOILER, "false").toBoolean())
     private val autoCheckUpdates = MutableStateFlow(settings.get(KEY_AUTO_CHECK_UPDATES, "true").toBoolean())
     private val autoDetectClipboardLinks = MutableStateFlow(settings.get("ui.autoDetectClipboardLinks") == "true")
     private val reduceMotion = MutableStateFlow(settings.get(KEY_REDUCE_MOTION) == "true")
     private val hardwareDecoding = MutableStateFlow(settings.get(KEY_HARDWARE_DECODING, "true").toBoolean())
-    private val playbackMaxHeight = MutableStateFlow(settings.get(KEY_PLAYBACK_MAX_HEIGHT).toIntOrNull() ?: 0)
+    private val playbackMaxHeight = MutableStateFlow(
+        settings.get(KEY_PLAYBACK_MAX_HEIGHT).toIntOrNull() ?: PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT,
+    )
     private val downloadMaxHeight = MutableStateFlow(settings.get(KEY_DOWNLOAD_MAX_HEIGHT).toIntOrNull())
     private val playerSeekStepSeconds = MutableStateFlow(
         settings.get(KEY_PLAYER_SEEK_STEP_SECONDS).toIntOrNull() ?: PlayerGestureDefaults.SEEK_STEP_SECONDS,
@@ -97,6 +147,7 @@ class StoredPikoPreferences(
     private val syncPlayHistory = MutableStateFlow(settings.get(KEY_SYNC_PLAY_HISTORY, "true").toBoolean())
     private val themeMode = MutableStateFlow(settings.get(KEY_THEME_MODE).ifEmpty { null })
     private val themeSeed = MutableStateFlow(settings.get(KEY_THEME_SEED).ifEmpty { null })
+    private val pureBlack = MutableStateFlow(settings.get(KEY_PURE_BLACK) == "true")
     // 旧版只存了是否海报墙，没有新键时由它换算
     private val driveViewMode = MutableStateFlow(
         // 没选过时是海报墙，与 Android 相同；旧版只存了是否网格，明确关掉过的仍是列表
@@ -268,6 +319,37 @@ class StoredPikoPreferences(
         settings.set(KEY_THEME_SEED, seed.orEmpty())
         themeSeed.value = seed
     }
+
+    override val pureBlackFlow: Flow<Boolean> = pureBlack.asStateFlow()
+    override suspend fun setPureBlack(enabled: Boolean) {
+        settings.set(KEY_PURE_BLACK, enabled.toString())
+        pureBlack.value = enabled
+    }
+
+    override val currentSnapshot: PikoPreferencesSnapshot
+        get() = PikoPreferencesSnapshot(
+            appLanguage = language.value,
+            themeMode = themeMode.value,
+            themeSeed = themeSeed.value,
+            pureBlack = pureBlack.value,
+            spoilerBlurEnabled = spoiler.value,
+            reduceMotion = reduceMotion.value,
+            hardwareDecoding = hardwareDecoding.value,
+            playbackMaxHeight = playbackMaxHeight.value,
+            driveViewMode = driveViewMode.value,
+            galleryShowImages = galleryShowImages.value,
+            sidebarCollapsed = sidebarCollapsed.value,
+            showExtensions = showExtensions.value,
+            proxySetting = proxySetting.value,
+            tileSizes = tileSizes.value.mapValues { it.value.value },
+            playerLayout = playerLayout.value,
+            driveAppearance = driveAppearance.value,
+            skipFeedExitConfirm = skipFeedExitConfirm.value,
+            cacheMaxBytes = cacheMaxBytes.value,
+            cacheMaxAgeDays = cacheMaxAgeDays.value,
+        )
+
+    override fun currentTileSize(view: String): String = tileSize(view).value
 
     override val driveViewModeFlow: Flow<String> = driveViewMode.asStateFlow()
     override suspend fun setDriveViewMode(mode: String) {
@@ -499,6 +581,11 @@ class StoredPikoPreferences(
         const val KEY_DOWNLOAD_MAX_HEIGHT = "download.defaultMaxHeight"
         const val KEY_PLAYER_SEEK_STEP_SECONDS = "player.seekStepSeconds"
         const val KEY_PLAYER_BOOST_SPEED = "player.boostSpeed"
+        const val KEY_PLAYER_LAYOUT = "player.layout"
+        const val KEY_DRIVE_APPEARANCE = "drive.appearance"
+        const val KEY_SKIP_FEED_EXIT_CONFIRM = "ui.skipFeedExitConfirm"
+        const val KEY_CACHE_MAX_BYTES = "cache.maxBytes"
+        const val KEY_CACHE_MAX_AGE_DAYS = "cache.maxAgeDays"
         const val KEY_FOLDER_MAP_OPEN = "ui.folderMapOpen"
         const val KEY_FOLDER_MAP_PINNED = "ui.folderMapPinned"
         const val KEY_HEURISTIC = "ui.heuristicFilter"
@@ -521,6 +608,7 @@ class StoredPikoPreferences(
         // 沿用 Fluent 版设置页的键，旧值是小写的 system、light、dark，解析时不分大小写
         const val KEY_THEME_MODE = "themeMode"
         const val KEY_THEME_SEED = "ui.themeSeed"
+        const val KEY_PURE_BLACK = "ui.pureBlack"
         const val KEY_DOWNLOAD_DIR = "download.directory"
         const val KEY_LAST_FOLDER_ID = "drive.lastFolderId"
         const val KEY_LAST_FOLDER_NAME = "drive.lastFolderName"

@@ -246,14 +246,45 @@ class VaultStars internal constructor(
 
     /** 归档条目在清单中改名后，同步更新星标账本里的名称。 */
     fun renameEntry(entryId: String, newName: String, nowMs: Long = now(), expectedAccount: String? = null) {
+        renameEntries(mapOf(entryId to newName), nowMs = nowMs, expectedAccount = expectedAccount)
+    }
+
+    /** 批量同步归档条目改名到星标账本。 */
+    fun renameEntries(renames: Map<String, String>, nowMs: Long = now(), expectedAccount: String? = null) {
+        if (renames.isEmpty()) return
         var changed = false
         state.update { cur ->
             if (expectedAccount != null && cur.account != expectedAccount) return@update cur
-            val prev = cur.records[entryId] ?: return@update cur
-            if (prev.name == newName) return@update cur
-            val stamp = maxOf(nowMs, prev.updatedAt + 1L)
-            changed = true
-            cur.copy(records = cur.records + (entryId to prev.copy(name = newName, updatedAt = stamp)))
+            var next: LinkedHashMap<String, VaultStarRecord>? = null
+            for ((entryId, newName) in renames) {
+                val prev = (next ?: cur.records)[entryId] ?: continue
+                if (prev.name == newName) continue
+                val map = next ?: LinkedHashMap(cur.records).also { next = it }
+                val stamp = maxOf(nowMs, prev.updatedAt + 1L)
+                map[entryId] = prev.copy(name = newName, updatedAt = stamp)
+                changed = true
+            }
+            if (changed && next != null) cur.copy(records = next!!) else cur
+        }
+        if (changed) scheduleSave()
+    }
+
+    /** 归档条目跨目录移动后，同步更新星标账本里的所在目录，避免源目录对账时误取消星标。 */
+    fun moveEntries(entryIds: Collection<String>, targetFolderId: String, nowMs: Long = now(), expectedAccount: String? = null) {
+        if (entryIds.isEmpty()) return
+        var changed = false
+        state.update { cur ->
+            if (expectedAccount != null && cur.account != expectedAccount) return@update cur
+            var next: LinkedHashMap<String, VaultStarRecord>? = null
+            for (entryId in entryIds) {
+                val prev = (next ?: cur.records)[entryId] ?: continue
+                if (prev.folderId == targetFolderId) continue
+                val map = next ?: LinkedHashMap(cur.records).also { next = it }
+                val stamp = maxOf(nowMs, prev.updatedAt + 1L)
+                map[entryId] = prev.copy(folderId = targetFolderId, updatedAt = stamp)
+                changed = true
+            }
+            if (changed && next != null) cur.copy(records = next!!) else cur
         }
         if (changed) scheduleSave()
     }

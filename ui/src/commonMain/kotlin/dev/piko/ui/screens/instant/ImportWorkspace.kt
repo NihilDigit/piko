@@ -8,9 +8,16 @@ import dev.piko.ui.i18n.stringResource
 
 import dev.piko.shared.i18n.tr
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.LazyGridState
@@ -23,7 +30,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.state.ToggleableState
+import dev.piko.ui.theme.islandSurface
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.onSizeChanged
@@ -52,7 +63,7 @@ internal data class ImportSource(val key: String, val state: InstantSheetState, 
 internal class ImportManagementState {
     var query by mutableStateOf("")
     var searchShown by mutableStateOf(false)
-    var collapsed by mutableStateOf(emptyList<String>())
+    var collapsed by mutableStateOf<Set<String>>(emptySet())
     var settingsShown by mutableStateOf(false)
     val list = LazyListState()
 }
@@ -70,6 +81,7 @@ internal class ImportBrowserState {
 internal class ImportWorkspaceViewState {
     var expanded by mutableStateOf(false)
     var started by mutableStateOf(false)
+    var managerWidthDp by mutableStateOf<Float?>(null)
     val management = ImportManagementState()
     val browser = ImportBrowserState()
 }
@@ -94,7 +106,9 @@ internal fun ResolvedImportWorkspace(
     val height = with(density) { viewport.height.toDp() }
     // Change sheet ownership in composition, after measuring; disposing popup owners during subcomposition is invalid.
     val split = width >= 840.dp || (width >= 720.dp && height < 480.dp)
-    val managerWidth = if (height < 480.dp) 320.dp else 360.dp
+    val defaultManagerWidth = if (height < 480.dp) 320.dp else 360.dp
+    val maxManagerWidth = (width - 360.dp).coerceAtLeast(280.dp)
+    val managerWidth = (view.managerWidthDp?.dp ?: defaultManagerWidth).coerceIn(280.dp, maxManagerWidth)
     Box(Modifier.fillMaxSize().onSizeChanged { viewport = it }) {
         val management = view.management
         val browser = view.browser
@@ -122,10 +136,18 @@ internal fun ResolvedImportWorkspace(
                 status()
             }
         }
-        if (split) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Surface(Modifier.weight(1f).fillMaxHeight(), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
+        if (split) Row(Modifier.fillMaxSize()) {
+            Surface(Modifier.weight(1f).fillMaxHeight(), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.islandSurface) {
                 Result()
             }
+            SplitPaneDragHandle(
+                onDragDeltaPx = { deltaPx ->
+                    val current = view.managerWidthDp ?: defaultManagerWidth.value
+                    val deltaDp = with(density) { deltaPx.toDp().value }
+                    view.managerWidthDp = (current - deltaDp).coerceIn(280f, maxManagerWidth.value)
+                },
+                onResetWidth = { view.managerWidthDp = null },
+            )
             Surface(Modifier.width(managerWidth).fillMaxHeight(), shape = MaterialTheme.shapes.large,
                 color = MaterialTheme.colorScheme.surfaceContainerLow) {
                 Column {
@@ -141,6 +163,61 @@ internal fun ResolvedImportWorkspace(
                     Box(Modifier.fillMaxWidth().padding(12.dp)) { saveBar() }
                 }),
         ) { Result() }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SplitPaneDragHandle(
+    onDragDeltaPx: (Float) -> Unit,
+    onResetWidth: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    var dragging by remember { mutableStateOf(false) }
+    val latestDrag by rememberUpdatedState(onDragDeltaPx)
+    val colors = MaterialTheme.colorScheme
+    val pillColor by animateColorAsState(
+        targetValue = when {
+            dragging -> colors.primary
+            hovered -> colors.onSurfaceVariant
+            else -> colors.outlineVariant
+        },
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "split_pane_handle",
+    )
+    val resizeCursor = LocalHorizontalResizeCursor.current
+    Box(
+        modifier = Modifier
+            .width(12.dp)
+            .fillMaxHeight()
+            .then(if (resizeCursor != null) Modifier.pointerHoverIcon(resizeCursor) else Modifier)
+            .hoverable(interaction)
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = {},
+                onDoubleClick = onResetWidth,
+            )
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onDragStart = { dragging = true },
+                    onDragEnd = { dragging = false },
+                    onDragCancel = { dragging = false },
+                ) { change, dragAmount ->
+                    change.consume()
+                    latestDrag(dragAmount)
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(if (dragging || hovered) 4.dp else 3.dp)
+                .height(if (dragging) 48.dp else 36.dp)
+                .clip(CircleShape)
+                .background(pillColor),
+        )
     }
 }
 
@@ -162,19 +239,41 @@ internal fun ImportResolutionStatus(state: InstantSheetState, notice: PanelNotic
         missing > 0 -> tr("已选文件中有 ${missing} 项未收录", "${missing} selected items are not indexed", "選択した ${missing} 項目は未収録です", "선택한 ${missing}개 항목이 미등록입니다", "已選檔案中有 ${missing} 項未收錄")
         else -> null
     }
-    if (message != null) Row(
-        Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        val color = if (error != null || notice?.isError == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-        Icon(Icons.Outlined.Info, null, Modifier.size(18.dp), tint = color)
-        Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = color)
-        if (state.effectiveSaveAsReference && state.missingReferenceCount > 0 && state.referenceItemsToSave.isNotEmpty()) {
-            TextButton(onClick = state::deselectUnindexed, enabled = state.canEdit) { Text(stringResource(Res.string.text_uncheck)) }
+    if (message != null) {
+        val isError = error != null || notice?.isError == true
+        val colors = MaterialTheme.colorScheme
+        val containerColor = if (isError) colors.errorContainer else colors.surfaceContainerHigh
+        val contentColor = if (isError) colors.onErrorContainer else colors.onSurfaceVariant
+        Surface(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            shape = MaterialTheme.shapes.medium,
+            color = containerColor,
+            contentColor = contentColor,
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (state.isResolving && !isError) {
+                    InlineLoadingIndicator(modifier = Modifier.size(18.dp), color = contentColor)
+                } else {
+                    Icon(
+                        imageVector = if (isError) Icons.Outlined.ErrorOutline else Icons.Outlined.Info,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = contentColor,
+                    )
+                }
+                Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = contentColor)
+                if (state.effectiveSaveAsReference && state.missingReferenceCount > 0 && state.referenceItemsToSave.isNotEmpty()) {
+                    TextButton(onClick = state::deselectUnindexed, enabled = state.canEdit) { Text(stringResource(Res.string.text_uncheck)) }
+                }
+                if (state.resolution?.resource?.truncated == true) TooltipIconButton(
+                    Icons.Outlined.Refresh, tr("重新解析链接", "Resolve link again", "リンクを再解析", "링크 다시 분석", "重新解析連結"), state::retryResolve, enabled = state.canEdit,
+                )
+            }
         }
-        if (state.resolution?.resource?.truncated == true) TooltipIconButton(
-            Icons.Outlined.Refresh, tr("重新解析链接", "Resolve link again", "リンクを再解析", "링크 다시 분석", "重新解析連結"), state::retryResolve, enabled = state.canEdit,
-        )
     }
 }
 
@@ -199,9 +298,17 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
     val nodes = remember(versions) {
         importSourceForest(versions.map { version -> ImportTreeSource(version.key, version.files.orEmpty().map { it.path }) })
     }
+    LaunchedEffect(nodes) {
+        if (nodes.size > 200 && management.collapsed.isEmpty()) {
+            management.collapsed = nodes.filter { it.node.isFolder && it.node.depth >= 1 }.mapTo(HashSet()) { it.key }
+        }
+    }
     val query = management.query
     val collapsed = management.collapsed
-    val visible = remember(nodes, collapsed, query) { visibleImportSources(nodes, nodes.map { it.key }.toSet() - collapsed.toSet(), query) }
+    val visible = remember(nodes, collapsed, query) {
+        val expanded = nodes.filter { it.node.isFolder && it.key !in collapsed }.mapTo(HashSet()) { it.key }
+        visibleImportSources(nodes, expanded, query)
+    }
     val hasBranches = visible.any { it.node.isFolder }
     val sourceByKey = sources.associateBy { it.key }
     var details by remember { mutableStateOf<ImportSource?>(null) }
@@ -230,7 +337,7 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
             val state = source.state
             val editable = source.enabled && state.canEdit
             val node = entry.node
-            val selected = node.indices.count { it in state.sourceSelectedIndices }
+            val selected = state.sourceSelection.countIn(node.indices)
             val checked = when(selected) { 0 -> ToggleableState.Off; node.indices.size -> ToggleableState.On; else -> ToggleableState.Indeterminate }
             val index = node.fileIndex
             val toggle = { management.collapsed = if(entry.key in collapsed) collapsed - entry.key else collapsed + entry.key }
@@ -253,16 +360,44 @@ private fun SourceImportTree(sources: List<ImportSource>, management: ImportMana
             val state = source.state
             val longClick = fileItemLongPress { details = source }
             ContextMenuArea(actions = { sourceActions(source) }) {
-                ListItem(headlineContent = { Text(state.resolution?.resource?.name ?: state.input, maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
-                    supportingContent = { Text(state.errorMessage ?: when {
-                        state.isResolving -> tr("正在解析链接", "Resolving link", "リンクを解析中", "링크 분석 중", "正在解析連結")
-                        state.needsSharePassCode -> tr("需要提取码", "Access code required", "アクセスコードが必要です", "접근 코드 필요", "需要提取碼")
-                        else -> tr("整条链接离线下载", "Download entire link to cloud", "リンク全体をクラウドダウンロード", "전체 링크 클라우드 다운로드", "整條連結離線下載")
-                    }) },
-                    leadingContent = { Icon(Icons.Outlined.Link, null) },
-                    modifier = Modifier.combinedClickable(onClick = {}, onLongClick = longClick),
-                    colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent))
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = androidx.compose.ui.graphics.Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .combinedClickable(onClick = {}, onLongClick = longClick)
+                            .heightIn(min = 56.dp)
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Link,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = state.resolution?.resource?.name ?: state.input,
+                                style = MaterialTheme.typography.bodyLarge,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = state.errorMessage ?: when {
+                                    state.isResolving -> tr("正在解析链接", "Resolving link", "リンクを解析中", "링크 분석 중", "正在解析連結")
+                                    state.needsSharePassCode -> tr("需要提取码", "Access code required", "アクセスコードが必要です", "접근 코드 필요", "需要提取碼")
+                                    else -> tr("整条链接离线下载", "Download entire link to cloud", "リンク全体をクラウドダウンロード", "전체 링크 클라우드 다운로드", "整條連結離線下載")
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
             SharePassCodeInput(state)
         }
@@ -390,7 +525,7 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
         }
         }
         moreId?.let { id -> byId[id]?.let { file ->
-            ItemDetailsSheet(title = file.name, headerIcon = { FileTypeIcon(file, 24.dp, Modifier.fillMaxSize()) },
+            ItemDetailsSheet(title = file.name, headerIcon = { FileListLeadingVisual(file = file, size = 40.dp, allowThumbnail = false) },
                 actions = withSelectAction(actions(file), if (selected.isEmpty()) ({ moreId = null; selected = listOf(file.id) }) else null),
                 onDismiss = { moreId = null }, metaParts = listOf(file.sizeBytes.toReadableSize()))
         } }

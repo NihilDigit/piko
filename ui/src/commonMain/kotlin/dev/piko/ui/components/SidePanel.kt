@@ -9,7 +9,6 @@ import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -33,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDragHandle
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -42,8 +42,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -122,7 +124,13 @@ fun SidePanelLayout(
         showHeader -> Modifier
         else -> Modifier.clip(MaterialTheme.shapes.largeIncreased)
     }
-    BoxWithConstraints(modifier = modifier) {
+    val density = LocalDensity.current
+    val initialWidthPx = LocalWindowInfo.current.containerSize.width
+    var containerWidthPx by remember(initialWidthPx) { mutableIntStateOf(initialWidthPx) }
+    val maxWidth = with(density) { containerWidthPx.toDp() }
+    // 不用 BoxWithConstraints（内部是 SubcomposeLayout）：子槽承载主区与侧栏内的弹层和工具提示，
+    // 测量期销毁弹层会触发桌面端 RootNodeOwner is already disposed 崩溃
+    Box(modifier = modifier.onSizeChanged { if (it.width > 0) containerWidthPx = it.width }) {
         // 拖过的宽度留在这里，松手才交给设置保存，每帧写盘没有必要。松手后也不清掉：
         // 清掉的话在设置写回来之前会先退回旧宽度，侧栏弹一下
         var draggingWidth by remember { mutableStateOf<Dp?>(null) }

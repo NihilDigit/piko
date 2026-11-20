@@ -157,6 +157,16 @@ internal class WindowsCaption(private val window: Window) {
     private val frameProcStub: MemorySegment by lazy { upcall("frameProc") }
     private val childProcStub: MemorySegment by lazy { upcall("childProc") }
 
+    // 缓存窗口样式与 DPI 缩放边框厚度，避免鼠标掠过窗口时每次 WM_NCHITTEST 都走 4 次 Win32 FFM 调用。
+    @Volatile
+    private var cachedStyle: Int = WS_CAPTION or WS_THICKFRAME
+
+    @Volatile
+    private var cachedResizeBorder: Int = 8
+
+    @Volatile
+    private var trackingNonClientLeave: Boolean = false
+
     /**
      * 窗口已有 HWND 时接管标题栏。须在窗口首次显示前调用，否则系统标题栏会先闪一下。
      * 非 Windows 或调用失败时返回 false，窗口保持系统标题栏。
@@ -166,6 +176,7 @@ internal class WindowsCaption(private val window: Window) {
         val hwnd = Win32Window.handleOf(window) ?: return false
         return runCatching {
             frame = hwnd
+            refreshWindowMetrics()
             // 这里在界面线程，窗口过程在工具包线程上跑：先记下原窗口过程再替换，替换后的第一条消息就要用到它
             originalFrameProc = User32.getWindowLongPtr(hwnd, GWLP_WNDPROC)
             live += this
@@ -195,6 +206,7 @@ internal class WindowsCaption(private val window: Window) {
         layout = null
         hovered = null
         pressed = null
+        trackingNonClientLeave = false
     }
 
     private fun upcall(name: String): MemorySegment {
@@ -223,11 +235,15 @@ internal class WindowsCaption(private val window: Window) {
                 }
                 WM_NCMOUSEMOVE -> {
                     val button = buttonOf(wParam)
-                    if (button != null) trackNonClientLeave(hwnd)
-                    hovered = button
+                    if (button != null && !trackingNonClientLeave) {
+                        trackingNonClientLeave = true
+                        trackNonClientLeave(hwnd)
+                    }
+                    if (hovered != button) hovered = button
                     // 仍交给系统：贴靠布局的弹出靠 DefWindowProc 看到 HTMAXBUTTON 上的悬停
                 }
                 WM_NCMOUSELEAVE -> {
+                    trackingNonClientLeave = false
                     hovered = null
                     pressed = null
                 }
@@ -247,6 +263,7 @@ internal class WindowsCaption(private val window: Window) {
                 WM_NCACTIVATE -> isActive = wParam != 0L
                 // 系统改设置时向每个顶层窗口广播一次；开着几个窗口就收到几次，重读很便宜，不去重
                 WM_SETTINGCHANGE -> SystemReducedMotion.onSystemSettingChange()
+                WM_STYLECHANGED, WM_DPICHANGED -> refreshWindowMetrics()
                 WM_ENTERSIZEMOVE -> isSizing = true
                 WM_EXITSIZEMOVE -> isSizing = false
                 WM_SIZE -> {
@@ -254,6 +271,7 @@ internal class WindowsCaption(private val window: Window) {
                         SIZE_MAXIMIZED -> isMaximized = true
                         SIZE_RESTORED -> isMaximized = false
                     }
+                    refreshWindowMetrics()
                     if (originalChildProcs.isEmpty()) hookChildren()
                 }
                 WM_NCDESTROY -> {
@@ -302,6 +320,7 @@ internal class WindowsCaption(private val window: Window) {
      * 要计算的那个矩形。
      */
     private fun onNcCalcSize(hwnd: MemorySegment, wParam: Long, lParam: Long): Long {
+        refreshWindowMetrics()
         if (!hasCaption()) return callFrame(hwnd, WM_NCCALCSIZE, wParam, lParam)
         val proposed = MemorySegment.ofAddress(lParam).reinterpret(16)
         val originalLeft = proposed.get(JAVA_INT, 0)
@@ -360,6 +379,7 @@ internal class WindowsCaption(private val window: Window) {
         }
         // 最小化或最大化后鼠标可能不再经过这里，收不到 WM_NCMOUSELEAVE
         hovered = null
+        trackingNonClientLeave = false
         User32.postMessage(hwnd, WM_SYSCOMMAND, command.toLong(), 0L)
     }
 
@@ -386,23 +406,25 @@ internal class WindowsCaption(private val window: Window) {
         User32.trackMouseEvent(trackMouseEvent)
     }
 
-    private fun style(): Int = User32.getWindowLong(frame, GWL_STYLE)
+    private fun refreshWindowMetrics() {
+        if (frame == MemorySegment.NULL) return
+        cachedStyle = User32.getWindowLong(frame, GWL_STYLE)
+        val dpi = User32.getDpiForWindow(frame)
+        cachedResizeBorder = User32.getSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) +
+            User32.getSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
+    }
 
     /**
      * 无边框全屏（[WindowsFullscreen]）去掉了标题栏样式，这时两处改动都让开：客户区照系统算，
      * 命中一律答客户区。布局随后也会被 clearLayout 清掉，但改样式与重组之间有一段空档，
      * 那时按旧布局答 HTCAPTION，全屏画面顶端一条就成了拖动区。WS_CAPTION 是两个位的组合，要两位都在。
      */
-    private fun hasCaption(): Boolean = style() and WS_CAPTION == WS_CAPTION
+    private fun hasCaption(): Boolean = cachedStyle and WS_CAPTION == WS_CAPTION
 
-    private fun hasThickFrame(): Boolean = style() and WS_THICKFRAME != 0
+    private fun hasThickFrame(): Boolean = cachedStyle and WS_THICKFRAME != 0
 
     /** 标题栏被收进客户区之前，系统在顶端留给缩放的厚度，按窗口当前所在显示器的 DPI 取。 */
-    private fun resizeBorder(): Int {
-        val dpi = User32.getDpiForWindow(frame)
-        return User32.getSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) +
-            User32.getSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
-    }
+    private fun resizeBorder(): Int = cachedResizeBorder
 
     private fun toClient(hwnd: MemorySegment, screenX: Int, screenY: Int) {
         point.set(JAVA_INT, 0, screenX)
@@ -515,6 +537,7 @@ internal class WindowsCaption(private val window: Window) {
 
         const val WM_SIZE = 0x0005
         const val WM_SETTINGCHANGE = 0x001A
+        const val WM_STYLECHANGED = 0x007D
         const val WM_NCDESTROY = 0x0082
         const val WM_NCCALCSIZE = 0x0083
         const val WM_NCHITTEST = 0x0084
@@ -525,6 +548,7 @@ internal class WindowsCaption(private val window: Window) {
         const val WM_NCLBUTTONDBLCLK = 0x00A3
         const val WM_SYSCOMMAND = 0x0112
         const val WM_NCMOUSELEAVE = 0x02A2
+        const val WM_DPICHANGED = 0x02E0
         const val WM_ENTERSIZEMOVE = 0x0231
         const val WM_EXITSIZEMOVE = 0x0232
 

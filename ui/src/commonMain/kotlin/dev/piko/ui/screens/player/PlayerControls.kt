@@ -1,6 +1,7 @@
 package dev.piko.ui.screens.player
 
 import dev.piko.ui.components.MediaLoadingCaption
+import dev.piko.ui.components.PikoLoadingIndicator
 import dev.piko.ui.resources.*
 import dev.piko.ui.i18n.stringResource
 
@@ -10,8 +11,14 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -24,6 +31,8 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.requiredHeight
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -57,23 +66,27 @@ import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CropSquare
+import androidx.compose.material.icons.filled.FilterNone
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
@@ -94,7 +107,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -116,23 +131,19 @@ import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.Constraints
+import dev.piko.shared.media.AUTO_QUALITY
+import dev.piko.ui.components.LocalPointerSource
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.wrapContentWidth
 import dev.piko.ui.components.MorphContainer
 import androidx.compose.runtime.derivedStateOf
-import androidx.compose.animation.core.spring
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntRect
-import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupPositionProvider
-import androidx.compose.ui.window.PopupProperties
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
@@ -151,14 +162,22 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.media.ORIGINAL_QUALITY
 import dev.piko.ui.platform.LocalFramelessWindow
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.windowDragArea
+import dev.piko.ui.theme.LocalFixedColors
+import dev.piko.ui.theme.LocalPikoMotion
+import dev.piko.ui.theme.LocalWindowVisible
+import dev.piko.ui.theme.tabular
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import dev.piko.ui.format.formatDurationMillis
 import dev.piko.ui.format.formatPlaybackSpeed
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.sin
 import dev.piko.data.auth.PlayerGestureDefaults
 import kotlin.math.roundToInt
 
@@ -173,6 +192,23 @@ import kotlin.math.roundToInt
  * 末尾省略会把几十集截成同一个前缀。完整标题在长按提示里。
  * 按钮浮在视频上，规范要求带容器，否则对比度随画面变化没有保证。
  */
+/**
+ * 桌面独立播放窗口交给顶栏的窗口控制动作：最小化、最大化/还原、置顶与关闭。
+ * Windows 无边框窗口显示整组控制；macOS / Linux 复用系统窗口键，仅保留置顶并去掉重复返回键。
+ */
+@Immutable
+data class PlayerWindowActions(
+    val isMaximized: Boolean = false,
+    val isFullscreen: Boolean = false,
+    val isAlwaysOnTop: Boolean = false,
+    val showWindowButtons: Boolean = true,
+    val topChromePadding: Dp = 0.dp,
+    val onMinimize: (() -> Unit)? = null,
+    val onToggleMaximize: (() -> Unit)? = null,
+    val onToggleAlwaysOnTop: (() -> Unit)? = null,
+    val onClose: (() -> Unit)? = null,
+)
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun PlayerTopBar(
@@ -184,9 +220,19 @@ fun PlayerTopBar(
     onTracksClick: (() -> Unit)? = null,
     onStatsClick: (() -> Unit)? = null,
     onSettingsClick: (() -> Unit)? = null,
+    windowActions: PlayerWindowActions? = null,
+    isFullscreen: Boolean = false,
 ) {
-    // 桌面端独立的播放窗口没有标题栏：关窗按钮放在右上角，与其他按钮同款，左边的返回键与它重复，不再显示
+    // 桌面端独立的播放窗口没有导航返回栈：由窗口动作或系统标题栏关闭，不再显示移动端返回键
     val framelessWindow = LocalFramelessWindow.current
+    val isDesktopWindow = framelessWindow != null || windowActions != null
+    val hasActionCluster = onTracksClick != null || onStatsClick != null || onSettingsClick != null
+    val effectivePin = windowActions?.onToggleAlwaysOnTop ?: framelessWindow?.let { fw -> { fw.setAlwaysOnTop(!fw.isAlwaysOnTop) } }
+    val effectiveOnTop = windowActions?.isAlwaysOnTop ?: framelessWindow?.isAlwaysOnTop ?: false
+    val showWindowButtons = windowActions?.showWindowButtons ?: (framelessWindow != null)
+    val effectiveClose = windowActions?.onClose ?: framelessWindow?.let { fw -> fw::close }
+    val hasWindowCluster = effectivePin != null || (showWindowButtons && (windowActions?.onMinimize != null || windowActions?.onToggleMaximize != null || effectiveClose != null))
+
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -196,10 +242,16 @@ fun PlayerTopBar(
             .windowInsetsPadding(
                 WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top),
             )
-            .padding(horizontal = 8.dp, vertical = 8.dp),
+            .padding(
+                start = 12.dp,
+                end = 12.dp,
+                top = 8.dp + (windowActions?.topChromePadding ?: 0.dp),
+                bottom = 12.dp,
+            ),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (framelessWindow == null) {
+        if (!isDesktopWindow) {
             PlayerIconButton(
                 icon = Icons.AutoMirrored.Filled.ArrowBack,
                 label = tr("返回", "Back", "戻る", "뒤로", "返回"),
@@ -209,7 +261,7 @@ fun PlayerTopBar(
             )
         }
         // 标题这一块兼做拖动窗口的地方（仅限没有标题栏的桌面窗口）
-        Box(Modifier.weight(1f).windowDragArea().padding(horizontal = 12.dp)) {
+        Box(Modifier.weight(1f).windowDragArea().padding(horizontal = 8.dp)) {
             TooltipBox(
                 positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
                 tooltip = { PlainTooltip { Text(title) } },
@@ -218,8 +270,8 @@ fun PlayerTopBar(
                 Column {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.titleMediumEmphasized,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        style = MaterialTheme.typography.titleMediumEmphasized.copy(shadow = PlayerTextShadow),
+                        color = LocalFixedColors.current.OnMedia,
                         maxLines = 1,
                         overflow = TextOverflow.MiddleEllipsis,
                     )
@@ -232,8 +284,8 @@ fun PlayerTopBar(
                             if (episodeLabel != null) {
                                 Text(
                                     text = episodeLabel,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.labelLarge.tabular.copy(shadow = PlayerTextShadow),
+                                    color = LocalFixedColors.current.OnMedia.copy(alpha = 0.82f),
                                     maxLines = 1,
                                 )
                             }
@@ -243,53 +295,192 @@ fun PlayerTopBar(
                 }
             }
         }
-        if (onTracksClick != null) {
-            PlayerIconButton(
-                icon = Icons.Outlined.Subtitles,
-                label = tr("音轨与字幕", "Audio and subtitles", "音声と字幕", "오디오 및 자막", "音軌與字幕"),
-                onClick = onTracksClick,
-                tooltipBelow = true,
+        if (isFullscreen) {
+            PlayerSystemStatusCapsule()
+        }
+        if (hasActionCluster) {
+            PlayerPillCluster {
+                if (onTracksClick != null) {
+                    ClusterIconButton(
+                        icon = Icons.Outlined.Subtitles,
+                        label = tr("音轨与字幕", "Audio and subtitles", "音声と字幕", "오디오 및 자막", "音軌與字幕"),
+                        onClick = onTracksClick,
+                        tooltipBelow = true,
+                    )
+                }
+                if (onStatsClick != null) {
+                    ClusterIconButton(
+                        icon = Icons.Outlined.Info,
+                        label = tr("详细信息", "Details", "詳細情報", "세부 정보", "詳細資訊"),
+                        onClick = onStatsClick,
+                        tooltipBelow = true,
+                        shortcut = "I",
+                    )
+                }
+                if (onSettingsClick != null) {
+                    ClusterIconButton(
+                        icon = Icons.Outlined.Tune,
+                        label = tr("播放设置", "Playback settings", "再生設定", "재생 설정", "播放設定"),
+                        onClick = onSettingsClick,
+                        tooltipBelow = true,
+                    )
+                }
+            }
+        }
+        if (hasWindowCluster) {
+            PlayerPillCluster {
+                if (effectivePin != null) {
+                    ClusterIconButton(
+                        icon = if (effectiveOnTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                        label = if (effectiveOnTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제", "取消置頂") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시", "置頂"),
+                        onClick = effectivePin,
+                        tooltipBelow = true,
+                        shortcut = "T",
+                        tint = if (effectiveOnTop) MaterialTheme.colorScheme.primary else LocalFixedColors.current.OnMedia,
+                    )
+                }
+                if (showWindowButtons) {
+                    windowActions?.onMinimize?.let { onMinimize ->
+                        ClusterIconButton(
+                            icon = Icons.Filled.Remove,
+                            label = stringResource(Res.string.player_minimize),
+                            onClick = onMinimize,
+                            tooltipBelow = true,
+                            iconSize = 18.dp,
+                        )
+                    }
+                    windowActions?.onToggleMaximize?.let { onToggleMaximize ->
+                        val restored = windowActions.isMaximized || windowActions.isFullscreen
+                        ClusterIconButton(
+                            icon = if (restored) Icons.Filled.FilterNone else Icons.Filled.CropSquare,
+                            label = stringResource(if (restored) Res.string.player_restore else Res.string.player_maximize),
+                            onClick = onToggleMaximize,
+                            tooltipBelow = true,
+                            iconSize = 16.dp,
+                        )
+                    }
+                    if (effectiveClose != null) {
+                        PlayerCloseWindowButton(
+                            label = tr("关闭", "Close", "閉じる", "닫기", "關閉"),
+                            shortcut = LocalPikoPlatform.current.shortcutModifier.label("W"),
+                            onClick = effectiveClose,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 浮在视频画面上的分组半透明高光描边胶囊：在纯白或亮画面上仍保持清晰的边缘对比度。 */
+@Composable
+internal fun PlayerPillCluster(
+    modifier: Modifier = Modifier,
+    content: @Composable RowScope.() -> Unit,
+) {
+    Surface(
+        shape = CircleShape,
+        color = playerContainerColor(),
+        contentColor = LocalFixedColors.current.OnMedia,
+        border = BorderStroke(1.dp, LocalFixedColors.current.HudSpecularBorder),
+        modifier = modifier,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            content = content,
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ClusterIconButton(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    iconSize: Dp = 20.dp,
+    tint: Color = LocalFixedColors.current.OnMedia,
+    tooltipBelow: Boolean = false,
+    shortcut: String? = null,
+) {
+    val hoverSource = remember { MutableInteractionSource() }
+    val hovered by hoverSource.collectIsHoveredAsState()
+    val bg by animateColorAsState(
+        targetValue = if (hovered && enabled) Color.White.copy(alpha = 0.14f) else Color.Transparent,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+    )
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(
+            if (tooltipBelow) TooltipAnchorPosition.Below else TooltipAnchorPosition.Above,
+        ),
+        tooltip = { PlainTooltip { Text(if (shortcut != null) "$label ($shortcut)" else label) } },
+        state = rememberTooltipState(),
+        modifier = modifier,
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(bg)
+                .hoverable(hoverSource, enabled = enabled)
+                .clickable(enabled = enabled, onClickLabel = label, onClick = onClick)
+                .handCursor(enabled),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (enabled) tint else tint.copy(alpha = DISABLED_CONTENT_ALPHA),
+                modifier = Modifier.size(iconSize),
             )
         }
-        if (onStatsClick != null) {
-            PlayerIconButton(
-                icon = Icons.Outlined.Info,
-                label = tr("详细信息", "Details", "詳細情報", "세부 정보", "詳細資訊"),
-                onClick = onStatsClick,
-                tooltipBelow = true,
-                shortcut = "I",
-            )
-        }
-        if (onSettingsClick != null) {
-            PlayerIconButton(
-                icon = Icons.Outlined.Tune,
-                label = tr("播放设置", "Playback settings", "再生設定", "재생 설정", "播放設定"),
-                onClick = onSettingsClick,
-                tooltipBelow = true,
-            )
-        }
-        if (framelessWindow != null) {
-            val onTop = framelessWindow.isAlwaysOnTop
-            PlayerIconButton(
-                icon = if (onTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
-                label = if (onTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제", "取消置頂") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시", "置頂"),
-                onClick = { framelessWindow.setAlwaysOnTop(!onTop) },
-                tooltipBelow = true,
-                shortcut = "T",
-            )
-            PlayerIconButton(
-                icon = Icons.Filled.Close,
-                label = tr("关闭", "Close", "閉じる", "닫기", "關閉"),
-                onClick = framelessWindow::close,
-                tooltipBelow = true,
-                shortcut = LocalPikoPlatform.current.shortcutModifier.label("W"),
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun PlayerCloseWindowButton(
+    label: String,
+    shortcut: String?,
+    onClick: () -> Unit,
+) {
+    val hoverSource = remember { MutableInteractionSource() }
+    val hovered by hoverSource.collectIsHoveredAsState()
+    val bg by animateColorAsState(
+        targetValue = if (hovered) PlayerCloseHoverRed else Color.Transparent,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+    )
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
+        tooltip = { PlainTooltip { Text(if (shortcut != null) "$label ($shortcut)" else label) } },
+        state = rememberTooltipState(),
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(bg)
+                .hoverable(hoverSource)
+                .clickable(onClickLabel = label, onClick = onClick)
+                .handCursor(),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = label,
+                tint = if (hovered) Color.White else LocalFixedColors.current.OnMedia,
+                modifier = Modifier.size(18.dp),
             )
         }
     }
 }
 
 @Composable
-private fun LocalPlaybackBadge() {
+internal fun LocalPlaybackBadge() {
     Surface(
         shape = MaterialTheme.shapes.extraSmall,
         color = MaterialTheme.colorScheme.tertiaryContainer,
@@ -347,6 +538,7 @@ internal data class CenterIndicator(
     val description: String,
     val progress: Float? = null,
     val textTemplate: String? = null,
+    val direction: Int = 0,
 )
 
 /** 把数字都换成 0：等宽数字下，同样格式里位数最多的那一个就是最宽的。 */
@@ -414,7 +606,7 @@ private fun PlayPauseButton(
         else -> CenterFace.Icon
     }
     // 读数形态的宽度照内容量出来，胶囊恰好托住它：固定宽度的话「90°」两边空一大截，「01:23:45」又放不下
-    val readoutStyle = MaterialTheme.typography.titleMediumEmphasized.copy(fontFeatureSettings = "tnum")
+    val readoutStyle = MaterialTheme.typography.titleMediumEmphasized.tabular
     val textMeasurer = rememberTextMeasurer()
     val density = LocalDensity.current
     // 文字占的宽度：有模板时取模板与眼前文字中宽的一个
@@ -486,9 +678,9 @@ private fun PlayPauseButton(
                 .semantics { contentDescription = actionLabel },
         ) { shown ->
             when (shown) {
-                CenterFace.Loading -> LoadingIndicator(
+                CenterFace.Loading -> PikoLoadingIndicator(
+                    size = size.height * LOADING_INDICATOR_FRACTION,
                     color = contentColorOf(shown),
-                    modifier = Modifier.size(size.height * LOADING_INDICATOR_FRACTION),
                 )
                 CenterFace.Icon -> Icon(
                     imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
@@ -582,6 +774,15 @@ internal fun PlayerBottomBar(
     onRotate: (() -> Unit)?,
     onToggleFullscreen: () -> Unit,
     modifier: Modifier = Modifier,
+    isPlaying: Boolean = false,
+    onPlayPause: (() -> Unit)? = null,
+    qualityOptions: List<String> = emptyList(),
+    currentQuality: String? = null,
+    isQualityPopupOpen: Boolean = false,
+    onQualityPopupOpenChange: (Boolean) -> Unit = {},
+    onQualityChange: (String) -> Unit = {},
+    onTracksClick: (() -> Unit)? = null,
+    onSettingsClick: (() -> Unit)? = null,
     onScrubbingChange: (Boolean) -> Unit = {},
     /** 当前音量，0 即静音；为 null 时不给音量键与滑块（移动端，或平台没有可调的音量）。 */
     volume: Float? = null,
@@ -598,6 +799,8 @@ internal fun PlayerBottomBar(
             if (wasScrubbing != (target != null)) latestOnScrubbingChange(target != null)
         }
     }
+    val showTransportPlay = !compactWidth && onPlayPause != null
+    val showQualityPill = !compactWidth && qualityOptions.size > 1 && currentQuality != null
 
     Column(
         modifier = modifier
@@ -606,31 +809,59 @@ internal fun PlayerBottomBar(
             .windowInsetsPadding(
                 WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
             )
-            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = if (isLandscape) 8.dp else 12.dp),
+            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = if (isLandscape) 10.dp else 14.dp),
     ) {
         PlayerBottomSeekBar(
             positionMillisProvider = positionMillisProvider,
             previewPositionMillis = previewPositionMillis,
             durationMillis = durationMillis,
             bufferedPositionMillisProvider = bufferedPositionMillisProvider,
+            isPlaying = isPlaying,
+            playbackSpeed = playbackSpeed ?: 1f,
             onSeek = onSeek,
             thumbOnHoverOnly = thumbOnHoverOnly,
             onScrub = handleScrub,
         )
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(6.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                // 换集在时间前面，照多数播放器底栏的排法。没有上一集或下一集时禁用而不是隐藏，时间不会左右跳
-                if (showEpisodeSkip) {
-                    PlayerIconButton(icon = Icons.Filled.SkipPrevious, label = tr("上一集", "Previous episode", "前のエピソード", "이전 에피소드", "上一集"), onClick = onPrevious, enabled = hasPrevious, shortcut = "PageUp")
-                    PlayerIconButton(icon = Icons.Filled.SkipNext, label = tr("下一集", "Next episode", "次のエピソード", "다음 에피소드", "下一集"), onClick = onNext, enabled = hasNext, shortcut = "PageDown")
-                    Spacer(Modifier.width(8.dp))
+            Row(
+                Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (showTransportPlay || showEpisodeSkip) {
+                    PlayerPillCluster {
+                        if (showTransportPlay && onPlayPause != null) {
+                            ClusterIconButton(
+                                icon = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                label = if (isPlaying) tr("暂停", "Pause", "一時停止", "일시 중지", "暫停") else tr("播放", "Play", "再生", "재생", "播放"),
+                                onClick = onPlayPause,
+                                iconSize = 22.dp,
+                                shortcut = "Space",
+                            )
+                        }
+                        if (showEpisodeSkip) {
+                            ClusterIconButton(
+                                icon = Icons.Filled.SkipPrevious,
+                                label = tr("上一集", "Previous episode", "前のエピソード", "이전 에피소드", "上一集"),
+                                onClick = onPrevious,
+                                enabled = hasPrevious,
+                                shortcut = "PageUp",
+                            )
+                            ClusterIconButton(
+                                icon = Icons.Filled.SkipNext,
+                                label = tr("下一集", "Next episode", "次のエピソード", "다음 에피소드", "下一集"),
+                                onClick = onNext,
+                                enabled = hasNext,
+                                shortcut = "PageDown",
+                            )
+                        }
+                    }
                 }
-                // 照 YouTube 放在换集之后、时间之前，右边一组的位置不变
                 if (volume != null) {
                     PlayerVolumeControl(
                         volume = volume,
@@ -640,7 +871,6 @@ internal fun PlayerBottomBar(
                         onToggleMute = onToggleMute,
                         onDraggingChange = onVolumeDraggingChange,
                     )
-                    Spacer(Modifier.width(8.dp))
                 }
                 PlayerTimeReadout(
                     positionMillisProvider = positionMillisProvider,
@@ -650,23 +880,22 @@ internal fun PlayerBottomBar(
                 )
             }
 
+            if (showQualityPill && currentQuality != null) {
+                PlayerChipButton(
+                    text = currentQuality.qualityDisplayLabel,
+                    selected = isQualityPopupOpen,
+                    onClick = { onQualityPopupOpenChange(!isQualityPopupOpen) },
+                    tooltip = if (!isQualityPopupOpen) stringResource(Res.string.player_quality) else null,
+                )
+            }
             if (playbackSpeed != null) {
-                // 浮层锚在这个 Box 上，出现在按钮正上方
-                Box {
-                    PlayerChipButton(
-                        text = formatSpeed(playbackSpeed),
-                        onClick = { onSpeedPopupOpenChange(!isSpeedPopupOpen) },
-                        tooltip = if (!isSpeedPopupOpen) tr("倍速 ([ / ]，Backspace 恢复原速)", "Speed ([ / ], Backspace resets)", "再生速度 ([ / ]、Backspace で等倍)", "재생 속도 ([ / ], Backspace 기본 속도)", "倍速 ([ / ]，Backspace 還原原速)") else null,
-                        modifier = Modifier.semantics { contentDescription = tr("倍速 ${formatSpeed(playbackSpeed)}", "Speed ${formatSpeed(playbackSpeed)}", "再生速度 ${formatSpeed(playbackSpeed)}", "재생 속도 ${formatSpeed(playbackSpeed)}", "倍速 ${formatSpeed(playbackSpeed)}") },
-                    )
-                    if (isSpeedPopupOpen) {
-                        SpeedPopup(
-                            playbackSpeed = playbackSpeed,
-                            onSpeedChange = onSpeedChange,
-                            onDismiss = { onSpeedPopupOpenChange(false) },
-                        )
-                    }
-                }
+                PlayerChipButton(
+                    text = formatSpeed(playbackSpeed),
+                    selected = isSpeedPopupOpen,
+                    onClick = { onSpeedPopupOpenChange(!isSpeedPopupOpen) },
+                    tooltip = if (!isSpeedPopupOpen) tr("倍速 ([ / ]，Backspace 恢复原速)", "Speed ([ / ], Backspace resets)", "再生速度 ([ / ]、Backspace で等倍)", "재생 속도 ([ / ], Backspace 기본 속도)", "倍速 ([ / ]，Backspace 還原原速)") else null,
+                    modifier = Modifier.semantics { contentDescription = tr("倍速 ${formatSpeed(playbackSpeed)}", "Speed ${formatSpeed(playbackSpeed)}", "再生速度 ${formatSpeed(playbackSpeed)}", "재생 속도 ${formatSpeed(playbackSpeed)}", "倍速 ${formatSpeed(playbackSpeed)}") },
+                )
             }
             if (showEpisodes) {
                 // 窄窗口只留图标，名字在提示里：带字的这一格约 80dp，省下的地方让旋转按钮常驻，
@@ -677,17 +906,37 @@ internal fun PlayerBottomBar(
                     PlayerChipButton(text = tr("选集", "Playlist", "再生リスト", "재생 목록", "選集"), icon = Icons.Outlined.VideoLibrary, onClick = onEpisodesClick)
                 }
             }
-            // 一次转 90 度，与 R 键相同。原先在播放设置里列四个角度，要转画面得先开面板，
-            // 桌面上转了窗口还跟着对调，这一步该是顺手就点的
-            if (onRotate != null) {
-                PlayerIconButton(icon = Icons.Filled.Rotate90DegreesCw, label = tr("顺时针旋转 90 度", "Rotate 90° clockwise", "右に90度回転", "시계 방향으로 90도 회전", "順時針旋轉 90 度"), onClick = onRotate, shortcut = "R")
+            PlayerPillCluster {
+                if (!compactWidth && onTracksClick != null) {
+                    ClusterIconButton(
+                        icon = Icons.Outlined.Subtitles,
+                        label = tr("音轨与字幕", "Audio and subtitles", "音声と字幕", "오디오 및 자막", "音軌與字幕"),
+                        onClick = onTracksClick,
+                        shortcut = "C",
+                    )
+                }
+                if (!compactWidth && onSettingsClick != null) {
+                    ClusterIconButton(
+                        icon = Icons.Outlined.Tune,
+                        label = tr("播放设置", "Playback settings", "再生設定", "재생 설정", "播放設定"),
+                        onClick = onSettingsClick,
+                    )
+                }
+                if (onRotate != null) {
+                    ClusterIconButton(
+                        icon = Icons.Filled.Rotate90DegreesCw,
+                        label = tr("顺时针旋转 90 度", "Rotate 90° clockwise", "右に90度回転", "시계 방향으로 90도 회전", "順時針旋轉 90 度"),
+                        onClick = onRotate,
+                        shortcut = "R",
+                    )
+                }
+                ClusterIconButton(
+                    icon = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
+                    label = if (isFullscreen) tr("退出全屏", "Exit fullscreen", "全画面を終了", "전체 화면 종료", "結束全螢幕") else tr("全屏", "Fullscreen", "全画面", "전체 화면", "全螢幕"),
+                    onClick = onToggleFullscreen,
+                    shortcut = "F",
+                )
             }
-            PlayerIconButton(
-                icon = if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
-                label = if (isFullscreen) tr("退出全屏", "Exit fullscreen", "全画面を終了", "전체 화면 종료", "結束全螢幕") else tr("全屏", "Fullscreen", "全画面", "전체 화면", "全螢幕"),
-                onClick = onToggleFullscreen,
-                shortcut = "F",
-            )
         }
     }
 }
@@ -698,15 +947,20 @@ private fun PlayerBottomSeekBar(
     previewPositionMillis: Long?,
     durationMillis: Long,
     bufferedPositionMillisProvider: () -> Long,
+    isPlaying: Boolean,
+    playbackSpeed: Float = 1f,
     onSeek: (Long) -> Unit,
     thumbOnHoverOnly: Boolean,
     onScrub: (Long?) -> Unit,
 ) {
     PlayerSeekBar(
-        positionMillis = positionMillisProvider(),
+        positionMillisProvider = positionMillisProvider,
         previewMillis = previewPositionMillis,
         durationMillis = durationMillis,
-        bufferedPositionMillis = bufferedPositionMillisProvider(),
+        bufferedPositionMillisProvider = bufferedPositionMillisProvider,
+        isPlaying = isPlaying,
+        playbackSpeed = playbackSpeed,
+        wavy = false,
         onSeek = onSeek,
         thumbOnHoverOnly = thumbOnHoverOnly,
         onScrub = onScrub,
@@ -717,7 +971,7 @@ private fun PlayerBottomSeekBar(
 }
 
 @Composable
-private fun PlayerTimeReadout(
+internal fun PlayerTimeReadout(
     positionMillisProvider: () -> Long,
     scrubPositionMillis: Long?,
     previewPositionMillis: Long?,
@@ -732,41 +986,48 @@ private fun PlayerTimeReadout(
             millis.coerceAtLeast(0L) / 1_000L
         }
     }
-    Text(
-        text = formatTime(displayedSeconds * 1_000L),
-        style = TimeTextStyle(),
-        color = MaterialTheme.colorScheme.onSurface,
-    )
-    Text(
-        text = " / ${formatTime(durationMillis)}",
-        style = TimeTextStyle(),
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        maxLines = 1,
-    )
+    val onMedia = LocalFixedColors.current.OnMedia
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = formatTime(displayedSeconds * 1_000L),
+            style = TimeTextStyle().copy(shadow = PlayerTextShadow),
+            color = onMedia,
+            maxLines = 1,
+        )
+        Text(
+            text = " / ${formatTime(durationMillis)}",
+            style = TimeTextStyle().copy(shadow = PlayerTextShadow),
+            color = onMedia.copy(alpha = 0.72f),
+            maxLines = 1,
+        )
+    }
 }
 
 /**
- * 桌面底栏的音量：静音键加一条常驻的横向滑块，键与滑块上的滚轮都调音量。
- *
- * 不学 YouTube 悬停才展开：桌面端也有触屏（Windows 的触摸与笔经 compose-windows-touch 接入），手指没有悬停，
- * 点键只会静音，滑块永远出不来；键盘 Tab 过去也要先展开。也不学 Windows 媒体播放器点键弹出浮层：
- * 那样点键就不能是静音。常驻滑块照 IINA、VLC，只占约 90dp，横屏底栏放得下。
+ * 桌面底栏的音量：静音键加一条常驻的可展开横向滑块，键与滑块上的滚轮都调音量（±5%）。
+ * 常驻挂载保证桌面触屏与键盘 Tab 可达，同时悬停或拖动时平滑展开提供更精细的调节行程。
  */
 @Composable
-private fun PlayerVolumeControl(
+internal fun PlayerVolumeControl(
     volume: Float,
     showSlider: Boolean,
     onVolumeChange: (Float) -> Unit,
     onToggleMute: () -> Unit,
     onDraggingChange: (Boolean) -> Unit,
+    showBackground: Boolean = true,
+    tooltipBelow: Boolean = false,
 ) {
     val currentVolume by rememberUpdatedState(volume)
     val currentOnVolumeChange by rememberUpdatedState(onVolumeChange)
     val muted = volume <= 0f
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        // 底栏盖在手势层上面，画面上的滚轮调音量到不了这里，要自己接；消费掉，免得冒泡给别的滚动容器
-        modifier = Modifier.pointerInput(Unit) {
+    val containerHover = remember { MutableInteractionSource() }
+    val containerHovered by containerHover.collectIsHoveredAsState()
+    var sliderDragging by remember { mutableStateOf(false) }
+    val expanded = containerHovered || sliderDragging
+
+    val scrollModifier = Modifier
+        .hoverable(containerHover)
+        .pointerInput(Unit) {
             awaitPointerEventScope {
                 while (true) {
                     val event = awaitPointerEvent()
@@ -779,9 +1040,10 @@ private fun PlayerVolumeControl(
                     change.consume()
                 }
             }
-        },
-    ) {
-        PlayerIconButton(
+        }
+
+    val content: @Composable RowScope.() -> Unit = {
+        ClusterIconButton(
             icon = when {
                 muted -> Icons.AutoMirrored.Filled.VolumeOff
                 volume < VOLUME_LOW_THRESHOLD -> Icons.AutoMirrored.Filled.VolumeDown
@@ -789,25 +1051,43 @@ private fun PlayerVolumeControl(
             },
             label = if (muted) tr("取消静音", "Unmute", "ミュートを解除", "음소거 해제", "取消靜音") else tr("静音", "Mute", "ミュート", "음소거", "靜音"),
             onClick = onToggleMute,
+            tooltipBelow = tooltipBelow,
             shortcut = "M",
         )
         if (showSlider) {
-            Spacer(Modifier.width(4.dp))
-            PlayerVolumeSlider(volume = volume, onVolumeChange = onVolumeChange, onDraggingChange = onDraggingChange)
+            PlayerVolumeSlider(
+                volume = volume,
+                expanded = expanded,
+                onVolumeChange = onVolumeChange,
+                onDraggingChange = { dragging ->
+                    sliderDragging = dragging
+                    onDraggingChange(dragging)
+                },
+            )
+            Spacer(Modifier.width(6.dp))
         }
+    }
+
+    if (showBackground) {
+        PlayerPillCluster(modifier = scrollModifier, content = content)
+    } else {
+        Row(
+            modifier = scrollModifier.padding(horizontal = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            content = content,
+        )
     }
 }
 
 /**
  * 音量滑块，外观同进度条（细轨道、靠近变粗），理由见 [PlayerSeekBar]。与进度条不同，拖动途中即时生效：
  * 改音量没有重开请求的代价，要边拖边听。悬停或拖动时在手柄上方显示百分比。
- *
- * 键盘：Tab 可停在这里；上下方向键由播放器根节点接住、调的就是这个音量，左右方向键照旧是进退，
- * 与进度条同样让上级的快捷键赢。
  */
 @Composable
 private fun PlayerVolumeSlider(
     volume: Float,
+    expanded: Boolean,
     onVolumeChange: (Float) -> Unit,
     onDraggingChange: (Boolean) -> Unit,
 ) {
@@ -821,6 +1101,7 @@ private fun PlayerVolumeSlider(
     val trackColors = SeekTrackColors(active = scheme.primary, inactive = inactive, buffered = inactive)
     val motion = MaterialTheme.motionScheme
     val engaged = dragging || hovered || focused
+    val sliderWidth by animateDpAsState(if (expanded || focused) VolumeSliderExpandedWidth else VolumeSliderWidth, motion.fastSpatialSpec())
     val thickness by animateDpAsState(if (engaged) SeekTrackEngagedThickness else SeekTrackThickness, motion.fastSpatialSpec())
     val thumbRadius by animateDpAsState(if (dragging) SeekThumbDraggingRadius else SeekThumbRadius, motion.fastSpatialSpec())
     val focusRingColor = scheme.secondary
@@ -830,8 +1111,8 @@ private fun PlayerVolumeSlider(
 
     Box(
         Modifier
-            .width(VolumeSliderWidth)
-            .height(SeekTouchHeight)
+            .width(sliderWidth)
+            .height(36.dp)
             .handCursor()
             .hoverable(hoverInteraction)
             .pointerInput(Unit) {
@@ -881,9 +1162,9 @@ private fun PlayerVolumeSlider(
             val density = LocalDensity.current
             Surface(
                 shape = MaterialTheme.shapes.small,
-                color = if (dragging) scheme.primary else scheme.inverseSurface,
-                contentColor = if (dragging) scheme.onPrimary else scheme.inverseOnSurface,
-                // 零尺寸、贴在手柄正上方，可以宽出滑块：滑块只有九十来 dp，按它收边的话气泡对不上手柄
+                color = if (dragging) scheme.primary else LocalFixedColors.current.ScrimOnMediaStrong,
+                contentColor = if (dragging) scheme.onPrimary else LocalFixedColors.current.OnMedia,
+                border = if (dragging) null else BorderStroke(1.dp, LocalFixedColors.current.HudSpecularBorder),
                 modifier = Modifier.layout { measurable, constraints ->
                     val placeable = measurable.measure(Constraints())
                     val inset = with(density) { SeekThumbDraggingRadius.toPx() }
@@ -893,7 +1174,6 @@ private fun PlayerVolumeSlider(
                 },
             ) {
                 Text(
-                    // 悬停时顺带写出快捷键：音量能用方向键调，原先只有快捷键一览里写着
                     text = if (dragging) "$percent%" else tr("音量 $percent% (↑ / ↓)", "Volume $percent% (↑ / ↓)", "音量 $percent% (↑ / ↓)", "볼륨 $percent% (↑ / ↓)", "音量 $percent% (↑ / ↓)"),
                     style = TimeTextStyle(),
                     fontWeight = FontWeight.Medium,
@@ -905,110 +1185,86 @@ private fun PlayerVolumeSlider(
     }
 }
 
-private val VolumeSliderWidth = 88.dp
-// 气泡下沿压进滑块上沿的距离：滑块的布局高度是 48dp 的触控区、轨道在正中，贴着上沿放就离轨道太远，
-// 往上又压住进度条。12dp 时气泡下沿离轨道 12dp，让得开拖动时放大的手柄
-private val VolumeBubbleDrop = 12.dp
-// 低于这个音量换成小喇叭图标
+private val VolumeSliderWidth = 76.dp
+private val VolumeSliderExpandedWidth = 104.dp
+private val VolumeBubbleDrop = 6.dp
 private const val VOLUME_LOW_THRESHOLD = 0.5f
 
-/**
- * 倍速的浮动滑块：贴在「1x」按钮正上方，只有当前值与一条滑块，点数值回到 1x。
- * 不用面板：调倍速时要看着画面，横屏的侧边面板与竖屏的底部面板都会盖住一大块。常用预设在右上角的播放设置里。
- */
-@Composable
-private fun SpeedPopup(playbackSpeed: Float, onSpeedChange: (Float) -> Unit, onDismiss: () -> Unit) {
-    val gap = with(LocalDensity.current) { SpeedPopupGap.roundToPx() }
-    Popup(
-        popupPositionProvider = remember(gap) { AboveAnchorPositionProvider(gap) },
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = true),
-    ) {
-        Surface(
-            shape = MaterialTheme.shapes.large,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shadowElevation = 6.dp,
-        ) {
-            Row(
-                modifier = Modifier.width(SpeedPopupWidth).padding(start = 8.dp, end = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = formatSpeed(playbackSpeed),
-                    style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
-                    color = MaterialTheme.colorScheme.primary,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .clip(MaterialTheme.shapes.small)
-                        .clickable(onClickLabel = tr("恢复 1x", "Reset to 1x", "1倍速に戻す", "1배속으로 복원", "還原為 1x")) { onSpeedChange(1f) }
-                        .widthIn(min = 56.dp)
-                        .padding(vertical = 12.dp),
-                )
-                Box(Modifier.weight(1f)) {
-                    SpeedSlider(playbackSpeed, onSpeedChange)
-                }
-            }
-        }
+internal val String.baseQualityLabel: String
+    get() = when (this) {
+        AUTO_QUALITY -> tr("自动", "Auto", "自動", "자동", "自動")
+        ORIGINAL_QUALITY -> tr("原画", "Original", "オリジナル", "원본", "原畫")
+        else -> this
     }
-}
 
-/** 浮层放在锚点正上方居中，靠窗口边时往里收，不超出窗口。 */
-private class AboveAnchorPositionProvider(private val gap: Int) : PopupPositionProvider {
-    override fun calculatePosition(
-        anchorBounds: IntRect,
-        windowSize: IntSize,
-        layoutDirection: LayoutDirection,
-        popupContentSize: IntSize,
-    ): IntOffset {
-        val maxX = (windowSize.width - popupContentSize.width).coerceAtLeast(0)
-        val x = (anchorBounds.center.x - popupContentSize.width / 2).coerceIn(0, maxX)
-        val y = (anchorBounds.top - popupContentSize.height - gap).coerceAtLeast(0)
-        return IntOffset(x, y)
+internal val String.qualityDisplayLabel: String
+    @Composable get() = if (this == AUTO_QUALITY) {
+        val resolved = LocalAutoResolvedQuality.current
+        if (resolved != null) "${AUTO_QUALITY.baseQualityLabel} (${resolved.baseQualityLabel})" else AUTO_QUALITY.baseQualityLabel
+    } else {
+        baseQualityLabel
     }
-}
-
-private val SpeedPopupWidth = 280.dp
-private val SpeedPopupGap = 8.dp
 
 /** 时间码用等宽数字：比例数字随秒数跳动，右侧按钮会跟着左右抖。 */
 @Composable
 private fun TimeTextStyle(): TextStyle =
-    MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum")
+    MaterialTheme.typography.labelLarge.tabular
 
 /**
- * 底栏的文字按钮。浮在视频上不能用无容器的 TextButton，改用 XS 高度的 tonal 按钮，
- * 与旁边的图标按钮同为半透明容器，按压时有形变。
+ * 底栏的文字胶囊按钮：半透明高光描边容器，等宽数字防抖动，按压时有形变；
+ * 对应单段面板展开时切换为 `primaryContainer` 选中态（与 Bilby `ControlButton` 对齐）。
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun PlayerChipButton(
+internal fun PlayerChipButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     icon: ImageVector? = null,
+    selected: Boolean = false,
     tooltip: String? = null,
+    tooltipBelow: Boolean = false,
+    showBackground: Boolean = true,
 ) {
+    val fixed = LocalFixedColors.current
+    val colors = MaterialTheme.colorScheme
+    val textStyle = if (showBackground || selected) {
+        MaterialTheme.typography.labelLarge.tabular
+    } else {
+        MaterialTheme.typography.labelLarge.tabular.copy(shadow = PlayerTextShadow)
+    }
     val button: @Composable () -> Unit = {
         FilledTonalButton(
             onClick = onClick,
             shapes = ButtonDefaults.shapes(),
             colors = ButtonDefaults.filledTonalButtonColors(
-                containerColor = playerContainerColor(),
-                contentColor = MaterialTheme.colorScheme.onSurface,
+                containerColor = when {
+                    selected && showBackground -> colors.primaryContainer
+                    showBackground -> playerContainerColor()
+                    else -> Color.Transparent
+                },
+                contentColor = when {
+                    selected && showBackground -> colors.onPrimaryContainer
+                    selected -> colors.primary
+                    else -> fixed.OnMedia
+                },
             ),
+            border = if (showBackground && !selected) BorderStroke(1.dp, fixed.HudSpecularBorder) else null,
             contentPadding = ButtonDefaults.ExtraSmallContentPadding,
-            modifier = modifier.heightIn(min = ButtonDefaults.ExtraSmallContainerHeight).handCursor(),
+            modifier = modifier.heightIn(min = 36.dp).handCursor(),
         ) {
             if (icon != null) {
                 Icon(icon, contentDescription = null, modifier = Modifier.size(ButtonDefaults.ExtraSmallIconSize))
                 Spacer(Modifier.width(ButtonDefaults.ExtraSmallIconSpacing))
             }
-            Text(text, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+            Text(text, style = textStyle, maxLines = 1)
         }
     }
     if (tooltip != null) {
         TooltipBox(
-            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(
+                if (tooltipBelow) TooltipAnchorPosition.Below else TooltipAnchorPosition.Above,
+            ),
             tooltip = { PlainTooltip { Text(tooltip) } },
             state = rememberTooltipState(),
         ) {
@@ -1020,25 +1276,22 @@ private fun PlayerChipButton(
 }
 
 /**
- * 进度条：细轨道，靠近时变粗，未播放段与缓冲段用半透明的前景色，透出画面。
- *
- * 原先是 M3 的 XS 滑块（16dp 高的轨道、竖条手柄、不透明的 secondaryContainer 底色），
- * 压在画面上又粗又闷。细轨道不在 M3 滑块的规格里，是视频播放器的通行做法。已播放段不用波浪：
- * M3 的波浪是进度指示器表示「过程在进行」的外观，滑块没有这一项；克制版也试过，在画面上仍然显得多余。
- * [thumbOnHoverOnly] 时手柄平时隐藏、悬停才出现（鼠标）；触屏没有悬停，手柄一直显示，否则看不出能拖。
- *
- * 不用 Material 的 Slider：换手柄与轨道的重载两端没有交集（Android 的 1.5.0-alpha28 与桌面的
- * 1.12.0-alpha03 各缺一半），手柄固定是 44dp 高的竖条，配不了细轨道。手势自己接：按下即跳到该处，
- * 拖动期间只预览时间，松手才 seek，网络流每次 seek 都要重开 range 请求，跟手 seek 会连续打断缓冲。
- * 读屏的进度与「设置进度」动作也自己补上。桌面上鼠标悬停在轨道上时，指针上方显示该处的时间。
+ * 进度条（移植自 Bilby `SeekBar.kt`）：
+ * - 触屏相对拖动（落指不跳针，按水平位移增量微调）、键鼠绝对拖动，单击/轻点独立提交定位避免暂停-恢复顿挫；
+ * - M3E `4dp -> 6dp` 轨道与 `5dp -> 8dp` 手柄 `fastSpatialSpec` 形变、已缓冲段与末尾 `2dp` 停止圆点；
+ * - 播放中且未交互、未开减少动画且窗口可见时，按 30fps（33ms）在绘制阶段推进波浪进度，零重组；
+ * - 零布局高度预览气泡支持实时缩略帧（经 [LocalScrubFrameCache] 共享）与时间/相对偏移胶囊。
  */
 @Composable
 internal fun PlayerSeekBar(
-    positionMillis: Long,
+    positionMillisProvider: () -> Long,
     durationMillis: Long,
-    bufferedPositionMillis: Long,
+    bufferedPositionMillisProvider: () -> Long,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier,
+    isPlaying: Boolean = false,
+    playbackSpeed: Float = 1f,
+    wavy: Boolean = false,
     thumbOnHoverOnly: Boolean = false,
     onScrub: (Long?) -> Unit = {},
     // 在别处拖动进度（播放器画面上的横滑）时的目标处：手柄与时间气泡照拖动进度条本身的样子显示在这里
@@ -1046,18 +1299,32 @@ internal fun PlayerSeekBar(
 ) {
     var dragFraction by remember { mutableStateOf<Float?>(null) }
     var hoverFraction by remember { mutableStateOf<Float?>(null) }
+    var scrubOriginMillis by remember { mutableLongStateOf(0L) }
     // 松手到新位置回报之间有一段延迟，这段时间里滑块停在目标处，不回跳到旧位置
     var pendingSeekMillis by remember { mutableStateOf<Long?>(null) }
     var pendingSeekSeq by remember { mutableIntStateOf(0) }
-    val latestPositionMillis by rememberUpdatedState(positionMillis)
+    val latestPositionProvider by rememberUpdatedState(positionMillisProvider)
+    val latestBufferedProvider by rememberUpdatedState(bufferedPositionMillisProvider)
+    val currentDurationMillis by rememberUpdatedState(durationMillis)
+    val currentOnSeek by rememberUpdatedState(onSeek)
+    val currentOnScrub by rememberUpdatedState(onScrub)
+    val currentSpeed by rememberUpdatedState(playbackSpeed.coerceIn(0.25f, 4f))
+    val relativeMode by rememberUpdatedState(LocalPointerSource.current.isTouchLike)
 
     LaunchedEffect(pendingSeekMillis, pendingSeekSeq) {
         val pending = pendingSeekMillis ?: return@LaunchedEffect
         withTimeoutOrNull(SEEK_SETTLE_TIMEOUT_MILLIS) {
-            snapshotFlow { latestPositionMillis }
+            snapshotFlow { latestPositionProvider() }
                 .first { abs(it - pending) < SEEK_SETTLE_TOLERANCE_MILLIS }
         }
         pendingSeekMillis = null
+    }
+
+    // 捕获横向手势预览起点，供拖动气泡计算相对偏移 ±mm:ss
+    LaunchedEffect(previewMillis != null) {
+        if (previewMillis != null) {
+            scrubOriginMillis = latestPositionProvider()
+        }
     }
 
     val enabled = durationMillis > 0
@@ -1066,11 +1333,10 @@ internal fun PlayerSeekBar(
 
     // 正在拖向的位置：拖进度条本身，或在画面上横滑
     val scrubFraction = dragFraction ?: previewMillis?.let(::fractionOf)
-    val fraction = scrubFraction ?: fractionOf(pendingSeekMillis ?: positionMillis)
-    val bufferedFraction = fractionOf(bufferedPositionMillis)
+    val isHovered by remember { derivedStateOf { hoverFraction != null } }
     val focusInteraction = remember { MutableInteractionSource() }
     val isFocused by focusInteraction.collectIsFocusedAsState()
-    val isEngaged = scrubFraction != null || hoverFraction != null || isFocused
+    val isEngaged = scrubFraction != null || isHovered || isFocused
     val scheme = MaterialTheme.colorScheme
     val trackColors = SeekTrackColors(
         active = scheme.primary,
@@ -1083,17 +1349,29 @@ internal fun PlayerSeekBar(
         when {
             scrubFraction != null -> SeekThumbDraggingRadius
             // 键盘停在进度条上时手柄要露出来，否则看不出焦点在这里、方向键会动它
-            thumbOnHoverOnly && hoverFraction == null && !isFocused -> 0.dp
+            thumbOnHoverOnly && !isHovered && !isFocused -> 0.dp
             else -> SeekThumbRadius
         },
         motion.fastSpatialSpec(),
     )
-    val currentDurationMillis by rememberUpdatedState(durationMillis)
-    val currentOnSeek by rememberUpdatedState(onSeek)
-    val currentOnScrub by rememberUpdatedState(onScrub)
+
+    // 仅音频播放启用 M3E 30fps（33ms）绘制阶段波形推进；视频与信息流保持干脆直轨
+    val animateWave = wavy && isPlaying && !isEngaged && enabled && !LocalPikoMotion.current.reduced && LocalWindowVisible.current
+    val wavePhase = remember { mutableFloatStateOf(0f) }
+    val wavePath = remember { Path() }
+    val waveFactor by animateFloatAsState(if (animateWave) 1f else 0f, motion.fastEffectsSpec())
+    LaunchedEffect(animateWave) {
+        if (!animateWave) return@LaunchedEffect
+        while (true) {
+            delay(WAVE_FRAME_DELAY_MS)
+            val periodMs = (WAVE_PERIOD_MILLIS / currentSpeed).coerceIn(800f, 6_400f)
+            val step = TWO_PI * (WAVE_FRAME_DELAY_MS / periodMs)
+            wavePhase.floatValue = (wavePhase.floatValue + step) % TWO_PI
+        }
+    }
 
     fun commitSeek(target: Float) {
-        val millis = (target * currentDurationMillis).toLong()
+        val millis = (target * currentDurationMillis).toLong().coerceIn(0L, currentDurationMillis.coerceAtLeast(0L))
         pendingSeekMillis = millis
         pendingSeekSeq += 1
         currentOnSeek(millis)
@@ -1103,22 +1381,30 @@ internal fun PlayerSeekBar(
     // 连按时从上一步的目标接着算，位置回报还没跟上也不会原地打转
     fun stepBy(deltaMillis: Long): Boolean {
         if (!enabled) return false
-        val base = pendingSeekMillis ?: latestPositionMillis
+        val base = pendingSeekMillis ?: latestPositionProvider()
         commitSeek(fractionOf(base + deltaMillis))
         return true
     }
 
-    // 无障碍语义按整秒（1000ms）粒度量化，避免毫秒级进度每帧标脏 Windows UIA / Android 语义树；视觉绘制仍保持毫秒级平滑
-    val displayedMillis = if (!enabled) {
-        0L
-    } else {
-        when {
-            dragFraction != null -> (dragFraction!! * durationMillis).toLong().coerceIn(0L, durationMillis)
-            previewMillis != null -> previewMillis.coerceIn(0L, durationMillis)
-            else -> (pendingSeekMillis ?: positionMillis).coerceIn(0L, durationMillis)
+    // 无障碍语义按整秒（1000ms）粒度经 derivedStateOf 量化，播放期间 1Hz 更新，拖动/预览期间即时更新
+    val latestPreview by rememberUpdatedState(previewMillis)
+    val semanticsSeconds by remember(enabled, durationMillis) {
+        derivedStateOf {
+            if (!enabled) {
+                0L
+            } else {
+                val drag = dragFraction
+                val preview = latestPreview
+                val millis = when {
+                    drag != null -> (drag * durationMillis).toLong().coerceIn(0L, durationMillis)
+                    preview != null -> preview.coerceIn(0L, durationMillis)
+                    else -> (pendingSeekMillis ?: latestPositionProvider()).coerceIn(0L, durationMillis)
+                }
+                millis / 1_000L
+            }
         }
     }
-    val semanticsPositionMillis = (displayedMillis / 1_000L) * 1_000L
+    val semanticsPositionMillis = semanticsSeconds * 1_000L
     val semanticsFraction = fractionOf(semanticsPositionMillis)
     val progressLabel = tr("播放进度", "Playback progress", "再生位置", "재생 위치", "播放進度")
     val semanticsStateDescription = remember(semanticsPositionMillis, durationMillis) {
@@ -1132,12 +1418,12 @@ internal fun PlayerSeekBar(
     }
 
     val focusRingColor = scheme.secondary
-    var barWidthPx by remember { mutableIntStateOf(0) }
+    val barWidthPx = remember { intArrayOf(0) }
 
     Box(
         modifier = modifier
             .height(SeekBarHeight)
-            .onSizeChanged { barWidthPx = it.width },
+            .onSizeChanged { barWidthPx[0] = it.width },
     ) {
         Box(
             Modifier
@@ -1146,29 +1432,51 @@ internal fun PlayerSeekBar(
                 // 不能指望 Compose 的最小触控区自动外扩：它只在别处都没接住时才生效，而进度条底下铺着整屏的手势层
                 .requiredHeight(SeekTouchHeight)
                 .handCursor(enabled)
-                // 按下即跳到该处并开始拖动，松手才真正 seek
+                // 单击/轻点直接定位：不触发拖动态与暂停/恢复顿挫（与 Bilby SeekBar 一致）
                 .pointerInput(enabled) {
                     if (!enabled) return@pointerInput
                     val inset = SeekThumbDraggingRadius.toPx()
-                    awaitEachGesture {
-                        val down = awaitFirstDown()
-                        down.consume()
-                        fun follow(x: Float) {
-                            val target = seekFractionAt(x, size.width.toFloat(), inset)
+                    detectTapGestures { offset ->
+                        commitSeek(seekFractionAt(offset.x, size.width.toFloat(), inset))
+                    }
+                }
+                // 横向拖动：触屏走相对位移（抓任意位置不跳针），鼠标走绝对位置（松手才提交 seek）
+                .pointerInput(enabled) {
+                    if (!enabled) return@pointerInput
+                    val inset = SeekThumbDraggingRadius.toPx()
+                    detectHorizontalDragGestures(
+                        onDragStart = { offset ->
+                            val origin = pendingSeekMillis ?: latestPositionProvider()
+                            scrubOriginMillis = origin
+                            val startFrac = if (relativeMode) {
+                                fractionOf(origin)
+                            } else {
+                                seekFractionAt(offset.x, size.width.toFloat(), inset)
+                            }
+                            dragFraction = startFrac
+                            currentOnScrub((startFrac * currentDurationMillis).toLong())
+                        },
+                        onDragEnd = {
+                            dragFraction?.let(::commitSeek)
+                            dragFraction = null
+                            currentOnScrub(null)
+                        },
+                        onDragCancel = {
+                            dragFraction = null
+                            currentOnScrub(null)
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            val usable = (size.width - 2f * inset).coerceAtLeast(1f)
+                            val target = if (relativeMode) {
+                                ((dragFraction ?: fractionOf(scrubOriginMillis)) + dragAmount / usable).coerceIn(0f, 1f)
+                            } else {
+                                seekFractionAt(change.position.x, size.width.toFloat(), inset)
+                            }
                             dragFraction = target
                             currentOnScrub((target * currentDurationMillis).toLong())
-                        }
-                        follow(down.position.x)
-                        while (true) {
-                            val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
-                            if (!change.pressed) break
-                            follow(change.position.x)
-                            change.consume()
-                        }
-                        dragFraction?.let(::commitSeek)
-                        dragFraction = null
-                        currentOnScrub(null)
-                    }
+                        },
+                    )
                 }
                 // 只有鼠标会悬停；触屏的移动都是拖动，交给上面处理
                 .pointerInput(enabled) {
@@ -1185,14 +1493,23 @@ internal fun PlayerSeekBar(
                     }
                 }
                 .drawBehind {
+                    // 高频位置、缓冲与波形相位仅在绘制阶段读取，0 重组
+                    val liveFraction = scrubFraction ?: fractionOf(pendingSeekMillis ?: latestPositionProvider())
+                    val liveBufferedFraction = fractionOf(latestBufferedProvider())
                     drawSeekTrack(
-                        fraction = fraction,
-                        bufferedFraction = bufferedFraction,
+                        fraction = liveFraction,
+                        bufferedFraction = liveBufferedFraction,
                         colors = trackColors,
                         thickness = thickness.toPx(),
                         thumbRadius = thumbRadius.toPx(),
                         inset = SeekThumbDraggingRadius.toPx(),
                         focusRing = if (isFocused) focusRingColor else null,
+                        waveAmplitudePx = SeekWaveAmplitude.toPx() * waveFactor,
+                        waveLengthPx = SeekWaveLength.toPx(),
+                        waveGapPx = SeekWaveGap.toPx() * waveFactor,
+                        wavePhase = wavePhase.floatValue,
+                        wavePath = wavePath,
+                        showStopDot = enabled,
                     )
                 }
                 // M3 滑块的键盘约定：Tab 停到手柄上，方向键调值。在播放器与信息流里，上级根节点的
@@ -1218,40 +1535,171 @@ internal fun PlayerSeekBar(
                 },
         )
 
-        // 拖动或悬停时的时间气泡，贴在该处正上方；零尺寸布局，不挤占进度条的高度
-        (scrubFraction ?: hoverFraction)?.let { shown ->
-            val density = LocalDensity.current
-            val inset = with(density) { SeekThumbDraggingRadius.toPx() }
-            val gapPx = with(density) { 2.dp.roundToPx() }
-            val dragging = scrubFraction != null
-            Surface(
-                shape = MaterialTheme.shapes.small,
-                // 拖动时是要跳过去的位置，用主题色强调；悬停只是看看，用中性的反色
-                color = if (dragging) scheme.primary else scheme.inverseSurface,
-                contentColor = if (dragging) scheme.onPrimary else scheme.inverseOnSurface,
-                modifier = Modifier.layout { measurable, constraints ->
-                    val placeable = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
-                    val widthPx = when {
-                        barWidthPx > 0 -> barWidthPx
-                        constraints.hasBoundedWidth -> constraints.maxWidth
-                        else -> 0
+        // 拖动或悬停时的预览气泡隔离为子组件：鼠标在轨道上滑动只更新气泡自身，不重组外层进度条
+        if (scrubFraction != null || isHovered) {
+            SeekPreviewBubble(
+                scrubFraction = scrubFraction,
+                hoverFractionProvider = { hoverFraction },
+                durationMillis = durationMillis,
+                originMillis = scrubOriginMillis,
+                barWidthPxProvider = { barWidthPx[0] },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SeekPreviewBubble(
+    scrubFraction: Float?,
+    hoverFractionProvider: () -> Float?,
+    durationMillis: Long,
+    originMillis: Long,
+    barWidthPxProvider: () -> Int,
+) {
+    val shown = scrubFraction ?: hoverFractionProvider() ?: return
+    val density = LocalDensity.current
+    val inset = with(density) { SeekThumbDraggingRadius.toPx() }
+    val gapPx = with(density) { SeekBubbleGap.roundToPx() }
+    val dragging = scrubFraction != null
+    val scheme = MaterialTheme.colorScheme
+    val fixed = LocalFixedColors.current
+    val targetMillis = (shown * durationMillis).toLong().coerceIn(0L, durationMillis.coerceAtLeast(0L))
+    val deltaMillis = targetMillis - originMillis
+
+    val frameCache = LocalScrubFrameCache.current
+    val hasStoryboard = frameCache != null && durationMillis > 0L
+    val previewFrame = if (frameCache != null && durationMillis > 0L) {
+        // 读取 revision 使新解码帧到位后仅刷新气泡自身；O(log N) 真实 PTS 二分查帧 < 1ms，0 网络
+        frameCache.revision
+        val quantizedBoostMs = (targetMillis / 2_000L) * 2_000L
+        LaunchedEffect(frameCache, quantizedBoostMs) {
+            frameCache.notifyUserFocus(targetMillis)
+        }
+        frameCache.frameAt(targetMillis)
+    } else {
+        null
+    }
+
+    // 必须传无界 Constraints()：外层 PlayerSeekBar 布局高度仅 32dp，若继承父 maxHeight 会把 16:9 预览卡压扁成胶囊
+    val bubbleModifier = Modifier.layout { measurable, constraints ->
+        val placeable = measurable.measure(Constraints())
+        val widthPx = when {
+            barWidthPxProvider() > 0 -> barWidthPxProvider()
+            constraints.hasBoundedWidth -> constraints.maxWidth
+            else -> 0
+        }
+        val trackWidthPx = (widthPx - 2 * inset).coerceAtLeast(0f)
+        val anchorPx = inset + shown * trackWidthPx
+        val maxX = (widthPx - placeable.width).coerceAtLeast(0)
+        val x = (anchorPx - placeable.width / 2f).roundToInt().coerceIn(0, maxX)
+        layout(0, 0) { placeable.place(x, -placeable.height - gapPx) }
+    }
+
+    if (hasStoryboard) {
+        val barWidthPx = barWidthPxProvider()
+        val compactPreview = barWidthPx > 0 && with(density) { barWidthPx.toDp() } < SeekPreviewCompactThreshold
+        val previewWidth = if (compactPreview) SeekPreviewWidthCompact else SeekPreviewWidthWide
+        val previewHeight = if (compactPreview) SeekPreviewHeightCompact else SeekPreviewHeightWide
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = Color(0xFF101218),
+            border = BorderStroke(1.dp, if (dragging) scheme.primary else fixed.HudSpecularBorder),
+            shadowElevation = 8.dp,
+            modifier = bubbleModifier.testTag(SEEK_PREVIEW_CARD_TEST_TAG),
+        ) {
+            Box(
+                modifier = Modifier.size(width = previewWidth, height = previewHeight),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (previewFrame != null) {
+                    Image(
+                        bitmap = previewFrame,
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.matchParentSize(),
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Outlined.Movie,
+                        contentDescription = null,
+                        tint = fixed.OnMedia.copy(alpha = 0.28f),
+                        modifier = Modifier.size(28.dp),
+                    )
+                }
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .background(
+                            Brush.verticalGradient(
+                                0.58f to Color.Transparent,
+                                1f to Color(0xD9000000),
+                            ),
+                        ),
+                )
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 6.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xA6000000))
+                        .padding(horizontal = 7.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = formatTime(targetMillis),
+                        style = MaterialTheme.typography.labelMedium.tabular.copy(shadow = PlayerTextShadow),
+                        color = fixed.OnMedia,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                    )
+                    if (dragging && abs(deltaMillis) >= 1_000L) {
+                        Text(
+                            text = formatSeekDelta(deltaMillis),
+                            style = MaterialTheme.typography.labelSmall.tabular.copy(shadow = PlayerTextShadow),
+                            color = scheme.primaryContainer,
+                            maxLines = 1,
+                        )
                     }
-                    val trackWidthPx = (widthPx - 2 * inset).coerceAtLeast(0f)
-                    val anchorPx = inset + shown * trackWidthPx
-                    val maxX = (widthPx - placeable.width).coerceAtLeast(0)
-                    val x = (anchorPx - placeable.width / 2f).roundToInt().coerceIn(0, maxX)
-                    layout(0, 0) { placeable.place(x, -placeable.height - gapPx) }
-                },
+                }
+            }
+        }
+    } else {
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            // 拖动时是要跳过去的位置，用主题色强调；悬停只是看看，用半透明高光深色胶囊
+            color = if (dragging) scheme.primary else fixed.ScrimOnMediaStrong,
+            contentColor = if (dragging) scheme.onPrimary else fixed.OnMedia,
+            border = if (dragging) null else BorderStroke(1.dp, fixed.HudSpecularBorder),
+            modifier = bubbleModifier,
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = formatTime((shown * durationMillis).toLong()),
+                    text = formatTime(targetMillis),
                     style = TimeTextStyle(),
                     fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    maxLines = 1,
                 )
+                if (dragging && abs(deltaMillis) >= 1_000L) {
+                    Text(
+                        text = formatSeekDelta(deltaMillis),
+                        style = MaterialTheme.typography.labelSmall.tabular,
+                        color = scheme.onPrimary.copy(alpha = 0.82f),
+                        maxLines = 1,
+                    )
+                }
             }
         }
     }
+}
+
+private fun formatSeekDelta(deltaMillis: Long): String {
+    val sign = if (deltaMillis >= 0L) "+" else "−"
+    return "$sign${formatTime(abs(deltaMillis))}"
 }
 
 /** 指针横坐标对应的进度。两端各让出手柄放大后的半径，拖到头时手柄不出界。 */
@@ -1262,7 +1710,7 @@ private fun seekFractionAt(x: Float, width: Float, inset: Float): Float =
 private data class SeekTrackColors(val active: Color, val inactive: Color, val buffered: Color)
 
 /**
- * 轨道从左到右：已播放段、手柄、缓冲段、未播放段。[inset] 是两端给手柄留的边，
+ * 轨道从左到右：已播放段（播放中可选 M3E 波浪）、手柄、缓冲段、未播放段与末尾停止圆点。[inset] 是两端给手柄留的边，
  * 与 [seekFractionAt] 的换算一致，手柄画在哪、点下去就是哪。
  */
 private fun DrawScope.drawSeekTrack(
@@ -1273,6 +1721,12 @@ private fun DrawScope.drawSeekTrack(
     thumbRadius: Float,
     inset: Float,
     focusRing: Color?,
+    waveAmplitudePx: Float = 0f,
+    waveLengthPx: Float = 0f,
+    waveGapPx: Float = 0f,
+    wavePhase: Float = 0f,
+    wavePath: Path? = null,
+    showStopDot: Boolean = false,
 ) {
     val centerY = size.height / 2
     val start = inset
@@ -1284,9 +1738,36 @@ private fun DrawScope.drawSeekTrack(
     if (bufferedX > thumbX) {
         drawLine(colors.buffered, Offset(thumbX, centerY), Offset(bufferedX, centerY), thickness, StrokeCap.Round)
     }
+    if (showStopDot && fraction < 0.985f && end > thumbX + SeekStopDotRadius.toPx() * 2f) {
+        drawCircle(colors.active, SeekStopDotRadius.toPx(), Offset(end, centerY))
+    }
 
-    if (thumbX > start) {
-        drawLine(colors.active, Offset(start, centerY), Offset(thumbX, centerY), thickness, StrokeCap.Round)
+    val activeEnd = (thumbX - waveGapPx).coerceAtLeast(start)
+    val activeSpan = activeEnd - start
+    if (activeSpan > 0f) {
+        if (wavePath != null && waveAmplitudePx > 0.05f && waveLengthPx > 0f && activeSpan > waveLengthPx * 0.6f) {
+            wavePath.reset()
+            val stepPx = 3f
+            val taperPx = waveLengthPx * 0.5f
+            val freq = TWO_PI / waveLengthPx
+            var x = 0f
+            wavePath.moveTo(start, centerY)
+            while (x < activeSpan) {
+                x = (x + stepPx).coerceAtMost(activeSpan)
+                val edgeStart = (x / taperPx).coerceIn(0f, 1f)
+                val edgeEnd = ((activeSpan - x) / taperPx).coerceIn(0f, 1f)
+                val env = minOf(edgeStart, edgeEnd)
+                val y = centerY + sin(x * freq - wavePhase) * waveAmplitudePx * env
+                wavePath.lineTo(start + x, y)
+            }
+            drawPath(
+                path = wavePath,
+                color = colors.active,
+                style = Stroke(width = thickness, cap = StrokeCap.Round),
+            )
+        } else {
+            drawLine(colors.active, Offset(start, centerY), Offset(thumbX, centerY), thickness, StrokeCap.Round)
+        }
     }
     if (thumbRadius > 0f) drawCircle(colors.active, thumbRadius, Offset(thumbX, centerY))
     // 键盘焦点照 M3 画在手柄外面一圈，隔开一道缝，不与手柄连成一块
@@ -1297,22 +1778,29 @@ private fun DrawScope.drawSeekTrack(
     }
 }
 
-/** 浮在视频上的控件容器色。半透明：既保证图标对比度，又不整块挡住画面。 */
+/** 浮在视频上的控件容器色。半透明高光底色：既保证亮画面上的对比度，又不整块挡住画面。 */
 @Composable
 internal fun playerContainerColor(): Color =
     MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = CONTAINER_ALPHA)
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun playerIconButtonColors(): IconButtonColors = IconButtonDefaults.filledTonalIconButtonColors(
-    containerColor = playerContainerColor(),
-    contentColor = MaterialTheme.colorScheme.onSurface,
-    disabledContainerColor = playerContainerColor().copy(alpha = CONTAINER_ALPHA / 2),
-    disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = DISABLED_CONTENT_ALPHA),
+private fun playerIconButtonColors(
+    selected: Boolean = false,
+    showBackground: Boolean = true,
+): IconButtonColors = IconButtonDefaults.filledTonalIconButtonColors(
+    containerColor = when {
+        selected -> MaterialTheme.colorScheme.primaryContainer
+        showBackground -> playerContainerColor()
+        else -> Color.Transparent
+    },
+    contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else LocalFixedColors.current.OnMedia,
+    disabledContainerColor = if (showBackground) playerContainerColor().copy(alpha = CONTAINER_ALPHA / 2) else Color.Transparent,
+    disabledContentColor = LocalFixedColors.current.OnMedia.copy(alpha = DISABLED_CONTENT_ALPHA),
 )
 
 /**
- * 带长按提示与半透明容器的图标按钮。
+ * 带长按提示与可选半透明高光描边容器的图标按钮。
  *
  * 控件栏全是纯图标按钮，提示是这类按钮在触屏上唯一的文字说明；
  * 触控目标由 IconButton 自带的最小交互尺寸保证不低于 48dp。
@@ -1325,6 +1813,8 @@ internal fun PlayerIconButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    selected: Boolean = false,
+    showBackground: Boolean = true,
     containerSize: DpSize? = null,
     iconSize: Dp = 24.dp,
     shapes: IconButtonShapes = IconButtonDefaults.shapes(),
@@ -1343,9 +1833,10 @@ internal fun PlayerIconButton(
         FilledTonalIconButton(
             onClick = onClick,
             shapes = shapes,
-            colors = playerIconButtonColors(),
+            colors = playerIconButtonColors(selected = selected, showBackground = showBackground),
             enabled = enabled,
-            modifier = (if (containerSize != null) Modifier.size(containerSize) else Modifier).handCursor(enabled),
+            modifier = (if (containerSize != null) Modifier.size(containerSize) else Modifier)
+                .handCursor(enabled),
         ) {
             Icon(
                 imageVector = icon,
@@ -1363,16 +1854,18 @@ internal fun PlayerIconButton(
 internal fun Modifier.handCursor(enabled: Boolean = true): Modifier =
     if (enabled) pointerHoverIcon(PointerIcon.Hand) else this
 
-private val TopScrim = listOf(
-    Color.Black.copy(alpha = 0.7f),
-    Color.Black.copy(alpha = 0.3f),
+internal val TopScrim = listOf(
+    Color(0x8C000000),
+    Color(0x38000000),
     Color.Transparent,
 )
-private val BottomScrim = listOf(
+internal val BottomScrim = listOf(
     Color.Transparent,
-    Color.Black.copy(alpha = 0.45f),
-    Color.Black.copy(alpha = 0.8f),
+    Color(0x42000000),
+    Color(0x9E000000),
 )
+internal val PlayerTextShadow = Shadow(color = Color.Black.copy(alpha = 0.55f), offset = Offset(0f, 1f), blurRadius = 6f)
+private val PlayerCloseHoverRed = Color(0xFFC42B1C)
 
 // 进度条的布局高度与轨道几何。布局高度决定它在底栏里占多少地方，ClipChrome 按它把细线挪到底边，
 // 不随触控区改；触控区另取 48dp 的最小触控尺寸，细轨道要能点中
@@ -1381,13 +1874,27 @@ private val SeekTouchHeight = 48.dp
 private val SeekFocusRingWidth = 3.dp
 private val SeekFocusRingGap = 2.dp
 private val SeekTrackThickness = 4.dp
-private val SeekTrackEngagedThickness = 8.dp
-private val SeekThumbRadius = 6.dp
-private val SeekThumbDraggingRadius = 9.dp
+private val SeekTrackEngagedThickness = 6.dp
+private val SeekThumbRadius = 5.dp
+private val SeekThumbDraggingRadius = 8.dp
+private val SeekStopDotRadius = 2.dp
+private val SeekBubbleGap = 10.dp
+private val SeekPreviewWidthWide = 192.dp
+private val SeekPreviewHeightWide = 108.dp
+private val SeekPreviewWidthCompact = 160.dp
+private val SeekPreviewHeightCompact = 90.dp
+private val SeekPreviewCompactThreshold = 560.dp
+internal const val SEEK_PREVIEW_CARD_TEST_TAG = "seek-preview-card"
+private val SeekWaveAmplitude = 3.dp
+private val SeekWaveLength = 28.dp
+private val SeekWaveGap = 4.dp
+private const val WAVE_FRAME_DELAY_MS = 33L
+private const val WAVE_PERIOD_MILLIS = 3_200f
+private const val TWO_PI = (PI * 2.0).toFloat()
 private const val INACTIVE_TRACK_ALPHA = 0.28f
 private const val BUFFERED_TRACK_ALPHA = 0.55f
 
-private const val CONTAINER_ALPHA = 0.72f
+private const val CONTAINER_ALPHA = 0.78f
 private const val LOADING_INDICATOR_FRACTION = 0.75f
 private const val DISABLED_CONTENT_ALPHA = 0.38f
 private const val SEEK_SETTLE_TOLERANCE_MILLIS = 1_500L

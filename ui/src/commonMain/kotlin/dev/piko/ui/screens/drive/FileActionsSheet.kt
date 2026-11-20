@@ -23,13 +23,14 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.piko.data.repository.isPlayableMedia
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.FolderUsage
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFolder
 import dev.piko.shared.state.DriveItemName
 import dev.piko.ui.components.ActionTier
-import dev.piko.ui.components.FileTypeIcon
+import dev.piko.ui.components.FileListLeadingVisual
 import dev.piko.ui.components.ItemDetailsSheet
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.metaParts
@@ -71,7 +72,7 @@ internal fun FileActionsSheet(
     ItemDetailsSheet(
         title = name.headingText,
         subtitle = name.headingOriginal,
-        headerIcon = { FileTypeIcon(file = file, iconSize = 24.dp, modifier = Modifier.fillMaxSize()) },
+        headerIcon = { FileListLeadingVisual(file = file, size = 40.dp, allowThumbnail = false) },
         actions = actions,
         onDismiss = onDismiss,
         // 类型、大小与修改时间排成一行。文件夹的类型已由图标表明，只留时间
@@ -166,6 +167,7 @@ internal class FileActionHandlers(
     val putOnClipboard: ((cut: Boolean) -> Unit)?,
     val downloadAtQuality: () -> Unit,
     val copyDownloadLink: (() -> Unit)? = null,
+    val unwrapOrFlatten: (() -> Unit)? = null,
 )
 
 /**
@@ -174,6 +176,7 @@ internal class FileActionHandlers(
  */
 internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionHandlers): List<SheetAction> = buildList {
     val video = !file.isFolder && file.isPlayableVideo()
+    val playableMedia = !file.isFolder && file.isPlayableMedia()
     val putOnClipboard = on.putOnClipboard?.takeIf { commands.cutCopy }
     addAll(
         DriveActions.quickRow(
@@ -189,13 +192,14 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
     if (commands.downloadAtQuality) add(DriveActions.downloadAtQuality(on.prepareQualities.takeIf { video }, on.downloadAtQuality))
     if (video) add(DriveActions.downloadSegment(on.downloadSegment, on.prepareQualities))
     if (!file.isFolder && commands.download) on.copyDownloadLink?.let { add(DriveActions.copyDownloadLink(it)) }
-    if (video) on.openInExternalPlayer?.let { add(DriveActions.openInExternalPlayer(it)) }
+    if (playableMedia) on.openInExternalPlayer?.let { add(DriveActions.openInExternalPlayer(it)) }
     if (file.isFolder) on.openInNewTab?.let { add(DriveActions.openInNewTab(it)) }
     if (commands.moveCopyTo) {
         add(DriveActions.moveTo(on.move))
         on.copy?.let { add(DriveActions.copyTo(it)) }
     }
     if (file.isFolder) {
+        if (commands.unwrapOrFlatten) on.unwrapOrFlatten?.let { add(DriveActions.unwrapOrFlatten(it)) }
         if (commands.rename) on.canonicalNameFolder?.let { add(DriveActions.canonicalName(it)) }
         on.findDuplicates?.let { add(DriveActions.findDuplicates(it)) }
         if (commands.viewSpaceMap) on.viewSpaceMap?.let { add(DriveActions.viewSpaceMap(it)) }

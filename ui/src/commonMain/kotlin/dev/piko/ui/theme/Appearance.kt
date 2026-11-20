@@ -21,32 +21,43 @@ enum class ThemeMode(private val labelText: () -> String) {
     val label: String get() = labelText()
 }
 
-/** 用户的外观选择。[seed] 为 null 表示系统取色。 */
+/** 用户的外观选择。[seed] 为 null 表示系统取色；[pureBlack] 仅在深色模式下生效。 */
 @Immutable
 data class Appearance(
     val mode: ThemeMode = ThemeMode.SYSTEM,
     val seed: SeedTheme? = null,
     /** 平台是否有系统取色，没有时 [seed] 为 null 也落到第一个内置主题上。 */
     val dynamicColorAvailable: Boolean = false,
+    /** 深色模式下启用纯黑 OLED 表面阶梯（Oklab 插值，见 [toPureBlack]）。 */
+    val pureBlack: Boolean = false,
 )
 
 val LocalAppearance = staticCompositionLocalOf { Appearance() }
 
 // 不分大小写：桌面端旧设置里存的是小写的 system、light、dark
 fun PikoUserPreferences.appearanceFlow(dynamicColorAvailable: Boolean): Flow<Appearance> =
-    combine(themeModeFlow, themeSeedFlow) { mode, seed ->
+    combine(themeModeFlow, themeSeedFlow, pureBlackFlow) { mode, seed, pureBlack ->
         Appearance(
             mode = ThemeMode.entries.find { it.name.equals(mode, ignoreCase = true) } ?: ThemeMode.SYSTEM,
             seed = SeedTheme.entries.find { it.name == seed },
             dynamicColorAvailable = dynamicColorAvailable,
+            pureBlack = pureBlack,
         )
     }
 
+/** 当前外观是否处于水墨屏（E-Ink）主题。 */
+val Appearance.isEInk: Boolean
+    get() = effectiveSeed == SeedTheme.EINK
+
 @Composable
-fun Appearance.isDark(): Boolean = when (mode) {
-    ThemeMode.SYSTEM -> isSystemInDarkTheme()
-    ThemeMode.LIGHT -> false
-    ThemeMode.DARK -> true
+fun Appearance.isDark(): Boolean = if (isEInk) {
+    false
+} else {
+    when (mode) {
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
 }
 
 /** 没有系统取色的平台，选了系统取色也落到第一个内置主题上。 */
@@ -55,9 +66,11 @@ val Appearance.effectiveSeed: SeedTheme?
 
 @Composable
 fun Appearance.colorScheme(dark: Boolean): ColorScheme {
+    if (isEInk) return SeedTheme.EINK.light
     val theme = effectiveSeed
-    return when {
+    val base = when {
         theme != null -> if (dark) theme.dark else theme.light
         else -> LocalPikoPlatform.current.dynamicColorScheme(dark)
     }
+    return if (dark && pureBlack) base.toPureBlack() else base
 }

@@ -70,13 +70,23 @@ class DriveChangeJournal internal constructor(
             override val id: Long = nextChangeId()
         }
 
-        class Rename private constructor(val renames: List<Renamed>, override val summary: String, override val id: Long) : Change {
-            constructor(renames: List<Renamed>, summary: String) : this(renames, summary, nextChangeId())
-            internal fun appended(more: List<Renamed>) = Rename(renames + more, summary, id)
+        class Rename private constructor(
+            val renames: List<Renamed>,
+            override val summary: String,
+            override val id: Long,
+            val vaultReverts: Map<String, VaultEdit> = emptyMap(),
+        ) : Change {
+            constructor(
+                renames: List<Renamed>,
+                summary: String,
+                vaultReverts: Map<String, VaultEdit> = emptyMap(),
+            ) : this(renames, summary, nextChangeId(), vaultReverts)
+
+            internal fun appended(more: List<Renamed>) = Rename(renames + more, summary, id, vaultReverts)
         }
 
         /**
-         * 归档清单上的改动：移除、改名。清单的改动本身是纯函数，撤销也就是一个反向的 [VaultEdit]，
+         * 归档清单上的改动：移除、改名、移动。清单的改动本身是纯函数，撤销也就是一个反向的 [VaultEdit]，
          * 按文件夹记下，撤销时照样经可信写入套上去，不必为每种改动各写一种撤销。
          */
         class Vault(
@@ -95,6 +105,8 @@ class DriveChangeJournal internal constructor(
             val untrashByFolder: Map<String, Map<String, FileStat>> = emptyMap(),
             /** 按目录记录恢复归档时新建或从回收站取回的实体文件 ID；撤销时必须先写回该目录清单引用，才允许移入回收站。 */
             val trashByFolder: Map<String, List<String>> = emptyMap(),
+            /** 必须严格按顺序执行的清单回退（例如跨目录移动归档条目撤销时，先写回源目录再从目标目录移除）。 */
+            val orderedReverts: List<Pair<String, VaultEdit>> = emptyList(),
         ) : Change {
             override val id: Long = nextChangeId()
         }
@@ -295,6 +307,18 @@ class DriveChangeJournal internal constructor(
                     // 半途失败也重列已完成的目录，整批撤销只广播一次，避免列表逐项重排。
                     if (affectedParents.isNotEmpty()) access.publish(DriveChange.ContentsChanged(affectedParents))
                 }
+                if (change.vaultReverts.isNotEmpty()) {
+                    coroutineScope {
+                        val folderSlots = Semaphore(12)
+                        change.vaultReverts.map { (folderId, revert) ->
+                            async {
+                                folderSlots.withPermit {
+                                    access.vault.update(folderId, revert).getOrThrow()
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                }
             }
             is Change.Vault -> runSuspendCatching {
                 val allUntrashIds = buildList {
@@ -421,6 +445,11 @@ class DriveChangeJournal internal constructor(
                 }
                 recreateFailure?.let { throw it }
                 check(missing == 0) { tr("$missing 个文件在云端不可用，已保留在归档中", "${enCount(missing, "file", "files")} unavailable in the cloud; kept in archive", "$missing ファイルはクラウドで利用できないため、アーカイブに保持しました", "파일 ${missing}개를 클라우드에서 사용할 수 없어 보관 상태로 유지했습니다", "$missing 個檔案在雲端無法使用，已保留於歸檔中") }
+                if (change.orderedReverts.isNotEmpty()) {
+                    for ((folderId, revert) in change.orderedReverts) {
+                        access.vault.update(folderId, revert).getOrThrow()
+                    }
+                }
                 val standaloneReverts = change.reverts.filterKeys { it !in change.untrashByFolder }
                 if (standaloneReverts.isNotEmpty()) {
                     coroutineScope {
@@ -466,7 +495,7 @@ class DriveChangeJournal internal constructor(
         is Change.Trash -> "Trash(id=${change.id}, items=${change.ids.size})"
         is Change.Rename -> "Rename(id=${change.id}, steps=${change.renames.size})"
         is Change.Vault -> {
-            val folders = (change.reverts.keys + change.untrashByFolder.keys + change.recreateOnRevert.keys).size
+            val folders = (change.reverts.keys + change.orderedReverts.map { it.first } + change.untrashByFolder.keys + change.recreateOnRevert.keys).size
             val recreate = change.recreateOnRevert.values.sumOf { it.size }
             val untrash = change.untrashOnRevert.size + change.untrashByFolder.values.sumOf { it.size }
             "Vault(id=${change.id}, folders=$folders, recreate=$recreate, untrash=$untrash)"

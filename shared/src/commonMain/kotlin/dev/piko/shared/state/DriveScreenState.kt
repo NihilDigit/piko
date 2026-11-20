@@ -31,6 +31,7 @@ import dev.piko.shared.data.isVaulted
 import dev.piko.shared.upload.isUploading
 import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.data.DriveClipboard
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -99,6 +100,8 @@ internal fun <T> reinsertRemoved(current: List<T>, snapshot: List<T>, removedIds
 }
 
 private const val PREFETCH_DWELL_MILLIS = 400L
+private const val ASYNC_LOCAL_SEARCH_THRESHOLD = 500
+private const val ASYNC_LOCAL_SEARCH_DEBOUNCE_MS = 80L
 
 private val HIGHLIGHT_RETRY_DELAYS = listOf(300L, 600L, 800L, 1000L)
 
@@ -112,6 +115,7 @@ data class PasteReturnNotice(val message: String, val originStack: List<PikoPath
 
 data class TrashFailure(val completed: Int, val remainingIds: List<String>)
 
+@Stable
 class DriveScreenState(
     private val driveRepo: PikoDriveRepository,
     private val preferences: PikoUserPreferences,
@@ -295,6 +299,17 @@ class DriveScreenState(
 
     private val isSearching: Boolean by derivedStateOf { isGlobalSearchActive || searchQuery.isNotBlank() || typeFilter != null }
 
+    private class AsyncLocalSearch(val folderId: String?, val query: String, val source: List<FileStat>, val results: List<FileStat>)
+    private data class AsyncLocalSearchInput(
+        val folderId: String?,
+        val query: String,
+        val list: List<FileStat>,
+        val parse: Boolean,
+        val views: Map<String, DriveFileView>?,
+        val folders: Map<String, DriveFolderView>,
+    )
+    private var asyncLocalSearch by mutableStateOf<AsyncLocalSearch?>(null)
+
     private val searchedFiles: List<FileStat> by derivedStateOf {
         when {
             isGlobalSearchActive -> {
@@ -302,7 +317,20 @@ class DriveScreenState(
                 driveRepo.projectOptimisticFiles(globalSearchHits.map { it.file })
             }
             searchQuery.isNotBlank() -> searchQuery.trim().let { query ->
-                files.filter { listedName(it).matches(query) }
+                val current = files
+                if (current.size <= ASYNC_LOCAL_SEARCH_THRESHOLD) {
+                    current.filter { listedName(it).matches(query) }
+                } else {
+                    val cached = asyncLocalSearch
+                    when {
+                        cached != null && cached.source === current -> cached.results
+                        cached != null && cached.folderId != null && cached.folderId == loadedFolderId && cached.folderId == activeFolderId -> {
+                            val byId = current.associateBy(FileStat::id)
+                            cached.results.mapNotNull { byId[it.id] }
+                        }
+                        else -> current
+                    }
+                }
             }
             else -> files
         }
@@ -342,17 +370,15 @@ class DriveScreenState(
         }
     }
 
-    private val isStructured: Boolean by derivedStateOf {
-        val structure = currentAnalysis
-        !isSearching && (!isVirtualPlace || isLocalPlace || importPreviewView != null) && isNameParsing && foldersFirst &&
-            sortOrder != PikoFileSortOrder.DURATION_DESC && sortOrder != PikoFileSortOrder.DURATION_ASC &&
-            structure != null && structure.blocks.isNotEmpty()
+    private val isParsedProjection: Boolean by derivedStateOf {
+        !isSearching && (!isVirtualPlace || isLocalPlace || importPreviewView != null) && isNameParsing && currentAnalysis != null
     }
 
     private val fileRows: List<DriveListItem.File> by derivedStateOf {
         val structure = currentAnalysis
         val rows = when {
-            isStructured && structure != null -> buildDriveItems(files, structure, isFoldingActive && !showAllFilesTemporarily) { true }
+            isParsedProjection && structure != null ->
+                projection.items(files, structure, isFoldingActive && !showAllFilesTemporarily, isNameParsing, foldersFirst, sortOrder) { true }
             !isSearching && usesFolderStructure -> folderSessionItems { true }
             !isSearching && libraryView?.isSession == true -> sessionItems { true }
             else -> displayItems
@@ -364,7 +390,7 @@ class DriveScreenState(
 
     val displayedFiles: List<FileStat> by derivedStateOf {
         val shown = fileRows.map { it.file }
-        val hosts = if (isStructured) currentAnalysis?.attachedTo.orEmpty() else emptyMap()
+        val hosts = if (isParsedProjection) currentAnalysis?.attachedTo.orEmpty() else emptyMap()
         val shownIds = shown.mapTo(HashSet()) { it.id }
         val attachments = files.filter { file -> hosts[file.id]?.let { it in shownIds } == true && !isHiddenByThumbnails(file) }
         (shown + attachments).distinctBy { it.id }
@@ -400,7 +426,7 @@ class DriveScreenState(
         val attachments = files.filter { attachedTo[it.id] != null }.groupBy { attachedTo.getValue(it.id) }
         return selected.flatMap { listOf(it) + attachments[it.id].orEmpty() }
             .distinctBy { it.id }
-            .filterNot { it.isUploading || it.isVaulted || it.isImportPreview }
+            .filterNot { it.isUploading || it.isImportPreview }
     }
 
     val highlightedRowIds: Set<String> by derivedStateOf {
@@ -576,6 +602,43 @@ class DriveScreenState(
             }.distinctUntilChanged().collectLatest { (_, folders) -> describeFolders(folders) }
         }
         scope.launch {
+            var debouncedQuery = ""
+            snapshotFlow {
+                val query = searchQuery.trim()
+                val list = files
+                if (isGlobalSearchActive || query.isEmpty() || list.size <= ASYNC_LOCAL_SEARCH_THRESHOLD) {
+                    null
+                } else {
+                    val parse = isNameParsing
+                    val views = if (parse) currentAnalysis?.views else null
+                    val folders = if (parse) _folderViews.toMap() else emptyMap()
+                    AsyncLocalSearchInput(loadedFolderId, query, list, parse, views, folders)
+                }
+            }.collectLatest { input ->
+                if (input == null) {
+                    debouncedQuery = ""
+                    if (asyncLocalSearch != null) asyncLocalSearch = null
+                    return@collectLatest
+                }
+                if (input.query != debouncedQuery) {
+                    delay(ASYNC_LOCAL_SEARCH_DEBOUNCE_MS)
+                    debouncedQuery = input.query
+                }
+                val filtered = withContext(Dispatchers.Default) {
+                    input.list.filter { file ->
+                        val fileView = if (input.parse) input.views?.get(file.id) else null
+                        val folderView = if (input.parse && file.isFolder) input.folders[file.id] else null
+                        driveItemName(file, fileView, folderView).matches(input.query)
+                    }
+                }
+                Snapshot.withMutableSnapshot {
+                    if (canAcceptAction && files === input.list && loadedFolderId == input.folderId && searchQuery.trim() == input.query && !isGlobalSearchActive) {
+                        asyncLocalSearch = AsyncLocalSearch(input.folderId, input.query, input.list, filtered)
+                    }
+                }
+            }
+        }
+        scope.launch {
             driveRepo.vaultCoverChanges.collect {
                 Snapshot.withMutableSnapshot {
                     remoteFiles = driveRepo.withVaultCovers(remoteFiles)
@@ -741,7 +804,13 @@ class DriveScreenState(
                         }
                     }
                 }
-                if (change is DriveChange.Starred) {
+                if (change is DriveChange.Starred ||
+                    change is DriveChange.Renamed ||
+                    change is DriveChange.Trashed ||
+                    change is DriveChange.Deleted ||
+                    change is DriveChange.Restored ||
+                    change is DriveChange.ContentsChanged
+                ) {
                     libraryListings.remove(DriveLibrary.STARRED)
                 }
                 if (change is DriveChange.Renamed && change.parentId == activeFolderId && libraryView == null && archiveView == null && !isSearching) {
@@ -1210,8 +1279,7 @@ class DriveScreenState(
 
     fun selectOnly(ids: Set<String>) {
         if (ids.isEmpty()) return
-        exitSelection()
-        _selectedFileIds.addAll(ids)
+        selection.replaceSelected(ids)
     }
 
     private fun isSessionGroupExpanded(blockId: String): Boolean = expandedSections[expandKey(blockId)] ?: true
@@ -1224,14 +1292,11 @@ class DriveScreenState(
     private fun folderSessionItems(isExpanded: (DriveBlock) -> Boolean): List<DriveListItem> {
         val listing = libraryView?.let(sessionListing) ?: return emptyList()
         val structure = currentAnalysis
-        if (!isNameParsing) return files.map { DriveListItem.File(it, null) }
-        if (!foldersFirst || structure == null || structure.blocks.isEmpty()) return files.map { file ->
-            val view = structure?.views?.get(file.id)?.let { if (it.heading.isNotBlank()) it.withTitle(it.heading) else it }
-            listing.decorate(DriveListItem.File(file, view))
-        }
-        val items = buildDriveItems(files, structure, hideFolded = false, isExpanded)
+        if (!isNameParsing || structure == null) return files.map { DriveListItem.File(it, null) }
+        val items = projection.items(files, structure, hideFolded = false, parseNames = true, foldersFirst = foldersFirst, order = sortOrder, isExpanded = isExpanded)
         val rows = items.filterIsInstance<DriveListItem.File>().mapTo(HashSet()) { it.file.id }
-        val related = files.filter { it.id !in rows && it.id in structure.attachedTo }.groupBy { structure.attachedTo[it.id] }
+        val attachmentSectionIds = structure.attachmentBlocks.flatMapTo(HashSet()) { it.fileIds }
+        val related = files.filter { it.id !in rows && it.id !in attachmentSectionIds && it.id in structure.attachedTo }.groupBy { structure.attachedTo[it.id] }
         val groupedIds = structure.blocks.flatMapTo(HashSet()) { it.fileIds } + structure.secondaryIds + structure.attachedTo.keys
         return buildList {
             items.forEach { item ->
@@ -1311,15 +1376,27 @@ class DriveScreenState(
             globalSortOrder = order
         }
         if (order == sortOrder && !isGlobalSearchActive) return
-        sortOrder = order
         if (isGlobalSearchActive) {
+            sortOrder = order
             val sortedFiles = driveRepo.sortFilesFast(globalSearchHits.map { it.file }, order, "", foldersFirst = foldersFirst)
             val byId = globalSearchHits.associateBy { it.file.id }
             val reordered = sortedFiles.mapNotNull { byId[it.id] }
             globalSearchHits.clear()
             globalSearchHits.addAll(reordered)
         } else if (loadedFolderId != activeFolderId || archiveView != null || libraryView?.isSession == true) {
+            sortOrder = order
             load()
+        } else {
+            val nextRemote = driveRepo.sortFilesFast(remoteFiles, order, activeFolderId, foldersFirst = foldersFirst)
+            Snapshot.withMutableSnapshot {
+                sortOrder = order
+                remoteFiles = nextRemote
+                baseFiles = if (importPreviewFilesFor(activeFolderId).isEmpty()) {
+                    driveRepo.sortFilesFast(baseFiles, order, activeFolderId, foldersFirst = foldersFirst)
+                } else {
+                    withImportPreviews(activeFolderId, nextRemote)
+                }
+            }
         }
     }
 
@@ -1330,10 +1407,20 @@ class DriveScreenState(
 
     private fun applyFoldersFirst(enabled: Boolean) {
         if (foldersFirst == enabled) return
-        foldersFirst = enabled
-        if (archiveView != null || libraryView?.isSession == true) return
-        baseFiles = driveRepo.sortFilesFast(baseFiles, sortOrder, activeFolderId, foldersFirst = enabled)
-        remoteFiles = driveRepo.sortFilesFast(remoteFiles, sortOrder, activeFolderId, foldersFirst = enabled)
+        if (archiveView != null || libraryView?.isSession == true) {
+            foldersFirst = enabled
+            return
+        }
+        val nextRemote = driveRepo.sortFilesFast(remoteFiles, sortOrder, activeFolderId, foldersFirst = enabled)
+        Snapshot.withMutableSnapshot {
+            foldersFirst = enabled
+            remoteFiles = nextRemote
+            baseFiles = if (importPreviewFilesFor(activeFolderId).isEmpty()) {
+                driveRepo.sortFilesFast(baseFiles, sortOrder, activeFolderId, foldersFirst = enabled)
+            } else {
+                withImportPreviews(activeFolderId, nextRemote)
+            }
+        }
         val byId = globalSearchHits.associateBy { it.file.id }
         val sortedHits = driveRepo.sortFilesFast(globalSearchHits.map { it.file }, sortOrder, "", foldersFirst = enabled)
         globalSearchHits.clear()
@@ -1739,14 +1826,45 @@ class DriveScreenState(
     }
 
     fun move(ids: List<String>, targetId: String, targetName: String, sources: Map<String, String> = emptyMap(), onSuccess: (() -> Unit)? = null): Boolean {
+        if (!canAcceptAction) return false
+        val eligible = editableCloudIds(ids)
+        if (eligible.isEmpty()) return false
         fun sourceOf(id: String) = knownFile(id)?.parentId ?: sources[id]
-        val moving = withoutVaulted(ids).filter { it != targetId && sourceOf(it) != targetId }
-        if (moving.isEmpty()) return false
-        val before = moving.mapNotNull { id ->
+        val (vaultedAll, realAll) = eligible.partition(VaultEntry::isVaulted)
+        val realMoving = realAll.filter { it != targetId && sourceOf(it) != targetId }
+        val vaultedBySource = vaultedAll
+            .groupBy { sourceOf(it) ?: activeFolderId }
+            .filterKeys { it != targetId }
+            .mapValues { entryIds(it.value) }
+            .filterValues { it.isNotEmpty() }
+        if (realMoving.isEmpty() && vaultedBySource.isEmpty()) return false
+        if (realMoving.isNotEmpty()) {
+            val availability = fileActions.filesAvailability(realMoving)
+            if (availability is dev.piko.shared.presentation.ActionAvailability.Blocked) {
+                _messages.tryEmit(availability.reason)
+                return false
+            }
+        }
+        val vaultMove = vaultedBySource.takeIf { it.isNotEmpty() }?.let {
+            VaultEntryEditCommand.Move(it, targetId, targetName)
+        }
+        if (vaultMove != null) {
+            val vaultAvailability = vaultActions.availability(vaultMove)
+            if (vaultAvailability is dev.piko.shared.presentation.ActionAvailability.Blocked) {
+                _messages.tryEmit(vaultAvailability.reason)
+                return false
+            }
+            if (!submitVaultEdit(vaultMove, clearSelection = realMoving.isEmpty())) return false
+        }
+        if (realMoving.isEmpty()) {
+            onSuccess?.invoke()
+            return true
+        }
+        val before = realMoving.mapNotNull { id ->
             knownFile(id)?.takeUnless { it.trashed }
                 ?.let { id to FileBefore(it.name, it.parentId) }
         }.toMap()
-        return submitFileAction(FileWriteCommand.Move(moving, PikoPathBreadcrumb(targetId, targetName), before), onSuccess = onSuccess)
+        return submitFileAction(FileWriteCommand.Move(realMoving, PikoPathBreadcrumb(targetId, targetName), before), onSuccess = onSuccess)
     }
 
     fun undoLast(): Boolean {
@@ -1764,7 +1882,7 @@ class DriveScreenState(
 
     fun putOnClipboard(requested: List<String>, cut: Boolean) {
         if (!canAcceptAction) return
-        val ids = withoutVaulted(requested)
+        val ids = if (cut) editableCloudIds(requested) else withoutVaulted(requested)
         if (ids.isEmpty()) return
         val origin = activeFolderStack.takeIf { isDriveFolderId(activeFolderId) }.orEmpty()
         clipboard.put(DriveClipboard(ids.associateWith { knownFile(it)?.parentId ?: activeFolderId }, cut, origin.toList()))
@@ -1778,7 +1896,7 @@ class DriveScreenState(
         val clip = clipboard.contents.value ?: return
         val target = navigation.folderStackFlow.value.lastOrNull()?.takeIf { isDriveFolderId(it.id) } ?: return
         val ids = clip.sources.keys.toList()
-        val movingCount = if (clip.cut) withoutVaulted(ids).count {
+        val movingCount = if (clip.cut) editableCloudIds(ids).count {
             it != target.id && (knownFile(it)?.parentId ?: clip.sources[it]) != target.id
         } else ids.size
         val onSuccess = {
@@ -1804,7 +1922,7 @@ class DriveScreenState(
         return submitFileAction(FileWriteCommand.Copy(ids, PikoPathBreadcrumb(targetId, targetName)), onSuccess = onSuccess)
     }
 
-    private fun withoutVaulted(ids: List<String>): List<String> {
+    private fun editableCloudIds(ids: List<String>): List<String> {
         if (ids.any(dev.piko.shared.data.LocalLocation::isLocal)) {
             _messages.tryEmit(tr("本地文件夹为只读", "Local folders are read-only", "ローカルフォルダーは読み取り専用です", "로컬 폴더는 읽기 전용입니다", "本機資料夾為唯讀"))
             return emptyList()
@@ -1812,6 +1930,11 @@ class DriveScreenState(
         if (refusedInArchive(ids)) return emptyList()
         val nonPreview = ids.filterNot { ImportPreviewEntryId.isEntry(it) || ImportPreviewLocation.of(it) != null }
         if (nonPreview.size < ids.size) _messages.tryEmit(tr("请先将链接项目保存至网盘", "Save link items to the drive first", "リンク項目を先にドライブへ保存してください", "링크 항목을 먼저 드라이브에 저장해 주세요", "請先將連結項目儲存至雲端硬碟"))
+        return nonPreview
+    }
+
+    private fun withoutVaulted(ids: List<String>): List<String> {
+        val nonPreview = editableCloudIds(ids)
         val real = nonPreview.filterNot(VaultEntry::isVaulted)
         if (real.size < nonPreview.size) _messages.tryEmit(VAULTED_NEEDS_RESTORE)
         return real

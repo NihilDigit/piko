@@ -10,7 +10,6 @@ import dev.piko.desktop.isLinux
 import dev.piko.desktop.isMacOs
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.player.ExternalSubtitle
-import dev.piko.shared.media.player.MPV_SUBTITLE_LANGUAGES
 import dev.piko.shared.media.player.MediaTrack
 import dev.piko.shared.media.player.MpvTrackSnapshot
 import dev.piko.shared.media.player.PlaybackFeedbackTracker
@@ -21,6 +20,8 @@ import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.VideoCropRegion
 import kotlin.math.ln
 import dev.piko.shared.media.player.mpvSubtitleAddCommands
+import dev.piko.shared.media.player.mpvSubtitleCodepage
+import dev.piko.shared.media.player.mpvSubtitleLanguages
 import dev.piko.shared.media.player.mpvSubtitleSelectCommand
 import dev.piko.shared.media.player.readMpvTracks
 import kotlinx.coroutines.Dispatchers
@@ -160,6 +161,7 @@ internal class MediampPlaybackBackend(
         scope.launch(Dispatchers.IO) {
             while (isActive && !closing) {
                 val generation = playbackGeneration
+                val activePlayback = isPlaying || isBuffering
                 val seconds = mpv?.let { runCatching { it.getPropertyString("demuxer-cache-duration")?.toDoubleOrNull() }.getOrNull() }
                 val sampledAt = kotlin.time.TimeSource.Monotonic.markNow()
                 withContext(scope.coroutineContext.minusKey(Job)) {
@@ -169,10 +171,11 @@ internal class MediampPlaybackBackend(
                             ?.let { positionMillis + (it * 1000).toLong() } ?: 0L
                     }
                 }
-                delay(250L)
+                delay(if (activePlayback) BUFFER_POLL_ACTIVE_MILLIS else BUFFER_POLL_PAUSED_MILLIS)
             }
         }
-        mpv?.setPropertyString("slang", MPV_SUBTITLE_LANGUAGES)
+        mpv?.setPropertyString("slang", mpvSubtitleLanguages())
+        mpv?.setPropertyString("sub-codepage", mpvSubtitleCodepage())
         // libass 缺字时在 Windows 上经 DirectWrite 找回退字体，传的语言是空串，非中文系统上给汉字挑的多是日文字体：
         // 繁体字在里面有，「这」「们」这类简体字没有，回退失败后落到 sub-font。默认的 sans-serif 在 Windows 上也不含中文，
         // 按当前平台与语言偏好挑选自带简繁字体（见 SUBTITLE_FALLBACK_FONT）
@@ -199,8 +202,17 @@ internal class MediampPlaybackBackend(
         mpv?.setPropertyString("hwdec", if (hardwareDecoding) "auto,auto-copy" else "no")
         mpv?.setPropertyString("hwdec-codecs", "all")
         scope.launch {
+            // 播放期间按 ~30fps（33ms）节流写入 Compose positionMillis，避免 60-120fps 逐帧驱动重组；
+            // 暂停、seek 或发生跳变时立即提交，保证拖拽/定帧响应无延迟。
+            var lastPublishedNanos = 0L
             player.currentPositionMillis.collect { pos ->
-                positionMillis = pos
+                if (closing) return@collect
+                val nowNanos = System.nanoTime()
+                val jumped = kotlin.math.abs(pos - positionMillis) >= POSITION_JUMP_IMMEDIATE_MILLIS
+                if (!isPlaying || manualSeeking || jumped || nowNanos - lastPublishedNanos >= POSITION_THROTTLE_NANOS) {
+                    positionMillis = pos
+                    lastPublishedNanos = nowNanos
+                }
             }
         }
         metadataFeature?.let { feature ->
@@ -287,6 +299,8 @@ internal class MediampPlaybackBackend(
         pendingSubtitles = subtitles
         mpv?.setPropertyString("hwdec", if (hardwareDecoding) "auto,auto-copy" else "no")
         if (!preview) {
+            mpv?.setPropertyString("slang", mpvSubtitleLanguages())
+            mpv?.setPropertyString("sub-codepage", mpvSubtitleCodepage())
             val isMpegTsTranscode = target is PlaybackTarget.Url && target.isMpegTsTranscode
             if (isMpegTsTranscode) {
                 mpv?.setPropertyString("demuxer-lavf-probesize", "$MPEGTS_TRANSCODE_PROBE_BYTES")
@@ -553,6 +567,8 @@ internal class MediampPlaybackBackend(
     override fun setSpeed(speed: Float) {
         if (closing) return
         speedFeature?.set(speed)
+        // 读数经 mpv 属性流异步回报会滞后一拍，先行更新以消除长按起速/松手回落时的状态错位
+        currentSpeed = speed
     }
 
     override fun setVolume(volume: Float) {
@@ -692,6 +708,10 @@ private const val DEFAULT_LAVF_PROBE_BYTES = 5_000_000
 private const val MPEGTS_TRANSCODE_PROBE_BYTES = 512 * 1024
 private const val MPEGTS_TRANSCODE_ANALYZE_SECONDS = 1
 private const val STOP_IDLE_TIMEOUT_MILLIS = 2_000L
+private const val POSITION_THROTTLE_NANOS = 33_000_000L // ~30fps
+private const val POSITION_JUMP_IMMEDIATE_MILLIS = 500L
+private const val BUFFER_POLL_ACTIVE_MILLIS = 250L
+private const val BUFFER_POLL_PAUSED_MILLIS = 1_000L
 
 private val NO_OP_EVENT_LISTENER = object : EventListener {
     override fun onPropertyChange(name: String) = Unit

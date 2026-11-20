@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="updater_download_in_background">バックグラウンドでダウンロード</string>
+    <string name="updater_open_download_page">ダウンロードページを開く</string>
+    <string name="updater_later">あとで再起動</string>
+    <string name="updater_stage_downloading">ダウンロード中</string>
+    <string name="updater_stage_verifying">パッケージを検証中…</string>
+    <string name="updater_stage_staging">更新ファイルを準備中…</string>
+    <string name="updater_no_release_notes">このバージョンの更新情報はありません</string>
+    <string name="updater_ready_short">更新の準備完了</string>
+    <string name="updater_checking">更新を確認中</string>
+    <string name="updater_up_to_date">最新バージョンです</string>
+    <string name="updater_available_version">新バージョン %1$s があります</string>
+    <string name="updater_ready_to_restart_desc">ダウンロードと検証が完了しました。再起動して更新を完了します</string>
+    <string name="updater_view_update">更新を表示</string>
+    <string name="updater_view_progress">進捗を表示</string>
+    <string name="updater_check_for_updates">更新を確認</string>
+    <string name="updater_version_label">バージョン %1$s</string>
+    <string name="updater_remaining_eta">残り %1$s</string>
+    <string name="updater_background_downloading_tooltip">更新をバックグラウンドでダウンロード中 (%1$d%%)</string>
+    <string name="updater_dialog_title">Piko を更新</string>
+    <string name="updater_updating_to">%1$s に更新中</string>
+</resources>

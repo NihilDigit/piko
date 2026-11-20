@@ -2,6 +2,7 @@ package dev.piko.shared.media
 
 import dev.piko.shared.i18n.tr
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.data.repository.isPlayableAudio
 import dev.piko.shared.data.BatchDriveDetailObserver
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.log.PikoLog
@@ -20,6 +21,8 @@ import io.github.nihildigit.pikpak.BlockStore
 import io.github.nihildigit.pikpak.BufferBudget
 import io.github.nihildigit.pikpak.ConsumerIntent
 import dev.piko.shared.media.cache.PikoFileCachePool
+import dev.piko.shared.media.storyboard.StoryboardSource
+import dev.piko.shared.media.storyboard.StoryboardSourceResolver
 import dev.piko.download.DownloadTask
 import io.github.nihildigit.pikpak.ReadEndReason
 import io.github.nihildigit.pikpak.ServiceIntent
@@ -63,6 +66,16 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import dev.piko.shared.media.player.ExternalSubtitle
+import dev.piko.shared.media.player.InMemoryProxyByteSource
+import dev.piko.shared.media.player.OriginalEmbeddedSubtitlesResult
+import dev.piko.shared.media.player.OriginalSubtitleExtractor
+import dev.piko.shared.media.player.OriginalSubtitleTrackInfo
+import dev.piko.shared.media.player.SubtitleEncoding
+import dev.piko.shared.media.player.inferSubtitleLanguageCode
+import dev.piko.shared.media.player.isTextSubtitleName
+import kotlinx.coroutines.IO
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -74,7 +87,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
-enum class PlayableMediaKind { Video, Image, UnsupportedImage }
+enum class PlayableMediaKind { Video, Audio, Image, UnsupportedImage }
 
 data class PlayableMediaInfo(
     val fileId: String,
@@ -142,6 +155,13 @@ class PreparedPlayback internal constructor(
 
     /** 当前流底层缓存已从网络收到的累计字节数（单调递增，用于显示加载实时网速）。 */
     val receivedBytes: Long get() = stream?.receivedBytes ?: 0L
+
+    /** 当前流活跃网络传输累计 `(activeBytes, activeNanos)`，供 ABR Dual-EWMA 估算真实链路吞吐。 */
+    internal fun activeTransferSnapshot(): Pair<Long, Long> = stream?.activeTransferSnapshot() ?: (0L to 0L)
+
+    internal fun setOnReadActivity(callback: (() -> Unit)?) {
+        stream?.setOnReadActivity(callback)
+    }
 
     /** 底层云端文件是否正处于冷存唤醒等待中。 */
     val isReactivating: StateFlow<Boolean> get() = stream?.isReactivating ?: InactivePlaybackReactivation
@@ -280,6 +300,10 @@ class PikoMediaRepository(
     private val freshDetailsLock = Mutex()
     private var freshDetailsOwner: PikPakClient? = null
 
+    private val cachedOriginalSubtitles = HashMap<String, OriginalEmbeddedSubtitlesResult>()
+    private val cachedOriginalSubtitlesLock = Mutex()
+    private var cachedOriginalSubtitlesOwner: PikPakClient? = null
+
     internal fun knownContentMetadata(fileId: String): dev.piko.shared.data.ContentMetadata? {
         val owner = clientManager.currentClient.value ?: return null
         return metadataSink?.lookupContentByFileId(owner, fileId)
@@ -300,6 +324,12 @@ class PikoMediaRepository(
                     if (freshDetailsOwner !== owner) {
                         freshDetails.clear()
                         freshDetailsOwner = owner
+                    }
+                }
+                cachedOriginalSubtitlesLock.withLock {
+                    if (cachedOriginalSubtitlesOwner !== owner) {
+                        cachedOriginalSubtitles.clear()
+                        cachedOriginalSubtitlesOwner = owner
                     }
                 }
             }
@@ -405,7 +435,11 @@ class PikoMediaRepository(
                 val resolved = detail.resolveVariant(preferenceFor(resolution))
                 val info = playableMediaInfo(detail, resolved, fileId)
                 val leased = LeasedFile.isLeased(fileId)
-                val stream = if (info.kind == PlayableMediaKind.Video) openProxyStream(client, detail, resolved, leased = leased) else null
+                val stream = if (info.kind == PlayableMediaKind.Video || info.kind == PlayableMediaKind.Audio) {
+                    openProxyStream(client, detail, resolved, leased = leased)
+                } else {
+                    null
+                }
                 val actualStreamBytes = stream?.size ?: resolved.sizeBytes ?: detail.sizeBytes.takeIf { resolved.isOrigin } ?: 0L
                 val resolvedInfo = if (actualStreamBytes > 0L && info.sizeBytes != actualStreamBytes) {
                     info.copy(sizeBytes = actualStreamBytes)
@@ -973,7 +1007,11 @@ class PikoMediaRepository(
 
     /**
      * 为外挂字幕开一个代理会话，与视频走同一个本机代理：播放器读的是 127.0.0.1，不碰会过期的直链，
-     * 地址里带着文件名，mpv 按扩展名认格式。开不起来返回 null，调用方跳过这一条。
+     * 地址里带着文件名，mpv 按扩展名认格式。
+     *
+     * 纯文本字幕（SRT/ASS/SSA/VTT，且体积不超过 8 MiB）在内存中先经 [SubtitleEncoding] 探测并
+     * 规范化为 UTF-8，彻底消除 GBK/GB18030/Big5/Shift-JIS/UTF-16 字幕在 mpv 下误按 Latin-1
+     * 解码导致的乱码；二进制 `.sup` 或超大文件沿用原样流式代理。开不起来返回 null，调用方跳过这一条。
      */
     suspend fun prepareSubtitle(fileId: String): ProxyStream? =
         withContext(Dispatchers.Default) {
@@ -985,9 +1023,49 @@ class PikoMediaRepository(
                         .also { rememberFreshDetail(client, fileId, it) }
                 resolvedName = detail.name
                 val resolved = detail.resolveVariant(VariantPreference.Original)
-                openProxyStream(client, detail, resolved, leased = LeasedFile.isLeased(fileId))
+                val leased = LeasedFile.isLeased(fileId)
+                val expectedSize = (resolved.sizeBytes ?: detail.sizeBytes).coerceAtLeast(0L)
+                if (isTextSubtitleName(detail.name) && expectedSize in 1L..MAX_TEXT_SUBTITLE_BYTES) {
+                    val transcoded = runSuspendCatching {
+                        readAndNormalizeTextSubtitle(client, detail, resolved, leased, expectedSize.toInt())
+                    }.getOrNull()
+                    if (transcoded != null) {
+                        return@runSuspendCatching registerProxy(
+                            source = InMemoryProxyByteSource(transcoded),
+                            fileName = detail.name,
+                            fileLabel = logFile(detail.id, detail.name),
+                        )
+                    }
+                }
+                openProxyStream(client, detail, resolved, leased = leased)
             }.logFailure(TAG, "Failed to prepare external subtitle stream: ${logFile(fileId, resolvedName)}").getOrNull()
         }
+
+    private suspend fun readAndNormalizeTextSubtitle(
+        client: PikPakClient,
+        detail: FileDetail,
+        resolved: ResolvedVariant,
+        leased: Boolean,
+        expectedSize: Int,
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        val source = openByteSource(client, detail, resolved, leased = leased) ?: return@withContext null
+        try {
+            val raw = source.openReader().use { reader ->
+                val out = ByteArray(expectedSize)
+                var filled = 0
+                while (filled < expectedSize) {
+                    val n = reader.read(out, filled, expectedSize - filled)
+                    if (n <= 0) break
+                    filled += n
+                }
+                if (filled == 0) return@use null
+                if (filled == expectedSize) out else out.copyOf(filled)
+            } ?: return@withContext null
+            SubtitleEncoding.current.normalizeToUtf8(raw)
+        } finally {
+            runCatching { source.close() }
+        }
+    }
 
     private suspend fun isPlayHistorySynced(): Boolean = preferences?.syncPlayHistoryFlow?.first() ?: false
 
@@ -1529,18 +1607,35 @@ class PikoMediaRepository(
         } else {
             resolved.sizeBytes?.takeIf { it > 0L }
                 ?: resolved.mediaId?.let { knownTranscodeStreamSize(client, detail, it) }
+                ?: if (blockStore == null && !fastReactivation && fileCachePool != null && resolved.mediaId != null) {
+                    runSuspendCatching { streamSizeOf(client, detail, resolved.mediaId!!) }.getOrNull()
+                } else {
+                    null
+                }
         }
         val mediaRate = estimatedMediaBytesPerSecond(
             streamSize = knownStreamSize ?: detail.sizeBytes.takeIf { resolved.isOrigin } ?: 0L,
             durationSeconds = resolved.video?.duration ?: (durationMsOf(detail) / 1000L),
             bitRateBitsPerSecond = resolved.video?.bitRate,
         )
-        if (resolved.isOrigin && blockStore == null && !fastReactivation) {
+        if (blockStore == null && !fastReactivation && knownStreamSize != null && knownStreamSize > 0L) {
             fileCachePool?.let { pool ->
-                val lease = pool.acquire(client, detail.id, detail.hash, detail.sizeBytes, detail.name,
-                    parentId = detail.parentId, leased = leased, detail = detail,
-                    retained = retainedBy != null, owner = retainedBy ?: detail.id,
-                    mediaBytesPerSecond = mediaRate)
+                val lease = pool.acquire(
+                    client = client,
+                    fileId = detail.id,
+                    gcid = detail.hash,
+                    size = detail.sizeBytes,
+                    name = detail.name,
+                    parentId = detail.parentId,
+                    leased = leased,
+                    detail = detail,
+                    retained = retainedBy != null,
+                    owner = retainedBy ?: detail.id,
+                    mediaId = if (resolved.isOrigin) null else resolved.mediaId,
+                    streamSize = knownStreamSize,
+                    mediaBytesPerSecond = mediaRate,
+                    retainForPlayback = retainedBy == null,
+                )
                 return PikPakByteSource(lease.entry.handle, lease.entry.cache, lease::close)
             }
         }
@@ -1589,8 +1684,311 @@ class PikoMediaRepository(
         }
     }
 
+    /**
+     * 查询某视频各档位（原画 + 全部转码档）在 [PikoFileCachePool] 中的本地缓存覆盖比例与前方播放窗口命中集合，
+     * 供缓存感知 Auto ABR 在初始选档与稳态评估时复用本地缓存、避免无效切档与流量浪费。
+     */
+    suspend fun cachedRenditionCoverage(
+        info: PlayableMediaInfo,
+        positionMillis: Long,
+        durationMillis: Long,
+    ): Pair<Map<String, Float>, Set<String>> {
+        val pool = fileCachePool ?: return emptyMap<String, Float>() to emptySet()
+        val account = clientManager.currentClient.value?.account ?: return emptyMap<String, Float>() to emptySet()
+        val gcid = info.gcid.takeIf { it.isNotBlank() } ?: return emptyMap<String, Float>() to emptySet()
+        val owner = clientManager.currentClient.value
+        val content = if (owner != null) {
+            metadataSink?.lookupContentByFileId(owner, info.fileId)
+                ?: metadataSink?.lookupContent(owner, gcid, info.sizeBytes)
+        } else {
+            null
+        }
+        val transcodeSizes = content?.transcodes?.associate { it.mediaId to it.streamSizeBytes }.orEmpty()
+        val freshDetail = if (owner != null) takeFreshDetail(owner, info.fileId) else null
+        val origTotal = freshDetail?.sizeBytes?.takeIf { it > 0L }
+            ?: info.sizeBytes.takeIf { info.isOrigin && it > 0L }
+            ?: 0L
+
+        val coverage = LinkedHashMap<String, Float>()
+        val windowCached = LinkedHashSet<String>()
+        val posFraction = if (durationMillis > 0L) (positionMillis.toDouble() / durationMillis.toDouble()).coerceIn(0.0, 0.99) else 0.0
+
+        suspend fun probeOne(keyName: String, mediaId: String?, totalBytes: Long) {
+            if (totalBytes <= 0L) return
+            val windowStart = (totalBytes.toDouble() * posFraction).toLong().coerceIn(0L, (totalBytes - 1L).coerceAtLeast(0L))
+            val windowLen = minOf(ABR_CACHE_WINDOW_BYTES, (totalBytes - windowStart).coerceAtLeast(1L))
+            val stats = pool.cachedCoverage(
+                account = account,
+                gcid = gcid,
+                totalBytes = totalBytes,
+                mediaId = mediaId,
+                windowStartByte = windowStart,
+                windowLengthBytes = windowLen,
+            )
+            if (stats.coverageRatio > 0f) {
+                if (mediaId != null) coverage[mediaId] = stats.coverageRatio
+                coverage[keyName] = stats.coverageRatio
+            }
+            if (stats.windowCached) {
+                if (mediaId != null) windowCached += mediaId
+                windowCached += keyName
+            }
+        }
+
+        if (origTotal > 0L) {
+            probeOne(ORIGINAL_QUALITY, null, origTotal)
+        }
+        for (variant in info.availableVariants) {
+            if (variant.isOrigin || variant.video == null || variant.mediaId.isBlank()) continue
+            val name = variant.qualityName ?: continue
+            val size = transcodeSizes[variant.mediaId]?.takeIf { it > 0L }
+                ?: info.sizeBytes.takeIf { !info.isOrigin && info.mediaId == variant.mediaId && it > 0L }
+                ?: continue
+            probeOne(name, variant.mediaId, size)
+        }
+        return coverage to windowCached
+    }
+
+    internal fun knownUnreadableTranscodeIds(fileId: String, gcid: String, sizeBytes: Long): Set<String> {
+        val owner = clientManager.currentClient.value ?: return emptySet()
+        val content = metadataSink?.lookupContentByFileId(owner, fileId)
+            ?: (if (gcid.isNotBlank() && sizeBytes >= 0L) metadataSink?.lookupContent(owner, gcid, sizeBytes) else null)
+        return content?.transcodes?.filter { it.unreadable }?.map { it.mediaId }?.toSet().orEmpty()
+    }
+
+    internal fun knownTranscodeStreamSizeFor(fileId: String, gcid: String, sizeBytes: Long, mediaId: String): Long? {
+        val owner = clientManager.currentClient.value ?: return null
+        val content = metadataSink?.lookupContentByFileId(owner, fileId)
+            ?: (if (gcid.isNotBlank() && sizeBytes >= 0L) metadataSink?.lookupContent(owner, gcid, sizeBytes) else null)
+        return content?.transcodes?.firstOrNull { it.mediaId == mediaId }?.streamSizeBytes?.takeIf { it > 0L }
+    }
+
+    /** 探测 `<= 480P` 雪碧图转码流的总字节数（优先命中本地元数据，未命中时单次 1 字节 Range 探测并持久化）。 */
+    suspend fun resolveStoryboardStreamSize(source: StoryboardSource): Long? = withContext(Dispatchers.IO) {
+        val accountClient = clientManager.currentClient.value ?: return@withContext null
+        source.streamSizeBytes?.takeIf { it > 0L }?.let { return@withContext it }
+        knownTranscodeStreamSizeFor(source.fileId, source.gcid, 0L, source.mediaId)?.let { return@withContext it }
+        val detail = takeFreshDetail(accountClient, source.fileId)
+        val variant = detail?.medias?.firstOrNull { it.mediaId == source.mediaId && it.link.url.isNotBlank() }
+        val targetUrl = variant?.link?.url ?: source.url
+        if (targetUrl.isBlank()) return@withContext null
+        val probed = runSuspendCatching {
+            withTimeoutOrNull(PREVIEW_FETCH_TIMEOUT_MILLIS) {
+                accountClient.streamRangeFromUrl(targetUrl, start = 0L, length = 1L) { stream ->
+                    val size = stream.totalSize?.takeIf { it > 0L } ?: return@streamRangeFromUrl null
+                    val read = runSuspendCatching { stream.channel.readAvailable(ByteArray(1), 0, 1) }.getOrNull() ?: -1
+                    if (read < 1) null else size
+                }
+            }
+        }.getOrNull()
+        if (probed != null && detail != null) {
+            recordTranscodeStreamSize(accountClient, detail, source.mediaId, probed, unreadable = false)
+        }
+        probed
+    }
+
+    /**
+     * 为雪碧图引擎拉取 `[offset, offset + length)` 字节块：
+     * - 优先直接读取 [PikoFileCachePool] 本地持久化缓存（已播过/已缓存时 0 字节网络流量）；
+     * - 未命中时发起轻量 `<= 64 KiB` HTTP `Range` 请求（命中 SDK `MICRO_PROBE_PRIORITY = 12`），不占前景播放 `TransferDemand` 通道。
+     */
+    suspend fun fetchStoryboardRange(
+        source: StoryboardSource,
+        streamSize: Long,
+        offset: Long,
+        length: Int,
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        if (streamSize <= TS_PACKET_BYTES || offset < 0L || length <= 0) return@withContext null
+        val accountClient = clientManager.currentClient.value ?: return@withContext null
+        val fetchLen = minOf(length.toLong(), streamSize - offset).toInt()
+        if (fetchLen <= 0) return@withContext null
+
+        // 1. 优先零流量直读 PikoFileCachePool 本地缓存
+        fileCachePool?.readCachedBytes(
+            account = accountClient.account,
+            gcid = source.gcid,
+            totalBytes = streamSize,
+            mediaId = source.mediaId,
+            offset = offset,
+            length = fetchLen,
+        )?.let { return@withContext it }
+
+        // 2. 轻量 HTTP Range 探测（优先取最新详情里的签名 URL）
+        val freshUrl = takeFreshDetail(accountClient, source.fileId)
+            ?.medias
+            ?.firstOrNull { it.mediaId == source.mediaId && it.link.url.isNotBlank() }
+            ?.link?.url
+            ?: source.url
+        if (freshUrl.isBlank()) return@withContext null
+
+        withTimeoutOrNull(PREVIEW_FETCH_TIMEOUT_MILLIS) {
+            runSuspendCatching {
+                accountClient.streamRangeFromUrl(freshUrl, start = offset, length = fetchLen.toLong()) { stream ->
+                    val result = ByteArray(fetchLen)
+                    var filled = 0
+                    while (filled < fetchLen) {
+                        val read = stream.channel.readAvailable(result, filled, fetchLen - filled)
+                        if (read <= 0) break
+                        filled += read
+                    }
+                    if (filled == fetchLen) result else result.copyOf(filled)
+                }
+            }.getOrNull()
+        }
+    }
+
+    /**
+     * 为进度条悬停与「速览」拉取指定时刻附近的 `<= 480P` MPEG-TS 关键帧分块：
+     * 严格遵循门控规则，仅允许 `height <= 480` 的转码档；纯原画或最低档 `>= 720P` 直接返回 `null`。
+     */
+    suspend fun fetchPreviewChunk(
+        fileId: String,
+        positionMillis: Long,
+        durationMillis: Long,
+        chunkBytes: Int = PREVIEW_CHUNK_BYTES,
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        if (fileId.isBlank() || durationMillis <= 0L || dev.piko.shared.data.LocalLocation.isLocal(fileId)) {
+            return@withContext null
+        }
+        val accountClient = clientManager.currentClient.value ?: return@withContext null
+        val detail = takeFreshDetail(accountClient, fileId) ?: return@withContext null
+        val content = metadataSink?.lookupContent(accountClient, detail.hash, detail.sizeBytes)
+            ?: metadataSink?.lookupContentByFileId(accountClient, fileId)
+        val unreadableIds = content?.transcodes?.filter { it.unreadable }?.map { it.mediaId }?.toSet().orEmpty()
+        val variant = detail.medias
+            .mapNotNull { media ->
+                val h = StoryboardSourceResolver.eligibleHeightOrNull(media, unreadableIds) ?: return@mapNotNull null
+                media to h
+            }
+            .minByOrNull { (_, h) -> h }
+            ?.first
+            ?: return@withContext null
+        val streamSize = knownTranscodeStreamSize(accountClient, detail, variant.mediaId)
+            ?: runSuspendCatching {
+                withTimeoutOrNull(PREVIEW_FETCH_TIMEOUT_MILLIS) {
+                    probeTranscode(accountClient, variant)
+                }
+            }.getOrNull()?.also { probedSize ->
+                recordTranscodeStreamSize(accountClient, detail, variant.mediaId, probedSize, unreadable = false)
+            }
+            ?: return@withContext null
+        if (streamSize <= TS_PACKET_BYTES) return@withContext null
+        val clampedPos = positionMillis.coerceIn(0L, durationMillis)
+        val rawOffset = ((streamSize.toDouble() * clampedPos.toDouble() / durationMillis.toDouble()).toLong() / TS_PACKET_BYTES) * TS_PACKET_BYTES
+        val offset = rawOffset.coerceIn(0L, (streamSize - TS_PACKET_BYTES).coerceAtLeast(0L))
+        val fetchLen = minOf(chunkBytes.toLong(), streamSize - offset).coerceAtLeast(TS_PACKET_BYTES)
+        fileCachePool?.readCachedBytes(
+            account = accountClient.account,
+            gcid = detail.hash,
+            totalBytes = streamSize,
+            mediaId = variant.mediaId,
+            offset = offset,
+            length = fetchLen.toInt(),
+        )?.let { cached -> return@withContext alignMpegTsSync(cached) }
+        val bytes = withTimeoutOrNull(PREVIEW_FETCH_TIMEOUT_MILLIS) {
+            runSuspendCatching {
+                accountClient.streamRangeFromUrl(variant.link.url, start = offset, length = fetchLen) { stream ->
+                    val target = fetchLen.toInt()
+                    val result = ByteArray(target)
+                    var filled = 0
+                    while (filled < target) {
+                        val read = stream.channel.readAvailable(result, filled, target - filled)
+                        if (read <= 0) break
+                        filled += read
+                    }
+                    if (filled == target) result else result.copyOf(filled)
+                }
+            }.getOrNull()
+        } ?: return@withContext null
+        alignMpegTsSync(bytes)
+    }
+
+    /**
+     * 当播放转码流时，尝试从原画容器中探测并提取仅原画携带的内封字幕（MP4 稀疏 Range 零视频下载、
+     * 或小体积/已缓存 MKV 完整抽出），经本机回环代理挂载为外挂字幕供 mpv 同步显示。
+     */
+    suspend fun prepareOriginalEmbeddedSubtitles(fileId: String): PreparedOriginalSubtitles =
+        withContext(Dispatchers.IO) {
+            if (fileId.isBlank() || dev.piko.shared.data.LocalLocation.isLocal(fileId)) {
+                return@withContext PreparedOriginalSubtitles()
+            }
+            val accountClient = clientManager.currentClient.value ?: return@withContext PreparedOriginalSubtitles()
+            val cached = cachedOriginalSubtitlesLock.withLock {
+                if (cachedOriginalSubtitlesOwner === accountClient) cachedOriginalSubtitles[fileId] else null
+            }
+            val result = if (cached != null) {
+                cached
+            } else {
+                val detail = takeFreshDetail(accountClient, fileId) ?: return@withContext PreparedOriginalSubtitles()
+                val original = detail.resolveVariant(VariantPreference.Original)
+                val url = original.link.url.takeIf { it.isNotBlank() } ?: return@withContext PreparedOriginalSubtitles()
+                val fileSize = detail.sizeBytes
+                if (fileSize <= 0L) return@withContext PreparedOriginalSubtitles()
+                val extracted = runSuspendCatching {
+                    OriginalSubtitleExtractor.extract(
+                        fileSize = fileSize,
+                        readRange = { offset, length ->
+                            withTimeoutOrNull(ORIGINAL_SUB_RANGE_TIMEOUT_MILLIS) {
+                                runSuspendCatching {
+                                    accountClient.streamRangeFromUrl(url, start = offset, length = length.toLong()) { stream ->
+                                        val buf = ByteArray(length)
+                                        var filled = 0
+                                        while (filled < length) {
+                                            val n = stream.channel.readAvailable(buf, filled, length - filled)
+                                            if (n <= 0) break
+                                            filled += n
+                                        }
+                                        if (filled == length) buf else buf.copyOf(filled)
+                                    }
+                                }.getOrNull()
+                            }
+                        },
+                    )
+                }.getOrElse {
+                    PikoLog.d(TAG, "Original subtitle probe skipped for ${logFile(fileId, detail.name)}: ${it::class.simpleName}: ${it.message}")
+                    OriginalEmbeddedSubtitlesResult()
+                }
+                cachedOriginalSubtitlesLock.withLock {
+                    if (cachedOriginalSubtitlesOwner !== accountClient) {
+                        cachedOriginalSubtitles.clear()
+                        cachedOriginalSubtitlesOwner = accountClient
+                    }
+                    if (cachedOriginalSubtitles.size >= MAX_CACHED_ORIGINAL_SUB_FILES) {
+                        cachedOriginalSubtitles.clear()
+                    }
+                    cachedOriginalSubtitles[fileId] = extracted
+                }
+                extracted
+            }
+            val attached = ArrayList<Pair<ExternalSubtitle, ProxyStream>>(result.extracted.size)
+            for (sub in result.extracted) {
+                val stream = registerProxy(
+                    source = InMemoryProxyByteSource(sub.bytes),
+                    fileName = sub.fileName,
+                    fileLabel = logFile(fileId, sub.fileName),
+                ) ?: continue
+                val title = sub.info.title
+                    ?: sub.info.language?.uppercase()
+                    ?: tr("原画字幕", "Original subtitles", "オリジナル字幕", "원본 자막", "原畫字幕")
+                val lang = inferSubtitleLanguageCode(sub.info.language, sub.info.title ?: sub.fileName)
+                attached += ExternalSubtitle(url = stream.url, title = title, language = lang) to stream
+            }
+            PreparedOriginalSubtitles(attached = attached, unextracted = result.unextracted)
+        }
+
+    private fun alignMpegTsSync(bytes: ByteArray): ByteArray? {
+        if (bytes.size < TS_PACKET_BYTES.toInt() * 2) return null
+        val limit = minOf(bytes.size - TS_PACKET_BYTES.toInt(), TS_PACKET_BYTES.toInt())
+        for (i in 0 until limit) {
+            if (bytes[i] == 0x47.toByte() && bytes[i + TS_PACKET_BYTES.toInt()] == 0x47.toByte()) {
+                return if (i == 0) bytes else bytes.copyOfRange(i, bytes.size)
+            }
+        }
+        return null
+    }
+
     private fun preferenceFor(resolution: String?): VariantPreference =
-        if (resolution.isNullOrBlank() || resolution == ORIGINAL_QUALITY) {
+        if (resolution.isNullOrBlank() || resolution == ORIGINAL_QUALITY || resolution == AUTO_QUALITY) {
             VariantPreference.Original
         } else {
             VariantPreference.Resolution(resolution)
@@ -1684,14 +2082,31 @@ private val FRESH_DETAIL_FOR = 5.minutes
 // 各档的大小随内容而定，不会变；读不出的档有可能被服务端修好，所以也不留太久
 private val QUALITY_PROBE_FOR = 10.minutes
 
+/** 转码流尝试提取原画内封字幕的会话结果。 */
+class PreparedOriginalSubtitles(
+    val attached: List<Pair<ExternalSubtitle, ProxyStream>> = emptyList(),
+    val unextracted: List<OriginalSubtitleTrackInfo> = emptyList(),
+)
+
+private const val PREVIEW_CHUNK_BYTES = 256 * 1024
+private const val ABR_CACHE_WINDOW_BYTES = 1024L * 1024L // 1 MiB upcoming playback window check
+private const val PREVIEW_FETCH_TIMEOUT_MILLIS = 6_000L
+private const val ORIGINAL_SUB_RANGE_TIMEOUT_MILLIS = 8_000L
+private const val MAX_CACHED_ORIGINAL_SUB_FILES = 16
+private const val MAX_TEXT_SUBTITLE_BYTES = 8L * 1024L * 1024L
+
+/** 清晰度菜单里代表「自动」动态码率档位的标识。 */
+const val AUTO_QUALITY = "Auto"
+
 /** 清晰度菜单里代表原画的那一项，也是 [PikoMediaRepository] 认的原画标识。 */
 const val ORIGINAL_QUALITY = "Original"
 
 // 云端记录停在片尾这么近时当作看完，从头播；与本机续播的判断一致
 private const val CLOUD_NEAR_END_MILLIS = 10_000L
 
-fun mediaKindOf(name: String): PlayableMediaKind = when (name.substringAfterLast('.', "").lowercase()) {
-    "avif", "bmp", "heic", "heif", "jpeg", "jpg", "png", "webp" -> PlayableMediaKind.Image
-    "gif" -> PlayableMediaKind.UnsupportedImage
+fun mediaKindOf(name: String): PlayableMediaKind = when {
+    name.substringAfterLast('.', "").lowercase() in setOf("avif", "bmp", "heic", "heif", "jpeg", "jpg", "png", "webp") -> PlayableMediaKind.Image
+    name.substringAfterLast('.', "").lowercase() == "gif" -> PlayableMediaKind.UnsupportedImage
+    name.isPlayableAudio() -> PlayableMediaKind.Audio
     else -> PlayableMediaKind.Video
 }

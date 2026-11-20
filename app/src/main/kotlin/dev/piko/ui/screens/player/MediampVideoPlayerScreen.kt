@@ -32,9 +32,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import dev.piko.shared.media.player.isPlayerSubtitleName
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.platform.LocalPikoPlatform
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -96,8 +97,8 @@ fun MediampVideoPlayerScreen(
 
     val preferences = LocalPikoServices.current.preferences
     val backend = remember {
-        // 启动时已读过偏好，DataStore 有缓存，first() 不等磁盘
-        val hardwareDecoding = runBlocking { preferences.hardwareDecodingFlow.first() }
+        // 启动时已预热内存偏好快照，无锁直取，不在组合首帧阻塞主线程
+        val hardwareDecoding = preferences.currentSnapshot.hardwareDecoding
         MpvPlaybackBackend(context.applicationContext, hardwareDecoding = hardwareDecoding)
     }
     val state = remember(initialFileId) {
@@ -144,16 +145,22 @@ fun MediampVideoPlayerScreen(
     val brightness = rememberWindowBrightness()
     val mediaVolume = rememberMediaVolume()
     val snackbarHostState = remember { SnackbarHostState() }
-    val isSpoilerBlurEnabled by app.sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isSpoilerBlurEnabled by app.sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(
+        initialValue = app.sessionManager.currentSnapshot.spoilerBlurEnabled,
+    )
     val seekStepSeconds by preferences.playerSeekStepSecondsFlow
         .collectAsStateWithLifecycle(initialValue = PlayerGestureDefaults.SEEK_STEP_SECONDS)
     val longPressSpeed by preferences.playerBoostSpeedFlow
         .collectAsStateWithLifecycle(initialValue = PlayerGestureDefaults.BOOST_SPEED)
+    val playerLayoutPrefs by preferences.playerLayoutPrefsFlow
+        .collectAsStateWithLifecycle(initialValue = preferences.currentSnapshot.playerLayout)
+    var listenMode by rememberSaveable(initialFileId) { mutableStateOf(false) }
+    val showListen = !state.isImage && (state.isAudioFile || listenMode)
 
     LaunchedEffect(initialFileId) {
         val siblings = driveRepo.siblingMedia(initialFileId)
         siblingVideos = siblings.videos
-        state.playlist = playlistOf(siblingVideos, app.sessionManager, siblings.subtitles)
+        state.playlist = playlistOf(siblingVideos, app.sessionManager, siblings.subtitles, currentFileId = initialFileId)
     }
 
     // 内存任务表 App 重启就空：同目录元数据到了之后，用磁盘再验一次，
@@ -192,17 +199,28 @@ fun MediampVideoPlayerScreen(
         if (isFullscreen) orientationController.hideSystemBars() else orientationController.showSystemBars()
     }
 
-    DisposableEffect(Unit) {
+    LaunchedEffect(showListen) {
+        backend.setAudioOnlyMode(showListen)
+        if (showListen && isFullscreen) exitFullscreen()
+    }
+
+    // 听音频 / 听视频模式允许系统正常息屏，仅在观看视频画面时保持屏幕常亮
+    DisposableEffect(showListen) {
         val window = context.findActivity()?.window
-        window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (!showListen) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
         onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
     }
 
-    // 不支持退到后台继续播放（前台期间通过下方 MediaSession 与媒体通知提供耳机按键和系统媒体控制），ON_STOP 时暂停；Surface 此时也被销毁
+    // 视频模式退到后台时暂停（Surface 随 ON_STOP 销毁）；听音频 / 听视频模式允许息屏与后台继续播放
+    val latestShowListen by androidx.compose.runtime.rememberUpdatedState(showListen)
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, state) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) state.pause()
+            if (event == Lifecycle.Event.ON_STOP && !latestShowListen) state.pause()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -434,7 +452,11 @@ fun MediampVideoPlayerScreen(
     }
 
     BackHandler {
-        if (isFullscreen) exitFullscreen() else onBackClick()
+        when {
+            isFullscreen -> exitFullscreen()
+            listenMode && !state.isAudioFile -> listenMode = false
+            else -> onBackClick()
+        }
     }
 
     val leave = remember(orientationController, onBackClick) {
@@ -469,84 +491,116 @@ fun MediampVideoPlayerScreen(
         { file -> state.addDriveSubtitle(file.id, file.name) }
     }
 
-    Box(modifier.fillMaxSize().background(Color.Black)) {
-        if (state.isImage) {
-            AsyncImage(
-                model = state.mediaInfo?.currentUrl,
-                contentDescription = state.title,
-                modifier = Modifier.fillMaxSize(),
-            )
-            PlayerTheme {
-                PlayerTopBar(
-                    title = state.title,
-                    episodeLabel = null,
-                    isLocalPlayback = state.isLocalPlayback,
+    CompositionLocalProvider(LocalPlayerLayoutPrefs provides playerLayoutPrefs) {
+        Box(modifier.fillMaxSize().background(Color.Black)) {
+            if (state.isImage) {
+                AsyncImage(
+                    model = state.mediaInfo?.currentUrl,
+                    contentDescription = state.title,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                PlayerTheme {
+                    PlayerTopBar(
+                        title = state.title,
+                        episodeLabel = null,
+                        isLocalPlayback = state.isLocalPlayback,
+                        onBackClick = leave,
+                        modifier = Modifier.align(Alignment.TopCenter),
+                    )
+                }
+            } else if (showListen) {
+                // 纯音频文件或主动切入「听视频」：不挂载 SurfaceView，mpv 音频不中断继续播放，切回视频无缝重建画面
+                ListenScreen(
+                    state = state,
                     onBackClick = leave,
-                    modifier = Modifier.align(Alignment.TopCenter),
+                    volumeControl = mediaVolume,
+                    onSwitchToVideo = if (!state.isAudioFile) ({ listenMode = false }) else null,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp),
+                )
+            } else {
+                MpvVideoSurface(backend, Modifier.fillMaxSize())
+
+                val platform = LocalPikoPlatform.current
+                val scrubFrameCache = rememberScrubFrameCache(
+                    state = state,
+                    storyboardCache = app.services.storyboardCache,
+                    mediaRepository = app.mediampMediaRepository,
+                    platform = platform,
+                )
+
+                MobilePlayerControls(
+                    title = state.title,
+                    isLocalPlayback = state.isLocalPlayback,
+                    isPlaying = state.isPlaying,
+                    isLoading = state.isLoading,
+                    loadingSpeedText = state.loadingSpeedText,
+                    durationMillis = state.durationMillis,
+                    positionMillisProvider = positionMillisProvider,
+                    bufferedPositionMillisProvider = bufferedPositionMillisProvider,
+                    playbackSpeed = state.playbackSpeed,
+                    aspectRatio = state.aspectRatio,
+                    cropRegion = state.cropRegion,
+                    videoAspect = state.videoAspect,
+                    qualityOptions = state.qualityOptions,
+                    currentQuality = state.currentQuality,
+                    autoResolvedQuality = state.autoResolvedQuality,
+                    scrubFrameCache = scrubFrameCache,
+                    originalSubtitleHints = state.originalSubtitleHints,
+                    errorMessage = state.errorMessage,
+                    resumedFromMillis = state.resumedFromMillis,
+                    onPlayPause = state::togglePlayPause,
+                    onPausePlayback = state::pause,
+                    onResumePlayback = state::play,
+                    onSeek = state::seekTo,
+                    onSpeedChange = state::setSpeed,
+                    onAspectRatioChange = state::setAspectRatio,
+                    onCropRegionChange = state::setCropRegion,
+                    onQualityChange = state::selectQuality,
+                    onRetry = state::retry,
+                    onRestartFromBeginning = state::restartFromBeginning,
+                    onBack = leave,
+                    onToggleFullscreen = toggleFullscreen,
+                    isFullscreen = isFullscreen,
+                    isLandscapeVideo = state.isLandscapeVideo,
+                    playlist = state.playlist,
+                    currentFileId = state.fileId,
+                    hasPrevious = state.previousEntry != null,
+                    hasNext = state.nextEntry != null,
+                    onPrevious = state::playPrevious,
+                    onNext = state::playNext,
+                    onSelectEntry = state::playEntry,
+                    hideEpisodeThumbnails = isSpoilerBlurEnabled,
+                    seekStepSeconds = seekStepSeconds,
+                    onSeekStepChange = handleSeekStepChange,
+                    longPressSpeed = longPressSpeed,
+                    onLongPressSpeedChange = handleLongPressSpeedChange,
+                    playbackStats = state::stats,
+                    audioTracks = state.audioTracks,
+                    selectedAudioTrackId = state.selectedAudioTrackId,
+                    onSelectAudioTrack = state::selectAudioTrack,
+                    subtitleTracks = state.subtitleTracks,
+                    selectedSubtitleTrackId = state.selectedSubtitleTrackId,
+                    onSelectSubtitleTrack = state::selectSubtitleTrack,
+                    brightness = brightness,
+                    volume = mediaVolume,
+                    snackbarHost = { SnackbarHost(snackbarHostState) },
+                    fileActions = rememberPlayerFileActions(state.fileId, state.isLocalPlayback) { message ->
+                        scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) }
+                    },
+                    rotationDegrees = state.rotationDegrees.takeIf { state.supportsRotation },
+                    onRotationChange = handleRotationChange,
+                    onPickLocalSubtitle = pickLocalSubtitle.takeIf { state.canAddSubtitle },
+                    onPickDriveSubtitle = pickDriveSubtitle.takeIf { state.canAddSubtitle },
+                    onSwitchToListen = {
+                        if (isFullscreen) exitFullscreen()
+                        listenMode = true
+                    },
                 )
             }
-        } else {
-            MpvVideoSurface(backend, Modifier.fillMaxSize())
-
-            MobilePlayerControls(
-                title = state.title,
-                isLocalPlayback = state.isLocalPlayback,
-                isPlaying = state.isPlaying,
-                isLoading = state.isLoading,
-                loadingSpeedText = state.loadingSpeedText,
-                durationMillis = state.durationMillis,
-                positionMillisProvider = positionMillisProvider,
-                bufferedPositionMillisProvider = bufferedPositionMillisProvider,
-                playbackSpeed = state.playbackSpeed,
-                aspectRatio = state.aspectRatio,
-                cropRegion = state.cropRegion,
-                videoAspect = state.videoAspect,
-                qualityOptions = state.qualityOptions,
-                currentQuality = state.currentQuality,
-                errorMessage = state.errorMessage,
-                resumedFromMillis = state.resumedFromMillis,
-                onPlayPause = state::togglePlayPause,
-                onSeek = state::seekTo,
-                onSpeedChange = state::setSpeed,
-                onAspectRatioChange = state::setAspectRatio,
-                onCropRegionChange = state::setCropRegion,
-                onQualityChange = state::selectQuality,
-                onRetry = state::retry,
-                onRestartFromBeginning = state::restartFromBeginning,
-                onBack = leave,
-                onToggleFullscreen = toggleFullscreen,
-                isFullscreen = isFullscreen,
-                isLandscapeVideo = state.isLandscapeVideo,
-                playlist = state.playlist,
-                currentFileId = state.fileId,
-                hasPrevious = state.previousEntry != null,
-                hasNext = state.nextEntry != null,
-                onPrevious = state::playPrevious,
-                onNext = state::playNext,
-                onSelectEntry = state::playEntry,
-                hideEpisodeThumbnails = isSpoilerBlurEnabled,
-                seekStepSeconds = seekStepSeconds,
-                onSeekStepChange = handleSeekStepChange,
-                longPressSpeed = longPressSpeed,
-                onLongPressSpeedChange = handleLongPressSpeedChange,
-                playbackStats = state::stats,
-                audioTracks = state.audioTracks,
-                selectedAudioTrackId = state.selectedAudioTrackId,
-                onSelectAudioTrack = state::selectAudioTrack,
-                subtitleTracks = state.subtitleTracks,
-                selectedSubtitleTrackId = state.selectedSubtitleTrackId,
-                onSelectSubtitleTrack = state::selectSubtitleTrack,
-                brightness = brightness,
-                volume = mediaVolume,
-                snackbarHost = { SnackbarHost(snackbarHostState) },
-                fileActions = rememberPlayerFileActions(state.fileId, state.isLocalPlayback) { message ->
-                    scope.launch { snackbarHostState.showSnackbar(message, withDismissAction = true) }
-                },
-                rotationDegrees = state.rotationDegrees.takeIf { state.supportsRotation },
-                onRotationChange = handleRotationChange,
-                onPickLocalSubtitle = pickLocalSubtitle.takeIf { state.canAddSubtitle },
-                onPickDriveSubtitle = pickDriveSubtitle.takeIf { state.canAddSubtitle },
-            )
         }
     }
 }
@@ -574,7 +628,40 @@ private fun copySubtitleToCache(context: Context, uri: Uri): LocalSubtitle {
     if (!isPlayerSubtitleName(name)) return LocalSubtitle.Unsupported
     val target = File(File(context.cacheDir, "subtitles").apply { mkdirs() }, name.replace('/', '_'))
     return runCatching {
-        resolver.openInputStream(uri)?.use { input -> target.outputStream().use { input.copyTo(it) } } ?: error(tr("无法打开文件", "Unable to open file", "ファイルを開けません", "파일을 열 수 없습니다", "無法開啟檔案"))
+        resolver.openInputStream(uri)?.use { input ->
+            if (!dev.piko.shared.media.player.isTextSubtitleName(name)) {
+                // 二进制字幕（如 .sup PGS，通常 30–120 MB）严禁整包读入内存，直接流式拷贝
+                target.outputStream().use { output -> input.copyTo(output) }
+            } else {
+                val maxTextBytes = 8 * 1024 * 1024
+                val buffer = java.io.ByteArrayOutputStream(minOf(64 * 1024, maxTextBytes))
+                val chunk = ByteArray(16 * 1024)
+                var exceeded = false
+                while (true) {
+                    val remaining = (maxTextBytes + 1) - buffer.size()
+                    if (remaining <= 0) {
+                        exceeded = true
+                        break
+                    }
+                    val n = input.read(chunk, 0, minOf(chunk.size, remaining))
+                    if (n <= 0) break
+                    buffer.write(chunk, 0, n)
+                    if (buffer.size() > maxTextBytes) {
+                        exceeded = true
+                        break
+                    }
+                }
+                if (exceeded) {
+                    target.outputStream().use { output ->
+                        buffer.writeTo(output)
+                        input.copyTo(output)
+                    }
+                } else {
+                    val normalized = dev.piko.shared.media.player.JvmSubtitleTextTranscoder.normalizeToUtf8(buffer.toByteArray())
+                    target.writeBytes(normalized)
+                }
+            }
+        } ?: error(tr("无法打开文件", "Unable to open file", "ファイルを開けません", "파일을 열 수 없습니다", "無法開啟檔案"))
         LocalSubtitle.Copied(target)
     }.getOrElse { LocalSubtitle.Unreadable }
 }

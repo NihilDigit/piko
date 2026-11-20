@@ -14,6 +14,10 @@ import dev.piko.ui.platform.LocalPikoPlatform
 
 val LocalFixedColors = staticCompositionLocalOf { FixedColors }
 val LocalStatusColors = staticCompositionLocalOf { PikoLightStatusColors }
+val LocalPikoStatusColors = LocalStatusColors
+
+/** 当前宿主窗口是否处于可见态（未最小化/未藏入托盘），供无限循环动画与骨架屏降频停表。 */
+val LocalWindowVisible = staticCompositionLocalOf { true }
 
 /**
  * Piko 全局主题，使用 [MaterialExpressiveTheme] 作为统一入口。
@@ -31,15 +35,17 @@ fun PikoTheme(
     appearance: Appearance = Appearance(),
     content: @Composable () -> Unit,
 ) {
+    val isEInk = appearance.isEInk
     val darkTheme = appearance.isDark()
     val platform = LocalPikoPlatform.current
-    val reduced = platform.motionScale.reduced
+    val reduced = platform.motionScale.reduced || isEInk
     val motion = remember(platform.motionStyle, reduced) { PikoMotion.of(platform.motionStyle, reduced) }
     val motionScheme = when (platform.motionStyle) {
         MotionStyle.Expressive -> MotionScheme.expressive()
         MotionStyle.Standard -> MotionScheme.standard()
     }
-    val colorScheme = animateColorScheme(appearance.colorScheme(darkTheme), motionScheme)
+    val targetScheme = appearance.colorScheme(darkTheme)
+    val colorScheme = if (isEInk) targetScheme else animateColorScheme(targetScheme, motionScheme)
     val effectiveLanguage = PikoLocale.effectiveLanguageState.value
     val systemLanguage = PikoLocale.systemLanguage
     val localeList = remember(effectiveLanguage, systemLanguage) {
@@ -62,7 +68,11 @@ fun PikoTheme(
             LocalAppearance provides appearance,
             LocalPikoMotion provides motion,
             LocalFixedColors provides FixedColors,
-            LocalStatusColors provides if (darkTheme) PikoDarkStatusColors else PikoLightStatusColors,
+            LocalStatusColors provides when {
+                isEInk -> PikoEInkStatusColors
+                darkTheme -> PikoDarkStatusColors
+                else -> PikoLightStatusColors
+            },
         ) {
             Surface(
                 color = MaterialTheme.colorScheme.background,

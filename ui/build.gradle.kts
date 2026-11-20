@@ -6,10 +6,21 @@ plugins {
     alias(libs.plugins.android.kotlin.multiplatform.library)
 }
 
-compose.resources {
-    generateResClass = always
-    publicResClass = true
-    packageOfResClass = "dev.piko.ui.resources"
+compose {
+    dependencyCompatibility {
+        // Coil 3.6.3 与 ZoomImage 1.7.0 传递声明旧版 Skiko，由 CMP 1.13.0-rc01 统一解析到 Skiko 0.156.1。
+        exclude("io.coil-kt.coil3")
+        exclude("io.github.panpf.zoomimage")
+    }
+    resources {
+        generateResClass = always
+        publicResClass = true
+        packageOfResClass = "dev.piko.ui.resources"
+    }
+}
+
+composeCompiler {
+    stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("compose-stability.conf"))
 }
 
 // 两端共用的 Material 3 Expressive 界面。与 shared 分开：shared 只放状态与业务，

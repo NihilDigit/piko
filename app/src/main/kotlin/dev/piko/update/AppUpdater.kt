@@ -36,6 +36,7 @@ data class AndroidUpdate(
     override val localizedNotes: Map<AppLanguage, String> = emptyMap(),
 ) : AvailableUpdate {
     override val downloadSize: Long get() = apk.size
+    override val modeLabel: String get() = "APK"
 }
 
 /**
@@ -71,24 +72,23 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
         )
     }
 
-    /** 下载并校验，成功后提交安装。未授予「安装未知应用」时先带用户去授权，授权后需再点一次。 */
-    override suspend fun downloadAndInstall(update: AvailableUpdate) {
-        val own = update.own()
-        // 每次下载都先清空同一个缓存目录，两次下载同时进行会删掉、覆盖对方的文件。连点两下时，
-        // 两次调用在主线程上排队，检查与下面改成 Downloading 之间没有挂起点，后一次必然看到前一次的状态。
-        // Installing 不拦：系统安装器被划掉时可能不回调，状态会一直停在那里
-        if (!own.canInstallInApp || status is UpdateStatus.Downloading) return
+    /** 未授予「安装未知应用」时先带用户去授权，授权后需再点一次。Installing 不拦：系统安装器被划掉时可能不回调。 */
+    override fun prepareDownload(update: AndroidUpdate): Boolean {
         if (!context.packageManager.canRequestPackageInstalls()) {
             val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             PikoLog.i(TAG, "Unknown app install permission not granted; opening system settings")
             runCatching { context.startActivity(intent) }
                 .onFailure { PikoLog.w(TAG, "Failed to open unknown app sources settings", it) }
-            return
+            return false
         }
-        status = UpdateStatus.Downloading(update, 0f)
+        return true
+    }
+
+    /** 下载并校验，成功后提交安装。运行在应用级 [serviceScope] 内，关闭弹窗不中断下载。 */
+    override suspend fun performDownloadAndInstall(update: AndroidUpdate) {
         val file = try {
-            download(own)
+            download(update)
         } catch (e: CancellationException) {
             status = UpdateStatus.Available(update)
             throw e
@@ -96,7 +96,7 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
             status = downloadFailed(e, update)
             return
         }
-        PikoLog.i(TAG, "Update APK downloaded and verified: ${own.apk.name} (${file.length()} bytes)")
+        PikoLog.i(TAG, "Update APK downloaded and verified: ${update.apk.name} (${file.length()} bytes)")
         try {
             withContext(Dispatchers.IO) { install(file, update) }
         } catch (e: CancellationException) {
@@ -105,13 +105,13 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
             }
             throw e
         } catch (e: SecurityException) {
-            PikoLog.w(TAG, "Downloaded update APK failed identity verification for ${own.apk.name}", e)
+            PikoLog.w(TAG, "Downloaded update APK failed identity verification for ${update.apk.name}", e)
             status = UpdateStatus.Failed(
                 tr("安装包校验未通过，请从下载页获取", "Package verification failed. Use the download page", "パッケージの検証に失敗しました。ダウンロードページから取得してください", "설치 패키지 검증에 실패했습니다. 다운로드 페이지에서 받으세요", "安裝套件驗證未通過，請從下載頁取得"),
                 update,
             )
         } catch (e: Exception) {
-            PikoLog.w(TAG, "Failed to commit PackageInstaller session for ${own.apk.name}", e)
+            PikoLog.w(TAG, "Failed to commit PackageInstaller session for ${update.apk.name}", e)
             if (status !is UpdateStatus.Failed) {
                 status = UpdateStatus.Failed(
                     tr("无法启动安装", "Unable to start installation", "インストールを開始できません", "설치를 시작할 수 없습니다", "無法啟動安裝"),
@@ -126,6 +126,10 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
         val dir = File(context.cacheDir, UPDATE_DIR).apply { deleteRecursively(); mkdirs() }
         val target = File(dir, update.apk.name)
         val digest = MessageDigest.getInstance("SHA-256")
+        val total = update.apk.size
+        val tracker = UpdateProgressTracker(total) { progress, downloaded, totalBytes, bytesPerSec ->
+            reportDownloadProgress(update, progress, downloaded, totalBytes, bytesPerSec, update.modeLabel)
+        }
         try {
             target.outputStream().use { out ->
                 releases.download(
@@ -133,14 +137,21 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
                     onChunk = { buffer, length ->
                         out.write(buffer, 0, length)
                         digest.update(buffer, 0, length)
+                        tracker.onBytes(length)
                     },
-                    onProgress = { status = UpdateStatus.Downloading(update, it) },
+                    onProgress = {},
                 )
             }
         } catch (t: Throwable) {
             target.delete()
             throw t
         }
+        transitionDownloadStage(
+            update = update,
+            stage = UpdateStage.Verifying,
+            totalBytes = total,
+            modeLabel = update.modeLabel,
+        )
         val actual = digest.digest().joinToString("") { "%02x".format(it) }
         if (actual != expected) {
             target.delete()
@@ -149,13 +160,25 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
         target
     }
 
-    private fun install(apk: File, update: AvailableUpdate) {
+    private fun install(apk: File, update: AndroidUpdate) {
+        transitionDownloadStage(
+            update = update,
+            stage = UpdateStage.Verifying,
+            totalBytes = update.apk.size,
+            modeLabel = update.modeLabel,
+        )
         try {
             verifyDownloadedApk(apk)
         } catch (e: Throwable) {
             apk.delete()
             throw e
         }
+        transitionDownloadStage(
+            update = update,
+            stage = UpdateStage.Staging,
+            totalBytes = update.apk.size,
+            modeLabel = update.modeLabel,
+        )
         val installer = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(context.packageName)

@@ -133,6 +133,8 @@ class DriveStructure(
     val views: Map<String, DriveFileView>,
     /** 挂在别的文件下的附件，id 到宿主 id。 */
     val attachedTo: Map<String, String>,
+    /** 外挂字幕、外挂音轨等独立附件分区，与文件夹置顶及排序方式正交。 */
+    val attachmentBlocks: List<DriveBlock> = blocks.filter { it.id.startsWith(ATTACHMENT_BLOCK_PREFIX) },
 )
 
 /**
@@ -172,9 +174,22 @@ fun analyzeDriveFolder(files: List<FileStat>): DriveStructure {
             }
         }
     }
-    val workBlocks = if (batch.works.any { it.kind != WorkKind.UNKNOWN }) buildBlocks(batch, regular) else emptyList()
-    // 没认出作品时整个目录平铺，附件本来就各占一行，不必另起一栏
-    val blocks = if (workBlocks.isEmpty()) workBlocks else workBlocks + attachmentBlocks(batch, regular)
+    val attachments = attachmentBlocks(batch, regular)
+    val workBlocks = if (batch.works.any { it.kind != WorkKind.UNKNOWN }) {
+        buildBlocks(batch, regular)
+    } else if (attachments.isNotEmpty()) {
+        val secondarySet = secondaryIds.toHashSet()
+        val primaryIds = regular.mapNotNull { file ->
+            file.id.takeIf { it !in attachedTo && it !in secondarySet }
+        }
+        if (primaryIds.isEmpty()) emptyList() else {
+            val otherFilesLabel = tr("其他文件", "Other files", "その他のファイル", "기타 파일", "其他檔案")
+            listOf(DriveBlock(OTHERS_BLOCK_ID, otherFilesLabel, otherFilesLabel, true, null, null, emptyList(), primaryIds))
+        }
+    } else {
+        emptyList()
+    }
+    val blocks = workBlocks + attachments
     val views = if (blocks.isEmpty()) emptyMap() else withoutCollidingStandalone(buildViews(batch, regular), batch, regular)
     return DriveStructure(
         blocks = blocks,
@@ -182,6 +197,7 @@ fun analyzeDriveFolder(files: List<FileStat>): DriveStructure {
         foldedIds = (secondaryIds + secondaryFolders).toSet(),
         views = views,
         attachedTo = attachedTo,
+        attachmentBlocks = attachments,
     )
 }
 
@@ -432,7 +448,13 @@ fun buildDriveItems(
     files.forEachIndexed { index, file -> positionById.putIfAbsentCompat(file.id, index) }
     val flatIds = flat.flatMap { it.fileIds }.sortedBy { id -> positionById[id] ?: -1 }
     val flatWorks = flat.filter { it.id != OTHERS_BLOCK_ID }.flatMap { it.fileIds }.toSet()
-    val rawBlocks = grouped + listOfNotNull(secondaryBlock)
+    val rawBlocks = (grouped + listOfNotNull(secondaryBlock)).map { block ->
+        if (block.id == SECONDARY_BLOCK_ID || block.id.startsWith(ATTACHMENT_BLOCK_PREFIX)) {
+            block.copy(fileIds = block.fileIds.filter { it in byId }.sortedBy { id -> positionById[id] ?: Int.MAX_VALUE })
+        } else {
+            block
+        }
+    }.filter { it.fileIds.isNotEmpty() }
     val (rawPreviewFlatIds, existingFlatIds) = if (hasPreviewFiles) {
         flatIds.partition { byId[it]?.isImportPreview == true }
     } else {
@@ -519,6 +541,64 @@ fun buildDriveItems(
             }
             previousWork = null
             existingBlocks.forEach { block -> previousWork = emitBlock(block, previousWork) }
+        }
+    }
+}
+
+/**
+ * 严格按 [files] 既定顺序投影主列表（已由仓储按排序字段与 foldersFirst 排好），同时始终将解析出的
+ * 附件分区（外挂字幕、外挂音轨）与隐藏附件（封面、原盘成员、折叠版本）从主列表剥离至独立末尾分区。
+ *
+ * 该投影与 `foldersFirst` 及所有排序方式完全正交：
+ * - `foldersFirst = true` 时主列表为 `[已排序文件夹] + [已排序主文件]`
+ * - `foldersFirst = false` 时主列表为 `[已排序文件夹与主文件混排]`
+ * - 两种模式下外挂字幕与外挂音轨均固定独立成默认收起的末尾分区，且分区内条目同样严格保持当前排序。
+ */
+fun buildOrderedDriveItems(
+    files: List<FileStat>,
+    structure: DriveStructure,
+    hideFolded: Boolean,
+    isExpanded: (DriveBlock) -> Boolean,
+): List<DriveListItem> {
+    if (files.isEmpty()) return emptyList()
+    val byId = HashMap<String, FileStat>(files.size * 2)
+    val positionById = HashMap<String, Int>(files.size * 2)
+    files.forEachIndexed { index, file ->
+        byId.putIfAbsentCompat(file.id, file)
+        positionById.putIfAbsentCompat(file.id, index)
+    }
+    val foldingApplied = hideFolded && isFoldingScope(files)
+    val activeAttachedIds = HashSet<String>(structure.attachedTo.size * 2)
+    for ((attachmentId, hostId) in structure.attachedTo) {
+        if (hostId in byId) activeAttachedIds += attachmentId
+    }
+    val primary = ArrayList<DriveListItem.File>(files.size)
+    for (file in files) {
+        if (!file.isImportPreview && foldingApplied && file.id in structure.foldedIds) continue
+        if (!file.isFolder && file.id in activeAttachedIds) continue
+        val view = if (!file.isFolder) {
+            structure.views[file.id]?.let { v -> if (v.heading.isNotBlank()) v.withTitle(v.heading) else v }
+        } else null
+        primary += DriveListItem.File(file, view)
+    }
+    val trailingBlocks = structure.attachmentBlocks.mapNotNull { block ->
+        val orderedIds = block.fileIds
+            .filter { it in byId && it in activeAttachedIds }
+            .sortedBy { positionById[it] ?: Int.MAX_VALUE }
+        if (orderedIds.isEmpty()) null else block.copy(fileIds = orderedIds)
+    }
+    if (trailingBlocks.isEmpty()) return primary
+    val withHeaders = primary.isNotEmpty() || trailingBlocks.size > 1
+    return buildList(primary.size + trailingBlocks.size * 4) {
+        addAll(primary)
+        for (block in trailingBlocks) {
+            val expanded = !withHeaders || isExpanded(block)
+            if (withHeaders) {
+                add(DriveListItem.SectionHeader("section:${block.id}", block.id, block.label, block.menuLabel, expanded))
+            }
+            if (expanded) {
+                block.fileIds.forEach { id -> byId[id]?.let { add(DriveListItem.File(it, structure.views[id])) } }
+            }
         }
     }
 }

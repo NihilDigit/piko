@@ -19,6 +19,15 @@ class VaultEntryCommands(private val repository: PikoDriveRepository, val sessio
         if (account == null || repository.currentAccount != account || !acceptsActions()) return ActionAvailability.Blocked(tr("当前浏览会话已结束", "This browsing session has ended", "閲覧セッションは終了しました", "현재 탐색 세션이 종료되었습니다", "目前的瀏覽工作階段已結束"))
         if (command.entries.isEmpty() || command.entries.any { !isDriveFolderId(it.key) || it.value.isEmpty() || it.value.any(String::isBlank) }) return ActionAvailability.Blocked(tr("无可编辑的归档条目", "No archive items to edit", "編集可能なアーカイブ項目がありません", "편집할 보관 항목이 없습니다", "無可編輯的歸檔項目"))
         if (command is VaultEntryEditCommand.Rename && command.name.isBlank()) return ActionAvailability.Blocked(tr("名称不能为空", "Name cannot be empty", "名前を入力してください", "이름을 입력해 주세요", "名稱不可為空"))
+        if (command is VaultEntryEditCommand.RenameMany && command.renamesByFolder.values.any { map -> map.isEmpty() || map.values.any(String::isBlank) }) {
+            return ActionAvailability.Blocked(tr("名称不能为空", "Name cannot be empty", "名前を入力してください", "이름을 입력해 주세요", "名稱不可為空"))
+        }
+        if (command is VaultEntryEditCommand.Move) {
+            if (!isDriveFolderId(command.targetFolderId)) {
+                return ActionAvailability.Blocked(tr("目标位置不支持移动归档条目", "Destination does not support moving archive items", "移動先はアーカイブ項目の移動に対応していません", "대상 위치에서 보관 항목 이동을 지원하지 않습니다", "目標位置不支援移動歸檔項目"))
+            }
+            return fileCommands.manifestAvailability(command.entries.keys + command.targetFolderId)
+        }
         return fileCommands.manifestAvailability(command.entries.keys)
     }
     fun submit(command: VaultEntryEditCommand): VaultEntryCommandResult = when (val state = availability(command)) {

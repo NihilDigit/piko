@@ -347,4 +347,27 @@ class SqliteDriveTreeIndexTest {
             assertFalse(isUnambiguousLegacyTreeAccount("用户@example.com"))
         } finally { assertTrue(directory.deleteRecursively()) }
     }
+
+    @Test
+    fun openingSqliteSucceedsWhenSqliteTmpdirPointsToMissingNestedDirectory() {
+        val root = Files.createTempDirectory("piko-sqlite-tmpdir-test").toFile()
+        val missingTmpDir = root.resolve("missing/nested/natives")
+        val dbDir = root.resolve("db")
+        val prevTmpDir = System.getProperty("org.sqlite.tmpdir")
+        try {
+            assertFalse(missingTmpDir.exists())
+            System.setProperty("org.sqlite.tmpdir", missingTmpDir.absolutePath)
+            DesktopPikoTreeDatabaseFactory(dbDir).open("tmpdir-test@example.com").use { db ->
+                assertTrue(missingTmpDir.isDirectory, "Expected org.sqlite.tmpdir directory to be created before JDBC connect")
+                db.query("SELECT 1").use { cursor ->
+                    assertTrue(cursor.next())
+                    assertEquals(1L, cursor.long(0))
+                }
+            }
+        } finally {
+            if (prevTmpDir == null) System.clearProperty("org.sqlite.tmpdir")
+            else System.setProperty("org.sqlite.tmpdir", prevTmpDir)
+            root.deleteRecursively()
+        }
+    }
 }

@@ -32,12 +32,14 @@ import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material3.ButtonGroupDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
-import androidx.compose.material3.TonalToggleButton
+import androidx.compose.material3.FilledTonalToggleButton
+import dev.piko.ui.theme.tabular
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,7 +98,7 @@ internal fun TaskKindFilter(
             val selected = state.filter == kind
             val count = state.counts[kind] ?: 0
             val label = if (count > 0) "${kind.label} $count" else kind.label
-            TonalToggleButton(
+            FilledTonalToggleButton(
                 checked = selected,
                 onCheckedChange = { if (!selected) state.changeFilter(kind) },
                 shapes = connectedToggleShapes(index, kinds.size),
@@ -130,44 +132,35 @@ private fun CompactTaskTabStrip(
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
-    Column(modifier = modifier.fillMaxWidth()) {
-        AdaptiveEvenOrScrollableTabs(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 8.dp)
-                .selectableGroup(),
-        ) {
-            kinds.forEach { kind ->
-                val selected = state.filter == kind
-                val count = state.counts[kind] ?: 0
-                val textColor = if (selected) colors.primary else colors.onSurfaceVariant
-                Column(
-                    modifier = Modifier
-                        .width(IntrinsicSize.Max)
-                        .clip(RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp))
-                        .selectable(
-                            selected = selected,
-                            role = Role.Tab,
-                            onClick = { if (!selected) state.changeFilter(kind) },
-                        )
-                        .padding(horizontal = 10.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
+    val selectedIndex = kinds.indexOf(state.filter).coerceAtLeast(0)
+    PrimaryScrollableTabRow(
+        selectedTabIndex = selectedIndex,
+        modifier = modifier.fillMaxWidth(),
+        containerColor = Color.Transparent,
+        contentColor = colors.primary,
+        edgePadding = 12.dp,
+        divider = {},
+    ) {
+        kinds.forEach { kind ->
+            val selected = state.filter == kind
+            val count = state.counts[kind] ?: 0
+            Tab(
+                selected = selected,
+                onClick = { if (!selected) state.changeFilter(kind) },
+                selectedContentColor = colors.primary,
+                unselectedContentColor = colors.onSurfaceVariant,
+                text = {
                     Row(
-                        modifier = Modifier.height(40.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         Text(
                             text = kind.label,
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                            color = textColor,
                             maxLines = 1,
                         )
                         if (count > 0) {
-                            Spacer(Modifier.width(4.dp))
                             Surface(
                                 shape = CircleShape,
                                 color = if (selected) colors.primaryContainer else colors.surfaceContainerHigh,
@@ -175,7 +168,7 @@ private fun CompactTaskTabStrip(
                             ) {
                                 Text(
                                     text = "$count",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                                    style = MaterialTheme.typography.labelSmall.tabular,
                                     fontWeight = FontWeight.Medium,
                                     maxLines = 1,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
@@ -183,57 +176,8 @@ private fun CompactTaskTabStrip(
                             }
                         }
                     }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(3.dp)
-                            .clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp))
-                            .background(if (selected) colors.primary else Color.Transparent),
-                    )
-                }
-            }
-        }
-        HorizontalDivider(
-            thickness = 0.5.dp,
-            color = colors.outlineVariant.copy(alpha = 0.45f),
-        )
-    }
-}
-
-/** 五个标签总自然宽放得下时均分铺满整行，西文长词或大字号超出屏宽时自然转为横向滚动，不截断任何一项。 */
-@Composable
-private fun AdaptiveEvenOrScrollableTabs(
-    modifier: Modifier = Modifier,
-    content: @Composable () -> Unit,
-) {
-    Layout(content = content, modifier = modifier) { measurables, constraints ->
-        val naturalWidths = measurables.map { it.maxIntrinsicWidth(44.dp.roundToPx()) }
-        val sumNatural = naturalWidths.sum()
-        val viewport = constraints.minWidth
-        val extraPerTab = if (viewport > sumNatural && measurables.isNotEmpty()) {
-            (viewport - sumNatural) / measurables.size
-        } else {
-            0
-        }
-        val placeables = measurables.mapIndexed { index, measurable ->
-            val targetWidth = naturalWidths[index] + extraPerTab
-            measurable.measure(
-                Constraints(
-                    minWidth = targetWidth,
-                    maxWidth = targetWidth,
-                    minHeight = 0,
-                    maxHeight = constraints.maxHeight,
-                ),
+                },
             )
-        }
-        val totalWidth = placeables.sumOf { it.width }.coerceAtLeast(viewport)
-        val height = placeables.maxOfOrNull { it.height } ?: 0
-        layout(totalWidth, height) {
-            var x = 0
-            for (placeable in placeables) {
-                placeable.placeRelative(x, height - placeable.height)
-                x += placeable.width
-            }
         }
     }
 }

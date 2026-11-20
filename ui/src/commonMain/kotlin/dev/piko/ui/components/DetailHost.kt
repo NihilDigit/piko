@@ -1,11 +1,13 @@
 package dev.piko.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -26,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.adaptive.isHeightCompact
+import dev.piko.ui.theme.islandBorderColor
 
 internal class DetailPanelSpec(
     private val titleText: () -> String,
@@ -87,6 +90,7 @@ internal class DetailPanelState<T : Any>(val spec: DetailPanelSpec) {
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun <T : Any> DetailHost(
     state: DetailPanelState<T>,
@@ -117,7 +121,7 @@ internal fun <T : Any> DetailHost(
                         modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, bottom = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(spec.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                        Text(spec.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMediumEmphasized)
                         TooltipIconButton(Icons.Outlined.Close, spec.closeLabel, state::close)
                     }
                 }
@@ -139,10 +143,11 @@ internal fun <T : Any> DetailHost(
                         detectTapGestures { state.close() }
                     },
             )
+            val borderColor = MaterialTheme.colorScheme.islandBorderColor
             Surface(
                 shape = MaterialTheme.shapes.extraLarge,
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
-                tonalElevation = 6.dp,
+                border = borderColor?.let { BorderStroke(1.dp, it) },
                 shadowElevation = 8.dp,
                 modifier = Modifier
                     .padding(horizontal = 24.dp, vertical = 16.dp)
@@ -166,7 +171,7 @@ internal fun <T : Any> DetailHost(
                     ) {
                         Text(
                             text = spec.title,
-                            style = MaterialTheme.typography.titleMedium,
+                            style = MaterialTheme.typography.titleMediumEmphasized,
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.weight(1f),
                         )

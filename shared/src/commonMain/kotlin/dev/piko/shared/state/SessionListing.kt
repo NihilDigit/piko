@@ -4,6 +4,7 @@ import dev.piko.shared.i18n.enCount
 import dev.piko.shared.i18n.tr
 
 import dev.piko.shared.data.readableSize
+import dev.piko.shared.data.treeEpochMillis
 import io.github.nihildigit.pikpak.FileStat
 
 /**
@@ -39,20 +40,47 @@ enum class DuplicateKeepRule {
 fun DuplicateGroup.orderedRows(rule: DuplicateKeepRule, focusFolder: String? = null): List<DuplicateRow> {
     // 默认顺序由分组器决定：相同文件按保留建议，版本按大小降序。
     if (rule == DuplicateKeepRule.RECOMMENDED) {
-        return rows.sortedByDescending { focusFolder != null && it.file.folderPath == focusFolder }
+        if (focusFolder == null) return rows
+        var hasFocused = false
+        for (i in 0 until rows.size) {
+            if (rows[i].file.folderPath == focusFolder) {
+                hasFocused = true
+                break
+            }
+        }
+        return if (!hasFocused) rows else rows.sortedByDescending { it.file.folderPath == focusFolder }
+    }
+    fun timeMillisOf(file: DuplicateFile): Long? = treeEpochMillis(file.modifiedTime) ?: file.effectiveCreatedAtMillis
+    fun compareTime(a: DuplicateFile, b: DuplicateFile, descending: Boolean): Int {
+        val ta = timeMillisOf(a)
+        val tb = timeMillisOf(b)
+        return when {
+            ta != null && tb != null -> if (descending) tb.compareTo(ta) else ta.compareTo(tb)
+            ta != null -> -1
+            tb != null -> 1
+            else -> {
+                val sa = a.modifiedTime.ifEmpty { a.createdTime }
+                val sb = b.modifiedTime.ifEmpty { b.createdTime }
+                if (descending) sb.compareTo(sa) else sa.compareTo(sb)
+            }
+        }
     }
     val order = when (rule) {
         DuplicateKeepRule.RECOMMENDED -> KEEP_ORDER
-        DuplicateKeepRule.NEWEST -> compareByDescending<DuplicateFile> { it.modifiedTime.ifEmpty { it.createdTime } }
-        DuplicateKeepRule.OLDEST -> compareBy<DuplicateFile> { it.modifiedTime.ifEmpty { it.createdTime } }
+        DuplicateKeepRule.NEWEST -> Comparator<DuplicateFile> { a, b -> compareTime(a, b, descending = true) }
+        DuplicateKeepRule.OLDEST -> Comparator<DuplicateFile> { a, b -> compareTime(a, b, descending = false) }
         DuplicateKeepRule.LARGEST -> compareByDescending<DuplicateFile> { it.size }
         DuplicateKeepRule.SMALLEST -> compareBy<DuplicateFile> { it.size }
         DuplicateKeepRule.SHORTEST_PATH -> compareBy<DuplicateFile> { it.folderPath.count { char -> char == '/' } }
             .thenBy { it.path.length }
         DuplicateKeepRule.SHORTEST_NAME -> compareBy<DuplicateFile> { it.name.length }
     }.then(KEEP_ORDER)
-    return rows.sortedWith(compareByDescending<DuplicateRow> { focusFolder != null && it.file.folderPath == focusFolder }
-        .thenComparator { a, b -> order.compare(a.file, b.file) })
+    return if (focusFolder == null) {
+        rows.sortedWith { a, b -> order.compare(a.file, b.file) }
+    } else {
+        rows.sortedWith(compareByDescending<DuplicateRow> { it.file.folderPath == focusFolder }
+            .thenComparator { a, b -> order.compare(a.file, b.file) })
+    }
 }
 
 /** 同一文件可能同时出现在相同文件与版本组，行 key 带组身份，选中仍按文件 ID。 */
@@ -63,32 +91,109 @@ class DuplicateListing(
     private val focusFolder: () -> String? = { null },
     private val kindProvider: () -> DuplicateKind? = { kind },
 ) : SessionListing {
-    private val groups: List<DuplicateGroup>
-        get() = when (kindProvider()) {
-            DuplicateKind.IDENTICAL -> finder.report.identical
-            DuplicateKind.VERSIONS -> finder.report.versions
-            null -> finder.report.identical + finder.report.versions
-        }
+    private class MaterializedGroup(
+        val blockId: String,
+        val expandedHeader: DriveListItem.SectionHeader,
+        val collapsedHeader: DriveListItem.SectionHeader,
+        val rows: List<DriveListItem.File>,
+    )
+
+    private var cachedFilesReport: DuplicateReport? = null
+    private var cachedFilesKind: DuplicateKind? = null
+    private var cachedFiles: List<FileStat> = emptyList()
+
+    private var cachedGroupsReport: DuplicateReport? = null
+    private var cachedGroupsKind: DuplicateKind? = null
+    private var cachedGroupsRule: DuplicateKeepRule? = null
+    private var cachedGroupsFocus: String? = null
+    private var cachedGroupsLanguage: Any? = null
+    private var cachedMaterialized: List<MaterializedGroup> = emptyList()
+    private var cachedTotalItemCount: Int = 0
+
+    private fun groupsOf(report: DuplicateReport, currentKind: DuplicateKind?): List<DuplicateGroup> = when (currentKind) {
+        DuplicateKind.IDENTICAL -> report.identical
+        DuplicateKind.VERSIONS -> report.versions
+        null -> report.identical + report.versions
+    }
 
     override val files: List<FileStat>
-        get() = groups
-            .flatMap { group -> group.rows.mapNotNull { finder.fileStat(it.file.id) } }
-            .distinctBy { it.id }
-
-    override fun items(isExpanded: (blockId: String) -> Boolean): List<DriveListItem> = buildList {
-        for (group in groups) {
-            val blockId = "dup:${group.kind}:${group.key}"
-            val expanded = isExpanded(blockId)
-            add(DriveListItem.SectionHeader(blockId, blockId, label(group), group.title, expanded))
-            if (!expanded) continue
-            val rule = keepRule()
-            val orderedRows = group.orderedRows(rule, focusFolder())
-            val showKeepSuggestion = group.kind == DuplicateKind.IDENTICAL || rule != DuplicateKeepRule.RECOMMENDED
-            for (row in orderedRows) {
-                val file = finder.fileStat(row.file.id) ?: continue
-                add(DriveListItem.File(file, view(file, row, showKeepSuggestion && row == orderedRows.firstOrNull()), key = "$blockId/${file.id}"))
+        get() {
+            val report = finder.report
+            val currentKind = kindProvider()
+            if (cachedFilesReport === report && cachedFilesKind == currentKind) return cachedFiles
+            val groups = groupsOf(report, currentKind)
+            val seen = HashSet<String>(groups.size * 3)
+            val out = ArrayList<FileStat>(groups.size * 2)
+            for (i in 0 until groups.size) {
+                val rows = groups[i].rows
+                for (j in 0 until rows.size) {
+                    val id = rows[j].file.id
+                    if (seen.add(id)) {
+                        finder.fileStat(id)?.let(out::add)
+                    }
+                }
             }
+            cachedFilesReport = report
+            cachedFilesKind = currentKind
+            cachedFiles = out
+            return out
         }
+
+    private fun materializedGroups(): List<MaterializedGroup> {
+        val report = finder.report
+        val currentKind = kindProvider()
+        val rule = keepRule()
+        val focus = focusFolder()
+        val language = dev.piko.shared.i18n.PikoLocale.effectiveLanguage
+        if (cachedGroupsReport === report &&
+            cachedGroupsKind == currentKind &&
+            cachedGroupsRule == rule &&
+            cachedGroupsFocus == focus &&
+            cachedGroupsLanguage == language
+        ) {
+            return cachedMaterialized
+        }
+        val groups = groupsOf(report, currentKind)
+        val built = ArrayList<MaterializedGroup>(groups.size)
+        var totalCount = 0
+        for (i in 0 until groups.size) {
+            val group = groups[i]
+            val blockId = "dup:${group.kind}:${group.key}"
+            val text = label(group)
+            val expandedHeader = DriveListItem.SectionHeader(blockId, blockId, text, group.title, expanded = true)
+            val collapsedHeader = DriveListItem.SectionHeader(blockId, blockId, text, group.title, expanded = false)
+            val orderedRows = group.orderedRows(rule, focus)
+            val showKeepSuggestion = group.kind == DuplicateKind.IDENTICAL || rule != DuplicateKeepRule.RECOMMENDED
+            val rowItems = ArrayList<DriveListItem.File>(orderedRows.size)
+            for (j in 0 until orderedRows.size) {
+                val row = orderedRows[j]
+                val file = finder.fileStat(row.file.id) ?: continue
+                rowItems.add(DriveListItem.File(file, view(file, row, showKeepSuggestion && j == 0), key = "$blockId/${file.id}"))
+            }
+            totalCount += 1 + rowItems.size
+            built.add(MaterializedGroup(blockId, expandedHeader, collapsedHeader, rowItems))
+        }
+        cachedGroupsReport = report
+        cachedGroupsKind = currentKind
+        cachedGroupsRule = rule
+        cachedGroupsFocus = focus
+        cachedGroupsLanguage = language
+        cachedMaterialized = built
+        cachedTotalItemCount = totalCount
+        return built
+    }
+
+    override fun items(isExpanded: (blockId: String) -> Boolean): List<DriveListItem> {
+        val groups = materializedGroups()
+        if (groups.isEmpty()) return emptyList()
+        val out = ArrayList<DriveListItem>(cachedTotalItemCount)
+        for (i in 0 until groups.size) {
+            val g = groups[i]
+            val expanded = isExpanded(g.blockId)
+            out.add(if (expanded) g.expandedHeader else g.collapsedHeader)
+            if (expanded) out.addAll(g.rows)
+        }
+        return out
     }
 
     private fun label(group: DuplicateGroup): String = when (group.kind) {

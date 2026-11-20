@@ -3,6 +3,9 @@ package dev.piko.ui.screens.drive
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -10,10 +13,14 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.RotateRight
+import androidx.compose.material.icons.outlined.ZoomIn
+import androidx.compose.material.icons.outlined.ZoomOut
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -50,12 +57,20 @@ import dev.piko.ui.components.previewImageCoverUrl
 import dev.piko.ui.components.trackPointerSource
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.resolveCoilModel
+import dev.piko.ui.theme.LocalFixedColors
+import dev.piko.ui.theme.tabular
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 private const val KEY_ZOOM_STEP = 1.5f
+
+private sealed interface ViewerCommand {
+    data class Zoom(val factor: Float?) : ViewerCommand
+    data object RotateCw : ViewerCommand
+}
 
 /** ZoomImage alone owns image transforms; the outer layer only owns downward dismissal. */
 @Composable
@@ -76,7 +91,8 @@ internal fun ImageViewer(images: List<FileStat>, initialIndex: Int, onDismiss: (
         val focus = remember { FocusRequester() }
         var dismissProgress by remember { mutableFloatStateOf(0f) }
         // The registered callback belongs to the active page's scope, not the dialog scope.
-        var zoomCommand by remember { mutableStateOf<((Float?) -> Unit)?>(null) }
+        var viewerCommand by remember { mutableStateOf<((ViewerCommand) -> Unit)?>(null) }
+        var zoomPercent by remember { mutableIntStateOf(100) }
         LaunchedEffect(pointers.isTouchLike) {
             if (!pointers.isTouchLike) runCatching { focus.requestFocus() }
         }
@@ -84,6 +100,7 @@ internal fun ImageViewer(images: List<FileStat>, initialIndex: Int, onDismiss: (
             val target = page.coerceIn(images.indices)
             if (target != pager.currentPage) scope.launch { pager.animateScrollToPage(target) }
         }
+        val motion = MaterialTheme.motionScheme
         Box(
             Modifier.fillMaxSize()
                 .trackPointerSource(pointers)
@@ -97,9 +114,10 @@ internal fun ImageViewer(images: List<FileStat>, initialIndex: Int, onDismiss: (
                         Key.DirectionRight, Key.PageDown, Key.Spacebar -> goTo(pager.currentPage + 1)
                         Key.MoveHome -> goTo(0)
                         Key.MoveEnd -> goTo(images.lastIndex)
-                        Key.Plus, Key.Equals, Key.NumPadAdd -> zoomCommand?.invoke(KEY_ZOOM_STEP)
-                        Key.Minus, Key.NumPadSubtract -> zoomCommand?.invoke(1f / KEY_ZOOM_STEP)
-                        Key.Zero, Key.NumPad0 -> zoomCommand?.invoke(null)
+                        Key.Plus, Key.Equals, Key.NumPadAdd -> viewerCommand?.invoke(ViewerCommand.Zoom(KEY_ZOOM_STEP))
+                        Key.Minus, Key.NumPadSubtract -> viewerCommand?.invoke(ViewerCommand.Zoom(1f / KEY_ZOOM_STEP))
+                        Key.Zero, Key.NumPad0 -> viewerCommand?.invoke(ViewerCommand.Zoom(null))
+                        Key.R -> viewerCommand?.invoke(ViewerCommand.RotateCw)
                         else -> return@onPreviewKeyEvent false
                     }
                     true
@@ -117,7 +135,8 @@ internal fun ImageViewer(images: List<FileStat>, initialIndex: Int, onDismiss: (
                     ZoomableImagePage(
                         file = file,
                         isPaging = { pager.isScrollInProgress },
-                        onZoomCommand = { zoomCommand = it },
+                        onViewerCommand = { viewerCommand = it },
+                        onZoomPercentChange = { zoomPercent = it },
                         onTap = { isChromeVisible = !isChromeVisible },
                         onDismiss = onDismiss,
                         onDismissProgress = { dismissProgress = it },
@@ -128,7 +147,8 @@ internal fun ImageViewer(images: List<FileStat>, initialIndex: Int, onDismiss: (
             }
             AnimatedVisibility(
                 visible = isChromeVisible,
-                enter = fadeIn(), exit = fadeOut(),
+                enter = fadeIn(motion.fastEffectsSpec()),
+                exit = fadeOut(motion.fastEffectsSpec()),
                 modifier = Modifier.align(Alignment.TopCenter).graphicsLayer { alpha = 1f - dismissProgress },
             ) {
                 ViewerTopBar(
@@ -151,6 +171,22 @@ internal fun ImageViewer(images: List<FileStat>, initialIndex: Int, onDismiss: (
                     { goTo(pager.currentPage + 1) }, Modifier.align(Alignment.CenterEnd),
                 )
             }
+            AnimatedVisibility(
+                visible = isChromeVisible && viewerCommand != null,
+                enter = slideInVertically(motion.fastSpatialSpec()) { it / 2 } + fadeIn(motion.fastEffectsSpec()),
+                exit = slideOutVertically(motion.fastSpatialSpec()) { it / 2 } + fadeOut(motion.fastEffectsSpec()),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .graphicsLayer { alpha = 1f - dismissProgress },
+            ) {
+                ViewerControlCapsule(
+                    zoomPercent = zoomPercent,
+                    onZoomOut = { viewerCommand?.invoke(ViewerCommand.Zoom(1f / KEY_ZOOM_STEP)) },
+                    onResetZoom = { viewerCommand?.invoke(ViewerCommand.Zoom(null)) },
+                    onZoomIn = { viewerCommand?.invoke(ViewerCommand.Zoom(KEY_ZOOM_STEP)) },
+                    onRotate = { viewerCommand?.invoke(ViewerCommand.RotateCw) },
+                )
+            }
         }
     }
 }
@@ -161,37 +197,146 @@ private fun PageButton(
     visible: Boolean, icon: ImageVector, description: String, shortcut: String,
     onClick: () -> Unit, modifier: Modifier,
 ) {
-    AnimatedVisibility(visible, enter = fadeIn(), exit = fadeOut(), modifier = modifier.padding(16.dp)) {
+    val fixedColors = LocalFixedColors.current
+    val motion = MaterialTheme.motionScheme
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(motion.fastEffectsSpec()),
+        exit = fadeOut(motion.fastEffectsSpec()),
+        modifier = modifier.padding(16.dp),
+    ) {
         TooltipBox(
             positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
             tooltip = { PlainTooltip { Text("$description ($shortcut)") } },
             state = rememberTooltipState(),
         ) {
-            FilledTonalIconButton(
+            Surface(
                 onClick = onClick,
-                colors = IconButtonDefaults.filledTonalIconButtonColors(
-                    containerColor = Color.Black.copy(alpha = 0.45f), contentColor = Color.White,
-                ),
-            ) { Icon(icon, contentDescription = description) }
+                shape = CircleShape,
+                color = fixedColors.ScrimOnMediaStrong,
+                contentColor = fixedColors.OnMedia,
+                modifier = Modifier.size(44.dp),
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = description)
+                }
+            }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ViewerTopBar(title: String, position: String?, onClose: () -> Unit) {
-    Box(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.6f), Color.Transparent)))) {
+    val fixedColors = LocalFixedColors.current
+    Box(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(fixedColors.ScrimOnMedia.copy(alpha = 0.78f), Color.Transparent)))) {
         Row(
             Modifier.fillMaxWidth()
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
                 .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, tr("关闭", "Close", "閉じる", "닫기", "關閉"), onClose, shortcut = "Esc", tint = Color.White)
-            Text(title, style = MaterialTheme.typography.titleMedium, color = Color.White,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, tr("关闭", "Close", "閉じる", "닫기", "關閉"), onClose, shortcut = "Esc", tint = fixedColors.OnMedia)
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMediumEmphasized,
+                color = fixedColors.OnMedia,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
             if (position != null) {
                 Spacer(Modifier.width(12.dp))
-                Text(position, style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.8f))
+                Surface(
+                    shape = CircleShape,
+                    color = fixedColors.ScrimOnMediaStrong,
+                    border = BorderStroke(1.dp, fixedColors.HudSpecularBorder),
+                ) {
+                    Text(
+                        text = position,
+                        style = MaterialTheme.typography.labelLarge.tabular,
+                        color = fixedColors.OnMedia,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ViewerControlCapsule(
+    zoomPercent: Int,
+    onZoomOut: () -> Unit,
+    onResetZoom: () -> Unit,
+    onZoomIn: () -> Unit,
+    onRotate: () -> Unit,
+) {
+    val fixedColors = LocalFixedColors.current
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Brush.verticalGradient(listOf(Color.Transparent, fixedColors.ScrimOnMedia.copy(alpha = 0.6f))))
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal))
+            .padding(top = 20.dp, bottom = 16.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = fixedColors.ScrimOnMediaStrong,
+            contentColor = fixedColors.OnMedia,
+            border = BorderStroke(1.dp, fixedColors.HudSpecularBorder),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TooltipIconButton(
+                    icon = Icons.Outlined.ZoomOut,
+                    label = tr("缩小", "Zoom out", "縮小", "축소", "縮小"),
+                    onClick = onZoomOut,
+                    shortcut = "-",
+                    tint = fixedColors.OnMedia,
+                )
+                TooltipBox(
+                    positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+                    tooltip = { PlainTooltip { Text(tr("重置缩放 (0)", "Reset zoom (0)", "ズームをリセット (0)", "배율 재설정 (0)", "重設縮放 (0)")) } },
+                    state = rememberTooltipState(),
+                ) {
+                    TextButton(
+                        onClick = onResetZoom,
+                        colors = ButtonDefaults.textButtonColors(contentColor = fixedColors.OnMedia),
+                        contentPadding = PaddingValues(horizontal = 10.dp),
+                    ) {
+                        Text(
+                            text = "${zoomPercent}%",
+                            style = MaterialTheme.typography.labelLarge.tabular,
+                            maxLines = 1,
+                        )
+                    }
+                }
+                TooltipIconButton(
+                    icon = Icons.Outlined.ZoomIn,
+                    label = tr("放大", "Zoom in", "拡大", "확대", "放大"),
+                    onClick = onZoomIn,
+                    shortcut = "+",
+                    tint = fixedColors.OnMedia,
+                )
+                Box(
+                    modifier = Modifier
+                        .padding(horizontal = 4.dp)
+                        .width(1.dp)
+                        .height(18.dp)
+                        .background(fixedColors.HudSpecularBorder),
+                )
+                TooltipIconButton(
+                    icon = Icons.Outlined.RotateRight,
+                    label = tr("旋转 90°", "Rotate 90°", "90° 回転", "90° 회전", "旋轉 90°"),
+                    onClick = onRotate,
+                    shortcut = "R",
+                    tint = fixedColors.OnMedia,
+                )
             }
         }
     }
@@ -209,7 +354,8 @@ private fun ViewerPreview(file: FileStat) {
 private fun ZoomableImagePage(
     file: FileStat,
     isPaging: () -> Boolean,
-    onZoomCommand: (((Float?) -> Unit)?) -> Unit,
+    onViewerCommand: (((ViewerCommand) -> Unit)?) -> Unit,
+    onZoomPercentChange: (Int) -> Unit,
     onTap: () -> Unit,
     onDismiss: () -> Unit,
     onDismissProgress: (Float) -> Unit,
@@ -253,6 +399,13 @@ private fun ZoomableImagePage(
                 var keyJob by remember { mutableStateOf<Job?>(null) }
                 var dragY by remember { mutableFloatStateOf(0f) }
                 val atFit by remember { derivedStateOf { zoom.zoomable.transform.scaleX <= zoom.zoomable.minScale * 1.001f } }
+                val currentZoomPercent by remember {
+                    derivedStateOf {
+                        val base = zoom.zoomable.minScale.takeIf { it > 0.001f } ?: 1f
+                        ((zoom.zoomable.transform.scaleX / base) * 100f).roundToInt().coerceAtLeast(10)
+                    }
+                }
+                LaunchedEffect(currentZoomPercent) { onZoomPercentChange(currentZoomPercent) }
                 val paging by rememberUpdatedState(isPaging)
                 val tap by rememberUpdatedState(onTap)
                 val dismiss by rememberUpdatedState(onDismiss)
@@ -262,13 +415,18 @@ private fun ZoomableImagePage(
                     // foreground tiles remain owned by this page; no second background tile layer.
                     zoom.subsampling.setDisabledTileImageCache(true)
                     zoom.subsampling.setDisabledBackgroundTiles(true)
-                    onZoomCommand { factor ->
+                    onViewerCommand { command ->
                         keyJob?.cancel()
                         keyJob = scope.launch {
-                            if (factor == null) {
-                                zoom.zoomable.scale(zoom.zoomable.minScale)
-                                zoom.zoomable.reset()
-                            } else zoom.zoomable.scaleBy(factor, animated = true)
+                            when (command) {
+                                is ViewerCommand.Zoom -> {
+                                    if (command.factor == null) {
+                                        zoom.zoomable.scale(zoom.zoomable.minScale)
+                                        zoom.zoomable.reset()
+                                    } else zoom.zoomable.scaleBy(command.factor, animated = true)
+                                }
+                                ViewerCommand.RotateCw -> zoom.zoomable.rotateBy(90)
+                            }
                         }
                     }
                     onDispose {
@@ -276,7 +434,8 @@ private fun ZoomableImagePage(
                         zoom.subsampling.setStopped(true)
                         zoom.setSubsamplingImage(null as com.github.panpf.zoomimage.subsampling.SubsamplingImage?)
                         zoom.zoomable.reset()
-                        onZoomCommand(null)
+                        onViewerCommand(null)
+                        onZoomPercentChange(100)
                         progress(0f)
                     }
                 }

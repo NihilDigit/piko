@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="updater_download_in_background">背景下載</string>
+    <string name="updater_open_download_page">開啟下載頁</string>
+    <string name="updater_later">稍後重啟</string>
+    <string name="updater_stage_downloading">正在下載</string>
+    <string name="updater_stage_verifying">正在驗證安裝套件…</string>
+    <string name="updater_stage_staging">正在準備更新檔案…</string>
+    <string name="updater_no_release_notes">此版本沒有更新說明</string>
+    <string name="updater_ready_short">更新已就緒</string>
+    <string name="updater_checking">正在檢查更新</string>
+    <string name="updater_up_to_date">已是最新版本</string>
+    <string name="updater_available_version">發現新版本 %1$s</string>
+    <string name="updater_ready_to_restart_desc">已下載並驗證，重新啟動後完成更新</string>
+    <string name="updater_view_update">查看更新</string>
+    <string name="updater_view_progress">查看進度</string>
+    <string name="updater_check_for_updates">檢查更新</string>
+    <string name="updater_version_label">版本 %1$s</string>
+    <string name="updater_remaining_eta">剩餘 %1$s</string>
+    <string name="updater_background_downloading_tooltip">正在背景下載更新 (%1$d%%)</string>
+    <string name="updater_dialog_title">更新 Piko</string>
+    <string name="updater_updating_to">更新至 %1$s</string>
+</resources>

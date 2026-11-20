@@ -1,5 +1,7 @@
 package dev.piko.data.auth
 
+import dev.piko.shared.data.DriveAppearancePrefs
+import dev.piko.shared.media.player.PlayerLayoutPrefs
 import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -32,8 +34,26 @@ object PlayerGestureDefaults {
     const val BOOST_SPEED = 2f
     val BoostSpeedChoices = listOf(1.5f, 2f, 2.5f, 3f)
 
-    /** 播放画质上限的档位，画面高度，0 是原画。PikPak 的转码一般是这三档 */
+    /** 播放画质自动档：按网络速度与当前倍速自动升降画质（默认），仅用于在线播放。 */
+    const val PLAYBACK_AUTO_HEIGHT = -1
+
+    /** 固定画质上限的档位，画面高度，0 是原画。PikPak 的转码一般是这三档 */
     val MaxHeightChoices = listOf(0, 1080, 720, 480)
+}
+
+/** 本地缓存上限与过期清理天数的默认值与可选档位（设备本地设置，不参与跨设备同步）。 */
+object CachePolicyDefaults {
+    const val DEFAULT_MAX_BYTES: Long = 2L * 1024L * 1024L * 1024L
+    const val DEFAULT_MAX_AGE_DAYS: Int = 14
+    val MaxBytesChoices: List<Long> = listOf(
+        512L * 1024L * 1024L,
+        1L * 1024L * 1024L * 1024L,
+        2L * 1024L * 1024L * 1024L,
+        5L * 1024L * 1024L * 1024L,
+        10L * 1024L * 1024L * 1024L,
+        0L,
+    )
+    val MaxAgeDaysChoices: List<Int> = listOf(3, 7, 14, 30, 0)
 }
 
 enum class AppLanguage(val tag: String, val nativeLabel: String) {
@@ -72,7 +92,41 @@ enum class AppLanguage(val tag: String, val nativeLabel: String) {
     }
 }
 
+/**
+ * 启动与高频界面路径的无锁偏好快照，避免在组合或 ViewModel 初始化期间调用 `runBlocking`。
+ * 带内存缓存的实现（`StoredPikoPreferences`、已预加载的 `SessionManager`）直接返回最新值；测试替身回退至默认值。
+ */
+data class PikoPreferencesSnapshot(
+    val appLanguage: AppLanguage = AppLanguage.SYSTEM,
+    val themeMode: String? = null,
+    val themeSeed: String? = null,
+    val pureBlack: Boolean = false,
+    val spoilerBlurEnabled: Boolean = false,
+    val reduceMotion: Boolean = false,
+    val hardwareDecoding: Boolean = true,
+    val playbackMaxHeight: Int = PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT,
+    val driveViewMode: String = "POSTER",
+    val galleryShowImages: Boolean = true,
+    val sidebarCollapsed: Boolean = false,
+    val showExtensions: Boolean = false,
+    val proxySetting: ProxySetting = ProxySetting(),
+    val tileSizes: Map<String, String> = emptyMap(),
+    val playerLayout: PlayerLayoutPrefs = PlayerLayoutPrefs.Default,
+    val driveAppearance: DriveAppearancePrefs = DriveAppearancePrefs.DEFAULT,
+    val skipFeedExitConfirm: Boolean = false,
+    val cacheMaxBytes: Long = CachePolicyDefaults.DEFAULT_MAX_BYTES,
+    val cacheMaxAgeDays: Int = CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS,
+) {
+    fun tileSize(view: String): String = tileSizes[view].orEmpty()
+}
+
 interface PikoUserPreferences {
+    /** 无锁读取当前偏好快照，供启动初始化与界面初值使用。 */
+    val currentSnapshot: PikoPreferencesSnapshot get() = PikoPreferencesSnapshot()
+
+    /** 无锁读取指定视图的卡片大小偏好，未设置时返回空串。 */
+    fun currentTileSize(view: String): String = currentSnapshot.tileSize(view)
+
     /** 当前设备记住的引用保存选择，不参与跨设备设置同步。 */
     val saveAsReferenceFlow: Flow<Boolean> get() = kotlinx.coroutines.flow.flowOf(false)
     suspend fun setSaveAsReference(enabled: Boolean) {}
@@ -131,6 +185,10 @@ interface PikoUserPreferences {
     /** 内置主题色，存 SeedTheme 的名字。为 null 表示系统取色。 */
     val themeSeedFlow: Flow<String?>
     suspend fun setThemeSeed(seed: String?)
+
+    /** 纯黑深色模式（OLED），仅在深色外观下生效，默认关闭。随设置跨设备同步。 */
+    val pureBlackFlow: Flow<Boolean> get() = flowOf(false)
+    suspend fun setPureBlack(enabled: Boolean) {}
 
     /**
      * 网盘列表的视图，存 ui 里 DriveViewMode 的名字：列表、海报墙或图库。全局记住，不随进出目录或重启复位。
@@ -264,8 +322,9 @@ interface PikoUserPreferences {
     suspend fun setHardwareDecoding(enabled: Boolean)
 
     /**
-     * 播放画质上限：画面高度，0 是原画（默认）。播放时挑不高于它的最大一档转码，没有就放原画，见 transcodeNameAtMost。
-     * 每台设备各自的，不同步：手机走流量想要 720P，电脑上要原画。
+     * 播放画质设置：-1（[PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT]）是自动（默认，按网速与倍速调节），
+     * 0 是原画，正整数是画面高度上限（播放时挑不高于它的最大一档转码，没有就放原画，见 transcodeNameAtMost）。
+     * 每台设备各自的，不同步：手机走流量想要 720P，电脑上要自动或原画。
      */
     val playbackMaxHeightFlow: Flow<Int>
     suspend fun setPlaybackMaxHeight(height: Int)
@@ -289,6 +348,26 @@ interface PikoUserPreferences {
     /** 信息流 30 秒片段播完后自动顺延续播当前视频后续内容，默认开启。跟着设置同步。 */
     val clipAutoExtendFlow: Flow<Boolean>
     suspend fun setClipAutoExtend(enabled: Boolean)
+
+    /** 播放器四态自定义布局、听音频与手势配置。跟着设置同步。 */
+    val playerLayoutPrefsFlow: Flow<PlayerLayoutPrefs> get() = flowOf(PlayerLayoutPrefs.Default)
+    suspend fun setPlayerLayoutPrefs(prefs: PlayerLayoutPrefs) {}
+
+    /** 网盘三视图（列表 / 网格 / 瀑布流）文件外观自定义配置。跟着设置同步。 */
+    val driveAppearancePrefsFlow: Flow<DriveAppearancePrefs> get() = flowOf(DriveAppearancePrefs.DEFAULT)
+    suspend fun setDriveAppearancePrefs(prefs: DriveAppearancePrefs) {}
+
+    /** 退出瀑布流与信息流时跳过确认弹窗直接退出，默认关闭。跨设备同步。 */
+    val skipFeedExitConfirmFlow: Flow<Boolean> get() = flowOf(false)
+    suspend fun setSkipFeedExitConfirm(skip: Boolean) {}
+
+    /** 本地缓存容量上限（字节；0 表示无限制）。仅保存在当前设备，不同步。 */
+    val cacheMaxBytesFlow: Flow<Long> get() = flowOf(CachePolicyDefaults.DEFAULT_MAX_BYTES)
+    suspend fun setCacheMaxBytes(bytes: Long) {}
+
+    /** 本地缓存过期自动清理天数（0 表示永不自动按时间清理）。仅保存在当前设备，不同步。 */
+    val cacheMaxAgeDaysFlow: Flow<Int> get() = flowOf(CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS)
+    suspend fun setCacheMaxAgeDays(days: Int) {}
 
     /**
      * 网盘页的目录图（FolderMap）开着与钉着，默认都否。两项各自独立：× 关掉不改钉住，再打开照旧钉着；

@@ -14,7 +14,11 @@ internal class AccountPresentationStores {
     var generation by mutableLongStateOf(0L)
         private set
 
-    fun forAccount(account: String): ViewModelStoreOwner {
+    fun forAccount(account: String, activeAccount: String? = account): ViewModelStoreOwner {
+        if (activeAccount != null && activeAccount != account) {
+            // Stale composition frame for a departed account must never evict the newly active account's store.
+            return Owner()
+        }
         if (this.account == account) return requireNotNull(owner)
         owner?.viewModelStore?.clear()
         return Owner().also { this.account = account; owner = it }

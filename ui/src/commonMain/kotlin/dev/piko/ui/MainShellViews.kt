@@ -6,7 +6,6 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -48,7 +47,7 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TonalToggleButton
+import androidx.compose.material3.FilledTonalToggleButton
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteItem
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
@@ -56,7 +55,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.SaveableStateHolder
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
@@ -88,6 +91,7 @@ import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.state.DriveBrowserSession
 import dev.piko.shared.state.QuickAccessState
 import dev.piko.ui.components.CommandPalette
+import dev.piko.ui.components.FeedExitConfirmCheckbox
 import dev.piko.ui.components.FileDragOverlay
 import dev.piko.ui.components.FileDragState
 import dev.piko.ui.components.PaletteItem
@@ -120,6 +124,7 @@ import dev.piko.ui.screens.transfers.TransfersScreen
 import dev.piko.ui.theme.LocalPikoMotion
 import dev.piko.ui.theme.ThemeMode
 import dev.piko.ui.theme.frame
+import kotlinx.coroutines.launch
 import dev.piko.ui.workbench.ClaimDialog
 import dev.piko.ui.workbench.LocatingOverlay
 import dev.piko.ui.workbench.OngoingWorkSheet
@@ -275,7 +280,7 @@ internal fun MainHomeContent(
         }
     }
 
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize()) {
         BackHandler(enabled = currentTab != MainTab.FILES && !feedFullScreen) {
             onSelectMainTab(MainTab.FILES)
         }
@@ -408,15 +413,28 @@ internal fun MainShellOverlays(
     FileDragOverlay(fileDrag)
 
     if (workspaceModel.askingCloseFeed) {
+        val scope = rememberCoroutineScope()
+        var dontAskAgain by remember { mutableStateOf(false) }
         PikoDialog(
             onDismissRequest = { workspaceModel.askingCloseFeed = false },
             title = { Text(stringResource(Res.string.text_close_feed_alt)) },
-            text = { Text(stringResource(Res.string.text_closing_clears_the_current_queue_and_browsing_progress)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(stringResource(Res.string.text_closing_clears_the_current_queue_and_browsing_progress))
+                    FeedExitConfirmCheckbox(
+                        checked = dontAskAgain,
+                        onCheckedChange = { dontAskAgain = it },
+                    )
+                }
+            },
             confirmButton = {
                 PikoDialogConfirm(
                     tr("关闭", "Close", "閉じる", "닫기", "關閉"),
                     destructive = true,
                     onClick = {
+                        if (dontAskAgain) {
+                            scope.launch { services.preferences.setSkipFeedExitConfirm(true) }
+                        }
                         workspaceModel.askingCloseFeed = false
                         onConfirmCloseFeed()
                     },
@@ -558,7 +576,13 @@ internal fun MainTab.icon(selected: Boolean) = when (this) {
 private val SidebarFadeLength = 24.dp
 
 private fun Modifier.scrollFadeEdges(state: ScrollState, length: Dp): Modifier = this
-    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    .graphicsLayer {
+        compositingStrategy = if (state.canScrollBackward || state.canScrollForward) {
+            CompositingStrategy.Offscreen
+        } else {
+            CompositingStrategy.Auto
+        }
+    }
     .drawWithContent {
         drawContent()
         val fade = length.toPx().coerceAtMost(size.height / 2)
@@ -686,7 +710,7 @@ private fun MainTabSwitch(currentTab: MainTab?, onTabClick: (MainTab) -> Unit, c
     ) {
         tabs.forEachIndexed { index, tab ->
             val selected = tab == currentTab
-            TonalToggleButton(
+            FilledTonalToggleButton(
                 checked = selected,
                 onCheckedChange = { onTabClick(tab) },
                 shapes = connectedToggleShapes(index, tabs.size),

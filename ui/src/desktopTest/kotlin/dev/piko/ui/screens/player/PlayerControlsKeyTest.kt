@@ -16,6 +16,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TestTimeSource
 
 @OptIn(InternalComposeUiApi::class)
 class PlayerControlsKeyTest {
@@ -237,5 +239,90 @@ class PlayerControlsKeyTest {
             ),
         )
         assertEquals(0, playPauseCalls)
+    }
+
+    @Test
+    fun hiddenControlsLongPressAcceleratesImmediatelyWithoutFlashingLegacyOneXHud() {
+        val timeSource = TestTimeSource()
+        var backendSpeed = 1.0f
+        val speedWrites = mutableListOf<Float>()
+        val ui = PlayerControlsUiState(
+            scope = scope,
+            initialResumedFromMillis = null,
+            initialSpeed = backendSpeed,
+            initialRotation = 0,
+            initialBoostSpeed = 2.5f,
+            timeSource = timeSource,
+        ).apply {
+            currentDurationMillis = 120_000L
+            currentPositionMillis = 30_000L
+            currentIsPlaying = true
+            controlsVisible = false
+            currentPlaybackSpeed = backendSpeed
+            currentLongPressSpeed = 2.5f
+        }
+        val controller = PlaybackSpeedController(
+            readSpeed = { backendSpeed },
+            writeSpeed = { next ->
+                backendSpeed = next
+                ui.currentPlaybackSpeed = next
+                speedWrites += next
+            },
+            defaultHoldSpeed = 2.5f,
+            readDurationMillis = { 120_000L },
+            onDialSpeedWrite = ui::markDialSpeedWrite,
+        )
+        ui.onStartHoldBoost = { controller.open(temporary = true, showDial = false) }
+        ui.onEndHoldBoost = { if (controller.active) controller.finish(cancel = false) }
+
+        // 1. 控件隐藏时画面长按：立即加速至 2.5x，松手恢复 1.0x，且全程不触发旧风格 1× 中心胶囊闪烁
+        controller.open(temporary = true, showDial = true)
+        assertEquals(2.5f, backendSpeed)
+        assertFalse(ui.consumeObservedSpeedFlash(previous = 1.0f, speed = 2.5f, isSpeedDialActive = controller.active))
+
+        controller.releaseHoldDrag()
+        assertEquals(1.0f, backendSpeed)
+        assertFalse(controller.active)
+        // Frame 1: 同步乐观写回 1.0x 被抑制
+        assertFalse(
+            ui.consumeObservedSpeedFlash(previous = 2.5f, speed = 1.0f, isSpeedDialActive = controller.active),
+            "Releasing temporary hold-boost back to 1.0x must NOT flash legacy 1x center indicator",
+        )
+        // 模拟松手后数毫秒原生 libmpv 异步滞后回传中间倍速 3.0x 与 1.0x：400ms 单调窗口内须全部吸收，绝不闪出旧胶囊
+        timeSource += 35.milliseconds
+        assertFalse(
+            ui.consumeObservedSpeedFlash(previous = 1.0f, speed = 3.0f, isSpeedDialActive = false),
+            "Trailing async native mpv echo (3.0x) inside 400ms window must be suppressed",
+        )
+        timeSource += 45.milliseconds
+        assertFalse(
+            ui.consumeObservedSpeedFlash(previous = 3.0f, speed = 1.0f, isSpeedDialActive = false),
+            "Trailing async native mpv echo (1.0x) inside 400ms window must be suppressed",
+        )
+        assertNull(ui.flashIndicator)
+
+        // 2. 控件隐藏时键盘右方向键长按同样走统一 PlaybackSpeedController（无旧 PlayerHud 胶囊）
+        ui.startBoost { controller.applySpeed(it) }
+        assertTrue(controller.active)
+        assertEquals(false, controller.selection?.showDial)
+        assertEquals(2.5f, backendSpeed)
+        ui.endBoost { controller.applySpeed(it) }
+        assertFalse(controller.active)
+        assertEquals(1.0f, backendSpeed)
+        assertFalse(ui.consumeObservedSpeedFlash(previous = 2.5f, speed = 1.0f, isSpeedDialActive = false))
+        assertNull(ui.flashIndicator)
+
+        // 3. 显式快捷键（如 Backspace / [ / ]）立即清空拨盘抑制窗口，即使在 400ms 内也能立即闪烁反馈
+        timeSource += 20.milliseconds
+        ui.clearDialSpeedSuppression()
+        controller.applySpeed(1.5f)
+        assertTrue(ui.consumeObservedSpeedFlash(previous = 1.0f, speed = 1.5f, isSpeedDialActive = false))
+
+        // 4. 超过 400ms 单调窗口后自动解除抑制
+        controller.open(temporary = true, showDial = true)
+        controller.releaseHoldDrag()
+        timeSource += 450.milliseconds
+        assertTrue(ui.consumeObservedSpeedFlash(previous = 1.0f, speed = 1.25f, isSpeedDialActive = false))
+        assertEquals(listOf(2.5f, 1.0f, 2.5f, 1.0f, 1.5f, 2.5f, 1.5f), speedWrites)
     }
 }

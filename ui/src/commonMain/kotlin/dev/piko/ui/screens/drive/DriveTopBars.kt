@@ -48,7 +48,10 @@ import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.TonalToggleButton
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.OutlinedToggleButton
+import androidx.compose.material3.OutlinedToggleButtonDefaults
+import androidx.compose.ui.graphics.Color
 import dev.piko.ui.components.connectedToggleShapes
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,7 +64,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -104,14 +106,13 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.platform.windowDragArea
 
-/** 多选顶栏只保留选择控制，条目操作统一在批量面板中。 */
+/** 多选顶栏只保留退出、已选计数与全选控制；条目动作统一收敛在底部浮动工具栏（DriveSelectionFloatingToolbar），避免重复入口。 */
 @Composable
 internal fun DriveSelectionTopBar(
     scrollBehavior: TopAppBarScrollBehavior,
     selectedCount: Int,
     onExit: () -> Unit,
     onSelectAll: (() -> Unit)?,
-    onActions: () -> Unit,
 ) {
     PikoTopBar(
         scrollBehavior = scrollBehavior,
@@ -123,7 +124,6 @@ internal fun DriveSelectionTopBar(
         actions = buildList {
             val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
             if (onSelectAll != null) add(iconBarItem(Icons.Outlined.SelectAll, tr("全选", "Select all", "すべて選択", "모두 선택", "全選"), onSelectAll, priority = 10, shortcut = shortcutModifier.label("A")))
-            add(iconBarItem(Icons.Outlined.MoreVert, tr("操作", "Actions", "操作", "작업", "操作"), onActions, priority = 30, enabled = selectedCount > 0))
         },
     )
 }
@@ -288,7 +288,7 @@ private val BrowseTitleMinWidth = 96.dp
  * 它打开的是另一种浏览方式：随机刷这个文件夹里的视频片段，所以单独一个带名字的按钮，开着时是选中态。
  * 已弹出到独立窗口时仍是开着的，再点一下连同窗口一起关掉。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun FeedToggle(
     shown: Boolean,
@@ -314,11 +314,18 @@ internal fun FeedToggle(
         }
         return
     }
-    TonalToggleButton(
+    val colors = MaterialTheme.colorScheme
+    OutlinedToggleButton(
         checked = shown,
         onCheckedChange = onShownChange,
-        contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
-        modifier = Modifier.padding(end = 4.dp).heightIn(min = 40.dp),
+        colors = OutlinedToggleButtonDefaults.colors(
+            containerColor = Color.Transparent,
+            contentColor = colors.onSurfaceVariant,
+            checkedContainerColor = colors.secondaryContainer,
+            checkedContentColor = colors.onSecondaryContainer,
+        ),
+        contentPadding = PaddingValues(start = 10.dp, end = 14.dp, top = 0.dp, bottom = 0.dp),
+        modifier = Modifier.padding(end = 4.dp).height(36.dp),
     ) {
         Icon(
             imageVector = if (shown) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
@@ -326,14 +333,14 @@ internal fun FeedToggle(
             modifier = Modifier.size(18.dp),
         )
         Spacer(Modifier.width(6.dp))
-        Text(stringResource(Res.string.text_feed))
+        Text(stringResource(Res.string.text_feed), maxLines = 1)
     }
 }
 
 /**
- * 窄窗口命令栏右端的连体探索组：左段瀑布流（开启时点开菜单可调尺寸或退出瀑布流），右段信息流（随机片段）。
+ * 窄窗口命令栏右端的连体探索组（Outlined Connected Toggle Group）：左段瀑布流（开启时点开菜单可调尺寸或退出瀑布流），右段信息流（随机片段）。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun ExploreToggleGroup(
     galleryShown: Boolean,
@@ -347,6 +354,13 @@ internal fun ExploreToggleGroup(
 ) {
     val count = (if (onGalleryShownChange != null) 1 else 0) + (if (onFeedShownChange != null) 1 else 0)
     if (count == 0) return
+    val colors = MaterialTheme.colorScheme
+    val toggleColors = OutlinedToggleButtonDefaults.colors(
+        containerColor = Color.Transparent,
+        contentColor = colors.onSurfaceVariant,
+        checkedContainerColor = colors.secondaryContainer,
+        checkedContentColor = colors.onSecondaryContainer,
+    )
     var index = 0
     Row(
         modifier = Modifier.padding(end = 4.dp),
@@ -356,7 +370,7 @@ internal fun ExploreToggleGroup(
             var sizeMenuOpen by remember { mutableStateOf(false) }
             val currentIndex = index++
             Box {
-                TonalToggleButton(
+                OutlinedToggleButton(
                     checked = galleryShown,
                     onCheckedChange = {
                         if (galleryShown && tileSize != null && onTileSizeChange != null) {
@@ -366,11 +380,14 @@ internal fun ExploreToggleGroup(
                         }
                     },
                     shapes = connectedToggleShapes(currentIndex, count),
+                    colors = toggleColors,
                     contentPadding = PaddingValues(
-                        start = 12.dp,
-                        end = if (galleryShown && tileSize != null && onTileSizeChange != null) 8.dp else if (count == 1) 16.dp else 12.dp,
+                        start = 10.dp,
+                        end = if (galleryShown && tileSize != null && onTileSizeChange != null) 6.dp else if (count == 1) 14.dp else 10.dp,
+                        top = 0.dp,
+                        bottom = 0.dp,
                     ),
-                    modifier = Modifier.heightIn(min = 40.dp),
+                    modifier = Modifier.height(36.dp),
                 ) {
                     Icon(
                         imageVector = if (galleryShown) Icons.Filled.PhotoLibrary else Icons.Outlined.PhotoLibrary,
@@ -378,7 +395,7 @@ internal fun ExploreToggleGroup(
                         modifier = Modifier.size(18.dp),
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text(stringResource(Res.string.text_masonry))
+                    Text(stringResource(Res.string.text_masonry), maxLines = 1)
                     if (galleryShown && tileSize != null && onTileSizeChange != null) {
                         Spacer(Modifier.width(2.dp))
                         Icon(Icons.Outlined.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -391,7 +408,7 @@ internal fun ExploreToggleGroup(
                             val current = tileSize == size
                             DropdownMenuItem(
                                 text = { Text(tr("${size.label}尺寸", "${size.label} size", "${size.label}サイズ", "${size.label} 크기", "${size.label}尺寸"), color = if (current) MaterialTheme.colorScheme.primary else androidx.compose.ui.graphics.Color.Unspecified) },
-                                trailingIcon = if (current) ({
+                                trailingContent = if (current) ({
                                     Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                                 }) else null,
                                 shape = menuItemShape(sizeIndex, sizes.size),
@@ -418,7 +435,7 @@ internal fun ExploreToggleGroup(
                                         modifier = Modifier.size(18.dp),
                                     )
                                 },
-                                trailingIcon = if (galleryShowImages) ({
+                                trailingContent = if (galleryShowImages) ({
                                     Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                                 }) else null,
                                 shape = menuItemShape(0, 1),
@@ -444,12 +461,13 @@ internal fun ExploreToggleGroup(
         }
         if (onFeedShownChange != null) {
             val currentIndex = index
-            TonalToggleButton(
+            OutlinedToggleButton(
                 checked = feedShown,
                 onCheckedChange = onFeedShownChange,
                 shapes = connectedToggleShapes(currentIndex, count),
-                contentPadding = PaddingValues(start = 12.dp, end = 16.dp),
-                modifier = Modifier.heightIn(min = 40.dp),
+                colors = toggleColors,
+                contentPadding = PaddingValues(start = 10.dp, end = 14.dp, top = 0.dp, bottom = 0.dp),
+                modifier = Modifier.height(36.dp),
             ) {
                 Icon(
                     imageVector = if (feedShown) Icons.Filled.SwipeVertical else Icons.Outlined.SwipeVertical,
@@ -457,7 +475,7 @@ internal fun ExploreToggleGroup(
                     modifier = Modifier.size(18.dp),
                 )
                 Spacer(Modifier.width(6.dp))
-                Text(stringResource(Res.string.text_feed))
+                Text(stringResource(Res.string.text_feed), maxLines = 1)
             }
         }
     }

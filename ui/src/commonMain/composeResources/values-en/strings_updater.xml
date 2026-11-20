@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="updater_download_in_background">Download in background</string>
+    <string name="updater_open_download_page">Open download page</string>
+    <string name="updater_later">Restart later</string>
+    <string name="updater_stage_downloading">Downloading</string>
+    <string name="updater_stage_verifying">Verifying package…</string>
+    <string name="updater_stage_staging">Preparing update…</string>
+    <string name="updater_no_release_notes">No release notes for this version</string>
+    <string name="updater_ready_short">Update ready</string>
+    <string name="updater_checking">Checking for updates</string>
+    <string name="updater_up_to_date">Up to date</string>
+    <string name="updater_available_version">Update available: %1$s</string>
+    <string name="updater_ready_to_restart_desc">Downloaded and verified; restart to finish updating</string>
+    <string name="updater_view_update">View update</string>
+    <string name="updater_view_progress">View progress</string>
+    <string name="updater_check_for_updates">Check for updates</string>
+    <string name="updater_version_label">Version %1$s</string>
+    <string name="updater_remaining_eta">%1$s left</string>
+    <string name="updater_background_downloading_tooltip">Downloading update in background (%1$d%%)</string>
+    <string name="updater_dialog_title">Update Piko</string>
+    <string name="updater_updating_to">Updating to %1$s</string>
+</resources>

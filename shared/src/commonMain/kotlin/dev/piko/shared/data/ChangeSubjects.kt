@@ -13,12 +13,12 @@ internal fun DriveChangeJournal.Change.affectedFileIds(): Set<String> = when (th
     }
 }
 
-internal fun DriveChangeJournal.Change.affectedManifestFolders(): Set<String> =
-    if (this is DriveChangeJournal.Change.Vault) {
-        reverts.keys + recreateOnRevert.keys + untrashByFolder.keys + trashByFolder.keys
-    } else {
-        emptySet()
-    }
+internal fun DriveChangeJournal.Change.affectedManifestFolders(): Set<String> = when (this) {
+    is DriveChangeJournal.Change.Vault ->
+        reverts.keys + orderedReverts.map { it.first } + recreateOnRevert.keys + untrashByFolder.keys + trashByFolder.keys
+    is DriveChangeJournal.Change.Rename -> vaultReverts.keys
+    else -> emptySet()
+}
 
 /** 名称撤销不改变接收目录的身份；位置和存在状态的撤销需要保护其后代。 */
 internal fun DriveChangeJournal.Change.affectedTreeIds(): Set<String> =

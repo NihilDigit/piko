@@ -10,6 +10,8 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -65,6 +67,8 @@ import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
 import dev.piko.ui.components.connectedToggleShapes
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 
 /**
  * 设置页一套的尺寸。桌面照 Windows 设置页的卡片（Fluent settings card）：每项一张独立的小圆角卡片、卡片间 4dp、
@@ -105,18 +109,18 @@ internal fun settingsStyle(): SettingsStyle {
         if (desktop) {
             SettingsStyle(
                 horizontalPadding = 16.dp,
-                verticalPadding = 12.dp,
-                minHeight = 64.dp,
+                verticalPadding = 10.dp,
+                minHeight = 56.dp,
                 iconSize = 20.dp,
                 iconGap = 16.dp,
-                outerCorner = 8.dp,
-                innerCorner = 8.dp,
-                itemGap = 4.dp,
+                outerCorner = 12.dp,
+                innerCorner = 4.dp,
+                itemGap = 2.dp,
                 titleStyle = typography.bodyMedium,
                 supportingStyle = typography.bodySmall,
                 trailingChoices = true,
-                swatchTarget = 40.dp,
-                swatchSize = 32.dp,
+                swatchTarget = 44.dp,
+                swatchSize = 36.dp,
             )
         } else {
             SettingsStyle(
@@ -188,9 +192,11 @@ internal fun SettingsGroup(title: String?, modifier: Modifier = Modifier, conten
 @Composable
 internal fun SettingsCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     val style = settingsStyle()
+    val eInk = LocalAppearance.current.isEInk
     Surface(
         shape = style.itemShape,
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = if (eInk) Color.White else MaterialTheme.colorScheme.surfaceContainer,
+        border = if (eInk) BorderStroke(1.dp, MaterialTheme.colorScheme.outline) else null,
         modifier = modifier.fillMaxWidth(),
         content = content,
     )
@@ -236,9 +242,15 @@ internal fun SettingsRow(
     }
     val contentColor = if (selected) colors.onSecondaryContainer else colors.onSurface
     val dimmed = if (enabled) 1f else DisabledContentAlpha
+    val eInk = LocalAppearance.current.isEInk
     Surface(
         shape = style.itemShape,
-        color = if (selected) colors.secondaryContainer else colors.surfaceContainer,
+        color = when {
+            selected -> colors.secondaryContainer
+            eInk -> Color.White
+            else -> colors.surfaceContainer
+        },
+        border = if (eInk) BorderStroke(1.dp, colors.outline) else null,
         modifier = modifier.fillMaxWidth(),
     ) {
         Column(
@@ -390,13 +402,15 @@ internal fun <T> SettingsSegmentedChoice(
         horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
     ) {
         // 未选的段默认是 surfaceContainer，与设置行同色，放在行里只剩一行字，看不出是按钮
-        val colors = ToggleButtonDefaults.toggleButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest)
+        val eInk = LocalAppearance.current.isEInk
+        val colors = ToggleButtonDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest)
         options.forEachIndexed { index, option ->
             ToggleButton(
                 checked = option == selected,
                 onCheckedChange = { onSelect(option) },
                 shapes = connectedToggleShapes(index, options.size),
                 colors = colors,
+                border = if (eInk) BorderStroke(1.dp, MaterialTheme.colorScheme.outline) else null,
                 modifier = if (fill) Modifier.weight(1f) else Modifier,
             ) {
                 Text(label(option), maxLines = 1)

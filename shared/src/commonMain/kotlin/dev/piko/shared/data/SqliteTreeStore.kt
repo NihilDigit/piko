@@ -43,6 +43,9 @@ internal class SqliteTreeStore(
     private var cachedSubtreeStats: Map<String, SubtreeStats>? = null
     // Bounded ContentMetadata cache active during candidate builds to avoid 120,000+ redundant SELECTs on Android.
     private val candidateContentCache = LinkedHashMap<ContentKey, ContentMetadata>(2048)
+    // Keys already verified absent in tree_content during the current appendCandidate batch.
+    private val batchMissingContentKeys = HashSet<ContentKey>(512)
+    private var batchPrefetchActive = false
 
     private fun cacheCandidateContent(key: ContentKey, metadata: ContentMetadata) {
         // Common LinkedHashMap has insertion order only; remove/reinsert preserves the access-order LRU.
@@ -54,6 +57,8 @@ internal class SqliteTreeStore(
 
     private fun clearCandidateContentCache() {
         candidateContentCache.clear()
+        batchMissingContentKeys.clear()
+        batchPrefetchActive = false
         candidateContentExhaustive = false
     }
 
@@ -115,14 +120,42 @@ internal class SqliteTreeStore(
         db.execute("CREATE TABLE IF NOT EXISTS tree_legacy_refs(generation INTEGER NOT NULL,id TEXT NOT NULL,ref INTEGER NOT NULL,PRIMARY KEY(generation,id))")
         db.execute("CREATE TABLE IF NOT EXISTS tree_legacy_instances(generation INTEGER NOT NULL,id TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(generation,id))")
         db.execute("CREATE TABLE IF NOT EXISTS tree_legacy_content(generation INTEGER NOT NULL,gcid TEXT NOT NULL,bytes INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(generation,gcid,bytes))")
-        for (table in listOf("tree_legacy_sources", "tree_legacy_refs", "tree_legacy_instances", "tree_legacy_content")) db.execute("DELETE FROM $table")
-        // Candidate generations have no visibility after a process crash.
-        db.execute("DELETE FROM tree_nodes WHERE generation>0")
-        db.execute("DELETE FROM tree_vault WHERE generation>0")
-        db.execute("DELETE FROM tree_vault_state WHERE generation>0")
-        db.execute("DELETE FROM tree_deleted")
-        db.execute("DELETE FROM tree_overrides")
+        for (table in listOf("tree_legacy_sources", "tree_legacy_refs", "tree_legacy_instances", "tree_legacy_content")) {
+            if (scalar("SELECT 1 FROM $table LIMIT 1") != null) db.execute("DELETE FROM $table")
+        }
         sequence = meta("sequence")?.toLongOrNull() ?: 0L
+        val resumeGen = meta("candidate_resume_gen")?.toLongOrNull()?.takeIf { it > 0L }
+        val resumeToken = meta("candidate_resume_token")?.takeIf { it.isNotBlank() }
+        val keepResumable = meta("complete") != "true" && resumeGen != null && resumeToken != null
+        if (keepResumable) {
+            val savedGen = resumeGen!!
+            nextGeneration = maxOf(nextGeneration, savedGen)
+            val baseline = meta("candidate_resume_baseline")?.toLongOrNull() ?: sequence
+            candidates[savedGen] = baseline
+            if (scalar("SELECT 1 FROM tree_nodes WHERE generation>0 AND generation<>? LIMIT 1", listOf(savedGen)) != null) {
+                db.execute("DELETE FROM tree_nodes WHERE generation>0 AND generation<>?", listOf(savedGen))
+            }
+            if (scalar("SELECT 1 FROM tree_vault WHERE generation>0 AND generation<>? LIMIT 1", listOf(savedGen)) != null) {
+                db.execute("DELETE FROM tree_vault WHERE generation>0 AND generation<>?", listOf(savedGen))
+            }
+            if (scalar("SELECT 1 FROM tree_vault_state WHERE generation>0 AND generation<>? LIMIT 1", listOf(savedGen)) != null) {
+                db.execute("DELETE FROM tree_vault_state WHERE generation>0 AND generation<>?", listOf(savedGen))
+            }
+        } else {
+            // Candidate generations have no visibility after a process crash.
+            if (scalar("SELECT 1 FROM tree_nodes WHERE generation>0 LIMIT 1") != null) {
+                db.execute("DELETE FROM tree_nodes WHERE generation>0")
+            }
+            if (scalar("SELECT 1 FROM tree_vault WHERE generation>0 LIMIT 1") != null) {
+                db.execute("DELETE FROM tree_vault WHERE generation>0")
+            }
+            if (scalar("SELECT 1 FROM tree_vault_state WHERE generation>0 LIMIT 1") != null) {
+                db.execute("DELETE FROM tree_vault_state WHERE generation>0")
+            }
+            if (resumeGen != null || resumeToken != null) clearCandidateCheckpointMeta()
+            if (scalar("SELECT 1 FROM tree_deleted LIMIT 1") != null) db.execute("DELETE FROM tree_deleted")
+            if (scalar("SELECT 1 FROM tree_overrides LIMIT 1") != null) db.execute("DELETE FROM tree_overrides")
+        }
         val interruptedVaults = ArrayList<String>()
         rows("SELECT key FROM tree_meta WHERE key LIKE 'optimistic_vault:%' AND value='true'") {
             interruptedVaults += it.string(0)!!.removePrefix("optimistic_vault:")
@@ -277,6 +310,7 @@ internal class SqliteTreeStore(
     fun clear() = mutate {
         for (table in listOf("tree_nodes", "tree_content", "tree_instances", "tree_coverage", "tree_vault", "tree_deleted", "tree_aggregate", "tree_subtree", "tree_restores", "tree_overrides", "tree_vault_revision", "tree_vault_state", "tree_direct_usage")) db.execute("DELETE FROM $table")
         meta("complete", "false"); meta("usage", null); meta("synced", null); meta("sync_cursor", null); meta("sync_cursor_version", null)
+        clearCandidateCheckpointMeta()
         candidates.clear(); clearCandidateContentCache(); rebuildAll = true
         invalidateAllCaches()
     }
@@ -422,33 +456,13 @@ internal class SqliteTreeStore(
     ): Map<String, List<dev.piko.shared.space.SpacePreviewBlock>> {
         if (closed || limitPerParent <= 0 || parentIds.isEmpty()) return emptyMap()
         val distinct = parentIds.distinct()
-        val result = HashMap<String, ArrayList<dev.piko.shared.space.SpacePreviewBlock>>(distinct.size)
-        val virtualClause = if (includeVaulted) "" else " AND virtual=0"
-        for (chunk in distinct.chunked(200)) {
-            val placeholders = chunk.joinToString(",") { "?" }
-            val sql = """
-                SELECT parent,id,virtual,name,bytes FROM (
-                    SELECT parent,id,virtual,name,bytes,
-                           ROW_NUMBER() OVER (PARTITION BY parent ORDER BY bytes DESC) AS rn
-                    FROM tree_nodes
-                    WHERE generation=0 AND parent IN ($placeholders) AND folder=0 AND excluded=0$virtualClause AND bytes>0
-                ) WHERE rn <= ?
-            """.trimIndent()
-            rows(sql, chunk + limitPerParent) { c ->
-                val parent = c.string(0)!!
-                val vaulted = c.long(2) == 1L
-                val bytes = (c.long(4) ?: 0L).coerceAtLeast(0L)
-                result.getOrPut(parent) { ArrayList(limitPerParent) } += dev.piko.shared.space.SpacePreviewBlock(
-                    id = c.string(1)!!,
-                    name = c.string(3)!!,
-                    isFolder = false,
-                    isVaulted = vaulted,
-                    bytes = bytes,
-                    physicalBytes = if (vaulted) 0L else bytes,
-                    vaultedBytes = if (vaulted) bytes else 0L,
-                    fileCount = 1L,
-                )
-            }
+        val result = HashMap<String, List<dev.piko.shared.space.SpacePreviewBlock>>(distinct.size)
+        // SQLite 3.22 (Android 10 / API 29) lacks window functions (ROW_NUMBER() requires 3.25+).
+        // Per-parent indexed LIMIT seeks tree_space_files(generation,parent,folder,excluded,bytes DESC) in O(log N + K)
+        // and reuses a single cached prepared statement instead of compiling dynamic IN (...) queries.
+        for (parent in distinct) {
+            val top = topSpacePreviewFiles(parent, includeVaulted, limitPerParent)
+            if (top.isNotEmpty()) result[parent] = top
         }
         return result
     }
@@ -549,11 +563,20 @@ internal class SqliteTreeStore(
                 return it
             }
             if (candidateContentExhaustive) return null
+            if (batchPrefetchActive && key in batchMissingContentKeys) return null
         }
         return content(key)?.also { if (generation != 0L) cacheCandidateContent(key, it) }
     }
 
-    private fun clean(file: FileStat) = file.copy(params = file.params - "piko_original_created_at", thumbnailLink = file.thumbnailLink.takeUnless { '?' in it }.orEmpty())
+    private fun clean(file: FileStat): FileStat {
+        val stripCreated = "piko_original_created_at" in file.params
+        val stripThumb = '?' in file.thumbnailLink
+        if (!stripCreated && !stripThumb) return file
+        return file.copy(
+            params = if (stripCreated) file.params - "piko_original_created_at" else file.params,
+            thumbnailLink = if (stripThumb) "" else file.thumbnailLink,
+        )
+    }
 
     private fun put(file: FileStat, generation: Long = 0) {
         if (file.trashed) return
@@ -724,6 +747,23 @@ internal class SqliteTreeStore(
     }
 
     fun content(key: ContentKey): ContentMetadata? = if (closed) null else scalar("SELECT payload FROM tree_content WHERE gcid=? AND bytes=?", listOf(key.gcid, key.sizeBytes))?.let { json.decodeFromString(ContentMetadata.serializer(), it) }
+
+    fun contentBatch(keys: Collection<ContentKey>): Map<ContentKey, ContentMetadata> {
+        if (closed || keys.isEmpty()) return emptyMap()
+        val wanted = if (keys is Set<ContentKey>) keys else keys.toHashSet()
+        val result = HashMap<ContentKey, ContentMetadata>(wanted.size)
+        val gcids = wanted.mapTo(LinkedHashSet(wanted.size)) { it.gcid }
+        for (chunk in gcids.chunked(400)) {
+            val placeholders = chunk.joinToString(",") { "?" }
+            rows("SELECT gcid,bytes,payload FROM tree_content WHERE gcid IN ($placeholders)", chunk) { c ->
+                val key = ContentKey(c.string(0)!!, c.long(1)!!)
+                if (key in wanted) {
+                    result[key] = json.decodeFromString(ContentMetadata.serializer(), c.string(2)!!)
+                }
+            }
+        }
+        return result
+    }
     private fun putContent(
         key: ContentKey,
         metadata: ContentMetadata,
@@ -804,6 +844,18 @@ internal class SqliteTreeStore(
         }
     }
     fun originalCreated(id: String): Long? = if (closed) null else scalar("SELECT original_created FROM tree_instances WHERE id=?", listOf(id))?.toLongOrNull()
+
+    fun originalCreatedBatch(ids: Collection<String>): Map<String, Long> {
+        if (closed || ids.isEmpty()) return emptyMap()
+        val result = HashMap<String, Long>()
+        for (chunk in ids.distinct().chunked(400)) {
+            val placeholders = chunk.joinToString(",") { "?" }
+            rows("SELECT id,original_created FROM tree_instances WHERE id IN ($placeholders)", chunk) { c ->
+                result[c.string(0)!!] = c.long(1)!!
+            }
+        }
+        return result
+    }
     fun instance(id: String, value: EntryMetadata) {
         if (closed) return
         if (originalCreated(id) == value.originalCreatedAtMillis) return
@@ -897,16 +949,26 @@ internal class SqliteTreeStore(
                     }
                 }
             }
-            is DriveChange.Moved -> for (id in change.ids) {
-                db.execute("INSERT OR IGNORE INTO tree_overrides(id) VALUES (?)", listOf(id))
-                db.execute("UPDATE tree_overrides SET parent=?,parent_seq=? WHERE id=?", listOf(change.to, sequence, id))
-                val known = file(id)
-                if (known != null) {
-                    if (known.isFolder && isPikoInternalFolder(known, known.parentId) != isPikoInternalFolder(known, change.to)) {
-                        rebuildAll = true
-                    }
-                    put(known.copy(parentId = change.to))
-                } else change.folders.orEmpty().forEach { coverage(it, true) }
+            is DriveChange.Moved -> {
+                val manifestParents = HashMap<String, String?>()
+                for (id in change.ids) {
+                    db.execute("INSERT OR IGNORE INTO tree_overrides(id) VALUES (?)", listOf(id))
+                    db.execute("UPDATE tree_overrides SET parent=?,parent_seq=? WHERE id=?", listOf(change.to, sequence, id))
+                    val known = file(id)
+                    if (known != null) {
+                        if (known.isFolder && isPikoInternalFolder(known, known.parentId) != isPikoInternalFolder(known, change.to)) {
+                            rebuildAll = true
+                        }
+                        if (VaultStore.looksLikeManifest(known)) {
+                            if (known.parentId !in manifestParents) manifestParents[known.parentId] = winner(known.parentId)?.id
+                            if (change.to !in manifestParents) manifestParents[change.to] = winner(change.to)?.id
+                        }
+                        put(known.copy(parentId = change.to))
+                    } else change.folders.orEmpty().forEach { coverage(it, true) }
+                }
+                for ((folder, previous) in manifestParents) {
+                    if (previous != winner(folder)?.id) clearVault(folder)
+                }
             }
             is DriveChange.Trashed -> remove(change.ids)
             is DriveChange.Deleted -> remove(change.ids)
@@ -928,6 +990,7 @@ internal class SqliteTreeStore(
                 if (change.folders == null) {
                     rebuildAll = true
                     meta("complete", "false")
+                    clearCandidateCheckpointMeta()
                     candidates.clear()
                     invalidateCoverage()
                     db.execute("DELETE FROM tree_coverage")
@@ -1019,6 +1082,44 @@ internal class SqliteTreeStore(
         }
     }
 
+    private fun saveCandidateCheckpointMeta(checkpoint: DriveTreeIndex.CandidateResumeCheckpoint, baseline: Long) {
+        meta("candidate_resume_gen", checkpoint.generation.toString())
+        meta("candidate_resume_token", checkpoint.pageToken)
+        meta("candidate_resume_first_sync", checkpoint.firstSyncTime)
+        meta("candidate_resume_folders", checkpoint.foldersRead.toString())
+        meta("candidate_resume_files", checkpoint.filesRead.toString())
+        meta("candidate_resume_baseline", baseline.toString())
+    }
+
+    private fun clearCandidateCheckpointMeta() {
+        db.execute("DELETE FROM tree_meta WHERE key LIKE 'candidate_resume_%'")
+    }
+
+    fun resumableCandidate(): DriveTreeIndex.CandidateResumeCheckpoint? {
+        if (closed || complete) return null
+        val gen = meta("candidate_resume_gen")?.toLongOrNull()?.takeIf { it > 0L && it in candidates } ?: return null
+        val token = meta("candidate_resume_token")?.takeIf { it.isNotBlank() } ?: return null
+        val firstSync = meta("candidate_resume_first_sync").orEmpty()
+        val foldersRead = meta("candidate_resume_folders")?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+        val filesRead = meta("candidate_resume_files")?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+        return DriveTreeIndex.CandidateResumeCheckpoint(
+            generation = gen,
+            pageToken = token,
+            firstSyncTime = firstSync,
+            foldersRead = foldersRead,
+            filesRead = filesRead,
+        )
+    }
+
+    fun candidateManifests(generation: Long): List<FileStat> {
+        if (closed || generation !in candidates) return emptyList()
+        val manifests = ArrayList<FileStat>()
+        rows("SELECT payload FROM tree_nodes WHERE generation=? AND excluded=1 AND name LIKE '.piko-vault-%'", listOf(generation)) {
+            manifests += decode(it.string(0)!!)
+        }
+        return manifests
+    }
+
     fun beginCandidate(): Long {
         if (closed) return -1
         val id = ++nextGeneration
@@ -1029,9 +1130,43 @@ internal class SqliteTreeStore(
         candidates[id] = sequence
         return id
     }
-    fun appendCandidate(generation: Long, files: List<FileStat>) {
+    fun appendCandidate(
+        generation: Long,
+        files: List<FileStat>,
+        checkpoint: DriveTreeIndex.CandidateResumeCheckpoint? = null,
+    ) {
         if (closed || generation !in candidates) return
-        db.transaction { files.forEach { if (!VaultEntry.isVaulted(it.id)) put(it, generation) } }
+        val baseline = candidates[generation] ?: sequence
+        db.transaction {
+            // Batch-prefetch tree_content for the whole page so shadow/resumed builds execute 1-2 queries
+            // instead of 500 individual SELECTs per page.
+            batchMissingContentKeys.clear()
+            if (!candidateContentExhaustive && files.isNotEmpty()) {
+                val missingKeys = HashSet<ContentKey>(files.size)
+                for (f in files) {
+                    if (f.trashed || VaultEntry.isVaulted(f.id)) continue
+                    val key = ContentKey.of(f) ?: continue
+                    if (key !in candidateContentCache) missingKeys.add(key)
+                }
+                if (missingKeys.isNotEmpty()) {
+                    val found = contentBatch(missingKeys)
+                    for ((k, v) in found) cacheCandidateContent(k, v)
+                    for (k in missingKeys) if (k !in found) batchMissingContentKeys.add(k)
+                }
+                batchPrefetchActive = true
+            }
+            try {
+                for (f in files) {
+                    if (!VaultEntry.isVaulted(f.id)) put(f, generation)
+                }
+            } finally {
+                batchPrefetchActive = false
+                batchMissingContentKeys.clear()
+            }
+            if (checkpoint != null && checkpoint.generation == generation && checkpoint.pageToken.isNotBlank()) {
+                saveCandidateCheckpointMeta(checkpoint, baseline)
+            }
+        }
     }
     private fun flushObservedMetadata() {
         if (touchedFolders.isNotEmpty()) { rebuildAggregates(); revision++ }
@@ -1041,10 +1176,15 @@ internal class SqliteTreeStore(
         candidates.remove(generation)
         if (candidates.isEmpty()) clearCandidateContentCache()
         db.transaction {
+            if (meta("candidate_resume_gen")?.toLongOrNull() == generation) clearCandidateCheckpointMeta()
             db.execute("DELETE FROM tree_nodes WHERE generation=?", listOf(generation))
             db.execute("DELETE FROM tree_vault WHERE generation=?", listOf(generation))
             db.execute("DELETE FROM tree_vault_state WHERE generation=?", listOf(generation))
-            for (table in listOf("tree_legacy_sources", "tree_legacy_refs", "tree_legacy_instances", "tree_legacy_content")) db.execute("DELETE FROM $table WHERE generation=?", listOf(generation))
+            for (table in listOf("tree_legacy_sources", "tree_legacy_refs", "tree_legacy_instances", "tree_legacy_content")) {
+                if (scalar("SELECT 1 FROM $table WHERE generation=? LIMIT 1", listOf(generation)) != null) {
+                    db.execute("DELETE FROM $table WHERE generation=?", listOf(generation))
+                }
+            }
         }
     }
     fun commitCandidate(generation: Long, usage: Long?, syncedAt: Long, syncCursor: String? = null): Set<String> {
@@ -1088,8 +1228,17 @@ internal class SqliteTreeStore(
             for ((folder, manifest) in candidateVaultStates) {
                 if ((folder.isNotEmpty() && file(folder, generation)?.isFolder != true) || manifest != winner(folder, generation)?.id) clearVault(folder, generation)
             }
-            rows("SELECT DISTINCT a.parent FROM tree_nodes a LEFT JOIN tree_nodes b ON b.generation=? AND b.id=a.id WHERE a.generation=0 AND (b.id IS NULL OR a.payload<>b.payload) UNION SELECT DISTINCT b.parent FROM tree_nodes b LEFT JOIN tree_nodes a ON a.generation=0 AND a.id=b.id WHERE b.generation=? AND (a.id IS NULL OR a.payload<>b.payload)", listOf(generation, generation)) { changed += it.string(0)!! }
-            db.execute("DELETE FROM tree_nodes WHERE generation=0")
+            val hadLiveNodes = scalar("SELECT 1 FROM tree_nodes WHERE generation=0 LIMIT 1") != null
+            if (!hadLiveNodes) {
+                rows("SELECT DISTINCT parent FROM tree_nodes WHERE generation=?", listOf(generation)) { changed += it.string(0)!! }
+            } else {
+                rows(
+                    "SELECT DISTINCT a.parent FROM tree_nodes a LEFT JOIN tree_nodes b ON b.generation=? AND b.id=a.id WHERE a.generation=0 AND (b.id IS NULL OR a.parent<>b.parent OR a.name<>b.name OR a.bytes<>b.bytes OR a.payload<>b.payload) " +
+                        "UNION SELECT DISTINCT b.parent FROM tree_nodes b LEFT JOIN tree_nodes a ON a.generation=0 AND a.id=b.id WHERE b.generation=? AND (a.id IS NULL OR a.parent<>b.parent OR a.name<>b.name OR a.bytes<>b.bytes OR a.payload<>b.payload)",
+                    listOf(generation, generation),
+                ) { changed += it.string(0)!! }
+                db.execute("DELETE FROM tree_nodes WHERE generation=0")
+            }
             db.execute("UPDATE tree_nodes SET generation=0 WHERE generation=?", listOf(generation))
             db.execute("DELETE FROM tree_vault WHERE generation=0")
             db.execute("UPDATE tree_vault SET generation=0 WHERE generation=?", listOf(generation))
@@ -1101,6 +1250,7 @@ internal class SqliteTreeStore(
             db.execute("INSERT OR IGNORE INTO tree_coverage VALUES ('',0,?)", listOf(sequence))
             db.execute("DELETE FROM tree_instances WHERE id NOT IN (SELECT id FROM tree_nodes WHERE generation=0)")
             db.execute("INSERT OR REPLACE INTO tree_instances SELECT r.id,r.original_created FROM tree_restores r JOIN tree_nodes n ON n.generation=0 AND n.id=r.id AND n.gcid=r.gcid AND n.bytes=r.bytes AND n.folder=0")
+            clearCandidateCheckpointMeta()
             meta("complete", "true")
             if ((meta("usage_seq")?.toLongOrNull() ?: 0L) <= baseline && usage != null) meta("usage", usage.toString())
             meta("synced", syncedAt.toString())
@@ -1258,12 +1408,31 @@ internal class SqliteTreeStore(
             if (excluded.add(id)) queue.addAll(childrenByParent[id].orEmpty())
         }
 
+        val manifestRows = ensureManifestRows()
+        val unresolvedManifestFolders: Set<String> = if (manifestRows.isEmpty()) {
+            emptySet()
+        } else {
+            val cachedIds = locallyCachedManifestIds()
+            val winners = HashMap<String, FileStat>()
+            for (f in manifestRows.values) {
+                val w = VaultStore.winnerOf(listOfNotNull(winners[f.parentId], f), cachedIds)
+                if (w != null) winners[f.parentId] = w
+            }
+            val resolved = HashMap<String, String?>()
+            rows("SELECT folder,manifest_id FROM tree_vault_state WHERE generation=0") { c ->
+                resolved[c.string(0)!!] = c.string(1)
+            }
+            winners.entries.mapNotNullTo(HashSet()) { (folderId, w) ->
+                folderId.takeIf { resolved[folderId] != w.id }
+            }
+        }
+
         val accByFolder = HashMap<String, FolderStatAcc>(folders.size + 1)
         fun addFolder(id: String) {
             val folderComplete = (isComplete || id in listed) && id !in dirty
             accByFolder[id] = FolderStatAcc(
                 physListingComplete = folderComplete,
-                vaultListingComplete = folderComplete,
+                vaultListingComplete = folderComplete && id !in unresolvedManifestFolders,
             )
         }
         addFolder("")

@@ -111,23 +111,29 @@ class FileDragState {
     var hovered by mutableStateOf<Any?>(null)
         private set
 
-    private class Target(val bounds: Rect, val folder: PikoPathBreadcrumb)
+    private class Target(var coordinates: LayoutCoordinates?, var folder: PikoPathBreadcrumb)
 
     // 要按登记先后倒着找，所以用 LinkedHashMap；HashMap 的遍历顺序与登记先后无关
     private val targets = LinkedHashMap<Any, Target>()
 
     val hoveredFolder: PikoPathBreadcrumb? get() = hovered?.let { targets[it]?.folder }
 
-    // 拖着的时候指针不动也会换落点：滚轮滚动列表、侧栏展开都会挪动落点的范围。所以登记、撤销与松手时
-    // 都按眼下的指针位置重新找一遍，不只在指针移动时找，否则松手落到已经滚走的那个文件夹上
-    internal fun register(key: Any, bounds: Rect, folder: PikoPathBreadcrumb) {
-        targets[key] = Target(bounds, folder)
-        retarget()
+    // 仅在真正拖动期间（payload != null）才求 boundsInRoot 与 retarget，避免普通滚动时每个可见文件夹
+    // 在每帧 onGloballyPositioned 都遍历布局树并分配 Rect/Target。
+    internal fun register(key: Any, coordinates: LayoutCoordinates, folder: PikoPathBreadcrumb) {
+        val existing = targets[key]
+        if (existing != null) {
+            existing.coordinates = coordinates
+            existing.folder = folder
+        } else {
+            targets[key] = Target(coordinates, folder)
+        }
+        if (payload != null) retarget()
     }
 
     internal fun unregister(key: Any) {
         targets.remove(key)
-        retarget()
+        if (payload != null) retarget()
     }
 
     /** 拖着这批条目的那个指针。起拖之后由根上的 [fileDragHost] 按它跟到松手，拖出来的条目滚走了也不断。 */
@@ -154,7 +160,8 @@ class FileDragState {
         }
         // 后登记的在上层（弹出的侧栏、滚到上面的条目），倒着找先碰到它
         hovered = targets.entries.reversed().firstOrNull { (_, target) ->
-            target.bounds.contains(position) && payload.accepts(target.folder)
+            val coords = target.coordinates
+            coords != null && coords.isAttached && coords.boundsInRoot().contains(position) && payload.accepts(target.folder)
         }?.key
     }
 
@@ -300,7 +307,7 @@ fun Modifier.fileDropTarget(key: Any, folder: PikoPathBreadcrumb): Modifier {
     val currentFolder by rememberUpdatedState(folder)
     DisposableEffect(drag, key) { onDispose { drag.unregister(key) } }
     val color = MaterialTheme.colorScheme.primary
-    return onGloballyPositioned { drag.register(key, it.boundsInRoot(), currentFolder) }
+    return onGloballyPositioned { drag.register(key, it, currentFolder) }
         .drawWithContent {
             drawContent()
             if (drag.hovered == key) {

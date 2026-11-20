@@ -15,7 +15,8 @@ Android 与桌面端均支持应用内检查与安装更新。跨平台版本检
 
 - 发版前在 `.github/changelogs/<version>.md` 中编写 `# zh-Hans`、`# zh-Hant`、`# en`、`# ja`、`# ko` 五段更新说明。`release.yml` 最开头的第一个前置 job 对正式 tag 发版执行硬性门控校验（缺失或任一语言为空即在数秒内失败阻断，不浪费后续测试与编译时间；`workflow_dispatch` 演练不强制要求），且前置校验与 `release` job 均优先从 `origin/main` 读取该文件（回退至 tag 提交树），支持漏写或修订文案后推送到 `main` 直接单任务 Rerun `release` job 幂等覆盖草稿附件与 SLSA 证明。
 - `release` job 将 `zh-Hans` 拼接在 `.github/release-notes.md` 的 `## 下载` 附件表之前作为 GitHub Release 页面正文（保持中文默认展示并兼容旧版客户端：`GithubReleases.kt` 的 `updateNotesOf` 读到 `## 下载` 即截断，修改该标题须同步修改 `.github/release-notes.md`，由 `ReleaseNotesTest` 守护），同时将 `zh-Hans` 写入 `release.json` 的 `body` 字段，并将全部五种语言写入 `release.json` 的 `localized_notes` 字段。
-- 客户端请求 `api.github.com` 成功但响应体本身不含 `localized_notes` 时，`GithubReleaseClient` 会按 API 公布的 `release.json` 权威 SHA-256 摘要经 `ReleaseAsset.urls` 下载并校验 `release.json`，提取 `localized_notes` 供 `UpdateDialog` 按 `PikoLocale.effectiveLanguage` 展示对应语言更新说明（缺失时依次回退至 `zh-Hans` 与截断后的默认 `body`）。
+- 客户端请求 `api.github.com` 成功但响应体本身不含 `localized_notes` 时，`GithubReleaseClient` 会按 API 公布的 `release.json` 权威 SHA-256 摘要经 `ReleaseAsset.urls` 下载并校验 `release.json`，提取 `localized_notes` 供 `UpdateDialog` 按 `PikoLocale.effectiveLanguage` 展示对应语言更新说明（缺失时依次回退至 `zh-Hans` 与截断后的默认 `body`）；更新说明解析支持 `##`/`###` 标题层级与多级嵌套列表（由 `ReleaseNotesTest` 守护）。
+- **非阻塞后台下载、分阶段遥测与失败恢复（`AppUpdateService`、`UpdateDialog`）**：更新下载协程归属应用级 `serviceScope`（`startDownload` / `cancelDownload`），关闭 `UpdateDialog` 时下载在后台继续执行，并由侧边栏 `SidebarAccountRow` 与设置「关于」卡片持续呈现下载环与就绪态「重启并更新」入口。`UpdateStatus.Downloading` 携带 `downloadedBytes`、`totalBytes`、`bytesPerSec`、`stage`（`UpdateStage.Downloading` / `Verifying` / `Staging`）与 `modeLabel`（如 zstd 差分 / 补丁 / 按需镜像 / MSI / DMG / AppImage / APK），由 `UpdateProgressTracker` 按 `>=1%` 或 `>=250ms` 节流并在 `downloadLock` 下单调上报，消除逐块重组与阶段竞争。任何失败态（包括 `ChecksumMismatchException` 与启动自动提示模式）均同时提供「重试」与「打开下载页」两个出口，杜绝无解死胡同。
 
 ## Windows 更新架构与老客户端兼容契约
 

@@ -1,0 +1,302 @@
+package dev.piko.shared.media.storyboard
+
+import dev.piko.shared.media.PlayableMediaInfo
+import dev.piko.shared.media.PlayableMediaKind
+import io.github.nihildigit.pikpak.MediaVariant
+import kotlin.math.abs
+import kotlin.math.roundToInt
+
+/**
+ * 经过严格 `<= 480P` MPEG-TS 门控筛选出的雪碧图视频源。
+ */
+data class StoryboardSource(
+    val fileId: String,
+    val gcid: String,
+    val mediaId: String,
+    val url: String,
+    val width: Int,
+    val height: Int,
+    val durationMillis: Long,
+    val streamSizeBytes: Long? = null,
+)
+
+/**
+ * 单个雪碧图采样槽位计划（已按 188 字节 TS 包边界对齐）。
+ */
+data class StoryboardSlotPlan(
+    val slotIndex: Int,
+    val estimatedMs: Long,
+    val byteOffset: Long,
+    val probeLengthBytes: Int,
+)
+
+/**
+ * 已解码的一帧紧凑雪碧图（含真实 MPEG-TS `PTS` 毫秒时间戳与紧凑 JPEG 字节）。
+ */
+data class StoryboardFrame(
+    val slotIndex: Int,
+    val ptsMs: Long,
+    val jpegBytes: ByteArray,
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is StoryboardFrame) return false
+        return slotIndex == other.slotIndex && ptsMs == other.ptsMs && jpegBytes.contentEquals(other.jpegBytes)
+    }
+
+    override fun hashCode(): Int {
+        var result = slotIndex
+        result = 31 * result + ptsMs.hashCode()
+        result = 31 * result + jpegBytes.contentHashCode()
+        return result
+    }
+}
+
+/**
+ * 持久化到 [StoryboardCache] 的单视频雪碧图包（支持部分持久化与完整持久化）。
+ */
+data class StoryboardBundle(
+    val gcid: String,
+    val durationMillis: Long,
+    val width: Int,
+    val height: Int,
+    val completed: Boolean,
+    val lastAccessEpochMillis: Long,
+    val frames: List<StoryboardFrame>,
+)
+
+/**
+ * 按真实 `PTS` 升序排列的雪碧图时间线，提供 `O(log N)` 毫秒级二分查帧：
+ * 每帧 `i` 覆盖进度条区间 `[pts_i, pts_{i+1})`（首帧兼管 `[0, pts_1)`，末帧覆盖至片尾）。
+ */
+data class StoryboardTimeline(
+    val durationMillis: Long,
+    val totalSlots: Int,
+    val frames: List<StoryboardFrame>,
+    val isComplete: Boolean = false,
+) {
+    /**
+     * 在 `frames` 中执行 `O(log N)` 二分查找，返回覆盖 [positionMillis] 的帧索引；无帧时返回 `-1`。
+     */
+    fun findFrameIndex(positionMillis: Long): Int {
+        if (frames.isEmpty()) return -1
+        val target = positionMillis.coerceAtLeast(0L)
+        if (target <= frames.first().ptsMs) return 0
+        if (target >= frames.last().ptsMs) return frames.lastIndex
+        var lo = 0
+        var hi = frames.lastIndex
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            val pts = frames[mid].ptsMs
+            when {
+                pts == target -> return mid
+                pts < target -> lo = mid + 1
+                else -> hi = mid - 1
+            }
+        }
+        // hi is the greatest index with frames[hi].ptsMs < target, so target lies in [pts_hi, pts_{hi+1})
+        return hi.coerceIn(0, frames.lastIndex)
+    }
+
+    fun findFrame(positionMillis: Long): StoryboardFrame? {
+        val idx = findFrameIndex(positionMillis)
+        return if (idx in frames.indices) frames[idx] else null
+    }
+}
+
+/**
+ * 复用单一持久化 HEVC 解码器将 Annex B IDR 帧（带 VPS/SPS/PPS）直接解码缩放为紧凑 JPEG（<= 384x216）。
+ * 严禁每帧重建 `avformat_open_input` 或 `av_seek_frame`；切换视频或关闭播放器时调用 [close] 确定性释放。
+ */
+interface StoryboardIdrDecoder : AutoCloseable {
+    suspend fun decodeToJpeg(
+        csdAnnexB: ByteArray,
+        idrAccessUnitAnnexB: ByteArray,
+        width: Int,
+        height: Int,
+        maxWidthPx: Int = DEFAULT_MAX_WIDTH_PX,
+        jpegQuality: Int = DEFAULT_JPEG_QUALITY,
+    ): ByteArray?
+
+    companion object {
+        const val DEFAULT_MAX_WIDTH_PX = 384
+        const val DEFAULT_JPEG_QUALITY = 80
+    }
+}
+
+/**
+ * 严格门控解析器：
+ * - 仅当视频具备 `height <= 480` 的 PikPak MPEG-TS 转码档时返回 [StoryboardSource]（优先选最低可用 `<= 480P`）；
+ * - 纯原画视频、最低转码档为 `720P` / `1080P` 的视频、或本地文件一律返回 `null`（悬停仅显示时间，隐藏「速览」入口，零额外流量）。
+ */
+object StoryboardSourceResolver {
+    const val MAX_ALLOWED_HEIGHT = 480
+
+    private val RESOLUTION_REGEX = Regex("([0-9]{3,4})[pP]")
+
+    fun resolve(
+        isLocalPlayback: Boolean,
+        mediaInfo: PlayableMediaInfo?,
+        durationMillis: Long,
+        unreadableMediaIds: Set<String> = emptySet(),
+        knownStreamSizeLookup: ((mediaId: String) -> Long?)? = null,
+    ): StoryboardSource? {
+        if (isLocalPlayback || mediaInfo == null || durationMillis <= 0L) return null
+        if (mediaInfo.kind != PlayableMediaKind.Video) return null
+        if (mediaInfo.gcid.isBlank()) return null
+
+        val eligible = mediaInfo.availableVariants.mapNotNull { variant ->
+            val height = eligibleHeightOrNull(variant, unreadableMediaIds) ?: return@mapNotNull null
+            variant to height
+        }
+        val (best, bestHeight) = eligible.minByOrNull { (_, h) -> h } ?: return null
+        val bestWidth = best.video?.width?.takeIf { it > 0 } ?: ((bestHeight * 16) / 9)
+        return StoryboardSource(
+            fileId = mediaInfo.fileId,
+            gcid = mediaInfo.gcid,
+            mediaId = best.mediaId,
+            url = best.link.url,
+            width = bestWidth,
+            height = bestHeight,
+            durationMillis = durationMillis,
+            streamSizeBytes = knownStreamSizeLookup?.invoke(best.mediaId),
+        )
+    }
+
+    internal fun eligibleHeightOrNull(variant: MediaVariant, unreadableMediaIds: Set<String> = emptySet()): Int? {
+        if (variant.isOrigin) return null
+        if (variant.video == null) return null
+        if (variant.link.url.isBlank()) return null
+        if (variant.mediaId.isBlank() || variant.mediaId in unreadableMediaIds) return null
+        val height = variant.video?.height?.takeIf { it > 0 }
+            ?: parseHeight(variant.resolutionName)
+            ?: parseHeight(variant.mediaName)
+            ?: return null
+        return height.takeIf { it in 1..MAX_ALLOWED_HEIGHT }
+    }
+
+    private fun parseHeight(label: String): Int? {
+        if (label.isBlank()) return null
+        return RESOLUTION_REGEX.find(label)?.groupValues?.getOrNull(1)?.toIntOrNull()
+    }
+}
+
+/**
+ * 全片自适应雪碧图采样规划器：
+ * - 按时长计算槽位数（`<=10min`: ~5s，`10-30min`: ~12s，`30-90min`: ~25s，`>90min`: ~35s，夹在 `48..180` 槽位）；
+ * - 生成 Wave 1（12–16 个均匀锚点）、Wave 2（均匀二分插值填满剩余槽位）与交互优先排序。
+ */
+object StoryboardPlanner {
+    const val TS_PACKET_BYTES = 188L
+    const val MIN_SLOTS = 48
+    const val MAX_SLOTS = 180
+    const val DEFAULT_PROBE_BYTES = 64 * 1024
+    const val EXPANDED_PROBE_BYTES = 128 * 1024
+    const val WAVE1_MIN_ANCHORS = 12
+    const val WAVE1_MAX_ANCHORS = 16
+
+    fun slotCountForDuration(durationMillis: Long): Int {
+        if (durationMillis <= 0L) return 0
+        val durationSec = (durationMillis / 1_000L).coerceAtLeast(1L)
+        if (durationSec < MIN_SLOTS.toLong()) {
+            return durationSec.toInt().coerceIn(1, MIN_SLOTS)
+        }
+        val targetStepSec = when {
+            durationSec <= 600L -> 5.0
+            durationSec <= 1_800L -> 12.0
+            durationSec <= 5_400L -> 25.0
+            else -> 35.0
+        }
+        return (durationSec / targetStepSec).roundToInt().coerceIn(MIN_SLOTS, MAX_SLOTS)
+    }
+
+    fun buildSlots(
+        durationMillis: Long,
+        streamSizeBytes: Long,
+        probeBytes: Int = DEFAULT_PROBE_BYTES,
+    ): List<StoryboardSlotPlan> {
+        val count = slotCountForDuration(durationMillis)
+        if (count <= 0 || streamSizeBytes < TS_PACKET_BYTES * 2L) return emptyList()
+        val effectiveProbe = probeBytes.coerceIn(16 * 1024, 256 * 1024)
+        val maxOffset = ((streamSizeBytes - TS_PACKET_BYTES).coerceAtLeast(0L) / TS_PACKET_BYTES) * TS_PACKET_BYTES
+        return List(count) { idx ->
+            val fraction = if (count == 1) 0.0 else idx.toDouble() / count.toDouble()
+            val estMs = (durationMillis.toDouble() * fraction).toLong().coerceIn(0L, durationMillis)
+            val rawOffset = (streamSizeBytes.toDouble() * fraction).toLong()
+            val alignedOffset = ((rawOffset / TS_PACKET_BYTES) * TS_PACKET_BYTES).coerceIn(0L, maxOffset)
+            val len = minOf(effectiveProbe.toLong(), streamSizeBytes - alignedOffset).toInt().coerceAtLeast(TS_PACKET_BYTES.toInt())
+            StoryboardSlotPlan(
+                slotIndex = idx,
+                estimatedMs = estMs,
+                byteOffset = alignedOffset,
+                probeLengthBytes = len,
+            )
+        }
+    }
+
+    /**
+     * Wave 1：全片均匀分布的 12–16 个锚点槽位（始终覆盖开头与末尾，~0.7–1.0 MiB）。
+     */
+    fun wave1Indices(slotCount: Int): List<Int> {
+        if (slotCount <= 0) return emptyList()
+        if (slotCount <= WAVE1_MAX_ANCHORS) return (0 until slotCount).toList()
+        val anchors = when {
+            slotCount >= 96 -> WAVE1_MAX_ANCHORS
+            slotCount >= 64 -> 14
+            else -> WAVE1_MIN_ANCHORS
+        }.coerceIn(WAVE1_MIN_ANCHORS, minOf(WAVE1_MAX_ANCHORS, slotCount))
+        val out = LinkedHashSet<Int>(anchors)
+        for (i in 0 until anchors) {
+            val idx = if (i == anchors - 1) {
+                slotCount - 1
+            } else {
+                ((i.toDouble() * (slotCount - 1)) / (anchors - 1)).roundToInt().coerceIn(0, slotCount - 1)
+            }
+            out += idx
+        }
+        return out.toList()
+    }
+
+    /**
+     * Wave 2：将剩余槽位按区间中点递归细分排布，使全片缩略图密度均匀加密，而非从左到右线性堆叠。
+     */
+    fun wave2Indices(slotCount: Int, wave1: List<Int> = wave1Indices(slotCount)): List<Int> {
+        if (slotCount <= 0) return emptyList()
+        val taken = wave1.toHashSet()
+        val sortedAnchors = wave1.sorted()
+        val result = ArrayList<Int>((slotCount - taken.size).coerceAtLeast(0))
+        val queue = ArrayDeque<Pair<Int, Int>>()
+        if (sortedAnchors.isEmpty()) {
+            queue.addLast(0 to (slotCount - 1))
+        } else {
+            if (sortedAnchors.first() > 0) queue.addLast(0 to (sortedAnchors.first() - 1))
+            for (i in 0 until sortedAnchors.lastIndex) {
+                val lo = sortedAnchors[i] + 1
+                val hi = sortedAnchors[i + 1] - 1
+                if (lo <= hi) queue.addLast(lo to hi)
+            }
+            if (sortedAnchors.last() < slotCount - 1) queue.addLast((sortedAnchors.last() + 1) to (slotCount - 1))
+        }
+        while (queue.isNotEmpty()) {
+            val (lo, hi) = queue.removeFirst()
+            if (lo > hi) continue
+            val mid = (lo + hi) ushr 1
+            if (taken.add(mid)) {
+                result += mid
+            }
+            if (lo <= mid - 1) queue.addLast(lo to (mid - 1))
+            if (mid + 1 <= hi) queue.addLast((mid + 1) to hi)
+        }
+        return result
+    }
+
+    /**
+     * 交互覆盖排序：用户悬停进度条或打开「速览」时，将待解码槽位按距离 [targetMs] 从近到远立刻重排。
+     */
+    fun prioritizeAround(
+        pendingSlots: List<StoryboardSlotPlan>,
+        targetMs: Long,
+    ): List<StoryboardSlotPlan> = pendingSlots.sortedWith(
+        compareBy<StoryboardSlotPlan> { abs(it.estimatedMs - targetMs) }.thenBy { it.slotIndex },
+    )
+}

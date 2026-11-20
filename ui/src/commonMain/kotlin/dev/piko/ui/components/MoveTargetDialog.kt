@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -45,10 +46,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.ListItemShapes
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -58,6 +59,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -70,6 +72,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -273,7 +276,9 @@ private fun FolderPickerContent(
     var newFolderName by remember { mutableStateOf("") }
     var isCreatingFolder by remember { mutableStateOf(false) }
     var pendingFolderName by remember { mutableStateOf<String?>(null) }
-    val autoCleanNames by LocalPikoServices.current.preferences.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
+    val preferences = LocalPikoServices.current.preferences
+    val autoCleanNames by preferences.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
+    val isSpoilerBlurEnabled by preferences.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = preferences.currentSnapshot.spoilerBlurEnabled)
 
     suspend fun loadPage(reset: Boolean) {
         if (!reset && (isLoadingMore || !hasMore)) return
@@ -446,12 +451,13 @@ private fun FolderPickerContent(
                         itemsIndexed(items = folders, key = { _, folder -> folder.id }) { index, folder ->
                             val isBlocked = folder.id in blockedFolderIds
                             FolderPickerRow(
-                                name = folder.name,
+                                folder = folder,
                                 enabled = !isBlocked,
                                 hint = if (isBlocked) blockedFolderHint else null,
                                 shapes = ListItemDefaults.segmentedShapes(index = index, count = folders.size),
                                 // 全屏形态铺在 surface 上，照设置页取 surfaceContainer；浮着的对话框底是 surfaceContainerHigh，行再高一级
                                 containerColor = if (fullscreen) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                isSpoilerBlurred = isSpoilerBlurEnabled,
                                 onClick = { path = path + PathBreadcrumb(folder.id, folder.name) },
                             )
                         }
@@ -658,30 +664,58 @@ private fun RecentTargetsRow(
 
 /** 一个子文件夹，设置页那样的分段行，点了进去。 */
 @Composable
-private fun FolderPickerRow(
-    name: String,
+internal fun FolderPickerRow(
+    folder: FileStat,
     enabled: Boolean,
     hint: String?,
     shapes: ListItemShapes,
     containerColor: Color,
+    isSpoilerBlurred: Boolean = false,
     onClick: () -> Unit,
 ) {
-    SegmentedListItem(
+    val contentAlpha = if (enabled) 1f else 0.38f
+    val onSurface = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha)
+    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = contentAlpha)
+    // 禁用时底色照旧，只淡化内容：默认的禁用底色在对话框底上是一块突兀的亮条
+    Surface(
         onClick = onClick,
         enabled = enabled,
-        shapes = shapes,
-        // 禁用时底色照旧，只淡化内容：默认的禁用底色在对话框底上是一块突兀的亮条
-        colors = ListItemDefaults.segmentedColors(containerColor = containerColor, disabledContainerColor = containerColor),
-        leadingContent = { Icon(Icons.Outlined.Folder, contentDescription = null) },
-        trailingContent = {
-            if (hint != null) {
-                Text(hint, style = MaterialTheme.typography.labelMedium)
-            } else {
-                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+        modifier = Modifier.fillMaxWidth(),
+        shape = shapes.shape,
+        color = containerColor,
+        contentColor = onSurface,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 56.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            FileListLeadingVisual(
+                file = folder,
+                size = 36.dp,
+                isSpoilerBlurred = isSpoilerBlurred,
+                modifier = if (enabled) Modifier else Modifier.alpha(contentAlpha),
+            )
+            Text(
+                text = folder.name,
+                style = MaterialTheme.typography.bodyLarge,
+                color = onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            CompositionLocalProvider(LocalContentColor provides onSurfaceVariant) {
+                if (hint != null) {
+                    Text(hint, style = MaterialTheme.typography.labelMedium)
+                } else {
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+                }
             }
-        },
-        content = { Text(name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-    )
+        }
+    }
 }
 
 /**

@@ -35,6 +35,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.joinAll
 
@@ -148,7 +150,10 @@ class PikoDownloadService : Service() {
             // 归档、解压、查重是 Compose 状态，下载与上传是 StateFlow，合在一起只当作「有变化」的信号，
             // 每次都从 services 重新取一遍
             val serverWork = snapshotFlow { services.runningWork() }
-            val fileWork = services.fileWorkChanges()
+            val fileWork = merge(
+                services.fileWorkChanges(),
+                dev.piko.shared.media.proxy.ExternalPlayerStreams.active.map { Unit },
+            )
             // 用 collect 而非 collectLatest，每轮末尾等一秒：conflate 让等待期间的中间值直接跳过，
             // 通知更新被压到每秒一次。系统对单个应用的通知更新有频率上限，超出的直接丢弃，
             // 多发只是白白重建 Notification。combine 自身不合并，要显式 conflate

@@ -6,6 +6,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -32,7 +34,9 @@ import dev.piko.ui.components.trackPointerSource
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.screens.clips.ClipFeedScreen
+import dev.piko.ui.screens.player.LocalPlayerLayoutPrefs
 import dev.piko.ui.theme.Appearance
+import dev.piko.ui.theme.LocalWindowVisible
 import dev.piko.ui.theme.PikoTheme
 
 /**
@@ -56,12 +60,14 @@ fun ClipFeedWindow(
     pausedByHost: Boolean = false,
 ) {
     val windowState = rememberRememberedWindowState(settings, "clips", DpSize(1000.dp, 620.dp))
+    val windowVisible = !windowState.isMinimized
     PikoWindow(
         onCloseRequest = links.dock,
         onFatalClose = links.close,
         title = tr("信息流 - Piko", "Feed - Piko", "フィード - Piko", "피드 - Piko", "資訊流 - Piko"),
         icon = icon,
         state = windowState,
+        windowVisible = windowVisible,
     ) {
         TitleBarThemeEffect(window, dark = true)
         PixelAlignedContentEffect(window)
@@ -73,14 +79,21 @@ fun ClipFeedWindow(
             onDispose { services.onWindowClosed("clips") }
         }
         LaunchedEffect(raise) { bringToFront(window) }
-        // 独立的组合树，主窗口根部的输入来源追踪管不到这里
+        // 独立的组合树，主窗口根部的输入来源追踪与布局偏好需要显式注入
         val pointerSource = remember { PointerSource(initialTouchLike = false) }
         val effectiveLanguage = PikoLocale.effectiveLanguageState.value
+        val playerLayoutPrefs by services.preferences.playerLayoutPrefsFlow
+            .collectAsState(initial = services.preferences.currentSnapshot.playerLayout)
+        val driveAppearancePrefs by services.preferences.driveAppearancePrefsFlow
+            .collectAsState(initial = services.preferences.currentSnapshot.driveAppearance)
         CompositionLocalProvider(
             LocalAppLanguage provides effectiveLanguage,
             LocalPikoServices provides services,
             LocalPikoPlatform provides platform,
             LocalPointerSource provides pointerSource,
+            LocalWindowVisible provides windowVisible,
+            LocalPlayerLayoutPrefs provides playerLayoutPrefs,
+            dev.piko.ui.screens.drive.LocalDriveAppearancePrefs provides driveAppearancePrefs,
         ) {
             PikoTheme(appearance = appearance) {
                 WindowFrame(

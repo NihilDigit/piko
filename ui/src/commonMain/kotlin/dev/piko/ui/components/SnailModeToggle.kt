@@ -30,8 +30,8 @@ import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TonalToggleButton
-import androidx.compose.material3.ToggleButtonDefaults
+import androidx.compose.material3.FilledTonalToggleButton
+import androidx.compose.material3.FilledTonalToggleButtonDefaults
 import androidx.compose.material3.ToggleButtonShapes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -76,11 +76,11 @@ fun SnailModeToggle(modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ContextMenuArea(actions = { listOf(SheetAction(Icons.Outlined.Tune, tr("设置上限", "Set limit", "上限を設定", "한도 설정", "設定上限"), { editing = true })) }) {
-            TonalToggleButton(
+            FilledTonalToggleButton(
                 checked = mode.enabled,
                 onCheckedChange = { enabled -> scope.launch { preferences.setSnailMode(mode.copy(enabled = enabled)) } },
                 shapes = ToggleButtonShapes(shape = leading, pressedShape = leading, checkedShape = leading),
-                colors = ToggleButtonDefaults.tonalToggleButtonColors(
+                colors = FilledTonalToggleButtonDefaults.colors(
                     checkedContainerColor = colors.tertiaryContainer,
                     checkedContentColor = colors.onTertiaryContainer,
                 ),

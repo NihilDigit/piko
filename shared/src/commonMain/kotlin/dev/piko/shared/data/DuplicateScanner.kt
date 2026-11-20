@@ -156,7 +156,7 @@ class DuplicateScanner(
         } else {
             PikoLog.i(TAG, "Tree scan finished ($summary)")
         }
-        emit(DuplicateScanEvent.Finished(files.toList(), listed, failed, stop, subfolders.toList()))
+        emit(DuplicateScanEvent.Finished(files, listed, failed, stop, subfolders))
     }.flowOn(Dispatchers.Default)
 
     /** [entry] 是这个目录在上一层里的那一项，起点为 null。 */

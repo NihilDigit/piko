@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,32 +25,74 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.update.ReleaseNoteBlock
 import dev.piko.shared.update.releaseNoteBlocks
 
-/** 更新说明：标题、列表与段落按排版档位排开，行内的粗体、代码与链接照样呈现，可选中复制。 */
+/**
+ * 更新说明：支持多级标题（`##` / `###`）、嵌套列表与段落排版，行内粗体、代码与链接照样呈现，可选中复制。
+ * 外层容器建议放在 `surfaceContainerLow` 上，使 `surfaceContainerHighest` 的行内代码背景形成清晰对比。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun ReleaseNotes(markdown: String, modifier: Modifier = Modifier) {
     val blocks = remember(markdown) { releaseNoteBlocks(markdown) }
     val colors = MaterialTheme.colorScheme
     val inlineStyles = remember(colors) {
         InlineStyles(
-            code = SpanStyle(fontFamily = FontFamily.Monospace, background = colors.surfaceContainerHighest),
+            code = SpanStyle(
+                fontFamily = FontFamily.Monospace,
+                background = colors.surfaceContainerHighest,
+                color = colors.onSurface,
+            ),
             link = TextLinkStyles(SpanStyle(color = colors.primary, textDecoration = TextDecoration.Underline)),
         )
     }
     SelectionContainer(modifier) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
             blocks.forEachIndexed { index, block ->
                 val text = remember(block, inlineStyles) { inlineMarkdown(block.text, inlineStyles) }
                 when (block) {
-                    is ReleaseNoteBlock.Heading -> Text(
-                        text,
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(top = if (index == 0) 0.dp else 8.dp),
-                    )
-                    is ReleaseNoteBlock.Bullet -> Row {
-                        Text("•", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 6.dp))
-                        Text(text, style = MaterialTheme.typography.bodyMedium)
+                    is ReleaseNoteBlock.Heading -> {
+                        val isSubheading = block.level >= 3
+                        Text(
+                            text = text,
+                            style = if (isSubheading) {
+                                MaterialTheme.typography.labelLargeEmphasized
+                            } else {
+                                MaterialTheme.typography.titleSmallEmphasized
+                            },
+                            color = if (isSubheading) colors.onSurfaceVariant else colors.onSurface,
+                            modifier = Modifier.padding(
+                                top = when {
+                                    index == 0 -> 0.dp
+                                    isSubheading -> 6.dp
+                                    else -> 10.dp
+                                },
+                            ),
+                        )
                     }
-                    is ReleaseNoteBlock.Paragraph -> Text(text, style = MaterialTheme.typography.bodyMedium)
+                    is ReleaseNoteBlock.Bullet -> {
+                        val marker = when (block.depth) {
+                            0 -> "•"
+                            1 -> "◦"
+                            else -> "▪"
+                        }
+                        Row(modifier = Modifier.padding(start = (14 * block.depth).dp)) {
+                            Text(
+                                text = marker,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.onSurfaceVariant,
+                                modifier = Modifier.padding(end = 6.dp),
+                            )
+                            Text(
+                                text = text,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.onSurface,
+                            )
+                        }
+                    }
+                    is ReleaseNoteBlock.Paragraph -> Text(
+                        text = text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onSurface,
+                    )
                 }
             }
         }

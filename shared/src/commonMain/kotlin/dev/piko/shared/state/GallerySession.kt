@@ -6,6 +6,7 @@ import androidx.compose.runtime.setValue
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.i18n.enCount
 import dev.piko.shared.i18n.tr
@@ -66,6 +67,7 @@ class GallerySession(
         private set
 
     private var selectedIds: Set<String>? = null
+    private var selectedVaultEntryIds: Set<String> = emptySet()
     private var selectedParentIds: Set<String> = emptySet()
     private var rootPath = emptyList<PikoPathBreadcrumb>()
     private var folders by mutableStateOf(driveRepo.folderIndex.flow.value)
@@ -133,6 +135,7 @@ class GallerySession(
         root = folder
         account = owner
         selectedIds = ids
+        selectedVaultEntryIds = selection?.mapNotNullTo(HashSet()) { VaultEntry.entryIdOf(it.id) }.orEmpty()
         selectedParentIds = selection?.mapTo(LinkedHashSet()) { it.parentId }.orEmpty()
         selectedMediaTotal = selection?.size
         selectedVideoCount = selection?.count { it.isDiscoverableVideo() }
@@ -160,7 +163,7 @@ class GallerySession(
             }
             return
         }
-        discovery = VideoDiscovery(driveRepo, owner, folder.id)
+        discovery = VideoDiscovery(driveRepo, owner, folder.id, includeImages = true)
         discoveredFolders += folder.id
         hasMore = true
         requestMore()
@@ -260,6 +263,7 @@ class GallerySession(
         shown = false
         root = null
         selectedIds = null
+        selectedVaultEntryIds = emptySet()
         selectedParentIds = emptySet()
         selectedVideoCount = null
         selectedImageCount = 0
@@ -353,8 +357,9 @@ class GallerySession(
                         val listing = driveRepo.listBrowsable(parentId, PikoFileSortOrder.NAME_ASC)
                         if (request != generation) return@launch
                         listing.onSuccess { latest ->
-                            val media = latest.filter {
-                                it.id in selectedVideoIds && it.isDiscoverableGalleryMedia(includeImages = true) && it.hasGalleryCover()
+                            val media = latest.filter { item ->
+                                (item.id in selectedVideoIds || VaultEntry.entryIdOf(item.id)?.let { it in selectedVaultEntryIds } == true) &&
+                                    item.isDiscoverableGalleryMedia(includeImages = true) && item.hasGalleryCover()
                             }
                             val batch = analyzeVideoFolder(parentId, media)
                             if (request != generation) return@launch
@@ -372,7 +377,7 @@ class GallerySession(
                     isComplete = failedFolders.isEmpty()
                     return@launch
                 }
-                traversal.rebind(driveRepo, account ?: throw CancellationException("Account changed"))
+                traversal.rebind(driveRepo, account ?: throw CancellationException("Account changed"), includeImages = true)
                 val batches = mutableListOf<VideoFolderBatch>()
                 val targets = pendingRefresh.toList()
                 // 先重列所有受影响层，再判断目录是否移出范围，避免同一子树在范围内移动时短暂消失。

@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.graphics.Color
@@ -132,6 +133,8 @@ import dev.piko.ui.theme.IslandGap
 import dev.piko.ui.theme.LocalFramed
 import dev.piko.ui.theme.LocalPikoMotion
 import dev.piko.ui.theme.frame
+import dev.piko.ui.theme.islandBorderColor
+import dev.piko.ui.theme.islandSurface
 import dev.piko.ui.workbench.AccountSettings
 import dev.piko.ui.workbench.LocalFileWorkspace
 import dev.piko.ui.workbench.LocalShowOngoingWork
@@ -140,10 +143,9 @@ import dev.piko.ui.workbench.LocalWorkspaceContexts
 import dev.piko.ui.workbench.LocalWorkspaceSnapshotEnabled
 import dev.piko.ui.workbench.TaskSlot
 import dev.piko.ui.workbench.WorkspaceViewModel
+import dev.piko.data.auth.SidePanelPrefs
 import io.github.nihildigit.pikpak.FileStat
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
@@ -191,6 +193,8 @@ private val NavKeyConfiguration = SavedStateConfiguration {
             subclass(Screen.SpaceMap::class)
             subclass(Screen.Settings::class)
             subclass(Screen.WebDav::class)
+            subclass(Screen.PlayerCustomization::class)
+            subclass(Screen.DriveAppearanceCustomization::class)
             subclass(Screen.VideoPlayer::class)
         }
     }
@@ -209,12 +213,13 @@ fun PikoMainScaffold(
     modifier: Modifier = Modifier,
 ) {
     val services = LocalPikoServices.current
+    if (services.driveRepository.currentAccount != account) return
     val coroutineScope = rememberCoroutineScope()
     val desktop = isDesktopLayout()
     val localFiles = LocalPikoPlatform.current.localFiles
     val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
     val presentationOwner = remember(services, account, services.presentationStores.generation) {
-        services.presentationStores.forAccount(account)
+        services.presentationStores.forAccount(account, activeAccount = services.driveRepository.currentAccount)
     }
     val workspaceModel = viewModel<WorkspaceViewModel>(
         viewModelStoreOwner = presentationOwner,
@@ -416,12 +421,11 @@ fun PikoMainScaffold(
 
     val clipFeedSession = services.clipFeedSession
     val preferences = services.preferences
-    val initialSidebarCollapsed = remember { runBlocking { preferences.sidebarCollapsedFlow.first() } }
-    val sidebarCollapsed by preferences.sidebarCollapsedFlow.collectAsStateWithLifecycle(initialSidebarCollapsed)
-    val initialShowExtensions = remember { runBlocking { preferences.showExtensionsFlow.first() } }
-    val showExtensions by preferences.showExtensionsFlow.collectAsStateWithLifecycle(initialShowExtensions)
-    val initialPanelPrefs = remember { runBlocking { preferences.clipPanelFlow.first() } }
-    val panelPrefs by preferences.clipPanelFlow.collectAsStateWithLifecycle(initialPanelPrefs)
+    val initialPrefs = remember(preferences) { preferences.currentSnapshot }
+    val sidebarCollapsed by preferences.sidebarCollapsedFlow.collectAsStateWithLifecycle(initialPrefs.sidebarCollapsed)
+    val showExtensions by preferences.showExtensionsFlow.collectAsStateWithLifecycle(initialPrefs.showExtensions)
+    val loadedPanelPrefs by preferences.clipPanelFlow.collectAsStateWithLifecycle(initialValue = null)
+    val panelPrefs = loadedPanelPrefs ?: SidePanelPrefs(open = false, widthDp = null)
 
     val contentWidth = with(density) { contentSize.width.toDp() }.takeIf { contentSize != IntSize.Zero }
     val sidebarMode = sidebarWindow && (onHome || isProfilePane(topScreen) || topScreen in SettingsSubpages)
@@ -450,9 +454,10 @@ fun PikoMainScaffold(
         sidePanelFits(panelAvailableWidth, ClipPanelMinWidth)
 
     var feedShownState by workspaceModel.feed::shown
-    LaunchedEffect(contentWidth != null) {
-        if (feedShownState == null && contentWidth != null) {
-            feedShownState = initialPanelPrefs.open && panelFits &&
+    LaunchedEffect(contentWidth != null, loadedPanelPrefs != null) {
+        val prefs = loadedPanelPrefs
+        if (feedShownState == null && contentWidth != null && prefs != null) {
+            feedShownState = prefs.open && panelFits &&
                 clipFeedSession.reopensFor(services.clientManager.currentClient.value?.account)
         }
     }
@@ -475,8 +480,11 @@ fun PikoMainScaffold(
         }
         coroutineScope.launch { preferences.setClipPanelOpen(shown) }
     }
+    val skipFeedExitConfirm by preferences.skipFeedExitConfirmFlow.collectAsStateWithLifecycle(
+        initialValue = preferences.currentSnapshot.skipFeedExitConfirm,
+    )
     fun requestCloseFeed() {
-        if (feedShown) workspaceModel.askingCloseFeed = true else setFeedShown(false)
+        if (feedShown && !skipFeedExitConfirm) workspaceModel.askingCloseFeed = true else setFeedShown(false)
     }
 
     val addLinkDocked = panelFits && addLink.state != null && addLink.isExpanded &&
@@ -847,16 +855,30 @@ fun PikoMainScaffold(
                 .then(if ((workspaceModel.ongoingWorkShown && !desktop) || floatingDrawerTarget) Modifier.clearAndSetSemantics { } else Modifier)
             if (sidebarMode) LocalWindowCaption.current?.Host()
 
-            CompositionLocalProvider(LocalFramed provides sidebarMode) {
+            val playerLayoutPrefs by services.preferences.playerLayoutPrefsFlow.collectAsStateWithLifecycle(
+                initialValue = services.preferences.currentSnapshot.playerLayout,
+            )
+            val driveAppearancePrefs by services.preferences.driveAppearancePrefsFlow.collectAsStateWithLifecycle(
+                initialValue = services.preferences.currentSnapshot.driveAppearance,
+            )
+
+            CompositionLocalProvider(
+                LocalFramed provides sidebarMode,
+                dev.piko.ui.screens.player.LocalPlayerLayoutPrefs provides playerLayoutPrefs,
+                dev.piko.ui.screens.drive.LocalDriveAppearancePrefs provides driveAppearancePrefs,
+            ) {
                 Row(Modifier.fillMaxSize().then(frameModifier)) {
                     if (sidebarMode) {
                         CompositionLocalProvider(LocalSidebarTooltipsEnabled provides !floatingDrawerTarget) {
+                            val sidebarColors = MaterialTheme.colorScheme
+                            val sidebarBorder = sidebarColors.islandBorderColor
                             Box(
                                 Modifier
                                     .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom + WindowInsetsSides.Start))
                                     .padding(start = IslandGap, top = IslandGap, bottom = IslandGap)
                                     .clip(FrameCardShape)
-                                    .background(MaterialTheme.colorScheme.surface),
+                                    .background(sidebarColors.islandSurface)
+                                    .then(if (sidebarBorder != null) Modifier.border(1.dp, sidebarBorder, FrameCardShape) else Modifier),
                             ) {
                                 MainSidebarSlot(
                                     width = inlineSidebarWidth,
@@ -1034,11 +1056,32 @@ fun PikoMainScaffold(
                                         SettingsScreen(
                                             onBackClick = paneBack,
                                             onOpenWebDav = { backStack.add(Screen.WebDav) },
+                                            onOpenPlayerCustomization = { backStack.add(Screen.PlayerCustomization) },
+                                            onOpenDriveAppearanceCustomization = { backStack.add(Screen.DriveAppearanceCustomization) },
                                             account = if (sidebarWindow) ({ AccountSettings(onLogout, onOpenSpaceMap = { openPage(Screen.SpaceMap()) }) }) else null,
                                             showAbout = sidebarWindow,
                                         )
                                     }
                                     entry<Screen.WebDav> { WebDavScreen(onBackClick = ::popBack) }
+                                    entry<Screen.PlayerCustomization> {
+                                        dev.piko.ui.screens.settings.PlayerCustomizationPage(
+                                            prefs = playerLayoutPrefs,
+                                            onUpdate = { transform ->
+                                                val next = transform(playerLayoutPrefs)
+                                                coroutineScope.launch { services.preferences.setPlayerLayoutPrefs(next) }
+                                            },
+                                            onBackClick = ::popBack,
+                                        )
+                                    }
+                                    entry<Screen.DriveAppearanceCustomization> {
+                                        dev.piko.ui.screens.settings.DriveAppearanceCustomizationPage(
+                                            prefs = driveAppearancePrefs,
+                                            onUpdate = { next ->
+                                                coroutineScope.launch { services.preferences.setDriveAppearancePrefs(next) }
+                                            },
+                                            onBackClick = ::popBack,
+                                        )
+                                    }
                                     entry<Screen.VideoPlayer> { screen ->
                                         (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, ::popBack)
                                     }
@@ -1099,7 +1142,7 @@ fun PikoMainScaffold(
                         .focusRequester(drawerFocus)
                         .focusable(!pointerSource.isTouchLike),
                     shape = FrameCardShape,
-                    color = MaterialTheme.colorScheme.surface,
+                    color = MaterialTheme.colorScheme.islandSurface,
                     tonalElevation = 2.dp,
                     shadowElevation = 12.dp,
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
@@ -1196,4 +1239,4 @@ private val DesktopTopLevelScreens = ProfilePanes + Screen.Home
 private val DesktopTopLevelContentKeys = DesktopTopLevelScreens.mapTo(mutableSetOf()) { it.toString() }
 private fun isDesktopTopLevelContentKey(key: Any?): Boolean =
     key in DesktopTopLevelContentKeys || key?.toString()?.startsWith("SpaceMap(") == true
-private val SettingsSubpages = setOf<NavKey?>(Screen.WebDav)
+private val SettingsSubpages = setOf<NavKey?>(Screen.WebDav, Screen.PlayerCustomization, Screen.DriveAppearanceCustomization)

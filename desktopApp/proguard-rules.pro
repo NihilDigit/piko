@@ -27,9 +27,22 @@
     long seek(java.lang.foreign.MemorySegment, long, int);
 }
 
+# Windows SMTC 按键回调（ITypedEventHandler<SMTC, SMTCButtonPressedEventArgs>）经 findVirtual 绑定 FFM upcall，
+# 不保留的话 release 包里媒体键与任务栏暂停按钮回调方法会被裁剪
+-keepclassmembers class dev.piko.desktop.winrt.SmtcButtonPressedCallback {
+    int queryInterface(java.lang.foreign.MemorySegment, java.lang.foreign.MemorySegment, java.lang.foreign.MemorySegment);
+    int addRef(java.lang.foreign.MemorySegment);
+    int release(java.lang.foreign.MemorySegment);
+    int invoke(java.lang.foreign.MemorySegment, java.lang.foreign.MemorySegment, java.lang.foreign.MemorySegment);
+}
+
+# FFM 下调句柄的 MethodHandle.invokeExact 属签名多态（@PolymorphicSignature），
+# ProGuard 逐字核对库方法签名时会报找不到。
+-dontwarn java.lang.invoke.MethodHandle
+
 # 触摸桥（compose-windows-touch）经反射取 Compose Desktop 的内部入口，注入 WM_POINTER 的触摸。
 # 取不到时静默退回鼠标路径，release 里看不出来，所以这些成员要显式保留。
-# 桥对每一层取的是 getClass() 上声明的成员，这几个类都是 final，类名照 CMP 1.12.0 的 ui-desktop 写准：
+# 桥对每一层取的是 getClass() 上声明的成员，这几个类都是 final，类名照 CMP 1.13.0-rc01 的 ui-desktop 写准：
 # ComposeWindow.composePanel → ComposeWindowPanel._composeContainer → ComposeContainer 的 mediator 与内容组件
 # → ComposeSceneMediator 里的 scene 与场景范围。升级 CMP 后用 javap 核对这些成员是否还在原来的类上
 -keepclassmembers class androidx.compose.ui.awt.ComposeWindow {
@@ -54,6 +67,41 @@
 }
 -keepclassmembers class androidx.compose.ui.scene.BaseComposeScene {
     *** sendPointerEvent-UGFwazM(...);
+}
+
+# 显卡设备失效检测（GpuDeviceWatch）与桌面视频表面（PikoMpvVideoSurface）经反射取 Skiko 0.156.1 的
+# FrameDriver、FrameProducer、Direct3DRenderer / MetalRenderer / LinuxOpenGLRenderer 及原生句柄与 DirectContext。
+# 升级 Skiko 时同步核对这些成员仍在。
+-keepclassmembers class org.jetbrains.skiko.SkiaLayer {
+    *** getFrameDriver$org_jetbrains_skiko_skiko();
+    *** getBackedLayer$org_jetbrains_skiko_skiko();
+    *** getContentHandle();
+    *** getWindowHandle();
+}
+-keepclassmembers class org.jetbrains.skiko.renderer.FrameDriver {
+    *** getRenderer();
+    static *** access$getRenderer(org.jetbrains.skiko.renderer.FrameDriver);
+}
+-keepclassmembers class org.jetbrains.skiko.renderer.FrameProducer {
+    *** renderer;
+    *** getRenderer$org_jetbrains_skiko_skiko();
+}
+-keepclassmembers class org.jetbrains.skiko.renderer.Direct3DRenderer {
+    *** device;
+    *** context;
+}
+-keepclassmembers class org.jetbrains.skiko.renderer.MetalRenderer {
+    *** adapter;
+    *** context;
+}
+-keepclassmembers class org.jetbrains.skiko.MetalAdapter {
+    *** getPtr();
+}
+-keepclassmembers class org.jetbrains.skiko.renderer.AbstractOpenGLRenderer {
+    *** glContext;
+}
+-keepclassmembers class org.jetbrains.skiko.renderer.LinuxOpenGLRenderer {
+    *** context;
 }
 
 # sqlite-jdbc：JDBC Driver 经 ServiceLoader 装载，NativeDB 与进度/函数回调由原生 sqlite3 经 JNI 按签名反射查找

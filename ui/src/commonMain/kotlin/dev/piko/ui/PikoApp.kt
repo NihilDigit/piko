@@ -20,6 +20,7 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.screens.archive.ArchiveExtractHost
 import dev.piko.ui.screens.auth.LoginScreen
+import dev.piko.ui.screens.drive.LocalDriveAppearancePrefs
 import dev.piko.ui.screens.upload.UploadRequestHost
 import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.LocalPikoMotion
@@ -54,12 +55,16 @@ fun PikoApp(
     val pointerSource = remember(platform.motionStyle) {
         PointerSource(initialTouchLike = platform.motionStyle != MotionStyle.Standard)
     }
+    val driveAppearancePrefs by services.preferences.driveAppearancePrefsFlow.collectAsStateWithLifecycle(
+        initialValue = services.preferences.currentSnapshot.driveAppearance,
+    )
     platform.ProvideLocalizedEnvironment(effectiveLanguage) {
         CompositionLocalProvider(
             LocalAppLanguage provides effectiveLanguage,
             LocalPikoServices provides services,
             LocalPikoPlatform provides platform,
             LocalPointerSource provides pointerSource,
+            LocalDriveAppearancePrefs provides driveAppearancePrefs,
         ) {
             PikoTheme(appearance = appearance) {
                 val clientManager = services.clientManager
@@ -84,8 +89,11 @@ fun PikoApp(
                         // 加账号时当前账号不退出，取消即回到它
                         is AppState.Login -> LoginScreen(onCancel = if (state.adding) clientManager::cancelAddingAccount else null)
                         // 按账号区分：换号时整个主界面重建，各页的记忆状态（滚动、展开、选中）不带到另一个账号。
+                        // Crossfade 淡出阶段旧账号的 ViewModelStore 与仓储已切换，跳过旧账号分支的重组避免跨帧竞态崩溃。
                         // 退出登录后 currentClient 变空，根状态自动回到 Login
-                        is AppState.Main -> PikoMainScaffold(account = state.account, onLogout = {}, videoPlayer = videoPlayer)
+                        is AppState.Main -> if (state.account == account) {
+                            PikoMainScaffold(account = state.account, onLogout = {}, videoPlayer = videoPlayer)
+                        }
                     }
                 }
                 // 解压的密码框放在网盘页之外：离开网盘页后，加密包仍要能问到密码

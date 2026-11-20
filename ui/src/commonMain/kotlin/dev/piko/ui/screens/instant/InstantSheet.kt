@@ -18,7 +18,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -60,6 +59,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -94,6 +94,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -101,6 +103,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.PathBreadcrumb
 import dev.piko.ui.components.PikoDialog
@@ -114,12 +117,16 @@ import dev.piko.shared.state.SavePlan
 import dev.piko.shared.state.InstantRow
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.shared.state.NameGroupSummary
+import dev.piko.shared.state.ShareNodeCheckState
+import dev.piko.shared.state.ShareTreeBrowser
+import dev.piko.shared.state.ShareTreeRow
 import dev.piko.shared.state.VaultArchiveOptions
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.screens.drive.VaultRiskWarningDialog
 import kotlinx.coroutines.launch
 import dev.piko.ui.components.FileNameField
+import dev.piko.ui.components.FolderListLeadingVisual
 import dev.piko.ui.components.FolderPickerDialog
 import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.MetaRow
@@ -144,6 +151,8 @@ import androidx.compose.material.icons.outlined.OpenInFull
 import androidx.compose.ui.backhandler.BackHandler
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.LocalStatusColors
+import dev.piko.ui.theme.tabular
+import io.github.nihildigit.pikpak.ResolvedFile
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.merge
 
@@ -266,9 +275,20 @@ internal fun InstantSheetContent(
         TargetRow(target = state.target, notice = state.targetNotice, enabled = state.canEdit,
             onClick = { showTargetPicker = true })
     }
-    BoxWithConstraints(Modifier.fillMaxWidth().then(if (inSideSheet || fillHeight) Modifier.fillMaxHeight() else Modifier)) {
-        val splitSelection = fillHeight && maxWidth >= 720.dp && maxHeight < 480.dp && batch == null &&
-            state.resolution != null
+    val density = LocalDensity.current
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+    val splitSelection = fillHeight &&
+        containerSize.width > 0 &&
+        containerSize.height > 0 &&
+        with(density) { containerSize.width.toDp() >= 720.dp && containerSize.height.toDp() < 480.dp } &&
+        batch == null &&
+        state.resolution != null
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .then(if (inSideSheet || fillHeight) Modifier.fillMaxHeight() else Modifier)
+            .onSizeChanged { containerSize = it },
+    ) {
         LaunchedEffect(splitSelection) {
             if (splitSelection) isTreeMaximized = false
         }
@@ -808,6 +828,9 @@ internal fun ColumnScope.ResolutionSection(
 
     // 列表占去面板剩下的高度，不再定死 320dp：长资源的上半部分有文件夹名、计数与芯片，
     // 定高时列表里只看得到两三行。fill = false 让短列表照常收缩
+    state.shareTree?.takeIf { it.isLazyMode }?.let { browser ->
+        ShareTreeProgressBanner(browser = browser, onCancel = state::cancelShareSave)
+    }
     UnindexedBanner(state)
     if (state.offersCanonicalNames) CanonicalNamesToggle(state.useCanonicalNames, enabled = state.canEdit, onChange = state::updateUseCanonicalNames)
 
@@ -878,9 +901,12 @@ private fun SelectionHeader(
             .heightIn(min = 48.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        val headerLabel = state.shareTree?.takeIf { it.isLazyMode }?.let { browser ->
+            tr("分享内容（${browser.selectedSummaryText}）", "Shared items (${browser.selectedSummaryText})", "共有アイテム（${browser.selectedSummaryText}）", "공유 항목 (${browser.selectedSummaryText})", "分享內容（${browser.selectedSummaryText}）")
+        } ?: tr("原始文件（已选 ${state.sourceSelectedIndices.size} / ${state.items.size}）", "Original files (${state.sourceSelectedIndices.size} / ${state.items.size} selected)", "元ファイル（${state.sourceSelectedIndices.size} / ${state.items.size} 選択済み）", "원본 파일 (${state.sourceSelectedIndices.size} / ${state.items.size}개 선택됨)", "原始檔案（已選 ${state.sourceSelectedIndices.size} / ${state.items.size}）")
         Text(
-            text = tr("原始文件（已选 ${state.sourceSelectedIndices.size} / ${state.items.size}）", "Original files (${state.sourceSelectedIndices.size} / ${state.items.size} selected)", "元ファイル（${state.sourceSelectedIndices.size} / ${state.items.size} 選択済み）", "원본 파일 (${state.sourceSelectedIndices.size} / ${state.items.size}개 선택됨)", "原始檔案（已選 ${state.sourceSelectedIndices.size} / ${state.items.size}）"),
-            style = MaterialTheme.typography.labelLarge,
+            text = headerLabel,
+            style = MaterialTheme.typography.labelLarge.tabular,
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )
@@ -900,23 +926,111 @@ private fun SelectionHeader(
     }
 }
 
+private const val LARGE_TREE_AUTO_COLLAPSE_THRESHOLD = 200
+private const val MAX_AUTO_EXPAND_TOP_FOLDERS = 20
+
+private fun defaultExpandedImportKeys(nodes: List<dev.piko.shared.presentation.ImportTreeNode>): Set<String> {
+    if (nodes.size <= LARGE_TREE_AUTO_COLLAPSE_THRESHOLD) {
+        return nodes.filter { it.isFolder }.mapTo(HashSet()) { it.key }
+    }
+    val topFolders = nodes.filter { it.isFolder && it.depth == 0 }
+    return if (topFolders.size <= MAX_AUTO_EXPAND_TOP_FOLDERS) {
+        topFolders.mapTo(HashSet()) { it.key }
+    } else {
+        emptySet()
+    }
+}
+
+@Composable
+private fun ShareTreeProgressBanner(
+    browser: ShareTreeBrowser,
+    onCancel: () -> Unit,
+) {
+    val vault = browser.vaultProgress
+    val restore = browser.restoreProgress
+    if (vault == null && restore == null) return
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                InlineLoadingIndicator(modifier = Modifier.size(18.dp), color = MaterialTheme.colorScheme.onSecondaryContainer)
+                val label = when {
+                    vault != null -> tr(
+                        "正在流式保存引用：已扫描 ${vault.foldersScanned} 个文件夹，已保存 ${vault.filesSaved} / ${vault.filesCollected} 个文件",
+                        "Streaming references: ${vault.foldersScanned} folders scanned, ${vault.filesSaved} / ${vault.filesCollected} files saved",
+                        "参照を保存中：${vault.foldersScanned} フォルダー確認済み、${vault.filesSaved} / ${vault.filesCollected} ファイル保存済み",
+                        "참조 저장 중: 폴더 ${vault.foldersScanned}개 확인, 파일 ${vault.filesSaved} / ${vault.filesCollected}개 저장됨",
+                        "正在串流儲存引用：已掃描 ${vault.foldersScanned} 個資料夾，已儲存 ${vault.filesSaved} / ${vault.filesCollected} 個檔案",
+                    )
+                    restore != null -> tr(
+                        "正在云端转存：第 ${restore.completedBatches} / ${restore.totalBatches} 批（已提交 ${restore.submittedItems} 项）",
+                        "Saving in cloud: batch ${restore.completedBatches} / ${restore.totalBatches} (${restore.submittedItems} items)",
+                        "クラウドに保存中：${restore.completedBatches} / ${restore.totalBatches} バッチ（${restore.submittedItems} 項目）",
+                        "클라우드 저장 중: ${restore.completedBatches} / ${restore.totalBatches} 배치 (${restore.submittedItems}개 항목)",
+                        "正在雲端轉存：第 ${restore.completedBatches} / ${restore.totalBatches} 批（已提交 ${restore.submittedItems} 項）",
+                    )
+                    else -> ""
+                }
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodySmall.tabular,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                TextButton(
+                    onClick = onCancel,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSecondaryContainer),
+                ) {
+                    Text(stringResource(Res.string.common_cancel))
+                }
+            }
+            if (restore != null && restore.totalBatches > 0) {
+                LinearProgressIndicator(
+                    progress = { (restore.completedBatches.toFloat() / restore.totalBatches).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
 /** 右侧显示原始文件目录树，默认勾选需要的条目，支持展开目录精细调整。 */
 @Composable
 private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, modifier: Modifier = Modifier, retainedListState: LazyListState? = null) {
+    val shareBrowser = state.shareTree?.takeIf { it.isLazyMode }
+    if (shareBrowser != null) {
+        ShareTreeList(
+            browser = shareBrowser,
+            state = state,
+            onDownloaded = onDownloaded,
+            modifier = modifier,
+            retainedListState = retainedListState,
+        )
+        return
+    }
     val version = remember(state.resolution) {
         ImportTreeSourceVersion("single", state.resolution?.resource?.name ?: state.input, state.resolution?.resource?.files)
     }
     val nodes = remember(version) {
         importTree(version.files.orEmpty().map { it.path })
     }
-    var collapsed by remember(version) { mutableStateOf(emptySet<String>()) }
+    var expanded by remember(version) { mutableStateOf(defaultExpandedImportKeys(nodes)) }
     val filtering = state.isUnindexedFilterActive
-    val visible = remember(nodes, collapsed, filtering, state.items) {
-        val base = visibleImportTree(nodes, nodes.mapTo(HashSet()) { it.key } - collapsed, "")
+    val visible = remember(nodes, expanded, filtering, state.items) {
+        val base = visibleImportTree(nodes, expanded, "")
         if (!filtering) base else base.filter { node -> node.indices.any { !state.items[it].isInstantReady } }
     }
     val hasBranches = visible.any { it.isFolder }
     val editable = state.canEdit
+    val selection = state.sourceSelection
 
     Surface(
         shape = MaterialTheme.shapes.large,
@@ -937,14 +1051,14 @@ private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, mod
             contentPadding = PaddingValues(vertical = 4.dp),
         ) {
             items(visible, key = { it.key }) { node ->
-                val selected = node.indices.count { it in state.sourceSelectedIndices }
+                val selected = selection.countIn(node.indices)
                 val checked = when (selected) {
                     0 -> ToggleableState.Off
                     node.indices.size -> ToggleableState.On
                     else -> ToggleableState.Indeterminate
                 }
                 val index = node.fileIndex
-                val toggle = { collapsed = if (node.key in collapsed) collapsed - node.key else collapsed + node.key }
+                val toggle = { expanded = if (node.key in expanded) expanded - node.key else expanded + node.key }
                 val item = if (index == null) FilePresentation(
                     node.key, FileItemName(node.name), FileVisual(node.name, isFolder = true),
                     metadata = listOf(tr("${node.indices.size} 个文件", "${enCount(node.indices.size, "file", "files")}", "${node.indices.size} ファイル", "파일 ${node.indices.size}개", "${node.indices.size} 個檔案")),
@@ -954,7 +1068,7 @@ private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, mod
                     name = node.name,
                     depth = node.depth,
                     icon = item.visual.typeIcon(),
-                    expanded = if (node.isFolder) node.key !in collapsed else null,
+                    expanded = if (node.isFolder) node.key in expanded else null,
                     onExpand = toggle,
                     onOpen = open,
                     onLongClick = null,
@@ -976,117 +1090,170 @@ private fun FileTreeList(state: InstantSheetState, onDownloaded: () -> Unit, mod
     }
 }
 
-// 名字不长于此就与大小排在同一行
-private const val SHORT_LABEL = 16
-
-// 每深一层缩进这么多，让子项的复选框落在上一层名字的起点附近
-private val TreeIndent = 16.dp
-
-// 没勾的行压暗，扫一眼就知道会存哪些；复选框不压，免得看起来像禁用
-private const val UNSELECTED_ALPHA = 0.6f
-
 @Composable
-private fun GroupRow(
-    group: InstantGroup,
-    depth: Int,
-    isExpanded: Boolean,
-    summary: NameGroupSummary,
-    /** 为 null 时不能收起，也不画展开箭头。 */
-    onToggleExpanded: (() -> Unit)?,
-    onSelectAll: (Boolean) -> Unit,
-    selectionEnabled: Boolean,
+private fun ShareTreeList(
+    browser: ShareTreeBrowser,
+    state: InstantSheetState,
+    onDownloaded: () -> Unit,
+    modifier: Modifier = Modifier,
+    retainedListState: LazyListState? = null,
 ) {
-    val selectedCount = summary.selected
-    val total = summary.total
-    val checkState = when (selectedCount) {
-        0 -> ToggleableState.Off
-        total -> ToggleableState.On
-        else -> ToggleableState.Indeterminate
-    }
-    // 行本身负责展开收起，复选框负责整组勾选，两个点击目标分开
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(
-                if (onToggleExpanded != null) {
-                    Modifier.clickable(onClickLabel = if (isExpanded) tr("收起", "Collapse", "折りたたむ", "접기", "收起") else tr("展开", "Expand", "展開", "펼치기", "展開"), onClick = onToggleExpanded)
-                } else {
-                    Modifier
-                },
-            )
-            .padding(start = 4.dp + TreeIndent * depth, end = 8.dp, top = 4.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        TriStateCheckbox(state = checkState, enabled = selectionEnabled, onClick = { onSelectAll(checkState != ToggleableState.On) })
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .alpha(if (selectedCount == 0) UNSELECTED_ALPHA else 1f),
-        ) {
-            Text(
-                text = group.title,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            // 作品共有的标签只在这里出现一次，行里只剩有区分度的
-            MediaTagRow(tags = group.tags, modifier = Modifier.padding(vertical = 2.dp))
-            MetaRow(
-                parts = listOf(
-                    if (selectedCount == total || selectedCount == 0) tr("$total 项", "${enCount(total, "item", "items")}", "$total 項目", "${total}개 항목", "$total 項") else tr("已选 $selectedCount / $total", "Selected $selectedCount / $total", "選択済み $selectedCount / $total", "$selectedCount / ${total}개 선택됨", "已選 $selectedCount / $total"),
-                    summary.bytes.toReadableSize(),
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        // 收起的组里看不到行上的标记，组行上写明有几项，展开前就知道里面有慢的
-        if (summary.unindexed > 0) {
-            UnindexedMark(count = summary.unindexed)
-        }
-        if (onToggleExpanded != null) {
-            Icon(
-                imageVector = if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 8.dp),
-            )
-        }
-    }
-}
+    val downloads = LocalPikoServices.current.downloadManager
+    val editable = state.canEdit
+    val rows = remember(browser, browser.revision) { browser.visibleRows() }
+    val hasBranches = remember(rows) { rows.any { it is ShareTreeRow.NodeRow && it.node.isFolder } }
 
-/**
- * 未收录的标记：文件行上只有图标，组行上带组内的行数。原先是 outline 色的云下载图标，浅得像禁用，
- * 又与旁边的下载按钮同形；改为沙漏、tertiary 色，悬停或长按给出与横幅相同的说法。
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun UnindexedMark(count: Int? = null) {
-    val description = if (count != null) tr("其中 $count 项$UNINDEXED_HINT", "Including ${enCount(count, "item", "items")}: $UNINDEXED_HINT", "うち $count 項目：$UNINDEXED_HINT", "그중 ${count}개 항목: $UNINDEXED_HINT", "其中 $count 項$UNINDEXED_HINT") else UNINDEXED_HINT
-    val tint = MaterialTheme.colorScheme.tertiary
-    TooltipBox(
-        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-        tooltip = { PlainTooltip { Text(description) } },
-        state = rememberTooltipState(),
-        modifier = Modifier.padding(start = 12.dp),
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = modifier,
     ) {
-        Row(
-            modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = description },
-            verticalAlignment = Alignment.CenterVertically,
+        val listState = retainedListState ?: rememberLazyListState()
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(vertical = 4.dp),
         ) {
-            Icon(imageVector = UnindexedIcon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
-            if (count != null) {
-                Text(
-                    text = count.toString(),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = tint,
-                    modifier = Modifier.padding(start = 2.dp),
-                )
+            items(rows, key = { it.key }) { row ->
+                when (row) {
+                    is ShareTreeRow.NodeRow -> {
+                        val node = row.node
+                        val checked = when (row.checkState) {
+                            ShareNodeCheckState.OFF -> ToggleableState.Off
+                            ShareNodeCheckState.ON -> ToggleableState.On
+                            ShareNodeCheckState.INDETERMINATE -> ToggleableState.Indeterminate
+                        }
+                        val presentation = if (node.isFolder) {
+                            FilePresentation(
+                                key = node.id,
+                                name = FileItemName(node.name),
+                                visual = FileVisual(node.name, isFolder = true),
+                                metadata = if (row.isLoading) {
+                                    listOf(tr("加载中…", "Loading…", "読み込み中…", "불러오는 중…", "載入中…"))
+                                } else emptyList(),
+                            )
+                        } else {
+                            ResolvedFile(node.relativePath, node.sizeBytes, node.hash.ifBlank { null }).filePresentation(node.id)
+                        }
+                        val canPreview = state.canPreviewShareNode(node)
+                        val canDownload = !node.isFolder && node.hash.isNotBlank()
+                        WorkspaceTreeRow(
+                            name = node.name,
+                            depth = row.depth,
+                            icon = presentation.visual.typeIcon(),
+                            expanded = if (node.isFolder) row.expanded else null,
+                            onExpand = { browser.toggleExpand(node.id) },
+                            onOpen = {
+                                if (node.isFolder) browser.toggleExpand(node.id)
+                                else if (editable) browser.toggleNodeSelected(node)
+                            },
+                            onLongClick = null,
+                            item = presentation,
+                            reserveExpandSpace = hasBranches,
+                            leading = {
+                                FileItemSelectionControl(
+                                    FileItemSelection(
+                                        checked,
+                                        { if (editable) browser.toggleNodeSelected(node) },
+                                        enabled = editable,
+                                        label = tr("选择来源 ${node.name}", "Select source ${node.name}", "ソース ${node.name} を選択", "원본 ${node.name} 선택", "選取來源 ${node.name}"),
+                                    ),
+                                )
+                            },
+                            trailing = {
+                                if (row.isLoading) {
+                                    InlineLoadingIndicator(modifier = Modifier.padding(end = 8.dp).size(18.dp))
+                                }
+                                if (canPreview) {
+                                    PreviewButton(
+                                        onClick = { state.previewShareNode(node) },
+                                        isPreviewing = state.previewingShareNodeId == node.id,
+                                    )
+                                }
+                                if (canDownload) {
+                                    DownloadContentButton(
+                                        onClick = {
+                                            downloads.enqueueResolved(
+                                                listOf(ResolvedFile(node.name, node.sizeBytes, node.hash)),
+                                                state.target?.id.orEmpty(),
+                                            )
+                                            onDownloaded()
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                    is ShareTreeRow.LoadMoreRow -> {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !row.isLoading) { browser.loadMore(row.parentId) }
+                                .padding(start = 16.dp + TreeIndent * row.depth, end = 16.dp, top = 8.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            if (row.isLoading) {
+                                InlineLoadingIndicator(modifier = Modifier.size(16.dp))
+                                Text(
+                                    text = tr("正在加载更多…", "Loading more…", "さらに読み込み中…", "더 불러오는 중…", "正在載入更多…"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            } else {
+                                Text(
+                                    text = row.errorMessage ?: tr("加载更多…", "Load more…", "さらに読み込む…", "더 불러오기…", "載入更多…"),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = if (row.errorMessage != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    }
+                    is ShareTreeRow.ErrorRow -> {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp + TreeIndent * row.depth, end = 12.dp, top = 4.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                Icons.Outlined.ErrorOutline,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = row.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            TextButton(onClick = { browser.retryFolder(row.parentId) }) {
+                                Text(stringResource(Res.string.common_retry))
+                            }
+                        }
+                    }
+                    is ShareTreeRow.EmptyRow -> {
+                        Text(
+                            text = tr("空文件夹", "Empty folder", "空のフォルダー", "빈 폴더", "空資料夾"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 48.dp + TreeIndent * row.depth, end = 16.dp, top = 6.dp, bottom = 6.dp),
+                        )
+                    }
+                }
             }
         }
     }
 }
+
+// 每深一层缩进这么多，让子项的复选框落在上一层名字的起点附近
+private val TreeIndent = 16.dp
 
 /**
  * 复制磁力链的图标按钮。用链接图标而不是剪贴板：剪贴板图标挨着标题，读起来像「复制标题」；
@@ -1123,106 +1290,6 @@ internal fun CopyLinkButton(link: String, modifier: Modifier = Modifier) {
                     tint = if (done) LocalStatusColors.current.success else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun InstantFileRow(
-    row: InstantRow,
-    fullName: String,
-    depth: Int,
-    isInstantReady: Boolean,
-    checked: Boolean,
-    enabled: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    onPreview: (() -> Unit)?,
-    isPreviewing: Boolean,
-    onDownload: (() -> Unit)?,
-) {
-    val isCompact = row.label.length <= SHORT_LABEL
-    val meta = listOfNotNull(
-        row.bytes.toReadableSize(),
-        tr("+${row.subtitleCount} 字幕", "+${row.subtitleCount} subtitles", "+${row.subtitleCount} 字幕", "+${row.subtitleCount}개 자막", "+${row.subtitleCount} 字幕").takeIf { row.subtitleCount > 0 },
-        tr("+${row.audioTrackCount} 音轨", "+${row.audioTrackCount} audio tracks", "+${row.audioTrackCount} 音声", "+${row.audioTrackCount}개 오디오 트랙", "+${row.audioTrackCount} 音軌").takeIf { row.audioTrackCount > 0 },
-    )
-    // 整行是一个复选项，Checkbox 只作显示，免得同一次点击被行与复选框各处理一遍
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .toggleable(value = checked, enabled = enabled, role = Role.Checkbox, onValueChange = onCheckedChange)
-            // 单行时就是复选框的 48dp，再加上下边距，二十几集的列表会显得松散
-            .padding(start = 4.dp + TreeIndent * depth, end = 16.dp, top = if (isCompact) 0.dp else 4.dp, bottom = if (isCompact) 0.dp else 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Checkbox(checked = checked, enabled = enabled, onCheckedChange = null, modifier = Modifier.minimumInteractiveComponentSize())
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .alpha(if (checked) 1f else UNSELECTED_ALPHA),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 视频、图片、压缩包、nfo 常混在一起，短标签看不出类型，图标按原始文件名判断
-            Icon(
-                imageVector = fileNameTypeIcon(fullName),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp),
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            // 短标签（「01」「23 Beta」）与标签、大小排成一行，二十几集的列表矮一半；
-            // 原始文件名放不下，标签与大小另起一行
-            if (isCompact) {
-                Text(
-                    text = row.label,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                // 标签只占剩下的宽度，放不下就整个丢掉，不挤压大小
-                Box(modifier = Modifier.weight(1f)) {
-                    MediaTagRow(tags = row.tags, lead = row.code)
-                }
-                MetaRow(
-                    parts = meta,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            } else {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = row.label,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        MetaRow(
-                            parts = meta,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (row.tags.isNotEmpty() || row.code != null) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Box(modifier = Modifier.weight(1f)) {
-                                MediaTagRow(tags = row.tags, lead = row.code)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if (onPreview != null) {
-            PreviewButton(onClick = onPreview, isPreviewing = isPreviewing)
-        }
-        if (onDownload != null) {
-            DownloadContentButton(onClick = onDownload)
-        }
-        if (!isInstantReady) {
-            UnindexedMark()
         }
     }
 }
@@ -1273,12 +1340,11 @@ internal fun TargetRow(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                Icons.Outlined.Folder,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            FolderListLeadingVisual(
+                name = target?.localizedName.orEmpty(),
+                size = 36.dp,
             )
-            Spacer(modifier = Modifier.width(16.dp))
+            Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = stringResource(Res.string.text_save_to),
@@ -1324,6 +1390,7 @@ internal fun InstantSheetState.summary(): InstantSummary {
         batch != null -> batch.blockedReason ?: tr("可保存 ${batch.submittableCount} 项", "${enCount(batch.submittableCount, "item", "items")} ready to save", "${batch.submittableCount} 項目を保存可能", "${batch.submittableCount}개 항목 저장 가능", "可儲存 ${batch.submittableCount} 項")
         isResolving -> resolvingText(this)
         errorMessage != null -> errorMessage
+        isLazyShareMode -> shareTree?.selectedSummaryText
         result != null -> tr("已选 $selectedEntryCount / $entryCount", "Selected $selectedEntryCount / $entryCount", "選択済み $selectedEntryCount / $entryCount", "$selectedEntryCount / ${entryCount}개 선택됨", "已選 $selectedEntryCount / $entryCount")
         else -> null
     }

@@ -10,8 +10,11 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import dev.piko.data.auth.PlayerGestureDefaults
+import dev.piko.data.repository.isPlayableAudio
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFile
+import dev.piko.shared.media.AUTO_QUALITY
 import dev.piko.shared.media.ORIGINAL_QUALITY
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.PlayableMediaInfo
@@ -20,6 +23,8 @@ import dev.piko.shared.media.PreparedPlayback
 import dev.piko.shared.media.bestTranscodeName
 import dev.piko.shared.media.transcodeName
 import dev.piko.shared.media.proxy.ProxyStream
+import dev.piko.shared.media.storyboard.StoryboardSource
+import dev.piko.shared.media.storyboard.StoryboardSourceResolver
 import dev.piko.shared.runtime.PikoWorkloadGovernor
 import dev.piko.shared.runtime.WorkPhase
 import dev.piko.shared.runtime.WorkPurpose
@@ -74,10 +79,11 @@ class PlayerScreenState(
      */
     private val resolveLocalPath: suspend (fileId: String, hint: String?) -> String? = { _, hint -> hint },
     /**
-     * 设置里的播放画质上限（画面高度），0 是原画。每次准备时读，播放器开着时改了设置，下一集起生效。
-     * 挂起取值而不是收集成 State：头一集准备时收集多半还没拿到第一个值，会按原画开。
+     * 设置里的播放画质：-1（[PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT]）是自动，0 是原画，正整数是画面高度上限。
+     * 每次准备时读，播放器开着时改了设置，下一集起生效。
+     * 挂起取值而不是收集成 State：头一集准备时收集多半还没拿到第一个值，会按默认值开。
      */
-    private val defaultMaxHeight: suspend () -> Int = { 0 },
+    private val defaultMaxHeight: suspend () -> Int = { PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT },
 ) {
     var fileId by mutableStateOf(initialFileId)
         private set
@@ -86,6 +92,9 @@ class PlayerScreenState(
     private var localPathHint: String? = initialLocalPath
 
     var isLocalPlayback by mutableStateOf(false)
+        private set
+    /** 当前本地播放时实际打开的本机路径/URI，供预览帧缓存本地抽帧使用。 */
+    var resolvedLocalPath by mutableStateOf<String?>(null)
         private set
     var mediaInfo by mutableStateOf<PlayableMediaInfo?>(null)
         private set
@@ -100,11 +109,20 @@ class PlayerScreenState(
     /** 实际在放的变体，null 为原画。与用户所选不同之处在于它包含自动换上的转码流。 */
     private var activeQuality by mutableStateOf<String?>(null)
 
+    /** 是否处于「自动」动态画质模式：按倍速有效码率需求、实测吞吐与缓冲余量在原画与转码档位间平滑升降。 */
+    var isAutoQuality by mutableStateOf(false)
+        private set
+
+    /** 当播放转码流且原画为大体积未缓存 MKV 时，探测到的原画内封字幕轨元数据（供字幕列表提示）。 */
+    var originalSubtitleHints by mutableStateOf<List<OriginalSubtitleTrackInfo>>(emptyList())
+        private set
+
     /** 本次从续播位置开始时非 null，5 秒后清掉；控件据此显示「从头播放」提示。 */
     var resumedFromMillis by mutableStateOf<Long?>(null)
         private set
 
     val isImage by derivedStateOf { mediaInfo?.kind == PlayableMediaKind.Image }
+    val isAudioFile by derivedStateOf { mediaInfo?.kind == PlayableMediaKind.Audio || title.isPlayableAudio() }
 
     private val knownContent
         get() = if (isLocalPlayback || fileId.isBlank()) null else repository.knownContentMetadata(fileId)
@@ -153,21 +171,57 @@ class PlayerScreenState(
                 emptyList()
             } else {
                 val variants = info.availableVariants
+                    .filter { !it.isOrigin && it.video != null && it.link.url.isNotBlank() }
                     .map { it.mediaName.ifBlank { it.resolutionName } }
                     .filter { it.isNotBlank() }
-                if (variants.isEmpty()) emptyList() else (listOf(ORIGINAL_QUALITY) + variants).distinct()
+                if (variants.isEmpty()) emptyList() else (listOf(AUTO_QUALITY, ORIGINAL_QUALITY) + variants).distinct()
             }
         } else {
             val transcodes = knownContent?.transcodes
                 ?.filter { !it.unreadable && it.name.isNotBlank() }
                 ?.map { it.name }
                 .orEmpty()
-            if (transcodes.isEmpty()) emptyList() else (listOf(ORIGINAL_QUALITY) + transcodes).distinct()
+            if (transcodes.isEmpty()) emptyList() else (listOf(AUTO_QUALITY, ORIGINAL_QUALITY) + transcodes).distinct()
         }
     }
 
     val currentQuality by derivedStateOf {
-        if (qualityOptions.isEmpty()) null else activeQuality ?: ORIGINAL_QUALITY
+        if (qualityOptions.isEmpty()) null
+        else if (isAutoQuality) AUTO_QUALITY
+        else activeQuality ?: ORIGINAL_QUALITY
+    }
+
+    /** 处于「自动」画质时实际正在播放的档位（`ORIGINAL_QUALITY` 或转码名），非自动模式为 null。 */
+    val autoResolvedQuality by derivedStateOf {
+        if (qualityOptions.isEmpty() || !isAutoQuality) null else activeQuality ?: ORIGINAL_QUALITY
+    }
+
+    /**
+     * 经过严格 `<= 480P` MPEG-TS 门控的雪碧图源；纯原画视频、最低转码档 `>= 720P` 或本地文件恒为 `null`。
+     */
+    val storyboardSource: StoryboardSource? by derivedStateOf {
+        val info = mediaInfo ?: return@derivedStateOf null
+        val unreadable = repository.knownUnreadableTranscodeIds(info.fileId, info.gcid, info.sizeBytes)
+        StoryboardSourceResolver.resolve(
+            isLocalPlayback = isLocalPlayback,
+            mediaInfo = info,
+            durationMillis = durationMillis,
+            unreadableMediaIds = unreadable,
+            knownStreamSizeLookup = { mediaId ->
+                repository.knownTranscodeStreamSizeFor(info.fileId, info.gcid, info.sizeBytes, mediaId)
+            },
+        )
+    }
+
+    /** 当前视频是否启用全片雪碧图预览与「速览」时间轴条（严格要求存在 `<= 480P` MPEG-TS 转码档）。 */
+    val hasStoryboard: Boolean by derivedStateOf { storyboardSource != null }
+
+    /** 首帧是否已渲染完成，供雪碧图冷启动触发门控读取。 */
+    val isFirstFrameReady: Boolean get() = startedThisAttempt
+
+    /** 播放器当前是否处于加载/定位/重连/卡顿忙态，供雪碧图后台抓取主动退让。 */
+    val isPlaybackBusyForStoryboard: Boolean by derivedStateOf {
+        isPreparing || isRecovering || backend.isBuffering || seeking
     }
 
     val errorMessage by derivedStateOf { if (isRecovering) null else failure }
@@ -190,7 +244,7 @@ class PlayerScreenState(
     var playlist: List<PlaylistEntry>
         get() = playlistState
         set(value) {
-            playlistState = value
+            playlistState = normalizePlaylistForCurrentFile(value, fileId)
             isPlaylistLoaded = true
         }
     private var playlistState by mutableStateOf<List<PlaylistEntry>>(emptyList())
@@ -256,10 +310,19 @@ class PlayerScreenState(
     private var seeking by mutableStateOf(false)
     private var prepareJob: Job? = null
     private var lateSubtitlesJob: Job? = null
+    private var originalSubtitlesJob: Job? = null
     private var recoveryJob: Job? = null
     private var resumeTipJob: Job? = null
 
     private var requestedQuality: String? = null
+    private var sessionAutoQuality: Boolean? = null
+    private val failedAutoQualities = HashSet<String>()
+    private var cachedCoverageByMediaId: Map<String, Float> = emptyMap()
+    private var cachedWindowRenditions: Set<String> = emptySet()
+    private val abrClockOrigin = TimeSource.Monotonic.markNow()
+    private val abrController = AdaptiveBitrateController()
+
+    private fun abrNowMillis(): Long = abrClockOrigin.elapsedNow().inWholeMilliseconds
 
     // 这次打开播放器期间在播放器里选过的清晰度（画面高度，0 是原画）与倍速，连播换集时带着走，关掉播放器即忘。
     // 倍速不交给后端自己保留：桌面经 MediaMP 换片时会不会复位没有保证，每次打开后照这里设回去
@@ -314,6 +377,7 @@ class PlayerScreenState(
             }
         }
         scope.launch { persistLoop() }
+        scope.launch { autoQualityLoop() }
         scope.launch {
             snapshotFlow { backend.playbackGeneration to backend.isBuffering }.collect { (gen, waiting) ->
                 if (acceptedNativeGeneration != Long.MIN_VALUE && gen > acceptedNativeGeneration) {
@@ -426,7 +490,7 @@ class PlayerScreenState(
         }
         val subtitle = ManualSubtitle(title = name, localPath = path, fileId = null)
         manualSubtitles = manualSubtitles + subtitle
-        attachManualSubtitle(ExternalSubtitle(url = path, title = name, language = null))
+        attachManualSubtitle(ExternalSubtitle(url = path, title = name, language = inferSubtitleLanguageCode(null, name)))
     }
 
     /** 网盘上的字幕文件，与自动挂的外挂字幕一样经本机代理读。 */
@@ -459,7 +523,7 @@ class PlayerScreenState(
             }
             subtitleStreams = subtitleStreams + stream
             manualSubtitles = manualSubtitles + ManualSubtitle(title = name, localPath = null, fileId = subtitleFileId)
-            attachManualSubtitle(ExternalSubtitle(url = stream.url, title = name, language = null), subtitleFileId = subtitleFileId)
+            attachManualSubtitle(ExternalSubtitle(url = stream.url, title = name, language = inferSubtitleLanguageCode(null, name)), subtitleFileId = subtitleFileId)
         }
     }
 
@@ -504,9 +568,20 @@ class PlayerScreenState(
             prefersSubtitlesOff -> if (backend.selectedSubtitleTrackId != null && backend.subtitleTracks.isNotEmpty()) {
                 backend.selectSubtitleTrack(null)
             }
-            else -> preferredSubtitle?.let { preferred ->
+            preferredSubtitle != null -> {
+                val preferred = preferredSubtitle!!
                 matchTrack(backend.subtitleTracks, preferred)?.takeIf { it.id != backend.selectedSubtitleTrackId }
                     ?.let { backend.selectSubtitleTrack(it.id) }
+            }
+            backend.subtitleTracks.isNotEmpty() -> {
+                val preferredVariant = preferredChineseSubtitleVariant()
+                val current = backend.subtitleTracks.firstOrNull { it.id == backend.selectedSubtitleTrackId }
+                if (current == null || current.chineseVariant != preferredVariant) {
+                    val best = selectPreferredSubtitleTrack(backend.subtitleTracks, preferredVariant)
+                    if (best != null && best.chineseVariant == preferredVariant && best.id != backend.selectedSubtitleTrackId) {
+                        backend.selectSubtitleTrack(best.id)
+                    }
+                }
             }
         }
     }
@@ -644,12 +719,36 @@ class PlayerScreenState(
     fun stats(): List<PlaybackStatsSection> {
         // 走不走本机代理是实现细节，看的人只关心是不是在用流量
         val source = if (isLocalPlayback) tr("本机", "This device", "この端末", "이 기기", "本機") else tr("网盘", "Drive", "ドライブ", "드라이브", "雲端硬碟")
-        val quality = if (isLocalPlayback) null else activeQuality ?: tr("原画", "Original", "オリジナル", "원본", "原畫")
+        val resolvedLabel = activeQuality ?: tr("原画", "Original", "オリジナル", "원본", "原畫")
+        val quality = when {
+            isLocalPlayback -> null
+            isAutoQuality -> "${tr("自动", "Auto", "自動", "자동", "自動")} ($resolvedLabel)"
+            else -> resolvedLabel
+        }
         val playback = PlaybackStatsSection(tr("播放", "Play", "再生", "재생", "播放"), listOfNotNull(tr("来源", "Source", "ソース", "출처", "來源") to source, quality?.let { tr("画质", "Quality", "画質", "화질", "畫質") to it }))
         return listOf(playback) + readPlaybackStats(backend::mpvProperty)
     }
 
     fun selectQuality(quality: String) {
+        if (quality == AUTO_QUALITY) {
+            isAutoQuality = true
+            sessionAutoQuality = true
+            sessionMaxHeight = null
+            abrController.noteManualSwitch(abrNowMillis())
+            val target = pickInitialAutoQuality()
+            val activeName = activeQuality ?: ORIGINAL_QUALITY
+            if (target == activeName && !isPreparing && failure == null) {
+                return
+            }
+            pendingStartMillis = currentPosition()
+            requestedQuality = target
+            resetRecovery()
+            reload()
+            return
+        }
+        isAutoQuality = false
+        sessionAutoQuality = false
+        abrController.noteManualSwitch(abrNowMillis())
         pendingStartMillis = currentPosition()
         requestedQuality = quality
         // 之后几集按这一档的画面高度挑，不照名字找：别的集未必有同名的一档，照名字找不到会退回原画
@@ -726,6 +825,11 @@ class PlayerScreenState(
         mediaInfo = null
         activeQuality = null
         requestedQuality = null
+        originalSubtitleHints = emptyList()
+        failedAutoQualities.clear()
+        cachedCoverageByMediaId = emptyMap()
+        cachedWindowRenditions = emptySet()
+        abrController.resetSession(nowMillis = abrNowMillis(), clearBandwidth = false)
         pendingStartMillis = null
         lastKnownPositionMillis = 0L
         resumePositionVerified = true
@@ -767,6 +871,7 @@ class PlayerScreenState(
         workloadLease.close()
         prepareJob?.cancel()
         lateSubtitlesJob?.cancel()
+        originalSubtitlesJob?.cancel()
         recoveryJob?.cancel()
         val oldStreams = detachPrepared()
         backend.stop()
@@ -811,6 +916,7 @@ class PlayerScreenState(
     private fun reload() {
         prepareJob?.cancel()
         lateSubtitlesJob?.cancel()
+        originalSubtitlesJob?.cancel()
         prepareJob = scope.launch { prepare() }
     }
 
@@ -856,8 +962,11 @@ class PlayerScreenState(
             val localPath = resolveLocalPath(fileId, repository.localPath(fileId) ?: localPathHint)
             if (localPath != null) {
                 isLocalPlayback = true
+                resolvedLocalPath = localPath
                 usingProxy = false
                 activeQuality = null
+                isAutoQuality = false
+                originalSubtitleHints = emptyList()
                 PikoLog.i(TAG, "Opening local file for playback: ${logFile(fileId, title)}")
                 val startAt = startPosition()
                 val subs = openSubtitles()
@@ -866,17 +975,53 @@ class PlayerScreenState(
                 sessionSpeed?.let(backend::setSpeed)
             } else {
                 isLocalPlayback = false
+                resolvedLocalPath = null
+                val configuredMaxHeight = sessionMaxHeight ?: defaultMaxHeight()
                 val prewarmStartHint = pending
                     ?: (if (cloudPosition?.isCompleted == true) cloudPosition.await() else null)
                     ?: localSaved
                     ?: 0L
                 val playbackStarted = TimeSource.Monotonic.markNow()
-                val playback = repository.preparePlayback(
+                var playback = repository.preparePlayback(
                     fileId = fileId,
                     preferredResolution = requestedQuality,
-                    defaultMaxHeight = sessionMaxHeight ?: defaultMaxHeight(),
+                    defaultMaxHeight = configuredMaxHeight,
                     startPositionMillis = prewarmStartHint,
                 ).getOrThrow()
+                val hasTranscodes = playback.info.availableVariants.any { !it.isOrigin && it.video != null && it.link.url.isNotBlank() }
+                val autoMode = hasTranscodes && when {
+                    sessionAutoQuality != null -> sessionAutoQuality == true
+                    requestedQuality != null -> false
+                    else -> configuredMaxHeight == PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT
+                }
+                // 自动画质冷开播/重播时先查本地缓存覆盖：若某档位已有可观本地缓存（>= 25% 或起点窗口命中），
+                // 直接切换到已缓存档位开播，实现零额外流量秒开。
+                if (autoMode && requestedQuality == null && playback.info.kind == PlayableMediaKind.Video) {
+                    val infoDurMs = playback.info.durationSeconds * 1_000L
+                    val (cov, win) = runCatching {
+                        repository.cachedRenditionCoverage(playback.info, prewarmStartHint, infoDurMs)
+                    }.getOrDefault(emptyMap<String, Float>() to emptySet())
+                    cachedCoverageByMediaId = cov
+                    cachedWindowRenditions = win
+                    if (cov.isNotEmpty() || win.isNotEmpty()) {
+                        val cands = autoQualityCandidatesFor(playback.info, infoDurMs)
+                        val speed = (sessionSpeed ?: backend.speed).coerceAtLeast(0.5f)
+                        val preferredCached = abrController.pickInitial(cands, speed, cov, win)
+                        val openedName = playback.info.transcodeName ?: ORIGINAL_QUALITY
+                        if (preferredCached.isNotBlank() && preferredCached != openedName) {
+                            val reopened = repository.preparePlayback(
+                                fileId = fileId,
+                                preferredResolution = preferredCached,
+                                defaultMaxHeight = configuredMaxHeight,
+                                startPositionMillis = prewarmStartHint,
+                            ).getOrNull()
+                            if (reopened != null) {
+                                playback.close()
+                                playback = reopened
+                            }
+                        }
+                    }
+                }
                 val prepareMillis = playbackStarted.elapsedNow().inWholeMilliseconds
                 // 出第一帧前直接提交 WAITING 意图（未知缓冲保持 bufferedDuration = null，绝不伪装成 0s），
                 // 并预先对齐 backend.open 内部的 generation 递增，防止开播探测中途二次递增 epoch。
@@ -893,10 +1038,14 @@ class PlayerScreenState(
                 mediaInfo = playback.info
                 // 按实际打开的那一档标：没点选过时由设置的上限挑，点选的档位没有时 SDK 退回原画
                 activeQuality = playback.info.transcodeName
+                isAutoQuality = autoMode
+                if (playback.info.isOrigin) {
+                    originalSubtitleHints = emptyList()
+                }
                 when (playback.info.kind) {
                     PlayableMediaKind.Image -> Unit
                     PlayableMediaKind.UnsupportedImage -> failure = tr("GIF 暂不支持预览", "GIF preview is not supported yet", "GIFのプレビューにはまだ対応していません", "GIF 미리 보기는 아직 지원하지 않습니다", "GIF 暫不支援預覽")
-                    PlayableMediaKind.Video -> {
+                    PlayableMediaKind.Video, PlayableMediaKind.Audio -> {
                         val proxyUrl = playback.proxyUrl.takeUnless { preferDirectLink }
                         usingProxy = proxyUrl != null
                         val info = playback.info
@@ -914,6 +1063,7 @@ class PlayerScreenState(
                             "Opening stream: ${logFile(fileId, title)}, transport=${if (usingProxy) "proxy" else "direct"}, variant=$variantDesc, " +
                                 "video=${info.width}x${info.height}, size=${info.sizeBytes} B, prepareMs=$prepareMillis" +
                                 (requestedQuality?.let { ", requested=$it" } ?: "") +
+                                (if (isAutoQuality) ", auto=true" else "") +
                                 (if (retryAttempt > 0) ", reconnect=$retryAttempt/${RECOVERY_DELAYS_MILLIS.size}" else ""),
                         )
                         val startAt = startPosition()
@@ -928,6 +1078,9 @@ class PlayerScreenState(
                             subtitles = subs,
                         )
                         sessionSpeed?.let(backend::setSpeed)
+                        if (!info.isOrigin && backend.canAddSubtitle) {
+                            attachOriginalEmbeddedSubtitles(fileId)
+                        }
                     }
                 }
             }
@@ -1078,6 +1231,16 @@ class PlayerScreenState(
                 return
             }
             val transcode = mediaInfo?.bestTranscodeName()
+            if (isAutoQuality && activeQuality != null) {
+                failedAutoQualities += activeQuality!!
+                val fallback = autoQualityCandidates().firstOrNull { it.name != activeQuality }?.name ?: ORIGINAL_QUALITY
+                PikoLog.i(TAG, "Auto-selected transcode $activeQuality failed before first frame, falling back to $fallback: ${logFile(fileId, title)}")
+                preferDirectLink = false
+                requestedQuality = fallback
+                isRecovering = true
+                reload()
+                return
+            }
             if (activeQuality == null && transcode != null) {
                 PikoLog.i(TAG, "Original stream failed before first frame, falling back to $transcode transcode: ${logFile(fileId, title)}")
                 preferDirectLink = false
@@ -1212,7 +1375,7 @@ class PlayerScreenState(
             val url = subtitle.localPath
                 ?: subtitle.fileId?.let { id -> repository.prepareSubtitle(id)?.let(::registerSubtitleStream) }
                 ?: return@mapNotNull null
-            ExternalSubtitle(url = url, title = subtitle.title, language = null)
+            ExternalSubtitle(url = url, title = subtitle.title, language = inferSubtitleLanguageCode(null, subtitle.title))
         }
         return subtitles + manual
     }
@@ -1225,19 +1388,211 @@ class PlayerScreenState(
     }
 
     private suspend fun openPlaylistSubtitle(ref: SubtitleRef): ExternalSubtitle? {
+        val detectedLang = inferSubtitleLanguageCode(ref.language, ref.name)
+        val displayTitle = ref.language ?: tr("外挂字幕", "External subtitles", "外部字幕", "외부 자막", "外掛字幕")
         repository.localPath(ref.fileId, subtitle = true)?.let { path ->
             return ExternalSubtitle(
                 url = path,
-                title = ref.language ?: tr("外挂字幕", "External subtitles", "外部字幕", "외부 자막", "外掛字幕"),
-                language = ref.language?.let(::subtitleLanguageCode),
+                title = displayTitle,
+                language = detectedLang,
             )
         }
         val stream = repository.prepareSubtitle(ref.fileId) ?: return null
         return ExternalSubtitle(
             url = registerSubtitleStream(stream),
-            title = ref.language ?: tr("外挂字幕", "External subtitles", "外部字幕", "외부 자막", "外掛字幕"),
-            language = ref.language?.let(::subtitleLanguageCode),
+            title = displayTitle,
+            language = detectedLang,
         )
+    }
+
+    private fun autoQualityCandidates(): List<AbrRendition> {
+        val info = mediaInfo ?: return emptyList()
+        return autoQualityCandidatesFor(info, durationMillis)
+    }
+
+    private fun autoQualityCandidatesFor(info: PlayableMediaInfo, fallbackDurationMs: Long): List<AbrRendition> {
+        if (info.kind != PlayableMediaKind.Video) return emptyList()
+        val durationSec = info.durationSeconds.takeIf { it > 0L }
+            ?: (fallbackDurationMs / 1_000L).takeIf { it > 0L }
+            ?: 0L
+        val out = ArrayList<AbrRendition>()
+        val origVariant = info.availableVariants.firstOrNull { it.isOrigin }
+        val origSize = if (info.isOrigin && info.sizeBytes > 0L) info.sizeBytes else 0L
+        val origBySize = if (origSize > 0L && durationSec > 0L) origSize / durationSec else 0L
+        val origByBitRate = (origVariant?.video?.bitRate ?: 0L) / 8L
+        val origBps = maxOf(origBySize, origByBitRate).takeIf { it > 0L } ?: (400L * 1024L)
+        if (ORIGINAL_QUALITY !in failedAutoQualities) {
+            out += AbrRendition(
+                name = ORIGINAL_QUALITY,
+                bytesPerSec = origBps,
+                height = origVariant?.video?.height?.takeIf { it > 0 } ?: info.height.takeIf { it > 0 } ?: 1080,
+                mediaId = null,
+            )
+        }
+        val seen = HashSet<String>()
+        for (variant in info.availableVariants) {
+            if (variant.isOrigin || variant.video == null || variant.link.url.isBlank()) continue
+            val name = variant.mediaName.ifBlank { variant.resolutionName }.takeIf { it.isNotBlank() } ?: continue
+            if (name in failedAutoQualities || !seen.add(name)) continue
+            val h = variant.video?.height ?: 0
+            val bps = ((variant.video?.bitRate ?: 0L) / 8L).takeIf { it > 0L }
+                ?: when {
+                    h >= 1000 -> 140L * 1024L
+                    h >= 680 -> 90L * 1024L
+                    else -> 60L * 1024L
+                }
+            out += AbrRendition(name = name, bytesPerSec = bps, height = h, mediaId = variant.mediaId)
+        }
+        return out.sortedWith(compareByDescending<AbrRendition> { it.bytesPerSec }.thenByDescending { it.height })
+    }
+
+    private fun pickInitialAutoQuality(): String {
+        val candidates = autoQualityCandidates()
+        if (candidates.isEmpty()) return ORIGINAL_QUALITY
+        val speed = (sessionSpeed ?: backend.speed).coerceAtLeast(0.5f)
+        return abrController.pickInitial(
+            candidates = candidates,
+            playbackSpeed = speed,
+            cachedCoverageByMediaId = cachedCoverageByMediaId,
+            windowCachedRenditions = cachedWindowRenditions,
+        ).ifEmpty { ORIGINAL_QUALITY }
+    }
+
+    private fun switchAutoQuality(decision: AbrDecision) {
+        val activeName = activeQuality ?: ORIGINAL_QUALITY
+        if (decision.targetName == activeName) return
+        PikoLog.i(
+            TAG,
+            "Auto quality switching $activeName -> ${decision.targetName} " +
+                "(reason=${decision.reason}, forSpeed=${decision.forSpeed}, speed=${sessionSpeed ?: backend.speed}, " +
+                "ewmaBps=${abrController.estimatedBytesPerSec ?: -1L}): ${logFile(fileId, title)}",
+        )
+        pendingStartMillis = currentPosition()
+        requestedQuality = decision.targetName
+        resetRecovery()
+        reload()
+    }
+
+    /**
+     * 「自动」画质自适应循环（Shaka Dual-EWMA 活跃传输测速 + DASH.js BOLA 缓冲效用混合算法）：
+     * - 仅在活跃网络拉取期间累计字节与耗时，消除低画质满缓冲时的限速低估陷阱；
+     * - 严格受 `isAutoQuality`（设置「自动」档或播放器内显式切换至「自动」）门控。
+     */
+    private suspend fun autoQualityLoop() {
+        var lastToken: PreparedPlayback? = null
+        var lastActiveBytes = 0L
+        var lastActiveNanos = 0L
+        var pendingBurstBytes = 0L
+        var pendingBurstNanos = 0L
+        var coveragePollTick = 0
+
+        while (!released) {
+            delay(AUTO_QUALITY_POLL_MS)
+            if (released || isLocalPlayback || isImage || isPreparing || isRecovering || failure != null) {
+                continue
+            }
+            val active = prepared
+            val nowMs = abrNowMillis()
+            if (active !== lastToken) {
+                lastToken = active
+                val snap = active?.activeTransferSnapshot() ?: (0L to 0L)
+                lastActiveBytes = snap.first
+                lastActiveNanos = snap.second
+                pendingBurstBytes = 0L
+                pendingBurstNanos = 0L
+                coveragePollTick = 0
+                continue
+            }
+            if (active != null && startedThisAttempt) {
+                val (curActiveBytes, curActiveNanos) = active.activeTransferSnapshot()
+                val deltaBytes = (curActiveBytes - lastActiveBytes).coerceAtLeast(0L)
+                val deltaNanos = (curActiveNanos - lastActiveNanos).coerceAtLeast(0L)
+                lastActiveBytes = curActiveBytes
+                lastActiveNanos = curActiveNanos
+                if (deltaBytes > 0L && deltaNanos > 0L) {
+                    pendingBurstBytes += deltaBytes
+                    pendingBurstNanos += deltaNanos
+                    if (pendingBurstBytes >= DualEwmaBandwidthEstimator.MIN_BURST_BYTES &&
+                        pendingBurstNanos >= DualEwmaBandwidthEstimator.MIN_BURST_NANOS
+                    ) {
+                        abrController.recordActiveBurst(pendingBurstBytes, pendingBurstNanos, nowMs)
+                        pendingBurstBytes = 0L
+                        pendingBurstNanos = 0L
+                    }
+                }
+            }
+
+            if (!isAutoQuality || !startedThisAttempt) continue
+            val candidates = autoQualityCandidates()
+            if (candidates.size < 2) continue
+
+            val info = mediaInfo
+            if (info != null && coveragePollTick % ABR_CACHE_POLL_EVERY_TICKS == 0) {
+                val (cov, win) = runCatching {
+                    repository.cachedRenditionCoverage(info, backend.positionMillis, durationMillis)
+                }.getOrDefault(cachedCoverageByMediaId to cachedWindowRenditions)
+                cachedCoverageByMediaId = cov
+                cachedWindowRenditions = win
+            }
+            coveragePollTick++
+
+            val activeName = activeQuality ?: ORIGINAL_QUALITY
+            val activeCandidate = candidates.firstOrNull { it.name == activeName }
+            val currentWindowHit = activeName in cachedWindowRenditions ||
+                (activeCandidate?.mediaId != null && activeCandidate.mediaId in cachedWindowRenditions)
+            val decision = abrController.evaluate(
+                AbrObservation(
+                    nowMillis = nowMs,
+                    candidates = candidates,
+                    currentName = activeName,
+                    playbackSpeed = (sessionSpeed ?: backend.speed).coerceAtLeast(0.5f),
+                    bufferSeconds = backend.bufferSnapshot?.bufferedDuration?.inWholeMilliseconds?.div(1_000.0),
+                    isBuffering = backend.isBuffering && backend.isPlaying,
+                    isPlaying = backend.isPlaying,
+                    cachedCoverageByMediaId = cachedCoverageByMediaId,
+                    currentWindowCached = currentWindowHit,
+                    windowCachedRenditions = cachedWindowRenditions,
+                ),
+            )
+            if (decision != null) {
+                switchAutoQuality(decision)
+            }
+        }
+    }
+
+    /**
+     * 转码流播放时，后台尝试从原画容器中探测并挂载仅原画携带的内封字幕（MP4 稀疏 Range / 小体积 MKV）。
+     */
+    private fun attachOriginalEmbeddedSubtitles(targetFileId: String) {
+        originalSubtitlesJob?.cancel()
+        originalSubtitlesJob = scope.launch {
+            val result = repository.prepareOriginalEmbeddedSubtitles(targetFileId)
+            if (fileId != targetFileId || released || mediaInfo?.isOrigin == true) {
+                result.attached.forEach { (_, stream) -> runCatching { stream.close() } }
+                return@launch
+            }
+            originalSubtitleHints = result.unextracted
+            if (result.attached.isNotEmpty()) {
+                val existingTitles = backend.subtitleTracks.mapNotNull { it.title }.toSet()
+                for ((ext, stream) in result.attached) {
+                    if (fileId != targetFileId || released) {
+                        runCatching { stream.close() }
+                        continue
+                    }
+                    registerSubtitleStream(stream)
+                    if (ext.title !in existingTitles) {
+                        backend.addSubtitle(ext)
+                    }
+                }
+                PikoLog.i(TAG, "Mounted ${result.attached.size} original-only embedded subtitle track(s) onto transcode stream: ${logFile(targetFileId, title)}")
+                applyTrackPreferences()
+            } else if (result.unextracted.isNotEmpty()) {
+                PikoLog.d(
+                    TAG,
+                    "Detected ${result.unextracted.size} original-only embedded subtitle track(s) in large MKV (${result.unextracted.joinToString { "${it.codecId}:${it.language ?: "?"}" }}): ${logFile(targetFileId, title)}",
+                )
+            }
+        }
     }
 
     private fun attachLatePlaylistSubtitles(targetFileId: String) {
@@ -1296,6 +1651,8 @@ class PlayerScreenState(
         const val STABLE_PLAYBACK_MILLIS = 15_000L
         const val STOP_DRAIN_TIMEOUT_MILLIS = 350L
         const val REACTIVATION_WAIT_MILLIS = 5 * 60_000L
+        const val AUTO_QUALITY_POLL_MS = 1_000L
+        const val ABR_CACHE_POLL_EVERY_TICKS = 3
         val RECOVERY_DELAYS_MILLIS = longArrayOf(500L, 1_500L, 4_000L)
         val retireScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
@@ -1314,12 +1671,3 @@ fun formatTransferRate(bytesPerSec: Long): String {
 
 /** 手动挂上的一条字幕：本机的记路径，网盘的记 ID，每次打开文件时重新开代理会话。 */
 private class ManualSubtitle(val title: String, val localPath: String?, val fileId: String?)
-
-/** 解析器给的字幕语言（「简」「繁日」）换成 mpv 按 slang 匹配用的代码。 */
-private fun subtitleLanguageCode(label: String): String? = when {
-    label.startsWith("简") -> "chs"
-    label.startsWith("繁") -> "cht"
-    label.startsWith("英") -> "eng"
-    label.startsWith("日") -> "jpn"
-    else -> null
-}

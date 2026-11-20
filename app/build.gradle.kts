@@ -122,6 +122,10 @@ android {
     }
 }
 
+composeCompiler {
+    stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("compose-stability.conf"))
+}
+
 dependencies {
     // 状态与业务在 shared，界面在 ui；这里只剩 Activity 入口、平台实现与播放器
     implementation(project(":shared"))
@@ -141,7 +145,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
 
-    // Compose (Material 3 Expressive 1.5.0-alpha28 via BOM)
+    // Compose (Material 3 Expressive 1.5.0-rc01 via compose-bom-beta)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)

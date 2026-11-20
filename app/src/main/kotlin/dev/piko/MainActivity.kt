@@ -49,6 +49,9 @@ import dev.piko.ui.hasBackgroundWork
 import dev.piko.ui.fileWorkChanges
 import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.screens.player.MediampVideoPlayerScreen
+import dev.piko.ui.theme.Appearance
+import dev.piko.ui.theme.SeedTheme
+import dev.piko.ui.theme.ThemeMode
 import dev.piko.ui.theme.appearanceFlow
 import dev.piko.ui.theme.isDark
 import dev.piko.platform.installMotionScale
@@ -63,7 +66,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -95,8 +97,14 @@ class MainActivity : ComponentActivity() {
 
         val app = PikoApplication.instance
         val appearanceFlow = app.sessionManager.appearanceFlow(app.platform.supportsDynamicColor)
-        // 同步读一次再 setContent：异步给初值的话，首帧按系统取色画出来，随即跳成用户选的主题
-        val initialAppearance = runBlocking { appearanceFlow.first() }
+        // 从预加载的无锁偏好快照同步构造初始外观，既避免主线程 runBlocking 又避免首帧闪回默认主题
+        val initialSnapshot = app.sessionManager.currentSnapshot
+        val initialAppearance = Appearance(
+            mode = ThemeMode.entries.find { it.name.equals(initialSnapshot.themeMode, ignoreCase = true) } ?: ThemeMode.SYSTEM,
+            seed = SeedTheme.entries.find { it.name == initialSnapshot.themeSeed },
+            dynamicColorAvailable = app.platform.supportsDynamicColor,
+            pureBlack = initialSnapshot.pureBlack,
+        )
         // 播放器仍在 app 模块，以应用内覆盖层的方式交给共享主界面
         val videoPlayer = VideoPlayerHost.InApp { screen, onClose ->
             MediampVideoPlayerScreen(

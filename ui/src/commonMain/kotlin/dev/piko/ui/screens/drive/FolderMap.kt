@@ -88,9 +88,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.piko.data.repository.FileCategory
 import dev.piko.shared.data.DriveChange
+import dev.piko.shared.data.LocalLocation
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.isDriveFolderId
+import dev.piko.ui.components.FileVisual
+import dev.piko.ui.components.fileVisual
 import dev.piko.ui.components.typeIcon
 import io.github.nihildigit.pikpak.FileStat
 import dev.piko.shared.data.PikoPathBreadcrumb
@@ -692,6 +696,13 @@ private fun MapNodeRow(
     val leaf = !node.expandable || (loaded != null && loaded.nodes.isEmpty() && !state.isExpanded(id))
     val bring = remember { BringIntoViewRequester() }
     LaunchedEffect(highlighted) { if (highlighted) bring.bringIntoView() }
+    val visual = remember(node) {
+        when {
+            node.file != null -> node.file!!.fileVisual()
+            node.isArchive -> FileVisual(node.crumb.name, isFolder = false, category = FileCategory.ARCHIVE)
+            else -> FileVisual(node.crumb.name, isFolder = true, isLocalMount = LocalLocation.isLocal(node.crumb.id))
+        }
+    }
     dev.piko.ui.components.WorkspaceTreeRow(
         name = node.crumb.localizedName, depth = row.depth,
         icon = node.file?.typeIcon() ?: if (node.isArchive) Icons.Outlined.FolderZip else Icons.Outlined.Folder,
@@ -699,6 +710,8 @@ private fun MapNodeRow(
         onExpand = { if (state.isExpanded(id)) state.collapse(id) else state.expand(id) },
         onOpen = { onActivate(row) }, emphasized = here || onPath,
         supporting = if (showPath && row.stack.size > 2) row.stack.drop(1).dropLast(1).joinToString(" › ") { it.localizedName } else null,
+        visual = visual,
+        visualSize = 28.dp,
         modifier = Modifier.bringIntoViewRequester(bring).padding(horizontal = 4.dp)
             .then(if (node.expandable) Modifier.fileDropTarget("map:$id", node.crumb) else Modifier)
             .clip(MaterialTheme.shapes.medium)

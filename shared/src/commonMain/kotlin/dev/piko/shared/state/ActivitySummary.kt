@@ -1,5 +1,8 @@
 package dev.piko.shared.state
 
+import androidx.compose.runtime.Immutable
+
+@Immutable
 data class ActivitySummary(
     val active: List<TransferItem>,
     val needsAttention: List<TransferItem>,

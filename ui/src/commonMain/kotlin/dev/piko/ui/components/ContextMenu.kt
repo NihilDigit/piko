@@ -43,9 +43,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isSecondaryPressed
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.DropdownMenuPopupPositionProvider
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.unit.IntOffset
@@ -96,22 +93,9 @@ fun ContextMenuArea(
     content: @Composable () -> Unit,
 ) {
     var menuAt by remember { mutableStateOf<Offset?>(null) }
+    val onSecondary: (Offset) -> Unit = remember { { menuAt = it } }
     Box(
-        modifier = modifier
-            .pointerInput(enabled) {
-                if (!enabled) return@pointerInput
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.first()
-                        // 嵌套时里层先收到（Main 阶段由内向外）：条目的菜单弹出后标为已消费，外面网格空白处的那一层就不再弹
-                        if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed && !change.isConsumed) {
-                            menuAt = change.position
-                            change.consume()
-                        }
-                    }
-                }
-            },
+        modifier = modifier.onSecondaryPress(enabled = enabled, onPress = onSecondary),
     ) {
         content()
         val position = menuAt
@@ -390,7 +374,7 @@ private fun ActionMenuItem(action: SheetAction, shape: Shape, onDismiss: () -> U
         modifier = modifier.height(MenuItemHeight).prepareOnPointer(action),
         contentPadding = MenuItemPadding,
         leadingIcon = { MenuItemIcon(action.icon, tint) },
-        trailingIcon = if (action.checked == true) {
+        trailingContent = if (action.checked == true) {
             { Icon(Icons.Outlined.Check, contentDescription = tr("当前", "Current", "現在", "현재", "目前"), tint = colors.primary, modifier = Modifier.size(MenuIconSize)) }
         } else {
             null

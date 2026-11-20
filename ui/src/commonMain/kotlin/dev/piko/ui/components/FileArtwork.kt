@@ -1,6 +1,10 @@
 package dev.piko.ui.components
 
+import dev.piko.shared.data.DriveAppearancePrefs
+import dev.piko.shared.data.FolderStyle
 import dev.piko.shared.i18n.tr
+import dev.piko.ui.screens.drive.LocalDriveAppearancePrefs
+import io.github.nihildigit.pikpak.FileStat
 
 import androidx.compose.foundation.border
 import androidx.compose.ui.draw.drawWithCache
@@ -13,11 +17,13 @@ import androidx.compose.ui.layout.Layout
 import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.isDark
 import kotlin.math.roundToInt
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -30,33 +36,294 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.*
+import dev.piko.ui.theme.LocalFixedColors
+
+internal const val FILE_LEADING_SKEUOMORPHIC_FOLDER_TAG = "file_leading_skeuomorphic_folder"
+internal const val FILE_LEADING_MINIMAL_FOLDER_TAG = "file_leading_minimal_folder"
+internal const val FILE_LEADING_MEDIA_TAG = "file_leading_media"
+internal const val FILE_POSTER_SKEUOMORPHIC_FOLDER_TAG = "file_poster_skeuomorphic_folder"
+internal const val FILE_POSTER_MINIMAL_FOLDER_TAG = "file_poster_minimal_folder"
+
+internal fun resolveLeadingFolderStyle(prefs: DriveAppearancePrefs): FolderStyle = prefs.list.folderStyle
+
+internal fun resolvePosterFolderStyle(prefs: DriveAppearancePrefs): FolderStyle = prefs.grid.folderStyle
+
+internal fun leadingIconSizeFor(containerSize: Dp): Dp = when {
+    containerSize >= 52.dp -> ListLeadingIconSize
+    containerSize >= 40.dp -> 22.dp
+    containerSize >= 34.dp -> 20.dp
+    containerSize >= 28.dp -> 18.dp
+    else -> 16.dp
+}
+
+internal fun leadingCornerRadiusFor(containerSize: Dp): Dp = when {
+    containerSize >= 40.dp -> 8.dp
+    containerSize >= 28.dp -> 6.dp
+    else -> 5.dp
+}
+
+internal fun leadingSkeuomorphicPaddingFor(containerSize: Dp): Dp = when {
+    containerSize >= 52.dp -> 3.dp
+    containerSize >= 40.dp -> 2.dp
+    containerSize >= 28.dp -> 1.5.dp
+    else -> 1.dp
+}
+
+/**
+ * 全应用列表、目录树、文件夹选择器与面板共用的单权威文件/文件夹前导视觉组件。
+ * 始终读取 [LocalDriveAppearancePrefs.current.list]（含 `folderStyle`、`thumbnailScale`、`thumbnailClarity`），
+ * 确保网盘列表、链接解析、文件夹选择、传输列表、分享与空间分布保持统一外观。
+ */
+@Composable
+fun FileListLeadingVisual(
+    file: FileStat,
+    modifier: Modifier = Modifier,
+    size: Dp = ListLeadingSize,
+    isSpoilerBlurred: Boolean = false,
+    isEmptyFolder: Boolean = false,
+    allowThumbnail: Boolean = true,
+    showMinimalFolderBadge: Boolean = true,
+    showPlayOverlay: Boolean = false,
+) {
+    val visual = remember(file, isEmptyFolder) { file.fileVisual(emptyFolder = isEmptyFolder) }
+    FileListLeadingVisual(
+        file = visual,
+        modifier = modifier,
+        size = size,
+        isSpoilerBlurred = isSpoilerBlurred,
+        allowThumbnail = allowThumbnail,
+        showMinimalFolderBadge = showMinimalFolderBadge,
+        showPlayOverlay = showPlayOverlay,
+    )
+}
+
+/**
+ * 仅有文件夹名称（尚未持有完整 [FileStat]）时的单权威列表前导视觉组件，
+ * 同样严格遵循 [LocalDriveAppearancePrefs.current.list.folderStyle]。
+ */
+@Composable
+fun FolderListLeadingVisual(
+    name: String,
+    modifier: Modifier = Modifier,
+    size: Dp = ListLeadingSize,
+    isEmptyFolder: Boolean = false,
+    isLocalMount: Boolean = false,
+    thumbnail: Any? = null,
+    isSpoilerBlurred: Boolean = false,
+    showMinimalFolderBadge: Boolean = true,
+) {
+    val visual = remember(name, isEmptyFolder, isLocalMount, thumbnail) {
+        FileVisual(
+            name = name,
+            isFolder = true,
+            thumbnail = thumbnail,
+            isEmptyFolder = isEmptyFolder,
+            isLocalMount = isLocalMount,
+        )
+    }
+    FileListLeadingVisual(
+        file = visual,
+        modifier = modifier,
+        size = size,
+        isSpoilerBlurred = isSpoilerBlurred,
+        showMinimalFolderBadge = showMinimalFolderBadge,
+    )
+}
+
+@Composable
+internal fun FileListLeadingVisual(
+    file: FileVisual,
+    modifier: Modifier = Modifier,
+    size: Dp = ListLeadingSize,
+    isSpoilerBlurred: Boolean = false,
+    allowThumbnail: Boolean = true,
+    showMinimalFolderBadge: Boolean = true,
+    showPlayOverlay: Boolean = false,
+    folderStyle: FolderStyle = resolveLeadingFolderStyle(LocalDriveAppearancePrefs.current),
+) {
+    val effectiveThumbnail = if (allowThumbnail) file.thumbnail else null
+    val iconSize = leadingIconSizeFor(size)
+    val shape = RoundedCornerShape(leadingCornerRadiusFor(size))
+    when {
+        file.isFolder && folderStyle == FolderStyle.SKEUOMORPHIC -> {
+            var coverFailed by remember(effectiveThumbnail) { mutableStateOf(false) }
+            val cover = effectiveThumbnail?.takeUnless { coverFailed }
+            Box(
+                modifier = modifier
+                    .size(size)
+                    .padding(leadingSkeuomorphicPaddingFor(size))
+                    .testTag(FILE_LEADING_SKEUOMORPHIC_FOLDER_TAG),
+            ) {
+                StackedSheets(
+                    Modifier.fillMaxSize(),
+                    empty = file.isEmptyFolder,
+                    cover = cover?.let {
+                        {
+                            SpoilerThumbnail(
+                                model = it,
+                                isBlurred = isSpoilerBlurred,
+                                blur = ListSpoilerBlur,
+                                modifier = Modifier.fillMaxSize(),
+                                onError = { coverFailed = true },
+                                stableId = file.stableId,
+                            )
+                        }
+                    },
+                )
+            }
+        }
+        file.isFolder && folderStyle == FolderStyle.MINIMAL_ICON -> {
+            var coverFailed by remember(effectiveThumbnail) { mutableStateOf(false) }
+            val cover = effectiveThumbnail?.takeUnless { coverFailed }
+            Box(
+                modifier = modifier
+                    .size(size)
+                    .clip(shape)
+                    .testTag(FILE_LEADING_MINIMAL_FOLDER_TAG),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (cover == null) {
+                    FileTypeIcon(file, iconSize, Modifier.fillMaxSize())
+                } else {
+                    SpoilerThumbnail(
+                        model = cover,
+                        isBlurred = isSpoilerBlurred,
+                        blur = ListSpoilerBlur,
+                        modifier = Modifier.fillMaxSize(),
+                        onError = { coverFailed = true },
+                        stableId = file.stableId,
+                    )
+                    if (showMinimalFolderBadge) {
+                        MinimalFolderBadge(
+                            compact = true,
+                            mini = size <= 36.dp,
+                            modifier = Modifier.align(Alignment.BottomEnd).padding(2.dp),
+                        )
+                    }
+                }
+            }
+        }
+        else -> ListLeadingMedia(
+            thumbnail = effectiveThumbnail,
+            fallback = { FileTypeIcon(file, iconSize, Modifier.fillMaxSize()) },
+            isSpoilerBlurred = isSpoilerBlurred,
+            showPlayOverlay = showPlayOverlay,
+            size = size,
+            shape = shape,
+            modifier = modifier.testTag(FILE_LEADING_MEDIA_TAG),
+            stableId = file.stableId,
+        )
+    }
+}
 
 internal enum class FileArtworkFormat { Icon, Leading, Poster }
 
 @Composable
 internal fun FileArtwork(
-    file: FileVisual, format: FileArtworkFormat,
-    isSpoilerBlurred: Boolean = false, modifier: Modifier = Modifier,
+    file: FileVisual,
+    format: FileArtworkFormat,
+    isSpoilerBlurred: Boolean = false,
+    modifier: Modifier = Modifier,
+    folderStyle: FolderStyle = when (format) {
+        FileArtworkFormat.Poster -> resolvePosterFolderStyle(LocalDriveAppearancePrefs.current)
+        else -> resolveLeadingFolderStyle(LocalDriveAppearancePrefs.current)
+    },
+    /** 列表前导视觉的边长；仅 [FileArtworkFormat.Leading] 使用。 */
+    leadingSize: Dp = ListLeadingSize,
+    /** 极简图标模式下有封面文件夹是否在封面内部绘制轻巧文件夹角标；`PosterCard` 会在左下角徽标行自行并排绘制，避免重叠。 */
+    showMinimalFolderBadge: Boolean = true,
 ) {
     when (format) {
         FileArtworkFormat.Icon -> Icon(file.typeIcon(), null, modifier, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-        FileArtworkFormat.Leading -> ListLeadingMedia(
-            thumbnail = file.thumbnail.takeUnless { file.isFolder },
-            fallback = { FileTypeIcon(file, ListLeadingIconSize, Modifier.fillMaxSize()) },
-            isSpoilerBlurred = isSpoilerBlurred, modifier = modifier,
+        FileArtworkFormat.Leading -> FileListLeadingVisual(
+            file = file,
+            modifier = modifier,
+            size = leadingSize,
+            isSpoilerBlurred = isSpoilerBlurred,
+            showMinimalFolderBadge = showMinimalFolderBadge,
+            folderStyle = folderStyle,
         )
         FileArtworkFormat.Poster -> Box(modifier) {
             var coverFailed by remember(file.thumbnail) { mutableStateOf(false) }
             val cover = file.thumbnail?.takeUnless { coverFailed }
             when {
-                file.isFolder -> StackedSheets(Modifier.fillMaxSize(), empty = file.isEmptyFolder,
-                    cover = cover?.let { { SpoilerThumbnail(it, isSpoilerBlurred, PosterSpoilerBlur, Modifier.fillMaxSize(), onError = { coverFailed = true }) } })
-                cover != null -> SpoilerThumbnail(cover, isSpoilerBlurred, PosterSpoilerBlur, Modifier.fillMaxSize(), showBlurIcon = !file.isVideo, onError = { coverFailed = true })
-                else -> TypePlaceholder(file, Modifier.fillMaxSize())
+                file.isFolder && folderStyle == FolderStyle.SKEUOMORPHIC -> StackedSheets(
+                    Modifier.fillMaxSize().testTag(FILE_POSTER_SKEUOMORPHIC_FOLDER_TAG),
+                    empty = file.isEmptyFolder,
+                    cover = cover?.let { { SpoilerThumbnail(it, isSpoilerBlurred, PosterSpoilerBlur, Modifier.fillMaxSize(), onError = { coverFailed = true }, stableId = file.stableId) } },
+                )
+                cover != null -> {
+                    val coverMod = if (file.isFolder && folderStyle == FolderStyle.MINIMAL_ICON) {
+                        Modifier.fillMaxSize().testTag(FILE_POSTER_MINIMAL_FOLDER_TAG)
+                    } else {
+                        Modifier.fillMaxSize()
+                    }
+                    SpoilerThumbnail(cover, isSpoilerBlurred, PosterSpoilerBlur, coverMod, showBlurIcon = !file.isVideo, onError = { coverFailed = true }, stableId = file.stableId)
+                    if (file.isFolder && folderStyle == FolderStyle.MINIMAL_ICON && showMinimalFolderBadge) {
+                        MinimalFolderBadge(
+                            compact = false,
+                            modifier = Modifier.align(Alignment.BottomStart).padding(6.dp),
+                        )
+                    }
+                }
+                else -> TypePlaceholder(
+                    file,
+                    if (file.isFolder && folderStyle == FolderStyle.MINIMAL_ICON) {
+                        Modifier.fillMaxSize().testTag(FILE_POSTER_MINIMAL_FOLDER_TAG)
+                    } else {
+                        Modifier.fillMaxSize()
+                    },
+                )
             }
             if (file.isVideo && cover != null) VideoPlayMark(Modifier.align(Alignment.Center))
         }
+    }
+}
+
+/** 极简图标模式下有封面文件夹的轻巧角标：不遮挡画面主体，又能一眼与普通视频/图片区分。 */
+@Composable
+internal fun MinimalFolderBadge(
+    compact: Boolean,
+    modifier: Modifier = Modifier,
+    mini: Boolean = false,
+) {
+    val colors = MaterialTheme.colorScheme
+    val border = if (compact) {
+        BorderStroke(1.dp, colors.surfaceContainerLow)
+    } else {
+        BorderStroke(0.75.dp, LocalFixedColors.current.HudSpecularBorder)
+    }
+    val iconSize = when {
+        mini -> 9.dp
+        compact -> 11.dp
+        else -> 14.dp
+    }
+    val hPad = when {
+        mini -> 2.dp
+        compact -> 2.5.dp
+        else -> 5.dp
+    }
+    val vPad = when {
+        mini -> 1.5.dp
+        compact -> 2.dp
+        else -> 3.dp
+    }
+    Surface(
+        shape = RoundedCornerShape(if (compact) 4.dp else 5.dp),
+        color = colors.secondaryContainer.copy(alpha = 0.94f),
+        contentColor = colors.onSecondaryContainer,
+        border = border,
+        modifier = modifier,
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Folder,
+            contentDescription = tr("文件夹", "Folder", "フォルダー", "폴더", "資料夾"),
+            modifier = Modifier
+                .padding(horizontal = hPad, vertical = vPad)
+                .size(iconSize),
+        )
     }
 }
 
@@ -113,8 +380,8 @@ private fun StackedSheets(
                 val isLtr = layoutDirection == LayoutDirection.Ltr
                 val sheetLeft = if (isLtr) size.width * 0.035f else size.width - size.width * 0.035f - sheetW
                 val sheetTop = size.height * FRONT_CLOSED_RIGHT_TOP
-                val topStartR = 6.dp.toPx()
-                val topEndR = 5.dp.toPx()
+                val topStartR = 6.dp.toPx().coerceAtMost(sheetH * 0.5f)
+                val topEndR = 5.dp.toPx().coerceAtMost(sheetH * 0.5f)
                 val topLeftR = if (isLtr) topStartR else topEndR
                 val topRightR = if (isLtr) topEndR else topStartR
                 Path().apply {
@@ -224,7 +491,7 @@ private const val FRONT_CLOSED_RIGHT_TOP = 0.12f
 private fun buildFolderBackPath(size: Size, density: Density): Path {
     val w = size.width
     val h = size.height
-    val r = with(density) { 10.dp.toPx() }.coerceAtMost(minOf(w, h) / 2)
+    val r = minOf(with(density) { 10.dp.toPx() }, minOf(w, h) * 0.16f)
     val tabHeight = h * 0.065f
     val tabEnd = w * 0.33f
     val shoulderStart = w * 0.43f

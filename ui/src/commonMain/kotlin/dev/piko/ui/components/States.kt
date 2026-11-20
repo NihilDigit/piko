@@ -6,7 +6,9 @@ import dev.piko.ui.i18n.stringResource
 import dev.piko.shared.i18n.tr
 
 import androidx.compose.animation.Crossfade
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
@@ -63,7 +65,7 @@ fun PikoErrorState(
     modifier: Modifier = Modifier,
     title: String = tr("加载失败", "Failed to load", "読み込みに失敗しました", "불러오지 못했습니다", "載入失敗"),
 ) {
-    StateLayout(title = title, description = message, icon = Icons.Outlined.ErrorOutline, modifier = modifier) {
+    StateLayout(title = title, description = message, icon = Icons.Outlined.ErrorOutline, isError = true, modifier = modifier) {
         Spacer(modifier = Modifier.height(12.dp))
         TextButton(onClick = onRetry) { Text(stringResource(Res.string.common_retry)) }
     }
@@ -75,8 +77,10 @@ private fun StateLayout(
     description: String?,
     icon: ImageVector,
     modifier: Modifier,
+    isError: Boolean = false,
     action: @Composable ColumnScope.() -> Unit,
 ) {
+    val colors = MaterialTheme.colorScheme
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -84,19 +88,28 @@ private fun StateLayout(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        // 图标是状态标识，不是插图：比标题大一档即可。原先 64dp 配 outlineVariant 是插画的做法，
-        // outline 系是描边角色，拿来染图标在浅色主题下对比度不够
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(40.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // M3 Expressive 容器化状态图标：56dp 圆角底壳提供温和锚点，错误态切入 errorContainer 区分语义
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .background(
+                    color = if (isError) colors.errorContainer else colors.surfaceContainerHigh,
+                    shape = MaterialTheme.shapes.large,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(28.dp),
+                tint = if (isError) colors.onErrorContainer else colors.onSurfaceVariant,
+            )
+        }
         Spacer(modifier = Modifier.height(16.dp))
         Text(
             text = title,
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.titleMediumEmphasized,
+            color = colors.onSurface,
             textAlign = TextAlign.Center,
         )
         if (!description.isNullOrEmpty()) {
@@ -104,7 +117,7 @@ private fun StateLayout(
             Text(
                 text = description,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = colors.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
         }

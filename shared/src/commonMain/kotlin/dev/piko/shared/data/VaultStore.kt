@@ -208,6 +208,11 @@ object VaultEdits {
         current.map { if (it.id == id) it.copy(name = name) else it }
     }
 
+    fun renameAll(renames: Map<String, String>): VaultEdit = { current ->
+        if (renames.isEmpty()) current
+        else current.map { entry -> renames[entry.id]?.let { entry.copy(name = it) } ?: entry }
+    }
+
     fun remove(ids: Set<String>): VaultEdit = { current -> current.filterNot { it.id in ids } }
 
     /** 取回后保留来源及 CID，同时跟随真实文件的新名称。 */

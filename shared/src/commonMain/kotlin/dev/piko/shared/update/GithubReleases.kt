@@ -371,16 +371,16 @@ fun parseLocalizedChangelog(markdown: String): Map<AppLanguage, String> {
 sealed interface ReleaseNoteBlock {
     val text: String
 
-    data class Heading(override val text: String) : ReleaseNoteBlock
+    data class Heading(override val text: String, val level: Int = 2) : ReleaseNoteBlock
 
-    data class Bullet(override val text: String) : ReleaseNoteBlock
+    data class Bullet(override val text: String, val depth: Int = 0) : ReleaseNoteBlock
 
     data class Paragraph(override val text: String) : ReleaseNoteBlock
 }
 
 /**
- * 按更新日志的写法切成标题、列表项与段落：一行概述，「## 修复」「## 变化」两节，每条一个短横线。
- * 只认这几种块，不是完整的 Markdown 解析；列表项折行接到上一项，段落内的换行并成一段。
+ * 按更新日志的写法切成标题、列表项与段落：一行概述，「## 修复」「## 变化」「### 子标题」各节，
+ * 支持二级/三级嵌套列表；列表项折行接到上一项，段落内的换行并成一段。
  */
 fun releaseNoteBlocks(markdown: String): List<ReleaseNoteBlock> {
     val blocks = mutableListOf<ReleaseNoteBlock>()
@@ -396,11 +396,18 @@ fun releaseNoteBlocks(markdown: String): List<ReleaseNoteBlock> {
             line.isBlank() -> close()
             heading != null -> {
                 close()
-                blocks += ReleaseNoteBlock.Heading(heading.groupValues[1])
+                blocks += ReleaseNoteBlock.Heading(
+                    text = heading.groupValues[2],
+                    level = heading.groupValues[1].length,
+                )
             }
             bullet != null -> {
                 close()
-                open = ReleaseNoteBlock.Bullet(line.substring(bullet.range.last + 1).trim())
+                val indentCols = bullet.groupValues[1].sumOf { if (it == '\t') 2 else 1 }
+                open = ReleaseNoteBlock.Bullet(
+                    text = line.substring(bullet.range.last + 1).trim(),
+                    depth = (indentCols / 2).coerceIn(0, 2),
+                )
             }
             else -> open = when (val current = open) {
                 is ReleaseNoteBlock.Bullet -> current.copy(text = joinWrapped(current.text, line.trim()))
@@ -413,8 +420,8 @@ fun releaseNoteBlocks(markdown: String): List<ReleaseNoteBlock> {
     return blocks
 }
 
-private val MARKDOWN_HEADING = Regex("""\s{0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*""")
-private val MARKDOWN_BULLET = Regex("""^\s*[-*+]\s+""")
+private val MARKDOWN_HEADING = Regex("""\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*""")
+private val MARKDOWN_BULLET = Regex("""^([ \t]*)[-*+]\s+""")
 
 /**
  * 按数字逐段比较，忽略 -debug 这类后缀；段数不同时缺的一段按 0 计。

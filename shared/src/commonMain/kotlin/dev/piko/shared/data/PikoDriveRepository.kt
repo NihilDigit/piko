@@ -68,6 +68,7 @@ import io.github.nihildigit.pikpak.getQuota
 import io.github.nihildigit.pikpak.getTransferQuota
 import io.github.nihildigit.pikpak.listAllDriveEntriesFlow
 import io.github.nihildigit.pikpak.consumeFileChanges
+import io.github.nihildigit.pikpak.listFileChangesPage
 import io.github.nihildigit.pikpak.listAllDriveFolders
 import io.github.nihildigit.pikpak.listFiles
 import io.github.nihildigit.pikpak.listFilesPaged
@@ -415,6 +416,12 @@ open class PikoDriveRepository(
 
     fun contentMetadataOf(file: FileStat): ContentMetadata? =
         ContentKey.of(file)?.let(driveTreeIndex::contentMetadata)
+
+    fun contentMetadataBatch(keys: Collection<ContentKey>): Map<ContentKey, ContentMetadata> =
+        driveTreeIndex.contentMetadataBatch(keys)
+
+    fun originalCreatedAtMillisBatch(ids: Collection<String>): Map<String, Long> =
+        driveTreeIndex.originalCreatedAtMillisBatch(ids)
 
     fun contentMetadataByFileId(fileId: String): ContentMetadata? {
         if (fileId.isBlank()) return null
@@ -1372,11 +1379,33 @@ open class PikoDriveRepository(
                 )
             if (isFolderClean) {
                 val real = children.files
+                val winnerManifest = store.winnerOf(real) ?: state.manifestsByFolder[folderId]
+                val hasManifest = winnerManifest != null
+                val pending = store.hasPending(folderId)
                 val indexedVault = driveTreeIndex.vaultEntries(folderId)
-                val hasUnresolvedManifest = folderId in state.manifestsByFolder &&
-                    indexedVault == null && store.cached(folderId, real) == null
+                val cachedVault = store.cached(folderId, real)
+                val hasUnresolvedManifest = hasManifest && !pending && indexedVault == null && cachedVault == null
                 if (!hasUnresolvedManifest) {
-                    val entries = indexedVault ?: store.cached(folderId, real).orEmpty()
+                    val entries = when {
+                        pending -> cachedVault ?: indexedVault.orEmpty()
+                        indexedVault != null -> indexedVault
+                        cachedVault != null -> {
+                            if (hasManifest && winnerManifest != null) {
+                                withPikoLock(treeStateLock) {
+                                    if (clientManager.currentClient.value === asked) {
+                                        vaultEntriesKnown(
+                                            folderId,
+                                            cachedVault,
+                                            expectedManifestId = winnerManifest.id,
+                                            requireMatch = true,
+                                        )
+                                    }
+                                }
+                            }
+                            cachedVault
+                        }
+                        else -> emptyList()
+                    }
                     return@reader Result.success(withVaulted(folderId, real, entries, PikoFileSortOrder.TIME_DESC))
                 }
             }
@@ -1525,16 +1554,35 @@ open class PikoDriveRepository(
         }
     }
 
-    /** 归档封面有变：读到了清单、写成了清单或从磁盘载入。网盘页据此给眼前的文件夹补封面。 */
-    val vaultCoverChanges: Flow<Unit> get() = combine(childContents.vaultCovers, vaultTrees.flow) { _, _ -> }
+    /** 归档封面有变：读到了清单、写成了清单、从磁盘载入或归档目录被移动。网盘页据此给眼前的文件夹补封面。 */
+    val vaultCoverChanges: Flow<Unit> get() = combine(childContents.vaultCovers, vaultTrees.flow, vaultedFolders) { _, _, _ -> }
 
     private fun vaultCoverOf(folderId: String): String? {
         val covers = childContents.vaultCovers.value
+        val treeState = driveTreeIndex.flow.value
+        val subtreeStats = treeState.sortProjection?.subtreeStats ?: driveTreeIndex.fastSortContext().subtreeStats
+        val indexNodes = folderIndex.flow.value.nodes
         val visited = mutableSetOf<String>()
+        fun isMovedAway(childId: String, expectedParent: String): Boolean {
+            val actualParent = indexNodes[childId]?.takeUnless { it.provisional }?.parentId
+                ?: treeState.entries[childId]?.parentId
+            return actualParent != null && actualParent != expectedParent
+        }
         fun cover(id: String): String? {
             if (!visited.add(id)) return null
-            return covers[id]?.ifEmpty { null }
-                ?: vaultTrees.flow.value[id]?.sorted()?.firstNotNullOfOrNull(::cover)
+            covers[id]?.ifEmpty { null }?.let { return it }
+            vaultTrees.flow.value[id]?.sorted()?.firstNotNullOfOrNull { childId ->
+                if (isMovedAway(childId, id)) null else cover(childId)
+            }?.let { return it }
+            val treeChildren = treeState.childrenByParent[id]
+            if (!treeChildren.isNullOrEmpty()) {
+                return treeChildren.sorted().firstNotNullOfOrNull { childId ->
+                    val childStats = subtreeStats[childId]
+                    val hasVaultInSubtree = (childStats?.structuralValid == true && childStats.vaulted.fileCount > 0L) || childId in covers
+                    if (hasVaultInSubtree) cover(childId) else null
+                }
+            }
+            return null
         }
         return cover(folderId)
     }
@@ -1592,10 +1640,27 @@ open class PikoDriveRepository(
             .stateIn(backgroundScope, SharingStarted.Eagerly, emptySet())
     }
 
-    /** 挂归档标记的文件夹：直接放着归档条目的，加上归档时选的那一层到它们之间的各层。 */
+    /** 挂归档标记的文件夹：以本地文件树子树聚合为准覆盖跨目录移动遗留的旧标记，未建索引时回退至 VaultTrees。 */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val vaultedFolders: StateFlow<Set<String>> by lazy {
-        combine(childContents.vaultedFolders, childContents.listedFolders, vaultTrees.flow, VaultTrees::marked)
-            .stateIn(backgroundScope, SharingStarted.Eagerly, emptySet())
+        combine(
+            childContents.vaultedFolders,
+            childContents.listedFolders,
+            vaultTrees.flow,
+            treeBindingFlow.flatMapLatest { it.flow },
+        ) { direct, listed, trees, treeState ->
+            val base = VaultTrees.marked(direct, listed, trees).toMutableSet()
+            val stats = treeState.sortProjection?.subtreeStats ?: SortContext.of(treeState).subtreeStats
+            for ((folderId, subtree) in stats) {
+                if (folderId.isEmpty() || !subtree.structuralValid) continue
+                if (subtree.vaulted.fileCount > 0L) {
+                    base += folderId
+                } else if (subtree.vaulted.listingComplete) {
+                    base -= folderId
+                }
+            }
+            base
+        }.stateIn(backgroundScope, SharingStarted.Eagerly, emptySet())
     }
 
     init {
@@ -1750,10 +1815,10 @@ open class PikoDriveRepository(
                             } else if (!driveTreeIndex.isComplete) {
                                 val firstSync = runSuspendCatching { ensureTreeSync(client).await() }
                                 if (firstSync.isFailure && clientManager.currentClient.value === client && !driveTreeIndex.isComplete) {
-                                    // 启动初期若撞上失效默认域名超时、随后测速已切到可用域名，自动在新域名上补跑一次
+                                    // 启动初期若撞上失效默认域名超时、随后测速已切到可用域名，自动在新域名上补跑一次（沿用已落盘断点）
                                     delay(2_000L)
                                     if (clientManager.currentClient.value === client && !driveTreeIndex.isComplete) {
-                                        runSuspendCatching { ensureTreeSync(client, forceRebuild = true).await() }
+                                        runSuspendCatching { ensureTreeSync(client, forceRebuild = false).await() }
                                             .logFailure(TAG, "Background tree index build failed after retry (acct=$slot)")
                                     }
                                 } else {
@@ -2929,13 +2994,21 @@ open class PikoDriveRepository(
         if (index.isPersistent) {
             if (!isCurrent()) return@withContext false
             val imported = !index.isComplete && migrateLegacyTreeCache(index, account, cacheStore)
-            if (imported && isCurrent()) {
-                val vaultStore = vaultForClient(asked)
-                vaultStore.awaitLoaded()
-                for ((folderId, manifest) in index.flow.value.manifestsByFolder) {
-                    if (!isCurrent()) return@withContext false
-                    val entries = vaultStore.parsedFlow.value[manifest.id] ?: continue
-                    index.putVaultEntries(folderId, entries, expectedManifestId = manifest.id, requireMatch = true)
+            if ((imported || index.isComplete) && isCurrent()) {
+                val manifests = index.flow.value.manifestsByFolder
+                val unresolved = manifests.filterKeys { index.vaultEntries(it) == null }
+                if (unresolved.isNotEmpty()) {
+                    val vaultStore = vaultForClient(asked)
+                    vaultStore.awaitLoaded()
+                    val starredIds = vaultStars.flow.value.values.asSequence().filter { it.starred }.mapTo(HashSet()) { it.entryId }
+                    for ((folderId, manifest) in unresolved) {
+                        if (!isCurrent()) return@withContext false
+                        val entries = vaultStore.parsedFlow.value[manifest.id] ?: continue
+                        if (index.putVaultEntries(folderId, entries, expectedManifestId = manifest.id, requireMatch = true, starredEntryIds = starredIds)) {
+                            childContents.markVaulted(folderId, entries.any { it.isArchived })
+                            childContents.rememberCover(folderId, entries.coverGcid().orEmpty())
+                        }
+                    }
                 }
             }
             return@withContext withPikoLock(treeStateLock) {
@@ -2978,22 +3051,46 @@ open class PikoDriveRepository(
                 if (!isCurrent()) return@withLock
                 if (index.isPersistent) {
                     val started = TimeSource.Monotonic.markNow()
-                    val (candidate, serial) = withPikoLock(treeStateLock) {
+                    val acctSlot = logAccountSlot(asked.account)
+                    val initialResume = if (!isShadowRebuild && !forceRebuild) index.resumableCandidate() else null
+                    if (initialResume == null && forceRebuild) {
+                        index.resumableCandidate()?.let { stale -> index.abortCandidate(stale.generation) }
+                    }
+                    val (initialCandidate, serial) = withPikoLock(treeStateLock) {
                         if (!isCurrent()) return@withLock
                         activeBuildToken = token
+                        val gen = initialResume?.generation ?: index.beginCandidate()
                         _treeBuildProgressFlow.value = TreeBuildProgress(
                             isBuilding = true, isInitialBlocking = !isShadowRebuild,
-                            foldersRead = 0, filesRead = 0,
+                            foldersRead = initialResume?.foldersRead ?: 0,
+                            filesRead = initialResume?.filesRead ?: 0,
                         )
-                        index.beginCandidate() to changeMarks.value.serial
+                        gen to changeMarks.value.serial
                     }
+                    var candidate = initialCandidate
                     var committed = false
+                    var abortOnExit = isShadowRebuild
+                    var hasSavedCheckpoint = initialResume != null
+                    var resumedFromCheckpoint = initialResume != null
+                    if (initialResume != null) {
+                        PikoLog.i(
+                            TAG,
+                            "Resuming interrupted SQLite WAL tree build (acct=$acctSlot, folders=${initialResume.foldersRead}, files=${initialResume.filesRead})",
+                        )
+                    }
                     try {
-                        var folderCount = 0
-                        var fileCount = 0
+                        var folderCount = initialResume?.foldersRead ?: 0
+                        var fileCount = initialResume?.filesRead ?: 0
                         val manifestByFolder = LinkedHashMap<String, MutableList<FileStat>>()
+                        if (initialResume != null) {
+                            for (manifest in index.candidateManifests(candidate)) {
+                                manifestByFolder.getOrPut(manifest.parentId) { mutableListOf() }.add(manifest)
+                            }
+                        }
                         val resolvedVaultMeta = ArrayList<Pair<String, List<VaultEntry>>>()
                         var totalManifestFolders = 0
+                        var firstSyncTime = initialResume?.firstSyncTime.orEmpty()
+                        var lastSyncTime = ""
                         var syncCursor: String? = null
                         coroutineScope {
                             // 流水线并发预热归档清单：翻页扫描 4 万文件的同时后台即刻并发预拉取已发现的 .piko-vault-* 清单，消除两阶段串行等待
@@ -3014,55 +3111,141 @@ open class PikoDriveRepository(
                                     }
                                 }
                             }
-                            try {
-                                syncCursor = asked.consumeFileChanges(pageSize = 500) { page ->
-                                    currentCoroutineContext().ensureActive()
-                                    if (!isCurrent()) throw CancellationException("Account changed")
-                                    val enriched = sourceLedger.enrich(page.files.filterNot { it.trashed })
-                                    if (!isCurrent()) throw CancellationException("Account changed")
-                                    index.appendCandidate(candidate, enriched)
-                                    var learnedFolders = false
-                                    val touchedManifestFolders = ArrayList<String>()
-                                    withPikoLock(treeStateLock) {
-                                        if (!isCurrent()) throw CancellationException("Account changed")
-                                        for (entry in enriched) {
-                                            if (entry.isFolder) {
-                                                folderCount++
-                                                if (!isShadowRebuild && folderIndex.learned(entry.id, entry.name, entry.parentId, isFolder = true, trashed = entry.trashed)) {
-                                                    learnedFolders = true
-                                                }
+                            var pagesFetchedInPass = 0
+                            suspend fun runPaginatedIngest(startToken: String) {
+                                pagesFetchedInPass = 0
+                                val pageChannel = kotlinx.coroutines.channels.Channel<io.github.nihildigit.pikpak.FileListPage>(capacity = 4)
+                                coroutineScope {
+                                    val producer = launch {
+                                        try {
+                                            var nextToken = startToken
+                                            val seenTokens = HashSet<String>()
+                                            if (nextToken.isNotEmpty()) seenTokens.add(nextToken)
+                                            do {
+                                                currentCoroutineContext().ensureActive()
+                                                if (!isCurrent()) throw CancellationException("Account changed")
+                                                val page = asked.listFileChangesPage(sinceSyncTime = "", pageToken = nextToken, pageSize = 500)
+                                                pagesFetchedInPass++
+                                                pageChannel.send(page)
+                                                nextToken = page.nextPageToken
+                                                check(nextToken.isEmpty() || seenTokens.add(nextToken)) { "Repeated file sync page token" }
+                                            } while (nextToken.isNotEmpty())
+                                            pageChannel.close()
+                                        } catch (t: Throwable) {
+                                            pageChannel.close(t)
+                                            throw t
+                                        }
+                                    }
+                                    try {
+                                        for (page in pageChannel) {
+                                            currentCoroutineContext().ensureActive()
+                                            if (!isCurrent()) throw CancellationException("Account changed")
+                                            if (firstSyncTime.isEmpty() && page.syncTime.isNotBlank()) firstSyncTime = page.syncTime
+                                            if (page.syncTime.isNotBlank()) lastSyncTime = page.syncTime
+                                            val enriched = sourceLedger.enrich(page.files.filterNot { it.trashed })
+                                            if (!isCurrent()) throw CancellationException("Account changed")
+                                            var pageFolders = 0
+                                            var pageFiles = 0
+                                            for (entry in enriched) {
+                                                if (entry.isFolder) pageFolders++ else pageFiles++
+                                            }
+                                            val nextFolderCount = folderCount + pageFolders
+                                            val nextFileCount = fileCount + pageFiles
+                                            val checkpoint = if (!isShadowRebuild && page.nextPageToken.isNotBlank()) {
+                                                DriveTreeIndex.CandidateResumeCheckpoint(
+                                                    generation = candidate,
+                                                    pageToken = page.nextPageToken,
+                                                    firstSyncTime = firstSyncTime,
+                                                    foldersRead = nextFolderCount,
+                                                    filesRead = nextFileCount,
+                                                )
                                             } else {
-                                                fileCount++
+                                                null
                                             }
-                                            if (VaultStore.looksLikeManifest(entry)) {
-                                                manifestByFolder.getOrPut(entry.parentId) { mutableListOf() }.add(entry)
-                                                touchedManifestFolders += entry.parentId
+                                            index.appendCandidate(candidate, enriched, checkpoint)
+                                            if (checkpoint != null) hasSavedCheckpoint = true
+                                            var learnedFolders = false
+                                            val touchedManifestFolders = ArrayList<String>()
+                                            withPikoLock(treeStateLock) {
+                                                if (!isCurrent()) throw CancellationException("Account changed")
+                                                folderCount = nextFolderCount
+                                                fileCount = nextFileCount
+                                                for (entry in enriched) {
+                                                    if (entry.isFolder && !isShadowRebuild &&
+                                                        folderIndex.learned(entry.id, entry.name, entry.parentId, isFolder = true, trashed = entry.trashed)
+                                                    ) {
+                                                        learnedFolders = true
+                                                    }
+                                                    if (VaultStore.looksLikeManifest(entry)) {
+                                                        manifestByFolder.getOrPut(entry.parentId) { mutableListOf() }.add(entry)
+                                                        touchedManifestFolders += entry.parentId
+                                                    }
+                                                }
+                                                _treeBuildProgressFlow.update {
+                                                    it.copy(
+                                                        foldersRead = folderCount,
+                                                        filesRead = fileCount,
+                                                        manifestsTotal = manifestByFolder.size,
+                                                    )
+                                                }
+                                                if (learnedFolders) normalizeLocations()
                                             }
-                                        }
-                                        _treeBuildProgressFlow.update {
-                                            it.copy(
-                                                foldersRead = folderCount,
-                                                filesRead = fileCount,
-                                                manifestsTotal = manifestByFolder.size,
-                                            )
-                                        }
-                                        if (learnedFolders) normalizeLocations()
-                                    }
-                                    for (parentId in touchedManifestFolders) {
-                                        val candidates = manifestByFolder[parentId] ?: continue
-                                        val winner = store.winnerOf(candidates) ?: continue
-                                        if (store.cachedCommitted(listOf(winner)) != null) {
-                                            if (queuedManifestIds.add(winner.id)) {
-                                                val done = incrementPrefetchedCount()
-                                                _treeBuildProgressFlow.update { cur ->
-                                                    cur.copy(manifestsRead = done.coerceAtMost(cur.manifestsTotal.coerceAtLeast(done)))
+                                            for (parentId in touchedManifestFolders) {
+                                                val candidates = manifestByFolder[parentId] ?: continue
+                                                val winner = store.winnerOf(candidates) ?: continue
+                                                val added = withPikoLock(prefetchCountLock) { queuedManifestIds.add(winner.id) }
+                                                if (!added) continue
+                                                if (store.cachedCommitted(listOf(winner)) != null) {
+                                                    val done = incrementPrefetchedCount()
+                                                    _treeBuildProgressFlow.update { cur ->
+                                                        cur.copy(manifestsRead = done.coerceAtMost(cur.manifestsTotal.coerceAtLeast(done)))
+                                                    }
+                                                } else {
+                                                    prefetchQueue.trySend(winner)
                                                 }
                                             }
-                                        } else if (queuedManifestIds.add(winner.id)) {
-                                            prefetchQueue.trySend(winner)
+                                        }
+                                        producer.join()
+                                    } finally {
+                                        producer.cancel()
+                                    }
+                                }
+                            }
+                            try {
+                                if (initialResume != null) {
+                                    try {
+                                        runPaginatedIngest(initialResume.pageToken)
+                                    } catch (err: Exception) {
+                                        if (err is CancellationException || !isCurrent()) throw err
+                                        if (isResumedCheckpointRejected(err, pagesFetchedInPass)) {
+                                            PikoLog.i(TAG, "Saved tree build checkpoint rejected by server on first resumed page; restarting full scan (acct=$acctSlot, error=${err::class.simpleName})")
+                                            index.abortCandidate(candidate)
+                                            candidate = index.beginCandidate()
+                                            hasSavedCheckpoint = false
+                                            resumedFromCheckpoint = false
+                                            folderCount = 0
+                                            fileCount = 0
+                                            firstSyncTime = ""
+                                            lastSyncTime = ""
+                                            manifestByFolder.clear()
+                                            withPikoLock(prefetchCountLock) {
+                                                prefetchedCount = 0
+                                                queuedManifestIds.clear()
+                                            }
+                                            _treeBuildProgressFlow.update {
+                                                it.copy(foldersRead = 0, filesRead = 0, manifestsTotal = 0, manifestsRead = 0)
+                                            }
+                                            runPaginatedIngest("")
+                                        } else {
+                                            throw err
                                         }
                                     }
-                                }.syncTime
+                                } else {
+                                    runPaginatedIngest("")
+                                }
+                                // 断点续扫跨多次启动完成时采用首页保守水位 firstSyncTime，保证暂停期间的远端变更可由下一次增量同步补齐
+                                syncCursor = (if (resumedFromCheckpoint && firstSyncTime.isNotBlank()) firstSyncTime else lastSyncTime)
+                                    .takeIf { it.isNotBlank() }
                             } finally {
                                 prefetchQueue.close()
                             }
@@ -3122,13 +3305,13 @@ open class PikoDriveRepository(
                             }
                         }
                         currentCoroutineContext().ensureActive()
-                        val acctSlot = logAccountSlot(asked.account)
                         // 先在锁外执行 SQLite commitCandidate 与子树聚合重算，严禁长时间占用 treeStateLock 阻塞主线程 UI
                         val preInvalidated = withPikoLock(treeStateLock) {
                             if (!isCurrent()) return@withLock
                             changeMarks.value.treeInvalidatedAt > serial
                         }
                         if (preInvalidated) {
+                            abortOnExit = true
                             PikoLog.d(TAG, "SQLite tree build superseded by concurrent tree invalidation; scheduling rebuild (acct=$acctSlot)")
                             requestTreeRebuild()
                             return@withLock
@@ -3169,13 +3352,14 @@ open class PikoDriveRepository(
                                 TAG,
                                 "SQLite WAL tree index ready (acct=$acctSlot, folders=$folderCount, files=$fileCount, " +
                                     "manifestFolders=$totalManifestFolders, complete=${readyState.complete}, dirtyFolders=${readyState.dirtyFolders.size}, " +
-                                    "hasCursor=${syncCursor != null}, shadowRebuild=$isShadowRebuild, elapsedMs=${started.elapsedNow().inWholeMilliseconds})",
+                                    "hasCursor=${syncCursor != null}, shadowRebuild=$isShadowRebuild, resumed=$resumedFromCheckpoint, elapsedMs=${started.elapsedNow().inWholeMilliseconds})",
                             )
                         }
                     } catch (failure: Exception) {
                         if (isCurrent()) throw failure
                     } finally {
-                        if (!committed) index.abortCandidate(candidate)
+                        val preserveCheckpoint = !abortOnExit && hasSavedCheckpoint && !isShadowRebuild
+                        if (!committed && !preserveCheckpoint) index.abortCandidate(candidate)
                         withPikoLock(treeStateLock) {
                             if (isCurrent() && activeBuildToken === token) {
                                 activeBuildToken = null
@@ -3591,6 +3775,16 @@ open class PikoDriveRepository(
         }
     }
 
+    /** 分享里某个文件夹（或顶层，parentId 为空时）的单页内容，支持按 pageToken 增量翻页。 */
+    suspend fun shareFolderPage(
+        shareId: String,
+        passCodeToken: String,
+        parentId: String = "",
+        pageToken: String = "",
+    ): Result<io.github.nihildigit.pikpak.ShareFolderPage> = withContext(Dispatchers.Default) {
+        runSuspendCatching { client.listShareFiles(shareId, passCodeToken, parentId = parentId, pageToken = pageToken) }
+    }
+
     suspend fun shareFolder(shareId: String, passCodeToken: String, parentId: String): Result<List<FileStat>> =
         shareFolderFull(shareId, passCodeToken, parentId).map { it.first }
 
@@ -3865,20 +4059,7 @@ open class PikoDriveRepository(
             }
         }
         if (!foldersFirst) return files.sortedWith(comparator)
-        val folderComparator = if (order == PikoFileSortOrder.DURATION_DESC || order == PikoFileSortOrder.DURATION_ASC) {
-            val durations = folders.associate { folder -> folder.id to context.subtreeStats[folder.id]?.let {
-                val total = it.physical + it.vaulted
-                total.durationMillis.takeIf { value -> value > 0 }
-            } }
-            Comparator<FileStat> { a, b ->
-                val durationOrder = compareKnown(durations[a.id], durations[b.id], order == PikoFileSortOrder.DURATION_DESC)
-                if (durationOrder != 0) durationOrder
-                else if (durations[a.id] != null && durations[b.id] != null) {
-                    compareKnown(sizes[a.id], sizes[b.id], order == PikoFileSortOrder.DURATION_DESC)
-                } else 0
-            }.then(nameComparator)
-        } else comparator
-        val sortedFolders = folders.sortedWith(folderComparator)
+        val sortedFolders = folders.sortedWith(comparator)
         val pinned = if (parentId.isEmpty()) sortedFolders.firstOrNull { it.isMyPacksFolder() } else null
         val orderedFolders = if (pinned == null) sortedFolders else listOf(pinned) + (sortedFolders - pinned)
         return orderedFolders + regularFiles.sortedWith(comparator)
@@ -4004,4 +4185,19 @@ open class PikoDriveRepository(
         // PikPak 各端自动建的保存目录名不一，官方客户端建过的也算
         private val MY_PACKS_FOLDER_NAMES = setOf("my pack", "my packs", "我的资源", "我的离线")
     }
+}
+
+/**
+ * 判断断点续扫遇到的异常是否属于「服务端明确拒绝旧分页游标」，决定是否作废已落盘断点并从头重扫：
+ * 仅在续扫首张分页（[resumedPagesFetched] == 0）即收到同步版本过期或明确 4xx（排除 408 超时与 429 限流）时才视为游标失效；
+ * 5xx / 429 / 408 / 网络 I/O 错误以及续扫成功翻过至少一页后的任何中途故障均保留已落盘断点。
+ */
+internal fun isResumedCheckpointRejected(err: Throwable, resumedPagesFetched: Int): Boolean {
+    if (resumedPagesFetched > 0) return false
+    if (err is io.github.nihildigit.pikpak.FileSyncVersionOutdatedException) return true
+    if (err is PikPakException) {
+        val status = err.httpStatus
+        if (status != null && status in 400..499 && status != 408 && status != 429) return true
+    }
+    return false
 }

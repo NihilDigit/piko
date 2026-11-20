@@ -4,6 +4,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.dp
 
 /**
@@ -35,6 +36,31 @@ val IslandGap = 8.dp
  * 靠色差分出上下两段，不画分隔线：一道线横在岛中间，读起来像两样东西拼在一起。
  */
 val ColorScheme.islandHeader: Color get() = surfaceContainerLow
+
+/**
+ * 岛主体内容区的底色：浅色模式下取更亮一档的 `surfaceContainerLowest`（纯白），与 `frame`（`surfaceContainerHigh`）
+ * 及 `islandHeader`（`surfaceContainerLow`）构成清晰的三阶明度层次；深色与纯黑 OLED 模式下沿用 `surface`。
+ */
+val ColorScheme.islandSurface: Color
+    get() = if (surface.luminance() > 0.5f) surfaceContainerLowest else surface
+
+/**
+ * 纯黑 OLED 模式下为岛屿边缘补充一条极细描边，防止纯黑内容面与极暗外框在低亮度屏幕上边界发虚；
+ * 常规深浅主题（常规深色 `surface` 相对亮度约 `0.005+`）依靠色阶分区，不画描边。
+ *
+ * 按相对亮度在 `0.003f → 0f` 区间平滑淡入，避免 `animateColorScheme` Oklab 弹簧过渡结束时边界突兀闪现。
+ */
+val ColorScheme.islandBorderColor: Color?
+    get() {
+        // 水墨屏模式：外框与岛屿同为纯白，统一以 1dp 纯黑描边界定边界
+        if (surface == Color.White && surfaceContainerHigh == Color.White && outline == Color.Black) {
+            return outline
+        }
+        val lum = surface.luminance()
+        if (lum >= 0.003f) return null
+        val weight = ((0.003f - lum) / 0.003f).coerceIn(0f, 1f)
+        return outlineVariant.copy(alpha = 0.30f * weight)
+    }
 
 /** 岛的页眉与内容之间，内容上沿的小圆角：露出一点页眉的底色，像内容被页眉包着。 */
 val IslandInnerCorner = 12.dp

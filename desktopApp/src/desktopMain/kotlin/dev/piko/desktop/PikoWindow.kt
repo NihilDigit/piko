@@ -36,6 +36,7 @@ fun PikoWindow(
     title: String,
     icon: Painter?,
     visible: Boolean = true,
+    windowVisible: Boolean = visible,
     onFatalClose: () -> Unit = onCloseRequest,
     onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
     onKeyEvent: (KeyEvent) -> Boolean = { false },
@@ -66,7 +67,8 @@ fun PikoWindow(
                 onPreviewKeyEvent = onPreviewKeyEvent,
                 onKeyEvent = onKeyEvent,
             ) {
-                LaunchedEffect(window) {
+                LaunchedEffect(window, windowVisible) {
+                    if (!windowVisible) return@LaunchedEffect
                     while (true) {
                         delay(DEVICE_CHECK_INTERVAL_MS)
                         if (GpuDeviceWatch.checkLost(window)) break

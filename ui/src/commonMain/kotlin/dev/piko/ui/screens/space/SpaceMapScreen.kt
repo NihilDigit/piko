@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -118,10 +119,13 @@ import dev.piko.ui.components.AdaptiveBar
 import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.ContributePaletteItems
+import dev.piko.ui.components.FileListLeadingVisual
+import dev.piko.ui.components.FileVisual
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.IslandPage
 import dev.piko.ui.components.IslandTitle
 import dev.piko.ui.components.ItemDetailsSheet
+import dev.piko.ui.components.VaultMark
 import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.PaletteItem
 import dev.piko.ui.components.PikoEmptyState
@@ -140,6 +144,7 @@ import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.ShortcutModifier
 import dev.piko.ui.format.formatPercentage
+import dev.piko.ui.theme.tabular
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.seconds
@@ -431,7 +436,13 @@ fun SpaceMapScreen(
         }
     }
 
-    val summaryText = remember(snapshot, includeVaulted, isCalculating, treeBuildProgress, displayedTotalBytes, rootFreeQuotaBytes) {
+    val showQuotaLegend = snapshot != null && (
+        (includeVaulted && snapshot.vaultedBytes > 0L) ||
+            rootFreeQuotaBytes > 0L ||
+            (currentFolderId.isEmpty() && cloudQuota != null)
+        )
+
+    val summaryText = remember(snapshot, includeVaulted, isCalculating, treeBuildProgress, displayedTotalBytes, showQuotaLegend) {
         val current = snapshot
         when {
             current == null -> if (treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates) {
@@ -439,7 +450,7 @@ fun SpaceMapScreen(
             } else {
                 tr("读取统计…", "Loading statistics…", "統計を読み込み中…", "통계 불러오는 중…", "讀取統計…")
             }
-            current.syncError != null -> current.syncError.orEmpty()
+            current.syncError != null -> tr("统计同步失败", "Sync failed", "同期失敗", "동기화 실패", "統計同步失敗")
             treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates -> formatTreeIndexProgressLabel(treeBuildProgress)
             isCalculating -> {
                 val totalSizeText = displayedTotalBytes.toReadableSize()
@@ -449,6 +460,17 @@ fun SpaceMapScreen(
                     "集計中 $totalSizeText",
                     "계산 중 $totalSizeText",
                     "正在統計 $totalSizeText",
+                )
+            }
+            // 下方已展示「已用 / 可用 / 归档」图例时，顶栏仅报文件数，避免同一总容量重复出现两次
+            showQuotaLegend && current.fileCount > 0L -> {
+                val enFiles = enCount(current.fileCount, "file", "files")
+                tr(
+                    "${current.fileCount} 个文件",
+                    enFiles,
+                    "${current.fileCount} ファイル",
+                    "파일 ${current.fileCount}개",
+                    "${current.fileCount} 個檔案",
                 )
             }
             current.fileCount > 0L -> {
@@ -462,6 +484,7 @@ fun SpaceMapScreen(
                     "$totalSizeText（${current.fileCount} 個檔案）",
                 )
             }
+            showQuotaLegend -> ""
             else -> displayedTotalBytes.toReadableSize()
         }
     }
@@ -537,7 +560,9 @@ fun SpaceMapScreen(
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
                                 IslandTitle(pageTitle)
-                                StatusSummaryBadge(isCalculating = isCalculating, text = summaryText)
+                                if (isCalculating || summaryText.isNotEmpty()) {
+                                    StatusSummaryBadge(isCalculating = isCalculating, text = summaryText)
+                                }
                             }
                         },
                         middleMinWidth = 120.dp,
@@ -588,46 +613,13 @@ fun SpaceMapScreen(
                             modifier = Modifier.weight(1f),
                         )
                         val current = snapshot
-                        if (current != null && (includeVaulted && current.vaultedBytes > 0L || rootFreeQuotaBytes > 0L)) {
+                        if (showQuotaLegend && current != null) {
                             Spacer(Modifier.width(12.dp))
-                            val breakdownText = buildList {
-                                add(
-                                    tr(
-                                        "占配额 ${current.physicalBytes.toReadableSize()}",
-                                        "Quota ${current.physicalBytes.toReadableSize()}",
-                                        "容量枠 ${current.physicalBytes.toReadableSize()}",
-                                        "할당량 ${current.physicalBytes.toReadableSize()}",
-                                        "佔配額 ${current.physicalBytes.toReadableSize()}",
-                                    ),
-                                )
-                                if (includeVaulted && current.vaultedBytes > 0L) {
-                                    add(
-                                        tr(
-                                            "归档 ${current.vaultedBytes.toReadableSize()}",
-                                            "Archived ${current.vaultedBytes.toReadableSize()}",
-                                            "アーカイブ ${current.vaultedBytes.toReadableSize()}",
-                                            "보관 ${current.vaultedBytes.toReadableSize()}",
-                                            "歸檔 ${current.vaultedBytes.toReadableSize()}",
-                                        ),
-                                    )
-                                }
-                                if (rootFreeQuotaBytes > 0L) {
-                                    add(
-                                        tr(
-                                            "可用 ${rootFreeQuotaBytes.toReadableSize()}",
-                                            "Free ${rootFreeQuotaBytes.toReadableSize()}",
-                                            "空き ${rootFreeQuotaBytes.toReadableSize()}",
-                                            "여유 ${rootFreeQuotaBytes.toReadableSize()}",
-                                            "可用 ${rootFreeQuotaBytes.toReadableSize()}",
-                                        ),
-                                    )
-                                }
-                            }.joinToString("   ")
-                            Text(
-                                text = breakdownText,
-                                style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
+                            SpaceQuotaLegendStrip(
+                                physicalBytes = current.physicalBytes,
+                                vaultedBytes = if (includeVaulted) current.vaultedBytes else 0L,
+                                freeQuotaBytes = rootFreeQuotaBytes,
+                                quotaLimitBytes = if (currentFolderId.isEmpty()) cloudQuota?.limitBytes ?: 0L else 0L,
                             )
                         }
                     }
@@ -686,6 +678,16 @@ fun SpaceMapScreen(
                             onToggle = { if (!isBlockingLoad) includeVaulted = !includeVaulted },
                         )
                     }
+                    val current = snapshot
+                    if (showQuotaLegend && current != null) {
+                        SpaceQuotaLegendStrip(
+                            physicalBytes = current.physicalBytes,
+                            vaultedBytes = if (includeVaulted) current.vaultedBytes else 0L,
+                            freeQuotaBytes = rootFreeQuotaBytes,
+                            quotaLimitBytes = if (currentFolderId.isEmpty()) cloudQuota?.limitBytes ?: 0L else 0L,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                        )
+                    }
                 }
 
                 snapshot?.syncError?.let { error ->
@@ -719,6 +721,102 @@ fun SpaceMapScreen(
 }
 
 @Composable
+private fun SpaceQuotaLegendStrip(
+    physicalBytes: Long,
+    vaultedBytes: Long,
+    freeQuotaBytes: Long,
+    quotaLimitBytes: Long,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.colorScheme
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (quotaLimitBytes > 0L) {
+            val usedFraction = (physicalBytes.toFloat() / quotaLimitBytes.toFloat()).coerceIn(0f, 1f)
+            Box(
+                modifier = Modifier
+                    .width(72.dp)
+                    .height(6.dp)
+                    .clip(CircleShape)
+                    .background(colors.surfaceContainerHighest),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(usedFraction)
+                        .height(6.dp)
+                        .clip(CircleShape)
+                        .background(
+                            when {
+                                usedFraction >= 0.95f -> colors.error
+                                usedFraction >= 0.85f -> colors.tertiary
+                                else -> colors.primary
+                            },
+                        ),
+                )
+            }
+        }
+        SpaceLegendItem(
+            dotColor = colors.primary,
+            label = tr(
+                "已用 ${physicalBytes.toReadableSize()}",
+                "Used ${physicalBytes.toReadableSize()}",
+                "使用済み ${physicalBytes.toReadableSize()}",
+                "사용됨 ${physicalBytes.toReadableSize()}",
+                "已使用 ${physicalBytes.toReadableSize()}",
+            ),
+        )
+        if (freeQuotaBytes > 0L) {
+            SpaceLegendItem(
+                dotColor = colors.outlineVariant,
+                label = tr(
+                    "可用 ${freeQuotaBytes.toReadableSize()}",
+                    "Free ${freeQuotaBytes.toReadableSize()}",
+                    "空き ${freeQuotaBytes.toReadableSize()}",
+                    "여유 ${freeQuotaBytes.toReadableSize()}",
+                    "可用 ${freeQuotaBytes.toReadableSize()}",
+                ),
+            )
+        }
+        if (vaultedBytes > 0L) {
+            SpaceLegendItem(
+                dotColor = colors.tertiary,
+                label = tr(
+                    "归档 ${vaultedBytes.toReadableSize()}",
+                    "Archived ${vaultedBytes.toReadableSize()}",
+                    "アーカイブ ${vaultedBytes.toReadableSize()}",
+                    "보관 ${vaultedBytes.toReadableSize()}",
+                    "歸檔 ${vaultedBytes.toReadableSize()}",
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SpaceLegendItem(dotColor: Color, label: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(dotColor),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium.tabular,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
 private fun StatusSummaryBadge(isCalculating: Boolean, text: String) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -729,7 +827,7 @@ private fun StatusSummaryBadge(isCalculating: Boolean, text: String) {
         }
         Text(
             text = text,
-            style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
+            style = MaterialTheme.typography.labelLarge.tabular,
             color = if (isCalculating) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -2437,25 +2535,14 @@ private fun TileActionSheet(
             ItemDetailsSheet(
                 title = target.name,
                 headerIcon = {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                if (target.isFolder) MaterialTheme.colorScheme.primaryContainer
-                                else MaterialTheme.colorScheme.secondaryContainer,
-                            ),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = when {
-                                target.isVaulted -> Icons.Outlined.Inventory2
-                                target.isFolder -> Icons.Outlined.Folder
-                                else -> Icons.Outlined.Description
-                            },
-                            contentDescription = null,
-                            tint = if (target.isFolder) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
+                    val visual = remember(target.name, target.isFolder) {
+                        FileVisual(target.name, isFolder = target.isFolder)
                     }
+                    FileListLeadingVisual(
+                        file = visual,
+                        size = 40.dp,
+                        allowThumbnail = false,
+                    )
                 },
                 actions = actions,
                 metaParts = meta,
@@ -2535,31 +2622,33 @@ private fun OtherGroupSheet(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
+                            .padding(start = 12.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Icon(
-                            imageVector = when {
-                                purelyVaulted -> Icons.Outlined.Inventory2
-                                item.isFolder -> Icons.Outlined.Folder
-                                else -> Icons.Outlined.Description
-                            },
-                            contentDescription = null,
-                            tint = when {
-                                purelyVaulted -> MaterialTheme.colorScheme.tertiary
-                                item.isFolder -> MaterialTheme.colorScheme.primary
-                                else -> MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.size(20.dp),
+                        val visual = remember(item.name, item.isFolder) {
+                            FileVisual(item.name, isFolder = item.isFolder)
+                        }
+                        FileListLeadingVisual(
+                            file = visual,
+                            size = 36.dp,
                         )
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = item.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    text = item.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
+                                if (purelyVaulted) {
+                                    VaultMark(inFolder = item.isFolder)
+                                }
+                            }
                             val subText = if (item.isFolder && item.fileCount > 0L) {
                                 tr(
                                     "${item.bytes(includeVaulted).toReadableSize()}（${item.fileCount} 个文件）",

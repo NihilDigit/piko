@@ -4,17 +4,22 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
+import coil3.Bitmap
 import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.media.player.PlaybackBackend
+import dev.piko.shared.media.storyboard.StoryboardIdrDecoder
 import dev.piko.ui.adaptive.FormFactor
 import dev.piko.ui.theme.MotionStyle
 import dev.piko.ui.theme.PikoMotionScale
 import dev.piko.update.AppUpdateService
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emptyFlow
 
 /**
  * 共享界面向所在平台要的能力。各宿主端各自实现一份，按 AGENTS.md 的约定用接口而不用
@@ -185,7 +190,54 @@ interface PikoPlatform {
         containerHeightPx: Int,
         targetBlurPx: Float,
     ): ImageBitmap? = null
+
+    /**
+     * 对 Coil 后台解码出的位图执行一次性边缘钳位预模糊（供防窥缩略图在解码阶段完成模糊并写入 MemoryCache）。
+     * 失败或未实现时返回 null，由调用方按隐私兜底策略拒绝展示未模糊原图。
+     */
+    fun blurCoilBitmap(input: Bitmap, radiusPx: Int): Bitmap? = null
+
+    /**
+     * 监听播放器全屏期间的系统状态（电量、充电与网络类型）。仅在全屏组合期间收集，非全屏零开销；
+     * 默认返回空流，由各平台按需提供原生实现。
+     */
+    fun observeSystemStatus(): Flow<PlayerSystemStatusInfo?> = emptyFlow()
+
+    /**
+     * 从内存媒体片段（如低清 MPEG-TS 关键帧分块）解码一张缩略预览帧，宽度不超过 [maxWidthPx]。
+     * 供进度条悬停、拖动与 `∞` 粗剪速览共用；平台未提供解码器时返回 null。
+     */
+    suspend fun decodeVideoPreviewFrame(bytes: ByteArray, maxWidthPx: Int = 320): ImageBitmap? = null
+
+    /**
+     * 从本机视频文件指定时间点 [positionMillis] 解码一张缩略预览帧，宽度不超过 [maxWidthPx]。
+     */
+    suspend fun decodeLocalVideoPreviewFrame(path: String, positionMillis: Long, maxWidthPx: Int = 320): ImageBitmap? = null
+
+    /**
+     * 创建持久化单解码器 HEVC IDR 雪碧图解码器（每视频复用单个解码器实例，退出确定性关闭）；
+     * 不支持的平台返回 `null`。
+     */
+    fun createStoryboardIdrDecoder(): StoryboardIdrDecoder? = null
+
+    /**
+     * 将紧凑雪碧图 JPEG/WebP 字节直接解码为 Compose [ImageBitmap]（用于磁盘缓存命中 `< 0.5ms` 展示）。
+     */
+    fun decodeEncodedImageBitmap(bytes: ByteArray): ImageBitmap? = null
 }
+
+/** 播放器全屏状态栏的电池与网络快照，由各平台实现经 [PikoPlatform.observeSystemStatus] 推送。 */
+@Immutable
+data class PlayerSystemStatusInfo(
+    /** 电池电量百分比（0..100），台式机无电池或无法读取时为 null。 */
+    val batteryPercent: Int? = null,
+    /** 是否正在充电。 */
+    val isCharging: Boolean = false,
+    /** 网络类型（Wi-Fi / 蜂窝 / 以太网 / 离线），无法读取或无需展示时为 null。 */
+    val networkType: PlayerNetworkType? = null,
+)
+
+enum class PlayerNetworkType { Wifi, Cellular, Ethernet, Offline }
 
 /** 已下载到本机的文件的外部动作。路径可能是普通路径，也可能是 Android SAF 的 content: URI。 */
 interface LocalFileActions {

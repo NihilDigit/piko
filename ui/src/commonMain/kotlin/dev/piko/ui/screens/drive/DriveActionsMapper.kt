@@ -29,6 +29,8 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
 import dev.piko.data.repository.PathBreadcrumb
+import dev.piko.data.repository.isPlayableAudio
+import dev.piko.data.repository.isPlayableMedia
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.DriveLibrary
@@ -45,6 +47,7 @@ import dev.piko.shared.naming.av.hasAvCode
 import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.state.DriveListItem
 import dev.piko.shared.state.DriveScreenState
+import dev.piko.shared.state.FolderStructureMode
 import dev.piko.shared.upload.isUploading
 import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.SheetAction
@@ -139,6 +142,7 @@ internal class DriveItemActionIntents(
     val onRevealFromGalleryOrLibrary: (FileStat) -> Unit,
     val onRevealLocalInFileManager: (String) -> Unit,
     val onUnmountLocal: (String) -> Unit,
+    val onFolderStructure: (folders: List<FileStat>, initialMode: FolderStructureMode) -> Unit,
 )
 
 internal fun buildArchiveEntryActions(
@@ -195,6 +199,9 @@ internal fun buildVaultEntryActions(
         ),
     )
     add(DriveActions.restoreFromVault { intents.onRestoreVaultItems(listOf(file)) })
+    if (state.libraryView != DriveLibrary.TRASH && state.archiveView == null) {
+        add(DriveActions.moveTo { intents.onMove(setOf(file.id)) })
+    }
     if (!file.isFolder) add(DriveActions.copyDownloadLink { intents.onCopyDownloadLink(file) })
     addAll(
         DriveActions.sourceActions(
@@ -214,7 +221,8 @@ internal fun buildSelectionActions(
 ): List<SheetAction> = buildList {
     val inTrash = state.libraryView == DriveLibrary.TRASH
     val ids = files.map { it.id }
-    val settled = files.filterNot { it.isUploading || it.isVaulted || it.isImportPreview }
+    val editable = files.filterNot { it.isUploading || it.isImportPreview || it.isLocal }
+    val settled = editable.filterNot { it.isVaulted }
     val putOnClipboard: ((Boolean) -> Unit)? = if (commands.cutCopy) {
         { cut -> state.putOnClipboard(ids, cut) }
     } else null
@@ -224,15 +232,15 @@ internal fun buildSelectionActions(
             copy = null,
             download = DriveActions.download { intents.onDownload(files.filterNot { it.isUploading }, false) }.takeIf { commands.download },
             share = DriveActions.share { intents.onShare(settled) }.takeIf { commands.share },
-            rename = DriveActions.batchRename { intents.onBatchRename(settled, false) }.takeIf { commands.rename },
+            rename = DriveActions.batchRename { intents.onBatchRename(editable, false) }.takeIf { commands.rename },
             star = DriveActions.star(
-                starred = settled.all { it.isStarred },
+                starred = editable.all { it.isStarred },
                 onClick = {
-                    val nextStarred = !settled.all { it.isStarred }
-                    state.setStarred(settled, nextStarred)
+                    val nextStarred = !editable.all { it.isStarred }
+                    state.setStarred(editable, nextStarred)
                     state.exitSelection()
                 },
-            ).takeIf { !inTrash && state.archiveView == null && settled.isNotEmpty() },
+            ).takeIf { !inTrash && state.archiveView == null && editable.isNotEmpty() },
         ),
     )
     val galleryCandidates = files.filter {
@@ -276,15 +284,25 @@ internal fun buildSelectionActions(
         )
     }
     if (commands.downloadAtQuality) add(DriveActions.downloadAtQuality { intents.onDownload(files, true) })
-    if (commands.moveCopyTo) {
+    if (commands.moveTo) {
         add(DriveActions.moveTo { intents.onMove(ids.toSet()) })
+    }
+    if (commands.moveCopyTo) {
         add(DriveActions.copyTo { intents.onCopy(ids.toSet()) })
     }
-    if (commands.rename && settled.any { !it.isFolder && hasAvCode(it.name) }) {
-        add(DriveActions.canonicalName { intents.onBatchRename(settled, true) })
+    if (commands.unwrapOrFlatten) {
+        add(DriveActions.unwrapOrFlatten { intents.onFolderStructure(files, FolderStructureMode.UNWRAP) })
+    }
+    if (commands.mergeFolders) {
+        add(DriveActions.mergeFolders { intents.onFolderStructure(files, FolderStructureMode.MERGE) })
+    }
+    if (commands.rename && editable.any { !it.isFolder && hasAvCode(it.name) }) {
+        add(DriveActions.canonicalName { intents.onBatchRename(editable, true) })
+    }
+    if (commands.cut) {
+        add(DriveActions.cut { state.putOnClipboard(ids, true) })
     }
     if (putOnClipboard != null) {
-        add(DriveActions.cut { putOnClipboard(true) })
         add(DriveActions.copy { putOnClipboard(false) })
     }
     if (commands.removeRecord) add(DriveActions.removeRecord { state.removeFromLibrary(ids.toSet()) })
@@ -337,12 +355,18 @@ internal fun buildDriveOperations(
                 )
             }
         } else if (file.isLocal) {
-            if (file.isPlayableVideo()) {
+            if (file.isPlayableMedia()) {
+                val isAudioOnly = file.isPlayableAudio() && !file.isPlayableVideo()
                 add(
                     SheetAction(
                         Icons.Outlined.PlayArrow,
                         tr("播放", "Play", "再生", "재생", "播放"),
-                        { intents.onPlayVideo(file, intents.displayedFiles.filter { it.isPlayableVideo() }) },
+                        {
+                            intents.onPlayVideo(
+                                file,
+                                intents.displayedFiles.filter { if (isAudioOnly) it.isPlayableAudio() else it.isPlayableVideo() },
+                            )
+                        },
                         group = ActionGroup.Open,
                     ),
                 )
@@ -461,6 +485,7 @@ internal fun buildDriveOperations(
         togglePreview = { state.toggleSpoiler(file.id) },
         putOnClipboard = { cut -> state.putOnClipboard(listOf(file.id), cut) },
         copyDownloadLink = if (!file.isFolder && !file.isVaulted && !file.isUploading) ({ intents.onCopyDownloadLink(file) }) else null,
+        unwrapOrFlatten = if (commands.unwrapOrFlatten) ({ intents.onFolderStructure(listOf(file), FolderStructureMode.UNWRAP) }) else null,
     )
     return reveal + removeRecord + fileActions(file, commands, handlers)
 }
@@ -649,7 +674,7 @@ internal fun handleDriveKeyShortcut(
         addressKey -> onEditAddress()
         primary && event.isShiftPressed && event.key == Key.E -> onToggleFolderMap()
         primary && event.key == Key.F -> if (pathInTopBar) onFocusDesktopSearch() else state.openSearch()
-        primary && event.key == Key.X && itemCommands(place, commandTargets).cutCopy ->
+        primary && event.key == Key.X && itemCommands(place, commandTargets).cut ->
             state.putOnClipboard(commandTargets.map { it.id }, cut = true)
         primary && event.key == Key.C && itemCommands(place, commandTargets).cutCopy ->
             state.putOnClipboard(commandTargets.map { it.id }, cut = false)
@@ -672,11 +697,7 @@ internal fun handleDriveKeyShortcut(
             val targets = displayedFiles.filter { it.id in state.selectedFileIds && !it.isLocal && !it.isUploading && !it.isImportPreview }
             when {
                 targets.size == 1 -> onStartRename(targets.single())
-                targets.size > 1 -> {
-                    val realTargets = targets.filterNot { it.isVaulted }
-                    if (realTargets.size == 1) onStartRename(realTargets.single())
-                    else if (realTargets.size > 1) onBatchRename(realTargets)
-                }
+                targets.size > 1 -> onBatchRename(targets)
             }
         }
         (event.isAltPressed && event.key == Key.DirectionLeft) || (primary && event.key == Key.LeftBracket) ||

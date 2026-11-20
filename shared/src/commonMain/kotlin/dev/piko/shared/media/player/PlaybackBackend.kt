@@ -143,6 +143,7 @@ data class MediaTrack(
     val title: String?,
     val language: String?,
     val isExternal: Boolean = false,
+    val externalFilename: String? = null,
 )
 
 /** 随视频一起加载的外挂字幕。[url] 是后端能直接读的地址，[title] 用来在列表里区分。 */

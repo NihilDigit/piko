@@ -1,6 +1,7 @@
 package dev.piko.shared.state
 
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.Snapshot
 import io.github.nihildigit.pikpak.FileStat
 
 internal class DriveSelectionState(
@@ -104,18 +105,31 @@ internal class DriveSelectionState(
             return
         }
         if (idSet != next) {
+            Snapshot.withMutableSnapshot {
+                _selectedFileIds.clear()
+                _selectedFileIds.addAll(next)
+            }
+        }
+    }
+
+    fun replaceSelected(fileIds: Collection<String>) {
+        Snapshot.withMutableSnapshot {
+            selectionHeldOpen = false
+            selectionAnchor = null
             _selectedFileIds.clear()
-            _selectedFileIds.addAll(next)
+            if (fileIds.isNotEmpty()) _selectedFileIds.addAll(fileIds)
         }
     }
 
     fun toggleSelectAll() {
-        val visible = visible().filter { canSelect(it.id) }.map { it.id }
-        if (_selectedFileIds.size == visible.size) {
-            _selectedFileIds.clear()
-        } else {
-            _selectedFileIds.clear()
-            _selectedFileIds.addAll(visible)
+        val visible = visible().mapNotNull { if (canSelect(it.id)) it.id else null }
+        Snapshot.withMutableSnapshot {
+            if (_selectedFileIds.size == visible.size) {
+                _selectedFileIds.clear()
+            } else {
+                _selectedFileIds.clear()
+                _selectedFileIds.addAll(visible)
+            }
         }
     }
 

@@ -38,16 +38,29 @@ class PikoMemoryGovernor(
     private val mutablePolicy = MutableStateFlow(MemoryPolicy.Normal)
     val policy: StateFlow<MemoryPolicy> = mutablePolicy.asStateFlow()
     private var visible = true
+    private var backgroundPlaybackActive = false
     private var pressure = MemoryPolicy.Normal
     private var lowSamples = 0
     private var criticalSamples = 0
     private var availableBytes = Long.MAX_VALUE
 
+    /**
+     * 外部播放器经本机回环代理拉流时，应用虽处于后台但仍承载前台级播放吞吐；
+     * 保护期间不因单纯切后台而将传输预算压至 Background (25%)，仍严格遵守真实堆水位与系统内存修剪信号。
+     */
+    fun setBackgroundPlaybackActive(active: Boolean) {
+        withPikoLock(lock) {
+            if (backgroundPlaybackActive == active) return
+            backgroundPlaybackActive = active
+            publish()
+        }
+    }
+
     fun onVisibilityChanged(visible: Boolean) {
         val transitioned = withPikoLock(lock) {
             this.visible = visible
             val before = pressure
-            if (!visible && pressure == MemoryPolicy.Normal) {
+            if (!visible && !backgroundPlaybackActive && pressure == MemoryPolicy.Normal) {
                 pressure = MemoryPolicy.Constrained
                 lowSamples = 0
             }
@@ -179,7 +192,7 @@ class PikoMemoryGovernor(
     }
 
     private fun publish() {
-        mutablePolicy.value = if (visible) pressure else MemoryPolicy.Background
+        mutablePolicy.value = if (visible || backgroundPlaybackActive) pressure else MemoryPolicy.Background
     }
 
     companion object {

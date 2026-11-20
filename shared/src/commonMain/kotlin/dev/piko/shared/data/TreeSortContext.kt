@@ -70,8 +70,11 @@ internal data class SortContext(
             val modified = HashMap<String, Long>()
             fun addFolder(id: String) {
                 val complete = (state.complete || id in state.listedFolders) && id !in state.dirtyFolders
-                val empty = ContentStats(listingComplete = complete)
-                stats[id] = SubtreeStats(empty, empty)
+                val vaultUnresolved = id in state.manifestsByFolder && id !in state.vaultEntriesByFolder
+                stats[id] = SubtreeStats(
+                    physical = ContentStats(listingComplete = complete),
+                    vaulted = ContentStats(listingComplete = complete && !vaultUnresolved),
+                )
                 pendingChildren[id] = 0
             }
             addFolder("")

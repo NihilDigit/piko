@@ -86,9 +86,10 @@ internal class GalleryCanvasLayout(private var restoredAnchor: GalleryAnchor? = 
         width: Double,
         height: Double,
         gap: Double,
+        extraTileHeight: Double = 0.0,
     ): List<GalleryPlacement> {
-        require(columns > 0 && width > 0 && height > 0 && gap >= 0)
-        val next = Configuration(columns, width, height, gap)
+        require(columns > 0 && width > 0 && height > 0 && gap >= 0 && extraTileHeight >= 0.0)
+        val next = Configuration(columns, width, height, gap, extraTileHeight)
         if (items !== rawItemsRef || next != configuration || lanes.isEmpty()) {
             rawItemsRef = items
             if (!hasScrolled) {
@@ -142,7 +143,7 @@ internal class GalleryCanvasLayout(private var restoredAnchor: GalleryAnchor? = 
             val top = extents[column]
             val ordinal = assigned[column].size.toLong()
             val ratio = masonryRatio(item, column, ordinal.toInt(), index)
-            val height = config.tileWidth / ratio
+            val height = config.tileWidth / ratio + config.extraTileHeight
             assigned[column] += Slot(ordinal, top, height, item.id, item.shape)
             extents[column] = top + height + config.gap
         }
@@ -164,7 +165,13 @@ internal class GalleryCanvasLayout(private var restoredAnchor: GalleryAnchor? = 
         return LANDSCAPE_MASONRY_RATIOS[(hash.toLong() + rowInColumn.toLong()).mod(LANDSCAPE_MASONRY_RATIOS.size)]
     }
 
-    private data class Configuration(val columns: Int, val width: Double, val height: Double, val gap: Double) {
+    private data class Configuration(
+        val columns: Int,
+        val width: Double,
+        val height: Double,
+        val gap: Double,
+        val extraTileHeight: Double,
+    ) {
         val tileWidth = ((width - gap * (columns - 1)) / columns).coerceAtLeast(1.0)
     }
 

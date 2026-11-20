@@ -87,4 +87,40 @@ class PlayerPlaylistTest {
         assertEquals("720p", preferredVersion(second, "720p").versionLabel)
         assertEquals("1080p", preferredVersion(second, "480p").versionLabel)
     }
+
+    @Test
+    fun `standalone movies in one folder fall back to unified natural-sorted folder queue`() {
+        val files = listOf(
+            PlaylistEntry("m3", "Tenet (2020) [1080p].mkv", "", size = 5L shl 30),
+            PlaylistEntry("m1", "Inception (2010) [1080p].mkv", "", size = 4L shl 30),
+            PlaylistEntry("m2", "Interstellar (2014) [1080p].mkv", "", size = 6L shl 30),
+        )
+        val subtitles = listOf(
+            SubtitleRef("s1", "Inception (2010) [1080p].cht.ass", null),
+        )
+        val list = buildPlaylist(files, subtitles, currentFileId = "m1")
+        // 每部电影各自分区都只有 1 条，应退回当前文件夹自然排序的单一队列，并保留匹配的外挂字幕
+        assertEquals(listOf("m1", "m2", "m3"), list.map { it.fileId })
+        assertEquals(listOf(""), list.map { it.sectionKey }.distinct())
+        assertEquals(listOf("s1"), list.first { it.fileId == "m1" }.subtitles.map { it.fileId })
+    }
+
+    @Test
+    fun `opening a single-item section in a mixed folder falls back to current folder while multi-episode work stays grouped`() {
+        val files = listOf(
+            PlaylistEntry("e1", "[Grp] Show - 01 [1080p].mkv", "", size = 700L shl 20),
+            PlaylistEntry("e2", "[Grp] Show - 02 [1080p].mkv", "", size = 700L shl 20),
+            PlaylistEntry("solo", "Random Documentary 2026.mp4", "", size = 1200L shl 20),
+        )
+        // 打开多集剧集时保持解析分组
+        val seriesQueue = buildPlaylist(files, currentFileId = "e1")
+        val seriesSection = seriesQueue.first { it.fileId == "e1" }.sectionKey
+        assertEquals(listOf("e1", "e2"), seriesQueue.filter { it.sectionKey == seriesSection }.map { it.fileId })
+
+        // 打开同目录下只有单条目的独立文件时，队列退回当前文件夹全部可播文件
+        val soloQueue = buildPlaylist(files, currentFileId = "solo")
+        assertEquals(3, soloQueue.size)
+        assertEquals(listOf(""), soloQueue.map { it.sectionKey }.distinct())
+        assertEquals(setOf("e1", "e2", "solo"), soloQueue.map { it.fileId }.toSet())
+    }
 }

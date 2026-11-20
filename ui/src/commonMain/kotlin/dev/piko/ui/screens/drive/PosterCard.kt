@@ -3,13 +3,21 @@ package dev.piko.ui.screens.drive
 import dev.piko.shared.i18n.tr
 
 import dev.piko.ui.components.itemMarks
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import dev.piko.ui.theme.LocalFixedColors
+import dev.piko.ui.theme.LocalPikoMotion
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Dp
 import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,8 +36,12 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.runtime.getValue
@@ -37,12 +49,18 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.data.CardBadgeKind
+import dev.piko.shared.data.CornerSlots
+import dev.piko.shared.data.FolderStyle
+import dev.piko.shared.i18n.PikoLocale
 import dev.piko.ui.components.focusIndication
 import dev.piko.ui.components.ownsClicks
 import dev.piko.ui.components.locateHighlight
@@ -50,6 +68,8 @@ import dev.piko.ui.components.MediaTag
 import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.SkeletonBlock
 import dev.piko.ui.components.SkeletonTextLine
+import dev.piko.ui.format.formatDurationMillis
+import dev.piko.ui.theme.tabular
 import io.github.nihildigit.pikpak.FileStat
 import dev.piko.ui.components.*
 
@@ -117,16 +137,96 @@ internal fun PosterCard(
     resolution: String? = null,
     /** 文件夹里直接放着归档条目，见 itemMarks。 */
     folderHasVault: Boolean = false,
+    /** 文件夹递归条目数、总时长与总大小，供四角徽标与底部详情行按 [LocalDriveAppearancePrefs] 显示。 */
+    folderItemCount: Int? = null,
+    folderDurationMillis: Long? = null,
+    folderSizeBytes: Long? = null,
 ) {
+    val gridPrefs = LocalDriveAppearancePrefs.current.grid
+    val corners = gridPrefs.corners
     val item = file.filePresentation(title, original, tags, code, resolution, folderHasVault, isEmptyFolder)
     val hover = fileItemHover()
+    val reducedMotion = LocalPikoMotion.current.reduced
+    val fixedColors = LocalFixedColors.current
+    val colors = MaterialTheme.colorScheme
     val coverShape = MaterialTheme.shapes.medium
+    val hoverBg by animateColorAsState(
+        targetValue = when {
+            isSelected -> colors.secondaryContainer.copy(alpha = 0.42f)
+            hover.mouseHovered -> colors.surfaceContainerLow
+            else -> Color.Transparent
+        },
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "poster_hover_bg",
+    )
+    val selectionBorderColor by animateColorAsState(
+        targetValue = if (isSelected) colors.primary else Color.Transparent,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "poster_selection_border",
+    )
+    val coverScale by animateFloatAsState(
+        targetValue = if (hover.mouseHovered && !reducedMotion) 1.02f else 1f,
+        animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
+        label = "poster_hover_scale",
+    )
+    val hasResolutionCorner = corners.contains(CardBadgeKind.RESOLUTION)
+    val hasStatusCorner = corners.contains(CardBadgeKind.STATUS_BADGES)
+    val hasTagsCorner = corners.contains(CardBadgeKind.PARSED_TAGS)
+    val cornerTags = remember(tags, resolution, hasResolutionCorner) {
+        tags.filter { !hasResolutionCorner || it != resolution }.take(COVER_CORNER_TAGS)
+    }
+    val durationLabel = remember(file, folderDurationMillis) {
+        val ms = if (file.isFolder) folderDurationMillis?.takeIf { it > 0L } else file.fileDurationMillis()
+        ms?.let { formatDurationMillis(it) }
+    }
+    val sizeLabel = remember(file, folderSizeBytes) {
+        val bytes = if (file.isFolder) folderSizeBytes?.takeIf { it > 0L } else file.sizeBytes.takeIf { it >= 0L }
+        bytes?.toReadableSize()
+    }
+    val extensionText = remember(file) { if (file.isFolder) null else file.extensionLabel() }
+    val badgeData = PosterCornerData(
+        duration = durationLabel,
+        resolution = resolution?.takeIf { it.isNotBlank() },
+        tags = cornerTags,
+        code = code,
+        fileSize = sizeLabel,
+        marks = item.marks,
+        extension = extensionText,
+    )
+    val showSelectionOverlay = isSelectionMode || (hover.mouseHovered && onStartSelection != null)
+    val showsMediaCover = item.visual.thumbnail != null && (!file.isFolder || gridPrefs.folderStyle == FolderStyle.MINIMAL_ICON)
+    val showMinimalFolderBadge = file.isFolder && gridPrefs.folderStyle == FolderStyle.MINIMAL_ICON && showsMediaCover
+    val hasTopStart = showSelectionOverlay || badgeData.hasContent(corners.topStart)
+    val hasTopEnd = badgeData.hasContent(corners.topEnd)
+    val hasBottomStart = showMinimalFolderBadge || badgeData.hasContent(corners.bottomStart)
+    val hasBottomEnd = badgeData.hasContent(corners.bottomEnd)
+
+    val detailParts = remember(
+        file, gridPrefs.showDetailLine, gridPrefs.detailFields, hasTagsCorner, tags,
+        folderItemCount, folderDurationMillis, folderSizeBytes, folderHasVault, PikoLocale.effectiveLanguage,
+    ) {
+        if (gridPrefs.showDetailLine) {
+            file.detailLineParts(
+                fields = gridPrefs.detailFields,
+                tags = tags,
+                folderItemCount = folderItemCount,
+                folderDurationMillis = folderDurationMillis,
+                folderSizeBytes = folderSizeBytes,
+                folderHasVault = folderHasVault,
+                includeParsedTags = !hasTagsCorner,
+            )
+        } else {
+            emptyList()
+        }
+    }
+
     Column(
         modifier = modifier
             .then(hover.modifier)
             .fillMaxWidth()
             .focusIndication(coverShape, showPointerFocus = !isSelectionMode)
             .clip(coverShape)
+            .background(hoverBg)
             .cardInteraction(isSelectionMode, isSelected, onClick, onLongClick, onSelectToggle),
     ) {
         Box(
@@ -134,40 +234,108 @@ internal fun PosterCard(
                 .fillMaxWidth()
                 .aspectRatio(COVER_ASPECT)
                 .clip(coverShape)
-                .then(if (isSelected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, coverShape) else Modifier)
+                .then(
+                    if (showsMediaCover) {
+                        Modifier.border(1.dp, fixedColors.HudSpecularBorder, coverShape)
+                    } else Modifier,
+                )
+                .then(if (selectionBorderColor.alpha > 0f) Modifier.border(3.dp, selectionBorderColor, coverShape) else Modifier)
                 .locateHighlight(isHighlighted, coverShape),
         ) {
-            FileArtwork(item.visual, FileArtworkFormat.Poster, isSpoilerBlurred, Modifier.fillMaxSize())
-            if (isSelectionMode || (hover.mouseHovered && onStartSelection != null)) {
-                FileOverlaySelectionControl(FileItemSelection(
-                    if (isSelected) androidx.compose.ui.state.ToggleableState.On else androidx.compose.ui.state.ToggleableState.Off,
-                    { if (isSelectionMode) onSelectToggle(!isSelected) else onStartSelection?.invoke() }, label = tr("选择 ${item.name.fullName}", "Select ${item.name.fullName}", "${item.name.fullName} を選択", "${item.name.fullName} 선택", "選取 ${item.name.fullName}")),
-                    modifier = Modifier.align(Alignment.TopStart).padding(6.dp).then(if (!isSelectionMode) Modifier.ownsClicks() else Modifier), interactive = !isSelectionMode)
-            }
-            val cornerTags = tags.filter { it != resolution }.take(COVER_CORNER_TAGS)
-            if (cornerTags.isNotEmpty()) {
-                // 放不下的整个丢掉，不截半个标签
-                MediaTagRow(
-                    tags = cornerTags,
-                    onMedia = true,
+            FileArtwork(
+                item.visual,
+                FileArtworkFormat.Poster,
+                isSpoilerBlurred,
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = coverScale
+                        scaleY = coverScale
+                    },
+                folderStyle = gridPrefs.folderStyle,
+                showMinimalFolderBadge = false,
+            )
+            if ((hasBottomStart || hasBottomEnd) && showsMediaCover) {
+                Box(
                     modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(6.dp)
+                        .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .wrapContentSize(Alignment.TopEnd),
+                        .height(44.dp)
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color.Transparent, fixedColors.ScrimOnMedia.copy(alpha = 0.72f)),
+                            ),
+                        ),
                 )
             }
-            if (code != null || resolution != null) {
-                // 左右两角放在同一行：窄卡片上长番号会碰到清晰度，同一行里番号先让出位置
+            if (hasTopStart || hasTopEnd) {
+                val topEndFlex = corners.topEnd == CardBadgeKind.PARSED_TAGS && !showSelectionOverlay && corners.topStart != CardBadgeKind.PARSED_TAGS
+                Row(
+                    modifier = Modifier.align(Alignment.TopStart).fillMaxWidth().padding(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Box(
+                        modifier = if (topEndFlex) Modifier else Modifier.weight(1f),
+                        contentAlignment = Alignment.TopStart,
+                    ) {
+                        if (showSelectionOverlay) {
+                            FileOverlaySelectionControl(
+                                FileItemSelection(
+                                    if (isSelected) androidx.compose.ui.state.ToggleableState.On else androidx.compose.ui.state.ToggleableState.Off,
+                                    { if (isSelectionMode) onSelectToggle(!isSelected) else onStartSelection?.invoke() },
+                                    label = tr("选择 ${item.name.fullName}", "Select ${item.name.fullName}", "${item.name.fullName} を選択", "${item.name.fullName} 선택", "選取 ${item.name.fullName}"),
+                                ),
+                                modifier = if (!isSelectionMode) Modifier.ownsClicks() else Modifier,
+                                interactive = !isSelectionMode,
+                            )
+                        } else if (badgeData.hasContent(corners.topStart)) {
+                            PosterCornerBadge(corners.topStart, badgeData)
+                        }
+                    }
+                    if (hasTopEnd) {
+                        Box(
+                            modifier = if (topEndFlex) Modifier.weight(1f) else Modifier,
+                            contentAlignment = Alignment.TopEnd,
+                        ) {
+                            PosterCornerBadge(corners.topEnd, badgeData)
+                        }
+                    }
+                }
+            }
+            if (hasBottomStart || hasBottomEnd) {
+                val bottomEndFlex = corners.bottomEnd == CardBadgeKind.PARSED_TAGS && corners.bottomStart != CardBadgeKind.PARSED_TAGS
                 Row(
                     modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(6.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Box(Modifier.weight(1f)) {
-                        if (code != null) MediaTag(code, onMedia = true, emphasized = true)
+                    Box(
+                        modifier = if (bottomEndFlex) Modifier else Modifier.weight(1f),
+                        contentAlignment = Alignment.BottomStart,
+                    ) {
+                        if (hasBottomStart) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (showMinimalFolderBadge) {
+                                    MinimalFolderBadge(compact = false)
+                                }
+                                if (badgeData.hasContent(corners.bottomStart)) {
+                                    PosterCornerBadge(corners.bottomStart, badgeData)
+                                }
+                            }
+                        }
                     }
-                    if (resolution != null) MediaTag(resolution, onMedia = true)
+                    if (hasBottomEnd) {
+                        Box(
+                            modifier = if (bottomEndFlex) Modifier.weight(1f) else Modifier,
+                            contentAlignment = Alignment.BottomEnd,
+                        ) {
+                            PosterCornerBadge(corners.bottomEnd, badgeData)
+                        }
+                    }
                 }
             }
         }
@@ -175,24 +343,148 @@ internal fun PosterCard(
         // 右端的勾选框或更多按钮浮在标题上，不另占一栏：原来的三点按钮占着 48dp 的一栏，
         // 又往右上偏移出卡片，被卡片的圆角裁掉一半，偏出去的部分也点不到。显示时给标题让出位置
         val trailingShown = moreButton
-        // 下面留 4dp：叠在一行标题上的 28dp 按钮上下各探出 4dp，卡片裁了圆角，不留就被切掉
-        Box(modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(end = if (trailingShown) CARD_TRAILING_SIZE else 0.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
-                // 星标与归档标记放在标题前而不上封面，封面的角已经给了标签与番号；对齐首行（bodyMedium 行高 20，图标 16）
-                if (item.marks.isNotEmpty()) Box(Modifier.padding(top = 2.dp, end = 4.dp)) { FileItemMarks(item.marks) }
-                Column(Modifier.weight(1f)) {
-                    FileItemTitle(item.name, style = MaterialTheme.typography.bodyMedium, maxLines = TITLE_LINES)
-                    FileItemOriginal(item.name)
+        val showMarksBelowTitle = item.marks.isNotEmpty() && !hasStatusCorner
+        val showFooter = gridPrefs.showTitle || detailParts.isNotEmpty() || showMarksBelowTitle
+        if (showFooter) {
+            // 下面留 4dp：叠在一行标题上的 28dp 按钮上下各探出 4dp，卡片裁了圆角，不留就被切掉；左右留 4dp 使悬停/选中底色柔和包住文字
+            Box(modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 4.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(end = if (trailingShown) CARD_TRAILING_SIZE else 0.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    // 未在封面角落放置状态徽标时，星标与归档标记留在标题前；已放上封面时不再重复（DRY）
+                    if (showMarksBelowTitle) Box(Modifier.padding(top = 2.dp, end = 4.dp)) { FileItemMarks(item.marks) }
+                    Column(Modifier.weight(1f)) {
+                        if (gridPrefs.showTitle) {
+                            FileItemTitle(item.name, style = MaterialTheme.typography.bodyMedium, maxLines = TITLE_LINES)
+                            FileItemOriginal(item.name)
+                        }
+                        if (detailParts.isNotEmpty()) {
+                            MetaRow(
+                                parts = detailParts,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onSurfaceVariant,
+                                modifier = if (gridPrefs.showTitle) Modifier.padding(top = 2.dp) else Modifier,
+                            )
+                        }
+                    }
+                }
+                if (trailingShown && !isSelectionMode) {
+                    // matchParentSize 不参与量高度：标题只有一行时这一行 20dp，按钮一出现就把它撑高的话，悬停时卡片会跳
+                    Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
+                        CardTrailing(onMoreClick = onMoreClick)
+                    }
                 }
             }
-            if (trailingShown && !isSelectionMode) {
-                // matchParentSize 不参与量高度：标题只有一行时这一行 20dp，按钮一出现就把它撑高的话，悬停时卡片会跳
-                Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
-                    CardTrailing(onMoreClick = onMoreClick)
-                }
+        }
+    }
+}
+
+internal class PosterCornerData(
+    val duration: String?,
+    val resolution: String?,
+    val tags: List<String>,
+    val code: String?,
+    val fileSize: String?,
+    val marks: Set<FileItemMark>,
+    val extension: String?,
+) {
+    fun hasContent(kind: CardBadgeKind): Boolean = when (kind) {
+        CardBadgeKind.NONE -> false
+        CardBadgeKind.DURATION -> duration != null
+        CardBadgeKind.RESOLUTION -> resolution != null
+        CardBadgeKind.PARSED_TAGS -> code != null || tags.isNotEmpty()
+        CardBadgeKind.FILE_SIZE -> fileSize != null
+        CardBadgeKind.STATUS_BADGES -> marks.isNotEmpty()
+        CardBadgeKind.EXTENSION -> extension != null
+    }
+}
+
+internal fun CornerSlots.contains(kind: CardBadgeKind): Boolean =
+    topStart == kind || topEnd == kind || bottomStart == kind || bottomEnd == kind
+
+@Composable
+internal fun PosterCornerBadge(kind: CardBadgeKind, data: PosterCornerData) {
+    when (kind) {
+        CardBadgeKind.NONE -> Unit
+        CardBadgeKind.DURATION -> data.duration?.let { PosterCornerPill(it, tabular = true) }
+        CardBadgeKind.RESOLUTION -> data.resolution?.let { PosterCornerPill(it, tabular = true) }
+        CardBadgeKind.PARSED_TAGS -> if (data.code != null || data.tags.isNotEmpty()) {
+            MediaTagRow(tags = data.tags, lead = data.code, onMedia = true)
+        }
+        CardBadgeKind.FILE_SIZE -> data.fileSize?.let { PosterCornerPill(it, tabular = true) }
+        CardBadgeKind.STATUS_BADGES -> if (data.marks.isNotEmpty()) {
+            PosterCornerStatusPill(data.marks)
+        }
+        CardBadgeKind.EXTENSION -> data.extension?.let { PosterCornerPill(it, tabular = false) }
+    }
+}
+
+@Composable
+internal fun PosterCornerPill(text: String, tabular: Boolean, modifier: Modifier = Modifier) {
+    val style = MaterialTheme.typography.labelSmall
+    Surface(
+        shape = RoundedCornerShape(4.dp),
+        color = Color.Black.copy(alpha = 0.6f),
+        contentColor = Color.White,
+        modifier = modifier,
+    ) {
+        Text(
+            text = text,
+            style = if (tabular) style.tabular else style,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+        )
+    }
+}
+
+@Composable
+private fun PosterCornerStatusPill(marks: Set<FileItemMark>, modifier: Modifier = Modifier) {
+    Surface(
+        shape = RoundedCornerShape(4.dp),
+        color = Color.Black.copy(alpha = 0.6f),
+        contentColor = Color.White,
+        modifier = modifier,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (FileItemMark.LocalMount in marks) {
+                Icon(
+                    imageVector = Icons.Filled.Storage,
+                    contentDescription = tr("本机挂载文件夹", "Mounted local folder", "マウントされたローカルフォルダー", "마운트된 로컬 폴더", "本機掛載資料夾"),
+                    tint = Color.White,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+            if (FileItemMark.ImportPreview in marks) {
+                Text(
+                    text = tr("待保存", "Unsaved", "未保存", "저장 대기", "待儲存"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White,
+                    maxLines = 1,
+                )
+            }
+            if (FileItemMark.Starred in marks) {
+                Icon(
+                    imageVector = Icons.Filled.Star,
+                    contentDescription = tr("已加星标", "Starred", "スター付き", "별표 있음", "已加星號"),
+                    tint = Color(0xFFFFD54F),
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+            if (FileItemMark.Vaulted in marks || FileItemMark.ContainsVault in marks) {
+                val inFolder = FileItemMark.ContainsVault in marks
+                Icon(
+                    imageVector = Icons.Filled.Inventory2,
+                    contentDescription = if (inFolder) tr("含归档条目", "Includes archived items", "アーカイブ項目を含む", "보관 항목 포함", "含歸檔項目") else tr("已归档", "Archived", "アーカイブ済み", "보관됨", "已歸檔"),
+                    tint = Color.White,
+                    modifier = Modifier.size(14.dp),
+                )
             }
         }
     }
@@ -229,23 +521,6 @@ private fun CardTrailing(
         FilledTonalIconButton(onClick = onMoreClick, modifier = modifier.size(28.dp).ownsClicks()) {
             Icon(Icons.Outlined.MoreVert, contentDescription = tr("更多操作", "More actions", "その他の操作", "추가 작업", "更多操作"), modifier = Modifier.size(18.dp))
         }
-}
-
-/** 有封面的文件夹靠这个标记与视频区分。图库方格共用。 */
-@Composable
-internal fun FolderCoverMark(modifier: Modifier = Modifier) {
-    Surface(
-        shape = MaterialTheme.shapes.extraSmall,
-        color = MaterialTheme.colorScheme.secondaryContainer,
-        modifier = modifier,
-    ) {
-        Icon(
-            imageVector = Icons.Filled.Folder,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-            modifier = Modifier.padding(4.dp).size(20.dp),
-        )
-    }
 }
 
 

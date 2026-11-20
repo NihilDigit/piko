@@ -2,9 +2,13 @@ package dev.piko.ui.components
 
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.PointerInputModifierNode
+import androidx.compose.ui.platform.InspectorInfo
+import androidx.compose.ui.unit.IntSize
 
 /**
  * 面板、右键菜单与工具栏「更多」里的一项操作。怎么摆由 [layoutActions] 统一决定：[destructive] 的单独成组垫底、用错误色，
@@ -103,15 +107,44 @@ const val FlatLimit = 6
 const val QuickLimit = 4
 const val MenuQuickLimit = 4
 
-/** 在 [action] 上按下或指针移入时调用 [SheetAction.onPrepare]。不消费事件，点击照常。 */
+/** 在 [action] 上按下或指针移入时调用 [SheetAction.onPrepare]。不消费事件，点击照常；零协程节点实现。 */
 internal fun Modifier.prepareOnPointer(action: SheetAction): Modifier {
     val prepare = action.onPrepare ?: return this
-    return pointerInput(action) {
-        awaitPointerEventScope {
-            while (true) {
-                val event = awaitPointerEvent(PointerEventPass.Initial)
-                if (event.type == PointerEventType.Press || event.type == PointerEventType.Enter) prepare()
-            }
+    return this then PrepareOnPointerElement(prepare)
+}
+
+private class PrepareOnPointerElement(
+    private val onPrepare: () -> Unit,
+) : ModifierNodeElement<PrepareOnPointerNode>() {
+    override fun create(): PrepareOnPointerNode = PrepareOnPointerNode(onPrepare)
+
+    override fun update(node: PrepareOnPointerNode) {
+        node.onPrepare = onPrepare
+    }
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "prepareOnPointer"
+    }
+
+    override fun equals(other: Any?): Boolean =
+        this === other || (other is PrepareOnPointerElement && onPrepare == other.onPrepare)
+
+    override fun hashCode(): Int = onPrepare.hashCode()
+}
+
+private class PrepareOnPointerNode(
+    var onPrepare: () -> Unit,
+) : Modifier.Node(), PointerInputModifierNode {
+    override fun onPointerEvent(
+        pointerEvent: PointerEvent,
+        pass: PointerEventPass,
+        bounds: IntSize,
+    ) {
+        if (pass != PointerEventPass.Initial) return
+        if (pointerEvent.type == PointerEventType.Press || pointerEvent.type == PointerEventType.Enter) {
+            onPrepare()
         }
     }
+
+    override fun onCancelPointerInput() = Unit
 }

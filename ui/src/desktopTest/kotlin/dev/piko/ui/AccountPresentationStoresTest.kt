@@ -43,4 +43,38 @@ class AccountPresentationStoresTest {
         assertTrue(stores.forAccount("a") !== firstOwner)
         stores.leave("a")
     }
+
+    @Test
+    fun staleRecompositionDuringAccountSwitchDoesNotEvictNewActiveAccount() {
+        val stores = AccountPresentationStores()
+        val oldOwner = stores.forAccount("acct-old", activeAccount = "acct-old")
+        val oldModel = model(oldOwner)
+        assertFalse(oldModel.cleared)
+
+        // Account switches from acct-old -> acct-new: PikoServices tears down old store, new account enters.
+        stores.leave("acct-old")
+        assertTrue(oldModel.cleared)
+
+        val newOwner = stores.forAccount("acct-new", activeAccount = "acct-new")
+        val newModel = model(newOwner)
+        assertFalse(newModel.cleared)
+
+        // Simulate outgoing Crossfade frame recomposing with stale account="acct-old" while active="acct-new".
+        val staleOwner = stores.forAccount("acct-old", activeAccount = "acct-new")
+        assertTrue(staleOwner !== newOwner)
+        assertFalse(newModel.cleared, "Stale Crossfade recomposition must never clear the new active account's store")
+        assertTrue(stores.forAccount("acct-new", activeAccount = "acct-new") === newOwner)
+
+        // Rapid flip acct-new -> acct-third -> stale acct-old & stale acct-new calls.
+        stores.leave("acct-new")
+        assertTrue(newModel.cleared)
+        val thirdOwner = stores.forAccount("acct-third", activeAccount = "acct-third")
+        val thirdModel = model(thirdOwner)
+        assertTrue(stores.forAccount("acct-old", activeAccount = "acct-third") !== thirdOwner)
+        assertTrue(stores.forAccount("acct-new", activeAccount = "acct-third") !== thirdOwner)
+        assertFalse(thirdModel.cleared)
+        assertTrue(stores.forAccount("acct-third", activeAccount = "acct-third") === thirdOwner)
+        stores.leave("acct-third")
+        assertTrue(thirdModel.cleared)
+    }
 }

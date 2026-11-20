@@ -115,9 +115,23 @@ internal class DriveTreeIndex(
         }
     }
 
+    internal data class CandidateResumeCheckpoint(
+        val generation: Long,
+        val pageToken: String,
+        val firstSyncTime: String,
+        val foldersRead: Int,
+        val filesRead: Int,
+    )
+
+    fun resumableCandidate(): CandidateResumeCheckpoint? = withPikoLock(lock) {
+        if (closed) null else disk?.resumableCandidate()
+    }
+    fun candidateManifests(generation: Long): List<FileStat> = withPikoLock(lock) {
+        if (closed) emptyList() else disk?.candidateManifests(generation).orEmpty()
+    }
     fun beginCandidate(): Long = withPikoLock(lock) { if (closed) -1 else disk?.beginCandidate() ?: error("Candidates require SQLite") }
-    fun appendCandidate(generation: Long, files: List<FileStat>) = withPikoLock(lock) {
-        if (!closed) disk?.let { it.appendCandidate(generation, files); if (it.currentRevision != state.value.revision) publishDisk() }
+    fun appendCandidate(generation: Long, files: List<FileStat>, checkpoint: CandidateResumeCheckpoint? = null) = withPikoLock(lock) {
+        if (!closed) disk?.let { it.appendCandidate(generation, files, checkpoint); if (it.currentRevision != state.value.revision) publishDisk() }
     }
     fun appendCandidateVault(generation: Long, folderId: String, entries: List<VaultEntry>) = withPikoLock(lock) {
         if (!closed) disk?.let { it.vault(folderId, entries, null, false, emptySet(), generation); if (it.currentRevision != state.value.revision) publishDisk() }
@@ -259,6 +273,16 @@ internal class DriveTreeIndex(
         disk?.content(normalized) ?: state.value.contentMetadata[normalized]
     }
 
+    fun contentMetadataBatch(keys: Collection<ContentKey>): Map<ContentKey, ContentMetadata> = withPikoLock(lock) {
+        if (closed || keys.isEmpty()) return@withPikoLock emptyMap()
+        val normalized = keys.mapNotNullTo(HashSet(keys.size)) { ContentKey.of(it.gcid, it.sizeBytes) }
+        if (normalized.isEmpty()) return@withPikoLock emptyMap()
+        disk?.contentBatch(normalized) ?: buildMap(normalized.size) {
+            val map = state.value.contentMetadata
+            for (key in normalized) map[key]?.let { put(key, it) }
+        }
+    }
+
     fun observeContentMetadata(key: ContentKey, metadata: ContentMetadata) {
         withPikoLock(lock) { if (closed) return; disk?.let { it.observeContent(key, metadata); publishDisk(); return } }
         val normalized = ContentKey.of(key.gcid, key.sizeBytes) ?: return
@@ -331,6 +355,16 @@ internal class DriveTreeIndex(
     fun originalCreatedAtMillis(id: String): Long? = withPikoLock(lock) {
         if (closed || id.isBlank()) return@withPikoLock null
         disk?.originalCreated(id) ?: state.value.entryMetadata[id]?.originalCreatedAtMillis
+    }
+
+    fun originalCreatedAtMillisBatch(ids: Collection<String>): Map<String, Long> = withPikoLock(lock) {
+        if (closed || ids.isEmpty()) return@withPikoLock emptyMap()
+        val valid = ids.filterTo(HashSet(ids.size)) { it.isNotBlank() }
+        if (valid.isEmpty()) return@withPikoLock emptyMap()
+        disk?.originalCreatedBatch(valid) ?: buildMap(valid.size) {
+            val map = state.value.entryMetadata
+            for (id in valid) map[id]?.originalCreatedAtMillis?.let { put(id, it) }
+        }
     }
 
     fun subtreeStats(folderId: String): SubtreeStats? {
@@ -668,23 +702,37 @@ internal class DriveTreeIndex(
                 is DriveChange.Renamed -> {
                     renamedAtSeq[change.id] = seq to change.name
                     val target = current.entries[change.id] ?: return@update current
-                    current.copy(entries = current.entries + (change.id to target.copy(name = change.name)))
+                    val renamed = target.copy(name = change.name)
+                    val updated = current.copy(entries = current.entries + (change.id to renamed))
+                    if (VaultStore.looksLikeManifest(target) || VaultStore.looksLikeManifest(renamed)) {
+                        refreshManifestsForFolders(updated, setOf(target.parentId))
+                    } else updated
                 }
                 is DriveChange.Moved -> {
                     val known = change.ids.mapNotNull { current.entries[it] }
                     val allKnown = known.size == change.ids.size
                     val affected = change.folders.orEmpty() + known.map { it.parentId } + change.to
+                    val manifestFolders = HashSet<String>()
+                    for (entry in known) {
+                        if (VaultStore.looksLikeManifest(entry)) {
+                            manifestFolders += entry.parentId
+                            manifestFolders += change.to
+                        }
+                    }
                     for (id in change.ids) {
                         movedAtSeq[id] = seq to change.to
                     }
                     val upserted = upsert(current, known.map { it.copy(parentId = change.to) })
+                    val manifestUpdated = if (manifestFolders.isNotEmpty()) {
+                        refreshManifestsForFolders(upserted, manifestFolders)
+                    } else upserted
                     if (allKnown) {
-                        upserted
+                        manifestUpdated
                     } else {
                         for (folderId in affected) {
                             dirtyAtSeq[folderId] = seq
                         }
-                        upserted.copy(dirtyFolders = current.dirtyFolders + affected)
+                        manifestUpdated.copy(dirtyFolders = current.dirtyFolders + affected)
                     }
                 }
                 is DriveChange.Trashed -> {

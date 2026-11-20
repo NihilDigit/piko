@@ -5,7 +5,9 @@ import dev.piko.shared.i18n.enCount
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.presentation.localizedName
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -91,6 +93,7 @@ import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.AddressCompletion
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.ui.components.ContextMenuArea
+import dev.piko.ui.components.FolderListLeadingVisual
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.PaletteItem
 import dev.piko.ui.components.PikoDropdownMenu
@@ -150,6 +153,11 @@ internal fun DrivePathTitle(model: AddressBarModel, editRequests: Int) {
     val platform = LocalPikoPlatform.current
     val pathText = model.stack.joinToString("/") { it.name }
     var barWidth by remember { mutableIntStateOf(0) }
+    val focusBorderColor by animateColorAsState(
+        targetValue = if (editing) colors.primary else Color.Transparent,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "address_focus_ring",
+    )
     ContextMenuArea(
         actions = {
             listOf(
@@ -168,6 +176,7 @@ internal fun DrivePathTitle(model: AddressBarModel, editRequests: Int) {
                 .releasesFocusOnOutsidePress()
                 .clip(CircleShape)
                 .background(colors.headerFieldColor)
+                .border(1.5.dp, focusBorderColor, CircleShape)
                 // 各段自己接住单击；落在段外的（路径后面的空白）进入输入
                 .then(if (editing) Modifier else Modifier.clickable(onClickLabel = tr("输入路径", "Enter path", "パスを入力", "경로 입력", "輸入路徑")) { editing = true })
                 .padding(start = 8.dp),
@@ -531,7 +540,7 @@ private fun SiblingChevron(
                                     overflow = TextOverflow.Ellipsis,
                                 )
                             },
-                            leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                            leadingIcon = { FolderListLeadingVisual(name = folder.name, size = 24.dp) },
                             shape = menuItemShape(index, list.size),
                             onClick = {
                                 expanded = false

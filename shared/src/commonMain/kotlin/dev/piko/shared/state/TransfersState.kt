@@ -2,6 +2,9 @@ package dev.piko.shared.state
 
 import dev.piko.shared.i18n.tr
 
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,6 +41,7 @@ import kotlin.time.Duration.Companion.days
 import kotlin.time.Instant
 
 /** 传输列表中的一项：本机下载、上传（含准备批次）、云端离线或整包任务、秒传/引用保存，以及解压、归档与复制。 */
+@Immutable
 sealed class TransferItem {
     /** 列表唯一键。不同来源的任务 ID 来自各自命名空间，加类型前缀防撞。 */
     abstract val key: String
@@ -168,8 +172,9 @@ sealed class TransferItem {
     }
 }
 
-/** 同一快照中互斥的任务分组。 */
-class TransferSections(
+/** 同一快照中互斥的任务分组。使用 data class 提供结构相等性，避免未受影响的筛选页签在 500ms 进度刷新时无效重组。 */
+@Immutable
+data class TransferSections(
     val inProgress: List<TransferItem>,
     val needsAttention: List<TransferItem>,
     val completed: List<TransferItem>,
@@ -179,6 +184,16 @@ class TransferSections(
     val isEmpty: Boolean
         get() = paused.isEmpty() && inProgress.isEmpty() && needsAttention.isEmpty() && completed.isEmpty() && outputDeleted.isEmpty()
 }
+
+/** 仅记录各分组的稳定任务键顺序，用于隔离结构变化与 500ms 字节/速率跳动。 */
+@Immutable
+data class TransferSectionKeys(
+    val inProgress: List<String>,
+    val needsAttention: List<String>,
+    val completed: List<String>,
+    val outputDeleted: List<String>,
+    val paused: List<String> = emptyList(),
+)
 
 /**
  * 传输页的类型筛选。秒传记录归「云端」：它与离线任务出自同一个「添加链接」，东西落在网盘里；
@@ -212,6 +227,7 @@ enum class TransferKind(private val labelText: () -> String) {
  *
  * 轮询挂在 [whileVisible] 上，由视图在可见期间调用。
  */
+@Stable
 class TransfersState(
     private val coordinator: PikoDownloadCoordinator,
     private val taskRepo: TaskRepository,
@@ -334,10 +350,94 @@ class TransfersState(
         TransferSections(progress, attention, completed, deleted, paused)
     }
 
+    private val sectionsByKind: Map<TransferKind, State<TransferSections>> = TransferKind.entries.associateWith { kind ->
+        if (kind == TransferKind.ALL) {
+            derivedStateOf { allSections }
+        } else {
+            derivedStateOf {
+                val all = allSections
+                TransferSections(
+                    all.inProgress.filter(kind::matches),
+                    all.needsAttention.filter(kind::matches),
+                    all.completed.filter(kind::matches),
+                    all.outputDeleted.filter(kind::matches),
+                    all.paused.filter(kind::matches),
+                )
+            }
+        }
+    }
+
+    private val sectionKeysByKind: Map<TransferKind, State<TransferSectionKeys>> = TransferKind.entries.associateWith { kind ->
+        derivedStateOf {
+            val s = sectionsByKind.getValue(kind).value
+            TransferSectionKeys(
+                inProgress = s.inProgress.map { it.key },
+                needsAttention = s.needsAttention.map { it.key },
+                completed = s.completed.map { it.key },
+                outputDeleted = s.outputDeleted.map { it.key },
+                paused = s.paused.map { it.key },
+            )
+        }
+    }
+
+    /** 结构化的已完成/需要处理键集合，500ms 字节与速率跳动时保持值相等而不触发无效重组。 */
+    val completedKeys: Set<String> by derivedStateOf {
+        val keys = sectionKeysByKind.getValue(TransferKind.ALL).value
+        LinkedHashSet<String>(keys.completed.size + keys.outputDeleted.size).apply {
+            addAll(keys.completed)
+            addAll(keys.outputDeleted)
+        }
+    }
+    val attentionKeys: Set<String> by derivedStateOf {
+        sectionKeysByKind.getValue(TransferKind.ALL).value.needsAttention.toHashSet()
+    }
+
+    /** 按 key 快速查找任务项（含批次子任务），避免详情面板每 500ms 线性扫描 5 个分组。 */
+    private val itemsByKey: Map<String, TransferItem> by derivedStateOf {
+        val sections = allSections
+        val map = HashMap<String, TransferItem>(
+            sections.paused.size + sections.inProgress.size + sections.needsAttention.size +
+                sections.completed.size + sections.outputDeleted.size,
+        )
+        fun indexAll(list: List<TransferItem>) {
+            for (item in list) {
+                map[item.key] = item
+                for (child in item.children) map[child.key] = child
+            }
+        }
+        indexAll(sections.paused)
+        indexAll(sections.inProgress)
+        indexAll(sections.needsAttention)
+        indexAll(sections.completed)
+        indexAll(sections.outputDeleted)
+        map
+    }
+
+    fun findItemByKey(key: String): TransferItem? = itemsByKey[key]
+
+    fun sectionKeysOf(kind: TransferKind): TransferSectionKeys = sectionKeysByKind.getValue(kind).value
+
+    val activeCount: Int by derivedStateOf { sectionKeysByKind.getValue(TransferKind.ALL).value.inProgress.size }
+    val attentionCount: Int by derivedStateOf { sectionKeysByKind.getValue(TransferKind.ALL).value.needsAttention.size }
+
+    private val executionRequired: Boolean by derivedStateOf {
+        val sections = allSections
+        fun needsExecution(item: TransferItem): Boolean =
+            item.requiresLocalExecution() ||
+                (item is TransferItem.Vault && item.record?.let(::vaultUndoStatus)?.status == DriveChangeJournal.UndoStatus.RUNNING)
+        sections.inProgress.any(::needsExecution) || sections.needsAttention.any(::needsExecution)
+    }
+
     val activity: ActivitySummary by derivedStateOf {
-        ActivitySummary(allSections.inProgress, allSections.needsAttention, allSections.paused, downloadSpeed, uploadSpeed,
-            (allSections.inProgress + allSections.needsAttention).any { item -> item.requiresLocalExecution() ||
-                item is TransferItem.Vault && item.record?.let(::vaultUndoStatus)?.status == DriveChangeJournal.UndoStatus.RUNNING })
+        val sections = allSections
+        ActivitySummary(
+            active = sections.inProgress,
+            needsAttention = sections.needsAttention,
+            paused = sections.paused,
+            downloadSpeed = downloadSpeed,
+            uploadSpeed = uploadSpeed,
+            executionRequired = executionRequired,
+        )
     }
 
     private val allInProgress get() = allSections.inProgress
@@ -345,13 +445,9 @@ class TransfersState(
 
     /**
      * 按类型筛选分组。横划切换类别时相邻的一页跟着手指进来，它列的是还没选中的那一类，所以不能只有 [filter] 的一份。
-     * 读的是派生状态，调用方包一层 derivedStateOf 即可随任务刷新。
+     * 按类别缓存为独立 derivedStateOf，配合 data class 结构相等性，仅在对应类别实际变化时通知订阅者。
      */
-    fun sectionsOf(kind: TransferKind): TransferSections {
-        val all = allSections
-        return TransferSections(all.inProgress.filter(kind::matches), all.needsAttention.filter(kind::matches),
-            all.completed.filter(kind::matches), all.outputDeleted.filter(kind::matches), all.paused.filter(kind::matches))
-    }
+    fun sectionsOf(kind: TransferKind): TransferSections = sectionsByKind.getValue(kind).value
 
     private val current: TransferSections by derivedStateOf { sectionsOf(filter) }
     val paused: List<TransferItem> get() = current.paused

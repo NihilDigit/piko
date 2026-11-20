@@ -44,7 +44,7 @@ import androidx.compose.ui.unit.sp
 import dev.piko.shared.state.ShareCreateState
 import dev.piko.shared.state.SharePassCodeMode
 import dev.piko.ui.LocalPikoServices
-import dev.piko.ui.components.FileTypeIcon
+import dev.piko.ui.components.FileListLeadingVisual
 import dev.piko.ui.components.connectedToggleShapes
 import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.FileStat
@@ -118,7 +118,7 @@ private fun SharedItems(files: List<FileStat>) {
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
-            Box(Modifier.size(24.dp)) { FileTypeIcon(file = first, iconSize = 24.dp, modifier = Modifier.fillMaxSize()) }
+            FileListLeadingVisual(file = first, size = 32.dp, allowThumbnail = false)
             Text(
                 text = first.name,
                 style = MaterialTheme.typography.bodyMedium,
