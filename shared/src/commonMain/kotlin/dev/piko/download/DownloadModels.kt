@@ -62,6 +62,8 @@ data class DownloadTask(
     val qualityCap: Int = 0,
     /** 转码档已经下完、正在本机转封装，进度在 [progressFraction]。 */
     val converting: Boolean = false,
+    /** 本次下载单独指定的保存目录（桌面绝对路径或 Android SAF content: URI）；为 null 或空串时使用全局默认下载目录。 */
+    val targetDirectory: String? = null,
 ) {
     val progress: Float
         get() = progressFraction?.coerceIn(0f, 1f)
@@ -82,4 +84,6 @@ data class DownloadBatch(
     val folderName: String,
     val isFolder: Boolean = true,
     val sourceFolderId: String? = null,
+    /** 本批任务单独指定的保存目录；为 null 或空串时使用全局默认下载目录。 */
+    val targetDirectory: String? = null,
 )

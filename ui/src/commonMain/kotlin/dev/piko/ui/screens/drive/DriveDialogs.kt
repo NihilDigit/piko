@@ -26,7 +26,6 @@ import dev.piko.data.repository.PathBreadcrumb
 import dev.piko.data.repository.isPreviewableImage
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.isDriveFolderId
-import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.naming.av.canonicalAvName
 import dev.piko.shared.naming.av.canonicalAvNameOf
@@ -37,6 +36,7 @@ import dev.piko.shared.state.DriveScreenState
 import dev.piko.shared.state.FolderVaultSession
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.CopyTargetDialog
+import dev.piko.ui.components.DownloadLauncher
 import dev.piko.ui.components.FeedExitConfirmCheckbox
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.MoveTargetDialog
@@ -334,7 +334,7 @@ internal fun DriveSheetHost(
 internal fun DriveSystemOverlays(
     state: DriveScreenState,
     segmentSession: SegmentSession,
-    downloadManager: PikoDownloadCoordinator,
+    downloads: DownloadLauncher,
     onOpenTransfers: () -> Unit,
 ) {
     state.archivePasswordRequest?.let { request ->
@@ -351,7 +351,7 @@ internal fun DriveSystemOverlays(
         SegmentDownloadSheet(
             session = segmentSession,
             onConfirmDownload = { startByte, lengthBytes, timeLabel, startMs, endMs, streamUrl, quality ->
-                downloadManager.enqueueSegment(
+                downloads.downloadSegment(
                     file = segmentTarget,
                     startMs = startMs,
                     endMs = endMs,
@@ -360,9 +360,11 @@ internal fun DriveSystemOverlays(
                     startByte = startByte,
                     lengthBytes = lengthBytes,
                     quality = quality,
+                    onQueued = {
+                        segmentSession.end()
+                        onOpenTransfers()
+                    },
                 )
-                segmentSession.end()
-                onOpenTransfers()
             },
             itemName = state.itemName(segmentTarget).headingText,
         )

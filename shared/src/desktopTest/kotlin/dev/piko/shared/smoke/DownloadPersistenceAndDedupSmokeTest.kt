@@ -37,9 +37,12 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 internal class DirectoryStorage(private val directory: File) : PikoDownloadStorage {
+    override fun forDirectory(directory: String?): PikoDownloadStorage =
+        if (directory.isNullOrBlank()) this else DirectoryStorage(File(directory))
     override fun pathFor(fileName: String): String = directory.resolve(fileName).absolutePath
     override suspend fun downloadTarget(fileName: String): String = directory.resolve(fileName).also { it.parentFile?.mkdirs() }.absolutePath
     override suspend fun commit(fileName: String, downloadedPath: String): String = downloadedPath
@@ -415,6 +418,123 @@ class DownloadPersistenceAndDedupSmokeTest {
         } finally {
             blockedRange.complete(Unit)
             directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `per-request targetDirectory overrides default folder for files, folders, and restart restoration`() = smoke { scope ->
+        val defaultDir = Files.createTempDirectory("piko-default-dir").toFile()
+        val customDir1 = Files.createTempDirectory("piko-custom-dir-1").toFile()
+        val customDir2 = Files.createTempDirectory("piko-custom-dir-2").toFile()
+        val firstJob = SupervisorJob(scope.coroutineContext[Job])
+        val secondJob = SupervisorJob(scope.coroutineContext[Job])
+        try {
+            val server = FakePikPakServer()
+            val singleContent = Random(91).nextBytes(24 * 1024)
+            val folderContent = Random(92).nextBytes(16 * 1024)
+            val singleNode = server.addFile("movie.mkv", content = singleContent, hash = "CUSTOMSINGLE1")
+            val albumFolder = server.addFolder("Album")
+            server.addFile("track.flac", parentId = albumFolder.id, content = folderContent, hash = "CUSTOMFOLDER1")
+            val provider = server.provider()
+            val prefs = MemoryPreferences()
+            val drive = PikoDriveRepository(provider, prefs)
+            val rootItems = drive.listAllFiles().getOrThrow()
+            val singleStat = rootItems.first { it.id == singleNode.id }
+            val folderStat = rootItems.first { it.id == albumFolder.id }
+
+            val firstCoordinator = PikoDownloadCoordinator(
+                provider,
+                prefs,
+                DirectoryStorage(defaultDir),
+                CoroutineScope(scope.coroutineContext + firstJob),
+            )
+
+            // 单文件下载到自定义目录 1，不应落在默认目录
+            firstCoordinator.enqueue(singleStat, targetDirectory = customDir1.absolutePath)
+            awaitUntil("single custom dir completed") {
+                firstCoordinator.tasks.value.values.any {
+                    it.fileId == singleStat.id && it.targetDirectory == customDir1.absolutePath && it.status == DownloadStatus.COMPLETED
+                }
+            }
+            assertFalse(defaultDir.resolve("movie.mkv").exists())
+            assertContentEquals(singleContent, customDir1.resolve("movie.mkv").readBytes())
+            assertEquals(
+                customDir1.resolve("movie.mkv").canonicalPath,
+                firstCoordinator.findCompletedLocalPath(singleStat)?.let { File(it).canonicalPath },
+            )
+
+            // 同一文件再次下载到自定义目录 2，生成独立任务并落盘到目录 2，不覆盖目录 1 任务
+            firstCoordinator.enqueue(singleStat, targetDirectory = customDir2.absolutePath)
+            awaitUntil("second custom dir completed") {
+                firstCoordinator.tasks.value.values.count { it.fileId == singleStat.id && it.status == DownloadStatus.COMPLETED } == 2
+            }
+            assertContentEquals(singleContent, customDir1.resolve("movie.mkv").readBytes())
+            assertContentEquals(singleContent, customDir2.resolve("movie.mkv").readBytes())
+
+            // 文件夹下载到自定义目录 1
+            val batchCount = firstCoordinator.enqueueFolders(
+                listOf(folderStat),
+                DriveDownloadFolderSource(drive),
+                targetDirectory = customDir1.absolutePath,
+            )
+            assertEquals(1, batchCount)
+            awaitUntil("custom dir folder batch completed") {
+                firstCoordinator.tasks.value.values.any {
+                    it.batch?.sourceFolderId == folderStat.id && it.status == DownloadStatus.COMPLETED
+                }
+            }
+            assertFalse(defaultDir.resolve("Album").exists())
+            assertContentEquals(folderContent, customDir1.resolve("Album/track.flac").readBytes())
+            val batch = firstCoordinator.tasks.value.values.first { it.batch?.sourceFolderId == folderStat.id }.batch!!
+            assertEquals(customDir1.absolutePath, batch.targetDirectory)
+            assertEquals(
+                customDir1.resolve("Album").canonicalPath,
+                firstCoordinator.batchFolderPath(batch)?.let { File(it).canonicalPath },
+            )
+
+            // 重启恢复：目录 1 仍存在的任务保留，从目录 2 删除的文件自动剔除
+            firstCoordinator.flushPersistence()
+            firstJob.cancelAndJoin()
+            assertTrue(customDir2.resolve("movie.mkv").delete())
+
+            val restored = PikoDownloadCoordinator(
+                provider,
+                prefs,
+                DirectoryStorage(defaultDir),
+                CoroutineScope(scope.coroutineContext + secondJob),
+            )
+            restored.flushPersistence()
+            assertEquals(2, restored.tasks.value.size)
+            assertTrue(restored.tasks.value.values.all { it.targetDirectory == customDir1.absolutePath && it.status == DownloadStatus.COMPLETED })
+            assertEquals(
+                customDir1.resolve("movie.mkv").canonicalPath,
+                restored.findCompletedLocalPath(singleStat)?.let { File(it).canonicalPath },
+            )
+
+            // 旧版不含 targetDirectory 字段的序列化任务无损反序列化为 null
+            val legacyJson = """{"taskId":"legacy","fileId":"f0","fileName":"old.bin","gcid":"G0","totalBytes":10}"""
+            val decodedLegacy = Json { ignoreUnknownKeys = true }.decodeFromString(DownloadTask.serializer(), legacyJson)
+            assertNull(decodedLegacy.targetDirectory)
+
+            // 先按默认目录（targetDirectory = null）下载，再在选择器中显式确认同一个默认目录，必须复用已有任务不产生重复项
+            val defaultNode = server.addFile("default-dedup.bin", content = singleContent, hash = "DEFAULTDEDUP1")
+            val defaultStat = drive.listAllFiles().getOrThrow().first { it.id == defaultNode.id }
+            restored.enqueue(defaultStat)
+            awaitUntil("default dir initial download completed") {
+                restored.tasks.value[defaultStat.id]?.status == DownloadStatus.COMPLETED
+            }
+            val fetchCountBefore = server.count("GET /${defaultNode.id}")
+            restored.enqueue(defaultStat, targetDirectory = defaultDir.absolutePath)
+            delay(150L)
+            assertEquals(1, restored.tasks.value.values.count { it.fileId == defaultStat.id })
+            assertEquals(fetchCountBefore, server.count("GET /${defaultNode.id}"))
+            assertFalse(defaultDir.resolve("default-dedup (2).bin").exists())
+        } finally {
+            firstJob.cancelAndJoin()
+            secondJob.cancelAndJoin()
+            defaultDir.deleteRecursively()
+            customDir1.deleteRecursively()
+            customDir2.deleteRecursively()
         }
     }
 }

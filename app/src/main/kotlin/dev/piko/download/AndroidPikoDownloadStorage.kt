@@ -22,6 +22,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.security.MessageDigest
 
 class AndroidPikoDownloadStorage(
     private val context: Context,
@@ -57,11 +58,36 @@ class AndroidPikoDownloadStorage(
         }
     }
 
-    private val treeUri: Uri?
-        get() = configuredDirectory.takeIf { it.startsWith("content:") }?.let(Uri::parse)
+    override fun forDirectory(directory: String?): PikoDownloadStorage {
+        val normalized = directory?.trim()?.takeIf { it.isNotEmpty() } ?: return this
+        return ScopedDirectoryStorage(normalized)
+    }
 
-    override fun pathFor(fileName: String): String = configuredDirectory.takeIf { it.startsWith("content:") }
-        ?: File(resolveDirectory(), fileName).absolutePath
+    private suspend fun activeDirectory(overrideDir: String?): String {
+        val custom = overrideDir?.trim()?.takeIf { it.isNotEmpty() }
+        if (custom != null) return custom
+        directoryLoaded.await()
+        return configuredDirectory
+    }
+
+    private fun treeUriOf(directory: String): Uri? =
+        directory.takeIf { it.startsWith("content:") }?.let(Uri::parse)
+
+    private fun stagingDirectoryFor(overrideDir: String?): File {
+        val custom = overrideDir?.trim()?.takeIf { it.isNotEmpty() } ?: return stagingDirectory
+        if (custom == configuredDirectory) return stagingDirectory
+        val digest = MessageDigest.getInstance("SHA-256").digest(custom.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+            .take(16)
+        return File(stagingDirectory, "dir-$digest")
+    }
+
+    private fun pathForDirectory(fileName: String, overrideDir: String?): String {
+        val dir = overrideDir?.trim()?.takeIf { it.isNotEmpty() } ?: configuredDirectory
+        return dir.takeIf { it.startsWith("content:") } ?: File(resolveDirectoryOf(dir), fileName).absolutePath
+    }
+
+    override fun pathFor(fileName: String): String = pathForDirectory(fileName, overrideDir = null)
 
     override suspend fun cacheTarget(name: String): String = withContext(Dispatchers.IO) {
         val directory = File(stagingDirectory, "blocks")
@@ -69,123 +95,147 @@ class AndroidPikoDownloadStorage(
         File(directory, "$name.data").absolutePath
     }
 
-    override suspend fun existingLengths(fileNames: List<String>): Map<String, Long> = withContext(Dispatchers.IO) {
-        directoryLoaded.await()
-        val tree = treeUri ?: return@withContext fileNames.associateWith { File(resolveDirectory(), it).length() }
-        val rootId = treeRootDocumentId(tree) ?: return@withContext emptyMap()
-        buildMap {
-            for ((parent, names) in fileNames.groupBy { it.substringBeforeLast('/', "") }) {
-                val segments = parent.split('/').filter { it.isNotEmpty() }
-                val folderId = folderLock.withLock { resolveFolderId(tree, rootId, segments, createFolders = false) }
-                val children = if (folderId != null) listDirectoryByName(tree, folderId, allowCache = true) else emptyMap()
-                for (name in names) {
-                    val staged = File(stagingDirectory, name)
-                    val leaf = name.substringAfterLast('/')
-                    val existing = children[leaf]?.takeIf { !it.isDirectory }?.size ?: 0L
-                    put(name, if (staged.isFile) staged.length() else existing)
+    override suspend fun existingLengths(fileNames: List<String>): Map<String, Long> =
+        existingLengthsIn(fileNames, overrideDir = null)
+
+    private suspend fun existingLengthsIn(fileNames: List<String>, overrideDir: String?): Map<String, Long> =
+        withContext(Dispatchers.IO) {
+            val activeDir = activeDirectory(overrideDir)
+            val tree = treeUriOf(activeDir)
+                ?: return@withContext fileNames.associateWith { File(resolveDirectoryOf(activeDir), it).length() }
+            val activeStaging = stagingDirectoryFor(overrideDir)
+            val rootId = treeRootDocumentId(tree) ?: return@withContext emptyMap()
+            buildMap {
+                for ((parent, names) in fileNames.groupBy { it.substringBeforeLast('/', "") }) {
+                    val segments = parent.split('/').filter { it.isNotEmpty() }
+                    val folderId = folderLock.withLock { resolveFolderId(tree, rootId, segments, createFolders = false) }
+                    val children = if (folderId != null) listDirectoryByName(tree, folderId, allowCache = true) else emptyMap()
+                    for (name in names) {
+                        val staged = File(activeStaging, name)
+                        val leaf = name.substringAfterLast('/')
+                        val existing = children[leaf]?.takeIf { !it.isDirectory }?.size ?: 0L
+                        put(name, if (staged.isFile) staged.length() else existing)
+                    }
                 }
             }
         }
-    }
 
     // 暂存区与私有目录里照搬相对路径建子文件夹，与最终位置一一对应，续传时凭同一个 fileName 找回半截文件
-    override suspend fun downloadTarget(fileName: String): String = withContext(Dispatchers.IO) {
-        directoryLoaded.await()
-        val target = if (treeUri != null) File(stagingDirectory, fileName) else File(resolveDirectory(), fileName)
+    override suspend fun downloadTarget(fileName: String): String = downloadTargetIn(fileName, overrideDir = null)
+
+    private suspend fun downloadTargetIn(fileName: String, overrideDir: String?): String = withContext(Dispatchers.IO) {
+        val activeDir = activeDirectory(overrideDir)
+        val target = if (treeUriOf(activeDir) != null) {
+            File(stagingDirectoryFor(overrideDir), fileName)
+        } else {
+            File(resolveDirectoryOf(activeDir), fileName)
+        }
         target.parentFile?.mkdirs()
         target.absolutePath
     }
 
-    override suspend fun commit(fileName: String, downloadedPath: String): String = withContext(Dispatchers.IO) {
-        directoryLoaded.await()
-        val tree = treeUri ?: return@withContext downloadedPath
-        val staged = File(downloadedPath)
-        val rootId = treeRootDocumentId(tree)
-            ?: error(tr("无法访问下载目录", "Cannot access download folder", "ダウンロード先にアクセスできません", "다운로드 폴더에 접근할 수 없습니다", "無法存取下載資料夾"))
-        val segments = fileName.split('/').filter { it.isNotEmpty() }
-        val name = segments.last()
-        val folderSegments = segments.dropLast(1)
-        // 同一文件夹下载的几个文件并行交付，同时发现子文件夹不存在时会各建一个，
-        // 系统给后建的改名成「文件夹 (1)」，所以找与建放在一把锁里
-        var targetParentId: String? = null
-        val targetUri = folderLock.withLock {
-            var parentId = resolveFolderId(tree, rootId, folderSegments, createFolders = true)
-            if (parentId == null) {
-                clearDirCache()
-                parentId = resolveFolderId(tree, rootId, folderSegments, createFolders = true)
-            }
-            val resolvedParentId = parentId
-                ?: error(tr("无法创建下载文件夹", "Cannot create download folder", "ダウンロード先を作成できません", "다운로드 폴더를 만들 수 없습니다", "無法建立下載資料夾"))
-            targetParentId = resolvedParentId
-            findOrCreateChildFileUri(context.contentResolver, tree, resolvedParentId, name, "application/octet-stream")
-                ?.also { invalidateDirCache(tree, resolvedParentId) }
-                ?: error(tr("无法创建下载文件", "Cannot create download file", "ダウンロードファイルを作成できません", "다운로드 파일을 만들 수 없습니다", "無法建立下載檔案"))
-        }
-        try {
-            val written = exportFileToSafUri(context.contentResolver, staged, targetUri)
-            if (!written) {
-                error(tr("无法写入下载文件", "Cannot write download file", "ダウンロードファイルに書き込めません", "다운로드 파일에 쓸 수 없습니다", "無法寫入下載檔案"))
-            }
-        } catch (t: Throwable) {
-            deleteSafDocument(context.contentResolver, targetUri)
-            targetParentId?.let { invalidateDirCache(tree, it) }
-            invalidateParentCacheForPath(tree, rootId, folderSegments)
-            throw t
-        }
-        invalidateParentCacheForPath(tree, rootId, folderSegments)
-        staged.delete()
-        targetUri.toString()
-    }
+    override suspend fun commit(fileName: String, downloadedPath: String): String =
+        commitIn(fileName, downloadedPath, overrideDir = null)
 
-    override suspend fun existingLength(fileName: String): Long = withContext(Dispatchers.IO) {
-        directoryLoaded.await()
-        val tree = treeUri
+    private suspend fun commitIn(fileName: String, downloadedPath: String, overrideDir: String?): String =
+        withContext(Dispatchers.IO) {
+            val activeDir = activeDirectory(overrideDir)
+            val tree = treeUriOf(activeDir) ?: return@withContext downloadedPath
+            val staged = File(downloadedPath)
+            val rootId = treeRootDocumentId(tree)
+                ?: error(tr("无法访问下载目录", "Cannot access download folder", "ダウンロード先にアクセスできません", "다운로드 폴더에 접근할 수 없습니다", "無法存取下載資料夾"))
+            val segments = fileName.split('/').filter { it.isNotEmpty() }
+            val name = segments.last()
+            val folderSegments = segments.dropLast(1)
+            // 同一文件夹下载的几个文件并行交付，同时发现子文件夹不存在时会各建一个，
+            // 系统给后建的改名成「文件夹 (1)」，所以找与建放在一把锁里
+            var targetParentId: String? = null
+            val targetUri = folderLock.withLock {
+                var parentId = resolveFolderId(tree, rootId, folderSegments, createFolders = true)
+                if (parentId == null) {
+                    clearDirCache()
+                    parentId = resolveFolderId(tree, rootId, folderSegments, createFolders = true)
+                }
+                val resolvedParentId = parentId
+                    ?: error(tr("无法创建下载文件夹", "Cannot create download folder", "ダウンロード先を作成できません", "다운로드 폴더를 만들 수 없습니다", "無法建立下載資料夾"))
+                targetParentId = resolvedParentId
+                findOrCreateChildFileUri(context.contentResolver, tree, resolvedParentId, name, "application/octet-stream")
+                    ?.also { invalidateDirCache(tree, resolvedParentId) }
+                    ?: error(tr("无法创建下载文件", "Cannot create download file", "ダウンロードファイルを作成できません", "다운로드 파일을 만들 수 없습니다", "無法建立下載檔案"))
+            }
+            try {
+                val written = exportFileToSafUri(context.contentResolver, staged, targetUri)
+                if (!written) {
+                    error(tr("无法写入下载文件", "Cannot write download file", "ダウンロードファイルに書き込めません", "다운로드 파일에 쓸 수 없습니다", "無法寫入下載檔案"))
+                }
+            } catch (t: Throwable) {
+                deleteSafDocument(context.contentResolver, targetUri)
+                targetParentId?.let { invalidateDirCache(tree, it) }
+                invalidateParentCacheForPath(tree, rootId, folderSegments)
+                throw t
+            }
+            invalidateParentCacheForPath(tree, rootId, folderSegments)
+            staged.delete()
+            targetUri.toString()
+        }
+
+    override suspend fun existingLength(fileName: String): Long = existingLengthIn(fileName, overrideDir = null)
+
+    private suspend fun existingLengthIn(fileName: String, overrideDir: String?): Long = withContext(Dispatchers.IO) {
+        val activeDir = activeDirectory(overrideDir)
+        val tree = treeUriOf(activeDir)
         if (tree != null) {
             // 暂存区里有半截文件说明还没交付，以它为准；否则看目录里有没有已交付的完整文件
-            File(stagingDirectory, fileName).takeIf { it.isFile }?.length()
+            File(stagingDirectoryFor(overrideDir), fileName).takeIf { it.isFile }?.length()
                 ?: findEntryInTree(tree, fileName)?.takeIf { !it.isDirectory }?.size
                 ?: 0L
         } else {
-            File(resolveDirectory(), fileName).takeIf { it.isFile }?.length() ?: 0L
+            File(resolveDirectoryOf(activeDir), fileName).takeIf { it.isFile }?.length() ?: 0L
         }
     }
 
-    override suspend fun exists(fileName: String): Boolean = withContext(Dispatchers.IO) {
-        directoryLoaded.await()
-        val tree = treeUri
+    override suspend fun exists(fileName: String): Boolean = existsIn(fileName, overrideDir = null)
+
+    private suspend fun existsIn(fileName: String, overrideDir: String?): Boolean = withContext(Dispatchers.IO) {
+        val activeDir = activeDirectory(overrideDir)
+        val tree = treeUriOf(activeDir)
         if (tree != null) {
             findEntryInTree(tree, fileName) != null
         } else {
-            File(resolveDirectory(), fileName).exists()
+            File(resolveDirectoryOf(activeDir), fileName).exists()
         }
     }
 
-    override suspend fun locate(fileName: String): String? = withContext(Dispatchers.IO) {
-        directoryLoaded.await()
-        val tree = treeUri
+    override suspend fun locate(fileName: String): String? = locateIn(fileName, overrideDir = null)
+
+    private suspend fun locateIn(fileName: String, overrideDir: String?): String? = withContext(Dispatchers.IO) {
+        val activeDir = activeDirectory(overrideDir)
+        val tree = treeUriOf(activeDir)
         if (tree != null) {
             findEntryInTree(tree, fileName)?.let { entry ->
                 DocumentsContract.buildDocumentUriUsingTree(tree, entry.documentId).toString()
             }
         } else {
-            File(resolveDirectory(), fileName).takeIf { it.exists() }?.absolutePath
+            File(resolveDirectoryOf(activeDir), fileName).takeIf { it.exists() }?.absolutePath
         }
     }
 
-    override suspend fun pruneEmptyFolders(folder: String) = withContext(Dispatchers.IO) {
-        directoryLoaded.await()
-        val tree = treeUri
+    override suspend fun pruneEmptyFolders(folder: String) = pruneEmptyFoldersIn(folder, overrideDir = null)
+
+    private suspend fun pruneEmptyFoldersIn(folder: String, overrideDir: String?) = withContext(Dispatchers.IO) {
+        val activeDir = activeDirectory(overrideDir)
+        val tree = treeUriOf(activeDir)
         if (tree != null) {
             findEntryInTree(tree, folder, allowCache = false)?.takeIf { it.isDirectory }?.let { entry ->
                 pruneSafDirectory(tree, entry.documentId)
                 clearDirCache()
             }
         } else {
-            val root = File(resolveDirectory(), folder)
+            val root = File(resolveDirectoryOf(activeDir), folder)
             if (root.isDirectory) root.walkBottomUp().filter { it.isDirectory }.forEach { it.delete() }
         }
         // 暂存区里取消掉的半截文件已由 delete 删掉，剩下同样结构的空文件夹
-        val staged = File(stagingDirectory, folder)
+        val staged = File(stagingDirectoryFor(overrideDir), folder)
         if (staged.isDirectory) staged.walkBottomUp().filter { it.isDirectory }.forEach { it.delete() }
     }
 
@@ -298,23 +348,61 @@ class AndroidPikoDownloadStorage(
         }
     }
 
-    override suspend fun delete(path: String): Boolean = withContext(Dispatchers.IO) {
-        directoryLoaded.await()
+    override suspend fun delete(path: String): Boolean = deleteIn(path, overrideDir = null)
+
+    private suspend fun deleteIn(path: String, overrideDir: String?): Boolean = withContext(Dispatchers.IO) {
+        val activeDir = activeDirectory(overrideDir)
         if (path.startsWith("content:")) {
             // 下载目录本身也是 content: URI，误传进来就会删掉用户选的整个目录
-            if (path == configuredDirectory) return@withContext false
+            if (path == configuredDirectory || path == activeDir) return@withContext false
             val deleted = deleteSafDocument(context.contentResolver, Uri.parse(path))
             if (deleted) clearDirCache()
             return@withContext deleted
         }
-        File(path).takeIf { it.isAbsolute }?.delete() == true || File(resolveDirectory(), path).delete()
+        File(path).takeIf { it.isAbsolute }?.delete() == true || File(resolveDirectoryOf(activeDir), path).delete()
     }
 
-    private fun resolveDirectory(): File {
-        val path = configuredDirectory
+    private fun resolveDirectoryOf(path: String): File {
         val result = if (path.isNotBlank() && !path.startsWith("content:")) File(path) else appDirectory
         result.mkdirs()
         return result
+    }
+
+    private inner class ScopedDirectoryStorage(
+        private val directoryOverride: String,
+    ) : PikoDownloadStorage {
+        override fun forDirectory(directory: String?): PikoDownloadStorage =
+            this@AndroidPikoDownloadStorage.forDirectory(directory)
+
+        override suspend fun cacheTarget(name: String): String =
+            this@AndroidPikoDownloadStorage.cacheTarget(name)
+
+        override fun pathFor(fileName: String): String =
+            pathForDirectory(fileName, directoryOverride)
+
+        override suspend fun downloadTarget(fileName: String): String =
+            downloadTargetIn(fileName, directoryOverride)
+
+        override suspend fun commit(fileName: String, downloadedPath: String): String =
+            commitIn(fileName, downloadedPath, directoryOverride)
+
+        override suspend fun existingLength(fileName: String): Long =
+            existingLengthIn(fileName, directoryOverride)
+
+        override suspend fun existingLengths(fileNames: List<String>): Map<String, Long> =
+            existingLengthsIn(fileNames, directoryOverride)
+
+        override suspend fun exists(fileName: String): Boolean =
+            existsIn(fileName, directoryOverride)
+
+        override suspend fun delete(path: String): Boolean =
+            deleteIn(path, directoryOverride)
+
+        override suspend fun locate(fileName: String): String? =
+            locateIn(fileName, directoryOverride)
+
+        override suspend fun pruneEmptyFolders(folder: String) =
+            pruneEmptyFoldersIn(folder, directoryOverride)
     }
 
     private data class CachedSafDirectory(

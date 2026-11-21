@@ -204,6 +204,7 @@ class StoredPikoPreferences(
     private val downloadPath = MutableStateFlow(
         settings.get(KEY_DOWNLOAD_DIR, settings.downloadDirectoryPath),
     )
+    private val askDownloadLocation = MutableStateFlow(settings.get(KEY_ASK_DOWNLOAD_LOCATION) == "true")
 
     override suspend fun savePlaybackPosition(fileId: String, positionMs: Long) {
         settings.set(KEY_PLAYBACK_PREFIX + fileId, positionMs.toString())
@@ -381,6 +382,7 @@ class StoredPikoPreferences(
             skipFeedExitConfirm = skipFeedExitConfirm.value,
             cacheMaxBytes = cacheMaxBytes.value,
             cacheMaxAgeDays = cacheMaxAgeDays.value,
+            askDownloadLocation = askDownloadLocation.value,
         )
 
     override fun currentTileSize(view: String): String = tileSize(view).value
@@ -455,6 +457,12 @@ class StoredPikoPreferences(
     }
 
     override suspend fun getDownloadDirPath(): String = downloadPath.value
+
+    override val askDownloadLocationFlow: Flow<Boolean> = askDownloadLocation.asStateFlow()
+    override suspend fun setAskDownloadLocation(enabled: Boolean) {
+        settings.set(KEY_ASK_DOWNLOAD_LOCATION, enabled.toString())
+        askDownloadLocation.value = enabled
+    }
 
     override suspend fun loadDownloadTasks(): String = settings.get(KEY_DOWNLOAD_TASKS)
 
@@ -707,6 +715,7 @@ class StoredPikoPreferences(
         const val KEY_PURE_BLACK = "ui.pureBlack"
         const val KEY_EINK_MODE = "ui.einkMode"
         const val KEY_DOWNLOAD_DIR = "download.directory"
+        const val KEY_ASK_DOWNLOAD_LOCATION = "download.askLocation"
         const val KEY_LAST_FOLDER_ID = "drive.lastFolderId"
         const val KEY_LAST_FOLDER_NAME = "drive.lastFolderName"
         const val KEY_LAST_FOLDER_STACK = "drive.lastFolderStack"

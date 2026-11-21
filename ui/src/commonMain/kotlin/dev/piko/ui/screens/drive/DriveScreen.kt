@@ -382,6 +382,9 @@ fun DriveScreen(
                     if (effect.chooseQuality) downloads.downloadAtQuality(effect.targets, source, onQueued)
                     else downloads.download(effect.targets, source, onQueued)
                 }
+                is DriveUiEffect.EnqueueResolvedDownload -> {
+                    downloads.downloadResolved(effect.files, effect.parentId) { openTransfers() }
+                }
                 DriveUiEffect.OpenTransfers -> openTransfers()
             }
         }
@@ -671,7 +674,7 @@ fun DriveScreen(
     DriveSystemOverlays(
         state = state,
         segmentSession = services.segmentSession,
-        downloadManager = services.downloadManager,
+        downloads = downloads,
         onOpenTransfers = openTransfers,
     )
 }

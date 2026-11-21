@@ -169,6 +169,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
                 skipFeedExitConfirm = prefs[PreferencesKeys.SKIP_FEED_EXIT_CONFIRM] ?: false,
                 cacheMaxBytes = (prefs[PreferencesKeys.CACHE_MAX_BYTES] ?: CachePolicyDefaults.DEFAULT_MAX_BYTES).coerceAtLeast(0L),
                 cacheMaxAgeDays = (prefs[PreferencesKeys.CACHE_MAX_AGE_DAYS] ?: CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS).coerceAtLeast(0),
+                askDownloadLocation = prefs[PreferencesKeys.ASK_DOWNLOAD_LOCATION] ?: false,
             )
         }
 
@@ -184,6 +185,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     private object PreferencesKeys {
         val SAVE_AS_REFERENCE = booleanPreferencesKey("save_as_reference")
         val DOWNLOAD_DIR_PATH = stringPreferencesKey("download_dir_path")
+        val ASK_DOWNLOAD_LOCATION = booleanPreferencesKey("ask_download_location")
         val SPOILER_BLUR_ENABLED = booleanPreferencesKey("spoiler_blur_enabled")
         val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         val AUTO_DETECT_CLIPBOARD_LINKS = booleanPreferencesKey("auto_detect_clipboard_links")
@@ -656,6 +658,16 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun getDownloadDirPath(): String {
         val prefs = context.dataStore.data.first()
         return prefs[PreferencesKeys.DOWNLOAD_DIR_PATH] ?: ""
+    }
+
+    override val askDownloadLocationFlow: Flow<Boolean> = preference { preferences ->
+        preferences[PreferencesKeys.ASK_DOWNLOAD_LOCATION] ?: false
+    }
+
+    override suspend fun setAskDownloadLocation(enabled: Boolean) {
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.ASK_DOWNLOAD_LOCATION] = enabled
+        }
     }
 
     override suspend fun loadDownloadTasks(): String =

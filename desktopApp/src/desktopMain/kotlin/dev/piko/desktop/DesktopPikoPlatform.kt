@@ -13,9 +13,11 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.i18n.PikoLocale
@@ -51,6 +53,7 @@ import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.shared.media.storyboard.StoryboardIdrDecoder
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.platform.DownloadLocationPicker
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
@@ -362,11 +365,33 @@ class DesktopPikoPlatform(
 
         @Composable
         override fun rememberLauncher(onPicked: (String) -> Unit): () -> Unit {
+            val latestOnPicked by rememberUpdatedState(onPicked)
+            val pick = rememberPickerLauncher { picked -> if (picked != null) latestOnPicked(picked) }
+            return { pick("") }
+        }
+
+        @Composable
+        override fun rememberPickerLauncher(onResult: (String?) -> Unit): (initialPath: String) -> Unit {
             val scope = rememberCoroutineScope()
-            return {
+            val latestOnResult by rememberUpdatedState(onResult)
+            return { initialPath ->
                 val owner = activeWindow()
+                val initial = initialPath.takeIf { it.isNotBlank() }?.let(::File)?.takeIf { it.isDirectory }
+                    ?: settings.downloadDirectory
                 scope.launch {
-                    pickFolder(owner, settings.downloadDirectory, tr("选择下载位置", "Choose download location", "ダウンロード先を選択", "다운로드 위치 선택", "選擇下載位置"))?.let { onPicked(it.absolutePath) }
+                    val picked = try {
+                        pickFolder(
+                            owner,
+                            initial,
+                            tr("选择下载位置", "Choose download location", "ダウンロード先を選択", "다운로드 위치 선택", "選擇下載位置"),
+                        )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        PikoLog.w("Platform", "Failed to open download folder picker", e)
+                        null
+                    }
+                    latestOnResult(picked?.absolutePath)
                 }
             }
         }

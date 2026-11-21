@@ -43,6 +43,7 @@ import dev.piko.shared.upload.UploadEnqueueResult
 import dev.piko.shared.upload.UploadSelection
 import dev.piko.shared.upload.isUploading
 import io.github.nihildigit.pikpak.FileStat
+import io.github.nihildigit.pikpak.ResolvedFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -125,6 +126,11 @@ internal sealed interface DriveUiEffect {
     data class EnqueuePlatformDownload(
         val targets: List<FileStat>,
         val chooseQuality: Boolean,
+    ) : DriveUiEffect
+
+    data class EnqueueResolvedDownload(
+        val files: List<ResolvedFile>,
+        val parentId: String,
     ) : DriveUiEffect
 
     data object OpenTransfers : DriveUiEffect
@@ -630,8 +636,7 @@ internal class DriveViewModel(
                     }?.map { it.second }.orEmpty()
             }.filter { it.gcid != null }.distinct()
             if (resolvedList.isNotEmpty()) {
-                downloadManager.enqueueResolved(resolvedList, draft?.target?.id ?: activeFolderId)
-                _effects.tryEmit(DriveUiEffect.OpenTransfers)
+                _effects.tryEmit(DriveUiEffect.EnqueueResolvedDownload(resolvedList, draft?.target?.id ?: activeFolderId))
             }
             val rest = files.filterNot { it.isImportPreview }
             if (rest.isEmpty()) return
@@ -640,8 +645,9 @@ internal class DriveViewModel(
         if (state.archiveView != null) {
             viewModelScope.launch {
                 val ready = activeFiles.filter { !it.isFolder }.mapNotNull { state.prepareArchiveEntry(it) }
-                downloadManager.enqueueFiles(ready)
-                if (ready.isNotEmpty()) _effects.emit(DriveUiEffect.OpenTransfers)
+                if (ready.isNotEmpty()) {
+                    _effects.emit(DriveUiEffect.EnqueuePlatformDownload(ready, chooseQuality = false))
+                }
             }
             return
         }

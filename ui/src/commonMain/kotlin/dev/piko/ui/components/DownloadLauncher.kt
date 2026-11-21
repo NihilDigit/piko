@@ -3,11 +3,13 @@ package dev.piko.ui.components
 import dev.piko.shared.i18n.tr
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.log.PikoLog
@@ -16,7 +18,11 @@ import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.media.DownloadQuality
 import dev.piko.shared.media.downloadMaxHeightFor
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.FileStat
+import io.github.nihildigit.pikpak.ResolvedFile
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -65,11 +71,18 @@ class DownloadLauncher internal constructor(
     private val coordinator: PikoDownloadCoordinator,
     private val preferences: PikoUserPreferences,
     private val scope: CoroutineScope,
+    private val canPickLocation: Boolean = false,
+    private val pickLocation: ((initialPath: String, onResult: (String?) -> Unit) -> Unit)? = null,
 ) {
     internal var request by mutableStateOf<DownloadRequest?>(null)
         private set
     private var isPreparing = false
     private var preparation: Job? = null
+
+    private sealed interface LocationDecision {
+        data class Proceed(val targetDirectory: String?) : LocationDecision
+        data object Cancelled : LocationDecision
+    }
 
     internal fun dismissRequest(pending: DownloadRequest) {
         if (request === pending) request = null
@@ -87,6 +100,55 @@ class DownloadLauncher internal constructor(
         start(files, folderSource, chooseQuality = true, onQueued)
     }
 
+    /** 链接解析、分享树或播放器内临时借出条目的下载入口，开启逐次选择位置时同样先询问保存目录。 */
+    fun downloadResolved(
+        files: List<ResolvedFile>,
+        parentId: String = "",
+        onQueued: (notice: String?) -> Unit = {},
+    ) {
+        if (files.isEmpty() || isPreparing || request != null) return
+        val snapshot = files.toList()
+        launchPrepared {
+            val decision = resolveTargetDirectory()
+            if (decision !is LocationDecision.Proceed) return@launchPrepared
+            currentCoroutineContext().ensureActive()
+            coordinator.enqueueResolved(snapshot, parentId, targetDirectory = decision.targetDirectory)
+            onQueued(null)
+        }
+    }
+
+    /** 视频片段截取下载入口，开启逐次选择位置时在真正入队前询问一次保存目录；取消选择时不关闭面板、不弹报错。 */
+    fun downloadSegment(
+        file: FileStat,
+        startMs: Long,
+        endMs: Long,
+        timeRangeLabel: String,
+        streamUrl: String?,
+        startByte: Long,
+        lengthBytes: Long,
+        quality: DownloadQuality? = null,
+        onQueued: () -> Unit = {},
+    ) {
+        if (isPreparing || request != null) return
+        launchPrepared {
+            val decision = resolveTargetDirectory()
+            if (decision !is LocationDecision.Proceed) return@launchPrepared
+            currentCoroutineContext().ensureActive()
+            coordinator.enqueueSegment(
+                file = file,
+                startMs = startMs,
+                endMs = endMs,
+                timeRangeLabel = timeRangeLabel,
+                streamUrl = streamUrl,
+                startByte = startByte,
+                lengthBytes = lengthBytes,
+                quality = quality,
+                targetDirectory = decision.targetDirectory,
+            )
+            onQueued()
+        }
+    }
+
     private fun start(files: List<FileStat>, folderSource: DownloadFolderSource?, chooseQuality: Boolean, onQueued: (String?) -> Unit) {
         if (files.isEmpty() || isPreparing || request != null) return
         val folderCount = files.count { it.isFolder }
@@ -100,16 +162,48 @@ class DownloadLauncher internal constructor(
             request = pending
             return
         }
-        isPreparing = true
         val started = TimeSource.Monotonic.markNow()
         PikoLog.d(TAG, "Preparing direct download: ${files.size} item(s), $folderCount folder(s)")
+        launchPrepared {
+            val decision = resolveTargetDirectory()
+            if (decision !is LocationDecision.Proceed) return@launchPrepared
+            // 普通下载直接使用默认画质上限，未设置时用 0（原画）；仅显式指定画质才弹窗询问
+            val maxHeight = preferences.downloadMaxHeightFlow.first() ?: 0
+            currentCoroutineContext().ensureActive()
+            PikoLog.d(TAG, "Submitting direct download after ${started.elapsedNow().inWholeMilliseconds} ms (maxHeight=$maxHeight)")
+            enqueue(pending, DownloadChoice.Cap(maxHeight), notice = null, targetDirectory = decision.targetDirectory)
+        }
+    }
+
+    internal fun confirm(request: DownloadRequest, choice: DownloadChoice, keep: Boolean) {
+        if (this.request !== request) return
+        this.request = null
+        val kept = keptDefaultMaxHeight(choice, keep)
+        val choiceLabel = when (choice) {
+            is DownloadChoice.Exact -> choice.quality.name ?: "original"
+            is DownloadChoice.Cap -> if (choice.maxHeight <= 0) "original" else "${choice.maxHeight}P"
+        }
+        PikoLog.d(TAG, "Confirmed download quality: $choiceLabel, keepDefault=$keep, items=${request.files.size}")
+        launchPrepared {
+            val decision = resolveTargetDirectory()
+            if (decision !is LocationDecision.Proceed) return@launchPrepared
+            currentCoroutineContext().ensureActive()
+            if (kept != null) preferences.setDownloadMaxHeight(kept)
+            enqueue(
+                request,
+                choice,
+                notice = DEFAULT_QUALITY_SAVED_NOTICE.takeIf { kept != null },
+                targetDirectory = decision.targetDirectory,
+            )
+        }
+    }
+
+    private fun launchPrepared(block: suspend () -> Unit) {
+        if (isPreparing) return
+        isPreparing = true
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
-                // 普通下载直接使用默认画质上限，未设置时用 0（原画）；仅显式指定画质才弹窗询问
-                val maxHeight = preferences.downloadMaxHeightFlow.first() ?: 0
-                currentCoroutineContext().ensureActive()
-                PikoLog.d(TAG, "Submitting direct download after ${started.elapsedNow().inWholeMilliseconds} ms (maxHeight=$maxHeight)")
-                enqueue(pending, DownloadChoice.Cap(maxHeight), notice = null)
+                block()
             } finally {
                 if (preparation === currentCoroutineContext()[Job]) {
                     preparation = null
@@ -121,28 +215,44 @@ class DownloadLauncher internal constructor(
         job.start()
     }
 
-    internal fun confirm(request: DownloadRequest, choice: DownloadChoice, keep: Boolean) {
-        if (this.request !== request) return
-        this.request = null
-        val kept = keptDefaultMaxHeight(choice, keep)
-        if (kept != null) scope.launch { preferences.setDownloadMaxHeight(kept) }
-        val choiceLabel = when (choice) {
-            is DownloadChoice.Exact -> choice.quality.name ?: "original"
-            is DownloadChoice.Cap -> if (choice.maxHeight <= 0) "original" else "${choice.maxHeight}P"
+    private suspend fun resolveTargetDirectory(): LocationDecision {
+        val picker = pickLocation
+        if (!canPickLocation || picker == null) return LocationDecision.Proceed(null)
+        if (!preferences.askDownloadLocationFlow.first()) return LocationDecision.Proceed(null)
+        val defaultDir = preferences.getDownloadDirPath()
+        val deferred = CompletableDeferred<String?>()
+        try {
+            picker(defaultDir) { picked -> deferred.complete(picked) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            PikoLog.w(TAG, "Failed to invoke download location picker", e)
+            return LocationDecision.Cancelled
         }
-        PikoLog.d(TAG, "Confirmed download quality: $choiceLabel, keepDefault=$keep, items=${request.files.size}")
-        enqueue(request, choice, notice = DEFAULT_QUALITY_SAVED_NOTICE.takeIf { kept != null })
+        val chosen = deferred.await()
+        return if (chosen.isNullOrBlank()) {
+            PikoLog.d(TAG, "Download cancelled at location picker")
+            LocationDecision.Cancelled
+        } else {
+            LocationDecision.Proceed(chosen)
+        }
     }
 
-    private fun enqueue(request: DownloadRequest, choice: DownloadChoice, notice: String?) {
+    private fun enqueue(
+        request: DownloadRequest,
+        choice: DownloadChoice,
+        notice: String?,
+        targetDirectory: String?,
+    ) {
         val files = request.files.filter { !it.isFolder }
         val folders = request.files.filter { it.isFolder }
         val cap = (choice as? DownloadChoice.Cap)?.maxHeight
         when (choice) {
-            is DownloadChoice.Exact -> coordinator.enqueueQuality(files.single(), choice.quality)
-            is DownloadChoice.Cap -> coordinator.enqueueFiles(files, choice.maxHeight)
+            is DownloadChoice.Exact -> coordinator.enqueueQuality(files.single(), choice.quality, targetDirectory = targetDirectory)
+            is DownloadChoice.Cap -> coordinator.enqueueFiles(files, choice.maxHeight, targetDirectory = targetDirectory)
         }
-        val batches = request.folderSource?.takeIf { folders.isNotEmpty() }?.let { coordinator.enqueueFolders(folders, it, cap) } ?: 0
+        val batches = request.folderSource?.takeIf { folders.isNotEmpty() }
+            ?.let { coordinator.enqueueFolders(folders, it, cap, targetDirectory = targetDirectory) } ?: 0
         if (files.isNotEmpty() || batches > 0) request.onQueued(notice)
     }
 
@@ -151,12 +261,38 @@ class DownloadLauncher internal constructor(
     }
 }
 
+private class PendingLocationCallback {
+    var onResult: ((String?) -> Unit)? = null
+}
+
 /** 对话框画在调用处所在的窗口里：播放器在桌面上是单独的窗口。 */
 @Composable
 fun rememberDownloadLauncher(): DownloadLauncher {
     val services = LocalPikoServices.current
+    val platform = LocalPikoPlatform.current
     val scope = rememberCoroutineScope()
-    val launcher = remember(services, scope) { DownloadLauncher(services.downloadManager, services.preferences, scope) }
+    val pendingCallback = remember { PendingLocationCallback() }
+    val launchPicker = platform.downloadLocation.rememberPickerLauncher { picked ->
+        val callback = pendingCallback.onResult
+        pendingCallback.onResult = null
+        callback?.invoke(picked)
+    }
+    val currentLaunchPicker by rememberUpdatedState(launchPicker)
+    DisposableEffect(pendingCallback) {
+        onDispose { pendingCallback.onResult = null }
+    }
+    val launcher = remember(services, platform, scope, pendingCallback) {
+        DownloadLauncher(
+            coordinator = services.downloadManager,
+            preferences = services.preferences,
+            scope = scope,
+            canPickLocation = platform.downloadLocation.canChoose,
+            pickLocation = { initialPath, onResult ->
+                pendingCallback.onResult = onResult
+                currentLaunchPicker(initialPath)
+            },
+        )
+    }
     launcher.request?.let { pending ->
         DownloadQualityDialog(
             request = pending,

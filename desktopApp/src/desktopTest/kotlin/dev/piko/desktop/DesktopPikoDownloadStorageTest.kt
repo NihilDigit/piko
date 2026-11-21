@@ -53,6 +53,39 @@ class DesktopPikoDownloadStorageTest {
     }
 
     @Test
+    fun `forDirectory scopes file operations to override folder while sharing cache directory`() = runBlocking<Unit> {
+        val root = Files.createTempDirectory("piko-override-storage").toFile()
+        try {
+            val cacheDir = root.resolve("cache")
+            val defaultDir = root.resolve("default")
+            val customDir = root.resolve("custom")
+            val base = DesktopPikoDownloadStorage(cacheDir) { defaultDir }
+
+            assertEquals(base, base.forDirectory(null))
+            assertEquals(base, base.forDirectory("   "))
+
+            val scoped = base.forDirectory(customDir.absolutePath)
+            assertEquals(base.cacheTarget("same-key"), scoped.cacheTarget("same-key"))
+            assertEquals(customDir.resolve("clip.mp4").canonicalFile, File(scoped.pathFor("clip.mp4")).canonicalFile)
+
+            val target = File(scoped.downloadTarget("Album/track.mp3"))
+            target.writeBytes(byteArrayOf(1, 2, 3, 4))
+            assertEquals(customDir.resolve("Album/track.mp3").canonicalFile, target.canonicalFile)
+            assertTrue(scoped.exists("Album/track.mp3"))
+            assertFalse(base.exists("Album/track.mp3"))
+            assertEquals(4L, scoped.existingLength("Album/track.mp3"))
+            assertEquals(customDir.resolve("Album").canonicalPath, scoped.locate("Album")?.let { File(it).canonicalPath })
+
+            assertTrue(scoped.delete(target.absolutePath))
+            scoped.pruneEmptyFolders("Album")
+            assertNull(scoped.locate("Album"))
+            assertFalse(defaultDir.exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `bundled sqlite library opens WAL database without extracting a fresh native dll`() {
         val osName = System.getProperty("os.name") ?: ""
         if (!osName.startsWith("Windows", ignoreCase = true)) return

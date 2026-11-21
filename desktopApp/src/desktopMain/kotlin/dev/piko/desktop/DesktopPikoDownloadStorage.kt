@@ -50,6 +50,17 @@ class DesktopPikoDownloadStorage(
     }
     private val directory: File get() = directoryProvider()
 
+    override fun forDirectory(directory: String?): PikoDownloadStorage {
+        val normalized = directory?.trim()?.takeIf { it.isNotEmpty() } ?: return this
+        val target = File(normalized)
+        return DesktopPikoDownloadStorage(
+            cacheDirectory = cacheDirectory,
+            legacyCacheDirectory = legacyCacheDirectory,
+            usePackCache = usePackCache,
+            directoryProvider = { target },
+        )
+    }
+
     // File.resolve 在 Windows 上也认 / 分隔的相对路径
     override fun pathFor(fileName: String): String = directory.resolve(fileName).absolutePath
 

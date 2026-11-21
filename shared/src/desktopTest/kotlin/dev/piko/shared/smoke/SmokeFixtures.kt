@@ -110,6 +110,8 @@ class MemoryPreferences : PikoUserPreferences {
     override val downloadDirPathFlow: Flow<String> = MutableStateFlow("")
     override suspend fun setDownloadDirPath(path: String) = Unit
     override suspend fun getDownloadDirPath(): String = ""
+    override val askDownloadLocationFlow = MutableStateFlow(false)
+    override suspend fun setAskDownloadLocation(enabled: Boolean) { askDownloadLocationFlow.value = enabled }
     @Volatile var downloadTasks: String = ""
     override suspend fun loadDownloadTasks(): String = downloadTasks
     override suspend fun saveDownloadTasks(serialized: String) {

@@ -270,6 +270,9 @@ interface LocalFileActions {
 
 /** 下载位置的展示与选择。Android 选的是 SAF 目录树，桌面端是系统的目录选择框。 */
 interface DownloadLocationPicker {
+    /** 当前平台是否支持用户自行选择下载文件夹（iOS 沙盒固定落在文稿目录，为 false）。 */
+    val canChoose: Boolean get() = true
+
     /** 选择对话框里的说明文字。 */
     val description: String
 
@@ -288,6 +291,17 @@ interface DownloadLocationPicker {
      */
     @Composable
     fun rememberLauncher(onPicked: (String) -> Unit): () -> Unit
+
+    /**
+     * 返回一个启动单次下载位置选择器的函数。选中后以要保存的目标目录（桌面路径或持久化授权的 Android SAF
+     * `content:` URI）回调 [onResult]；用户取消选择或平台不支持时回调 `null`（调用方据此静默中止入队）。
+     * [initialPath] 为预填起始目录（通常为当前默认下载目录），空串表示由平台自行决定。
+     */
+    @Composable
+    fun rememberPickerLauncher(onResult: (String?) -> Unit): (initialPath: String) -> Unit {
+        val fallback = rememberLauncher { onResult(it) }
+        return { _ -> if (canChoose) fallback() else onResult(null) }
+    }
 }
 
 /**

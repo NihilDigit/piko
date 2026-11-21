@@ -128,6 +128,7 @@ import kotlinx.coroutines.launch
 import dev.piko.ui.components.FileNameField
 import dev.piko.ui.components.FolderListLeadingVisual
 import dev.piko.ui.components.FolderPickerDialog
+import dev.piko.ui.components.rememberDownloadLauncher
 import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.InlineLoadingIndicator
@@ -1098,7 +1099,7 @@ private fun ShareTreeList(
     modifier: Modifier = Modifier,
     retainedListState: LazyListState? = null,
 ) {
-    val downloads = LocalPikoServices.current.downloadManager
+    val downloads = rememberDownloadLauncher()
     val editable = state.canEdit
     val rows = remember(browser, browser.revision) { browser.visibleRows() }
     val hasBranches = remember(rows) { rows.any { it is ShareTreeRow.NodeRow && it.node.isFolder } }
@@ -1173,11 +1174,12 @@ private fun ShareTreeList(
                                 if (canDownload) {
                                     DownloadContentButton(
                                         onClick = {
-                                            downloads.enqueueResolved(
+                                            downloads.downloadResolved(
                                                 listOf(ResolvedFile(node.name, node.sizeBytes, node.hash)),
                                                 state.target?.id.orEmpty(),
-                                            )
-                                            onDownloaded()
+                                            ) {
+                                                onDownloaded()
+                                            }
                                         },
                                     )
                                 }

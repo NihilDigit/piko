@@ -28,8 +28,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -707,30 +709,52 @@ class AndroidPikoPlatform(
 
         @Composable
         override fun rememberLauncher(onPicked: (String) -> Unit): () -> Unit {
+            val latestOnPicked by rememberUpdatedState(onPicked)
+            val pick = rememberPickerLauncher { picked -> if (picked != null) latestOnPicked(picked) }
+            return { pick("") }
+        }
+
+        @Composable
+        override fun rememberPickerLauncher(onResult: (String?) -> Unit): (initialPath: String) -> Unit {
+            val latestOnResult by rememberUpdatedState(onResult)
             val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-                val selected = result.data?.data ?: return@rememberLauncherForActivityResult
+                val selected = if (result.resultCode == Activity.RESULT_OK) result.data?.data else null
+                if (selected == null) {
+                    latestOnResult(null)
+                    return@rememberLauncherForActivityResult
+                }
                 val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 runCatching { context.contentResolver.takePersistableUriPermission(selected, flags) }
                     .onFailure { PikoLog.w(TAG, "Failed to persist download folder URI permission (authority=${selected.authority})", it) }
                 val serialized = selected.toString()
                 cachedDisplayNames.remove(serialized)
-                onPicked(serialized)
+                latestOnResult(serialized)
             }
-            return {
-                val initialUri = DocumentsContract.buildTreeDocumentUri(
+            return { initialPath ->
+                val initialUri = initialPath.takeIf { it.startsWith("content:") }?.let { raw ->
+                    runCatching {
+                        val tree = Uri.parse(raw)
+                        DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+                    }.getOrNull()
+                } ?: DocumentsContract.buildTreeDocumentUri(
                     "com.android.externalstorage.documents",
                     "primary:Download/Piko",
                 )
-                launcher.launch(
-                    Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-                        putExtra(DocumentsContract.EXTRA_INITIAL_URI, initialUri)
-                        addFlags(
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
-                                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION,
-                        )
-                    },
-                )
+                runCatching {
+                    launcher.launch(
+                        Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                            putExtra(DocumentsContract.EXTRA_INITIAL_URI, initialUri)
+                            addFlags(
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION,
+                            )
+                        },
+                    )
+                }.onFailure {
+                    PikoLog.w(TAG, "Failed to launch download folder picker", it)
+                    latestOnResult(null)
+                }
             }
         }
     }

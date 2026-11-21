@@ -106,5 +106,31 @@ class Round2PrefsCodecTest {
         assertTrue("skipFeedExitConfirm" in syncedKeys)
         assertFalse("cacheMaxBytes" in syncedKeys)
         assertFalse("cacheMaxAgeDays" in syncedKeys)
+        assertFalse("askDownloadLocation" in syncedKeys)
+    }
+
+    @Test
+    fun askDownloadLocationPersistsLocallyAndUpdatesSnapshot() = runBlocking {
+        val settings = MapSettings()
+        val prefs = StoredPikoPreferences(settings) { DummyVault() }
+
+        assertFalse(prefs.askDownloadLocationFlow.first())
+        assertFalse(prefs.currentSnapshot.askDownloadLocation)
+
+        prefs.setAskDownloadLocation(true)
+        assertTrue(prefs.askDownloadLocationFlow.first())
+        assertTrue(prefs.currentSnapshot.askDownloadLocation)
+
+        val reopened = StoredPikoPreferences(settings) { DummyVault() }
+        assertTrue(reopened.askDownloadLocationFlow.first())
+        assertTrue(reopened.currentSnapshot.askDownloadLocation)
+
+        reopened.setAskDownloadLocation(false)
+        assertFalse(reopened.askDownloadLocationFlow.first())
+        assertFalse(reopened.currentSnapshot.askDownloadLocation)
+
+        val reopenedAgain = StoredPikoPreferences(settings) { DummyVault() }
+        assertFalse(reopenedAgain.askDownloadLocationFlow.first())
+        assertFalse(reopenedAgain.currentSnapshot.askDownloadLocation)
     }
 }

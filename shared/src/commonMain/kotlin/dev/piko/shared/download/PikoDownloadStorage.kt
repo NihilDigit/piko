@@ -12,6 +12,12 @@ package dev.piko.shared.download
  * 路径放在名字里，旧任务（不带 /）照旧落在下载目录根下。
  */
 interface PikoDownloadStorage {
+    /**
+     * 返回指向指定保存目录 [directory] 的存储视图；[directory] 为 null 或空串时返回当前默认存储自身。
+     * 不支持任意外部目录的平台（如 iOS 沙盒）保留默认实现，继续落盘至应用托管目录。
+     */
+    fun forDirectory(directory: String?): PikoDownloadStorage = this
+
     /** 原画播放与下载共享的暂存文件；有效块记录与它放在一起。 */
     suspend fun cacheTarget(name: String): String = downloadTarget(".piko-cache/$name.data")
     /** 完成后文件所在的位置，用于展示与播放。 */

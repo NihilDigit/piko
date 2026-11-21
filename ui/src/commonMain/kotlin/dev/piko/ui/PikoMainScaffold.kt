@@ -108,6 +108,7 @@ import dev.piko.ui.components.PaletteRegistry
 import dev.piko.ui.components.SidePanelLayout
 import dev.piko.ui.components.fileDragHost
 import dev.piko.ui.components.focusFallbackRoot
+import dev.piko.ui.components.rememberDownloadLauncher
 import dev.piko.ui.components.sidePanelFits
 import dev.piko.ui.components.trackInputModality
 import dev.piko.ui.navigation.MainTab
@@ -1146,6 +1147,7 @@ fun PikoMainScaffold(
                                     }
                                     entry<Screen.DocumentReader> { screen ->
                                         val isLocal = !screen.localPath.isNullOrBlank() || dev.piko.shared.data.LocalLocation.isLocal(screen.fileId)
+                                        val docDownloads = rememberDownloadLauncher()
                                         dev.piko.ui.screens.reader.DocumentReaderScreen(
                                             fileId = screen.fileId,
                                             fileName = screen.fileName,
@@ -1153,15 +1155,19 @@ fun PikoMainScaffold(
                                             sizeBytes = screen.sizeBytes,
                                             onBackClick = ::popBack,
                                             onDownloadFullFile = if (isLocal) null else ({
-                                                services.downloadManager.enqueue(
-                                                    FileStat(
-                                                        id = screen.fileId,
-                                                        name = screen.fileName,
-                                                        parentId = screen.parentFolderId.orEmpty(),
-                                                        size = screen.sizeBytes.toString(),
+                                                docDownloads.download(
+                                                    listOf(
+                                                        FileStat(
+                                                            id = screen.fileId,
+                                                            name = screen.fileName,
+                                                            parentId = screen.parentFolderId.orEmpty(),
+                                                            size = screen.sizeBytes.toString(),
+                                                        ),
                                                     ),
-                                                )
-                                                openTransfers()
+                                                ) { notice ->
+                                                    notice?.let(services::noticeOnTransfers)
+                                                    openTransfers()
+                                                }
                                             }),
                                         )
                                     }

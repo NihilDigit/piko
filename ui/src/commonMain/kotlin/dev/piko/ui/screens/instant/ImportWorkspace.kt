@@ -420,7 +420,7 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
     val entryById = entries.associateBy { it.file.id }
     val byId = all.associateBy { it.id }
     val sourceByKey = sources.associateBy { it.key }
-    val downloads = LocalPikoServices.current.downloadManager
+    val downloads = rememberDownloadLauncher()
     val platform = LocalPikoPlatform.current
     val detail = browser.detail
     var moreId by remember { mutableStateOf<String?>(null) }
@@ -476,8 +476,9 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
         if (index != null && state.canPreview(index)) add(SheetAction(Icons.Outlined.PlayCircle, tr("预览", "Preview", "プレビュー", "미리 보기", "預覽"), { state.preview(index) }))
         if (index != null && state.items.getOrNull(index)?.isInstantReady == true) add(SheetAction(Icons.Outlined.CloudDownload, tr("下载", "Downloads", "ダウンロード", "다운로드", "下載"), download@{
             val item = state.items.getOrNull(index)?.takeIf { it.isInstantReady } ?: return@download
-            downloads.enqueueResolved(listOf(item.file.copy(path = file.name)), state.target?.id.orEmpty())
-            onDownloaded()
+            downloads.downloadResolved(listOf(item.file.copy(path = file.name)), state.target?.id.orEmpty()) {
+                onDownloaded()
+            }
         }))
         add(SheetAction(Icons.Outlined.Info, tr("属性", "Properties", "プロパティ", "속성", "屬性"), { properties(file) }, group = ActionGroup.Properties))
         add(SheetAction(Icons.Outlined.ContentCopy, tr("复制来源链接", "Copy source link", "ソースリンクをコピー", "출처 링크 복사", "複製來源連結"), { platform.copyToClipboard(tr("来源链接", "Source link", "ソースリンク", "출처 링크", "來源連結"), state.input) }))

@@ -284,6 +284,8 @@ class IosPikoPlatform(
     }
 
     override val downloadLocation: DownloadLocationPicker = object : DownloadLocationPicker {
+        override val canChoose: Boolean = false
+
         // 下载固定在文档目录的 Piko 下，系统不提供「另存到别处」的持久授权
         override val description: String get() = tr(
             "下载的文件保存在本应用的文稿目录里，可在「文件」App 的 Piko 文件夹查看。",

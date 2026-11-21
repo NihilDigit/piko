@@ -43,6 +43,7 @@ import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -210,6 +211,9 @@ fun SettingsScreen(
     val syncStatus by settingsSync.status.collectAsStateWithLifecycle()
     val lastSynced by settingsSync.lastSynced.collectAsStateWithLifecycle()
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
+    val askDownloadLocation by sessionManager.askDownloadLocationFlow.collectAsStateWithLifecycle(
+        initialValue = sessionManager.currentSnapshot.askDownloadLocation,
+    )
     val isFreeAccount by services.driveRepository.isFreeAccountFlow.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val appLanguage by sessionManager.appLanguageFlow.collectAsStateWithLifecycle(initialValue = AppLanguage.SYSTEM)
@@ -803,9 +807,19 @@ fun SettingsScreen(
                     }
 
                     val matchDlDir = match("下载位置", "Download location", "folder", "path", "ダウンロード先", "다운로드 위치", "下載位置", resolvedDownloadPath)
+                    val matchAskDlLoc = downloadLocation.canChoose && match(
+                        "每次下载前选择位置",
+                        "Ask where to save each download",
+                        "ダウンロードごとに保存先を選択",
+                        "다운로드할 때마다 저장 위치 선택",
+                        "每次下載前選擇位置",
+                        "folder",
+                        "location",
+                        "ask",
+                    )
                     val matchDlQuality = match("默认下载画质", "Default download quality", "ダウンロード画質", "기본 다운로드 화질", "預設下載畫質")
                     val matchBgTransfer = backgroundTransferAccess != null && match("后台持续传输", "Unrestricted background transfers", "battery", "バックグラウンド", "백그라운드", "背景持續傳輸")
-                    val matchDlGroup = matchDlDir || matchDlQuality || matchBgTransfer
+                    val matchDlGroup = matchDlDir || matchAskDlLoc || matchDlQuality || matchBgTransfer
                     val matchSnail = match("蜗牛模式", "Snail mode", "speed limit", "限速", "低速モード", "저속 모드", "蝸牛模式")
                     val matchSnailLimit = snailMode.enabled && match("速度上限", "Speed limit", "速度上限", "속도 한도")
                     val matchSnailGroup = matchSnail || matchSnailLimit
@@ -820,6 +834,21 @@ fun SettingsScreen(
                                             supporting = resolvedDownloadPath,
                                             onClick = { showDownloadDirDialog = true },
                                             trailingIcon = null,
+                                        )
+                                    }
+                                    if (matchAskDlLoc) {
+                                        SettingsSwitchRow(
+                                            icon = Icons.Outlined.DriveFileMove,
+                                            title = tr(
+                                                "每次下载前选择位置",
+                                                "Ask where to save each download",
+                                                "ダウンロードごとに保存先を選択",
+                                                "다운로드할 때마다 저장 위치 선택",
+                                                "每次下載前選擇位置",
+                                            ),
+                                            supporting = null,
+                                            checked = askDownloadLocation,
+                                            onCheckedChange = { scope.launch { sessionManager.setAskDownloadLocation(it) } },
                                         )
                                     }
                                     if (matchDlQuality) {
