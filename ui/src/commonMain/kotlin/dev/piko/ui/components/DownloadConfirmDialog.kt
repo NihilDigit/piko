@@ -1,12 +1,16 @@
 package dev.piko.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -17,24 +21,35 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.carousel.CarouselDefaults
+import androidx.compose.material3.carousel.HorizontalMultiBrowseCarousel
+import androidx.compose.material3.carousel.rememberCarouselState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isAltPressed
@@ -44,10 +59,14 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.i18n.tr
+import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.platform.DiskSpace
 import dev.piko.ui.platform.LocalPikoPlatform
@@ -57,12 +76,21 @@ import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.tabular
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
+import kotlin.math.exp
+
+private val CarouselCardScrim = Brush.verticalGradient(
+    0.35f to Color.Transparent,
+    1.0f to Color(0xC7000000),
+)
 
 /**
  * 开启「每次下载前选择位置」时的轻量应用内下载确认框，替代直接弹出系统文件夹选择器。
- * 展示待下载内容摘要、当前保存位置与「更改」入口，以及「默认保存到此位置，不再每次询问」勾选框；
- * 仅点击「更改」时调起系统文件夹选择框并原地刷新路径，取消系统选择框不关闭此对话框。
+ * 单项展示缩略图媒体卡，多项采用 M3 Expressive [HorizontalMultiBrowseCarousel] 横向浏览（桌面端支持纵向滚轮直接横向滚动），
+ * 配合保存位置卡片与「默认保存到此位置，不再每次询问」勾选框。
  */
 @Composable
 internal fun DownloadConfirmDialog(
@@ -72,6 +100,7 @@ internal fun DownloadConfirmDialog(
     onDismiss: () -> Unit,
 ) {
     var saveAsDefault by remember(request) { mutableStateOf(false) }
+    val spoilerBlurred by LocalPikoServices.current.preferences.spoilerBlurFlow.collectAsState(initial = false)
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(request) {
         focusRequester.requestFocus()
@@ -101,7 +130,10 @@ internal fun DownloadConfirmDialog(
                     .onDialogEnterConfirm(enabled = true) { onConfirm(saveAsDefault) },
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                DownloadItemSummarySection(request.summary)
+                DownloadItemSummarySection(
+                    summary = request.summary,
+                    isSpoilerBlurred = spoilerBlurred,
+                )
                 DownloadLocationCard(
                     targetDirectory = request.targetDirectory,
                     onPickLocation = onPickLocation,
@@ -126,68 +158,301 @@ internal fun DownloadConfirmDialog(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DownloadItemSummarySection(summary: DownloadItemSummary) {
-    val metaParts = remember(summary) {
+private fun DownloadItemSummarySection(
+    summary: DownloadItemSummary,
+    isSpoilerBlurred: Boolean,
+) {
+    if (summary.items.size >= 2) {
+        DownloadBatchCarouselSection(
+            summary = summary,
+            isSpoilerBlurred = isSpoilerBlurred,
+        )
+        return
+    }
+
+    val singleItem = summary.items.firstOrNull()
+    val metaParts = remember(summary, singleItem) {
         buildList {
-            when {
-                summary.isFolderOnly -> {
-                    add(tr("文件夹", "Folder", "フォルダー", "폴더", "資料夾"))
-                }
-                summary.itemCount == 1 -> {
-                    summary.timeRangeLabel?.let { add(formatSegmentRange(it)) }
-                    if (summary.totalKnownBytes > 0L) {
-                        add(summary.totalKnownBytes.toReadableSize())
-                    }
-                }
-                else -> {
-                    add(
-                        tr(
-                            "共 ${summary.itemCount} 项",
-                            "${summary.itemCount} items",
-                            "計 ${summary.itemCount} 項目",
-                            "총 ${summary.itemCount}개 항목",
-                            "共 ${summary.itemCount} 項",
-                        ),
-                    )
-                    if (summary.totalKnownBytes > 0L) {
-                        val sizeText = summary.totalKnownBytes.toReadableSize()
-                        if (summary.folderCount > 0) {
-                            add(
-                                tr(
-                                    "已知文件 $sizeText",
-                                    "$sizeText known",
-                                    "既知ファイル $sizeText",
-                                    "알려진 파일 $sizeText",
-                                    "已知檔案 $sizeText",
-                                ),
-                            )
-                        } else {
-                            add(sizeText)
-                        }
-                    }
+            if (summary.isFolderOnly) {
+                add(tr("文件夹", "Folder", "フォルダー", "폴더", "資料夾"))
+            } else {
+                singleItem?.visual?.extensionLabel()?.let { add(it) }
+                summary.timeRangeLabel?.let { add(formatSegmentRange(it)) }
+                if (summary.totalKnownBytes > 0L) {
+                    add(summary.totalKnownBytes.toReadableSize())
                 }
             }
         }
     }
 
+    val colors = MaterialTheme.colorScheme
+    val isEInk = LocalAppearance.current.isEInk
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = colors.surfaceContainerLow,
+        border = if (isEInk) BorderStroke(1.dp, colors.outline) else null,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (singleItem != null) {
+                FileListLeadingVisual(
+                    file = singleItem.visual,
+                    size = 52.dp,
+                    isSpoilerBlurred = isSpoilerBlurred,
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = summary.primaryText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (metaParts.isNotEmpty()) {
+                    MetaRow(
+                        parts = metaParts,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DownloadBatchCarouselSection(
+    summary: DownloadItemSummary,
+    isSpoilerBlurred: Boolean,
+) {
+    val colors = MaterialTheme.colorScheme
+    val isEInk = LocalAppearance.current.isEInk
+    val carouselState = rememberCarouselState { summary.items.size }
+    val wheelScope = rememberCoroutineScope()
+    var pendingWheelPx by remember(carouselState) { mutableFloatStateOf(0f) }
+    var wheelAnimJob by remember(carouselState) { mutableStateOf<Job?>(null) }
+    val countLabel = remember(summary.itemCount, summary.folderCount) {
+        if (summary.folderCount in 1 until summary.itemCount) {
+            tr(
+                "共 ${summary.itemCount} 项（含 ${summary.folderCount} 个文件夹）",
+                "${summary.itemCount} items (${summary.folderCount} folders)",
+                "計 ${summary.itemCount} 項目（フォルダー ${summary.folderCount} 件を含む）",
+                "총 ${summary.itemCount}개 항목(폴더 ${summary.folderCount}개 포함)",
+                "共 ${summary.itemCount} 項（含 ${summary.folderCount} 個資料夾）",
+            )
+        } else {
+            tr(
+                "共 ${summary.itemCount} 项",
+                "${summary.itemCount} items",
+                "計 ${summary.itemCount} 項目",
+                "총 ${summary.itemCount}개 항목",
+                "共 ${summary.itemCount} 項",
+            )
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(
-            text = summary.primaryText,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = if (summary.itemCount > 1) 1 else 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (metaParts.isNotEmpty()) {
-            MetaRow(
-                parts = metaParts,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = countLabel,
+                style = MaterialTheme.typography.labelMedium,
+                color = colors.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
             )
+            if (summary.totalKnownBytes > 0L) {
+                Text(
+                    text = summary.totalKnownBytes.toReadableSize(),
+                    style = MaterialTheme.typography.labelMedium.tabular,
+                    color = colors.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
+
+        HorizontalMultiBrowseCarousel(
+            state = carouselState,
+            preferredItemWidth = 148.dp,
+            itemSpacing = 8.dp,
+            flingBehavior = CarouselDefaults.noSnapFlingBehavior(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(108.dp)
+                .pointerInput(carouselState) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.type == PointerEventType.Scroll) {
+                                val delta = event.changes.fold(Offset.Zero) { acc, c -> acc + c.scrollDelta }
+                                val raw = if (abs(delta.x) > abs(delta.y)) delta.x else delta.y
+                                if (raw != 0f) {
+                                    val canAdvance = (raw > 0f && carouselState.canScrollForward) ||
+                                        (raw < 0f && carouselState.canScrollBackward)
+                                    if (canAdvance) {
+                                        event.changes.forEach { it.consume() }
+                                        if (abs(raw) < 0.45f) {
+                                            carouselState.dispatchRawDelta(raw * 64f)
+                                        } else {
+                                            pendingWheelPx = (pendingWheelPx + raw * 136f).coerceIn(-1200f, 1200f)
+                                            if (wheelAnimJob?.isActive != true) {
+                                                wheelAnimJob = wheelScope.launch {
+                                                    var lastNanos = 0L
+                                                    carouselState.scroll {
+                                                        while (abs(pendingWheelPx) > 0.5f) {
+                                                            val frameNanos = withFrameNanos { it }
+                                                            val dtSec = if (lastNanos == 0L) {
+                                                                1f / 60f
+                                                            } else {
+                                                                ((frameNanos - lastNanos) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
+                                                            }
+                                                            lastNanos = frameNanos
+                                                            val step = pendingWheelPx * (1f - exp(-dtSec * 18f))
+                                                            val actual = scrollBy(step)
+                                                            pendingWheelPx -= step
+                                                            if (abs(actual) < 0.05f) {
+                                                                pendingWheelPx = 0f
+                                                                break
+                                                            }
+                                                        }
+                                                        pendingWheelPx = 0f
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+        ) { index ->
+            val item = summary.items[index]
+            val shape = MaterialTheme.shapes.large
+            val cardModifier = Modifier
+                .height(108.dp)
+                .maskClip(shape)
+                .then(
+                    if (isEInk) Modifier.maskBorder(BorderStroke(1.dp, Color.Black), shape) else Modifier,
+                )
+            DownloadCarouselTile(
+                item = item,
+                isSpoilerBlurred = isSpoilerBlurred,
+                modifier = cardModifier,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DownloadCarouselTile(
+    item: DownloadPreviewItem,
+    isSpoilerBlurred: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val isEInk = LocalAppearance.current.isEInk
+    var coverFailed by remember(item.visual.thumbnail) { mutableStateOf(false) }
+    val activeCover = if (!isEInk && !coverFailed) item.visual.thumbnail else null
+    val (placeholderBg, placeholderFg) = item.visual.placeholderColors()
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(placeholderBg),
+    ) {
+        if (activeCover != null) {
+            SpoilerThumbnail(
+                model = activeCover,
+                isBlurred = isSpoilerBlurred,
+                blur = PosterSpoilerBlur,
+                showBlurIcon = false,
+                stableId = item.visual.stableId,
+                onError = { coverFailed = true },
+                modifier = Modifier.fillMaxSize(),
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(CarouselCardScrim),
+            )
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                Text(
+                    text = item.visual.name,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                item.subtitle?.let { sub ->
+                    Text(
+                        text = sub,
+                        style = MaterialTheme.typography.labelSmall.tabular,
+                        color = Color.White.copy(alpha = 0.82f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        } else {
+            Icon(
+                imageVector = item.visual.watermarkIcon(),
+                contentDescription = null,
+                tint = placeholderFg.copy(alpha = if (isEInk) 0.85f else 0.42f),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 10.dp, end = 10.dp)
+                    .size(34.dp),
+            )
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                Text(
+                    text = item.visual.name,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = placeholderFg,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                item.subtitle?.let { sub ->
+                    Text(
+                        text = sub,
+                        style = MaterialTheme.typography.labelSmall.tabular,
+                        color = placeholderFg.copy(alpha = if (isEInk) 1f else 0.78f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
     }
 }

@@ -11,6 +11,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import dev.piko.data.auth.PikoUserPreferences
+import dev.piko.data.repository.FileCategory
+import dev.piko.data.repository.fileCategory
+import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.download.DownloadFolderSource
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.i18n.tr
@@ -21,6 +24,8 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
+import io.github.nihildigit.pikpak.imageThumbnailUrlOf
+import io.github.nihildigit.pikpak.videoThumbnailUrlOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -41,12 +46,20 @@ internal sealed interface DownloadChoice {
 }
 
 @Immutable
+internal data class DownloadPreviewItem(
+    val key: String,
+    val visual: FileVisual,
+    val subtitle: String? = null,
+)
+
+@Immutable
 internal data class DownloadItemSummary(
     val primaryText: String,
     val itemCount: Int,
     val folderCount: Int,
     val totalKnownBytes: Long,
     val timeRangeLabel: String? = null,
+    val items: List<DownloadPreviewItem> = emptyList(),
 ) {
     val isFolderOnly: Boolean get() = itemCount == 1 && folderCount == 1
 }
@@ -86,12 +99,45 @@ private fun summarizePayload(payload: DownloadPayload): DownloadItemSummary = wh
         totalKnownBytes = payload.files.asSequence()
             .filter { !it.isFolder }
             .sumOf { it.sizeBytes.coerceAtLeast(0L) },
+        items = payload.files.mapIndexed { idx, file ->
+            DownloadPreviewItem(
+                key = file.id.ifBlank { "$idx:${file.name}" },
+                visual = file.fileVisual(),
+                subtitle = if (file.isFolder) {
+                    tr("文件夹", "Folder", "フォルダー", "폴더", "資料夾")
+                } else {
+                    file.sizeBytes.takeIf { it > 0L }?.toReadableSize()
+                },
+            )
+        },
     )
     is DownloadPayload.Resolved -> DownloadItemSummary(
         primaryText = payload.files.first().name,
         itemCount = payload.files.size,
         folderCount = 0,
         totalKnownBytes = payload.files.sumOf { it.size.coerceAtLeast(0L) },
+        items = payload.files.mapIndexed { idx, rf ->
+            val category = rf.name.fileCategory()
+            val isVid = rf.name.isPlayableVideo()
+            val hash = rf.gcid?.takeIf { it.isNotBlank() }
+            val cover = when {
+                hash == null -> null
+                isVid -> videoThumbnailUrlOf(hash)
+                category == FileCategory.IMAGE -> imageThumbnailUrlOf(hash)
+                else -> null
+            }
+            DownloadPreviewItem(
+                key = "$idx:${rf.path}",
+                visual = FileVisual(
+                    name = rf.name,
+                    thumbnail = cover,
+                    isVideo = isVid,
+                    category = category,
+                    stableId = hash,
+                ),
+                subtitle = rf.size.takeIf { it > 0L }?.toReadableSize(),
+            )
+        },
     )
     is DownloadPayload.Segment -> DownloadItemSummary(
         primaryText = payload.file.name,
@@ -99,6 +145,13 @@ private fun summarizePayload(payload: DownloadPayload): DownloadItemSummary = wh
         folderCount = 0,
         totalKnownBytes = payload.lengthBytes.coerceAtLeast(0L),
         timeRangeLabel = payload.timeRangeLabel.takeIf { it.isNotBlank() },
+        items = listOf(
+            DownloadPreviewItem(
+                key = payload.file.id.ifBlank { payload.file.name },
+                visual = payload.file.fileVisual(),
+                subtitle = payload.lengthBytes.takeIf { it > 0L }?.toReadableSize(),
+            ),
+        ),
     )
 }
 

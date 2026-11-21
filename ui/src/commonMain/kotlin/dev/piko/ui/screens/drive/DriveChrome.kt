@@ -7,6 +7,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -75,6 +76,7 @@ import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBarScrollBehavior
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -543,10 +545,10 @@ internal fun DriveCompactHeader(
 }
 
 /**
- * 多选上下文浮动工具栏：遵循 M3 Expressive Toolbars（Vibrant Floating Toolbar）规范，
+ * 多选上下文浮动工具栏：遵循 M3 Expressive Toolbars（Standard Floating Toolbar）规范，
  * 选中至少一项时从底部中央升起（覆盖手机、平板与桌面全形态），保留 16dp 边缘净距（FloatingToolbarDefaults.ScreenOffset），
- * 仅承载作用于选中条目的高频批量动作与「更多」溢出入口，不与顶栏/命令栏重复。
- * 查重与回收站内将破坏性删除提升为高对比度带文案错误色药丸按钮，确保平板与触摸屏去重后一键触达删除。
+ * 采用柔和的 `standardFloatingToolbarColors`（`surfaceContainerHigh`）避免抢夺网盘内容焦点，
+ * 并通过竖向分隔线将破坏性删除与常规批量动作自然分组，保持工具栏内控件规格统一。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -586,6 +588,14 @@ internal fun DriveSelectionFloatingToolbar(
     val motion = MaterialTheme.motionScheme
     val colors = MaterialTheme.colorScheme
     val isEInk = LocalAppearance.current.isEInk
+    val toolbarColors = if (isEInk) {
+        FloatingToolbarDefaults.standardFloatingToolbarColors(
+            toolbarContainerColor = Color.White,
+            toolbarContentColor = Color.Black,
+        )
+    } else {
+        FloatingToolbarDefaults.standardFloatingToolbarColors()
+    }
     AnimatedVisibility(
         visible = visible,
         enter = slideInVertically(motion.fastSpatialSpec()) { it / 2 } + fadeIn(motion.fastEffectsSpec()),
@@ -599,7 +609,10 @@ internal fun DriveSelectionFloatingToolbar(
     ) {
         HorizontalFloatingToolbar(
             expanded = true,
-            colors = FloatingToolbarDefaults.vibrantFloatingToolbarColors(),
+            colors = toolbarColors,
+            expandedShadowElevation = if (isEInk) 0.dp else 3.dp,
+            collapsedShadowElevation = if (isEInk) 0.dp else 2.dp,
+            modifier = if (isEInk) Modifier.border(1.dp, Color.Black, FloatingToolbarDefaults.ContainerShape) else Modifier,
         ) {
             val contentTint = LocalContentColor.current
             nonDestructiveActions.forEach { action ->
@@ -611,13 +624,23 @@ internal fun DriveSelectionFloatingToolbar(
                 )
             }
             if (destructiveAction != null) {
+                if (nonDestructiveActions.isNotEmpty()) {
+                    VerticalDivider(
+                        modifier = Modifier
+                            .align(Alignment.CenterVertically)
+                            .padding(horizontal = 2.dp)
+                            .height(20.dp),
+                        color = if (isEInk) Color.Black else colors.outlineVariant.copy(alpha = 0.7f),
+                    )
+                }
                 if (inDuplicates || inTrash) {
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(2.dp))
                     Surface(
                         onClick = destructiveAction.onClick,
                         shape = CircleShape,
-                        color = colors.error,
-                        contentColor = colors.onError,
+                        color = if (isEInk) Color.White else colors.errorContainer,
+                        contentColor = if (isEInk) Color.Black else colors.onErrorContainer,
+                        border = if (isEInk) BorderStroke(1.dp, Color.Black) else null,
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
@@ -638,28 +661,12 @@ internal fun DriveSelectionFloatingToolbar(
                     }
                     Spacer(Modifier.width(2.dp))
                 } else {
-                    TooltipBox(
-                        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-                        tooltip = { PlainTooltip { Text(destructiveAction.shortLabel) } },
-                        state = rememberTooltipState(),
-                    ) {
-                        Surface(
-                            onClick = destructiveAction.onClick,
-                            shape = CircleShape,
-                            color = if (isEInk) Color.White else colors.errorContainer,
-                            contentColor = if (isEInk) Color.Black else colors.onErrorContainer,
-                            border = if (isEInk) BorderStroke(1.dp, Color.Black) else null,
-                            modifier = Modifier.padding(horizontal = 2.dp).size(40.dp),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = destructiveAction.icon,
-                                    contentDescription = destructiveAction.shortLabel,
-                                    modifier = Modifier.size(20.dp),
-                                )
-                            }
-                        }
-                    }
+                    TooltipIconButton(
+                        icon = destructiveAction.icon,
+                        label = destructiveAction.shortLabel,
+                        onClick = destructiveAction.onClick,
+                        tint = if (isEInk) Color.Black else colors.error,
+                    )
                 }
             }
             TooltipIconButton(

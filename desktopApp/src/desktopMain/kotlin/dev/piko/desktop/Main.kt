@@ -135,6 +135,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 private const val AOT_TRAINING_PROPERTY = "compose.aot.training-run"
 private const val AOT_TRAINING_MILLIS = 12_000L
 private const val CLOSE_BEHAVIOR_ASKED_KEY = "window.closeToTrayAsked"
+private const val CLOSE_BEHAVIOR_REMEMBER_CHECKED_KEY = "window.closeToTrayRememberChecked"
 private const val BACKGROUND_HINT_SHOWN_KEY = "window.backgroundHintShown"
 
 fun main(args: Array<String>) {
@@ -514,7 +515,9 @@ fun main(args: Array<String>) {
                         }
                     }
                     if (askCloseBehavior) {
-                        var rememberCloseChoice by remember { mutableStateOf(true) }
+                        var rememberCloseChoice by remember {
+                            mutableStateOf(settings.get(CLOSE_BEHAVIOR_REMEMBER_CHECKED_KEY) != "false")
+                        }
                         PikoDialog(
                             onDismissRequest = { askCloseBehavior = false },
                             title = { Text(stringResource(Res.string.text_close_main_window)) },
@@ -528,7 +531,10 @@ fun main(args: Array<String>) {
                                             .toggleable(
                                                 value = rememberCloseChoice,
                                                 role = Role.Checkbox,
-                                                onValueChange = { rememberCloseChoice = it },
+                                                onValueChange = { checked ->
+                                                    rememberCloseChoice = checked
+                                                    settings.set(CLOSE_BEHAVIOR_REMEMBER_CHECKED_KEY, checked.toString())
+                                                },
                                             ),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
@@ -543,6 +549,7 @@ fun main(args: Array<String>) {
                                     label = tr("最小化到托盘", "Minimize to tray", "トレイに最小化", "트레이로 최소화", "最小化至系統匣"),
                                     onClick = {
                                         askCloseBehavior = false
+                                        settings.set(CLOSE_BEHAVIOR_REMEMBER_CHECKED_KEY, rememberCloseChoice.toString())
                                         if (rememberCloseChoice) {
                                             settings.set(CLOSE_BEHAVIOR_ASKED_KEY, "true")
                                             platform.closeToTray?.set(true)
@@ -555,6 +562,7 @@ fun main(args: Array<String>) {
                                 TextButton(
                                     onClick = {
                                         askCloseBehavior = false
+                                        settings.set(CLOSE_BEHAVIOR_REMEMBER_CHECKED_KEY, rememberCloseChoice.toString())
                                         if (rememberCloseChoice) {
                                             settings.set(CLOSE_BEHAVIOR_ASKED_KEY, "true")
                                             platform.closeToTray?.set(false)
