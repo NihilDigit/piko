@@ -35,12 +35,14 @@ import io.github.nihildigit.pikpak.PikPakStreamReader
 import io.github.nihildigit.pikpak.PlaybackBufferSnapshot
 import kotlinx.coroutines.currentCoroutineContext
 import io.github.nihildigit.pikpak.ApiRequestPriority
+import io.github.nihildigit.pikpak.DownloadLink
 import io.github.nihildigit.pikpak.FileDetail
 import io.github.nihildigit.pikpak.MediaVariant
 import io.github.nihildigit.pikpak.PikPakClient
 import io.github.nihildigit.pikpak.PikPakFileHandle
 import io.github.nihildigit.pikpak.ResolvedVariant
 import io.github.nihildigit.pikpak.StreamRole
+import io.github.nihildigit.pikpak.VariantLink
 import io.github.nihildigit.pikpak.VariantPreference
 import io.github.nihildigit.pikpak.batchGetFileDetails
 import io.github.nihildigit.pikpak.fileHandle
@@ -88,7 +90,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.concurrent.Volatile
+import kotlin.time.Clock
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -322,9 +326,18 @@ class PikoMediaRepository(
 
     private val localPositionOps = Channel<LocalPositionOp>(Channel.UNLIMITED)
 
-    // 随机片段挑段时查转码拿到的详情，紧接着建 handle 直接用：handle 连第一条直链都从详情里取，
-    // 一段省下全部的详情查询。直链的有效期远长于这几分钟
-    private val freshDetails = HashMap<String, Pair<FileDetail, TimeMark>>()
+    private class CachedFreshDetail(
+        val detail: FileDetail,
+        val savedAt: TimeMark,
+        val ttl: Duration,
+    ) {
+        val isFresh: Boolean get() = savedAt.elapsedNow() <= ttl
+    }
+
+    // 随机片段挑段、链接面板预览或归档借出查到的详情直接复用：
+    // 普通网盘文件按 fileId 短期保留以感知重命名/移动；归档借出条目额外按 (gcid, size) 在直链有效期内复用，避免重复秒传扣费
+    private val freshDetails = HashMap<String, CachedFreshDetail>()
+    private val freshContentDetails = LinkedHashMap<String, CachedFreshDetail>()
     private val freshDetailsLock = Mutex()
     private var freshDetailsOwner: PikPakClient? = null
 
@@ -363,6 +376,7 @@ class PikoMediaRepository(
                 freshDetailsLock.withLock {
                     if (freshDetailsOwner !== owner) {
                         freshDetails.clear()
+                        freshContentDetails.clear()
                         freshDetailsOwner = owner
                     }
                 }
@@ -779,7 +793,10 @@ class PikoMediaRepository(
                     return@runSuspendCatching ClipProbe(false, file?.params?.get("duration")?.toDoubleOrNull()?.let { (it * 1000).toLong() })
                 }
                 val owner = client
-                val content = metadataSink?.lookupContentByFileId(owner, fileId)
+                takeFreshDetail(owner, fileId)?.let { fresh ->
+                    return@runSuspendCatching clipProbeOf(fresh)
+                }
+                val content = lookupCachedContent(owner, fileId)
                 val transcodes = content?.transcodes
                 val durationMs = content?.durationMillis
                 if (transcodes != null && (transcodes.isNotEmpty() || content.qualityRank > 0) && (durationMs ?: 0L) > 0L) {
@@ -831,7 +848,7 @@ class PikoMediaRepository(
                     result[id] = clipProbeOf(fresh)
                     continue
                 }
-                val cachedContent = metadataSink?.lookupContentByFileId(owner, id)
+                val cachedContent = lookupCachedContent(owner, id)
                 val cachedTranscodes = cachedContent?.transcodes
                 val cachedDurationMs = cachedContent?.durationMillis
                 if (cachedTranscodes != null && (cachedTranscodes.isNotEmpty() || cachedContent.qualityRank > 0) && (cachedDurationMs ?: 0L) > 0L) {
@@ -933,37 +950,104 @@ class PikoMediaRepository(
         return detail
     }
 
+    private fun lookupCachedContent(owner: PikPakClient, fileId: String): dev.piko.shared.data.ContentMetadata? {
+        val sink = metadataSink ?: return null
+        sink.lookupContentByFileId(owner, fileId)?.let { return it }
+        val leased = LeasedFile.resolvedFileOf(fileId) ?: return null
+        val gcid = leased.gcid?.takeIf { it.isNotBlank() } ?: return null
+        return if (leased.size >= 0L) {
+            sink.lookupContent(owner, gcid, leased.size)
+        } else {
+            null
+        }
+    }
+
+    private fun contentCacheKey(gcid: String?, sizeBytes: Long): String? {
+        val clean = gcid?.trim().orEmpty()
+        if (clean.isEmpty() || sizeBytes < 0L) return null
+        return "${clean.uppercase()}:$sizeBytes"
+    }
+
+    private fun signedDetailTtlOf(detail: FileDetail): Duration {
+        val expiries = buildList {
+            detail.links.values.forEach { link -> if (link.url.isNotBlank()) link.expiresAt?.let(::add) }
+            detail.medias.forEach { media -> if (media.link.url.isNotBlank()) media.link.expiresAt?.let(::add) }
+        }
+        val earliest = expiries.minOrNull() ?: return FRESH_DETAIL_FOR
+        val remaining = earliest - Clock.System.now() - SIGNED_DETAIL_EXPIRY_MARGIN
+        return remaining.coerceAtMost(MAX_SIGNED_DETAIL_TTL)
+    }
+
+    private fun putContentFreshDetailLocked(detail: FileDetail, mark: TimeMark) {
+        val key = contentCacheKey(detail.hash, detail.sizeBytes) ?: return
+        val ttl = signedDetailTtlOf(detail)
+        if (ttl <= Duration.ZERO) {
+            freshContentDetails.remove(key)
+            return
+        }
+        freshContentDetails.remove(key)
+        while (freshContentDetails.size >= MAX_CACHED_CONTENT_DETAILS) {
+            val eldest = freshContentDetails.keys.firstOrNull() ?: break
+            freshContentDetails.remove(eldest)
+        }
+        freshContentDetails[key] = CachedFreshDetail(detail, mark, ttl)
+    }
+
     private suspend fun rememberFreshDetail(owner: PikPakClient, fileId: String, detail: FileDetail) = freshDetailsLock.withLock {
         if (clientManager.currentClient.value === owner) {
-            if (freshDetailsOwner !== owner) freshDetails.clear()
+            if (freshDetailsOwner !== owner) {
+                freshDetails.clear()
+                freshContentDetails.clear()
+            }
             freshDetailsOwner = owner
-            freshDetails.entries.removeAll { it.value.second.elapsedNow() > FRESH_DETAIL_FOR }
-            freshDetails[fileId] = detail to TimeSource.Monotonic.markNow()
+            freshDetails.entries.removeAll { !it.value.isFresh }
+            freshContentDetails.entries.removeAll { !it.value.isFresh }
+            val mark = TimeSource.Monotonic.markNow()
+            val idTtl = if (LeasedFile.isLeased(fileId)) signedDetailTtlOf(detail) else FRESH_DETAIL_FOR
+            if (idTtl > Duration.ZERO) {
+                freshDetails[fileId] = CachedFreshDetail(detail, mark, idTtl)
+            }
+            putContentFreshDetailLocked(detail, mark)
         }
     }
 
     private suspend fun rememberFreshDetails(owner: PikPakClient, details: List<FileDetail>) = freshDetailsLock.withLock {
         if (clientManager.currentClient.value === owner) {
-            if (freshDetailsOwner !== owner) freshDetails.clear()
+            if (freshDetailsOwner !== owner) {
+                freshDetails.clear()
+                freshContentDetails.clear()
+            }
             freshDetailsOwner = owner
-            freshDetails.entries.removeAll { it.value.second.elapsedNow() > FRESH_DETAIL_FOR }
+            freshDetails.entries.removeAll { !it.value.isFresh }
+            freshContentDetails.entries.removeAll { !it.value.isFresh }
             val mark = TimeSource.Monotonic.markNow()
             for (detail in details) {
-                freshDetails[detail.id] = detail to mark
+                freshDetails[detail.id] = CachedFreshDetail(detail, mark, FRESH_DETAIL_FOR)
+                putContentFreshDetailLocked(detail, mark)
             }
         }
     }
 
-    /** 近期刚查过的详情（如 [clipProbe] 或 [prepareClip]），还新鲜就直接复用，省一次 getFile 查询。 */
+    /**
+     * 近期刚查过的详情直接复用：
+     * 普通网盘文件按 `fileId` 保留 5 分钟；归档借出条目额外匹配 `(gcid, size)` 内容缓存并在签名直链有效期内复用，
+     * 使临时预览后「以引用保存」、切换画质、续播或截取片段不再重复触发 `leaseDetail` 扣减上传配额。
+     */
     private suspend fun takeFreshDetail(owner: PikPakClient, fileId: String): FileDetail? = freshDetailsLock.withLock {
         if (freshDetailsOwner !== owner) return@withLock null
-        val entry = freshDetails[fileId] ?: return@withLock null
-        if (entry.second.elapsedNow() <= FRESH_DETAIL_FOR) {
-            entry.first
-        } else {
+        freshDetails[fileId]?.let { entry ->
+            if (entry.isFresh) return@withLock entry.detail
             freshDetails.remove(fileId)
-            null
         }
+        val leased = LeasedFile.resolvedFileOf(fileId) ?: return@withLock null
+        val key = contentCacheKey(leased.gcid, leased.size) ?: return@withLock null
+        val cached = freshContentDetails[key] ?: return@withLock null
+        if (!cached.isFresh) {
+            freshContentDetails.remove(key)
+            return@withLock null
+        }
+        val resolvedName = leased.name.ifBlank { cached.detail.name }
+        if (cached.detail.name == resolvedName) cached.detail else cached.detail.copy(name = resolvedName)
     }
 
     private suspend fun openClipSlice(
@@ -1970,13 +2054,13 @@ class PikoMediaRepository(
 
     /**
      * 为单个雪碧图引擎打开专属分层传输会话：
-     * - 持有独立的 [TransferDemand]：`URGENT`（流头、用户焦点、Wave 1 锚点）使用 `ServiceIntent.PLAYING (prio=50)`，
-     *   避免在 SDK `SignedUrlGates` 中被 mpv 的 36 MiB `prio=10` 投机预读与 `prio=5` 暂停读饿死，同时绝不抢占前景 `prio=100/50`；
-     * - `BACKGROUND`（Wave 2 后台补齐）使用 `ServiceIntent.PREFETCH (prio=8)`，既不打断前景活跃预读（`prio=10`），
-     *   又高于暂停态后台读（`prio=5/1`）与默认 0 级；
-     * - 播放器进入忙态或缓冲跌破临界线时经 [StoryboardTransportSession.updateTransportGate] 实时把对应 Demand 降为 `PAUSED (prio=1)`；
-     * - 优先按 256 KiB 分块零流量直读 [PikoFileCachePool]，未命中部分走流式 `streamRangeFromUrl`，回调返回 `true` 立即中止 HTTP 流；
-     * - 遇到 401/403 [UrlExpiredException] 自动互斥刷新单次签名链接并重试。
+     * - 通过 [PikPakFileHandle] 接入 SDK 正式 `RangeReader` 与 `SignedUrlGates` 优先级调度（裸 `streamRangeFromUrl`
+     *   对 `> 64 KiB` 固定走 `priority = 0` 会被 mpv 的 `prio=10` 预读块饿死）：
+     *   - `URGENT`（流头、用户悬停/速览焦点、Wave 1 锚点）以 `priority = 20` 读取，高于 mpv 投机预读（`10`）且低于前景紧急播放（`50/100`）；
+     *   - `BACKGROUND`（Wave 2 后台补全）以 `priority = 6` 读取，礼让活跃预读（`10`）且高于空闲读（`5`）；
+     *   - 播放器忙或缓冲低于阈值时经 [StoryboardTransportSession.updateTransportGate] 实时降为 `priority = 1`；
+     * - 优先按 256 KiB 分块零流量直读 [PikoFileCachePool]，未命中部分走流式 `handle.read`，回调返回 `true` 立即退出并取消底层 HTTP 泵；
+     * - 自动享有 [PikPakFileHandle] 的多 CDN 候选优选与 401/403 互斥签名续期。
      */
     fun openStoryboardSession(source: StoryboardSource): StoryboardTransportSession =
         StoryboardTransportSession(source)
@@ -1985,37 +2069,31 @@ class PikoMediaRepository(
         private val source: StoryboardSource,
     ) : StoryboardStreamFetcher, AutoCloseable {
         private val sessionClient: PikPakClient? = clientManager.currentClient.value
-        private val urgentDemand: TransferDemand? = sessionClient?.openTransferDemand(
-            ConsumerIntent(service = ServiceIntent.PLAYING, bufferBudget = BufferBudget.NONE),
-        )
-        private val backgroundDemand: TransferDemand? = sessionClient?.openTransferDemand(
-            ConsumerIntent(service = ServiceIntent.PREFETCH, bufferBudget = BufferBudget.NONE),
-        )
-        private val refreshLock = Mutex()
+        private val handleLock = Mutex()
         private val errorLogLock = Mutex()
         private var loggedErrors = 0
 
-        @kotlin.concurrent.Volatile
-        private var activeUrl: String = source.url
+        @Volatile
+        private var handle: PikPakFileHandle? = null
 
-        @kotlin.concurrent.Volatile
+        @Volatile
+        private var yieldBackgroundGate = false
+
+        @Volatile
+        private var urgentAllowedGate = true
+
+        @Volatile
         private var knownStreamSize: Long = source.streamSizeBytes?.takeIf { it > 0L }
             ?: knownTranscodeStreamSizeFor(source.fileId, source.gcid, 0L, source.mediaId)
             ?: 0L
 
-        @kotlin.concurrent.Volatile
+        @Volatile
         private var closed = false
 
         fun updateTransportGate(yieldBackground: Boolean, urgentAllowed: Boolean) {
             if (closed) return
-            val nextUrgent = if (urgentAllowed) ServiceIntent.PLAYING else ServiceIntent.PAUSED
-            val nextBackground = if (yieldBackground) ServiceIntent.PAUSED else ServiceIntent.PREFETCH
-            urgentDemand?.updateIntent { intent ->
-                if (intent.service == nextUrgent) intent else intent.copy(service = nextUrgent)
-            }
-            backgroundDemand?.updateIntent { intent ->
-                if (intent.service == nextBackground) intent else intent.copy(service = nextBackground)
-            }
+            yieldBackgroundGate = yieldBackground
+            urgentAllowedGate = urgentAllowed
         }
 
         override suspend fun streamRange(
@@ -2075,113 +2153,96 @@ class PikoMediaRepository(
                 }
             }
 
-            // 2. 未命中部分走流式 HTTP Range（按 priority 绑定分层 TransferDemand，回调返回 true 即刻中止流）
-            val demand = when (priority) {
-                StoryboardFetchPriority.URGENT -> urgentDemand
-                StoryboardFetchPriority.BACKGROUND -> backgroundDemand
+            // 2. 未命中部分经 PikPakFileHandle.read 以显式整数优先级流式读取，回调返回 true 即刻退出关闭连接
+            val fileHandle = ensureHandle(accountClient) ?: return@withContext null
+            val readPriority = when (priority) {
+                StoryboardFetchPriority.URGENT -> {
+                    if (urgentAllowedGate) STORYBOARD_URGENT_READ_PRIORITY else STORYBOARD_PAUSED_READ_PRIORITY
+                }
+                StoryboardFetchPriority.BACKGROUND -> {
+                    if (yieldBackgroundGate) STORYBOARD_PAUSED_READ_PRIORITY else STORYBOARD_BACKGROUND_READ_PRIORITY
+                }
             }
-            if (demand?.isClosed == true) return@withContext null
-
             val timeoutMs = when (priority) {
                 StoryboardFetchPriority.URGENT -> STORYBOARD_URGENT_FETCH_TIMEOUT_MILLIS
                 StoryboardFetchPriority.BACKGROUND -> STORYBOARD_FETCH_TIMEOUT_MILLIS
             }
 
-            var url = currentBestUrl(accountClient)
-            if (url.isBlank()) return@withContext null
-
-            var refreshedOnce = false
-            while (true) {
-                var netRead = 0
-                val streamResult = try {
-                    Result.success(
-                        withTimeoutOrNull(timeoutMs) {
-                            val attemptContext = if (demand != null) demand else kotlin.coroutines.EmptyCoroutineContext
-                            withContext(attemptContext) {
-                                accountClient.streamRangeFromUrl(url, start = effectiveOffset, length = remaining.toLong()) { stream ->
-                                    val discoveredSize = stream.totalSize?.takeIf { it > 0L }
-                                    if (discoveredSize != null && knownStreamSize <= 0L) {
-                                        knownStreamSize = discoveredSize
-                                        recordDiscoveredStreamSize(accountClient, discoveredSize)
-                                    }
-                                    val buf = ByteArray(minOf(STORYBOARD_STREAM_CHUNK_BYTES, remaining))
-                                    var stoppedEarly = false
-                                    while (netRead < remaining) {
-                                        val toRead = minOf(buf.size, remaining - netRead)
-                                        val n = stream.channel.readAvailable(buf, 0, toRead)
-                                        if (n <= 0) break
-                                        netRead += n
-                                        if (onChunk(buf, n)) {
-                                            stoppedEarly = true
-                                            break
-                                        }
-                                    }
-                                    val effectiveSize = discoveredSize ?: knownStreamSize.takeIf { it > 0L }
-                                    val endOffset = effectiveOffset + netRead
-                                    val reachedEof = !stoppedEarly && (
-                                        (effectiveSize != null && endOffset >= effectiveSize) ||
-                                            (stream.rangeEndInclusive != null && effectiveSize != null &&
-                                                stream.rangeEndInclusive!! + 1L >= effectiveSize && netRead < remaining)
-                                        )
-                                    StoryboardRangeProbe(
-                                        streamSizeBytes = effectiveSize,
-                                        bytesConsumed = totalConsumed + netRead,
-                                        reachedEof = reachedEof,
-                                    )
+            var netRead = 0
+            val streamResult = try {
+                Result.success(
+                    withTimeoutOrNull(timeoutMs) {
+                        fileHandle.read(
+                            start = effectiveOffset,
+                            length = remaining.toLong(),
+                            priority = readPriority,
+                        ) { channel ->
+                            val buf = ByteArray(minOf(STORYBOARD_STREAM_CHUNK_BYTES, remaining))
+                            var stoppedEarly = false
+                            while (netRead < remaining) {
+                                val toRead = minOf(buf.size, remaining - netRead)
+                                val n = channel.readAvailable(buf, 0, toRead)
+                                if (n <= 0) break
+                                netRead += n
+                                if (onChunk(buf, n)) {
+                                    stoppedEarly = true
+                                    break
                                 }
                             }
-                        }.also { completed ->
-                            if (completed == null) {
-                                logSessionErrorThrottled(
-                                    "Storyboard stream range timed out (${timeoutMs}ms, offset=$effectiveOffset, maxLen=$remaining, priority=$priority): ${logFile(source.fileId, source.mediaId)}",
-                                )
+                            if (knownStreamSize <= 0L) {
+                                val discovered = runCatching { fileHandle.streamSize() }.getOrNull()?.takeIf { it > 0L }
+                                if (discovered != null) {
+                                    knownStreamSize = discovered
+                                    recordDiscoveredStreamSize(accountClient, discovered)
+                                }
                             }
-                        },
+                            val effectiveSize = knownStreamSize.takeIf { it > 0L }
+                            val endOffset = effectiveOffset + netRead
+                            val reachedEof = !stoppedEarly && (
+                                (effectiveSize != null && endOffset >= effectiveSize) ||
+                                    (netRead < remaining && netRead > 0)
+                                )
+                            StoryboardRangeProbe(
+                                streamSizeBytes = effectiveSize,
+                                bytesConsumed = totalConsumed + netRead,
+                                reachedEof = reachedEof,
+                            )
+                        }
+                    }.also { completed ->
+                        if (completed == null) {
+                            logSessionErrorThrottled(
+                                "Storyboard stream range timed out (${timeoutMs}ms, offset=$effectiveOffset, maxLen=$remaining, priority=$priority/$readPriority): ${logFile(source.fileId, source.mediaId)}",
+                            )
+                        }
+                    },
+                )
+            } catch (ce: CancellationException) {
+                // SDK 内部高优抢占（TransferPreempted）仅取消当前子读取；若引擎协程本身仍存活则平滑退让而非杀死整个引擎
+                currentCoroutineContext().ensureActive()
+                if (closed) throw ce
+                logSessionErrorThrottled(
+                    "Storyboard stream range preempted by foreground transfer (offset=$effectiveOffset, priority=$priority/$readPriority): ${logFile(source.fileId, source.mediaId)}",
+                )
+                val consumedSoFar = totalConsumed + netRead
+                return@withContext if (consumedSoFar > 0) {
+                    StoryboardRangeProbe(
+                        streamSizeBytes = knownStreamSize.takeIf { it > 0L },
+                        bytesConsumed = consumedSoFar,
+                        reachedEof = false,
                     )
-                } catch (ce: CancellationException) {
-                    // SDK 内部高优抢占（TransferPreempted）仅取消 withSlot 子作用域；若引擎协程本身仍存活则平滑退让而非杀死整个引擎
-                    currentCoroutineContext().ensureActive()
-                    if (closed || demand?.isClosed == true) throw ce
-                    logSessionErrorThrottled(
-                        "Storyboard stream range preempted by foreground transfer (offset=$effectiveOffset, priority=$priority): ${logFile(source.fileId, source.mediaId)}",
-                    )
-                    val consumedSoFar = totalConsumed + netRead
-                    return@withContext if (consumedSoFar > 0) {
-                        StoryboardRangeProbe(
-                            streamSizeBytes = knownStreamSize.takeIf { it > 0L },
-                            bytesConsumed = consumedSoFar,
-                            reachedEof = false,
-                        )
-                    } else {
-                        null
-                    }
-                } catch (e: Throwable) {
-                    Result.failure(e)
+                } else {
+                    null
                 }
-                val err = streamResult.exceptionOrNull()
-                if (err is UrlExpiredException && !refreshedOnce) {
-                    refreshedOnce = true
-                    val nextUrl = refreshUrlOnce(accountClient, staleUrl = url)
-                    if (!nextUrl.isNullOrBlank() && nextUrl != url) {
-                        url = nextUrl
-                        continue
-                    }
-                }
-                if (err != null) {
-                    logSessionErrorThrottled(
-                        "Storyboard stream range failed (offset=$effectiveOffset, maxLen=$remaining, priority=$priority, cause=${err::class.simpleName}: ${err.message}): ${logFile(source.fileId, source.mediaId)}",
-                    )
-                    return@withContext if (totalConsumed > 0) {
-                        StoryboardRangeProbe(
-                            streamSizeBytes = knownStreamSize.takeIf { it > 0L },
-                            bytesConsumed = totalConsumed,
-                            reachedEof = false,
-                        )
-                    } else {
-                        null
-                    }
-                }
-                return@withContext streamResult.getOrNull() ?: if (totalConsumed > 0) {
+            } catch (e: Throwable) {
+                Result.failure(e)
+            }
+
+            val err = streamResult.exceptionOrNull()
+            if (err != null) {
+                logSessionErrorThrottled(
+                    "Storyboard stream range failed (offset=$effectiveOffset, maxLen=$remaining, priority=$priority/$readPriority, cause=${err::class.simpleName}: ${err.message}): ${logFile(source.fileId, source.mediaId)}",
+                )
+                return@withContext if (totalConsumed > 0) {
                     StoryboardRangeProbe(
                         streamSizeBytes = knownStreamSize.takeIf { it > 0L },
                         bytesConsumed = totalConsumed,
@@ -2191,40 +2252,69 @@ class PikoMediaRepository(
                     null
                 }
             }
-            @Suppress("UNREACHABLE_CODE")
-            return@withContext null
+            return@withContext streamResult.getOrNull() ?: if (totalConsumed > 0) {
+                StoryboardRangeProbe(
+                    streamSizeBytes = knownStreamSize.takeIf { it > 0L },
+                    bytesConsumed = totalConsumed,
+                    reachedEof = false,
+                )
+            } else {
+                null
+            }
         }
 
-        private suspend fun currentBestUrl(accountClient: PikPakClient): String {
-            val fresh = takeFreshDetail(accountClient, source.fileId)
-                ?.medias
-                ?.firstOrNull { it.mediaId == source.mediaId && it.link.url.isNotBlank() }
-                ?.link?.url
-            if (!fresh.isNullOrBlank()) {
-                activeUrl = fresh
-                return fresh
+        private suspend fun ensureHandle(accountClient: PikPakClient): PikPakFileHandle? {
+            handle?.let { return it }
+            return handleLock.withLock {
+                if (closed) return@withLock null
+                handle?.let { return@withLock it }
+                val fresh = takeFreshDetail(accountClient, source.fileId)
+                val matchedVariant = fresh?.medias?.firstOrNull { it.mediaId == source.mediaId && it.link.url.isNotBlank() }
+                val isLeased = LeasedFile.isLeased(source.fileId)
+                val leasedMeta = LeasedFile.resolvedFileOf(source.fileId)
+                val created = if (fresh != null && matchedVariant != null) {
+                    val leaseParentId = if (isLeased) {
+                        runCatching { leaseFolder?.invoke(accountClient).orEmpty() }.getOrDefault("")
+                    } else {
+                        fresh.parentId
+                    }
+                    accountClient.fileHandle(
+                        detail = fresh,
+                        mediaId = source.mediaId,
+                        parentId = leaseParentId,
+                        leased = isLeased,
+                        onRangeAttempt = ::logRangeAttempt,
+                        streamSize = knownStreamSize.takeIf { it > 0L },
+                    )
+                } else {
+                    val initialUrl = source.url.takeIf { it.isNotBlank() } ?: return@withLock null
+                    val originalBytes = fresh?.sizeBytes?.takeIf { it > 0L }
+                        ?: leasedMeta?.size?.takeIf { it > 0L }
+                        ?: 0L
+                    val leaseParentId = if (isLeased) {
+                        runCatching { leaseFolder?.invoke(accountClient).orEmpty() }.getOrDefault("")
+                    } else {
+                        fresh?.parentId.orEmpty()
+                    }
+                    PikPakFileHandle(
+                        client = accountClient,
+                        gcid = source.gcid,
+                        size = originalBytes,
+                        name = fresh?.name?.takeIf { it.isNotBlank() } ?: leasedMeta?.name ?: source.fileId,
+                        initialFileId = if (isLeased) null else source.fileId,
+                        mediaId = source.mediaId,
+                        parentId = leaseParentId,
+                        connectionBudget = 6,
+                        leased = isLeased,
+                        onRangeAttempt = ::logRangeAttempt,
+                        initialLink = VariantLink(url = initialUrl, expiresAt = DownloadLink(url = initialUrl).expiresAt),
+                        streamSize = knownStreamSize.takeIf { it > 0L },
+                    )
+                }
+                handle = created
+                created
             }
-            return activeUrl
         }
-
-        private suspend fun refreshUrlOnce(accountClient: PikPakClient, staleUrl: String): String? =
-            refreshLock.withLock {
-                if (activeUrl.isNotBlank() && activeUrl != staleUrl) {
-                    return@withLock activeUrl
-                }
-                val refreshed = runSuspendCatching {
-                    withApiPriority(ApiRequestPriority.BACKGROUND) {
-                        detailOf(accountClient, source.fileId)
-                    }.also { rememberFreshDetail(accountClient, source.fileId, it) }
-                }.getOrNull()
-                val nextUrl = refreshed?.medias
-                    ?.firstOrNull { it.mediaId == source.mediaId && it.link.url.isNotBlank() }
-                    ?.link?.url
-                if (!nextUrl.isNullOrBlank()) {
-                    activeUrl = nextUrl
-                }
-                nextUrl
-            }
 
         private suspend fun recordDiscoveredStreamSize(accountClient: PikPakClient, size: Long) {
             if (size <= 0L) return
@@ -2254,8 +2344,7 @@ class PikoMediaRepository(
         override fun close() {
             if (closed) return
             closed = true
-            runCatching { urgentDemand?.close() }
-            runCatching { backgroundDemand?.close() }
+            runCatching { handle?.close() }
         }
     }
 
@@ -2618,6 +2707,9 @@ private val CLIP_REACTIVATION_TIMEOUT = 1_500.milliseconds
 private const val SLICE_BITRATE_MARGIN = 1.5
 
 private val FRESH_DETAIL_FOR = 5.minutes
+private val SIGNED_DETAIL_EXPIRY_MARGIN = 15.minutes
+private val MAX_SIGNED_DETAIL_TTL = 23.hours + 45.minutes
+private const val MAX_CACHED_CONTENT_DETAILS = 256
 
 // 各档的大小随内容而定，不会变；读不出的档有可能被服务端修好，所以也不留太久
 private val QUALITY_PROBE_FOR = 10.minutes
@@ -2639,6 +2731,9 @@ private const val ABR_CACHE_WINDOW_BYTES = 1024L * 1024L // 1 MiB upcoming playb
 private const val PREVIEW_FETCH_TIMEOUT_MILLIS = 6_000L
 private const val STORYBOARD_URGENT_FETCH_TIMEOUT_MILLIS = 8_000L
 private const val STORYBOARD_FETCH_TIMEOUT_MILLIS = 10_000L
+private const val STORYBOARD_URGENT_READ_PRIORITY = 20
+private const val STORYBOARD_BACKGROUND_READ_PRIORITY = 6
+private const val STORYBOARD_PAUSED_READ_PRIORITY = 1
 private const val STORYBOARD_STREAM_CHUNK_BYTES = 32 * 1024
 private const val STORYBOARD_LOCAL_CACHE_SLICE_BYTES = 256 * 1024
 private const val MAX_SESSION_ERROR_LOGS = 4
