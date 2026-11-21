@@ -928,4 +928,80 @@ class StoryboardPlannerAndCacheTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun mostlyFailedSlotsDoNotPoisonCacheAsCompletedAndMalformedPesLengthReturnsNull() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val streamSize = 188L * 30_000L
+            val durationMs = 120_000L
+            val headerChunk = buildSyntheticHeaderChunk()
+            val header = assertNotNull(TsIdrExtractor.parseHeader(headerChunk, fallbackWidth = 640, fallbackHeight = 360))
+
+            // 1. Malformed PES packet where 6 + declared <= headerEnd must return null without IllegalArgumentException
+            val pts = encodePts(90_000L)
+            val malformedPes = byteArrayOf(
+                0x00, 0x00, 0x01, 0xE0.toByte(),
+                0x00, 0x04, // declared = 4 => 6 + declared = 10 <= headerEnd (9 + 10 = 19)
+                0x80.toByte(), 0x80.toByte(), 0x0A, // PES_header_data_length = 10 => headerEnd = 19
+                pts[0], pts[1], pts[2], pts[3], pts[4],
+                0, 0, 0, 0, 0,
+                0, 0, 0, 1, 0x26, 0x01,
+            )
+            val malformedTs = tsPacket(pid = header.videoPid, payload = malformedPes, payloadStart = true, cc = 0) +
+                tsPacket(pid = 0x1FFF, payload = ByteArray(184), payloadStart = false, cc = 0)
+            assertNull(TsIdrExtractor.extractFirstIdr(malformedTs, header, durationMillis = durationMs, allowTailDrain = true))
+
+            // 2. Slot 0 succeeds from headerChunk, but all remaining slots fail (network outage):
+            // must persist partial frame(s) with completed = false instead of poisoning cache as completed = true
+            val cache = InMemoryStoryboardCache()
+            val gate = MutableStateFlow(StoryboardPlaybackGate(firstFrameReady = true, isPlaying = false, isPlaybackBusy = false))
+            val source = StoryboardSource(
+                fileId = "f-outage",
+                gcid = "GCID_PARTIAL_OUTAGE",
+                mediaId = "m360",
+                url = "https://cdn.example/360.ts",
+                width = 640,
+                height = 360,
+                durationMillis = durationMs,
+                streamSizeBytes = streamSize,
+            )
+            val engine = StoryboardEngine(
+                source = source,
+                cache = cache,
+                resolveStreamSize = { streamSize },
+                fetchRange = { offset, length ->
+                    if (offset == 0L) headerChunk.copyOfRange(0, minOf(length, headerChunk.size)) else null
+                },
+                decoderFactory = {
+                    object : StoryboardIdrDecoder {
+                        override suspend fun decodeToJpeg(
+                            csdAnnexB: ByteArray,
+                            idrAccessUnitAnnexB: ByteArray,
+                            width: Int,
+                            height: Int,
+                            maxWidthPx: Int,
+                            jpegQuality: Int,
+                        ): ByteArray = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 1)
+                        override fun close() {}
+                    }
+                },
+                playbackGate = gate,
+                scope = scope,
+            )
+            engine.start()
+            withTimeout(3_000L) {
+                while (cache.read(source.gcid) == null) delay(25L)
+            }
+            delay(150L)
+            engine.close()
+
+            val persisted = assertNotNull(cache.read(source.gcid))
+            assertEquals(1, persisted.frames.size)
+            assertFalse(persisted.completed, "1-frame partial storyboard after slot failures must NOT be marked completed")
+            assertFalse(engine.timeline.value.isComplete, "Timeline must NOT be marked complete when most slots failed")
+        } finally {
+            scope.cancel()
+        }
+    }
 }

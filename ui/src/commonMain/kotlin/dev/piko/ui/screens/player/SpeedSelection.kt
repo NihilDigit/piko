@@ -116,12 +116,28 @@ internal class SpeedSelectionDrag(
     private var crossStartAlong = 0f
     private var crossStartAcross = 0f
     private var engaged = false
+    private var anchorInitialized = true
+
+    fun resetAnchor() {
+        axis = null
+        engaged = false
+        anchorInitialized = false
+    }
 
     fun move(
         selection: SpeedSelection,
         along: Float,
         across: Float,
     ): SpeedSelection {
+        if (!anchorInitialized) {
+            anchorInitialized = true
+            lastAlong = along
+            probeAlong = along
+            probeAcross = across
+            crossStartAlong = along
+            crossStartAcross = across
+            return selection
+        }
         val deltaAlong = along - lastAlong
         lastAlong = along
         val localAlong = along - probeAlong
@@ -365,6 +381,11 @@ internal class PlaybackSpeedController(
         val current = selection ?: return
         if (!current.isRapidScrub) return
         rapidScrubBrowseMode = false
+        if (dragging) {
+            drag?.resetAnchor()
+        } else {
+            drag = null
+        }
         val maxIdx = current.choices.indexOfLast { it != RAPID_SCRUB_VALUE }
         if (maxIdx >= 0) {
             update(current.coarseAt(maxIdx.toFloat()), allowUnlock = true)

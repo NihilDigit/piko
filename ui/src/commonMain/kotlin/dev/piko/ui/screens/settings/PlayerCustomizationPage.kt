@@ -321,7 +321,7 @@ fun PlayerCustomizationPage(
         }
     }
 
-    val currentDropTarget: DropTarget? = when {
+    fun resolveCurrentDropTarget(): DropTarget? = when {
         activeMode != null && activeLayout != null -> dragState.resolveDropTarget(
             layout = activeLayout,
             mode = activeMode,
@@ -333,9 +333,11 @@ fun PlayerCustomizationPage(
         else -> null
     }
 
+    val currentDropTarget: DropTarget? = resolveCurrentDropTarget()
+
     val finishDrag: () -> Unit = {
         val drag = dragState.activeDrag
-        val target = currentDropTarget
+        val target = if (drag != null) resolveCurrentDropTarget() else null
         dragState.cancelDrag()
         if (drag != null && target != null) {
             when (target) {
@@ -1699,10 +1701,8 @@ private fun PreviewBarRow(
                                 onSlotBounds = { pos, rect -> dragState.centerSlotBounds[pos] = rect },
                                 modifier = baseDragMod,
                             )
-                            return@key
-                        }
-
-                        val hiddenByCenter = mode.isVideo && layout.isHiddenByCenter(item.id, transportInCenter)
+                        } else {
+                            val hiddenByCenter = mode.isVideo && layout.isHiddenByCenter(item.id, transportInCenter)
                         val selectMod = if (isSelected) {
                             Modifier
                                 .border(2.dp, accent, CircleShape)
@@ -1899,6 +1899,7 @@ private fun PreviewBarRow(
                                 onClick = { onSelect(SlotSelection.PanelItem(bar, index)) },
                                 modifier = baseDragMod,
                             )
+                        }
                         }
                     }
                 }

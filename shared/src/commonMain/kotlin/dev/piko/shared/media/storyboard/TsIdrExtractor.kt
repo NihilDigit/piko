@@ -342,11 +342,12 @@ object TsIdrExtractor {
             val flags = (bytes[7].toInt() ushr 6) and 0x3
             if (flags and 0x2 == 0) return null
             val headerEnd = 9 + (bytes[8].toInt() and 0xFF)
-            if (headerEnd >= bytes.size) return null
+            if (headerEnd < 14 || headerEnd >= bytes.size) return null
             val declared = ((bytes[4].toInt() and 0xFF) shl 8) or (bytes[5].toInt() and 0xFF)
             if (requireDeclaredLength && declared == 0) return null
             if (declared != 0 && bytes.size < 6 + declared) return null
             val end = if (declared == 0) bytes.size else minOf(bytes.size, 6 + declared)
+            if (end <= headerEnd) return null
             val pts = timestamp(bytes, 9)
             return PesPacket(pts, bytes.copyOfRange(headerEnd, end))
         }

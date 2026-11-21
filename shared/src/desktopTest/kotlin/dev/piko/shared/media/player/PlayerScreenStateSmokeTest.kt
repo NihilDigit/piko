@@ -282,6 +282,7 @@ class PlayerScreenStateSmokeTest {
         assertEquals(true, secondUrl.isMpegTsTranscode)
         assertEquals(180_000L, secondOpen.startMillis)
         assertEquals(512L * 1024L, state.mediaInfo?.sizeBytes)
+        assertEquals(1024L * 1024L, state.mediaInfo?.originalSizeBytes, "播放转码流时仍须保留原画文件大小供 ABR 计算原画码率")
 
         val block = 256L * 1024L
         assertEquals(
@@ -526,6 +527,80 @@ class PlayerScreenStateSmokeTest {
             cloud.playEvents.any { it.fileId == "f1" && it.playSeconds == 95L && it.playDuration == 600L },
             "Previous episode report must survive immediate player close after switchTo, got: ${cloud.playEvents}",
         )
+    }
+
+    @Test
+    fun switchingAccountBeforeClosingPlayerReportsHistoryToOriginalSessionAccount() = runBlocking {
+        val cloudA = FakePikPakCloud(origin = FakePikPakCloud.payload(1024 * 1024))
+        val cloudB = FakePikPakCloud(origin = FakePikPakCloud.payload(1024 * 1024))
+        val currentClientFlow = kotlinx.coroutines.flow.MutableStateFlow(cloudA.provider.currentClient.value)
+        val switchableProvider = object : dev.piko.shared.data.PikoClientProvider {
+            override val currentClient: kotlinx.coroutines.flow.StateFlow<io.github.nihildigit.pikpak.PikPakClient?> = currentClientFlow
+        }
+        val syncPositions = RecordedPositions(syncPlayHistory = true)
+        val switchableRepo = PikoMediaRepository(switchableProvider, syncPositions.preferences)
+
+        val state = withContext(stateThread) {
+            PlayerScreenState(
+                repository = switchableRepo,
+                backend = backend,
+                scope = scope,
+                initialFileId = "f1",
+                initialFileName = cloudA.fileName,
+            ).apply { playlist = emptyList() }
+        }
+        backend.awaitOpens(1)
+        backend.emit(PlaybackBackendEvent.Ready)
+        backend.progress(positionMillis = 150_000L, durationMillis = 600_000L)
+
+        // 用户先切换登录账号至 B，随后关闭旧播放器：最终播放历史必须上报给开播时归属的账号 A，绝不污染账号 B
+        currentClientFlow.value = cloudB.provider.currentClient.value
+        leavePlayer(state)
+        switchableRepo.flushPlayHistory(timeoutMillis = 3_000L)
+
+        assertTrue(
+            cloudA.playEvents.any { it.fileId == "f1" && it.playSeconds == 150L && it.playDuration == 600L },
+            "Original account A must receive final play history report, got: ${cloudA.playEvents}",
+        )
+        assertTrue(cloudB.playEvents.isEmpty(), "Switched-to account B must never receive old session play history: ${cloudB.playEvents}")
+    }
+
+    @Test
+    fun endedWithLaggingBackendPositionNeverOverwritesZeroResetOrCompletedHistory() = runBlocking {
+        positions.syncPlayHistoryFlow.value = true
+        val state = newState()
+        backend.awaitOpens(1)
+        backend.emit(PlaybackBackendEvent.Ready)
+        // 模拟 EOF 时后端最后一次上报的 positionMillis 仍滞后在距片尾 >10s 处（580s / 600s）
+        backend.progress(positionMillis = 580_000L, durationMillis = 600_000L)
+        backend.emit(PlaybackBackendEvent.Ended)
+
+        leavePlayer(state)
+        repository.flushPlayHistory(timeoutMillis = 3_000L)
+
+        assertEquals(0L, positions.saved["f1"], "Ended reset to 0ms must not be overwritten by lagging backend position on close")
+        assertEquals(600L, cloud.playEvents.lastOrNull { it.fileId == "f1" }?.playSeconds, "Completed play history must stay at full duration")
+    }
+
+    @Test
+    fun seekBufferingStallDoesNotTriggerFalseAutoQualityDowngrade() = runBlocking {
+        backend.simulateNativeGenerations = true
+        val state = newState()
+        backend.awaitOpens(1)
+        backend.emit(PlaybackBackendEvent.Ready)
+        backend.progress(positionMillis = 30_000L, durationMillis = 600_000L)
+        assertEquals(dev.piko.shared.media.ORIGINAL_QUALITY, state.autoResolvedQuality)
+
+        // 发起拖动定位并保持后端处于 seek 缓冲等待态 4.5s（超过稳态 3s 卡顿降档阈值）
+        withContext(stateThread) {
+            state.seekTo(300_000L)
+            Snapshot.sendApplyNotifications()
+        }
+        delay(4_500L)
+
+        assertEquals(1, backend.opens.size, "Buffering caused by active seek must not trigger ABR stall downgrade")
+        assertEquals(dev.piko.shared.media.ORIGINAL_QUALITY, state.autoResolvedQuality)
+        leavePlayer(state)
     }
 
     private fun java.net.HttpURLConnection.useCode(): Int = try {

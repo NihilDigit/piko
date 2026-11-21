@@ -154,49 +154,53 @@ class FileStoryboardCache(
     override suspend fun read(gcid: String): StoryboardBundle? = withContext(Dispatchers.IO) {
         val safeName = safeFileName(gcid) ?: return@withContext null
         val file = Path(directory, "$safeName$EXTENSION")
-        val bundle = lock.withLock {
+        lock.withLock {
             if (!SystemFileSystem.exists(file)) return@withLock null
-            runCatching {
+            val bundle = runCatching {
                 SystemFileSystem.source(file).buffered().use { StoryboardBundleCodec.decode(it) }
             }.onFailure { err ->
                 if (err is CancellationException) throw err
                 PikoLog.w(TAG, "Failed to read storyboard bundle", err)
-            }.getOrNull()
-        } ?: return@withContext null
+            }.getOrNull() ?: return@withLock null
 
-        // 若上次访问时间超过节流窗口则刷新 lastAccessEpochMillis，保证 LRU 准确
-        val now = nowMillis()
-        if (now - bundle.lastAccessEpochMillis >= TOUCH_THROTTLE_MS) {
-            val touched = bundle.copy(lastAccessEpochMillis = now)
-            runCatching { write(touched) }
-            touched
-        } else {
-            bundle
+            // 若上次访问时间超过节流窗口则在同一把锁内刷新 lastAccessEpochMillis，防止并发写盘被旧快照覆盖
+            val now = nowMillis()
+            if (now - bundle.lastAccessEpochMillis >= TOUCH_THROTTLE_MS) {
+                val touched = bundle.copy(lastAccessEpochMillis = now)
+                writeLocked(safeName, touched)
+                touched
+            } else {
+                bundle
+            }
         }
     }
 
     override suspend fun write(bundle: StoryboardBundle): Unit = withContext(Dispatchers.IO) {
         val safeName = safeFileName(bundle.gcid) ?: return@withContext
-        val target = Path(directory, "$safeName$EXTENSION")
-        val temp = Path(directory, "$safeName.${Random.nextLong().toULong()}.tmp")
         val normalized = if (bundle.lastAccessEpochMillis > 0L) {
             bundle
         } else {
             bundle.copy(lastAccessEpochMillis = nowMillis())
         }
         lock.withLock {
-            runCatching {
-                SystemFileSystem.createDirectories(directory)
-                SystemFileSystem.sink(temp).buffered().use { sink ->
-                    StoryboardBundleCodec.encode(normalized, sink)
-                }
-                SystemFileSystem.atomicMove(temp, target)
-            }.onFailure { err ->
-                if (err is CancellationException) throw err
-                PikoLog.w(TAG, "Failed to write storyboard bundle", err)
-            }
-            runCatching { SystemFileSystem.delete(temp, mustExist = false) }
+            writeLocked(safeName, normalized)
         }
+    }
+
+    private fun writeLocked(safeName: String, bundle: StoryboardBundle) {
+        val target = Path(directory, "$safeName$EXTENSION")
+        val temp = Path(directory, "$safeName.${Random.nextLong().toULong()}.tmp")
+        runCatching {
+            SystemFileSystem.createDirectories(directory)
+            SystemFileSystem.sink(temp).buffered().use { sink ->
+                StoryboardBundleCodec.encode(bundle, sink)
+            }
+            SystemFileSystem.atomicMove(temp, target)
+        }.onFailure { err ->
+            if (err is CancellationException) throw err
+            PikoLog.w(TAG, "Failed to write storyboard bundle", err)
+        }
+        runCatching { SystemFileSystem.delete(temp, mustExist = false) }
     }
 
     override suspend fun delete(gcid: String): Unit = withContext(Dispatchers.IO) {

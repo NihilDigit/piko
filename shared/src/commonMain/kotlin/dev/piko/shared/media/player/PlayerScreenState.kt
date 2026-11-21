@@ -30,6 +30,7 @@ import dev.piko.shared.runtime.WorkPhase
 import dev.piko.shared.runtime.WorkPurpose
 import io.github.nihildigit.pikpak.BufferBudget
 import io.github.nihildigit.pikpak.ConsumerIntent
+import io.github.nihildigit.pikpak.PikPakClient
 import io.github.nihildigit.pikpak.PlaybackBufferSnapshot
 import io.github.nihildigit.pikpak.ServiceIntent
 import kotlinx.coroutines.sync.Mutex
@@ -201,14 +202,15 @@ class PlayerScreenState(
      */
     val storyboardSource: StoryboardSource? by derivedStateOf {
         val info = mediaInfo ?: return@derivedStateOf null
-        val unreadable = repository.knownUnreadableTranscodeIds(info.fileId, info.gcid, info.sizeBytes)
+        val contentSizeBytes = info.originalSizeBytes.takeIf { it > 0L } ?: info.sizeBytes
+        val unreadable = repository.knownUnreadableTranscodeIds(info.fileId, info.gcid, contentSizeBytes)
         StoryboardSourceResolver.resolve(
             isLocalPlayback = isLocalPlayback,
             mediaInfo = info,
             durationMillis = durationMillis,
             unreadableMediaIds = unreadable,
             knownStreamSizeLookup = { mediaId ->
-                repository.knownTranscodeStreamSizeFor(info.fileId, info.gcid, info.sizeBytes, mediaId)
+                repository.knownTranscodeStreamSizeFor(info.fileId, info.gcid, contentSizeBytes, mediaId)
             },
         )
     }
@@ -322,6 +324,7 @@ class PlayerScreenState(
     private var cachedWindowRenditions: Set<String> = emptySet()
     private val abrClockOrigin = TimeSource.Monotonic.markNow()
     private val abrController = AdaptiveBitrateController()
+    private var lastSeekAtMillis: Long = Long.MIN_VALUE
 
     private fun abrNowMillis(): Long = abrClockOrigin.elapsedNow().inWholeMilliseconds
 
@@ -355,6 +358,8 @@ class PlayerScreenState(
     private var lastKnownDurationMillis = 0L
     /** 当前文件是否已产生过可信的播放进度（仅在换片 reset，不因切画质/ABR/重连重置）。 */
     private var hasVerifiedProgressForFile = false
+    /** 当前文件开播时绑定的账号客户端，避免关闭前切账号导致进度错报到新账号。 */
+    private var playbackAccountClient: PikPakClient? = repository.currentAccountClient()
     private val playbackTransition = Mutex()
     private var released by mutableStateOf(false)
     private val workloadLease = PikoWorkloadGovernor.Shared.register(
@@ -681,6 +686,9 @@ class PlayerScreenState(
         acceptedNativeGeneration = expectedNativeGen
         val nextEpoch = maxOf(intentEpoch + 1L, expectedNativeGen)
         intentEpoch = nextEpoch
+        val seekAt = abrNowMillis()
+        lastSeekAtMillis = seekAt
+        abrController.notePlaybackReady(seekAt)
         seeking = true
         prepared?.let { active ->
             active.cancelPrewarm()
@@ -809,7 +817,6 @@ class PlayerScreenState(
 
     fun restartFromBeginning() {
         val key = positionKey
-        val targetLog = logFile(fileId, title)
         resumePositionVerified = true
         lastKnownPositionMillis = 0L
         hasVerifiedProgressForFile = false
@@ -817,6 +824,9 @@ class PlayerScreenState(
         acceptedNativeGeneration = expectedNativeGen
         val nextEpoch = maxOf(intentEpoch + 1L, expectedNativeGen)
         intentEpoch = nextEpoch
+        val seekAt = abrNowMillis()
+        lastSeekAtMillis = seekAt
+        abrController.notePlaybackReady(seekAt)
         seeking = true
         prepared?.let { active ->
             active.cancelPrewarm()
@@ -831,7 +841,6 @@ class PlayerScreenState(
         resumedFromMillis = null
         if (key.isNotBlank() && !isImage) {
             repository.savePlaybackPositionAsync(key, 0L)
-            scope.launch { runCatchingNonCancel("save local playback position ($targetLog)") { repository.savePlaybackPosition(key, 0L) } }
         }
     }
 
@@ -848,6 +857,7 @@ class PlayerScreenState(
         this.fileId = fileId
         title = fileName
         localPathHint = localPath
+        playbackAccountClient = repository.currentAccountClient()
         mediaInfo = null
         activeQuality = null
         requestedQuality = null
@@ -855,6 +865,7 @@ class PlayerScreenState(
         failedAutoQualities.clear()
         cachedCoverageByMediaId = emptyMap()
         cachedWindowRenditions = emptySet()
+        lastSeekAtMillis = Long.MIN_VALUE
         abrController.resetSession(nowMillis = abrNowMillis(), clearBandwidth = false)
         pendingStartMillis = null
         lastKnownPositionMillis = 0L
@@ -914,13 +925,15 @@ class PlayerScreenState(
             return
         }
         persistAsync(key, pos, dur)
-        if (id.isNotBlank()) {
+        val sessionClient = playbackAccountClient
+        if (id.isNotBlank() && sessionClient != null) {
             repository.enqueuePlayHistory(
                 fileId = id,
                 positionMillis = pos,
                 durationMillis = dur,
                 urgent = urgent,
                 title = currentTitle,
+                client = sessionClient,
             )
         }
     }
@@ -1032,6 +1045,9 @@ class PlayerScreenState(
             }
 
             tracksChosenThisFile = false
+            if (playbackAccountClient == null) {
+                playbackAccountClient = repository.currentAccountClient()
+            }
             val localPath = resolveLocalPath(fileId, repository.localPath(fileId) ?: localPathHint)
             if (localPath != null) {
                 isLocalPlayback = true
@@ -1055,59 +1071,77 @@ class PlayerScreenState(
                     ?: localSaved
                     ?: 0L
                 val playbackStarted = TimeSource.Monotonic.markNow()
-                var playback = repository.preparePlayback(
-                    fileId = fileId,
-                    preferredResolution = requestedQuality,
-                    defaultMaxHeight = configuredMaxHeight,
-                    startPositionMillis = prewarmStartHint,
-                ).getOrThrow()
-                val hasTranscodes = playback.info.availableVariants.any { !it.isOrigin && it.video != null && it.link.url.isNotBlank() }
-                val autoMode = hasTranscodes && when {
-                    sessionAutoQuality != null -> sessionAutoQuality == true
-                    requestedQuality != null -> false
-                    else -> configuredMaxHeight == PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT
-                }
-                // 自动画质冷开播/重播时先查本地缓存覆盖：若某档位已有可观本地缓存（>= 25% 或起点窗口命中），
-                // 直接切换到已缓存档位开播，实现零额外流量秒开。
-                if (autoMode && requestedQuality == null && playback.info.kind == PlayableMediaKind.Video) {
-                    val infoDurMs = playback.info.durationSeconds * 1_000L
-                    val (cov, win) = runCatching {
-                        repository.cachedRenditionCoverage(playback.info, prewarmStartHint, infoDurMs)
-                    }.getOrDefault(emptyMap<String, Float>() to emptySet())
-                    cachedCoverageByMediaId = cov
-                    cachedWindowRenditions = win
-                    if (cov.isNotEmpty() || win.isNotEmpty()) {
-                        val cands = autoQualityCandidatesFor(playback.info, infoDurMs)
-                        val speed = (sessionSpeed ?: backend.speed).coerceAtLeast(0.5f)
-                        val preferredCached = abrController.pickInitial(cands, speed, cov, win)
-                        val openedName = playback.info.transcodeName ?: ORIGINAL_QUALITY
-                        if (preferredCached.isNotBlank() && preferredCached != openedName) {
-                            val reopened = repository.preparePlayback(
-                                fileId = fileId,
-                                preferredResolution = preferredCached,
-                                defaultMaxHeight = configuredMaxHeight,
-                                startPositionMillis = prewarmStartHint,
-                            ).getOrNull()
-                            if (reopened != null) {
-                                playback.close()
-                                playback = reopened
+                var unassignedPlayback: PreparedPlayback? = null
+                val autoMode: Boolean
+                val playback: PreparedPlayback = try {
+                    var candidate = repository.preparePlayback(
+                        fileId = fileId,
+                        preferredResolution = requestedQuality,
+                        defaultMaxHeight = configuredMaxHeight,
+                        startPositionMillis = prewarmStartHint,
+                    ).getOrThrow()
+                    unassignedPlayback = candidate
+                    candidate.client?.let { playbackAccountClient = it }
+                    val hasTranscodes = candidate.info.availableVariants.any { !it.isOrigin && it.video != null && it.link.url.isNotBlank() }
+                    autoMode = hasTranscodes && when {
+                        sessionAutoQuality != null -> sessionAutoQuality == true
+                        requestedQuality != null -> false
+                        else -> configuredMaxHeight == PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT
+                    }
+                    // 自动画质冷开播/重播时先查本地缓存覆盖：若某档位已有可观本地缓存（>= 25% 或起点窗口命中），
+                    // 直接切换到已缓存档位开播，实现零额外流量秒开。
+                    if (autoMode && requestedQuality == null && candidate.info.kind == PlayableMediaKind.Video) {
+                        val infoDurMs = candidate.info.durationSeconds * 1_000L
+                        val (cov, win) = try {
+                            repository.cachedRenditionCoverage(candidate.info, prewarmStartHint, infoDurMs)
+                        } catch (cancel: CancellationException) {
+                            throw cancel
+                        } catch (_: Exception) {
+                            emptyMap<String, Float>() to emptySet()
+                        }
+                        cachedCoverageByMediaId = cov
+                        cachedWindowRenditions = win
+                        if (cov.isNotEmpty() || win.isNotEmpty()) {
+                            val cands = autoQualityCandidatesFor(candidate.info, infoDurMs)
+                            val speed = (sessionSpeed ?: backend.speed).coerceAtLeast(0.5f)
+                            val preferredCached = abrController.pickInitial(cands, speed, cov, win)
+                            val openedName = candidate.info.transcodeName ?: ORIGINAL_QUALITY
+                            if (preferredCached.isNotBlank() && preferredCached != openedName) {
+                                val reopened = repository.preparePlayback(
+                                    fileId = fileId,
+                                    preferredResolution = preferredCached,
+                                    defaultMaxHeight = configuredMaxHeight,
+                                    startPositionMillis = prewarmStartHint,
+                                ).getOrNull()
+                                if (reopened != null) {
+                                    candidate.close()
+                                    candidate = reopened
+                                    unassignedPlayback = candidate
+                                    candidate.client?.let { playbackAccountClient = it }
+                                }
                             }
                         }
                     }
+                    if (released) throw CancellationException("Player released during prepare")
+                    // 出第一帧前直接提交 WAITING 意图（未知缓冲保持 bufferedDuration = null，绝不伪装成 0s），
+                    // 并预先对齐 backend.open 内部的 generation 递增，防止开播探测中途二次递增 epoch。
+                    acceptedNativeGeneration = Long.MIN_VALUE
+                    val initialEpoch = maxOf(intentEpoch + 1L, backend.playbackGeneration + 1L)
+                    intentEpoch = initialEpoch
+                    submitPlaybackIntent(
+                        candidate,
+                        WorkPhase.Urgent,
+                        initialEpoch,
+                        PlaybackBufferSnapshot(initialEpoch, null, TimeSource.Monotonic.markNow(), candidate.estimatedBytesPerSecond),
+                    )
+                    prepared = candidate
+                    unassignedPlayback = null
+                    candidate
+                } catch (t: Throwable) {
+                    unassignedPlayback?.close()
+                    throw t
                 }
                 val prepareMillis = playbackStarted.elapsedNow().inWholeMilliseconds
-                // 出第一帧前直接提交 WAITING 意图（未知缓冲保持 bufferedDuration = null，绝不伪装成 0s），
-                // 并预先对齐 backend.open 内部的 generation 递增，防止开播探测中途二次递增 epoch。
-                acceptedNativeGeneration = Long.MIN_VALUE
-                val initialEpoch = maxOf(intentEpoch + 1L, backend.playbackGeneration + 1L)
-                intentEpoch = initialEpoch
-                submitPlaybackIntent(
-                    playback,
-                    WorkPhase.Urgent,
-                    initialEpoch,
-                    PlaybackBufferSnapshot(initialEpoch, null, TimeSource.Monotonic.markNow(), playback.estimatedBytesPerSecond),
-                )
-                prepared = playback
                 mediaInfo = playback.info
                 val knownDur = durationMillis
                 if (knownDur > 0L) lastKnownDurationMillis = knownDur
@@ -1218,25 +1252,27 @@ class PlayerScreenState(
                 val key = positionKey
                 val id = fileId
                 val currentTitle = title
+                val sessionClient = playbackAccountClient
                 val dur = currentDuration()
                 val pos = currentPosition()
                 val verified = hasVerifiedProgressForFile || (startedThisAttempt && resumePositionVerified)
-                if (verified && dur > 0L) {
-                    lastKnownPositionMillis = dur
+                // 在切下一集或关闭前先清零本集活跃标记与已知进度，防止后端滞后的旧位置覆盖 0ms 重置与完播上报
+                startedThisAttempt = false
+                lastKnownPositionMillis = 0L
+                hasVerifiedProgressForFile = false
+                if (key.isNotBlank() && !isImage) {
+                    repository.savePlaybackPositionAsync(key, 0L)
                 }
-                repository.savePlaybackPositionAsync(key, 0L)
-                val targetLog = logFile(id, currentTitle)
-                scope.launch { runCatchingNonCancel("save local playback position ($targetLog)") { repository.savePlaybackPosition(key, 0L) } }
-                if (verified && !isImage && id.isNotBlank() && dur > 0L) {
+                if (verified && !isImage && id.isNotBlank() && dur > 0L && sessionClient != null) {
                     repository.enqueuePlayHistory(
                         fileId = id,
                         positionMillis = maxOf(pos, dur),
                         durationMillis = dur,
                         urgent = true,
                         title = currentTitle,
+                        client = sessionClient,
                     )
                 }
-                // 放完接着放下一集。switchTo 会按片尾位置再存一次，而片尾位置存的也是 0
                 nextEntry?.let(::playEntry)
             }
 
@@ -1415,13 +1451,15 @@ class PlayerScreenState(
                     val pos = currentPosition()
                     val dur = currentDuration()
                     persist(positionKey, pos, dur)
-                    if (!released && !isImage && fileId.isNotBlank()) {
+                    val sessionClient = playbackAccountClient
+                    if (!released && !isImage && fileId.isNotBlank() && sessionClient != null) {
                         repository.enqueuePlayHistory(
                             fileId = fileId,
                             positionMillis = pos,
                             durationMillis = dur,
                             urgent = true,
                             title = title,
+                            client = sessionClient,
                         )
                     }
                 }
@@ -1436,6 +1474,7 @@ class PlayerScreenState(
 
     private fun reportPlayPeriodic() {
         val id = fileId
+        val sessionClient = playbackAccountClient ?: return
         if (!startedThisAttempt || !resumePositionVerified || !backend.isPlaying || isImage || id.isBlank()) return
         val pos = currentPosition()
         val dur = currentDuration()
@@ -1444,7 +1483,7 @@ class PlayerScreenState(
         val sameFile = id == lastPeriodicCloudFileId
         if (sameFile && posSec == lastPeriodicCloudPosSec) return
         if (sameFile && lastPeriodicCloudAt.elapsedNow() < PLAY_REPORT_INTERVAL) return
-        if (repository.enqueuePlayHistory(id, pos, dur, urgent = false, title = title)) {
+        if (repository.enqueuePlayHistory(id, pos, dur, urgent = false, title = title, client = sessionClient)) {
             lastPeriodicCloudFileId = id
             lastPeriodicCloudPosSec = posSec
             lastPeriodicCloudAt = TimeSource.Monotonic.markNow()
@@ -1556,7 +1595,8 @@ class PlayerScreenState(
             ?: 0L
         val out = ArrayList<AbrRendition>()
         val origVariant = info.availableVariants.firstOrNull { it.isOrigin }
-        val origSize = if (info.isOrigin && info.sizeBytes > 0L) info.sizeBytes else 0L
+        val origSize = info.originalSizeBytes.takeIf { it > 0L }
+            ?: if (info.isOrigin && info.sizeBytes > 0L) info.sizeBytes else 0L
         val origBySize = if (origSize > 0L && durationSec > 0L) origSize / durationSec else 0L
         val origByBitRate = (origVariant?.video?.bitRate ?: 0L) / 8L
         val origBps = maxOf(origBySize, origByBitRate).takeIf { it > 0L } ?: (400L * 1024L)
@@ -1662,14 +1702,26 @@ class PlayerScreenState(
             }
 
             if (!isAutoQuality || !startedThisAttempt) continue
+            if (seeking) {
+                lastSeekAtMillis = nowMs
+                abrController.notePlaybackReady(nowMs)
+                continue
+            }
+            if (lastSeekAtMillis != Long.MIN_VALUE && nowMs - lastSeekAtMillis < POST_SEEK_ABR_GRACE_MS) {
+                continue
+            }
             val candidates = autoQualityCandidates()
             if (candidates.size < 2) continue
 
             val info = mediaInfo
             if (info != null && coveragePollTick % ABR_CACHE_POLL_EVERY_TICKS == 0) {
-                val (cov, win) = runCatching {
+                val (cov, win) = try {
                     repository.cachedRenditionCoverage(info, backend.positionMillis, durationMillis)
-                }.getOrDefault(cachedCoverageByMediaId to cachedWindowRenditions)
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (_: Exception) {
+                    cachedCoverageByMediaId to cachedWindowRenditions
+                }
                 cachedCoverageByMediaId = cov
                 cachedWindowRenditions = win
             }
@@ -1791,6 +1843,7 @@ class PlayerScreenState(
         const val STOP_DRAIN_TIMEOUT_MILLIS = 350L
         const val REACTIVATION_WAIT_MILLIS = 5 * 60_000L
         const val AUTO_QUALITY_POLL_MS = 1_000L
+        const val POST_SEEK_ABR_GRACE_MS = 3_000L
         const val ABR_CACHE_POLL_EVERY_TICKS = 3
         val RECOVERY_DELAYS_MILLIS = longArrayOf(500L, 1_500L, 4_000L)
         val retireScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

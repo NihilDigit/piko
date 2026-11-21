@@ -62,6 +62,7 @@ class StoryboardEngine(
     private val initialSlotCount = StoryboardPlanner.slotCountForDuration(source.durationMillis)
     private val stateLock = Mutex()
     private val decodeLock = Mutex()
+    private val persistLock = Mutex()
     private val decodedBySlot = LinkedHashMap<Int, StoryboardFrame>()
     private val failedSlots = HashSet<Int>()
 
@@ -205,23 +206,38 @@ class StoryboardEngine(
                 engineStartMs = engineStartMs,
             )
 
-            val (allDone, frameCount, failedCount, contCount) = stateLock.withLock {
-                val done = decodedBySlot.size + failedSlots.size >= slots.size && decodedBySlot.isNotEmpty()
+            val summary = stateLock.withLock {
+                val processedAll = slots.isNotEmpty() && decodedBySlot.size + failedSlots.size >= slots.size
+                val minCompletedFrames = maxOf(1, (slots.size * MIN_COMPLETION_NUMERATOR) / MIN_COMPLETION_DENOMINATOR)
+                val done = processedAll && (failedSlots.isEmpty() || decodedBySlot.size >= minCompletedFrames)
                 if (done) {
                     publishTimelineLocked(isComplete = true)
                 }
-                CompletionSummary(done, decodedBySlot.size, failedSlots.size, continuationFetches)
+                CompletionSummary(
+                    allDone = done,
+                    hasFrames = decodedBySlot.isNotEmpty(),
+                    frames = decodedBySlot.size,
+                    failed = failedSlots.size,
+                    continuations = continuationFetches,
+                )
             }
-            if (allDone) {
+            if (summary.allDone) {
                 persistSnapshotIfDirty(completed = true, header = resolvedHeader, force = true)
                 PikoLog.i(
                     TAG,
                     "Storyboard complete: ${logFile(source.fileId, source.mediaId)}, " +
-                        "frames=$frameCount, totalSlots=${slots.size}, failed=$failedCount, " +
-                        "elapsedMs=${(nowMillis() - engineStartMs).coerceAtLeast(0L)}, continuations=$contCount",
+                        "frames=${summary.frames}, totalSlots=${slots.size}, failed=${summary.failed}, " +
+                        "elapsedMs=${(nowMillis() - engineStartMs).coerceAtLeast(0L)}, continuations=${summary.continuations}",
                 )
             } else {
-                persistSnapshotIfDirty(completed = false, header = resolvedHeader)
+                persistSnapshotIfDirty(completed = false, header = resolvedHeader, force = summary.hasFrames)
+                if (summary.failed > 0) {
+                    PikoLog.d(
+                        TAG,
+                        "Storyboard incomplete due to slot failures: ${logFile(source.fileId, source.mediaId)}, " +
+                            "frames=${summary.frames}, totalSlots=${slots.size}, failed=${summary.failed}",
+                    )
+                }
             }
         } catch (cancel: CancellationException) {
             withContext(NonCancellable) {
@@ -587,22 +603,22 @@ class StoryboardEngine(
         completed: Boolean,
         header: TsStoryboardHeader?,
         force: Boolean = false,
-    ) {
+    ) = persistLock.withLock {
         val bundle = stateLock.withLock {
-            if (!force && dirtyNewFrames <= 0) return
+            if (!force && dirtyNewFrames <= 0) return@withLock null
             val frames = _timeline.value.frames
-            if (frames.isEmpty()) return
+            if (frames.isEmpty()) return@withLock null
             dirtyNewFrames = 0
             StoryboardBundle(
                 gcid = source.gcid,
                 durationMillis = source.durationMillis,
                 width = header?.width ?: source.width,
                 height = header?.height ?: source.height,
-                completed = completed,
+                completed = completed || _timeline.value.isComplete,
                 lastAccessEpochMillis = nowMillis(),
                 frames = frames,
             )
-        }
+        } ?: return@withLock
         runCatching { cache.write(bundle) }
             .onFailure { err ->
                 if (err is CancellationException) throw err
@@ -617,6 +633,7 @@ class StoryboardEngine(
 
     private data class CompletionSummary(
         val allDone: Boolean,
+        val hasFrames: Boolean,
         val frames: Int,
         val failed: Int,
         val continuations: Int,
@@ -648,5 +665,7 @@ class StoryboardEngine(
         const val BUSY_BOOSTED_CONCURRENCY = 2
         const val USER_BOOST_WINDOW_SLOTS = 16
         const val PERSIST_BATCH_INTERVAL = 16
+        const val MIN_COMPLETION_NUMERATOR = 3
+        const val MIN_COMPLETION_DENOMINATOR = 4
     }
 }

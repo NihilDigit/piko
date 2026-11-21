@@ -78,7 +78,13 @@ internal object OriginalSubtitleExtractor {
     private const val MAX_MOOV_BYTES = 8 * 1024 * 1024
     private const val MAX_SUBTITLE_TOTAL_BYTES = 4 * 1024 * 1024
     private const val MAX_MP4_SUB_CHUNKS = 240
+    private const val MAX_MP4_SUB_SAMPLES = 50_000
+    private const val MAX_MP4_TABLE_ENTRIES = 50_000
+    private const val MAX_MP4_SUB_SAMPLE_BYTES = 64 * 1024
     private const val MAX_MKV_DIRECT_EXTRACT_BYTES = 96L * 1024 * 1024
+    private const val MAX_MKV_SUB_BLOCK_BYTES = 64L * 1024L
+    private const val MAX_MKV_BLOCK_GROUP_BYTES = 256L * 1024L
+    private const val MAX_SAFE_TIMESTAMP_MS = Long.MAX_VALUE / 4L
 
     suspend fun extract(
         fileSize: Long,
@@ -145,14 +151,21 @@ internal object OriginalSubtitleExtractor {
         val cuesByTrack = extractableTracks.associate { it.info.trackNumber to ArrayList<MkvCue>() }
         val timecodeScaleNs = header.timecodeScaleNs.takeIf { it > 0L } ?: 1_000_000L
 
-        // 流式顺序扫描 Cluster（仅当文件较小或已命中本地缓存时执行；位图字幕如 PGS/VobSub 不参与文本扫描）
+        // 流式按 EBML 元素边界扫描 Cluster（跨分块保持剩余载荷字节数，绝不在压缩视频字节内做盲扫）
         var filePos = header.firstClusterOffset.coerceAtLeast(0L)
         val chunkBytes = 1024 * 1024
         var carry = ByteArray(0)
+        var skipBytesRemaining = 0L
         var currentClusterTimecode = 0L
         var totalCueBytes = 0
 
         while (filePos < fileSize && totalCueBytes < MAX_SUBTITLE_TOTAL_BYTES) {
+            if (skipBytesRemaining > 0L && carry.isEmpty()) {
+                val advance = min(skipBytesRemaining, fileSize - filePos)
+                filePos += advance
+                skipBytesRemaining -= advance
+                if (filePos >= fileSize) break
+            }
             val len = min(chunkBytes.toLong(), fileSize - filePos).toInt()
             val chunk = if (filePos == 0L && len <= head.size) {
                 head.copyOfRange(0, len)
@@ -161,21 +174,28 @@ internal object OriginalSubtitleExtractor {
             } ?: break
             if (chunk.isEmpty()) break
             filePos += chunk.size
+            val isEof = filePos >= fileSize
 
             val buf = if (carry.isEmpty()) chunk else carry + chunk
-            val consumed = scanMkvBuffer(
+            val scanResult = scanMkvBuffer(
                 buf = buf,
+                fileSize = fileSize,
+                isEof = isEof,
+                initialSkipBytes = skipBytesRemaining,
                 tracksByNum = tracksByNum,
                 timecodeScaleNs = timecodeScaleNs,
                 currentClusterTimecode = currentClusterTimecode,
                 onClusterTimecode = { currentClusterTimecode = it },
                 onCue = { trackNum, cue ->
-                    cuesByTrack[trackNum]?.add(cue)
-                    totalCueBytes += cue.payload.length
+                    if (totalCueBytes < MAX_SUBTITLE_TOTAL_BYTES) {
+                        cuesByTrack[trackNum]?.add(cue)
+                        totalCueBytes += cue.payload.length
+                    }
                 },
             )
+            skipBytesRemaining = scanResult.skipBytesRemaining
+            val consumed = scanResult.consumed
             carry = if (consumed < buf.size) {
-                // 避免单个超大视频块撑爆 carry；最多保留尾部 512 KiB
                 val keepStart = maxOf(consumed, buf.size - 512 * 1024)
                 buf.copyOfRange(keepStart, buf.size)
             } else {
@@ -358,72 +378,165 @@ internal object OriginalSubtitleExtractor {
         )
     }
 
+    private data class MkvScanResult(
+        val consumed: Int,
+        val skipBytesRemaining: Long,
+    )
+
     /**
-     * 在当前缓冲区中扫描 Cluster Timecode (0xE7)、SimpleBlock (0xA3) 与 BlockGroup (0xA0)。
-     * 通过合法 VINT 约束避免把视频载荷字节误认为字幕块。
+     * 按验证过的 EBML 元素边界流式扫描 Cluster Timecode (0xE7)、SimpleBlock (0xA3) 与 BlockGroup (0xA0)。
+     * 非目标大块（如视频关键帧或内封字体）跨分块时保留 [MkvScanResult.skipBytesRemaining]，绝不在视频字节内盲扫。
      */
     private fun scanMkvBuffer(
         buf: ByteArray,
+        fileSize: Long,
+        isEof: Boolean,
+        initialSkipBytes: Long,
         tracksByNum: Map<Int, MkvSubTrack>,
         timecodeScaleNs: Long,
         currentClusterTimecode: Long,
         onClusterTimecode: (Long) -> Unit,
         onCue: (trackNumber: Int, cue: MkvCue) -> Unit,
-    ): Int {
+    ): MkvScanResult {
         var clusterTc = currentClusterTimecode
         var pos = 0
-        while (pos + 4 < buf.size) {
-            // 优先匹配 Cluster ID (0x1F 0x43 0xB6 0x75)
-            if (buf[pos] == 0x1F.toByte() &&
-                buf[pos + 1] == 0x43.toByte() &&
-                buf[pos + 2] == 0xB6.toByte() &&
-                buf[pos + 3] == 0x75.toByte()
-            ) {
-                val sz = readEbmlSize(buf, pos + 4)
-                if (sz != null) {
-                    pos = sz.nextPos
-                    continue
-                }
+        if (initialSkipBytes > 0L) {
+            if (initialSkipBytes >= buf.size.toLong()) {
+                return MkvScanResult(consumed = buf.size, skipBytesRemaining = initialSkipBytes - buf.size.toLong())
             }
-            val b = buf[pos].toInt() and 0xFF
-            when (b) {
-                0xE7 -> { // Cluster Timecode
-                    val sz = readEbmlSize(buf, pos + 1)
-                    if (sz != null && !sz.unknown && sz.value in 1L..8L) {
-                        val end = sz.nextPos + sz.value.toInt()
-                        if (end > buf.size) return pos
-                        clusterTc = readUIntBe(buf, sz.nextPos, sz.value.toInt())
-                        onClusterTimecode(clusterTc)
-                        pos = end
-                        continue
-                    }
-                }
-                0xA3 -> { // SimpleBlock
-                    val sz = readEbmlSize(buf, pos + 1)
-                    if (sz != null && !sz.unknown && sz.value in 5L..16_777_216L) {
-                        val dataStart = sz.nextPos
-                        val end = dataStart + sz.value.toInt()
-                        if (end > buf.size) return if (sz.value <= 256 * 1024) pos else buf.size
-                        parseMkvBlock(buf, dataStart, end, tracksByNum, timecodeScaleNs, clusterTc, blockDuration = null, onCue = onCue)
-                        pos = end
-                        continue
-                    }
-                }
-                0xA0 -> { // BlockGroup
-                    val sz = readEbmlSize(buf, pos + 1)
-                    if (sz != null && !sz.unknown && sz.value in 6L..256 * 1024L) {
-                        val dataStart = sz.nextPos
-                        val end = dataStart + sz.value.toInt()
-                        if (end > buf.size) return pos
-                        parseMkvBlockGroup(buf, dataStart, end, tracksByNum, timecodeScaleNs, clusterTc, onCue)
-                        pos = end
-                        continue
-                    }
-                }
-            }
-            pos++
+            pos = initialSkipBytes.toInt()
         }
-        return pos
+
+        while (pos < buf.size) {
+            if (!isEof && buf.size - pos < 16) {
+                return MkvScanResult(consumed = pos, skipBytesRemaining = 0L)
+            }
+            val id = readEbmlId(buf, pos)
+            val sz = if (id != null) readEbmlSize(buf, id.nextPos) else null
+            if (id == null || sz == null) {
+                if (!isEof && buf.size - pos < 16) {
+                    return MkvScanResult(consumed = pos, skipBytesRemaining = 0L)
+                }
+                pos = resyncToNextCluster(buf, pos + 1, isEof)
+                continue
+            }
+            val dataStart = sz.nextPos
+            if (id.value == 0x18538067L || id.value == 0x1F43B675L) { // Segment or Cluster: step into children
+                pos = dataStart
+                continue
+            }
+            if (sz.unknown || sz.value < 0L || sz.value > fileSize) {
+                pos = resyncToNextCluster(buf, pos + 1, isEof)
+                continue
+            }
+            val availInBuf = (buf.size - dataStart).toLong()
+            when (id.value) {
+                0xE7L -> { // Cluster Timestamp
+                    if (sz.value > 8L) {
+                        pos = resyncToNextCluster(buf, pos + 1, isEof)
+                        continue
+                    }
+                    if (sz.value > availInBuf) {
+                        return if (!isEof) {
+                            MkvScanResult(consumed = pos, skipBytesRemaining = 0L)
+                        } else {
+                            MkvScanResult(consumed = buf.size, skipBytesRemaining = 0L)
+                        }
+                    }
+                    val end = dataStart + sz.value.toInt()
+                    if (sz.value > 0L) {
+                        val parsedTc = readUIntBe(buf, dataStart, sz.value.toInt())
+                        if (parsedTc >= 0L) {
+                            clusterTc = parsedTc
+                            onClusterTimecode(clusterTc)
+                        }
+                    }
+                    pos = end
+                }
+                0xA3L -> { // SimpleBlock
+                    if (sz.value < 4L) {
+                        if (sz.value <= availInBuf) {
+                            pos = dataStart + sz.value.toInt()
+                            continue
+                        }
+                        return MkvScanResult(consumed = buf.size, skipBytesRemaining = sz.value - availInBuf)
+                    }
+                    if (availInBuf < min(4L, sz.value)) {
+                        return if (!isEof) {
+                            MkvScanResult(consumed = pos, skipBytesRemaining = 0L)
+                        } else {
+                            MkvScanResult(consumed = buf.size, skipBytesRemaining = 0L)
+                        }
+                    }
+                    val trackVint = readEbmlSize(buf, dataStart)
+                    val isSubTrack = trackVint != null &&
+                        !trackVint.unknown &&
+                        trackVint.value in 1L..Int.MAX_VALUE.toLong() &&
+                        tracksByNum.containsKey(trackVint.value.toInt())
+                    if (!isSubTrack || sz.value > MAX_MKV_SUB_BLOCK_BYTES) {
+                        if (sz.value <= availInBuf) {
+                            pos = dataStart + sz.value.toInt()
+                            continue
+                        }
+                        return MkvScanResult(consumed = buf.size, skipBytesRemaining = sz.value - availInBuf)
+                    }
+                    if (sz.value > availInBuf) {
+                        return if (!isEof) {
+                            MkvScanResult(consumed = pos, skipBytesRemaining = 0L)
+                        } else {
+                            MkvScanResult(consumed = buf.size, skipBytesRemaining = 0L)
+                        }
+                    }
+                    val end = dataStart + sz.value.toInt()
+                    parseMkvBlock(buf, dataStart, end, tracksByNum, timecodeScaleNs, clusterTc, blockDuration = null, onCue = onCue)
+                    pos = end
+                }
+                0xA0L -> { // BlockGroup
+                    if (sz.value > MAX_MKV_BLOCK_GROUP_BYTES || sz.value < 6L) {
+                        if (sz.value <= availInBuf) {
+                            pos = dataStart + sz.value.toInt()
+                            continue
+                        }
+                        return MkvScanResult(consumed = buf.size, skipBytesRemaining = sz.value - availInBuf)
+                    }
+                    if (sz.value > availInBuf) {
+                        return if (!isEof) {
+                            MkvScanResult(consumed = pos, skipBytesRemaining = 0L)
+                        } else {
+                            parseMkvBlockGroup(buf, dataStart, buf.size, tracksByNum, timecodeScaleNs, clusterTc, onCue)
+                            MkvScanResult(consumed = buf.size, skipBytesRemaining = 0L)
+                        }
+                    }
+                    val end = dataStart + sz.value.toInt()
+                    parseMkvBlockGroup(buf, dataStart, end, tracksByNum, timecodeScaleNs, clusterTc, onCue)
+                    pos = end
+                }
+                else -> {
+                    if (sz.value <= availInBuf) {
+                        pos = dataStart + sz.value.toInt()
+                    } else {
+                        return MkvScanResult(consumed = buf.size, skipBytesRemaining = sz.value - availInBuf)
+                    }
+                }
+            }
+        }
+        return MkvScanResult(consumed = pos, skipBytesRemaining = 0L)
+    }
+
+    private fun resyncToNextCluster(buf: ByteArray, fromPos: Int, isEof: Boolean): Int {
+        var i = fromPos.coerceAtLeast(0)
+        while (i + 4 <= buf.size) {
+            if (buf[i] == 0x1F.toByte() &&
+                buf[i + 1] == 0x43.toByte() &&
+                buf[i + 2] == 0xB6.toByte() &&
+                buf[i + 3] == 0x75.toByte()
+            ) {
+                if (!isEof && buf.size - i < 12) return i
+                if (readEbmlSize(buf, i + 4) != null) return i
+            }
+            i++
+        }
+        return if (isEof) buf.size else maxOf(fromPos, buf.size - 3).coerceAtMost(buf.size)
     }
 
     private fun parseMkvBlockGroup(
@@ -471,7 +584,9 @@ internal object OriginalSubtitleExtractor {
         blockDuration: Long?,
         onCue: (Int, MkvCue) -> Unit,
     ) {
+        if (clusterTc < 0L || timecodeScaleNs <= 0L) return
         val trackVint = readEbmlSize(buf, start) ?: return
+        if (trackVint.unknown || trackVint.value !in 1L..Int.MAX_VALUE.toLong()) return
         val trackNum = trackVint.value.toInt()
         val track = tracksByNum[trackNum] ?: return
         val headerPos = trackVint.nextPos
@@ -482,13 +597,42 @@ internal object OriginalSubtitleExtractor {
         if (payloadLen <= 0 || payloadLen > 32 * 1024) return
         val text = decodeSubtitleSlice(buf, payloadStart, end).trimEnd('\u0000')
         if (text.isBlank()) return
-        val startMs = ((clusterTc + relTc) * timecodeScaleNs) / 1_000_000L
+        val rawTicks = if (relTc >= 0L) satAdd(clusterTc, relTc) else (clusterTc + relTc).coerceAtLeast(0L)
+        val startMs = scaleTicksToMillisSafe(rawTicks, timecodeScaleNs)
         val durMs = when {
-            blockDuration != null && blockDuration > 0L -> (blockDuration * timecodeScaleNs) / 1_000_000L
+            blockDuration != null && blockDuration > 0L -> scaleTicksToMillisSafe(blockDuration, timecodeScaleNs)
             track.defaultDurationNs > 0L -> track.defaultDurationNs / 1_000_000L
             else -> 3_000L
         }.coerceIn(200L, 30_000L)
-        onCue(trackNum, MkvCue(startMs = startMs.coerceAtLeast(0L), endMs = (startMs + durMs).coerceAtLeast(startMs + 200L), payload = text))
+        val safeStart = startMs.coerceAtLeast(0L)
+        val safeEnd = satAdd(safeStart, durMs).coerceAtLeast(satAdd(safeStart, 200L))
+        onCue(trackNum, MkvCue(startMs = safeStart, endMs = safeEnd, payload = text))
+    }
+
+    private fun satAdd(a: Long, b: Long): Long {
+        if (a <= 0L) return b.coerceAtMost(MAX_SAFE_TIMESTAMP_MS)
+        if (b <= 0L) return a.coerceAtMost(MAX_SAFE_TIMESTAMP_MS)
+        return if (MAX_SAFE_TIMESTAMP_MS - a < b) MAX_SAFE_TIMESTAMP_MS else a + b
+    }
+
+    private fun satMul(a: Long, b: Long): Long {
+        if (a <= 0L || b <= 0L) return 0L
+        return if (a > MAX_SAFE_TIMESTAMP_MS / b) MAX_SAFE_TIMESTAMP_MS else a * b
+    }
+
+    private fun scaleTicksToMillisSafe(ticks: Long, timecodeScaleNs: Long): Long {
+        if (ticks <= 0L || timecodeScaleNs <= 0L) return 0L
+        if (timecodeScaleNs == 1_000_000L) return ticks.coerceAtMost(MAX_SAFE_TIMESTAMP_MS)
+        val m = 1_000_000L
+        val qT = ticks / m
+        val rT = ticks % m
+        val qS = timecodeScaleNs / m
+        val rS = timecodeScaleNs % m
+        val term1 = satMul(satMul(qT, qS), m)
+        val term2 = satMul(qT, rS)
+        val term3 = satMul(rT, qS)
+        val term4 = (rT * rS) / m
+        return satAdd(satAdd(term1, term2), satAdd(term3, term4))
     }
 
     private fun formatMkvSubtitle(track: MkvSubTrack, cues: List<MkvCue>): String {
@@ -585,15 +729,22 @@ internal object OriginalSubtitleExtractor {
     // MP4 / MOV (ISO-BMFF) — 零视频字节下载的稀疏字幕提取
     // =========================================================================
 
+    private data class Mp4Stsz(
+        val defaultSize: Int,
+        val sampleCount: Int,
+        val sizes: IntArray,
+    )
+
     private data class Mp4SubTrack(
         val trackId: Int,
         val language: String?,
         val title: String?,
         val codec: String,
         val timescale: Long,
-        val stts: List<Pair<Int, Long>>, // count -> delta
-        val stsc: List<Triple<Int, Int, Int>>, // firstChunk -> samplesPerChunk -> descIdx
+        val stts: List<Pair<Long, Long>>, // count -> delta
+        val stsc: List<Triple<Long, Long, Long>>, // firstChunk -> samplesPerChunk -> descIdx
         val stszDefault: Int,
+        val stszSampleCount: Int,
         val stszSizes: IntArray,
         val chunkOffsets: LongArray,
     )
@@ -642,14 +793,16 @@ internal object OriginalSubtitleExtractor {
         fileSize: Long,
         readRange: suspend (Long, Int) -> ByteArray?,
     ): ByteArray? {
+        if (fileSize < 8L) return null
         var offset = 0L
         var hops = 0
-        while (offset + 8L <= fileSize && hops < 24) {
+        while (offset <= fileSize - 8L && hops < 24) {
             hops++
-            val hdr = if (offset + 16L <= head.size) {
+            val remaining = fileSize - offset
+            val hdr = if (offset <= head.size.toLong() - 16L) {
                 head.copyOfRange(offset.toInt(), (offset + 16L).toInt())
             } else {
-                readRange(offset, min(16L, fileSize - offset).toInt())
+                readRange(offset, min(16L, remaining).toInt())
             } ?: return null
             if (hdr.size < 8) return null
             val rawSize = readUInt32Be(hdr, 0)
@@ -659,7 +812,7 @@ internal object OriginalSubtitleExtractor {
             when (rawSize) {
                 0L -> {
                     headerLen = 8L
-                    boxSize = fileSize - offset
+                    boxSize = remaining
                 }
                 1L -> {
                     if (hdr.size < 16) return null
@@ -671,12 +824,12 @@ internal object OriginalSubtitleExtractor {
                     boxSize = rawSize
                 }
             }
-            if (boxSize < headerLen) return null
+            if (boxSize < headerLen || boxSize <= 0L || boxSize > remaining) return null
             if (type == "moov") {
-                if (boxSize > MAX_MOOV_BYTES) return null
+                if (boxSize > MAX_MOOV_BYTES.toLong()) return null
                 val payloadOffset = offset + headerLen
                 val payloadLen = (boxSize - headerLen).toInt()
-                return if (payloadOffset + payloadLen <= head.size) {
+                return if (payloadOffset <= head.size.toLong() - payloadLen.toLong()) {
                     head.copyOfRange(payloadOffset.toInt(), (payloadOffset + payloadLen).toInt())
                 } else {
                     readRange(payloadOffset, payloadLen)
@@ -704,9 +857,10 @@ internal object OriginalSubtitleExtractor {
         var timescale = 1_000L
         var language: String? = null
         var codec: String? = null
-        var stts: List<Pair<Int, Long>> = emptyList()
-        var stsc: List<Triple<Int, Int, Int>> = emptyList()
+        var stts: List<Pair<Long, Long>> = emptyList()
+        var stsc: List<Triple<Long, Long, Long>> = emptyList()
         var stszDefault = 0
+        var stszSampleCount = 0
         var stszSizes = IntArray(0)
         var chunkOffsets = LongArray(0)
 
@@ -749,8 +903,9 @@ internal object OriginalSubtitleExtractor {
                                                 "stsc" -> stsc = parseStsc(buf, bs, be)
                                                 "stsz" -> {
                                                     val parsed = parseStsz(buf, bs, be)
-                                                    stszDefault = parsed.first
-                                                    stszSizes = parsed.second
+                                                    stszDefault = parsed.defaultSize
+                                                    stszSampleCount = parsed.sampleCount
+                                                    stszSizes = parsed.sizes
                                                 }
                                                 "stco" -> chunkOffsets = parseStco(buf, bs, be)
                                                 "co64" -> chunkOffsets = parseCo64(buf, bs, be)
@@ -777,6 +932,7 @@ internal object OriginalSubtitleExtractor {
             stts = stts,
             stsc = stsc,
             stszDefault = stszDefault,
+            stszSampleCount = stszSampleCount,
             stszSizes = stszSizes,
             chunkOffsets = chunkOffsets,
         )
@@ -787,40 +943,65 @@ internal object OriginalSubtitleExtractor {
         fileSize: Long,
         readRange: suspend (Long, Int) -> ByteArray?,
     ): List<MkvCue> {
-        val sampleCount = if (track.stszDefault > 0) track.stts.sumOf { it.first } else track.stszSizes.size
-        if (sampleCount <= 0 || track.chunkOffsets.size > MAX_MP4_SUB_CHUNKS) return emptyList()
+        if (track.chunkOffsets.isEmpty() || track.chunkOffsets.size > MAX_MP4_SUB_CHUNKS) return emptyList()
+        var sttsTotalSamples = 0L
+        for ((count, delta) in track.stts) {
+            if (count < 0L || delta < 0L) return emptyList()
+            sttsTotalSamples = (sttsTotalSamples + count).coerceAtMost(MAX_MP4_SUB_SAMPLES.toLong() + 1L)
+        }
+        val declaredSampleCount = if (track.stszDefault > 0) track.stszSampleCount else track.stszSizes.size
+        if (declaredSampleCount <= 0 || sttsTotalSamples <= 0L) return emptyList()
+        val sampleCount = minOf(
+            declaredSampleCount.toLong(),
+            sttsTotalSamples,
+            MAX_MP4_SUB_SAMPLES.toLong(),
+        ).toInt()
+        if (sampleCount <= 0) return emptyList()
 
         // 展开每个样本的起止时间戳
+        val timescale = track.timescale.coerceAtLeast(1L)
         val startTimesMs = LongArray(sampleCount)
         val endTimesMs = LongArray(sampleCount)
         var cursor = 0
         var pts = 0L
         for ((count, delta) in track.stts) {
-            for (i in 0 until count) {
-                if (cursor >= sampleCount) break
-                startTimesMs[cursor] = (pts * 1000L) / track.timescale
-                pts += delta
-                endTimesMs[cursor] = (pts * 1000L) / track.timescale
+            if (cursor >= sampleCount) break
+            val runLen = minOf(count, (sampleCount - cursor).toLong()).toInt()
+            for (i in 0 until runLen) {
+                startTimesMs[cursor] = mp4PtsToMillisSafe(pts, timescale)
+                pts = if (Long.MAX_VALUE - pts < delta) Long.MAX_VALUE else pts + delta
+                endTimesMs[cursor] = mp4PtsToMillisSafe(pts, timescale)
                 cursor++
             }
         }
 
         // 将连续块按样本映射为待读取区间，并合并邻近区间以减少 HTTP Range 次数
         data class SampleSpan(val sampleIdx: Int, val offset: Long, val size: Int)
-        val spans = ArrayList<SampleSpan>(sampleCount)
+        val spans = ArrayList<SampleSpan>(min(sampleCount, 4096))
         var sampleIdx = 0
         for (chunkIdx in track.chunkOffsets.indices) {
-            val chunkNum1Based = chunkIdx + 1
+            if (sampleIdx >= sampleCount) break
+            val chunkNum1Based = chunkIdx + 1L
             val samplesInChunk = samplesPerChunkAt(track.stsc, chunkNum1Based)
+                .coerceIn(0L, (sampleCount - sampleIdx).toLong())
+                .toInt()
             var off = track.chunkOffsets[chunkIdx]
+            if (off < 0L || off > fileSize) {
+                sampleIdx += samplesInChunk
+                continue
+            }
             for (s in 0 until samplesInChunk) {
                 if (sampleIdx >= sampleCount) break
-                val sz = if (track.stszDefault > 0) track.stszDefault else track.stszSizes[sampleIdx]
-                if (sz > 0 && off >= 0L && off + sz <= fileSize) {
-                    spans += SampleSpan(sampleIdx, off, sz)
+                val idx = sampleIdx++
+                val sz = if (track.stszDefault > 0) track.stszDefault else track.stszSizes[idx]
+                if (sz < 0 || off < 0L || off > fileSize || sz.toLong() > fileSize - off) {
+                    off = -1L
+                    continue
                 }
-                off += sz
-                sampleIdx++
+                if (sz in 1..MAX_MP4_SUB_SAMPLE_BYTES) {
+                    spans += SampleSpan(idx, off, sz)
+                }
+                off += sz.toLong()
             }
         }
         if (spans.isEmpty()) return emptyList()
@@ -828,32 +1009,55 @@ internal object OriginalSubtitleExtractor {
         // 仅拉取小体积字幕区段（合并间隔 <= 4 KiB 的相邻块，总拉取量不超过 2 MiB）
         val cues = ArrayList<MkvCue>()
         var fetchedTotal = 0
+        var totalCueBytes = 0
         var i = 0
-        while (i < spans.size && fetchedTotal < 2 * 1024 * 1024) {
+        while (i < spans.size && fetchedTotal < 2 * 1024 * 1024 && totalCueBytes < MAX_SUBTITLE_TOTAL_BYTES) {
             val groupStart = spans[i].offset
-            var groupEnd = groupStart + spans[i].size
+            var groupEnd = groupStart + spans[i].size.toLong()
             var j = i + 1
-            while (j < spans.size && spans[j].offset - groupEnd <= 4096L && (spans[j].offset + spans[j].size - groupStart) <= 64 * 1024L) {
-                groupEnd = maxOf(groupEnd, spans[j].offset + spans[j].size)
+            while (j < spans.size) {
+                val nextEnd = spans[j].offset + spans[j].size.toLong()
+                if (spans[j].offset < groupStart || spans[j].offset - groupEnd > 4096L || (nextEnd - groupStart) > 64 * 1024L) {
+                    break
+                }
+                groupEnd = maxOf(groupEnd, nextEnd)
                 j++
             }
             val fetchLen = (groupEnd - groupStart).toInt()
+            if (fetchLen <= 0) {
+                i = j
+                continue
+            }
             val bytes = readRange(groupStart, fetchLen) ?: break
             fetchedTotal += bytes.size
             for (k in i until j) {
+                if (totalCueBytes >= MAX_SUBTITLE_TOTAL_BYTES) break
                 val sp = spans[k]
-                val rel = (sp.offset - groupStart).toInt()
-                if (rel < 0 || rel + sp.size > bytes.size) continue
-                val text = decodeMp4SubtitleSample(track.codec, bytes, rel, sp.size)
+                val relLong = sp.offset - groupStart
+                if (relLong < 0L || relLong + sp.size.toLong() > bytes.size.toLong()) continue
+                val text = decodeMp4SubtitleSample(track.codec, bytes, relLong.toInt(), sp.size)
                 if (!text.isNullOrBlank()) {
                     val st = startTimesMs[sp.sampleIdx]
-                    val en = endTimesMs[sp.sampleIdx].coerceAtLeast(st + 200L)
+                    val en = endTimesMs[sp.sampleIdx].coerceAtLeast(satAdd(st, 200L))
                     cues += MkvCue(startMs = st, endMs = en, payload = text)
+                    totalCueBytes += text.length
                 }
             }
             i = j
         }
         return cues
+    }
+
+    private fun mp4PtsToMillisSafe(pts: Long, timescale: Long): Long {
+        if (pts <= 0L || timescale <= 0L) return 0L
+        val seconds = pts / timescale
+        val rem = pts % timescale
+        val remMs = if (rem <= Long.MAX_VALUE / 1_000L) {
+            (rem * 1_000L) / timescale
+        } else {
+            ((rem.toDouble() * 1_000.0) / timescale.toDouble()).toLong()
+        }
+        return satAdd(satMul(seconds, 1_000L), remMs)
     }
 
     private fun decodeMp4SubtitleSample(codec: String, buf: ByteArray, offset: Int, len: Int): String? {
@@ -881,17 +1085,18 @@ internal object OriginalSubtitleExtractor {
         }
     }
 
-    private fun samplesPerChunkAt(stsc: List<Triple<Int, Int, Int>>, chunkNum1Based: Int): Int {
-        var spc = 1
+    private fun samplesPerChunkAt(stsc: List<Triple<Long, Long, Long>>, chunkNum1Based: Long): Long {
+        var spc = 1L
         for ((first, count, _) in stsc) {
             if (first <= chunkNum1Based) spc = count else break
         }
-        return spc
+        return spc.coerceIn(0L, MAX_MP4_SUB_SAMPLES.toLong())
     }
 
     private fun forEachMp4Box(buf: ByteArray, start: Int, end: Int, onBox: (type: String, payloadStart: Int, payloadEnd: Int) -> Unit) {
         var pos = start
-        while (pos + 8 <= end) {
+        val limit = end.coerceAtMost(buf.size)
+        while (pos >= 0 && pos <= limit - 8) {
             val rawSize = readUInt32Be(buf, pos)
             val type = fourCc(buf, pos + 4)
             val headerLen: Int
@@ -899,10 +1104,10 @@ internal object OriginalSubtitleExtractor {
             when (rawSize) {
                 0L -> {
                     headerLen = 8
-                    boxSize = (end - pos).toLong()
+                    boxSize = (limit - pos).toLong()
                 }
                 1L -> {
-                    if (pos + 16 > end) break
+                    if (pos > limit - 16) break
                     headerLen = 16
                     boxSize = readUInt64Be(buf, pos + 8)
                 }
@@ -911,66 +1116,81 @@ internal object OriginalSubtitleExtractor {
                     boxSize = rawSize
                 }
             }
-            if (boxSize < headerLen) break
-            val next = min(end.toLong(), pos + boxSize).toInt()
+            if (boxSize < headerLen.toLong() || boxSize > (limit - pos).toLong()) break
+            val next = pos + boxSize.toInt()
             onBox(type, pos + headerLen, next)
             if (next <= pos) break
             pos = next
         }
     }
 
-    private fun parseStts(buf: ByteArray, start: Int, end: Int): List<Pair<Int, Long>> {
+    private fun parseStts(buf: ByteArray, start: Int, end: Int): List<Pair<Long, Long>> {
         if (end - start < 8) return emptyList()
-        val count = readUInt32Be(buf, start + 4).toInt().coerceIn(0, 100_000)
-        val out = ArrayList<Pair<Int, Long>>(count)
+        val rawCount = readUInt32Be(buf, start + 4)
+        val maxByBytes = (end - start - 8) / 8
+        val count = minOf(rawCount, maxByBytes.toLong(), MAX_MP4_TABLE_ENTRIES.toLong()).coerceAtLeast(0L).toInt()
+        val out = ArrayList<Pair<Long, Long>>(count)
         var pos = start + 8
         repeat(count) {
-            if (pos + 8 > end) return out
-            out += readUInt32Be(buf, pos).toInt() to readUInt32Be(buf, pos + 4)
+            if (pos > end - 8) return out
+            out += readUInt32Be(buf, pos) to readUInt32Be(buf, pos + 4)
             pos += 8
         }
         return out
     }
 
-    private fun parseStsc(buf: ByteArray, start: Int, end: Int): List<Triple<Int, Int, Int>> {
+    private fun parseStsc(buf: ByteArray, start: Int, end: Int): List<Triple<Long, Long, Long>> {
         if (end - start < 8) return emptyList()
-        val count = readUInt32Be(buf, start + 4).toInt().coerceIn(0, 100_000)
-        val out = ArrayList<Triple<Int, Int, Int>>(count)
+        val rawCount = readUInt32Be(buf, start + 4)
+        val maxByBytes = (end - start - 8) / 12
+        val count = minOf(rawCount, maxByBytes.toLong(), MAX_MP4_TABLE_ENTRIES.toLong()).coerceAtLeast(0L).toInt()
+        val out = ArrayList<Triple<Long, Long, Long>>(count)
         var pos = start + 8
         repeat(count) {
-            if (pos + 12 > end) return out
+            if (pos > end - 12) return out
             out += Triple(
-                readUInt32Be(buf, pos).toInt(),
-                readUInt32Be(buf, pos + 4).toInt(),
-                readUInt32Be(buf, pos + 8).toInt(),
+                readUInt32Be(buf, pos),
+                readUInt32Be(buf, pos + 4).coerceAtMost(MAX_MP4_SUB_SAMPLES.toLong()),
+                readUInt32Be(buf, pos + 8),
             )
             pos += 12
         }
         return out
     }
 
-    private fun parseStsz(buf: ByteArray, start: Int, end: Int): Pair<Int, IntArray> {
-        if (end - start < 12) return 0 to IntArray(0)
-        val defaultSize = readUInt32Be(buf, start + 4).toInt()
-        val count = readUInt32Be(buf, start + 8).toInt().coerceIn(0, 100_000)
-        if (defaultSize > 0) return defaultSize to IntArray(0)
+    private fun parseStsz(buf: ByteArray, start: Int, end: Int): Mp4Stsz {
+        if (end - start < 12) return Mp4Stsz(0, 0, IntArray(0))
+        val rawDefaultSize = readUInt32Be(buf, start + 4)
+        val rawCount = readUInt32Be(buf, start + 8)
+        if (rawDefaultSize > MAX_MP4_SUB_SAMPLE_BYTES.toLong() || rawCount <= 0L) {
+            return Mp4Stsz(0, 0, IntArray(0))
+        }
+        if (rawDefaultSize > 0L) {
+            val cappedCount = min(rawCount, MAX_MP4_SUB_SAMPLES.toLong()).toInt()
+            return Mp4Stsz(rawDefaultSize.toInt(), cappedCount, IntArray(0))
+        }
+        val maxByBytes = (end - start - 12) / 4
+        val count = minOf(rawCount, maxByBytes.toLong(), MAX_MP4_SUB_SAMPLES.toLong()).coerceAtLeast(0L).toInt()
         val sizes = IntArray(count)
         var pos = start + 12
         for (i in 0 until count) {
-            if (pos + 4 > end) break
-            sizes[i] = readUInt32Be(buf, pos).toInt()
+            if (pos > end - 4) break
+            val sz = readUInt32Be(buf, pos)
+            sizes[i] = if (sz in 0L..MAX_MP4_SUB_SAMPLE_BYTES.toLong()) sz.toInt() else -1
             pos += 4
         }
-        return 0 to sizes
+        return Mp4Stsz(0, count, sizes)
     }
 
     private fun parseStco(buf: ByteArray, start: Int, end: Int): LongArray {
         if (end - start < 8) return LongArray(0)
-        val count = readUInt32Be(buf, start + 4).toInt().coerceIn(0, 100_000)
+        val rawCount = readUInt32Be(buf, start + 4)
+        val maxByBytes = (end - start - 8) / 4
+        val count = minOf(rawCount, maxByBytes.toLong(), (MAX_MP4_SUB_CHUNKS + 1).toLong()).coerceAtLeast(0L).toInt()
         val out = LongArray(count)
         var pos = start + 8
         for (i in 0 until count) {
-            if (pos + 4 > end) break
+            if (pos > end - 4) break
             out[i] = readUInt32Be(buf, pos)
             pos += 4
         }
@@ -979,11 +1199,13 @@ internal object OriginalSubtitleExtractor {
 
     private fun parseCo64(buf: ByteArray, start: Int, end: Int): LongArray {
         if (end - start < 8) return LongArray(0)
-        val count = readUInt32Be(buf, start + 4).toInt().coerceIn(0, 100_000)
+        val rawCount = readUInt32Be(buf, start + 4)
+        val maxByBytes = (end - start - 8) / 8
+        val count = minOf(rawCount, maxByBytes.toLong(), (MAX_MP4_SUB_CHUNKS + 1).toLong()).coerceAtLeast(0L).toInt()
         val out = LongArray(count)
         var pos = start + 8
         for (i in 0 until count) {
-            if (pos + 8 > end) break
+            if (pos > end - 8) break
             out[i] = readUInt64Be(buf, pos)
             pos += 8
         }

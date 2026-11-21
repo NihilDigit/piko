@@ -108,6 +108,8 @@ data class PlayableMediaInfo(
     val width: Int = 0,
     val height: Int = 0,
     val isOrigin: Boolean = true,
+    /** 原画文件的真实字节大小；播放转码流时 [sizeBytes] 为转码流长度，此字段仍保留原画大小供 ABR 测算原画码率。 */
+    val originalSizeBytes: Long = if (isOrigin) sizeBytes else 0L,
 ) {
     /** 横向画面。尺寸未知时为 null，界面据此决定要不要提示全屏。 */
     val isLandscapeVideo: Boolean?
@@ -148,6 +150,8 @@ class PreparedPlayback internal constructor(
     val estimatedBytesPerSecond: Long? = null,
     val defaultBufferBudget: BufferBudget = playbackBufferBudget(),
     internal val demand: TransferDemand = TransferDemand(),
+    /** 打开本次播放会话时归属的账号客户端，供关闭播放器或切账号竞态时准确上报历史。 */
+    val client: PikPakClient? = null,
 ) : dev.piko.shared.media.player.PlaybackTransport {
     @Volatile internal var prewarmJob: Job? = null
     @Volatile private var boundPlaybackEpoch: Long = -1L
@@ -280,6 +284,9 @@ class PikoMediaRepository(
     private val clipCache: ClipCache? = null,
 ) {
     private val client get() = clientManager.currentClient.value ?: error("Not logged in")
+
+    /** 读取当前登录账号对应的 [PikPakClient] 快照，供播放器在开播时绑定会话账号。 */
+    fun currentAccountClient(): PikPakClient? = clientManager.currentClient.value
 
     /**
      * 打开归档条目时借用的文件对象放在哪个目录，返回它的 ID。PikoServices 组装好 Piko-Temp 之后设上：
@@ -527,12 +534,12 @@ class PikoMediaRepository(
                         PikoLog.d(TAG, "Reusing partial download cache for playback: $fileLabel, held=${task.downloadedBytes}/${task.totalBytes} B")
                         val info = PlayableMediaInfo(fileId, task.displayName.substringAfterLast('/'), task.gcid,
                             currentUrl = "", durationSeconds = 0, availableVariants = emptyList(),
-                            currentResolution = ORIGINAL_QUALITY, sizeBytes = task.totalBytes)
+                            currentResolution = ORIGINAL_QUALITY, sizeBytes = task.totalBytes, originalSizeBytes = task.totalBytes)
                         val stream = registerProxy(source, task.fileName.substringAfterLast('/'), fileLabel, owner)
                             ?: error(tr("无法创建本地播放会话", "Unable to create local playback session", "ローカル再生セッションを作成できません", "로컬 재생 세션을 만들 수 없습니다", "無法建立本機播放工作階段"))
                         val partialBudget = playbackBufferBudget()
                         owner.updateIntent { it.copy(bufferBudget = partialBudget) }
-                        return@runSuspendCatching PreparedPlayback(info, stream, defaultBufferBudget = partialBudget, demand = owner)
+                        return@runSuspendCatching PreparedPlayback(info, stream, defaultBufferBudget = partialBudget, demand = owner, client = client)
                     }
                 }
                 val detail = takeFreshDetail(client, fileId)
@@ -562,7 +569,7 @@ class PikoMediaRepository(
                 )
                 val defaultBudget = playbackBufferBudget(estimatedRate)
                 owner.updateIntent { it.copy(bufferBudget = defaultBudget) }
-                val prepared = PreparedPlayback(resolvedInfo, stream, estimatedRate, defaultBudget, owner)
+                val prepared = PreparedPlayback(resolvedInfo, stream, estimatedRate, defaultBudget, owner, client = client)
                 // 完整播放器必读偏移 0 识别容器与编解码头；MPEG-TS 转码流从中途续播或切换画质时，
                 // FFmpeg 打开无索引 TS 还需读末尾 PCR 计算总时长并向比例偏移跳读定位，并发预热首尾与估计落点可省去串行往返。
                 if (stream != null && stream.size > 0L) {
@@ -1131,40 +1138,49 @@ class PikoMediaRepository(
     suspend fun prepareExternalSubtitle(
         fileId: String,
         knownLanguage: String? = null,
-    ): PreparedSubtitle? =
-        withContext(Dispatchers.Default) {
-            var resolvedName = ""
-            runSuspendCatching {
-                val client = client
-                val detail = takeFreshDetail(client, fileId)
-                    ?: withApiPriority(ApiRequestPriority.INTERACTIVE) { detailOf(client, fileId) }
-                        .also { rememberFreshDetail(client, fileId, it) }
-                resolvedName = detail.name
-                val resolved = detail.resolveVariant(VariantPreference.Original)
-                val leased = LeasedFile.isLeased(fileId)
-                val expectedSize = (resolved.sizeBytes ?: detail.sizeBytes).coerceAtLeast(0L)
-                if (isTextSubtitleName(detail.name) && expectedSize in 1L..MAX_TEXT_SUBTITLE_BYTES) {
-                    val transcoded = runSuspendCatching {
-                        readAndNormalizeTextSubtitle(client, detail, resolved, leased, expectedSize.toInt())
-                    }.getOrNull()
-                    if (transcoded != null) {
-                        val sniffedLang = knownLanguage ?: detectSubtitleLanguageFromUtf8Bytes(transcoded, detail.name)
-                        val stream = registerProxy(
-                            source = InMemoryProxyByteSource(transcoded),
-                            fileName = detail.name,
-                            fileLabel = logFile(detail.id, detail.name),
-                        ) ?: return@runSuspendCatching null
-                        return@runSuspendCatching PreparedSubtitle(
-                            stream = stream,
-                            detectedLanguage = sniffedLang,
-                        )
+    ): PreparedSubtitle? {
+        var resolvedName = ""
+        val registeredStreams = ArrayList<ProxyStream>(1)
+        return try {
+            withContext(Dispatchers.Default) {
+                runSuspendCatching {
+                    val client = client
+                    val detail = takeFreshDetail(client, fileId)
+                        ?: withApiPriority(ApiRequestPriority.INTERACTIVE) { detailOf(client, fileId) }
+                            .also { rememberFreshDetail(client, fileId, it) }
+                    resolvedName = detail.name
+                    val resolved = detail.resolveVariant(VariantPreference.Original)
+                    val leased = LeasedFile.isLeased(fileId)
+                    val expectedSize = (resolved.sizeBytes ?: detail.sizeBytes).coerceAtLeast(0L)
+                    if (isTextSubtitleName(detail.name) && expectedSize in 1L..MAX_TEXT_SUBTITLE_BYTES) {
+                        val transcoded = runSuspendCatching {
+                            readAndNormalizeTextSubtitle(client, detail, resolved, leased, expectedSize.toInt())
+                        }.getOrNull()
+                        if (transcoded != null) {
+                            val sniffedLang = knownLanguage ?: detectSubtitleLanguageFromUtf8Bytes(transcoded, detail.name)
+                            val stream = registerProxy(
+                                source = InMemoryProxyByteSource(transcoded),
+                                fileName = detail.name,
+                                fileLabel = logFile(detail.id, detail.name),
+                            ) ?: return@runSuspendCatching null
+                            registeredStreams += stream
+                            return@runSuspendCatching PreparedSubtitle(
+                                stream = stream,
+                                detectedLanguage = sniffedLang,
+                            )
+                        }
                     }
-                }
-                openProxyStream(client, detail, resolved, leased = leased)?.let { stream ->
-                    PreparedSubtitle(stream = stream, detectedLanguage = knownLanguage)
-                }
-            }.logFailure(TAG, "Failed to prepare external subtitle stream: ${logFile(fileId, resolvedName)}").getOrNull()
+                    openProxyStream(client, detail, resolved, leased = leased)?.let { stream ->
+                        registeredStreams += stream
+                        PreparedSubtitle(stream = stream, detectedLanguage = knownLanguage)
+                    }
+                }.logFailure(TAG, "Failed to prepare external subtitle stream: ${logFile(fileId, resolvedName)}").getOrNull()
+            }
+        } catch (t: Throwable) {
+            registeredStreams.forEach { runCatching { it.close() } }
+            throw t
         }
+    }
 
     private suspend fun readAndNormalizeTextSubtitle(
         client: PikPakClient,
@@ -1204,8 +1220,9 @@ class PikoMediaRepository(
         durationMillis: Long,
         urgent: Boolean = false,
         title: String = "",
+        client: PikPakClient? = null,
     ): Boolean {
-        val owner = clientManager.currentClient.value
+        val owner = client ?: clientManager.currentClient.value
         if (owner == null) {
             PikoLog.d(TAG, "Skipped cloud play history report (not logged in): ${logFile(fileId, title)}")
             return false
@@ -1229,8 +1246,9 @@ class PikoMediaRepository(
         durationMillis: Long,
         urgent: Boolean = true,
         title: String = "",
+        client: PikPakClient? = null,
     ) {
-        if (enqueuePlayHistory(fileId, positionMillis, durationMillis, urgent = urgent, title = title)) {
+        if (enqueuePlayHistory(fileId, positionMillis, durationMillis, urgent = urgent, title = title, client = client)) {
             playHistoryReporter.flushAll()
         }
     }
@@ -1877,15 +1895,17 @@ class PikoMediaRepository(
         val account = clientManager.currentClient.value?.account ?: return emptyMap<String, Float>() to emptySet()
         val gcid = info.gcid.takeIf { it.isNotBlank() } ?: return emptyMap<String, Float>() to emptySet()
         val owner = clientManager.currentClient.value
+        val contentSizeBytes = info.originalSizeBytes.takeIf { it > 0L } ?: info.sizeBytes
         val content = if (owner != null) {
             metadataSink?.lookupContentByFileId(owner, info.fileId)
-                ?: metadataSink?.lookupContent(owner, gcid, info.sizeBytes)
+                ?: metadataSink?.lookupContent(owner, gcid, contentSizeBytes)
         } else {
             null
         }
         val transcodeSizes = content?.transcodes?.associate { it.mediaId to it.streamSizeBytes }.orEmpty()
         val freshDetail = if (owner != null) takeFreshDetail(owner, info.fileId) else null
         val origTotal = freshDetail?.sizeBytes?.takeIf { it > 0L }
+            ?: info.originalSizeBytes.takeIf { it > 0L }
             ?: info.sizeBytes.takeIf { info.isOrigin && it > 0L }
             ?: 0L
 
@@ -2087,75 +2107,116 @@ class PikoMediaRepository(
      * 当播放转码流时，尝试从原画容器中探测并提取仅原画携带的内封字幕（MP4 稀疏 Range 零视频下载、
      * 或小体积/已缓存 MKV 完整抽出），经本机回环代理挂载为外挂字幕供 mpv 同步显示。
      */
-    suspend fun prepareOriginalEmbeddedSubtitles(fileId: String): PreparedOriginalSubtitles =
-        withContext(Dispatchers.IO) {
-            if (fileId.isBlank() || dev.piko.shared.data.LocalLocation.isLocal(fileId)) {
-                return@withContext PreparedOriginalSubtitles()
-            }
-            val accountClient = clientManager.currentClient.value ?: return@withContext PreparedOriginalSubtitles()
-            val cached = cachedOriginalSubtitlesLock.withLock {
-                if (cachedOriginalSubtitlesOwner === accountClient) cachedOriginalSubtitles[fileId] else null
-            }
-            val result = if (cached != null) {
-                cached
-            } else {
-                val detail = takeFreshDetail(accountClient, fileId) ?: return@withContext PreparedOriginalSubtitles()
-                val original = detail.resolveVariant(VariantPreference.Original)
-                val url = original.link.url.takeIf { it.isNotBlank() } ?: return@withContext PreparedOriginalSubtitles()
-                val fileSize = detail.sizeBytes
-                if (fileSize <= 0L) return@withContext PreparedOriginalSubtitles()
-                val extracted = runSuspendCatching {
-                    OriginalSubtitleExtractor.extract(
-                        fileSize = fileSize,
-                        readRange = { offset, length ->
-                            withTimeoutOrNull(ORIGINAL_SUB_RANGE_TIMEOUT_MILLIS) {
-                                runSuspendCatching {
-                                    accountClient.streamRangeFromUrl(url, start = offset, length = length.toLong()) { stream ->
-                                        val buf = ByteArray(length)
-                                        var filled = 0
-                                        while (filled < length) {
-                                            val n = stream.channel.readAvailable(buf, filled, length - filled)
-                                            if (n <= 0) break
-                                            filled += n
-                                        }
-                                        if (filled == length) buf else buf.copyOf(filled)
+    suspend fun prepareOriginalEmbeddedSubtitles(fileId: String): PreparedOriginalSubtitles {
+        val registeredStreams = ArrayList<ProxyStream>()
+        return try {
+            withContext(Dispatchers.IO) {
+                if (fileId.isBlank() || dev.piko.shared.data.LocalLocation.isLocal(fileId)) {
+                    return@withContext PreparedOriginalSubtitles()
+                }
+                val accountClient = clientManager.currentClient.value ?: return@withContext PreparedOriginalSubtitles()
+                val cached = cachedOriginalSubtitlesLock.withLock {
+                    if (cachedOriginalSubtitlesOwner === accountClient) cachedOriginalSubtitles[fileId] else null
+                }
+                val result = if (cached != null) {
+                    cached
+                } else {
+                    val detail = takeFreshDetail(accountClient, fileId) ?: return@withContext PreparedOriginalSubtitles()
+                    val original = detail.resolveVariant(VariantPreference.Original)
+                    val url = original.link.url.takeIf { it.isNotBlank() } ?: return@withContext PreparedOriginalSubtitles()
+                    val fileSize = detail.sizeBytes
+                    if (fileSize <= 0L) return@withContext PreparedOriginalSubtitles()
+                    val pool = fileCachePool
+                    val fullyCached = if (pool != null && detail.hash.isNotBlank()) {
+                        runSuspendCatching {
+                            pool.cachedCoverage(
+                                account = accountClient.account,
+                                gcid = detail.hash,
+                                totalBytes = fileSize,
+                                mediaId = null,
+                                windowStartByte = 0L,
+                                windowLengthBytes = minOf(fileSize, ABR_CACHE_WINDOW_BYTES),
+                            ).coverageRatio >= 1.0f
+                        }.getOrDefault(false)
+                    } else {
+                        false
+                    }
+                    val extracted = runSuspendCatching {
+                        OriginalSubtitleExtractor.extract(
+                            fileSize = fileSize,
+                            readRange = { offset, length ->
+                                val fetchLen = minOf(length.toLong(), (fileSize - offset).coerceAtLeast(0L)).toInt()
+                                if (fetchLen <= 0 || offset < 0L) {
+                                    null
+                                } else {
+                                    val cachedRange = if (detail.hash.isNotBlank()) {
+                                        pool?.readCachedBytes(
+                                            account = accountClient.account,
+                                            gcid = detail.hash,
+                                            totalBytes = fileSize,
+                                            mediaId = null,
+                                            offset = offset,
+                                            length = fetchLen,
+                                        )
+                                    } else {
+                                        null
                                     }
-                                }.getOrNull()
-                            }
-                        },
-                    )
-                }.getOrElse {
-                    PikoLog.d(TAG, "Original subtitle probe skipped for ${logFile(fileId, detail.name)}: ${it::class.simpleName}: ${it.message}")
-                    OriginalEmbeddedSubtitlesResult()
-                }
-                cachedOriginalSubtitlesLock.withLock {
-                    if (cachedOriginalSubtitlesOwner !== accountClient) {
-                        cachedOriginalSubtitles.clear()
-                        cachedOriginalSubtitlesOwner = accountClient
+                                    cachedRange ?: withTimeoutOrNull(ORIGINAL_SUB_RANGE_TIMEOUT_MILLIS) {
+                                        runSuspendCatching {
+                                            accountClient.streamRangeFromUrl(url, start = offset, length = fetchLen.toLong()) { stream ->
+                                                val buf = ByteArray(fetchLen)
+                                                var filled = 0
+                                                while (filled < fetchLen) {
+                                                    val n = stream.channel.readAvailable(buf, filled, fetchLen - filled)
+                                                    if (n <= 0) break
+                                                    filled += n
+                                                }
+                                                if (filled == fetchLen) buf else buf.copyOf(filled)
+                                            }
+                                        }.getOrNull()
+                                    }
+                                }
+                            },
+                            canScanFullMkv = fullyCached,
+                        )
+                    }.getOrElse {
+                        PikoLog.d(TAG, "Original subtitle probe skipped for ${logFile(fileId, detail.name)}: ${it::class.simpleName}: ${it.message}")
+                        OriginalEmbeddedSubtitlesResult()
                     }
-                    if (cachedOriginalSubtitles.size >= MAX_CACHED_ORIGINAL_SUB_FILES) {
-                        cachedOriginalSubtitles.clear()
+                    cachedOriginalSubtitlesLock.withLock {
+                        if (cachedOriginalSubtitlesOwner !== accountClient) {
+                            cachedOriginalSubtitles.clear()
+                            cachedOriginalSubtitlesOwner = accountClient
+                        }
+                        if (cachedOriginalSubtitles.size >= MAX_CACHED_ORIGINAL_SUB_FILES) {
+                            cachedOriginalSubtitles.clear()
+                        }
+                        cachedOriginalSubtitles[fileId] = extracted
                     }
-                    cachedOriginalSubtitles[fileId] = extracted
+                    extracted
                 }
-                extracted
+                val attached = ArrayList<Pair<ExternalSubtitle, ProxyStream>>(result.extracted.size)
+                for (sub in result.extracted) {
+                    val stream = registerProxy(
+                        source = InMemoryProxyByteSource(sub.bytes),
+                        fileName = sub.fileName,
+                        fileLabel = logFile(fileId, sub.fileName),
+                    ) ?: continue
+                    registeredStreams += stream
+                    val lang = inferSubtitleLanguageCode(sub.info.language, sub.info.title ?: sub.fileName)
+                        ?: detectSubtitleLanguageFromUtf8Bytes(sub.bytes, sub.fileName)
+                    val title = sub.info.title
+                        ?: sub.info.language?.uppercase()
+                        ?: if (lang != null) "" else tr("原画字幕", "Original subtitles", "オリジナル字幕", "원본 자막", "原畫字幕")
+                    attached += ExternalSubtitle(url = stream.url, title = title, language = lang) to stream
+                }
+                PreparedOriginalSubtitles(attached = attached, unextracted = result.unextracted)
             }
-            val attached = ArrayList<Pair<ExternalSubtitle, ProxyStream>>(result.extracted.size)
-            for (sub in result.extracted) {
-                val stream = registerProxy(
-                    source = InMemoryProxyByteSource(sub.bytes),
-                    fileName = sub.fileName,
-                    fileLabel = logFile(fileId, sub.fileName),
-                ) ?: continue
-                val lang = inferSubtitleLanguageCode(sub.info.language, sub.info.title ?: sub.fileName)
-                    ?: detectSubtitleLanguageFromUtf8Bytes(sub.bytes, sub.fileName)
-                val title = sub.info.title
-                    ?: sub.info.language?.uppercase()
-                    ?: if (lang != null) "" else tr("原画字幕", "Original subtitles", "オリジナル字幕", "원본 자막", "原畫字幕")
-                attached += ExternalSubtitle(url = stream.url, title = title, language = lang) to stream
-            }
-            PreparedOriginalSubtitles(attached = attached, unextracted = result.unextracted)
+        } catch (t: Throwable) {
+            registeredStreams.forEach { runCatching { it.close() } }
+            throw t
         }
+    }
 
     private fun alignMpegTsSync(bytes: ByteArray): ByteArray? {
         if (bytes.size < TS_PACKET_BYTES.toInt() * 2) return null
@@ -2189,6 +2250,7 @@ class PikoMediaRepository(
             width = resolved.video?.width?.takeIf { it > 0 } ?: detail.params["width"]?.toIntOrNull() ?: 0,
             height = resolved.video?.height?.takeIf { it > 0 } ?: detail.params["height"]?.toIntOrNull() ?: 0,
             isOrigin = resolved.isOrigin,
+            originalSizeBytes = detail.sizeBytes,
         )
 
     private suspend fun <T> runSuspendCatching(block: suspend () -> T): Result<T> = try {

@@ -706,7 +706,7 @@ private fun ListenMainPane(
         // 细轨道进度条（复用 Piko PlayerSeekBar，仅音频播放启用 M3E 波浪轨道）
         Box(modifier = Modifier.fillMaxWidth().widthIn(max = 520.dp)) {
             PlayerSeekBar(
-                positionMillisProvider = { scrub.dragPositionMillis ?: state.positionMillis },
+                positionMillisProvider = { state.positionMillis },
                 durationMillis = state.durationMillis,
                 bufferedPositionMillisProvider = { state.bufferedPositionMillis },
                 onSeek = state::seekTo,

@@ -795,4 +795,65 @@ class PlayerGesturesTest {
             scene.close()
         }
     }
+
+    /**
+     * 回归测试 5（从 `∞` 粗剪速览上滑退回 `3.5x` 时重锚拖拽基准）：
+     * 当手指长按拨入 `∞`（`RAPID_SCRUB_VALUE`）并在胶片区大幅移动后，上滑触发 `exitRapidScrubToMaxSpeed()`
+     * 退回 `3.5x` 时，随后哪怕仅移动 1dp 也必须稳定停留在 `3.5x`，绝不能因残留 `lastAlong` 差值瞬间跳跌至 `0.5x`。
+     */
+    @Test
+    fun exitingRapidScrubResetsDragAnchorWithoutSnappingToMinSpeed() {
+        var currentSpeed = 1.0f
+        var pausedForScrub = 0
+        var resumedAfterScrub = 0
+        val controller = PlaybackSpeedController(
+            readSpeed = { currentSpeed },
+            writeSpeed = { currentSpeed = it },
+            defaultHoldSpeed = 2.5f,
+            readPositionMillis = { 45_000L },
+            readDurationMillis = { 600_000L },
+            allowRapidScrub = { true },
+            readIsPlaying = { true },
+            onPauseForRapidScrub = { pausedForScrub++ },
+            onResumeAfterRapidScrub = { resumedAfterScrub++ },
+        )
+
+        controller.open(temporary = true, showDial = true)
+        assertEquals(2.5f, currentSpeed)
+        assertTrue(controller.beginDrag(vertical = true))
+
+        // 沿竖直拨盘向下滑入 ∞ 档（2.5x -> 3.0x -> 3.5x -> ∞）
+        controller.move(alongDp = 140f, acrossDp = 0f)
+        assertTrue(controller.isRapidScrubActive, "Dragging past 3.5x must enter rapid scrub mode")
+        assertEquals(1, pausedForScrub)
+        assertEquals(1.0f, currentSpeed, "Rapid scrub drops backend rate to base speed while paused")
+
+        // 模拟用户在胶片浏览途中手指已移至上方区域并触发退出 ∞ 回到最高倍速 3.5x
+        controller.exitRapidScrubToMaxSpeed()
+        assertFalse(controller.isRapidScrubActive)
+        assertEquals(350, controller.selection?.value)
+        assertEquals(3.5f, currentSpeed)
+        assertEquals(1, resumedAfterScrub)
+
+        // 紧接着手指仅微移 1dp：必须重锚当前坐标并维持 3.5x，严禁跳跌至 0.5x
+        controller.move(alongDp = -120f, acrossDp = 2f)
+        assertEquals(350, controller.selection?.value, "First post-exit move must re-anchor at 3.5x")
+        assertEquals(3.5f, currentSpeed)
+
+        controller.move(alongDp = -124f, acrossDp = 2f)
+        assertEquals(350, controller.selection?.value, "Sub-intent movement after re-anchor must stay at 3.5x")
+
+        // 继续向上滑动满一档（跨越 10dp 意图阈值 + 36dp 步长）平滑退一档至 3.0x
+        controller.move(alongDp = -167f, acrossDp = 2f)
+        assertEquals(300, controller.selection?.value, "Intentional upward drag step must step from 3.5x to 3.0x")
+        assertEquals(3.0f, currentSpeed)
+
+        // 跨轴右滑锁定 3.0x，松手后保留 3.0x
+        controller.move(alongDp = -167f, acrossDp = 40f)
+        assertEquals(true, controller.selection?.locked)
+        controller.releaseHoldDrag()
+        assertFalse(controller.active)
+        assertTrue(controller.lockedByHold)
+        assertEquals(3.0f, currentSpeed)
+    }
 }
