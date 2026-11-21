@@ -18,15 +18,14 @@ import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.player.PlayerScreenState
 import dev.piko.shared.media.storyboard.StoryboardCache
 import dev.piko.shared.media.storyboard.StoryboardEngine
-import dev.piko.shared.media.storyboard.StoryboardFrame
 import dev.piko.shared.media.storyboard.StoryboardPlanner
 import dev.piko.shared.media.storyboard.StoryboardPlaybackGate
 import dev.piko.shared.media.storyboard.StoryboardSource
-import dev.piko.shared.media.storyboard.StoryboardTimeline
 import dev.piko.ui.platform.PikoPlatform
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -54,6 +53,7 @@ class ScrubFrameCache(
     private val engine: StoryboardEngine,
     private val decodeBitmap: (ByteArray) -> ImageBitmap?,
     private val scope: CoroutineScope,
+    private val batchWindowMillis: Long = UI_BATCH_WINDOW_MILLIS,
 ) {
     private val bitmapsByPts = LinkedHashMap<Long, ImageBitmap>()
     private var collectorJob: Job? = null
@@ -61,7 +61,7 @@ class ScrubFrameCache(
     var timeline by mutableStateOf(engine.timeline.value)
         private set
 
-    /** 每次有新雪碧图帧解码入库时递增，供悬停气泡与「速览」局部刷新。 */
+    /** 每次有新雪碧图批次解码入库时递增，供悬停气泡与「速览」局部刷新。 */
     var revision by mutableIntStateOf(0)
         private set
 
@@ -94,8 +94,15 @@ class ScrubFrameCache(
                         bitmapsByPts[pts] = bmp
                     }
                 }
+                val changed = newlyDecoded.isNotEmpty() || next != timeline
                 timeline = next
-                revision += 1
+                if (changed) {
+                    revision += 1
+                }
+                // 首帧与完成态零延迟立即刷新；流式补齐期间以约 60ms 微批合并突发帧，避免每解码 1 帧就重排重组整个胶片条。
+                if (!next.isComplete && batchWindowMillis > 0L && next.frames.isNotEmpty() && changed) {
+                    delay(batchWindowMillis)
+                }
             }
         }
         engine.start()
@@ -212,6 +219,7 @@ class ScrubFrameCache(
 
     private companion object {
         const val MAX_BITMAP_ENTRIES = 200
+        const val UI_BATCH_WINDOW_MILLIS = 60L
     }
 }
 
@@ -225,6 +233,7 @@ internal val LocalAutoResolvedQuality = compositionLocalOf<String?> { null }
  * 为当前播放视频创建并管理全片雪碧图 [ScrubFrameCache] 生命周期：
  * - 严格门控：仅当 [state.storyboardSource] 非空（即存在 `<= 480P` PikPak MPEG-TS 转码档）时启用；
  *   纯原画、最低档 `>= 720P` 或本地文件均直接返回 `null`（悬停仅显示时间，隐藏「速览」，零流量）。
+ * - `remember` 仅以 `(fileId, gcid, mediaId)` 为键（不纳入 `durationMillis`），避免 mpv 打开后微调容器时长导致引擎与原生解码器重建；
  * - 切换视频或退出播放器时确定性关闭持久化单解码器并清空位图。
  */
 @Composable
@@ -240,22 +249,26 @@ fun rememberScrubFrameCache(
         MutableStateFlow(StoryboardPlaybackGate())
     }
 
-    LaunchedEffect(source, state) {
+    LaunchedEffect(source?.fileId, source?.gcid, source?.mediaId, state) {
         if (source == null) return@LaunchedEffect
         snapshotFlow {
-            val pos = state.positionMillis
-            val buf = state.bufferedPositionMillis
-            val ahead = (buf - pos).coerceAtLeast(0L)
+            val ahead = state.storyboardBufferedAheadMillis
+            val quantizedAhead = when {
+                ahead == null -> 0L
+                ahead >= GATE_BUFFER_QUANTUM_MS -> (ahead / GATE_BUFFER_QUANTUM_MS) * GATE_BUFFER_QUANTUM_MS
+                else -> ahead
+            }
             StoryboardPlaybackGate(
                 firstFrameReady = state.isFirstFrameReady,
-                bufferedAheadMs = ahead,
+                bufferedAheadMs = quantizedAhead,
                 isPlaying = state.isPlaying,
                 isPlaybackBusy = state.isPlaybackBusyForStoryboard,
+                hasBufferReading = ahead != null,
             )
         }.collect { gate.value = it }
     }
 
-    val cache = remember(source?.fileId, source?.gcid, source?.mediaId, source?.durationMillis) {
+    val cache = remember(source?.fileId, source?.gcid, source?.mediaId) {
         if (source == null) {
             null
         } else {
@@ -292,3 +305,5 @@ fun rememberScrubFrameCache(
     }
     return cache
 }
+
+private const val GATE_BUFFER_QUANTUM_MS = 250L

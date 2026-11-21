@@ -1,5 +1,20 @@
 package dev.piko.ui.screens.player
 
+import androidx.compose.ui.graphics.ImageBitmap
+import dev.piko.shared.media.storyboard.InMemoryStoryboardCache
+import dev.piko.shared.media.storyboard.StoryboardEngine
+import dev.piko.shared.media.storyboard.StoryboardIdrDecoder
+import dev.piko.shared.media.storyboard.StoryboardPlanner
+import dev.piko.shared.media.storyboard.StoryboardPlaybackGate
+import dev.piko.shared.media.storyboard.StoryboardSource
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -369,5 +384,198 @@ class RapidScrubFilmstripTest {
         assertTrue(playing)
         assertEquals(countBeforeCommit + 1, writtenSpeeds.size)
         assertEquals(1.0f, writtenSpeeds.last())
+    }
+
+    @Test
+    fun scrubFrameCacheMicroBatchesRapidBurstUpdatesIntoFarFewerRevisions() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val durationMs = 120_000L
+            val streamSize = 188L * 40_000L
+            val slots = StoryboardPlanner.buildSlots(durationMillis = durationMs, streamSizeBytes = streamSize)
+            val slotByOffset = slots.associateBy { it.byteOffset }
+            val headerChunk = buildSyntheticHeaderTs()
+            val source = StoryboardSource(
+                fileId = "f-batch",
+                gcid = "GCID_UI_BATCH_TEST",
+                mediaId = "m360",
+                url = "https://cdn.example/360.ts",
+                width = 640,
+                height = 360,
+                durationMillis = durationMs,
+                streamSizeBytes = streamSize,
+            )
+            val gate = MutableStateFlow(StoryboardPlaybackGate(firstFrameReady = true, isPlaying = false, isPlaybackBusy = false))
+            val engine = StoryboardEngine(
+                source = source,
+                cache = InMemoryStoryboardCache(),
+                resolveStreamSize = { streamSize },
+                fetchRange = { offset, length ->
+                    if (offset == 0L) {
+                        headerChunk.copyOfRange(0, minOf(length, headerChunk.size))
+                    } else {
+                        delay(5L)
+                        val plan = slotByOffset[offset]
+                        buildSyntheticSlotTs(ptsMs = plan?.estimatedMs ?: 1_000L, sizeBytes = length)
+                    }
+                },
+                decoderFactory = {
+                    object : StoryboardIdrDecoder {
+                        override suspend fun decodeToJpeg(
+                            csdAnnexB: ByteArray,
+                            idrAccessUnitAnnexB: ByteArray,
+                            width: Int,
+                            height: Int,
+                            maxWidthPx: Int,
+                            jpegQuality: Int,
+                        ): ByteArray = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 1, 2)
+                        override fun close() {}
+                    }
+                },
+                playbackGate = gate,
+                scope = scope,
+            )
+            val stubBitmap = ImageBitmap(4, 4)
+            val frameCache = ScrubFrameCache(
+                durationMillis = durationMs,
+                engine = engine,
+                decodeBitmap = { stubBitmap },
+                scope = scope,
+                batchWindowMillis = 65L,
+            )
+            try {
+                withTimeout(5_000L) {
+                    while (!frameCache.isComplete) delay(15L)
+                }
+                assertEquals(slots.size, frameCache.loadedCount)
+                assertTrue(
+                    frameCache.revision in 1..(slots.size / 2),
+                    "Expected micro-batching to coalesce ${slots.size} decoded frames into far fewer UI revisions, got revision=${frameCache.revision}",
+                )
+                assertTrue(frameCache.displaySlots().all { it.isDecoded && it.bitmap != null })
+            } finally {
+                frameCache.clear()
+            }
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    private fun buildTsPacket(pid: Int, payload: ByteArray, payloadStart: Boolean, cc: Int): ByteArray {
+        val pkt = ByteArray(188) { 0xFF.toByte() }
+        pkt[0] = 0x47
+        pkt[1] = (((if (payloadStart) 0x40 else 0) or ((pid ushr 8) and 0x1F))).toByte()
+        pkt[2] = (pid and 0xFF).toByte()
+        if (payload.size >= 184) {
+            pkt[3] = (0x10 or (cc and 0x0F)).toByte()
+            payload.copyInto(pkt, 4, 0, 184)
+        } else {
+            pkt[3] = (0x30 or (cc and 0x0F)).toByte()
+            val adaptLen = 183 - payload.size
+            pkt[4] = adaptLen.toByte()
+            if (adaptLen >= 1) pkt[5] = 0x00
+            payload.copyInto(pkt, 5 + adaptLen, 0, payload.size)
+        }
+        return pkt
+    }
+
+    private fun encodePtsBytes(ticks: Long): ByteArray {
+        val t = ticks and ((1L shl 33) - 1L)
+        return byteArrayOf(
+            (0x21L or ((t ushr 29) and 0x0EL)).toByte(),
+            ((t ushr 22) and 0xFFL).toByte(),
+            (0x01L or ((t ushr 14) and 0xFEL)).toByte(),
+            ((t ushr 7) and 0xFFL).toByte(),
+            (0x01L or ((t shl 1) and 0xFEL)).toByte(),
+        )
+    }
+
+    private fun hevcNalBytes(nalType: Int, bodySize: Int): ByteArray = ByteArray(6 + bodySize).also { out ->
+        out[3] = 1
+        out[4] = ((nalType and 0x3F) shl 1).toByte()
+        out[5] = 0x01
+        for (i in 6 until out.size) out[i] = 0x5A
+    }
+
+    private fun videoPesTs(videoPid: Int, ptsTicks: Long, payload: ByteArray, startCc: Int): Pair<ByteArray, Int> {
+        val pts = encodePtsBytes(ptsTicks)
+        val header = byteArrayOf(
+            0x00, 0x00, 0x01, 0xE0.toByte(),
+            0x00, 0x00,
+            0x80.toByte(), 0x80.toByte(), 0x05,
+            pts[0], pts[1], pts[2], pts[3], pts[4],
+        )
+        val full = header + payload
+        val packets = ArrayList<ByteArray>()
+        var offset = 0
+        var cc = startCc
+        var first = true
+        while (offset < full.size) {
+            val take = minOf(184, full.size - offset)
+            packets += buildTsPacket(videoPid, full.copyOfRange(offset, offset + take), first, cc)
+            cc = (cc + 1) and 0x0F
+            offset += take
+            first = false
+        }
+        val out = ByteArray(packets.size * 188)
+        packets.forEachIndexed { idx, pkt -> pkt.copyInto(out, idx * 188) }
+        return out to cc
+    }
+
+    private fun buildSyntheticHeaderTs(videoPid: Int = 0x0100): ByteArray {
+        val pat = buildTsPacket(
+            pid = 0,
+            payload = byteArrayOf(
+                0x00, 0x00, 0xB0.toByte(), 13, 0x00, 0x01, 0xC1.toByte(), 0x00, 0x00,
+                0x00, 0x01, (0xE0 or ((0x1000 ushr 8) and 0x1F)).toByte(), (0x1000 and 0xFF).toByte(),
+                0, 0, 0, 0,
+            ),
+            payloadStart = true,
+            cc = 0,
+        )
+        val pmt = buildTsPacket(
+            pid = 0x1000,
+            payload = byteArrayOf(
+                0x00, 0x02, 0xB0.toByte(), 18, 0x00, 0x01, 0xC1.toByte(), 0x00, 0x00,
+                0xE1.toByte(), 0x00, 0xF0.toByte(), 0x00,
+                0x24, (0xE0 or ((videoPid ushr 8) and 0x1F)).toByte(), (videoPid and 0xFF).toByte(),
+                0xF0.toByte(), 0x00, 0, 0, 0, 0,
+            ),
+            payloadStart = true,
+            cc = 0,
+        )
+        val au = hevcNalBytes(32, 8) + hevcNalBytes(33, 12) + hevcNalBytes(34, 8) + hevcNalBytes(19, 400)
+        val (pes0, cc1) = videoPesTs(videoPid, 90_000L, au, 0)
+        val (term, _) = videoPesTs(videoPid, 93_600L, hevcNalBytes(1, 32), cc1)
+        val raw = pat + pmt + pes0 + term
+        return ByteArray(64 * 1024).also { dst ->
+            raw.copyInto(dst, 0)
+            var p = raw.size
+            while (p + 188 <= dst.size) {
+                dst[p] = 0x47
+                dst[p + 1] = 0x1F
+                dst[p + 2] = 0xFF.toByte()
+                dst[p + 3] = 0x10
+                p += 188
+            }
+        }
+    }
+
+    private fun buildSyntheticSlotTs(ptsMs: Long, sizeBytes: Int, videoPid: Int = 0x0100): ByteArray {
+        val ticks = 90_000L + ptsMs * 90L
+        val (pes, cc1) = videoPesTs(videoPid, ticks, hevcNalBytes(19, 400), 0)
+        val (term, _) = videoPesTs(videoPid, ticks + 3_600L, hevcNalBytes(1, 32), cc1)
+        val raw = pes + term
+        return ByteArray(sizeBytes).also { dst ->
+            raw.copyInto(dst, 0, 0, minOf(raw.size, dst.size))
+            var p = ((minOf(raw.size, dst.size) + 187) / 188) * 188
+            while (p + 188 <= dst.size) {
+                dst[p] = 0x47
+                dst[p + 1] = 0x1F
+                dst[p + 2] = 0xFF.toByte()
+                dst[p + 3] = 0x10
+                p += 188
+            }
+        }
     }
 }

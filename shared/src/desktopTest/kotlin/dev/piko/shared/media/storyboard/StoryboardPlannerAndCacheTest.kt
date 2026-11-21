@@ -510,15 +510,46 @@ class StoryboardPlannerAndCacheTest {
     }
 
     @Test
-    fun continuationConcatenatesWithoutRefetchingFirst64KiBAndSkipsTruncatedCraNalu21() = runBlocking {
+    fun adaptiveProbeSizesCoverFiveSecondGopWithinSmartBounds() {
+        // 极低码率 360P（20 KiB/s -> 100+32=132 KiB）钳制到下限 192 KiB
+        assertEquals(
+            StoryboardPlanner.MIN_ADAPTIVE_PROBE_BYTES,
+            StoryboardPlanner.adaptiveProbeBytes(durationMillis = 600_000L, streamSizeBytes = 20L * 1024L * 600L),
+        )
+        // 典型 46 分钟 480P MPEG-TS（~140 MiB -> ~52 KiB/s）：单次首探落在 288..304 KiB，单 RTT 覆盖 5s GOP + IDR
+        val typical480p = StoryboardPlanner.adaptiveProbeBytes(
+            durationMillis = 2_760_000L,
+            streamSizeBytes = 140L * 1024L * 1024L,
+        )
+        assertTrue(
+            typical480p in 272 * 1024..320 * 1024,
+            "Expected typical 480P single-shot probe in 272..320 KiB, got ${typical480p / 1024} KiB",
+        )
+        assertEquals(0, typical480p % (16 * 1024), "Adaptive probe must align to 16 KiB granularity")
+        // 高码率 480P（90 KiB/s -> 482 KiB）钳制到上限 384 KiB
+        assertEquals(
+            StoryboardPlanner.MAX_ADAPTIVE_PROBE_BYTES,
+            StoryboardPlanner.adaptiveProbeBytes(durationMillis = 1_800_000L, streamSizeBytes = 90L * 1024L * 1_800L),
+        )
+    }
+
+    @Test
+    fun adaptiveProbeAndContinuationSkipTruncatedCraNalu21WithoutRefetchingPrimary() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         try {
-            val probeSize = StoryboardPlanner.DEFAULT_PROBE_BYTES // 64 KiB
-            val streamSize = 188L * 40_000L
-            val slots = StoryboardPlanner.buildSlots(durationMillis = 120_000L, streamSizeBytes = streamSize)
+            val streamSize = 188L * 40_000L // ~7.52 MB over 120s -> ~62.7 KiB/s
+            val durationMs = 120_000L
+            val slots = StoryboardPlanner.buildSlots(durationMillis = durationMs, streamSizeBytes = streamSize)
+            val probeSize = StoryboardPlanner.adaptiveProbeBytes(durationMs, streamSize)
+            assertTrue(
+                probeSize in StoryboardPlanner.MIN_ADAPTIVE_PROBE_BYTES..StoryboardPlanner.MAX_ADAPTIVE_PROBE_BYTES,
+                "Adaptive probeSize=$probeSize must stay in 192..384 KiB",
+            )
             val targetSlot = slots[1]
+            val longGopSlot = slots[2]
+            assertEquals(probeSize, targetSlot.probeLengthBytes)
 
-            // 构造跨 64 KiB 边界截断的 HEVC CRA (NALU 21) 访问单元：前一半落在 primary64K 末尾，后一半 + 终结 PES 落在 cont64K 开头
+            // 构造跨 primary 边界截断的 HEVC CRA (NALU 21) 访问单元：前一半落在 primary 末尾，后一半 + 终结 PES 落在续块开头
             val headerChunk = buildSyntheticHeaderChunk()
             val header = TsIdrExtractor.parseHeader(headerChunk, fallbackWidth = 640, fallbackHeight = 360)
             assertNotNull(header)
@@ -537,8 +568,8 @@ class StoryboardPlannerAndCacheTest {
                 startCc = ccAfterCra,
                 randomAccess = false,
             )
-            val combinedExpected = ByteArray(probeSize * 2)
-            // 用空包（PID 0x1FFF）填充前部，使 CRA PES 恰好横跨 64 KiB 边界（前 ~1.8 KiB 在首块，剩余 + 终结包在续块）
+            val combinedExpected = ByteArray(StoryboardPlanner.EXPANDED_PROBE_BYTES)
+            // 用空包（PID 0x1FFF）填充前部，使 CRA PES 恰好横跨 primary 边界（前 ~1.8 KiB 在首块，剩余 + 终结包在续块）
             val startPacketIndex = (probeSize / 188) - 10
             val craStartByte = startPacketIndex * 188
             var p = 0
@@ -553,18 +584,40 @@ class StoryboardPlannerAndCacheTest {
             craTerminator.copyInto(combinedExpected, craStartByte + craPes.size)
 
             val firstHalf = combinedExpected.copyOfRange(0, probeSize)
-            val secondHalf = combinedExpected.copyOfRange(probeSize, probeSize * 2)
+            val secondHalf = combinedExpected.copyOfRange(probeSize, combinedExpected.size)
 
-            // 验证 TsIdrExtractor 绝不把跨 64 KiB 截断的半帧 NALU 21 交给解码器
+            // 验证 TsIdrExtractor 识别为 TruncatedAtTail 且绝不把截断半帧 NALU 21 交给解码器
             assertNull(
-                TsIdrExtractor.extractFirstIdr(firstHalf, header, durationMillis = 120_000L, allowTailDrain = false),
-                "Truncated mid-stream CRA NALU 21 at 64 KiB boundary must NOT be drained to FFmpeg",
+                TsIdrExtractor.extractFirstIdr(firstHalf, header, durationMillis = durationMs, allowTailDrain = false),
+                "Truncated mid-stream CRA NALU 21 at primary boundary must NOT be drained to FFmpeg",
             )
-            val fullExtracted = TsIdrExtractor.extractFirstIdr(combinedExpected, header, durationMillis = 120_000L, allowTailDrain = false)
-            assertNotNull(fullExtracted, "Concatenated 128 KiB buffer must cleanly extract the complete CRA NALU 21")
+            assertTrue(
+                TsIdrExtractor.extractFirstIdrDetailed(firstHalf, header, durationMillis = durationMs, allowTailDrain = false) is TsIdrExtractionResult.TruncatedAtTail,
+                "Truncated CRA NALU 21 at chunk tail must be reported as TruncatedAtTail",
+            )
+            val fullExtracted = TsIdrExtractor.extractFirstIdr(combinedExpected, header, durationMillis = durationMs, allowTailDrain = false)
+            assertNotNull(fullExtracted, "Concatenated buffer must cleanly extract the complete CRA NALU 21")
             assertEquals(2_500L, fullExtracted.ptsMs)
 
-            // 端到端验证 StoryboardEngine：所有请求严格 <= 64 KiB，且对 targetSlot 仅补拉续块不重拉首块
+            // 构造超长 GOP 槽位：整个 primary 块内全为空包（NotFound），IDR 落在续块中
+            val emptyPrimary = ByteArray(probeSize).also { dst ->
+                var q = 0
+                while (q + 188 <= dst.size) {
+                    dst[q] = 0x47
+                    dst[q + 1] = 0x1F
+                    dst[q + 2] = 0xFF.toByte()
+                    dst[q + 3] = 0x10
+                    q += 188
+                }
+            }
+            assertEquals(
+                TsIdrExtractionResult.NotFound,
+                TsIdrExtractor.extractFirstIdrDetailed(emptyPrimary, header, durationMillis = durationMs, allowTailDrain = false),
+            )
+            val longGopContLen = StoryboardPlanner.EXPANDED_PROBE_BYTES - probeSize
+            val longGopCont = buildSyntheticSlotChunk(ptsMs = longGopSlot.estimatedMs, sizeBytes = longGopContLen)
+
+            // 端到端验证 StoryboardEngine：流头首探 <= 64 KiB，中段槽位单次自适应首探，续块零重复拉取且区分尾块与超长 GOP
             val requests = Collections.synchronizedList(mutableListOf<Pair<Long, Int>>())
             val slotByOffset = slots.associateBy { it.byteOffset }
             val gate = MutableStateFlow(StoryboardPlaybackGate(firstFrameReady = true, isPlaying = false, isPlaybackBusy = false))
@@ -575,7 +628,7 @@ class StoryboardPlannerAndCacheTest {
                 url = "https://cdn.example/360.ts",
                 width = 640,
                 height = 360,
-                durationMillis = 120_000L,
+                durationMillis = durationMs,
                 streamSizeBytes = streamSize,
             )
             val engine = StoryboardEngine(
@@ -588,6 +641,8 @@ class StoryboardPlannerAndCacheTest {
                         0L -> headerChunk.copyOfRange(0, minOf(length, headerChunk.size))
                         targetSlot.byteOffset -> firstHalf.copyOfRange(0, minOf(length, firstHalf.size))
                         targetSlot.byteOffset + probeSize -> secondHalf.copyOfRange(0, minOf(length, secondHalf.size))
+                        longGopSlot.byteOffset -> emptyPrimary.copyOfRange(0, minOf(length, emptyPrimary.size))
+                        longGopSlot.byteOffset + probeSize -> longGopCont.copyOfRange(0, minOf(length, longGopCont.size))
                         else -> {
                             val plan = slotByOffset[offset]
                             buildSyntheticSlotChunk(ptsMs = plan?.estimatedMs ?: 1_000L, sizeBytes = length)
@@ -616,12 +671,22 @@ class StoryboardPlannerAndCacheTest {
             }
             engine.close()
 
-            assertTrue(requests.all { (_, len) -> len <= probeSize }, "Every storyboard range request must stay <= 64 KiB for MICRO_PROBE_PRIORITY=12")
-            val primaryCallsForTarget = requests.count { (off, _) -> off == targetSlot.byteOffset }
-            val contCallsForTarget = requests.count { (off, _) -> off == targetSlot.byteOffset + probeSize }
-            assertEquals(1, primaryCallsForTarget, "Primary 64 KiB chunk must NOT be re-fetched on continuation retry")
-            assertEquals(1, contCallsForTarget, "Continuation [offset + 64 KiB, offset + 128 KiB) must be fetched exactly once")
+            val headReq = requests.first { (off, _) -> off == 0L }
+            assertTrue(headReq.second <= StoryboardPlanner.DEFAULT_PROBE_BYTES, "Head probe must stay <= 64 KiB for MICRO_PROBE_PRIORITY=12")
+            val primaryCallsForTarget = requests.filter { (off, _) -> off == targetSlot.byteOffset }
+            val contCallsForTarget = requests.filter { (off, _) -> off == targetSlot.byteOffset + probeSize }
+            assertEquals(1, primaryCallsForTarget.size, "Primary chunk must NOT be re-fetched on continuation retry")
+            assertEquals(probeSize, primaryCallsForTarget.single().second)
+            assertEquals(1, contCallsForTarget.size, "Tail continuation must be fetched exactly once")
+            assertTrue(
+                contCallsForTarget.single().second <= StoryboardPlanner.TAIL_CONTINUATION_BYTES,
+                "TruncatedAtTail continuation must stay bounded to TAIL_CONTINUATION_BYTES",
+            )
+            val longGopContCalls = requests.filter { (off, _) -> off == longGopSlot.byteOffset + probeSize }
+            assertEquals(1, longGopContCalls.size, "Long GOP slot must expand cleanly up to EXPANDED_PROBE_BYTES in one continuation")
+            assertEquals(longGopContLen, longGopContCalls.single().second)
             assertTrue(timeline.frames.any { it.slotIndex == targetSlot.slotIndex && it.ptsMs == 2_500L })
+            assertTrue(timeline.frames.any { it.slotIndex == longGopSlot.slotIndex && it.ptsMs == longGopSlot.estimatedMs })
         } finally {
             scope.cancel()
         }
@@ -1000,6 +1065,312 @@ class StoryboardPlannerAndCacheTest {
             assertEquals(1, persisted.frames.size)
             assertFalse(persisted.completed, "1-frame partial storyboard after slot failures must NOT be marked completed")
             assertFalse(engine.timeline.value.isComplete, "Timeline must NOT be marked complete when most slots failed")
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun sparseCompletedDiskCacheSelfHealsInBackgroundWhileShortOrDenseCachesStayComplete() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val durationMs = 2_760_000L // 46 min -> 110 slots
+            val expectedSlots = StoryboardPlanner.slotCountForDuration(durationMs)
+            assertEquals(110, expectedSlots)
+            val streamSize = 188L * 700_000L
+            val slots = StoryboardPlanner.buildSlots(durationMillis = durationMs, streamSizeBytes = streamSize)
+            val headerChunk = buildSyntheticHeaderChunk()
+            val slotByOffset = slots.associateBy { it.byteOffset }
+
+            // 模拟旧版稀疏 .sb2：仅 37 帧却标为 completed=true（< 110 * 65% = 71）
+            val sparseFrames = (0 until 37).map { i ->
+                val slotIdx = i * 3
+                StoryboardFrame(
+                    slotIndex = slotIdx,
+                    ptsMs = slots[slotIdx].estimatedMs,
+                    jpegBytes = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x10),
+                )
+            }
+            val sparseBundle = StoryboardBundle(
+                gcid = "SPARSE_46M_GCID",
+                durationMillis = durationMs,
+                width = 640,
+                height = 360,
+                completed = true,
+                lastAccessEpochMillis = 1_000L,
+                frames = sparseFrames,
+            )
+            assertTrue(StoryboardEngine.isSparseCompletedCache(sparseBundle, durationMs, expectedSlots))
+            // 短视频 (< 180s)、高密度缓存 (>= 65%) 与长 GOP 均匀去重缓存（无大空洞）均不触发自愈降级
+            assertFalse(StoryboardEngine.isSparseCompletedCache(sparseBundle.copy(durationMillis = 120_000L), 120_000L, 48))
+            val denseFrames = (0 until 72).map { idx -> StoryboardFrame(idx, idx * 25_000L, byteArrayOf(1)) }
+            assertFalse(StoryboardEngine.isSparseCompletedCache(sparseBundle.copy(frames = denseFrames), durationMs, expectedSlots))
+            val uniformLongGopFrames = (0 until 24).map { idx -> StoryboardFrame(idx * 2, idx * 10_000L, byteArrayOf(1)) }
+            assertFalse(
+                StoryboardEngine.isSparseCompletedCache(
+                    bundle = sparseBundle.copy(durationMillis = 240_000L, frames = uniformLongGopFrames),
+                    durationMillis = 240_000L,
+                    expectedSlots = 48,
+                ),
+                "Valid completed 4-minute video with uniform 10s GOPs (no large PTS gaps) must NOT trigger infinite self-healing",
+            )
+
+            val cache = InMemoryStoryboardCache()
+            cache.write(sparseBundle)
+            val fetchedOffsets = Collections.synchronizedSet(HashSet<Long>())
+            val gate = MutableStateFlow(StoryboardPlaybackGate(firstFrameReady = true, isPlaying = false, isPlaybackBusy = false))
+            val source = StoryboardSource(
+                fileId = "f-sparse",
+                gcid = "SPARSE_46M_GCID",
+                mediaId = "m480",
+                url = "https://cdn.example/480.ts",
+                width = 640,
+                height = 360,
+                durationMillis = durationMs,
+                streamSizeBytes = streamSize,
+            )
+            val engine = StoryboardEngine(
+                source = source,
+                cache = cache,
+                resolveStreamSize = { streamSize },
+                fetchRange = { offset, length ->
+                    fetchedOffsets += offset
+                    if (offset == 0L) {
+                        headerChunk.copyOfRange(0, minOf(length, headerChunk.size))
+                    } else {
+                        val plan = slotByOffset[offset]
+                        buildSyntheticSlotChunk(ptsMs = plan?.estimatedMs ?: 1_000L, sizeBytes = length)
+                    }
+                },
+                decoderFactory = {
+                    object : StoryboardIdrDecoder {
+                        override suspend fun decodeToJpeg(
+                            csdAnnexB: ByteArray,
+                            idrAccessUnitAnnexB: ByteArray,
+                            width: Int,
+                            height: Int,
+                            maxWidthPx: Int,
+                            jpegQuality: Int,
+                        ): ByteArray = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x22)
+                        override fun close() {}
+                    }
+                },
+                playbackGate = gate,
+                scope = scope,
+            )
+            engine.start()
+            val healedTimeline = withTimeout(5_000L) {
+                engine.timeline.first { it.isComplete }
+            }
+            engine.close()
+
+            assertEquals(expectedSlots, healedTimeline.frames.size, "Sparse cache must self-heal all missing slots")
+            val persisted = assertNotNull(cache.read(source.gcid))
+            assertTrue(persisted.completed)
+            assertEquals(expectedSlots, persisted.frames.size)
+            // 已缓存的非 0 槽位不应被重复拉取
+            assertFalse(slots[3].byteOffset in fetchedOffsets, "Already-cached slot 3 must be reused without refetching")
+            assertTrue(slots[1].byteOffset in fetchedOffsets, "Missing slot 1 must be fetched during self-healing")
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun healthyPlaybackFansOutToFourWave1WorkersAndSurvivesZeroBufferAheadReading() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val durationMs = 120_000L
+            val streamSize = 188L * 50_000L
+            val slots = StoryboardPlanner.buildSlots(durationMillis = durationMs, streamSizeBytes = streamSize)
+            val headerChunk = buildSyntheticHeaderChunk()
+            val slotByOffset = slots.associateBy { it.byteOffset }
+
+            val inFlight = AtomicInteger(0)
+            val maxInFlightWave1 = AtomicInteger(0)
+            val totalSlotFetches = AtomicInteger(0)
+            val fetchesAfterUnreportedZero = AtomicInteger(0)
+            val unreportedZeroPhase = AtomicBoolean(false)
+
+            // 1. 起播即带 8s 健康缓冲：零等待直接启动并拉满 Wave 1 四路并发
+            val gate = MutableStateFlow(
+                StoryboardPlaybackGate(
+                    firstFrameReady = true,
+                    bufferedAheadMs = 8_000L,
+                    isPlaying = true,
+                    isPlaybackBusy = false,
+                ),
+            )
+            val source = StoryboardSource(
+                fileId = "f-healthy",
+                gcid = "GCID_HEALTHY_4W",
+                mediaId = "m360",
+                url = "https://cdn.example/360.ts",
+                width = 640,
+                height = 360,
+                durationMillis = durationMs,
+                streamSizeBytes = streamSize,
+            )
+            val engine = StoryboardEngine(
+                source = source,
+                cache = InMemoryStoryboardCache(),
+                resolveStreamSize = { streamSize },
+                fetchRange = { offset, length ->
+                    if (offset == 0L) {
+                        headerChunk.copyOfRange(0, minOf(length, headerChunk.size))
+                    } else {
+                        totalSlotFetches.incrementAndGet()
+                        if (unreportedZeroPhase.get()) {
+                            fetchesAfterUnreportedZero.incrementAndGet()
+                        }
+                        val cur = inFlight.incrementAndGet()
+                        maxInFlightWave1.accumulateAndGet(cur, ::maxOf)
+                        try {
+                            delay(35L)
+                            val plan = slotByOffset[offset]
+                            buildSyntheticSlotChunk(ptsMs = plan?.estimatedMs ?: 1_000L, sizeBytes = length)
+                        } finally {
+                            inFlight.decrementAndGet()
+                        }
+                    }
+                },
+                decoderFactory = {
+                    object : StoryboardIdrDecoder {
+                        override suspend fun decodeToJpeg(
+                            csdAnnexB: ByteArray,
+                            idrAccessUnitAnnexB: ByteArray,
+                            width: Int,
+                            height: Int,
+                            maxWidthPx: Int,
+                            jpegQuality: Int,
+                        ): ByteArray = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x33)
+                        override fun close() {}
+                    }
+                },
+                playbackGate = gate,
+                scope = scope,
+            )
+            engine.start()
+            withTimeout(2_000L) {
+                while (maxInFlightWave1.get() < StoryboardEngine.WAVE1_PLAYING_CONCURRENCY) delay(15L)
+            }
+            assertEquals(
+                StoryboardEngine.WAVE1_PLAYING_CONCURRENCY,
+                maxInFlightWave1.get(),
+                "Healthy playing buffer (>= 6s) must run 4 concurrent Wave 1 workers without 4s startup delay",
+            )
+
+            // 2. 真实测得缓冲耗尽（bufferedAheadMs == 0 且 hasBufferReading == true）：必须立即退让为 0 并发
+            gate.value = gate.value.copy(bufferedAheadMs = 0L, hasBufferReading = true)
+            delay(80L)
+            val countWhileStarving = totalSlotFetches.get()
+            delay(160L)
+            assertEquals(
+                countWhileStarving,
+                totalSlotFetches.get(),
+                "Measured 0ms buffer (hasBufferReading=true) must immediately yield background concurrency to 0",
+            )
+
+            // 3. 后端未上报缓冲读数（hasBufferReading == false 且 isPlaybackBusy == false）：不落入旧 sawPositiveBufferAhead 陷阱，恢复并顺利完成
+            unreportedZeroPhase.set(true)
+            gate.value = gate.value.copy(bufferedAheadMs = 0L, hasBufferReading = false)
+            val completed = withTimeout(5_000L) {
+                engine.timeline.first { it.isComplete }
+            }
+            engine.close()
+
+            assertEquals(slots.size, completed.frames.size)
+            assertTrue(
+                fetchesAfterUnreportedZero.get() > 0,
+                "Unreported buffer reading (hasBufferReading=false) while playback is smooth must NOT stall storyboard concurrency to 0",
+            )
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun declaredLengthTruncatedIdrReportsExactRemainingBytesWhileNonIdrTailReportsNotFound() {
+        val headerChunk = buildSyntheticHeaderChunk()
+        val header = assertNotNull(TsIdrExtractor.parseHeader(headerChunk, fallbackWidth = 640, fallbackHeight = 360))
+
+        // 1. 声明了固定 PES 长度的 IDR 在中途被截断 -> TruncatedAtTail(declaredRemainingBytes > 0)
+        val (declaredIdr, _) = buildVideoPesPackets(
+            videoPid = header.videoPid,
+            ptsTicks = 90_000L + 15_000L * 90L,
+            annexBPayload = hevcNal(nalType = 19, bodySize = 2_000),
+            startCc = 0,
+            randomAccess = true,
+            declaredLength = true,
+        )
+        val truncatedIdr = declaredIdr.copyOfRange(0, 188 * 4)
+        val idrResult = TsIdrExtractor.extractFirstIdrDetailed(truncatedIdr, header, durationMillis = 120_000L, allowTailDrain = false)
+        val truncatedTail = assertNotNull(
+            idrResult as? TsIdrExtractionResult.TruncatedAtTail,
+            "Expected TruncatedAtTail, got $idrResult",
+        )
+        assertTrue(
+            (truncatedTail.declaredRemainingBytes ?: 0) > 0,
+            "Expected positive declaredRemainingBytes, got ${truncatedTail.declaredRemainingBytes}",
+        )
+
+        // 2. 非 IDR（NALU 1 P/B 帧，randomAccess = false）在块尾截断 -> NotFound（不误判为 IDR 尾块）
+        val (nonIdr, _) = buildVideoPesPackets(
+            videoPid = header.videoPid,
+            ptsTicks = 90_000L + 16_000L * 90L,
+            annexBPayload = hevcNal(nalType = 1, bodySize = 2_000),
+            startCc = 0,
+            randomAccess = false,
+            declaredLength = false,
+        )
+        val truncatedNonIdr = nonIdr.copyOfRange(0, 188 * 4)
+        assertEquals(
+            TsIdrExtractionResult.NotFound,
+            TsIdrExtractor.extractFirstIdrDetailed(truncatedNonIdr, header, durationMillis = 120_000L, allowTailDrain = false),
+        )
+    }
+
+    @Test
+    fun boostAroundCoalescesSubSlotJitterWhileAcceptingLargeJumpsAndBoundaries() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            // 46 分钟（110 槽，单槽约 25s -> 合并阈值约 12.5s）
+            val durationMs = 2_760_000L
+            val source = StoryboardSource(
+                fileId = "f-boost",
+                gcid = "GCID_BOOST_COALESCE",
+                mediaId = "m480",
+                url = "https://cdn.example/480.ts",
+                width = 640,
+                height = 360,
+                durationMillis = durationMs,
+                streamSizeBytes = 188L * 700_000L,
+            )
+            val engine = StoryboardEngine(
+                source = source,
+                cache = InMemoryStoryboardCache(),
+                resolveStreamSize = { source.streamSizeBytes },
+                fetchRange = { _, _ -> null },
+                decoderFactory = { null },
+                playbackGate = MutableStateFlow(StoryboardPlaybackGate()),
+                scope = scope,
+            )
+            // 首次调用立即生效
+            engine.boostAround(600_000L)
+            assertEquals(600_000L, engine.activePriorityTargetMs)
+            // 半槽以内的频繁悬停抖动被合并，不触发队列重排
+            engine.boostAround(602_500L)
+            engine.boostAround(608_000L)
+            assertEquals(600_000L, engine.activePriorityTargetMs)
+            // 跨槽大跳转立即生效
+            engine.boostAround(1_200_000L)
+            assertEquals(1_200_000L, engine.activePriorityTargetMs)
+            // 回到片头/片尾边界始终放行
+            engine.boostAround(0L)
+            assertEquals(0L, engine.activePriorityTargetMs)
+            engine.boostAround(durationMs)
+            assertEquals(durationMs, engine.activePriorityTargetMs)
+            engine.close()
         } finally {
             scope.cancel()
         }

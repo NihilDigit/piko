@@ -221,6 +221,21 @@ class PlayerScreenState(
     /** 首帧是否已渲染完成，供雪碧图冷启动触发门控读取。 */
     val isFirstFrameReady: Boolean get() = startedThisAttempt
 
+    /**
+     * 当前播放点前方的可信缓冲余量（毫秒），兼顾 `bufferedPositionMillis` 与后端 `bufferSnapshot.bufferedDuration`。
+     * 后端尚未上报任何缓冲读数时返回 `null`，以便雪碧图调度器区分「真实 0ms 耗尽」与「后端未上报」。
+     */
+    val storyboardBufferedAheadMillis: Long? by derivedStateOf {
+        val hasPosReading = bufferedPositionMillis > 0L
+        val snapshotMs = backend.bufferSnapshot?.bufferedDuration?.inWholeMilliseconds?.coerceAtLeast(0L)
+        if (!hasPosReading && snapshotMs == null) {
+            null
+        } else {
+            val fromBufferedPos = if (hasPosReading) (bufferedPositionMillis - positionMillis).coerceAtLeast(0L) else 0L
+            maxOf(fromBufferedPos, snapshotMs ?: 0L)
+        }
+    }
+
     /** 播放器当前是否处于加载/定位/重连/卡顿忙态，供雪碧图后台抓取主动退让。 */
     val isPlaybackBusyForStoryboard: Boolean by derivedStateOf {
         isPreparing || isRecovering || backend.isBuffering || seeking

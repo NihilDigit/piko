@@ -32,7 +32,7 @@ data class TsStoryboardHeader(
 }
 
 /**
- * 从单个 `48–128 KiB` MPEG-TS 分块中直接抽出的单帧 HEVC IDR 访问单元与真实片内 `PTS`（毫秒）。
+ * 从单个 MPEG-TS 分块中直接抽出的单帧 HEVC IDR 访问单元与真实片内 `PTS`（毫秒）。
  */
 data class ExtractedTsIdr(
     val ptsMs: Long,
@@ -56,10 +56,26 @@ data class ExtractedTsIdr(
 }
 
 /**
+ * [TsIdrExtractor.extractFirstIdrDetailed] 的结构化结果，用于指导引擎区分
+ * 「已抽到完整 IDR」「IDR 在分块末尾跨界截断」与「分块内尚未遇到 IDR」。
+ */
+sealed interface TsIdrExtractionResult {
+    data class Found(val idr: ExtractedTsIdr) : TsIdrExtractionResult
+
+    /**
+     * 分块末尾已开始组装 HEVC IRAP 或参数集 PES，但尚未等到下一个 PES 起始包或未收齐声明长度。
+     * [declaredRemainingBytes] 非空时表示 PES 头显式声明了固定长度且已知剩余字节数。
+     */
+    data class TruncatedAtTail(val declaredRemainingBytes: Int? = null) : TsIdrExtractionResult
+
+    data object NotFound : TsIdrExtractionResult
+}
+
+/**
  * 纯 `commonMain` 轻量级 MPEG-TS HEVC 单帧 IDR 提取器，复用 `TsDemuxer` 的 0x47 同步、PAT/PMT、
  * 33 位 90 kHz PTS 回绕展开、HEVC VPS/SPS/PPS 与 Annex B 访问单元规范化逻辑：
- * - 不走 `avformat_open_input` / `av_seek_frame`，单次 48–64 KiB Range 块即可在微秒级抽出带真实 `PTS` 的 IDR；
- * - 遇到未带完整下个 PES 起始包的尾部关键帧时，也支持用 `drain()` 安全收尾（只要 continuity counter 未断）。
+ * - 不走 `avformat_open_input` / `av_seek_frame`，单次 Range 分块即可在微秒级抽出带真实 `PTS` 的 IDR；
+ * - 遇到未带完整下个 PES 起始包的尾部关键帧时，支持精确识别跨界截断以便上层仅补拉紧凑尾块，EOF 时可用 `drain()` 收尾。
  */
 object TsIdrExtractor {
     private const val PACKET = 188
@@ -135,10 +151,10 @@ object TsIdrExtractor {
     }
 
     /**
-     * 从任意中段 48–128 KiB TS 字节块中提取第一个完整 HEVC IDR/CRA 帧及其真实片内 `PTS`（毫秒）。
+     * 从任意中段 TS 字节块中提取第一个完整 HEVC IDR/CRA 帧及其真实片内 `PTS`（毫秒）。
      *
      * 默认 [allowTailDrain] 为 `false`：若关键帧 PES 在分块末尾尚未见到下一个视频 PES 起始包（且未显式声明固定长度），
-     * 绝不把跨 64 KiB 边界被截断的半帧（尤其是 NALU 21 `CRA_NUT`）送进 FFmpeg 触发 `Skipping invalid undecodable NALU`，
+     * 绝不把跨边界被截断的半帧（尤其是 NALU 21 `CRA_NUT`）送进 FFmpeg 触发 `Skipping invalid undecodable NALU`，
      * 而是返回 `null` 交由上层补拉续块拼接后再完整解码；仅当分块已触达流末尾（EOF）时传入 `allowTailDrain = true`。
      */
     fun extractFirstIdr(
@@ -146,8 +162,20 @@ object TsIdrExtractor {
         header: TsStoryboardHeader,
         durationMillis: Long = Long.MAX_VALUE,
         allowTailDrain: Boolean = false,
-    ): ExtractedTsIdr? {
-        val syncStart = findSyncOffset(bytes) ?: return null
+    ): ExtractedTsIdr? =
+        (extractFirstIdrDetailed(bytes, header, durationMillis, allowTailDrain) as? TsIdrExtractionResult.Found)?.idr
+
+    /**
+     * 与 [extractFirstIdr] 相同的提取流程，但额外区分「块尾已见到跨界截断的 IDR PES」与「整块未遇到 IDR」，
+     * 使上层续块拉取可针对跨界尾部仅补拉精确/紧凑尾块，长 GOP 才拉满至扩展上限。
+     */
+    fun extractFirstIdrDetailed(
+        bytes: ByteArray,
+        header: TsStoryboardHeader,
+        durationMillis: Long = Long.MAX_VALUE,
+        allowTailDrain: Boolean = false,
+    ): TsIdrExtractionResult {
+        val syncStart = findSyncOffset(bytes) ?: return TsIdrExtractionResult.NotFound
         val targetPid = header.videoPid
         val assembler = SinglePidPesAssembler()
 
@@ -162,17 +190,25 @@ object TsIdrExtractor {
                 val finished = assembler.feed(pkt)
                 if (finished != null) {
                     val idr = maybeBuildIdr(finished, header.originTicks, durationMillis)
-                    if (idr != null) return idr
+                    if (idr != null) return TsIdrExtractionResult.Found(idr)
                 }
             }
             at += PACKET
         }
 
         // 仅在块尾已触达 EOF（allowTailDrain=true）或 PES 显式声明了完整固定长度时放行末尾收尾：
-        // 既不丢弃 EOF 或定长 PES 中的紧凑/单包关键帧（< 1 KiB），也严禁将跨 64 KiB 边界截断的无界半帧送入解码器。
-        return assembler.drain(requireDeclaredLength = !allowTailDrain)?.let { pes ->
-            maybeBuildIdr(pes, header.originTicks, durationMillis)
+        // 既不丢弃 EOF 或定长 PES 中的紧凑/单包关键帧（< 1 KiB），也严禁将跨边界截断的无界半帧送入解码器。
+        assembler.peekComplete(requireDeclaredLength = !allowTailDrain)?.let { pes ->
+            maybeBuildIdr(pes, header.originTicks, durationMillis)?.let { idr ->
+                return TsIdrExtractionResult.Found(idr)
+            }
         }
+        if (!allowTailDrain) {
+            assembler.inspectTruncatedIdrTail()?.let { tail ->
+                return tail
+            }
+        }
+        return TsIdrExtractionResult.NotFound
     }
 
     /**
@@ -284,6 +320,7 @@ object TsIdrExtractor {
         val start: Boolean get() = byte(1) and 0x40 != 0
         val continuity: Int get() = byte(3) and 0x0F
         private val adaptation: Int get() = (byte(3) ushr 4) and 0x3
+        val randomAccess: Boolean get() = adaptation and 0x2 != 0 && byte(4) >= 1 && (byte(5) and 0x40) != 0
         val payloadStart: Int get() = if (adaptation and 0x2 != 0) 5 + byte(4) else 4
         val hasPayload: Boolean get() = adaptation and 0x1 != 0 && payloadStart < PACKET
 
@@ -302,6 +339,7 @@ object TsIdrExtractor {
     private class SinglePidPesAssembler {
         private var parts: MutableList<ByteArray>? = null
         private var broken = false
+        private var currentRandomAccess = false
         private var lastContinuity = -1
 
         fun feed(packet: PacketView): PesPacket? {
@@ -315,6 +353,7 @@ object TsIdrExtractor {
             if (packet.start) {
                 parts = mutableListOf(packet.payload())
                 broken = false
+                currentRandomAccess = packet.randomAccess
             } else {
                 parts?.add(packet.payload())
             }
@@ -325,7 +364,42 @@ object TsIdrExtractor {
             buildCurrent(requireDeclaredLength = requireDeclaredLength).also {
                 parts = null
                 broken = false
+                currentRandomAccess = false
             }
+
+        fun peekComplete(requireDeclaredLength: Boolean = false): PesPacket? =
+            buildCurrent(requireDeclaredLength = requireDeclaredLength)
+
+        fun inspectTruncatedIdrTail(): TsIdrExtractionResult.TruncatedAtTail? {
+            val list = parts ?: return null
+            if (broken) return null
+            val total = list.sumOf { it.size }
+            if (total < 14) return null
+            val bytes = ByteArray(total)
+            var pos = 0
+            for (part in list) {
+                part.copyInto(bytes, pos)
+                pos += part.size
+            }
+            if (bytes[0] != 0.toByte() || bytes[1] != 0.toByte() || bytes[2] != 1.toByte()) return null
+            val flags = (bytes[7].toInt() ushr 6) and 0x3
+            if (flags and 0x2 == 0) return null
+            val headerEnd = 9 + (bytes[8].toInt() and 0xFF)
+            if (headerEnd < 14 || headerEnd >= bytes.size) return null
+            val declared = ((bytes[4].toInt() and 0xFF) shl 8) or (bytes[5].toInt() and 0xFF)
+            if (declared != 0 && 6 + declared <= headerEnd) return null
+            val declaredRemaining = if (declared != 0) {
+                val rem = (6 + declared) - bytes.size
+                if (rem <= 0) return null
+                rem
+            } else {
+                null
+            }
+            val payload = bytes.copyOfRange(headerEnd, bytes.size)
+            val nals = nalUnits(normalizeAccessUnit(payload))
+            val looksLikeIdr = currentRandomAccess || nals.any { it.type in HEVC_IRAP || it.type in HEVC_VPS..HEVC_PPS }
+            return if (looksLikeIdr) TsIdrExtractionResult.TruncatedAtTail(declaredRemainingBytes = declaredRemaining) else null
+        }
 
         private fun buildCurrent(requireDeclaredLength: Boolean = false): PesPacket? {
             val list = parts ?: return null

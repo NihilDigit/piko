@@ -184,16 +184,28 @@ object StoryboardSourceResolver {
 /**
  * 全片自适应雪碧图采样规划器：
  * - 按时长计算槽位数（`<=10min`: ~5s，`10-30min`: ~12s，`30-90min`: ~25s，`>90min`: ~35s，夹在 `48..180` 槽位）；
+ * - 按已知流大小与时长推算 `<= 480P` 转码流字节速率，将单槽首探自适应定容为覆盖约 5s GOP + IDR 帧（`192..384 KiB`），
+ *   单次 HTTP Range 往返即可命中绝大多数关键帧；
  * - 生成 Wave 1（12–16 个均匀锚点）、Wave 2（均匀二分插值填满剩余槽位）与交互优先排序。
  */
 object StoryboardPlanner {
     const val TS_PACKET_BYTES = 188L
     const val MIN_SLOTS = 48
     const val MAX_SLOTS = 180
+    /** 文件头（偏移 0）探测基准块大小，保持 `<= 64 KiB` 以命中 SDK `MICRO_PROBE_PRIORITY = 12`。 */
     const val DEFAULT_PROBE_BYTES = 64 * 1024
-    const val EXPANDED_PROBE_BYTES = 128 * 1024
+    const val MIN_ADAPTIVE_PROBE_BYTES = 192 * 1024
+    const val MAX_ADAPTIVE_PROBE_BYTES = 384 * 1024
+    /** 首块尾部已见到正在组装的 IDR PES 时，仅补拉紧凑尾块即可收齐完整关键帧。 */
+    const val TAIL_CONTINUATION_BYTES = 128 * 1024
+    /** 长 GOP 续块探测总预算上限（首块 + 续块累计不超过 512 KiB）。 */
+    const val EXPANDED_PROBE_BYTES = 512 * 1024
     const val WAVE1_MIN_ANCHORS = 12
     const val WAVE1_MAX_ANCHORS = 16
+
+    private const val ADAPTIVE_GOP_SECONDS = 5.0
+    private const val ADAPTIVE_IDR_HEADROOM_BYTES = 32 * 1024L
+    private const val PROBE_GRANULARITY_BYTES = 16 * 1024L
 
     fun slotCountForDuration(durationMillis: Long): Int {
         if (durationMillis <= 0L) return 0
@@ -210,14 +222,27 @@ object StoryboardPlanner {
         return (durationSec / targetStepSec).roundToInt().coerceIn(MIN_SLOTS, MAX_SLOTS)
     }
 
+    /**
+     * 按转码流平均字节速率（`streamSizeBytes / durationSec`）计算覆盖约 5s GOP + IDR 帧的单次探测字节数，
+     * 向上对齐至 16 KiB 并夹在 `192 KiB..384 KiB` 区间，避免 64 KiB 首探频繁二次往返或截断失帧。
+     */
+    fun adaptiveProbeBytes(durationMillis: Long, streamSizeBytes: Long): Int {
+        if (durationMillis <= 0L || streamSizeBytes <= 0L) return MIN_ADAPTIVE_PROBE_BYTES
+        val durationSec = (durationMillis.toDouble() / 1_000.0).coerceAtLeast(1.0)
+        val bytesPerSec = streamSizeBytes.toDouble() / durationSec
+        val rawTarget = (bytesPerSec * ADAPTIVE_GOP_SECONDS).toLong() + ADAPTIVE_IDR_HEADROOM_BYTES
+        val aligned = ((rawTarget + PROBE_GRANULARITY_BYTES - 1L) / PROBE_GRANULARITY_BYTES) * PROBE_GRANULARITY_BYTES
+        return aligned.coerceIn(MIN_ADAPTIVE_PROBE_BYTES.toLong(), MAX_ADAPTIVE_PROBE_BYTES.toLong()).toInt()
+    }
+
     fun buildSlots(
         durationMillis: Long,
         streamSizeBytes: Long,
-        probeBytes: Int = DEFAULT_PROBE_BYTES,
+        probeBytes: Int = adaptiveProbeBytes(durationMillis, streamSizeBytes),
     ): List<StoryboardSlotPlan> {
         val count = slotCountForDuration(durationMillis)
         if (count <= 0 || streamSizeBytes < TS_PACKET_BYTES * 2L) return emptyList()
-        val effectiveProbe = probeBytes.coerceIn(16 * 1024, 256 * 1024)
+        val effectiveProbe = probeBytes.coerceIn(16 * 1024, EXPANDED_PROBE_BYTES)
         val maxOffset = ((streamSizeBytes - TS_PACKET_BYTES).coerceAtLeast(0L) / TS_PACKET_BYTES) * TS_PACKET_BYTES
         return List(count) { idx ->
             val fraction = if (count == 1) 0.0 else idx.toDouble() / count.toDouble()

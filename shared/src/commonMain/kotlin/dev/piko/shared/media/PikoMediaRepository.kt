@@ -1990,7 +1990,8 @@ class PikoMediaRepository(
     /**
      * 为雪碧图引擎拉取 `[offset, offset + length)` 字节块：
      * - 优先直接读取 [PikoFileCachePool] 本地持久化缓存（已播过/已缓存时 0 字节网络流量）；
-     * - 未命中时发起轻量 `<= 64 KiB` HTTP `Range` 请求（命中 SDK `MICRO_PROBE_PRIORITY = 12`），不占前景播放 `TransferDemand` 通道。
+     * - 未命中时走 SDK `streamRangeFromUrl`（`<= 64 KiB` 流头与紧凑尾块命中 `MICRO_PROBE_PRIORITY = 12`，
+     *   自适应中段 GOP 探测以优先级 0 礼让前景播放并在空闲槽位单次往返拉回），不占前景播放 `TransferDemand` 通道。
      */
     suspend fun fetchStoryboardRange(
         source: StoryboardSource,
@@ -2013,7 +2014,7 @@ class PikoMediaRepository(
             length = fetchLen,
         )?.let { return@withContext it }
 
-        // 2. 轻量 HTTP Range 探测（优先取最新详情里的签名 URL）
+        // 2. HTTP Range 探测（优先取最新详情里的签名 URL）
         val freshUrl = takeFreshDetail(accountClient, source.fileId)
             ?.medias
             ?.firstOrNull { it.mediaId == source.mediaId && it.link.url.isNotBlank() }
@@ -2021,7 +2022,7 @@ class PikoMediaRepository(
             ?: source.url
         if (freshUrl.isBlank()) return@withContext null
 
-        withTimeoutOrNull(PREVIEW_FETCH_TIMEOUT_MILLIS) {
+        withTimeoutOrNull(STORYBOARD_FETCH_TIMEOUT_MILLIS) {
             runSuspendCatching {
                 accountClient.streamRangeFromUrl(freshUrl, start = offset, length = fetchLen.toLong()) { stream ->
                     val result = ByteArray(fetchLen)
@@ -2340,6 +2341,7 @@ class PreparedOriginalSubtitles(
 private const val PREVIEW_CHUNK_BYTES = 256 * 1024
 private const val ABR_CACHE_WINDOW_BYTES = 1024L * 1024L // 1 MiB upcoming playback window check
 private const val PREVIEW_FETCH_TIMEOUT_MILLIS = 6_000L
+private const val STORYBOARD_FETCH_TIMEOUT_MILLIS = 8_000L
 private const val ORIGINAL_SUB_RANGE_TIMEOUT_MILLIS = 8_000L
 private const val MAX_CACHED_ORIGINAL_SUB_FILES = 16
 private const val MAX_TEXT_SUBTITLE_BYTES = 8L * 1024L * 1024L

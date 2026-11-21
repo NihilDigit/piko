@@ -83,6 +83,7 @@ import dev.piko.ui.resources.player_rapid_scrub_jump
 import dev.piko.ui.resources.player_rapid_scrub_label
 import dev.piko.ui.theme.LocalFixedColors
 import dev.piko.ui.theme.tabular
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -229,18 +230,19 @@ internal fun RapidScrubFilmstripOverlay(
     }
 
     // 监听胶片条滚动：实时把居中帧的时间码同步到播放头读数与控制器
-    LaunchedEffect(listState, frames) {
-        if (frames.isEmpty()) return@LaunchedEffect
+    LaunchedEffect(listState, frames.isNotEmpty()) {
+        if (latestFrames.isEmpty()) return@LaunchedEffect
         snapshotFlow {
             val idx = centeredFrameIndex(listState, centeredIndex)
             idx to listState.isScrollInProgress
         }
             .distinctUntilChanged()
             .collect { (idx, scrolling) ->
-                if (idx in frames.indices) {
+                val currentFrames = latestFrames
+                if (idx in currentFrames.indices) {
                     centeredIndex = idx
                     if (scrolling) {
-                        latestOnTargetChange(frames[idx])
+                        latestOnTargetChange(currentFrames[idx])
                     }
                 }
             }
@@ -248,8 +250,9 @@ internal fun RapidScrubFilmstripOverlay(
 
     // 外部变更（键盘 ←/→、长按拖动、迷你时间轴直达）驱动胶片条同步滚动到对应帧
     LaunchedEffect(targetMillis, isHoldingDrag, initializedScroll) {
-        if (!initializedScroll || frames.isEmpty() || listState.isScrollInProgress) return@LaunchedEffect
-        val targetIdx = nearestFrameIndex(frames, targetMillis)
+        val currentFrames = latestFrames
+        if (!initializedScroll || currentFrames.isEmpty() || listState.isScrollInProgress) return@LaunchedEffect
+        val targetIdx = nearestFrameIndex(currentFrames, targetMillis)
         if (targetIdx != centeredIndex) {
             centeredIndex = targetIdx
             if (isHoldingDrag) {
@@ -260,17 +263,24 @@ internal fun RapidScrubFilmstripOverlay(
         }
     }
 
-    // 打开或滚动「速览」时通知雪碧图引擎优先抓取当前视口中心附近槽位（Stage c 交互覆盖）
-    LaunchedEffect(frameCache, listState, frames) {
-        if (frameCache == null || frames.isEmpty()) return@LaunchedEffect
-        frameCache.notifyUserFocus(originMillis)
+    // 打开或滚动「速览」时通知雪碧图引擎优先抓取当前视口中心附近槽位（Stage c 交互覆盖）：
+    // 仅按 frames.isNotEmpty() 建协程，避免后续缩略图批次到达时重启协程并把焦点冲回 originMillis。
+    LaunchedEffect(frameCache, listState, frames.isNotEmpty()) {
+        if (frameCache == null || latestFrames.isEmpty()) return@LaunchedEffect
+        var initialBoostSent = false
         snapshotFlow {
             val idx = centeredFrameIndex(listState, centeredIndex)
             latestFrames.getOrNull(idx) ?: originMillis
         }
             .distinctUntilChanged()
             .collectLatest { focusMs ->
-                frameCache.notifyUserFocus(focusMs)
+                if (!initialBoostSent) {
+                    initialBoostSent = true
+                    frameCache.notifyUserFocus(focusMs)
+                } else {
+                    delay(FOCUS_BOOST_COALESCE_MS)
+                    frameCache.notifyUserFocus(focusMs)
+                }
             }
     }
 
@@ -742,3 +752,4 @@ private val FILMSTRIP_TILE_HEIGHT_COMPACT = 104.dp
 private val FILMSTRIP_FRAME_GAP = 10.dp
 private val FILMSTRIP_VERTICAL_PADDING = 12.dp
 private val FILMSTRIP_SPROCKET_HEIGHT = 14.dp
+private const val FOCUS_BOOST_COALESCE_MS = 60L
