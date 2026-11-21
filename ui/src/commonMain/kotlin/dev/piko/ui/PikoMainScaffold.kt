@@ -1,9 +1,5 @@
 package dev.piko.ui
 
-import dev.piko.data.repository.isHtmlDocument
-import dev.piko.data.repository.isPlayableVideo
-import dev.piko.data.repository.isPreviewableImage
-
 import androidx.compose.animation.core.animateDp
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
@@ -12,10 +8,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -27,19 +21,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.PieChart
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.SyncAlt
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -47,7 +34,6 @@ import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -60,21 +46,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.isShiftPressed
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -83,19 +61,16 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
-import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.NavDisplay
-import androidx.savedstate.serialization.SavedStateConfiguration
-import dev.piko.download.DownloadStatus
+import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.shared.data.DriveLibrary
+import dev.piko.shared.data.LocalLocation
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.presentation.FileLocation
-import dev.piko.shared.presentation.WorkspaceContext
 import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.state.QuickAccessState
 import dev.piko.ui.adaptive.isDesktopLayout
@@ -107,7 +82,6 @@ import dev.piko.ui.components.LocalFocusFallback
 import dev.piko.ui.components.LocalPaletteRegistry
 import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.LocalShowExtensions
-import dev.piko.ui.components.PaletteItem
 import dev.piko.ui.components.PaletteRegistry
 import dev.piko.ui.components.SidePanelLayout
 import dev.piko.ui.components.fileDragHost
@@ -121,16 +95,23 @@ import dev.piko.ui.navigation.isWorkspaceSurface
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.LocalWindowCaption
 import dev.piko.ui.platform.LocalWindowResizing
+import dev.piko.ui.platform.ModalCaptionBlocker
 import dev.piko.ui.screens.clips.FeedResumeBar
+import dev.piko.ui.screens.drive.ImageViewer
+import dev.piko.ui.screens.drive.LocalDriveAppearancePrefs
 import dev.piko.ui.screens.drive.LocalSidebarTooltipsEnabled
 import dev.piko.ui.screens.drive.SidebarRailWidth
 import dev.piko.ui.screens.drive.SidebarWidth
-import dev.piko.ui.screens.drive.icon
 import dev.piko.ui.screens.files.FilesScreen
 import dev.piko.ui.screens.instant.CollapseAddLinkLabel
 import dev.piko.ui.screens.instant.DiscardAddLinkButton
 import dev.piko.ui.screens.instant.DockedAddLink
 import dev.piko.ui.screens.instant.rememberDiscardAddLink
+import dev.piko.ui.screens.player.LocalPlayerLayoutPrefs
+import dev.piko.ui.screens.reader.DocumentReaderScreen
+import dev.piko.ui.screens.reader.HtmlViewerScreen
+import dev.piko.ui.screens.settings.DriveAppearanceCustomizationPage
+import dev.piko.ui.screens.settings.PlayerCustomizationPage
 import dev.piko.ui.screens.settings.SettingsScreen
 import dev.piko.ui.screens.settings.WebDavScreen
 import dev.piko.ui.screens.share.MySharesScreen
@@ -150,12 +131,8 @@ import dev.piko.ui.workbench.LocalWorkspaceContexts
 import dev.piko.ui.workbench.LocalWorkspaceSnapshotEnabled
 import dev.piko.ui.workbench.TaskSlot
 import dev.piko.ui.workbench.WorkspaceViewModel
-import dev.piko.data.auth.SidePanelPrefs
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.launch
-import kotlinx.serialization.modules.SerializersModule
-import kotlinx.serialization.modules.polymorphic
-import kotlinx.serialization.modules.subclass
 
 /** 一次播放请求。[playlist] 是同目录可播的视频，桌面播放器用它做选集；来自传输页时为空。 */
 class VideoPlayerRequest(
@@ -165,16 +142,6 @@ class VideoPlayerRequest(
     val playlist: List<FileStat> = emptyList(),
     val startMillis: Long? = null,
 )
-
-/** 一次看图请求。[images] 是同上下文可连续翻看的图片，桌面端在独立看图窗口中展示。 */
-@Immutable
-class ImageViewerRequest(
-    val images: List<FileStat>,
-    val initialIndex: Int = 0,
-    val onLocate: ((FileStat) -> Unit)? = null,
-)
-
-val LocalDetachedImageViewer = staticCompositionLocalOf<((ImageViewerRequest) -> Unit)?> { null }
 
 /**
  * 播放器宿主策略：Android 在应用内压栈全屏页，桌面端开独立窗口。
@@ -202,24 +169,6 @@ class ClipFeedLinks(
     val close: () -> Unit,
 )
 
-private val NavKeyConfiguration = SavedStateConfiguration {
-    serializersModule = SerializersModule {
-        polymorphic(NavKey::class) {
-            subclass(Screen.Home::class)
-            subclass(Screen.Library::class)
-            subclass(Screen.MyShares::class)
-            subclass(Screen.SpaceMap::class)
-            subclass(Screen.Settings::class)
-            subclass(Screen.WebDav::class)
-            subclass(Screen.PlayerCustomization::class)
-            subclass(Screen.DriveAppearanceCustomization::class)
-            subclass(Screen.VideoPlayer::class)
-            subclass(Screen.DocumentReader::class)
-            subclass(Screen.HtmlViewer::class)
-        }
-    }
-}
-
 /**
  * 应用顶层主界面：连接账号级 `WorkspaceViewModel` 与 Navigation 3 返回栈，
  * 将顶层侧栏、主工作区、信息流右栏/全屏及低频全局弹窗分发至顶层无状态可跳过组件。
@@ -236,7 +185,7 @@ fun PikoMainScaffold(
     if (services.driveRepository.currentAccount != account) return
     val coroutineScope = rememberCoroutineScope()
     val desktop = isDesktopLayout()
-    val localFiles = LocalPikoPlatform.current.localFiles
+    val latestDesktop by rememberUpdatedState(desktop)
     val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
     val presentationOwner = remember(services, account, services.presentationStores.generation) {
         services.presentationStores.forAccount(account, activeAccount = services.driveRepository.currentAccount)
@@ -249,8 +198,26 @@ fun PikoMainScaffold(
     val driveWorkspace = workspaceModel.driveWorkspace
 
     var currentTab by rememberSaveable { mutableStateOf(workspaceModel.lastMainTab) }
-    val backStack = rememberNavBackStack(NavKeyConfiguration, *workspaceModel.lastNavigation.toTypedArray())
+    var libraryResetRequests by remember { mutableIntStateOf(0) }
+    var spaceMapResetRequests by remember { mutableIntStateOf(0) }
+    var filesScrollToTop by remember { mutableIntStateOf(0) }
+    var transfersScrollToTop by remember { mutableIntStateOf(0) }
+    val taskSlot = remember { TaskSlot() }
+
+    val nav = rememberMainBackStackCoordinator(
+        account = account,
+        services = services,
+        workspaceModel = workspaceModel,
+        videoPlayer = videoPlayer,
+        isDesktopProvider = { latestDesktop },
+        currentTabProvider = { currentTab },
+        onSetCurrentTab = { currentTab = it },
+        onIncrementLibraryReset = { libraryResetRequests++ },
+        onIncrementSpaceMapReset = { spaceMapResetRequests++ },
+    )
+    val backStack = nav.backStack
     if (services.driveRepository.currentAccount != account) return
+
     val workspaceUiStates = rememberSaveableStateHolder()
     val workspaceContexts by workspaceModel.contexts.contextsFlow.collectAsStateWithLifecycle()
     val retainedWorkIds = remember { mutableSetOf<Long>() }
@@ -263,7 +230,7 @@ fun PikoMainScaffold(
     LaunchedEffect(workspaceModel.activationRevision) {
         if (workspaceModel.consumeContextActivation()) {
             currentTab = MainTab.FILES
-            while (backStack.size > 1) backStack.removeLastOrNull()
+            nav.resetToHome()
         }
     }
     LaunchedEffect(desktop) {
@@ -275,7 +242,7 @@ fun PikoMainScaffold(
     LaunchedEffect(workspaceModel.returnedOrigin) {
         workspaceModel.consumeReturnedOrigin()?.let { origin ->
             currentTab = if (desktop && origin.tab == MainTab.SETTINGS) MainTab.FILES else origin.tab
-            while (backStack.size > 1) backStack.removeLastOrNull()
+            nav.resetToHome()
             origin.screens.drop(1).forEach(backStack::add)
         }
     }
@@ -295,12 +262,6 @@ fun PikoMainScaffold(
     val fileBrowser = workspaceModel.mainBrowser(activeFileTab)
     SideEffect { workspaceModel.rememberNavigation(backStack.filterIsInstance<Screen>(), currentTab) }
 
-    var libraryResetRequests by remember { mutableIntStateOf(0) }
-    var spaceMapResetRequests by remember { mutableIntStateOf(0) }
-    var filesScrollToTop by remember { mutableIntStateOf(0) }
-    var transfersScrollToTop by remember { mutableIntStateOf(0) }
-    val taskSlot = remember { TaskSlot() }
-
     val topScreen = backStack.lastOrNull() as? Screen
     val workspaceSurface = isWorkspaceSurface(topScreen, currentTab)
     LaunchedEffect(workspaceSurface) { if (!workspaceSurface) workspaceModel.ongoingWorkShown = false }
@@ -310,47 +271,6 @@ fun PikoMainScaffold(
     val windowWidth = with(density) { LocalWindowInfo.current.containerSize.width.toDp() }
     val heightCompact = isHeightCompact()
     val sidebarWindow = windowWidth >= 600.dp && !heightCompact
-
-    fun resetToHome() {
-        while (backStack.size > 1) backStack.removeLastOrNull()
-    }
-    fun popBack() {
-        if (backStack.size > 1) backStack.removeLastOrNull()
-    }
-    fun leaveFileEntry(): Boolean {
-        val origin = workspaceModel.returnFromFileEntry() ?: return false
-        currentTab = origin.tab
-        resetToHome()
-        origin.screens.drop(1).forEach(backStack::add)
-        return true
-    }
-    fun openProfilePane(screen: Screen) {
-        while (backStack.size > 1 && (backStack.lastOrNull() in SettingsSubpages || isReaderScreen(backStack.lastOrNull()))) {
-            backStack.removeLastOrNull()
-        }
-        val top = backStack.lastOrNull()
-        if (top == screen) {
-            if (screen is Screen.SpaceMap) spaceMapResetRequests++
-            return
-        }
-        if (isProfilePane(top) && backStack.size > 1) backStack.removeLastOrNull()
-        backStack.add(screen)
-    }
-    fun openSpaceMapFromDrive(folderId: String, folderName: String) {
-        openProfilePane(Screen.SpaceMap(folderId, folderName))
-    }
-    fun pushLibrary(library: DriveLibrary) {
-        val target = Screen.Library(library.id)
-        if (backStack.lastOrNull() == target) {
-            libraryResetRequests++
-            return
-        }
-        openProfilePane(target)
-    }
-    fun openTransfers() {
-        currentTab = MainTab.TRANSFERS
-        resetToHome()
-    }
 
     val openDriveRequested by services.openDriveRequested.collectAsStateWithLifecycle()
     val fileHighlightRequested by services.fileHighlightRequested.collectAsStateWithLifecycle()
@@ -365,146 +285,15 @@ fun PikoMainScaffold(
         if (openDriveRequested) {
             workspaceModel.activateFileBrowser()
             currentTab = MainTab.FILES
-            resetToHome()
+            nav.resetToHome()
             services.consumeOpenDriveRequest()
         }
     }
     LaunchedEffect(openTransfersRequested) {
         if (openTransfersRequested) {
-            openTransfers()
+            nav.openTransfers()
             services.consumeOpenTransfersRequest()
         }
-    }
-
-    fun playVideo(file: FileStat, playlist: List<FileStat>, startMillis: Long? = null) {
-        val localTask = services.downloadManager.tasks.value.values.find {
-            it.fileId == file.id && it.status == DownloadStatus.COMPLETED && !it.isSegment
-        }
-        val localPath = localTask?.destinationPath?.takeIf(localFiles::exists)
-        if (videoPlayer is VideoPlayerHost.Detached && videoPlayer.openImage != null &&
-            file.isPreviewableImage() && !file.isPlayableVideo()
-        ) {
-            val imageFile = if (localPath != null && file.params["local_path"].isNullOrBlank()) {
-                file.copy(params = file.params + ("local_path" to localPath))
-            } else file
-            val imagePeers = playlist.filter { it.isPreviewableImage() && !it.isPlayableVideo() }.ifEmpty { listOf(imageFile) }
-            val startIndex = imagePeers.indexOfFirst { it.id == imageFile.id }.coerceAtLeast(0)
-            videoPlayer.openImage.invoke(ImageViewerRequest(images = imagePeers, initialIndex = startIndex))
-            return
-        }
-        when (videoPlayer) {
-            is VideoPlayerHost.InApp -> backStack.add(Screen.VideoPlayer(file.id, file.name, localPath, startMillis))
-            is VideoPlayerHost.Detached -> videoPlayer.open(VideoPlayerRequest(file.id, file.name, localPath, playlist, startMillis))
-        }
-    }
-    fun playLocal(fileId: String, fileName: String, localPath: String?) {
-        val candidate = FileStat(
-            id = fileId,
-            name = fileName,
-            params = if (!localPath.isNullOrBlank()) mapOf("local_path" to localPath) else emptyMap(),
-        )
-        if (videoPlayer is VideoPlayerHost.Detached && videoPlayer.openImage != null &&
-            candidate.isPreviewableImage() && !candidate.isPlayableVideo()
-        ) {
-            videoPlayer.openImage.invoke(ImageViewerRequest(images = listOf(candidate), initialIndex = 0))
-            return
-        }
-        when (videoPlayer) {
-            is VideoPlayerHost.InApp -> backStack.add(Screen.VideoPlayer(fileId, fileName, localPath))
-            is VideoPlayerHost.Detached -> videoPlayer.open(VideoPlayerRequest(fileId, fileName, localPath))
-        }
-    }
-
-    val platform = LocalPikoPlatform.current
-    fun openDocument(file: FileStat) {
-        val localTask = services.downloadManager.tasks.value.values.find {
-            it.fileId == file.id && it.status == DownloadStatus.COMPLETED && !it.isSegment
-        }
-        val localPath = localTask?.destinationPath?.takeIf(localFiles::exists)
-            ?: file.params["local_path"]?.takeIf { it.isNotBlank() && !it.startsWith("content://") }
-        val parentFolderId = file.parentId.takeIf { it.isNotBlank() }
-        val sizeBytes = file.size.toLongOrNull() ?: 0L
-        when {
-            file.isHtmlDocument() -> {
-                if (platform.htmlViewer != null) {
-                    backStack.add(
-                        Screen.HtmlViewer(
-                            fileId = file.id,
-                            fileName = file.name,
-                            parentFolderId = parentFolderId,
-                            localPath = localPath,
-                        ),
-                    )
-                } else {
-                    coroutineScope.launch {
-                        dev.piko.shared.media.proxy.HtmlDocumentProxySessions.openForExternalBrowser(
-                            fileId = file.id,
-                            fileName = file.name,
-                            parentFolderId = parentFolderId,
-                            localPath = localPath,
-                            driveRepository = services.driveRepository,
-                            mediaRepository = services.mediaRepository,
-                        ).onSuccess { handle ->
-                            platform.openUrl(handle.url)
-                        }.onFailure { err ->
-                            services.postAppNotice(
-                                err.message ?: tr("无法打开网页文档", "Unable to open HTML document", "HTML ドキュメントを開けませんでした", "HTML 문서를 열 수 없습니다", "無法開啟網頁文件"),
-                            )
-                        }
-                    }
-                }
-            }
-            else -> {
-                backStack.add(
-                    Screen.DocumentReader(
-                        fileId = file.id,
-                        fileName = file.name,
-                        parentFolderId = parentFolderId,
-                        localPath = localPath,
-                        sizeBytes = sizeBytes,
-                    ),
-                )
-            }
-        }
-    }
-
-    fun goToDrive(stack: List<PikoPathBreadcrumb>, then: () -> Unit = {}) {
-        if (services.driveRepository.currentAccount != account) return
-        workspaceModel.activatePrimaryFileBrowser()
-        fileWorkspace.navigateThen(stack) {
-            if (services.driveRepository.currentAccount != account) return@navigateThen
-            fileWorkspace.updateFolderStack(stack)
-            then()
-            resetToHome()
-            currentTab = MainTab.FILES
-        }
-    }
-    fun showInDrive(stack: List<PikoPathBreadcrumb>, fileId: String, activatePrimary: Boolean = true) {
-        if (services.driveRepository.currentAccount != account) return
-        if (activatePrimary) workspaceModel.activatePrimaryFileBrowser()
-        fileWorkspace.navigateThen(stack) {
-            if (services.driveRepository.currentAccount != account) return@navigateThen
-            fileWorkspace.updateFolderStack(stack)
-            fileWorkspace.requestHighlight(setOf(fileId))
-            resetToHome()
-            currentTab = MainTab.FILES
-        }
-    }
-    suspend fun revealInDrive(fileId: String, knownParentStack: List<PikoPathBreadcrumb> = emptyList()): Boolean {
-        val originTab = currentTab
-        val originScreens = backStack.filterIsInstance<Screen>()
-        val originContextId = workspaceModel.contexts.activeContextId.value
-        val stack = when {
-            fileId.isEmpty() -> listOf(PikoDriveRepository.ROOT_BREADCRUMB)
-            knownParentStack.isNotEmpty() && knownParentStack.first().id.isEmpty() -> knownParentStack
-            else -> (workspaceModel.awaitPathLookup(fileId) ?: return true).getOrElse { return false }
-        }
-        if (services.driveRepository.currentAccount != account) return true
-        workspaceModel.enterFromOutside(stack, originTab, originScreens, originContextId)
-        if (fileId.isNotEmpty()) driveWorkspace.requestHighlight(setOf(fileId))
-        resetToHome()
-        currentTab = MainTab.FILES
-        return true
     }
 
     var contentSize by remember { mutableStateOf(IntSize.Zero) }
@@ -618,7 +407,7 @@ fun PikoMainScaffold(
         else suspendFeed(feedHome ?: fileWorkspace.currentLocation())
     }
 
-    fun playFromFeed(file: FileStat, startMillis: Long) = playVideo(file, listOf(file), startMillis)
+    fun playFromFeed(file: FileStat, startMillis: Long) = nav.playVideo(file, listOf(file), startMillis)
     fun locateFromFeed(file: FileStat) {
         if (services.driveRepository.currentAccount != account) return
         val origin = fileWorkspace.currentLocation()
@@ -633,7 +422,7 @@ fun PikoMainScaffold(
                 detourTab != null -> driveWorkspace.switchTab(detourTab)
                 feedDetour != null -> feedDetourTab = driveWorkspace.openTab(stack)
             }
-            showInDrive(stack, file.id, activatePrimary = false)
+            nav.showInDrive(stack, file.id, activatePrimary = false)
         }
     }
     fun popOutFeed() {
@@ -649,7 +438,7 @@ fun PikoMainScaffold(
     fun resumeFeed() {
         val detour = workspaceModel.feed.resume() ?: return
         fileWorkspace.returnTo(detour)
-        resetToHome()
+        nav.resetToHome()
         currentTab = MainTab.FILES
         if (feedPoppedOut) popOutFeed()
     }
@@ -658,12 +447,12 @@ fun PikoMainScaffold(
         (feedSuspended && !desktop && folderStack.size <= 1)
 
     fun leaveLibrary() {
-        if (workspaceModel.canLeaveFileOrigin(folderStack) && leaveFileEntry()) return
+        if (workspaceModel.canLeaveFileOrigin(folderStack) && nav.leaveFileEntry()) return
         if (feedSuspended && !desktop) {
             resumeFeed()
             return
         }
-        if (!leaveFileEntry() && !driveWorkspace.goBack()) {
+        if (!nav.leaveFileEntry() && !driveWorkspace.goBack()) {
             driveWorkspace.updateFolderStack(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
         }
     }
@@ -678,7 +467,7 @@ fun PikoMainScaffold(
             conflictsWith = setOf(TaskSlot.Task.ADD_LINK, TaskSlot.Task.FEED),
         ) {
             currentTab = MainTab.FILES
-            resetToHome()
+            nav.resetToHome()
             val validOwnerTabId = addLink.ownerTabId?.takeIf { liveFileTabIds.isEmpty() || it in liveFileTabIds }
             if (addLink.state != null && validOwnerTabId != null) workspaceModel.activateContext(validOwnerTabId)
             else workspaceModel.activateFileBrowser()
@@ -764,7 +553,7 @@ fun PikoMainScaffold(
                             DockedAddLink(
                                 state = state,
                                 onTargetPicked = { path -> fileWorkspace.updateFolderStack(path) },
-                                onPreview = { fileId, fileName -> playVideo(FileStat(id = fileId, name = fileName), emptyList()) },
+                                onPreview = { fileId, fileName -> nav.playVideo(FileStat(id = fileId, name = fileName), emptyList()) },
                             )
                         }
                     }
@@ -803,45 +592,7 @@ fun PikoMainScaffold(
         if (!pointerSource.isTouchLike && (currentTab != MainTab.FILES || !onHome)) runCatching { shortcutFocus.requestFocus() }
     }
 
-    fun openPage(screen: Screen) {
-        if (!desktop) currentTab = MainTab.SETTINGS
-        resetToHome()
-        openProfilePane(screen)
-    }
-
-    fun tabDestinations(): List<PaletteItem> {
-        val label = shortcutModifier::label
-        return listOfNotNull(
-            PaletteItem(tr("文件", "Files", "ファイル", "파일", "檔案"), Icons.Outlined.Folder, tr("前往", "Go", "移動", "이동", "前往"), detail = label("1"), keywords = "files drive") { currentTab = MainTab.FILES; resetToHome() },
-            PaletteItem(tr("任务", "Tasks", "タスク", "작업", "任務"), Icons.Outlined.SyncAlt, tr("前往", "Go", "移動", "이동", "前往"), detail = label("2"), keywords = "tasks transfers downloads uploads") { openTransfers() },
-            if (desktop) null else PaletteItem(tr("我的", "Me", "マイページ", "내 정보", "我的"), Icons.Outlined.Person, tr("前往", "Go", "移動", "이동", "前往"), detail = label("3"), keywords = "profile me") { currentTab = MainTab.SETTINGS; resetToHome() },
-        )
-    }
-
-    fun openDuplicateReport() {
-        val reports = workspaceModel.contexts.contextsFlow.value.filterIsInstance<WorkspaceContext.Duplicate>()
-        if (reports.size == 1) workspaceModel.activateContext(reports.single().id, rememberOrigin = true)
-        else if (reports.isNotEmpty()) {
-            currentTab = MainTab.FILES
-            resetToHome()
-            if (!desktop) workspaceModel.ongoingWorkShown = true
-        }
-    }
-
-    fun libraryDestination(library: DriveLibrary, keywords: String) =
-        PaletteItem(library.title, library.icon, tr("页面", "Page", "ページ", "페이지", "頁面"), keywords = keywords) { pushLibrary(library) }
-
-    fun pageDestinations(): List<PaletteItem> = listOf(
-        libraryDestination(DriveLibrary.STARRED, "starred"),
-        libraryDestination(DriveLibrary.RECENT, "recent added uploads 新增"),
-        libraryDestination(DriveLibrary.HISTORY, "history"),
-        PaletteItem(tr("我的分享", "My shares", "自分の共有", "내 공유", "我的分享"), Icons.Outlined.Share, tr("页面", "Page", "ページ", "페이지", "頁面"), keywords = "shares") { openPage(Screen.MyShares) },
-        PaletteItem(tr("空间分布", "Space usage", "ストレージ内訳", "공간 분포", "空間分佈"), Icons.Outlined.PieChart, tr("页面", "Page", "ページ", "페이지", "頁面"), keywords = "space usage storage disk treemap 容量 空间 占用") { openPage(Screen.SpaceMap()) },
-        libraryDestination(DriveLibrary.TRASH, "trash bin"),
-        PaletteItem(tr("设置", "Settings", "設定", "설정", "設定"), Icons.Outlined.Settings, tr("页面", "Page", "ページ", "페이지", "頁面"), keywords = "settings preferences") { openPage(Screen.Settings) },
-    )
-
-    val paneBack: (() -> Unit)? = if (sidebarWindow) null else ::popBack
+    val paneBack: (() -> Unit)? = if (sidebarWindow) null else nav::popBack
     val activePaneScreen = if (isReaderScreen(topScreen)) backStack.dropLast(1).lastOrNull() as? Screen else topScreen
     val selectedPane = when {
         activePaneScreen in SettingsSubpages -> Screen.Settings
@@ -865,10 +616,10 @@ fun PikoMainScaffold(
         onTransfersTab = currentTab == MainTab.TRANSFERS,
         isViewingActiveImport = { currentTab == MainTab.FILES && backStack.size == 1 && workspaceModel.contexts.activeContextId.value in workspaceModel.importModels },
         isViewingDuplicateReport = { id -> currentTab == MainTab.FILES && backStack.size == 1 && workspaceModel.contexts.activeContextId.value == id },
-        onOpenTransfers = ::openTransfers,
+        onOpenTransfers = nav::openTransfers,
         onOpenAddLink = ::openAddLinkWithConfirm,
         onRevealInstantSaved = { target, createdIds ->
-            resetToHome()
+            nav.resetToHome()
             currentTab = MainTab.FILES
             fileWorkspace.navigateToFolder(target)
             workspaceModel.activateFileBrowser()
@@ -888,6 +639,9 @@ fun PikoMainScaffold(
         LocalWorkspaceSnapshotEnabled provides !workspaceModel.ongoingWorkShown,
         LocalShowOngoingWork provides if (desktop || !workspaceSurface) null else ({ workspaceModel.ongoingWorkShown = true }),
         LocalDetachedImageViewer provides detachedHost?.openImage,
+        LocalInAppImageViewer provides { images, initialIndex, onDismiss ->
+            ImageViewer(images = images, initialIndex = initialIndex, onDismiss = onDismiss)
+        },
     ) {
         Box(
             modifier = modifier
@@ -897,56 +651,21 @@ fun PikoMainScaffold(
                 .focusFallbackRoot(focusFallback)
                 .focusRequester(shortcutFocus)
                 .focusable(!pointerSource.isTouchLike)
-                .onPreviewKeyEvent { event ->
-                    if (drawerOpen && event.type == KeyEventType.KeyDown && event.key == Key.Escape) {
-                        drawerOpen = false
-                        return@onPreviewKeyEvent true
-                    }
-                    if (!workspaceSurface || drawerOpen || event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) false
-                    else when (event.key) {
-                        Key.Tab -> { workspaceModel.cycleContext(if (event.isShiftPressed) -1 else 1); true }
-                        Key.T -> { workspaceModel.newFileContext(); true }
-                        Key.W -> {
-                            val id = workspaceModel.contexts.activeContextId.value
-                            if (workspaceModel.canCloseContext(id)) workspaceModel.requestCloseContext(id)
-                            true
-                        }
-                        Key.PageUp -> if (event.isShiftPressed) { workspaceModel.moveActiveContext(-1); true } else false
-                        Key.PageDown -> if (event.isShiftPressed) { workspaceModel.moveActiveContext(1); true } else false
-                        else -> false
-                    }
-                }
-                .onKeyEvent { event ->
-                    if (event.type == KeyEventType.KeyDown && (event.key == Key.F1 || (shortcutModifier.isPressed(event) && event.key == Key.Slash))) {
-                        workspaceModel.shortcutsOpen = true
-                        return@onKeyEvent true
-                    }
-                    if (event.type != KeyEventType.KeyDown || !shortcutModifier.isPressed(event)) return@onKeyEvent false
-                    if (event.key == Key.K) {
-                        drawerOpen = false
-                        workspaceModel.paletteOpen = true
-                        return@onKeyEvent true
-                    }
-                    if (event.key == Key.Comma) {
-                        drawerOpen = false
-                        openPage(Screen.Settings)
-                        return@onKeyEvent true
-                    }
-                    if (event.key == Key.B && sidebarMode) {
-                        toggleSidebar()
-                        return@onKeyEvent true
-                    }
-                    val tab = when (event.key) {
-                        Key.One -> MainTab.FILES
-                        Key.Two -> MainTab.TRANSFERS
-                        Key.Three -> if (desktop) return@onKeyEvent false else MainTab.SETTINGS
-                        else -> return@onKeyEvent false
-                    }
-                    drawerOpen = false
-                    currentTab = tab
-                    resetToHome()
-                    true
-                },
+                .mainShellShortcuts(
+                    shortcutModifier = shortcutModifier,
+                    workspaceModel = workspaceModel,
+                    workspaceSurface = workspaceSurface,
+                    desktop = desktop,
+                    sidebarMode = sidebarMode,
+                    drawerOpen = drawerOpen,
+                    onDismissDrawer = { drawerOpen = false },
+                    onToggleSidebar = ::toggleSidebar,
+                    onOpenSettings = { nav.openPage(Screen.Settings) },
+                    onSelectMainTab = { tab ->
+                        currentTab = tab
+                        nav.resetToHome()
+                    },
+                ),
         ) {
             val sidebarScrollState = rememberScrollState()
             val floatingDrawerTarget = drawerOpen && sidebarMode && !sidebarPushes
@@ -963,8 +682,8 @@ fun PikoMainScaffold(
 
             CompositionLocalProvider(
                 LocalFramed provides sidebarMode,
-                dev.piko.ui.screens.player.LocalPlayerLayoutPrefs provides playerLayoutPrefs,
-                dev.piko.ui.screens.drive.LocalDriveAppearancePrefs provides driveAppearancePrefs,
+                LocalPlayerLayoutPrefs provides playerLayoutPrefs,
+                LocalDriveAppearancePrefs provides driveAppearancePrefs,
             ) {
                 Row(Modifier.fillMaxSize().then(frameModifier)) {
                     if (sidebarMode) {
@@ -987,12 +706,12 @@ fun PikoMainScaffold(
                                     folderStack = folderStack,
                                     selectedPage = selectedPane,
                                     onTabClick = { tab ->
-                                        resetToHome()
+                                        nav.resetToHome()
                                         onTabClick(tab)
                                     },
-                                    onOpenQuickAccess = ::goToDrive,
-                                    onOpenPage = ::openPage,
-                                    onToggleLibrary = ::pushLibrary,
+                                    onOpenQuickAccess = nav::goToDrive,
+                                    onOpenPage = nav::openPage,
+                                    onToggleLibrary = nav::pushLibrary,
                                     onToggleCollapsed = ::toggleSidebar,
                                     scrollState = sidebarScrollState,
                                 )
@@ -1006,7 +725,7 @@ fun PikoMainScaffold(
                             NavDisplay(
                                 backStack = backStack,
                                 entryDecorators = listOf(rememberSaveableStateHolderNavEntryDecorator()),
-                                onBack = ::popBack,
+                                onBack = nav::popBack,
                                 transitionSpec = {
                                     if (sidebarMode && isDesktopTopLevelContentKey(initialState.entries.lastOrNull()?.contentKey) &&
                                         isDesktopTopLevelContentKey(targetState.entries.lastOrNull()?.contentKey)
@@ -1044,19 +763,19 @@ fun PikoMainScaffold(
                                             canLeaveOrigin = canLeaveOrigin,
                                             filesScrollToTop = filesScrollToTop,
                                             transfersScrollToTop = transfersScrollToTop,
-                                            addressDestinations = tabDestinations().drop(1) + pageDestinations(),
+                                            addressDestinations = nav.tabDestinations().drop(1) + nav.pageDestinations(),
                                             feedFrame = feedFrame,
                                             onSelectMainTab = { currentTab = it },
                                             onTabClick = ::onTabClick,
                                             onMeasuredContentSize = { if (latestResizing) pendingContentSize = it else contentSize = it },
-                                            onPlayVideo = { file, playlist -> playVideo(file, playlist) },
-                                            onOpenDocument = ::openDocument,
-                                            onPlayLocal = ::playLocal,
-                                            onRevealById = { id -> coroutineScope.launch { revealInDrive(id) } },
-                                            onOpenCloudFile = { fileId, _ -> revealInDrive(fileId) },
-                                            onOpenTransfers = ::openTransfers,
-                                            onOpenDuplicateReport = ::openDuplicateReport,
-                                            onOpenSpaceMap = ::openSpaceMapFromDrive,
+                                            onPlayVideo = { file, playlist -> nav.playVideo(file, playlist) },
+                                            onOpenDocument = nav::openDocument,
+                                            onPlayLocal = nav::playLocal,
+                                            onRevealById = { id -> coroutineScope.launch { nav.revealInDrive(id) } },
+                                            onOpenCloudFile = { fileId, _ -> nav.revealInDrive(fileId) },
+                                            onOpenTransfers = nav::openTransfers,
+                                            onOpenDuplicateReport = nav::openDuplicateReport,
+                                            onOpenSpaceMap = nav::openSpaceMapFromDrive,
                                             onLeaveLibrary = ::leaveLibrary,
                                             onFeedShownChange = { shown ->
                                                 when {
@@ -1085,8 +804,8 @@ fun PikoMainScaffold(
                                                 openAddLinkWithConfirm(it)
                                             },
                                             onLogout = onLogout,
-                                            onOpenProfilePane = ::openProfilePane,
-                                            onOpenLibraryFromProfile = ::pushLibrary,
+                                            onOpenProfilePane = nav::openProfilePane,
+                                            onOpenLibraryFromProfile = nav::pushLibrary,
                                         )
                                     }
                                     entry<Screen.Library> { screen ->
@@ -1104,29 +823,29 @@ fun PikoMainScaffold(
                                             }
                                         }
                                         FilesScreen(
-                                            onNavigateToVideoPlayer = { file, playlist -> playVideo(file, playlist) },
-                                            onOpenDocument = ::openDocument,
-                                            onOpenTransfers = ::openTransfers,
-                                            onOpenDuplicateReport = ::openDuplicateReport,
-                                            addressDestinations = tabDestinations() + pageDestinations(),
+                                            onNavigateToVideoPlayer = { file, playlist -> nav.playVideo(file, playlist) },
+                                            onOpenDocument = nav::openDocument,
+                                            onOpenTransfers = nav::openTransfers,
+                                            onOpenDuplicateReport = nav::openDuplicateReport,
+                                            addressDestinations = nav.tabDestinations() + nav.pageDestinations(),
                                             browserSession = session,
-                                            onLibraryLeft = ::popBack,
-                                            onRevealInDrive = { file -> coroutineScope.launch { revealInDrive(file.id) } },
-                                            onOpenSpaceMap = ::openSpaceMapFromDrive,
+                                            onLibraryLeft = nav::popBack,
+                                            onRevealInDrive = { file -> coroutineScope.launch { nav.revealInDrive(file.id) } },
+                                            onOpenSpaceMap = nav::openSpaceMapFromDrive,
                                         )
                                     }
-                                    entry<Screen.MyShares> { MySharesScreen(onBackClick = paneBack, onLocate = ::revealInDrive) }
+                                    entry<Screen.MyShares> { MySharesScreen(onBackClick = paneBack, onLocate = nav::revealInDrive) }
                                     entry<Screen.SpaceMap> { screen ->
                                         SpaceMapScreen(
                                             rootFolderId = screen.rootFolderId,
                                             rootFolderName = screen.rootFolderName,
                                             resetRequests = spaceMapResetRequests,
-                                            onBackClick = if (screen.rootFolderId.isNotEmpty()) ::popBack else paneBack,
+                                            onBackClick = if (screen.rootFolderId.isNotEmpty()) nav::popBack else paneBack,
                                             onOpenFolderInDrive = { folderId, folderName, breadcrumbs ->
                                                 if (folderId.isEmpty()) {
-                                                    goToDrive(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
+                                                    nav.goToDrive(listOf(PikoDriveRepository.ROOT_BREADCRUMB))
                                                 } else if (breadcrumbs.isNotEmpty() && breadcrumbs.first().id.isEmpty() && breadcrumbs.last().id == folderId) {
-                                                    goToDrive(breadcrumbs)
+                                                    nav.goToDrive(breadcrumbs)
                                                 } else {
                                                     coroutineScope.launch {
                                                         val parentStack = (workspaceModel.awaitPathLookup(folderId) ?: return@launch).getOrElse {
@@ -1144,12 +863,12 @@ fun PikoMainScaffold(
                                                         }
                                                         val targetStack = if (parentStack.lastOrNull()?.id == folderId) parentStack
                                                         else parentStack + PikoPathBreadcrumb(folderId, folderName)
-                                                        goToDrive(targetStack)
+                                                        nav.goToDrive(targetStack)
                                                     }
                                                 }
                                             },
                                             onLocate = { fileId, knownParentBreadcrumbs ->
-                                                revealInDrive(fileId, knownParentBreadcrumbs)
+                                                nav.revealInDrive(fileId, knownParentBreadcrumbs)
                                             },
                                         )
                                     }
@@ -1159,42 +878,42 @@ fun PikoMainScaffold(
                                             onOpenWebDav = { backStack.add(Screen.WebDav) },
                                             onOpenPlayerCustomization = { backStack.add(Screen.PlayerCustomization) },
                                             onOpenDriveAppearanceCustomization = { backStack.add(Screen.DriveAppearanceCustomization) },
-                                            account = if (sidebarWindow) ({ AccountSettings(onLogout, onOpenSpaceMap = { openPage(Screen.SpaceMap()) }) }) else null,
+                                            account = if (sidebarWindow) ({ AccountSettings(onLogout, onOpenSpaceMap = { nav.openPage(Screen.SpaceMap()) }) }) else null,
                                             showAbout = sidebarWindow,
                                         )
                                     }
-                                    entry<Screen.WebDav> { WebDavScreen(onBackClick = ::popBack) }
+                                    entry<Screen.WebDav> { WebDavScreen(onBackClick = nav::popBack) }
                                     entry<Screen.PlayerCustomization> {
-                                        dev.piko.ui.screens.settings.PlayerCustomizationPage(
+                                        PlayerCustomizationPage(
                                             prefs = playerLayoutPrefs,
                                             onUpdate = { transform ->
                                                 val next = transform(playerLayoutPrefs)
                                                 coroutineScope.launch { services.preferences.setPlayerLayoutPrefs(next) }
                                             },
-                                            onBackClick = ::popBack,
+                                            onBackClick = nav::popBack,
                                         )
                                     }
                                     entry<Screen.DriveAppearanceCustomization> {
-                                        dev.piko.ui.screens.settings.DriveAppearanceCustomizationPage(
+                                        DriveAppearanceCustomizationPage(
                                             prefs = driveAppearancePrefs,
                                             onUpdate = { next ->
                                                 coroutineScope.launch { services.preferences.setDriveAppearancePrefs(next) }
                                             },
-                                            onBackClick = ::popBack,
+                                            onBackClick = nav::popBack,
                                         )
                                     }
                                     entry<Screen.VideoPlayer> { screen ->
-                                        (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, ::popBack)
+                                        (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, nav::popBack)
                                     }
                                     entry<Screen.DocumentReader> { screen ->
-                                        val isLocal = !screen.localPath.isNullOrBlank() || dev.piko.shared.data.LocalLocation.isLocal(screen.fileId)
+                                        val isLocal = !screen.localPath.isNullOrBlank() || LocalLocation.isLocal(screen.fileId)
                                         val docDownloads = rememberDownloadLauncher()
-                                        dev.piko.ui.screens.reader.DocumentReaderScreen(
+                                        DocumentReaderScreen(
                                             fileId = screen.fileId,
                                             fileName = screen.fileName,
                                             localPath = screen.localPath,
                                             sizeBytes = screen.sizeBytes,
-                                            onBackClick = ::popBack,
+                                            onBackClick = nav::popBack,
                                             onDownloadFullFile = if (isLocal) null else ({
                                                 docDownloads.download(
                                                     listOf(
@@ -1207,18 +926,18 @@ fun PikoMainScaffold(
                                                     ),
                                                 ) { notice ->
                                                     notice?.let(services::noticeOnTransfers)
-                                                    openTransfers()
+                                                    nav.openTransfers()
                                                 }
                                             }),
                                         )
                                     }
                                     entry<Screen.HtmlViewer> { screen ->
-                                        dev.piko.ui.screens.reader.HtmlViewerScreen(
+                                        HtmlViewerScreen(
                                             fileId = screen.fileId,
                                             fileName = screen.fileName,
                                             parentFolderId = screen.parentFolderId,
                                             localPath = screen.localPath,
-                                            onBackClick = ::popBack,
+                                            onBackClick = nav::popBack,
                                         )
                                     }
                                 },
@@ -1229,7 +948,7 @@ fun PikoMainScaffold(
             }
 
             BackHandler(enabled = drawerOpen) { drawerOpen = false }
-            dev.piko.ui.platform.ModalCaptionBlocker(enabled = floatingDrawerTarget)
+            ModalCaptionBlocker(enabled = floatingDrawerTarget)
             val floatingSidebar = updateTransition(targetState = floatingDrawerTarget, label = "floatingSidebar")
             if (floatingSidebar.currentState || floatingSidebar.targetState) {
                 val motionScheme = MaterialTheme.motionScheme
@@ -1292,10 +1011,10 @@ fun PikoMainScaffold(
                             quickAccess = quickAccess,
                             folderStack = folderStack,
                             selectedPage = selectedPane,
-                            onTabClick = { tab -> drawerOpen = false; resetToHome(); onTabClick(tab) },
-                            onOpenQuickAccess = { stack -> drawerOpen = false; goToDrive(stack) },
-                            onOpenPage = { screen -> drawerOpen = false; openPage(screen) },
-                            onToggleLibrary = { library -> drawerOpen = false; pushLibrary(library) },
+                            onTabClick = { tab -> drawerOpen = false; nav.resetToHome(); onTabClick(tab) },
+                            onOpenQuickAccess = { stack -> drawerOpen = false; nav.goToDrive(stack) },
+                            onOpenPage = { screen -> drawerOpen = false; nav.openPage(screen) },
+                            onToggleLibrary = { library -> drawerOpen = false; nav.pushLibrary(library) },
                             onToggleCollapsed = { drawerOpen = false },
                             scrollState = sidebarScrollState,
                         )
@@ -1317,10 +1036,10 @@ fun PikoMainScaffold(
                 feedShown = feedShown,
                 feedSuspended = feedSuspended,
                 feedBlockedReason = feedBlockedReason,
-                tabDestinations = ::tabDestinations,
-                pageDestinations = ::pageDestinations,
+                tabDestinations = nav::tabDestinations,
+                pageDestinations = nav::pageDestinations,
                 onConfirmCloseFeed = { setFeedShown(false) },
-                onGoToDrive = { stack -> goToDrive(stack) },
+                onGoToDrive = { stack -> nav.goToDrive(stack) },
                 onOpenAddLink = { openAddLinkWithConfirm() },
                 onUndoLast = {
                     if (services.driveRepository.currentAccount == account) {
@@ -1333,12 +1052,12 @@ fun PikoMainScaffold(
                 onToggleFeedFromPalette = {
                     if (feedShown) {
                         currentTab = MainTab.FILES
-                        resetToHome()
+                        nav.resetToHome()
                         requestCloseFeed()
                     } else {
                         taskSlot.claim(tr("打开信息流", "Open feed", "フィードを開く", "피드 열기", "開啟資訊流"), tr("打开信息流", "Open feed", "フィードを開く", "피드 열기", "開啟資訊流"), TaskSlot.Task.FEED, conflictsWith = setOf(TaskSlot.Task.ADD_LINK)) {
                             currentTab = MainTab.FILES
-                            resetToHome()
+                            nav.resetToHome()
                             workspaceModel.activateFileBrowser()
                             setFeedShown(true)
                         }
@@ -1353,13 +1072,6 @@ fun PikoMainScaffold(
 
 private enum class SideColumnContent { Feed, AddLink }
 
-@Composable
-private fun EscClosesWhenFocused(onClose: () -> Unit, content: @Composable () -> Unit) {
-    var hasFocus by remember { mutableStateOf(false) }
-    BackHandler(enabled = hasFocus, onBack = onClose)
-    Box(Modifier.fillMaxSize().onFocusChanged { hasFocus = it.hasFocus }) { content() }
-}
-
 internal val SidebarPushMinWindowWidth = 1000.dp
 
 private fun inlineSidebarIsCollapsed(windowWidthDp: Float, persistedCollapsed: Boolean): Boolean =
@@ -1368,13 +1080,3 @@ private fun inlineSidebarIsCollapsed(windowWidthDp: Float, persistedCollapsed: B
 private val ClipPanelMinWidth = 360.dp
 private val ClipPanelDefaultWidth = 420.dp
 private val FeedResumeBarFabWidth = 56.dp + 16.dp
-
-private val LibraryScreens: Set<NavKey?> = DriveLibrary.entries.mapTo(mutableSetOf()) { Screen.Library(it.id) }
-private val ProfilePanes = setOf<NavKey?>(Screen.MyShares, Screen.Settings) + LibraryScreens
-private fun isProfilePane(key: NavKey?): Boolean = key in ProfilePanes || key is Screen.SpaceMap
-private val DesktopTopLevelScreens = ProfilePanes + Screen.Home
-private val DesktopTopLevelContentKeys = DesktopTopLevelScreens.mapTo(mutableSetOf()) { it.toString() }
-private fun isDesktopTopLevelContentKey(key: Any?): Boolean =
-    key in DesktopTopLevelContentKeys || key?.toString()?.startsWith("SpaceMap(") == true
-private val SettingsSubpages = setOf<NavKey?>(Screen.WebDav, Screen.PlayerCustomization, Screen.DriveAppearanceCustomization)
-private fun isReaderScreen(key: NavKey?): Boolean = key is Screen.DocumentReader || key is Screen.HtmlViewer

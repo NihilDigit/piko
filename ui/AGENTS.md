@@ -1,6 +1,6 @@
-# ui 模块
+# 界面模块体系（`ui-core`、领域叶模块与 `ui`）
 
-Android 与桌面端共用的全部 Compose 界面。网盘浏览页细则见 `src/commonMain/kotlin/dev/piko/ui/screens/drive/AGENTS.md`，信息流细则见 `src/commonMain/kotlin/dev/piko/ui/screens/clips/AGENTS.md`。
+Android、桌面端与 iOS 共用的全部 Compose 界面按严格有向无环图拆分为底层 `ui-core`、五个零横向依赖的并行领域叶模块（`ui-drive`、`ui-player`、`ui-settings`、`ui-transfers`、`ui-reader`）与顶层聚合外壳 `ui`（含 iOS `PikoKit` 静态框架与 `iosMain` 宿主实现），统一由 `build-logic` 的 `piko.kmp.ui` 约定插件配置并保持全模块 Kotlin 包名（`dev.piko.ui.*`）不变。叶模块仅允许依赖 `:shared` 与 `:ui-core`，严禁叶模块之间直接互相引用；跨领域复用的基础组件、对话框或 CompositionLocal 须下沉至 `:ui-core`。网盘浏览页细则见 `../ui-drive/src/commonMain/kotlin/dev/piko/ui/screens/drive/AGENTS.md`，信息流细则见 `../ui-player/src/commonMain/kotlin/dev/piko/ui/screens/clips/AGENTS.md`。
 
 Android 与桌面端现已通过 Compose Multiplatform `1.13.0-rc01` 与 Android `compose-bom-beta:2026.11.00` 统一链接至 Material 3 `1.5.0-rc01`（详见 `../desktopApp/AGENTS.md` 的版本说明）；修改后仍须双端编译核对平台特有差异。Material 3 `1.5.0-rc01` 中部分 Expressive API 仍处于实验性阶段，本模块已在构建脚本中统一 opt-in；涉及 API 与规范核对一律优先使用 `/expressive-ui`（`rtx`）。为规避 M3 `1.5.0-rc01` `InteractiveListItemMeasurePolicy` 无条件查询 `supportingContent[FirstBaseline]` 在 `LookaheadScope` 中的基线测量 NPE 及桌面端 `SubcomposeLayout` 销毁弹层崩溃，全仓已清零 `ListItem` 与 `SegmentedListItem` 调用（统一采用 `Surface + Row` 搭配 `ListItemDefaults.segmentedShapes(...)`），并清零所有承载弹层/工具提示的非叶子 `BoxWithConstraints`（统一改用 `Box + Modifier.onSizeChanged` 或普通 `Layout`）。高频鼠标悬停、副键菜单与组合点击检测统一经 `components/PointerInputNodes.kt` 的零协程 `PointerInputModifierNode`（`onPointerHover`、`onSecondaryPress`、`SelectionClicks`）实现，避免为每个文件行分配 `MutableInteractionSource` 与协程收集器。
 

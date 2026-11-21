@@ -71,6 +71,9 @@ kotlin {
     sourceSets {
         getByName("desktopMain").dependencies {
             implementation(project(":shared"))
+            implementation(project(":ui-core"))
+            implementation(project(":ui-player"))
+            implementation(project(":ui-reader"))
             implementation(project(":ui"))
             implementation(libs.windows.touch)
             implementation(composeDesktopRuntime)
@@ -90,6 +93,7 @@ kotlin {
         getByName("desktopTest").dependencies {
             implementation(kotlin("test"))
             implementation(libs.junit)
+            implementation(project(":ui-drive"))
             // 控件的鼠标悬停只能用真实的指针事件序列验证；版本跟界面库走，理由同 composeDesktopRuntime
             implementation("org.jetbrains.compose.ui:ui-test:${libs.versions.composeMultiplatform.get()}")
             // 测试里按键不经窗口的返回输入，要从组合里取到返回事件的分发器自己发。版本取界面库已经解析到的那一个

@@ -1,14 +1,14 @@
 # AGENTS.md
 
-Piko 是 PikPak 的第三方跨平台客户端。Android、Windows、macOS 与 Linux（后两者为实验性支持）共用一套 Material 3 Expressive 界面、业务能力与工作状态，按窗口可用净空间调整布局，按触摸与键鼠输入来源适配交互。业务逻辑与呈现状态位于 `shared`，共享界面位于 `ui`，`app` 与 `desktopApp` 仅保留平台入口与原生能力实现。
+Piko 是 PikPak 的第三方跨平台客户端。Android、Windows、macOS 与 Linux（后两者为实验性支持）共用一套 Material 3 Expressive 界面、业务能力与工作状态，按窗口可用净空间调整布局，按触摸与键鼠输入来源适配交互。业务逻辑与呈现状态位于 `shared`，共享界面按职责分层为 `ui-core`、五个并行叶模块（`ui-drive`、`ui-player`、`ui-settings`、`ui-transfers`、`ui-reader`）与聚合入口 `ui`，`app` 与 `desktopApp` 仅保留平台入口与原生能力实现。
 
 本文件记录跨模块的架构约束与工程约定。各模块与子领域的细则位于对应目录的 `AGENTS.md`：
 
 | 文件 | 内容 |
 | --- | --- |
-| `ui/AGENTS.md` | 自适应工作区、状态归属、响应式布局、导航与侧边栏、外框与标题栏、对话框与面板、设置页规范、键鼠与触屏交互、动效与减少动画 |
-| `ui/src/commonMain/kotlin/dev/piko/ui/screens/drive/AGENTS.md` | 网盘页：瀑布流、资料库、压缩包浏览、查重与清理、命令栏、地址栏、目录图、条目操作、下载画质、属性浮卡、双名称体系、键鼠与拖放 |
-| `ui/src/commonMain/kotlin/dev/piko/ui/screens/clips/AGENTS.md` | 信息流：作用域、选段分散算法、挂起与恢复、TS 有界切片与 PTS 校准、取流预取调度、三播放器图层与交互 |
+| `ui/AGENTS.md` | 界面模块拓扑、自适应工作区、状态归属、响应式布局、导航与侧边栏、外框与标题栏、对话框与面板、设置页规范、键鼠与触屏交互、动效与减少动画 |
+| `ui-drive/src/commonMain/kotlin/dev/piko/ui/screens/drive/AGENTS.md` | 网盘页：瀑布流、资料库、压缩包浏览、查重与清理、命令栏、地址栏、目录图、条目操作、下载画质、属性浮卡、双名称体系、键鼠与拖放 |
+| `ui-player/src/commonMain/kotlin/dev/piko/ui/screens/clips/AGENTS.md` | 信息流：作用域、选段分散算法、挂起与恢复、TS 有界切片与 PTS 校准、取流预取调度、三播放器图层与交互 |
 | `desktopApp/AGENTS.md` | 桌面端：依赖版本锁定、Release 打包与 AOT 缓存、原生库与 FFmpeg FFM 转封装、GPU 设备失效恢复、弹层销毁规避、数据目录、单实例与原生托盘、自绘标题栏、Windows 触摸桥、模态文件框隔离、macOS 与 Linux 打包及更新 |
 | `shared/src/commonMain/kotlin/dev/piko/shared/update/AGENTS.md` | 应用内更新：多语言更新说明、版本检查与镜像降级、Windows 事务补丁与 `image.zip` 按需拉取、老客户端兼容契约、跨平台更新冒烟 |
 | `shared/src/commonMain/kotlin/dev/piko/shared/download/AGENTS.md` | 下载与缓存：共享稀疏暂存池与持久化播放缓存、统一缓存管理、转码档探测与画质匹配、缓存感知自动画质、外部播放器保活、转封装与片段截取 |
@@ -34,7 +34,7 @@ pwsh -File scripts/run-desktop.ps1 -NoBuild       # 跳过 Gradle 构建，直�
 ./gradlew :desktopApp:run                         # 通过 Gradle 直接启动桌面开发版（运行期间会持续占用 Gradle Daemon）
 ./gradlew :shared:desktopTest                     # shared 模块单元测试与冒烟测试
 ./gradlew :shared:desktopTest --tests '*ReleaseNotesTest*'  # 运行单个测试类
-./gradlew :ui:desktopTest                         # ui 模块纯函数规则测试（命令栏显隐、设置分区高亮等）
+./gradlew :ui-core:desktopTest :ui-drive:desktopTest :ui-player:desktopTest :ui-settings:desktopTest :ui-transfers:desktopTest :ui-reader:desktopTest :ui:desktopTest  # 界面各模块纯函数与组合规则测试
 ./gradlew :desktopApp:desktopTest                 # 桌面端原生测试（含 WinRT、窗口过程与虚拟触摸，仅限 Windows）
 ./gradlew :app:testDebugUnitTest                  # Android 单元测试
 ./gradlew :desktopApp:createReleaseDistributable  # 构建桌面 Release 镜像（ProGuard + AOT 训练），暴露 keep 规则遗漏
@@ -76,12 +76,19 @@ gh workflow run release.yml -f version=9.9.9      # 发版演练：完整执行�
 
 ## 模块与架构
 
-仓库包含四个主要模块：
+仓库按职责分层为以下模块（共享界面模块共用 `build-logic` 中的 `piko.kmp.ui` 约定插件，统一兼容 Gradle Configuration Cache）：
 
-- `shared`：跨平台业务逻辑与呈现状态（`commonMain`、`jvmSharedMain`、`androidMain`、`desktopMain`）。
-- `ui`：跨平台 Compose 界面（`commonMain`、`androidMain`、`desktopMain`）。
+- `shared`：跨平台业务逻辑与呈现状态（`commonMain`、`jvmSharedMain`、`androidMain`、`desktopMain`、`iosMain`）。
+- `ui-core`：共享界面底座，承载 `composeResources` 多语言资源、主题与动效、多语言与平台抽象接口（`PikoPlatform`）、路由定义（`Screen`）、进程级服务容器（`PikoServices`）、账号工作区状态（`WorkspaceViewModel`）及跨领域公共组件（对话框、面板、列表与海报骨架、设置布局原语、目录选择器、分享与代理对话框等）。
+- 五个零横向依赖的并行领域叶模块（仅依赖 `:shared` 与 `:ui-core`，叶模块之间严禁互相依赖）：
+  - `ui-drive`：网盘浏览、瀑布流画布、资料库、查重报告、链接导入工作区、批量重命名与文件外观自定义。
+  - `ui-player`：应用内视频与听视频播放器、信息流（`ClipFeedScreen`）及播放器外观自定义。
+  - `ui-settings`：设置页各功能分区、缓存管理、WebDAV、登录页、账号切换与个人页。
+  - `ui-transfers`：传输与后台任务页及运行态进度汇总。
+  - `ui-reader`：文档与沙箱网页阅读页、空间分布图（`SpaceMapScreen`）、我的分享页与大图查看器（`ImageViewer`）。
+- `ui`：轻量聚合外壳与工作台宿主（`PikoApp`、`PikoMainScaffold`、`WorkspaceContextHost`），并在 iOS 端承载 `iosMain` 宿主桥接与静态框架 `PikoKit` 导出。
 - `app`：Android 应用入口、平台能力实现与 `libmpv` 播放适配。
-- `desktopApp`：Windows、macOS 与 Linux 入口、平台能力实现、原生系统集成与独立播放器窗口。
+- `desktopApp`：Windows、macOS 与 Linux 入口、平台能力实现、原生系统集成与独立播放器及看图窗口。
 
 Windows 触摸与手写笔接入 Compose Desktop 的桥接库独立发布于 `dev.nihildigit:compose-windows-touch`（仓库 `NihilDigit/compose-windows-touch`，版本记录于 `gradle/libs.versions.toml`）；本地联调时在 `local.properties` 中写入 `windowstouch.dir=../compose-windows-touch` 即可启用复合构建。
 

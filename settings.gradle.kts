@@ -1,4 +1,5 @@
 pluginManagement {
+    includeBuild("build-logic")
     repositories {
         google {
             content {
@@ -29,6 +30,12 @@ dependencyResolutionManagement {
 rootProject.name = "piko"
 include(":app")
 include(":shared")
+include(":ui-core")
+include(":ui-drive")
+include(":ui-player")
+include(":ui-settings")
+include(":ui-transfers")
+include(":ui-reader")
 include(":ui")
 include(":desktopApp")
 include(":cli")

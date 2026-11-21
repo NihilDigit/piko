@@ -38,6 +38,8 @@ application {
 dependencies {
     implementation(project(":desktopApp"))
     implementation(project(":ui"))
+    implementation(project(":ui-core"))
+    implementation(project(":ui-player"))
     implementation(project(":shared"))
     implementation("org.jetbrains.compose.desktop:desktop-jvm-$hostOs-$hostArch:${libs.versions.composeMultiplatform.get()}")
     implementation(libs.kotlinx.coroutines.core)

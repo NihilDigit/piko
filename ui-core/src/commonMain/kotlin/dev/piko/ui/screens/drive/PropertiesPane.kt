@@ -1,0 +1,685 @@
+package dev.piko.ui.screens.drive
+
+import dev.piko.shared.i18n.enCount
+
+import dev.piko.shared.i18n.tr
+import dev.piko.shared.data.formatLocalPathForDisplay
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Checklist
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Inventory2
+import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.Storage
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.piko.data.repository.isPlayableMedia
+import dev.piko.shared.data.FolderUsage
+import dev.piko.shared.data.isDriveFolderId
+import dev.piko.shared.data.isVaulted
+import dev.piko.shared.log.PikoLog
+import dev.piko.shared.log.logFolder
+import dev.piko.shared.state.DriveItemName
+import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.components.DetailAction
+import dev.piko.ui.components.DetailActionIconButton
+import dev.piko.ui.components.DetailField
+import dev.piko.ui.components.DetailHeading
+import dev.piko.ui.components.DetailPanelKey
+import dev.piko.ui.components.DetailPanelSpec
+import dev.piko.ui.components.DetailRow
+import dev.piko.ui.components.DetailSection
+import dev.piko.ui.components.FileListLeadingVisual
+import dev.piko.ui.components.FolderListLeadingVisual
+import dev.piko.ui.components.MediaTagRow
+import dev.piko.ui.components.PosterSpoilerBlur
+import dev.piko.ui.components.SpoilerThumbnail
+import dev.piko.ui.components.toReadableSize
+import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.theme.LocalFixedColors
+import dev.piko.ui.theme.tabular
+import io.github.nihildigit.pikpak.FileStat
+import kotlinx.coroutines.CancellationException
+
+/**
+ * 属性看的是哪几项：一项、几项，或者没指着条目时的当前目录。在打开的那一刻取定，之后选中怎么变都不跟，照资源管理器。
+ */
+sealed interface PropertiesTarget {
+    class Single(val name: DriveItemName, val tags: List<String>, val location: String?, val isBlurred: Boolean) : PropertiesTarget {
+        val file: FileStat get() = name.file
+    }
+
+    class Selection(val files: List<FileStat>, val location: String?) : PropertiesTarget
+
+    class Folder(val name: String, val files: List<FileStat>, val location: String?, val id: String = "") : PropertiesTarget
+}
+
+/**
+ * 条目的属性：窄窗口为底部模态 Sheet，中宽与桌面窗口为随内容定高的居中 M3 对话框（[DetailHost]）。
+ * 采用 M3 Expressive 分段式卡片分组展示概览、媒体信息与位置溯源，并提供文件名、位置、来源链接和哈希的一键操作。
+ */
+@Composable
+fun PropertiesPane(
+    target: PropertiesTarget,
+    modifier: Modifier = Modifier,
+    onLocate: ((FileStat) -> Unit)? = null,
+    onParseSource: ((String) -> Unit)? = null,
+    onToggleBlur: ((FileStat) -> Unit)? = null,
+    isRevealed: ((FileStat) -> Boolean)? = null,
+) {
+    Column(
+        modifier = modifier
+            .widthIn(min = PropertiesMinWidth, max = PropertiesMaxWidth)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(top = 4.dp, bottom = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        when (target) {
+            is PropertiesTarget.Single -> SingleDetails(
+                target = target,
+                onLocate = onLocate,
+                onParseSource = onParseSource,
+                onToggleBlur = onToggleBlur,
+                isRevealed = isRevealed,
+            )
+            is PropertiesTarget.Selection -> SelectionDetails(target)
+            is PropertiesTarget.Folder -> FolderDetails(target)
+        }
+    }
+}
+
+@Composable
+private fun SingleDetails(
+    target: PropertiesTarget.Single,
+    onLocate: ((FileStat) -> Unit)?,
+    onParseSource: ((String) -> Unit)?,
+    onToggleBlur: ((FileStat) -> Unit)?,
+    isRevealed: ((FileStat) -> Boolean)?,
+) {
+    val file = target.file
+    val platform = LocalPikoPlatform.current
+    val driveRepo = LocalPikoServices.current.driveRepository
+    val vaultedFolders by driveRepo.vaultedFolders.collectAsStateWithLifecycle()
+    val fullyVaultedFolders by driveRepo.fullyVaultedFolders.collectAsStateWithLifecycle()
+    val blurred = if (isRevealed != null && onToggleBlur != null) !isRevealed(file) else target.isBlurred
+    val copyNameAction = DetailAction(
+        icon = Icons.Outlined.ContentCopy,
+        label = tr("复制名称", "Copy name", "名前をコピー", "이름 복사", "複製名稱"),
+        onClick = { platform.copyToClipboard(tr("名称", "Name", "名前", "이름", "名稱"), file.name) },
+        copyFeedback = true,
+    )
+
+    val fixedColors = LocalFixedColors.current
+    val colors = MaterialTheme.colorScheme
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (!file.isFolder && file.thumbnailLink.isNotEmpty()) {
+            val previewShape = MaterialTheme.shapes.large
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(176.dp)
+                    .clip(previewShape)
+                    .border(1.dp, fixedColors.HudSpecularBorder, previewShape),
+            ) {
+                SpoilerThumbnail(
+                    model = file.thumbnailLink,
+                    isBlurred = blurred,
+                    blur = PosterSpoilerBlur,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                if (onToggleBlur != null) {
+                    Surface(
+                        onClick = { onToggleBlur(file) },
+                        shape = CircleShape,
+                        color = fixedColors.ScrimOnMediaStrong,
+                        border = BorderStroke(1.dp, fixedColors.HudSpecularBorder),
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp)
+                            .size(36.dp),
+                    ) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (blurred) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                                contentDescription = if (blurred) tr("显示预览", "Show preview", "プレビューを表示", "미리 보기 표시", "顯示預覽") else tr("隐藏预览", "Hide preview", "プレビューを隠す", "미리 보기 숨기기", "隱藏預覽"),
+                                tint = fixedColors.OnMedia,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                }
+            }
+            Row(
+                verticalAlignment = Alignment.Top,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Box(Modifier.weight(1f)) {
+                    FullName(target.name)
+                }
+                Spacer(Modifier.width(4.dp))
+                DetailActionIconButton(copyNameAction)
+            }
+        } else {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                FileListLeadingVisual(
+                    file = file,
+                    size = 48.dp,
+                    allowThumbnail = false,
+                )
+                Spacer(Modifier.width(14.dp))
+                Box(Modifier.weight(1f)) {
+                    FullName(target.name)
+                }
+                Spacer(Modifier.width(4.dp))
+                DetailActionIconButton(copyNameAction)
+            }
+        }
+
+        val isLocal = dev.piko.shared.data.LocalLocation.isLocal(file.id)
+        val statusBadge: Pair<ImageVector, String>? = when {
+            isLocal -> Icons.Outlined.Storage to tr("本机只读挂载，未上传云端", "Read-only local mount, not uploaded", "ローカル読み取り専用マウント", "로컬 읽기 전용 마운트", "本機唯讀掛載，未上傳雲端")
+            !file.isFolder && file.isVaulted -> Icons.Outlined.Inventory2 to tr("已归档引用，不占网盘空间", "Archived reference, no cloud quota used", "アーカイブ参照（容量消費なし）", "보관 참조, 클라우드 용량 미사용", "已歸檔引用，不占雲端空間")
+            file.isFolder && file.id in fullyVaultedFolders -> Icons.Outlined.Inventory2 to tr("完全归档，不占网盘空间", "Fully archived, no cloud quota used", "完全アーカイブ（容量消費なし）", "전체 보관, 클라우드 용량 미사용", "完全歸檔，不占雲端空間")
+            file.isFolder && file.id in vaultedFolders -> Icons.Outlined.Inventory2 to tr("部分归档，包含归档引用", "Partially archived, includes references", "一部アーカイブ（参照を含む）", "일부 보관, 보관 참조 포함", "部分歸檔，包含歸檔引用")
+            else -> null
+        }
+        if (statusBadge != null) {
+            InspectorStatusPill(
+                icon = statusBadge.first,
+                label = statusBadge.second,
+                containerColor = if (isLocal) colors.tertiaryContainer else colors.secondaryContainer,
+                contentColor = if (isLocal) colors.onTertiaryContainer else colors.onSecondaryContainer,
+            )
+        }
+
+        if (target.tags.isNotEmpty()) {
+            MediaTagRow(tags = target.tags)
+        }
+    }
+
+    val usage = if (file.isFolder) folderUsageById(file.id) else ""
+    val contentMetadata = if (!file.isFolder) {
+        driveRepo.contentMetadataOf(file) ?: driveRepo.contentMetadataByFileId(file.id)
+    } else null
+    val folderSubtreeStats = if (file.isFolder && isDriveFolderId(file.id)) {
+        driveRepo.folderSubtreeStats(file.id)
+    } else null
+    val originalCreatedAtMillis = driveRepo.originalCreatedAtMillis(file.id)
+        ?: file.params["piko_original_created_at"]?.toLongOrNull()
+    DetailSection(
+        buildList {
+            if (file.isFolder) {
+                val typeField = DetailField(
+                    label = tr("类型", "Type", "種類", "유형", "類型"),
+                    value = if (dev.piko.shared.data.LocalLocation.of(file.id)?.segments?.isEmpty() == true) tr("本机挂载文件夹", "Mounted local folder", "ローカルマウントフォルダー", "로컬 마운트 폴더", "本機掛載資料夾") else tr("文件夹", "Folder", "フォルダー", "폴더", "資料夾"),
+                )
+                val usageField = usage.takeIf { it.isNotEmpty() }?.let { DetailField(tr("内容", "Contents", "内容", "내용", "內容"), it) }
+                if (usageField != null) add(DetailRow.PairRow(typeField, usageField)) else add(DetailRow.Single(typeField))
+                val folderDurationSeconds = folderSubtreeStats?.let { (it.physical + it.vaulted).durationMillis / 1000L }?.takeIf { it > 0L }
+                if (folderDurationSeconds != null) {
+                    add(DetailRow.Single(DetailField(tr("总时长", "Total duration", "合計再生時間", "총 재생 시간", "總時長"), formatDuration(folderDurationSeconds))))
+                }
+            } else {
+                val ext = file.name.substringAfterLast('.', "").uppercase().ifEmpty { tr("文件", "Files", "ファイル", "파일", "檔案") }
+                val typeField = DetailField(tr("类型", "Type", "種類", "유형", "類型"), ext)
+                val sizeField = DetailField(
+                    label = tr("大小", "Size", "サイズ", "크기", "大小"),
+                    value = file.sizeBytes.toReadableSize(),
+                )
+                add(DetailRow.PairRow(typeField, sizeField))
+                val durationSeconds = file.params["duration"]?.toDoubleOrNull()?.takeIf { it > 0 }?.toLong()
+                    ?: contentMetadata?.durationMillis?.takeIf { it > 0 }?.let { it / 1000L }
+                val duration = durationSeconds?.let { DetailField(tr("时长", "Duration", "再生時間", "재생 시간", "時長"), formatDuration(it)) }
+                val width = file.params["width"]?.takeIf { it.isNotEmpty() }
+                    ?: contentMetadata?.width?.takeIf { it > 0 }?.toString()
+                val height = file.params["height"]?.takeIf { it.isNotEmpty() }
+                    ?: contentMetadata?.height?.takeIf { it > 0 }?.toString()
+                val resolution = if (!width.isNullOrEmpty() && !height.isNullOrEmpty()) {
+                    DetailField(tr("分辨率", "Resolution", "解像度", "해상도", "解析度"), "$width × $height")
+                } else null
+                val transcodeQualities = contentMetadata?.transcodes?.mapNotNull { it.name.takeIf(String::isNotBlank) }.orEmpty()
+                if (file.isPlayableMedia() || file.params["local_path"] != null || duration != null || resolution != null || transcodeQualities.isNotEmpty()) {
+                    when {
+                        duration != null && resolution != null -> add(DetailRow.PairRow(duration, resolution))
+                        duration != null -> add(DetailRow.Single(duration))
+                        resolution != null -> add(DetailRow.Single(resolution))
+                    }
+                    if (transcodeQualities.isNotEmpty()) {
+                        add(
+                            DetailRow.Single(
+                                DetailField(
+                                    tr("转码画质", "Transcode qualities", "トランスコード画質", "트랜스코드 화질", "轉碼畫質"),
+                                    transcodeQualities.joinToString(tr("、", ", ", "、", ", ", "、")),
+                                ),
+                            ),
+                        )
+                    }
+                }
+            }
+            val modifiedText = timestamp(file.modifiedTime)
+            val originalCreatedText = originalCreatedAtMillis?.let { timestamp(kotlin.time.Instant.fromEpochMilliseconds(it).toString()) }
+            val createdText = (originalCreatedText ?: timestamp(file.createdTime))?.takeIf { it != modifiedText || originalCreatedText != null }
+            val modified = modifiedText?.let { DetailField(tr("修改时间", "Modified", "更新日時", "수정한 날짜", "修改時間"), it) }
+            val created = createdText?.let { DetailField(tr("创建时间", "Created", "作成日時", "만든 날짜", "建立時間"), it) }
+            when {
+                modified != null && created != null -> add(DetailRow.PairRow(modified, created))
+                modified != null -> add(DetailRow.Single(modified))
+                created != null -> add(DetailRow.Single(created))
+            }
+        },
+    )
+
+    DetailSection(
+        buildList {
+            (file.params["local_path"]?.let(::formatLocalPathForDisplay) ?: target.location)?.takeIf { it.isNotEmpty() }?.let { loc ->
+                val isLocalFile = dev.piko.shared.data.LocalLocation.isLocal(file.id)
+                add(
+                    DetailRow.Single(
+                        DetailField(
+                            label = tr("位置", "Location", "場所", "위치", "位置"),
+                            value = loc,
+                            actions = buildList {
+                                if (onLocate != null) {
+                                    add(DetailAction(Icons.Outlined.FolderOpen, if (isLocalFile) tr("在所在文件夹中显示", "Show in containing folder", "保存先フォルダーで表示", "포함된 폴더에서 보기", "在所在資料夾中顯示") else tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), { onLocate(file) }))
+                                }
+                                add(
+                                    DetailAction(
+                                        icon = Icons.Outlined.ContentCopy,
+                                        label = tr("复制位置", "Copy location", "場所をコピー", "위치 복사", "複製位置"),
+                                        onClick = { platform.copyToClipboard(tr("位置", "Location", "場所", "위치", "位置"), loc) },
+                                        copyFeedback = true,
+                                    ),
+                                )
+                            },
+                        ),
+                    ),
+                )
+            }
+            val source = file.source
+            val sourceUrl = file.sourceUrl?.takeIf { it.isNotBlank() }
+            if (source != null && sourceUrl != null) {
+                add(
+                    DetailRow.Single(
+                        DetailField(
+                            label = tr("来源", "Source", "ソース", "출처", "來源"),
+                            value = source.label.removePrefix(tr("来源：", "Source:", "ソース：", "출처:", "來源：")),
+                            supportingText = summarizeSourceUrl(sourceUrl),
+                            actions = buildList {
+                                if (onParseSource != null) {
+                                    add(DetailAction(Icons.Outlined.Link, tr("解析来源链接", "Resolve source link", "ソースリンクを解析", "출처 링크 분석", "解析來源連結"), { onParseSource(sourceUrl) }))
+                                }
+                                add(
+                                    DetailAction(
+                                        icon = Icons.Outlined.ContentCopy,
+                                        label = source.copyLabel,
+                                        onClick = { platform.copyToClipboard(source.copyLabel.removePrefix(tr("复制", "Copy", "コピー", "복사", "複製")), sourceUrl) },
+                                        copyFeedback = true,
+                                    ),
+                                )
+                            },
+                        ),
+                    ),
+                )
+            }
+            if (!file.isFolder && file.hash.isNotEmpty()) {
+                add(
+                    DetailRow.Single(
+                        DetailField(
+                            label = tr("哈希", "Hash", "ハッシュ", "해시", "雜湊"),
+                            value = file.hash,
+                            monospace = true,
+                            actions = listOf(
+                                DetailAction(
+                                    icon = Icons.Outlined.ContentCopy,
+                                    label = tr("复制哈希", "Copy hash", "ハッシュをコピー", "해시 복사", "複製雜湊"),
+                                    onClick = { platform.copyToClipboard(tr("哈希", "Hash", "ハッシュ", "해시", "雜湊"), file.hash) },
+                                    copyFeedback = true,
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            }
+        },
+    )
+}
+
+@Composable
+private fun FolderDetails(target: PropertiesTarget.Folder) {
+    val platform = LocalPikoPlatform.current
+    val driveRepo = LocalPikoServices.current.driveRepository
+    val vaultedFolders by driveRepo.vaultedFolders.collectAsStateWithLifecycle()
+    val fullyVaultedFolders by driveRepo.fullyVaultedFolders.collectAsStateWithLifecycle()
+
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        FolderListLeadingVisual(
+            name = target.name,
+            size = 48.dp,
+        )
+        Spacer(Modifier.width(14.dp))
+        Box(Modifier.weight(1f)) {
+            DetailHeading(target.name)
+        }
+        if (target.id.isNotEmpty() && target.name.isNotBlank()) {
+            Spacer(Modifier.width(4.dp))
+            DetailActionIconButton(
+                DetailAction(
+                    icon = Icons.Outlined.ContentCopy,
+                    label = tr("复制名称", "Copy name", "名前をコピー", "이름 복사", "複製名稱"),
+                    onClick = { platform.copyToClipboard(tr("名称", "Name", "名前", "이름", "名稱"), target.name) },
+                    copyFeedback = true,
+                ),
+            )
+        }
+    }
+
+    val colors = MaterialTheme.colorScheme
+    if (target.id.isNotEmpty()) {
+        val isLocal = dev.piko.shared.data.LocalLocation.isLocal(target.id)
+        val folderStatus: Pair<ImageVector, String>? = when {
+            isLocal -> Icons.Outlined.Storage to tr("本机只读挂载，未上传云端", "Read-only local mount, not uploaded", "ローカル読み取り専用マウント", "로컬 읽기 전용 마운트", "本機唯讀掛載，未上傳雲端")
+            target.id in fullyVaultedFolders -> Icons.Outlined.Inventory2 to tr("完全归档，不占网盘空间", "Fully archived, no cloud quota used", "完全アーカイブ（容量消費なし）", "전체 보관, 클라우드 용량 미사용", "完全歸檔，不占雲端空間")
+            target.id in vaultedFolders -> Icons.Outlined.Inventory2 to tr("部分归档，包含归档引用", "Partially archived, includes references", "一部アーカイブ（参照を含む）", "일부 보관, 보관 참조 포함", "部分歸檔，包含歸檔引用")
+            else -> null
+        }
+        if (folderStatus != null) {
+            InspectorStatusPill(
+                icon = folderStatus.first,
+                label = folderStatus.second,
+                containerColor = if (isLocal) colors.tertiaryContainer else colors.secondaryContainer,
+                contentColor = if (isLocal) colors.onTertiaryContainer else colors.onSecondaryContainer,
+            )
+        }
+    }
+
+    val folders = target.files.count { it.isFolder }
+    val others = target.files.size - folders
+    val subtreeStats = if (isDriveFolderId(target.id)) driveRepo.folderSubtreeStats(target.id) else null
+    val totalSubtree = subtreeStats?.let { it.physical + it.vaulted }
+    val effectiveFiles = if (folders == 0 && totalSubtree != null && totalSubtree.listingComplete) {
+        totalSubtree.fileCount.toInt()
+    } else others
+    val totalBytes = if (totalSubtree != null && (folders > 0 || totalSubtree.listingComplete)) {
+        totalSubtree.bytes
+    } else {
+        target.files.filterNot { it.isFolder }.sumOf { it.sizeBytes }
+    }
+    val totalDurationSeconds = totalSubtree?.let { it.durationMillis / 1000L }?.takeIf { it > 0L }
+    val recursiveUsage = if (folders > 0) folderUsageById(target.id) else ""
+    DetailSection(
+        buildList {
+            val itemsField = DetailField(tr("项目", "Items", "項目", "항목", "項目"), itemsSummary(folders, effectiveFiles))
+            val sumField = if (effectiveFiles > 0 || totalBytes > 0L) {
+                DetailField(tr("文件合计", "Total files", "ファイル合計", "파일 합계", "檔案合計"), totalBytes.toReadableSize())
+            } else null
+            if (sumField != null) add(DetailRow.PairRow(itemsField, sumField)) else add(DetailRow.Single(itemsField))
+            if (recursiveUsage.isNotEmpty()) {
+                add(DetailRow.Single(DetailField(tr("包含内容", "Includes", "含まれる内容", "포함 내용", "包含內容"), recursiveUsage)))
+            }
+            if (totalDurationSeconds != null) {
+                add(DetailRow.Single(DetailField(tr("总时长", "Total duration", "合計再生時間", "총 재생 시간", "總時長"), formatDuration(totalDurationSeconds))))
+            }
+        },
+    )
+
+    target.location?.let(::formatLocalPathForDisplay)?.takeIf { it.isNotEmpty() }?.let { loc ->
+        DetailSection(
+            listOf(
+                DetailRow.Single(
+                    DetailField(
+                        label = tr("位置", "Location", "場所", "위치", "位置"),
+                        value = loc,
+                        actions = listOf(
+                            DetailAction(
+                                icon = Icons.Outlined.ContentCopy,
+                                label = tr("复制位置", "Copy location", "場所をコピー", "위치 복사", "複製位置"),
+                                onClick = { platform.copyToClipboard(tr("位置", "Location", "場所", "위치", "位置"), loc) },
+                                copyFeedback = true,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    }
+}
+
+@Composable
+private fun SelectionDetails(target: PropertiesTarget.Selection) {
+    val platform = LocalPikoPlatform.current
+    val driveRepo = LocalPikoServices.current.driveRepository
+    val folders = target.files.count { it.isFolder }
+    val others = target.files.size - folders
+    val vaultedCount = target.files.count { it.isVaulted }
+    val totalBytes = target.files.sumOf { file ->
+        if (file.isFolder) {
+            driveRepo.folderSubtreeStats(file.id)?.let { (it.physical + it.vaulted).bytes } ?: 0L
+        } else {
+            file.sizeBytes
+        }
+    }
+    val totalDurationSeconds = target.files.sumOf { file ->
+        if (file.isFolder) {
+            driveRepo.folderSubtreeStats(file.id)?.let { (it.physical + it.vaulted).durationMillis } ?: 0L
+        } else {
+            file.params["duration"]?.toDoubleOrNull()?.takeIf { it > 0 }?.let { (it * 1000).toLong() }
+                ?: driveRepo.contentMetadataOf(file)?.durationMillis?.takeIf { it > 0 }
+                ?: 0L
+        }
+    } / 1000L
+
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Surface(
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            modifier = Modifier.size(48.dp),
+        ) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Outlined.Checklist,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+        }
+        Spacer(Modifier.width(14.dp))
+        Box(Modifier.weight(1f)) {
+            DetailHeading(tr("已选择 ${target.files.size} 项", "${enCount(target.files.size, "item", "items")} selected", "${target.files.size} 項目を選択中", "${target.files.size}개 선택됨", "已選取 ${target.files.size} 項"))
+        }
+    }
+
+    val colors = MaterialTheme.colorScheme
+    if (vaultedCount > 0) {
+        InspectorStatusPill(
+            icon = Icons.Outlined.Inventory2,
+            label = tr("$vaultedCount 项已归档，不占网盘空间", "${enCount(vaultedCount, "item", "items")} archived, no cloud quota used", "$vaultedCount 項目をアーカイブ済み（容量消費なし）", "${vaultedCount}개 항목 보관됨, 용량 미사용", "$vaultedCount 項已歸檔，不占雲端空間"),
+            containerColor = colors.secondaryContainer,
+            contentColor = colors.onSecondaryContainer,
+        )
+    }
+
+    DetailSection(
+        buildList {
+            val itemsField = DetailField(tr("项目", "Items", "項目", "항목", "項目"), itemsSummary(folders, others))
+            val sumField = if (others > 0 || totalBytes > 0L) {
+                DetailField(tr("文件合计", "Total files", "ファイル合計", "파일 합계", "檔案合計"), totalBytes.toReadableSize())
+            } else null
+            if (sumField != null) add(DetailRow.PairRow(itemsField, sumField)) else add(DetailRow.Single(itemsField))
+            if (totalDurationSeconds > 0L) {
+                add(DetailRow.Single(DetailField(tr("总时长", "Total duration", "合計再生時間", "총 재생 시간", "總時長"), formatDuration(totalDurationSeconds))))
+            }
+        },
+    )
+
+    target.location?.takeIf { it.isNotEmpty() }?.let { loc ->
+        DetailSection(
+            listOf(
+                DetailRow.Single(
+                    DetailField(
+                        label = tr("位置", "Location", "場所", "위치", "位置"),
+                        value = loc,
+                        actions = if (loc != tr("多个位置", "Multiple locations", "複数の場所", "여러 위치", "多個位置")) {
+                            listOf(
+                                DetailAction(
+                                    icon = Icons.Outlined.ContentCopy,
+                                    label = tr("复制位置", "Copy location", "場所をコピー", "위치 복사", "複製位置"),
+                                    onClick = { platform.copyToClipboard(tr("位置", "Location", "場所", "위치", "位置"), loc) },
+                                    copyFeedback = true,
+                                ),
+                            )
+                        } else emptyList(),
+                    ),
+                ),
+            ),
+        )
+    }
+}
+
+@Composable
+private fun InspectorStatusPill(
+    icon: ImageVector,
+    label: String,
+    containerColor: Color,
+    contentColor: Color,
+) {
+    Surface(
+        shape = CircleShape,
+        color = containerColor,
+        contentColor = contentColor,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(15.dp))
+            Text(text = label, style = MaterialTheme.typography.labelMedium.tabular)
+        }
+    }
+}
+
+private fun itemsSummary(folders: Int, others: Int): String =
+    listOfNotNull(
+        folders.takeIf { it > 0 }?.let { tr("$it 个文件夹", "${enCount(it, "folder", "folders")}", "$it フォルダー", "폴더 ${it}개", "$it 個資料夾") },
+        others.takeIf { it > 0 }?.let { tr("$it 个文件", "${enCount(it, "file", "files")}", "$it ファイル", "파일 ${it}개", "$it 個檔案") },
+    ).joinToString("、").ifEmpty { tr("空", "Empty", "空", "비어 있음", "空") }
+
+private fun summarizeSourceUrl(url: String): String {
+    val trimmed = url.trim()
+    if (trimmed.startsWith("magnet:", ignoreCase = true)) {
+        val xt = trimmed.substringAfter("?", "")
+            .split('&')
+            .firstOrNull { it.startsWith("xt=", ignoreCase = true) }
+        return if (xt != null) "magnet:?$xt" else trimmed
+    }
+    return trimmed
+}
+
+// 与卡片上同一个名字，真实名称在它下面；都可以选中复制，长名字换行，不截断
+@Composable
+private fun FullName(name: DriveItemName) {
+    DetailHeading(name.headingText, name.headingOriginal)
+}
+
+private sealed interface PropertiesFolderUsage {
+    data object Loading : PropertiesFolderUsage
+    data class Counted(val usage: FolderUsage) : PropertiesFolderUsage
+    data object Failed : PropertiesFolderUsage
+}
+
+/** 文件夹的递归统计，逐步长上去；与操作面板用的是同一个统计，换了文件夹就重新数。库与压缩包里的文件夹数不了，为空。 */
+@Composable
+private fun folderUsageById(folderId: String): String {
+    if (!isDriveFolderId(folderId)) return ""
+    val driveRepo = LocalPikoServices.current.driveRepository
+    val subtree = driveRepo.folderSubtreeStats(folderId)?.let { it.physical + it.vaulted }
+    if (subtree != null && subtree.listingComplete) {
+        val count = subtree.fileCount.toInt()
+        return tr(
+            "$count 个文件，${subtree.bytes.toReadableSize()}",
+            "${enCount(count, "file", "files")}, ${subtree.bytes.toReadableSize()}",
+            "$count ファイル、${subtree.bytes.toReadableSize()}",
+            "파일 ${count}개, ${subtree.bytes.toReadableSize()}",
+            "$count 個檔案，${subtree.bytes.toReadableSize()}",
+        )
+    }
+    val flow = remember(folderId) { driveRepo.folderUsage(folderId) }
+    val state by produceState<PropertiesFolderUsage>(PropertiesFolderUsage.Loading, flow) {
+        try {
+            flow.collect { value = PropertiesFolderUsage.Counted(it) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            PikoLog.w("Drive", "Failed to calculate folder usage in properties pane for ${logFolder(folderId)}", e)
+            value = PropertiesFolderUsage.Failed
+        }
+    }
+    val counted = when (val current = state) {
+        PropertiesFolderUsage.Loading -> return tr("统计中", "Calculating", "集計中", "계산 중", "統計中")
+        PropertiesFolderUsage.Failed -> return ""
+        is PropertiesFolderUsage.Counted -> current.usage
+    }
+    val text = tr("${counted.fileCount} 个文件，${counted.bytes.toReadableSize()}", "${enCount(counted.fileCount, "file", "files")}, ${counted.bytes.toReadableSize()}", "${counted.fileCount} ファイル、${counted.bytes.toReadableSize()}", "파일 ${counted.fileCount}개, ${counted.bytes.toReadableSize()}", "${counted.fileCount} 個檔案，${counted.bytes.toReadableSize()}")
+    return when (counted.progress) {
+        FolderUsage.Progress.COUNTING -> tr("$text（统计中）", "$text (calculating)", "$text（集計中）", "$text (계산 중)", "$text（統計中）")
+        FolderUsage.Progress.COMPLETE -> text
+        FolderUsage.Progress.TRUNCATED -> tr("至少 $text", "At least $text", "少なくとも $text", "최소 $text", "至少 $text")
+    }
+}
+
+// ISO 8601 取到分钟：2024-05-01T12:34:56.789+08:00 -> 2024-05-01 12:34
+private fun timestamp(iso: String): String? = iso.takeIf { it.isNotEmpty() }?.take(16)?.replace('T', ' ')
+
+private fun formatDuration(seconds: Long): String {
+    val h = seconds / 3600
+    val m = seconds % 3600 / 60
+    val s = seconds % 60
+    return if (h > 0) "$h:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}" else "$m:${s.toString().padStart(2, '0')}"
+}
+
+val PropertiesMinWidth = 360.dp
+val PropertiesMaxWidth = 440.dp
+val FilePropertiesPanelKey = DetailPanelKey<PropertiesTarget>(
+    DetailPanelSpec({ tr("属性", "Properties", "プロパティ", "속성", "屬性") }, { tr("关闭属性", "Close properties", "プロパティを閉じる", "속성 닫기", "關閉屬性") }, PropertiesMinWidth, PropertiesMaxWidth),
+)

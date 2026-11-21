@@ -129,8 +129,11 @@ composeCompiler {
 }
 
 dependencies {
-    // 状态与业务在 shared，界面在 ui；这里只剩 Activity 入口、平台实现与播放器
+    // 状态与业务在 shared，界面按职责拆在 ui-core、各领域叶模块与 ui；这里只剩 Activity 入口、平台实现与播放器
     implementation(project(":shared"))
+    implementation(project(":ui-core"))
+    implementation(project(":ui-player"))
+    implementation(project(":ui-transfers"))
     implementation(project(":ui"))
 
     // PikPak SDK (KMP)

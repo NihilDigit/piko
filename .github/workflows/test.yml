@@ -104,11 +104,15 @@ jobs:
           )
           global_patterns = (
               "gradle/*", "gradle/**", "gradlew*", "build.gradle.kts", "settings.gradle.kts",
+              "build-logic/*", "build-logic/**", "compose-stability.conf",
               "gradle.properties", ".github/workflows/test.yml",
           )
 
           def matches(path, patterns):
               return any(fnmatch.fnmatch(path, pat) for pat in patterns)
+
+          def is_ui_platform_src(path, source_set):
+              return path.startswith(f"ui/src/{source_set}/") or fnmatch.fnmatch(path, f"ui-*/src/{source_set}/*") or fnmatch.fnmatch(path, f"ui-*/src/{source_set}/**")
 
           flags = {k: False for k in ("jvm", "desktop_unit", "macos_keychain", "ios", "android")}
           for f in files:
@@ -118,9 +122,9 @@ jobs:
                   for k in flags:
                       flags[k] = True
                   break
-              if f.startswith(("iosApp/", "shared/src/iosMain/", "shared/src/nativeInterop/", "ui/src/iosMain/")) or f == ".github/workflows/ios-native.yml":
+              if f.startswith(("iosApp/", "shared/src/iosMain/", "shared/src/nativeInterop/")) or is_ui_platform_src(f, "iosMain") or f == ".github/workflows/ios-native.yml":
                   flags["ios"] = True
-              elif f.startswith(("app/", "shared/src/androidMain/", "ui/src/androidMain/")):
+              elif f.startswith(("app/", "shared/src/androidMain/")) or is_ui_platform_src(f, "androidMain"):
                   flags["android"] = True
               elif f.startswith("desktopApp/"):
                   flags["jvm"] = True
@@ -129,10 +133,10 @@ jobs:
                   flags["jvm"] = True
                   flags["desktop_unit"] = True
                   flags["macos_keychain"] = True
-              elif f.startswith("ui/src/desktopMain/") or f.startswith(("cli/", "shots/")):
+              elif is_ui_platform_src(f, "desktopMain") or f.startswith(("cli/", "shots/")):
                   flags["jvm"] = True
                   flags["desktop_unit"] = True
-              elif f.startswith("shared/src/jvmSharedMain/"):
+              elif f.startswith("shared/src/jvmSharedMain/") or is_ui_platform_src(f, "jvmSharedMain"):
                   flags["jvm"] = True
                   flags["desktop_unit"] = True
                   flags["macos_keychain"] = True
@@ -176,7 +180,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
 
       - name: Shared smoke tests
-        run: ./gradlew :shared:desktopTest :ui:desktopTest --no-daemon --stacktrace
+        run: >-
+          ./gradlew :shared:desktopTest
+          :ui-core:desktopTest :ui-drive:desktopTest :ui-player:desktopTest
+          :ui-settings:desktopTest :ui-transfers:desktopTest :ui-reader:desktopTest :ui:desktopTest
+          --no-daemon --stacktrace
 
       - name: Upload test reports
         if: failure()
@@ -185,6 +193,12 @@ jobs:
           name: jvm-smoke-reports
           path: |
             shared/build/reports/tests/
+            ui-core/build/reports/tests/
+            ui-drive/build/reports/tests/
+            ui-player/build/reports/tests/
+            ui-settings/build/reports/tests/
+            ui-transfers/build/reports/tests/
+            ui-reader/build/reports/tests/
             ui/build/reports/tests/
           if-no-files-found: ignore
 

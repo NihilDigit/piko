@@ -134,7 +134,7 @@ internal fun WorkspaceContextHost(
                             val content: @Composable () -> Unit = {
                                 InstantSheetContent(
                                     state = draft,
-                                    view = model.importView(context.id),
+                                    view = model.importView(context.id) { dev.piko.ui.screens.instant.ImportWorkspaceViewState() },
                                     headerShown = true,
                                     fillHeight = true,
                                     useImportWorkspace = wide,
