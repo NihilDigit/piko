@@ -103,6 +103,7 @@ class IosAvPlayerMediaBridge(
             entriesLock.withLock { entries[token] = entry }
             return WrappedAvPlayerUrl(
                 playbackUrl = "http://$LOOPBACK:$port/$token/playlist.m3u8",
+                isHls = true,
                 onClose = { unregister(token, entry) },
             )
         }
@@ -135,6 +136,7 @@ class IosAvPlayerMediaBridge(
         entriesLock.withLock { entries[token] = entry }
         return WrappedAvPlayerUrl(
             playbackUrl = "http://$LOOPBACK:$port/$token/playlist.m3u8",
+            isHls = true,
             onClose = { unregister(token, entry) },
         )
     }
@@ -424,6 +426,7 @@ class IosAvPlayerMediaBridge(
 
 class WrappedAvPlayerUrl internal constructor(
     val playbackUrl: String,
+    val isHls: Boolean = false,
     private val onClose: () -> Unit,
 ) : AutoCloseable {
     @Volatile

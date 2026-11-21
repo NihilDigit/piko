@@ -49,8 +49,15 @@ import org.openani.mediamp.mpv.MpvMediampPlayer
  *
  * 两轮播放均越过 [PASS_POSITION_MILLIS] 且关窗清理完成才通过；每轮播放与清理分别限时。
  * [holdMillis] 是第二轮播放达标后窗口再留多久，供外部截图检查画面。
+ * [requireVideo] 默认开启，要求 `current-vo=libmpv`、帧状态推进与非黑像素均达标；
+ * 仅在无硬件 GPU 的虚拟化 macOS CI 宿主（`mediampv` `CGLChoosePixelFormat` 返回 `10002`）上显式关闭。
  */
-internal fun playbackSelfTest(file: File, holdMillis: Long, report: (String) -> Unit): Boolean {
+internal fun playbackSelfTest(
+    file: File,
+    holdMillis: Long,
+    requireVideo: Boolean = true,
+    report: (String) -> Unit,
+): Boolean {
     if (!file.isFile) {
         report("no such file: $file")
         return false
@@ -154,9 +161,13 @@ internal fun playbackSelfTest(file: File, holdMillis: Long, report: (String) -> 
                                 while (
                                     failure == null && (
                                         backend.positionMillis < PASS_POSITION_MILLIS ||
-                                            probe.distinctStates < MIN_RENDERED_STATES ||
-                                            !probe.latestNonBlack ||
-                                            currentMpvVo(backend.player) != "libmpv"
+                                            (
+                                                requireVideo && (
+                                                    probe.distinctStates < MIN_RENDERED_STATES ||
+                                                        !probe.latestNonBlack ||
+                                                        currentMpvVo(backend.player) != "libmpv"
+                                                    )
+                                                )
                                         )
                                 ) {
                                     delay(50L)
@@ -168,7 +179,7 @@ internal fun playbackSelfTest(file: File, holdMillis: Long, report: (String) -> 
                             report(
                                 "round=$round position=${backend.positionMillis} duration=${backend.durationMillis} " +
                                     "vo=$vo mode=${probe.activeMode} states=${probe.distinctStates} " +
-                                    "nonBlack=${probe.latestNonBlack} error=$failure",
+                                    "nonBlack=${probe.latestNonBlack} requireVideo=$requireVideo error=$failure",
                             )
                             played[round - 1].complete(reached)
                         }

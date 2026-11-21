@@ -19,6 +19,7 @@ import kotlinx.coroutines.runBlocking
 internal const val SELF_TEST_PROPERTY = "piko.selftest"
 private const val SELF_TEST_OUT_PROPERTY = "piko.selftest.out"
 private const val SELF_TEST_PATH_ENV = "PIKO_SELFTEST_PATH"
+private const val SELF_TEST_REQUIRE_VIDEO_ENV = "PIKO_SELFTEST_REQUIRE_VIDEO"
 
 internal fun runSelfTest(name: String): Int {
     val out = System.getProperty(SELF_TEST_OUT_PROPERTY)?.let(::File)
@@ -70,8 +71,9 @@ internal fun runSelfTest(name: String): Int {
             }
             // 开窗放 PIKO_SELFTEST_PATH 指的本机视频，见 playbackSelfTest。PIKO_SELFTEST_HOLD 为放通之后窗口再留的秒数
             "play" -> playbackSelfTest(
-                File(System.getenv(SELF_TEST_PATH_ENV).orEmpty()),
+                file = File(System.getenv(SELF_TEST_PATH_ENV).orEmpty()),
                 holdMillis = (System.getenv("PIKO_SELFTEST_HOLD")?.toLongOrNull() ?: 0L) * 1000,
+                requireVideo = System.getenv(SELF_TEST_REQUIRE_VIDEO_ENV)?.trim()?.lowercase() !in setOf("0", "false", "no"),
                 report = ::report,
             )
             // 查视频的默认应用，不打开。全新的 macos-15 runner 上 .mp4 归 QuickTime Player，.mkv 没有默认应用、

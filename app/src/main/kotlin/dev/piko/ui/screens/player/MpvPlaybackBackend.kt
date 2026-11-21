@@ -315,8 +315,10 @@ internal class MpvPlaybackBackend(
         positionMillis = startMillis.coerceAtLeast(0L)
         durationMillis = 0L
         bufferedPositionMillis = 0L
-        // mpv 0.38 起 loadfile 的第三个参数是插入位置，逐文件选项放在第四个
-        val command = arrayOf("loadfile", uri, "replace", "-1", "start=$start,hwdec=$targetHwdec")
+        // mpv 0.38 起 loadfile 的第三个参数是插入位置，逐文件选项放在第四个；
+        // hwdec 值含逗号（mediacodec,mediacodec-copy），已在上方经 setPropertyString 原样写入，
+        // 避免放入 loadfile 逗号分隔选项串触发 mpv 选项解析报错。
+        val command = arrayOf("loadfile", uri, "replace", "-1", "start=$start")
         if (surfaceAttached || headless || audioOnlyMode) {
             issueLoad(command)
         } else {
@@ -921,7 +923,7 @@ internal class MpvPlaybackBackend(
                                 mpv.setPropertyString("hwdec", "no")
                                 mpv.setPropertyBoolean("pause", !lastLoadPlayWhenReady)
                             }
-                            issueLoad(arrayOf("loadfile", retryUri, "replace", "-1", "start=$resumeSeconds,hwdec=no"))
+                            issueLoad(arrayOf("loadfile", retryUri, "replace", "-1", "start=$resumeSeconds"))
                             return
                         }
                     }

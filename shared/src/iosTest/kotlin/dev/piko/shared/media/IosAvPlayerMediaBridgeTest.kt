@@ -87,6 +87,7 @@ class IosAvPlayerMediaBridgeTest {
             val stream = proxy.register(MemoryByteSource(payload), fileName = "clip.ts")
             val wrapped = bridge.wrap(stream.url, durationSeconds = 30L)
             try {
+                assertTrue(wrapped.isHls)
                 assertTrue(wrapped.playbackUrl.endsWith("/playlist.m3u8"))
                 val m3u8 = httpGet(wrapped.playbackUrl)
                 assertEquals(200, m3u8.status)
@@ -119,6 +120,7 @@ class IosAvPlayerMediaBridgeTest {
             val stream = proxy.register(MemoryByteSource(payload), fileName = "movie.mp4")
             val wrapped = bridge.wrap(stream.url)
             try {
+                assertFalse(wrapped.isHls)
                 assertTrue(wrapped.playbackUrl.endsWith("/media.mp4"))
                 val resp = httpGet(wrapped.playbackUrl)
                 assertEquals(200, resp.status)

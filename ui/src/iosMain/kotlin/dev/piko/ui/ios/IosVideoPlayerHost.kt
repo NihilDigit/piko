@@ -413,7 +413,7 @@ private class PlayerSession(
 
                 IosHostBridge.configurePlaybackAudioSession(TAG)
 
-                val isBridgedHls = bridgeHandle?.bridged == true
+                val isBridgedHls = bridgeHandle?.isHls == true
                 val deferInitialSeek = resumeStartMs > 0L && isBridgedHls
 
                 val asset = AVURLAsset.URLAssetWithURL(url, options = null)
