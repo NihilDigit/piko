@@ -546,9 +546,9 @@ tasks.matching { it.name == "packageReleaseMsi" }.configureEach {
                 "-Identity",
                 identity,
             )
-                .redirectInput(ProcessBuilder.Redirect.DISCARD)
                 .redirectErrorStream(true)
                 .start()
+            process.outputStream.close()
             val output = process.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             val exit = process.waitFor()
             if (output.isNotBlank()) {

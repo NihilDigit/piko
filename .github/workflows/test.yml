@@ -467,7 +467,10 @@ jobs:
           $bases = "$env:RUNNER_TEMP/smoke-bases"
           foreach ($version in @('9.9.0', '9.9.1')) {
             $extra = @(if ($version -eq '9.9.1') { "-PpikoUpdateBases=$bases" })
-            .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --no-configuration-cache --stacktrace `
+            .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --no-configuration-cache --no-parallel --stacktrace `
+              '-DGRADLE_ACTIONS_SKIP_BUILD_RESULT_CAPTURE=true' `
+              '-Dorg.gradle.jvmargs=-Xmx2560m -XX:MaxMetaspaceSize=768m -XX:+UseParallelGC -Dfile.encoding=UTF-8' `
+              '-Dkotlin.daemon.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=768m -XX:+UseParallelGC' `
               "-PpikoDesktopVersion=$version" "-PpikoDesktopUpgradeUuid=$env:SMOKE_UPGRADE_CODE" "-PpikoDesktopPackageName=$env:SMOKE_PACKAGE" @extra
             if ($LASTEXITCODE -ne 0) { throw "build $version failed" }
             $out = "smoke-dist/$version"
@@ -567,7 +570,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --no-configuration-cache --stacktrace `
+          .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --no-configuration-cache --no-parallel --stacktrace `
+            '-DGRADLE_ACTIONS_SKIP_BUILD_RESULT_CAPTURE=true' `
+            '-Dorg.gradle.jvmargs=-Xmx2560m -XX:MaxMetaspaceSize=768m -XX:+UseParallelGC -Dfile.encoding=UTF-8' `
+            '-Dkotlin.daemon.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=768m -XX:+UseParallelGC' `
             "-PpikoDesktopVersion=9.9.1" "-PpikoUpdateBases=old-bases" "-PpikoUpdateRetired=old-retired"
           if ($LASTEXITCODE -ne 0) { throw 'build failed' }
           $binaries = 'desktopApp/build/compose/binaries/main-release'
