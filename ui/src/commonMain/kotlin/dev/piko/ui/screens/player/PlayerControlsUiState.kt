@@ -341,8 +341,8 @@ internal class PlayerControlsUiState(
             isQualityPopupOpen = false
             true
         }
-        openSheet == PlayerSheet.DriveSubtitles -> {
-            openSheet = PlayerSheet.Tracks
+        openSheet?.parentSheet() != null -> {
+            openSheet = openSheet?.parentSheet()
             true
         }
         openSheet != null -> {

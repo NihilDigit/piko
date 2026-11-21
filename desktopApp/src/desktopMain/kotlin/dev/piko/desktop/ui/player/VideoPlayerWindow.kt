@@ -248,7 +248,8 @@ fun VideoPlayerWindow(
                     icon = icon,
                     colors = PlayerTitleBarColors,
                     // macOS 保留透明原生红绿灯，不再在内容上方叠第二条不透明标题栏；Windows 经 onCloseInContent 交给播放器顶栏
-                    showTitleBar = !inFullscreen && !isMacOs,
+                    // 全局快捷键弹窗打开时同样收起无边框拖动区，避免 Win32 HTCAPTION 拦截弹窗顶部点击
+                    showTitleBar = !inFullscreen && !isMacOs && !shortcutsOpen,
                     onCloseInContent = requestClose,
                 ) {
                     val toggleFullscreen = {

@@ -222,6 +222,7 @@ fun PlayerTopBar(
     onSettingsClick: (() -> Unit)? = null,
     windowActions: PlayerWindowActions? = null,
     isFullscreen: Boolean = false,
+    dragAreaEnabled: Boolean = true,
 ) {
     // 桌面端独立的播放窗口没有导航返回栈：由窗口动作或系统标题栏关闭，不再显示移动端返回键
     val framelessWindow = LocalFramelessWindow.current
@@ -261,7 +262,7 @@ fun PlayerTopBar(
             )
         }
         // 标题这一块兼做拖动窗口的地方（仅限没有标题栏的桌面窗口）
-        Box(Modifier.weight(1f).windowDragArea().padding(horizontal = 8.dp)) {
+        Box(Modifier.weight(1f).windowDragArea(enabled = dragAreaEnabled).padding(horizontal = 8.dp)) {
             TooltipBox(
                 positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
                 tooltip = { PlainTooltip { Text(title) } },

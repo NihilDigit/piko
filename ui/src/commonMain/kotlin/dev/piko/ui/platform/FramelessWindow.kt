@@ -39,14 +39,32 @@ val LocalFramelessWindow = staticCompositionLocalOf<FramelessWindow?> { null }
  * 都可以有好几块，按元素区分。
  */
 @Composable
-fun Modifier.windowDragArea(): Modifier {
+fun Modifier.windowDragArea(enabled: Boolean = true): Modifier {
     val key = remember { Any() }
     val caption = LocalWindowCaption.current
     if (caption != null) {
-        DisposableEffect(caption) { onDispose { caption.setDragArea(key, null) } }
-        return onGloballyPositioned { caption.setDragArea(key, it.boundsInWindow()) }
+        DisposableEffect(caption, enabled) {
+            if (!enabled) caption.setDragArea(key, null)
+            onDispose { caption.setDragArea(key, null) }
+        }
+        return if (enabled) {
+            onGloballyPositioned { coordinates ->
+                caption.setDragArea(key, if (coordinates.isAttached) coordinates.boundsInWindow() else null)
+            }
+        } else {
+            this
+        }
     }
     val window = LocalFramelessWindow.current ?: return this
-    DisposableEffect(window) { onDispose { window.updateDragArea(key, null) } }
-    return onGloballyPositioned { window.updateDragArea(key, it.boundsInWindow()) }
+    DisposableEffect(window, enabled) {
+        if (!enabled) window.updateDragArea(key, null)
+        onDispose { window.updateDragArea(key, null) }
+    }
+    return if (enabled) {
+        onGloballyPositioned { coordinates ->
+            window.updateDragArea(key, if (coordinates.isAttached) coordinates.boundsInWindow() else null)
+        }
+    } else {
+        this
+    }
 }

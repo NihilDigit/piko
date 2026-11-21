@@ -328,7 +328,13 @@ fun MobilePlayerControls(
     val seekPreviewMillis = activeSeekGesture?.targetMillis(durationMillis) ?: ui.settledSeekMillis
     var barScrubPositionMillis by remember { mutableStateOf<Long?>(null) }
 
-    val chromeVisible = ui.controlsVisible && !ui.isLocked && !ui.isEditingCropRegion && !speedController.active
+    val effectiveOpenSheet = when {
+        ui.isSpeedPopupOpen -> PlayerSheet.Speed
+        ui.isQualityPopupOpen -> PlayerSheet.Quality
+        else -> ui.openSheet
+    }
+    val modalOverlayOpen = effectiveOpenSheet != null || ui.isShortcutsOverlayOpen || ui.isEditingCropRegion
+    val chromeVisible = ui.controlsVisible && !ui.isLocked && !modalOverlayOpen && !speedController.active
     var stalledLoading by remember { mutableStateOf(false) }
     LaunchedEffect(isLoading) {
         stalledLoading = false
@@ -347,9 +353,9 @@ fun MobilePlayerControls(
             activeLayout.hasInTopBar(PlayerControlId.PlayPause)
         )
 
-    val bottomBarVisible = (chromeVisible || seekPreviewMillis != null) && !ui.isEditingCropRegion && !speedController.active
+    val bottomBarVisible = (chromeVisible || seekPreviewMillis != null) && !modalOverlayOpen && !speedController.active
     val showCenterCluster = transportInCenter && chromeVisible && !ui.isBoosting && errorMessage == null
-    val centerUnblocked = errorMessage == null && !ui.isEditingCropRegion &&
+    val centerUnblocked = errorMessage == null && !modalOverlayOpen &&
         activeSeekGesture == null && activeEpisodeSwipe == null && !speedController.active
     val centerInteractive = (showCenterCluster || (isLoading && (chromeVisible || stalledLoading))) && centerUnblocked
     val centerVisible = centerInteractive || (centerIndicator != null && centerUnblocked)
@@ -469,7 +475,7 @@ fun MobilePlayerControls(
                 ),
         ) {
             PlayerGestureLayer(
-                isLocked = ui.isLocked || ui.isEditingCropRegion,
+                isLocked = ui.isLocked || modalOverlayOpen,
                 durationMillis = durationMillis,
                 positionProvider = readPositionMillis,
                 brightness = brightness,
@@ -533,8 +539,8 @@ fun MobilePlayerControls(
                     ui.interacted()
                 },
                 seekTapActive = { ui.doubleTapVisible && ui.tapSeekRound && pointerSource.isTouchLike },
-                modifier = Modifier.pointerInput(ui.isLocked, ui.isEditingCropRegion, speedController) {
-                    if (ui.isLocked || ui.isEditingCropRegion) return@pointerInput
+                modifier = Modifier.pointerInput(ui.isLocked, modalOverlayOpen, speedController) {
+                    if (ui.isLocked || modalOverlayOpen) return@pointerInput
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
@@ -554,7 +560,7 @@ fun MobilePlayerControls(
                 snackbarHost()
                 if (resumedFromMillis != null) {
                     ResumeTipCapsule(
-                        visible = ui.showResumeTip && !ui.isLocked && !isSeeking,
+                        visible = ui.showResumeTip && !ui.isLocked && !modalOverlayOpen && !isSeeking,
                         resumedPositionMillis = resumedFromMillis,
                         onRestart = {
                             onRestartFromBeginning()
@@ -566,7 +572,7 @@ fun MobilePlayerControls(
                 FullscreenPromptButton(
                     visible = layoutPrefs.showPortraitFullscreenPrompt && !isFullscreen && !ui.isLocked &&
                         !isLandscape && isLandscapeVideo == true &&
-                        errorMessage == null && !ui.isEditingCropRegion && !isSeeking,
+                        errorMessage == null && !modalOverlayOpen && !isSeeking,
                     onClick = onToggleFullscreen,
                 )
                 RestoreCropPromptButton(
@@ -722,6 +728,7 @@ fun MobilePlayerControls(
                     ui.toggleMute(showHud = false)
                 },
                 onVolumeDraggingChange = { ui.isDraggingVolume = it },
+                dragAreaEnabled = chromeVisible,
             )
 
             AnimatedVisibility(
@@ -774,13 +781,13 @@ fun MobilePlayerControls(
 
             // Bilby 三分式手势 HUD：横划进退（含取消态）居中、音量/亮度贴对侧边缘、双击快进/快退贴同侧边缘
             SeekHudOverlay(
-                seek = if (ui.isEditingCropRegion) null else activeSeekGesture,
+                seek = if (modalOverlayOpen) null else activeSeekGesture,
                 durationMillis = durationMillis,
                 modifier = Modifier.align(Alignment.Center),
             )
 
             EpisodeSwipeHud(
-                visible = !ui.isEditingCropRegion && activeEpisodeSwipe != null,
+                visible = !modalOverlayOpen && activeEpisodeSwipe != null,
                 direction = activeEpisodeSwipe?.direction ?: 0,
                 armed = activeEpisodeSwipe?.armed == true,
                 available = if ((activeEpisodeSwipe?.direction ?: 1) > 0) hasNext else hasPrevious,
@@ -788,7 +795,7 @@ fun MobilePlayerControls(
             )
 
             PlayerLevelEdgeBar(
-                adjust = if (ui.isEditingCropRegion) null else activeLevel,
+                adjust = if (modalOverlayOpen) null else activeLevel,
                 dockEnd = levelDockEnd,
                 large = isLandscape || !compactWidth,
                 modifier = Modifier
@@ -802,7 +809,7 @@ fun MobilePlayerControls(
             )
 
             DoubleTapSeekHint(
-                visible = !ui.isEditingCropRegion && ui.doubleTapVisible,
+                visible = !modalOverlayOpen && ui.doubleTapVisible,
                 forward = doubleTapForwardSide,
                 seconds = ui.doubleTapSeconds,
                 modifier = Modifier
@@ -859,7 +866,7 @@ fun MobilePlayerControls(
 
             // 锁屏键：若用户已在顶/底栏放置 Lock 则未锁定时不重复显示悬浮锁（严格 DRY）；已锁定时常驻右侧解锁入口
             AnimatedVisibility(
-                visible = ui.controlsVisible && errorMessage == null && !ui.isEditingCropRegion &&
+                visible = ui.controlsVisible && errorMessage == null && !modalOverlayOpen &&
                     !speedController.active &&
                     (ui.isLocked || (pointerSource.isTouchLike && !activeLayout.hasControl(PlayerControlId.Lock))) &&
                     !(activeLevel != null && levelDockEnd),
@@ -918,11 +925,6 @@ fun MobilePlayerControls(
                 )
             }
 
-            val effectiveOpenSheet = when {
-                ui.isSpeedPopupOpen -> PlayerSheet.Speed
-                ui.isQualityPopupOpen -> PlayerSheet.Quality
-                else -> ui.openSheet
-            }
             PlayerSheetsOverlay(
                 openSheet = effectiveOpenSheet,
                 isLandscape = isLandscape,
@@ -945,6 +947,7 @@ fun MobilePlayerControls(
                     ui.isSpeedPopupOpen = false
                     ui.isQualityPopupOpen = false
                     ui.openSheet = null
+                    ui.interacted()
                 },
                 onOpenSheet = {
                     ui.isSpeedPopupOpen = false
@@ -974,7 +977,10 @@ fun MobilePlayerControls(
             PlayerShortcutsOverlay(
                 visible = ui.isShortcutsOverlayOpen,
                 compactWidth = compactWidth,
-                onDismiss = { ui.isShortcutsOverlayOpen = false },
+                onDismiss = {
+                    ui.isShortcutsOverlayOpen = false
+                    ui.interacted()
+                },
             )
         }
     }

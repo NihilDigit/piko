@@ -103,7 +103,7 @@ internal fun PlayerShortcutsOverlay(
         ) {
             Surface(
                 shape = MaterialTheme.shapes.extraLarge,
-                color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.94f),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
                 contentColor = MaterialTheme.colorScheme.onSurface,
                 border = BorderStroke(1.dp, fixed.HudSpecularBorder),
                 shadowElevation = 8.dp,

@@ -136,6 +136,7 @@ internal class PlayerBarEnvironment(
     val onVolumeChange: (Float) -> Unit,
     val onToggleMute: () -> Unit,
     val onVolumeDraggingChange: (Boolean) -> Unit,
+    val dragAreaEnabled: Boolean = true,
 )
 
 /**
@@ -335,7 +336,7 @@ private fun RowScope.RenderVideoPanelItems(
                 Spacer(
                     Modifier
                         .weight(1f)
-                        .then(if (inTopBar) Modifier.height(36.dp).windowDragArea() else Modifier),
+                        .then(if (inTopBar) Modifier.height(36.dp).windowDragArea(enabled = env.dragAreaEnabled) else Modifier),
                 )
             }
 
@@ -364,7 +365,7 @@ private fun RowScope.RenderVideoPanelItems(
                             if (hasRemainingSpacer) Modifier.widthIn(max = 360.dp)
                             else Modifier.weight(1f)
                             )
-                            .then(if (inTopBar) Modifier.windowDragArea() else Modifier)
+                            .then(if (inTopBar) Modifier.windowDragArea(enabled = env.dragAreaEnabled) else Modifier)
                             .padding(horizontal = 6.dp)
                         Box(titleModifier) {
                             TooltipBox(

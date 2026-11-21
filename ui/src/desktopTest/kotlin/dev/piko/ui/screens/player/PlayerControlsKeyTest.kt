@@ -159,6 +159,16 @@ class PlayerControlsKeyTest {
         assertEquals(0, fullscreenToggled)
         state.dispatch(keyUp(Key.Escape))
 
+        // 4b. 字幕外观二级面板退回播放设置面板，再按一次 Esc 关闭
+        state.openSheet = PlayerSheet.SubtitleStyle
+        assertTrue(state.dispatch(keyDown(Key.Escape), onToggleFullscreen = { fullscreenToggled++ }))
+        assertEquals(PlayerSheet.Settings, state.openSheet)
+        state.dispatch(keyUp(Key.Escape))
+        assertTrue(state.dispatch(keyDown(Key.Escape), onToggleFullscreen = { fullscreenToggled++ }))
+        assertNull(state.openSheet)
+        assertEquals(0, fullscreenToggled)
+        state.dispatch(keyUp(Key.Escape))
+
         // 5. 退出全屏
         assertTrue(state.dispatch(keyDown(Key.Escape), onToggleFullscreen = { fullscreenToggled++; state.currentIsFullscreen = false }))
         assertEquals(1, fullscreenToggled)

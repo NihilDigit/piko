@@ -178,6 +178,8 @@ internal class MediampPlaybackBackend(
                 delay(if (activePlayback) BUFFER_POLL_ACTIVE_MILLIS else BUFFER_POLL_PAUSED_MILLIS)
             }
         }
+        // 所有播放控制与状态提示均由 Compose 控件层渲染，关闭 libmpv 自带 OSD（level 0 仅保留字幕）
+        mpv?.setPropertyString("osd-level", "0")
         mpv?.setPropertyString("slang", mpvSubtitleLanguages())
         mpv?.setPropertyString("sub-codepage", mpvSubtitleCodepage())
         // 纯文本字幕（SRT/VTT）按实际视频画面高度缩放而非整个窗口高度，避免竖窄窗口下字幕暴涨并落入上下大黑边

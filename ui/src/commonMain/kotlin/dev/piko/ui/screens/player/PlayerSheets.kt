@@ -201,7 +201,7 @@ import kotlin.math.roundToInt
 
 internal enum class PlayerSheet { Episodes, Settings, Tracks, DriveSubtitles, SubtitleStyle, Stats, Speed, Quality }
 
-private fun PlayerSheet.parentSheet(): PlayerSheet? = when (this) {
+internal fun PlayerSheet.parentSheet(): PlayerSheet? = when (this) {
     PlayerSheet.DriveSubtitles -> PlayerSheet.Tracks
     PlayerSheet.SubtitleStyle -> PlayerSheet.Settings
     else -> null
@@ -550,22 +550,44 @@ private fun PlayerSideSheet(
         ) {
             Surface(
                 shape = RoundedCornerShape(topStart = SIDE_SHEET_CORNER, bottomStart = SIDE_SHEET_CORNER),
-                color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.96f),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                contentColor = MaterialTheme.colorScheme.onSurface,
                 border = BorderStroke(1.dp, fixed.HudSpecularBorder),
                 modifier = Modifier.width(panelWidth).fillMaxHeight(),
             ) {
-                Column(Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.End + WindowInsetsSides.Vertical))) {
+                Column(
+                    Modifier
+                        .wheelStaysInSheet()
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.End + WindowInsetsSides.Vertical)),
+                ) {
+                    val parentSheet = activeSheet?.parentSheet()
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                start = if (parentSheet != null) 8.dp else 16.dp,
+                                end = 8.dp,
+                                top = 12.dp,
+                                bottom = 10.dp,
+                            ),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        val parentSheet = activeSheet?.parentSheet()
                         if (parentSheet != null && activeSheet != null) {
-                            IconButton(onClick = { onSelectTab(parentSheet) }, shapes = IconButtonDefaults.shapes()) {
+                            IconButton(
+                                onClick = { onSelectTab(parentSheet) },
+                                shapes = IconButtonDefaults.shapes(),
+                                modifier = Modifier.handCursor(),
+                            ) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("返回", "Back", "戻る", "뒤로", "返回"))
                             }
-                            Text(activeSheet.sheetTitle(), style = MaterialTheme.typography.titleMediumEmphasized, modifier = Modifier.weight(1f))
+                            Text(
+                                text = activeSheet.sheetTitle(),
+                                style = MaterialTheme.typography.titleMediumEmphasized,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
                         } else if (availableTabs.size > 1 && activeSheet != null && activeSheet in availableTabs) {
                             PlayerSheetTabStrip(
                                 tabs = availableTabs,
@@ -577,10 +599,16 @@ private fun PlayerSideSheet(
                             Text(
                                 text = activeSheet?.sheetTitle().orEmpty(),
                                 style = MaterialTheme.typography.titleMediumEmphasized,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f).padding(start = 4.dp),
                             )
                         }
-                        IconButton(onClick = onDismiss, shapes = IconButtonDefaults.shapes()) {
+                        IconButton(
+                            onClick = onDismiss,
+                            shapes = IconButtonDefaults.shapes(),
+                            modifier = Modifier.handCursor(),
+                        ) {
                             Icon(Icons.Filled.Close, contentDescription = tr("关闭", "Close", "閉じる", "닫기", "關閉"))
                         }
                     }

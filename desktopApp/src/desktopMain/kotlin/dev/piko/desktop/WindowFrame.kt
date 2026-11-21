@@ -24,6 +24,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -107,30 +108,20 @@ fun FrameWindowScope.WindowFrame(
             val caption = remember(window) { WindowsCaption(window).takeIf { it.install() } }
             if (onCloseInContent != null && caption != null) {
                 // 直接设在 AWT 窗口上：Compose 的 Window 参数 alwaysOnTop 只在它自己的值变化时才下发，
-                // 调用方不传它，不会把这里的设置盖回去
-                var alwaysOnTop by remember(window) { mutableStateOf(window.isAlwaysOnTop) }
-                // 全屏时整个窗口都是画面：拖动区不报给窗口过程，否则按住顶栏会把全屏的窗口拖走
-                val frameless = remember(caption, showTitleBar, onCloseInContent) {
-                    object : FramelessWindow {
-                        // 顶栏上按钮两边的空白各是一块
-                        private val areas = HashMap<Any, Rect>()
-
-                        override fun updateDragArea(key: Any, bounds: Rect?) {
-                            val normalized = bounds?.takeUnless { it.isEmpty }
-                            if (areas[key] == normalized) return
-                            if (normalized == null) areas.remove(key) else areas[key] = normalized
-                            if (showTitleBar && areas.isNotEmpty()) caption.updateLayout(areas.values.toList(), emptyMap()) else caption.clearLayout()
-                        }
-
-                        override fun close() = onCloseInContent()
-
-                        override val isAlwaysOnTop: Boolean get() = alwaysOnTop
-
-                        override fun setAlwaysOnTop(onTop: Boolean) {
-                            window.isAlwaysOnTop = onTop
-                            alwaysOnTop = onTop
-                        }
-                    }
+                // 调用方不传它，不会把这里的设置盖回去。全屏或顶层模态弹层打开时经 setDragEnabled(false)
+                // 立即撤销 HTCAPTION 拖动区，避免 Win32 WM_NCHITTEST 劫持浮层顶部点击。
+                val frameless = remember(caption, window) {
+                    CaptionFramelessWindow(
+                        window = window,
+                        caption = caption,
+                        initialDragEnabled = showTitleBar,
+                        initialAlwaysOnTop = window.isAlwaysOnTop,
+                        onClose = onCloseInContent,
+                    )
+                }
+                SideEffect {
+                    frameless.onClose = onCloseInContent
+                    frameless.setDragEnabled(showTitleBar)
                 }
                 DisposableEffect(frameless) { onDispose { caption.clearLayout() } }
                 CompositionLocalProvider(LocalFramelessWindow provides frameless) { SettledWindowInfo(caption) { ProvideTouchViewConfiguration(content) } }
@@ -160,6 +151,50 @@ fun FrameWindowScope.WindowFrame(
             }
         }
         else -> content()
+    }
+}
+
+private class CaptionFramelessWindow(
+    private val window: java.awt.Window,
+    private val caption: WindowsCaption,
+    initialDragEnabled: Boolean,
+    initialAlwaysOnTop: Boolean,
+    onClose: () -> Unit,
+) : FramelessWindow {
+    // 顶栏上按钮两边的空白各是一块
+    private val areas = HashMap<Any, Rect>()
+    private var dragEnabled: Boolean = initialDragEnabled
+    var onClose: () -> Unit = onClose
+
+    private var _isAlwaysOnTop by mutableStateOf(initialAlwaysOnTop)
+    override val isAlwaysOnTop: Boolean get() = _isAlwaysOnTop
+
+    fun setDragEnabled(enabled: Boolean) {
+        if (dragEnabled == enabled) return
+        dragEnabled = enabled
+        publish()
+    }
+
+    private fun publish() {
+        if (dragEnabled && areas.isNotEmpty()) {
+            caption.updateLayout(areas.values.toList(), emptyMap())
+        } else {
+            caption.clearLayout()
+        }
+    }
+
+    override fun updateDragArea(key: Any, bounds: Rect?) {
+        val normalized = bounds?.takeUnless { it.isEmpty }
+        if (areas[key] == normalized) return
+        if (normalized == null) areas.remove(key) else areas[key] = normalized
+        publish()
+    }
+
+    override fun close() = onClose()
+
+    override fun setAlwaysOnTop(onTop: Boolean) {
+        window.isAlwaysOnTop = onTop
+        _isAlwaysOnTop = onTop
     }
 }
 
