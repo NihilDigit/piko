@@ -165,6 +165,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.media.ORIGINAL_QUALITY
 import dev.piko.ui.platform.LocalFramelessWindow
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.platform.captionExclusion
 import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.theme.LocalFixedColors
 import dev.piko.ui.theme.LocalPikoMotion
@@ -259,6 +260,7 @@ fun PlayerTopBar(
                 onClick = onBackClick,
                 tooltipBelow = true,
                 containerSize = IconButtonDefaults.smallContainerSize(IconButtonDefaults.IconButtonWidthOption.Narrow),
+                modifier = Modifier.captionExclusion(),
             )
         }
         // 标题这一块兼做拖动窗口的地方（仅限没有标题栏的桌面窗口）
@@ -329,45 +331,64 @@ fun PlayerTopBar(
             }
         }
         if (hasWindowCluster) {
-            PlayerPillCluster {
-                if (effectivePin != null) {
-                    ClusterIconButton(
-                        icon = if (effectiveOnTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
-                        label = if (effectiveOnTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제", "取消置頂") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시", "置頂"),
-                        onClick = effectivePin,
-                        tooltipBelow = true,
-                        shortcut = "T",
-                        tint = if (effectiveOnTop) MaterialTheme.colorScheme.primary else LocalFixedColors.current.OnMedia,
-                    )
-                }
-                if (showWindowButtons) {
-                    windowActions?.onMinimize?.let { onMinimize ->
-                        ClusterIconButton(
-                            icon = Icons.Filled.Remove,
-                            label = stringResource(Res.string.player_minimize),
-                            onClick = onMinimize,
-                            tooltipBelow = true,
-                            iconSize = 18.dp,
-                        )
-                    }
-                    windowActions?.onToggleMaximize?.let { onToggleMaximize ->
-                        val restored = windowActions.isMaximized || windowActions.isFullscreen
-                        ClusterIconButton(
-                            icon = if (restored) Icons.Filled.FilterNone else Icons.Filled.CropSquare,
-                            label = stringResource(if (restored) Res.string.player_restore else Res.string.player_maximize),
-                            onClick = onToggleMaximize,
-                            tooltipBelow = true,
-                            iconSize = 16.dp,
-                        )
-                    }
-                    if (effectiveClose != null) {
-                        PlayerCloseWindowButton(
-                            label = tr("关闭", "Close", "閉じる", "닫기", "關閉"),
-                            shortcut = LocalPikoPlatform.current.shortcutModifier.label("W"),
-                            onClick = effectiveClose,
-                        )
-                    }
-                }
+            MediaWindowControlsCluster(
+                windowActions = windowActions,
+                effectivePin = effectivePin,
+                effectiveOnTop = effectiveOnTop,
+                showWindowButtons = showWindowButtons,
+                effectiveClose = effectiveClose,
+            )
+        }
+    }
+}
+
+@Composable
+internal fun MediaWindowControlsCluster(
+    windowActions: PlayerWindowActions?,
+    effectivePin: (() -> Unit)? = windowActions?.onToggleAlwaysOnTop,
+    effectiveOnTop: Boolean = windowActions?.isAlwaysOnTop == true,
+    showWindowButtons: Boolean = windowActions?.showWindowButtons == true,
+    effectiveClose: (() -> Unit)? = windowActions?.onClose,
+    closeLabel: String = tr("关闭", "Close", "閉じる", "닫기", "關閉"),
+    closeShortcut: String? = LocalPikoPlatform.current.shortcutModifier.label("W"),
+) {
+    PlayerPillCluster {
+        if (effectivePin != null) {
+            ClusterIconButton(
+                icon = if (effectiveOnTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                label = if (effectiveOnTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제", "取消置頂") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시", "置頂"),
+                onClick = effectivePin,
+                tooltipBelow = true,
+                shortcut = "T",
+                tint = if (effectiveOnTop) MaterialTheme.colorScheme.primary else LocalFixedColors.current.OnMedia,
+            )
+        }
+        if (showWindowButtons) {
+            windowActions?.onMinimize?.let { onMinimize ->
+                ClusterIconButton(
+                    icon = Icons.Filled.Remove,
+                    label = stringResource(Res.string.player_minimize),
+                    onClick = onMinimize,
+                    tooltipBelow = true,
+                    iconSize = 18.dp,
+                )
+            }
+            windowActions?.onToggleMaximize?.let { onToggleMaximize ->
+                val restored = windowActions.isMaximized || windowActions.isFullscreen
+                ClusterIconButton(
+                    icon = if (restored) Icons.Filled.FilterNone else Icons.Filled.CropSquare,
+                    label = stringResource(if (restored) Res.string.player_restore else Res.string.player_maximize),
+                    onClick = onToggleMaximize,
+                    tooltipBelow = true,
+                    iconSize = 16.dp,
+                )
+            }
+            if (effectiveClose != null) {
+                PlayerCloseWindowButton(
+                    label = closeLabel,
+                    shortcut = closeShortcut,
+                    onClick = effectiveClose,
+                )
             }
         }
     }
@@ -384,7 +405,7 @@ internal fun PlayerPillCluster(
         color = playerContainerColor(),
         contentColor = LocalFixedColors.current.OnMedia,
         border = BorderStroke(1.dp, LocalFixedColors.current.HudSpecularBorder),
-        modifier = modifier,
+        modifier = modifier.captionExclusion(),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),

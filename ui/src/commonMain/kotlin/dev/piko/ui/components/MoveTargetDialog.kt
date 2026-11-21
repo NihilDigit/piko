@@ -161,17 +161,22 @@ fun FolderPickerDialog(
             onDismissRequest = onDismiss,
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
-        // 高度写死比例：Android 的对话框按内容定高，换一层目录、文件夹数一变整个对话框就跳。
-        // 底色照 M3 对话框取 surfaceContainerHigh：取 surface 时深色主题下与变暗的背景分不开。文件夹行因此高一级，见 FolderPickerRow
-        Surface(
-            modifier = Modifier
-                .widthIn(max = 680.dp)
-                .fillMaxWidth(0.92f)
-                .fillMaxHeight(0.85f),
-            shape = MaterialTheme.shapes.extraLarge,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        ) {
-                content()
+            dev.piko.ui.platform.ModalCaptionBlocker()
+            val topInset = dev.piko.ui.platform.LocalDesktopTitleBarInset.current
+            androidx.compose.runtime.CompositionLocalProvider(dev.piko.ui.platform.LocalWindowCaption provides null) {
+                // 高度写死比例：Android 的对话框按内容定高，换一层目录、文件夹数一变整个对话框就跳。
+                // 底色照 M3 对话框取 surfaceContainerHigh：取 surface 时深色主题下与变暗的背景分不开。文件夹行因此高一级，见 FolderPickerRow
+                Surface(
+                    modifier = Modifier
+                        .padding(top = topInset)
+                        .widthIn(max = 680.dp)
+                        .fillMaxWidth(0.92f)
+                        .fillMaxHeight(0.85f),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    content()
+                }
             }
         }
     }

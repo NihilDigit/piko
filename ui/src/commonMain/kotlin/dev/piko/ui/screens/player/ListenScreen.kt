@@ -144,6 +144,7 @@ import dev.piko.ui.components.PikoSheet
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.formatTimeMs
 import dev.piko.ui.i18n.stringResource
+import dev.piko.ui.platform.captionExclusion
 import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.resources.*
 import dev.piko.ui.theme.LocalPikoMotion
@@ -197,6 +198,8 @@ fun ListenScreen(
     volumeControl: PlayerLevelControl? = null,
     windowActions: (@Composable RowScope.() -> Unit)? = null,
     onSwitchToVideo: (() -> Unit)? = null,
+    topChromePadding: Dp = 0.dp,
+    showBackButton: Boolean = true,
     registerKeyFallback: (((KeyEvent) -> Boolean)?) -> Unit = {},
 ) {
     val layoutPrefs = LocalPlayerLayoutPrefs.current
@@ -337,24 +340,29 @@ fun ListenScreen(
                 .fillMaxSize()
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)),
         ) {
+            val listenModalOpen = speedDialogOpen || sleepDialogOpen || queueSheetOpen
             // 顶栏（极简：返回 + 可拖拽空白 + 可选切回视频 + 音量 + 窗口控制按钮）
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                    .padding(start = 8.dp, end = 8.dp, top = 6.dp + topChromePadding, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                TooltipIconButton(
-                    icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                    label = stringResource(Res.string.player_custom_ctrl_back),
-                    onClick = onBackClick,
-                )
-                Spacer(Modifier.weight(1f).height(40.dp).windowDragArea())
+                if (showBackButton) {
+                    TooltipIconButton(
+                        icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                        label = stringResource(Res.string.player_custom_ctrl_back),
+                        onClick = onBackClick,
+                        modifier = Modifier.captionExclusion(),
+                    )
+                }
+                Spacer(Modifier.weight(1f).height(40.dp).windowDragArea(enabled = !listenModalOpen))
                 if (onSwitchToVideo != null) {
                     FilledTonalButton(
                         onClick = onSwitchToVideo,
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                        modifier = Modifier.captionExclusion(),
                     ) {
                         Icon(Icons.Outlined.Movie, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
@@ -362,23 +370,33 @@ fun ListenScreen(
                     }
                 }
                 if (volumeControl != null) {
-                    ListenVolumeControl(
-                        volume = volumeValue,
-                        onVolumeChange = { next ->
-                            volumeValue = volumeControl.set(next)
-                            if (volumeValue > 0f) volumeBeforeMute = volumeValue
-                        },
-                        onToggleMute = {
-                            if (volumeValue > 0f) {
-                                volumeBeforeMute = volumeValue
-                                volumeValue = volumeControl.set(0f)
-                            } else {
-                                volumeValue = volumeControl.set(volumeBeforeMute.coerceAtLeast(0.2f))
-                            }
-                        },
-                    )
+                    Box(Modifier.captionExclusion()) {
+                        ListenVolumeControl(
+                            volume = volumeValue,
+                            onVolumeChange = { next ->
+                                volumeValue = volumeControl.set(next)
+                                if (volumeValue > 0f) volumeBeforeMute = volumeValue
+                            },
+                            onToggleMute = {
+                                if (volumeValue > 0f) {
+                                    volumeBeforeMute = volumeValue
+                                    volumeValue = volumeControl.set(0f)
+                                } else {
+                                    volumeValue = volumeControl.set(volumeBeforeMute.coerceAtLeast(0.2f))
+                                }
+                            },
+                        )
+                    }
                 }
-                windowActions?.invoke(this)
+                if (windowActions != null) {
+                    Row(
+                        modifier = Modifier.captionExclusion(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        windowActions()
+                    }
+                }
             }
 
             // 主内容区：宽屏双栏（左主聆听区 + 右侧常驻队列），窄屏单栏

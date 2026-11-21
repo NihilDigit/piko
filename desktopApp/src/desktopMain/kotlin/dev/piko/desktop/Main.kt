@@ -61,6 +61,7 @@ import androidx.compose.ui.window.Tray
 import dev.piko.desktop.ui.clips.ClipFeedWindow
 import dev.piko.desktop.ui.player.VideoPlayerWindow
 import dev.piko.desktop.ui.player.MpvLogBridge
+import dev.piko.desktop.ui.viewer.ImageViewerWindow
 import dev.piko.desktop.update.DesktopAppUpdater
 import dev.piko.desktop.update.WindowsInstaller
 import dev.piko.desktop.winrt.WinRTSupport
@@ -91,6 +92,7 @@ import dev.piko.shared.upload.UploadTask
 import dev.piko.ui.PikoApp
 import dev.piko.ui.PikoServices
 import dev.piko.ui.ClipFeedLinks
+import dev.piko.ui.ImageViewerRequest
 import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.VideoPlayerRequest
 import dev.piko.ui.backgroundWorkChanges
@@ -277,6 +279,7 @@ fun main(args: Array<String>) {
         }
         val appearance by appearanceFlow.collectAsState(initialAppearance)
         val players = remember { mutableStateListOf<VideoPlayerRequest>() }
+        val imageViewers = remember { mutableStateListOf<ImageViewerRequest>() }
         // 信息流从网盘页弹出，只开一个窗口；已开着时再弹一次是把它调到前台。开着的这段时间应用内的侧栏收起，
         // 收回时再出现；关窗是关掉信息流，见 ClipFeedLinks
         var clipFeed by remember { mutableStateOf<ClipFeedLinks?>(null) }
@@ -298,13 +301,15 @@ fun main(args: Array<String>) {
                 isClipFeedOpen = { clipFeed != null },
                 closeClipFeed = { clipFeed = null },
                 hasActivePlayer = { players.isNotEmpty() },
+                openImage = { imageViewers += it },
             )
         }
-        // 播放器与信息流的窗口在主界面之外，换号时主界面重建、它们不会跟着走：放的是上一个账号的文件，
-        // 信息流窗口的回调还指着上一个账号的主界面。随进程级会话一起关掉
+        // 播放器、看图与信息流窗口在主界面之外，换号时主界面重建、它们不会跟着走：放的是上一个账号的文件，
+        // 信息流与看图窗口的回调还指着上一个账号的主界面。随进程级会话一起关掉
         LaunchedEffect(Unit) {
             launchOnAccountLeave(services.clientManager) {
                 players.clear()
+                imageViewers.clear()
                 clipFeed = null
             }
         }
@@ -359,7 +364,7 @@ fun main(args: Array<String>) {
                 exitApplication()
             }
         }
-        val hasDetachedWindows = players.isNotEmpty() || clipFeed != null
+        val hasDetachedWindows = players.isNotEmpty() || imageViewers.isNotEmpty() || clipFeed != null
         LaunchedEffect(isInBackground) {
             if (!isInBackground) manualTraySession = false
         }
@@ -427,8 +432,8 @@ fun main(args: Array<String>) {
 
         val mainWindowState = rememberRememberedWindowState(settings, "main", DpSize(1120.dp, 760.dp))
         val mainWindowVisible = !isInBackground && !mainWindowState.isMinimized
-        // Detached playback/feed windows keep the process visible even when the main window is hidden.
-        val memoryVisible = mainWindowVisible || players.isNotEmpty() || clipFeed != null
+        // Detached playback/feed/viewer windows keep the process visible even when the main window is hidden.
+        val memoryVisible = mainWindowVisible || players.isNotEmpty() || imageViewers.isNotEmpty() || clipFeed != null
         LaunchedEffect(memoryVisible) {
             PikoMemoryGovernor.Shared.onVisibilityChanged(memoryVisible)
         }
@@ -513,109 +518,130 @@ fun main(args: Array<String>) {
                                 videoPlayer = videoPlayer,
                             )
                         }
-                    }
-                    if (askCloseBehavior) {
-                        var rememberCloseChoice by remember {
-                            mutableStateOf(settings.get(CLOSE_BEHAVIOR_REMEMBER_CHECKED_KEY) != "false")
-                        }
-                        PikoDialog(
-                            onDismissRequest = { askCloseBehavior = false },
-                            title = { Text(stringResource(Res.string.text_close_main_window)) },
-                            text = {
-                                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    Text(stringResource(Res.string.text_choose_what_the_close_button_does_change_this_anytime_in_appearance_settings))
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .heightIn(min = 40.dp)
-                                            .toggleable(
-                                                value = rememberCloseChoice,
-                                                role = Role.Checkbox,
-                                                onValueChange = { checked ->
-                                                    rememberCloseChoice = checked
-                                                    settings.set(CLOSE_BEHAVIOR_REMEMBER_CHECKED_KEY, checked.toString())
-                                                },
-                                            ),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Checkbox(checked = rememberCloseChoice, onCheckedChange = null)
-                                        Spacer(Modifier.width(8.dp))
-                                        Text(stringResource(Res.string.text_remember_my_choice), style = MaterialTheme.typography.bodyMedium)
+                        if (askCloseBehavior) {
+                            var rememberCloseChoice by remember {
+                                mutableStateOf(settings.get(CLOSE_BEHAVIOR_REMEMBER_CHECKED_KEY) != "false")
+                            }
+                            PikoDialog(
+                                onDismissRequest = { askCloseBehavior = false },
+                                title = { Text(stringResource(Res.string.text_close_main_window)) },
+                                text = {
+                                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                        Text(stringResource(Res.string.text_choose_what_the_close_button_does_change_this_anytime_in_appearance_settings))
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .heightIn(min = 40.dp)
+                                                .toggleable(
+                                                    value = rememberCloseChoice,
+                                                    role = Role.Checkbox,
+                                                    onValueChange = { checked ->
+                                                        rememberCloseChoice = checked
+                                                        settings.set(CLOSE_BEHAVIOR_REMEMBER_CHECKED_KEY, checked.toString())
+                                                    },
+                                                ),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Checkbox(checked = rememberCloseChoice, onCheckedChange = null)
+                                            Spacer(Modifier.width(8.dp))
+                                            Text(stringResource(Res.string.text_remember_my_choice), style = MaterialTheme.typography.bodyMedium)
+                                        }
                                     }
-                                }
-                            },
-                            confirmButton = {
-                                PikoDialogConfirm(
-                                    label = tr("最小化到托盘", "Minimize to tray", "トレイに最小化", "트레이로 최소화", "最小化至系統匣"),
-                                    onClick = {
-                                        askCloseBehavior = false
-                                        settings.set(CLOSE_BEHAVIOR_REMEMBER_CHECKED_KEY, rememberCloseChoice.toString())
-                                        if (rememberCloseChoice) {
-                                            settings.set(CLOSE_BEHAVIOR_ASKED_KEY, "true")
-                                            platform.closeToTray?.set(true)
-                                        }
-                                        hideToTray(true)
-                                    },
-                                )
-                            },
-                            dismissButton = {
-                                TextButton(
-                                    onClick = {
-                                        askCloseBehavior = false
-                                        settings.set(CLOSE_BEHAVIOR_REMEMBER_CHECKED_KEY, rememberCloseChoice.toString())
-                                        if (rememberCloseChoice) {
-                                            settings.set(CLOSE_BEHAVIOR_ASKED_KEY, "true")
-                                            platform.closeToTray?.set(false)
-                                        }
-                                        quitNow()
-                                    },
-                                ) {
-                                    Text(stringResource(Res.string.text_quit))
-                                }
-                            },
-                        )
-                    }
-                    if (showInvalidTorrentDialog) {
-                        PikoDialog(
-                            onDismissRequest = { showInvalidTorrentDialog = false },
-                            title = {
-                                Text(
-                                    tr(
-                                        "无法解析种子文件",
-                                        "Cannot read torrent file",
-                                        "トレントファイルを読み取れません",
-                                        "토렌트 파일을 읽을 수 없습니다",
-                                        "無法解析種子檔案",
-                                    ),
-                                )
-                            },
-                            text = {
-                                Text(
-                                    tr(
-                                        "该 .torrent 文件已损坏，或仅包含暂不支持的 BitTorrent v2 信息字典。",
-                                        "The .torrent file is corrupted or uses a BitTorrent v2-only info dictionary that cannot be converted into a magnet link.",
-                                        "この .torrent ファイルは破損しているか、マグネットリンクに変換できない BitTorrent v2 専用の形式です。",
-                                        "이 .torrent 파일이 손상되었거나 마그넷 링크로 변환할 수 없는 BitTorrent v2 전용 형식입니다.",
-                                        "該 .torrent 檔案已損毀，或僅包含暫不支援的 BitTorrent v2 資訊字典。",
-                                    ),
-                                )
-                            },
-                            confirmButton = {
-                                PikoDialogConfirm(
-                                    label = tr("知道了", "OK", "OK", "확인", "知道了"),
-                                    onClick = { showInvalidTorrentDialog = false },
-                                )
-                            },
-                        )
-                    }
-                    // 两个对话框不叠在一起：先说数据去了哪里，关掉之后才问关联
-                    val fallback = portableFallback
-                    if (fallback != null) {
-                        PortableFallbackNotice(fallback, settings, onDismiss = { portableFallback = null })
-                    } else if (askLinkAssociation) {
-                        LinkAssociationPrompt(platform.linkAssociation, settings)
+                                },
+                                confirmButton = {
+                                    PikoDialogConfirm(
+                                        label = tr("最小化到托盘", "Minimize to tray", "トレイに最小化", "트레이로 최소화", "最小化至系統匣"),
+                                        onClick = {
+                                            askCloseBehavior = false
+                                            settings.set(CLOSE_BEHAVIOR_REMEMBER_CHECKED_KEY, rememberCloseChoice.toString())
+                                            if (rememberCloseChoice) {
+                                                settings.set(CLOSE_BEHAVIOR_ASKED_KEY, "true")
+                                                platform.closeToTray?.set(true)
+                                            }
+                                            hideToTray(true)
+                                        },
+                                    )
+                                },
+                                dismissButton = {
+                                    TextButton(
+                                        onClick = {
+                                            askCloseBehavior = false
+                                            settings.set(CLOSE_BEHAVIOR_REMEMBER_CHECKED_KEY, rememberCloseChoice.toString())
+                                            if (rememberCloseChoice) {
+                                                settings.set(CLOSE_BEHAVIOR_ASKED_KEY, "true")
+                                                platform.closeToTray?.set(false)
+                                            }
+                                            quitNow()
+                                        },
+                                    ) {
+                                        Text(stringResource(Res.string.text_quit))
+                                    }
+                                },
+                            )
+                        }
+                        if (showInvalidTorrentDialog) {
+                            PikoDialog(
+                                onDismissRequest = { showInvalidTorrentDialog = false },
+                                title = {
+                                    Text(
+                                        tr(
+                                            "无法解析种子文件",
+                                            "Cannot read torrent file",
+                                            "トレントファイルを読み取れません",
+                                            "토렌트 파일을 읽을 수 없습니다",
+                                            "無法解析種子檔案",
+                                        ),
+                                    )
+                                },
+                                text = {
+                                    Text(
+                                        tr(
+                                            "该 .torrent 文件已损坏，或仅包含暂不支持的 BitTorrent v2 信息字典。",
+                                            "The .torrent file is corrupted or uses a BitTorrent v2-only info dictionary that cannot be converted into a magnet link.",
+                                            "この .torrent ファイルは破損しているか、マグネットリンクに変換できない BitTorrent v2 専用の形式です。",
+                                            "이 .torrent 파일이 손상되었거나 마그넷 링크로 변환할 수 없는 BitTorrent v2 전용 형식입니다.",
+                                            "該 .torrent 檔案已損毀，或僅包含暫不支援的 BitTorrent v2 資訊字典。",
+                                        ),
+                                    )
+                                },
+                                confirmButton = {
+                                    PikoDialogConfirm(
+                                        label = tr("知道了", "OK", "OK", "확인", "知道了"),
+                                        onClick = { showInvalidTorrentDialog = false },
+                                    )
+                                },
+                            )
+                        }
+                        // 两个对话框不叠在一起：先说数据去了哪里，关掉之后才问关联
+                        val fallback = portableFallback
+                        if (fallback != null) {
+                            PortableFallbackNotice(fallback, settings, onDismiss = { portableFallback = null })
+                        } else if (askLinkAssociation) {
+                            LinkAssociationPrompt(platform.linkAssociation, settings)
+                        }
                     }
                 }
+            }
+        }
+
+        imageViewers.forEach { request ->
+            key(request) {
+                ImageViewerWindow(
+                    request = request,
+                    services = services,
+                    platform = platform,
+                    settings = settings,
+                    appearance = appearance,
+                    icon = appIcon,
+                    onLocate = request.onLocate?.let { locate ->
+                        { file ->
+                            isInBackground = false
+                            locate(file)
+                            mainWindow?.let(::bringToFront)
+                        }
+                    },
+                    onClose = { imageViewers.remove(request) },
+                )
             }
         }
 

@@ -37,14 +37,19 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.ViewSidebar
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
+import androidx.compose.material.icons.filled.FilterNone
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Star
@@ -121,13 +126,18 @@ import dev.piko.ui.components.formatTimeMs
 import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.platform.LocalFramelessWindow
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.platform.captionExclusion
 import dev.piko.ui.platform.resolveCoilModel
 import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.resources.Res
+import dev.piko.ui.resources.player_maximize
+import dev.piko.ui.resources.player_minimize
 import dev.piko.ui.resources.player_next_clip
 import dev.piko.ui.resources.player_previous_clip
+import dev.piko.ui.resources.player_restore
 import dev.piko.ui.screens.player.PlayerSeekBar
+import dev.piko.ui.screens.player.PlayerWindowActions
 import dev.piko.ui.screens.player.formatSpeedPreset
 import dev.piko.ui.screens.player.handCursor
 import dev.piko.ui.theme.FixedColors
@@ -167,14 +177,17 @@ internal fun ClipFeedTopBar(
     layout: PlayerFormFactorLayout? = null,
     paused: Boolean = false,
     onTogglePause: (() -> Unit)? = null,
+    windowActions: PlayerWindowActions? = null,
 ) {
     val buttonSize = if (compact) 40.dp else 48.dp
-    val caption = rememberCaptionSlot()
+    val caption = rememberCaptionSlot(tint = LocalFixedColors.current.OnMedia)
     val resolvedLayout = layout ?: LocalPlayerLayoutPrefs.current.clipsLayout(isLandscape = landscapeLayout)
     val items = resolvedLayout.topBar
     val hasSpacer = items.any { it == PlayerPanelItem.Spacer }
     val framelessWindow = LocalFramelessWindow.current
     val pinInLayout = items.any { it is PlayerPanelItem.Control && it.id == PlayerControlId.PinOnTop }
+    // 主窗口内全屏信息流且右上角已并入窗口关闭按钮时，退出按钮移至左端改为返回箭头，避免两枚 × 并排
+    val closeAsLeadingBack = onDock == null && caption.buttons != null && landscapeLocked != true && onClose != null
 
     Row(
         modifier = modifier
@@ -182,10 +195,27 @@ internal fun ClipFeedTopBar(
             .then(caption.modifier)
             .background(Brush.verticalGradient(TopScrim))
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top))
-            .padding(horizontal = if (compact) 4.dp else 8.dp, vertical = if (compact) 4.dp else 8.dp),
+            .padding(
+                start = if (compact) 4.dp else 8.dp,
+                end = if (compact) 4.dp else 8.dp,
+                top = (if (compact) 4.dp else 8.dp) + (windowActions?.topChromePadding ?: 0.dp),
+                bottom = if (compact) 4.dp else 8.dp,
+            ),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (closeAsLeadingBack) {
+            ChromeIconButton(
+                icon = Icons.AutoMirrored.Filled.ArrowBack,
+                label = tr("关闭信息流", "Close feed", "フィードを閉じる", "피드 닫기", "關閉資訊流"),
+                onClick = onClose,
+                size = buttonSize,
+                tooltip = true,
+                shortcut = "Esc",
+                minTouchTarget = true,
+                inTopBar = true,
+            )
+        }
         items.forEach { item ->
             when (item) {
                 PlayerPanelItem.Spacer -> Spacer(
@@ -212,6 +242,7 @@ internal fun ClipFeedTopBar(
                             size = buttonSize,
                             tooltip = true,
                             showBackground = item.showBackground,
+                            inTopBar = true,
                         )
                     }
 
@@ -223,6 +254,7 @@ internal fun ClipFeedTopBar(
                             size = buttonSize,
                             tooltip = true,
                             showBackground = item.showBackground,
+                            inTopBar = true,
                         )
                     }
 
@@ -236,6 +268,7 @@ internal fun ClipFeedTopBar(
                             tooltip = true,
                             shortcut = "A",
                             showBackground = item.showBackground,
+                            inTopBar = true,
                         )
                     }
 
@@ -247,28 +280,36 @@ internal fun ClipFeedTopBar(
                         tooltip = true,
                         shortcut = "M",
                         showBackground = item.showBackground,
+                        inTopBar = true,
                     )
 
-                    PlayerControlId.PinOnTop -> if (onDock != null && framelessWindow != null) {
-                        val onTop = framelessWindow.isAlwaysOnTop
-                        ChromeIconButton(
-                            icon = if (onTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
-                            label = if (onTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제", "取消置頂") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시", "置頂"),
-                            onClick = { framelessWindow.setAlwaysOnTop(!onTop) },
-                            size = buttonSize,
-                            tooltip = true,
-                            showBackground = item.showBackground,
-                        )
+                    PlayerControlId.PinOnTop -> if (onDock != null) {
+                        val effectivePin = windowActions?.onToggleAlwaysOnTop
+                            ?: framelessWindow?.let { fw -> { fw.setAlwaysOnTop(!fw.isAlwaysOnTop) } }
+                        val onTop = windowActions?.isAlwaysOnTop ?: framelessWindow?.isAlwaysOnTop ?: false
+                        if (effectivePin != null) {
+                            ChromeIconButton(
+                                icon = if (onTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                                label = if (onTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제", "取消置頂") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시", "置頂"),
+                                onClick = effectivePin,
+                                size = buttonSize,
+                                tooltip = true,
+                                shortcut = "T",
+                                showBackground = item.showBackground,
+                                inTopBar = true,
+                            )
+                        }
                     }
 
                     PlayerControlId.Fullscreen -> if (onDock == null && onToggleFullscreen != null) {
                         ChromeIconButton(
-                            icon = Icons.Filled.Fullscreen,
+                            icon = if (compact) Icons.Filled.Fullscreen else Icons.Filled.FullscreenExit,
                             label = if (compact) tr("全屏信息流", "Fullscreen feed", "フィードを全画面表示", "전체 화면 피드", "全螢幕資訊流") else tr("返回文件与信息流", "Back to files and feed", "ファイルとフィードに戻る", "파일 및 피드로 돌아가기", "返回檔案與資訊流"),
                             onClick = onToggleFullscreen,
                             size = buttonSize,
                             tooltip = true,
                             showBackground = item.showBackground,
+                            inTopBar = true,
                         )
                     }
 
@@ -281,21 +322,55 @@ internal fun ClipFeedTopBar(
                             tooltip = true,
                             shortcut = "Space",
                             showBackground = item.showBackground,
+                            inTopBar = true,
                         )
                     }
 
                     PlayerControlId.Back -> {
                         if (onDock != null) {
-                            if (!pinInLayout && framelessWindow != null) {
-                                val onTop = framelessWindow.isAlwaysOnTop
-                                ChromeIconButton(
-                                    icon = if (onTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
-                                    label = if (onTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제", "取消置頂") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시", "置頂"),
-                                    onClick = { framelessWindow.setAlwaysOnTop(!onTop) },
-                                    size = buttonSize,
-                                    tooltip = true,
-                                    showBackground = item.showBackground,
-                                )
+                            if (!pinInLayout) {
+                                val effectivePin = windowActions?.onToggleAlwaysOnTop
+                                    ?: framelessWindow?.let { fw -> { fw.setAlwaysOnTop(!fw.isAlwaysOnTop) } }
+                                val onTop = windowActions?.isAlwaysOnTop ?: framelessWindow?.isAlwaysOnTop ?: false
+                                if (effectivePin != null) {
+                                    ChromeIconButton(
+                                        icon = if (onTop) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                                        label = if (onTop) tr("取消置顶", "Unpin", "最前面表示を解除", "고정 해제", "取消置頂") else tr("置顶", "Pin on top", "最前面に表示", "항상 위에 표시", "置頂"),
+                                        onClick = effectivePin,
+                                        size = buttonSize,
+                                        tooltip = true,
+                                        shortcut = "T",
+                                        showBackground = item.showBackground,
+                                        inTopBar = true,
+                                    )
+                                }
+                            }
+                            if (windowActions?.showWindowButtons == true) {
+                                windowActions.onMinimize?.let { onMin ->
+                                    ChromeIconButton(
+                                        icon = Icons.Filled.Remove,
+                                        label = stringResource(Res.string.player_minimize),
+                                        onClick = onMin,
+                                        size = buttonSize,
+                                        iconSize = 20.dp,
+                                        tooltip = true,
+                                        showBackground = item.showBackground,
+                                        inTopBar = true,
+                                    )
+                                }
+                                windowActions.onToggleMaximize?.let { onMax ->
+                                    val restored = windowActions.isMaximized || windowActions.isFullscreen
+                                    ChromeIconButton(
+                                        icon = if (restored) Icons.Filled.FilterNone else Icons.Filled.CropSquare,
+                                        label = stringResource(if (restored) Res.string.player_restore else Res.string.player_maximize),
+                                        onClick = onMax,
+                                        size = buttonSize,
+                                        iconSize = 18.dp,
+                                        tooltip = true,
+                                        showBackground = item.showBackground,
+                                        inTopBar = true,
+                                    )
+                                }
                             }
                             ChromeIconButton(
                                 icon = Icons.Filled.Close,
@@ -305,6 +380,7 @@ internal fun ClipFeedTopBar(
                                 tooltip = true,
                                 minTouchTarget = true,
                                 showBackground = item.showBackground,
+                                inTopBar = true,
                             )
                         } else {
                             if (onPopOut != null) {
@@ -315,9 +391,10 @@ internal fun ClipFeedTopBar(
                                     size = buttonSize,
                                     tooltip = true,
                                     showBackground = item.showBackground,
+                                    inTopBar = true,
                                 )
                             }
-                            if (onClose != null) {
+                            if (onClose != null && !closeAsLeadingBack) {
                                 val label = if (landscapeLocked == true) tr("返回竖屏", "Return to portrait", "縦向きに戻る", "세로 화면으로 돌아가기", "返回直向螢幕") else tr("关闭信息流", "Close feed", "フィードを閉じる", "피드 닫기", "關閉資訊流")
                                 ChromeIconButton(
                                     icon = Icons.Filled.Close,
@@ -327,6 +404,7 @@ internal fun ClipFeedTopBar(
                                     tooltip = true,
                                     minTouchTarget = true,
                                     showBackground = item.showBackground,
+                                    inTopBar = true,
                                 )
                             }
                         }
@@ -620,6 +698,7 @@ private fun ChromeIconButton(
     shortcut: String? = null,
     minTouchTarget: Boolean = false,
     showBackground: Boolean = true,
+    inTopBar: Boolean = false,
 ) {
     if (tooltip) {
         TooltipBox(
@@ -627,7 +706,18 @@ private fun ChromeIconButton(
             tooltip = { PlainTooltip { Text(if (shortcut != null) "$label ($shortcut)" else label) } },
             state = rememberTooltipState(),
         ) {
-            ChromeIconButton(icon, label, onClick, size, iconSize, tint, selected = selected, minTouchTarget = minTouchTarget, showBackground = showBackground)
+            ChromeIconButton(
+                icon,
+                label,
+                onClick,
+                size,
+                iconSize,
+                tint,
+                selected = selected,
+                minTouchTarget = minTouchTarget,
+                showBackground = showBackground,
+                inTopBar = inTopBar,
+            )
         }
         return
     }
@@ -642,7 +732,10 @@ private fun ChromeIconButton(
         shapes = IconButtonDefaults.shapes(),
         colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = containerColor, contentColor = contentColor),
         // 占位放大到最小触控尺寸、画的仍是 size，触控范围随占位放大
-        modifier = (if (minTouchTarget) Modifier.minimumInteractiveComponentSize() else Modifier).size(size).handCursor(),
+        modifier = (if (minTouchTarget) Modifier.minimumInteractiveComponentSize() else Modifier)
+            .size(size)
+            .then(if (inTopBar) Modifier.captionExclusion() else Modifier)
+            .handCursor(),
     ) {
         if (tint == Color.Unspecified) {
             Icon(icon, contentDescription = label, modifier = Modifier.size(iconSize))

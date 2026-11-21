@@ -1,6 +1,8 @@
 package dev.piko.ui
 
 import dev.piko.data.repository.isHtmlDocument
+import dev.piko.data.repository.isPlayableVideo
+import dev.piko.data.repository.isPreviewableImage
 
 import androidx.compose.animation.core.animateDp
 import androidx.compose.animation.core.animateDpAsState
@@ -45,6 +47,7 @@ import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -57,6 +60,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
@@ -162,6 +166,16 @@ class VideoPlayerRequest(
     val startMillis: Long? = null,
 )
 
+/** 一次看图请求。[images] 是同上下文可连续翻看的图片，桌面端在独立看图窗口中展示。 */
+@Immutable
+class ImageViewerRequest(
+    val images: List<FileStat>,
+    val initialIndex: Int = 0,
+    val onLocate: ((FileStat) -> Unit)? = null,
+)
+
+val LocalDetachedImageViewer = staticCompositionLocalOf<((ImageViewerRequest) -> Unit)?> { null }
+
 /**
  * 播放器宿主策略：Android 在应用内压栈全屏页，桌面端开独立窗口。
  */
@@ -176,6 +190,7 @@ sealed interface VideoPlayerHost {
         val isClipFeedOpen: () -> Boolean,
         val closeClipFeed: () -> Unit,
         val hasActivePlayer: () -> Boolean = { false },
+        val openImage: ((ImageViewerRequest) -> Unit)? = null,
     ) : VideoPlayerHost
 }
 
@@ -310,7 +325,9 @@ fun PikoMainScaffold(
         return true
     }
     fun openProfilePane(screen: Screen) {
-        while (backStack.size > 1 && backStack.lastOrNull() in SettingsSubpages) backStack.removeLastOrNull()
+        while (backStack.size > 1 && (backStack.lastOrNull() in SettingsSubpages || isReaderScreen(backStack.lastOrNull()))) {
+            backStack.removeLastOrNull()
+        }
         val top = backStack.lastOrNull()
         if (top == screen) {
             if (screen is Screen.SpaceMap) spaceMapResetRequests++
@@ -364,12 +381,34 @@ fun PikoMainScaffold(
             it.fileId == file.id && it.status == DownloadStatus.COMPLETED && !it.isSegment
         }
         val localPath = localTask?.destinationPath?.takeIf(localFiles::exists)
+        if (videoPlayer is VideoPlayerHost.Detached && videoPlayer.openImage != null &&
+            file.isPreviewableImage() && !file.isPlayableVideo()
+        ) {
+            val imageFile = if (localPath != null && file.params["local_path"].isNullOrBlank()) {
+                file.copy(params = file.params + ("local_path" to localPath))
+            } else file
+            val imagePeers = playlist.filter { it.isPreviewableImage() && !it.isPlayableVideo() }.ifEmpty { listOf(imageFile) }
+            val startIndex = imagePeers.indexOfFirst { it.id == imageFile.id }.coerceAtLeast(0)
+            videoPlayer.openImage.invoke(ImageViewerRequest(images = imagePeers, initialIndex = startIndex))
+            return
+        }
         when (videoPlayer) {
             is VideoPlayerHost.InApp -> backStack.add(Screen.VideoPlayer(file.id, file.name, localPath, startMillis))
             is VideoPlayerHost.Detached -> videoPlayer.open(VideoPlayerRequest(file.id, file.name, localPath, playlist, startMillis))
         }
     }
     fun playLocal(fileId: String, fileName: String, localPath: String?) {
+        val candidate = FileStat(
+            id = fileId,
+            name = fileName,
+            params = if (!localPath.isNullOrBlank()) mapOf("local_path" to localPath) else emptyMap(),
+        )
+        if (videoPlayer is VideoPlayerHost.Detached && videoPlayer.openImage != null &&
+            candidate.isPreviewableImage() && !candidate.isPlayableVideo()
+        ) {
+            videoPlayer.openImage.invoke(ImageViewerRequest(images = listOf(candidate), initialIndex = 0))
+            return
+        }
         when (videoPlayer) {
             is VideoPlayerHost.InApp -> backStack.add(Screen.VideoPlayer(fileId, fileName, localPath))
             is VideoPlayerHost.Detached -> videoPlayer.open(VideoPlayerRequest(fileId, fileName, localPath))
@@ -486,7 +525,7 @@ fun PikoMainScaffold(
     val panelPrefs = loadedPanelPrefs ?: SidePanelPrefs(open = false, widthDp = null)
 
     val contentWidth = with(density) { contentSize.width.toDp() }.takeIf { contentSize != IntSize.Zero }
-    val sidebarMode = sidebarWindow && (onHome || isProfilePane(topScreen) || topScreen in SettingsSubpages)
+    val sidebarMode = sidebarWindow && (onHome || isProfilePane(topScreen) || topScreen in SettingsSubpages || isReaderScreen(topScreen))
     val sidebarPushes = windowWidth >= SidebarPushMinWindowWidth
     val inlineCollapsed = inlineSidebarIsCollapsed(windowWidth.value, sidebarCollapsed)
     val animatedSidebarWidth by animateDpAsState(
@@ -803,10 +842,11 @@ fun PikoMainScaffold(
     )
 
     val paneBack: (() -> Unit)? = if (sidebarWindow) null else ::popBack
+    val activePaneScreen = if (isReaderScreen(topScreen)) backStack.dropLast(1).lastOrNull() as? Screen else topScreen
     val selectedPane = when {
-        topScreen in SettingsSubpages -> Screen.Settings
-        topScreen is Screen.SpaceMap -> Screen.SpaceMap()
-        isProfilePane(topScreen) -> topScreen
+        activePaneScreen in SettingsSubpages -> Screen.Settings
+        activePaneScreen is Screen.SpaceMap -> Screen.SpaceMap()
+        isProfilePane(activePaneScreen) -> activePaneScreen
         else -> null
     }
 
@@ -847,6 +887,7 @@ fun PikoMainScaffold(
         LocalWorkspaceContexts provides workspaceModel,
         LocalWorkspaceSnapshotEnabled provides !workspaceModel.ongoingWorkShown,
         LocalShowOngoingWork provides if (desktop || !workspaceSurface) null else ({ workspaceModel.ongoingWorkShown = true }),
+        LocalDetachedImageViewer provides detachedHost?.openImage,
     ) {
         Box(
             modifier = modifier
@@ -1188,6 +1229,7 @@ fun PikoMainScaffold(
             }
 
             BackHandler(enabled = drawerOpen) { drawerOpen = false }
+            dev.piko.ui.platform.ModalCaptionBlocker(enabled = floatingDrawerTarget)
             val floatingSidebar = updateTransition(targetState = floatingDrawerTarget, label = "floatingSidebar")
             if (floatingSidebar.currentState || floatingSidebar.targetState) {
                 val motionScheme = MaterialTheme.motionScheme
@@ -1335,3 +1377,4 @@ private val DesktopTopLevelContentKeys = DesktopTopLevelScreens.mapTo(mutableSet
 private fun isDesktopTopLevelContentKey(key: Any?): Boolean =
     key in DesktopTopLevelContentKeys || key?.toString()?.startsWith("SpaceMap(") == true
 private val SettingsSubpages = setOf<NavKey?>(Screen.WebDav, Screen.PlayerCustomization, Screen.DriveAppearanceCustomization)
+private fun isReaderScreen(key: NavKey?): Boolean = key is Screen.DocumentReader || key is Screen.HtmlViewer

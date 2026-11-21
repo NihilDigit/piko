@@ -142,10 +142,13 @@ fun CommandPalette(items: List<PaletteItem>, onDismiss: () -> Unit) {
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        dev.piko.ui.platform.ModalCaptionBlocker()
+        val topInset = dev.piko.ui.platform.LocalDesktopTitleBarInset.current
+        androidx.compose.runtime.CompositionLocalProvider(dev.piko.ui.platform.LocalWindowCaption provides null) {
         // 在对话框自己的组合里要焦点：放在外面时对话框的内容还没挂上，输入框接不到键盘
         LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
         // 贴着窗口上部，不居中：结果变多变少时输入框不跟着上下跳
-        Box(Modifier.fillMaxSize().clickable(interactionSource = null, indication = null, onClick = onDismiss)) {
+        Box(Modifier.fillMaxSize().padding(top = topInset).clickable(interactionSource = null, indication = null, onClick = onDismiss)) {
             Surface(
                 shape = MaterialTheme.shapes.extraLarge,
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -232,6 +235,7 @@ fun CommandPalette(items: List<PaletteItem>, onDismiss: () -> Unit) {
                     }
                 }
             }
+        }
         }
     }
 }

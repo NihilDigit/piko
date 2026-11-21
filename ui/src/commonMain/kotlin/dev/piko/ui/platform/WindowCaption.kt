@@ -14,6 +14,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -39,11 +40,28 @@ interface WindowCaption {
     @Composable
     fun Buttons()
 
+    /** 带显式前景色覆写的三个窗口按钮（供深色媒体顶栏在浅色主题下保持浅色字形）。 */
+    @Composable
+    fun Buttons(tint: Color) = Buttons()
+
     /** 登记一块能拖动窗口的区域（窗口坐标），[bounds] 为 null 时撤掉。同一个 [key] 后登记的替换先登记的。 */
     fun setDragArea(key: Any, bounds: Rect?)
+
+    /** 登记一块交互控件排除区（窗口坐标）：命中此处一律答 HTCLIENT，不被重叠拖动区吞噬。 */
+    fun setExclusion(key: Any, bounds: Rect?) = Unit
+
+    /** 模态弹层（对话框、侧边面板、弹出菜单、遮罩）打开期间挂起底层拖动区与窗口按钮命中。 */
+    @Composable
+    fun ModalBlocker() = Unit
 }
 
 val LocalWindowCaption = compositionLocalOf<WindowCaption?> { null }
+
+/**
+ * 窗口顶部独立标题栏占用的高度（Windows 非紧凑标题栏或 macOS 标题栏可见时为 32.dp，否则为 0.dp）。
+ * 根场景级全窗口弹层（如 FullscreenDialog、ModalSideSheet、CommandPalette）据此避让外层标题栏与系统红绿灯。
+ */
+val LocalDesktopTitleBarInset = compositionLocalOf { 0.dp }
 
 /**
  * 正拖着窗口边框改尺寸。这期间按尺寸换形态的判断停在拖动前，松手再换，由桌面端提供（Windows 的 WindowFrame）。
@@ -73,7 +91,7 @@ class CaptionSlot(
  * 页眉那一行仍算贴着顶，窗口按钮画在它末尾（见 PikoScaffold 的 IslandScaffold）。
  */
 @Composable
-fun rememberCaptionSlot(topInset: Dp = 0.dp): CaptionSlot {
+fun rememberCaptionSlot(topInset: Dp = 0.dp, tint: Color = Color.Unspecified): CaptionSlot {
     val caption = LocalWindowCaption.current ?: return NoCaptionSlot
     val liveWindow = LocalLiveWindowInfo.current ?: LocalWindowInfo.current
     val insetPx = with(LocalDensity.current) { topInset.toPx() }
@@ -93,7 +111,7 @@ fun rememberCaptionSlot(topInset: Dp = 0.dp): CaptionSlot {
                 // 高度写死与按钮同高，不用 fillMaxHeight：侧栏栏名那一行在竖排的列里没有定高，填满高度会把它撑成整列高，
                 // 栏里的内容被挤没（实测）
                 Spacer(Modifier.width(CaptionDragGap).height(CaptionDragHeight).windowDragArea())
-                caption.Buttons()
+                if (tint != Color.Unspecified) caption.Buttons(tint) else caption.Buttons()
             }
         } else {
             null

@@ -218,19 +218,16 @@ internal fun DriveDialogHost(
             )
         }
         is DriveDialog.ImagePreview -> {
-            val previewables = remember(displayedFiles) {
-                displayedFiles.filter { it.isPreviewableImage() && it.previewImageCoverUrl().isNotBlank() }
+            val previewables = remember(displayedFiles, dialog.initialFile) {
+                val peers = displayedFiles.filter { it.isPreviewableImage() && it.previewImageCoverUrl().isNotBlank() }
+                if (peers.any { it.id == dialog.initialFile.id }) peers else listOf(dialog.initialFile)
             }
-            val startIndex = previewables.indexOfFirst { it.id == dialog.initialFile.id }
-            if (startIndex < 0) {
-                onDismiss()
-            } else {
-                ImageViewer(
-                    images = previewables,
-                    initialIndex = startIndex,
-                    onDismiss = onDismiss,
-                )
-            }
+            val startIndex = previewables.indexOfFirst { it.id == dialog.initialFile.id }.coerceAtLeast(0)
+            ImageViewer(
+                images = previewables,
+                initialIndex = startIndex,
+                onDismiss = onDismiss,
+            )
         }
         is DriveDialog.FolderStructure -> {
             FolderStructureDialog(

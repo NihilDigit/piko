@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.ui.Alignment
+import dev.piko.ui.platform.captionExclusion
 import dev.piko.ui.platform.windowDragArea
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.add
@@ -156,16 +157,23 @@ private fun PikoTopBarContent(
                 fillMiddle = true,
                 alwaysMore = moreActions.isNotEmpty(),
                 moreActions = moreActions,
-                end = { androidx.compose.foundation.layout.Row { persistentActions?.invoke(); caption.buttons?.invoke() } },
+                end = {
+                    androidx.compose.foundation.layout.Row {
+                        if (persistentActions != null) {
+                            Box(Modifier.captionExclusion(enabled = caption.atTop)) { persistentActions() }
+                        }
+                        caption.buttons?.invoke()
+                    }
+                },
                 dragWindow = caption.atTop,
             )
         },
         modifier = modifier.then(caption.modifier),
         navigationIcon = {
             if (navigationIcon != null) {
-                navigationIcon()
+                Box(Modifier.captionExclusion(enabled = caption.atTop)) { navigationIcon() }
             } else if (onBackClick != null) {
-                IconButton(onClick = onBackClick) {
+                IconButton(onClick = onBackClick, modifier = Modifier.captionExclusion(enabled = caption.atTop)) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                         contentDescription = tr("返回", "Back", "戻る", "뒤로", "返回"),

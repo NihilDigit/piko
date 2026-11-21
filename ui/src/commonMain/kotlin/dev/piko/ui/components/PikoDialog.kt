@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import dev.piko.ui.adaptive.isDesktopLayout
+import dev.piko.ui.platform.ModalCaptionBlocker
 import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.isEInk
 
@@ -39,6 +40,7 @@ fun PikoDialog(
     val shapes = MaterialTheme.shapes
     val dialogShape = if (isDesktopLayout()) shapes.largeIncreased else shapes.extraLarge
     val isEInk = LocalAppearance.current.isEInk
+    ModalCaptionBlocker()
     AlertDialog(
         onDismissRequest = onDismissRequest,
         confirmButton = confirmButton,

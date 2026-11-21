@@ -220,6 +220,7 @@ private fun ActionMenu(actions: List<SheetAction>, positionProvider: DropdownMen
         onDismissRequest = onDismiss,
         popupPositionProvider = positionProvider,
     ) {
+        dev.piko.ui.platform.ModalCaptionBlocker()
         // 弹层是另一层，有自己的焦点。要在这里面取：在外面取到的是窗口主层的，方向键会去挪列表里的焦点
         val focusManager = LocalFocusManager.current
         LaunchedEffect(Unit) { runCatching { firstItem.requestFocus() } }

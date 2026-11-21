@@ -105,11 +105,15 @@ internal class WindowsCaption(private val window: Window) {
     enum class Button { MINIMIZE, MAXIMIZE, CLOSE }
 
     /**
-     * 拖动区与按钮在 Compose 根坐标系里的位置，单位为像素，即 Skiko 画布的客户区坐标。拖动区是一组矩形：
-     * 有单独的标题栏时只有它一块；标题栏并进内容时是内容里的几块空白（见 WindowCaption），整行都答
-     * HTCAPTION 的话行里的控件就点不到了。
+     * 拖动区、交互排除区与按钮在 Compose 根坐标系里的位置，单位为像素，即 Skiko 画布的客户区坐标。
+     * 拖动区是一组矩形：有单独的标题栏时只有它一块；标题栏并进内容时是内容里的几块空白（见 WindowCaption）。
+     * 交互控件登记进 [exclusions] 后优先返回 HTCLIENT，绝不被重叠拖动区吞噬。
      */
-    private class Layout(val dragAreas: List<Rect>, val buttons: Map<Button, Rect>)
+    private class Layout(
+        val dragAreas: List<Rect>,
+        val buttons: Map<Button, Rect>,
+        val exclusions: List<Rect>,
+    )
 
     @Volatile
     private var layout: Layout? = null
@@ -196,9 +200,13 @@ internal class WindowsCaption(private val window: Window) {
         }
     }
 
-    /** 拖动区或按钮的位置变化时由界面调用。 */
-    fun updateLayout(dragAreas: List<Rect>, buttons: Map<Button, Rect>) {
-        layout = Layout(dragAreas, buttons)
+    /** 拖动区、交互排除区或按钮的位置变化时由界面调用。 */
+    fun updateLayout(
+        dragAreas: List<Rect>,
+        buttons: Map<Button, Rect>,
+        exclusions: List<Rect> = emptyList(),
+    ) {
+        layout = Layout(dragAreas, buttons, exclusions)
     }
 
     /** 不显示标题栏时（如播放器全屏）整个窗口都是客户区。 */
@@ -358,6 +366,15 @@ internal class WindowsCaption(private val window: Window) {
 
         toClient(if (canvas != MemorySegment.NULL) canvas else frame, screenX, screenY)
         val position = Offset(point.get(JAVA_INT, 0).toFloat(), point.get(JAVA_INT, 4).toFloat())
+        return hitTestClientPosition(current, position)
+    }
+
+    internal fun hitTestClientPositionForTest(position: Offset): Int {
+        val current = layout ?: return HTCLIENT
+        return hitTestClientPosition(current, position)
+    }
+
+    private fun hitTestClientPosition(current: Layout, position: Offset): Int {
         for ((button, bounds) in current.buttons) {
             if (bounds.contains(position)) {
                 return when (button) {
@@ -367,6 +384,7 @@ internal class WindowsCaption(private val window: Window) {
                 }
             }
         }
+        if (current.exclusions.any { it.contains(position) }) return HTCLIENT
         return if (current.dragAreas.any { it.contains(position) }) HTCAPTION else HTCLIENT
     }
 

@@ -100,6 +100,7 @@ import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.fileDropTarget
 import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.verticalWheelScrollsRow
+import dev.piko.ui.platform.captionExclusion
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.platform.windowDragArea
 import kotlin.math.roundToInt
@@ -210,7 +211,7 @@ internal fun DriveTabBar(
             tabsContent = {
                 // 标签贴着这一行的下沿，活动的那个与下面的页眉连成一片
                 Row(
-                    modifier = Modifier.fillMaxHeight().onSizeChanged { viewportWidth = it.width.toFloat() }
+                    modifier = Modifier.fillMaxHeight().captionExclusion(enabled = caption.atTop).onSizeChanged { viewportWidth = it.width.toFloat() }
                         .verticalWheelScrollsRow(scroll).horizontalScroll(scroll).selectableGroup(),
                     verticalAlignment = Alignment.Bottom,
                 ) {
@@ -259,7 +260,7 @@ internal fun DriveTabBar(
                 var overflowMenuOpen by remember { mutableStateOf(false) }
                 // 标签高度为 36dp 且贴着 44dp 标签栏下沿；操作按钮行同样取 36dp 并贴底摆放，使「+」「⌄」「×」与标签文字严格处于同一水平中线
                 Row(
-                    modifier = Modifier.height(TabActionBandHeight).padding(start = 2.dp),
+                    modifier = Modifier.height(TabActionBandHeight).padding(start = 2.dp).captionExclusion(enabled = caption.atTop),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                 ) {

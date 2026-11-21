@@ -103,6 +103,7 @@ import dev.piko.ui.components.AdaptiveBar
 import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.platform.captionExclusion
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.platform.windowDragArea
 
@@ -155,7 +156,7 @@ internal fun DriveSearchTopBar(
         // 窄窗口的桌面端：点到列表即让出焦点，方向键回到列表上；搜索栏与搜索词留着
         modifier = Modifier.releasesFocusOnOutsidePress().then(caption.modifier),
         navigationIcon = {
-            IconButton(onClick = onClose) {
+            IconButton(onClick = onClose, modifier = Modifier.captionExclusion(enabled = caption.atTop)) {
                 Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = tr("关闭搜索", "Close search", "検索を閉じる", "검색 닫기", "關閉搜尋"))
             }
         },
@@ -210,7 +211,10 @@ internal fun DriveSearchTopBar(
             }
             // 右端一直有个取消：有字时清掉搜索词，没字时收起搜索。只在有字时才出现的话，刚点开搜索时右边空着，
             // 要找退路得回到左上角的返回，拇指够不着
-            IconButton(onClick = { if (query.isNotEmpty()) onQueryChange("") else onClose() }) {
+            IconButton(
+                onClick = { if (query.isNotEmpty()) onQueryChange("") else onClose() },
+                modifier = Modifier.captionExclusion(enabled = caption.atTop),
+            ) {
                 Icon(Icons.Outlined.Close, contentDescription = if (query.isNotEmpty()) tr("清除搜索词", "Clear search", "検索語を消去", "검색어 지우기", "清除搜尋詞") else tr("关闭搜索", "Close search", "検索を閉じる", "검색 닫기", "關閉搜尋"))
             }
             dev.piko.ui.workbench.WorkspaceControls(compact = true)
@@ -269,7 +273,11 @@ internal fun DriveBrowseTopBar(
                 dragWindow = caption.atTop,
             )
         },
-        navigationIcon = { navigationIcon?.invoke() },
+        navigationIcon = {
+            if (navigationIcon != null) {
+                Box(Modifier.captionExclusion(enabled = caption.atTop)) { navigationIcon() }
+            }
+        },
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = MaterialTheme.colorScheme.surface,
             scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,

@@ -39,6 +39,7 @@ import dev.piko.ui.components.rememberLoadingVisible
  */
 @Composable
 fun LocatingOverlay(onCancel: () -> Unit) {
+    dev.piko.ui.platform.ModalCaptionBlocker()
     val focus = remember { FocusRequester() }
     // 焦点拿过来，按键才落在这一层被吞掉，而不是落到底下的列表上
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }

@@ -107,7 +107,9 @@ import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.navigation.MainTab
 import dev.piko.ui.navigation.Screen
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.platform.LocalWindowCaption
 import dev.piko.ui.platform.ShortcutModifier
+import dev.piko.ui.platform.captionExclusion
 import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.resources.Res
 import dev.piko.ui.resources.common_cancel
@@ -307,27 +309,32 @@ internal fun MainHomeContent(
             else -> NavigationSuiteType.ShortNavigationBarCompact
         }
 
-        NavigationSuiteScaffold(
-            containerColor = if (sidebarMode) MaterialTheme.colorScheme.frame else MaterialTheme.colorScheme.background,
-            navigationItems = {
-                val activeTransferCount = if (sidebarMode) 0 else rememberActiveTransferCount()
-                MainTab.entries.forEach { tab ->
-                    val selected = currentTab == tab
-                    val badgeCount = activeTransferCount.takeIf { tab == MainTab.TRANSFERS && !selected && it > 0 }
-                    NavigationSuiteItem(
-                        selected = selected,
-                        onClick = { onTabClick(tab) },
-                        navigationSuiteType = navigationSuiteType,
-                        icon = { Icon(imageVector = tab.icon(selected), contentDescription = null) },
-                        label = { Text(tab.title, fontWeight = if (selected) FontWeight.Bold else null) },
-                        badge = badgeCount?.let { count -> { Badge { Text(if (count > 99) "99+" else "$count") } } },
-                    )
-                }
-            },
-            navigationSuiteType = navigationSuiteType,
-            navigationItemVerticalArrangement = Arrangement.Center,
-            content = mainContent,
-        )
+        // 全屏信息流盖在文件工作区之上时撤掉底下标签栏/地址栏的标题栏登记，改由信息流顶栏单独接管
+        CompositionLocalProvider(
+            LocalWindowCaption provides if (feedFullScreen) null else LocalWindowCaption.current,
+        ) {
+            NavigationSuiteScaffold(
+                containerColor = if (sidebarMode) MaterialTheme.colorScheme.frame else MaterialTheme.colorScheme.background,
+                navigationItems = {
+                    val activeTransferCount = if (sidebarMode) 0 else rememberActiveTransferCount()
+                    MainTab.entries.forEach { tab ->
+                        val selected = currentTab == tab
+                        val badgeCount = activeTransferCount.takeIf { tab == MainTab.TRANSFERS && !selected && it > 0 }
+                        NavigationSuiteItem(
+                            selected = selected,
+                            onClick = { onTabClick(tab) },
+                            navigationSuiteType = navigationSuiteType,
+                            icon = { Icon(imageVector = tab.icon(selected), contentDescription = null) },
+                            label = { Text(tab.title, fontWeight = if (selected) FontWeight.Bold else null) },
+                            badge = badgeCount?.let { count -> { Badge { Text(if (count > 99) "99+" else "$count") } } },
+                        )
+                    }
+                },
+                navigationSuiteType = navigationSuiteType,
+                navigationItemVerticalArrangement = Arrangement.Center,
+                content = mainContent,
+            )
+        }
 
         BackHandler(enabled = feedFullScreen, onBack = onRequestCloseFeed)
         AnimatedVisibility(
@@ -642,7 +649,7 @@ private fun MainSidebar(
                         label = if (collapsed) tr("展开侧边栏", "Expand sidebar", "サイドバーを展開", "사이드바 펼치기", "展開側邊欄") else tr("收起侧边栏", "Collapse sidebar", "サイドバーを折りたたむ", "사이드바 접기", "收合側邊欄"),
                         onClick = onToggleCollapsed,
                         shortcut = LocalPikoPlatform.current.shortcutModifier.label("B"),
-                        modifier = if (collapsed) Modifier else Modifier.padding(end = 8.dp),
+                        modifier = (if (collapsed) Modifier else Modifier.padding(end = 8.dp)).captionExclusion(),
                     )
                 }
             }

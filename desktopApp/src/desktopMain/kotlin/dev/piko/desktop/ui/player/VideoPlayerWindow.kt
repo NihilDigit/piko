@@ -251,6 +251,7 @@ fun VideoPlayerWindow(
                     // 全局快捷键弹窗打开时同样收起无边框拖动区，避免 Win32 HTCAPTION 拦截弹窗顶部点击
                     showTitleBar = !inFullscreen && !isMacOs && !shortcutsOpen,
                     onCloseInContent = requestClose,
+                    immersiveFullscreen = inFullscreen,
                 ) {
                     val toggleFullscreen = {
                         if (usesSystemFullscreen) {
@@ -609,6 +610,8 @@ private fun VideoPlayerContent(
                 volumeControl = volume,
                 windowActions = { ListenWindowChromeButtons(windowActions) },
                 onSwitchToVideo = if (!state.isAudioFile) ({ listenMode = false }) else null,
+                topChromePadding = windowActions.topChromePadding,
+                showBackButton = false,
                 registerKeyFallback = registerKeyFallback,
                 modifier = Modifier.fillMaxSize(),
             )

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.OpenInBrowser
 import androidx.compose.material.icons.outlined.Refresh
@@ -36,11 +37,18 @@ import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.proxy.DocumentProxyHandle
 import dev.piko.shared.media.proxy.DriveHtmlDocumentResolver
 import dev.piko.shared.media.proxy.HtmlDocumentProxySessions
+import dev.piko.shared.i18n.tr
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.components.AdaptiveBar
+import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.FullScreenLoading
+import dev.piko.ui.components.IslandPage
+import dev.piko.ui.components.IslandTitle
 import dev.piko.ui.components.PikoScaffold
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.PinnedPriority
 import dev.piko.ui.components.SheetAction
+import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.iconBarItem
 import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.platform.LocalPikoPlatform
@@ -197,18 +205,44 @@ fun HtmlViewerScreen(
         ),
     )
 
+    val resolvedTitle = pageTitle?.takeIf { it.isNotBlank() } ?: fileName
+    val handleBack = {
+        if (canGoBack) {
+            goBackEvents.tryEmit(Unit)
+        } else {
+            onBackClick()
+        }
+    }
+
     PikoScaffold(
         modifier = modifier.fillMaxSize(),
+        island = IslandPage(
+            header = {
+                AdaptiveBar(
+                    modifier = Modifier.weight(1f),
+                    leading = listOf(
+                        BarItem("back", PinnedPriority) {
+                            TooltipIconButton(
+                                icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                                label = tr("返回", "Back", "戻る", "뒤로", "返回"),
+                                onClick = { handleBack() },
+                            )
+                        },
+                    ),
+                    middle = { IslandTitle(resolvedTitle) },
+                    middleMinWidth = 112.dp,
+                    reserveMiddle = true,
+                    trailing = topActions,
+                    moreActions = moreActions,
+                    gap = 4.dp,
+                    dragWindow = true,
+                )
+            },
+        ),
         topBar = {
             PikoTopBar(
-                title = pageTitle?.takeIf { it.isNotBlank() } ?: fileName,
-                onBackClick = {
-                    if (canGoBack) {
-                        goBackEvents.tryEmit(Unit)
-                    } else {
-                        onBackClick()
-                    }
-                },
+                title = resolvedTitle,
+                onBackClick = { handleBack() },
                 actions = topActions,
                 moreActions = moreActions,
             )

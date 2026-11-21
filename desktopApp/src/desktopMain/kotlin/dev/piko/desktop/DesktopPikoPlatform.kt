@@ -8,6 +8,7 @@ import dev.piko.ui.platform.LaunchAtStartup
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material3.ColorScheme
@@ -488,9 +489,16 @@ class DesktopPikoPlatform(
         systemBarsVisible: Boolean,
         content: @Composable () -> Unit,
     ) {
-        // 窗口内的一层，Esc 由 dismissOnBackPress 关闭
+        val topInset = dev.piko.ui.platform.LocalDesktopTitleBarInset.current
+        // 窗口内的一层，Esc 由 dismissOnBackPress 关闭；组合期间挂起底层紧凑标题栏拖动区与按钮命中，
+        // 并在外层存在独立标题栏（Windows 非紧凑态或 macOS 红绿灯栏）时让出顶部高度。
         Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Box(Modifier.fillMaxSize()) { content() }
+            dev.piko.ui.platform.ModalCaptionBlocker()
+            androidx.compose.runtime.CompositionLocalProvider(dev.piko.ui.platform.LocalWindowCaption provides null) {
+                Box(Modifier.fillMaxSize().padding(top = topInset)) {
+                    content()
+                }
+            }
         }
     }
 

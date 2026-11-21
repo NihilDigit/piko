@@ -103,8 +103,20 @@ fun ShortcutsDialog(modifier: ShortcutModifier, onDismiss: () -> Unit) {
             "R" to tr("画面顺时针旋转 90 度", "Rotate video 90° clockwise", "映像を右に90度回転", "화면을 시계 방향으로 90도 회전", "畫面順時針旋轉 90 度"),
             "I" to tr("详细信息", "Playback details", "詳細情報", "세부 정보", "詳細資訊"),
             "T" to tr("置顶或取消置顶（独立播放窗口）", "Pin or unpin window on top (player window)", "最前面表示の切り替え（独立プレーヤーウィンドウ）", "창 항상 위에 표시 전환 (독립 플레이어 창)", "置頂或取消置頂（獨立播放視窗）"),
-            "Esc" to tr("关闭面板、取消裁剪或退出全屏", "Close panel, cancel crop or exit fullscreen", "パネルを閉じる・切り抜き解除・全画面終了", "패널 닫기, 자르기 취소 또는 전체 화면 종료", "關閉面板、取消裁剪或結束全螢幕"),
+            "Esc" to tr("关闭面板、取消裁剪或退出全屏", "Close panel, cancel crop or exit fullscreen", "パネルを閉じる、切り抜き解除、または全画面終了", "패널 닫기, 자르기 취소 또는 전체 화면 종료", "關閉面板、取消裁剪或結束全螢幕"),
             "${primary}W" to tr("关闭独立播放窗口", "Close player window", "プレーヤーウィンドウを閉じる", "플레이어 창 닫기", "關閉獨立播放視窗"),
+        ),
+        tr("看图", "Image viewer", "画像ビューアー", "이미지 뷰어", "看圖") to listOf(
+            tr("← / →、PageUp / PageDown 或空格", "← / →, PageUp / PageDown or Space", "← / →、PageUp / PageDown またはスペース", "← / →, PageUp / PageDown 또는 스페이스", "← / →、PageUp / PageDown 或空白鍵") to tr("上一张、下一张图片", "Previous or next image", "前または次の画像", "이전 또는 다음 이미지", "上一張、下一張圖片"),
+            "Home / End" to tr("第一张、最后一张图片", "First or last image", "最初または最後の画像", "첫 번째 또는 마지막 이미지", "第一張、最後一張圖片"),
+            tr("+ / - 或滚轮", "+ / - or mouse wheel", "+ / - またはホイール", "+ / - 또는 마우스 휠", "+ / - 或滾輪") to tr("放大、缩小", "Zoom in or out", "拡大、縮小", "확대 또는 축소", "放大、縮小"),
+            "0" to tr("重置缩放与位置", "Reset zoom and pan", "ズームと位置をリセット", "배율 및 위치 재설정", "重設縮放與位置"),
+            "R" to tr("顺时针旋转 90 度", "Rotate 90° clockwise", "右に90度回転", "시계 방향으로 90도 회전", "順時針旋轉 90 度"),
+            "${primary}S" to tr("下载当前图片", "Download current image", "現在の画像をダウンロード", "현재 이미지 다운로드", "下載目前圖片"),
+            "I" to tr("属性", "Properties", "プロパティ", "속성", "屬性"),
+            tr("F 或 F11", "F or F11", "F または F11", "F 또는 F11", "F 或 F11") to tr("全屏（独立看图窗口）", "Fullscreen (image viewer window)", "全画面（画像ビューアーウィンドウ）", "전체 화면 (이미지 뷰어 창)", "全螢幕（獨立看圖視窗）"),
+            "T" to tr("置顶或取消置顶（独立看图窗口）", "Pin or unpin window on top (image viewer window)", "最前面表示の切り替え（画像ビューアーウィンドウ）", "창 항상 위에 표시 전환 (이미지 뷰어 창)", "置頂或取消置頂（獨立看圖視窗）"),
+            tr("Esc 或 ${primary}W", "Esc or ${primary}W", "Esc または ${primary}W", "Esc 또는 ${primary}W", "Esc 或 ${primary}W") to tr("退出全屏或关闭独立看图窗口", "Exit fullscreen or close image viewer window", "全画面終了または画像ビューアーを閉じる", "전체 화면 종료 또는 이미지 뷰어 창 닫기", "結束全螢幕或關閉獨立看圖視窗"),
         ),
     )
     PikoDialog(

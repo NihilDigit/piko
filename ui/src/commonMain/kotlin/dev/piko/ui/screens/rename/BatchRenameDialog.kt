@@ -177,16 +177,22 @@ internal val LocalRenameRowColor = staticCompositionLocalOf { Color.Unspecified 
 @Composable
 internal fun RenameDialogSurface(onDismiss: () -> Unit, maxWidth: Int, heightFraction: Float = 0.88f, content: @Composable () -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        dev.piko.ui.platform.ModalCaptionBlocker()
+        val topInset = dev.piko.ui.platform.LocalDesktopTitleBarInset.current
         Surface(
             // 高度写死比例，不随内容变：Android 的对话框按内容定高，预览行数一变整个对话框就跳
             modifier = Modifier
+                .padding(top = topInset)
                 .widthIn(max = maxWidth.dp)
                 .fillMaxWidth(0.92f)
                 .fillMaxHeight(heightFraction),
             shape = MaterialTheme.shapes.extraLarge,
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
         ) {
-            CompositionLocalProvider(LocalRenameRowColor provides MaterialTheme.colorScheme.surfaceContainerHighest) {
+            CompositionLocalProvider(
+                LocalRenameRowColor provides MaterialTheme.colorScheme.surfaceContainerHighest,
+                dev.piko.ui.platform.LocalWindowCaption provides null,
+            ) {
                 content()
             }
         }

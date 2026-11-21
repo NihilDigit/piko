@@ -628,7 +628,43 @@ fun DriveScreen(
         onRequestRestoreVaultFolder = viewModel::requestRestoreVault,
         onRestoreVaultItems = viewModel::restoreVaultItems,
         onRequestLibraryConfirm = viewModel::requestLibraryConfirm,
-        onRequestImagePreview = viewModel::requestImagePreview,
+        onRequestImagePreview = run {
+            val detachedImageViewer = dev.piko.ui.LocalDetachedImageViewer.current
+            if (detachedImageViewer != null) {
+                { file ->
+                    val peers = displayedFiles.filter { it.isPreviewableImage() && it.previewImageCoverUrl().isNotBlank() }
+                    val images = if (peers.any { it.id == file.id }) peers else listOf(file)
+                    val startIndex = images.indexOfFirst { it.id == file.id }.coerceAtLeast(0)
+                    val locateCallback: ((FileStat) -> Unit)? = if (file.isLocal || file.isImportPreview || ArchiveEntryId.isEntry(file.id)) {
+                        null
+                    } else {
+                        { target ->
+                            if (galleryActive) {
+                                val path = gallery.pathTo(target.parentId)
+                                gallery.close()
+                                if (path != null) {
+                                    navigation.updateFolderStack(path)
+                                    state.highlight(setOf(target.id))
+                                } else {
+                                    onRevealInDrive?.invoke(target) ?: state.revealInDrive(target)
+                                }
+                            } else {
+                                onRevealInDrive?.invoke(target) ?: state.revealInDrive(target)
+                            }
+                        }
+                    }
+                    detachedImageViewer(
+                        dev.piko.ui.ImageViewerRequest(
+                            images = images,
+                            initialIndex = startIndex,
+                            onLocate = locateCallback,
+                        ),
+                    )
+                }
+            } else {
+                viewModel::requestImagePreview
+            }
+        },
         onRequestDownload = { files, chooseQuality -> viewModel.requestDownload(files, activeFolderId, chooseQuality) },
         onExtractArchives = viewModel::extractArchives,
         onExtractFromArchive = viewModel::extractFromArchive,

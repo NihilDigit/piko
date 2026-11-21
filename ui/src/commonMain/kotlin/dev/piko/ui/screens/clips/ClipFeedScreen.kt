@@ -104,6 +104,7 @@ import dev.piko.ui.screens.player.CenterIndicator
 import dev.piko.ui.screens.player.LocalPlayerLayoutPrefs
 import dev.piko.ui.screens.player.PlayerHud
 import dev.piko.ui.screens.player.PlayerTheme
+import dev.piko.ui.screens.player.PlayerWindowActions
 import dev.piko.data.auth.PlayerGestureDefaults
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.StreamRole
@@ -161,6 +162,7 @@ fun ClipFeedScreen(
     onToggleFullscreen: (() -> Unit)? = null,
     onPopOut: (() -> Unit)? = null,
     onDock: (() -> Unit)? = null,
+    windowActions: PlayerWindowActions? = null,
 ) {
     val services = LocalPikoServices.current
     val session = services.clipFeedSession
@@ -270,6 +272,7 @@ fun ClipFeedScreen(
                 layout = layoutPrefs.clipsLayout(isLandscape = landscapeLayout),
                 paused = paused,
                 onTogglePause = onTogglePause,
+                windowActions = windowActions,
                 modifier = Modifier.align(Alignment.TopCenter),
             )
         }
@@ -1198,6 +1201,8 @@ private fun ClipPager(
         // 控件层，在翻页器之上、不随页位移：只画当前这一段的说明、操作与进度，换段时就地淡出淡入。
         // 原先长在页里，翻页途中两段的说明与操作栏连同底部遮罩一起滑过画面，看着乱。
         // 这一层只有按钮与进度条接输入，其余空白处的点按与拖动落到底下的页上
+        // 主窗口全屏信息流进入沉浸态藏起顶栏时，同步挂起紧凑标题栏兜底按钮与命中区，避免右上角残留隐形 HTCLOSE
+        dev.piko.ui.platform.ModalCaptionBlocker(enabled = immersive && !compact)
         AnimatedVisibility(
             visible = !immersive,
             enter = fadeIn(motion.defaultEffectsSpec()),

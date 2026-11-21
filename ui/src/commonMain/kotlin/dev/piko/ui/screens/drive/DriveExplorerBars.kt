@@ -118,6 +118,7 @@ import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.releasesFocusOnOutsidePress
 import dev.piko.ui.platform.ShortcutModifier
+import dev.piko.ui.platform.captionExclusion
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.platform.windowDragArea
 import androidx.compose.foundation.layout.fillMaxSize
@@ -158,16 +159,21 @@ internal fun ExplorerNavBar(
         modifier = Modifier.fillMaxWidth().then(caption.modifier).height(56.dp).padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 后退与前进走不了时不摆出来，与命令栏同一个规矩；地址栏随之左移
-        if (canGoBack) TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, tr("后退", "Back", "戻る", "뒤로", "上一頁"), onBack, shortcut = if (mac) "⌘[" else "Alt+←")
-        if (canGoForward) TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowForward, tr("前进", "Forward", "進む", "앞으로", "下一頁"), onForward, shortcut = if (mac) "⌘]" else "Alt+→")
-        TooltipIconButton(Icons.Outlined.ArrowUpward, tr("上一级", "Parent folder", "上の階層", "상위 폴더", "上一層"), onUp, shortcut = if (mac) "⌘↑" else "Alt+↑", enabled = canGoUp)
-        Box(Modifier.weight(1f).padding(horizontal = 8.dp)) { address() }
-        if (showFolderMap != null) {
-            TooltipIconButton(Icons.Outlined.AccountTree, tr("目录图", "Folder map", "フォルダーマップ", "폴더 맵", "目錄圖"), showFolderMap, shortcut = if (mac) "⌘⇧E" else "Ctrl+Shift+E")
+        Row(
+            modifier = Modifier.weight(1f).captionExclusion(enabled = caption.atTop),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 后退与前进走不了时不摆出来，与命令栏同一个规矩；地址栏随之左移
+            if (canGoBack) TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowBack, tr("后退", "Back", "戻る", "뒤로", "上一頁"), onBack, shortcut = if (mac) "⌘[" else "Alt+←")
+            if (canGoForward) TooltipIconButton(Icons.AutoMirrored.Outlined.ArrowForward, tr("前进", "Forward", "進む", "앞으로", "下一頁"), onForward, shortcut = if (mac) "⌘]" else "Alt+→")
+            TooltipIconButton(Icons.Outlined.ArrowUpward, tr("上一级", "Parent folder", "上の階層", "상위 폴더", "上一層"), onUp, shortcut = if (mac) "⌘↑" else "Alt+↑", enabled = canGoUp)
+            Box(Modifier.weight(1f).padding(horizontal = 8.dp)) { address() }
+            if (showFolderMap != null) {
+                TooltipIconButton(Icons.Outlined.AccountTree, tr("目录图", "Folder map", "フォルダーマップ", "폴더 맵", "目錄圖"), showFolderMap, shortcut = if (mac) "⌘⇧E" else "Ctrl+Shift+E")
+            }
+            // 搜索收起时只是一个图标，地址栏占走让出的宽度
+            Box(Modifier.widthIn(max = SearchFieldWidth).animateContentSize()) { search() }
         }
-        // 搜索收起时只是一个图标，地址栏占走让出的宽度
-        Box(Modifier.widthIn(max = SearchFieldWidth).animateContentSize()) { search() }
         caption.buttons?.invoke()
     }
 }
@@ -437,7 +443,6 @@ internal fun ExplorerCommandBar(
         moreAfterLeading = true,
         moreIcon = Icons.Outlined.MoreHoriz,
         gap = BarItemGap,
-        dragWindow = true,
     )
 }
 

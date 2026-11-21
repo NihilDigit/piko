@@ -29,6 +29,7 @@ import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.piko.ui.platform.captionExclusion
 import dev.piko.ui.platform.windowDragArea
 
 /**
@@ -145,9 +146,11 @@ fun AdaptiveBar(
             MoreButton(moreIcon) { overflow.actions }
             Box(contentAlignment = Alignment.CenterStart) { middle?.invoke() }
             // 中间余下的空白也能拖动窗口（标题栏并进内容时），只在 [dragWindow] 的行上：列表页眉这类不贴窗口顶的行，
-            // 按住空白拖动窗口就错了。一直摆着，没有空白时宽度为 0，登记的拖动区随之为空
+            // 按住空白拖动窗口就错了。一直摆着，没有空白时宽度为 0，登记的拖动区随之为空；两侧已放置按钮区同步登记排除区。
             Box(if (dragWindow) Modifier.fillMaxSize().windowDragArea() else Modifier.fillMaxSize())
             Box(contentAlignment = Alignment.Center) { end?.invoke() }
+            Box(if (dragWindow) Modifier.fillMaxSize().captionExclusion() else Modifier.fillMaxSize())
+            Box(if (dragWindow) Modifier.fillMaxSize().captionExclusion() else Modifier.fillMaxSize())
         },
     ) { measurables, constraints ->
         // 高度按内容定，再夹进约束：TopAppBar 给标题格的高度上限是整个窗口，取上限的话顶栏撑满全屏（实测）；
@@ -158,6 +161,8 @@ fun AdaptiveBar(
         val middleMeasurable = measurables[items.size + 1]
         val dragMeasurable = measurables[items.size + 2]
         val endPlaceable = measurables[items.size + 3].measure(loose.copy(maxWidth = constraints.maxWidth))
+        val leadingExclusionMeasurable = measurables[items.size + 4]
+        val trailingExclusionMeasurable = measurables[items.size + 5]
         val contentHeight = (placeables + more + endPlaceable).maxOf { it.height }
         val gapPx = gap.roundToPx()
         val reserved = endPlaceable.width + if (reserveMiddle && middle != null) middleMinWidth.roundToPx() else 0
@@ -228,8 +233,12 @@ fun AdaptiveBar(
         val height = maxOf(contentHeight, middlePlaceable?.height ?: 0).coerceIn(constraints.minHeight, constraints.maxHeight)
         val dragStart = boundedLeadingEnd + (middlePlaceable?.width ?: 0)
         val dragArea = dragMeasurable.measure(Constraints.fixed((trailingStart - dragStart).coerceAtLeast(0), height))
+        val leadingExclusion = leadingExclusionMeasurable.measure(Constraints.fixed(leadingWidth.coerceAtLeast(0), height))
+        val trailingExclusion = trailingExclusionMeasurable.measure(Constraints.fixed((endStart - trailingStart).coerceAtLeast(0), height))
         layout(constraints.maxWidth, height) {
             fun Placeable.placeAt(x: Int) = place(x, (height - this.height) / 2)
+            leadingExclusion.place(0, 0)
+            trailingExclusion.place(trailingStart, 0)
             var x = 0
             for (index in leadingIndices) {
                 if (x + placeables[index].width <= trailingStart) placeables[index].placeAt(x)

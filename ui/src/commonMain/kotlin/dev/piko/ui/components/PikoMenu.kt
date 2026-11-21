@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
+import dev.piko.ui.platform.ModalCaptionBlocker
 import dev.piko.ui.theme.LocalPikoMotion
 import dev.piko.ui.theme.PikoMotion
 
@@ -28,6 +29,7 @@ fun PikoDropdownMenu(
     offset: DpOffset = DpOffset(0.dp, 0.dp),
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    ModalCaptionBlocker(enabled = expanded)
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismissRequest,

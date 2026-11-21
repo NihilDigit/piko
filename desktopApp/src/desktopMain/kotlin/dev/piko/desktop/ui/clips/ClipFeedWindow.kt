@@ -8,13 +8,20 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.WindowPlacement
 import dev.piko.desktop.DesktopSettingsStore
 import dev.piko.desktop.PikoWindow
 import dev.piko.desktop.PixelAlignedContentEffect
@@ -23,6 +30,7 @@ import dev.piko.desktop.TitleBarThemeEffect
 import dev.piko.desktop.WindowFrame
 import dev.piko.desktop.bringToFront
 import dev.piko.desktop.rememberRememberedWindowState
+import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.shared.i18n.PikoLocale
 import dev.piko.ui.ClipFeedLinks
 import dev.piko.ui.LocalAppLanguage
@@ -31,13 +39,16 @@ import dev.piko.ui.PikoServices
 import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.PointerSource
 import dev.piko.ui.components.trackPointerSource
+import dev.piko.ui.platform.LocalFramelessWindow
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.screens.clips.ClipFeedScreen
 import dev.piko.ui.screens.player.LocalPlayerLayoutPrefs
+import dev.piko.ui.screens.player.PlayerWindowActions
 import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.LocalWindowVisible
 import dev.piko.ui.theme.PikoTheme
+import dev.piko.ui.workbench.ShortcutsDialog
 
 /**
  * 信息流从侧栏弹出的独立窗口，同播放窗口：可以一边刷一边浏览网盘，Windows 上没有标题栏，片段顶栏的名字兼做拖动区。
@@ -61,6 +72,8 @@ fun ClipFeedWindow(
 ) {
     val windowState = rememberRememberedWindowState(settings, "clips", DpSize(1000.dp, 620.dp))
     val windowVisible = !windowState.isMinimized
+    var shortcutsOpen by remember { mutableStateOf(false) }
+    val shortcutModifier = platform.shortcutModifier
     PikoWindow(
         onCloseRequest = links.dock,
         onFatalClose = links.close,
@@ -68,6 +81,19 @@ fun ClipFeedWindow(
         icon = icon,
         state = windowState,
         windowVisible = windowVisible,
+        onPreviewKeyEvent = { event ->
+            if (event.type == KeyEventType.KeyDown &&
+                (event.key == Key.F1 || (shortcutModifier.isPressed(event) && event.key == Key.Slash))
+            ) {
+                shortcutsOpen = !shortcutsOpen
+                true
+            } else if (shortcutsOpen && event.type == KeyEventType.KeyDown && event.key == Key.Escape) {
+                shortcutsOpen = false
+                true
+            } else {
+                false
+            }
+        },
     ) {
         TitleBarThemeEffect(window, dark = true)
         PixelAlignedContentEffect(window)
@@ -100,8 +126,37 @@ fun ClipFeedWindow(
                     title = tr("信息流 - Piko", "Feed - Piko", "フィード - Piko", "피드 - Piko", "資訊流 - Piko"),
                     icon = icon,
                     colors = ClipTitleBarColors,
+                    showTitleBar = windowState.placement != WindowPlacement.Fullscreen && !shortcutsOpen,
                     onCloseInContent = links.dock,
+                    immersiveFullscreen = windowState.placement == WindowPlacement.Fullscreen,
                 ) {
+                    val framelessWindow = LocalFramelessWindow.current
+                    var alwaysOnTop by remember(window) { mutableStateOf(window.isAlwaysOnTop) }
+                    val effectiveAlwaysOnTop = framelessWindow?.isAlwaysOnTop ?: alwaysOnTop
+                    val windowActions = PlayerWindowActions(
+                        isMaximized = windowState.placement == WindowPlacement.Maximized,
+                        isFullscreen = windowState.placement == WindowPlacement.Fullscreen,
+                        isAlwaysOnTop = effectiveAlwaysOnTop,
+                        showWindowButtons = WinRTSupport.isWindows,
+                        onMinimize = { windowState.isMinimized = true },
+                        onToggleMaximize = {
+                            windowState.placement = if (windowState.placement == WindowPlacement.Maximized) {
+                                WindowPlacement.Floating
+                            } else {
+                                WindowPlacement.Maximized
+                            }
+                        },
+                        onToggleAlwaysOnTop = {
+                            val next = !effectiveAlwaysOnTop
+                            if (framelessWindow != null) {
+                                framelessWindow.setAlwaysOnTop(next)
+                            } else {
+                                window.isAlwaysOnTop = next
+                            }
+                            alwaysOnTop = next
+                        },
+                        onClose = links.dock,
+                    )
                     ClipFeedScreen(
                         // Esc 与返回也是收回主窗口
                         onBackClick = links.dock,
@@ -109,8 +164,12 @@ fun ClipFeedWindow(
                         onLocate = links.locate,
                         onDock = links.dock,
                         pausedByHost = pausedByHost,
+                        windowActions = windowActions,
                         modifier = Modifier.trackPointerSource(pointerSource),
                     )
+                    if (shortcutsOpen) {
+                        ShortcutsDialog(shortcutModifier, onDismiss = { shortcutsOpen = false })
+                    }
                 }
             }
         }

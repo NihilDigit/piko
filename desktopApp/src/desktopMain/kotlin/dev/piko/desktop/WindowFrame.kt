@@ -51,6 +51,7 @@ import androidx.compose.ui.window.FrameWindowScope
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.desktop.winrt.WindowsCaption
 import dev.piko.ui.platform.FramelessWindow
+import dev.piko.ui.platform.LocalDesktopTitleBarInset
 import dev.piko.ui.platform.LocalFramelessWindow
 import dev.piko.ui.platform.LocalWindowCaption
 import dev.piko.ui.platform.LocalWindowResizing
@@ -99,6 +100,7 @@ fun FrameWindowScope.WindowFrame(
     showTitleBar: Boolean = true,
     onCloseInContent: (() -> Unit)? = null,
     compactCaption: Boolean = false,
+    immersiveFullscreen: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     when {
@@ -109,7 +111,7 @@ fun FrameWindowScope.WindowFrame(
             if (onCloseInContent != null && caption != null) {
                 // 直接设在 AWT 窗口上：Compose 的 Window 参数 alwaysOnTop 只在它自己的值变化时才下发，
                 // 调用方不传它，不会把这里的设置盖回去。全屏或顶层模态弹层打开时经 setDragEnabled(false)
-                // 立即撤销 HTCAPTION 拖动区，避免 Win32 WM_NCHITTEST 劫持浮层顶部点击。
+                // 或 ModalBlocker 立即撤销 HTCAPTION 拖动区，避免 Win32 WM_NCHITTEST 劫持浮层顶部点击。
                 val frameless = remember(caption, window) {
                     CaptionFramelessWindow(
                         window = window,
@@ -124,20 +126,31 @@ fun FrameWindowScope.WindowFrame(
                     frameless.setDragEnabled(showTitleBar)
                 }
                 DisposableEffect(frameless) { onDispose { caption.clearLayout() } }
-                CompositionLocalProvider(LocalFramelessWindow provides frameless) { SettledWindowInfo(caption) { ProvideTouchViewConfiguration(content) } }
+                CompositionLocalProvider(
+                    LocalFramelessWindow provides frameless,
+                    LocalDesktopTitleBarInset provides 0.dp,
+                ) {
+                    SettledWindowInfo(caption) { ProvideTouchViewConfiguration(content) }
+                }
                 return
             }
             val compact = remember(caption, compactCaption) { caption?.takeIf { compactCaption }?.let(::CompactCaption) }
             // 界面声明了由它放按钮与拖动区（WindowCaption.Host）才收起标题栏。内容始终在同一个位置组合，
             // 标题栏收起与出现时内容的状态不丢
             val hosted = showTitleBar && compact?.hosted == true
-            LaunchedEffect(hosted) { if (hosted) compact?.publish() }
+            val hasOuterTitleBar = showTitleBar && caption != null && !hosted
+            LaunchedEffect(hosted) { if (hosted) compact.publish() }
             Column(Modifier.fillMaxSize()) {
-                if (showTitleBar && caption != null && !hosted) WindowsTitleBar(caption, title, icon, colors)
+                if (hasOuterTitleBar) WindowsTitleBar(caption, title, icon, colors)
                 Box(Modifier.fillMaxWidth().weight(1f)) {
-                    CompositionLocalProvider(LocalWindowCaption provides compact) { SettledWindowInfo(caption) { ProvideTouchViewConfiguration(content) } }
-                    // 兜底：声明了却一时没有哪一行贴着右上角来画按钮，就浮在角上画一组，窗口总关得掉
-                    if (hosted && !compact.hasActiveButtonBounds) {
+                    CompositionLocalProvider(
+                        LocalWindowCaption provides compact,
+                        LocalDesktopTitleBarInset provides if (hasOuterTitleBar) TitleBarHeight else 0.dp,
+                    ) {
+                        SettledWindowInfo(caption) { ProvideTouchViewConfiguration(content) }
+                    }
+                    // 兜底：声明了却一时没有哪一行贴着右上角来画按钮，且当前无模态弹层遮挡时，浮在角上画一组
+                    if (hosted && !compact.hasActiveButtonBounds && !compact.isModalBlocked) {
                         Box(Modifier.align(Alignment.TopEnd).padding(8.dp)) { compact.ButtonRow(countAsRow = false) }
                     }
                 }
@@ -145,17 +158,22 @@ fun FrameWindowScope.WindowFrame(
         }
         isMacOs -> {
             MacTitleBarEffect()
+            val macTitleInset = if (!immersiveFullscreen && (showTitleBar || onCloseInContent != null)) TitleBarHeight else 0.dp
             Column(Modifier.fillMaxSize()) {
                 if (showTitleBar) MacTitleBar(title, colors)
-                Box(Modifier.fillMaxWidth().weight(1f)) { content() }
+                Box(Modifier.fillMaxWidth().weight(1f)) {
+                    CompositionLocalProvider(LocalDesktopTitleBarInset provides macTitleInset) {
+                        content()
+                    }
+                }
             }
         }
         else -> content()
     }
 }
 
-private class CaptionFramelessWindow(
-    private val window: java.awt.Window,
+internal class CaptionFramelessWindow(
+    private val window: java.awt.Window?,
     private val caption: WindowsCaption,
     initialDragEnabled: Boolean,
     initialAlwaysOnTop: Boolean,
@@ -163,7 +181,9 @@ private class CaptionFramelessWindow(
 ) : FramelessWindow {
     // 顶栏上按钮两边的空白各是一块
     private val areas = HashMap<Any, Rect>()
+    private val exclusions = HashMap<Any, Rect>()
     private var dragEnabled: Boolean = initialDragEnabled
+    private var modalBlockers: Int = 0
     var onClose: () -> Unit = onClose
 
     private var _isAlwaysOnTop by mutableStateOf(initialAlwaysOnTop)
@@ -175,9 +195,26 @@ private class CaptionFramelessWindow(
         publish()
     }
 
+    internal fun setModalBlocked(blocked: Boolean) {
+        modalBlockers = (modalBlockers + if (blocked) 1 else -1).coerceAtLeast(0)
+        publish()
+    }
+
+    @Composable
+    override fun ModalBlocker() {
+        DisposableEffect(this) {
+            setModalBlocked(true)
+            onDispose { setModalBlocked(false) }
+        }
+    }
+
     private fun publish() {
-        if (dragEnabled && areas.isNotEmpty()) {
-            caption.updateLayout(areas.values.toList(), emptyMap())
+        if (dragEnabled && modalBlockers == 0 && areas.isNotEmpty()) {
+            caption.updateLayout(
+                dragAreas = areas.values.toList(),
+                buttons = emptyMap(),
+                exclusions = exclusions.values.toList(),
+            )
         } else {
             caption.clearLayout()
         }
@@ -190,10 +227,17 @@ private class CaptionFramelessWindow(
         publish()
     }
 
+    override fun updateExclusion(key: Any, bounds: Rect?) {
+        val normalized = bounds?.takeUnless { it.isEmpty }
+        if (exclusions[key] == normalized) return
+        if (normalized == null) exclusions.remove(key) else exclusions[key] = normalized
+        publish()
+    }
+
     override fun close() = onClose()
 
     override fun setAlwaysOnTop(onTop: Boolean) {
-        window.isAlwaysOnTop = onTop
+        window?.isAlwaysOnTop = onTop
         _isAlwaysOnTop = onTop
     }
 }
@@ -305,9 +349,12 @@ private fun FrameWindowScope.WindowsTitleBar(
  * 并进内容的标题栏：收集内容登记的拖动区与各处按钮的位置，合成一份交给窗口过程。只在界面线程上读写。
  * 没有谁声明 [Host] 时什么也不交：那时画着单独的标题栏，布局归它。
  */
-private class CompactCaption(private val caption: WindowsCaption) : WindowCaption {
+internal class CompactCaption(private val caption: WindowsCaption) : WindowCaption {
     private var hosts by mutableIntStateOf(0)
     val hosted: Boolean get() = hosts > 0
+
+    private var modalBlockers by mutableIntStateOf(0)
+    val isModalBlocked: Boolean get() = modalBlockers > 0
 
     private val activeRows = mutableStateListOf<Any>()
     val hasActiveButtonBounds: Boolean get() = activeButtonBounds() != null
@@ -321,6 +368,7 @@ private class CompactCaption(private val caption: WindowsCaption) : WindowCaptio
         }
 
     private val dragAreas = HashMap<Any, Rect>()
+    private val exclusions = HashMap<Any, Rect>()
     // 按画按钮的那一处分开记：一处离开组合时只撤它自己的，另一处的位置不会跟着丢
     private val buttons = mutableStateMapOf<Any, Map<WindowsCaption.Button, Rect>>()
 
@@ -328,7 +376,28 @@ private class CompactCaption(private val caption: WindowsCaption) : WindowCaptio
     override fun Host() {
         DisposableEffect(this) {
             hosts++
-            onDispose { hosts-- }
+            onDispose {
+                hosts--
+                if (hosts <= 0) caption.clearLayout()
+            }
+        }
+    }
+
+    internal fun setHostedForTest(active: Boolean) {
+        hosts = (hosts + if (active) 1 else -1).coerceAtLeast(0)
+        if (hosts <= 0) caption.clearLayout() else publish()
+    }
+
+    internal fun setModalBlocked(blocked: Boolean) {
+        modalBlockers = (modalBlockers + if (blocked) 1 else -1).coerceAtLeast(0)
+        publish()
+    }
+
+    @Composable
+    override fun ModalBlocker() {
+        DisposableEffect(this) {
+            setModalBlocked(true)
+            onDispose { setModalBlocked(false) }
         }
     }
 
@@ -336,7 +405,10 @@ private class CompactCaption(private val caption: WindowsCaption) : WindowCaptio
     override fun Buttons() = ButtonRow(countAsRow = true)
 
     @Composable
-    fun ButtonRow(countAsRow: Boolean) {
+    override fun Buttons(tint: Color) = ButtonRow(countAsRow = true, explicitTint = tint)
+
+    @Composable
+    fun ButtonRow(countAsRow: Boolean, explicitTint: Color = Color.Unspecified) {
         val key = remember { Any() }
         DisposableEffect(this) {
             if (countAsRow) activeRows.add(key)
@@ -347,7 +419,8 @@ private class CompactCaption(private val caption: WindowsCaption) : WindowCaptio
             }
         }
         // 非活动窗口的按钮变灰，与系统标题栏一致
-        val color = MaterialTheme.colorScheme.onSurfaceVariant.let { if (caption.isActive) it else it.copy(alpha = 0.45f) }
+        val baseColor = if (explicitTint != Color.Unspecified) explicitTint else MaterialTheme.colorScheme.onSurfaceVariant
+        val color = if (caption.isActive) baseColor else baseColor.copy(alpha = 0.45f)
         Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
             for (button in WindowsCaption.Button.entries) {
                 RoundCaptionButton(
@@ -377,11 +450,26 @@ private class CompactCaption(private val caption: WindowsCaption) : WindowCaptio
         publish()
     }
 
+    override fun setExclusion(key: Any, bounds: Rect?) {
+        val normalized = bounds?.takeUnless { it.isEmpty }
+        if (exclusions[key] == normalized) return
+        if (normalized == null) exclusions.remove(key) else exclusions[key] = normalized
+        publish()
+    }
+
     fun publish() {
         if (!hosted) return
+        if (modalBlockers > 0) {
+            caption.clearLayout()
+            return
+        }
         val buttonBounds = activeButtonBounds()
             ?: buttons.entries.firstOrNull { it.key !in activeRows }?.value.orEmpty()
-        caption.updateLayout(dragAreas.values.toList(), buttonBounds.filterValues { !it.isEmpty })
+        caption.updateLayout(
+            dragAreas = dragAreas.values.toList(),
+            buttons = buttonBounds.filterValues { !it.isEmpty },
+            exclusions = exclusions.values.toList(),
+        )
     }
 }
 

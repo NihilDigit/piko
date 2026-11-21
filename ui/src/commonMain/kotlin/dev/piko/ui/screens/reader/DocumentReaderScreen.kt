@@ -22,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
@@ -85,11 +86,17 @@ import dev.piko.shared.media.reader.DocumentLoader
 import dev.piko.shared.media.reader.DocumentTextDecoder
 import dev.piko.shared.media.reader.ParsedDocument
 import dev.piko.shared.media.reader.searchDocumentBlocks
+import dev.piko.shared.i18n.tr
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.components.AdaptiveBar
+import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.FullScreenLoading
+import dev.piko.ui.components.IslandPage
+import dev.piko.ui.components.IslandTitle
 import dev.piko.ui.components.PikoScaffold
 import dev.piko.ui.components.PikoSheet
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.PinnedPriority
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.connectedToggleShapes
@@ -422,6 +429,29 @@ fun DocumentReaderScreen(
                     false
                 }
             },
+        island = IslandPage(
+            header = {
+                AdaptiveBar(
+                    modifier = Modifier.weight(1f),
+                    leading = listOf(
+                        BarItem("back", PinnedPriority) {
+                            TooltipIconButton(
+                                icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                                label = tr("返回", "Back", "戻る", "뒤로", "返回"),
+                                onClick = onBackClick,
+                            )
+                        },
+                    ),
+                    middle = { IslandTitle(fileName) },
+                    middleMinWidth = 112.dp,
+                    reserveMiddle = true,
+                    trailing = topBarActions,
+                    moreActions = moreActions,
+                    gap = 4.dp,
+                    dragWindow = true,
+                )
+            },
+        ),
         topBar = {
             PikoTopBar(
                 title = fileName,

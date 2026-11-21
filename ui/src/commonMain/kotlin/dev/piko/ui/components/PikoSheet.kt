@@ -155,6 +155,7 @@ private fun ModalSideSheet(
         if (visibility.isIdle && !visibility.currentState && !visibility.targetState) latestDismiss()
     }
     LocalPikoPlatform.current.FullscreenDialog(onDismiss = dismiss, immersive = false, systemBarsVisible = true) {
+        dev.piko.ui.platform.ModalCaptionBlocker()
         Box(modifier = Modifier.fillMaxSize()) {
             // 点在面板外面就是关掉。不画按下的波纹：这一整片是遮罩，不是一个按钮。
             // 也不进无障碍树：否则读屏先停在一个没有名字的可点控件上，才轮到面板里的内容（M3 side sheets 的
