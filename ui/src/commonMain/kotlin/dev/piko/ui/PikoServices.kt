@@ -10,6 +10,8 @@ import dev.piko.shared.sync.SourceLedgerSync
 import dev.piko.shared.sync.VaultTreeSync
 import dev.piko.shared.download.DriveDownloadFolderSource
 import dev.piko.ui.components.SegmentSession
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.staticCompositionLocalOf
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.DriveRepository
@@ -64,6 +66,7 @@ import kotlin.time.Clock
  * 界面用到的进程级对象。各端在入口按自己的偏好、会话存储与下载实现拼好一份，
  * 经 [LocalPikoServices] 交给界面。这些对象的生命周期是进程，不是某个屏幕。
  */
+@Stable
 class PikoServices(
     platformPreferences: PikoUserPreferences,
     val clientManager: PikoClientManager,
@@ -139,6 +142,7 @@ class PikoServices(
         onAppForegrounded()
     }
     fun consumeOpenDriveRequest() { _openDriveRequested.value = false }
+    @Immutable
     class FileHighlightRequest internal constructor(val account: String, val ids: Set<String>)
     private val _fileHighlightRequested = MutableStateFlow<FileHighlightRequest?>(null)
     val fileHighlightRequested: StateFlow<FileHighlightRequest?> = _fileHighlightRequested.asStateFlow()

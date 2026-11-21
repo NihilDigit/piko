@@ -71,7 +71,7 @@ class FileCommands(
         if (command !is FileWriteCommand.Star &&
             (receivingBlocked(if (command is FileWriteCommand.Copy) emptyList() else command.ids, changesTree(command)) ||
                 command.target?.let { target -> receiving?.exclusiveRoots(account)?.any { contains(it, target.id) } } == true))
-            return blocked(tr("相关文件或文件夹有保存、上传或解压任务，请先在任务页完成、核对或移除相关任务", "Related files or folders have save, upload or extraction tasks. Complete, check or remove them in Tasks first", "関連ファイルやフォルダーに保存・アップロード・解凍タスクがあります。先にタスク画面で完了、確認または削除してください", "관련 파일이나 폴더에 저장, 업로드 또는 압축 해제 작업이 있습니다. 먼저 작업 페이지에서 완료, 확인 또는 삭제해 주세요", "相關檔案或資料夾有儲存、上傳或解壓縮任務，請先至任務頁完成、核對或移除相關任務"))
+            return blocked(tr("相关文件或文件夹有保存、上传或解压任务，请先在任务页完成、核对或移除相关任务", "Related files or folders have save, upload or extraction tasks. Complete, check or remove them in Tasks first", "関連ファイルやフォルダーに保存、アップロード、解凍タスクがあります。先にタスク画面で完了、確認または削除してください", "관련 파일이나 폴더에 저장, 업로드 또는 압축 해제 작업이 있습니다. 먼저 작업 페이지에서 완료, 확인 또는 삭제해 주세요", "相關檔案或資料夾有儲存、上傳或解壓縮任務，請先至任務頁完成、核對或移除相關任務"))
         if (repository.changes.state.value.undo.values.any { undo -> overlaps(command.ids, undo.activeFileIds) ||
                 command.target?.let { target -> undo.activeTreeIds.any { contains(it, target.id) } } == true }) return blocked(tr("相关文件正在撤销，完成后再试", "Related files are being reverted. Try again when finished", "関連ファイルの操作を元に戻しています。完了後にお試しください", "관련 파일의 작업을 취소 중입니다. 완료 후 다시 시도해 주세요", "相關檔案正在復原，請待完成後再試"))
         if (changesTree(command) && repository.changes.state.value.undo.values.any { touchesFolders(command.ids, it.activeManifestFolders) }) return blocked(tr("相关文件夹的归档清单正在撤销，请待完成后重试", "The folder manifest is being reverted. Try again when finished", "フォルダーのアーカイブ一覧を元に戻しています。完了後にお試しください", "폴더의 보관 목록을 되돌리는 중입니다. 완료 후 다시 시도해 주세요", "相關資料夾的歸檔清單正在復原，請待完成後重試"))
@@ -94,7 +94,7 @@ class FileCommands(
 
     private fun filesAvailability(ids: Collection<String>, tree: Boolean): ActionAvailability {
         if (!acceptsActions() || account == null || repository.currentAccount != account) return ActionAvailability.Blocked(tr("当前工作区已结束", "This workspace has ended", "このワークスペースは終了しました", "현재 작업 공간이 종료되었습니다", "目前的工作區已結束"))
-        if (receivingBlocked(ids, tree)) return ActionAvailability.Blocked(tr("相关文件夹有保存、上传或解压任务，请先在任务页处理", "Related folders have save, upload or extraction tasks. Check Tasks first", "関連フォルダーに保存・アップロード・解凍タスクがあります。先にタスク画面で確認してください", "관련 폴더에 저장, 업로드 또는 압축 해제 작업이 있습니다. 먼저 작업 페이지에서 확인해 주세요", "相關資料夾有儲存、上傳或解壓縮任務，請先至任務頁處理"))
+        if (receivingBlocked(ids, tree)) return ActionAvailability.Blocked(tr("相关文件夹有保存、上传或解压任务，请先在任务页处理", "Related folders have save, upload or extraction tasks. Check Tasks first", "関連フォルダーに保存、アップロード、解凍タスクがあります。先にタスク画面で確認してください", "관련 폴더에 저장, 업로드 또는 압축 해제 작업이 있습니다. 먼저 작업 페이지에서 확인해 주세요", "相關資料夾有儲存、上傳或解壓縮任務，請先至任務頁處理"))
         if (repository.changes.state.value.undo.values.any { overlaps(ids, it.activeFileIds) }) return ActionAvailability.Blocked(tr("相关文件正在撤销，完成后再试", "Related files are being reverted. Try again when finished", "関連ファイルの操作を元に戻しています。完了後にお試しください", "관련 파일의 작업을 취소 중입니다. 완료 후 다시 시도해 주세요", "相關檔案正在復原，請待完成後再試"))
         if (repository.changes.state.value.undo.values.any { touchesFolders(ids, it.activeManifestFolders) }) return ActionAvailability.Blocked(tr("相关归档清单正在撤销，请待完成后重试", "The archive manifest is being reverted. Try again when finished", "アーカイブ一覧を元に戻しています。完了後にお試しください", "보관 목록을 되돌리는 중입니다. 완료 후 다시 시도해 주세요", "相關歸檔清單正在復原，請待完成後重試"))
         vault?.activeTargets?.let { targets ->
@@ -131,7 +131,7 @@ class FileCommands(
         if (session.mutations.active.value.values.any { overlaps(change.affectedFileIds(), it.ids) })
             return ActionAvailability.Blocked(tr("相关文件正在处理，请待完成后撤销", "Related files are being processed. Undo when finished", "関連ファイルを処理中です。完了後に元に戻してください", "관련 파일을 처리 중입니다. 완료 후 실행을 취소해 주세요", "相關檔案正在處理，請待完成後復原"))
         if (receivingBlocked(change.affectedFileIds(), change !is DriveChangeJournal.Change.Rename))
-            return ActionAvailability.Blocked(tr("相关文件夹有保存、上传或解压任务，请先在任务页处理", "Related folders have save, upload or extraction tasks. Check Tasks first", "関連フォルダーに保存・アップロード・解凍タスクがあります。先にタスク画面で確認してください", "관련 폴더에 저장, 업로드 또는 압축 해제 작업이 있습니다. 먼저 작업 페이지에서 확인해 주세요", "相關資料夾有儲存、上傳或解壓縮任務，請先至任務頁處理"))
+            return ActionAvailability.Blocked(tr("相关文件夹有保存、上传或解压任务，请先在任务页处理", "Related folders have save, upload or extraction tasks. Check Tasks first", "関連フォルダーに保存、アップロード、解凍タスクがあります。先にタスク画面で確認してください", "관련 폴더에 저장, 업로드 또는 압축 해제 작업이 있습니다. 먼저 작업 페이지에서 확인해 주세요", "相關資料夾有儲存、上傳或解壓縮任務，請先至任務頁處理"))
         val files = filesAvailability(change.affectedFileIds(), tree = change !is DriveChangeJournal.Change.Rename)
         if (files is ActionAvailability.Blocked) return files
         return manifestAvailability(change.affectedManifestFolders())

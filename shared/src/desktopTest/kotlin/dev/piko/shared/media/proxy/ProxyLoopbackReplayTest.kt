@@ -1004,15 +1004,16 @@ class ProxyLoopbackReplayTest {
                         channel.close()
                     } catch (t: Throwable) {
                         channel.close(t)
-                    } finally {
-                        activeCdnRequests.decrementAndGet()
                     }
                 }
                 val completionHandle = request.executionContext.invokeOnCompletion { cause ->
                     channel.cancel(cause)
                     producerJob.cancel()
                 }
-                producerJob.invokeOnCompletion { completionHandle.dispose() }
+                producerJob.invokeOnCompletion {
+                    completionHandle.dispose()
+                    activeCdnRequests.decrementAndGet()
+                }
                 streamScope.launch {
                     while (producerJob.isActive && !channel.isClosedForWrite && !channel.isClosedForRead) {
                         delay(5)

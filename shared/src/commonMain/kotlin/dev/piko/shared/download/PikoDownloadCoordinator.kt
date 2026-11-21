@@ -1,1399 +1,68 @@
+@file:JvmMultifileClass
+@file:JvmName("PikoDownloadCoordinatorKt")
+
 package dev.piko.shared.download
 
-import kotlinx.coroutines.IO
-import dev.piko.shared.i18n.tr
-
+import androidx.compose.runtime.Stable
 import dev.piko.data.auth.PikoUserPreferences
-import dev.piko.data.repository.FileNameSanitizer
 import dev.piko.download.DownloadBatch
-import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
-import dev.piko.shared.data.LeasedFile
-import dev.piko.shared.data.PikoClientProvider
-import dev.piko.shared.log.PikoLog
-import dev.piko.shared.log.logFailure
-import dev.piko.shared.log.logFile
-import dev.piko.shared.log.logFolder
-import dev.piko.shared.media.DownloadQuality
-import dev.piko.shared.media.ORIGINAL_QUALITY
-import dev.piko.shared.media.PikoMediaRepository
-import dev.piko.shared.media.TRANSCODE_GONE_MESSAGE
-import dev.piko.data.repository.isPlayableVideo
-import dev.piko.shared.data.runSuspendCatching
-import io.github.nihildigit.pikpak.BandwidthLimiter
-import io.github.nihildigit.pikpak.FileStat
-import dev.piko.shared.upload.isUploading
-import io.github.nihildigit.pikpak.PikPakFileHandle
-import dev.piko.shared.media.cache.PersistentFileStore
-import dev.piko.shared.media.cache.PikoFileCachePool
 import dev.piko.shared.data.PikoCacheStore
-import kotlinx.serialization.Serializable
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CancellationException
+import dev.piko.shared.data.PikoClientProvider
+import dev.piko.shared.media.DownloadQuality
+import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.media.cache.PikoFileCachePool
+import io.github.nihildigit.pikpak.FileStat
+import io.github.nihildigit.pikpak.ResolvedFile
+import kotlin.jvm.JvmMultifileClass
+import kotlin.jvm.JvmName
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.joinAll
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.conflate
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChangedBy
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.sync.withPermit
-import io.github.nihildigit.pikpak.StreamRole
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.Json
-import kotlin.time.Clock
-import kotlin.time.TimeMark
-import kotlin.time.TimeSource
 
-class PikoDownloadCoordinator(
-    private val clientProvider: PikoClientProvider,
-    private val preferences: PikoUserPreferences,
-    private val storage: PikoDownloadStorage,
-    private val scope: CoroutineScope,
-    private val segmentDownloader: PikoSegmentDownloader? = null,
-    /** 片段抽取经它开本机代理会话读源文件。缺省时退回任务里存下的直链。 */
-    private val mediaRepository: PikoMediaRepository? = null,
-    private val cacheStore: PikoCacheStore? = null,
-) {
-    private val _tasks = MutableStateFlow<Map<String, DownloadTask>>(emptyMap())
-    val tasks: StateFlow<Map<String, DownloadTask>> = _tasks.asStateFlow()
+/**
+ * 下载领域服务窄接口（ABI 防火墙）：隔离任务表 JSON 持久化、递归目录展开、并发限速与转封装实现细节。
+ */
+@Stable
+interface DownloadService {
+    val tasks: StateFlow<Map<String, DownloadTask>>
+    val listings: StateFlow<Map<String, FolderListing>>
+    val fileCachePool: PikoFileCachePool
 
-    // 视图在主线程启停任务，任务协程在 IO 线程上结束时自己摘除，两边会同时改这张表。
-    // 用 StateFlow.update 的 CAS 代替普通 Map，commonMain 里没有 ConcurrentHashMap。
-    private val jobs = MutableStateFlow<Map<String, Job>>(emptyMap())
+    fun bindDefaultFolderSource(source: DownloadFolderSource)
+    suspend fun flushPersistence()
+    suspend fun findCompletedLocalPath(file: FileStat): String?
 
-    // 蜗牛模式：所有下载任务、所有连接共用这一个额度，总和不超过上限；改设置即时生效，不必重启任务
-    private val limiter = BandwidthLimiter()
-
-    private val _listings = MutableStateFlow<Map<String, FolderListing>>(emptyMap())
-
-    /** 还没变成任务的文件夹下载，按批次 ID。见 [enqueueFolders]。 */
-    val listings: StateFlow<Map<String, FolderListing>> = _listings.asStateFlow()
-
-    // 列出中的文件夹下载的输入与协程，重试与放弃要用；列完等确认的还带着排好的任务
-    private val listingWork = MutableStateFlow<Map<String, ListingWork>>(emptyMap())
-
-    private data class ListingWork(
-        val folder: FileStat,
-        val source: DownloadFolderSource?,
-        /** 下载时选的画质上限，null 取设置里的。重新列出时照旧用它。 */
-        val maxHeight: Int?,
-        val targetDirectory: String? = null,
-        val job: Job? = null,
-        val planned: List<DownloadTask> = emptyList(),
-    )
-
-    private fun normalizeTargetDirectory(directory: String?): String? =
-        directory?.trim()?.takeIf { it.isNotEmpty() }
-
-    private fun storageFor(targetDirectory: String?): PikoDownloadStorage =
-        storage.forDirectory(normalizeTargetDirectory(targetDirectory))
-
-    private fun storageFor(task: DownloadTask): PikoDownloadStorage =
-        storageFor(task.targetDirectory)
-
-    private fun storageFor(batch: DownloadBatch): PikoDownloadStorage =
-        storageFor(batch.targetDirectory)
-
-    /**
-     * 解析任务目标目录的规范化比较键，使「未指定目标目录（使用默认位置）」与「在选择器中显式确认当前默认目录」
-     * 归入同一目录身份，避免重复入队、重名冲突或并发写入同一目标文件。
-     */
-    private fun directoryKey(targetDirectory: String?): String {
-        val raw = storageFor(targetDirectory).pathFor(DIRECTORY_KEY_PROBE)
-        if (raw.startsWith("content:", ignoreCase = true)) return raw.trimEnd('/')
-        val normalized = raw.replace('\\', '/').removeSuffix("/$DIRECTORY_KEY_PROBE").trimEnd('/')
-        return if (normalized.length >= 2 && normalized[1] == ':') normalized.lowercase() else normalized
-    }
-
-    val fileCachePool = mediaRepository?.fileCachePool ?: PikoFileCachePool(scope) { storage.cacheTarget(it) }
-    private val restoreCompleted = CompletableDeferred<Unit>()
-    /**
-     * 仅记录上次应用进程退出时仍处于 `PENDING` 或 `DOWNLOADING`、在 [restoreTask] 中被暂置为 `PAUSED` 的任务 ID：
-     * - 待所属账号变为当前活动账号后由 [resumeInterruptedTasks] 自动恢复为 `PENDING`；
-     * - 若在切回所属账号前再次落盘，[flushPersistence] 仍按 `PENDING` 持久化以免丢失自动续传意图；
-     * - 运行期手动暂停、运行期切号自动暂停的任务**不**加入此集合，显式暂停或取消任务时须从此集合移除。
-     */
-    private val interruptedTasks = MutableStateFlow<Set<String>>(emptySet())
-    private val persistLock = Mutex()
-    private var preserveUnreadTasks = false
-    private var defaultFolderSource: DownloadFolderSource? = null
-
-    @Serializable
-    private data class PersistedFolderListing(
-        val batch: DownloadBatch,
-        val folderId: String,
-        val folderName: String,
-        val maxHeight: Int? = null,
-        val createdAtMs: Long = 0L,
-        val account: String = "",
-        val targetDirectory: String? = null,
-    )
-
-    fun bindDefaultFolderSource(source: DownloadFolderSource) {
-        defaultFolderSource = source
-        scope.launch {
-            restoreCompleted.await()
-            resumeListings()
-        }
-    }
-
-    private fun resumeListings() {
-        _listings.value.values.filter { it.account == currentAccount() }.forEach { listing ->
-            val work = listingWork.value[listing.batch.id] ?: return@forEach
-            if (work.job?.isActive != true && (work.source != null || defaultFolderSource != null)) retryListing(listing.batch.id)
-        }
-    }
-
-    private fun persistListingsSoon() { scope.launch { flushPersistence() } }
-
-    private val queueLock = Mutex()
-    private val enqueueLock = Mutex()
-    private val listingSlots = Semaphore(4)
-    private val partialPlaybackEpoch = MutableStateFlow(0L)
-    private var lastGroup: String? = null
-    private var batchSequence = 0L
-
-    private fun hasActiveWholeDownload(tasks: Map<String, DownloadTask>): Boolean =
-        tasks.values.any { it.status == DownloadStatus.DOWNLOADING && !it.isSegment }
-
-    private fun hasOpenTrackedCache(
-        tasks: Map<String, DownloadTask>,
-        snapshots: Map<String, PikoFileCachePool.Snapshot>,
-    ): Boolean = snapshots.isNotEmpty() && tasks.values.any {
-        it.sparseCache && !it.isSegment && it.status != DownloadStatus.COMPLETED && it.cacheIdentity in snapshots
-    }
-
-    init {
-        mediaRepository?.fileCachePool = fileCachePool
-        mediaRepository?.partialDownload = { fileId ->
-            _tasks.value.values.firstOrNull { it.fileId == fileId && belongsToCurrent(it) &&
-                !it.isSegment && it.mediaId == null && it.status != DownloadStatus.COMPLETED && it.sparseCache }
-                ?.also { partialPlaybackEpoch.update { epoch -> epoch + 1L } }
-        }
-        // 播放也会补齐暂停的下载。进度与网络速度统一采样，同一缓存的网络字节只统计一次。
-        scope.launch {
-            val samples = mutableMapOf<String, ArrayDeque<Pair<TimeMark, Long>>>()
-            var observedPlaybackEpoch = partialPlaybackEpoch.value
-            while (true) {
-                combine(_tasks, partialPlaybackEpoch) { tasks, epoch ->
-                    hasActiveWholeDownload(tasks) || epoch != observedPlaybackEpoch
-                }.first { it }
-
-                samples.clear()
-                var previousTick = TimeSource.Monotonic.markNow()
-                var logMark = previousTick
-                for ((path, snapshot) in fileCachePool.progressSnapshot()) {
-                    samples[path] = ArrayDeque<Pair<TimeMark, Long>>().apply {
-                        addLast(previousTick to snapshot.deliveredBytes)
-                    }
-                }
-                var playbackGraceTicks = if (partialPlaybackEpoch.value != observedPlaybackEpoch) {
-                    observedPlaybackEpoch = partialPlaybackEpoch.value
-                    PLAYBACK_WAKE_GRACE_TICKS
-                } else {
-                    0
-                }
-
-                while (true) {
-                    delay(PROGRESS_INTERVAL_MS)
-                    val latestEpoch = partialPlaybackEpoch.value
-                    if (latestEpoch != observedPlaybackEpoch) {
-                        observedPlaybackEpoch = latestEpoch
-                        playbackGraceTicks = PLAYBACK_WAKE_GRACE_TICKS
-                    } else if (playbackGraceTicks > 0) {
-                        playbackGraceTicks--
-                    }
-
-                    val snapshots = fileCachePool.progressSnapshot()
-                    val now = TimeSource.Monotonic.markNow()
-                    val speeds = if (snapshots.isEmpty()) {
-                        emptyMap()
-                    } else {
-                        snapshots.mapValues { (path, snapshot) ->
-                            val window = samples.getOrPut(path) {
-                                ArrayDeque<Pair<TimeMark, Long>>().apply { addLast(previousTick to 0L) }
-                            }
-                            window.addLast(now to snapshot.deliveredBytes)
-                            while (window.size > 2 && window.first().first.elapsedNow().inWholeMilliseconds > SPEED_WINDOW_MS) {
-                                window.removeFirst()
-                            }
-                            val (mark, bytes) = window.first()
-                            (snapshot.deliveredBytes - bytes).coerceAtLeast(0) * 1000 / mark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1)
-                        }
-                    }
-                    samples.keys.retainAll(snapshots.keys)
-                    previousTick = now
-
-                    if (snapshots.isNotEmpty()) {
-                        _tasks.update { tasks ->
-                            // 片段也占着暂存，但它的进度按截到的时间算，字节数是整个源文件的，不往它身上记
-                            val primary = HashMap<String, String>()
-                            for (task in tasks.values) {
-                                if (task.status == DownloadStatus.DOWNLOADING && task.sparseCache && !task.isSegment) {
-                                    val id = task.cacheIdentity
-                                    val existing = primary[id]
-                                    if (existing == null || task.taskId < existing) {
-                                        primary[id] = task.taskId
-                                    }
-                                }
-                            }
-                            var changed: MutableList<Pair<String, DownloadTask>>? = null
-                            for (task in tasks.values) {
-                                if (!task.sparseCache || task.isSegment || task.status == DownloadStatus.COMPLETED) continue
-                                val identity = task.cacheIdentity
-                                val snapshot = snapshots[identity] ?: continue
-                                val speed = if (primary[identity] == task.taskId) speeds[identity] ?: 0L else 0L
-                                if (snapshot.heldBytes != task.downloadedBytes || speed != task.speedBytesPerSec) {
-                                    if (changed == null) changed = ArrayList()
-                                    changed.add(task.taskId to task.copy(downloadedBytes = snapshot.heldBytes, speedBytesPerSec = speed))
-                                }
-                            }
-                            if (changed == null) tasks else tasks + changed
-                        }
-                    }
-
-                    if (logMark.elapsedNow().inWholeMilliseconds >= LOG_INTERVAL_MS) {
-                        val activeIdentities = _tasks.value.values
-                            .filter { it.status == DownloadStatus.DOWNLOADING && it.sparseCache && !it.isSegment }
-                            .mapTo(HashSet()) { it.cacheIdentity }
-                        if (activeIdentities.isNotEmpty()) {
-                            val activeSpeed = activeIdentities.sumOf { speeds[it] ?: 0L }
-                            PikoLog.d(
-                                TAG,
-                                "Active downloads: speed=$activeSpeed B/s, activeCaches=${activeIdentities.size}, poolEntries=${snapshots.size}",
-                            )
-                        }
-                        logMark = TimeSource.Monotonic.markNow()
-                    }
-
-                    val currentTasks = _tasks.value
-                    if (
-                        !hasActiveWholeDownload(currentTasks) &&
-                        !hasOpenTrackedCache(currentTasks, snapshots) &&
-                        playbackGraceTicks == 0 &&
-                        partialPlaybackEpoch.value == observedPlaybackEpoch
-                    ) {
-                        samples.clear()
-                        break
-                    }
-                }
-            }
-        }
-        scope.launch {
-            combine(preferences.snailModeFlow, clientProvider.currentClient) { mode, client -> mode to client }
-                .collect { (mode, client) ->
-                    limiter.bytesPerSecond = if (mode.enabled) mode.downloadKiBps * 1024L else null
-                    client?.downloadLimiter?.bytesPerSecond = limiter.bytesPerSecond
-                }
-        }
-        // 先恢复再开始写回：反过来的话，第一次写入的是构造时的空表，上次的记录就被抹掉了
-        scope.launch {
-            try { restore() } finally { restoreCompleted.complete(Unit) }
-            resumeListings()
-            runSuspendCatching { fileCachePool.prune() }.logFailure(TAG, "Failed to prune orphan download caches on startup")
-            persistOnStructuralChange()
-        }
-        // 换号时别的账号的任务转为暂停：它们手里的 client 随即关闭，放着不管会以失败告终
-        scope.launch {
-            clientProvider.currentClient.map { it?.account }.distinctUntilChanged().collect {
-                restoreCompleted.await()
-                val runningTasks = _tasks.value.values.count { task -> task.taskId in jobs.value && !belongsToCurrent(task) }
-                val foreignBatches = _tasks.value.values
-                    .filter { (it.status == DownloadStatus.PENDING || it.status == DownloadStatus.DOWNLOADING) && !belongsToCurrent(it) }
-                    .mapNotNull { it.batch?.id }
-                    .distinct()
-                val deferredSinglePending = _tasks.value.values.count {
-                    it.status == DownloadStatus.PENDING && it.batch == null && !belongsToCurrent(it)
-                }
-                val activeForeignListings = _listings.value.values.filter { it.isListing && it.account != currentAccount() }
-                if (runningTasks > 0 || foreignBatches.isNotEmpty() || activeForeignListings.isNotEmpty() || deferredSinglePending > 0) {
-                    PikoLog.i(
-                        TAG,
-                        "Account switched: pausing running=$runningTasks, batches=${foreignBatches.size}, listings=${activeForeignListings.size}, deferredSinglePending=$deferredSinglePending",
-                    )
-                }
-                // 文件夹下载的任务先整批停下：逐个暂停时，每停一个就会补上同一批里排着的下一个
-                foreignBatches.forEach { pauseBatchInternal(it, log = false) }
-                _tasks.value.values.filter { task -> task.taskId in jobs.value && !belongsToCurrent(task) }
-                    .forEach { task -> pauseDownloadInternal(task.taskId, log = false) }
-                // 列到一半的文件夹换了账号就列不下去，停下等切回来重试。这条只在切回所属账号后才看得见
-                activeForeignListings.forEach { listing ->
-                    listingWork.value[listing.batch.id]?.job?.cancel()
-                    updateListing(listing.batch.id) { it.copy(error = listingLeftAccountMessage) }
-                }
-                resumeListings()
-                resumeInterruptedTasks()
-            }
-        }
-    }
-
-    private fun resumeInterruptedTasks() {
-        val client = clientProvider.currentClient.value ?: return
-        client.downloadLimiter.bytesPerSecond = limiter.bytesPerSecond
-        var resumedCount = 0
-        _tasks.update { tasks ->
-            resumedCount = 0
-            tasks.mapValues { (id, task) ->
-                if (id in interruptedTasks.value && task.belongsTo(client.account) && task.status == DownloadStatus.PAUSED) {
-                    resumedCount++
-                    task.copy(status = DownloadStatus.PENDING, errorMessage = null)
-                } else task
-            }
-        }
-        interruptedTasks.update { ids -> ids.filterTo(HashSet()) { id ->
-            _tasks.value[id]?.let { !it.belongsTo(client.account) } == true
-        } }
-        if (resumedCount > 0) {
-            PikoLog.i(TAG, "Resumed $resumedCount interrupted download tasks for active account")
-        }
-        pumpQueue()
-    }
-
-    /**
-     * 读回上次保存的任务表。
-     *
-     * 上次进程结束时仍在下载或排队的任务，先核对暂存，所属账号可用后自动继续；手动暂停的保持暂停。
-     * 已完成的任务以磁盘为准核对，文件被删或长度不足的丢弃，免得列表里挂着打不开的条目。
-     */
-    private suspend fun restore() {
-        val saved = runSuspendCatching {
-            val serialized = preferences.loadDownloadTasks()
-            preserveUnreadTasks = serialized.isNotBlank()
-            val decoded = if (serialized.isBlank()) emptyList() else json.decodeFromString(taskListSerializer, serialized)
-            preserveUnreadTasks = false
-            decoded
-        }.logFailure(TAG, "Failed to load persisted download tasks, preserving raw data").getOrDefault(emptyList())
-        runSuspendCatching {
-            val serialized = cacheStore?.read("pending-folder-downloads.json")
-            val pending = serialized?.takeIf { it.isNotBlank() }?.let {
-                json.decodeFromString(ListSerializer(PersistedFolderListing.serializer()), it)
-            }.orEmpty()
-            pending.forEach { item ->
-                val folder = FileStat(id = item.folderId, name = item.folderName, kind = io.github.nihildigit.pikpak.FileKind.FOLDER)
-                val targetDir = normalizeTargetDirectory(item.targetDirectory ?: item.batch.targetDirectory)
-                val batch = if (item.batch.targetDirectory == targetDir) item.batch else item.batch.copy(targetDirectory = targetDir)
-                _listings.update { current -> mapOf(batch.id to FolderListing(batch, item.createdAtMs, item.account)) + current }
-                listingWork.update { current -> mapOf(batch.id to ListingWork(folder, null, item.maxHeight, targetDirectory = targetDir)) + current }
-            }
-        }.logFailure(TAG, "Failed to load pending folder download listings")
-        if (saved.isEmpty()) return
-        val restored = withContext(Dispatchers.IO) { saved.mapNotNull { restoreTask(it) } }
-        PikoLog.i(
-            TAG,
-            "Restored download tasks: saved=${saved.size}, restored=${restored.size}, " +
-                "incomplete=${restored.count { it.status != DownloadStatus.COMPLETED }}, droppedMissingOrIncomplete=${saved.size - restored.size}",
-        )
-        // 恢复期间用户可能已经加了新任务，同一任务以内存里的为准
-        _tasks.update { current -> restored.associateBy { it.taskId } + current }
-    }
-
-    // 片段任务的 destinationPath 与按 fileName 在下载目录里解析出的是同一个文件，存储层
-    // 只提供按文件名查询，所以两类任务都按 fileName 核对
-    private suspend fun restoreTask(task: DownloadTask): DownloadTask? {
-        if (task.status == DownloadStatus.PENDING || task.status == DownloadStatus.DOWNLOADING) {
-            interruptedTasks.update { it + task.taskId }
-        }
-        val cachedBytes = if (task.status != DownloadStatus.COMPLETED && !task.isSegment && task.gcid.isNotBlank() && task.cacheSize > 0L) {
-            fileCachePool.progress(task.account, task.gcid, task.cacheSize, task.cacheMediaId)
-        } else 0L
-        val sparseCache = task.sparseCache || cachedBytes > 0L
-        if (sparseCache && task.status != DownloadStatus.COMPLETED) {
-            fileCachePool.remember(task.account, task.gcid, task.cacheSize, task.taskId, task.cacheMediaId)
-        }
-        // 转封装做到一半退出的，下次从头再转：转码流还整个在暂存里，只是本机的活
-        val stopped = task.copy(speedBytesPerSec = 0L, converting = false,
-            progressFraction = task.progressFraction.takeUnless { task.converting })
-        val taskStorage = storageFor(task)
-        if (task.status == DownloadStatus.COMPLETED) {
-            if (!taskStorage.exists(task.fileName)) return null
-            val length = taskStorage.existingLength(task.fileName)
-            // 片段的 totalBytes 在旧版本里一直是 0，「长度不小于 totalBytes」对空文件也成立，
-            // 抽取失败留下的 0 字节文件会被当成已完成恢复回来。片段改为要求非空，并补上大小
-            if (task.isSegment) {
-                return stopped.copy(totalBytes = length, downloadedBytes = length).takeIf { length > 0 }
-            }
-            return stopped.takeIf { length == task.totalBytes }
-        }
-        val status = when (task.status) {
-            DownloadStatus.PENDING, DownloadStatus.DOWNLOADING -> DownloadStatus.PAUSED
-            else -> task.status
-        }
-        // 保存只在状态变化时发生，记下的字节数可能落后；整文件下载的续传点就是文件长度
-        val downloaded = if (task.isSegment) {
-            task.downloadedBytes
-        } else {
-            if (sparseCache) cachedBytes
-            else taskStorage.existingLength(task.fileName).coerceAtMost(task.totalBytes)
-        }
-        return stopped.copy(status = status, downloadedBytes = downloaded, sparseCache = sparseCache)
-    }
-
-    private data class TaskPersistenceKey(
-        val status: DownloadStatus,
-        val sparseCache: Boolean,
-        val fileName: String,
-        val mediaId: String?,
-        val fullFileSize: Long,
-        val targetDirectory: String?,
-    )
-
-    /**
-     * 任务增删或状态变化时保存整张表。进度每 500 毫秒刷新一次，按它写盘的话，
-     * Android 的 DataStore 每次都要整份重写文件。
-     *
-     * 写完一次至少隔 [PERSIST_INTERVAL_MS] 再写，其间的变化并成一次：文件夹下载一批上千个小文件，
-     * 每完成一个就是一次状态变化，逐次写就是上千次整表重写。晚写的那一段丢了也无妨，恢复时以磁盘为准核对。
-     */
-    private suspend fun persistOnStructuralChange() {
-        _tasks
-            // 暂存的身份（档位与长度）变了也要写：重启时按它登记暂存，记错了暂存会被当成没人要的删掉
-            .distinctUntilChangedBy { tasks ->
-                tasks.mapValues { (_, task) ->
-                    TaskPersistenceKey(task.status, task.sparseCache, task.fileName, task.mediaId, task.fullFileSize, task.targetDirectory)
-                }
-            }
-            .conflate()
-            .collect {
-                flushPersistence()
-                delay(PERSIST_INTERVAL_MS)
-            }
-    }
-
-    /** 立即把当前下载任务表与待处理文件夹枚举状态写入持久化存储。 */
-    suspend fun flushPersistence() {
-        restoreCompleted.await()
-        withContext(Dispatchers.IO) {
-            persistLock.withLock {
-                val tasks = _tasks.value
-                if (!preserveUnreadTasks || tasks.isNotEmpty()) {
-                    preserveUnreadTasks = false
-                    runSuspendCatching {
-                        val persisted = tasks.values.map { task ->
-                            if (task.taskId in interruptedTasks.value && task.status == DownloadStatus.PAUSED) {
-                                task.copy(status = DownloadStatus.PENDING)
-                            } else task
-                        }
-                        preferences.saveDownloadTasks(json.encodeToString(taskListSerializer, persisted))
-                    }
-                        .logFailure(TAG, "Failed to save download task table")
-                }
-                val pending = _listings.value.values.mapNotNull { listing ->
-                    listingWork.value[listing.batch.id]?.let { work ->
-                        PersistedFolderListing(
-                            batch = listing.batch,
-                            folderId = work.folder.id,
-                            folderName = work.folder.name,
-                            maxHeight = work.maxHeight,
-                            createdAtMs = listing.createdAtMs,
-                            account = listing.account,
-                            targetDirectory = work.targetDirectory ?: listing.batch.targetDirectory,
-                        )
-                    }
-                }
-                runSuspendCatching {
-                    cacheStore?.write("pending-folder-downloads.json", json.encodeToString(ListSerializer(PersistedFolderListing.serializer()), pending))
-                }.logFailure(TAG, "Failed to save pending folder download listings")
-            }
-        }
-    }
-
-    private fun localNameOf(file: FileStat): String = localFileNameOf(file)
-
-    /**
-     * 这个文件在下载目录里有没有完整副本。
-     *
-     * 只查内存任务表会在 App 重启后失忆（表是空的），明明下好的片子又去云端取流。
-     * 这里以磁盘为准：sanitize 后的文件名对上、长度落满才算数，暂停中的半截文件不算。
-     */
-    suspend fun findCompletedLocalPath(file: FileStat): String? = withContext(Dispatchers.IO) {
-        restoreCompleted.await()
-        if (file.sizeBytes <= 0L) return@withContext null
-        // 随文件夹下载或自选位置下载下来的路径只有任务表知道；任务表是持久化的，重启后照样查得到
-        val fromTasks = _tasks.value.values
-            .filter { it.fileId == file.id && belongsToCurrent(it) && it.status == DownloadStatus.COMPLETED }
-            .firstNotNullOfOrNull { task ->
-                val taskStorage = storageFor(task)
-                if (taskStorage.exists(task.fileName) && taskStorage.existingLength(task.fileName) == file.sizeBytes) {
-                    taskStorage.pathFor(task.fileName).takeUnless { it.startsWith("content:") }
-                } else {
-                    null
-                }
-            }
-        if (fromTasks != null) return@withContext fromTasks
-        val defaultName = localNameOf(file)
-        if (!storage.exists(defaultName) || storage.existingLength(defaultName) != file.sizeBytes) return@withContext null
-        // SAF 目录返回的是 content: URI，播放器认不了，维持走云端（与之前行为一致）。
-        storage.pathFor(defaultName).takeUnless { it.startsWith("content:") }
-    }
-
-    fun enqueue(file: FileStat, targetDirectory: String? = null) =
-        enqueueFiles(listOf(file), targetDirectory = targetDirectory)
-
-    /**
-     * 多选文件一次入队，共用全局并发上限；重复文件复用已有任务。视频按画质上限 [maxHeight] 挑档（0 是原画，
-     * null 取设置里的默认下载画质，没设过取原画），开始下载时才挑，见 [DownloadTask.qualityCap]。
-     */
-    fun enqueueFiles(files: List<FileStat>, maxHeight: Int? = null, targetDirectory: String? = null) {
-        enqueueFiles(files, leasedSource = false, maxHeight = maxHeight, targetDirectory = targetDirectory)
-    }
-
-    /**
-     * 单个视频按用户在下载对话框里选的那一档下载，不看上限。[quality] 是原画（name 为 null）时下原画；
-     * 是转码档时下完转封装成 MP4，文件名里带上档位。
-     */
-    fun enqueueQuality(file: FileStat, quality: DownloadQuality, targetDirectory: String? = null) {
-        enqueueFiles(listOf(file), leasedSource = false, chosen = quality, targetDirectory = targetDirectory)
-    }
-
-    /** 分享或解析得到的内容直接下载，临时文件对象不随解析面板关闭。 */
-    fun enqueueResolved(
-        files: List<io.github.nihildigit.pikpak.ResolvedFile>,
-        parentId: String = "",
-        targetDirectory: String? = null,
-    ) {
-        var missingHash = 0
-        val resolved = files.mapNotNull { file ->
-            val hash = file.gcid?.takeIf { it.isNotBlank() }?.uppercase() ?: run {
-                missingHash++
-                return@mapNotNull null
-            }
-            FileStat(id = "piko-content:$hash:${file.size}", name = file.name, hash = hash,
-                size = file.size.toString(), parentId = parentId, phase = io.github.nihildigit.pikpak.TaskPhase.COMPLETE)
-        }
-        if (missingHash > 0) {
-            PikoLog.w(TAG, "Skipped $missingHash resolved file(s) missing GCID (${logFolder(parentId)})")
-        }
-        enqueueFiles(resolved, leasedSource = true, targetDirectory = targetDirectory)
-    }
-
-    /** [chosen] 为 null 时按上限 [maxHeight] 挑档，它也为 null 时取设置里的下载画质。 */
-    private fun enqueueFiles(
-        files: List<FileStat>,
-        leasedSource: Boolean,
-        chosen: DownloadQuality? = null,
-        maxHeight: Int? = null,
-        targetDirectory: String? = null,
-    ) {
-        val account = currentAccount()
-        val accepted = files.filter { !it.isFolder && !it.isUploading }.distinctBy { it.id }
-        if (accepted.isEmpty()) return
-        val normalizedDir = normalizeTargetDirectory(targetDirectory)
-        val targetDirKey = directoryKey(normalizedDir)
-        val taskStorage = storageFor(normalizedDir)
-        scope.launch(Dispatchers.IO) {
-            restoreCompleted.await()
-            enqueueLock.withLock {
-                val now = Clock.System.now().toEpochMilliseconds()
-                val cap = if (chosen == null && !leasedSource) maxHeight ?: defaultMaxHeight() else 0
-                val batch = if (accepted.size > 1) {
-                    DownloadBatch(
-                        id = "files@$now-${++batchSequence}",
-                        folderName = tr("批量下载", "Batch download", "一括ダウンロード", "일괄 다운로드", "批次下載"),
-                        isFolder = false,
-                        targetDirectory = normalizedDir,
-                    )
-                } else null
-                val taken = _tasks.value.values
-                    .filter { directoryKey(it.targetDirectory) == targetDirKey }
-                    .mapTo(mutableSetOf()) { it.fileName.lowercase() }
-                val reused = accepted.count { existingTask(it, account, chosen, targetDirKey) != null }
-                val added = accepted.map { file ->
-                    val existing = existingTask(file, account, chosen, targetDirKey)
-                    if (existing != null) {
-                        existing.copy(status = if (existing.status == DownloadStatus.PAUSED || existing.status == DownloadStatus.FAILED) DownloadStatus.PENDING else existing.status)
-                    } else if (chosen?.name != null) {
-                        transcodeTask(file, chosen, account, now, taken, normalizedDir, targetDirKey, taskStorage)
-                    } else {
-                        val wanted = localNameOf(file)
-                        val matches = wanted.lowercase() !in taken && file.sizeBytes > 0L && taskStorage.exists(wanted) && taskStorage.existingLength(wanted) == file.sizeBytes
-                        var name = if (matches) wanted.also { taken.add(it.lowercase()) } else uniqueDownloadName(wanted, taken)
-                        if (!matches) while (taskStorage.exists(name)) name = uniqueDownloadName(wanted, taken)
-                        val bytes = taskStorage.existingLength(name)
-                        val complete = bytes == file.sizeBytes && file.sizeBytes > 0L
-                        DownloadTask(
-                            taskId = availableTaskId(file.id, account, targetDirKey), fileId = file.id, fileName = name, gcid = file.hash,
-                            totalBytes = file.sizeBytes, downloadedBytes = bytes.coerceAtMost(file.sizeBytes),
-                            destinationPath = if (complete) taskStorage.locate(name) ?: name else name,
-                            status = if (complete) DownloadStatus.COMPLETED else DownloadStatus.PENDING,
-                            fullFileSize = file.sizeBytes, thumbnailLink = file.thumbnailLink, parentId = file.parentId,
-                            createdAtMs = now, account = account, batch = batch, leasedSource = leasedSource,
-                            qualityCap = if (complete || leasedSource) 0 else qualityCapFor(file, name, cap),
-                            targetDirectory = normalizedDir,
-                        )
-                    }
-                }
-                _tasks.update { current -> current + added.filter { jobs.value[it.taskId]?.isActive != true }.associateBy { it.taskId } }
-                val targetSummary = batch?.let { "batch=${it.id}" }
-                    ?: "task=${logTask(added.first().taskId)}, ${logFile(accepted.first().id, added.first().fileName)}"
-                val qualitySummary = when {
-                    chosen != null -> ", quality=${chosen.name ?: "original"}"
-                    added.any { it.qualityCap > 0 } -> ", qualityCap=${cap}p"
-                    else -> ""
-                }
-                val unprobed = added.count { it.totalBytes == 0L && it.quality != null }
-                PikoLog.i(
-                    TAG,
-                    "Enqueued ${accepted.size} file(s) ($targetSummary${if (leasedSource) ", leased=true" else ""}${if (normalizedDir != null) ", customDir=true" else ""}): " +
-                        "reused=$reused, alreadyComplete=${added.count { it.status == DownloadStatus.COMPLETED }}, " +
-                        "knownBytes=${added.sumOf { it.totalBytes }}${if (unprobed > 0) " ($unprobed transcode size pending probe)" else ""}$qualitySummary",
-                )
-            }
-            pumpQueue()
-        }
-    }
-
-    /** 指定转码档的任务。文件名带上档位，与原画的下载分开；大小没探到时开始下载前再探。 */
-    private suspend fun transcodeTask(
-        file: FileStat,
-        quality: DownloadQuality,
-        account: String,
-        now: Long,
-        taken: MutableSet<String>,
-        targetDirectory: String?,
-        targetDirKey: String,
-        taskStorage: PikoDownloadStorage,
-    ): DownloadTask {
-        val label = quality.name ?: error("Original quality is not a transcode variant")
-        val wanted = transcodeFileName(localNameOf(file), label)
-        val size = quality.sizeBytes ?: 0L
-        val complete = wanted.lowercase() !in taken && size > 0L && taskStorage.exists(wanted) && taskStorage.existingLength(wanted) == size
-        var name = if (complete) wanted.also { taken.add(it.lowercase()) } else uniqueDownloadName(wanted, taken)
-        if (!complete) while (taskStorage.exists(name)) name = uniqueDownloadName(wanted, taken)
-        return DownloadTask(
-            taskId = availableTaskId("${file.id}_q_$label", account, targetDirKey), fileId = file.id, fileName = name, gcid = file.hash,
-            totalBytes = size, downloadedBytes = if (complete) size else 0L,
-            status = if (complete) DownloadStatus.COMPLETED else DownloadStatus.PENDING,
-            destinationPath = if (complete) taskStorage.locate(name) ?: name else name, fullFileSize = file.sizeBytes,
-            thumbnailLink = file.thumbnailLink, parentId = file.parentId, createdAtMs = now, account = account,
-            quality = label, mediaId = quality.mediaId, endMs = quality.durationMs,
-            targetDirectory = targetDirectory,
-        )
-    }
-
-    // 只有视频挑档。归档条目经借出的对象取流（leaseDetail），转码档的下载没有接这条路，只下原画
-    private fun qualityCapFor(file: FileStat, localName: String, cap: Int): Int =
-        if (cap > 0 && localName.isPlayableVideo() && !LeasedFile.isLeased(file.id)) cap else 0
-
-    /**
-     * 下载几个文件夹，每个一批：在后台列出其中全部文件，落在下载目录下同名的文件夹里、保持子文件夹结构。
-     * 列出期间与列完等确认时见 [listings]；列完即变成任务表里的一批任务（[DownloadTask.batch]），
-     * 同一批同时只下 [BATCH_PARALLEL] 个，其余排着。返回开始列出的批数：Piko 自己的文件夹不下载，见 [isPikoFolder]。
-     * 其中的视频按上限 [maxHeight] 挑档，同 [enqueueFiles]。
-     */
+    fun enqueue(file: FileStat, targetDirectory: String? = null)
+    fun enqueueFiles(files: List<FileStat>, maxHeight: Int? = null, targetDirectory: String? = null)
+    fun enqueueQuality(file: FileStat, quality: DownloadQuality, targetDirectory: String? = null)
+    fun enqueueResolved(files: List<ResolvedFile>, parentId: String = "", targetDirectory: String? = null)
     fun enqueueFolders(
         folders: List<FileStat>,
         source: DownloadFolderSource,
         maxHeight: Int? = null,
         targetDirectory: String? = null,
-    ): Int {
-        val normalizedDir = normalizeTargetDirectory(targetDirectory)
-        val targetDirKey = directoryKey(normalizedDir)
-        val eligible = folders.filter { it.isFolder && !isPikoFolder(it) }.distinctBy { it.id }
-        val accepted = eligible
-            .filter { folder ->
-                _listings.value.values.none {
-                    it.account == currentAccount() && it.batch.sourceFolderId == folder.id &&
-                        directoryKey(it.batch.targetDirectory) == targetDirKey
-                } &&
-                    _tasks.value.values.none {
-                        it.account == currentAccount() && it.batch?.sourceFolderId == folder.id &&
-                            directoryKey(it.batch.targetDirectory) == targetDirKey &&
-                            (it.status == DownloadStatus.PENDING || it.status == DownloadStatus.DOWNLOADING)
-                    }
-            }
-        val taken = (_listings.value.values
-            .filter { directoryKey(it.batch.targetDirectory) == targetDirKey }
-            .map { it.batch.folderName } +
-            _tasks.value.values.mapNotNull {
-                it.batch?.takeIf { batch -> batch.isFolder && directoryKey(batch.targetDirectory) == targetDirKey }?.folderName
-            }).mapTo(mutableSetOf()) { it.lowercase() }
-        accepted.forEach { folder ->
-            val now = Clock.System.now().toEpochMilliseconds()
-            val previous = _tasks.value.values.firstOrNull {
-                it.account == currentAccount() && it.batch?.sourceFolderId == folder.id &&
-                    directoryKey(it.batch.targetDirectory) == targetDirKey
-            }?.batch
-            val batch = previous ?: DownloadBatch(
-                id = "${folder.id}@$now",
-                folderName = uniqueDownloadName(FileNameSanitizer.sanitizeFolderName(folder.name), taken, false),
-                sourceFolderId = folder.id,
-                targetDirectory = normalizedDir,
-            )
-            _listings.update { it + (batch.id to FolderListing(batch, createdAtMs = now, account = currentAccount())) }
-            listingWork.update { it + (batch.id to ListingWork(folder, source, maxHeight, targetDirectory = normalizedDir)) }
-            PikoLog.d(TAG, "Preparing folder download: batch=${batch.id}, ${logFolder(folder.id)}${if (normalizedDir != null) ", customDir=true" else ""}")
-            persistListingsSoon()
-            startListing(batch.id)
-        }
-        return eligible.size
-    }
+    ): Int
 
-    /** 列出失败的重新列一遍。 */
-    fun retryListing(batchId: String) {
-        val listing = _listings.value[batchId] ?: return
-        if (listing.account.isNotEmpty() && listing.account != currentAccount()) return
-        updateListing(batchId) { it.copy(filesFound = 0, bytesFound = 0L, error = null, quotaExcess = null) }
-        startListing(batchId)
-    }
+    fun retryListing(batchId: String)
+    fun confirmListing(batchId: String)
+    fun dismissListing(batchId: String)
 
-    /** 超出今日额度也照样下载。 */
-    fun confirmListing(batchId: String) {
-        val work = listingWork.value[batchId] ?: return
-        if (_listings.value[batchId]?.account != currentAccount()) return
-        if (work.planned.isNotEmpty()) {
-            PikoLog.i(TAG, "Confirmed folder download exceeding daily quota: batch=$batchId, ${logFolder(work.folder.id)}, files=${work.planned.size}")
-            addBatch(batchId, work.planned)
-        }
-    }
+    fun pauseBatch(batchId: String)
+    fun resumeBatch(batchId: String)
+    fun cancelBatch(batchId: String)
+    suspend fun batchFolderPath(batch: DownloadBatch): String?
 
-    /** 不下载了：停下列出，或丢掉等确认的那一批。 */
-    fun dismissListing(batchId: String) {
-        val dismissed = _listings.value[batchId]
-        listingWork.value[batchId]?.job?.cancel()
-        listingWork.update { it - batchId }
-        _listings.update { it - batchId }
-        if (dismissed != null) {
-            PikoLog.d(TAG, "Dismissed folder listing: batch=$batchId, ${logFolder(dismissed.batch.sourceFolderId)}")
-        }
-        persistListingsSoon()
-    }
-
-    private fun startListing(batchId: String) {
-        val work = listingWork.value[batchId] ?: return
-        val listing = _listings.value[batchId] ?: return
-        if (work.job?.isActive == true) return
-        val job = scope.launch(Dispatchers.Default, start = CoroutineStart.LAZY) {
-            restoreCompleted.await()
-            if (_listings.value[batchId]?.account != currentAccount()) return@launch
-            val source = work.source ?: defaultFolderSource ?: return@launch
-            val planned = try {
-                planFolderDownload(work.folder, object : DownloadFolderSource {
-                    override suspend fun list(folderId: String) = listingSlots.withPermit { source.list(folderId) }
-                    override suspend fun remainingDailyDownload() = source.remainingDailyDownload()
-                }, rootName = listing.batch.folderName) { files, bytes ->
-                    updateListing(batchId) { it.copy(filesFound = files, bytesFound = bytes) }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                PikoLog.w(TAG, "Failed to list folder for download: batch=$batchId, ${logFolder(work.folder.id)}", e)
-                updateListing(batchId) { it.copy(error = e.message?.takeIf { m -> m.isNotBlank() } ?: tr("网络中断", "Network interrupted", "ネットワークが切断されました", "네트워크 연결이 끊어졌습니다", "網路中斷")) }
-                return@launch
-            }
-            if (planned.isEmpty()) {
-                PikoLog.d(TAG, "Folder has no downloadable files: batch=$batchId, ${logFolder(work.folder.id)}")
-                updateListing(batchId) { it.copy(error = tr("此文件夹中无可下载的文件", "No downloadable files in this folder", "このフォルダーにダウンロード可能なファイルはありません", "이 폴더에 다운로드할 수 있는 파일이 없습니다", "此資料夾中無可下載的檔案")) }
-                return@launch
-            }
-            // 已在本机的按长度认作完成，与单个文件的下载一样；上千个文件逐个查长度，放在 IO 线程上
-            val batchStorage = storageFor(listing.batch)
-            val lengths = batchStorage.existingLengths(planned.map { it.path })
-            val cap = work.maxHeight ?: defaultMaxHeight()
-            val tasks = withContext(Dispatchers.IO) { planned.map { plannedTask(it, listing, lengths[it.path] ?: 0L, cap, batchStorage) } }
-            val needed = tasks.filter { it.status != DownloadStatus.COMPLETED }.sumOf { it.totalBytes - it.downloadedBytes }
-            val remaining = runSuspendCatching { source.remainingDailyDownload() }
-                .logFailure(TAG, "Failed to query remaining daily download quota for batch=$batchId")
-                .getOrNull()
-            PikoLog.d(TAG, "Listed folder for download: batch=$batchId, ${logFolder(work.folder.id)}, files=${tasks.size}, neededBytes=$needed, remainingDailyQuota=$remaining")
-            if (remaining != null && needed > remaining) {
-                PikoLog.i(TAG, "Folder download awaiting quota confirmation: batch=$batchId, ${logFolder(work.folder.id)}, neededBytes=$needed, remainingDailyQuota=$remaining")
-                listingWork.update { current -> current[batchId]?.let { current + (batchId to it.copy(job = null, planned = tasks)) } ?: current }
-                updateListing(batchId) { it.copy(quotaExcess = QuotaExcess(needed, remaining)) }
-            } else {
-                addBatch(batchId, tasks)
-            }
-        }
-        listingWork.update { current -> current[batchId]?.let { current + (batchId to it.copy(job = job, planned = emptyList())) } ?: current }
-        job.start()
-    }
-
-    private suspend fun plannedTask(
-        planned: PlannedFile,
-        listing: FolderListing,
-        length: Long,
-        cap: Int,
-        batchStorage: PikoDownloadStorage,
-    ): DownloadTask {
-        val file = planned.file
-        val targetDir = normalizeTargetDirectory(listing.batch.targetDirectory)
-        val targetDirKey = directoryKey(targetDir)
-        existingTask(file, listing.account, targetDirectoryKey = targetDirKey)?.takeIf {
-            (it.status != DownloadStatus.COMPLETED || (it.fileName == planned.path && length == file.sizeBytes)) }?.let {
-                return it.copy(status = if (it.status == DownloadStatus.PAUSED || it.status == DownloadStatus.FAILED) DownloadStatus.PENDING else it.status)
-            }
-        val downloaded = length
-        val complete = downloaded == file.sizeBytes && file.sizeBytes > 0L
-        return DownloadTask(
-            taskId = availableTaskId(file.id, listing.account, targetDirKey),
-            fileId = file.id,
-            fileName = planned.path,
-            gcid = file.hash,
-            totalBytes = file.sizeBytes,
-            downloadedBytes = downloaded.coerceAtMost(file.sizeBytes),
-            destinationPath = if (complete) batchStorage.locate(planned.path) ?: batchStorage.pathFor(planned.path) else planned.path,
-            status = if (complete) DownloadStatus.COMPLETED else DownloadStatus.PENDING,
-            fullFileSize = file.sizeBytes,
-            thumbnailLink = file.thumbnailLink,
-            parentId = file.parentId,
-            createdAtMs = listing.createdAtMs,
-            account = listing.account,
-            batch = listing.batch,
-            qualityCap = if (complete) 0 else qualityCapFor(file, planned.path, cap),
-            targetDirectory = targetDir,
-        )
-    }
-
-    // 一次写进任务表：逐个加的话上千个文件就是上千次整表复制与重组
-    private fun addBatch(batchId: String, tasks: List<DownloadTask>) {
-        val batch = tasks.firstOrNull()?.batch ?: _listings.value[batchId]?.batch
-        _tasks.update { current ->
-            // 正在下的同一个文件不拿排队的新任务盖掉，理由同 enqueue
-            current + tasks.filter { jobs.value[it.taskId]?.isActive != true }.associateBy { it.taskId }
-        }
-        listingWork.update { it - batchId }
-        _listings.update { it - batchId }
-        persistListingsSoon()
-        PikoLog.i(
-            TAG,
-            "Folder batch enqueued: batch=$batchId, ${logFolder(batch?.sourceFolderId)}, " +
-                "files=${tasks.size}, alreadyComplete=${tasks.count { it.status == DownloadStatus.COMPLETED }}, totalBytes=${tasks.sumOf { it.totalBytes }}",
-        )
-        pumpBatch(batchId)
-    }
-
-    /**
-     * 批次操作交给全局队列，多个文件夹不会各自叠加并发。
-     */
-    private fun pumpBatch(batchId: String) = pumpQueue()
-
-    /** 所有批次与单文件共用三个位置，各组轮流获得位置，取消中的任务收尾后才腾出位置。 */
-    private fun pumpQueue() {
-        scope.launch {
-            queueLock.withLock {
-                var slots = (BATCH_PARALLEL - jobs.value.size).coerceAtLeast(0)
-                val pending = _tasks.value.values.filter {
-                    it.status == DownloadStatus.PENDING && belongsToCurrent(it) && it.taskId !in jobs.value
-                }.sortedWith(compareBy({ it.createdAtMs }, { it.fileName }))
-                    .groupBy { it.batch?.id ?: "single" }.mapValues { it.value.toMutableList() }.toMutableMap()
-                while (slots > 0 && pending.isNotEmpty()) {
-                    val keys = pending.keys.toList()
-                    val previous = keys.indexOf(lastGroup)
-                    val key = keys[(previous + 1) % keys.size]
-                    val next = pending.getValue(key).removeAt(0)
-                    if (pending.getValue(key).isEmpty()) pending.remove(key)
-                    lastGroup = key
-                    var claimed = false
-                    update(next.taskId) {
-                        claimed = it.status == DownloadStatus.PENDING && belongsToCurrent(it)
-                        if (claimed) it.copy(status = DownloadStatus.DOWNLOADING) else it
-                    }
-                    if (claimed) {
-                        launchDownload(next.taskId)
-                        slots--
-                    }
-                }
-            }
-        }
-    }
-
-    fun pauseBatch(batchId: String) = pauseBatchInternal(batchId, log = true)
-
-    private fun pauseBatchInternal(batchId: String, log: Boolean) {
-        val ids = batchTaskIds(batchId)
-        val batch = ids.firstNotNullOfOrNull { _tasks.value[it]?.batch }
-        var pausedCount = 0
-        interruptedTasks.update { it - ids.toSet() }
-        // 先把排着的一起转为暂停，再停在下的：停一个会补下一个，补的时候已经没有排着的了
-        _tasks.update { tasks ->
-            pausedCount = 0
-            tasks + ids.mapNotNull { id ->
-                tasks[id]?.takeIf { it.status == DownloadStatus.PENDING || it.status == DownloadStatus.DOWNLOADING }
-                    ?.let {
-                        pausedCount++
-                        id to it.copy(status = DownloadStatus.PAUSED, speedBytesPerSec = 0L)
-                    }
-            }
-        }
-        ids.forEach { id -> jobs.value[id]?.cancel() }
-        if (log && pausedCount > 0) {
-            PikoLog.i(TAG, "Paused download batch: batch=$batchId, ${logFolder(batch?.sourceFolderId)}, paused=$pausedCount")
-        }
-    }
-
-    /** 整批继续：暂停与失败的重新排队。 */
-    fun resumeBatch(batchId: String) {
-        val ids = batchTaskIds(batchId)
-        val batch = ids.firstNotNullOfOrNull { _tasks.value[it]?.batch }
-        var resumedCount = 0
-        _tasks.update { tasks ->
-            resumedCount = 0
-            tasks + ids.mapNotNull { id ->
-                tasks[id]?.takeIf { (it.status == DownloadStatus.PAUSED || it.status == DownloadStatus.FAILED) && belongsToCurrent(it) }
-                    ?.let {
-                        resumedCount++
-                        id to it.copy(status = DownloadStatus.PENDING, errorMessage = null)
-                    }
-            }
-        }
-        if (resumedCount > 0) {
-            PikoLog.i(TAG, "Resumed download batch: batch=$batchId, ${logFolder(batch?.sourceFolderId)}, resumed=$resumedCount")
-        }
-        pumpBatch(batchId)
-    }
-
-    /** 取消整批并删掉已下载的文件，连同留下的空文件夹。 */
-    fun cancelBatch(batchId: String) {
-        dismissListing(batchId)
-        val tasks = _tasks.value.values.filter { it.batch?.id == batchId }
-        val batch = tasks.firstOrNull()?.batch ?: return
-        val folder = batch.folderName
-        PikoLog.i(
-            TAG,
-            "Cancelling download batch: batch=$batchId, ${logFolder(batch.sourceFolderId)}, " +
-                "tasks=${tasks.size}, completed=${tasks.count { it.status == DownloadStatus.COMPLETED }}, deleteLocal=true",
-        )
-        // 先整批转为暂停，免得逐个取消时补上同一批里排着的
-        pauseBatchInternal(batchId, log = false)
-        val removals = tasks.mapNotNull { cancelDownloadInternal(it.taskId, log = false) }
-        scope.launch(Dispatchers.IO) {
-            removals.joinAll()
-            if (batch.isFolder) {
-                runSuspendCatching { storageFor(batch).pruneEmptyFolders(folder) }
-                    .logFailure(TAG, "Failed to prune empty folders after cancelling batch=$batchId (${logFolder(batch.sourceFolderId)})")
-            }
-        }
-    }
-
-    /** 这一批的文件夹在本机的位置，还没建出来时为 null。 */
-    suspend fun batchFolderPath(batch: DownloadBatch): String? =
-        storageFor(batch).locate(if (batch.isFolder) batch.folderName else "")
-
-    private fun batchTaskIds(batchId: String): List<String> =
-        _tasks.value.values.filter { it.batch?.id == batchId }.map { it.taskId }
-
-    private fun updateListing(batchId: String, transform: (FolderListing) -> FolderListing) {
-        _listings.update { listings -> listings[batchId]?.let { listings + (batchId to transform(it)) } ?: listings }
-    }
-
-    /** 同一个文件已有的整文件任务。指定了画质（[chosen]）时只认那一档的，原画不认还没挑档的任务；不同目标目录视为独立任务。 */
-    private fun existingTask(
-        file: FileStat,
-        account: String,
-        chosen: DownloadQuality? = null,
-        targetDirectoryKey: String = directoryKey(null),
-    ): DownloadTask? = _tasks.value.values.firstOrNull {
-        it.fileId == file.id && !it.isSegment && (it.account == account || it.account.isEmpty()) && it.gcid == file.hash &&
-            directoryKey(it.targetDirectory) == targetDirectoryKey &&
-            (chosen == null || (it.quality == chosen.name && it.qualityCap == 0))
-    }
-
-    private fun availableTaskId(fileId: String, account: String, targetDirectoryKey: String = directoryKey(null)): String {
-        val scoped = if (_tasks.value[fileId]?.let { it.account.isNotEmpty() && it.account != account } == true) {
-            "$account:$fileId"
-        } else {
-            fileId
-        }
-        val existing = _tasks.value[scoped]
-        if (existing == null || directoryKey(existing.targetDirectory) == targetDirectoryKey) return scoped
-        var suffix = 2
-        while (_tasks.value.containsKey("$scoped#$suffix")) suffix++
-        return "$scoped#$suffix"
-    }
-
-    private fun currentAccount(): String = clientProvider.currentClient.value?.account.orEmpty()
-
-    /** 没给上限时取设置里的默认下载画质；没设过默认的，经对话框来的都已带上上限，其余入口下原画。 */
-    private suspend fun defaultMaxHeight(): Int = preferences.downloadMaxHeightFlow.first() ?: 0
-
-    private fun belongsToCurrent(task: DownloadTask): Boolean = task.belongsTo(currentAccount())
-
-    fun startDownload(taskId: String) {
-        val task = _tasks.value[taskId] ?: return
-        if (jobs.value[taskId]?.isActive == true) return
-        // 传输页只列当前账号的，这里只防换号与点击交错。不写原因：这条只在切回所属账号后才看得见，那时已不成立
-        if (!belongsToCurrent(task)) {
-            update(taskId) { it.copy(status = DownloadStatus.PAUSED, errorMessage = null) }
-            return
-        }
-        update(taskId) { it.copy(status = DownloadStatus.PENDING, errorMessage = null) }
-        pumpQueue()
-    }
-
-    private fun launchDownload(taskId: String) {
-        val task = _tasks.value[taskId] ?: return
-        // 文件 ID 与直链只在源账号里有效，换到别的账号上取不到
-        if (!belongsToCurrent(task)) {
-            update(taskId) { it.copy(status = DownloadStatus.PAUSED, errorMessage = null) }
-            return
-        }
-        // 整文件下载的开始在取得缓存之后记，那时才知道续传点
-        if (task.isSegment) {
-            PikoLog.d(TAG, "Starting segment extraction: task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}, range=${task.startMs}..${task.endMs}ms")
-        }
-        // 片段任务要重新抽取，不能走整文件下载：它的 totalBytes 是 0，gcid 属于整个源文件
-        if (task.isSegment) startSegment(task) else launchTracked(taskId) { runDownload(task) }
-    }
-
-    /** 播放、预取与下载共用 SDK 缓存；续传只请求位图尚未持有的块。 */
-    private suspend fun runDownload(queued: DownloadTask) {
-        var task = queued
-        val taskId = task.taskId
-        val client = clientProvider.currentClient.value ?: run {
-            PikoLog.w(TAG, "Download failed: not signed in (task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)})")
-            update(taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入")) }
-            return
-        }
-        var lease: PikoFileCachePool.Lease? = null
-        val started = TimeSource.Monotonic.markNow()
-        try {
-            if (task.qualityCap > 0 || task.quality != null) task = chooseQuality(task)
-            // 转码档的 handle 要原画的大小（重建文件对象时用），暂存的大小是转码流的长度
-            val isLeased = task.leasedSource || LeasedFile.isLeased(task.fileId)
-            val leaseParentId = if (isLeased) {
-                runSuspendCatching { mediaRepository?.leaseFolder?.invoke(client) }
-                    .logFailure(TAG, "Failed to resolve lease folder for task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}")
-                    .getOrNull()
-                    ?: task.parentId.takeIf { dev.piko.shared.data.isDriveFolderId(it) }.orEmpty()
-            } else {
-                task.parentId
-            }
-            lease = fileCachePool.acquire(client, task.fileId, task.gcid,
-                if (task.mediaId != null) task.fullFileSize else task.totalBytes, task.fileName,
-                parentId = leaseParentId, leased = isLeased,
-                retained = true, owner = taskId,
-                mediaId = task.mediaId, streamSize = task.totalBytes)
-            val entry = lease.entry
-            val importLegacyPrefix = !task.sparseCache && task.mediaId == null && task.downloadedBytes > 0L
-            task = task.copy(
-                account = client.account,
-                sparseCache = true,
-                downloadedBytes = entry.store.heldBytes.value,
-                status = DownloadStatus.DOWNLOADING,
-                errorMessage = null,
-            )
-            update(taskId) { it.copy(account = client.account, sparseCache = true, downloadedBytes = entry.store.heldBytes.value,
-                status = DownloadStatus.DOWNLOADING, errorMessage = null) }
-            val taskStorage = storageFor(task)
-            // 旧版本顺序下载的前缀只可能是原画；转码档的文件名指的是转封装的产物
-            if (importLegacyPrefix) {
-                val legacyPath = taskStorage.locate(task.fileName)?.takeUnless { it.startsWith("content:") }
-                    ?: if (taskStorage.existingLength(task.fileName) > 0L) taskStorage.downloadTarget(task.fileName) else null
-                if (legacyPath != null) entry.store.importPrefix(legacyPath)
-            }
-            val heldAtStart = entry.store.heldBytes.value
-            // 文件夹下载里的小文件成百上千，逐个记会把日志刷满，它们只进整批完成的那一行；失败照样逐个记
-            val logEach = task.batch == null || task.totalBytes >= BATCH_LOG_MIN_BYTES
-            if (logEach) {
-                PikoLog.d(
-                    TAG,
-                    "Download started: task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}, held=$heldAtStart/${task.totalBytes} B" +
-                        (if (isLeased) ", leased=true" else "") +
-                        (limiter.bytesPerSecond?.let { ", limit=${it / 1024} KiB/s" } ?: ""),
-                )
-            }
-            coroutineScope {
-                val networkStarted = TimeSource.Monotonic.markNow()
-                // SDK 按块限速并响应额度变化，切换蜗牛模式不撤回或重建下载需求。
-                val missingAll = entry.store.missing(entry.handle.contentKey, downloadOrder(task.totalBytes))
-                val download = entry.cache.download(missingAll, StreamRole.BACKGROUND)
-                // 下载属于共享缓存作用域，暂停或取消任务时仍须撤回这个需求。
-                val cancelHandle = currentCoroutineContext()[Job]?.invokeOnCompletion {
-                    if (it != null) download.cancel()
-                }
-                try {
-                    download.await()
-                } finally {
-                    cancelHandle?.dispose()
-                    download.cancel()
-                }
-                val networkMs = networkStarted.elapsedNow().inWholeMilliseconds
-                check(entry.store.heldBytes.value == task.totalBytes) {
-                    "Sparse cache still has missing blocks (${entry.store.heldBytes.value}/${task.totalBytes} B)"
-                }
-                val exportStarted = TimeSource.Monotonic.markNow()
-                entry.store.flush()
-                val target = taskStorage.downloadTarget(task.fileName)
-                if (task.mediaId == null) entry.store.exportTo(target) else convertTranscode(task, entry.store, target)
-                val destination = taskStorage.commit(task.fileName, target)
-                val exportMs = exportStarted.elapsedNow().inWholeMilliseconds
-                // 转码档存下的是转封装出的 MP4，长度与转码流不同；完成的任务按文件长度核对，见 restoreTask
-                val savedBytes = if (task.mediaId == null) task.totalBytes else taskStorage.existingLength(task.fileName)
-                fileCachePool.complete(lease, taskId)
-                val totalMs = started.elapsedNow().inWholeMilliseconds
-                val fetchedBytes = (task.totalBytes - heldAtStart).coerceAtLeast(0L)
-                val netRateSummary = if (fetchedBytes > 0L) "${fetchedBytes * 1000L / networkMs.coerceAtLeast(1L) / 1024L} KiB/s" else "cached"
-                if (logEach) {
-                    PikoLog.i(
-                        TAG,
-                        "Download completed: task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}, " +
-                            "streamBytes=${task.totalBytes}, fetchedBytes=$fetchedBytes, networkMs=$networkMs ($netRateSummary), " +
-                            "exportMs=$exportMs, totalMs=$totalMs" +
-                            (task.quality?.let { ", remuxedQuality=$it, savedBytes=$savedBytes" } ?: ""),
-                    )
-                }
-                update(taskId) { it.copy(status = DownloadStatus.COMPLETED, totalBytes = savedBytes, downloadedBytes = savedBytes,
-                    speedBytesPerSec = 0L, destinationPath = destination, sparseCache = false, converting = false, progressFraction = null) }
-                task.batch?.let { batch ->
-                    val members = _tasks.value.values.filter { it.batch?.id == batch.id }
-                    if (members.all { it.status == DownloadStatus.COMPLETED }) {
-                        PikoLog.i(
-                            TAG,
-                            "Download batch completed: batch=${batch.id}, ${logFolder(batch.sourceFolderId)}, " +
-                                "files=${members.size}, totalBytes=${members.sumOf { it.totalBytes }}",
-                        )
-                    }
-                }
-            }
-        } catch (e: CancellationException) {
-            update(taskId) { it.copy(status = if (it.status == DownloadStatus.PENDING) it.status else DownloadStatus.PAUSED,
-                downloadedBytes = lease?.entry?.store?.heldBytes?.value ?: it.downloadedBytes, speedBytesPerSec = 0L,
-                converting = false, progressFraction = null) }
-            throw e
-        } catch (e: Throwable) {
-            val stillCurrent = _tasks.value[taskId]?.let(::belongsToCurrent) ?: belongsToCurrent(task)
-            if (!stillCurrent) {
-                PikoLog.i(
-                    TAG,
-                    "Download paused after account switch: task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}, " +
-                        "held=${lease?.entry?.store?.heldBytes?.value ?: task.downloadedBytes}/${task.totalBytes} B (${e::class.simpleName})",
-                )
-                update(taskId) {
-                    it.copy(
-                        status = DownloadStatus.PAUSED,
-                        speedBytesPerSec = 0L,
-                        downloadedBytes = lease?.entry?.store?.heldBytes?.value ?: it.downloadedBytes,
-                        errorMessage = null,
-                        converting = false,
-                        progressFraction = null,
-                    )
-                }
-            } else {
-                val converting = _tasks.value[taskId]?.converting == true
-                PikoLog.w(
-                    TAG,
-                    "Download failed: task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}, " +
-                        "held=${lease?.entry?.store?.heldBytes?.value ?: "?"}/${task.totalBytes} B, " +
-                        "elapsedMs=${started.elapsedNow().inWholeMilliseconds}" +
-                        (if (lease == null) ", stage=before_cache_lease" else if (converting) ", stage=remux" else ", stage=transfer"),
-                    e,
-                )
-                // 转封装失败时转码流仍完整留在暂存里，重试只重做转封装
-                update(taskId) {
-                    it.copy(
-                        status = DownloadStatus.FAILED,
-                        speedBytesPerSec = 0L,
-                        downloadedBytes = lease?.entry?.store?.heldBytes?.value ?: it.downloadedBytes,
-                        errorMessage = e.message,
-                        converting = false,
-                        progressFraction = null,
-                    )
-                }
-            }
-        } finally {
-            val currentLease = lease
-            if (currentLease != null) {
-                val shouldPersistProgress = _tasks.value[taskId] != null && currentLease.entry.retained
-                currentLease.release()
-                if (shouldPersistProgress && currentLease.entry.retained) {
-                    withContext(NonCancellable) {
-                        runCatching { currentLease.entry.store.flush() }
-                            .logFailure(TAG, "Failed to flush sparse cache bitmap on exit: task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}")
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * 定下这个任务下哪一档：按上限挑（[DownloadTask.qualityCap]，规则见 downloadQualityOrder），或补齐用户选的那一档的
-     * media ID 与大小。挑到转码档时文件名换成带档位的 .mp4，挑到原画照旧。用户选的档已经没有了、或读不出字节则失败，
-     * 不悄悄换成原画。转码档的任务每次开始都经这里，读不出的档在开始时就以能看懂的提示失败，而不是下到第一个块才报错。
-     */
-    private suspend fun chooseQuality(task: DownloadTask): DownloadTask {
-        val repo = mediaRepository
-        if (repo == null) {
-            if (task.quality != null && (task.mediaId == null || task.totalBytes <= 0L)) error(TRANSCODE_GONE_MESSAGE)
-            val fallback = task.copy(qualityCap = 0)
-            if (task.qualityCap != 0) update(task.taskId) { it.copy(qualityCap = 0) }
-            PikoLog.d(TAG, "Media repository unavailable; using existing target for task=${logTask(task.taskId)}, ${logFile(task.fileId, task.fileName)}")
-            return fallback
-        }
-        val variant = repo.downloadVariant(task.fileId, task.quality, task.qualityCap).getOrThrow()
-        var reVerifiedSameTarget = false
-        val chosen = when {
-            variant != null && variant.sizeBytes != null && variant.sizeBytes > 0 -> {
-                reVerifiedSameTarget = task.quality != null && task.mediaId == variant.mediaId && task.totalBytes == variant.sizeBytes
-                val name = if (task.quality == null) renamedForQuality(task, variant.name ?: ORIGINAL_QUALITY) else task.fileName
-                task.copy(
-                    qualityCap = 0,
-                    quality = variant.name,
-                    mediaId = variant.mediaId,
-                    totalBytes = variant.sizeBytes,
-                    downloadedBytes = if (reVerifiedSameTarget) task.downloadedBytes else 0L,
-                    endMs = variant.durationMs,
-                    fileName = name,
-                    destinationPath = name,
-                )
-            }
-            task.quality != null -> error(TRANSCODE_GONE_MESSAGE)
-            else -> task.copy(qualityCap = 0)
-        }
-        val detail = "task=${logTask(task.taskId)}, ${logFile(task.fileId, chosen.fileName)}, " +
-            "quality=${chosen.quality ?: "original"}${if (task.qualityCap > 0) " (cap=${task.qualityCap}p)" else ""}, streamBytes=${chosen.totalBytes}"
-        if (reVerifiedSameTarget) {
-            PikoLog.d(TAG, "Verified transcode target: $detail")
-        } else {
-            PikoLog.i(TAG, "Selected download quality: $detail")
-        }
-        update(task.taskId) {
-            it.copy(qualityCap = chosen.qualityCap, quality = chosen.quality, mediaId = chosen.mediaId, totalBytes = chosen.totalBytes,
-                downloadedBytes = chosen.downloadedBytes, endMs = chosen.endMs, fileName = chosen.fileName, destinationPath = chosen.destinationPath)
-        }
-        return chosen
-    }
-
-    /**
-     * 片段从哪一档截：按上限挑或补齐所选档的 media ID。按上限挑到的不改名（名字入队时就定了）；
-     * 转码流的长度在截取开始打开来源时记下。用户选的档已经没有了则失败。
-     */
-    private suspend fun chooseSegmentQuality(task: DownloadTask): DownloadTask {
-        val repo = mediaRepository
-        if (repo == null) {
-            if (task.quality != null && task.mediaId == null) error(TRANSCODE_GONE_MESSAGE)
-            val fallback = task.copy(qualityCap = 0)
-            if (task.qualityCap != 0) update(task.taskId) { it.copy(qualityCap = 0) }
-            return fallback
-        }
-        val variant = repo.downloadVariant(task.fileId, task.quality, task.qualityCap).getOrThrow()
-        if (variant == null && task.quality != null) error(TRANSCODE_GONE_MESSAGE)
-        PikoLog.i(
-            TAG,
-            "Selected segment quality: task=${logTask(task.taskId)}, ${logFile(task.fileId, task.fileName)}, " +
-                "quality=${variant?.name ?: "original"}${if (task.qualityCap > 0) " (cap=${task.qualityCap}p)" else ""}",
-        )
-        update(task.taskId) { it.copy(qualityCap = 0, quality = variant?.name, mediaId = variant?.mediaId) }
-        return task.copy(qualityCap = 0, quality = variant?.name, mediaId = variant?.mediaId)
-    }
-
-    /** 按上限挑到转码档的任务改名：「名字 [720P].mp4」，在原来的文件夹里，与已有的文件与任务都不重名。 */
-    private suspend fun renamedForQuality(task: DownloadTask, label: String): String = enqueueLock.withLock {
-        val folder = task.fileName.substringBeforeLast('/', "")
-        val wanted = (if (folder.isEmpty()) "" else "$folder/") + transcodeFileName(task.fileName.substringAfterLast('/'), label)
-        val taskStorage = storageFor(task)
-        val targetDirKey = directoryKey(task.targetDirectory)
-        val taken = _tasks.value.values
-            .filter { it.taskId != task.taskId && directoryKey(it.targetDirectory) == targetDirKey }
-            .mapTo(mutableSetOf()) { it.fileName.lowercase() }
-        var name = uniqueDownloadName(wanted, taken)
-        while (taskStorage.exists(name)) name = uniqueDownloadName(wanted, taken)
-        name
-    }
-
-    /** 把下完的转码流（MPEG-TS）在本机转封装成 MP4 写到 [target]，任务显示为「转换中」。 */
-    private suspend fun convertTranscode(task: DownloadTask, store: PersistentFileStore, target: String) {
-        val converter = segmentDownloader ?: error(tr("当前平台不支持转封装", "Remuxing is not supported on this platform", "このプラットフォームでは再多重化に対応していません", "이 플랫폼에서는 리먹싱을 지원하지 않습니다", "目前平台不支援轉封裝"))
-        update(task.taskId) { it.copy(converting = true, progressFraction = 0f, speedBytesPerSec = 0L) }
-        val started = TimeSource.Monotonic.markNow()
-        val logicalOpen = store.logicalSourceFactory()?.let { open -> suspend { open() } }
-        converter.remux(
-            PikoRemuxRequest(
-                sourcePath = store.path,
-                destinationPath = target,
-                durationMillis = task.endMs,
-                openRandomAccess = logicalOpen,
-            ),
-        ) { fraction ->
-            update(task.taskId) { it.copy(progressFraction = fraction) }
-        }.getOrThrow()
-        PikoLog.d(TAG, "Remuxed transcode stream to MP4: task=${logTask(task.taskId)}, ${logFile(task.fileId, task.fileName)}, elapsedMs=${started.elapsedNow().inWholeMilliseconds}")
-    }
-
-    private fun downloadOrder(size: Long): List<LongRange> =
-        if (size > 0L) listOf(0L until size) else emptyList()
-
+    fun startDownload(taskId: String)
     fun enqueueSegment(
         file: FileStat,
         startMillis: Long,
         endMillis: Long,
         timeRangeLabel: String,
         sourceUrl: String,
-        /** 从哪一档截，原画的 name 为 null；为 null 时按设置里的下载画质上限，开始截取时再挑。 */
         quality: DownloadQuality? = null,
         targetDirectory: String? = null,
-    ) {
-        val account = currentAccount()
-        val normalizedDir = normalizeTargetDirectory(targetDirectory)
-        val targetDirKey = directoryKey(normalizedDir)
-        val taskStorage = storageFor(normalizedDir)
-        scope.launch {
-            restoreCompleted.await()
-            enqueueLock.withLock {
-                val cap = if (quality == null) defaultMaxHeight() else 0
-                // 选定了转码档时名字里带上档位；按上限挑的开始时才知道，名字不改
-                val label = quality?.name?.let { "_[$it]" }.orEmpty()
-                val name = FileNameSanitizer.sanitize(
-                    "${file.name.substringBeforeLast('.', file.name)}_[$timeRangeLabel]$label.mp4",
-                    fallbackExtension = "mp4",
-                    forceExtension = "mp4",
-                )
-                val taskId = availableTaskId(
-                    "${file.id}_seg_${startMillis}_$endMillis${quality?.name?.let { "_$it" }.orEmpty()}",
-                    account,
-                    targetDirKey,
-                )
-                val task = DownloadTask(
-                    taskId = taskId,
-                    fileId = file.id,
-                    fileName = name,
-                    gcid = file.hash,
-                    totalBytes = 0L,
-                    destinationPath = taskStorage.pathFor(name),
-                    isSegment = true,
-                    fullFileSize = file.sizeBytes,
-                    timeRangeLabel = timeRangeLabel,
-                    thumbnailLink = file.thumbnailLink,
-                    startMs = startMillis,
-                    endMs = endMillis,
-                    streamUrl = sourceUrl,
-                    parentId = file.parentId,
-                    createdAtMs = Clock.System.now().toEpochMilliseconds(),
-                    account = account,
-                    quality = quality?.name,
-                    mediaId = quality?.mediaId,
-                    qualityCap = if (LeasedFile.isLeased(file.id)) 0 else cap,
-                    targetDirectory = normalizedDir,
-                )
-                _tasks.update { it + (taskId to task) }
-                PikoLog.i(
-                    TAG,
-                    "Enqueued segment download: task=${logTask(taskId)}, ${logFile(file.id, name)}, " +
-                        "range=${startMillis}..${endMillis}ms, quality=${quality?.name ?: if (task.qualityCap > 0) "cap:${task.qualityCap}p" else "original"}" +
-                        if (normalizedDir != null) ", customDir=true" else "",
-                )
-            }
-            pumpQueue()
-        }
-    }
-
+    )
     fun enqueueSegment(
         file: FileStat,
         startMs: Long,
@@ -1404,267 +73,215 @@ class PikoDownloadCoordinator(
         lengthBytes: Long,
         quality: DownloadQuality? = null,
         targetDirectory: String? = null,
-    ) = enqueueSegment(file, startMs, endMs, timeRangeLabel, streamUrl.orEmpty(), quality, targetDirectory)
+    )
+    fun pauseDownload(taskId: String)
+    fun pauseAll()
+    fun cancelDownload(taskId: String): Job?
+}
 
-    private fun startSegment(task: DownloadTask) {
-        val extractor = segmentDownloader ?: run {
-            PikoLog.w(TAG, "Segment extraction failed: platform extractor unavailable (task=${logTask(task.taskId)}, ${logFile(task.fileId, task.fileName)})")
-            update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = tr("当前平台不支持片段截取", "Clip extraction is not supported on this platform", "このプラットフォームでは区間切り出しに対応していません", "이 플랫폼에서는 구간 추출을 지원하지 않습니다", "目前平台不支援片段擷取")) }
-            return
-        }
-        launchTracked(task.taskId) {
-            // 源经 SDK 的 handle 按偏移读（openRandomAccess），不用入队时存下的直链：直链绕过 SDK 的账号连接预算，
-            // 与代理、预览播放器抢连接，超出上限后 CDN 一律回 503（2026-09-23 实测）；存下的直链还会过期。
-            // 读过的块记在这个任务名下留在下载暂存里（sparseCache），暂停或失败后再来不必重下，完成或取消时放手
-            val repo = mediaRepository
-            update(task.taskId) { it.copy(status = DownloadStatus.DOWNLOADING, progressFraction = 0f, errorMessage = null) }
-            val chosen = try {
-                // 选定了转码档的也要经这里：读不出字节的档在开始时就以能看懂的提示失败
-                if (task.qualityCap > 0 || task.quality != null) chooseSegmentQuality(task) else task
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                PikoLog.w(TAG, "Failed to select segment quality: task=${logTask(task.taskId)}, ${logFile(task.fileId, task.fileName)}", e)
-                update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = e.message) }
-                return@launchTracked
-            }
-            update(task.taskId) { it.copy(sparseCache = it.sparseCache || repo != null) }
-            // 转码档的暂存按转码流的长度认，打开时才知道，记进 fullFileSize，放手与重启后登记都按它
-            var cacheSize = chosen.fullFileSize
-            val started = TimeSource.Monotonic.markNow()
-            extractor.extract(
-                PikoSegmentRequest(
-                    sourceUrl = task.streamUrl.orEmpty(),
-                    destinationPath = task.destinationPath,
-                    fileName = task.fileName,
-                    startMillis = task.startMs,
-                    endMillis = task.endMs,
-                    openRandomAccess = repo?.let {
-                        {
-                            it.openRandomAccess(task.fileId, retainedBy = task.taskId, mediaId = chosen.mediaId).getOrThrow().also { source ->
-                                if (chosen.mediaId != null && source.size != cacheSize) {
-                                    cacheSize = source.size
-                                    update(task.taskId) { current -> current.copy(fullFileSize = source.size) }
-                                }
-                            }
-                        }
-                    },
-                ),
-            ) { fraction ->
-                update(task.taskId) { it.copy(progressFraction = fraction) }
-            }.onSuccess { path ->
-                // 片段入队时不知道产物大小，totalBytes 一直是 0，列表会显示 0 B，完成后按实际文件补上
-                val size = runSuspendCatching { storageFor(task).existingLength(task.fileName) }
-                    .logFailure(TAG, "Failed to read extracted segment size: task=${logTask(task.taskId)}, ${logFile(task.fileId, task.fileName)}")
-                    .getOrDefault(0L)
-                PikoLog.i(
-                    TAG,
-                    "Segment extraction completed: task=${logTask(task.taskId)}, ${logFile(task.fileId, task.fileName)}, " +
-                        "range=${task.startMs}..${task.endMs}ms, quality=${chosen.quality ?: "original"}, savedBytes=$size, elapsedMs=${started.elapsedNow().inWholeMilliseconds}",
-                )
-                if (repo != null) {
-                    fileCachePool.discard(task.account, task.gcid, cacheSize, task.taskId, chosen.mediaId)
-                    fileCachePool.discardByOwner(task.taskId)
-                }
-                update(task.taskId) {
-                    it.copy(
-                        status = DownloadStatus.COMPLETED,
-                        destinationPath = path,
-                        progressFraction = 1f,
-                        totalBytes = size,
-                        downloadedBytes = size,
-                        sparseCache = false,
-                    )
-                }
-            }.onFailure { error ->
-                PikoLog.w(
-                    TAG,
-                    "Segment extraction failed: task=${logTask(task.taskId)}, ${logFile(task.fileId, task.fileName)}, " +
-                        "range=${task.startMs}..${task.endMs}ms, elapsedMs=${started.elapsedNow().inWholeMilliseconds}",
-                    error,
-                )
-                update(task.taskId) { it.copy(status = DownloadStatus.FAILED, errorMessage = error.message) }
-            }
-        }
+@Stable
+class PikoDownloadCoordinator(
+    clientProvider: PikoClientProvider,
+    preferences: PikoUserPreferences,
+    storage: PikoDownloadStorage,
+    scope: CoroutineScope,
+    segmentDownloader: PikoSegmentDownloader? = null,
+    /** 片段抽取经它开本机代理会话读源文件。缺省时退回任务里存下的直链。 */
+    mediaRepository: PikoMediaRepository? = null,
+    cacheStore: PikoCacheStore? = null,
+) : DownloadService {
+    override val fileCachePool: PikoFileCachePool =
+        mediaRepository?.fileCachePool ?: PikoFileCachePool(scope) { storage.cacheTarget(it) }
+
+    private val queueStore = DownloadQueueStore(
+        clientProvider = clientProvider,
+        preferences = preferences,
+        storage = storage,
+        scope = scope,
+        fileCachePool = fileCachePool,
+        cacheStore = cacheStore,
+    )
+
+    private val taskExecutor = DownloadTaskExecutor(
+        clientProvider = clientProvider,
+        preferences = preferences,
+        scope = scope,
+        segmentDownloader = segmentDownloader,
+        mediaRepository = mediaRepository,
+        fileCachePool = fileCachePool,
+        store = queueStore,
+    )
+
+    override val tasks: StateFlow<Map<String, DownloadTask>> get() = queueStore.tasks
+
+    /** 还没变成任务的文件夹下载，按批次 ID。见 [enqueueFolders]。 */
+    override val listings: StateFlow<Map<String, FolderListing>> get() = queueStore.listings
+
+    init {
+        mediaRepository?.fileCachePool = fileCachePool
+        mediaRepository?.partialDownload = taskExecutor::notifyPartialPlaybackLookup
+        taskExecutor.startBackgroundLoops()
     }
 
-    fun pauseDownload(taskId: String) = pauseDownloadInternal(taskId, log = true)
-
-    private fun pauseDownloadInternal(taskId: String, log: Boolean) {
-        interruptedTasks.update { it - taskId }
-        val current = _tasks.value[taskId]
-        if (log && current != null && (current.status == DownloadStatus.PENDING || current.status == DownloadStatus.DOWNLOADING)) {
-            val progressDetail = when {
-                current.isSegment -> "range=${current.startMs}..${current.endMs}ms, progress=${((current.progressFraction ?: 0f) * 100).toInt()}%"
-                current.converting -> "stage=remux, progress=${((current.progressFraction ?: 0f) * 100).toInt()}%"
-                else -> "bytes=${current.downloadedBytes}/${current.totalBytes}"
-            }
-            PikoLog.d(TAG, "Paused download: task=${logTask(taskId)}, ${logFile(current.fileId, current.fileName)}, $progressDetail")
-        }
-        jobs.value[taskId]?.cancel()
-        update(taskId) { it.copy(status = DownloadStatus.PAUSED, speedBytesPerSec = 0L) }
+    override fun bindDefaultFolderSource(source: DownloadFolderSource) {
+        queueStore.bindDefaultFolderSource(source, taskExecutor::isJobActive, taskExecutor::pumpQueue)
     }
 
-    /** 把所有进行中的任务转为暂停。前台服务被系统叫停时用，之后可以逐个继续。 */
-    fun pauseAll() {
-        interruptedTasks.value = emptySet()
-        val ids = _tasks.value.values.filter { it.status == DownloadStatus.PENDING || it.status == DownloadStatus.DOWNLOADING }.map { it.taskId }
-        if (ids.isNotEmpty()) PikoLog.i(TAG, "Paused all active downloads: count=${ids.size}")
-        _tasks.update { tasks -> tasks + ids.mapNotNull { id -> tasks[id]?.let { id to it.copy(status = DownloadStatus.PAUSED, speedBytesPerSec = 0L) } } }
-        ids.forEach { jobs.value[it]?.cancel() }
-    }
-
-    /** 返回删文件的协程，整批取消时等它们删完再收拾空文件夹。 */
-    fun cancelDownload(taskId: String): Job? = cancelDownloadInternal(taskId, log = true)
-
-    private fun cancelDownloadInternal(taskId: String, log: Boolean): Job? {
-        interruptedTasks.update { it - taskId }
-        val job = jobs.value[taskId]
-        val task = _tasks.value[taskId]
-        _tasks.update { it - taskId }
-        if (task == null) {
-            job?.cancel()
-            return null
-        }
-        if (log) {
-            PikoLog.d(TAG, "Cancelled download: task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}, status=${task.status}")
-        }
-        // 先解除保留并置为非持久化，阻止协程收尾时再次落盘刷新；等下载协程真正退出后再幂等清理稀疏缓存，
-        // 抢先删除底层文件的话协程收尾前仍可能重建。未完成任务仅在缓存池内下载，不触碰下载目标目录
-        return scope.launch(Dispatchers.IO) {
-            suspend fun discardCache() {
-                runSuspendCatching { fileCachePool.discard(task.account, task.gcid, task.cacheSize, task.taskId, task.cacheMediaId) }
-                    .logFailure(TAG, "Failed to discard sparse cache for cancelled task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}")
-            }
-            if (task.sparseCache) {
-                discardCache()
-            }
-            runSuspendCatching { job?.cancelAndJoin() }
-                .logFailure(TAG, "Error while awaiting cancelled download job: task=${logTask(taskId)}")
-            runSuspendCatching { fileCachePool.discardByOwner(taskId) }
-                .logFailure(TAG, "Failed to release owner cache pins for cancelled task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}")
-            if (task.sparseCache || !task.isSegment) {
-                discardCache()
-            }
-            if (task.status == DownloadStatus.COMPLETED && task.destinationPath.isNotBlank()) {
-                runSuspendCatching {
-                    storageFor(task).delete(task.destinationPath)
-                }.logFailure(TAG, "Failed to delete local target for cancelled task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}")
-            }
-        }
+    /** 立即把当前下载任务表与待处理文件夹枚举状态写入持久化存储。 */
+    override suspend fun flushPersistence() {
+        queueStore.flushPersistence()
     }
 
     /**
-     * 启动一个登记在 [jobs] 里的任务协程。同一任务已有活跃协程时不再启动。
-     *
-     * 协程先以 LAZY 创建、登记成功后才启动：先启动再登记的话，它可能在登记前就跑完，
-     * 结束时摘不掉自己，表里留下一个永远「在跑」的死条目。
+     * 这个文件在下载目录里有没有完整副本。
+     * 以磁盘为准核对 sanitize 后的文件名与完整字节长度，暂停中的半截文件不算。
      */
-    private fun launchTracked(taskId: String, block: suspend () -> Unit) {
-        var previous: Job? = null
-        val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
-            val self = currentCoroutineContext()[Job]
-            try {
-                // 暂停后马上继续时，被取消的旧协程可能还在写最后一块。两者同时追加同一个文件，
-                // 续传点就对不上了，所以先等它彻底退出
-                previous?.join()
-                if (_tasks.value[taskId]?.status != DownloadStatus.DOWNLOADING) return@launch
-                block()
-            } finally {
-                // 只摘自己：暂停后立刻继续时，表里已经是新协程，旧协程的收尾不能把它摘掉
-                jobs.update { current -> if (current[taskId] === self) current - taskId else current }
-                // 腾出一个位置，同一批里排着的补上
-                pumpQueue()
-            }
-        }
-        var registered = false
-        jobs.update { current ->
-            val existing = current[taskId]
-            if (existing?.isActive == true) {
-                registered = false
-                current
-            } else {
-                registered = true
-                previous = existing
-                current + (taskId to job)
-            }
-        }
-        if (registered) job.start() else job.cancel()
+    override suspend fun findCompletedLocalPath(file: FileStat): String? =
+        queueStore.findCompletedLocalPath(file)
+
+    override fun enqueue(file: FileStat, targetDirectory: String?) =
+        enqueueFiles(listOf(file), targetDirectory = targetDirectory)
+
+    /**
+     * 多选文件一次入队，共用全局并发上限；重复文件复用已有任务。视频按画质上限 [maxHeight] 挑档（0 是原画，
+     * null 取设置里的默认下载画质，没设过取原画），开始下载时才挑，见 [DownloadTask.qualityCap]。
+     */
+    override fun enqueueFiles(files: List<FileStat>, maxHeight: Int?, targetDirectory: String?) {
+        queueStore.enqueueFiles(
+            files = files,
+            leasedSource = false,
+            chosen = null,
+            maxHeight = maxHeight,
+            targetDirectory = targetDirectory,
+            isJobActive = taskExecutor::isJobActive,
+            onEnqueued = taskExecutor::pumpQueue,
+        )
     }
 
-    private fun update(taskId: String, transform: (DownloadTask) -> DownloadTask) {
-        _tasks.update { tasks ->
-            val current = tasks[taskId] ?: return@update tasks
-            val next = transform(current)
-            if (next == current) tasks else tasks + (taskId to next)
-        }
+    /**
+     * 单个视频按用户在下载对话框里选的那一档下载，不看上限。[quality] 是原画（name 为 null）时下原画；
+     * 是转码档时下完转封装成 MP4，文件名里带上档位。
+     */
+    override fun enqueueQuality(file: FileStat, quality: DownloadQuality, targetDirectory: String?) {
+        queueStore.enqueueFiles(
+            files = listOf(file),
+            leasedSource = false,
+            chosen = quality,
+            maxHeight = null,
+            targetDirectory = targetDirectory,
+            isJobActive = taskExecutor::isJobActive,
+            onEnqueued = taskExecutor::pumpQueue,
+        )
     }
 
-    private companion object {
-        const val TAG = "Download"
-        const val DIRECTORY_KEY_PROBE = "piko-dir-probe"
-        val listingLeftAccountMessage: String
-            get() = tr("切换账号时中断", "Interrupted by account switch", "アカウント切り替えにより中断されました", "계정 전환으로 중단됨", "切換帳號時中斷")
-        const val PROGRESS_INTERVAL_MS = 500L
-        const val PLAYBACK_WAKE_GRACE_TICKS = 10
-        const val LOG_INTERVAL_MS = 10_000L
-        const val SPEED_WINDOW_MS = 3_000L
-        const val PERSIST_INTERVAL_MS = 1_000L
-
-        /**
-         * 一批里同时下几个。每个任务各开「并发连接数」条连接，全放开的话一个上千文件的文件夹会同时开几千条；
-         * 只下一个又太慢：字幕、图片这类小文件的耗时几乎全在取直链上。
-         */
-        const val BATCH_PARALLEL = 3
-        const val BATCH_LOG_MIN_BYTES = 64L * 1024 * 1024
-        val json = Json { ignoreUnknownKeys = true }
-        val taskListSerializer = ListSerializer(DownloadTask.serializer())
-
-        /** 多账号任务 ID 形如 `$account:$fileId`，落盘导出日志时对账号前缀做单向摘要以避免泄露原始账号名。 */
-        fun logTask(taskId: String): String =
-            if (':' in taskId) {
-                "acct-${taskId.substringBefore(':').hashCode().toUInt().toString(16)}:${taskId.substringAfter(':')}"
-            } else {
-                taskId
-            }
+    /** 分享或解析得到的内容直接下载，临时文件对象不随解析面板关闭。 */
+    override fun enqueueResolved(files: List<ResolvedFile>, parentId: String, targetDirectory: String?) {
+        queueStore.enqueueResolved(
+            files = files,
+            parentId = parentId,
+            targetDirectory = targetDirectory,
+            isJobActive = taskExecutor::isJobActive,
+            onEnqueued = taskExecutor::pumpQueue,
+        )
     }
-}
 
-/**
- * 存到本机的文件名。离线下载进来的文件常常名字里不带扩展名（「…[繁日雙語MP4][1080P]」），扩展名单在
- * file_extension 里；照名字原样存，系统就不知道拿什么打开。名字里已经是这个扩展名的不重复补。
- */
-internal fun localFileNameOf(file: FileStat): String {
-    val extension = file.fileExtension.trim().removePrefix(".")
-    val named = extension.isEmpty() || file.name.endsWith(".$extension", ignoreCase = true)
-    return FileNameSanitizer.sanitize(if (named) file.name else "${file.name}.$extension")
-}
+    /**
+     * 下载几个文件夹，每个一批：在后台列出其中全部文件，落在下载目录下同名的文件夹里并保持子文件夹结构。
+     */
+    override fun enqueueFolders(
+        folders: List<FileStat>,
+        source: DownloadFolderSource,
+        maxHeight: Int?,
+        targetDirectory: String?,
+    ): Int = queueStore.enqueueFolders(
+        folders = folders,
+        source = source,
+        maxHeight = maxHeight,
+        targetDirectory = targetDirectory,
+        isJobActive = taskExecutor::isJobActive,
+        onBatchReady = taskExecutor::pumpQueue,
+    )
 
-/**
- * 片段读的是它那一档的整条流，占的是那一档的暂存，长度记在 fullFileSize（转码档开始截取时换成转码流的长度）；
- * 整文件任务的是它自己下的那一档，长度即 totalBytes。
- */
-private val DownloadTask.cacheSize: Long get() = if (isSegment) fullFileSize else totalBytes
-
-private val DownloadTask.cacheMediaId: String? get() = mediaId
-
-private val DownloadTask.cacheIdentity: String get() = PikoFileCachePool.identity(account, gcid, cacheSize, cacheMediaId)
-
-/** 转码档存下来的名字：「名字 [720P].mp4」。[name] 是不带文件夹的文件名。 */
-internal fun transcodeFileName(name: String, quality: String): String = FileNameSanitizer.sanitize(
-    "${name.substringBeforeLast('.', name)} [$quality].mp4",
-    fallbackExtension = "mp4",
-    forceExtension = "mp4",
-)
-
-private fun uniqueDownloadName(name: String, taken: MutableSet<String>, extension: Boolean = true): String {
-    if (taken.add(name.lowercase())) return name
-    val base = if (extension) name.substringBeforeLast('.', name) else name
-    val suffix = name.removePrefix(base)
-    var number = 2
-    while (true) {
-        val candidate = "$base ($number)$suffix"
-        if (taken.add(candidate.lowercase())) return candidate
-        number++
+    /** 列出失败的重新列一遍。 */
+    override fun retryListing(batchId: String) {
+        queueStore.retryListing(batchId, taskExecutor::isJobActive, taskExecutor::pumpQueue)
     }
+
+    /** 超出今日额度也照样下载。 */
+    override fun confirmListing(batchId: String) {
+        queueStore.confirmListing(batchId, taskExecutor::isJobActive, taskExecutor::pumpQueue)
+    }
+
+    /** 不下载了：停下列出，或丢掉等确认的那一批。 */
+    override fun dismissListing(batchId: String) {
+        queueStore.dismissListing(batchId)
+    }
+
+    override fun pauseBatch(batchId: String) {
+        taskExecutor.pauseBatchInternal(batchId, log = true)
+    }
+
+    /** 整批继续：暂停与失败的重新排队。 */
+    override fun resumeBatch(batchId: String) {
+        taskExecutor.resumeBatch(batchId)
+    }
+
+    /** 取消整批并删掉已下载的文件，连同留下的空文件夹。 */
+    override fun cancelBatch(batchId: String) {
+        taskExecutor.cancelBatch(batchId)
+    }
+
+    /** 这一批的文件夹在本机的位置，还没建出来时为 null。 */
+    override suspend fun batchFolderPath(batch: DownloadBatch): String? =
+        queueStore.batchFolderPath(batch)
+
+    override fun startDownload(taskId: String) {
+        taskExecutor.startDownload(taskId)
+    }
+
+    override fun enqueueSegment(
+        file: FileStat,
+        startMillis: Long,
+        endMillis: Long,
+        timeRangeLabel: String,
+        sourceUrl: String,
+        quality: DownloadQuality?,
+        targetDirectory: String?,
+    ) {
+        queueStore.enqueueSegment(
+            file = file,
+            startMillis = startMillis,
+            endMillis = endMillis,
+            timeRangeLabel = timeRangeLabel,
+            sourceUrl = sourceUrl,
+            quality = quality,
+            targetDirectory = targetDirectory,
+            onEnqueued = taskExecutor::pumpQueue,
+        )
+    }
+
+    override fun enqueueSegment(
+        file: FileStat,
+        startMs: Long,
+        endMs: Long,
+        timeRangeLabel: String,
+        streamUrl: String?,
+        startByte: Long,
+        lengthBytes: Long,
+        quality: DownloadQuality?,
+        targetDirectory: String?,
+    ) = enqueueSegment(file, startMs, endMs, timeRangeLabel, streamUrl.orEmpty(), quality, targetDirectory)
+
+    override fun pauseDownload(taskId: String) {
+        taskExecutor.pauseDownloadInternal(taskId, log = true)
+    }
+
+    /** 把所有进行中的任务转为暂停。前台服务被系统叫停时用，之后可以逐个继续。 */
+    override fun pauseAll() {
+        taskExecutor.pauseAll()
+    }
+
+    /** 返回删文件的协程，整批取消时等它们删完再收拾空文件夹。 */
+    override fun cancelDownload(taskId: String): Job? =
+        taskExecutor.cancelDownloadInternal(taskId, log = true)
 }
