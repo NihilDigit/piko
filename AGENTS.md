@@ -28,7 +28,10 @@ Piko 是 PikPak 的第三方跨平台客户端。Android、Windows、macOS 与 L
 ./gradlew :app:compileDebugKotlin                 # Android 编译（最快的语法与类型检查）
 ./gradlew :desktopApp:compileKotlinDesktop        # Desktop 编译（注意不是 compileKotlinJvm）
 ./gradlew :app:installDebug                       # 安装至已连接 Android 设备（包名 dev.piko.debug）
-./gradlew :desktopApp:run                         # 启动桌面开发版
+pwsh -File scripts/run-desktop.ps1                # 导出 @argfile 并以独立 JVM 启动桌面开发版（推荐，不占用 Gradle Daemon）
+pwsh -File scripts/run-desktop.ps1 -NoBuild       # 跳过 Gradle 构建，直接重开上次编好的桌面开发版
+./gradlew :desktopApp:prepareDevLaunch            # 仅生成 desktopApp/build/dev-launch/ 启动参数与随包原生资源
+./gradlew :desktopApp:run                         # 通过 Gradle 直接启动桌面开发版（运行期间会持续占用 Gradle Daemon）
 ./gradlew :shared:desktopTest                     # shared 模块单元测试与冒烟测试
 ./gradlew :shared:desktopTest --tests '*ReleaseNotesTest*'  # 运行单个测试类
 ./gradlew :ui:desktopTest                         # ui 模块纯函数规则测试（命令栏显隐、设置分区高亮等）
@@ -39,9 +42,8 @@ gh workflow run test.yml -f desktop=true          # 手动触发全量 CI 测试
 gh workflow run release.yml -f version=9.9.9      # 发版演练：完整执行测试、构建与产物汇总，不创建 Release
 ```
 
-`./gradlew :desktopApp:run` 直接从 `build/classes` 加载类文件；桌面开发版运行期间若重新编译其已加载的模块，运行中的进程会在下一次类加载时抛出 `NoClassDefFoundError`。重新编译前须先终止桌面开发版进程，编译完成后可在后台重新启动 `:desktopApp:run`；关闭用户系统中已安装的正式版 Piko 前仍须先征得用户确认。
-
-修改 `shared` 或 `ui` 后必须同时执行 `:app:compileDebugKotlin` 与 `:desktopApp:compileKotlinDesktop` 验证双端编译（双端现已统一至 Material 3 `1.5.0-rc01` / CMP `1.13.0-rc01`，详见 `desktopApp/AGENTS.md`，但仍须验证平台特有差异）。
+- **解耦桌面启动与热 Daemon**：Windows 本地调试桌面端优先使用 `pwsh -File scripts/run-desktop.ps1`（内部先执行 `:desktopApp:prepareDevLaunch` 导出 JDK 25 路径、`piko.args` `@argfile` 与 `bundledAppResources` 资源目录，再直接拉起独立 JVM，避免 `:desktopApp:run` 在窗口打开期间持续占用 Gradle Daemon）；仅需重启窗口时附加 `-NoBuild`。重新编译已加载模块前须先退出开发版进程（`run-desktop.ps1` 与 `:desktopApp:compileKotlinDesktop` 均会通过 `~/.piko-dev` 单实例通道尝试优雅退出开发版，传入 `-Ppiko.keepDevInstance=true` 可跳过）；关闭用户系统中已安装的正式版 Piko 前仍须先征得用户确认。
+- **构建缓存、配置缓存与目标裁剪**：`gradle.properties` 已统一开启并行构建、`org.gradle.caching=true`、`org.gradle.configuration-cache=true` 与 ParallelGC 堆配额（Gradle `-Xmx4g`，Kotlin Daemon `-Xmx3g`）。非 macOS 宿主默认跳过注册 `iosArm64` / `iosSimulatorArm64` 与 `pikoSqlite` cinterop（macOS 宿主自动启用，需要强制开启时传 `-Ppiko.enableIos=true`）；Android Debug 默认关闭 ABI 分包以单包快速构建，包含 `Release` 的任务（如 `assembleRelease`）自动恢复全架构与通用包分包（可用 `-Ppiko.enableAbiSplits=true|false` 显式覆写）；各 Compose 模块已关闭与 `libs.versions.toml` 重复的 `dependencyCompatibility` 检查，`:app` 已移除未使用的 `ksp` 插件。修改 `shared` 或 `ui` 后须分两条命令分别执行 `:app:compileDebugKotlin` 与 `:desktopApp:compileKotlinDesktop` 验证双端编译（避免单条命令同时拉起 JDK 21 与 JDK 25 双套 Kotlin Daemon 争抢内存；双端现已统一至 Material 3 `1.5.0-rc01` / CMP `1.13.0-rc01`，详见 `desktopApp/AGENTS.md`）。
 
 应用版本号读取环境变量 `PIKO_VERSION_NAME` 与 `PIKO_VERSION_CODE`，本地未设置时自动回退至默认值，无需额外配置。
 

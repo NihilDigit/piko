@@ -6,6 +6,11 @@ plugins {
     alias(libs.plugins.android.kotlin.multiplatform.library)
 }
 
+val enableIosTargets = providers.gradleProperty("piko.enableIos")
+    .map { it.toBoolean() }
+    .orElse(providers.systemProperty("os.name").map { it.startsWith("Mac", ignoreCase = true) })
+    .get()
+
 kotlin {
     android {
         namespace = "dev.piko.shared"
@@ -15,12 +20,14 @@ kotlin {
         minSdk = 26
     }
     jvm("desktop")
-    listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
-        target.binaries.configureEach {
-            freeCompilerArgs += "-Xoverride-konan-properties=minVersion.ios=15.0"
-        }
-        target.compilations.getByName("main").cinterops.create("pikoSqlite") {
-            definitionFile.set(project.file("src/nativeInterop/cinterop/pikoSqlite.def"))
+    if (enableIosTargets) {
+        listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
+            target.binaries.configureEach {
+                freeCompilerArgs += "-Xoverride-konan-properties=minVersion.ios=15.0"
+            }
+            target.compilations.getByName("main").cinterops.create("pikoSqlite") {
+                definitionFile.set(project.file("src/nativeInterop/cinterop/pikoSqlite.def"))
+            }
         }
     }
 
@@ -54,27 +61,32 @@ kotlin {
             // 纯 Kotlin Multiplatform Markdown AST 解析器（GFM 表格、删除线、任务列表、自动链接）
             implementation(libs.jetbrains.markdown)
         }
-        val desktopMain by getting {
-            dependencies {
-                implementation(libs.sqlite.jdbc)
-            }
+        getByName("desktopMain").dependencies {
+            implementation(libs.sqlite.jdbc)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation(libs.ktor.client.mock)
         }
-        iosMain.dependencies {
-            implementation(libs.ktor.client.darwin)
-        }
-        // 冒烟测试用 MockEngine 顶替 PikPak 的 API 与 CDN，SDK 的请求、鉴权与解析仍走真实代码
-        val desktopTest by getting {
-            dependencies {
-                implementation(libs.ktor.client.mock)
-                implementation(libs.kotlinx.serialization.json)
-                // 只给本机手动跑的 MetaTube 联调（MetaTubeLiveProbe）用，与两端传入的引擎相同
-                implementation(libs.ktor.client.okhttp)
+        if (enableIosTargets) {
+            iosMain.dependencies {
+                implementation(libs.ktor.client.darwin)
             }
         }
+        // 冒烟测试用 MockEngine 顶替 PikPak 的 API 与 CDN，SDK 的请求、鉴权与解析仍走真实代码
+        getByName("desktopTest").dependencies {
+            implementation(libs.ktor.client.mock)
+            implementation(libs.kotlinx.serialization.json)
+            // 只给本机手动跑的 MetaTube 联调（MetaTubeLiveProbe）用，与两端传入的引擎相同
+            implementation(libs.ktor.client.okhttp)
+        }
+    }
+}
+
+compose {
+    dependencyCompatibility {
+        // 依赖版本已由 libs.versions.toml 统一锁定，跳过每次构建的兼容检查任务以提速。
+        enabled = false
     }
 }
 

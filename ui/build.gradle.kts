@@ -8,9 +8,8 @@ plugins {
 
 compose {
     dependencyCompatibility {
-        // Coil 3.6.3 与 ZoomImage 1.7.0 传递声明旧版 Skiko，由 CMP 1.13.0-rc01 统一解析到 Skiko 0.156.1。
-        exclude("io.coil-kt.coil3")
-        exclude("io.github.panpf.zoomimage")
+        // 依赖版本已由 libs.versions.toml 统一锁定，跳过每次构建的兼容检查任务以提速。
+        enabled = false
     }
     resources {
         generateResClass = always
@@ -22,6 +21,11 @@ compose {
 composeCompiler {
     stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("compose-stability.conf"))
 }
+
+val enableIosTargets = providers.gradleProperty("piko.enableIos")
+    .map { it.toBoolean() }
+    .orElse(providers.systemProperty("os.name").map { it.startsWith("Mac", ignoreCase = true) })
+    .get()
 
 // 两端共用的 Material 3 Expressive 界面。与 shared 分开：shared 只放状态与业务，
 // 冒烟测试编译它时不必带上整套 material3 与图标库。
@@ -37,13 +41,15 @@ kotlin {
         }
     }
     jvm("desktop")
-    listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
-        target.binaries.configureEach {
-            freeCompilerArgs += "-Xoverride-konan-properties=minVersion.ios=15.0"
-        }
-        target.binaries.framework {
-            baseName = "PikoKit"
-            isStatic = true
+    if (enableIosTargets) {
+        listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
+            target.binaries.configureEach {
+                freeCompilerArgs += "-Xoverride-konan-properties=minVersion.ios=15.0"
+            }
+            target.binaries.framework {
+                baseName = "PikoKit"
+                isStatic = true
+            }
         }
     }
 
@@ -86,9 +92,11 @@ kotlin {
             implementation(kotlin("test"))
         }
         // Native 不使用 JVM ServiceLoader/OkHttp，显式装配 Ktor 3 fetcher。
-        iosMain.dependencies {
-            implementation(libs.ktor.client.core)
-            implementation(libs.coil.network.ktor3)
+        if (enableIosTargets) {
+            iosMain.dependencies {
+                implementation(libs.ktor.client.core)
+                implementation(libs.coil.network.ktor3)
+            }
         }
         // CMP 的 material3 在 Android 上重定向到 androidx 的构件，版本比 app 用的 BOM 旧；
         // 这里对齐到同一份 BOM，ui 模块编译时看到的就是 app 运行时的那套 API
@@ -98,20 +106,18 @@ kotlin {
             implementation(libs.androidx.adaptive.navigation3)
         }
         // 只测纯函数的规则（命令栏显隐这类 internal 的），界面行为的测试在 desktopApp
-        val desktopTest by getting {
-            dependencies {
-                implementation(kotlin("test"))
-                // Official resource lookup reads the desktop theme through Skiko.
-                val hostOs = System.getProperty("os.name").let {
-                    when {
-                        it.startsWith("Windows") -> "windows"
-                        it.startsWith("Mac") -> "macos"
-                        else -> "linux"
-                    }
+        getByName("desktopTest").dependencies {
+            implementation(kotlin("test"))
+            // Official resource lookup reads the desktop theme through Skiko.
+            val hostOs = System.getProperty("os.name").let {
+                when {
+                    it.startsWith("Windows") -> "windows"
+                    it.startsWith("Mac") -> "macos"
+                    else -> "linux"
                 }
-                val hostArch = if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
-                runtimeOnly("org.jetbrains.compose.desktop:desktop-jvm-$hostOs-$hostArch:${libs.versions.composeMultiplatform.get()}")
             }
+            val hostArch = if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
+            runtimeOnly("org.jetbrains.compose.desktop:desktop-jvm-$hostOs-$hostArch:${libs.versions.composeMultiplatform.get()}")
         }
     }
 }

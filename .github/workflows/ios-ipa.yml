@@ -141,6 +141,7 @@ jobs:
               "kotlin.daemon.jvmargs": "-Xmx3072m -XX:MaxMetaspaceSize=768m",
               "org.gradle.workers.max": "1",
               "org.gradle.caching": "true",
+              "org.gradle.configuration-cache": "false",
           }
           lines = [line for line in text.splitlines() if line.split("=", 1)[0] not in overrides]
           lines.extend(f"{key}={value}" for key, value in overrides.items())

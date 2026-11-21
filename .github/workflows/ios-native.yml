@@ -76,6 +76,26 @@ jobs:
           restore-keys: |
             konan-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode-ver.outputs.kotlin }}-${{ steps.xcode-ver.outputs.build }}-
 
+      # 7 GiB macos-15 runner：限制单 worker 与堆上限并关闭单次 CI 的 Configuration Cache，
+      # 同时覆盖后续 xcodebuild 内嵌的 embedAndSignAppleFrameworkForXcode，避免与模拟器及 LLVM 争抢内存。
+      - name: Configure runner Gradle memory
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          path = Path("gradle.properties")
+          text = path.read_text()
+          overrides = {
+              "org.gradle.jvmargs": "-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8",
+              "kotlin.daemon.jvmargs": "-Xmx2g -XX:MaxMetaspaceSize=768m",
+              "org.gradle.workers.max": "1",
+              "org.gradle.configuration-cache": "false",
+          }
+          lines = [line for line in text.splitlines() if line.split("=", 1)[0] not in overrides]
+          lines.extend(f"{key}={value}" for key, value in overrides.items())
+          path.write_text("\n".join(lines) + "\n")
+          PYCODE
+
       - uses: gradle/actions/setup-gradle@v5
 
       - name: Run iOS simulator tests
@@ -83,7 +103,10 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x gradlew
-          ./gradlew :shared:iosSimulatorArm64Test :ui:iosSimulatorArm64Test --build-cache --no-daemon --console=plain --stacktrace
+          ./gradlew :shared:iosSimulatorArm64Test :ui:iosSimulatorArm64Test \
+            -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8" \
+            -Dkotlin.daemon.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=768m" \
+            --max-workers=1 --no-configuration-cache --build-cache --no-daemon --console=plain --stacktrace
 
       - name: Build iOS 15 host
         shell: bash

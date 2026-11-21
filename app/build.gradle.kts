@@ -9,7 +9,6 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
-    alias(libs.plugins.ksp)
 }
 
 // Release signing is injected by CI or a local release shell. Keeping the
@@ -32,9 +31,12 @@ val appVersionCode = providers.environmentVariable("PIKO_VERSION_CODE")
     .orElse(2001)
 require(appVersionCode.get() > 0) { "PIKO_VERSION_CODE must be greater than zero." }
 
+val isReleaseTaskRequested = gradle.startParameter.taskNames.any {
+    it.contains("Release", ignoreCase = true)
+}
 val enableAbiSplits = providers.gradleProperty("piko.enableAbiSplits")
     .map { it.toBoolean() }
-    .orElse(true)
+    .orElse(isReleaseTaskRequested)
 
 android {
     namespace = "dev.piko"
@@ -103,7 +105,7 @@ android {
 
     sourceSets {
         // 播放冒烟的样片与 generate.sh 在仓库根目录，JVM 与 Android 两边的测试共用
-        getByName("androidTest").assets.srcDir(rootProject.file("testdata/media"))
+        getByName("androidTest").assets.directories.add(rootProject.file("testdata/media").path)
     }
 
     packaging {

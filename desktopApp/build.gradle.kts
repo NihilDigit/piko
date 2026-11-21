@@ -13,10 +13,12 @@ import java.util.Collections
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
+import org.gradle.api.file.ArchiveOperations
 import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.testing.Test
 import org.gradle.jvm.tasks.Jar
+import org.gradle.kotlin.dsl.support.serviceOf
 import org.jetbrains.compose.desktop.application.dsl.AotMode
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.compose.desktop.application.tasks.AbstractCheckNativeDistributionRuntime
@@ -67,37 +69,33 @@ kotlin {
     jvmToolchain(25)
 
     sourceSets {
-        val desktopMain by getting {
-            dependencies {
-                implementation(project(":shared"))
-                implementation(project(":ui"))
-                implementation(libs.windows.touch)
-                implementation(composeDesktopRuntime)
-                implementation(libs.cmp.material.icons.extended)
-                implementation(libs.mediamp.all)
-                implementation(libs.kotlinx.serialization.json)
-                implementation(libs.ktor.client.core)
-                implementation(libs.ktor.client.okhttp)
-                implementation(libs.ktor.client.content.negotiation)
-                implementation(libs.ktor.serialization.kotlinx.json)
-                implementation(libs.ktor.client.logging)
-                implementation(libs.coil.compose)
-                implementation(libs.coil.network.okhttp)
-                // PikoUploadSources.open 返回 RawSource，shared 只以 implementation 引入
-                implementation(libs.kotlinx.io.core)
-            }
+        getByName("desktopMain").dependencies {
+            implementation(project(":shared"))
+            implementation(project(":ui"))
+            implementation(libs.windows.touch)
+            implementation(composeDesktopRuntime)
+            implementation(libs.cmp.material.icons.extended)
+            implementation(libs.mediamp.all)
+            implementation(libs.kotlinx.serialization.json)
+            implementation(libs.ktor.client.core)
+            implementation(libs.ktor.client.okhttp)
+            implementation(libs.ktor.client.content.negotiation)
+            implementation(libs.ktor.serialization.kotlinx.json)
+            implementation(libs.ktor.client.logging)
+            implementation(libs.coil.compose)
+            implementation(libs.coil.network.okhttp)
+            // PikoUploadSources.open 返回 RawSource，shared 只以 implementation 引入
+            implementation(libs.kotlinx.io.core)
         }
-        val desktopTest by getting {
-            dependencies {
-                implementation(kotlin("test"))
-                implementation(libs.junit)
-                // 控件的鼠标悬停只能用真实的指针事件序列验证；版本跟界面库走，理由同 composeDesktopRuntime
-                implementation("org.jetbrains.compose.ui:ui-test:${libs.versions.composeMultiplatform.get()}")
-                // 测试里按键不经窗口的返回输入，要从组合里取到返回事件的分发器自己发。版本取界面库已经解析到的那一个
-                implementation("org.jetbrains.androidx.navigationevent:navigationevent-compose:1.1.0")
-                // 测试进程没有打包好的资源目录，mpv 的原生库仍从类路径解压
-                runtimeOnly(hostMpvRuntime)
-            }
+        getByName("desktopTest").dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.junit)
+            // 控件的鼠标悬停只能用真实的指针事件序列验证；版本跟界面库走，理由同 composeDesktopRuntime
+            implementation("org.jetbrains.compose.ui:ui-test:${libs.versions.composeMultiplatform.get()}")
+            // 测试里按键不经窗口的返回输入，要从组合里取到返回事件的分发器自己发。版本取界面库已经解析到的那一个
+            implementation("org.jetbrains.androidx.navigationevent:navigationevent-compose:1.1.0")
+            // 测试进程没有打包好的资源目录，mpv 的原生库仍从类路径解压
+            runtimeOnly(hostMpvRuntime)
         }
     }
 }
@@ -125,10 +123,23 @@ val packagingJdkHome = javaToolchains.launcherFor {
     vendor = JvmVendorSpec.AZUL
 }.map { it.metadata.installationPath.asFile.absolutePath }
 afterEvaluate {
-    tasks.withType<AbstractJvmToolOperationTask>().configureEach { javaHome.set(packagingJdkHome) }
-    tasks.withType<AbstractProguardTask>().configureEach { javaHome.set(packagingJdkHome) }
-    tasks.withType<AbstractSuggestModulesTask>().configureEach { javaHome.set(packagingJdkHome) }
-    tasks.withType<AbstractCheckNativeDistributionRuntime>().configureEach { jdkHome.set(packagingJdkHome) }
+    val packagingCcReason = "Compose Desktop packaging/ProGuard/AOT tasks run outside Configuration Cache"
+    tasks.withType<AbstractJvmToolOperationTask>().configureEach {
+        javaHome.set(packagingJdkHome)
+        notCompatibleWithConfigurationCache(packagingCcReason)
+    }
+    tasks.withType<AbstractProguardTask>().configureEach {
+        javaHome.set(packagingJdkHome)
+        notCompatibleWithConfigurationCache(packagingCcReason)
+    }
+    tasks.withType<AbstractSuggestModulesTask>().configureEach {
+        javaHome.set(packagingJdkHome)
+        notCompatibleWithConfigurationCache(packagingCcReason)
+    }
+    tasks.withType<AbstractCheckNativeDistributionRuntime>().configureEach {
+        jdkHome.set(packagingJdkHome)
+        notCompatibleWithConfigurationCache(packagingCcReason)
+    }
 }
 
 // Compose 的桌面运行库与 MediaMP 带进了 ui-test，连带 junit、truth、guava 与
@@ -178,18 +189,23 @@ fun linuxSonameFiles(jar: File): Set<String> {
     }.toSet()
 }
 
-val bundledAppResources by tasks.registering(Sync::class) {
-    from({ hostMpvRuntimeJar.map { zipTree(it) } }) {
+val bundledAppResourcesDir = layout.buildDirectory.dir("appResources/common")
+
+val bundledAppResources = tasks.register<Sync>("bundledAppResources") {
+    // 局部变量保存 ArchiveOperations 服务，避免 Provider.map 闭包捕获脚本顶层对象导致 Configuration Cache 失败。
+    val archiveOps = serviceOf<ArchiveOperations>()
+    from(hostMpvRuntimeJar.elements.map { files -> files.map { archiveOps.zipTree(it.asFile) } }) {
         include("*.dll", "*.dylib", "*.txt")
         if (isLinuxHost) {
-            val keep by lazy { linuxSonameFiles(hostMpvRuntimeJar.singleFile) }
+            // 在任务配置期直接求出纯 Set<String>，避免 include 闭包捕获脚本或 Configuration 破坏 Configuration Cache。
+            val keep: Set<String> = linuxSonameFiles(hostMpvRuntimeJar.singleFile)
             include { !it.isDirectory && it.name in keep }
         }
         into("mpv")
     }
     // 只有 Windows 的更新用 zstd 差分，别处不捆
     if (isWindowsHost) {
-        from({ hostZstdJniJar.map { zipTree(it) } }) {
+        from(hostZstdJniJar.elements.map { files -> files.map { archiveOps.zipTree(it.asFile) } }) {
             include("**/*.dll")
             eachFile { path = "zstd/$name" }
             includeEmptyDirs = false
@@ -199,18 +215,23 @@ val bundledAppResources by tasks.registering(Sync::class) {
     // 免得它每次启动都解压到 %TEMP%，见 BundledNatives.kt 的 useBundledJnaDispatch。只做了 Windows：
     // 别的系统未验证 JNA 在禁止解压时的查找规则，照旧解压
     if (isWindowsHost) {
-        val jnaJar = configurations.named("desktopRuntimeClasspath").map { classpath ->
-            classpath.filter { Regex("""jna-[0-9][0-9.]*\.jar""").matches(it.name) }
-        }
-        from({ jnaJar.get().map { zipTree(it) } }) {
+        val desktopRuntimeFiles = configurations.named("desktopRuntimeClasspath").flatMap { it.elements }
+        from(
+            desktopRuntimeFiles.map { files ->
+                files.filter { Regex("""jna-[0-9][0-9.]*\.jar""").matches(it.asFile.name) }
+                    .map { archiveOps.zipTree(it.asFile) }
+            },
+        ) {
             include("com/sun/jna/win32-${if (hostArch == "arm64") "aarch64" else "x86-64"}/jnidispatch.dll")
             eachFile { path = "jna/$name" }
             includeEmptyDirs = false
         }
-        val sqliteJar = configurations.named("desktopRuntimeClasspath").map { classpath ->
-            classpath.filter { Regex("""sqlite-jdbc-[0-9][0-9.]*\.jar""").matches(it.name) }
-        }
-        from({ sqliteJar.get().map { zipTree(it) } }) {
+        from(
+            desktopRuntimeFiles.map { files ->
+                files.filter { Regex("""sqlite-jdbc-[0-9][0-9.]*\.jar""").matches(it.asFile.name) }
+                    .map { archiveOps.zipTree(it.asFile) }
+            },
+        ) {
             include("org/sqlite/native/Windows/${if (hostArch == "arm64") "aarch64" else "x86_64"}/sqlitejdbc.dll")
             eachFile { path = "sqlite/$name" }
             includeEmptyDirs = false
@@ -221,12 +242,12 @@ val bundledAppResources by tasks.registering(Sync::class) {
     if (isWindowsHost) {
         from("package/windows/torrent.ico")
     }
-    into(layout.buildDirectory.dir("appResources/common"))
+    into(bundledAppResourcesDir)
 }
 
 // Windows 应用内更新器：纯 java.base 单类打包为独立可执行 jar 并以 .bin 资源名塞进类路径，
 // 既彻底消除运行期释放 .ps1 调 powershell.exe -ExecutionPolicy Bypass，又避免 ProGuard 过滤嵌套 .jar。
-val compileWindowsUpdateApplier by tasks.registering(JavaCompile::class) {
+val compileWindowsUpdateApplier = tasks.register<JavaCompile>("compileWindowsUpdateApplier") {
     source = fileTree("updaterHelper/src/main/java") { include("**/*.java") }
     classpath = files()
     destinationDirectory.set(layout.buildDirectory.dir("updaterHelper/classes"))
@@ -235,7 +256,7 @@ val compileWindowsUpdateApplier by tasks.registering(JavaCompile::class) {
     options.release.set(21)
 }
 
-val packageWindowsUpdateApplier by tasks.registering(Jar::class) {
+val packageWindowsUpdateApplier = tasks.register<Jar>("packageWindowsUpdateApplier") {
     dependsOn(compileWindowsUpdateApplier)
     from(compileWindowsUpdateApplier.map { it.destinationDirectory })
     manifest {
@@ -278,9 +299,8 @@ composeCompiler {
 
 compose {
     dependencyCompatibility {
-        // Coil 3.6.3 与 ZoomImage 1.7.0 传递声明旧版 Skiko，由 CMP 1.13.0-rc01 统一解析到 Skiko 0.156.1。
-        exclude("io.coil-kt.coil3")
-        exclude("io.github.panpf.zoomimage")
+        // 依赖版本已由 libs.versions.toml 统一锁定，跳过每次构建的兼容检查任务以提速。
+        enabled = false
     }
 }
 
@@ -428,19 +448,21 @@ compose.desktop {
 
 // WinRT FFM（Linker/SymbolLookup）属于受限方法，显式开 native-access：
 // 不加现在只是 warning，未来 JDK 会直接拦截。exe 启动器的那份在上面的 application.jvmArgs。
-tasks.withType<Test> {
+val testdataMediaDir = rootProject.file("testdata/media").absolutePath
+tasks.withType<Test>().configureEach {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     jvmArgs(linuxJvmArgs)
     // 播放冒烟读仓库里的样片，路径由这里给出，不依赖测试进程的工作目录
-    systemProperty("piko.testdata", rootProject.file("testdata/media").absolutePath)
+    systemProperty("piko.testdata", testdataMediaDir)
     // 差分还原的用例载入与安装包同一份 libzstd：release.yml 在 arm64 的打包机上也跑这些测试，验的就是那一份
     if (isWindowsHost) {
         dependsOn(bundledAppResources)
-        systemProperty("piko.test.zstd", bundledAppResources.get().destinationDir.resolve("zstd").absolutePath)
-        systemProperty("piko.test.sqlite", bundledAppResources.get().destinationDir.resolve("sqlite").absolutePath)
+        val resourcesDir = bundledAppResourcesDir.get().asFile
+        systemProperty("piko.test.zstd", resourcesDir.resolve("zstd").absolutePath)
+        systemProperty("piko.test.sqlite", resourcesDir.resolve("sqlite").absolutePath)
     }
 }
-tasks.withType<JavaExec> {
+tasks.withType<JavaExec>().configureEach {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
 // AOT 训练真的启动一次应用。带版本号打的包启动配置里没有 piko.home（装好后用 ~/.piko），训练进程就读写打包机上
@@ -458,41 +480,43 @@ val releaseLauncherConfig = layout.buildDirectory.file(
         else -> "$desktopPackageName/app"
     } + "/$desktopPackageName.cfg",
 ).get().asFile
-// 原样保留换行符：启动配置是增量更新的补丁文件，内容变了就与没加过这一行时的构建对不上
-fun rewriteLauncherConfig(edit: (List<String>) -> List<String>) {
-    val text = releaseLauncherConfig.readText()
-    val newline = if (text.contains("\r\n")) "\r\n" else "\n"
-    val lines = text.split(newline).dropLastWhile { it.isEmpty() }.filter { it != aotTrainingHomeOption }
-    releaseLauncherConfig.writeText(edit(lines).joinToString(newline, postfix = newline))
-}
 // AOT 缓存按类路径上 jar 的修改时间校验（秒），对不上整份作废。训练前把这些 jar 统一成同一个偶数秒的时间：
 // MSI 的 cab 只存到偶数秒，不取整的话装上就差一秒。cab 存的还是不带时区的本地时间，装到与打包机不同时区的机器上
 // 整体偏几个小时，这一点打包时无从避免，所以把时间记进启动配置，由应用启动时改回（ClasspathTimes.kt）
 val classpathMtimeOptionPrefix = "java-options=-Dpiko.classpath-mtime="
-fun stampClasspathJars(): Long {
-    val jars = releaseLauncherConfig.parentFile.listFiles { f -> f.isFile && f.extension == "jar" }.orEmpty()
-    check(jars.isNotEmpty()) { "${releaseLauncherConfig.parent} 下没有 jar" }
-    val stamp = jars.maxOf { it.lastModified() } / 2000 * 2000
-    jars.forEach { check(it.setLastModified(stamp)) { "改不了 ${it.name} 的修改时间" } }
-    return stamp
-}
 tasks.matching { it.name == "createReleaseAotArchive" }.configureEach {
+    notCompatibleWithConfigurationCache("Compose Desktop packaging/ProGuard/AOT tasks run outside Configuration Cache")
+    // 配置缓存开着，doFirst/doLast 只捕获局部值，不引用脚本顶层方法或属性。
+    val trainingHome = aotTrainingHome
+    val trainingHomeOption = aotTrainingHomeOption
+    val launcherConfig = releaseLauncherConfig
+    val mtimePrefix = classpathMtimeOptionPrefix
     doFirst {
-        aotTrainingHome.deleteRecursively()
-        aotTrainingHome.mkdirs()
-        val classpathMtimeOption = classpathMtimeOptionPrefix + stampClasspathJars()
-        rewriteLauncherConfig { all ->
-            // 单独重跑训练时启动配置里已有上一次的时间
-            val lines = all.filterNot { it.startsWith(classpathMtimeOptionPrefix) }
-            val lastOption = lines.indexOfLast { it.startsWith("java-options=") }
-            check(lastOption >= 0) { "${releaseLauncherConfig.name} 里没有 java-options，jpackage 的格式可能变了" }
-            lines.take(lastOption + 1) + classpathMtimeOption + aotTrainingHomeOption + lines.drop(lastOption + 1)
-        }
+        trainingHome.deleteRecursively()
+        trainingHome.mkdirs()
+        val jars = launcherConfig.parentFile.listFiles { f -> f.isFile && f.extension == "jar" }.orEmpty()
+        check(jars.isNotEmpty()) { "${launcherConfig.parent} 下没有 jar" }
+        val stamp = jars.maxOf { it.lastModified() } / 2000 * 2000
+        jars.forEach { check(it.setLastModified(stamp)) { "改不了 ${it.name} 的修改时间" } }
+        val classpathMtimeOption = mtimePrefix + stamp
+        // 原样保留换行符：启动配置是增量更新的补丁文件，内容变了就与没加过这一行时的构建对不上
+        val text = launcherConfig.readText()
+        val newline = if (text.contains("\r\n")) "\r\n" else "\n"
+        val all = text.split(newline).dropLastWhile { it.isEmpty() }.filter { it != trainingHomeOption }
+        // 单独重跑训练时启动配置里已有上一次的时间
+        val lines = all.filterNot { it.startsWith(mtimePrefix) }
+        val lastOption = lines.indexOfLast { it.startsWith("java-options=") }
+        check(lastOption >= 0) { "${launcherConfig.name} 里没有 java-options，jpackage 的格式可能变了" }
+        val updated = lines.take(lastOption + 1) + classpathMtimeOption + trainingHomeOption + lines.drop(lastOption + 1)
+        launcherConfig.writeText(updated.joinToString(newline, postfix = newline))
     }
     doLast {
-        rewriteLauncherConfig { it }
+        val text = launcherConfig.readText()
+        val newline = if (text.contains("\r\n")) "\r\n" else "\n"
+        val lines = text.split(newline).dropLastWhile { it.isEmpty() }.filter { it != trainingHomeOption }
+        launcherConfig.writeText(lines.joinToString(newline, postfix = newline))
         // 训练进程开了日志就说明它读到了这个属性；没有日志则它仍在用别处的数据目录
-        check(aotTrainingHome.resolve("logs").isDirectory) { "AOT 训练没有写进 $aotTrainingHome，piko.home 没有生效" }
+        check(trainingHome.resolve("logs").isDirectory) { "AOT 训练没有写进 $trainingHome，piko.home 没有生效" }
     }
 }
 tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(bundledAppResources) }
@@ -502,9 +526,12 @@ tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(bu
 val transactionalUpgradeScript = file("package/windows/transactional-upgrade.ps1")
 val releaseMsiDir = layout.buildDirectory.dir("compose/binaries/main-release/msi").get().asFile
 tasks.matching { it.name == "packageReleaseMsi" }.configureEach {
+    val scriptFile = transactionalUpgradeScript
+    val msiDir = releaseMsiDir
+    val identity = shellId
     doLast {
-        releaseMsiDir.listFiles { f -> f.extension == "msi" }.orEmpty().forEach { msi ->
-            val exit = ProcessBuilder("pwsh", "-NoProfile", "-File", transactionalUpgradeScript.absolutePath, "-Msi", msi.absolutePath, "-Identity", shellId)
+        msiDir.listFiles { f -> f.extension == "msi" }.orEmpty().forEach { msi ->
+            val exit = ProcessBuilder("pwsh", "-NoProfile", "-File", scriptFile.absolutePath, "-Msi", msi.absolutePath, "-Identity", identity)
                 .inheritIO()
                 .start()
                 .waitFor()
@@ -549,11 +576,21 @@ abstract class UpdateArtifactsTask : DefaultTask() {
     @get:Input
     abstract val artifactPrefix: Property<String>
 
+    @get:Input
+    abstract val requireBaseManifests: Property<Boolean>
+
+    @get:Input
+    @get:Optional
+    abstract val baseManifestsPath: Property<String>
+
     @get:OutputDirectory
     abstract val outputDir: DirectoryProperty
 
     @TaskAction
     fun write() {
+        if (requireBaseManifests.getOrElse(false)) {
+            check(!baseManifests.isEmpty) { "pikoUpdateBases=${baseManifestsPath.orNull} 下没有 *-files.json" }
+        }
         val root = appImage.get().asFile
         val out = outputDir.get().asFile.apply { deleteRecursively(); mkdirs() }
         val files = root.walkTopDown().filter { it.isFile }
@@ -645,16 +682,22 @@ abstract class UpdateArtifactsTask : DefaultTask() {
 }
 
 // CI 将签好的启动器放进独立的应用目录；后续 Gradle 即使重建原目录，也不会覆盖签名。
-val signedAppImage = providers.gradleProperty("pikoSignedAppImage").map { rootProject.file(it) }
+val rootProjectDir: File = rootProject.projectDir
+val signedAppImage = providers.gradleProperty("pikoSignedAppImage").map { path ->
+    val candidate = File(path)
+    if (candidate.isAbsolute) candidate else File(rootProjectDir, path)
+}
 if (isWindowsHost) {
     afterEvaluate {
         tasks.named<AbstractJPackageTask>("packageReleaseMsi") {
             if (signedAppImage.isPresent) {
+                val signedDir = signedAppImage.get()
+                val expectedName = desktopPackageName
                 // Compose 的 appImage 指向包名目录的父目录，jpackage 参数再拼上 packageName。
-                appImage.set(layout.dir(signedAppImage.map { it.parentFile }))
+                appImage.set(signedDir.parentFile)
                 doFirst {
-                    check(signedAppImage.get().name == desktopPackageName)
-                    check(signedAppImage.get().resolve("$desktopPackageName.exe").isFile)
+                    check(signedDir.name == expectedName)
+                    check(signedDir.resolve("$expectedName.exe").isFile)
                 }
             }
         }
@@ -667,12 +710,14 @@ tasks.register<UpdateArtifactsTask>("packageReleaseUpdate") {
     appImage = layout.dir(signedAppImage).orElse(layout.buildDirectory.dir("compose/binaries/main-release/app/$desktopPackageName"))
     version = desktopPackageVersion
     artifactPrefix = "piko-$hostPlatform-$desktopPackageVersion"
+    requireBaseManifests = false
     outputDir = layout.buildDirectory.dir("compose/binaries/main-release/update")
     // 放着旧版 files.json 的目录，CI 由 .github/scripts/update-bases.sh 取来。相对路径按仓库根目录算，与在根目录跑 gradlew
     // 时的写法一致；按本模块算的话 test.yml 传的 smoke-bases 落到 desktopApp 下，一份清单都没取到，补丁包照样打出来
     providers.gradleProperty("pikoUpdateBases").orNull?.takeIf { it.isNotBlank() }?.let { dir ->
         baseManifests.from(rootProject.fileTree(dir) { include("*-files.json") })
-        doFirst { check(!baseManifests.isEmpty) { "pikoUpdateBases=$dir 下没有 *-files.json" } }
+        requireBaseManifests = true
+        baseManifestsPath = dir
     }
     providers.gradleProperty("pikoUpdateRetired").orNull?.takeIf { it.isNotBlank() }?.let { dir ->
         retiredManifests.from(rootProject.fileTree(dir) { include("*-files.json") })
@@ -682,45 +727,110 @@ tasks.register<UpdateArtifactsTask>("packageReleaseUpdate") {
 // 这里后注册、后执行，把 flag 补回去（注册顺序：插件先、脚本后）。
 val devHomeDir: File = File(System.getProperty("user.home"), ".piko-dev")
 val keepDevInstance = providers.gradleProperty("piko.keepDevInstance").orNull == "true"
-fun stopRunningDevInstance() {
-    if (keepDevInstance) return
-    val root = devHomeDir.toPath().toAbsolutePath().normalize()
-    val lockPath = root.resolve("instance.lock")
-    if (!lockPath.toFile().exists()) return
-    val channel = runCatching {
-        FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE)
-    }.getOrNull() ?: return
-    channel.use { ch ->
-        val existingLock = runCatching { ch.tryLock() }.getOrNull()
-        if (existingLock != null) {
-            runCatching { existingLock.release() }
-            return
-        }
-        val socketPath = Path.of(System.getProperty("java.io.tmpdir"), "piko@${Integer.toHexString(root.toString().hashCode())}.sock")
-        val sent = runCatching {
-            SocketChannel.open(StandardProtocolFamily.UNIX).use { sock ->
-                sock.connect(UnixDomainSocketAddress.of(socketPath))
-                val bytes = "--dev-quit".toByteArray(Charsets.UTF_8)
-                val buf = ByteBuffer.allocate(4 + bytes.size).putInt(bytes.size).put(bytes).flip()
-                while (buf.hasRemaining()) sock.write(buf)
+
+tasks.matching { it.name == "compileKotlinDesktop" }.configureEach {
+    // 仅在 desktopApp 编译前尝试优雅关闭开发版实例，不跨项目配置 rootProject.allprojects 以兼容 Configuration Cache。
+    val homeDir = devHomeDir
+    val skipStop = keepDevInstance
+    doFirst {
+        if (skipStop) return@doFirst
+        val root = homeDir.toPath().toAbsolutePath().normalize()
+        val lockPath = root.resolve("instance.lock")
+        if (!lockPath.toFile().exists()) return@doFirst
+        val channel = runCatching {
+            FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+        }.getOrNull() ?: return@doFirst
+        channel.use { ch ->
+            val existingLock = runCatching { ch.tryLock() }.getOrNull()
+            if (existingLock != null) {
+                runCatching { existingLock.release() }
+                return@doFirst
             }
-        }.isSuccess
-        if (!sent) return
-        repeat(40) {
-            Thread.sleep(75)
-            val acquired = runCatching { ch.tryLock() }.getOrNull()
-            if (acquired != null) {
-                runCatching { acquired.release() }
-                return
+            val socketPath = Path.of(System.getProperty("java.io.tmpdir"), "piko@${Integer.toHexString(root.toString().hashCode())}.sock")
+            val sent = runCatching {
+                SocketChannel.open(StandardProtocolFamily.UNIX).use { sock ->
+                    sock.connect(UnixDomainSocketAddress.of(socketPath))
+                    val bytes = "--dev-quit".toByteArray(Charsets.UTF_8)
+                    val buf = ByteBuffer.allocate(4 + bytes.size).putInt(bytes.size).put(bytes).flip()
+                    while (buf.hasRemaining()) sock.write(buf)
+                }
+            }.isSuccess
+            if (!sent) return@doFirst
+            repeat(40) {
+                Thread.sleep(75)
+                val acquired = runCatching { ch.tryLock() }.getOrNull()
+                if (acquired != null) {
+                    runCatching { acquired.release() }
+                    return@doFirst
+                }
             }
         }
     }
 }
 
-rootProject.allprojects {
-    tasks.matching { it.name == "compileKotlinDesktop" }.configureEach {
-        doFirst { stopRunningDevInstance() }
+/**
+ * 导出开发版独立启动参数文件（@argfile）与 JDK 25 可执行路径，配合 scripts/run-desktop.ps1 直接拉起桌面窗口，
+ * 避免 `./gradlew :desktopApp:run` 在窗口运行期间持续占用 Gradle Daemon。
+ */
+abstract class WriteDevLaunchArgsTask : DefaultTask() {
+    @get:Input
+    abstract val javaExecutable: Property<String>
+
+    @get:Input
+    abstract val mainClass: Property<String>
+
+    @get:Input
+    abstract val jvmArgs: ListProperty<String>
+
+    @get:Input
+    abstract val devSocketPath: Property<String>
+
+    @get:Classpath
+    abstract val runtimeClasspath: ConfigurableFileCollection
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun write() {
+        val dir = outputDir.get().asFile.apply { mkdirs() }
+        dir.resolve("java-exec.txt").writeText(javaExecutable.get(), Charsets.UTF_8)
+        dir.resolve("dev-socket.txt").writeText(devSocketPath.get(), Charsets.UTF_8)
+        val cp = runtimeClasspath.files.joinToString(File.pathSeparator) { it.absolutePath }
+        val lines = buildList {
+            jvmArgs.get().forEach { add(quoteArg(it)) }
+            add("-cp")
+            add(quoteArg(cp))
+            add(mainClass.get())
+        }
+        dir.resolve("piko.args").writeText(lines.joinToString("\n", postfix = "\n"), Charsets.UTF_8)
     }
+
+    private fun quoteArg(value: String): String =
+        "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}
+
+tasks.register<WriteDevLaunchArgsTask>("prepareDevLaunch") {
+    dependsOn("desktopMainClasses", "desktopJar", bundledAppResources)
+    javaExecutable.set(desktopJavaLauncher.map { it.executablePath.asFile.absolutePath })
+    mainClass.set("dev.piko.desktop.MainKt")
+    jvmArgs.set(
+        buildList {
+            add("--enable-native-access=ALL-UNNAMED")
+            add("-XX:+ExplicitGCInvokesConcurrent")
+            addAll(linuxJvmArgs)
+            add("-Dcompose.application.resources.dir=" + bundledAppResourcesDir.get().asFile.absolutePath)
+            add("-Dpiko.home=" + devHomeDir.path)
+            add("-Dpiko.dev-run=true")
+        },
+    )
+    val normalizedDevRoot = devHomeDir.toPath().toAbsolutePath().normalize().toString()
+    devSocketPath.set(
+        Path.of(System.getProperty("java.io.tmpdir"), "piko@${Integer.toHexString(normalizedDevRoot.hashCode())}.sock").toString(),
+    )
+    runtimeClasspath.from(tasks.named("desktopJar"))
+    runtimeClasspath.from(configurations.named("desktopRuntimeClasspath"))
+    outputDir.set(layout.buildDirectory.dir("dev-launch"))
 }
 
 project.afterEvaluate {
