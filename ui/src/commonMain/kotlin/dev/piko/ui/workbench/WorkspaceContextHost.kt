@@ -132,9 +132,19 @@ internal fun WorkspaceContextHost(
                         }
                         is WorkspaceContext.ImportDraft -> model.importModels[context.id]?.state?.let { draft ->
                             val content: @Composable () -> Unit = {
-                                InstantSheetContent(draft, view = model.importView(context.id), headerShown = true, fillHeight = true, onPreview = { id, name ->
-                                    onPlay(FileStat(id = id, name = name), emptyList())
-                                })
+                                InstantSheetContent(
+                                    state = draft,
+                                    view = model.importView(context.id),
+                                    headerShown = true,
+                                    fillHeight = true,
+                                    useImportWorkspace = wide,
+                                    onOpenLink = { url ->
+                                        if (draft.batch == null && draft.canEdit) draft.updateInput(url) else model.openImport(url)
+                                    },
+                                    onPreview = { id, name ->
+                                        onPlay(FileStat(id = id, name = name), emptyList())
+                                    },
+                                )
                             }
                             if (wide) {
                                 val summary = draft.summary()

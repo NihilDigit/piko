@@ -561,8 +561,8 @@ private fun DriveEmptyState(state: DriveScreenState, modifier: Modifier = Modifi
                 } else if (state.archiveView != null) {
                     val error = state.loadError
                     PikoEmptyState(
-                        title = if (error != null) tr("无法读取压缩包", "Unable to read archive", "圧縮ファイルを読み込めません", "압축 파일을 읽을 수 없습니다", "無法讀取壓縮檔") else tr("此文件夹为空", "This folder is empty", "このフォルダーは空です", "이 폴더는 비어 있습니다", "此資料夾為空"),
-                        description = error ?: tr("此压缩包目录为空", "This archive folder is empty", "圧縮ファイル内のこのフォルダーは空です", "압축 파일의 이 폴더는 비어 있습니다", "此壓縮檔目錄為空"),
+                        title = if (error != null) tr("无法读取压缩包", "Unable to read archive", "圧縮ファイルを読み込めません", "압축 파일을 읽을 수 없습니다", "無法讀取壓縮檔") else tr("此压缩包目录为空", "This archive folder is empty", "圧縮ファイル内のこのフォルダーは空です", "압축 파일의 이 폴더는 비어 있습니다", "此壓縮檔目錄為空"),
+                        description = error ?: "",
                         icon = if (error != null) Icons.Outlined.ErrorOutline else Icons.Outlined.FolderOpen,
                     )
                 } else if (state.importPreviewView != null) {

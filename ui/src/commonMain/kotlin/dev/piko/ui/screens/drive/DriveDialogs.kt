@@ -1,15 +1,24 @@
 package dev.piko.ui.screens.drive
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedToggleButton
+import androidx.compose.material3.OutlinedToggleButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,10 +56,13 @@ import dev.piko.ui.components.SegmentDownloadSheet
 import dev.piko.ui.components.SegmentSession
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.UnsupportedNameDialog
+import dev.piko.ui.components.connectedToggleShapes
 import dev.piko.ui.components.driveNameHint
 import dev.piko.ui.components.isUnfixableDriveName
 import dev.piko.ui.components.previewImageCoverUrl
 import dev.piko.ui.components.submitDriveName
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.resources.Res
 import dev.piko.ui.resources.common_cancel
@@ -307,10 +319,13 @@ internal fun DriveSheetHost(
                     onDismissRequest = onDismissSheet,
                     sideSheetTitle = tr("转到路径", "Go to path", "パスへ移動", "경로로 이동", "前往路徑"),
                 ) {
+                    val sideSheet = isSideSheet
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Text(stringResource(Res.string.text_go_to_path), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                            TextButton(onClick = onDismissSheet) { Text(stringResource(Res.string.common_close)) }
+                        if (!sideSheet) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(stringResource(Res.string.text_go_to_path), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                                TextButton(onClick = onDismissSheet, shapes = ButtonDefaults.shapes()) { Text(stringResource(Res.string.common_close)) }
+                            }
                         }
                         addressBar()
                         Text(stringResource(Res.string.text_enter_a_path_in_the_address_bar_or_choose_a_recent_or_pinned_folder), style = MaterialTheme.typography.bodySmall)
@@ -370,6 +385,7 @@ internal fun DriveSystemOverlays(
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun DriveSingleRenameDialog(
     dialog: DriveDialog.SingleRename,
@@ -402,8 +418,10 @@ private fun DriveSingleRenameDialog(
         }
     }
     val isAlreadyCanonical = normalizedWithCurrentFlags != null && renameNewName == normalizedWithCurrentFlags
-    val showAvControls = canonicalName != null || initialAv != null || liveAv != null
-    val showMetaTubeRow = canonicalName != null && (canonicalRename || isAlreadyCanonical) && metaTubeEnabled && metaTube != null
+    val hasInitialAv = canonicalName != null || initialAv != null
+    val showAvControls = hasInitialAv || liveAv != null
+    val canOfferMetaTube = canonicalName != null && metaTubeEnabled && metaTube != null
+    val showMetaTubeRow = canOfferMetaTube && (canonicalRename || isAlreadyCanonical)
 
     NameInputDialog(
         title = tr("重命名", "Rename", "名前を変更", "이름 변경", "重新命名"),
@@ -417,44 +435,71 @@ private fun DriveSingleRenameDialog(
         onConfirm = { name -> onConfirmRename(target.id, name) },
         extra = if (!showAvControls) null else {
             {
+                val colors = MaterialTheme.colorScheme
+                val isEInk = LocalAppearance.current.isEInk
+                val toggleColors = OutlinedToggleButtonDefaults.colors(
+                    containerColor = if (isEInk) Color.White else Color.Transparent,
+                    contentColor = if (isEInk) Color.Black else colors.onSurfaceVariant,
+                    checkedContainerColor = if (isEInk) Color.Black else colors.secondaryContainer,
+                    checkedContentColor = if (isEInk) Color.White else colors.onSecondaryContainer,
+                )
+                val toggleBorder = if (isEInk) BorderStroke(1.dp, Color.Black) else null
                 val hasU = liveAv?.uncensored == true
                 val hasC = liveAv?.chineseSubtitles == true
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(
+                    modifier = Modifier.heightIn(min = if (canOfferMetaTube) 80.dp else 40.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        FilterChip(
-                            selected = hasU,
-                            enabled = liveAv != null,
-                            onClick = {
-                                withAvFlags(
-                                    name = renameNewName,
-                                    isFolder = target.isFolder,
-                                    uncensored = !hasU,
-                                    chineseSubtitles = hasC,
-                                )?.let { renameNewName = it }
-                            },
-                            label = { Text("-U") },
-                        )
-                        FilterChip(
-                            selected = hasC,
-                            enabled = liveAv != null,
-                            onClick = {
-                                withAvFlags(
-                                    name = renameNewName,
-                                    isFolder = target.isFolder,
-                                    uncensored = hasU,
-                                    chineseSubtitles = !hasC,
-                                )?.let { renameNewName = it }
-                            },
-                            label = { Text("-C") },
-                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
+                            OutlinedToggleButton(
+                                checked = hasU,
+                                enabled = liveAv != null,
+                                onCheckedChange = {
+                                    withAvFlags(
+                                        name = renameNewName,
+                                        isFolder = target.isFolder,
+                                        uncensored = !hasU,
+                                        chineseSubtitles = hasC,
+                                    )?.let { renameNewName = it }
+                                },
+                                shapes = connectedToggleShapes(0, 2),
+                                colors = toggleColors,
+                                border = toggleBorder ?: OutlinedToggleButtonDefaults.border(enabled = liveAv != null, checked = hasU),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                modifier = Modifier.height(34.dp),
+                            ) {
+                                Text("-U")
+                            }
+                            OutlinedToggleButton(
+                                checked = hasC,
+                                enabled = liveAv != null,
+                                onCheckedChange = {
+                                    withAvFlags(
+                                        name = renameNewName,
+                                        isFolder = target.isFolder,
+                                        uncensored = hasU,
+                                        chineseSubtitles = !hasC,
+                                    )?.let { renameNewName = it }
+                                },
+                                shapes = connectedToggleShapes(1, 2),
+                                colors = toggleColors,
+                                border = toggleBorder ?: OutlinedToggleButtonDefaults.border(enabled = liveAv != null, checked = hasC),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                modifier = Modifier.height(34.dp),
+                            ) {
+                                Text("-C")
+                            }
+                        }
                         Spacer(Modifier.weight(1f))
                         if (normalizedWithCurrentFlags != null && !showMetaTubeRow) {
                             TextButton(
                                 enabled = !isAlreadyCanonical,
+                                shapes = ButtonDefaults.shapes(),
                                 onClick = {
                                     renameNewName = normalizedWithCurrentFlags
                                     canonicalRename = true
@@ -477,6 +522,7 @@ private fun DriveSingleRenameDialog(
     )
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun NameInputDialog(
     title: String,
@@ -520,7 +566,7 @@ private fun NameInputDialog(
             PikoDialogConfirm(confirmLabel, onClick = ::confirm, enabled = canConfirm)
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) }
+            TextButton(onClick = onDismiss, shapes = ButtonDefaults.shapes()) { Text(stringResource(Res.string.common_cancel)) }
         },
     )
     pendingName?.let { name ->

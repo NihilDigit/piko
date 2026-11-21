@@ -16,7 +16,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -43,6 +44,7 @@ import dev.piko.shared.rename.splitExtension
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
+import dev.piko.ui.components.PikoLoadingIndicator
 
 /**
  * 按番号规范命名一个文件夹：在批量重命名的对话框里先扫描这棵树（[CanonicalTreeScan]），扫完就是批量重命名的预览，
@@ -83,6 +85,7 @@ fun CanonicalFolderRenameDialog(
 }
 
 /** 扫描中与扫描失败时对话框里的样子：进度在中间，底栏是停止与取消。 */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ScanContent(scan: CanonicalTreeScan, title: String, onClose: () -> Unit, fullscreen: Boolean) {
     val colors = MaterialTheme.colorScheme
@@ -95,7 +98,7 @@ private fun ScanContent(scan: CanonicalTreeScan, title: String, onClose: () -> U
                     Text(stringResource(Res.string.text_scan_failed), style = MaterialTheme.typography.titleMedium)
                     Text(scan.errorMessage.orEmpty(), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                 } else {
-                    LinearProgressIndicator(Modifier.widthIn(max = 240.dp).fillMaxWidth())
+                    PikoLoadingIndicator(size = 48.dp)
                     Text(stringResource(Res.string.text_scanning), style = MaterialTheme.typography.titleMedium)
                     Text(
                         tr("已扫描 ${scan.scannedFolders} 个文件夹、${scan.scannedFiles} 个文件", "Scanned ${enCount(scan.scannedFolders, "folder", "folders")} and ${enCount(scan.scannedFiles, "file", "files")}", "${scan.scannedFolders} フォルダー、${scan.scannedFiles} ファイルを検索済み", "폴더 ${scan.scannedFolders}개, 파일 ${scan.scannedFiles}개 검색 완료", "已掃描 ${scan.scannedFolders} 個資料夾、${scan.scannedFiles} 個檔案"),
@@ -109,12 +112,12 @@ private fun ScanContent(scan: CanonicalTreeScan, title: String, onClose: () -> U
             modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 24.dp, vertical = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
         ) {
-            if (!fullscreen) TextButton(onClick = onClose) { Text(stringResource(Res.string.common_cancel)) }
+            if (!fullscreen) TextButton(onClick = onClose, shapes = ButtonDefaults.shapes()) { Text(stringResource(Res.string.common_cancel)) }
             if (failed) {
-                TextButton(onClick = scan::start) { Text(stringResource(Res.string.common_retry)) }
+                TextButton(onClick = scan::start, shapes = ButtonDefaults.shapes()) { Text(stringResource(Res.string.common_retry)) }
             } else {
                 // 停止不丢已扫到的部分，文案据此写明
-                TextButton(onClick = scan::stop) { Text(stringResource(Res.string.text_stop_and_view_results)) }
+                TextButton(onClick = scan::stop, shapes = ButtonDefaults.shapes()) { Text(stringResource(Res.string.text_stop_and_view_results)) }
             }
         }
     }

@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -213,7 +214,7 @@ fun ProfileScreen(
                     icon = DriveLibrary.RECENT.icon,
                     selectedIcon = DriveLibrary.RECENT.selectedIcon,
                     title = DriveLibrary.RECENT.title,
-                    supporting = tr("最近上传与离线、秒传的文件", "Recent uploads, cloud downloads and instant saves", "最近アップロード・クラウドダウンロード・インスタント保存したファイル", "최근 업로드, 클라우드 다운로드 및 즉시 저장 파일", "最近上傳與離線、秒傳的檔案"),
+                    supporting = tr("最近上传与离线、秒传的文件", "Recent uploads, cloud downloads and instant saves", "最近アップロード、クラウドダウンロード、インスタント保存したファイル", "최근 업로드, 클라우드 다운로드 및 즉시 저장 파일", "最近上傳與離線、秒傳的檔案"),
                     onClick = { onOpenLibrary(DriveLibrary.RECENT) },
                 )
                 SettingsNavigationRow(
@@ -260,7 +261,7 @@ fun ProfileScreen(
                     icon = Icons.Outlined.Settings,
                     selectedIcon = Icons.Filled.Settings,
                     title = tr("设置", "Settings", "設定", "설정", "設定"),
-                    supporting = tr("外观、网盘、传输与同步", "Appearance, drive, transfers and sync", "外観・ドライブ・転送・同期", "모양, 드라이브, 전송 및 동기화", "外觀、雲端硬碟、傳輸與同步"),
+                    supporting = tr("外观、网盘、传输与同步", "Appearance, drive, transfers and sync", "外観、ドライブ、転送、同期", "모양, 드라이브, 전송 및 동기화", "外觀、雲端硬碟、傳輸與同步"),
                     onClick = { onOpenPane(Screen.Settings) },
                     selected = selectedPane == Screen.Settings,
                 )
@@ -505,6 +506,7 @@ private fun StorageSection(
     val accent = if (nearlyFull) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
     val interactiveModifier = if (onClick != null) {
         modifier
+            .heightIn(min = 48.dp)
             .clip(MaterialTheme.shapes.small)
             .clickable(
                 role = Role.Button,
@@ -593,6 +595,7 @@ private fun UsageSection(title: String, usages: List<Usage>, resetLabel: () -> S
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(min = 48.dp)
                 .clip(MaterialTheme.shapes.small)
                 .clickable(
                     enabled = usages.isNotEmpty(),
@@ -722,10 +725,12 @@ private fun usedFraction(usedBytes: Long, limitBytes: Long): Float =
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun UsageTile(usage: Usage, modifier: Modifier = Modifier) {
+    val isEInk = LocalAppearance.current.isEInk
     Surface(
         modifier = modifier,
         shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = if (isEInk) Color.White else MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = if (isEInk) BorderStroke(1.dp, Color.Black) else null,
     ) {
         Column(modifier = Modifier.padding(10.dp)) {
             Text(

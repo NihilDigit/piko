@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -25,11 +26,13 @@ import androidx.compose.ui.unit.dp
  */
 
 /** 宽窗口：命令栏右端有底色的按钮（Tier 1 高强调唯一主操作）。 */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun PrimaryActionButton(action: SheetAction, modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
     Button(
         onClick = action.onClick,
+        shapes = ButtonDefaults.shapes(),
         colors = if (action.destructive) ButtonDefaults.buttonColors(containerColor = colors.error, contentColor = colors.onError) else ButtonDefaults.buttonColors(),
         contentPadding = PaddingValues(start = 12.dp, end = 16.dp, top = 0.dp, bottom = 0.dp),
         modifier = modifier.heightIn(min = 36.dp),

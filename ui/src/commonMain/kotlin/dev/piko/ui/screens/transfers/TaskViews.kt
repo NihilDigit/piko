@@ -1,9 +1,5 @@
 package dev.piko.ui.screens.transfers
 
-import dev.piko.shared.i18n.enCount
-
-import dev.piko.shared.i18n.tr
-
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -16,14 +12,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.i18n.enCount
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.state.TransfersState
 import dev.piko.ui.components.AdaptiveBar
 import dev.piko.ui.components.BarItem
-import dev.piko.ui.components.PinnedPriority
-import dev.piko.ui.components.iconBarItem
 import dev.piko.ui.components.IslandTitle
+import dev.piko.ui.components.PinnedPriority
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.SnailModeToggle
+import dev.piko.ui.components.iconBarItem
+import dev.piko.ui.platform.LocalPikoPlatform
 
 @Composable
 internal fun RowScope.TaskIslandHeader(
@@ -32,6 +31,7 @@ internal fun RowScope.TaskIslandHeader(
     actions: List<SheetAction>,
     inlineFilter: Boolean = true,
 ) {
+    val shortcutModifier = LocalPikoPlatform.current.shortcutModifier
     AdaptiveBar(
         modifier = Modifier.weight(1f).heightIn(min = 56.dp),
         leading = buildList {
@@ -44,12 +44,19 @@ internal fun RowScope.TaskIslandHeader(
             add(BarItem("title", PinnedPriority) {
                 IslandTitle(if (selectedCount > 0) tr("已选 $selectedCount 项", "${enCount(selectedCount, "item", "items")} selected", "$selectedCount 項目を選択中", "${selectedCount}개 선택됨", "已選 $selectedCount 項") else tr("任务", "Tasks", "タスク", "작업", "任務"))
             })
-            if (inlineFilter) add(BarItem("filter", PinnedPriority) { TaskKindFilter(state) })
+            if (inlineFilter && selectedCount == 0) add(BarItem("filter", PinnedPriority) { TaskKindFilter(state) })
         },
         trailing = buildList {
             addAll(actions.mapIndexed { index, action ->
-                iconBarItem(action.icon, action.label, action.onClick, priority = 50 - index,
-                    destructive = action.destructive, key = "action:$index")
+                iconBarItem(
+                    icon = action.icon,
+                    label = action.label,
+                    onClick = action.onClick,
+                    priority = if (selectedCount > 0) PinnedPriority else 50 - index,
+                    shortcut = if (selectedCount > 0) shortcutModifier.label("A") else null,
+                    destructive = action.destructive,
+                    key = "action:$index",
+                )
             })
             if (selectedCount == 0) add(BarItem("snail", PinnedPriority) { SnailModeToggle() })
         },

@@ -18,13 +18,22 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuDefaults
+import androidx.compose.material3.SplitButtonDefaults
+import androidx.compose.material3.SplitButtonLayout
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -55,6 +64,8 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.PikoBrandIcons
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
+import dev.piko.ui.components.PikoDropdownMenu
+import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.platform.LocalPikoPlatform
@@ -120,6 +131,7 @@ fun UpdateDialog(
     val activeTotalBytes = (status as? UpdateStatus.Downloading)?.totalBytes?.takeIf { it > 0L } ?: update.downloadSize
     val notesScroll = rememberScrollState()
     val notesSurfaceColor = colors.surfaceContainerLow
+    var moreActionsExpanded by remember { mutableStateOf(false) }
 
     PikoDialog(
         onDismissRequest = onDismiss,
@@ -233,46 +245,120 @@ fun UpdateDialog(
         },
         confirmButton = {
             when {
-                !update.canInstallInApp -> Button(onClick = { platform.openUrl(update.pageUrl) }) {
+                !update.canInstallInApp -> Button(
+                    onClick = { platform.openUrl(update.pageUrl) },
+                    shapes = ButtonDefaults.shapes(),
+                ) {
                     Text(stringResource(Res.string.text_go_to_download_page))
                 }
-                status is UpdateStatus.Downloading -> FilledTonalButton(onClick = onDismiss) {
+                status is UpdateStatus.Downloading -> FilledTonalButton(
+                    onClick = onDismiss,
+                    shapes = ButtonDefaults.shapes(),
+                ) {
                     Text(stringResource(Res.string.updater_download_in_background))
                 }
-                status is UpdateStatus.ReadyToRestart -> Button(onClick = restart) {
+                status is UpdateStatus.ReadyToRestart -> Button(
+                    onClick = restart,
+                    shapes = ButtonDefaults.shapes(),
+                ) {
                     Text(stringResource(Res.string.text_restart_and_update))
                 }
-                status is UpdateStatus.Installing -> Button(onClick = {}, enabled = false) {
+                status is UpdateStatus.Installing -> Button(
+                    onClick = {},
+                    enabled = false,
+                    shapes = ButtonDefaults.shapes(),
+                ) {
                     Text(stringResource(Res.string.text_waiting_to_install))
                 }
-                status is UpdateStatus.Failed -> Button(onClick = startDownload) {
+                status is UpdateStatus.Failed -> Button(
+                    onClick = startDownload,
+                    shapes = ButtonDefaults.shapes(),
+                ) {
                     Text(stringResource(Res.string.common_retry))
                 }
-                else -> Button(onClick = startDownload) {
-                    Text(stringResource(Res.string.text_download_and_install))
+                else -> {
+                    val menuCount = if (onIgnore != null) 2 else 1
+                    SplitButtonLayout(
+                        leadingButton = {
+                            SplitButtonDefaults.LeadingButton(onClick = startDownload) {
+                                Text(stringResource(Res.string.text_download_and_install))
+                            }
+                        },
+                        trailingButton = {
+                            Box {
+                                SplitButtonDefaults.TrailingButton(
+                                    checked = moreActionsExpanded,
+                                    onCheckedChange = { moreActionsExpanded = it },
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.KeyboardArrowDown,
+                                        contentDescription = tr("更多操作", "More actions", "その他の操作", "추가 작업", "更多操作"),
+                                        modifier = Modifier.size(SplitButtonDefaults.TrailingIconSize),
+                                    )
+                                }
+                                PikoDropdownMenu(
+                                    expanded = moreActionsExpanded,
+                                    onDismissRequest = { moreActionsExpanded = false },
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(Res.string.text_view_in_browser)) },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Outlined.OpenInNew,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(20.dp),
+                                            )
+                                        },
+                                        shape = menuItemShape(0, menuCount),
+                                        onClick = {
+                                            moreActionsExpanded = false
+                                            platform.openUrl(update.pageUrl)
+                                        },
+                                    )
+                                    if (onIgnore != null) {
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(Res.string.text_ignore_this_version)) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.VisibilityOff,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(20.dp),
+                                                )
+                                            },
+                                            shape = menuItemShape(1, menuCount),
+                                            onClick = {
+                                                moreActionsExpanded = false
+                                                onIgnore()
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                    )
                 }
             }
         },
         dismissButton = {
             when {
-                downloading -> TextButton(onClick = cancelDownload) {
+                downloading -> TextButton(onClick = cancelDownload, shapes = ButtonDefaults.shapes()) {
                     Text(stringResource(Res.string.text_cancel_download))
                 }
-                status is UpdateStatus.ReadyToRestart -> TextButton(onClick = onDismiss) {
+                status is UpdateStatus.ReadyToRestart -> TextButton(onClick = onDismiss, shapes = ButtonDefaults.shapes()) {
                     Text(stringResource(Res.string.updater_later))
                 }
-                status is UpdateStatus.Installing -> TextButton(onClick = onDismiss) {
+                status is UpdateStatus.Installing -> TextButton(onClick = onDismiss, shapes = ButtonDefaults.shapes()) {
                     Text(stringResource(Res.string.common_close))
                 }
                 // 失败（含 SHA-256 校验未通过）时，即使在开屏弹窗模式也始终给出「打开下载页」作为逃生通道
-                status is UpdateStatus.Failed -> TextButton(onClick = { platform.openUrl(update.pageUrl) }) {
+                status is UpdateStatus.Failed -> TextButton(onClick = { platform.openUrl(update.pageUrl) }, shapes = ButtonDefaults.shapes()) {
                     Text(stringResource(Res.string.updater_open_download_page))
                 }
-                onIgnore != null -> TextButton(onClick = onIgnore) {
+                !update.canInstallInApp && onIgnore != null -> TextButton(onClick = onIgnore, shapes = ButtonDefaults.shapes()) {
                     Text(stringResource(Res.string.text_ignore_this_version))
                 }
-                update.canInstallInApp -> TextButton(onClick = { platform.openUrl(update.pageUrl) }) {
-                    Text(stringResource(Res.string.text_view_in_browser))
+                else -> TextButton(onClick = onDismiss, shapes = ButtonDefaults.shapes()) {
+                    Text(stringResource(Res.string.updater_later))
                 }
             }
         },
@@ -289,6 +375,7 @@ fun UpdateDialog(
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun UpdateInterruptDownloadsDialog(
     onConfirm: () -> Unit,
@@ -305,7 +392,7 @@ internal fun UpdateInterruptDownloadsDialog(
             )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) }
+            TextButton(onClick = onDismiss, shapes = ButtonDefaults.shapes()) { Text(stringResource(Res.string.common_cancel)) }
         },
     )
 }

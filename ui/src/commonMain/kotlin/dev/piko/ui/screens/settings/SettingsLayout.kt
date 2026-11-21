@@ -476,6 +476,7 @@ internal fun SettingsRowButton(label: String, onClick: () -> Unit, enabled: Bool
     when {
         eInk -> OutlinedButton(
             onClick = onClick,
+            shapes = ButtonDefaults.shapes(),
             enabled = enabled,
             colors = ButtonDefaults.outlinedButtonColors(
                 containerColor = Color.White,
@@ -485,8 +486,16 @@ internal fun SettingsRowButton(label: String, onClick: () -> Unit, enabled: Bool
             ),
             border = BorderStroke(1.dp, if (enabled) Color.Black else Color(0xFF555555)),
         ) { Text(label, maxLines = 1) }
-        primary -> FilledTonalButton(onClick = onClick, enabled = enabled) { Text(label, maxLines = 1) }
-        else -> OutlinedButton(onClick = onClick, enabled = enabled) { Text(label, maxLines = 1) }
+        primary -> FilledTonalButton(
+            onClick = onClick,
+            shapes = ButtonDefaults.shapes(),
+            enabled = enabled,
+        ) { Text(label, maxLines = 1) }
+        else -> OutlinedButton(
+            onClick = onClick,
+            shapes = ButtonDefaults.shapes(),
+            enabled = enabled,
+        ) { Text(label, maxLines = 1) }
     }
 }
 

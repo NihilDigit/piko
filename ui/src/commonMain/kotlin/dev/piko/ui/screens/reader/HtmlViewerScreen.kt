@@ -44,6 +44,8 @@ import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.FullScreenLoading
 import dev.piko.ui.components.IslandPage
 import dev.piko.ui.components.IslandTitle
+import dev.piko.ui.components.PikoEmptyState
+import dev.piko.ui.components.PikoErrorState
 import dev.piko.ui.components.PikoScaffold
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.PinnedPriority
@@ -256,19 +258,20 @@ fun HtmlViewerScreen(
         ) {
             when {
                 viewer == null -> {
-                    HtmlErrorContent(
-                        message = stringResource(Res.string.reader_html_open_failed),
-                        onRetry = {
-                            proxyHandle?.url?.let(platform::openUrl)
-                        },
-                        retryLabel = openBrowserLabel,
+                    PikoEmptyState(
+                        title = stringResource(Res.string.reader_html_open_failed),
+                        icon = Icons.Outlined.OpenInBrowser,
+                        actionText = openBrowserLabel,
+                        onActionClick = { proxyHandle?.url?.let(platform::openUrl) },
+                        modifier = Modifier.fillMaxSize(),
                     )
                 }
                 proxyError != null -> {
-                    HtmlErrorContent(
-                        message = proxyError ?: stringResource(Res.string.reader_html_open_failed),
+                    PikoErrorState(
+                        title = stringResource(Res.string.reader_html_open_failed),
+                        message = proxyError.orEmpty(),
                         onRetry = { setupKey++ },
-                        retryLabel = stringResource(Res.string.reader_action_retry),
+                        modifier = Modifier.fillMaxSize(),
                     )
                 }
                 proxyHandle == null -> {
@@ -277,8 +280,15 @@ fun HtmlViewerScreen(
                 else -> {
                     val active = proxyHandle!!
                     Column(Modifier.fillMaxSize()) {
-                        if (pageLoading && !reducedMotion && windowVisible) {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
+                        if (pageLoading) {
+                            if (reducedMotion || !windowVisible) {
+                                LinearProgressIndicator(
+                                    progress = { 1f },
+                                    modifier = Modifier.fillMaxWidth().height(2.dp),
+                                )
+                            } else {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
+                            }
                         }
                         viewer.Content(
                             url = active.url,
@@ -299,37 +309,6 @@ fun HtmlViewerScreen(
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun HtmlErrorContent(
-    message: String,
-    onRetry: () -> Unit,
-    retryLabel: String,
-) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
-    ) {
-        Text(
-            text = stringResource(Res.string.reader_html_open_failed),
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        if (message.isNotBlank()) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(Modifier.height(16.dp))
-        FilledTonalButton(onClick = onRetry) {
-            Text(retryLabel)
         }
     }
 }

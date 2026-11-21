@@ -64,6 +64,7 @@ fun PikoDialog(
  * 对话框的确认按钮，有底色。[destructive] 时换成错误色：删掉的找不回来，后果落在要按下去的那一处，
  * 文案不必另加「并删除」，也不在对话框里另起一行红字。
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun PikoDialogConfirm(
     label: String,
@@ -74,6 +75,7 @@ fun PikoDialogConfirm(
 ) {
     Button(
         onClick = onClick,
+        shapes = ButtonDefaults.shapes(),
         modifier = modifier,
         enabled = enabled,
         colors = if (destructive) {

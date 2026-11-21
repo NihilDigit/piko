@@ -7,6 +7,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -44,6 +45,8 @@ import androidx.compose.material.icons.outlined.ZoomOut
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FloatingToolbarDefaults
+import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -56,6 +59,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -525,7 +529,7 @@ private fun PageButton(
                 color = fixedColors.ScrimOnMediaStrong,
                 contentColor = fixedColors.OnMedia,
                 border = BorderStroke(1.dp, fixedColors.HudSpecularBorder),
-                modifier = Modifier.size(44.dp).captionExclusion(),
+                modifier = Modifier.size(48.dp).captionExclusion(),
             ) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Icon(icon, contentDescription = description)
@@ -662,7 +666,7 @@ private fun ViewerTopBar(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ViewerControlCapsule(
     zoomPercent: Int,
@@ -680,63 +684,65 @@ private fun ViewerControlCapsule(
             .padding(top = 20.dp, bottom = 16.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Surface(
-            shape = CircleShape,
-            color = fixedColors.ScrimOnMediaStrong,
-            contentColor = fixedColors.OnMedia,
-            border = BorderStroke(1.dp, fixedColors.HudSpecularBorder),
-            modifier = Modifier.captionExclusion(),
+        HorizontalFloatingToolbar(
+            expanded = true,
+            colors = FloatingToolbarDefaults.standardFloatingToolbarColors(
+                toolbarContainerColor = fixedColors.ScrimOnMediaStrong,
+                toolbarContentColor = fixedColors.OnMedia,
+            ),
+            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+            expandedShadowElevation = 0.dp,
+            collapsedShadowElevation = 0.dp,
+            modifier = Modifier
+                .border(1.dp, fixedColors.HudSpecularBorder, FloatingToolbarDefaults.ContainerShape)
+                .captionExclusion(),
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            TooltipIconButton(
+                icon = Icons.Outlined.ZoomOut,
+                label = tr("缩小", "Zoom out", "縮小", "축소", "縮小"),
+                onClick = onZoomOut,
+                shortcut = "-",
+                tint = fixedColors.OnMedia,
+            )
+            TooltipBox(
+                positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+                tooltip = { PlainTooltip { Text(tr("重置缩放 (0)", "Reset zoom (0)", "ズームをリセット (0)", "배율 재설정 (0)", "重設縮放 (0)")) } },
+                state = rememberTooltipState(),
             ) {
-                TooltipIconButton(
-                    icon = Icons.Outlined.ZoomOut,
-                    label = tr("缩小", "Zoom out", "縮小", "축소", "縮小"),
-                    onClick = onZoomOut,
-                    shortcut = "-",
-                    tint = fixedColors.OnMedia,
-                )
-                TooltipBox(
-                    positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-                    tooltip = { PlainTooltip { Text(tr("重置缩放 (0)", "Reset zoom (0)", "ズームをリセット (0)", "배율 재설정 (0)", "重設縮放 (0)")) } },
-                    state = rememberTooltipState(),
+                TextButton(
+                    onClick = onResetZoom,
+                    shapes = ButtonDefaults.shapes(),
+                    colors = ButtonDefaults.textButtonColors(contentColor = fixedColors.OnMedia),
+                    contentPadding = PaddingValues(horizontal = 10.dp),
                 ) {
-                    TextButton(
-                        onClick = onResetZoom,
-                        colors = ButtonDefaults.textButtonColors(contentColor = fixedColors.OnMedia),
-                        contentPadding = PaddingValues(horizontal = 10.dp),
-                    ) {
-                        Text(
-                            text = "${zoomPercent}%",
-                            style = MaterialTheme.typography.labelLarge.tabular,
-                            maxLines = 1,
-                        )
-                    }
+                    Text(
+                        text = "${zoomPercent}%",
+                        style = MaterialTheme.typography.labelLarge.tabular,
+                        maxLines = 1,
+                    )
                 }
-                TooltipIconButton(
-                    icon = Icons.Outlined.ZoomIn,
-                    label = tr("放大", "Zoom in", "拡大", "확대", "放大"),
-                    onClick = onZoomIn,
-                    shortcut = "+",
-                    tint = fixedColors.OnMedia,
-                )
-                Box(
-                    modifier = Modifier
-                        .padding(horizontal = 4.dp)
-                        .width(1.dp)
-                        .height(18.dp)
-                        .background(fixedColors.HudSpecularBorder),
-                )
-                TooltipIconButton(
-                    icon = Icons.Outlined.RotateRight,
-                    label = tr("旋转 90°", "Rotate 90°", "90° 回転", "90° 회전", "旋轉 90°"),
-                    onClick = onRotate,
-                    shortcut = "R",
-                    tint = fixedColors.OnMedia,
-                )
             }
+            TooltipIconButton(
+                icon = Icons.Outlined.ZoomIn,
+                label = tr("放大", "Zoom in", "拡大", "확대", "放大"),
+                onClick = onZoomIn,
+                shortcut = "+",
+                tint = fixedColors.OnMedia,
+            )
+            VerticalDivider(
+                modifier = Modifier
+                    .align(Alignment.CenterVertically)
+                    .padding(horizontal = 4.dp)
+                    .height(18.dp),
+                color = fixedColors.HudSpecularBorder,
+            )
+            TooltipIconButton(
+                icon = Icons.Outlined.RotateRight,
+                label = tr("旋转 90°", "Rotate 90°", "90° 回転", "90° 회전", "旋轉 90°"),
+                onClick = onRotate,
+                shortcut = "R",
+                tint = fixedColors.OnMedia,
+            )
         }
     }
 }

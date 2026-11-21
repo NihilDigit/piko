@@ -111,7 +111,7 @@ internal fun BatchRenameOptions(
                 // 提示行常驻、出错只变色：Android 的对话框按内容定高，多出一行整个对话框会跳
                 supporting = when {
                     patternError != null -> tr("正则表达式有误：$patternError", "Invalid regular expression: $patternError", "正規表現が正しくありません：$patternError", "잘못된 정규식: $patternError", "正規表示式有誤：$patternError")
-                    options.search.isEmpty() -> tr("留空将仅调整大小写", "Leave empty to change case only", "空欄にすると大文字・小文字のみ変更", "비워 두면 대소문자만 변경", "留空將僅調整大小寫")
+                    options.search.isEmpty() -> tr("留空将仅调整大小写", "Leave empty to change case only", "空欄にすると大文字、小文字のみ変更", "비워 두면 대소문자만 변경", "留空將僅調整大小寫")
                     else -> tr("在替换中用 \$1 到 \$9 引用分组", "Use \$1 to \$9 for groups in replacements", "置換で \$1 ～ \$9 を使ってグループを参照", "바꾸기에서 \$1~\$9로 그룹 참조", "在取代文字中用 \$1 到 \$9 引用群組")
                 },
                 isError = patternError != null,
@@ -125,7 +125,7 @@ internal fun BatchRenameOptions(
                 value = options.replacement,
                 onValueChange = { update { copy(replacement = it) } },
                 label = tr("替换为", "Replace with", "置換後", "바꿀 내용", "取代為"),
-                supporting = tr("可插入序号、随机字符和日期", "Insert counters, random text and dates", "連番・ランダム文字・日時を挿入可能", "번호, 무작위 문자 및 날짜 삽입 가능", "可插入序號、隨機字元和日期"),
+                supporting = tr("可插入序号、随机字符和日期", "Insert counters, random text and dates", "連番、ランダム文字、日時を挿入可能", "번호, 무작위 문자 및 날짜 삽입 가능", "可插入序號、隨機字元和日期"),
                 isError = false,
                 enabled = enabled,
                 onSubmit = state::rename,
@@ -154,7 +154,7 @@ internal fun BatchRenameOptions(
                 selected = ItemKinds.of(options),
                 enabled = enabled,
             ) { kinds -> update { copy(includeFiles = kinds != ItemKinds.FOLDERS, includeFolders = kinds != ItemKinds.FILES) } }
-            DropdownChoice(tr("大小写", "Letter case", "大文字・小文字", "대소문자", "大小寫"), CASE_LABELS, options.textCase, enabled) { update { copy(textCase = it) } }
+            DropdownChoice(tr("大小写", "Letter case", "大文字、小文字", "대소문자", "大小寫"), CASE_LABELS, options.textCase, enabled) { update { copy(textCase = it) } }
             // 只在替换串里写了日期时才有意义，平时不占地方
             if (state.usesTime) {
                 DropdownChoice(
@@ -176,7 +176,7 @@ internal fun BatchRenameOptions(
                 }
             }
             Row {
-                CheckboxRow(tr("区分大小写", "Case sensitive", "大文字・小文字を区別", "대소문자 구분", "區分大小寫"), options.caseSensitive, enabled, Modifier.weight(1f)) { update { copy(caseSensitive = it) } }
+                CheckboxRow(tr("区分大小写", "Case sensitive", "大文字、小文字を区別", "대소문자 구분", "區分大小寫"), options.caseSensitive, enabled, Modifier.weight(1f)) { update { copy(caseSensitive = it) } }
                 CheckboxRow(tr("全部替换", "Replace all", "すべて置換", "모두 바꾸기", "全部取代"), options.matchAll, enabled, Modifier.weight(1f)) { update { copy(matchAll = it) } }
             }
             // 首尾的空格在界面上看不出来，用引号框住

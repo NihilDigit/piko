@@ -60,6 +60,7 @@ internal fun ColumnScope.BatchList(
     showTitle: Boolean,
     /** 侧边面板里列表部分占满中间，保存栏钉在底部，与单条时相同。 */
     fillHeight: Boolean,
+    referenceToggle: ReferenceSaveToggle? = null,
     saveSettings: @Composable () -> Unit,
 ) {
     Column(
@@ -118,10 +119,15 @@ internal fun ColumnScope.BatchList(
     saveSettings()
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         SaveButton(
-            label = tr("全部保存", "Save all", "すべて保存", "모두 저장", "全部儲存"),
+            label = if (referenceToggle?.checked == true) {
+                tr("全部以引用保存", "Save all as references", "すべて参照として保存", "모두 참조로 저장", "全部以引用儲存")
+            } else {
+                tr("全部保存", "Save all", "すべて保存", "모두 저장", "全部儲存")
+            },
             enabled = batch.canSaveAll,
             isSaving = batch.isSaving,
             onClick = batch::saveAll,
+            options = buildReferenceMenuOptions(referenceToggle),
         )
         val skipped = batch.rows.count { it.status == InstantBatchRowStatus.NOTHING_SELECTED }
         // 批量时不逐条确认离线，只在这里写明要用几次，想换成秒传的点开那一行改

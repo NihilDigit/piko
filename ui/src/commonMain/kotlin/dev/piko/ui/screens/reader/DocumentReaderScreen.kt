@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -37,12 +38,15 @@ import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.TextFormat
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
@@ -88,6 +92,8 @@ import dev.piko.shared.media.reader.ParsedDocument
 import dev.piko.shared.media.reader.searchDocumentBlocks
 import dev.piko.shared.i18n.tr
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.components.PikoEmptyState
+import dev.piko.ui.components.PikoErrorState
 import dev.piko.ui.components.AdaptiveBar
 import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.FullScreenLoading
@@ -489,7 +495,8 @@ fun DocumentReaderScreen(
                     FullScreenLoading(modifier = Modifier.weight(1f).fillMaxWidth())
                 }
                 errorMessage != null -> {
-                    ReaderErrorState(
+                    PikoErrorState(
+                        title = stringResource(Res.string.reader_load_failed),
                         message = errorMessage ?: stringResource(Res.string.reader_load_failed),
                         onRetry = { reloadKey++ },
                         modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -509,10 +516,9 @@ fun DocumentReaderScreen(
                                 modifier = Modifier.fillMaxSize(),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Text(
-                                    text = stringResource(Res.string.reader_empty_document),
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                PikoEmptyState(
+                                    title = stringResource(Res.string.reader_empty_document),
+                                    icon = Icons.AutoMirrored.Outlined.Article,
                                 )
                             }
                         } else {
@@ -742,7 +748,7 @@ private fun ReaderNoticeBanner(
                 modifier = Modifier.weight(1f),
             )
             if (actionLabel != null && onAction != null) {
-                TextButton(onClick = onAction) {
+                TextButton(onClick = onAction, shapes = ButtonDefaults.shapes()) {
                     Text(actionLabel, maxLines = 1)
                 }
             }
@@ -750,37 +756,7 @@ private fun ReaderNoticeBanner(
     }
 }
 
-@Composable
-private fun ReaderErrorState(
-    message: String,
-    onRetry: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier.padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Text(
-            text = stringResource(Res.string.reader_load_failed),
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        if (message.isNotBlank()) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(Modifier.height(16.dp))
-        FilledTonalButton(onClick = onRetry) {
-            Text(stringResource(Res.string.reader_action_retry))
-        }
-    }
-}
-
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ReaderSettingsSheetContent(
     isSideSheet: Boolean,
@@ -927,17 +903,23 @@ private fun ReaderSettingsSheetContent(
                 style = MaterialTheme.typography.labelLarge,
                 color = colors.onSurfaceVariant,
             )
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                for (option in encodingOptions) {
+            Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
+                encodingOptions.forEachIndexed { index, option ->
                     val selected = encodingOption == option
                     val label = if (option == DocumentEncodingOption.AUTO) {
                         stringResource(Res.string.reader_settings_encoding_auto, detectedEncoding)
                     } else {
                         option.displayName
                     }
+                    val itemShape = ListItemDefaults.segmentedShapes(index, encodingOptions.size).shape
+                    val contentColor = when {
+                        selected && isEInk -> colors.surface
+                        selected -> colors.onSecondaryContainer
+                        else -> colors.onSurface
+                    }
                     Surface(
                         onClick = { onEncodingChange(option) },
-                        shape = MaterialTheme.shapes.medium,
+                        shape = itemShape,
                         color = when {
                             selected && isEInk -> colors.onSurface
                             selected -> colors.secondaryContainer
@@ -954,17 +936,22 @@ private fun ReaderSettingsSheetContent(
                                 .fillMaxWidth()
                                 .padding(horizontal = 14.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
                             Text(
                                 text = label,
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                color = when {
-                                    selected && isEInk -> colors.surface
-                                    selected -> colors.onSecondaryContainer
-                                    else -> colors.onSurface
-                                },
+                                color = contentColor,
                             )
+                            if (selected) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Check,
+                                    contentDescription = null,
+                                    tint = contentColor,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
                         }
                     }
                 }

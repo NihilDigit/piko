@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,6 +27,7 @@ import dev.piko.ui.components.PikoDialogConfirm
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -69,6 +71,7 @@ internal fun offersVaultSizeChoice(survey: FolderVaultSession.Survey?): Boolean 
  * 丢失的风险只在这里讲清楚。考虑过给回收站里的原件打标记、清空时再提醒，否决了：官方客户端照样能清空回收站，
  * Piko 拦不住，拦一半只会让人以为有保护。
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun VaultDialog(
     target: VaultScope,
@@ -116,7 +119,10 @@ internal fun VaultDialog(
             )
         },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                Modifier.heightIn(min = 168.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 VaultDialogHeading(target.name, survey, counted?.files, files, bytes, emptyText = tr("无可归档的文件", "No files to archive", "アーカイブできるファイルがありません", "보관할 파일이 없습니다", "沒有可歸檔的檔案"))
                 blocked?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (current != null) {
@@ -175,7 +181,7 @@ internal fun VaultDialog(
                 },
             )
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) } },
+        dismissButton = { TextButton(onClick = onDismiss, shapes = ButtonDefaults.shapes()) { Text(stringResource(Res.string.common_cancel)) } },
     )
 }
 
@@ -201,6 +207,7 @@ private fun VaultDialogHeading(name: String, survey: Result<*>?, total: Int?, fi
  * 取消一个文件夹的归档之前的确认。先清点整棵树：多少条，其中几条能从回收站取回原文件，其余要占多少新空间；
  * 放不下时直接说明，不让人点了再失败。
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun RestoreVaultFolderDialog(
     folder: PikoPathBreadcrumb,
@@ -214,7 +221,10 @@ internal fun RestoreVaultFolderDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(Res.string.text_undo_archive)) },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(
+                Modifier.heightIn(min = 96.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
                 VaultDialogHeading(folder.localizedName, survey, counted?.entries, counted?.entries ?: 0, counted?.bytes ?: 0L, emptyText = tr("没有归档的文件", "No archived files", "アーカイブ済みファイルはありません", "보관된 파일이 없습니다", "沒有已歸檔的檔案"))
                 blocked?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (counted != null && counted.entries > 0) {
@@ -245,7 +255,7 @@ internal fun RestoreVaultFolderDialog(
                 },
             )
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) } },
+        dismissButton = { TextButton(onClick = onDismiss, shapes = ButtonDefaults.shapes()) { Text(stringResource(Res.string.common_cancel)) } },
     )
 }
 

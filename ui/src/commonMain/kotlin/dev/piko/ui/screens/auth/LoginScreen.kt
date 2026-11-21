@@ -122,6 +122,7 @@ import dev.piko.ui.screens.settings.ProxySettingsDialog
 import dev.piko.ui.theme.frame
 import dev.piko.ui.theme.islandBorderColor
 import dev.piko.ui.theme.islandSurface
+import dev.piko.ui.theme.tabular
 import kotlin.time.Clock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -274,7 +275,7 @@ fun LoginScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun LoginBrandCanvas(
     appLanguage: AppLanguage,
@@ -353,6 +354,7 @@ private fun LoginBrandCanvas(
                 FilledTonalButton(
                     onClick = onOpenProxy,
                     enabled = !isLoggingIn,
+                    shapes = ButtonDefaults.shapes(),
                     contentPadding = ButtonDefaults.ContentPadding,
                 ) {
                     Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -368,6 +370,7 @@ private fun LoginBrandCanvas(
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun LanguageQuickPill(
     current: AppLanguage,
@@ -381,6 +384,7 @@ private fun LanguageQuickPill(
         FilledTonalButton(
             onClick = { expanded = true },
             enabled = enabled,
+            shapes = ButtonDefaults.shapes(),
             contentPadding = ButtonDefaults.ContentPadding,
         ) {
             Icon(Icons.Outlined.Language, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -505,7 +509,7 @@ private fun LoginForm(
                 textAlign = TextAlign.Center,
             )
             if (reauthContext != null && browserAuth is BrowserAuthState.Idle) {
-                TextButton(onClick = state::clearReauthTarget, enabled = !isBusy) {
+                TextButton(onClick = state::clearReauthTarget, enabled = !isBusy, shapes = ButtonDefaults.shapes()) {
                     Text(
                         tr(
                             "换用其他账号登录",
@@ -664,7 +668,7 @@ private fun LoginForm(
                                                 onClickLabel = tr(
                                                     "选择国家或地区区号",
                                                     "Select country or region code",
-                                                    "国・地域コードを選択",
+                                                    "国、地域コードを選択",
                                                     "국가/지역 번호 선택",
                                                     "選擇國家或地區區碼",
                                                 ),
@@ -673,7 +677,7 @@ private fun LoginForm(
                                     ) {
                                         Text(
                                             text = "+${state.dialCode}",
-                                            style = MaterialTheme.typography.titleSmall.copy(fontFeatureSettings = "tnum"),
+                                            style = MaterialTheme.typography.titleSmall.tabular,
                                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha),
                                             maxLines = 1,
                                         )
@@ -790,7 +794,7 @@ private fun LoginForm(
                         enabled = !state.isLoggingIn,
                         onSelect = onSelectLanguage,
                     )
-                    TextButton(onClick = onOpenProxy, enabled = !state.isLoggingIn) {
+                    TextButton(onClick = onOpenProxy, enabled = !state.isLoggingIn, shapes = ButtonDefaults.shapes()) {
                         Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(
@@ -829,6 +833,7 @@ private fun LoginForm(
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun DialCodePickerDialog(
     currentDialCode: String,
@@ -852,7 +857,7 @@ private fun DialCodePickerDialog(
                 tr(
                     "选择国家或地区区号",
                     "Select country or region code",
-                    "国・地域コードを選択",
+                    "国、地域コードを選択",
                     "국가/지역 번호 선택",
                     "選擇國家或地區區碼",
                 ),
@@ -970,7 +975,7 @@ private fun DialCodePickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = onDismiss, shapes = ButtonDefaults.shapes()) {
                 Text(stringResource(Res.string.common_close))
             }
         },
@@ -1129,7 +1134,7 @@ private fun GoogleConfirmationCard(
                         "확인 대기 중 (남은 시간 $mins:$secs)",
                         "等待確認中，有效剩餘 $mins:$secs",
                     ),
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelMedium.tabular,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -1184,7 +1189,7 @@ private fun GoogleConfirmationCard(
                 )
             }
             Spacer(Modifier.height(4.dp))
-            TextButton(onClick = onCancel) {
+            TextButton(onClick = onCancel, shapes = ButtonDefaults.shapes()) {
                 Text(tr("取消等待并返回", "Cancel", "キャンセル", "취소", "取消等待並返回"))
             }
         }

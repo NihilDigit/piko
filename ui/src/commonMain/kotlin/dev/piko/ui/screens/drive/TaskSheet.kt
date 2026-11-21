@@ -52,6 +52,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.theme.LocalPikoMotion
+import dev.piko.ui.theme.LocalWindowVisible
 import kotlinx.coroutines.flow.first
 
 /** 在 [block] 里 rememberSaveable 退化成 remember：不往页面的保存表里存，也不从中恢复。 */
@@ -222,8 +224,14 @@ internal fun TaskSheetHeader(
             TooltipIconButton(Icons.Outlined.Close, closeLabel, onClose, enabled = closeEnabled)
         }
         if (progress) {
-            // 等的是几分钟、总量事先不知道，用不确定的线性进度条，从头到尾同一根（progress-indicators.md）
-            LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp))
+            val staticProgress = LocalPikoMotion.current.reduced || !LocalWindowVisible.current
+            val progressModifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)
+            if (staticProgress) {
+                LinearProgressIndicator(progress = { 1f }, modifier = progressModifier)
+            } else {
+                // 等的是几分钟、总量事先不知道，用不确定的线性进度条，从头到尾同一根（progress-indicators.md）
+                LinearProgressIndicator(modifier = progressModifier)
+            }
         } else {
             Spacer(Modifier.height(12.dp))
         }

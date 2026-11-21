@@ -6,6 +6,7 @@ import dev.piko.ui.resources.*
 import dev.piko.ui.i18n.stringResource
 
 import dev.piko.shared.i18n.tr
+import dev.piko.ui.LocalRootSnackbar
 import dev.piko.ui.ObserveMessages
 
 import androidx.compose.foundation.layout.Box
@@ -41,16 +42,26 @@ import dev.piko.ui.components.fullLineItem
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.Deselect
+import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.SelectAll
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
+import dev.piko.ui.components.PikoDropdownMenu
+import dev.piko.ui.components.menuItemShape
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SplitButtonDefaults
+import androidx.compose.material3.SplitButtonLayout
 import dev.piko.ui.components.PikoScaffold
 import dev.piko.ui.components.IslandPage
 import dev.piko.ui.components.IslandTitle
@@ -80,7 +91,7 @@ import dev.piko.shared.state.ShareCreateState
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
 import dev.piko.ui.components.ContextMenuArea
-import dev.piko.ui.components.FileLeadingVisual
+import dev.piko.ui.components.FileListLeadingVisual
 import dev.piko.ui.components.FileListItem
 import dev.piko.ui.components.FileListSkeleton
 import dev.piko.ui.components.FileTypeIcon
@@ -101,7 +112,11 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ShareStatus
 import io.github.nihildigit.pikpak.ShareSummary
+import androidx.compose.ui.graphics.Color
 import dev.piko.ui.format.formatOffsetDate
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
+import dev.piko.ui.theme.tabular
 import kotlinx.coroutines.launch
 
 /**
@@ -111,7 +126,7 @@ import kotlinx.coroutines.launch
  *
  * [onBackClick] 为 null 时不显示返回按钮。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun MySharesScreen(
     onBackClick: (() -> Unit)?,
@@ -120,7 +135,7 @@ fun MySharesScreen(
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
-    val snackbarHostState = remember { SnackbarHostState() }
+    val snackbarHostState = LocalRootSnackbar.current
     val services = LocalPikoServices.current
     val platform = LocalPikoPlatform.current
     val state = remember { MySharesState(services.driveRepository, scope) }
@@ -151,7 +166,18 @@ fun MySharesScreen(
     // 提取码另起一行而不拼进链接：SDK 与现有代码里都没有见到服务端认链接上的提取码参数
     fun copy(share: ShareSummary) {
         platform.copyToClipboard(tr("分享链接", "Share link", "共有リンク", "공유 링크", "分享連結"), ShareCreateState.shareText(share.title, share.shareUrl, share.passCode))
-        scope.launch { snackbarHostState.showSnackbar(tr("已复制分享链接", "Share link copied", "共有リンクをコピーしました", "공유 링크를 복사했습니다", "已複製分享連結"),withDismissAction = true) }
+        scope.launch { snackbarHostState.showSnackbar(tr("已复制分享链接", "Share link copied", "共有リンクをコピーしました", "공유 링크를 복사했습니다", "已複製分享連結"), withDismissAction = true) }
+    }
+
+    fun copyUrlOnly(share: ShareSummary) {
+        platform.copyToClipboard(tr("分享链接", "Share link", "共有リンク", "공유 링크", "分享連結"), share.shareUrl)
+        scope.launch { snackbarHostState.showSnackbar(tr("已复制分享链接", "Share link copied", "共有リンクをコピーしました", "공유 링크를 복사했습니다", "已複製分享連結"), withDismissAction = true) }
+    }
+
+    fun copyPassCodeOnly(share: ShareSummary) {
+        if (share.passCode.isEmpty()) return
+        platform.copyToClipboard(tr("提取码", "Access code", "アクセスコード", "접근 코드", "提取碼"), share.passCode)
+        scope.launch { snackbarHostState.showSnackbar(tr("已复制提取码", "Access code copied", "アクセスコードをコピーしました", "접근 코드를 복사했습니다", "已複製提取碼"), withDismissAction = true) }
     }
 
     fun locate(share: ShareSummary) {
@@ -170,6 +196,14 @@ fun MySharesScreen(
     )
 
     val selecting = state.selectedIds.isNotEmpty()
+    val allSelected = state.shares.isNotEmpty() && state.selectedIds.size == state.shares.size
+    val toggleSelectAll: () -> Unit = {
+        if (allSelected) {
+            state.clearSelection()
+        } else {
+            state.selectBoxed(emptySet(), state.shares.map { it.shareId })
+        }
+    }
     var confirmCancelSelected by remember { mutableStateOf(false) }
     BackHandler(enabled = selecting) { state.clearSelection() }
 
@@ -180,25 +214,30 @@ fun MySharesScreen(
     PikoScaffold(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
-        // 有外框时：没有分类，不放标签，页名写在岛的页眉开头；有选中项时整行换成「已选 N 项」与批量操作
+        // 有外框时：没有分类，不放标签，页名写在岛的页眉开头；有选中项时退出多选在最左端避免贴近窗口关闭键
         island = IslandPage(
             header = {
                 if (selecting) {
+                    TooltipIconButton(Icons.Outlined.Close, tr("退出多选", "Exit selection", "選択モードを終了", "선택 모드 종료", "結束多選"), state::clearSelection, shortcut = "Esc")
                     IslandTitle(tr("已选 ${state.selectedIds.size} 项", "${enCount(state.selectedIds.size, "item", "items")} selected", "${state.selectedIds.size} 項目を選択中", "${state.selectedIds.size}개 선택됨", "已選 ${state.selectedIds.size} 項"))
                     IslandHeaderSpace()
+                    TooltipIconButton(
+                        icon = if (allSelected) Icons.Outlined.Deselect else Icons.Outlined.SelectAll,
+                        label = if (allSelected) tr("取消全选", "Deselect all", "すべて選択解除", "모두 선택 해제", "取消全選") else tr("全选", "Select all", "すべて選択", "모두 선택", "全選"),
+                        onClick = toggleSelectAll,
+                    )
                     TooltipIconButton(
                         icon = Icons.Outlined.LinkOff,
                         label = tr("取消所选分享", "Revoke selected shares", "選択した共有を解除", "선택한 공유 취소", "取消所選分享"),
                         onClick = { confirmCancelSelected = true },
                         tint = MaterialTheme.colorScheme.error,
                     )
-                    TooltipIconButton(Icons.Outlined.Close, tr("取消选择", "Deselect", "選択を解除", "선택 해제", "取消選取"), state::clearSelection, shortcut = "Esc")
                 } else {
                     IslandTitle(tr("我的分享", "My shares", "自分の共有", "내 공유", "我的分享"))
                     if (state.shares.isNotEmpty()) {
                         Text(
                             tr("${state.shares.size} 个", "${enCount(state.shares.size, "share", "shares")}", "${state.shares.size} 件", "공유 ${state.shares.size}개", "${state.shares.size} 個"),
-                            style = MaterialTheme.typography.labelLarge,
+                            style = MaterialTheme.typography.labelLarge.tabular,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(start = 8.dp),
                         )
@@ -227,13 +266,21 @@ fun MySharesScreen(
                         }
                     }
                 },
-                actions = listOf(
-                    if (selecting) {
-                        iconBarItem(Icons.Outlined.LinkOff, tr("取消所选分享", "Revoke selected shares", "選択した共有を解除", "선택한 공유 취소", "取消所選分享"), { confirmCancelSelected = true }, priority = PinnedPriority, destructive = true)
-                    } else {
-                        iconBarItem(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침", "重新整理"), { state.load(refresh = true) }, priority = PinnedPriority, enabled = !state.isRefreshing)
-                    },
-                ),
+                actions = if (selecting) {
+                    listOf(
+                        iconBarItem(
+                            if (allSelected) Icons.Outlined.Deselect else Icons.Outlined.SelectAll,
+                            if (allSelected) tr("取消全选", "Deselect all", "すべて選択解除", "모두 선택 해제", "取消全選") else tr("全选", "Select all", "すべて選択", "모두 선택", "全選"),
+                            toggleSelectAll,
+                            priority = PinnedPriority,
+                        ),
+                        iconBarItem(Icons.Outlined.LinkOff, tr("取消所选分享", "Revoke selected shares", "選択した共有を解除", "선택한 공유 취소", "取消所選分享"), { confirmCancelSelected = true }, priority = PinnedPriority, destructive = true),
+                    )
+                } else {
+                    listOf(
+                        iconBarItem(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침", "重新整理"), { state.load(refresh = true) }, priority = PinnedPriority, enabled = !state.isRefreshing),
+                    )
+                },
             )
         },
     ) { innerPadding ->
@@ -292,6 +339,8 @@ fun MySharesScreen(
                                         isSpoilerBlurred = isSpoilerBlurEnabled && preview?.thumbnailLink?.isNotEmpty() == true,
                                         onLocate = { locate(share) },
                                         onCopy = { copy(share) },
+                                        onCopyUrlOnly = { copyUrlOnly(share) },
+                                        onCopyPassCodeOnly = if (share.passCode.isNotEmpty()) ({ copyPassCodeOnly(share) }) else null,
                                         onOpen = { platform.openUrl(share.shareUrl) },
                                         onCancel = { confirmCancel = share },
                                     )
@@ -380,6 +429,7 @@ private fun ShareSummary.leadingFile() = FileStat(kind = fileKind, name = title)
  * 一个分享摊开的样子。失效的分享链接打不开，链接一栏淡下去，也不给复制与打开，只留取消（即从列表里删掉）；
  * 次数照写，那是它失效之前的战绩。
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ShareCard(
     share: ShareSummary,
@@ -392,19 +442,33 @@ private fun ShareCard(
     isSpoilerBlurred: Boolean,
     onLocate: () -> Unit,
     onCopy: () -> Unit,
+    onCopyUrlOnly: () -> Unit,
+    onCopyPassCodeOnly: (() -> Unit)?,
     onOpen: () -> Unit,
     onCancel: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
+    val isEInk = LocalAppearance.current.isEInk
+    var copyMenuOpen by remember { mutableStateOf(false) }
     Surface(
         shape = MaterialTheme.shapes.large,
-        color = if (selected) colors.secondaryContainer else colors.surfaceContainerLow,
-        border = if (selected) BorderStroke(2.dp, colors.primary) else null,
+        color = when {
+            isEInk && selected -> Color.Black
+            isEInk -> Color.White
+            selected -> colors.secondaryContainer
+            else -> colors.surfaceContainerLow
+        },
+        contentColor = if (isEInk && selected) Color.White else Color.Unspecified,
+        border = when {
+            isEInk -> BorderStroke(if (selected) 2.dp else 1.dp, Color.Black)
+            selected -> BorderStroke(2.dp, colors.primary)
+            else -> null
+        },
         modifier = Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
     ) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                FileLeadingVisual(file = preview ?: share.leadingFile(), isSpoilerBlurred = isSpoilerBlurred, size = 56.dp)
+                FileListLeadingVisual(file = preview ?: share.leadingFile(), isSpoilerBlurred = isSpoilerBlurred, size = 56.dp)
                 Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
                     Text(share.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -417,7 +481,11 @@ private fun ShareCard(
             }
             Spacer(Modifier.height(12.dp))
             // 链接与提取码放在一块底色里：它们是一起发出去的一件东西
-            Surface(shape = MaterialTheme.shapes.medium, color = colors.surfaceContainerHighest) {
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = if (isEInk) Color.White else colors.surfaceContainerHighest,
+                border = if (isEInk) BorderStroke(1.dp, Color.Black) else null,
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -435,7 +503,7 @@ private fun ShareCard(
                         SelectionContainer {
                             Text(
                                 share.passCode,
-                                style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
+                                style = MaterialTheme.typography.labelLarge.tabular,
                                 color = if (share.isOk) colors.primary else linkColor,
                             )
                         }
@@ -452,18 +520,89 @@ private fun ShareCard(
             }
             Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onCancel, colors = ButtonDefaults.textButtonColors(contentColor = colors.error)) {
+                TextButton(
+                    onClick = onCancel,
+                    shapes = ButtonDefaults.shapes(),
+                    colors = ButtonDefaults.textButtonColors(contentColor = colors.error),
+                ) {
                     Text(if (share.isOk) tr("取消分享", "Revoke share", "共有を解除", "공유 취소", "取消分享") else tr("删除记录", "Delete record", "記録を削除", "기록 삭제", "刪除紀錄"))
                 }
                 if (share.isOk) {
                     TooltipIconButton(Icons.Outlined.FolderOpen, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), onLocate)
-                    TooltipIconButton(Icons.AutoMirrored.Outlined.OpenInNew, tr("在浏览器中打开", "Open in browser", "ブラウザーで開く", "브라우저에서 열기", "在瀏覽器中開啟"), onOpen)
                     Spacer(Modifier.width(4.dp))
-                    FilledTonalButton(onClick = onCopy) {
-                        Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(stringResource(Res.string.text_copy_link))
+                    val tonalColors = if (isEInk) {
+                        ButtonDefaults.filledTonalButtonColors(containerColor = Color.White, contentColor = Color.Black)
+                    } else {
+                        ButtonDefaults.filledTonalButtonColors()
                     }
+                    val tonalBorder = if (isEInk) BorderStroke(1.dp, Color.Black) else null
+                    val tonalElevation = if (isEInk) null else ButtonDefaults.filledTonalButtonElevation()
+                    val menuCount = if (onCopyPassCodeOnly != null) 3 else 2
+                    SplitButtonLayout(
+                        leadingButton = {
+                            SplitButtonDefaults.TonalLeadingButton(
+                                onClick = onCopy,
+                                colors = tonalColors,
+                                elevation = tonalElevation,
+                                border = tonalBorder,
+                            ) {
+                                Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(stringResource(Res.string.text_copy_link))
+                            }
+                        },
+                        trailingButton = {
+                            Box {
+                                SplitButtonDefaults.TonalTrailingButton(
+                                    checked = copyMenuOpen,
+                                    onCheckedChange = { copyMenuOpen = it },
+                                    colors = tonalColors,
+                                    elevation = tonalElevation,
+                                    border = tonalBorder,
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.KeyboardArrowDown,
+                                        contentDescription = tr("更多操作", "More actions", "その他の操作", "추가 작업", "更多操作"),
+                                        modifier = Modifier.size(SplitButtonDefaults.TrailingIconSize),
+                                    )
+                                }
+                                PikoDropdownMenu(
+                                    expanded = copyMenuOpen,
+                                    onDismissRequest = { copyMenuOpen = false },
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text(tr("仅复制链接地址", "Copy URL only", "URLのみコピー", "링크 주소만 복사", "僅複製連結網址")) },
+                                        leadingIcon = { Icon(Icons.Outlined.Link, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                                        shape = menuItemShape(0, menuCount),
+                                        onClick = {
+                                            copyMenuOpen = false
+                                            onCopyUrlOnly()
+                                        },
+                                    )
+                                    if (onCopyPassCodeOnly != null) {
+                                        DropdownMenuItem(
+                                            text = { Text(tr("仅复制提取码", "Copy access code only", "アクセスコードのみコピー", "접근 코드만 복사", "僅複製提取碼")) },
+                                            leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                                            shape = menuItemShape(1, menuCount),
+                                            onClick = {
+                                                copyMenuOpen = false
+                                                onCopyPassCodeOnly()
+                                            },
+                                        )
+                                    }
+                                    DropdownMenuItem(
+                                        text = { Text(tr("在浏览器中打开", "Open in browser", "ブラウザーで開く", "브라우저에서 열기", "在瀏覽器中開啟")) },
+                                        leadingIcon = { Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                                        shape = menuItemShape(menuCount - 1, menuCount),
+                                        onClick = {
+                                            copyMenuOpen = false
+                                            onOpen()
+                                        },
+                                    )
+                                }
+                            }
+                        },
+                    )
                 }
             }
         }

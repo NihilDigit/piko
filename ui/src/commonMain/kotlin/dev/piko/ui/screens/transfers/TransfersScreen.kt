@@ -6,7 +6,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -28,7 +27,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
-import androidx.compose.material.icons.outlined.SyncAlt
+import androidx.compose.material.icons.outlined.SwapVerticalCircle
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -78,7 +77,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
-import dev.piko.shared.i18n.enCount
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.state.TransferItem
 import dev.piko.shared.state.TransferKind
@@ -394,15 +392,18 @@ fun TransfersScreen(
         if (detailsKey != null && detailsItem == null) detailState.close()
     }
 
+    val allVisibleSelected by remember(state, visibleOrder) {
+        derivedStateOf { visibleOrder.isNotEmpty() && visibleOrder.all { it in state.selectedKeys } }
+    }
+    val pauseCount = bulkSelected.count(state::isPausable)
+    val resumeCount = bulkSelected.count(state::isResumable)
     val headerActions = taskPageActions(
         state = state,
         selectedCount = bulkSelected.size,
-        onSelectAll = { state.selectAll(visibleOrder) },
-        onDelete = { confirmingDeleteKeys = state.selectedKeys.toSet() },
-        onPause = pauseSelected,
-        onResume = resumeSelected,
-        pauseCount = bulkSelected.count(state::isPausable),
-        resumeCount = bulkSelected.count(state::isResumable),
+        allSelected = allVisibleSelected,
+        onToggleSelectAll = {
+            if (allVisibleSelected) state.clearSelection() else state.selectAll(visibleOrder)
+        },
         onRequestClearCompleted = { confirmingClearCompleted = true },
     )
 
@@ -418,8 +419,9 @@ fun TransfersScreen(
             },
         ),
     ) { padding ->
+        val framed = LocalFramed.current
         Column(Modifier.fillMaxSize().padding(padding)) {
-            if (!LocalFramed.current) TaskRateBar(state)
+            if (!framed) TaskRateBar(state)
             Box(
                 Modifier
                     .weight(1f)
@@ -475,6 +477,7 @@ fun TransfersScreen(
                                         completedExpanded = completedExpanded(kind, sections),
                                         onToggleCompleted = { completedExpansion[kind] = !completedExpanded(kind, sections) },
                                         sidePadding = SidePadding,
+                                        bottomPadding = if (selectionActive) 88.dp else 8.dp,
                                         deletedExpanded = deletedExpanded,
                                         onToggleDeleted = { deletedExpanded = !deletedExpanded },
                                         expandedBatches = expandedBatches,
@@ -490,7 +493,7 @@ fun TransfersScreen(
                                     PikoEmptyState(
                                         title = tr("暂无任务", "No tasks", "タスクはありません", "작업이 없습니다", "暫無任務"),
                                         description = tr("已提交的传输和文件处理将显示于此", "Submitted transfers and file operations appear here", "送信した転送やファイル操作を表示します", "제출된 전송 및 파일 작업이 여기에 표시됩니다", "已提交的傳輸和檔案處理將顯示於此"),
-                                        icon = Icons.Outlined.SyncAlt,
+                                        icon = Icons.Outlined.SwapVerticalCircle,
                                         actionText = tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結"),
                                         onActionClick = { onCreateImport("") },
                                     )
@@ -499,6 +502,17 @@ fun TransfersScreen(
                         }
                     }
                 }
+                TaskSelectionFloatingToolbar(
+                    visible = selectionActive,
+                    selectedCount = bulkSelected.size,
+                    pauseCount = pauseCount,
+                    resumeCount = resumeCount,
+                    onPause = pauseSelected,
+                    onResume = resumeSelected,
+                    onDelete = { confirmingDeleteKeys = state.selectedKeys.toSet() },
+                    applyNavBarsPadding = !framed,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
                 DetailHost(detailState) { _, contentModifier ->
                     TransferTaskDetailsPane(
                         item = detailsItem,
@@ -539,16 +553,31 @@ fun TransfersScreen(
 
 @Composable
 private fun PullableCentered(content: @Composable BoxScope.() -> Unit) {
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    val density = LocalDensity.current
+    var viewportHeightPx by remember { mutableIntStateOf(0) }
+    val viewportHeight = with(density) { viewportHeightPx.toDp() }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onSizeChanged { viewportHeightPx = it.height },
+    ) {
         Box(
             modifier = Modifier
                 .verticalScroll(rememberScrollState())
                 .fillMaxWidth()
-                .height(maxHeight),
+                .then(if (viewportHeightPx > 0) Modifier.height(viewportHeight) else Modifier),
             contentAlignment = Alignment.Center,
             content = content,
         )
     }
+}
+
+private fun emptyCategoryTitle(kind: TransferKind): String = when (kind) {
+    TransferKind.ALL -> tr("没有任务", "No tasks", "タスクはありません", "작업이 없습니다", "沒有任務")
+    TransferKind.DOWNLOAD -> tr("没有下载任务", "No download tasks", "ダウンロードタスクはありません", "다운로드 작업이 없습니다", "沒有下載任務")
+    TransferKind.UPLOAD -> tr("没有上传任务", "No upload tasks", "アップロードタスクはありません", "업로드 작업이 없습니다", "沒有上傳任務")
+    TransferKind.CLOUD -> tr("没有云端任务", "No cloud tasks", "クラウドタスクはありません", "클라우드 작업이 없습니다", "沒有雲端任務")
+    TransferKind.FILES -> tr("没有文件处理任务", "No file operation tasks", "ファイル操作タスクはありません", "파일 작업이 없습니다", "沒有檔案處理任務")
 }
 
 @Composable
@@ -559,6 +588,7 @@ private fun TransfersList(
     completedExpanded: Boolean,
     onToggleCompleted: () -> Unit,
     sidePadding: Dp,
+    bottomPadding: Dp,
     deletedExpanded: Boolean,
     onToggleDeleted: () -> Unit,
     expandedBatches: List<String>,
@@ -569,10 +599,9 @@ private fun TransfersList(
     Box(modifier) {
         if (sections.isEmpty) {
             PullableCentered {
-                Text(
-                    text = tr("没有${kind.label}任务", "No ${enCount(kind.label, "task", "tasks")}", "${kind.label}タスクはありません", "${kind.label} 작업이 없습니다", "沒有${kind.label}任務"),
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                PikoEmptyState(
+                    title = emptyCategoryTitle(kind),
+                    icon = if (kind == TransferKind.ALL) Icons.Outlined.SwapVerticalCircle else kind.icon(false),
                 )
             }
             return@Box
@@ -588,7 +617,7 @@ private fun TransfersList(
         PikoItemGrid(
             state = gridState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = sidePadding, vertical = 8.dp),
+            contentPadding = PaddingValues(start = sidePadding, end = sidePadding, top = 8.dp, bottom = bottomPadding),
             gridModifier = Modifier.marqueeSelection(
                 gridState = gridState,
                 selectedIds = state.selectedKeys,

@@ -16,8 +16,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -34,13 +36,18 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedToggleButton
+import androidx.compose.material3.OutlinedToggleButtonDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -96,6 +103,9 @@ import dev.piko.shared.rename.templateToReplaceBlocks
 import androidx.compose.material.icons.outlined.History
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.connectedToggleShapes
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 
 /**
  * 积木的颜色，按积木在查找条上的位置轮换。预览里匹配到的片段、替换条里引用它的 ①② 用同一种颜色，
@@ -142,7 +152,7 @@ internal fun FindBlockBar(state: BatchRenameState, enabled: Boolean, focusReques
     val sentence = state.effectiveFindBlocks.takeIf { it.isNotEmpty() }?.let(::describeFind)
     BlockBar(
         label = tr("查找", "Find", "検索", "찾기", "尋找"),
-        supporting = sentence ?: tr("未填写，仅调整大小写", "Empty; change case only", "未入力。大文字・小文字のみ変更", "미입력. 대소문자만 변경", "未填寫，僅調整大小寫"),
+        supporting = sentence ?: tr("未填写，仅调整大小写", "Empty; change case only", "未入力。大文字、小文字のみ変更", "미입력. 대소문자만 변경", "未填寫，僅調整大小寫"),
         blocks = blocks,
         onBlocksChange = state::updateFindBlocks,
         inputModifier = Modifier.focusRequester(focusRequester),
@@ -702,12 +712,35 @@ private fun NumberField(
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun <T> FlowChoices(choices: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        for ((value, label) in choices) {
-            FilterChip(selected = value == selected, onClick = { onSelect(value) }, label = { Text(label) })
+    val colors = MaterialTheme.colorScheme
+    val isEInk = LocalAppearance.current.isEInk
+    val toggleColors = OutlinedToggleButtonDefaults.colors(
+        containerColor = if (isEInk) Color.White else Color.Transparent,
+        contentColor = if (isEInk) Color.Black else colors.onSurfaceVariant,
+        checkedContainerColor = if (isEInk) Color.Black else colors.secondaryContainer,
+        checkedContentColor = if (isEInk) Color.White else colors.onSecondaryContainer,
+    )
+    val connected = choices.size <= 3
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(if (connected) ButtonGroupDefaults.ConnectedSpaceBetween else 6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        choices.forEachIndexed { index, (value, label) ->
+            val checked = value == selected
+            OutlinedToggleButton(
+                checked = checked,
+                onCheckedChange = { onSelect(value) },
+                shapes = if (connected) connectedToggleShapes(index, choices.size) else connectedToggleShapes(0, 1),
+                colors = toggleColors,
+                border = if (isEInk) BorderStroke(1.dp, Color.Black) else OutlinedToggleButtonDefaults.border(enabled = true, checked = checked),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                modifier = Modifier.height(34.dp),
+            ) {
+                Text(label, maxLines = 1)
+            }
         }
     }
 }
