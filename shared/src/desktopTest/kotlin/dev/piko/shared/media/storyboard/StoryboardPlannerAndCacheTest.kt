@@ -1375,4 +1375,321 @@ class StoryboardPlannerAndCacheTest {
             scope.cancel()
         }
     }
+
+    private fun buildAvcPmtPacket(pmtPid: Int, videoPid: Int, cc: Int = 0): ByteArray {
+        val section = byteArrayOf(
+            0x00, // pointer_field
+            0x02, // table_id PMT
+            0xB0.toByte(), 18,
+            0x00, 0x01, 0xC1.toByte(), 0x00, 0x00,
+            0xE1.toByte(), 0x00,
+            0xF0.toByte(), 0x00,
+            0x1B, // STREAM_AVC (H.264)
+            (0xE0 or ((videoPid ushr 8) and 0x1F)).toByte(), (videoPid and 0xFF).toByte(),
+            0xF0.toByte(), 0x00,
+            0, 0, 0, 0,
+        )
+        return tsPacket(pid = pmtPid, payload = section, payloadStart = true, cc = cc)
+    }
+
+    private fun avcNal(nalType: Int, bodySize: Int, fill: Byte = 0x3C): ByteArray {
+        val out = ByteArray(4 + 1 + bodySize)
+        out[0] = 0
+        out[1] = 0
+        out[2] = 0
+        out[3] = 1
+        out[4] = (0x60 or (nalType and 0x1F)).toByte()
+        for (i in 5 until out.size) out[i] = fill
+        return out
+    }
+
+    private fun fillNullPackets(dst: ByteArray, fromByte: Int = 0, endByte: Int = dst.size) {
+        var p = ((fromByte + 187) / 188) * 188
+        while (p + 188 <= endByte) {
+            dst[p] = 0x47
+            dst[p + 1] = 0x1F
+            dst[p + 2] = 0xFF.toByte()
+            dst[p + 3] = 0x10
+            p += 188
+        }
+    }
+
+    @Test
+    fun streamingScanEarlyAbortsCoversTenSecondGopSingleRttAndSeparatesPriorities() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val durationMs = 1_440_000L // 24 min -> 120 slots
+            val streamSize = 188L * 500_000L // ~94 MiB (~65 KiB/s -> adaptiveStreamScanBytes ~ 896 KiB)
+            val scanBudget = StoryboardPlanner.adaptiveStreamScanBytes(durationMs, streamSize)
+            assertTrue(
+                scanBudget in StoryboardPlanner.MIN_STREAM_SCAN_BYTES..StoryboardPlanner.MAX_STREAM_SCAN_BYTES,
+                "Expected streaming scan budget in 512..1280 KiB, got ${scanBudget / 1024} KiB",
+            )
+            assertTrue(scanBudget >= 800 * 1024, "65 KiB/s stream should budget >= 800 KiB for 10s+ GOP")
+
+            val slots = StoryboardPlanner.buildSlots(durationMillis = durationMs, streamSizeBytes = streamSize)
+            val wave1Set = StoryboardPlanner.wave1Indices(slots.size).toSet()
+            val headerChunk = buildSyntheticHeaderChunk()
+            val header = assertNotNull(TsIdrExtractor.parseHeader(headerChunk, fallbackWidth = 852, fallbackHeight = 480))
+
+            // 构造三个典型槽位流数据：
+            // 1. earlySlot：IDR 落在 +32 KiB 处（应提前中止，不读完 896 KiB）
+            // 2. tenSecGopSlot：IDR 落在 +680 KiB 处（远超旧 512 KiB 上限，单 RTT 命中且 0 续块）
+            // 3. extremeVbrSlot：IDR 落在 +1.35 MiB 处（超出首窗，沿同一扫描器单次续流命中）
+            val earlySlot = slots[wave1Set.first { it > 0 }]
+            val tenSecGopSlot = slots[wave1Set.first { it > earlySlot.slotIndex }]
+            val extremeVbrSlot = slots[wave1Set.first { it > tenSecGopSlot.slotIndex }]
+
+            fun buildDelayedSlotBuffer(ptsMs: Long, idrStartOffset: Int, totalBytes: Int): ByteArray {
+                val alignedStart = (idrStartOffset / 188) * 188
+                val buf = ByteArray(totalBytes)
+                fillNullPackets(buf, 0, totalBytes)
+                val ticks = 90_000L + ptsMs * 90L
+                val (pes, cc1) = buildVideoPesPackets(header.videoPid, ptsTicks = ticks, annexBPayload = hevcNal(19, 4_000), startCc = 0)
+                val (term, _) = buildVideoPesPackets(header.videoPid, ptsTicks = ticks + 3_600L, annexBPayload = hevcNal(1, 32), startCc = cc1, randomAccess = false)
+                pes.copyInto(buf, alignedStart)
+                term.copyInto(buf, alignedStart + pes.size)
+                return buf
+            }
+
+            val earlyBuf = buildDelayedSlotBuffer(earlySlot.estimatedMs, 32 * 1024, scanBudget)
+            val tenSecBuf = buildDelayedSlotBuffer(tenSecGopSlot.estimatedMs, 680 * 1024, scanBudget)
+            val extremeBuf = buildDelayedSlotBuffer(extremeVbrSlot.estimatedMs, 1_350 * 1024, StoryboardPlanner.EXPANDED_STREAM_SCAN_BYTES)
+            val slotByOffset = slots.associateBy { it.byteOffset }
+
+            val resolveStreamSizeCalls = AtomicInteger(0)
+            val bytesServedByOffset = Collections.synchronizedMap(HashMap<Long, Int>())
+            val requestCountByOffset = Collections.synchronizedMap(HashMap<Long, Int>())
+            val prioritiesBySlot = Collections.synchronizedMap(HashMap<Int, StoryboardFetchPriority>())
+            val gateTransitions = Collections.synchronizedList(mutableListOf<Pair<Boolean, Boolean>>())
+
+            val gate = MutableStateFlow(StoryboardPlaybackGate(firstFrameReady = true, bufferedAheadMs = 10_000L, isPlaying = true, isPlaybackBusy = false))
+            val source = StoryboardSource(
+                fileId = "f-stream",
+                gcid = "GCID_STREAM_FAST",
+                mediaId = "m480",
+                url = "https://cdn.example/480.ts",
+                width = 852,
+                height = 480,
+                durationMillis = durationMs,
+                streamSizeBytes = null, // 未知流长：必须由偏移 0 流式探测单 RTT 一并带回
+            )
+
+            val fetcher = StoryboardStreamFetcher { offset, maxLength, priority, onChunk ->
+                requestCountByOffset.merge(offset, 1, Int::plus)
+                val backing = when {
+                    offset == 0L -> headerChunk
+                    offset == earlySlot.byteOffset -> earlyBuf
+                    offset == tenSecGopSlot.byteOffset -> tenSecBuf
+                    offset == extremeVbrSlot.byteOffset || offset == extremeVbrSlot.byteOffset + scanBudget -> {
+                        val rel = (offset - extremeVbrSlot.byteOffset).toInt()
+                        extremeBuf.copyOfRange(rel, minOf(extremeBuf.size, rel + maxLength))
+                    }
+                    else -> {
+                        val plan = slotByOffset[offset]
+                        if (plan != null) prioritiesBySlot[plan.slotIndex] = priority
+                        buildDelayedSlotBuffer(plan?.estimatedMs ?: 1_000L, 16 * 1024, minOf(maxLength, 64 * 1024))
+                    }
+                }
+                if (offset == earlySlot.byteOffset) prioritiesBySlot[earlySlot.slotIndex] = priority
+                if (offset == tenSecGopSlot.byteOffset) prioritiesBySlot[tenSecGopSlot.slotIndex] = priority
+                if (offset == extremeVbrSlot.byteOffset) prioritiesBySlot[extremeVbrSlot.slotIndex] = priority
+
+                // 故意用非 188 对齐的不规则网络分块喂入，验证增量扫描器跨任意分块边界同步与提前中止
+                val chunkSizes = intArrayOf(1350, 4096, 17_000, 32_768)
+                var pos = 0
+                var chunkIdx = 0
+                val limit = minOf(backing.size, maxLength)
+                while (pos < limit) {
+                    val step = minOf(chunkSizes[chunkIdx % chunkSizes.size], limit - pos)
+                    val slice = backing.copyOfRange(pos, pos + step)
+                    pos += step
+                    chunkIdx++
+                    if (onChunk(slice, step)) break
+                }
+                bytesServedByOffset.merge(offset, pos, Int::plus)
+                StoryboardRangeProbe(
+                    streamSizeBytes = streamSize,
+                    bytesConsumed = pos,
+                    reachedEof = offset + pos >= streamSize,
+                )
+            }
+
+            val closedCallback = AtomicBoolean(false)
+            val engine = StoryboardEngine(
+                source = source,
+                cache = InMemoryStoryboardCache(),
+                resolveStreamSize = {
+                    resolveStreamSizeCalls.incrementAndGet()
+                    streamSize
+                },
+                fetchRange = { _, _ -> error("Legacy batch fetchRange must not be called when streamFetcher is provided") },
+                decoderFactory = {
+                    object : StoryboardIdrDecoder {
+                        override suspend fun decodeToJpeg(
+                            csdAnnexB: ByteArray,
+                            idrAccessUnitAnnexB: ByteArray,
+                            width: Int,
+                            height: Int,
+                            maxWidthPx: Int,
+                            jpegQuality: Int,
+                        ): ByteArray = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x42)
+                        override fun close() {}
+                    }
+                },
+                playbackGate = gate,
+                scope = scope,
+                streamFetcher = fetcher,
+                onTransportGateChange = { yieldBg, urgentOk -> gateTransitions += yieldBg to urgentOk },
+                onClose = { closedCallback.set(true) },
+            )
+
+            engine.start()
+            val timeline = withTimeout(8_000L) {
+                engine.timeline.first { it.isComplete }
+            }
+            engine.close()
+
+            assertEquals(0, resolveStreamSizeCalls.get(), "Streaming head probe must resolve streamSize from Content-Range in 1 RTT without extra resolveStreamSize call")
+            assertEquals(slots.size, timeline.frames.size, "All 120 slots including 10s+ and extreme VBR GOPs must succeed with 0 failures")
+            assertTrue(closedCallback.get(), "onClose callback must fire deterministically")
+
+            // 1. earlySlot 在 ~32 KiB 抽到 IDR 后必须立刻中止流，远小于 896 KiB 预算
+            val earlyServed = bytesServedByOffset[earlySlot.byteOffset] ?: Int.MAX_VALUE
+            assertTrue(
+                earlyServed < 96 * 1024,
+                "Streaming scan must abort early after IDR at +32 KiB (consumed ${earlyServed / 1024} KiB of ${scanBudget / 1024} KiB budget)",
+            )
+            // 2. tenSecGopSlot 在 +680 KiB 单 RTT 命中，0 续块
+            assertEquals(1, requestCountByOffset[tenSecGopSlot.byteOffset], "10s GOP at +680 KiB must complete in 1 RTT without continuation")
+            assertTrue(timeline.frames.any { it.slotIndex == tenSecGopSlot.slotIndex && it.ptsMs == tenSecGopSlot.estimatedMs })
+            // 3. extremeVbrSlot 经单次续流成功解码
+            assertTrue(timeline.frames.any { it.slotIndex == extremeVbrSlot.slotIndex && it.ptsMs == extremeVbrSlot.estimatedMs })
+            // 4. 分层优先级：Wave 1 全部走 URGENT，Wave 2 全部走 BACKGROUND
+            for (idx in wave1Set) {
+                if (idx == 0) continue
+                assertEquals(StoryboardFetchPriority.URGENT, prioritiesBySlot[idx], "Wave 1 anchor slot $idx must use URGENT priority")
+            }
+            val wave2Indices = StoryboardPlanner.wave2Indices(slots.size, wave1Set.toList())
+            assertTrue(wave2Indices.isNotEmpty())
+            for (idx in wave2Indices.take(16)) {
+                assertEquals(StoryboardFetchPriority.BACKGROUND, prioritiesBySlot[idx], "Wave 2 slot $idx must use BACKGROUND priority")
+            }
+            assertTrue(gateTransitions.isNotEmpty())
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun avcH264MpegTsStreamParsesExtractsAndDispatchesAvcCodecToDecoder() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val videoPid = 0x0101
+            val pat = buildPatPacket(pmtPid = 0x1000)
+            val pmt = buildAvcPmtPacket(pmtPid = 0x1000, videoPid = videoPid)
+            val sps = avcNal(7, 16)
+            val pps = avcNal(8, 8)
+            val idr0 = avcNal(5, 1_200)
+            val (pes0, cc1) = buildVideoPesPackets(videoPid, ptsTicks = 90_000L, annexBPayload = sps + pps + idr0, startCc = 0)
+            val (term0, _) = buildVideoPesPackets(videoPid, ptsTicks = 93_600L, annexBPayload = avcNal(1, 32), startCc = cc1, randomAccess = false)
+            val headBytes = ByteArray(32 * 1024).also { dst ->
+                val raw = pat + pmt + pes0 + term0
+                raw.copyInto(dst, 0)
+                fillNullPackets(dst, raw.size, dst.size)
+            }
+
+            val parsed = assertNotNull(TsIdrExtractor.parseHeader(headBytes, fallbackWidth = 852, fallbackHeight = 480))
+            assertEquals(TsVideoCodec.AVC, parsed.codec)
+            assertEquals(videoPid, parsed.videoPid)
+            assertTrue(parsed.csdAnnexB.size == sps.size + pps.size)
+
+            val slotPtsMs = 45_000L
+            val (slotPes, slotCc1) = buildVideoPesPackets(videoPid, ptsTicks = 90_000L + slotPtsMs * 90L, annexBPayload = avcNal(5, 1_500), startCc = 0)
+            val (slotTerm, _) = buildVideoPesPackets(videoPid, ptsTicks = 90_000L + (slotPtsMs + 40L) * 90L, annexBPayload = avcNal(1, 32), startCc = slotCc1, randomAccess = false)
+            val slotBytes = ByteArray(32 * 1024).also { dst ->
+                val raw = slotPes + slotTerm
+                raw.copyInto(dst, 0)
+                fillNullPackets(dst, raw.size, dst.size)
+            }
+
+            val extracted = assertNotNull(TsIdrExtractor.extractFirstIdr(slotBytes, parsed, durationMillis = 120_000L))
+            assertEquals(slotPtsMs, extracted.ptsMs)
+            assertFalse(extracted.hasInlineParameterSets)
+
+            // 端到端验证 StoryboardEngine 将 TsVideoCodec.AVC 传递给解码器并产出完整时间线
+            val observedCodecs = Collections.synchronizedSet(HashSet<TsVideoCodec>())
+            val durationMs = 120_000L
+            val streamSize = 188L * 10_000L
+            val source = StoryboardSource(
+                fileId = "f-avc",
+                gcid = "GCID_AVC_H264",
+                mediaId = "m480",
+                url = "https://cdn.example/avc480.ts",
+                width = 852,
+                height = 480,
+                durationMillis = durationMs,
+                streamSizeBytes = streamSize,
+            )
+            val slots = StoryboardPlanner.buildSlots(durationMs, streamSize)
+            val slotByOffset = slots.associateBy { it.byteOffset }
+            val gate = MutableStateFlow(StoryboardPlaybackGate(firstFrameReady = true, isPlaying = false, isPlaybackBusy = false))
+            val engine = StoryboardEngine(
+                source = source,
+                cache = InMemoryStoryboardCache(),
+                resolveStreamSize = { streamSize },
+                fetchRange = { _, _ -> null },
+                decoderFactory = {
+                    object : StoryboardIdrDecoder {
+                        override suspend fun decodeToJpeg(
+                            csdAnnexB: ByteArray,
+                            idrAccessUnitAnnexB: ByteArray,
+                            width: Int,
+                            height: Int,
+                            maxWidthPx: Int,
+                            jpegQuality: Int,
+                        ): ByteArray? = null
+
+                        override suspend fun decodeToJpeg(
+                            csdAnnexB: ByteArray,
+                            idrAccessUnitAnnexB: ByteArray,
+                            width: Int,
+                            height: Int,
+                            codec: TsVideoCodec,
+                            maxWidthPx: Int,
+                            jpegQuality: Int,
+                        ): ByteArray? {
+                            observedCodecs += codec
+                            return if (codec == TsVideoCodec.AVC) byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x77) else null
+                        }
+
+                        override fun close() {}
+                    }
+                },
+                playbackGate = gate,
+                scope = scope,
+                streamFetcher = StoryboardStreamFetcher { offset, maxLength, _, onChunk ->
+                    val data = if (offset == 0L) {
+                        headBytes
+                    } else {
+                        val estMs = slotByOffset[offset]?.estimatedMs ?: 1_000L
+                        val (p, c1) = buildVideoPesPackets(videoPid, ptsTicks = 90_000L + estMs * 90L, annexBPayload = avcNal(5, 800), startCc = 0)
+                        val (t, _) = buildVideoPesPackets(videoPid, ptsTicks = 90_000L + (estMs + 40L) * 90L, annexBPayload = avcNal(1, 32), startCc = c1, randomAccess = false)
+                        p + t
+                    }
+                    val len = minOf(data.size, maxLength)
+                    onChunk(data, len)
+                    StoryboardRangeProbe(streamSizeBytes = streamSize, bytesConsumed = len, reachedEof = offset + len >= streamSize)
+                },
+            )
+            engine.start()
+            val timeline = withTimeout(5_000L) { engine.timeline.first { it.isComplete } }
+            engine.close()
+
+            assertEquals(setOf(TsVideoCodec.AVC), observedCodecs)
+            assertEquals(slots.size, timeline.frames.size)
+        } finally {
+            scope.cancel()
+        }
+    }
 }

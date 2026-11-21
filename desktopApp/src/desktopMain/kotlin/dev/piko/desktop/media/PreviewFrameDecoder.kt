@@ -10,6 +10,7 @@ import dev.piko.desktop.media.FfmpegLayout.AVIO_SIZE
 import dev.piko.desktop.media.FfmpegLayout.AVSEEK_FLAG_BACKWARD
 import dev.piko.desktop.media.FfmpegLayout.AVSEEK_FORCE
 import dev.piko.desktop.media.FfmpegLayout.AVSEEK_SIZE
+import dev.piko.desktop.media.FfmpegLayout.AV_CODEC_ID_H264
 import dev.piko.desktop.media.FfmpegLayout.AV_CODEC_ID_HEVC
 import dev.piko.desktop.media.FfmpegLayout.AV_PIX_FMT_RGB24
 import dev.piko.desktop.media.FfmpegLayout.AV_PKT_DATA_DISPLAYMATRIX
@@ -26,6 +27,7 @@ import dev.piko.desktop.media.FfmpegLayout.PACKET_DATA
 import dev.piko.desktop.media.FfmpegLayout.PACKET_SIZE
 import dev.piko.desktop.media.FfmpegLayout.PACKET_STREAM_INDEX
 import dev.piko.shared.media.storyboard.StoryboardIdrDecoder
+import dev.piko.shared.media.storyboard.TsVideoCodec
 import org.jetbrains.skia.EncodedImageFormat
 import org.jetbrains.skia.Image as SkiaImage
 import dev.piko.desktop.media.FfmpegLayout.PAR_CODEC_ID
@@ -494,7 +496,7 @@ internal object PreviewFrameDecoder {
 }
 
 /**
- * 复用单一 FFmpeg 8 HEVC `AVCodecContext` + `AVFrame` + `AVPacket` + `SwsContext` 的持久化单帧 IDR 解码器。
+ * 复用单一 FFmpeg 8（HEVC / H.264）`AVCodecContext` + `AVFrame` + `AVPacket` + `SwsContext` 的持久化单帧 IDR 解码器。
  * 经 `Arena.ofShared()` 配合对象互斥锁，支持在协程 IO 线程池上跨线程安全调用并在 `close()` 时确定性释放全部原生资源。
  */
 private class PersistentHevcIdrDecoder(
@@ -505,6 +507,7 @@ private class PersistentHevcIdrDecoder(
     private val decoderRef = arena.allocate(ADDRESS).apply { set(ADDRESS, 0, MemorySegment.NULL) }
     private val frameRef = arena.allocate(ADDRESS).apply { set(ADDRESS, 0, MemorySegment.NULL) }
     private val packetRef = arena.allocate(ADDRESS).apply { set(ADDRESS, 0, MemorySegment.NULL) }
+    private var openCodec: TsVideoCodec? = null
     private var scaler: MemorySegment = MemorySegment.NULL
     private var scalerSrcW = 0
     private var scalerSrcH = 0
@@ -515,25 +518,6 @@ private class PersistentHevcIdrDecoder(
 
     init {
         try {
-            val codec = ff.decoderFind.invokeWithArguments(AV_CODEC_ID_HEVC) as MemorySegment
-            check(codec != MemorySegment.NULL) { "HEVC decoder not found" }
-            val decoder = ff.decoderAlloc.invokeWithArguments(codec) as MemorySegment
-            check(decoder != MemorySegment.NULL) { "Failed to allocate HEVC AVCodecContext" }
-            decoderRef.set(ADDRESS, 0, decoder)
-            Arena.ofConfined().use { initArena ->
-                val codecOptionsRef = initArena.allocate(ADDRESS).apply { set(ADDRESS, 0, MemorySegment.NULL) }
-                try {
-                    // 单帧 IDR/CRA 缩略图无需帧级多线程：显式单线程避免在 ARM64 / 软解播放时拉起多线程引发 CPU 抖动与音画不同步，
-                    // 并启用 +showall 确保独立的 HEVC CRA (NALU 21) 在 flush 后干净解码输出。
-                    ff.dictSet.invokeWithArguments(codecOptionsRef, initArena.allocateFrom("threads"), initArena.allocateFrom("1"), 0)
-                    ff.dictSet.invokeWithArguments(codecOptionsRef, initArena.allocateFrom("flags2"), initArena.allocateFrom("+showall"), 0)
-                    check((ff.decoderOpen.invokeWithArguments(decoder, codec, codecOptionsRef) as Int) >= 0) {
-                        "Failed to open persistent HEVC decoder"
-                    }
-                } finally {
-                    ff.dictFree.invokeWithArguments(codecOptionsRef)
-                }
-            }
             val frame = (ff.frameAlloc.invokeWithArguments() as MemorySegment)
                 .takeIf { it != MemorySegment.NULL }
                 ?.reinterpret(FRAME_PREFIX_SIZE)
@@ -550,6 +534,45 @@ private class PersistentHevcIdrDecoder(
         }
     }
 
+    private fun ensureDecoderLocked(targetCodec: TsVideoCodec): MemorySegment {
+        val current = decoderRef.get(ADDRESS, 0)
+        if (current != MemorySegment.NULL && openCodec == targetCodec) return current
+        if (current != MemorySegment.NULL) {
+            ff.decoderFree.invokeWithArguments(decoderRef)
+            decoderRef.set(ADDRESS, 0, MemorySegment.NULL)
+            openCodec = null
+        }
+        val codecId = when (targetCodec) {
+            TsVideoCodec.HEVC -> AV_CODEC_ID_HEVC
+            TsVideoCodec.AVC -> AV_CODEC_ID_H264
+        }
+        val codec = ff.decoderFind.invokeWithArguments(codecId) as MemorySegment
+        check(codec != MemorySegment.NULL) { "FFmpeg decoder not found for $targetCodec" }
+        val decoder = ff.decoderAlloc.invokeWithArguments(codec) as MemorySegment
+        check(decoder != MemorySegment.NULL) { "Failed to allocate AVCodecContext for $targetCodec" }
+        decoderRef.set(ADDRESS, 0, decoder)
+        Arena.ofConfined().use { initArena ->
+            val codecOptionsRef = initArena.allocate(ADDRESS).apply { set(ADDRESS, 0, MemorySegment.NULL) }
+            try {
+                // 单帧 IDR/CRA 缩略图无需帧级多线程：显式单线程避免在 ARM64 / 软解播放时拉起多线程引发 CPU 抖动与音画不同步，
+                // 并启用 +showall 确保独立的 HEVC CRA (NALU 21) 在 flush 后干净解码输出。
+                ff.dictSet.invokeWithArguments(codecOptionsRef, initArena.allocateFrom("threads"), initArena.allocateFrom("1"), 0)
+                ff.dictSet.invokeWithArguments(codecOptionsRef, initArena.allocateFrom("flags2"), initArena.allocateFrom("+showall"), 0)
+                check((ff.decoderOpen.invokeWithArguments(decoder, codec, codecOptionsRef) as Int) >= 0) {
+                    "Failed to open persistent $targetCodec decoder"
+                }
+            } catch (t: Throwable) {
+                ff.decoderFree.invokeWithArguments(decoderRef)
+                decoderRef.set(ADDRESS, 0, MemorySegment.NULL)
+                throw t
+            } finally {
+                ff.dictFree.invokeWithArguments(codecOptionsRef)
+            }
+        }
+        openCodec = targetCodec
+        return decoder
+    }
+
     override suspend fun decodeToJpeg(
         csdAnnexB: ByteArray,
         idrAccessUnitAnnexB: ByteArray,
@@ -557,12 +580,30 @@ private class PersistentHevcIdrDecoder(
         height: Int,
         maxWidthPx: Int,
         jpegQuality: Int,
+    ): ByteArray? = decodeToJpeg(
+        csdAnnexB = csdAnnexB,
+        idrAccessUnitAnnexB = idrAccessUnitAnnexB,
+        width = width,
+        height = height,
+        codec = TsVideoCodec.HEVC,
+        maxWidthPx = maxWidthPx,
+        jpegQuality = jpegQuality,
+    )
+
+    override suspend fun decodeToJpeg(
+        csdAnnexB: ByteArray,
+        idrAccessUnitAnnexB: ByteArray,
+        width: Int,
+        height: Int,
+        codec: TsVideoCodec,
+        maxWidthPx: Int,
+        jpegQuality: Int,
     ): ByteArray? = withContext(Dispatchers.IO) {
         if (idrAccessUnitAnnexB.isEmpty()) return@withContext null
         synchronized(nativeLock) {
             if (closed) return@withContext null
             runCatching {
-                decodeSynchronized(csdAnnexB, idrAccessUnitAnnexB, maxWidthPx, jpegQuality)
+                decodeSynchronized(csdAnnexB, idrAccessUnitAnnexB, codec, maxWidthPx, jpegQuality)
             }.getOrNull()
         }
     }
@@ -570,15 +611,16 @@ private class PersistentHevcIdrDecoder(
     private fun decodeSynchronized(
         csdAnnexB: ByteArray,
         idrAccessUnitAnnexB: ByteArray,
+        codec: TsVideoCodec,
         maxWidthPx: Int,
         jpegQuality: Int,
     ): ByteArray? {
-        val decoder = decoderRef.get(ADDRESS, 0)
+        val decoder = ensureDecoderLocked(codec)
         val frame = frameRef.get(ADDRESS, 0).reinterpret(FRAME_PREFIX_SIZE)
         val packet = packetRef.get(ADDRESS, 0).reinterpret(PACKET_SIZE)
         if (decoder == MemorySegment.NULL) return null
 
-        val payload = if (csdAnnexB.isNotEmpty() && !startsWithParameterSet(idrAccessUnitAnnexB)) {
+        val payload = if (csdAnnexB.isNotEmpty() && !startsWithParameterSet(idrAccessUnitAnnexB, codec)) {
             ByteArray(csdAnnexB.size + idrAccessUnitAnnexB.size).also { out ->
                 csdAnnexB.copyInto(out, 0)
                 idrAccessUnitAnnexB.copyInto(out, csdAnnexB.size)
@@ -673,14 +715,16 @@ private class PersistentHevcIdrDecoder(
         }
     }
 
-    private fun startsWithParameterSet(annexB: ByteArray): Boolean {
+    private fun startsWithParameterSet(annexB: ByteArray, codec: TsVideoCodec): Boolean {
         val off = when {
             annexB.size >= 5 && annexB[0] == 0.toByte() && annexB[1] == 0.toByte() && annexB[2] == 0.toByte() && annexB[3] == 1.toByte() -> 4
             annexB.size >= 4 && annexB[0] == 0.toByte() && annexB[1] == 0.toByte() && annexB[2] == 1.toByte() -> 3
             else -> return false
         }
-        val nalType = (annexB[off].toInt() ushr 1) and 0x3F
-        return nalType == 32 // HEVC VPS
+        return when (codec) {
+            TsVideoCodec.HEVC -> ((annexB[off].toInt() ushr 1) and 0x3F) == 32 // HEVC VPS
+            TsVideoCodec.AVC -> (annexB[off].toInt() and 0x1F) == 7 // AVC SPS
+        }
     }
 
     override fun close() {

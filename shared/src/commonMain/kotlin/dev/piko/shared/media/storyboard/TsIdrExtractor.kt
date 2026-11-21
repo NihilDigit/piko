@@ -1,15 +1,24 @@
 package dev.piko.shared.media.storyboard
 
 /**
- * 从 PikPak `<= 480P` MPEG-TS 转码流首块提取出的流参数头（PAT/PMT -> 视频 PID + HEVC VPS/SPS/PPS + 片头 90kHz 基准时间戳）。
+ * PikPak MPEG-TS 转码流支持的视频编码类型（`0x24` HEVC 与 `0x1B` H.264/AVC）。
+ */
+enum class TsVideoCodec {
+    HEVC,
+    AVC,
+}
+
+/**
+ * 从 PikPak `<= 480P` MPEG-TS 转码流首块提取出的流参数头（PAT/PMT -> 视频 PID + 编码 + 参数集 + 片头 90kHz 基准时间戳）。
  */
 data class TsStoryboardHeader(
     val videoPid: Int,
-    /** Annex B 4 字节起始码拼接的 VPS + SPS + PPS，即 HEVC 解码器所需的 csd-0。 */
+    /** Annex B 4 字节起始码拼接的参数集（HEVC 为 VPS+SPS+PPS，AVC 为 SPS+PPS）。 */
     val csdAnnexB: ByteArray,
     val originTicks: Long,
     val width: Int,
     val height: Int,
+    val codec: TsVideoCodec = TsVideoCodec.HEVC,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -18,6 +27,7 @@ data class TsStoryboardHeader(
             originTicks == other.originTicks &&
             width == other.width &&
             height == other.height &&
+            codec == other.codec &&
             csdAnnexB.contentEquals(other.csdAnnexB)
     }
 
@@ -27,12 +37,13 @@ data class TsStoryboardHeader(
         result = 31 * result + originTicks.hashCode()
         result = 31 * result + width
         result = 31 * result + height
+        result = 31 * result + codec.hashCode()
         return result
     }
 }
 
 /**
- * 从单个 MPEG-TS 分块中直接抽出的单帧 HEVC IDR 访问单元与真实片内 `PTS`（毫秒）。
+ * 从单个 MPEG-TS 分块中直接抽出的单帧 IDR/IRAP 访问单元与真实片内 `PTS`（毫秒）。
  */
 data class ExtractedTsIdr(
     val ptsMs: Long,
@@ -56,14 +67,14 @@ data class ExtractedTsIdr(
 }
 
 /**
- * [TsIdrExtractor.extractFirstIdrDetailed] 的结构化结果，用于指导引擎区分
+ * [TsIdrExtractor.extractFirstIdrDetailed] 与流式扫描器收尾的结构化结果，用于指导引擎区分
  * 「已抽到完整 IDR」「IDR 在分块末尾跨界截断」与「分块内尚未遇到 IDR」。
  */
 sealed interface TsIdrExtractionResult {
     data class Found(val idr: ExtractedTsIdr) : TsIdrExtractionResult
 
     /**
-     * 分块末尾已开始组装 HEVC IRAP 或参数集 PES，但尚未等到下一个 PES 起始包或未收齐声明长度。
+     * 分块末尾已开始组装关键帧或参数集 PES，但尚未等到下一个 PES 起始包或未收齐声明长度。
      * [declaredRemainingBytes] 非空时表示 PES 头显式声明了固定长度且已知剩余字节数。
      */
     data class TruncatedAtTail(val declaredRemainingBytes: Int? = null) : TsIdrExtractionResult
@@ -72,90 +83,219 @@ sealed interface TsIdrExtractionResult {
 }
 
 /**
- * 纯 `commonMain` 轻量级 MPEG-TS HEVC 单帧 IDR 提取器，复用 `TsDemuxer` 的 0x47 同步、PAT/PMT、
- * 33 位 90 kHz PTS 回绕展开、HEVC VPS/SPS/PPS 与 Annex B 访问单元规范化逻辑：
- * - 不走 `avformat_open_input` / `av_seek_frame`，单次 Range 分块即可在微秒级抽出带真实 `PTS` 的 IDR；
- * - 遇到未带完整下个 PES 起始包的尾部关键帧时，支持精确识别跨界截断以便上层仅补拉紧凑尾块，EOF 时可用 `drain()` 收尾。
+ * 纯 `commonMain` 轻量级 MPEG-TS 单帧 IDR 提取器（支持 HEVC `0x24` 与 H.264/AVC `0x1B`），
+ * 复用 `TsDemuxer` 的 0x47 同步、PAT/PMT、33 位 90 kHz PTS 回绕展开、参数集提取与 Annex B 访问单元规范化逻辑：
+ * - 不走 `avformat_open_input` / `av_seek_frame`，单次 Range 流式读取即可在微秒级抽出带真实 `PTS` 的 IDR；
+ * - 提供增量流式扫描器（[IncrementalHeaderAndIdrScanner] / [IncrementalIdrScanner]），支持边收网络分块边解析，
+ *   一旦拼出首个完整 IDR 立即通知上层中止 HTTP 流，零多余尾部流量；
+ * - 遇到未带完整下个 PES 起始包的尾部关键帧时，精确识别跨界截断以便上层仅补拉紧凑尾块，EOF 时可用 `allowTailDrain = true` 收尾。
  */
 object TsIdrExtractor {
     private const val PACKET = 188
     private const val SYNC = 0x47.toByte()
+    private const val STREAM_AVC = 0x1B
     private const val STREAM_HEVC = 0x24
     private const val HEVC_VPS = 32
     private const val HEVC_SPS = 33
     private const val HEVC_PPS = 34
     private val HEVC_IRAP = 16..21
+    private const val AVC_IDR = 5
+    private const val AVC_SPS = 7
+    private const val AVC_PPS = 8
     private val START_CODE_4 = byteArrayOf(0, 0, 0, 1)
     private const val WRAP = 1L shl 33
 
     /**
-     * 解析文件头部（建议 64–128 KiB）取得 PAT/PMT、HEVC 视频 PID、VPS/SPS/PPS、首帧 90 kHz 基准时间与宽高。
+     * 增量流式流头 + 首帧（槽位 0）合并扫描器：
+     * 喂入任意长度（不必 188 字节对齐）的网络分块，在单次偏移 0 HTTP 流中同时提取
+     * [header]（PAT/PMT + 参数集 + 片头基准时间戳）与 [firstIdr]（槽位 0 首个完整 IDR）；
+     * 一旦两者就绪（或无需首帧时流头就绪），[feed] 立即返回 `true` 通知调用方中止网络流。
      */
-    fun parseHeader(bytes: ByteArray, fallbackWidth: Int = 0, fallbackHeight: Int = 0): TsStoryboardHeader? {
-        val syncStart = findSyncOffset(bytes) ?: return null
-        var pmtPid = -1
-        var videoPid = -1
-        var firstVideoTicks: Long? = null
-        var csd: ByteArray? = null
-        var width = fallbackWidth
-        var height = fallbackHeight
-        val assembler = SinglePidPesAssembler()
+    class IncrementalHeaderAndIdrScanner(
+        private val fallbackWidth: Int = 0,
+        private val fallbackHeight: Int = 0,
+        private val durationMillis: Long = Long.MAX_VALUE,
+        private val captureFirstIdr: Boolean = true,
+    ) {
+        private var pmtPid = -1
+        private var videoPid = -1
+        private var videoCodec: TsVideoCodec = TsVideoCodec.HEVC
+        private var firstVideoTicks: Long? = null
+        private val assembler = SinglePidPesAssembler()
+        private val framer = TsPacketStreamFramer()
 
-        var at = syncStart
-        while (at + PACKET <= bytes.size) {
-            if (bytes[at] != SYNC) {
-                at = findSyncOffset(bytes, at + 1) ?: break
-                continue
+        var header: TsStoryboardHeader? = null
+            private set
+        var firstIdr: ExtractedTsIdr? = null
+            private set
+
+        val isDone: Boolean
+            get() = header != null && (!captureFirstIdr || firstIdr != null)
+
+        /** 喂入 [chunk] 的 `[0, length)` 字节；返回 `true` 表示已收齐全部目标，可立即中止流。 */
+        fun feed(chunk: ByteArray, length: Int = chunk.size): Boolean {
+            if (isDone || length <= 0) return isDone
+            framer.feed(chunk, length) { bytes, at ->
+                processPacket(PacketView(bytes, at))
+                isDone
             }
-            val pkt = PacketView(bytes, at)
+            return isDone
+        }
+
+        /** 流结束（或到达预算上限）时调用：在 EOF 或定长 PES 已收齐时收尾。 */
+        fun finish(allowTailDrain: Boolean) {
+            if (isDone || videoPid < 0) return
+            if (header == null) {
+                assembler.peekComplete(requireDeclaredLength = !allowTailDrain)?.let { pes ->
+                    handleCompletedPes(pes)
+                }
+                if (header == null && allowTailDrain) {
+                    assembler.drain(requireDeclaredLength = false)?.let { pes ->
+                        handleCompletedPes(pes)
+                    }
+                }
+            } else if (captureFirstIdr && firstIdr == null) {
+                assembler.peekComplete(requireDeclaredLength = !allowTailDrain)?.let { pes ->
+                    handleCompletedPes(pes)
+                }
+            }
+        }
+
+        private fun processPacket(pkt: PacketView) {
             val pid = pkt.pid
             if (pid == 0 && pkt.start) {
                 val parsed = parsePat(pkt)
                 if (parsed >= 0) pmtPid = parsed
             } else if (pid == pmtPid && pkt.start && videoPid < 0) {
-                val parsedVideo = parsePmtVideoPid(pkt)
-                if (parsedVideo >= 0) videoPid = parsedVideo
+                parsePmtVideo(pkt)?.let { stream ->
+                    videoPid = stream.pid
+                    videoCodec = stream.codec
+                }
             } else if (videoPid >= 0 && pid == videoPid) {
                 if (firstVideoTicks == null && pkt.start) {
                     pkt.pesPtsTicks()?.let { firstVideoTicks = it }
                 }
-                val pes = assembler.feed(pkt)
-                if (pes != null) {
-                    if (firstVideoTicks == null) firstVideoTicks = pes.ptsTicks
-                    val extracted = extractParameterSets(pes.payload)
-                    if (extracted != null) {
-                        csd = extracted
-                        break
-                    }
+                val (prevPes, completedCurrent) = assembler.feedWithImmediateComplete(pkt)
+                if (prevPes != null) {
+                    handleCompletedPes(prevPes)
+                }
+                if (!isDone && completedCurrent != null) {
+                    handleCompletedPes(completedCurrent)
                 }
             }
-            at += PACKET
         }
 
-        if (csd == null && videoPid >= 0) {
-            assembler.drain()?.let { pes ->
-                if (firstVideoTicks == null) firstVideoTicks = pes.ptsTicks
-                csd = extractParameterSets(pes.payload)
+        private fun handleCompletedPes(pes: PesPacket) {
+            if (firstVideoTicks == null) firstVideoTicks = pes.ptsTicks
+            var resolvedHeader = header
+            if (resolvedHeader == null) {
+                val csd = extractParameterSets(pes.payload, videoCodec)
+                if (csd != null) {
+                    resolvedHeader = TsStoryboardHeader(
+                        videoPid = videoPid,
+                        csdAnnexB = csd,
+                        originTicks = firstVideoTicks ?: 0L,
+                        width = fallbackWidth.coerceAtLeast(1),
+                        height = fallbackHeight.coerceAtLeast(1),
+                        codec = videoCodec,
+                    )
+                    header = resolvedHeader
+                }
+            }
+            if (captureFirstIdr && firstIdr == null && resolvedHeader != null) {
+                maybeBuildIdr(pes, resolvedHeader.originTicks, durationMillis, resolvedHeader.codec)?.let { idr ->
+                    firstIdr = idr
+                }
             }
         }
-
-        val finalCsd = csd ?: return null
-        if (videoPid < 0) return null
-        return TsStoryboardHeader(
-            videoPid = videoPid,
-            csdAnnexB = finalCsd,
-            originTicks = firstVideoTicks ?: 0L,
-            width = width.coerceAtLeast(1),
-            height = height.coerceAtLeast(1),
-        )
     }
 
     /**
-     * 从任意中段 TS 字节块中提取第一个完整 HEVC IDR/CRA 帧及其真实片内 `PTS`（毫秒）。
+     * 增量流式单槽位 IDR 扫描器：
+     * 边收网络分块边组装目标视频 PID 的 PES；首个完整 IDR 组装完毕立即返回 [ExtractedTsIdr]，
+     * 上层随即中止 HTTP Range 流；同一实例可无缝跨续块继续喂入而无需拷贝拼接字节数组。
+     */
+    class IncrementalIdrScanner(
+        private val header: TsStoryboardHeader,
+        private val durationMillis: Long = Long.MAX_VALUE,
+    ) {
+        private val targetPid = header.videoPid
+        private val assembler = SinglePidPesAssembler()
+        private val framer = TsPacketStreamFramer()
+
+        var foundIdr: ExtractedTsIdr? = null
+            private set
+
+        /** 喂入 [chunk] 的 `[0, length)` 字节；若已提取出首个完整 IDR 则立即返回该帧。 */
+        fun feed(chunk: ByteArray, length: Int = chunk.size): ExtractedTsIdr? {
+            foundIdr?.let { return it }
+            if (length <= 0) return null
+            framer.feed(chunk, length) { bytes, at ->
+                val pkt = PacketView(bytes, at)
+                if (pkt.pid == targetPid) {
+                    val (prevPes, completedCurrent) = assembler.feedWithImmediateComplete(pkt)
+                    if (prevPes != null) {
+                        maybeBuildIdr(prevPes, header.originTicks, durationMillis, header.codec)?.let { idr ->
+                            foundIdr = idr
+                            return@feed true
+                        }
+                    }
+                    if (completedCurrent != null) {
+                        maybeBuildIdr(completedCurrent, header.originTicks, durationMillis, header.codec)?.let { idr ->
+                            foundIdr = idr
+                            return@feed true
+                        }
+                    }
+                }
+                false
+            }
+            return foundIdr
+        }
+
+        /**
+         * 当前流段结束时调用：若到达 EOF（`allowTailDrain = true`）或定长 PES 已收齐则收尾产出；
+         * 否则报告尾部是否已出现跨界截断的 IDR PES（[TsIdrExtractionResult.TruncatedAtTail]）或 [TsIdrExtractionResult.NotFound]。
+         * 本方法不破坏内部状态，若上层继续拉取紧邻续块，可直接继续调用 [feed]。
+         */
+        fun finish(allowTailDrain: Boolean): TsIdrExtractionResult {
+            foundIdr?.let { return TsIdrExtractionResult.Found(it) }
+            assembler.peekComplete(requireDeclaredLength = !allowTailDrain)?.let { pes ->
+                maybeBuildIdr(pes, header.originTicks, durationMillis, header.codec)?.let { idr ->
+                    foundIdr = idr
+                    return TsIdrExtractionResult.Found(idr)
+                }
+            }
+            if (!allowTailDrain) {
+                assembler.inspectTruncatedIdrTail(header.codec)?.let { tail ->
+                    return tail
+                }
+            }
+            return TsIdrExtractionResult.NotFound
+        }
+    }
+
+    /**
+     * 解析文件头部（建议 64–128 KiB）取得 PAT/PMT、视频 PID 与编码（HEVC / AVC）、参数集、首帧 90 kHz 基准时间与宽高。
+     */
+    fun parseHeader(bytes: ByteArray, fallbackWidth: Int = 0, fallbackHeight: Int = 0): TsStoryboardHeader? {
+        val scanner = IncrementalHeaderAndIdrScanner(
+            fallbackWidth = fallbackWidth,
+            fallbackHeight = fallbackHeight,
+            captureFirstIdr = false,
+        )
+        scanner.feed(bytes, bytes.size)
+        if (scanner.header == null) {
+            scanner.finish(allowTailDrain = true)
+        }
+        return scanner.header
+    }
+
+    /**
+     * 从任意中段 TS 字节块中提取第一个完整 HEVC IDR/CRA 或 AVC IDR 帧及其真实片内 `PTS`（毫秒）。
      *
      * 默认 [allowTailDrain] 为 `false`：若关键帧 PES 在分块末尾尚未见到下一个视频 PES 起始包（且未显式声明固定长度），
-     * 绝不把跨边界被截断的半帧（尤其是 NALU 21 `CRA_NUT`）送进 FFmpeg 触发 `Skipping invalid undecodable NALU`，
-     * 而是返回 `null` 交由上层补拉续块拼接后再完整解码；仅当分块已触达流末尾（EOF）时传入 `allowTailDrain = true`。
+     * 绝不把跨边界被截断的半帧（尤其是 HEVC NALU 21 `CRA_NUT`）送进解码器，
+     * 而是返回 `null` 交由上层补拉续块后再完整解码；仅当分块已触达流末尾（EOF）时传入 `allowTailDrain = true`。
      */
     fun extractFirstIdr(
         bytes: ByteArray,
@@ -175,44 +315,13 @@ object TsIdrExtractor {
         durationMillis: Long = Long.MAX_VALUE,
         allowTailDrain: Boolean = false,
     ): TsIdrExtractionResult {
-        val syncStart = findSyncOffset(bytes) ?: return TsIdrExtractionResult.NotFound
-        val targetPid = header.videoPid
-        val assembler = SinglePidPesAssembler()
-
-        var at = syncStart
-        while (at + PACKET <= bytes.size) {
-            if (bytes[at] != SYNC) {
-                at = findSyncOffset(bytes, at + 1) ?: break
-                continue
-            }
-            val pkt = PacketView(bytes, at)
-            if (pkt.pid == targetPid) {
-                val finished = assembler.feed(pkt)
-                if (finished != null) {
-                    val idr = maybeBuildIdr(finished, header.originTicks, durationMillis)
-                    if (idr != null) return TsIdrExtractionResult.Found(idr)
-                }
-            }
-            at += PACKET
-        }
-
-        // 仅在块尾已触达 EOF（allowTailDrain=true）或 PES 显式声明了完整固定长度时放行末尾收尾：
-        // 既不丢弃 EOF 或定长 PES 中的紧凑/单包关键帧（< 1 KiB），也严禁将跨边界截断的无界半帧送入解码器。
-        assembler.peekComplete(requireDeclaredLength = !allowTailDrain)?.let { pes ->
-            maybeBuildIdr(pes, header.originTicks, durationMillis)?.let { idr ->
-                return TsIdrExtractionResult.Found(idr)
-            }
-        }
-        if (!allowTailDrain) {
-            assembler.inspectTruncatedIdrTail()?.let { tail ->
-                return tail
-            }
-        }
-        return TsIdrExtractionResult.NotFound
+        val scanner = IncrementalIdrScanner(header = header, durationMillis = durationMillis)
+        scanner.feed(bytes, bytes.size)?.let { return TsIdrExtractionResult.Found(it) }
+        return scanner.finish(allowTailDrain = allowTailDrain)
     }
 
     /**
-     * 合并参数集（VPS/SPS/PPS）与 IDR 访问单元：若 IDR 已内联全部 3 个参数集则直接返回，否则在前面拼上 [csdAnnexB]。
+     * 合并参数集（HEVC VPS/SPS/PPS 或 AVC SPS/PPS）与 IDR 访问单元：若 IDR 已内联全部参数集则直接返回，否则在前面拼上 [csdAnnexB]。
      */
     fun combineCsdAndIdr(csdAnnexB: ByteArray, idr: ExtractedTsIdr): ByteArray {
         if (idr.hasInlineParameterSets || csdAnnexB.isEmpty()) return idr.accessUnitAnnexB
@@ -222,27 +331,47 @@ object TsIdrExtractor {
         return out
     }
 
-    private fun maybeBuildIdr(pes: PesPacket, originTicks: Long, durationMillis: Long): ExtractedTsIdr? {
+    private fun maybeBuildIdr(
+        pes: PesPacket,
+        originTicks: Long,
+        durationMillis: Long,
+        codec: TsVideoCodec,
+    ): ExtractedTsIdr? {
         val normalized = normalizeAccessUnit(pes.payload)
-        val nals = nalUnits(normalized)
-        if (nals.none { it.type in HEVC_IRAP && (it.end - it.start) > 2 }) return null
-        val hasVps = nals.any { it.type == HEVC_VPS }
-        val hasSps = nals.any { it.type == HEVC_SPS }
-        val hasPps = nals.any { it.type == HEVC_PPS }
+        val nals = nalUnits(normalized, codec)
+        val isIdr = when (codec) {
+            TsVideoCodec.HEVC -> nals.any { it.type in HEVC_IRAP && (it.end - it.start) > 2 }
+            TsVideoCodec.AVC -> nals.any { it.type == AVC_IDR && (it.end - it.start) > 1 }
+        }
+        if (!isIdr) return null
+        val hasInline = when (codec) {
+            TsVideoCodec.HEVC -> nals.any { it.type == HEVC_VPS } && nals.any { it.type == HEVC_SPS } && nals.any { it.type == HEVC_PPS }
+            TsVideoCodec.AVC -> nals.any { it.type == AVC_SPS } && nals.any { it.type == AVC_PPS }
+        }
         val deltaTicks = wrapDistance(originTicks, pes.ptsTicks)
         val ptsUs = ticksToUs(deltaTicks)
         val ptsMs = (ptsUs / 1_000L).coerceIn(0L, durationMillis.coerceAtLeast(0L))
         return ExtractedTsIdr(
             ptsMs = ptsMs,
             accessUnitAnnexB = normalized,
-            hasInlineParameterSets = hasVps && hasSps && hasPps,
+            hasInlineParameterSets = hasInline,
         )
     }
 
-    private fun extractParameterSets(accessUnit: ByteArray): ByteArray? {
-        val units = nalUnits(accessUnit)
-        val sets = units.filter { it.type in HEVC_VPS..HEVC_PPS }.distinctBy { it.type }.sortedBy { it.type }
-        if (sets.size < 3) return null
+    private fun extractParameterSets(accessUnit: ByteArray, codec: TsVideoCodec): ByteArray? {
+        val units = nalUnits(accessUnit, codec)
+        val sets = when (codec) {
+            TsVideoCodec.HEVC -> {
+                val filtered = units.filter { it.type in HEVC_VPS..HEVC_PPS }.distinctBy { it.type }.sortedBy { it.type }
+                if (filtered.size < 3) return null
+                filtered
+            }
+            TsVideoCodec.AVC -> {
+                val filtered = units.filter { it.type == AVC_SPS || it.type == AVC_PPS }.distinctBy { it.type }.sortedBy { it.type }
+                if (filtered.size < 2) return null
+                filtered
+            }
+        }
         val totalLen = sets.sumOf { START_CODE_4.size + (it.end - it.start) }
         val out = ByteArray(totalLen)
         var pos = 0
@@ -267,12 +396,12 @@ object TsIdrExtractor {
         }
     }
 
-    internal fun findSyncOffset(bytes: ByteArray, from: Int = 0): Int? {
-        if (bytes.size - from < PACKET * 2) return null
-        val limit = minOf(bytes.size - PACKET * 2, from + PACKET * 4)
+    internal fun findSyncOffset(bytes: ByteArray, from: Int = 0, limitEnd: Int = bytes.size): Int? {
+        if (limitEnd - from < PACKET * 2) return null
+        val limit = minOf(limitEnd - PACKET * 2, from + PACKET * 4)
         for (i in from..limit) {
             if (bytes[i] == SYNC && bytes[i + PACKET] == SYNC) {
-                if (i + PACKET * 2 >= bytes.size || bytes[i + PACKET * 2] == SYNC) {
+                if (i + PACKET * 2 >= limitEnd || bytes[i + PACKET * 2] == SYNC) {
                     return i
                 }
             }
@@ -296,22 +425,175 @@ object TsIdrExtractor {
         return -1
     }
 
-    private fun parsePmtVideoPid(packet: PacketView): Int {
-        if (!packet.hasPayload) return -1
+    private data class VideoStreamInfo(val pid: Int, val codec: TsVideoCodec)
+
+    private fun parsePmtVideo(packet: PacketView): VideoStreamInfo? {
+        if (!packet.hasPayload) return null
         val section = packet.payloadStart + 1 + packet.byte(packet.payloadStart)
-        if (section + 12 > PACKET || packet.byte(section) != 0x02) return -1
+        if (section + 12 > PACKET || packet.byte(section) != 0x02) return null
         val sectionLen = ((packet.byte(section + 1) and 0x0F) shl 8) or packet.byte(section + 2)
         val end = minOf(PACKET, section + 3 + sectionLen - 4)
         val programInfo = ((packet.byte(section + 10) and 0x0F) shl 8) or packet.byte(section + 11)
         var at = section + 12 + programInfo
+        var avcFallback: VideoStreamInfo? = null
         while (at + 5 <= end) {
             val type = packet.byte(at)
             val pid = ((packet.byte(at + 1) and 0x1F) shl 8) or packet.byte(at + 2)
-            if (type == STREAM_HEVC) return pid
+            when (type) {
+                STREAM_HEVC -> return VideoStreamInfo(pid, TsVideoCodec.HEVC)
+                STREAM_AVC -> if (avcFallback == null) avcFallback = VideoStreamInfo(pid, TsVideoCodec.AVC)
+            }
             val esInfoLen = ((packet.byte(at + 3) and 0x0F) shl 8) or packet.byte(at + 4)
             at += 5 + esInfoLen
         }
-        return -1
+        return avcFallback
+    }
+
+    /**
+     * 跨任意大小网络分块维护 188 字节 MPEG-TS 同步与包边界对齐，零整块拷贝。
+     */
+    private class TsPacketStreamFramer {
+        private var synced = false
+        private val carry = ByteArray(PACKET)
+        private var carryLen = 0
+        private var syncBuf = ByteArray(0)
+        private var syncLen = 0
+
+        inline fun feed(chunk: ByteArray, length: Int, onPacket: (bytes: ByteArray, at: Int) -> Boolean) {
+            if (length <= 0) return
+            var pos = 0
+
+            if (!synced) {
+                if (syncLen == 0) {
+                    val sync = findSyncOffset(chunk, 0, length)
+                    if (sync != null) {
+                        synced = true
+                        pos = sync
+                    } else {
+                        // 仅保留末尾足以跨下一块寻找 0x47 同步的前缀，防止损坏流无限涨内存
+                        val keep = minOf(length, PACKET * 3)
+                        if (syncBuf.size < keep) syncBuf = ByteArray(PACKET * 4)
+                        chunk.copyInto(syncBuf, 0, length - keep, length)
+                        syncLen = keep
+                        return
+                    }
+                } else {
+                    val combinedLen = syncLen + length
+                    val needed = minOf(combinedLen, PACKET * 8)
+                    val combined = ByteArray(syncLen + minOf(length, needed - syncLen))
+                    syncBuf.copyInto(combined, 0, 0, syncLen)
+                    val prefixTake = combined.size - syncLen
+                    chunk.copyInto(combined, syncLen, 0, prefixTake)
+                    val sync = findSyncOffset(combined, 0, combined.size)
+                    if (sync == null) {
+                        val keep = minOf(combined.size, PACKET * 3)
+                        if (syncBuf.size < keep) syncBuf = ByteArray(PACKET * 4)
+                        combined.copyInto(syncBuf, 0, combined.size - keep, combined.size)
+                        syncLen = keep
+                        if (prefixTake < length) {
+                            val tailSync = findSyncOffset(chunk, prefixTake, length)
+                            if (tailSync != null) {
+                                synced = true
+                                syncLen = 0
+                                pos = tailSync
+                            } else {
+                                val tailKeep = minOf(length, PACKET * 3)
+                                chunk.copyInto(syncBuf, 0, length - tailKeep, length)
+                                syncLen = tailKeep
+                                return
+                            }
+                        } else {
+                            return
+                        }
+                    } else {
+                        synced = true
+                        val savedSyncLen = syncLen
+                        syncLen = 0
+                        // 先吐出落在 combined 前半段（跨 syncBuf 与 chunk）的完整 TS 包
+                        var at: Int = sync
+                        while (at + PACKET <= combined.size) {
+                            if (combined[at] != SYNC) {
+                                val next = findSyncOffset(combined, at + 1, combined.size)
+                                if (next == null) {
+                                    synced = false
+                                    break
+                                }
+                                at = next
+                                continue
+                            }
+                            if (onPacket(combined, at)) return
+                            at += PACKET
+                        }
+                        if (!synced) {
+                            val rem = combined.size - at
+                            if (rem > 0) {
+                                val keep = minOf(rem, PACKET * 3)
+                                if (syncBuf.size < keep) syncBuf = ByteArray(PACKET * 4)
+                                combined.copyInto(syncBuf, 0, combined.size - keep, combined.size)
+                                syncLen = keep
+                            }
+                            return
+                        }
+                        val tailInCombined = combined.size - at
+                        if (at >= savedSyncLen) {
+                            pos = at - savedSyncLen
+                        } else {
+                            if (tailInCombined > 0) {
+                                combined.copyInto(carry, 0, at, combined.size)
+                                carryLen = tailInCombined
+                            }
+                            pos = prefixTake
+                        }
+                    }
+                }
+            }
+
+            // 若上一块留下了不足 188 字节的尾包，先与当前块头部拼成完整包
+            if (carryLen > 0) {
+                val need = PACKET - carryLen
+                if (length - pos < need) {
+                    chunk.copyInto(carry, carryLen, pos, length)
+                    carryLen += (length - pos)
+                    return
+                }
+                chunk.copyInto(carry, carryLen, pos, pos + need)
+                carryLen = 0
+                pos += need
+                if (carry[0] == SYNC) {
+                    if (onPacket(carry, 0)) return
+                } else {
+                    synced = false
+                    val next = findSyncOffset(chunk, pos, length) ?: return
+                    synced = true
+                    pos = next
+                }
+            }
+
+            // 零拷贝遍历当前块中的所有完整 188 字节 TS 包
+            while (pos + PACKET <= length) {
+                if (chunk[pos] != SYNC) {
+                    val next = findSyncOffset(chunk, pos + 1, length)
+                    if (next == null) {
+                        synced = false
+                        val keep = minOf(length - pos, PACKET * 3)
+                        if (syncBuf.size < keep) syncBuf = ByteArray(PACKET * 4)
+                        chunk.copyInto(syncBuf, 0, length - keep, length)
+                        syncLen = keep
+                        return
+                    }
+                    pos = next
+                    continue
+                }
+                if (onPacket(chunk, pos)) return
+                pos += PACKET
+            }
+
+            val rem = length - pos
+            if (rem > 0) {
+                chunk.copyInto(carry, 0, pos, length)
+                carryLen = rem
+            }
+        }
     }
 
     private class PacketView(val bytes: ByteArray, val at: Int) {
@@ -338,31 +620,54 @@ object TsIdrExtractor {
 
     private class SinglePidPesAssembler {
         private var parts: MutableList<ByteArray>? = null
+        private var currentBytes = 0
+        private var currentDeclaredLen = 0
         private var broken = false
         private var currentRandomAccess = false
         private var lastContinuity = -1
 
-        fun feed(packet: PacketView): PesPacket? {
-            if (!packet.hasPayload) return null
+        /**
+         * 喂入一帧 TS 包：返回 `(由本包 start 终结的上一条 PES, 若当前定长 PES 已收齐则立即产出的本条 PES)`。
+         */
+        fun feedWithImmediateComplete(packet: PacketView): Pair<PesPacket?, PesPacket?> {
+            if (!packet.hasPayload) return null to null
             val cc = packet.continuity
-            if (lastContinuity == cc) return null
+            if (lastContinuity == cc) return null to null
             val gap = lastContinuity >= 0 && cc != ((lastContinuity + 1) and 0x0F)
             lastContinuity = cc
             if (gap) broken = true
-            val finished = if (packet.start) buildCurrent() else null
+            val finishedPrev = if (packet.start) buildCurrent(requireDeclaredLength = false) else null
+            val payload = packet.payload()
             if (packet.start) {
-                parts = mutableListOf(packet.payload())
+                parts = mutableListOf(payload)
+                currentBytes = payload.size
+                currentDeclaredLen = if (payload.size >= 6 && payload[0] == 0.toByte() && payload[1] == 0.toByte() && payload[2] == 1.toByte()) {
+                    ((payload[4].toInt() and 0xFF) shl 8) or (payload[5].toInt() and 0xFF)
+                } else {
+                    0
+                }
                 broken = false
                 currentRandomAccess = packet.randomAccess
             } else {
-                parts?.add(packet.payload())
+                val list = parts
+                if (list != null) {
+                    list.add(payload)
+                    currentBytes += payload.size
+                }
             }
-            return finished
+            val completedNow = if (!broken && currentDeclaredLen > 0 && currentBytes >= 6 + currentDeclaredLen) {
+                drain(requireDeclaredLength = true)
+            } else {
+                null
+            }
+            return finishedPrev to completedNow
         }
 
         fun drain(requireDeclaredLength: Boolean = false): PesPacket? =
             buildCurrent(requireDeclaredLength = requireDeclaredLength).also {
                 parts = null
+                currentBytes = 0
+                currentDeclaredLen = 0
                 broken = false
                 currentRandomAccess = false
             }
@@ -370,10 +675,10 @@ object TsIdrExtractor {
         fun peekComplete(requireDeclaredLength: Boolean = false): PesPacket? =
             buildCurrent(requireDeclaredLength = requireDeclaredLength)
 
-        fun inspectTruncatedIdrTail(): TsIdrExtractionResult.TruncatedAtTail? {
+        fun inspectTruncatedIdrTail(codec: TsVideoCodec): TsIdrExtractionResult.TruncatedAtTail? {
             val list = parts ?: return null
             if (broken) return null
-            val total = list.sumOf { it.size }
+            val total = currentBytes
             if (total < 14) return null
             val bytes = ByteArray(total)
             var pos = 0
@@ -396,15 +701,18 @@ object TsIdrExtractor {
                 null
             }
             val payload = bytes.copyOfRange(headerEnd, bytes.size)
-            val nals = nalUnits(normalizeAccessUnit(payload))
-            val looksLikeIdr = currentRandomAccess || nals.any { it.type in HEVC_IRAP || it.type in HEVC_VPS..HEVC_PPS }
+            val nals = nalUnits(normalizeAccessUnit(payload), codec)
+            val looksLikeIdr = currentRandomAccess || when (codec) {
+                TsVideoCodec.HEVC -> nals.any { it.type in HEVC_IRAP || it.type in HEVC_VPS..HEVC_PPS }
+                TsVideoCodec.AVC -> nals.any { it.type == AVC_IDR || it.type == AVC_SPS || it.type == AVC_PPS }
+            }
             return if (looksLikeIdr) TsIdrExtractionResult.TruncatedAtTail(declaredRemainingBytes = declaredRemaining) else null
         }
 
         private fun buildCurrent(requireDeclaredLength: Boolean = false): PesPacket? {
             val list = parts ?: return null
             if (broken) return null
-            val total = list.sumOf { it.size }
+            val total = currentBytes
             if (total < 14) return null
             val bytes = ByteArray(total)
             var pos = 0
@@ -429,7 +737,7 @@ object TsIdrExtractor {
 
     private class Nal(val type: Int, val start: Int, val end: Int)
 
-    private fun nalUnits(bytes: ByteArray): List<Nal> {
+    private fun nalUnits(bytes: ByteArray, codec: TsVideoCodec): List<Nal> {
         val starts = ArrayList<Int>(8)
         var i = 0
         while (i + 3 <= bytes.size) {
@@ -440,10 +748,19 @@ object TsIdrExtractor {
                 i++
             }
         }
+        val minNalBytes = if (codec == TsVideoCodec.HEVC) 2 else 1
         return starts.mapIndexedNotNull { index, start ->
             var end = if (index + 1 < starts.size) starts[index + 1] - 3 else bytes.size
             while (end > start && bytes[end - 1] == 0.toByte()) end--
-            if (end - start < 2) null else Nal((bytes[start].toInt() ushr 1) and 0x3F, start, end)
+            if (end - start < minNalBytes) {
+                null
+            } else {
+                val type = when (codec) {
+                    TsVideoCodec.HEVC -> (bytes[start].toInt() ushr 1) and 0x3F
+                    TsVideoCodec.AVC -> bytes[start].toInt() and 0x1F
+                }
+                Nal(type, start, end)
+            }
         }
     }
 

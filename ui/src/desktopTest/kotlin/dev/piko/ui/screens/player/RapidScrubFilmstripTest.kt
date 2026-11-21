@@ -435,7 +435,23 @@ class RapidScrubFilmstripTest {
                 playbackGate = gate,
                 scope = scope,
             )
-            val stubBitmap = ImageBitmap(4, 4)
+            val stubBitmap = object : ImageBitmap {
+                override val width: Int = 4
+                override val height: Int = 4
+                override val config: androidx.compose.ui.graphics.ImageBitmapConfig = androidx.compose.ui.graphics.ImageBitmapConfig.Argb8888
+                override val colorSpace: androidx.compose.ui.graphics.colorspace.ColorSpace = androidx.compose.ui.graphics.colorspace.ColorSpaces.Srgb
+                override val hasAlpha: Boolean = true
+                override fun readPixels(
+                    buffer: IntArray,
+                    startX: Int,
+                    startY: Int,
+                    width: Int,
+                    height: Int,
+                    bufferOffset: Int,
+                    stride: Int,
+                ) = Unit
+                override fun prepareToDraw() = Unit
+            }
             val frameCache = ScrubFrameCache(
                 durationMillis = durationMs,
                 engine = engine,

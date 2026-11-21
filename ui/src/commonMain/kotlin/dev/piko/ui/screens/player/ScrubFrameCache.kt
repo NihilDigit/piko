@@ -272,6 +272,7 @@ fun rememberScrubFrameCache(
         if (source == null) {
             null
         } else {
+            val session = mediaRepository.openStoryboardSession(source)
             var resolvedSize = source.streamSizeBytes?.takeIf { it > 0L } ?: 0L
             val engine = StoryboardEngine(
                 source = source,
@@ -290,6 +291,9 @@ fun rememberScrubFrameCache(
                 decoderFactory = { platform.createStoryboardIdrDecoder() },
                 playbackGate = gate,
                 scope = scope,
+                streamFetcher = session,
+                onTransportGateChange = session::updateTransportGate,
+                onClose = session::close,
             )
             ScrubFrameCache(
                 durationMillis = source.durationMillis,

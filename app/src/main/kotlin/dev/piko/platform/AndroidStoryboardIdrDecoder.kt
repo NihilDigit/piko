@@ -9,6 +9,7 @@ import android.media.MediaFormat
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import dev.piko.shared.media.storyboard.StoryboardIdrDecoder
+import dev.piko.shared.media.storyboard.TsVideoCodec
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import kotlin.math.roundToInt
@@ -24,6 +25,7 @@ import kotlinx.coroutines.withContext
 internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
     private val lock = Any()
     private var codec: MediaCodec? = null
+    private var configuredCodec: TsVideoCodec? = null
     private var configuredWidth = 0
     private var configuredHeight = 0
     private var configuredCsdHash = 0
@@ -37,6 +39,24 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
         height: Int,
         maxWidthPx: Int,
         jpegQuality: Int,
+    ): ByteArray? = decodeToJpeg(
+        csdAnnexB = csdAnnexB,
+        idrAccessUnitAnnexB = idrAccessUnitAnnexB,
+        width = width,
+        height = height,
+        codec = TsVideoCodec.HEVC,
+        maxWidthPx = maxWidthPx,
+        jpegQuality = jpegQuality,
+    )
+
+    override suspend fun decodeToJpeg(
+        csdAnnexB: ByteArray,
+        idrAccessUnitAnnexB: ByteArray,
+        width: Int,
+        height: Int,
+        codec: TsVideoCodec,
+        maxWidthPx: Int,
+        jpegQuality: Int,
     ): ByteArray? = withContext(Dispatchers.IO) {
         if (idrAccessUnitAnnexB.isEmpty()) return@withContext null
         synchronized(lock) {
@@ -47,6 +67,7 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
                 decodeSynchronized(
                     csdAnnexB = csdAnnexB,
                     idrAccessUnitAnnexB = idrAccessUnitAnnexB,
+                    videoCodec = codec,
                     width = safeWidth,
                     height = safeHeight,
                     maxWidthPx = maxWidthPx,
@@ -68,12 +89,13 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
     private fun decodeSynchronized(
         csdAnnexB: ByteArray,
         idrAccessUnitAnnexB: ByteArray,
+        videoCodec: TsVideoCodec,
         width: Int,
         height: Int,
         maxWidthPx: Int,
         jpegQuality: Int,
     ): ByteArray? {
-        val payload = if (csdAnnexB.isNotEmpty() && !startsWithVps(idrAccessUnitAnnexB)) {
+        val payload = if (csdAnnexB.isNotEmpty() && !startsWithParameterSet(idrAccessUnitAnnexB, videoCodec)) {
             ByteArray(csdAnnexB.size + idrAccessUnitAnnexB.size).also { out ->
                 csdAnnexB.copyInto(out, 0)
                 idrAccessUnitAnnexB.copyInto(out, csdAnnexB.size)
@@ -82,7 +104,7 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
             idrAccessUnitAnnexB
         }
 
-        var activeCodec = ensureCodec(csdAnnexB, width, height, payload.size) ?: return null
+        var activeCodec = ensureCodec(videoCodec, csdAnnexB, width, height, payload.size) ?: return null
         activeCodec.flush()
 
         var inputIndex = activeCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
@@ -90,7 +112,7 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
         var inputBuffer = activeCodec.getInputBuffer(inputIndex) ?: return null
         if (inputBuffer.capacity() < payload.size) {
             releaseCodecLocked()
-            activeCodec = ensureCodec(csdAnnexB, width, height, payload.size * 2) ?: return null
+            activeCodec = ensureCodec(videoCodec, csdAnnexB, width, height, payload.size * 2) ?: return null
             inputIndex = activeCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
             if (inputIndex < 0) return null
             inputBuffer = activeCodec.getInputBuffer(inputIndex) ?: return null
@@ -148,12 +170,19 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
         return null
     }
 
-    private fun ensureCodec(csdAnnexB: ByteArray, width: Int, height: Int, requiredInputBytes: Int): MediaCodec? {
+    private fun ensureCodec(
+        videoCodec: TsVideoCodec,
+        csdAnnexB: ByteArray,
+        width: Int,
+        height: Int,
+        requiredInputBytes: Int,
+    ): MediaCodec? {
         val csdHash = csdAnnexB.contentHashCode()
         val maxInputBytes = maxOf(DEFAULT_MAX_INPUT_BYTES, requiredInputBytes)
         val existing = codec
         if (
             existing != null &&
+            configuredCodec == videoCodec &&
             configuredWidth == width &&
             configuredHeight == height &&
             configuredCsdHash == csdHash &&
@@ -162,11 +191,12 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
             return existing
         }
         releaseCodecLocked()
-        return configureNewCodec(csdAnnexB, width, height, csdHash, maxInputBytes, explicitFlexibleColor = true)
-            ?: configureNewCodec(csdAnnexB, width, height, csdHash, maxInputBytes, explicitFlexibleColor = false)
+        return configureNewCodec(videoCodec, csdAnnexB, width, height, csdHash, maxInputBytes, explicitFlexibleColor = true)
+            ?: configureNewCodec(videoCodec, csdAnnexB, width, height, csdHash, maxInputBytes, explicitFlexibleColor = false)
     }
 
     private fun configureNewCodec(
+        videoCodec: TsVideoCodec,
         csdAnnexB: ByteArray,
         width: Int,
         height: Int,
@@ -174,10 +204,14 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
         maxInputBytes: Int,
         explicitFlexibleColor: Boolean,
     ): MediaCodec? {
-        val created = runCatching { MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC) }.getOrNull()
+        val mime = when (videoCodec) {
+            TsVideoCodec.HEVC -> MediaFormat.MIMETYPE_VIDEO_HEVC
+            TsVideoCodec.AVC -> MediaFormat.MIMETYPE_VIDEO_AVC
+        }
+        val created = runCatching { MediaCodec.createDecoderByType(mime) }.getOrNull()
             ?: return null
         return try {
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, width, height)
+            val format = MediaFormat.createVideoFormat(mime, width, height)
             format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, maxInputBytes)
             if (explicitFlexibleColor) {
                 format.setInteger(
@@ -186,11 +220,23 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
                 )
             }
             if (csdAnnexB.isNotEmpty()) {
-                format.setByteBuffer("csd-0", ByteBuffer.wrap(csdAnnexB))
+                when (videoCodec) {
+                    TsVideoCodec.HEVC -> format.setByteBuffer("csd-0", ByteBuffer.wrap(csdAnnexB))
+                    TsVideoCodec.AVC -> {
+                        val (sps, pps) = splitAvcCsd(csdAnnexB)
+                        if (sps != null && pps != null) {
+                            format.setByteBuffer("csd-0", ByteBuffer.wrap(sps))
+                            format.setByteBuffer("csd-1", ByteBuffer.wrap(pps))
+                        } else {
+                            format.setByteBuffer("csd-0", ByteBuffer.wrap(csdAnnexB))
+                        }
+                    }
+                }
             }
             created.configure(format, null, null, 0)
             created.start()
             codec = created
+            configuredCodec = videoCodec
             configuredWidth = width
             configuredHeight = height
             configuredCsdHash = csdHash
@@ -200,6 +246,30 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
             runCatching { created.release() }
             null
         }
+    }
+
+    private fun splitAvcCsd(csdAnnexB: ByteArray): Pair<ByteArray?, ByteArray?> {
+        var sps: ByteArray? = null
+        var pps: ByteArray? = null
+        val starts = ArrayList<Int>(4)
+        var i = 0
+        while (i + 4 <= csdAnnexB.size) {
+            if (csdAnnexB[i] == 0.toByte() && csdAnnexB[i + 1] == 0.toByte() && csdAnnexB[i + 2] == 0.toByte() && csdAnnexB[i + 3] == 1.toByte()) {
+                starts += i
+                i += 4
+            } else {
+                i++
+            }
+        }
+        for (idx in starts.indices) {
+            val start = starts[idx]
+            val end = if (idx + 1 < starts.size) starts[idx + 1] else csdAnnexB.size
+            if (end - start <= 4) continue
+            val nalType = csdAnnexB[start + 4].toInt() and 0x1F
+            if (nalType == 7 && sps == null) sps = csdAnnexB.copyOfRange(start, end)
+            if (nalType == 8 && pps == null) pps = csdAnnexB.copyOfRange(start, end)
+        }
+        return sps to pps
     }
 
     private fun yuvImageToScaledJpeg(image: Image, maxWidthPx: Int, jpegQuality: Int): ByteArray? {
@@ -268,19 +338,22 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
         }
     }
 
-    private fun startsWithVps(annexB: ByteArray): Boolean {
+    private fun startsWithParameterSet(annexB: ByteArray, videoCodec: TsVideoCodec): Boolean {
         val off = when {
             annexB.size >= 5 && annexB[0] == 0.toByte() && annexB[1] == 0.toByte() && annexB[2] == 0.toByte() && annexB[3] == 1.toByte() -> 4
             annexB.size >= 4 && annexB[0] == 0.toByte() && annexB[1] == 0.toByte() && annexB[2] == 1.toByte() -> 3
             else -> return false
         }
-        val nalType = (annexB[off].toInt() ushr 1) and 0x3F
-        return nalType == 32
+        return when (videoCodec) {
+            TsVideoCodec.HEVC -> ((annexB[off].toInt() ushr 1) and 0x3F) == 32
+            TsVideoCodec.AVC -> (annexB[off].toInt() and 0x1F) == 7
+        }
     }
 
     private fun releaseCodecLocked() {
         val existing = codec
         codec = null
+        configuredCodec = null
         configuredWidth = 0
         configuredHeight = 0
         configuredCsdHash = 0

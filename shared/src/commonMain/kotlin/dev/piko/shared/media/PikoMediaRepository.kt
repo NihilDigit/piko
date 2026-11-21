@@ -21,12 +21,16 @@ import io.github.nihildigit.pikpak.BlockStore
 import io.github.nihildigit.pikpak.BufferBudget
 import io.github.nihildigit.pikpak.ConsumerIntent
 import dev.piko.shared.media.cache.PikoFileCachePool
+import dev.piko.shared.media.storyboard.StoryboardFetchPriority
+import dev.piko.shared.media.storyboard.StoryboardRangeProbe
 import dev.piko.shared.media.storyboard.StoryboardSource
 import dev.piko.shared.media.storyboard.StoryboardSourceResolver
+import dev.piko.shared.media.storyboard.StoryboardStreamFetcher
 import dev.piko.download.DownloadTask
 import io.github.nihildigit.pikpak.ReadEndReason
 import io.github.nihildigit.pikpak.ServiceIntent
 import io.github.nihildigit.pikpak.TransferDemand
+import io.github.nihildigit.pikpak.UrlExpiredException
 import io.github.nihildigit.pikpak.PikPakStreamReader
 import io.github.nihildigit.pikpak.PlaybackBufferSnapshot
 import kotlinx.coroutines.currentCoroutineContext
@@ -56,6 +60,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -1963,6 +1968,297 @@ class PikoMediaRepository(
         return content?.transcodes?.firstOrNull { it.mediaId == mediaId }?.streamSizeBytes?.takeIf { it > 0L }
     }
 
+    /**
+     * 为单个雪碧图引擎打开专属分层传输会话：
+     * - 持有独立的 [TransferDemand]：`URGENT`（流头、用户焦点、Wave 1 锚点）使用 `ServiceIntent.PLAYING (prio=50)`，
+     *   避免在 SDK `SignedUrlGates` 中被 mpv 的 36 MiB `prio=10` 投机预读与 `prio=5` 暂停读饿死，同时绝不抢占前景 `prio=100/50`；
+     * - `BACKGROUND`（Wave 2 后台补齐）使用 `ServiceIntent.PREFETCH (prio=8)`，既不打断前景活跃预读（`prio=10`），
+     *   又高于暂停态后台读（`prio=5/1`）与默认 0 级；
+     * - 播放器进入忙态或缓冲跌破临界线时经 [StoryboardTransportSession.updateTransportGate] 实时把对应 Demand 降为 `PAUSED (prio=1)`；
+     * - 优先按 256 KiB 分块零流量直读 [PikoFileCachePool]，未命中部分走流式 `streamRangeFromUrl`，回调返回 `true` 立即中止 HTTP 流；
+     * - 遇到 401/403 [UrlExpiredException] 自动互斥刷新单次签名链接并重试。
+     */
+    fun openStoryboardSession(source: StoryboardSource): StoryboardTransportSession =
+        StoryboardTransportSession(source)
+
+    inner class StoryboardTransportSession(
+        private val source: StoryboardSource,
+    ) : StoryboardStreamFetcher, AutoCloseable {
+        private val sessionClient: PikPakClient? = clientManager.currentClient.value
+        private val urgentDemand: TransferDemand? = sessionClient?.openTransferDemand(
+            ConsumerIntent(service = ServiceIntent.PLAYING, bufferBudget = BufferBudget.NONE),
+        )
+        private val backgroundDemand: TransferDemand? = sessionClient?.openTransferDemand(
+            ConsumerIntent(service = ServiceIntent.PREFETCH, bufferBudget = BufferBudget.NONE),
+        )
+        private val refreshLock = Mutex()
+        private val errorLogLock = Mutex()
+        private var loggedErrors = 0
+
+        @kotlin.concurrent.Volatile
+        private var activeUrl: String = source.url
+
+        @kotlin.concurrent.Volatile
+        private var knownStreamSize: Long = source.streamSizeBytes?.takeIf { it > 0L }
+            ?: knownTranscodeStreamSizeFor(source.fileId, source.gcid, 0L, source.mediaId)
+            ?: 0L
+
+        @kotlin.concurrent.Volatile
+        private var closed = false
+
+        fun updateTransportGate(yieldBackground: Boolean, urgentAllowed: Boolean) {
+            if (closed) return
+            val nextUrgent = if (urgentAllowed) ServiceIntent.PLAYING else ServiceIntent.PAUSED
+            val nextBackground = if (yieldBackground) ServiceIntent.PAUSED else ServiceIntent.PREFETCH
+            urgentDemand?.updateIntent { intent ->
+                if (intent.service == nextUrgent) intent else intent.copy(service = nextUrgent)
+            }
+            backgroundDemand?.updateIntent { intent ->
+                if (intent.service == nextBackground) intent else intent.copy(service = nextBackground)
+            }
+        }
+
+        override suspend fun streamRange(
+            offset: Long,
+            maxLength: Int,
+            priority: StoryboardFetchPriority,
+            onChunk: (buffer: ByteArray, length: Int) -> Boolean,
+        ): StoryboardRangeProbe? = withContext(Dispatchers.IO) {
+            if (closed || offset < 0L || maxLength <= 0) return@withContext null
+            val accountClient = sessionClient ?: clientManager.currentClient.value ?: return@withContext null
+            val currentKnownSize = knownStreamSize
+            if (currentKnownSize > 0L && offset >= currentKnownSize) return@withContext null
+            val totalBudget = if (currentKnownSize > 0L) {
+                minOf(maxLength.toLong(), currentKnownSize - offset).toInt()
+            } else {
+                maxLength
+            }
+            if (totalBudget <= 0) return@withContext null
+
+            var effectiveOffset = offset
+            var remaining = totalBudget
+            var totalConsumed = 0
+
+            // 1. 优先按 256 KiB 分块零流量直读 PikoFileCachePool 本地持久化缓存
+            val pool = fileCachePool
+            if (pool != null && currentKnownSize > 0L) {
+                while (remaining > 0) {
+                    val sliceLen = minOf(remaining, STORYBOARD_LOCAL_CACHE_SLICE_BYTES)
+                    val cached = pool.readCachedBytes(
+                        account = accountClient.account,
+                        gcid = source.gcid,
+                        totalBytes = currentKnownSize,
+                        mediaId = source.mediaId,
+                        offset = effectiveOffset,
+                        length = sliceLen,
+                    ) ?: break
+                    if (cached.isEmpty()) break
+                    totalConsumed += cached.size
+                    effectiveOffset += cached.size
+                    remaining -= cached.size
+                    val stoppedEarly = onChunk(cached, cached.size)
+                    if (stoppedEarly) {
+                        return@withContext StoryboardRangeProbe(
+                            streamSizeBytes = currentKnownSize,
+                            bytesConsumed = totalConsumed,
+                            reachedEof = effectiveOffset >= currentKnownSize,
+                        )
+                    }
+                    if (cached.size < sliceLen) break
+                }
+                if (remaining <= 0) {
+                    return@withContext StoryboardRangeProbe(
+                        streamSizeBytes = currentKnownSize,
+                        bytesConsumed = totalConsumed,
+                        reachedEof = effectiveOffset >= currentKnownSize,
+                    )
+                }
+            }
+
+            // 2. 未命中部分走流式 HTTP Range（按 priority 绑定分层 TransferDemand，回调返回 true 即刻中止流）
+            val demand = when (priority) {
+                StoryboardFetchPriority.URGENT -> urgentDemand
+                StoryboardFetchPriority.BACKGROUND -> backgroundDemand
+            }
+            if (demand?.isClosed == true) return@withContext null
+
+            val timeoutMs = when (priority) {
+                StoryboardFetchPriority.URGENT -> STORYBOARD_URGENT_FETCH_TIMEOUT_MILLIS
+                StoryboardFetchPriority.BACKGROUND -> STORYBOARD_FETCH_TIMEOUT_MILLIS
+            }
+
+            var url = currentBestUrl(accountClient)
+            if (url.isBlank()) return@withContext null
+
+            var refreshedOnce = false
+            while (true) {
+                var netRead = 0
+                val streamResult = try {
+                    Result.success(
+                        withTimeoutOrNull(timeoutMs) {
+                            val attemptContext = if (demand != null) demand else kotlin.coroutines.EmptyCoroutineContext
+                            withContext(attemptContext) {
+                                accountClient.streamRangeFromUrl(url, start = effectiveOffset, length = remaining.toLong()) { stream ->
+                                    val discoveredSize = stream.totalSize?.takeIf { it > 0L }
+                                    if (discoveredSize != null && knownStreamSize <= 0L) {
+                                        knownStreamSize = discoveredSize
+                                        recordDiscoveredStreamSize(accountClient, discoveredSize)
+                                    }
+                                    val buf = ByteArray(minOf(STORYBOARD_STREAM_CHUNK_BYTES, remaining))
+                                    var stoppedEarly = false
+                                    while (netRead < remaining) {
+                                        val toRead = minOf(buf.size, remaining - netRead)
+                                        val n = stream.channel.readAvailable(buf, 0, toRead)
+                                        if (n <= 0) break
+                                        netRead += n
+                                        if (onChunk(buf, n)) {
+                                            stoppedEarly = true
+                                            break
+                                        }
+                                    }
+                                    val effectiveSize = discoveredSize ?: knownStreamSize.takeIf { it > 0L }
+                                    val endOffset = effectiveOffset + netRead
+                                    val reachedEof = !stoppedEarly && (
+                                        (effectiveSize != null && endOffset >= effectiveSize) ||
+                                            (stream.rangeEndInclusive != null && effectiveSize != null &&
+                                                stream.rangeEndInclusive!! + 1L >= effectiveSize && netRead < remaining)
+                                        )
+                                    StoryboardRangeProbe(
+                                        streamSizeBytes = effectiveSize,
+                                        bytesConsumed = totalConsumed + netRead,
+                                        reachedEof = reachedEof,
+                                    )
+                                }
+                            }
+                        }.also { completed ->
+                            if (completed == null) {
+                                logSessionErrorThrottled(
+                                    "Storyboard stream range timed out (${timeoutMs}ms, offset=$effectiveOffset, maxLen=$remaining, priority=$priority): ${logFile(source.fileId, source.mediaId)}",
+                                )
+                            }
+                        },
+                    )
+                } catch (ce: CancellationException) {
+                    // SDK 内部高优抢占（TransferPreempted）仅取消 withSlot 子作用域；若引擎协程本身仍存活则平滑退让而非杀死整个引擎
+                    currentCoroutineContext().ensureActive()
+                    if (closed || demand?.isClosed == true) throw ce
+                    logSessionErrorThrottled(
+                        "Storyboard stream range preempted by foreground transfer (offset=$effectiveOffset, priority=$priority): ${logFile(source.fileId, source.mediaId)}",
+                    )
+                    val consumedSoFar = totalConsumed + netRead
+                    return@withContext if (consumedSoFar > 0) {
+                        StoryboardRangeProbe(
+                            streamSizeBytes = knownStreamSize.takeIf { it > 0L },
+                            bytesConsumed = consumedSoFar,
+                            reachedEof = false,
+                        )
+                    } else {
+                        null
+                    }
+                } catch (e: Throwable) {
+                    Result.failure(e)
+                }
+                val err = streamResult.exceptionOrNull()
+                if (err is UrlExpiredException && !refreshedOnce) {
+                    refreshedOnce = true
+                    val nextUrl = refreshUrlOnce(accountClient, staleUrl = url)
+                    if (!nextUrl.isNullOrBlank() && nextUrl != url) {
+                        url = nextUrl
+                        continue
+                    }
+                }
+                if (err != null) {
+                    logSessionErrorThrottled(
+                        "Storyboard stream range failed (offset=$effectiveOffset, maxLen=$remaining, priority=$priority, cause=${err::class.simpleName}: ${err.message}): ${logFile(source.fileId, source.mediaId)}",
+                    )
+                    return@withContext if (totalConsumed > 0) {
+                        StoryboardRangeProbe(
+                            streamSizeBytes = knownStreamSize.takeIf { it > 0L },
+                            bytesConsumed = totalConsumed,
+                            reachedEof = false,
+                        )
+                    } else {
+                        null
+                    }
+                }
+                return@withContext streamResult.getOrNull() ?: if (totalConsumed > 0) {
+                    StoryboardRangeProbe(
+                        streamSizeBytes = knownStreamSize.takeIf { it > 0L },
+                        bytesConsumed = totalConsumed,
+                        reachedEof = false,
+                    )
+                } else {
+                    null
+                }
+            }
+            @Suppress("UNREACHABLE_CODE")
+            return@withContext null
+        }
+
+        private suspend fun currentBestUrl(accountClient: PikPakClient): String {
+            val fresh = takeFreshDetail(accountClient, source.fileId)
+                ?.medias
+                ?.firstOrNull { it.mediaId == source.mediaId && it.link.url.isNotBlank() }
+                ?.link?.url
+            if (!fresh.isNullOrBlank()) {
+                activeUrl = fresh
+                return fresh
+            }
+            return activeUrl
+        }
+
+        private suspend fun refreshUrlOnce(accountClient: PikPakClient, staleUrl: String): String? =
+            refreshLock.withLock {
+                if (activeUrl.isNotBlank() && activeUrl != staleUrl) {
+                    return@withLock activeUrl
+                }
+                val refreshed = runSuspendCatching {
+                    withApiPriority(ApiRequestPriority.BACKGROUND) {
+                        detailOf(accountClient, source.fileId)
+                    }.also { rememberFreshDetail(accountClient, source.fileId, it) }
+                }.getOrNull()
+                val nextUrl = refreshed?.medias
+                    ?.firstOrNull { it.mediaId == source.mediaId && it.link.url.isNotBlank() }
+                    ?.link?.url
+                if (!nextUrl.isNullOrBlank()) {
+                    activeUrl = nextUrl
+                }
+                nextUrl
+            }
+
+        private suspend fun recordDiscoveredStreamSize(accountClient: PikPakClient, size: Long) {
+            if (size <= 0L) return
+            if (source.gcid.isNotBlank() && source.mediaId.isNotBlank()) {
+                accountClient.rememberStreamSize(source.gcid, source.mediaId, size)
+            }
+            val detail = takeFreshDetail(accountClient, source.fileId)
+            if (detail != null) {
+                recordTranscodeStreamSize(accountClient, detail, source.mediaId, size, unreadable = false)
+            }
+        }
+
+        private suspend fun logSessionErrorThrottled(message: String) {
+            val shouldLog = errorLogLock.withLock {
+                if (loggedErrors < MAX_SESSION_ERROR_LOGS) {
+                    loggedErrors++
+                    true
+                } else {
+                    false
+                }
+            }
+            if (shouldLog) {
+                PikoLog.d(TAG, message)
+            }
+        }
+
+        override fun close() {
+            if (closed) return
+            closed = true
+            runCatching { urgentDemand?.close() }
+            runCatching { backgroundDemand?.close() }
+        }
+    }
+
     /** 探测 `<= 480P` 雪碧图转码流的总字节数（优先命中本地元数据，未命中时单次 1 字节 Range 探测并持久化）。 */
     suspend fun resolveStoryboardStreamSize(source: StoryboardSource): Long? = withContext(Dispatchers.IO) {
         val accountClient = clientManager.currentClient.value ?: return@withContext null
@@ -2341,7 +2637,11 @@ class PreparedOriginalSubtitles(
 private const val PREVIEW_CHUNK_BYTES = 256 * 1024
 private const val ABR_CACHE_WINDOW_BYTES = 1024L * 1024L // 1 MiB upcoming playback window check
 private const val PREVIEW_FETCH_TIMEOUT_MILLIS = 6_000L
-private const val STORYBOARD_FETCH_TIMEOUT_MILLIS = 8_000L
+private const val STORYBOARD_URGENT_FETCH_TIMEOUT_MILLIS = 8_000L
+private const val STORYBOARD_FETCH_TIMEOUT_MILLIS = 10_000L
+private const val STORYBOARD_STREAM_CHUNK_BYTES = 32 * 1024
+private const val STORYBOARD_LOCAL_CACHE_SLICE_BYTES = 256 * 1024
+private const val MAX_SESSION_ERROR_LOGS = 4
 private const val ORIGINAL_SUB_RANGE_TIMEOUT_MILLIS = 8_000L
 private const val MAX_CACHED_ORIGINAL_SUB_FILES = 16
 private const val MAX_TEXT_SUBTITLE_BYTES = 8L * 1024L * 1024L

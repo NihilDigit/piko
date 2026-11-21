@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.updateAndGet
@@ -41,13 +42,14 @@ data class StoryboardPlaybackGate(
 )
 
 /**
- * 单视频全片雪碧图引擎（仅对 `<= 480P` MPEG-TS 转码流启用）：
+ * 单视频全片雪碧图引擎（仅对 `<= 480P` MPEG-TS 转码流启用，支持 HEVC `0x24` 与 H.264/AVC `0x1B`）：
  * - Stage (a) 磁盘缓存命中（按 `gcid`）：开播即并行读入（`< 5ms`，0 字节网络流量）；对旧版稀疏 `.sb2`（时长 `>= 3m` 且帧数不足计划槽位的 65%）自动在内存中降级为部分缓存并后台补齐；
  * - Stage (b) 事件驱动启动与统一动态并发调度：首帧就绪且暂停/缓冲健康（`>= 3s` 零等待启动，未上报缓冲余量时平稳播放 `>= 800ms` 启动）后，
  *   由单队列优先级调度器（Priority 0 用户焦距附近 16 槽 > Priority 1 Wave 1 锚点 > Priority 2 Wave 2 其余槽位）
  *   驱动动态并发（暂停或交互优先 6 路并发、播放中缓冲充裕时 Wave 1 4 路、Wave 2 3 路，缓冲低于 3s 或卡顿立即退让为 0）；
- * - 偏移 0 流头探测沿用 `<= 64 KiB`（命中 SDK `MICRO_PROBE_PRIORITY = 12`），中段槽位按转码流字节速率单次自适应定容为 `192..384 KiB` 覆盖约 5s GOP + IDR 帧，
- *   仅在跨界截断（补拉紧凑尾块）或超长 GOP（扩展至 512 KiB 上限）时补拉单次续块并在内存中拼接，零重复流量；
+ * - 传输分层与增量流式扫描：流头探测、Priority 0 焦点槽与 Priority 1 Wave 1 锚点走 [StoryboardFetchPriority.URGENT] 高优通道，
+ *   Wave 2 后台补齐走 [StoryboardFetchPriority.BACKGROUND] 礼让通道；流式读取边收边扫描并在首个完整 IDR 就绪后立即中止 HTTP 流，
+ *   单次往返即可覆盖 10s+ 长 GOP 且零多余尾部流量；
  * - 复用单个持久化 [StoryboardIdrDecoder]，仅在 2–5ms 解码阶段串行加锁，网络拉取 100% 并行重叠。
  */
 class StoryboardEngine(
@@ -59,6 +61,9 @@ class StoryboardEngine(
     private val playbackGate: StateFlow<StoryboardPlaybackGate>,
     private val scope: CoroutineScope,
     private val nowMillis: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+    private val streamFetcher: StoryboardStreamFetcher? = null,
+    private val onTransportGateChange: ((yieldBackground: Boolean, urgentAllowed: Boolean) -> Unit)? = null,
+    private val onClose: (() -> Unit)? = null,
 ) : AutoCloseable {
     private val initialSlotCount = StoryboardPlanner.slotCountForDuration(source.durationMillis)
     private val boostCoalesceThresholdMs = run {
@@ -88,13 +93,28 @@ class StoryboardEngine(
     private val hasUserBoost = MutableStateFlow(false)
     internal val activePriorityTargetMs: Long? get() = priorityTargetMs.value
     private var workerJob: Job? = null
+    @kotlin.concurrent.Volatile
+    private var closed = false
+    @kotlin.concurrent.Volatile
+    private var closeNotified = false
     private var dirtyNewFrames = 0
     private var continuationFetches = 0
+    private var totalBytesRead = 0L
+
+    private fun notifyClosedOnce() {
+        if (closeNotified) return
+        closeNotified = true
+        runCatching { onClose?.invoke() }
+    }
 
     fun start() {
-        if (workerJob != null) return
+        if (workerJob != null || closed) return
         workerJob = scope.launch(Dispatchers.IO) {
-            runEngine()
+            try {
+                runEngine()
+            } finally {
+                notifyClosedOnce()
+            }
         }
     }
 
@@ -153,85 +173,49 @@ class StoryboardEngine(
         awaitStartupTrigger()
         val engineStartMs = nowMillis()
 
-        val streamSize = source.streamSizeBytes?.takeIf { it > 0L } ?: resolveStreamSize() ?: return
-        val slots = StoryboardPlanner.buildSlots(source.durationMillis, streamSize)
-        if (slots.isEmpty()) return
-        _plannedSlots.value = slots
-        if (cachedBundle != null && !effectiveComplete) {
-            reconcileCachedSlots(slots)
+        val gateWatcher = onTransportGateChange?.let { callback ->
+            scope.launch(Dispatchers.Default) {
+                combine(playbackGate, hasUserBoost) { g, boosted ->
+                    val yieldBg = shouldYieldForBackground(g)
+                    val urgentOk = boosted || !yieldBg
+                    yieldBg to urgentOk
+                }.distinctUntilChanged().collect { (yieldBg, urgentOk) ->
+                    callback(yieldBg, urgentOk)
+                }
+            }
         }
 
         // 打开一次持久化单解码器，全程复用，退出时确定性释放
-        val decoder = decoderFactory() ?: return
+        val decoder = decoderFactory()
+        if (decoder == null) {
+            gateWatcher?.cancel()
+            PikoLog.d(TAG, "Storyboard aborted: decoder unavailable: ${logFile(source.fileId, source.mediaId)}")
+            return
+        }
         try {
-            // 探测流头（首块保持 <= 64 KiB 命中 MICRO_PROBE_PRIORITY=12，仅缺失参数集或首帧跨界时单次补拉续块拼接）
-            awaitPlaybackIdleIfBackground()
-            val headPrimaryLen = minOf(HEAD_PROBE_BYTES.toLong(), streamSize).toInt()
-            val headPrimary = fetchRange(0L, headPrimaryLen) ?: return
-            if (headPrimary.isEmpty()) return
-            var headBytes = headPrimary
-            var header = TsIdrExtractor.parseHeader(
-                bytes = headBytes,
-                fallbackWidth = source.width,
-                fallbackHeight = source.height,
-            )
-            val headTargetCap = minOf(
-                streamSize,
-                maxOf(StoryboardPlanner.MIN_ADAPTIVE_PROBE_BYTES.toLong(), slots.first().probeLengthBytes.toLong()),
-            )
-            var headContinuationFetched = false
-            if (header == null && headTargetCap > headBytes.size.toLong()) {
-                val contOffset = headBytes.size.toLong()
-                val contLen = (headTargetCap - contOffset).toInt()
-                if (contLen > 0) {
-                    awaitPlaybackIdleIfBackground()
-                    val contBytes = fetchRange(contOffset, contLen)
-                    if (contBytes != null && contBytes.isNotEmpty()) {
-                        headContinuationFetched = true
-                        recordContinuationFetch()
-                        headBytes = concatBytes(headBytes, contBytes)
-                        header = TsIdrExtractor.parseHeader(
-                            bytes = headBytes,
-                            fallbackWidth = source.width,
-                            fallbackHeight = source.height,
-                        )
-                    }
-                }
-            }
-            val resolvedHeader = header ?: return
+            val bootstrap = if (streamFetcher != null) {
+                bootstrapStreaming(streamFetcher, decoder)
+            } else {
+                bootstrapLegacyBatch(decoder)
+            } ?: return
 
-            // 顺手解码第 0 槽位（0 额外网络往返；若首 64 KiB 未含完整首帧，按需补拉紧凑续块拼接）
+            val streamSize = bootstrap.streamSize
+            val slots = bootstrap.slots
+            val resolvedHeader = bootstrap.header
+
+            if (cachedBundle != null && !effectiveComplete) {
+                reconcileCachedSlots(slots)
+            }
+
+            // 若流式首探已顺手抽出第 0 槽位 IDR，零额外 RTT 直接解码入库
             val needSlot0 = stateLock.withLock { 0 !in decodedBySlot }
-            if (needSlot0) {
-                val outcome0 = decodeChunkIntoSlot(
+            if (needSlot0 && bootstrap.slot0Idr != null) {
+                decodeExtractedIdrIntoSlot(
                     slotIndex = 0,
-                    bytes = headBytes,
+                    extracted = bootstrap.slot0Idr,
                     header = resolvedHeader,
                     decoder = decoder,
-                    allowTailDrain = headBytes.size.toLong() >= streamSize,
                 )
-                if (outcome0 !is ChunkDecodeOutcome.Decoded && !headContinuationFetched && headTargetCap > headBytes.size.toLong()) {
-                    val contOffset = headBytes.size.toLong()
-                    val contLen = continuationLengthBytes(
-                        outcome = outcome0,
-                        remainingBudget = headTargetCap - contOffset,
-                    )
-                    if (contLen > 0) {
-                        awaitPlaybackIdleIfBackground()
-                        val contBytes = fetchRange(contOffset, contLen)
-                        if (contBytes != null && contBytes.isNotEmpty()) {
-                            recordContinuationFetch()
-                            val combined = concatBytes(headBytes, contBytes)
-                            decodeChunkIntoSlot(
-                                slotIndex = 0,
-                                bytes = combined,
-                                header = resolvedHeader,
-                                decoder = decoder,
-                                allowTailDrain = combined.size.toLong() >= streamSize,
-                            )
-                        }
-                    }
-                }
             }
 
             val wave1 = StoryboardPlanner.wave1Indices(slots.size)
@@ -258,6 +242,7 @@ class StoryboardEngine(
                     frames = decodedBySlot.size,
                     failed = failedSlots.size,
                     continuations = continuationFetches,
+                    bytesRead = totalBytesRead,
                 )
             }
             if (summary.allDone) {
@@ -270,7 +255,8 @@ class StoryboardEngine(
                     TAG,
                     "Storyboard complete: ${logFile(source.fileId, source.mediaId)}, " +
                         "frames=${summary.frames}, totalSlots=${slots.size}, failed=${summary.failed}, " +
-                        "elapsedMs=${(nowMillis() - engineStartMs).coerceAtLeast(0L)}, continuations=${summary.continuations}",
+                        "elapsedMs=${(nowMillis() - engineStartMs).coerceAtLeast(0L)}, continuations=${summary.continuations}, " +
+                        "codec=${resolvedHeader.codec}, readKiB=${summary.bytesRead / 1024L}",
                 )
             } else {
                 persistSnapshotIfDirty(completed = false, header = resolvedHeader, force = summary.hasFrames)
@@ -278,18 +264,231 @@ class StoryboardEngine(
                     PikoLog.d(
                         TAG,
                         "Storyboard incomplete due to slot failures: ${logFile(source.fileId, source.mediaId)}, " +
-                            "frames=${summary.frames}, totalSlots=${slots.size}, failed=${summary.failed}",
+                            "frames=${summary.frames}, totalSlots=${slots.size}, failed=${summary.failed}, " +
+                            "elapsedMs=${(nowMillis() - engineStartMs).coerceAtLeast(0L)}, continuations=${summary.continuations}, " +
+                            "readKiB=${summary.bytesRead / 1024L}",
                     )
                 }
             }
         } catch (cancel: CancellationException) {
+            val (frames, failed, bytesRead) = stateLock.withLock {
+                Triple(decodedBySlot.size, failedSlots.size, totalBytesRead)
+            }
+            if (frames > 0 || failed > 0 || bytesRead > 0L) {
+                PikoLog.d(
+                    TAG,
+                    "Storyboard cancelled: ${logFile(source.fileId, source.mediaId)}, " +
+                        "frames=$frames, failed=$failed, elapsedMs=${(nowMillis() - engineStartMs).coerceAtLeast(0L)}, " +
+                        "readKiB=${bytesRead / 1024L}",
+                )
+            }
             withContext(NonCancellable) {
                 persistSnapshotIfDirty(completed = false, header = null)
             }
             throw cancel
         } finally {
+            gateWatcher?.cancel()
             runCatching { decoder.close() }
         }
+    }
+
+    /**
+     * 流式冷启动引导：偏移 0 单次流式 Range 同时带回 `Content-Range` 总流长、MPEG-TS 流头（PAT/PMT/参数集）
+     * 与第 0 槽位首个完整 IDR，收齐后立即中止 HTTP 流，消除独立 1 字节探测往返。
+     */
+    private suspend fun bootstrapStreaming(
+        fetcher: StoryboardStreamFetcher,
+        decoder: StoryboardIdrDecoder,
+    ): BootstrapResult? {
+        awaitPlaybackIdleIfBackground()
+        val knownSize = source.streamSizeBytes?.takeIf { it > 0L }
+        val needSlot0 = stateLock.withLock { 0 !in decodedBySlot }
+        val scanner = TsIdrExtractor.IncrementalHeaderAndIdrScanner(
+            fallbackWidth = source.width,
+            fallbackHeight = source.height,
+            durationMillis = source.durationMillis,
+            captureFirstIdr = needSlot0,
+        )
+        val initialMaxLen = if (knownSize != null) {
+            minOf(StoryboardPlanner.HEAD_STREAM_SCAN_BYTES.toLong(), knownSize).toInt()
+        } else {
+            StoryboardPlanner.HEAD_STREAM_SCAN_BYTES
+        }
+        var consumed = 0
+        val headProbe = fetcher.streamRange(
+            offset = 0L,
+            maxLength = initialMaxLen,
+            priority = StoryboardFetchPriority.URGENT,
+        ) { buf, len ->
+            consumed += len
+            scanner.feed(buf, len)
+        }
+        if (headProbe == null || consumed <= 0) {
+            PikoLog.d(TAG, "Storyboard aborted: streaming head probe returned no data: ${logFile(source.fileId, source.mediaId)}")
+            return null
+        }
+        recordBytesRead(consumed.toLong())
+        val streamSize = knownSize
+            ?: headProbe.streamSizeBytes?.takeIf { it > 0L }
+            ?: resolveStreamSize()?.takeIf { it > 0L }
+        if (streamSize == null) {
+            PikoLog.d(TAG, "Storyboard aborted: unable to resolve stream size: ${logFile(source.fileId, source.mediaId)}")
+            return null
+        }
+        val reachedEofPrimary = headProbe.reachedEof || consumed.toLong() >= streamSize
+        scanner.finish(allowTailDrain = reachedEofPrimary)
+
+        // 极少数流开头音频包过多导致 512 KiB 内仍未凑齐流头或第 0 帧时，沿同一扫描器单次续流至 2 MiB 上限
+        if (!scanner.isDone && !reachedEofPrimary) {
+            val remainingBudget = minOf(
+                streamSize - consumed.toLong(),
+                (StoryboardPlanner.EXPANDED_STREAM_SCAN_BYTES - consumed).toLong(),
+            ).coerceAtLeast(0L).toInt()
+            if (remainingBudget > 0) {
+                awaitPlaybackIdleIfBackground()
+                var contConsumed = 0
+                val contProbe = fetcher.streamRange(
+                    offset = consumed.toLong(),
+                    maxLength = remainingBudget,
+                    priority = StoryboardFetchPriority.URGENT,
+                ) { buf, len ->
+                    contConsumed += len
+                    scanner.feed(buf, len)
+                }
+                if (contProbe != null && contConsumed > 0) {
+                    recordContinuationFetch()
+                    recordBytesRead(contConsumed.toLong())
+                    consumed += contConsumed
+                    scanner.finish(allowTailDrain = contProbe.reachedEof || consumed.toLong() >= streamSize)
+                }
+            }
+        }
+
+        val resolvedHeader = scanner.header
+        if (resolvedHeader == null) {
+            PikoLog.d(
+                TAG,
+                "Storyboard aborted: failed to parse MPEG-TS header (readBytes=$consumed): ${logFile(source.fileId, source.mediaId)}",
+            )
+            return null
+        }
+        val slots = StoryboardPlanner.buildSlots(source.durationMillis, streamSize)
+        if (slots.isEmpty()) {
+            PikoLog.d(TAG, "Storyboard aborted: empty slot plan (streamSize=$streamSize): ${logFile(source.fileId, source.mediaId)}")
+            return null
+        }
+        _plannedSlots.value = slots
+        return BootstrapResult(
+            streamSize = streamSize,
+            slots = slots,
+            header = resolvedHeader,
+            slot0Idr = scanner.firstIdr,
+        )
+    }
+
+    /**
+     * 兼容整块拉取路径（供无流式传输器的单测使用）。
+     */
+    private suspend fun bootstrapLegacyBatch(decoder: StoryboardIdrDecoder): BootstrapResult? {
+        val streamSize = source.streamSizeBytes?.takeIf { it > 0L } ?: resolveStreamSize()
+        if (streamSize == null) {
+            PikoLog.d(TAG, "Storyboard aborted: unable to resolve stream size: ${logFile(source.fileId, source.mediaId)}")
+            return null
+        }
+        val slots = StoryboardPlanner.buildSlots(source.durationMillis, streamSize)
+        if (slots.isEmpty()) {
+            PikoLog.d(TAG, "Storyboard aborted: empty slot plan (streamSize=$streamSize): ${logFile(source.fileId, source.mediaId)}")
+            return null
+        }
+        _plannedSlots.value = slots
+
+        awaitPlaybackIdleIfBackground()
+        val headPrimaryLen = minOf(HEAD_PROBE_BYTES.toLong(), streamSize).toInt()
+        val headPrimary = fetchRange(0L, headPrimaryLen)
+        if (headPrimary == null || headPrimary.isEmpty()) {
+            PikoLog.d(TAG, "Storyboard aborted: head probe returned no data: ${logFile(source.fileId, source.mediaId)}")
+            return null
+        }
+        recordBytesRead(headPrimary.size.toLong())
+        var headBytes = headPrimary
+        var header = TsIdrExtractor.parseHeader(
+            bytes = headBytes,
+            fallbackWidth = source.width,
+            fallbackHeight = source.height,
+        )
+        val headTargetCap = minOf(
+            streamSize,
+            maxOf(StoryboardPlanner.MIN_ADAPTIVE_PROBE_BYTES.toLong(), slots.first().probeLengthBytes.toLong()),
+        )
+        var headContinuationFetched = false
+        if (header == null && headTargetCap > headBytes.size.toLong()) {
+            val contOffset = headBytes.size.toLong()
+            val contLen = (headTargetCap - contOffset).toInt()
+            if (contLen > 0) {
+                awaitPlaybackIdleIfBackground()
+                val contBytes = fetchRange(contOffset, contLen)
+                if (contBytes != null && contBytes.isNotEmpty()) {
+                    headContinuationFetched = true
+                    recordContinuationFetch()
+                    recordBytesRead(contBytes.size.toLong())
+                    headBytes = concatBytes(headBytes, contBytes)
+                    header = TsIdrExtractor.parseHeader(
+                        bytes = headBytes,
+                        fallbackWidth = source.width,
+                        fallbackHeight = source.height,
+                    )
+                }
+            }
+        }
+        val resolvedHeader = header
+        if (resolvedHeader == null) {
+            PikoLog.d(
+                TAG,
+                "Storyboard aborted: failed to parse MPEG-TS header (readBytes=${headBytes.size}): ${logFile(source.fileId, source.mediaId)}",
+            )
+            return null
+        }
+
+        // 顺手解码第 0 槽位（0 额外网络往返；若首 64 KiB 未含完整首帧，按需补拉紧凑续块拼接）
+        val needSlot0 = stateLock.withLock { 0 !in decodedBySlot }
+        if (needSlot0) {
+            val outcome0 = decodeChunkIntoSlot(
+                slotIndex = 0,
+                bytes = headBytes,
+                header = resolvedHeader,
+                decoder = decoder,
+                allowTailDrain = headBytes.size.toLong() >= streamSize,
+            )
+            if (outcome0 !is ChunkDecodeOutcome.Decoded && !headContinuationFetched && headTargetCap > headBytes.size.toLong()) {
+                val contOffset = headBytes.size.toLong()
+                val contLen = continuationLengthBytes(
+                    outcome = outcome0,
+                    remainingBudget = headTargetCap - contOffset,
+                )
+                if (contLen > 0) {
+                    awaitPlaybackIdleIfBackground()
+                    val contBytes = fetchRange(contOffset, contLen)
+                    if (contBytes != null && contBytes.isNotEmpty()) {
+                        recordContinuationFetch()
+                        recordBytesRead(contBytes.size.toLong())
+                        val combined = concatBytes(headBytes, contBytes)
+                        decodeChunkIntoSlot(
+                            slotIndex = 0,
+                            bytes = combined,
+                            header = resolvedHeader,
+                            decoder = decoder,
+                            allowTailDrain = combined.size.toLong() >= streamSize,
+                        )
+                    }
+                }
+            }
+        }
+        return BootstrapResult(
+            streamSize = streamSize,
+            slots = slots,
+            header = resolvedHeader,
+            slot0Idr = null,
+        )
     }
 
     /**
@@ -422,15 +621,32 @@ class StoryboardEngine(
             }
         }
         if (pendingBySlot.isEmpty()) return
+        if (wave1Set.isEmpty()) {
+            val cachedFrames = stateLock.withLock { decodedBySlot.size }
+            PikoLog.d(
+                TAG,
+                "Storyboard wave1 already cached (frames=$cachedFrames/${allSlots.size}), healing remaining ${pendingBySlot.size} slots: ${logFile(source.fileId, source.mediaId)}",
+            )
+        }
 
+        val streamScanBytes = StoryboardPlanner.adaptiveStreamScanBytes(source.durationMillis, streamSize)
         val queueLock = Mutex()
         val boostQueue = ArrayDeque<Int>(USER_BOOST_WINDOW_SLOTS)
         var lastBoostSeen: Long? = null
+        var boostInFlight = 0
         val wave1Remaining = MutableStateFlow(wave1Set.size)
         val queueExhausted = MutableStateFlow(false)
         var wave1Logged = wave1Set.isEmpty()
 
-        suspend fun pollNext(): StoryboardSlotPlan? = queueLock.withLock {
+        fun refreshBoostFlagLocked() {
+            val hasPendingBoost = boostQueue.any { it in pendingBySlot }
+            val hasFreshBoost = priorityTargetMs.value != null && priorityTargetMs.value != lastBoostSeen
+            if (!hasPendingBoost && boostInFlight <= 0 && !hasFreshBoost && hasUserBoost.value) {
+                hasUserBoost.value = false
+            }
+        }
+
+        suspend fun pollNext(): PolledSlot? = queueLock.withLock {
             fun takePending(idx: Int): StoryboardSlotPlan? {
                 val taken = pendingBySlot.remove(idx) ?: return null
                 if (pendingBySlot.isEmpty()) {
@@ -450,20 +666,28 @@ class StoryboardEngine(
                     boostQueue.addLast(slot.slotIndex)
                 }
             }
-            // Priority 0: 用户焦点附近 ~16 个槽位（可抢占未完成的 Wave 1 与 Wave 2）
+            // Priority 0: 用户焦点附近 ~16 个槽位（高优 URGENT 通道，可抢占未完成的 Wave 1 与 Wave 2）
             while (boostQueue.isNotEmpty()) {
                 val idx = boostQueue.removeFirst()
-                takePending(idx)?.let { return@withLock it }
+                takePending(idx)?.let { slot ->
+                    boostInFlight++
+                    return@withLock PolledSlot(slot, StoryboardFetchPriority.URGENT, fromBoost = true)
+                }
             }
-            // Priority 1: Wave 1 全片均匀锚点
+            refreshBoostFlagLocked()
+            // Priority 1: Wave 1 全片均匀锚点（高优 URGENT 通道，不被 mpv 投机预读饿死）
             while (wave1Queue.isNotEmpty()) {
                 val idx = wave1Queue.removeFirst()
-                takePending(idx)?.let { return@withLock it }
+                takePending(idx)?.let { slot ->
+                    return@withLock PolledSlot(slot, StoryboardFetchPriority.URGENT, fromBoost = false)
+                }
             }
-            // Priority 2: Wave 2 其余二分细分槽位
+            // Priority 2: Wave 2 其余二分细分槽位（后台礼让 BACKGROUND 通道）
             while (wave2Queue.isNotEmpty()) {
                 val idx = wave2Queue.removeFirst()
-                takePending(idx)?.let { return@withLock it }
+                takePending(idx)?.let { slot ->
+                    return@withLock PolledSlot(slot, StoryboardFetchPriority.BACKGROUND, fromBoost = false)
+                }
             }
             queueExhausted.value = true
             null
@@ -492,8 +716,14 @@ class StoryboardEngine(
             }
         }
 
-        suspend fun onSlotFinished(slotIndex: Int) {
-            if (slotIndex !in wave1Set) return
+        suspend fun onSlotFinished(polled: PolledSlot) {
+            if (polled.fromBoost) {
+                queueLock.withLock {
+                    boostInFlight = (boostInFlight - 1).coerceAtLeast(0)
+                    refreshBoostFlagLocked()
+                }
+            }
+            if (polled.slot.slotIndex !in wave1Set) return
             val remaining = wave1Remaining.updateAndGet { (it - 1).coerceAtLeast(0) }
             if (remaining != 0) return
             val shouldLog = queueLock.withLock {
@@ -505,12 +735,15 @@ class StoryboardEngine(
                 }
             }
             if (shouldLog) {
-                val (frames, contCount) = stateLock.withLock { decodedBySlot.size to continuationFetches }
+                val (frames, contCount, readBytes) = stateLock.withLock {
+                    Triple(decodedBySlot.size, continuationFetches, totalBytesRead)
+                }
                 PikoLog.i(
                     TAG,
                     "Storyboard wave1 complete: ${logFile(source.fileId, source.mediaId)}, " +
                         "frames=$frames, totalSlots=${allSlots.size}, " +
-                        "elapsedMs=${(nowMillis() - engineStartMs).coerceAtLeast(0L)}, continuations=$contCount",
+                        "elapsedMs=${(nowMillis() - engineStartMs).coerceAtLeast(0L)}, continuations=$contCount, " +
+                        "codec=${header.codec}, readKiB=${readBytes / 1024L}",
                 )
                 persistSnapshotIfDirty(completed = false, header = header)
             }
@@ -521,11 +754,24 @@ class StoryboardEngine(
                 async {
                     while (true) {
                         if (!awaitWorkerPermit(workerId)) break
-                        val slot = pollNext() ?: break
+                        val polled = pollNext() ?: break
                         try {
-                            processSlot(slot, streamSize, header, decoder)
+                            val fetcher = streamFetcher
+                            if (fetcher != null) {
+                                processSlotStreaming(
+                                    slot = polled.slot,
+                                    priority = polled.priority,
+                                    streamSize = streamSize,
+                                    streamScanBytes = streamScanBytes,
+                                    header = header,
+                                    decoder = decoder,
+                                    fetcher = fetcher,
+                                )
+                            } else {
+                                processSlotLegacyBatch(polled.slot, streamSize, header, decoder)
+                            }
                         } finally {
-                            onSlotFinished(slot.slotIndex)
+                            onSlotFinished(polled)
                         }
                         maybePersistBatch(header)
                     }
@@ -535,7 +781,112 @@ class StoryboardEngine(
         }
     }
 
-    private suspend fun processSlot(
+    /**
+     * 流式增量单槽位处理：
+     * - 打开单个覆盖 10s+ 长 GOP 与 VBR 峰值的 HTTP Range 流，边收边扫描 MPEG-TS PES；
+     * - 首个完整 IDR 一经组装完成立即返回 `true` 中止 HTTP 流（零多余尾部字节、单次 RTT）；
+     * - 极少数超过首窗的长 GOP 或跨界尾帧沿同一 [TsIdrExtractor.IncrementalIdrScanner] 单次续流（零字节数组拼接拷贝）。
+     */
+    private suspend fun processSlotStreaming(
+        slot: StoryboardSlotPlan,
+        priority: StoryboardFetchPriority,
+        streamSize: Long,
+        streamScanBytes: Int,
+        header: TsStoryboardHeader,
+        decoder: StoryboardIdrDecoder,
+        fetcher: StoryboardStreamFetcher,
+    ) {
+        val primaryLen = minOf(
+            streamScanBytes.toLong(),
+            streamSize - slot.byteOffset,
+        ).toInt()
+        if (primaryLen <= 0) {
+            stateLock.withLock { failedSlots += slot.slotIndex }
+            return
+        }
+        val scanner = TsIdrExtractor.IncrementalIdrScanner(
+            header = header,
+            durationMillis = source.durationMillis,
+        )
+        var consumed = 0
+        var extracted: ExtractedTsIdr? = null
+        val primaryProbe = fetcher.streamRange(
+            offset = slot.byteOffset,
+            maxLength = primaryLen,
+            priority = priority,
+        ) { buf, len ->
+            consumed += len
+            val hit = scanner.feed(buf, len)
+            if (hit != null) {
+                extracted = hit
+                true
+            } else {
+                false
+            }
+        }
+        if (primaryProbe != null && consumed > 0) {
+            recordBytesRead(consumed.toLong())
+            val primaryEnd = slot.byteOffset + consumed
+            val reachedEof = primaryProbe.reachedEof || primaryEnd >= streamSize
+            val resolved = extracted?.let { TsIdrExtractionResult.Found(it) }
+                ?: scanner.finish(allowTailDrain = reachedEof)
+            when (resolved) {
+                is TsIdrExtractionResult.Found -> {
+                    if (decodeExtractedIdrIntoSlot(slot.slotIndex, resolved.idr, header, decoder)) {
+                        return
+                    }
+                }
+                is TsIdrExtractionResult.TruncatedAtTail, TsIdrExtractionResult.NotFound -> {
+                    if (!reachedEof) {
+                        val maxExpandedEnd = minOf(
+                            slot.byteOffset + StoryboardPlanner.EXPANDED_STREAM_SCAN_BYTES.toLong(),
+                            streamSize,
+                        )
+                        val contOffset = primaryEnd
+                        val remainingBudget = (maxExpandedEnd - contOffset).coerceAtLeast(0L)
+                        val contLen = continuationLengthBytesForResult(resolved, remainingBudget)
+                        if (contLen > 0) {
+                            awaitPlaybackIdleIfBackground()
+                            var contConsumed = 0
+                            var contExtracted: ExtractedTsIdr? = null
+                            val contProbe = fetcher.streamRange(
+                                offset = contOffset,
+                                maxLength = contLen,
+                                priority = priority,
+                            ) { buf, len ->
+                                contConsumed += len
+                                val hit = scanner.feed(buf, len)
+                                if (hit != null) {
+                                    contExtracted = hit
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            if (contProbe != null && contConsumed > 0) {
+                                recordContinuationFetch()
+                                recordBytesRead(contConsumed.toLong())
+                                val contEnd = contOffset + contConsumed
+                                val contReachedEof = contProbe.reachedEof || contEnd >= streamSize
+                                val finalResult = contExtracted?.let { TsIdrExtractionResult.Found(it) }
+                                    ?: scanner.finish(allowTailDrain = contReachedEof)
+                                if (finalResult is TsIdrExtractionResult.Found &&
+                                    decodeExtractedIdrIntoSlot(slot.slotIndex, finalResult.idr, header, decoder)
+                                ) {
+                                    return
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        stateLock.withLock {
+            failedSlots += slot.slotIndex
+        }
+    }
+
+    private suspend fun processSlotLegacyBatch(
         slot: StoryboardSlotPlan,
         streamSize: Long,
         header: TsStoryboardHeader,
@@ -551,6 +902,7 @@ class StoryboardEngine(
         }
         val primaryBytes = fetchRange(slot.byteOffset, primaryLen)
         if (primaryBytes != null && primaryBytes.isNotEmpty()) {
+            recordBytesRead(primaryBytes.size.toLong())
             val primaryEnd = slot.byteOffset + primaryBytes.size
             val outcome = decodeChunkIntoSlot(
                 slotIndex = slot.slotIndex,
@@ -576,6 +928,7 @@ class StoryboardEngine(
                     val contBytes = fetchRange(contOffset, contLen)
                     if (contBytes != null && contBytes.isNotEmpty()) {
                         recordContinuationFetch()
+                        recordBytesRead(contBytes.size.toLong())
                         val combined = concatBytes(primaryBytes, contBytes)
                         val combinedEnd = slot.byteOffset + combined.size
                         val contOutcome = decodeChunkIntoSlot(
@@ -597,27 +950,67 @@ class StoryboardEngine(
         }
     }
 
+    private fun continuationLengthBytesForResult(
+        result: TsIdrExtractionResult,
+        remainingBudget: Long,
+    ): Int {
+        if (remainingBudget <= 0L) return 0
+        return when (result) {
+            is TsIdrExtractionResult.TruncatedAtTail -> tailContinuationBytes(result.declaredRemainingBytes, remainingBudget)
+            TsIdrExtractionResult.NotFound -> remainingBudget.toInt()
+            is TsIdrExtractionResult.Found -> 0
+        }
+    }
+
     private fun continuationLengthBytes(
         outcome: ChunkDecodeOutcome,
         remainingBudget: Long,
     ): Int {
         if (remainingBudget <= 0L) return 0
         return when (outcome) {
-            is ChunkDecodeOutcome.TruncatedAtTail -> {
-                val declared = outcome.declaredRemainingBytes
-                val desired = if (declared != null && declared > 0) {
-                    // 计入 TS 188/184 封装开销与末尾终结包余量，尽量命中 <= 64 KiB 轻探测通道
-                    val framed = ((declared.toLong() * StoryboardPlanner.TS_PACKET_BYTES) + 183L) / 184L +
-                        StoryboardPlanner.TS_PACKET_BYTES * 8L
-                    framed.coerceIn(MIN_TAIL_CONTINUATION_BYTES, StoryboardPlanner.TAIL_CONTINUATION_BYTES.toLong())
-                } else {
-                    StoryboardPlanner.TAIL_CONTINUATION_BYTES.toLong()
-                }
-                minOf(remainingBudget, desired).toInt()
-            }
+            is ChunkDecodeOutcome.TruncatedAtTail -> tailContinuationBytes(outcome.declaredRemainingBytes, remainingBudget)
             ChunkDecodeOutcome.NotFound -> remainingBudget.toInt()
             ChunkDecodeOutcome.Decoded, ChunkDecodeOutcome.DecodeFailed -> 0
         }
+    }
+
+    private fun tailContinuationBytes(declaredRemainingBytes: Int?, remainingBudget: Long): Int {
+        val desired = if (declaredRemainingBytes != null && declaredRemainingBytes > 0) {
+            val framed = ((declaredRemainingBytes.toLong() * StoryboardPlanner.TS_PACKET_BYTES) + 183L) / 184L +
+                StoryboardPlanner.TS_PACKET_BYTES * 8L
+            framed.coerceIn(MIN_TAIL_CONTINUATION_BYTES, StoryboardPlanner.TAIL_CONTINUATION_BYTES.toLong())
+        } else {
+            StoryboardPlanner.TAIL_CONTINUATION_BYTES.toLong()
+        }
+        return minOf(remainingBudget, desired).toInt()
+    }
+
+    private suspend fun decodeExtractedIdrIntoSlot(
+        slotIndex: Int,
+        extracted: ExtractedTsIdr,
+        header: TsStoryboardHeader,
+        decoder: StoryboardIdrDecoder,
+    ): Boolean {
+        val jpeg = decodeLock.withLock {
+            decoder.decodeToJpeg(
+                csdAnnexB = header.csdAnnexB,
+                idrAccessUnitAnnexB = extracted.accessUnitAnnexB,
+                width = header.width,
+                height = header.height,
+                codec = header.codec,
+            )
+        } ?: return false
+        if (jpeg.isEmpty()) return false
+        stateLock.withLock {
+            decodedBySlot[slotIndex] = StoryboardFrame(
+                slotIndex = slotIndex,
+                ptsMs = extracted.ptsMs,
+                jpegBytes = jpeg,
+            )
+            dirtyNewFrames++
+            publishTimelineLocked(isComplete = _timeline.value.isComplete)
+        }
+        return true
     }
 
     private suspend fun decodeChunkIntoSlot(
@@ -639,30 +1032,23 @@ class StoryboardEngine(
             is TsIdrExtractionResult.TruncatedAtTail -> return ChunkDecodeOutcome.TruncatedAtTail(result.declaredRemainingBytes)
             TsIdrExtractionResult.NotFound -> return ChunkDecodeOutcome.NotFound
         }
-        val jpeg = decodeLock.withLock {
-            decoder.decodeToJpeg(
-                csdAnnexB = header.csdAnnexB,
-                idrAccessUnitAnnexB = extracted.accessUnitAnnexB,
-                width = header.width,
-                height = header.height,
-            )
-        } ?: return ChunkDecodeOutcome.DecodeFailed
-        if (jpeg.isEmpty()) return ChunkDecodeOutcome.DecodeFailed
-        stateLock.withLock {
-            decodedBySlot[slotIndex] = StoryboardFrame(
-                slotIndex = slotIndex,
-                ptsMs = extracted.ptsMs,
-                jpegBytes = jpeg,
-            )
-            dirtyNewFrames++
-            publishTimelineLocked(isComplete = _timeline.value.isComplete)
+        return if (decodeExtractedIdrIntoSlot(slotIndex, extracted, header, decoder)) {
+            ChunkDecodeOutcome.Decoded
+        } else {
+            ChunkDecodeOutcome.DecodeFailed
         }
-        return ChunkDecodeOutcome.Decoded
     }
 
     private suspend fun recordContinuationFetch() {
         stateLock.withLock {
             continuationFetches++
+        }
+    }
+
+    private suspend fun recordBytesRead(bytes: Long) {
+        if (bytes <= 0L) return
+        stateLock.withLock {
+            totalBytesRead += bytes
         }
     }
 
@@ -721,9 +1107,26 @@ class StoryboardEngine(
     }
 
     override fun close() {
-        workerJob?.cancel()
+        closed = true
+        val job = workerJob
         workerJob = null
+        // 立刻通知关闭底层传输会话（关闭 TransferDemand 会零延迟中止在途 Range 请求），随后取消引擎协程。
+        notifyClosedOnce()
+        job?.cancel()
     }
+
+    private data class BootstrapResult(
+        val streamSize: Long,
+        val slots: List<StoryboardSlotPlan>,
+        val header: TsStoryboardHeader,
+        val slot0Idr: ExtractedTsIdr?,
+    )
+
+    private data class PolledSlot(
+        val slot: StoryboardSlotPlan,
+        val priority: StoryboardFetchPriority,
+        val fromBoost: Boolean,
+    )
 
     private sealed interface ChunkDecodeOutcome {
         data object Decoded : ChunkDecodeOutcome
@@ -738,6 +1141,7 @@ class StoryboardEngine(
         val frames: Int,
         val failed: Int,
         val continuations: Int,
+        val bytesRead: Long,
     )
 
     private fun concatBytes(first: ByteArray, second: ByteArray): ByteArray =
@@ -748,7 +1152,7 @@ class StoryboardEngine(
 
     internal companion object {
         const val TAG = "Storyboard"
-        /** 偏移 0 流头探测保持 <= 64 KiB，命中 SDK `MICRO_PROBE_PRIORITY = 12`。 */
+        /** 偏移 0 流头探测保持 <= 64 KiB（兼容整块拉取路径命中 SDK `MICRO_PROBE_PRIORITY = 12`）。 */
         const val HEAD_PROBE_BYTES = StoryboardPlanner.DEFAULT_PROBE_BYTES
         const val MIN_TAIL_CONTINUATION_BYTES = 16L * 1024L
         /** 旧版稀疏 `.sb2` 自愈门限：片长 >= 3 分钟、帧数不足 65% 且实际 PTS 覆盖存在明显空洞时降级补齐。 */

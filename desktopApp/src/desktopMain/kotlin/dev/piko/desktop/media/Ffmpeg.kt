@@ -257,6 +257,7 @@ internal object FfmpegLayout {
 
     const val AVMEDIA_TYPE_VIDEO = 0
     const val AVMEDIA_TYPE_AUDIO = 1
+    const val AV_CODEC_ID_H264 = 27
     const val AV_CODEC_ID_HEVC = 173
     const val AV_DISPOSITION_ATTACHED_PIC = 0x400
     const val AV_PKT_FLAG_KEY = 1

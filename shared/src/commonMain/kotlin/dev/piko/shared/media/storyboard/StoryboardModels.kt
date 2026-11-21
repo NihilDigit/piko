@@ -105,7 +105,39 @@ data class StoryboardTimeline(
 }
 
 /**
- * 复用单一持久化 HEVC 解码器将 Annex B IDR 帧（带 VPS/SPS/PPS）直接解码缩放为紧凑 JPEG（<= 384x216）。
+ * 雪碧图 Range 拉取优先级档位：
+ * - [URGENT]：偏移 0 流头探测、Priority 0 用户悬停/「速览」焦点槽位与 Priority 1 Wave 1 锚点（高优通道，不被 mpv 投机预读饿死）；
+ * - [BACKGROUND]：Priority 2 Wave 2 后台补全槽位（低优礼让前景播放，优先于暂停态后台读）。
+ */
+enum class StoryboardFetchPriority {
+    URGENT,
+    BACKGROUND,
+}
+
+/**
+ * 单次流式 Range 读取返回的元数据摘要。
+ */
+data class StoryboardRangeProbe(
+    val streamSizeBytes: Long? = null,
+    val bytesConsumed: Int = 0,
+    val reachedEof: Boolean = false,
+)
+
+/**
+ * 流式 MPEG-TS Range 拉取接口：边收网络分块（或直读本地磁盘缓存）边回调 [onChunk]，
+ * 回调返回 `true` 时立即中止/关闭 HTTP Range 流，零多余尾部流量。
+ */
+fun interface StoryboardStreamFetcher {
+    suspend fun streamRange(
+        offset: Long,
+        maxLength: Int,
+        priority: StoryboardFetchPriority,
+        onChunk: (buffer: ByteArray, length: Int) -> Boolean,
+    ): StoryboardRangeProbe?
+}
+
+/**
+ * 复用单一持久化解码器（HEVC / H.264）将 Annex B IDR 帧（带参数集）直接解码缩放为紧凑 JPEG（<= 384x216）。
  * 严禁每帧重建 `avformat_open_input` 或 `av_seek_frame`；切换视频或关闭播放器时调用 [close] 确定性释放。
  */
 interface StoryboardIdrDecoder : AutoCloseable {
@@ -117,6 +149,20 @@ interface StoryboardIdrDecoder : AutoCloseable {
         maxWidthPx: Int = DEFAULT_MAX_WIDTH_PX,
         jpegQuality: Int = DEFAULT_JPEG_QUALITY,
     ): ByteArray?
+
+    suspend fun decodeToJpeg(
+        csdAnnexB: ByteArray,
+        idrAccessUnitAnnexB: ByteArray,
+        width: Int,
+        height: Int,
+        codec: TsVideoCodec,
+        maxWidthPx: Int = DEFAULT_MAX_WIDTH_PX,
+        jpegQuality: Int = DEFAULT_JPEG_QUALITY,
+    ): ByteArray? = if (codec == TsVideoCodec.HEVC) {
+        decodeToJpeg(csdAnnexB, idrAccessUnitAnnexB, width, height, maxWidthPx, jpegQuality)
+    } else {
+        null
+    }
 
     companion object {
         const val DEFAULT_MAX_WIDTH_PX = 384
@@ -198,13 +244,22 @@ object StoryboardPlanner {
     const val MAX_ADAPTIVE_PROBE_BYTES = 384 * 1024
     /** 首块尾部已见到正在组装的 IDR PES 时，仅补拉紧凑尾块即可收齐完整关键帧。 */
     const val TAIL_CONTINUATION_BYTES = 128 * 1024
-    /** 长 GOP 续块探测总预算上限（首块 + 续块累计不超过 512 KiB）。 */
+    /** 长 GOP 续块探测总预算上限（兼容旧版整块拉取路径：首块 + 续块累计不超过 512 KiB）。 */
     const val EXPANDED_PROBE_BYTES = 512 * 1024
+    /** 偏移 0 流式头 + 首帧探测上限（实际在收齐流头与第 0 帧后立即中止，通常仅读 32–96 KiB）。 */
+    const val HEAD_STREAM_SCAN_BYTES = 512 * 1024
+    /** 流式增量扫描单次 Range 上限区间（覆盖实测 10s GOP + VBR 峰值，抽到首帧立即中止不读尾块）。 */
+    const val MIN_STREAM_SCAN_BYTES = 512 * 1024
+    const val MAX_STREAM_SCAN_BYTES = 1280 * 1024
+    /** 流式增量扫描极长 VBR GOP 续块总预算上限（2 MiB）。 */
+    const val EXPANDED_STREAM_SCAN_BYTES = 2048 * 1024
     const val WAVE1_MIN_ANCHORS = 12
     const val WAVE1_MAX_ANCHORS = 16
 
     private const val ADAPTIVE_GOP_SECONDS = 5.0
     private const val ADAPTIVE_IDR_HEADROOM_BYTES = 32 * 1024L
+    private const val STREAM_SCAN_GOP_SECONDS = 13.0
+    private const val STREAM_SCAN_IDR_HEADROOM_BYTES = 48 * 1024L
     private const val PROBE_GRANULARITY_BYTES = 16 * 1024L
 
     fun slotCountForDuration(durationMillis: Long): Int {
@@ -224,7 +279,7 @@ object StoryboardPlanner {
 
     /**
      * 按转码流平均字节速率（`streamSizeBytes / durationSec`）计算覆盖约 5s GOP + IDR 帧的单次探测字节数，
-     * 向上对齐至 16 KiB 并夹在 `192 KiB..384 KiB` 区间，避免 64 KiB 首探频繁二次往返或截断失帧。
+     * 向上对齐至 16 KiB 并夹在 `192 KiB..384 KiB` 区间（供兼容整块拉取路径使用）。
      */
     fun adaptiveProbeBytes(durationMillis: Long, streamSizeBytes: Long): Int {
         if (durationMillis <= 0L || streamSizeBytes <= 0L) return MIN_ADAPTIVE_PROBE_BYTES
@@ -233,6 +288,20 @@ object StoryboardPlanner {
         val rawTarget = (bytesPerSec * ADAPTIVE_GOP_SECONDS).toLong() + ADAPTIVE_IDR_HEADROOM_BYTES
         val aligned = ((rawTarget + PROBE_GRANULARITY_BYTES - 1L) / PROBE_GRANULARITY_BYTES) * PROBE_GRANULARITY_BYTES
         return aligned.coerceIn(MIN_ADAPTIVE_PROBE_BYTES.toLong(), MAX_ADAPTIVE_PROBE_BYTES.toLong()).toInt()
+    }
+
+    /**
+     * 按转码流平均字节速率计算流式增量扫描单次 Range 上限（覆盖 10s 长 GOP + 30% VBR 峰值 + IDR 头余量），
+     * 向上对齐至 16 KiB 并夹在 `512 KiB..1280 KiB`；由于流式扫描在抽到首个完整 IDR 后立即中止 HTTP 流，
+     * 实际流量仅与首个 IDR 落点成正比，单次往返即可覆盖绝大多数 10s GOP 而不浪费尾部字节。
+     */
+    fun adaptiveStreamScanBytes(durationMillis: Long, streamSizeBytes: Long): Int {
+        if (durationMillis <= 0L || streamSizeBytes <= 0L) return MIN_STREAM_SCAN_BYTES
+        val durationSec = (durationMillis.toDouble() / 1_000.0).coerceAtLeast(1.0)
+        val bytesPerSec = streamSizeBytes.toDouble() / durationSec
+        val rawTarget = (bytesPerSec * STREAM_SCAN_GOP_SECONDS).toLong() + STREAM_SCAN_IDR_HEADROOM_BYTES
+        val aligned = ((rawTarget + PROBE_GRANULARITY_BYTES - 1L) / PROBE_GRANULARITY_BYTES) * PROBE_GRANULARITY_BYTES
+        return aligned.coerceIn(MIN_STREAM_SCAN_BYTES.toLong(), MAX_STREAM_SCAN_BYTES.toLong()).toInt()
     }
 
     fun buildSlots(
