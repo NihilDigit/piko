@@ -140,13 +140,15 @@ class PikPakPlaybackProxySmokeTest {
         }
         assertEquals(1, first.detailCalls.get())
         media.clipProbe("f1")
-        assertEquals(2, first.detailCalls.get())
+        assertEquals(1, first.detailCalls.get())
         provider.currentClient.value = second.provider.currentClient.value
         assertEquals(first.provider.currentClient.value!!.account, provider.currentClient.value!!.account)
         media.prepareClip("f1", 0, 600_000, io.github.nihildigit.pikpak.StreamRole.FOREGROUND).getOrThrow().use { clip ->
             assertEquals(2048L, clip.streamBytes)
             assertContentEquals(second.origin, request(assertNotNull(clip.url), range = "bytes=0-").body)
         }
+        assertEquals(1, second.detailCalls.get())
+        media.clipProbe("f1")
         assertEquals(1, second.detailCalls.get())
     }
 }

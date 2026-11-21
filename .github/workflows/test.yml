@@ -453,7 +453,7 @@ jobs:
           $bases = "$env:RUNNER_TEMP/smoke-bases"
           foreach ($version in @('9.9.0', '9.9.1')) {
             $extra = @(if ($version -eq '9.9.1') { "-PpikoUpdateBases=$bases" })
-            .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace `
+            .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --no-configuration-cache --stacktrace `
               "-PpikoDesktopVersion=$version" "-PpikoDesktopUpgradeUuid=$env:SMOKE_UPGRADE_CODE" "-PpikoDesktopPackageName=$env:SMOKE_PACKAGE" @extra
             if ($LASTEXITCODE -ne 0) { throw "build $version failed" }
             $out = "smoke-dist/$version"
@@ -553,7 +553,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --stacktrace `
+          .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --no-configuration-cache --stacktrace `
             "-PpikoDesktopVersion=9.9.1" "-PpikoUpdateBases=old-bases" "-PpikoUpdateRetired=old-retired"
           if ($LASTEXITCODE -ne 0) { throw 'build failed' }
           $binaries = 'desktopApp/build/compose/binaries/main-release'
@@ -664,7 +664,7 @@ jobs:
         run: |
           set -euo pipefail
           for version in 9.9.0 9.9.1; do
-            ./gradlew :desktopApp:packageReleaseDmg --no-daemon --stacktrace \
+            ./gradlew :desktopApp:packageReleaseDmg --no-daemon --no-configuration-cache --stacktrace \
               "-PpikoDesktopVersion=$version" "-PpikoDesktopPackageName=$SMOKE_PACKAGE"
             mkdir -p "smoke-dist/$version"
             # 按版本号取：上一轮的 DMG 可能还留在同一个目录里
@@ -719,7 +719,7 @@ jobs:
         run: |
           set -euo pipefail
           for version in 9.9.0 9.9.1; do
-            xvfb-run -a ./gradlew :desktopApp:packageReleaseAppImage --no-daemon --stacktrace "-PpikoDesktopVersion=$version"
+            xvfb-run -a ./gradlew :desktopApp:packageReleaseAppImage --no-daemon --no-configuration-cache --stacktrace "-PpikoDesktopVersion=$version"
             mkdir -p "smoke-dist/$version"
             cp desktopApp/build/compose/binaries/main-release/appimage/piko-linux-x64-"$version".AppImage* "smoke-dist/$version/"
           done

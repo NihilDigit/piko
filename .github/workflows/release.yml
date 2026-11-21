@@ -198,14 +198,14 @@ jobs:
         if: matrix.arch == 'arm64' || (github.event_name == 'workflow_dispatch' && inputs.windows-only)
         shell: pwsh
         run: |
-          .\gradlew.bat :desktopApp:desktopTest --stacktrace
+          .\gradlew.bat :desktopApp:desktopTest --no-daemon --stacktrace
           if ($LASTEXITCODE -ne 0) {
             Write-Warning "desktopTest failed on first attempt (exit $LASTEXITCODE), archiving report and retrying..."
             "retried=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             if (Test-Path desktopApp/build/reports/tests) {
               Copy-Item desktopApp/build/reports/tests desktopApp/build/reports/tests-attempt1 -Recurse -Force
             }
-            .\gradlew.bat :desktopApp:desktopTest --stacktrace --rerun-tasks
+            .\gradlew.bat :desktopApp:desktopTest --no-daemon --stacktrace --rerun-tasks
           }
 
       - name: Upload test report
@@ -232,7 +232,7 @@ jobs:
         run: bash .github/scripts/update-bases.sh "$VERSION" "${{ matrix.arch }}" "$RUNNER_TEMP/update-bases" "$RUNNER_TEMP/update-retired"
 
       - name: Build application image
-        run: .\gradlew.bat :desktopApp:createReleaseDistributable --stacktrace
+        run: .\gradlew.bat :desktopApp:createReleaseDistributable --no-daemon --no-configuration-cache --stacktrace
 
       # 打包出的类逐个让 JVM 校验。ProGuard 改写过的字节码可能校验不过，而那只在装上之后
       # 进到某一页才崩，gradle run 与单测都走不到（见 desktopApp/package/VerifyClasses.java）
@@ -276,7 +276,7 @@ jobs:
           exit 0
 
       - name: Package application
-        run: .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --stacktrace "-PpikoSignedAppImage=$env:RUNNER_TEMP/signed-image/Piko" "-PpikoUpdateBases=$env:RUNNER_TEMP/update-bases" "-PpikoUpdateRetired=$env:RUNNER_TEMP/update-retired"
+        run: .\gradlew.bat :desktopApp:packageReleaseMsi :desktopApp:packageReleaseUpdate --no-daemon --no-configuration-cache --stacktrace "-PpikoSignedAppImage=$env:RUNNER_TEMP/signed-image/Piko" "-PpikoUpdateBases=$env:RUNNER_TEMP/update-bases" "-PpikoUpdateRetired=$env:RUNNER_TEMP/update-retired"
 
       - name: Collect artifacts
         shell: powershell
@@ -407,7 +407,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
 
       - name: Build
-        run: ./gradlew :desktopApp:packageReleaseDmg --no-daemon --stacktrace
+        run: ./gradlew :desktopApp:packageReleaseDmg --no-daemon --no-configuration-cache --stacktrace
 
       - name: Verify classes
         run: java -Xverify:all desktopApp/package/VerifyClasses.java desktopApp/build/compose/binaries/main-release/app/Piko.app/Contents/app
@@ -454,7 +454,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsync appstream desktop-file-utils xvfb xauth
 
       - name: Build
-        run: xvfb-run -a ./gradlew :desktopApp:packageReleaseAppImage --no-daemon --stacktrace
+        run: xvfb-run -a ./gradlew :desktopApp:packageReleaseAppImage --no-daemon --no-configuration-cache --stacktrace
 
       - name: Verify classes
         run: java -Xverify:all desktopApp/package/VerifyClasses.java desktopApp/build/compose/binaries/main-release/app/Piko/lib/app

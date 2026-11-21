@@ -531,10 +531,25 @@ tasks.matching { it.name == "packageReleaseMsi" }.configureEach {
     val identity = shellId
     doLast {
         msiDir.listFiles { f -> f.extension == "msi" }.orEmpty().forEach { msi ->
-            val exit = ProcessBuilder("pwsh", "-NoProfile", "-File", scriptFile.absolutePath, "-Msi", msi.absolutePath, "-Identity", identity)
-                .inheritIO()
+            val process = ProcessBuilder(
+                "pwsh",
+                "-NoProfile",
+                "-NonInteractive",
+                "-File",
+                scriptFile.absolutePath,
+                "-Msi",
+                msi.absolutePath,
+                "-Identity",
+                identity,
+            )
+                .redirectInput(ProcessBuilder.Redirect.DISCARD)
+                .redirectErrorStream(true)
                 .start()
-                .waitFor()
+            val output = process.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val exit = process.waitFor()
+            if (output.isNotBlank()) {
+                output.lineSequence().filter { it.isNotBlank() }.forEach { logger.lifecycle(it) }
+            }
             check(exit == 0) { "改写 ${msi.name} 的安装序列失败（pwsh 退出码 $exit）" }
         }
     }
