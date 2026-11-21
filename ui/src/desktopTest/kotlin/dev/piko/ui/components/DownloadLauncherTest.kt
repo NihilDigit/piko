@@ -120,7 +120,9 @@ class DownloadLauncherTest {
                 pickerCalls++
                 onResult("/should-not-be-used")
             },
-        ) { _, coordinator, launcher, _ ->
+        ) { prefs, coordinator, launcher, _ ->
+            assertTrue(prefs.askDownloadLocationFlow.first())
+            prefs.setAskDownloadLocation(false)
             var queued = false
             val file = FileStat(id = "f1", name = "doc.pdf", size = "1024", hash = "H1", kind = FileKind.FILE)
             launcher.download(listOf(file)) { queued = true }

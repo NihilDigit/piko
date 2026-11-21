@@ -169,7 +169,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
                 skipFeedExitConfirm = prefs[PreferencesKeys.SKIP_FEED_EXIT_CONFIRM] ?: false,
                 cacheMaxBytes = (prefs[PreferencesKeys.CACHE_MAX_BYTES] ?: CachePolicyDefaults.DEFAULT_MAX_BYTES).coerceAtLeast(0L),
                 cacheMaxAgeDays = (prefs[PreferencesKeys.CACHE_MAX_AGE_DAYS] ?: CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS).coerceAtLeast(0),
-                askDownloadLocation = prefs[PreferencesKeys.ASK_DOWNLOAD_LOCATION] ?: false,
+                askDownloadLocation = prefs[PreferencesKeys.ASK_DOWNLOAD_LOCATION] ?: true,
             )
         }
 
@@ -661,7 +661,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     }
 
     override val askDownloadLocationFlow: Flow<Boolean> = preference { preferences ->
-        preferences[PreferencesKeys.ASK_DOWNLOAD_LOCATION] ?: false
+        preferences[PreferencesKeys.ASK_DOWNLOAD_LOCATION] ?: true
     }
 
     override suspend fun setAskDownloadLocation(enabled: Boolean) {

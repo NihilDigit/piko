@@ -124,7 +124,7 @@ data class PikoPreferencesSnapshot(
     val skipFeedExitConfirm: Boolean = false,
     val cacheMaxBytes: Long = CachePolicyDefaults.DEFAULT_MAX_BYTES,
     val cacheMaxAgeDays: Int = CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS,
-    val askDownloadLocation: Boolean = false,
+    val askDownloadLocation: Boolean = true,
 ) {
     fun tileSize(view: String): String = tileSizes[view].orEmpty()
 }
@@ -248,8 +248,8 @@ interface PikoUserPreferences {
     suspend fun setDownloadDirPath(path: String)
     suspend fun getDownloadDirPath(): String
 
-    /** 每次下载前手动选择保存位置，默认关闭。仅保存在当前设备，不参与跨设备同步。 */
-    val askDownloadLocationFlow: Flow<Boolean> get() = flowOf(false)
+    /** 每次下载前手动选择保存位置，默认开启。仅保存在当前设备，不参与跨设备同步。 */
+    val askDownloadLocationFlow: Flow<Boolean> get() = flowOf(true)
     suspend fun setAskDownloadLocation(enabled: Boolean) {}
 
     /** 本地下载任务表的 JSON。空串表示从未保存。 */

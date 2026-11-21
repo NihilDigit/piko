@@ -114,23 +114,23 @@ class Round2PrefsCodecTest {
         val settings = MapSettings()
         val prefs = StoredPikoPreferences(settings) { DummyVault() }
 
-        assertFalse(prefs.askDownloadLocationFlow.first())
-        assertFalse(prefs.currentSnapshot.askDownloadLocation)
-
-        prefs.setAskDownloadLocation(true)
         assertTrue(prefs.askDownloadLocationFlow.first())
         assertTrue(prefs.currentSnapshot.askDownloadLocation)
 
-        val reopened = StoredPikoPreferences(settings) { DummyVault() }
-        assertTrue(reopened.askDownloadLocationFlow.first())
-        assertTrue(reopened.currentSnapshot.askDownloadLocation)
+        prefs.setAskDownloadLocation(false)
+        assertFalse(prefs.askDownloadLocationFlow.first())
+        assertFalse(prefs.currentSnapshot.askDownloadLocation)
 
-        reopened.setAskDownloadLocation(false)
+        val reopened = StoredPikoPreferences(settings) { DummyVault() }
         assertFalse(reopened.askDownloadLocationFlow.first())
         assertFalse(reopened.currentSnapshot.askDownloadLocation)
 
+        reopened.setAskDownloadLocation(true)
+        assertTrue(reopened.askDownloadLocationFlow.first())
+        assertTrue(reopened.currentSnapshot.askDownloadLocation)
+
         val reopenedAgain = StoredPikoPreferences(settings) { DummyVault() }
-        assertFalse(reopenedAgain.askDownloadLocationFlow.first())
-        assertFalse(reopenedAgain.currentSnapshot.askDownloadLocation)
+        assertTrue(reopenedAgain.askDownloadLocationFlow.first())
+        assertTrue(reopenedAgain.currentSnapshot.askDownloadLocation)
     }
 }

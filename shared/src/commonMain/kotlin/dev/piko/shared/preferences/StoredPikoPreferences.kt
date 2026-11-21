@@ -204,7 +204,7 @@ class StoredPikoPreferences(
     private val downloadPath = MutableStateFlow(
         settings.get(KEY_DOWNLOAD_DIR, settings.downloadDirectoryPath),
     )
-    private val askDownloadLocation = MutableStateFlow(settings.get(KEY_ASK_DOWNLOAD_LOCATION) == "true")
+    private val askDownloadLocation = MutableStateFlow(settings.get(KEY_ASK_DOWNLOAD_LOCATION, "true") != "false")
 
     override suspend fun savePlaybackPosition(fileId: String, positionMs: Long) {
         settings.set(KEY_PLAYBACK_PREFIX + fileId, positionMs.toString())
