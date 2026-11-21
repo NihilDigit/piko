@@ -57,7 +57,7 @@ class LocalMediaCacheTest {
                     LocalMediaMetadata(640, 360, 90_000)
                 })
             }
-            withTimeout(5_000) { while (entered.get() < 2) delay(5) }
+            withTimeout(5_000) { while (entered.get() < 2 || maximum.get() < 2) delay(5) }
             assertEquals(2, maximum.get())
             release.complete(Unit)
             withTimeout(5_000) { while (finished.get() < 8) delay(5) }

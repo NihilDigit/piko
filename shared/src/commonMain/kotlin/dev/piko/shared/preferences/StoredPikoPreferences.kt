@@ -7,6 +7,7 @@ import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.data.auth.SidePanelPrefs
 import dev.piko.data.auth.SnailMode
+import dev.piko.data.auth.accountPreferenceKey
 import dev.piko.shared.auth.SecretVault
 import dev.piko.shared.data.DriveAppearancePrefs
 import dev.piko.shared.i18n.tr
@@ -22,6 +23,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -564,6 +566,27 @@ class StoredPikoPreferences(
         metaTubeUrl.value = url
     }
 
+    private val metaTubeUrlsByAccount = MutableStateFlow<Map<String, MutableStateFlow<String>>>(emptyMap())
+
+    private fun metaTubeUrlState(account: String): MutableStateFlow<String> {
+        while (true) {
+            val current = metaTubeUrlsByAccount.value
+            current[account]?.let { return it }
+            val created = MutableStateFlow(settings.get(metaTubeUrlAccountKey(account)))
+            if (metaTubeUrlsByAccount.compareAndSet(current, current + (account to created))) return created
+        }
+    }
+
+    override fun metaTubeUrlFlowFor(account: String): Flow<String> =
+        if (account.isBlank()) flowOf("") else metaTubeUrlState(account).asStateFlow()
+
+    override suspend fun setMetaTubeUrlFor(account: String, url: String) {
+        if (account.isBlank()) return
+        val key = metaTubeUrlAccountKey(account)
+        if (url.isEmpty()) settings.remove(key) else settings.set(key, url)
+        metaTubeUrlState(account).value = url
+    }
+
     /** null 是还没从保管处读出来。读不出来时当作没填，与解压密码同一取舍。 */
     private val metaTubeToken = MutableStateFlow<String?>(null)
     override val metaTubeTokenFlow: Flow<String> = metaTubeToken.onStart {
@@ -582,10 +605,50 @@ class StoredPikoPreferences(
         metaTubeToken.value = token
     }
 
+    private val metaTubeTokensByAccount = MutableStateFlow<Map<String, MutableStateFlow<String?>>>(emptyMap())
+
+    private fun metaTubeTokenState(account: String): MutableStateFlow<String?> {
+        while (true) {
+            val current = metaTubeTokensByAccount.value
+            current[account]?.let { return it }
+            val created = MutableStateFlow<String?>(null)
+            if (metaTubeTokensByAccount.compareAndSet(current, current + (account to created))) return created
+        }
+    }
+
+    override fun metaTubeTokenFlowFor(account: String): Flow<String> {
+        if (account.isBlank()) return flowOf("")
+        val state = metaTubeTokenState(account)
+        val secretKey = metaTubeTokenAccountKey(account)
+        return state.onStart {
+            if (state.value == null) {
+                val stored = withSecrets { runCatching { secrets.read(secretKey)?.decodeToString() } }
+                state.compareAndSet(
+                    null,
+                    stored.onFailure { PikoLog.w(TAG, "Failed to read per-account MetaTube token from secret vault", it) }
+                        .getOrNull().orEmpty(),
+                )
+            }
+        }.filterNotNull()
+    }
+
+    override suspend fun setMetaTubeTokenFor(account: String, token: String) {
+        if (account.isBlank()) return
+        val secretKey = metaTubeTokenAccountKey(account)
+        withSecrets {
+            runCatching {
+                if (token.isEmpty()) secrets.delete(secretKey) else secrets.write(secretKey, token.encodeToByteArray())
+            }.onFailure { PikoLog.w(TAG, "Failed to update per-account MetaTube token in secret vault", it) }.getOrThrow()
+        }
+        metaTubeTokenState(account).value = token
+    }
+
     private companion object {
         const val TAG = "Credentials"
         const val SECRET_METATUBE_TOKEN = "metatube-token"
         const val KEY_METATUBE_URL = "scrape.metaTubeUrl"
+        fun metaTubeUrlAccountKey(account: String) = "$KEY_METATUBE_URL.${accountPreferenceKey(account)}"
+        fun metaTubeTokenAccountKey(account: String) = "$SECRET_METATUBE_TOKEN-${accountPreferenceKey(account)}"
         const val KEY_SAVE_AS_REFERENCE = "instant.saveAsReference"
         const val KEY_FOLDERS_FIRST = "drive.foldersFirst"
 

@@ -49,7 +49,8 @@ internal abstract class ManagedPikoTreeDatabase(private val release: () -> Unit)
                 if (depth == 0) {
                     rollbackOuterTransaction()
                 } else {
-                    executeRaw("ROLLBACK TO SAVEPOINT $savepoint", emptyList())
+                    // Leading comment keeps Android API 26-30 DatabaseUtils.getSqlStatementType from classifying "ROL" as STATEMENT_ABORT.
+                    executeRaw("/*sp*/ ROLLBACK TO SAVEPOINT $savepoint", emptyList())
                     executeRaw("RELEASE SAVEPOINT $savepoint", emptyList())
                 }
             } catch (rollback: Throwable) {

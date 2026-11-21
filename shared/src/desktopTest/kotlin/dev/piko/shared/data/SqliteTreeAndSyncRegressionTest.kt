@@ -333,4 +333,73 @@ class SqliteTreeAndSyncRegressionTest {
             lease.close()
         }
     }
+
+    @Test
+    fun nestedSavepointRollbackPrefixesSqlCommentAndPreservesOuterTransaction() {
+        val executed = mutableListOf<String>()
+        val db = object : ManagedPikoTreeDatabase(release = {}) {
+            override fun executeRaw(sql: String, parameters: List<Any?>) {
+                executed += sql
+            }
+            override fun queryRaw(sql: String, parameters: List<Any?>): PikoTreeCursor = EmptyTreeCursor
+            override fun closeRaw() = Unit
+        }
+        try {
+            db.transaction {
+                runCatching {
+                    db.transaction {
+                        error("inner failure")
+                    }
+                }
+            }
+            assertEquals(
+                listOf(
+                    "BEGIN IMMEDIATE",
+                    "SAVEPOINT piko_tree_1",
+                    "/*sp*/ ROLLBACK TO SAVEPOINT piko_tree_1",
+                    "RELEASE SAVEPOINT piko_tree_1",
+                    "COMMIT",
+                ),
+                executed,
+            )
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun fullInvalidationAfterColdStartResumableCandidateDeletesOrphanGenerationRows() = fixture { factory ->
+        var index = open(factory)
+        try {
+            val gen = index.beginCandidate()
+            index.appendCandidate(
+                gen,
+                listOf(folder("A"), file("f1", "A")),
+                checkpoint = DriveTreeIndex.CandidateResumeCheckpoint(
+                    generation = gen,
+                    pageToken = "page-2",
+                    firstSyncTime = "2026-11-21T00:00:00Z",
+                    foldersRead = 1,
+                    filesRead = 1,
+                ),
+            )
+        } finally {
+            index.close()
+        }
+
+        // Reopen with cold-start resumable candidate rows (generation > 0), then invalidate full tree.
+        val reopenedDb = factory.open("acct@piko.dev")
+        index = DriveTreeIndex(database = reopenedDb, ownerAccount = "acct@piko.dev")
+        try {
+            assertNotNull(index.resumableCandidate())
+            assertEquals("1", reopenedDb.scalarString("SELECT 1 FROM tree_nodes WHERE generation>0 LIMIT 1"))
+            index.applyChange(DriveChange.ContentsChanged(folders = null))
+            assertNull(index.resumableCandidate())
+            assertNull(reopenedDb.scalarString("SELECT 1 FROM tree_nodes WHERE generation>0 LIMIT 1"))
+            assertNull(reopenedDb.scalarString("SELECT 1 FROM tree_vault WHERE generation>0 LIMIT 1"))
+            assertNull(reopenedDb.scalarString("SELECT 1 FROM tree_vault_state WHERE generation>0 LIMIT 1"))
+        } finally {
+            index.close()
+        }
+    }
 }

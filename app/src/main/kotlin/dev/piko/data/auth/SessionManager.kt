@@ -25,6 +25,7 @@ import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
@@ -240,6 +241,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
         val METATUBE_URL = stringPreferencesKey("metatube_url")
         val METATUBE_TOKEN = stringPreferencesKey("metatube_token")
+        fun metaTubeUrlFor(account: String) = stringPreferencesKey("metatube_url_${accountPreferenceKey(account)}")
+        fun metaTubeTokenFor(account: String) = stringPreferencesKey("metatube_token_${accountPreferenceKey(account)}")
     }
 
     /**
@@ -825,6 +828,20 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
+    override fun metaTubeUrlFlowFor(account: String): Flow<String> {
+        if (account.isBlank()) return flowOf("")
+        val key = PreferencesKeys.metaTubeUrlFor(account)
+        return preference { it[key].orEmpty() }
+    }
+
+    override suspend fun setMetaTubeUrlFor(account: String, url: String) {
+        if (account.isBlank()) return
+        val key = PreferencesKeys.metaTubeUrlFor(account)
+        context.dataStore.edit { preferences ->
+            if (url.isEmpty()) preferences.remove(key) else preferences[key] = url
+        }
+    }
+
     // 与解压密码同样加密存放；解不开（密钥库被清）当作没填
     override val metaTubeTokenFlow: Flow<String> = preference { it[PreferencesKeys.METATUBE_TOKEN] }.map { stored ->
         if (stored.isNullOrEmpty()) {
@@ -846,6 +863,34 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
         context.dataStore.edit { preferences ->
             if (sealed.isEmpty()) preferences.remove(PreferencesKeys.METATUBE_TOKEN) else preferences[PreferencesKeys.METATUBE_TOKEN] = sealed
+        }
+    }
+
+    override fun metaTubeTokenFlowFor(account: String): Flow<String> {
+        if (account.isBlank()) return flowOf("")
+        val key = PreferencesKeys.metaTubeTokenFor(account)
+        return preference { it[key] }.map { stored ->
+            if (stored.isNullOrEmpty()) {
+                ""
+            } else {
+                CredentialCipher.decrypt(stored)
+                    ?: "".also { PikoLog.w(TAG, "Failed to decrypt per-account MetaTube token; treating as unset") }
+            }
+        }
+    }
+
+    override suspend fun setMetaTubeTokenFor(account: String, token: String) {
+        if (account.isBlank()) return
+        val sealed = if (token.isEmpty()) {
+            ""
+        } else {
+            runCatching { CredentialCipher.encrypt(token) }
+                .onFailure { PikoLog.w(TAG, "Failed to encrypt per-account MetaTube token; skipping save", it) }
+                .getOrNull() ?: return
+        }
+        val key = PreferencesKeys.metaTubeTokenFor(account)
+        context.dataStore.edit { preferences ->
+            if (sealed.isEmpty()) preferences.remove(key) else preferences[key] = sealed
         }
     }
 }

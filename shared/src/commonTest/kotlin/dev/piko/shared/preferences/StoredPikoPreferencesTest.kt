@@ -215,6 +215,47 @@ class StoredPikoPreferencesTest {
         Unit
     }
 
+    @Test
+    fun perAccountMetaTubeUrlAndSecretTokenStayIsolatedAndKeepTokensStrictlyInVault() = runBlocking {
+        val settings = FakeSettings()
+        val vault = FakeVault()
+        val opens = MutableStateFlow(0)
+        val prefs = StoredPikoPreferences(settings) { opens.value += 1; vault }
+        val accountA = "alice+1@piko.dev"
+        val accountB = "+8613800138000"
+
+        prefs.setMetaTubeUrlFor(accountA, "https://mt-a.example")
+        prefs.setMetaTubeUrlFor(accountB, "https://mt-b.example")
+        assertEquals("https://mt-a.example", prefs.metaTubeUrlFlowFor(accountA).first())
+        assertEquals("https://mt-b.example", prefs.metaTubeUrlFlowFor(accountB).first())
+        assertEquals(0, opens.value, "Reading/writing per-account URL must not open secret vault")
+
+        prefs.setMetaTubeTokenFor(accountA, "secret-token-a")
+        prefs.setMetaTubeTokenFor(accountB, "secret-token-b")
+        assertEquals(1, opens.value)
+        assertEquals("secret-token-a", prefs.metaTubeTokenFlowFor(accountA).first())
+        assertEquals("secret-token-b", prefs.metaTubeTokenFlowFor(accountB).first())
+        assertEquals("", prefs.metaTubeTokenFlow.first(), "Per-account tokens must not write into legacy global slot")
+
+        // Tokens and raw phone/email identifiers must never appear in plaintext settings.
+        val snap = settings.snapshot()
+        assertTrue(snap.values.none { "secret-token" in it })
+        assertTrue(snap.keys.none { accountA in it || accountB in it || "13800138000" in it })
+
+        val reopened = StoredPikoPreferences(settings.reopen()) { vault }
+        assertEquals("https://mt-a.example", reopened.metaTubeUrlFlowFor(accountA).first())
+        assertEquals("https://mt-b.example", reopened.metaTubeUrlFlowFor(accountB).first())
+        assertEquals("secret-token-a", reopened.metaTubeTokenFlowFor(accountA).first())
+        assertEquals("secret-token-b", reopened.metaTubeTokenFlowFor(accountB).first())
+
+        reopened.setMetaTubeTokenFor(accountA, "")
+        reopened.setMetaTubeUrlFor(accountA, "")
+        assertEquals("", reopened.metaTubeTokenFlowFor(accountA).first())
+        assertEquals("", reopened.metaTubeUrlFlowFor(accountA).first())
+        assertEquals("secret-token-b", reopened.metaTubeTokenFlowFor(accountB).first())
+        assertEquals("https://mt-b.example", reopened.metaTubeUrlFlowFor(accountB).first())
+    }
+
     private fun preferences(settings: FakeSettings) = StoredPikoPreferences(settings) { FakeVault() }
 
     private class FakeSettings(initial: Map<String, String> = emptyMap()) : PreferenceSettings {

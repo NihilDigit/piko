@@ -139,10 +139,12 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun clearLegacyArchivePasswords() {
         legacyArchivePasswords = ""
     }
-    override val recentMoveTargetsFlow: Flow<String> = MutableStateFlow("")
-    override suspend fun saveRecentMoveTargets(serialized: String) = Unit
-    override val pinnedFoldersFlow: Flow<String> = MutableStateFlow("")
-    override suspend fun savePinnedFolders(serialized: String) = Unit
+    private val recentMoveTargets = MutableStateFlow("")
+    override val recentMoveTargetsFlow: Flow<String> = recentMoveTargets
+    override suspend fun saveRecentMoveTargets(serialized: String) { recentMoveTargets.value = serialized }
+    private val pinnedFolders = MutableStateFlow("")
+    override val pinnedFoldersFlow: Flow<String> = pinnedFolders
+    override suspend fun savePinnedFolders(serialized: String) { pinnedFolders.value = serialized }
     private val perFolderSort = MutableStateFlow(false)
     override val perFolderSortFlow: Flow<Boolean> = perFolderSort
     override suspend fun setPerFolderSort(enabled: Boolean) { perFolderSort.value = enabled }
@@ -161,8 +163,24 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setIgnoredUpdateVersion(version: String) = Unit
     override val metaTubeUrlFlow = MutableStateFlow("")
     override suspend fun setMetaTubeUrl(url: String) { metaTubeUrlFlow.value = url }
+    private val metaTubeUrlsByAccount = ConcurrentHashMap<String, MutableStateFlow<String>>()
+    override fun metaTubeUrlFlowFor(account: String): Flow<String> =
+        if (account.isBlank()) MutableStateFlow("") else metaTubeUrlsByAccount.computeIfAbsent(account) { MutableStateFlow("") }
+    override suspend fun setMetaTubeUrlFor(account: String, url: String) {
+        if (account.isNotBlank()) {
+            metaTubeUrlsByAccount.computeIfAbsent(account) { MutableStateFlow("") }.value = url
+        }
+    }
     override val metaTubeTokenFlow = MutableStateFlow("")
     override suspend fun setMetaTubeToken(token: String) { metaTubeTokenFlow.value = token }
+    private val metaTubeTokensByAccount = ConcurrentHashMap<String, MutableStateFlow<String>>()
+    override fun metaTubeTokenFlowFor(account: String): Flow<String> =
+        if (account.isBlank()) MutableStateFlow("") else metaTubeTokensByAccount.computeIfAbsent(account) { MutableStateFlow("") }
+    override suspend fun setMetaTubeTokenFor(account: String, token: String) {
+        if (account.isNotBlank()) {
+            metaTubeTokensByAccount.computeIfAbsent(account) { MutableStateFlow("") }.value = token
+        }
+    }
 }
 
 /** 内存会话存储，行为与两端的实现一致：会话、上次账号、密码三份各自独立。 */

@@ -4,8 +4,13 @@ import dev.piko.shared.data.DriveAppearancePrefs
 import dev.piko.shared.media.player.PlayerLayoutPrefs
 import dev.piko.shared.media.player.SubtitleStylePrefs
 import dev.piko.shared.net.ProxySetting
+import dev.piko.shared.sync.PortableDigest
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+
+/** 将账号标识映射为固定长度的十六进制存储槽位键，避免特殊字符并隐去手机号或邮箱明文。 */
+fun accountPreferenceKey(account: String): String =
+    PortableDigest.sha256(account.encodeToByteArray()).toHexString()
 
 /** 网盘空间用量。取到之前先用账号列表里记着的上一次的值，免得卡片整块缺席。 */
 data class QuotaSnapshot(val usageBytes: Long, val limitBytes: Long)
@@ -272,10 +277,20 @@ interface PikoUserPreferences {
     /** 最近移动到过的目录路径，JSON，见 MoveHistory。空串表示从未保存。 */
     val recentMoveTargetsFlow: Flow<String>
     suspend fun saveRecentMoveTargets(serialized: String)
+    fun recentMoveTargetsFlowFor(account: String): Flow<String> =
+        if (account.isBlank()) flowOf("") else recentMoveTargetsFlow
+    suspend fun saveRecentMoveTargetsFor(account: String, serialized: String) {
+        if (account.isNotBlank()) saveRecentMoveTargets(serialized)
+    }
 
     /** 固定到快速访问的文件夹，JSON，见 PinnedFolders。空串表示从未保存。 */
     val pinnedFoldersFlow: Flow<String>
     suspend fun savePinnedFolders(serialized: String)
+    fun pinnedFoldersFlowFor(account: String): Flow<String> =
+        if (account.isBlank()) flowOf("") else pinnedFoldersFlow
+    suspend fun savePinnedFoldersFor(account: String, serialized: String) {
+        if (account.isNotBlank()) savePinnedFolders(serialized)
+    }
 
     /** 文件夹优先显示，关闭后与文件按同一排序混排，默认开。 */
     val foldersFirstFlow: Flow<Boolean> get() = flowOf(true)
@@ -288,6 +303,11 @@ interface PikoUserPreferences {
     /** 按文件夹记住的排序方式，JSON（folderId -> PikoFileSortOrder.name），按账号隔离。 */
     val folderSortOrdersFlow: Flow<String> get() = flowOf("")
     suspend fun saveFolderSortOrders(serialized: String) {}
+    fun folderSortOrdersFlowFor(account: String): Flow<String> =
+        if (account.isBlank()) flowOf("") else folderSortOrdersFlow
+    suspend fun saveFolderSortOrdersFor(account: String, serialized: String) {
+        if (account.isNotBlank()) saveFolderSortOrders(serialized)
+    }
 
     /** 批量重命名上次的选项与最近用过的查找、替换串，JSON，见 BatchRenameMemory。空串表示从未保存。每台设备各自的，不同步。 */
     val batchRenameFlow: Flow<String>
@@ -396,12 +416,22 @@ interface PikoUserPreferences {
 
     /**
      * 用户自己部署的 MetaTube 服务地址，如「http://192.168.1.2:8080」。空串表示不用刮削，界面上不出现任何刮削入口。
-     * 跨设备经 MetaTubeSync 加密同步，不进入普通设置同步文件。
+     * 按账号隔离存储，跨设备经 MetaTubeSync 加密同步，不进入普通设置同步文件。
      */
     val metaTubeUrlFlow: Flow<String>
     suspend fun setMetaTubeUrl(url: String)
+    fun metaTubeUrlFlowFor(account: String): Flow<String> =
+        if (account.isBlank()) flowOf("") else metaTubeUrlFlow
+    suspend fun setMetaTubeUrlFor(account: String, url: String) {
+        if (account.isNotBlank()) setMetaTubeUrl(url)
+    }
 
-    /** MetaTube 的访问令牌（服务端的 TOKEN）。机密，由平台加密存放，跨设备仅经 MetaTubeSync 加密同步。空串表示没填。 */
+    /** MetaTube 的访问令牌（服务端的 TOKEN）。机密，按账号由平台加密存放，跨设备仅经 MetaTubeSync 加密同步。空串表示没填。 */
     val metaTubeTokenFlow: Flow<String>
     suspend fun setMetaTubeToken(token: String)
+    fun metaTubeTokenFlowFor(account: String): Flow<String> =
+        if (account.isBlank()) flowOf("") else metaTubeTokenFlow
+    suspend fun setMetaTubeTokenFor(account: String, token: String) {
+        if (account.isNotBlank()) setMetaTubeToken(token)
+    }
 }

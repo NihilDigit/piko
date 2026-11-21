@@ -106,7 +106,10 @@ class MetaTubeSync(
                     _status.value = EncryptedSyncStatus.Idle
                     if (account == null) return@collectLatest
                     syncNow()
-                    combine(preferences.metaTubeUrlFlow, preferences.metaTubeTokenFlow) { url, token -> url to token }
+                    combine(
+                        preferences.metaTubeUrlFlowFor(account),
+                        preferences.metaTubeTokenFlowFor(account),
+                    ) { url, token -> url to token }
                         .distinctUntilChanged().debounce(PUSH_DELAY_MS).collect { pair ->
                             if (lastSyncedPair != (account to pair)) syncNow()
                         }
@@ -201,9 +204,9 @@ class MetaTubeSync(
                 }
             }
             val stamp = now()
-            val localUrl = preferences.metaTubeUrlFlow.first()
+            val localUrl = preferences.metaTubeUrlFlowFor(expectedAccount).first()
             requireCurrent(expectedAccount)
-            val localToken = preferences.metaTubeTokenFlow.first()
+            val localToken = preferences.metaTubeTokenFlowFor(expectedAccount).first()
             requireCurrent(expectedAccount)
             val known = cacheStore?.read(stateKey(expectedAccount))?.let { raw ->
                 runCatching { json.decodeFromString(LocalState.serializer(), raw) }.getOrNull()
@@ -258,9 +261,9 @@ class MetaTubeSync(
                 merge(entry(localToken, tokenDigest, known?.token), remotePayload?.token),
             )
             requireCurrent(expectedAccount)
-            if (merged.url.value != localUrl) preferences.setMetaTubeUrl(merged.url.value)
+            if (merged.url.value != localUrl) preferences.setMetaTubeUrlFor(expectedAccount, merged.url.value)
             requireCurrent(expectedAccount)
-            if (merged.token.value != localToken) preferences.setMetaTubeToken(merged.token.value)
+            if (merged.token.value != localToken) preferences.setMetaTubeTokenFor(expectedAccount, merged.token.value)
             requireCurrent(expectedAccount)
             lastSyncedPair = expectedAccount to (merged.url.value to merged.token.value)
             val state = LocalState(
@@ -327,9 +330,9 @@ class MetaTubeSync(
                 remote.writeBackup(account, remoteText, writeStamp)
                 requireCurrent(account)
             }
-            val localUrl = preferences.metaTubeUrlFlow.first()
+            val localUrl = preferences.metaTubeUrlFlowFor(account).first()
             requireCurrent(account)
-            val localToken = preferences.metaTubeTokenFlow.first()
+            val localToken = preferences.metaTubeTokenFlowFor(account).first()
             requireCurrent(account)
             val payload = Payload(
                 url = Entry(localUrl, if (localUrl.isEmpty()) 0L else writeStamp),
@@ -392,9 +395,9 @@ class MetaTubeSync(
             return
         }
         requireCurrent(account)
-        val localUrl = preferences.metaTubeUrlFlow.first()
+        val localUrl = preferences.metaTubeUrlFlowFor(account).first()
         requireCurrent(account)
-        val localToken = preferences.metaTubeTokenFlow.first()
+        val localToken = preferences.metaTubeTokenFlowFor(account).first()
         requireCurrent(account)
         val known = cacheStore?.read(stateKey(account))?.let { raw ->
             runCatching { json.decodeFromString(LocalState.serializer(), raw) }
@@ -458,10 +461,10 @@ class MetaTubeSync(
         )
         requireCurrent(account)
         val urlUpdated = merged.url.value != localUrl
-        if (urlUpdated) preferences.setMetaTubeUrl(merged.url.value)
+        if (urlUpdated) preferences.setMetaTubeUrlFor(account, merged.url.value)
         requireCurrent(account)
         val tokenUpdated = merged.token.value != localToken
-        if (tokenUpdated) preferences.setMetaTubeToken(merged.token.value)
+        if (tokenUpdated) preferences.setMetaTubeTokenFor(account, merged.token.value)
         requireCurrent(account)
         lastSyncedPair = account to (merged.url.value to merged.token.value)
         val state = LocalState(

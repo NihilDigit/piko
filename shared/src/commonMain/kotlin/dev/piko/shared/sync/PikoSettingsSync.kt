@@ -17,6 +17,7 @@ import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -47,6 +49,9 @@ class SyncedSetting(
     val key: String,
     val read: (PikoUserPreferences) -> Flow<String>,
     val write: suspend (PikoUserPreferences, String) -> Unit,
+    val isAccountScoped: Boolean = false,
+    val readForAccount: (PikoUserPreferences, String) -> Flow<String> = { prefs, _ -> read(prefs) },
+    val writeForAccount: suspend (PikoUserPreferences, String, String) -> Unit = { prefs, _, value -> write(prefs, value) },
 )
 
 private fun bool(key: String, read: (PikoUserPreferences) -> Flow<Boolean>, write: suspend PikoUserPreferences.(Boolean) -> Unit) =
@@ -77,12 +82,33 @@ val SyncedSettings: List<SyncedSetting> = listOf(
     bool("pureBlack", { it.pureBlackFlow }) { setPureBlack(it) },
     SyncedSetting("driveViewMode", { it.driveViewModeFlow }, { prefs, value -> prefs.setDriveViewMode(value) }),
     // 最近移动到的目录：换一台设备也用得上
-    SyncedSetting("recentMoveTargets", { it.recentMoveTargetsFlow }, { prefs, value -> prefs.saveRecentMoveTargets(value) }),
+    SyncedSetting(
+        key = "recentMoveTargets",
+        read = { it.recentMoveTargetsFlow },
+        write = { prefs, value -> prefs.saveRecentMoveTargets(value) },
+        isAccountScoped = true,
+        readForAccount = { prefs, account -> prefs.recentMoveTargetsFlowFor(account) },
+        writeForAccount = { prefs, account, value -> prefs.saveRecentMoveTargetsFor(account, value) },
+    ),
     // 快速访问是 Piko 自己的，PikPak 没有这一项，只能靠这里带到别的设备
-    SyncedSetting("pinnedFolders", { it.pinnedFoldersFlow }, { prefs, value -> prefs.savePinnedFolders(value) }),
+    SyncedSetting(
+        key = "pinnedFolders",
+        read = { it.pinnedFoldersFlow },
+        write = { prefs, value -> prefs.savePinnedFolders(value) },
+        isAccountScoped = true,
+        readForAccount = { prefs, account -> prefs.pinnedFoldersFlowFor(account) },
+        writeForAccount = { prefs, account, value -> prefs.savePinnedFoldersFor(account, value) },
+    ),
     bool("foldersFirst", { it.foldersFirstFlow }) { setFoldersFirst(it) },
     bool("perFolderSort", { it.perFolderSortFlow }) { setPerFolderSort(it) },
-    SyncedSetting("folderSortOrders", { it.folderSortOrdersFlow }, { prefs, value -> prefs.saveFolderSortOrders(value) }),
+    SyncedSetting(
+        key = "folderSortOrders",
+        read = { it.folderSortOrdersFlow },
+        write = { prefs, value -> prefs.saveFolderSortOrders(value) },
+        isAccountScoped = true,
+        readForAccount = { prefs, account -> prefs.folderSortOrdersFlowFor(account) },
+        writeForAccount = { prefs, account, value -> prefs.saveFolderSortOrdersFor(account, value) },
+    ),
     SyncedSetting(
         "playerSeekStepSeconds",
         { prefs -> prefs.playerSeekStepSecondsFlow.map(Int::toString) },
@@ -158,6 +184,7 @@ class PikoSettingsSync(
     val lastSynced: StateFlow<Long?> = _lastSynced.asStateFlow()
 
     private val lock = Mutex()
+    private var lastAppliedGlobalMem: Map<String, String>? = null
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -170,7 +197,7 @@ class PikoSettingsSync(
                     if (account == null) return@collectLatest
                     syncNow()
                     // 本机的改动：头一个值是眼前的状态，不算改动；连着改几项等停下来再一起推
-                    combine(settings.map { it.read(preferences) }) { it.toList() }
+                    combine(settings.map { it.readForAccount(preferences, account) }) { it.toList() }
                         .distinctUntilChanged()
                         .drop(1)
                         .debounce(PUSH_DELAY_MS)
@@ -202,21 +229,39 @@ class PikoSettingsSync(
         }
     }
 
+    private fun requireCurrent(account: String) {
+        if (clients.currentClient.value?.account != account) {
+            throw SyncAccountSwitchedException()
+        }
+    }
+
     private suspend fun sync(account: String) {
         val stamp = now()
-        val local = settings.associate { it.key to it.read(preferences).first() }
+        requireCurrent(account)
+        val settingByKey = settings.associateBy { it.key }
+        val local = LinkedHashMap<String, String>(settings.size)
+        for (setting in settings) {
+            requireCurrent(account)
+            local[setting.key] = setting.readForAccount(preferences, account).first()
+        }
+        requireCurrent(account)
         val known = loadState(account)
-        // 本机与上次同步时不同的，是这之后在本机改的，算作此刻改的。这台设备从没同步过的项算作最旧：
-        // 新装的设备一身默认值，不能拿它们盖掉另一台设备上调好的设置
+        val lastApplied = loadLastAppliedGlobal()
+        requireCurrent(account)
+        // 本机与上次同步时不同的，仅在用户确实偏离了当前账号账本与上次同步写入的设备全局快照时才记作新改动：
+        // 切换账号 B 拉取全局外观后再切回账号 A 时，残留在设备全局偏好里的 B 设置不会冒充手动修改覆盖 A 的云端配置。
         val mine = local.mapValues { (key, value) ->
             val last = known[key]
+            val isAccountScoped = settingByKey[key]?.isAccountScoped == true
             when {
                 last == null -> Entry(value, 0L)
                 last.value == value -> last
+                !isAccountScoped && lastApplied[key] == value -> last
                 else -> Entry(value, stamp)
             }
         }
         val remoteText = remote.read(account)
+        requireCurrent(account)
         val remoteDoc = if (remoteText != null) {
             val parsed = runCatching { json.decodeFromString(Document.serializer(), remoteText) }
                 .onFailure {
@@ -246,18 +291,46 @@ class PikoSettingsSync(
                 else -> a
             }
         }
-        // 远端更新的写进本机
+        requireCurrent(account)
         val pulled = mutableListOf<String>()
-        for (setting in settings) {
-            val entry = merged[setting.key] ?: continue
-            if (entry.value != local[setting.key]) {
-                setting.write(preferences, entry.value)
-                pulled += setting.key
+        val nextApplied = LinkedHashMap(lastApplied)
+        var appliedDirty = false
+        try {
+            for (setting in settings) {
+                requireCurrent(account)
+                val entry = merged[setting.key] ?: continue
+                if (entry.value != local[setting.key]) {
+                    setting.writeForAccount(preferences, account, entry.value)
+                    pulled += setting.key
+                    if (!setting.isAccountScoped) {
+                        val actual = setting.readForAccount(preferences, account).first()
+                        if (nextApplied[setting.key] != actual) {
+                            nextApplied[setting.key] = actual
+                            appliedDirty = true
+                        }
+                    }
+                } else if (!setting.isAccountScoped) {
+                    val actual = local[setting.key].orEmpty()
+                    if (nextApplied[setting.key] != actual) {
+                        nextApplied[setting.key] = actual
+                        appliedDirty = true
+                    }
+                }
+            }
+        } finally {
+            if (appliedDirty) {
+                withContext(NonCancellable) {
+                    saveLastAppliedGlobal(nextApplied)
+                }
             }
         }
-        saveState(account, merged.filterKeys { key -> settings.any { it.key == key } })
+        requireCurrent(account)
+        saveState(account, merged.filterKeys { key -> settingByKey.containsKey(key) })
         val pushed = merged != remoteValues
-        if (pushed) remote.write(account, json.encodeToString(Document.serializer(), Document(VERSION, merged)), stamp)
+        if (pushed) {
+            requireCurrent(account)
+            remote.write(account, json.encodeToString(Document.serializer(), Document(VERSION, merged)), stamp)
+        }
         // 只记项名，不记值：值里有快速访问的文件夹 ID 与主题这类无关排查的内容
         PikoLog.i(
             TAG,
@@ -277,6 +350,21 @@ class PikoSettingsSync(
 
     private suspend fun saveState(account: String, state: Map<String, Entry>) {
         cacheStore?.write(stateKey(account), json.encodeToString(StateSerializer, state))
+    }
+
+    private suspend fun loadLastAppliedGlobal(): Map<String, String> {
+        lastAppliedGlobalMem?.let { return it }
+        val text = cacheStore?.read(LAST_APPLIED_GLOBAL_KEY) ?: return emptyMap<String, String>().also { lastAppliedGlobalMem = it }
+        return runCatching { json.decodeFromString(GlobalStateSerializer, text) }
+            .logFailure(TAG, "Failed to parse last-applied global settings snapshot; treating as empty")
+            .getOrDefault(emptyMap())
+            .also { lastAppliedGlobalMem = it }
+    }
+
+    private suspend fun saveLastAppliedGlobal(values: Map<String, String>) {
+        val frozen = values.toMap()
+        lastAppliedGlobalMem = frozen
+        cacheStore?.write(LAST_APPLIED_GLOBAL_KEY, json.encodeToString(GlobalStateSerializer, frozen))
     }
 
     private fun stateKey(account: String) = "settings-sync-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
@@ -300,8 +388,10 @@ class PikoSettingsSync(
         private const val VERSION = 1
         private const val PUSH_DELAY_MS = 3_000L
         private const val TAG = "SettingsSync"
+        private const val LAST_APPLIED_GLOBAL_KEY = "settings-sync-last-applied-global.json"
         private val UNSAFE_KEY_CHARS = Regex("""[^A-Za-z0-9._@-]""")
         private val StateSerializer = MapSerializer(String.serializer(), Entry.serializer())
+        private val GlobalStateSerializer = MapSerializer(String.serializer(), String.serializer())
     }
 }
 

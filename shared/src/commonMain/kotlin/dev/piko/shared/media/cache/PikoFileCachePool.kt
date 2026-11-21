@@ -98,15 +98,7 @@ class PikoFileCachePool(
                         entry.cache.close()
                         entry.handle.close()
                         runCatching {
-                            if (entry.retained || entry.playbackCached) {
-                                if (entry.playbackCached && entry.store.heldBytes.value > 0L) {
-                                    writePlaybackMarkerSafe(entry.store, entry.key, nowMillis())
-                                }
-                                entry.store.close()
-                            } else {
-                                entry.store.delete()
-                                deletePlaybackMarkerSafe(entry.store.path)
-                            }
+                            closeOrDeleteEntryStore(entry)
                         }.logFailure(TAG, "Failed to close/delete cache store on pool shutdown: cache=${fileCacheName(entry.key).take(12)}, retained=${entry.retained}")
                     }
                     entries.clear()
@@ -452,7 +444,21 @@ class PikoFileCachePool(
 
     /** 正在播放的缓存延迟到最后一个读者释放再删。 */
     suspend fun discard(account: String, gcid: String, size: Long, owner: String, mediaId: String? = null) {
-        val key = identity(account, gcid, size, mediaId)
+        discardKey(identity(account, gcid, size, mediaId), owner)
+    }
+
+    /** 释放指定 [owner] 持有的全部缓存固定引用，并按与 [discard] 一致的规则清理无主临时缓存。 */
+    suspend fun discardByOwner(owner: String) {
+        if (owner.isBlank()) return
+        val ownedKeys = lock.withLock {
+            owners.entries.mapNotNull { (key, set) -> key.takeIf { owner in set } }
+        }
+        for (key in ownedKeys) {
+            discardKey(key, owner)
+        }
+    }
+
+    private suspend fun discardKey(key: String, owner: String) {
         while (true) {
             val pendingReader = lock.withLock {
                 unpin(key, owner)
@@ -686,25 +692,58 @@ class PikoFileCachePool(
         entry.cache.close()
         entry.handle.close()
         try {
-            when {
-                entry.retained -> {
-                    if (entry.playbackCached && entry.store.heldBytes.value > 0L) {
-                        writePlaybackMarkerSafe(entry.store, entry.key, nowMillis())
-                    }
-                    entry.store.close()
-                }
-                entry.playbackCached && entry.store.heldBytes.value > 0L -> {
-                    entry.store.setDurable(true)
-                    writePlaybackMarkerSafe(entry.store, entry.key, nowMillis())
-                    entry.store.close()
-                }
-                else -> {
-                    entry.store.delete()
-                    deletePlaybackMarkerSafe(entry.store.path)
-                }
-            }
+            closeOrDeleteEntryStore(entry)
         } finally {
             if (entries[entry.key] === entry) entries.remove(entry.key)
+        }
+    }
+
+    private suspend fun closeOrDeleteEntryStore(entry: Entry) {
+        when {
+            entry.retained -> {
+                entry.store.setDurable(true)
+                val flushed = runCatching { entry.store.flush() }
+                    .onFailure { err ->
+                        if (err is CancellationException) throw err
+                        PikoLog.w(TAG, "Failed to flush retained cache store before close", err)
+                    }
+                    .isSuccess
+                if (entry.playbackCached && entry.store.heldBytes.value > 0L) {
+                    if (flushed) {
+                        writePlaybackMarkerSafe(entry.store, entry.key, nowMillis())
+                    } else {
+                        deletePlaybackMarkerSafe(entry.store.path)
+                    }
+                }
+                entry.store.close()
+            }
+            entry.playbackCached && entry.store.heldBytes.value > 0L -> {
+                entry.store.setDurable(true)
+                val flushed = runCatching { entry.store.flush() }
+                    .onFailure { err ->
+                        if (err is CancellationException) {
+                            runCatching { entry.store.close() }
+                            throw err
+                        }
+                        PikoLog.w(TAG, "Failed to flush playback cache store; skipping .pplay marker", err)
+                    }
+                    .isSuccess
+                if (flushed) {
+                    try {
+                        writePlaybackMarkerSafe(entry.store, entry.key, nowMillis())
+                    } finally {
+                        entry.store.close()
+                    }
+                } else {
+                    deletePlaybackMarkerSafe(entry.store.path)
+                    runCatching { entry.store.close() }
+                        .logFailure(TAG, "Failed to close faulted playback cache store")
+                }
+            }
+            else -> {
+                entry.store.delete()
+                deletePlaybackMarkerSafe(entry.store.path)
+            }
         }
     }
 

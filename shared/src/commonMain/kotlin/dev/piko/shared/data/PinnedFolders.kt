@@ -36,12 +36,24 @@ internal class PinnedFolders(private val preferences: PikoUserPreferences?, priv
 
     private fun edit(change: (List<PikoPathBreadcrumb>) -> List<PikoPathBreadcrumb>) {
         val preferences = preferences ?: return
+        val scoped = preferences as? AccountScopedPreferences
+        val account = if (scoped != null) scoped.currentAccount() ?: return else null
         scope.launch {
             lock.withLock {
-                val current = decode(preferences.pinnedFoldersFlow.first())
+                val raw = if (account != null) {
+                    preferences.pinnedFoldersFlowFor(account).first()
+                } else {
+                    preferences.pinnedFoldersFlow.first()
+                }
+                val current = decode(raw)
                 val next = change(current)
                 if (next != current) {
-                    preferences.savePinnedFolders(json.encodeToString(serializer, next.map { StoredPin(it.id, it.name) }))
+                    val encoded = json.encodeToString(serializer, next.map { StoredPin(it.id, it.name) })
+                    if (account != null) {
+                        preferences.savePinnedFoldersFor(account, encoded)
+                    } else {
+                        preferences.savePinnedFolders(encoded)
+                    }
                 }
             }
         }

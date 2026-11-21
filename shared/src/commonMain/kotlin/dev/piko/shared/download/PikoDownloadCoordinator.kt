@@ -1316,7 +1316,10 @@ class PikoDownloadCoordinator(
                     "Segment extraction completed: task=${logTask(task.taskId)}, ${logFile(task.fileId, task.fileName)}, " +
                         "range=${task.startMs}..${task.endMs}ms, quality=${chosen.quality ?: "original"}, savedBytes=$size, elapsedMs=${started.elapsedNow().inWholeMilliseconds}",
                 )
-                if (repo != null) fileCachePool.discard(task.account, task.gcid, cacheSize, task.taskId, chosen.mediaId)
+                if (repo != null) {
+                    fileCachePool.discard(task.account, task.gcid, cacheSize, task.taskId, chosen.mediaId)
+                    fileCachePool.discardByOwner(task.taskId)
+                }
                 update(task.taskId) {
                     it.copy(
                         status = DownloadStatus.COMPLETED,
@@ -1392,6 +1395,8 @@ class PikoDownloadCoordinator(
             }
             runSuspendCatching { job?.cancelAndJoin() }
                 .logFailure(TAG, "Error while awaiting cancelled download job: task=${logTask(taskId)}")
+            runSuspendCatching { fileCachePool.discardByOwner(taskId) }
+                .logFailure(TAG, "Failed to release owner cache pins for cancelled task=${logTask(taskId)}, ${logFile(task.fileId, task.fileName)}")
             if (task.sparseCache || !task.isSegment) {
                 discardCache()
             }

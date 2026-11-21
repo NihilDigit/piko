@@ -364,4 +364,90 @@ class PikoCacheManagerTest {
             assertEquals(0L, pool.cachedCoverage(client.account, "GCID_DUP_$ext", blockSize.toLong()).cachedBytes)
         }
     }
+
+    @Test
+    fun discardByOwnerReleasesTranscodeAndSegmentPinsWhilePreservingPlaybackCache() = withTempDir { root, scope ->
+        val poolDir = File(root, "discard-owner").apply { mkdirs() }
+        val cloud = FakePikPakCloud(ByteArray(blockSize) { 5 })
+        val client = cloud.provider.currentClient.value!!
+        val pool = PikoFileCachePool(scope) { poolDir.resolve("$it.pack").path }
+
+        // Simulate post-probe transcode download lease pinned under taskId.
+        val transcodeLease = pool.acquire(
+            client = client,
+            fileId = "f-trans",
+            gcid = "GCID_TRANS",
+            size = (blockSize * 4).toLong(),
+            streamSize = blockSize.toLong(),
+            mediaId = "media-720p",
+            name = "video.mkv",
+            retained = true,
+            owner = "dl-cancel-task",
+        )
+        transcodeLease.entry.store.write("t", 0L, ByteArray(blockSize) { 5 })
+        val transcodePath = transcodeLease.entry.store.path
+        transcodeLease.release()
+        assertTrue(File(transcodePath).exists())
+
+        // Also simulate a shared entry that has both a download owner pin AND persistent playback cache.
+        val sharedPlay = pool.acquire(
+            client = client,
+            fileId = "f-shared",
+            gcid = "GCID_SHARED",
+            size = blockSize.toLong(),
+            name = "shared.mp4",
+            retained = true,
+            owner = "dl-cancel-task",
+            retainForPlayback = true,
+        )
+        sharedPlay.entry.store.write("s", 0L, ByteArray(blockSize) { 6 })
+        val sharedPath = sharedPlay.entry.store.path
+        sharedPlay.release()
+        assertTrue(File("$sharedPath.pplay").exists())
+
+        pool.discardByOwner("dl-cancel-task")
+
+        // Non-playback transcode staging file is deleted; playback-cached file survives and is now clearable.
+        assertFalse(File(transcodePath).exists(), "discardByOwner must delete unpinned non-playback staging file")
+        assertTrue(File(sharedPath).exists(), "discardByOwner must preserve .pplay-marked playback cache")
+        assertTrue(pool.clearPlaybackCache() >= blockSize.toLong(), "Unpinned playback cache must become clearable")
+    }
+
+    @Test
+    fun poolShutdownFlushesDurablePlaybackStoreBeforeWritingMarker() = withTempDir { root, outerScope ->
+        val poolDir = File(root, "shutdown-flush").apply { mkdirs() }
+        val cloud = FakePikPakCloud(ByteArray(blockSize * 2) { (it % 251).toByte() })
+        val client = cloud.provider.currentClient.value!!
+        val poolJob = SupervisorJob()
+        val poolScope = CoroutineScope(Dispatchers.Default + poolJob)
+        val pool1 = PikoFileCachePool(poolScope, nowMillis = { 5_000_000L }) { poolDir.resolve("$it.pack").path }
+        val data = ByteArray(blockSize) { ((it * 11 + 3) % 251).toByte() }
+
+        val lease = pool1.acquire(
+            client = client,
+            fileId = "f-shut",
+            gcid = "GCID_SHUTDOWN",
+            size = (blockSize * 2).toLong(),
+            name = "shutdown.mp4",
+            retainForPlayback = true,
+        )
+        lease.entry.store.write(lease.entry.key, 0L, data)
+        val packPath = lease.entry.store.path
+
+        // Trigger pool scope cancellation while lease is still active.
+        poolScope.cancel()
+        val deadline = System.currentTimeMillis() + 5_000L
+        while (!File("$packPath.pplay").exists() && System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(20)
+        }
+        assertTrue(File("$packPath.pplay").exists(), "Shutdown hook must write .pplay after flushing store")
+
+        val pool2 = PikoFileCachePool(outerScope, nowMillis = { 5_000_000L }) { poolDir.resolve("$it.pack").path }
+        val cov = pool2.cachedCoverage(client.account, "GCID_SHUTDOWN", (blockSize * 2).toLong(), windowStartByte = 0L, windowLengthBytes = 4096L)
+        assertEquals(blockSize.toLong(), cov.cachedBytes)
+        assertTrue(cov.windowCached)
+        val restored = pool2.readCachedBytes(client.account, "GCID_SHUTDOWN", (blockSize * 2).toLong(), offset = 0L, length = 4096)
+        assertNotNull(restored)
+        assertContentEquals(data.copyOfRange(0, 4096), restored)
+    }
 }
