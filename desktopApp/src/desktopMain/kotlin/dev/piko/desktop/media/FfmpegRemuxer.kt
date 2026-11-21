@@ -121,7 +121,11 @@ internal class FfmpegRemuxer(private val ffmpeg: Ffmpeg) {
             val array = input.get(ADDRESS, FORMAT_STREAMS).reinterpret(count * ADDRESS.byteSize())
             List(count) { SourceStream(it, array.getAtIndex(ADDRESS, it.toLong()).reinterpret(STREAM_SIZE)) }
         }
-        private val packet: MemorySegment = (ffmpeg.packetAlloc.invokeWithArguments() as MemorySegment).reinterpret(PACKET_SIZE)
+        private val packet: MemorySegment = run {
+            val raw = ffmpeg.packetAlloc.invokeWithArguments() as MemorySegment
+            check(raw != MemorySegment.NULL) { "av_packet_alloc returned NULL" }
+            raw.reinterpret(PACKET_SIZE)
+        }
         private var reported = -1
 
         fun run(range: ClipRange?) {

@@ -6,6 +6,11 @@ import dev.piko.shared.log.PikoLog
 import java.awt.SystemTray
 import java.awt.Toolkit
 import java.io.File
+import java.lang.foreign.Arena
+import java.lang.foreign.FunctionDescriptor
+import java.lang.foreign.Linker
+import java.lang.foreign.ValueLayout.ADDRESS
+import java.lang.foreign.ValueLayout.JAVA_INT
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -43,6 +48,30 @@ internal object LinuxDesktop {
      * 静态字段，要 --add-opens java.desktop/sun.awt.X11（见 build.gradle.kts 的 linuxJvmArgs）。
      * 在建任何窗口之前调；XToolkit 在首次取 Toolkit 时初始化，之后再改才不会被它盖回去。
      */
+    /**
+     * WSLg（存在 `/dev/dxg` 虚拟 GPU 设备）默认未设置 `GALLIUM_DRIVER` 时，Mesa GLX 会回退到 `llvmpipe`，
+     * 进而被 Skiko 拒绝并降级为软件渲染。在 AWT/Skiko 加载 `libGL` 之前经 POSIX `setenv` 注入 `d3d12`
+     *（`overwrite = 0` 不覆盖用户显式配置），使开发运行与安装包在 WSLg 下开箱即走硬件 OpenGL。
+     */
+    fun enableWslgHardwareOpenGl() {
+        if (!File("/dev/dxg").exists()) return
+        if (!System.getenv("GALLIUM_DRIVER").isNullOrBlank()) return
+        if (!System.getenv("LIBGL_ALWAYS_SOFTWARE").isNullOrBlank()) return
+        runCatching {
+            val linker = Linker.nativeLinker()
+            val setenv = linker.defaultLookup().find("setenv").orElse(null) ?: return
+            val handle = linker.downcallHandle(
+                setenv,
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT),
+            )
+            Arena.ofConfined().use { arena ->
+                val key = arena.allocateFrom("GALLIUM_DRIVER")
+                val value = arena.allocateFrom("d3d12")
+                handle.invokeExact(key, value, 0) as Int
+            }
+        }
+    }
+
     fun setWmClass() {
         runCatching {
             val toolkit = Toolkit.getDefaultToolkit()

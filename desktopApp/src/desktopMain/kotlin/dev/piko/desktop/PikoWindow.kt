@@ -57,7 +57,8 @@ fun PikoWindow(
     CompositionLocalProvider(LocalWindowExceptionHandlerFactory provides handlerFactory) {
         // 显卡设备失效或未归属 EDT 异常走全局代次；已知所属窗口的故障仅递增该窗口自己的 windowScope.generation，
         // 避免主窗口异常把正在连播的独立播放器窗口重置回初始集，反之亦然。
-        key(GpuDeviceWatch.generation, desktopWindowFaultCoordinator.generation, windowScope.generation) {
+        val activeGpuGeneration = GpuDeviceWatch.generation
+        key(activeGpuGeneration, desktopWindowFaultCoordinator.generation, windowScope.generation) {
             Window(
                 onCloseRequest = onCloseRequest,
                 state = state,
@@ -67,11 +68,12 @@ fun PikoWindow(
                 onPreviewKeyEvent = onPreviewKeyEvent,
                 onKeyEvent = onKeyEvent,
             ) {
-                LaunchedEffect(window, windowVisible) {
+                LaunchedEffect(window, windowVisible, activeGpuGeneration) {
                     if (!windowVisible) return@LaunchedEffect
                     while (true) {
                         delay(DEVICE_CHECK_INTERVAL_MS)
-                        if (GpuDeviceWatch.checkLost(window)) break
+                        // 仅当 generation 实际递增（过了 3s 防抖触发窗口重建）才退出轮询，避免耗时较长的驱动复位把新窗口留在死画布上
+                        if (GpuDeviceWatch.checkLost(window) && GpuDeviceWatch.generation != activeGpuGeneration) break
                     }
                 }
                 content()

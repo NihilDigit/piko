@@ -457,10 +457,10 @@ private fun VideoPlayerContent(
     // Linux 上 MediaMP 的画面经 GLX 与 Skiko 共享纹理，Skiko 退到软件渲染时（没有硬件 OpenGL，llvmpipe 也被它拒绝）
     // 画面一直是黑的，打开也不返回。说一句原因，免得用户对着黑屏等。渲染方式在窗口头几帧里才定下来
     if (isLinux) {
-        LaunchedEffect(window) {
-            delay(1_000)
-            if (window.renderApi.name.startsWith("SOFTWARE")) {
-                PikoLog.w("Player", "Skiko is using ${window.renderApi}; hardware OpenGL video rendering is unavailable on Linux")
+        LaunchedEffect(window, backend) {
+            delay(2_000)
+            if (window.renderApi.name.startsWith("SOFTWARE") && !hasActiveLinuxVideoSurface(backend.player)) {
+                PikoLog.w("Player", "Skiko is using ${window.renderApi} and GLX fallback surface is unavailable; unable to render video on Linux")
                 snackbarHostState.showSnackbar(tr("未检测到可用的硬件 OpenGL，无法渲染视频画面。请检查显卡驱动程序。", "Hardware OpenGL is unavailable; unable to render video. Check your graphics driver.", "利用可能なハードウェアOpenGLがないため映像を描画できません。グラフィックスドライバーを確認してください。", "사용 가능한 하드웨어 OpenGL이 없어 동영상을 렌더링할 수 없습니다. 그래픽 드라이버를 확인해 주세요.", "未偵測到可用的硬體 OpenGL，無法繪製影片畫面。請檢查顯示卡驅動程式。"), withDismissAction = true)
             }
         }

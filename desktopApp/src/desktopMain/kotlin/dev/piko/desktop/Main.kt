@@ -138,6 +138,11 @@ private const val CLOSE_BEHAVIOR_ASKED_KEY = "window.closeToTrayAsked"
 private const val BACKGROUND_HINT_SHOWN_KEY = "window.backgroundHintShown"
 
 fun main(args: Array<String>) {
+    if ("--disable-gpu" in args && System.getProperty("skiko.renderApi").isNullOrBlank()) {
+        System.setProperty("skiko.renderApi", "SOFTWARE_FAST")
+    } else if (isLinux) {
+        LinuxDesktop.enableWslgHardwareOpenGl()
+    }
     PikoLocale.bindSystemLocale(Locale.getDefault().toLanguageTag())
     dev.piko.shared.media.player.SubtitleEncoding.install(dev.piko.shared.media.player.JvmSubtitleTextTranscoder)
     dev.piko.shared.media.reader.DocumentTextDecoder.install(dev.piko.shared.media.reader.JvmDocumentCharsetDecoder)

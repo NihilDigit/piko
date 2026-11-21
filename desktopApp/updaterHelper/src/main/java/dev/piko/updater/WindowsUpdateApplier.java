@@ -615,11 +615,18 @@ public final class WindowsUpdateApplier {
         }
     }
 
+    // HotSpot 解析 JAVA_TOOL_OPTIONS 时用单/双引号包裹含空白参数，引号内反斜杠按字面保留，不做反转义
     private static String quoteJvmOption(String arg) {
-        if (arg.indexOf(' ') < 0 && arg.indexOf('\t') < 0 && arg.indexOf('"') < 0) {
+        if (arg.indexOf(' ') < 0 && arg.indexOf('\t') < 0 && arg.indexOf('"') < 0 && arg.indexOf('\'') < 0) {
             return arg;
         }
-        return "\"" + arg.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        if (arg.indexOf('"') < 0) {
+            return "\"" + arg + "\"";
+        }
+        if (arg.indexOf('\'') < 0) {
+            return "'" + arg + "'";
+        }
+        return "\"" + arg.replace("\"", "") + "\"";
     }
 
     private static void sanitizeEnvironment(Map<String, String> env) {

@@ -45,18 +45,20 @@ import org.openani.mediamp.mpv.MpvMediampPlayer
 import org.openani.mediamp.mpv.nAckRetiredBuffersD3D11
 import org.openani.mediamp.mpv.nAckRetiredBuffersMacos
 import org.openani.mediamp.mpv.nAckRetiredBuffersOpenGL
-import org.openani.mediamp.mpv.nAttachRenderEnvironmentOpenGL
 import org.openani.mediamp.mpv.nCanShareFramesD3D11
 import org.openani.mediamp.mpv.nCopyLatestFrameD3D11
 import org.openani.mediamp.mpv.nCopyLatestFrameMacos
 import org.openani.mediamp.mpv.nCreateOpenGLConsumerFbo
 import org.openani.mediamp.mpv.nDeleteOpenGLConsumerFbo
+import org.openani.mediamp.mpv.nDestroyRenderContextOpenGL
 import org.openani.mediamp.mpv.nGetBufferTextureD3D11
 import org.openani.mediamp.mpv.nGetBufferTextureMacos
 import org.openani.mediamp.mpv.nGetBufferTextureOpenGL
 import org.openani.mediamp.mpv.nGetFrameStateD3D11
 import org.openani.mediamp.mpv.nGetFrameStateMacos
 import org.openani.mediamp.mpv.nGetFrameStateOpenGL
+import org.openani.mediamp.mpv.nHasOpenGLSurface
+import org.openani.mediamp.mpv.nReadSurfacePixelsOpenGL
 import org.openani.mediamp.mpv.nSetConsumerDeviceHintD3D11
 import org.openani.mediamp.mpv.nSetReadbackSurfaceConfigD3D11
 import org.openani.mediamp.mpv.nSetReadbackSurfaceConfigMacos
@@ -71,8 +73,10 @@ import java.awt.event.WindowEvent
 import java.awt.event.WindowStateListener
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
+import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.ref.WeakReference
+import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
@@ -80,6 +84,95 @@ import java.util.WeakHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.SwingUtilities
 import kotlin.math.min
+
+/**
+ * 供播放自检读取的轻量观测器，普通播放传 `null` 零额外开销。
+ */
+internal class VideoSurfaceProbe {
+    @Volatile
+    var drawnFrames: Long = 0L
+
+    @Volatile
+    var distinctStates: Int = 0
+
+    @Volatile
+    var nonBlackObserved: Boolean = false
+
+    @Volatile
+    var latestNonBlack: Boolean = false
+
+    @Volatile
+    var activeMode: String = "NONE"
+
+    private var lastRecordedState: Long = 0L
+
+    fun onFrameReady(state: Long, image: Image, directContext: DirectContext?) {
+        drawnFrames += 1L
+        val stateAdvanced = state != 0L && state != lastRecordedState
+        if (stateAdvanced) {
+            lastRecordedState = state
+            distinctStates += 1
+        }
+        if (distinctStates >= 2 && (!nonBlackObserved || (stateAdvanced && distinctStates % 8 == 0))) {
+            val nonBlack = sampleNonBlack(image, directContext)
+            latestNonBlack = nonBlack
+            if (nonBlack) nonBlackObserved = true
+        }
+    }
+
+    private fun sampleNonBlack(image: Image, directContext: DirectContext?): Boolean {
+        val w = image.width
+        val h = image.height
+        if (w <= 0 || h <= 0) return false
+        val sw = min(w, 8)
+        val sh = min(h, 8)
+        val anchors = intArrayOf(
+            (w - sw) / 2, (h - sh) / 2,
+            ((w - sw) / 4).coerceAtLeast(0), ((h - sh) / 4).coerceAtLeast(0),
+            ((w - sw) * 3 / 4).coerceAtLeast(0), ((h - sh) / 4).coerceAtLeast(0),
+            ((w - sw) / 4).coerceAtLeast(0), ((h - sh) * 3 / 4).coerceAtLeast(0),
+            ((w - sw) * 3 / 4).coerceAtLeast(0), ((h - sh) * 3 / 4).coerceAtLeast(0),
+        )
+        val bmp = Bitmap()
+        return try {
+            val info = ImageInfo(sw, sh, ColorType.RGBA_8888, image.imageInfo.colorAlphaType, image.imageInfo.colorSpace)
+            if (!bmp.allocPixels(info)) return false
+            for (p in anchors.indices step 2) {
+                if (!image.readPixels(directContext, bmp, anchors[p], anchors[p + 1], false)) continue
+                val pixmap = bmp.peekPixels() ?: continue
+                try {
+                    val bytes = MemorySegment.ofAddress(pixmap.addr).reinterpret((sw * sh * 4).toLong())
+                    for (i in 0 until sw * sh) {
+                        val off = (i * 4).toLong()
+                        val r = bytes.get(java.lang.foreign.ValueLayout.JAVA_BYTE, off).toInt() and 0xFF
+                        val g = bytes.get(java.lang.foreign.ValueLayout.JAVA_BYTE, off + 1).toInt() and 0xFF
+                        val b = bytes.get(java.lang.foreign.ValueLayout.JAVA_BYTE, off + 2).toInt() and 0xFF
+                        if (r > 16 || g > 16 || b > 16) return true
+                    }
+                } finally {
+                    pixmap.close()
+                }
+            }
+            false
+        } catch (_: Throwable) {
+            false
+        } finally {
+            bmp.close()
+        }
+    }
+}
+
+@OptIn(InternalMediampApi::class)
+internal fun hasActiveLinuxVideoSurface(player: MediampPlayer): Boolean {
+    val mpvPlayer = player as? MpvMediampPlayer ?: return false
+    val ptr = MediampAccess.getHandlePtr(mpvPlayer)
+    return ptr != 0L && nHasOpenGLSurface(ptr)
+}
+
+internal fun currentMpvVo(player: MediampPlayer): String? {
+    val mpvPlayer = player as? MpvMediampPlayer ?: return null
+    return MediampAccess.getPropertyString(mpvPlayer, "current-vo")
+}
 
 /**
  * 桌面端 mpv 视频表面，直接对接 Skiko 0.156.1 的 `FrameDriver` / `Direct3DRenderer` / `MetalRenderer` /
@@ -91,7 +184,10 @@ import kotlin.math.min
  *   渲染器自动回退至 D3D11 CPU readback。
  * - **macOS**：从 Skiko `MetalRenderer` 读取 `MetalAdapter.ptr` 与 `DirectContext` 走 Metal 共享纹理环，
  *   非 Metal 时回退至 macOS CPU readback。
- * - **Linux**：从 Skiko `LinuxOpenGLRenderer` 读取共享上下文、AWT 组件与 X11 句柄，走 GLX 零拷贝 FBO 环。
+ * - **Linux**：从 Skiko `LinuxOpenGLRenderer` 读取共享上下文、AWT 组件与 X11 句柄，经 MediaMP
+ *   `OpenGLRenderContextLifecycle.attachRenderEnvironment` 走 GLX 零拷贝 FBO 环，并在每次创建/销毁消费者
+ *   FBO 及快照采样前显式绑定当前窗口的 GLX 上下文以隔离多窗口 EDT 上下文切换；当 Skiko 退回软件渲染
+ *   （`--disable-gpu`、`SOFTWARE_FAST` 或 `llvmpipe`）时自动创建离屏 GLX 上下文并经 `nReadSurfacePixelsOpenGL` 回读渲染。
  * - 窗口最小化（`Frame.ICONIFIED`）时跳过递增 `frameTick`，避免向不可见窗口提交 GPU 帧。
  */
 @OptIn(ExperimentalComposeUiApi::class)
@@ -99,6 +195,7 @@ import kotlin.math.min
 internal fun PikoMpvVideoSurface(
     player: MediampPlayer,
     modifier: Modifier = Modifier,
+    probe: VideoSurfaceProbe? = null,
 ) {
     val mpvPlayer = player as? MpvMediampPlayer ?: return
     val window = LocalAwtWindow.current
@@ -200,7 +297,7 @@ internal fun PikoMpvVideoSurface(
         if (width <= 0 || height <= 0) return@Canvas
 
         val env = inspectCached(gen)
-        controller.drawCurrentFrame(width, height, env) { image ->
+        controller.drawCurrentFrame(width, height, env, probe) { image ->
             val srcWidth = image.width.toFloat()
             val srcHeight = image.height.toFloat()
             if (srcWidth <= 0f || srcHeight <= 0f) return@drawCurrentFrame
@@ -260,6 +357,7 @@ private enum class SkikoBackendKind {
 private data class SkikoRenderEnvironment(
     val hasRenderer: Boolean,
     val kind: SkikoBackendKind,
+    val renderer: Any? = null,
     val nativeDevicePtr: Long = 0L,
     val directContext: DirectContext? = null,
     val glComponent: Component? = null,
@@ -273,8 +371,9 @@ private data class SkikoRenderEnvironment(
             SkikoBackendKind.METAL,
             -> nativeDevicePtr != 0L && directContext != null && !directContext.isClosed
             SkikoBackendKind.LINUX_OPENGL ->
-                glComponent != null && glShareContext != 0L && directContext != null && !directContext.isClosed
-            SkikoBackendKind.OTHER -> true
+                glComponent != null && glShareContext != 0L && glDrawable != 0L &&
+                    directContext != null && !directContext.isClosed
+            SkikoBackendKind.OTHER -> !isLinux || (glComponent != null && glDrawable != 0L)
         }
 }
 
@@ -285,6 +384,11 @@ private object SkikoAccess {
     private const val METAL_ADAPTER_CLASS = "org.jetbrains.skiko.MetalAdapter"
     private const val ABSTRACT_OPENGL_RENDERER_CLASS = "org.jetbrains.skiko.renderer.AbstractOpenGLRenderer"
     private const val LINUX_OPENGL_RENDERER_CLASS = "org.jetbrains.skiko.renderer.LinuxOpenGLRenderer"
+    private const val LINUX_OPENGL_RENDERER_KT_CLASS = "org.jetbrains.skiko.renderer.LinuxOpenGLRendererKt"
+    private const val AWT_LINUX_DRAWING_SURFACE_KT_CLASS = "org.jetbrains.skiko.AWTLinuxDrawingSurfaceKt"
+    private const val HARDWARE_LAYER_CLASS = "org.jetbrains.skiko.HardwareLayer"
+    private const val LINUX_DRAWING_SURFACE_CLASS = "org.jetbrains.skiko.LinuxDrawingSurface"
+    private const val OPENGL_LIBRARY_KT_CLASS = "org.jetbrains.skiko.OpenGLLibrary_jvmKt"
 
     private val getFrameDriver: Method? by lazy {
         runCatching {
@@ -334,6 +438,30 @@ private object SkikoAccess {
         }.onFailure { PikoLog.w(TAG, "Failed to reflect LinuxOpenGLRenderer.context", it) }.getOrNull()
     }
 
+    private val linuxLockedSurfaceField: Field? by lazy {
+        runCatching {
+            Class.forName(LINUX_OPENGL_RENDERER_CLASS).getDeclaredField("lockedDrawingSurface").apply { isAccessible = true }
+        }.onFailure { PikoLog.w(TAG, "Failed to reflect LinuxOpenGLRenderer.lockedDrawingSurface", it) }.getOrNull()
+    }
+
+    private val linuxLockDrawingSurfaceMethod: Method? by lazy {
+        runCatching {
+            Class.forName(LINUX_OPENGL_RENDERER_CLASS).getMethod("lockDrawingSurface\$org_jetbrains_skiko_skiko")
+        }.onFailure { PikoLog.w(TAG, "Failed to reflect LinuxOpenGLRenderer.lockDrawingSurface", it) }.getOrNull()
+    }
+
+    private val linuxUnlockDrawingSurfaceMethod: Method? by lazy {
+        runCatching {
+            Class.forName(LINUX_OPENGL_RENDERER_CLASS).getMethod("unlockDrawingSurface\$org_jetbrains_skiko_skiko")
+        }.onFailure { PikoLog.w(TAG, "Failed to reflect LinuxOpenGLRenderer.unlockDrawingSurface", it) }.getOrNull()
+    }
+
+    private val linuxMakeCurrentMethod: Method? by lazy {
+        runCatching {
+            Class.forName(LINUX_OPENGL_RENDERER_CLASS).getMethod("makeCurrent\$org_jetbrains_skiko_skiko")
+        }.onFailure { PikoLog.w(TAG, "Failed to reflect LinuxOpenGLRenderer.makeCurrent", it) }.getOrNull()
+    }
+
     private val openGlContextField: Field? by lazy {
         runCatching {
             Class.forName(ABSTRACT_OPENGL_RENDERER_CLASS).getDeclaredField("glContext").apply { isAccessible = true }
@@ -344,6 +472,44 @@ private object SkikoAccess {
         runCatching {
             SkiaLayer::class.java.getMethod("getBackedLayer\$org_jetbrains_skiko_skiko")
         }.onFailure { PikoLog.w(TAG, "Failed to reflect SkiaLayer.getBackedLayer", it) }.getOrNull()
+    }
+
+    private val loadOpenGlLibraryMethod: Method? by lazy {
+        runCatching {
+            Class.forName(OPENGL_LIBRARY_KT_CLASS).getMethod("loadOpenGLLibrary")
+        }.getOrNull()
+    }
+
+    private val lockHardwareSurfaceMethod: Method? by lazy {
+        runCatching {
+            val hwClass = Class.forName(HARDWARE_LAYER_CLASS)
+            Class.forName(AWT_LINUX_DRAWING_SURFACE_KT_CLASS).getMethod("lockLinuxDrawingSurface", hwClass)
+        }.getOrNull()
+    }
+
+    private val unlockHardwareSurfaceMethod: Method? by lazy {
+        runCatching {
+            val surfClass = Class.forName(LINUX_DRAWING_SURFACE_CLASS)
+            Class.forName(AWT_LINUX_DRAWING_SURFACE_KT_CLASS).getMethod("unlockLinuxDrawingSurface", surfClass)
+        }.getOrNull()
+    }
+
+    private val createGlxContextMethod: Method? by lazy {
+        runCatching {
+            val surfClass = Class.forName(LINUX_DRAWING_SURFACE_CLASS)
+            Class.forName(LINUX_OPENGL_RENDERER_KT_CLASS)
+                .getDeclaredMethod("access\$createContext", surfClass, java.lang.Boolean.TYPE)
+                .apply { isAccessible = true }
+        }.getOrNull()
+    }
+
+    private val destroyGlxContextMethod: Method? by lazy {
+        runCatching {
+            val surfClass = Class.forName(LINUX_DRAWING_SURFACE_CLASS)
+            Class.forName(LINUX_OPENGL_RENDERER_KT_CLASS)
+                .getDeclaredMethod("access\$destroyContext", surfClass, java.lang.Long.TYPE)
+                .apply { isAccessible = true }
+        }.getOrNull()
     }
 
     private val rendererFlows = WeakHashMap<SkiaLayer, MutableStateFlow<Long>>()
@@ -375,6 +541,7 @@ private object SkikoAccess {
                 SkikoRenderEnvironment(
                     hasRenderer = true,
                     kind = SkikoBackendKind.DIRECT3D,
+                    renderer = renderer,
                     nativeDevicePtr = devicePtr,
                     directContext = directContext,
                 )
@@ -388,6 +555,7 @@ private object SkikoAccess {
                 SkikoRenderEnvironment(
                     hasRenderer = true,
                     kind = SkikoBackendKind.METAL,
+                    renderer = renderer,
                     nativeDevicePtr = mtlDevicePtr,
                     directContext = directContext,
                 )
@@ -401,6 +569,7 @@ private object SkikoAccess {
                 SkikoRenderEnvironment(
                     hasRenderer = true,
                     kind = SkikoBackendKind.LINUX_OPENGL,
+                    renderer = renderer,
                     directContext = directContext,
                     glComponent = backedLayer,
                     glShareContext = shareContext,
@@ -408,7 +577,109 @@ private object SkikoAccess {
                     glWindow = window,
                 )
             }
-            else -> SkikoRenderEnvironment(hasRenderer = true, kind = SkikoBackendKind.OTHER)
+            else -> {
+                val backedLayer = if (isLinux) {
+                    runCatching { layer?.let { getBackedLayer?.invoke(it) as? Component } }.getOrNull()
+                } else {
+                    null
+                }
+                val drawable = if (isLinux && backedLayer?.isDisplayable == true) {
+                    runCatching { layer?.contentHandle ?: 0L }.getOrDefault(0L)
+                } else {
+                    0L
+                }
+                val window = if (isLinux && backedLayer?.isDisplayable == true) {
+                    runCatching { layer?.windowHandle ?: 0L }.getOrDefault(0L)
+                } else {
+                    0L
+                }
+                SkikoRenderEnvironment(
+                    hasRenderer = true,
+                    kind = SkikoBackendKind.OTHER,
+                    renderer = renderer,
+                    glComponent = backedLayer,
+                    glDrawable = drawable,
+                    glWindow = window,
+                )
+            }
+        }
+    }
+
+    /**
+     * 在当前窗口所属的 `LinuxOpenGLRenderer` GLX 上下文绑定状态下执行 [block]。
+     *
+     * Skiko 在 Linux 上于同一条 AWT EDT 上串联所有窗口的 `SkiaLayer.update`（录制 `Picture`）与
+     * `renderFrame`（`makeCurrent` + 绘制）；`Canvas` 回调位于 `update` 阶段，此时线程上绑定的往往是
+     * 另一个窗口（如主窗口）的 `GLXContext`。显式锁定当前窗口的 `LinuxDrawingSurface` 并 `makeCurrent`
+     * 可彻底隔离多窗口 GLX 上下文串扰，亦防止关窗释放时误删其他窗口的同名 FBO。
+     */
+    fun withLinuxGlCurrent(env: SkikoRenderEnvironment?, block: () -> Unit): Boolean {
+        if (env == null || env.kind != SkikoBackendKind.LINUX_OPENGL) return false
+        if (!SwingUtilities.isEventDispatchThread()) return false
+        val renderer = env.renderer ?: return false
+        val component = env.glComponent ?: return false
+        if (!component.isDisplayable) return false
+        val directContext = env.directContext
+        if (directContext == null || directContext.isClosed) return false
+        val lockField = linuxLockedSurfaceField ?: return false
+        val lockMethod = linuxLockDrawingSurfaceMethod ?: return false
+        val unlockMethod = linuxUnlockDrawingSurfaceMethod ?: return false
+        val makeCurrentMethod = linuxMakeCurrentMethod ?: return false
+        val liveCtx = runCatching { linuxGlShareContextField?.getLong(renderer) ?: 0L }.getOrDefault(0L)
+        if (liveCtx == 0L) return false
+
+        val alreadyLocked = runCatching { lockField.get(renderer) != null }.getOrDefault(false)
+        var lockedHere = false
+        try {
+            if (!alreadyLocked) {
+                if (lockMethod.invoke(renderer) == null) return false
+                lockedHere = true
+            }
+            makeCurrentMethod.invoke(renderer)
+        } catch (_: Throwable) {
+            if (lockedHere) runCatching { unlockMethod.invoke(renderer) }
+            return false
+        }
+        return try {
+            block()
+            true
+        } finally {
+            if (lockedHere) {
+                runCatching { unlockMethod.invoke(renderer) }
+            }
+        }
+    }
+
+    fun createOffscreenLinuxGlxContext(component: Component): Long {
+        if (!SwingUtilities.isEventDispatchThread() || !component.isDisplayable) return 0L
+        val lockMethod = lockHardwareSurfaceMethod ?: return 0L
+        val unlockMethod = unlockHardwareSurfaceMethod ?: return 0L
+        val createMethod = createGlxContextMethod ?: return 0L
+        return runCatching {
+            loadOpenGlLibraryMethod?.invoke(null)
+            val surface = lockMethod.invoke(null, component) ?: return 0L
+            try {
+                createMethod.invoke(null, surface, false) as Long
+            } finally {
+                runCatching { unlockMethod.invoke(null, surface) }
+            }
+        }.onFailure { PikoLog.w(TAG, "Failed to create fallback GLX context for software renderer", it) }
+            .getOrDefault(0L)
+    }
+
+    fun destroyOffscreenLinuxGlxContext(component: Component?, contextSlot: Long) {
+        if (contextSlot == 0L || component == null || !component.isDisplayable) return
+        if (!SwingUtilities.isEventDispatchThread()) return
+        val lockMethod = lockHardwareSurfaceMethod ?: return
+        val unlockMethod = unlockHardwareSurfaceMethod ?: return
+        val destroyMethod = destroyGlxContextMethod ?: return
+        runCatching {
+            val surface = lockMethod.invoke(null, component) ?: return
+            try {
+                destroyMethod.invoke(null, surface, contextSlot)
+            } finally {
+                runCatching { unlockMethod.invoke(null, surface) }
+            }
         }
     }
 }
@@ -418,12 +689,10 @@ private object SkikoAccess {
  *
  * Skiko 0.156.1 的 `DirectXDevice` 在 `+0x10` 放 `ID3D12Device*`、`+0x20` 放 `ID3D12CommandQueue*`，
  * `+0x30` 已改为 `backbuffer[1]`；而 `mediampv.dll` 仍校验 `*(ptr+0x10) == *(ptr+0x30)` 与
- * `*(ptr+0x18) == *(ptr+0x40)`。每次原生设备或 COM 指针变化时分配新地址，旧 `Arena` 延迟释放。
+ * `*(ptr+0x18) == *(ptr+0x40)`。使用与 `MpvMediampPlayer` 生命周期绑定的 `Arena.ofAuto()` 托管，
+ * 避免表面先于 mpv 渲染线程卸载（如切换听视频模式或显卡重置）时提前 `Arena.close()` 引发原生 UAF。
  */
-private class DirectXDeviceShim {
-    private var activeArena: Arena? = null
-    private val retiredArenas = mutableListOf<Arena>()
-
+private class DirectXDeviceShim(private val owner: MpvMediampPlayer) {
     private var lastNativeDevicePtr = 0L
     private var lastD3d12Device = 0L
     private var lastD3d12Queue = 0L
@@ -446,15 +715,14 @@ private class DirectXDeviceShim {
             return shimPtr
         }
 
-        val nextArena = Arena.ofShared()
+        val nextArena = Arena.ofAuto()
         val segment = nextArena.allocate(SHIM_STRUCT_BYTES)
         segment.set(JAVA_LONG, SHIM_OFFSET_FDEVICE, d3d12Device)
         segment.set(JAVA_LONG, SHIM_OFFSET_FQUEUE, d3d12Queue)
         segment.set(JAVA_LONG, SHIM_OFFSET_DEVICE, d3d12Device)
         segment.set(JAVA_LONG, SHIM_OFFSET_QUEUE, d3d12Queue)
 
-        activeArena?.let { retiredArenas.add(it) }
-        activeArena = nextArena
+        retainArenaForPlayer(owner, nextArena)
         lastNativeDevicePtr = nativeDevicePtr
         lastD3d12Device = d3d12Device
         lastD3d12Queue = d3d12Queue
@@ -462,23 +730,7 @@ private class DirectXDeviceShim {
         return shimPtr
     }
 
-    fun closeRetired() {
-        if (retiredArenas.isEmpty()) return
-        val iterator = retiredArenas.iterator()
-        while (iterator.hasNext()) {
-            runCatching { iterator.next().close() }
-                .onFailure { PikoLog.w(TAG, "Failed to close retired D3D12 shim Arena", it) }
-            iterator.remove()
-        }
-    }
-
-    fun closeAll() {
-        closeRetired()
-        activeArena?.let { arena ->
-            runCatching { arena.close() }
-                .onFailure { PikoLog.w(TAG, "Failed to close D3D12 shim Arena", it) }
-        }
-        activeArena = null
+    fun reset() {
         shimPtr = 0L
         lastNativeDevicePtr = 0L
         lastD3d12Device = 0L
@@ -495,6 +747,12 @@ private class DirectXDeviceShim {
         const val SHIM_OFFSET_FQUEUE = 0x18L
         const val SHIM_OFFSET_DEVICE = 0x30L
         const val SHIM_OFFSET_QUEUE = 0x40L
+
+        private val playerArenas = WeakHashMap<MpvMediampPlayer, MutableList<Arena>>()
+
+        fun retainArenaForPlayer(player: MpvMediampPlayer, arena: Arena) = synchronized(playerArenas) {
+            playerArenas.getOrPut(player) { mutableListOf() }.add(arena)
+        }
     }
 }
 
@@ -505,18 +763,22 @@ private class PikoSurfaceController(private val mediamp: MpvMediampPlayer) {
     private val stateLock = Any()
     private val handlePtr: Long by lazy { MediampAccess.getHandlePtr(mediamp) }
 
-    private val shim = DirectXDeviceShim()
+    private val shim = DirectXDeviceShim(mediamp)
     private val d3d11Ring by lazy { D3D11RingConsumer(handlePtr) }
     private val d3d11Readback by lazy { CpuReadbackConsumer(handlePtr, isMacos = false) }
     private val macosRing by lazy { MacosRingConsumer(handlePtr) }
     private val macosReadback by lazy { CpuReadbackConsumer(handlePtr, isMacos = true) }
     private val openGlRing by lazy { OpenGLRingConsumer(handlePtr) }
+    private val linuxReadback by lazy { LinuxOpenGLReadbackConsumer(handlePtr) }
 
     private var activeMode: SurfaceMode? = null
     private var hintedShimPtr = 0L
     private var attachedOpenGlShareContext = 0L
     private var attachedOpenGlDrawable = 0L
     private var attachedOpenGlWindow = 0L
+    private var lastLinuxEnv: SkikoRenderEnvironment? = null
+    private var fallbackLinuxComponent: Component? = null
+    private var fallbackLinuxGlxContext = 0L
     private var renderContextRequested = false
 
     @Volatile
@@ -528,6 +790,7 @@ private class PikoSurfaceController(private val mediamp: MpvMediampPlayer) {
         MACOS_RING,
         MACOS_READBACK,
         OPENGL_RING,
+        LINUX_OPENGL_READBACK,
     }
 
     private fun ensureRenderContext(): Boolean {
@@ -569,21 +832,17 @@ private class PikoSurfaceController(private val mediamp: MpvMediampPlayer) {
             }
             if (!ensureRenderContext()) return false
             val useRing = nCanShareFramesD3D11(handlePtr, shimPtr)
-            val configured = if (useRing) {
+            return if (useRing) {
                 switchTo(SurfaceMode.D3D11_RING)
                 d3d11Ring.requestSurface(width, height, shimPtr)
             } else {
                 switchTo(SurfaceMode.D3D11_READBACK)
                 d3d11Readback.requestSurface(width, height)
             }
-            if (configured) shim.closeRetired()
-            return configured
         }
         if (!ensureRenderContext()) return false
         switchTo(SurfaceMode.D3D11_READBACK)
-        val configured = d3d11Readback.requestSurface(width, height)
-        if (configured) shim.closeRetired()
-        return configured
+        return d3d11Readback.requestSurface(width, height)
     }
 
     private fun configureMacos(width: Int, height: Int, env: SkikoRenderEnvironment): Boolean {
@@ -599,43 +858,97 @@ private class PikoSurfaceController(private val mediamp: MpvMediampPlayer) {
     }
 
     private fun configureLinux(width: Int, height: Int, env: SkikoRenderEnvironment): Boolean {
-        if (env.kind != SkikoBackendKind.LINUX_OPENGL) return false
         val component = env.glComponent ?: return false
-        if (env.glShareContext == 0L || env.directContext == null) return false
+        if (env.glDrawable == 0L) return false
+
+        if (env.kind == SkikoBackendKind.LINUX_OPENGL) {
+            if (env.glShareContext == 0L || env.directContext == null || env.directContext.isClosed) return false
+            lastLinuxEnv = env
+            if (
+                attachedOpenGlShareContext != env.glShareContext ||
+                attachedOpenGlDrawable != env.glDrawable ||
+                attachedOpenGlWindow != env.glWindow ||
+                !renderContextRequested
+            ) {
+                if (!MediampAccess.attachLinuxRenderEnvironment(mediamp, component, env.glShareContext, env.glDrawable, env.glWindow)) {
+                    return false
+                }
+                attachedOpenGlShareContext = env.glShareContext
+                attachedOpenGlDrawable = env.glDrawable
+                attachedOpenGlWindow = env.glWindow
+                renderContextRequested = true
+            }
+            switchTo(SurfaceMode.OPENGL_RING)
+            return openGlRing.requestSurface(width, height, env.glShareContext)
+        }
+
+        // Skiko 处于软件渲染（--disable-gpu、SOFTWARE_FAST 或 llvmpipe）时，创建独立 GLX 上下文经 CPU 回读出帧。
+        if (!SwingUtilities.isEventDispatchThread() || !component.isDisplayable) return false
+        if (fallbackLinuxGlxContext == 0L || fallbackLinuxComponent !== component) {
+            destroyFallbackLinuxGlxContext()
+            fallbackLinuxGlxContext = SkikoAccess.createOffscreenLinuxGlxContext(component)
+            if (fallbackLinuxGlxContext == 0L) return false
+            fallbackLinuxComponent = component
+        }
         if (
-            attachedOpenGlShareContext != env.glShareContext ||
+            attachedOpenGlShareContext != fallbackLinuxGlxContext ||
             attachedOpenGlDrawable != env.glDrawable ||
-            attachedOpenGlWindow != env.glWindow
+            attachedOpenGlWindow != env.glWindow ||
+            !renderContextRequested
         ) {
-            if (!nAttachRenderEnvironmentOpenGL(handlePtr, component, env.glShareContext, env.glDrawable, env.glWindow)) {
+            if (!MediampAccess.attachLinuxRenderEnvironment(mediamp, component, fallbackLinuxGlxContext, env.glDrawable, env.glWindow)) {
                 return false
             }
-            attachedOpenGlShareContext = env.glShareContext
+            attachedOpenGlShareContext = fallbackLinuxGlxContext
             attachedOpenGlDrawable = env.glDrawable
             attachedOpenGlWindow = env.glWindow
+            renderContextRequested = true
         }
-        if (!ensureRenderContext()) return false
-        switchTo(SurfaceMode.OPENGL_RING)
-        return openGlRing.requestSurface(width, height, env.glShareContext)
+        switchTo(SurfaceMode.LINUX_OPENGL_READBACK)
+        return linuxReadback.requestSurface(width, height, fallbackLinuxGlxContext)
     }
 
     fun drawCurrentFrame(
         width: Int,
         height: Int,
         env: SkikoRenderEnvironment,
+        probe: VideoSurfaceProbe?,
         draw: (Image) -> Unit,
     ) = synchronized(stateLock) {
         if (isTeardownStarted()) return@synchronized
         configureIfReadyLocked(width, height, env)
-        val image = when (activeMode) {
-            SurfaceMode.D3D11_RING -> d3d11Ring.currentFrameImage(env.directContext)
-            SurfaceMode.D3D11_READBACK -> d3d11Readback.currentFrameImage()
-            SurfaceMode.MACOS_RING -> macosRing.currentFrameImage(env.directContext)
-            SurfaceMode.MACOS_READBACK -> macosReadback.currentFrameImage()
-            SurfaceMode.OPENGL_RING -> openGlRing.currentFrameImage(env.directContext)
-            null -> null
-        } ?: return@synchronized
-        draw(image)
+        val mode = activeMode ?: return@synchronized
+        probe?.activeMode = mode.name
+        val image: Image? = when (mode) {
+            SurfaceMode.D3D11_RING -> d3d11Ring.currentFrameImage(env.directContext)?.also { img ->
+                probe?.onFrameReady(d3d11Ring.lastState, img, env.directContext)
+            }
+            SurfaceMode.D3D11_READBACK -> d3d11Readback.currentFrameImage()?.also { img ->
+                probe?.onFrameReady(d3d11Readback.lastState, img, null)
+            }
+            SurfaceMode.MACOS_RING -> macosRing.currentFrameImage(env.directContext)?.also { img ->
+                probe?.onFrameReady(macosRing.lastState, img, env.directContext)
+            }
+            SurfaceMode.MACOS_READBACK -> macosReadback.currentFrameImage()?.also { img ->
+                probe?.onFrameReady(macosReadback.lastState, img, null)
+            }
+            SurfaceMode.OPENGL_RING -> {
+                lastLinuxEnv = env
+                var resolved: Image? = null
+                val bound = SkikoAccess.withLinuxGlCurrent(env) {
+                    resolved = openGlRing.currentFrameImage(env.directContext)
+                    resolved?.let { img ->
+                        probe?.onFrameReady(openGlRing.lastState, img, env.directContext)
+                    }
+                    env.directContext?.flush()
+                }
+                if (!bound) openGlRing.peekCachedFrame() else resolved
+            }
+            SurfaceMode.LINUX_OPENGL_READBACK -> linuxReadback.currentFrameImage()?.also { img ->
+                probe?.onFrameReady(linuxReadback.lastState, img, null)
+            }
+        }
+        image?.let(draw)
     }
 
     private fun switchTo(mode: SurfaceMode) {
@@ -650,9 +963,34 @@ private class PikoSurfaceController(private val mediamp: MpvMediampPlayer) {
             SurfaceMode.D3D11_READBACK -> d3d11Readback.release()
             SurfaceMode.MACOS_RING -> macosRing.release()
             SurfaceMode.MACOS_READBACK -> macosReadback.release()
-            SurfaceMode.OPENGL_RING -> openGlRing.release()
+            SurfaceMode.OPENGL_RING -> {
+                val env = lastLinuxEnv
+                val bound = SkikoAccess.withLinuxGlCurrent(env) {
+                    openGlRing.release(canDeleteGlObjects = true)
+                    env?.directContext?.takeUnless { it.isClosed }?.let { ctx ->
+                        ctx.flush()
+                        ctx.resetGLAll()
+                    }
+                }
+                if (!bound) {
+                    openGlRing.release(canDeleteGlObjects = false)
+                }
+            }
+            SurfaceMode.LINUX_OPENGL_READBACK -> linuxReadback.release()
             null -> Unit
         }
+    }
+
+    private fun destroyFallbackLinuxGlxContext() {
+        if (fallbackLinuxGlxContext == 0L) return
+        val ctx = fallbackLinuxGlxContext
+        val comp = fallbackLinuxComponent
+        fallbackLinuxGlxContext = 0L
+        fallbackLinuxComponent = null
+        if (handlePtr != 0L) {
+            runCatching { nDestroyRenderContextOpenGL(handlePtr) }
+        }
+        SkikoAccess.destroyOffscreenLinuxGlxContext(comp, ctx)
     }
 
     fun release() {
@@ -661,11 +999,17 @@ private class PikoSurfaceController(private val mediamp: MpvMediampPlayer) {
         synchronized(stateLock) {
             releaseActiveMode()
             activeMode = null
+            destroyFallbackLinuxGlxContext()
+            lastLinuxEnv = null
+            if (WinRTSupport.isWindows && hintedShimPtr != 0L && handlePtr != 0L) {
+                runCatching { nSetConsumerDeviceHintD3D11(handlePtr, 0L) }
+            }
             hintedShimPtr = 0L
             attachedOpenGlShareContext = 0L
             attachedOpenGlDrawable = 0L
             attachedOpenGlWindow = 0L
-            shim.closeAll()
+            renderContextRequested = false
+            shim.reset()
         }
     }
 }
@@ -698,10 +1042,58 @@ private object MediampAccess {
         }.onFailure { PikoLog.w(TAG, "Failed to reflect isSurfaceTeardownStarted", it) }.getOrNull()
     }
 
+    private val getRenderContextLifecycleMethod: Method? by lazy {
+        runCatching {
+            MpvMediampPlayer::class.java.getMethod("getRenderContextLifecycle\$mediamp_mpv")
+        }.onFailure { PikoLog.w(TAG, "Failed to reflect getRenderContextLifecycle", it) }.getOrNull()
+    }
+
+    private val openGlEnvConstructor: Constructor<*>? by lazy {
+        runCatching {
+            Class.forName("org.openani.mediamp.mpv.utils.OpenGLRenderEnvironment").getConstructor(
+                Component::class.java,
+                java.lang.Long.TYPE,
+                java.lang.Long.TYPE,
+                java.lang.Long.TYPE,
+            )
+        }.onFailure { PikoLog.w(TAG, "Failed to reflect OpenGLRenderEnvironment constructor", it) }.getOrNull()
+    }
+
+    private val attachOpenGlEnvMethod: Method? by lazy {
+        val envClass = openGlEnvConstructor?.declaringClass ?: return@lazy null
+        runCatching {
+            Class.forName("org.openani.mediamp.mpv.internal.OpenGLRenderContextLifecycle")
+                .getMethod("attachRenderEnvironment", envClass)
+        }.onFailure { PikoLog.w(TAG, "Failed to reflect OpenGLRenderContextLifecycle.attachRenderEnvironment", it) }
+            .getOrNull()
+    }
+
     fun getHandlePtr(mediamp: MpvMediampPlayer): Long = runCatching {
         val handle = getHandleMethod.invoke(mediamp) as? MPVHandle ?: return 0L
         getPtrMethod.invoke(handle) as Long
     }.onFailure { PikoLog.w(TAG, "Failed to reflect MPVHandle pointer", it) }.getOrDefault(0L)
+
+    fun getPropertyString(mediamp: MpvMediampPlayer, name: String): String? = runCatching {
+        val handle = getHandleMethod.invoke(mediamp) as? MPVHandle ?: return null
+        handle.getPropertyString(name)
+    }.getOrNull()
+
+    fun attachLinuxRenderEnvironment(
+        mediamp: MpvMediampPlayer,
+        component: Component,
+        shareContext: Long,
+        drawable: Long,
+        window: Long,
+    ): Boolean {
+        val getLifecycle = getRenderContextLifecycleMethod ?: return false
+        val ctor = openGlEnvConstructor ?: return false
+        val attach = attachOpenGlEnvMethod ?: return false
+        return runCatching {
+            val lifecycle = getLifecycle.invoke(mediamp) ?: return false
+            val env = ctor.newInstance(component, shareContext, drawable, window)
+            attach.invoke(lifecycle, env) as Boolean
+        }.onFailure { PikoLog.w(TAG, "Failed to attach Linux OpenGLRenderEnvironment", it) }.getOrDefault(false)
+    }
 
     fun setRenderUpdateListener(mediamp: MpvMediampPlayer, onUpdate: (() -> Unit)?): Boolean {
         val listenerClass = renderUpdateListenerClass ?: return false
@@ -730,12 +1122,14 @@ private object MediampAccess {
 private abstract class BaseRingConsumer(protected val handlePtr: Long) {
     private val wrappedSurfaces = arrayOfNulls<Surface>(RING_BUFFER_COUNT)
     private val renderTargets = arrayOfNulls<BackendRenderTarget>(RING_BUFFER_COUNT)
-    private val extraCleanups = arrayOfNulls<() -> Unit>(RING_BUFFER_COUNT)
+    private val extraCleanups = arrayOfNulls<((Boolean) -> Unit)>(RING_BUFFER_COUNT)
     private var blitSurface: Surface? = null
     private var wrappedGeneration = -1
     private var surfaceContext: DirectContext? = null
     private var cachedFrame: Image? = null
     private var cachedState = 0L
+
+    val lastState: Long get() = cachedState
 
     private var requestedWidth = 0
     private var requestedHeight = 0
@@ -744,12 +1138,19 @@ private abstract class BaseRingConsumer(protected val handlePtr: Long) {
 
     protected abstract val surfaceOrigin: SurfaceOrigin
     protected abstract val colorFormat: SurfaceColorFormat
+    protected open val resetsGlStateOnWrap: Boolean get() = false
 
     protected abstract fun setSurfaceConfig(width: Int, height: Int, devicePtr: Long): Boolean
     protected abstract fun getFrameState(): Long
     protected abstract fun getBufferTexture(index: Int): Long
     protected abstract fun ackRetiredBuffers(): Boolean
-    protected abstract fun makeRenderTarget(width: Int, height: Int, texturePtr: Long): Pair<BackendRenderTarget, (() -> Unit)?>?
+    protected abstract fun makeRenderTarget(
+        width: Int,
+        height: Int,
+        texturePtr: Long,
+    ): Pair<BackendRenderTarget, ((Boolean) -> Unit)?>?
+
+    fun peekCachedFrame(): Image? = cachedFrame
 
     fun requestSurface(width: Int, height: Int, devicePtr: Long): Boolean {
         if (width == requestedWidth && height == requestedHeight && devicePtr == requestedDevicePtr) {
@@ -763,7 +1164,7 @@ private abstract class BaseRingConsumer(protected val handlePtr: Long) {
     }
 
     fun currentFrameImage(directContext: DirectContext?): Image? {
-        if (directContext == null) return null
+        if (directContext == null || directContext.isClosed) return null
         val state = getFrameState()
         if (state == cachedState && surfaceContext === directContext) {
             cachedFrame?.let { return it }
@@ -798,23 +1199,24 @@ private abstract class BaseRingConsumer(protected val handlePtr: Long) {
             cachedFrame = null
             cachedState = 0L
         }
-        closeWraps()
+        closeWraps(canDeleteGlObjects = true)
         ackRetiredBuffers()
 
         for (i in 0 until RING_BUFFER_COUNT) {
             val texture = getBufferTexture(i)
             if (texture == 0L) {
                 logOnce("buffer $i has no shared texture")
-                closeWraps()
+                closeWraps(canDeleteGlObjects = true)
                 return false
             }
             val created = makeRenderTarget(width, height, texture)
             if (created == null) {
                 logOnce("failed to create backend render target for buffer $i")
-                closeWraps()
+                closeWraps(canDeleteGlObjects = true)
                 return false
             }
             val (target, cleanup) = created
+            if (resetsGlStateOnWrap) directContext.resetGLAll()
             val surface = runCatching {
                 Surface.makeFromBackendRenderTarget(
                     context = directContext,
@@ -827,8 +1229,9 @@ private abstract class BaseRingConsumer(protected val handlePtr: Long) {
             if (surface == null) {
                 logOnce("Surface.makeFromBackendRenderTarget returned null")
                 target.close()
-                cleanup?.invoke()
-                closeWraps()
+                cleanup?.invoke(true)
+                if (resetsGlStateOnWrap) directContext.resetGLAll()
+                closeWraps(canDeleteGlObjects = true)
                 return false
             }
             renderTargets[i] = target
@@ -840,13 +1243,13 @@ private abstract class BaseRingConsumer(protected val handlePtr: Long) {
             Surface.makeRenderTarget(directContext, false, ImageInfo.makeN32Premul(width, height))
         }.onFailure { logOnce("creating blit surface failed", it) }.getOrNull()
         if (blitSurface == null) {
-            closeWraps()
+            closeWraps(canDeleteGlObjects = true)
             return false
         }
 
         val currentGeneration = ((getFrameState() ushr 48) and 0xFFFF).toInt()
         if (currentGeneration != generation) {
-            closeWraps()
+            closeWraps(canDeleteGlObjects = true)
             return false
         }
 
@@ -855,17 +1258,24 @@ private abstract class BaseRingConsumer(protected val handlePtr: Long) {
         return true
     }
 
-    private fun closeWraps() {
+    private fun closeWraps(canDeleteGlObjects: Boolean) {
+        var hadCleanup = false
         for (i in 0 until RING_BUFFER_COUNT) {
             wrappedSurfaces[i]?.close()
             wrappedSurfaces[i] = null
             renderTargets[i]?.close()
             renderTargets[i] = null
-            extraCleanups[i]?.invoke()
+            extraCleanups[i]?.let {
+                hadCleanup = true
+                it.invoke(canDeleteGlObjects)
+            }
             extraCleanups[i] = null
         }
         blitSurface?.close()
         blitSurface = null
+        if (hadCleanup && canDeleteGlObjects && resetsGlStateOnWrap) {
+            surfaceContext?.takeUnless { it.isClosed }?.resetGLAll()
+        }
         wrappedGeneration = -1
     }
 
@@ -876,11 +1286,11 @@ private abstract class BaseRingConsumer(protected val handlePtr: Long) {
         }
     }
 
-    fun release() {
+    fun release(canDeleteGlObjects: Boolean = true) {
         cachedFrame?.close()
         cachedFrame = null
         cachedState = 0L
-        closeWraps()
+        closeWraps(canDeleteGlObjects)
         surfaceContext = null
         setSurfaceConfig(0, 0, 0L)
         requestedWidth = 0
@@ -907,7 +1317,11 @@ private class D3D11RingConsumer(handlePtr: Long) : BaseRingConsumer(handlePtr) {
 
     override fun ackRetiredBuffers(): Boolean = nAckRetiredBuffersD3D11(handlePtr)
 
-    override fun makeRenderTarget(width: Int, height: Int, texturePtr: Long): Pair<BackendRenderTarget, (() -> Unit)?> =
+    override fun makeRenderTarget(
+        width: Int,
+        height: Int,
+        texturePtr: Long,
+    ): Pair<BackendRenderTarget, ((Boolean) -> Unit)?> =
         BackendRenderTarget.makeDirect3D(
             width = width,
             height = height,
@@ -936,7 +1350,11 @@ private class MacosRingConsumer(handlePtr: Long) : BaseRingConsumer(handlePtr) {
 
     override fun ackRetiredBuffers(): Boolean = nAckRetiredBuffersMacos(handlePtr)
 
-    override fun makeRenderTarget(width: Int, height: Int, texturePtr: Long): Pair<BackendRenderTarget, (() -> Unit)?> =
+    override fun makeRenderTarget(
+        width: Int,
+        height: Int,
+        texturePtr: Long,
+    ): Pair<BackendRenderTarget, ((Boolean) -> Unit)?> =
         BackendRenderTarget.makeMetal(width = width, height = height, texturePtr = texturePtr) to null
 }
 
@@ -944,6 +1362,7 @@ private class MacosRingConsumer(handlePtr: Long) : BaseRingConsumer(handlePtr) {
 private class OpenGLRingConsumer(handlePtr: Long) : BaseRingConsumer(handlePtr) {
     override val surfaceOrigin = SurfaceOrigin.BOTTOM_LEFT
     override val colorFormat = SurfaceColorFormat.RGBA_8888
+    override val resetsGlStateOnWrap = true
 
     override fun setSurfaceConfig(width: Int, height: Int, devicePtr: Long): Boolean =
         nSetSurfaceConfigOpenGL(handlePtr, width, height, devicePtr)
@@ -954,7 +1373,11 @@ private class OpenGLRingConsumer(handlePtr: Long) : BaseRingConsumer(handlePtr) 
 
     override fun ackRetiredBuffers(): Boolean = nAckRetiredBuffersOpenGL(handlePtr)
 
-    override fun makeRenderTarget(width: Int, height: Int, texturePtr: Long): Pair<BackendRenderTarget, (() -> Unit)?>? {
+    override fun makeRenderTarget(
+        width: Int,
+        height: Int,
+        texturePtr: Long,
+    ): Pair<BackendRenderTarget, ((Boolean) -> Unit)?>? {
         val fbo = nCreateOpenGLConsumerFbo(texturePtr)
         if (fbo <= 0) return null
         val target = runCatching {
@@ -962,7 +1385,7 @@ private class OpenGLRingConsumer(handlePtr: Long) : BaseRingConsumer(handlePtr) 
                 width = width,
                 height = height,
                 sampleCnt = 0,
-                stencilBits = 8,
+                stencilBits = 0,
                 fbId = fbo,
                 fbFormat = GL_RGBA8,
             )
@@ -970,11 +1393,104 @@ private class OpenGLRingConsumer(handlePtr: Long) : BaseRingConsumer(handlePtr) 
             nDeleteOpenGLConsumerFbo(fbo)
             logOnce("failed to wrap OpenGL consumer FBO $fbo", it)
         }.getOrNull() ?: return null
-        return target to { nDeleteOpenGLConsumerFbo(fbo) }
+        return target to { canDeleteGl ->
+            if (canDeleteGl) {
+                nDeleteOpenGLConsumerFbo(fbo)
+            }
+        }
     }
 
     private companion object {
         const val GL_RGBA8 = 0x8058
+    }
+}
+
+@OptIn(InternalMediampApi::class)
+private class LinuxOpenGLReadbackConsumer(private val handlePtr: Long) {
+    private val dims = IntArray(2)
+    private var bitmap: Bitmap? = null
+    private var bitmapPixels: Pixmap? = null
+    private var cachedFrame: Image? = null
+    private var cachedState = 0L
+    private var ackedGeneration = -1
+
+    val lastState: Long get() = cachedState
+
+    private var requestedWidth = 0
+    private var requestedHeight = 0
+    private var requestedDevicePtr = 0L
+
+    fun requestSurface(width: Int, height: Int, devicePtr: Long): Boolean {
+        if (width == requestedWidth && height == requestedHeight && devicePtr == requestedDevicePtr) {
+            return true
+        }
+        if (!nSetSurfaceConfigOpenGL(handlePtr, width, height, devicePtr)) return false
+        requestedWidth = width
+        requestedHeight = height
+        requestedDevicePtr = devicePtr
+        return true
+    }
+
+    fun currentFrameImage(): Image? {
+        val state = nGetFrameStateOpenGL(handlePtr)
+        if (state == cachedState) {
+            cachedFrame?.let { return it }
+        }
+        val generation = ((state ushr 48) and 0xFFFF).toInt()
+        val index = ((state ushr 44) and 0xF).toInt()
+        val width = ((state ushr 30) and 0x3FFF).toInt()
+        val height = ((state ushr 16) and 0x3FFF).toInt()
+        if (generation != ackedGeneration) {
+            nAckRetiredBuffersOpenGL(handlePtr)
+            ackedGeneration = generation
+        }
+        if (index == 0xF || width <= 0 || height <= 0) return cachedFrame
+
+        val argbPixels = nReadSurfacePixelsOpenGL(handlePtr, dims) ?: return cachedFrame
+        val outW = dims[0]
+        val outH = dims[1]
+        if (outW <= 0 || outH <= 0 || argbPixels.size < outW * outH) return cachedFrame
+
+        val newBitmap = Bitmap()
+        if (!newBitmap.allocPixels(ImageInfo(outW, outH, ColorType.BGRA_8888, ColorAlphaType.OPAQUE))) {
+            newBitmap.close()
+            return cachedFrame
+        }
+        val newPixels = newBitmap.peekPixels()
+        if (newPixels == null) {
+            newBitmap.close()
+            return cachedFrame
+        }
+        val count = outW * outH
+        val dst = MemorySegment.ofAddress(newPixels.addr).reinterpret(count.toLong() * 4L)
+        MemorySegment.copy(argbPixels, 0, dst, JAVA_INT, 0L, count)
+        newBitmap.setImmutable()
+        val newFrame = Image.makeFromBitmap(newBitmap)
+
+        cachedFrame?.close()
+        bitmapPixels?.close()
+        bitmap?.close()
+        cachedFrame = newFrame
+        bitmap = newBitmap
+        bitmapPixels = newPixels
+        cachedState = state
+        return newFrame
+    }
+
+    fun release() {
+        nSetSurfaceConfigOpenGL(handlePtr, 0, 0, 0L)
+        nAckRetiredBuffersOpenGL(handlePtr)
+        cachedFrame?.close()
+        cachedFrame = null
+        cachedState = 0L
+        ackedGeneration = -1
+        bitmapPixels?.close()
+        bitmapPixels = null
+        bitmap?.close()
+        bitmap = null
+        requestedWidth = 0
+        requestedHeight = 0
+        requestedDevicePtr = 0L
     }
 }
 
@@ -987,6 +1503,8 @@ private class CpuReadbackConsumer(
     private var bitmapPixels: Pixmap? = null
     private var cachedFrame: Image? = null
     private var cachedState = 0L
+
+    val lastState: Long get() = cachedState
 
     private var requestedWidth = 0
     private var requestedHeight = 0

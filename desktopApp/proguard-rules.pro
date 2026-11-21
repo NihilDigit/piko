@@ -102,6 +102,21 @@
 }
 -keepclassmembers class org.jetbrains.skiko.renderer.LinuxOpenGLRenderer {
     *** context;
+    *** lockedDrawingSurface;
+    *** lockDrawingSurface$org_jetbrains_skiko_skiko();
+    *** unlockDrawingSurface$org_jetbrains_skiko_skiko();
+    *** makeCurrent$org_jetbrains_skiko_skiko();
+}
+-keep class org.jetbrains.skiko.OpenGLLibrary_jvmKt {
+    public static void loadOpenGLLibrary();
+}
+-keep class org.jetbrains.skiko.AWTLinuxDrawingSurfaceKt {
+    public static *** lockLinuxDrawingSurface(...);
+    public static void unlockLinuxDrawingSurface(...);
+}
+-keep class org.jetbrains.skiko.renderer.LinuxOpenGLRendererKt {
+    public static long access$createContext(...);
+    public static void access$destroyContext(...);
 }
 
 # sqlite-jdbc：JDBC Driver 经 ServiceLoader 装载，NativeDB 与进度/函数回调由原生 sqlite3 经 JNI 按签名反射查找

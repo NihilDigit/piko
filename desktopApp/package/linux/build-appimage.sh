@@ -52,6 +52,13 @@ cp -a "$app/." "$appdir/usr/"
 cat > "$appdir/AppRun" <<EOF
 #!/bin/sh
 here="\$(dirname "\$(readlink -f "\$0")")"
+if [ -e /dev/dxg ] && [ -z "\${GALLIUM_DRIVER:-}" ] && [ -z "\${LIBGL_ALWAYS_SOFTWARE:-}" ]; then
+    skip_d3d12=0
+    for arg in "\$@"; do
+        [ "\$arg" = "--disable-gpu" ] && skip_d3d12=1
+    done
+    [ "\$skip_d3d12" -eq 0 ] && export GALLIUM_DRIVER=d3d12
+fi
 exec "\$here/usr/bin/$package" "\$@"
 EOF
 chmod +x "$appdir/AppRun"

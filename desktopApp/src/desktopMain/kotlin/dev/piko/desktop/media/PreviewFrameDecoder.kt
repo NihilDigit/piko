@@ -293,16 +293,27 @@ internal object PreviewFrameDecoder {
                     when (whence and AVSEEK_FORCE.inv()) {
                         AVSEEK_SIZE -> bytes.size.toLong()
                         0 -> {
-                            pos = offset.toInt().coerceIn(0, bytes.size)
-                            pos.toLong()
+                            if (offset < 0L || offset > bytes.size.toLong()) AVERROR_EIO.toLong()
+                            else {
+                                pos = offset.toInt()
+                                pos.toLong()
+                            }
                         }
                         1 -> {
-                            pos = (pos + offset).toInt().coerceIn(0, bytes.size)
-                            pos.toLong()
+                            val target = Math.addExact(pos.toLong(), offset)
+                            if (target < 0L || target > bytes.size.toLong()) AVERROR_EIO.toLong()
+                            else {
+                                pos = target.toInt()
+                                pos.toLong()
+                            }
                         }
                         2 -> {
-                            pos = (bytes.size + offset).toInt().coerceIn(0, bytes.size)
-                            pos.toLong()
+                            val target = Math.addExact(bytes.size.toLong(), offset)
+                            if (target < 0L || target > bytes.size.toLong()) AVERROR_EIO.toLong()
+                            else {
+                                pos = target.toInt()
+                                pos.toLong()
+                            }
                         }
                         else -> AVERROR_EIO.toLong()
                     }

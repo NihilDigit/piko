@@ -15,9 +15,11 @@ import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.invoke.MethodHandle
 import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.SwingUtilities
 
@@ -325,8 +327,10 @@ class WindowsSmtcSession(
     }
 
     private fun releaseOnWorker() {
+        var removeSucceeded = true
         if (smtc != MemorySegment.NULL && hasEventToken) {
-            ComInterop.invokeVtable(smtc, SLOT_SMTC_REMOVE_BUTTON_PRESSED, DESC_REMOVE_EVENT, smtc, eventToken)
+            val hrRemove = ComInterop.invokeVtable(smtc, SLOT_SMTC_REMOVE_BUTTON_PRESSED, DESC_REMOVE_EVENT, smtc, eventToken)
+            removeSucceeded = hrRemove >= 0
             hasEventToken = false
             registeredToken = 0L
         }
@@ -341,10 +345,11 @@ class WindowsSmtcSession(
             ComInterop.release(smtc)
             smtc = MemorySegment.NULL
         }
-        // 在 remove_ButtonPressed 返回后再释放回调 Arena，避免 WinRT 仍在持有函数指针时释放内存
+        // 仅在 COM 引用计数归零且 remove_ButtonPressed 成功后再释放回调 Arena，避免在途 MTA 回调触发 UAF
+        val cb = callback
         callback = null
-        callbackArena?.close()
         callbackArena = null
+        cb?.releaseOwner(removeSucceeded)
     }
 
     private companion object {
@@ -360,11 +365,14 @@ class WindowsSmtcSession(
  * 4 个 upcall 方法由 `desktopApp/proguard-rules.pro` 显式 `-keepclassmembers` 保留。
  */
 internal class SmtcButtonPressedCallback(
-    private val listener: SmtcActionListener,
+    listener: SmtcActionListener,
     private val dispatchOnEdt: Boolean,
-    arena: Arena,
+    private val arena: Arena,
 ) {
+    @Volatile
+    private var activeListener: SmtcActionListener? = listener
     private val refCount = AtomicInteger(1)
+    private val arenaClosed = AtomicBoolean(false)
     internal val queryInterfaceHits = AtomicInteger(0)
 
     private val iidUnknown = arena.allocateFrom(JAVA_BYTE, *IID_IUNKNOWN)
@@ -459,9 +467,30 @@ internal class SmtcButtonPressedCallback(
     fun addRef(@Suppress("UNUSED_PARAMETER") thisPtr: MemorySegment): Int =
         refCount.incrementAndGet()
 
+    private fun closeArenaOnce() {
+        if (arenaClosed.compareAndSet(false, true)) {
+            runCatching { arena.close() }
+                .onFailure { PikoLog.w("SMTC", "Failed to close SMTC callback Arena", it) }
+        }
+    }
+
+    fun releaseOwner(removeSucceeded: Boolean) {
+        activeListener = null
+        if (!removeSucceeded) return
+        if (refCount.decrementAndGet() <= 0) {
+            closeArenaOnce()
+        }
+    }
+
     @Suppress("unused")
-    fun release(@Suppress("UNUSED_PARAMETER") thisPtr: MemorySegment): Int =
-        refCount.decrementAndGet().coerceAtLeast(0)
+    fun release(@Suppress("UNUSED_PARAMETER") thisPtr: MemorySegment): Int {
+        val remaining = refCount.decrementAndGet().coerceAtLeast(0)
+        // 不能在当前 FFM upcall 栈帧内直接关闭所属 Arena，延迟到回调返回原生栈后再关闭
+        if (remaining == 0 && activeListener == null) {
+            CompletableFuture.runAsync(::closeArenaOnce)
+        }
+        return remaining
+    }
 
     @Suppress("unused")
     fun invoke(
@@ -469,6 +498,7 @@ internal class SmtcButtonPressedCallback(
         @Suppress("UNUSED_PARAMETER") senderPtr: MemorySegment,
         argsPtr: MemorySegment,
     ): Int {
+        val target = activeListener ?: return S_OK
         if (argsPtr == MemorySegment.NULL) return S_OK
         runCatching {
             Arena.ofConfined().use { local ->
@@ -484,11 +514,11 @@ internal class SmtcButtonPressedCallback(
                     val button = outButton.get(JAVA_INT, 0L)
                     val deliver = {
                         when (button) {
-                            BUTTON_PLAY -> listener.onPlay()
-                            BUTTON_PAUSE -> listener.onPause()
-                            BUTTON_STOP -> listener.onStop()
-                            BUTTON_NEXT -> listener.onNext()
-                            BUTTON_PREVIOUS -> listener.onPrevious()
+                            BUTTON_PLAY -> target.onPlay()
+                            BUTTON_PAUSE -> target.onPause()
+                            BUTTON_STOP -> target.onStop()
+                            BUTTON_NEXT -> target.onNext()
+                            BUTTON_PREVIOUS -> target.onPrevious()
                         }
                     }
                     if (dispatchOnEdt) {
