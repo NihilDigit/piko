@@ -98,7 +98,7 @@ import dev.piko.ui.screens.player.rememberPlayerFileActions
 import kotlinx.coroutines.launch
 import dev.piko.ui.screens.player.PlayerLevelControl
 import dev.piko.ui.screens.player.PlayerTheme
-import dev.piko.ui.screens.player.PlayerTopBar
+import dev.piko.ui.screens.player.CustomizablePlayerTopBar
 import dev.piko.ui.screens.player.PlayerWindowActions
 import dev.piko.ui.screens.player.rememberScrubFrameCache
 import dev.piko.ui.screens.player.playlistOf
@@ -593,7 +593,7 @@ private fun VideoPlayerContent(
                 modifier = Modifier.fillMaxSize(),
             )
             PlayerTheme {
-                PlayerTopBar(
+                CustomizablePlayerTopBar(
                     title = state.title,
                     episodeLabel = null,
                     isLocalPlayback = state.isLocalPlayback,

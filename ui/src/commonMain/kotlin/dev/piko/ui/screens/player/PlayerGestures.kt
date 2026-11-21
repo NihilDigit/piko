@@ -98,9 +98,9 @@ private sealed interface SurfaceGestureRace {
  * 覆盖整个播放区域的统一手势层（移植自 Bilby `PlayerShell` + `SpeedSelectionGestures`）：
  *
  * - **互斥状态机**：单个 `awaitEachGesture` 内在 `touchSlop` 与 `longPressTimeoutMillis` 之间二选一，
- *   拖拽（横划 seek / 纵划亮度·音量·切集）与长按倍速选档严格互斥，绝不串扰；
+ *   拖拽（横划 seek / 纵划亮度、音量与切集）与长按倍速选档严格互斥，绝不串扰；
  * - **手势自定义**：完整响应 [PlayerGestureConfig]（双击进退开关与区域占比、长按倍速与拨盘开关、
- *   横划进退开关·灵敏度·顶部两角取消区、左右侧纵划动作与区域占比）；
+ *   横划进退开关、灵敏度与顶部两角取消区、左右侧纵划动作与区域占比）；
  * - **连点续进退**：双击进退后在读数停留期间单点同侧继续累加步进，与现有移动端单测契约完全兼容；
  * - **边缘礼让**：从系统返回手势区起手的拖动不消费，交还系统导航。
  */
@@ -215,7 +215,7 @@ internal fun PlayerGestureLayer(
                     doubleTap(zoneAt(secondUp.position.x))
                 }
             }
-            // 内层（链尾优先）：统一互斥的拖拽（横划 seek / 纵划亮度·音量·切集）与长按倍速选档状态机
+            // 内层（链尾优先）：统一互斥的拖拽（横划 seek / 纵划亮度、音量与切集）与长按倍速选档状态机
             .pointerInput(isLocked, speedController, verticalDial) {
                 if (isLocked) return@pointerInput
                 var speedOwned = false

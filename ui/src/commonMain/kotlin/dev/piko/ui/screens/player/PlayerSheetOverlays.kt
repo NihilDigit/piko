@@ -14,7 +14,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FloatingToolbarDefaults
+import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -221,6 +225,7 @@ private enum class CropDragHandle {
 /**
  * 画面框选填充编辑器：在适应屏幕的完整画面上叠加可拖动四角或内部的矩形选框，确定后将该区域放大铺满窗口。
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun CropRegionEditorOverlay(
     initialRegion: VideoCropRegion,
@@ -395,10 +400,11 @@ internal fun CropRegionEditorOverlay(
                 )
             }
 
-            Surface(
-                shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
-                contentColor = MaterialTheme.colorScheme.onSurface,
+            HorizontalFloatingToolbar(
+                expanded = true,
+                colors = FloatingToolbarDefaults.standardFloatingToolbarColors(
+                    toolbarContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.94f),
+                ),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
@@ -406,12 +412,19 @@ internal fun CropRegionEditorOverlay(
                     .padding(bottom = 28.dp),
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    FilledTonalButton(onClick = onReset) { Text(stringResource(Res.string.text_reset_fit)) }
-                    FilledTonalButton(onClick = onCancel) { Text(stringResource(Res.string.common_cancel)) }
+                    FilledTonalButton(
+                        onClick = onReset,
+                        shapes = ButtonDefaults.shapes(),
+                        modifier = Modifier.handCursor(),
+                    ) { Text(stringResource(Res.string.text_reset_fit)) }
+                    FilledTonalButton(
+                        onClick = onCancel,
+                        shapes = ButtonDefaults.shapes(),
+                        modifier = Modifier.handCursor(),
+                    ) { Text(stringResource(Res.string.common_cancel)) }
                     Button(
                         onClick = {
                             val containerAspect = if (containerSize.width > 0 && containerSize.height > 0) {
@@ -419,6 +432,8 @@ internal fun CropRegionEditorOverlay(
                             } else 0f
                             onConfirm(region.copy(containerAspect = containerAspect))
                         },
+                        shapes = ButtonDefaults.shapes(),
+                        modifier = Modifier.handCursor(),
                     ) { Text(stringResource(Res.string.text_fill_screen)) }
                 }
             }

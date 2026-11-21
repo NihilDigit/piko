@@ -22,7 +22,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.ButtonShapes
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -61,6 +63,7 @@ import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.VideoPreviewSupport
 import io.github.nihildigit.pikpak.FileStat
 import dev.piko.ui.format.formatDurationMillis
+import dev.piko.ui.theme.tabular
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -195,7 +198,7 @@ class SegmentSession {
  * 只放一个预览，用「起点 | 终点」切换它显示哪一端；拖动区间滑块时自动跟随被拖的那一端。
  * 原先两张半屏宽的预览并排，画面小到看不清，且各开一个代理会话，白占一份账号连接预算。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun SegmentDownloadSheet(
     session: SegmentSession,
@@ -288,7 +291,12 @@ fun SegmentDownloadSheet(
             dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text(stringResource(Res.string.text_keep_editing)) } },
         )
     }
-    PikoSheet(onDismissRequest = { if (session.isEdited) confirmDiscard = true else session.end() }) {
+    val sheetTitle = stringResource(Res.string.text_download_clip)
+    PikoSheet(
+        onDismissRequest = { if (session.isEdited) confirmDiscard = true else session.end() },
+        sideSheetTitle = sheetTitle,
+    ) {
+        val inSideSheet = isSideSheet
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -298,7 +306,9 @@ fun SegmentDownloadSheet(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Column {
-                Text(stringResource(Res.string.text_download_clip), style = MaterialTheme.typography.titleLarge)
+                if (!inSideSheet) {
+                    Text(sheetTitle, style = MaterialTheme.typography.titleLarge)
+                }
                 Text(
                     text = itemName ?: file.name,
                     style = MaterialTheme.typography.bodyMedium,
@@ -344,7 +354,7 @@ fun SegmentDownloadSheet(
                 )
                 Text(
                     text = formatTimeMs(editingPosition),
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleLarge.tabular,
                     modifier = Modifier
                         .weight(1f)
                         .padding(horizontal = 12.dp),
@@ -353,13 +363,19 @@ fun SegmentDownloadSheet(
                     OutlinedButton(
                         onClick = { nudge(-1000L) },
                         enabled = normalized?.canAdjust == true && nudged(-1000L) != normalized,
-                        shape = ButtonGroupDefaults.connectedLeadingButtonShape,
-                    ) { Text("−1") }
+                        shapes = ButtonShapes(
+                            shape = ButtonGroupDefaults.connectedLeadingButtonShape,
+                            pressedShape = ButtonGroupDefaults.connectedLeadingButtonPressShape,
+                        ),
+                    ) { Text("−1", style = MaterialTheme.typography.labelLarge.tabular) }
                     OutlinedButton(
                         onClick = { nudge(1000L) },
                         enabled = normalized?.canAdjust == true && nudged(1000L) != normalized,
-                        shape = ButtonGroupDefaults.connectedTrailingButtonShape,
-                    ) { Text("+1") }
+                        shapes = ButtonShapes(
+                            shape = ButtonGroupDefaults.connectedTrailingButtonShape,
+                            pressedShape = ButtonGroupDefaults.connectedTrailingButtonPressShape,
+                        ),
+                    ) { Text("+1", style = MaterialTheme.typography.labelLarge.tabular) }
                 }
             }
 
@@ -390,12 +406,12 @@ fun SegmentDownloadSheet(
                     Row(modifier = Modifier.fillMaxWidth()) {
                         Text(
                             text = tr("${formatTimeMs(startPosMs)} 至 ${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)} to ${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)} ～ ${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)}~${formatTimeMs(endPosMs)}", "${formatTimeMs(startPosMs)} 至 ${formatTimeMs(endPosMs)}"),
-                            style = MaterialTheme.typography.labelMedium,
+                            style = MaterialTheme.typography.labelMedium.tabular,
                             modifier = Modifier.weight(1f),
                         )
                         Text(
                             text = tr("全长 ${formatTimeMs(totalDurationMs)}", "Total ${formatTimeMs(totalDurationMs)}", "全長 ${formatTimeMs(totalDurationMs)}", "전체 길이 ${formatTimeMs(totalDurationMs)}", "全長 ${formatTimeMs(totalDurationMs)}"),
-                            style = MaterialTheme.typography.labelMedium,
+                            style = MaterialTheme.typography.labelMedium.tabular,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -432,7 +448,7 @@ fun SegmentDownloadSheet(
             Column {
                 MetaRow(
                     parts = listOfNotNull(tr("时长 ${formatTimeMs(clipDurationMs)}", "Duration ${formatTimeMs(clipDurationMs)}", "長さ ${formatTimeMs(clipDurationMs)}", "길이 ${formatTimeMs(clipDurationMs)}", "時長 ${formatTimeMs(clipDurationMs)}"), estimatedBytes?.let { tr("约 ${it.toReadableSize()}", "About ${it.toReadableSize()}", "約 ${it.toReadableSize()}", "약 ${it.toReadableSize()}", "約 ${it.toReadableSize()}") }),
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodyMedium.tabular,
                 )
                 Text(
                     text = stringResource(Res.string.text_align_start_to_previous_keyframe),
@@ -456,6 +472,7 @@ fun SegmentDownloadSheet(
                 },
                 // 选中的档读不出时没有可下的档：放行的话 null 会被当成「按设置挑」，悄悄换了画质
                 enabled = normalized != null && !pickedUnreadable,
+                shapes = ButtonDefaults.shapes(),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),

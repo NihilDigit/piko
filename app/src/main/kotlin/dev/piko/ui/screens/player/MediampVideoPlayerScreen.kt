@@ -526,7 +526,7 @@ fun MediampVideoPlayerScreen(
                     modifier = Modifier.fillMaxSize(),
                 )
                 PlayerTheme {
-                    PlayerTopBar(
+                    CustomizablePlayerTopBar(
                         title = state.title,
                         episodeLabel = null,
                         isLocalPlayback = state.isLocalPlayback,

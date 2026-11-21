@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -63,11 +64,13 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledIconToggleButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.FilledTonalToggleButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -79,18 +82,16 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -105,6 +106,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
@@ -138,8 +140,8 @@ import dev.piko.shared.media.player.ListenLayoutConfig
 import dev.piko.shared.media.player.ListenQuickChip
 import dev.piko.shared.media.player.PlayerScreenState
 import dev.piko.shared.media.player.PlaylistEntry
+import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.PikoDialog
-import dev.piko.ui.components.PikoLoadingIndicator
 import dev.piko.ui.components.PikoSheet
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.formatTimeMs
@@ -147,8 +149,10 @@ import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.platform.captionExclusion
 import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.resources.*
+import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.LocalPikoMotion
 import dev.piko.ui.theme.LocalWindowVisible
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.tabular
 import kotlinx.coroutines.delay
 import kotlin.math.PI
@@ -181,6 +185,21 @@ private class ListenScrubState {
     var cancelArmed by mutableStateOf(false)
     val isScrubbing: Boolean get() = dragPositionMillis != null
 }
+
+@Immutable
+internal data class ListenQuickActionItem(
+    val icon: ImageVector,
+    val label: String,
+    val highlighted: Boolean,
+    val onClick: () -> Unit,
+)
+
+internal data class ListenEditHooks(
+    val selectedSlot: CenterSlotPosition,
+    val dropTargetSlot: CenterSlotPosition?,
+    val onSelectSlot: (CenterSlotPosition) -> Unit,
+    val onSlotBounds: (CenterSlotPosition, Rect) -> Unit,
+)
 
 /**
  * 音频与「听视频」播放页（移植自 Bilby ListenScreen 并适配 Piko 播放状态与 M3 Expressive 规范）：
@@ -361,8 +380,9 @@ fun ListenScreen(
                 if (onSwitchToVideo != null) {
                     FilledTonalButton(
                         onClick = onSwitchToVideo,
+                        shapes = ButtonDefaults.shapes(),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                        modifier = Modifier.captionExclusion(),
+                        modifier = Modifier.captionExclusion().handCursor(),
                     ) {
                         Icon(Icons.Outlined.Movie, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
@@ -560,7 +580,6 @@ fun ListenScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ListenMainPane(
     state: PlayerScreenState,
@@ -579,83 +598,236 @@ private fun ListenMainPane(
     onOpenQueue: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val speedLabelText = stringResource(Res.string.listen_speed)
+    val sleepOffLabel = stringResource(Res.string.listen_sleep_timer)
+    val sleepAfterLabel = stringResource(Res.string.listen_sleep_after_current)
+    val sleepLabel = when (sleepTimer) {
+        ListenSleepTimer.Off -> sleepOffLabel
+        ListenSleepTimer.AfterCurrent -> sleepAfterLabel
+        is ListenSleepTimer.Countdown -> stringResource(
+            Res.string.listen_sleep_remaining_fmt,
+            formatCountdown(sleepTimer.remainingSeconds),
+        )
+    }
+    val queueLabel = if (showQueueChip) {
+        stringResource(Res.string.listen_queue_count_fmt, state.playlist.size)
+    } else {
+        ""
+    }
+    val quickActions = buildList {
+        if (listenLayout.hasChip(ListenQuickChip.Speed) && state.playbackSpeed != null) {
+            val activeSpeed = state.playbackSpeed ?: 1f
+            add(
+                ListenQuickActionItem(
+                    icon = Icons.Filled.Speed,
+                    label = if (abs(activeSpeed - 1f) < 0.01f) speedLabelText else formatListenSpeed(activeSpeed),
+                    highlighted = abs(activeSpeed - 1f) >= 0.01f,
+                    onClick = onOpenSpeed,
+                ),
+            )
+        }
+        if (listenLayout.hasChip(ListenQuickChip.SleepTimer)) {
+            add(
+                ListenQuickActionItem(
+                    icon = Icons.Filled.Bedtime,
+                    label = sleepLabel,
+                    highlighted = sleepTimer !is ListenSleepTimer.Off,
+                    onClick = onOpenSleep,
+                ),
+            )
+        }
+        if (showQueueChip) {
+            add(
+                ListenQuickActionItem(
+                    icon = Icons.AutoMirrored.Outlined.QueueMusic,
+                    label = queueLabel,
+                    highlighted = false,
+                    onClick = onOpenQueue,
+                ),
+            )
+        }
+    }
+
+    ListenMainContent(
+        title = state.title.substringBeforeLast('.').ifBlank { state.title },
+        coverUrl = coverUrl,
+        listenLayout = listenLayout,
+        isPlaying = state.isPlaying,
+        isLoading = state.isLoading,
+        loadingSpeedText = state.loadingSpeedText,
+        errorMessage = state.errorMessage,
+        onRetry = state::retry,
+        positionMillisProvider = { state.positionMillis },
+        readoutPositionMillis = scrub.dragPositionMillis ?: state.positionMillis,
+        durationMillis = state.durationMillis,
+        bufferedPositionMillisProvider = { state.bufferedPositionMillis },
+        playbackSpeed = state.playbackSpeed ?: 1f,
+        isScrubbing = scrub.isScrubbing,
+        cancelArmed = scrub.cancelArmed,
+        hasPrevious = state.previousEntry != null,
+        hasNext = state.nextEntry != null,
+        onTogglePlayPause = state::togglePlayPause,
+        onPrevious = state::playPrevious,
+        onNext = state::playNext,
+        onSeek = state::seekTo,
+        onSeekBarScrub = { preview -> scrub.dragPositionMillis = preview },
+        previewSeekMillis = scrub.dragPositionMillis,
+        onSeekBySeconds = onSeekBySeconds,
+        onDiscScrubStart = onScrubStart,
+        onDiscScrub = onScrub,
+        onDiscScrubEnd = onScrubEnd,
+        onDiscCancelArmedChange = { scrub.cancelArmed = it },
+        onDiscScrubCancel = onScrubCancel,
+        quickActions = quickActions,
+        compact = false,
+        editHooks = null,
+        modifier = modifier,
+    )
+}
+
+/**
+ * 听音频主舞台单一权威实现：同时驱动真实 [ListenMainPane] 与自定义页 `ListenPreviewCanvas`，
+ * 确保封面/黑胶唱片、标题、时间读数、波浪进度条、5 槽位控制行与底部胶囊行 100% 零分叉。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+internal fun ListenMainContent(
+    title: String,
+    coverUrl: String,
+    listenLayout: ListenLayoutConfig,
+    isPlaying: Boolean,
+    positionMillisProvider: () -> Long,
+    readoutPositionMillis: Long,
+    durationMillis: Long,
+    bufferedPositionMillisProvider: () -> Long,
+    onTogglePlayPause: () -> Unit,
+    modifier: Modifier = Modifier,
+    isLoading: Boolean = false,
+    loadingSpeedText: String? = null,
+    errorMessage: String? = null,
+    onRetry: () -> Unit = {},
+    playbackSpeed: Float = 1f,
+    isScrubbing: Boolean = false,
+    cancelArmed: Boolean = false,
+    hasPrevious: Boolean = false,
+    hasNext: Boolean = false,
+    onPrevious: () -> Unit = {},
+    onNext: () -> Unit = {},
+    onSeek: (Long) -> Unit = {},
+    onSeekBarScrub: (Long?) -> Unit = {},
+    previewSeekMillis: Long? = null,
+    onSeekBySeconds: (Int) -> Unit = {},
+    onDiscScrubStart: () -> Unit = {},
+    onDiscScrub: (Long) -> Unit = {},
+    onDiscScrubEnd: () -> Unit = {},
+    onDiscCancelArmedChange: (Boolean) -> Unit = {},
+    onDiscScrubCancel: () -> Unit = {},
+    quickActions: List<ListenQuickActionItem> = emptyList(),
+    compact: Boolean = false,
+    editHooks: ListenEditHooks? = null,
+) {
+    val isPreview = editHooks != null
     val density = LocalDensity.current
     var artWidthDp by remember { mutableStateOf(0.dp) }
     var artHeightDp by remember { mutableStateOf(0.dp) }
+    val previewCoverSize = if (compact) 84.dp else 144.dp
 
     Column(
         modifier = modifier
-            .padding(horizontal = 24.dp)
-            .padding(bottom = 20.dp),
+            .then(
+                if (isPreview) {
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = if (compact) 10.dp else 18.dp)
+                } else {
+                    Modifier
+                        .padding(horizontal = 24.dp)
+                        .padding(bottom = 20.dp)
+                },
+            ),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // 封面 / 黑胶唱片区（自适应占用剩余高度）
+        // 封面 / 黑胶唱片区（真实页面自适应占用剩余高度，自定义页在可滚动容器内使用确定尺寸）
         Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .onSizeChanged { size ->
-                    artWidthDp = with(density) { size.width.toDp() }
-                    artHeightDp = with(density) { size.height.toDp() }
-                },
+            modifier = if (isPreview) {
+                Modifier.size(previewCoverSize)
+            } else {
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .onSizeChanged { size ->
+                        artWidthDp = with(density) { size.width.toDp() }
+                        artHeightDp = with(density) { size.height.toDp() }
+                    }
+            },
             contentAlignment = Alignment.Center,
         ) {
             if (listenLayout.coverStyle == ListenCoverStyle.StaticCover) {
                 ListenStaticCover(
                     coverUrl = coverUrl,
-                    maxWidth = artWidthDp,
-                    maxHeight = artHeightDp,
+                    maxWidth = if (isPreview) previewCoverSize else artWidthDp,
+                    maxHeight = if (isPreview) previewCoverSize else artHeightDp,
+                    minSide = if (isPreview) previewCoverSize else 140.dp,
+                )
+            } else if (isPreview) {
+                ListenVinylDiscVisual(
+                    coverUrl = coverUrl,
+                    discSize = previewCoverSize,
                 )
             } else {
                 val discSize = (minOf(artWidthDp, artHeightDp) * DiscSizeFraction).coerceIn(140.dp, 320.dp)
                 ListenVinylDisc(
                     coverUrl = coverUrl,
                     discSize = discSize,
-                    isPlaying = state.isPlaying && !state.isLoading,
-                    speed = state.playbackSpeed ?: 1f,
-                    positionMillisProvider = { scrub.dragPositionMillis ?: state.positionMillis },
-                    durationMillis = state.durationMillis,
-                    isScrubbing = scrub.isScrubbing,
-                    cancelArmed = scrub.cancelArmed,
-                    onScrubStart = onScrubStart,
-                    onScrub = onScrub,
-                    onScrubEnd = onScrubEnd,
-                    onCancelArmedChange = { scrub.cancelArmed = it },
-                    onScrubCancel = onScrubCancel,
+                    isPlaying = isPlaying && !isLoading,
+                    speed = playbackSpeed,
+                    positionMillisProvider = { previewSeekMillis ?: positionMillisProvider() },
+                    durationMillis = durationMillis,
+                    isScrubbing = isScrubbing,
+                    cancelArmed = cancelArmed,
+                    onScrubStart = onDiscScrubStart,
+                    onScrub = onDiscScrub,
+                    onScrubEnd = onDiscScrubEnd,
+                    onCancelArmedChange = onDiscCancelArmedChange,
+                    onScrubCancel = onDiscScrubCancel,
                 )
             }
 
-            // 转动唱片离盘取消提示胶囊（浮在唱片正中，不占布局高度）
-            val motion = MaterialTheme.motionScheme
-            androidx.compose.animation.AnimatedVisibility(
-                visible = scrub.cancelArmed,
-                enter = fadeIn(motion.fastEffectsSpec()) + scaleIn(motion.fastSpatialSpec(), initialScale = 0.85f),
-                exit = fadeOut(motion.fastEffectsSpec()) + scaleOut(motion.fastSpatialSpec(), targetScale = 0.85f),
-            ) {
-                Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                    shape = CircleShape,
+            if (!isPreview) {
+                val motion = MaterialTheme.motionScheme
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = cancelArmed,
+                    enter = fadeIn(motion.fastEffectsSpec()) + scaleIn(motion.fastSpatialSpec(), initialScale = 0.85f),
+                    exit = fadeOut(motion.fastEffectsSpec()) + scaleOut(motion.fastSpatialSpec(), targetScale = 0.85f),
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        shape = CircleShape,
                     ) {
-                        Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Text(
-                            text = stringResource(Res.string.listen_release_to_cancel),
-                            style = MaterialTheme.typography.labelLarge,
-                            maxLines = 1,
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        ) {
+                            Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Text(
+                                text = stringResource(Res.string.listen_release_to_cancel),
+                                style = MaterialTheme.typography.labelLarge,
+                                maxLines = 1,
+                            )
+                        }
                     }
                 }
             }
         }
 
+        if (isPreview) {
+            Spacer(Modifier.height(if (compact) 6.dp else 10.dp))
+        }
+
         // 错误或加载提示
-        val error = state.errorMessage
-        if (error != null) {
+        if (errorMessage != null) {
             Surface(
                 color = MaterialTheme.colorScheme.errorContainer,
                 contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -669,30 +841,29 @@ private fun ListenMainPane(
                 ) {
                     Icon(Icons.Outlined.ErrorOutline, contentDescription = null, modifier = Modifier.size(20.dp))
                     Text(
-                        text = error,
+                        text = errorMessage,
                         style = MaterialTheme.typography.bodyMedium,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
                     )
-                    TextButton(onClick = state::retry) {
+                    TextButton(onClick = onRetry) {
                         Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
                         Text(stringResource(Res.string.listen_retry))
                     }
                 }
             }
-        } else if (state.isLoading) {
+        } else if (isLoading) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.padding(bottom = 8.dp),
             ) {
-                PikoLoadingIndicator(size = 20.dp)
-                val speedText = state.loadingSpeedText
-                if (!speedText.isNullOrBlank()) {
+                InlineLoadingIndicator()
+                if (!loadingSpeedText.isNullOrBlank()) {
                     Text(
-                        text = speedText,
+                        text = loadingSpeedText,
                         style = MaterialTheme.typography.labelMedium.tabular,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -702,98 +873,75 @@ private fun ListenMainPane(
 
         // 标题与来源小标（避免重复信息：标题一行/两行居中）
         Text(
-            text = state.title.substringBeforeLast('.').ifBlank { state.title },
-            style = MaterialTheme.typography.headlineSmallEmphasized,
+            text = title,
+            style = if (compact) MaterialTheme.typography.titleMediumEmphasized else MaterialTheme.typography.headlineSmallEmphasized,
             textAlign = TextAlign.Center,
-            maxLines = 2,
+            maxLines = if (isPreview) 1 else 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth().widthIn(max = 520.dp),
+            modifier = Modifier.fillMaxWidth().widthIn(max = if (isPreview) 360.dp else 520.dp),
         )
         Spacer(Modifier.height(6.dp))
 
-        // 等宽时间大读数（按住拖动染主题色，进入取消区退为次要色）
-        ListenTimeReadout(
-            positionMillis = scrub.dragPositionMillis ?: state.positionMillis,
-            durationMillis = state.durationMillis,
-            active = scrub.isScrubbing,
-            cancelArmed = scrub.cancelArmed,
-        )
-
-        Spacer(Modifier.height(8.dp))
+        if (!compact) {
+            // 等宽时间大读数（按住拖动染主题色，进入取消区退为次要色）
+            ListenTimeReadout(
+                positionMillis = readoutPositionMillis,
+                durationMillis = durationMillis,
+                active = isScrubbing,
+                cancelArmed = cancelArmed,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
 
         // 细轨道进度条（复用 Piko PlayerSeekBar，仅音频播放启用 M3E 波浪轨道）
-        Box(modifier = Modifier.fillMaxWidth().widthIn(max = 520.dp)) {
+        Box(modifier = Modifier.fillMaxWidth().widthIn(max = if (isPreview) 360.dp else 520.dp)) {
             PlayerSeekBar(
-                positionMillisProvider = { state.positionMillis },
-                durationMillis = state.durationMillis,
-                bufferedPositionMillisProvider = { state.bufferedPositionMillis },
-                onSeek = state::seekTo,
-                isPlaying = state.isPlaying,
-                playbackSpeed = state.playbackSpeed ?: 1f,
+                positionMillisProvider = positionMillisProvider,
+                durationMillis = durationMillis,
+                bufferedPositionMillisProvider = bufferedPositionMillisProvider,
+                onSeek = onSeek,
+                isPlaying = isPlaying,
+                playbackSpeed = playbackSpeed,
                 wavy = true,
-                onScrub = { preview -> scrub.dragPositionMillis = preview },
-                previewMillis = scrub.dragPositionMillis,
+                onScrub = onSeekBarScrub,
+                previewMillis = previewSeekMillis,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
 
         // 5 槽位播放控制行（遵循 LocalPlayerLayoutPrefs.current.listen 配置）
         ListenTransportRow(
             config = listenLayout,
-            isPlaying = state.isPlaying,
-            hasPrevious = state.previousEntry != null,
-            hasNext = state.nextEntry != null,
-            onTogglePlayPause = state::togglePlayPause,
-            onPrevious = state::playPrevious,
-            onNext = state::playNext,
+            isPlaying = isPlaying,
+            hasPrevious = hasPrevious,
+            hasNext = hasNext,
+            onTogglePlayPause = onTogglePlayPause,
+            onPrevious = onPrevious,
+            onNext = onNext,
             onSeekBySeconds = onSeekBySeconds,
+            previewMode = isPreview,
+            selectedSlot = editHooks?.selectedSlot,
+            onSelectSlot = editHooks?.onSelectSlot,
+            dropTargetSlot = editHooks?.dropTargetSlot,
+            onSlotBounds = editHooks?.onSlotBounds,
         )
 
-        Spacer(Modifier.height(16.dp))
-
-        // 底部快捷胶囊行（倍速 / 定时关闭 / 窄屏队列，遵循 #35 DRY）
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (listenLayout.hasChip(ListenQuickChip.Speed) && state.playbackSpeed != null) {
-                val activeSpeed = state.playbackSpeed ?: 1f
-                ListenActionPill(
-                    icon = Icons.Filled.Speed,
-                    label = if (abs(activeSpeed - 1f) < 0.01f) {
-                        stringResource(Res.string.listen_speed)
-                    } else {
-                        formatListenSpeed(activeSpeed)
-                    },
-                    highlighted = abs(activeSpeed - 1f) >= 0.01f,
-                    onClick = onOpenSpeed,
-                )
-            }
-            if (listenLayout.hasChip(ListenQuickChip.SleepTimer)) {
-                val sleepLabel = when (sleepTimer) {
-                    ListenSleepTimer.Off -> stringResource(Res.string.listen_sleep_timer)
-                    ListenSleepTimer.AfterCurrent -> stringResource(Res.string.listen_sleep_after_current)
-                    is ListenSleepTimer.Countdown -> stringResource(
-                        Res.string.listen_sleep_remaining_fmt,
-                        formatCountdown(sleepTimer.remainingSeconds),
+        if (!compact && quickActions.isNotEmpty()) {
+            Spacer(Modifier.height(if (isPreview) 10.dp else 16.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                quickActions.forEach { action ->
+                    ListenActionPill(
+                        icon = action.icon,
+                        label = action.label,
+                        highlighted = action.highlighted,
+                        onClick = action.onClick,
                     )
                 }
-                ListenActionPill(
-                    icon = Icons.Filled.Bedtime,
-                    label = sleepLabel,
-                    highlighted = sleepTimer !is ListenSleepTimer.Off,
-                    onClick = onOpenSleep,
-                )
-            }
-            if (showQueueChip) {
-                ListenActionPill(
-                    icon = Icons.AutoMirrored.Outlined.QueueMusic,
-                    label = stringResource(Res.string.listen_queue_count_fmt, state.playlist.size),
-                    highlighted = false,
-                    onClick = onOpenQueue,
-                )
             }
         }
     }
@@ -843,8 +991,9 @@ internal fun ListenStaticCover(
     coverUrl: String,
     maxWidth: Dp,
     maxHeight: Dp,
+    minSide: Dp = 140.dp,
 ) {
-    val side = (minOf(maxWidth, maxHeight) * 0.80f).coerceIn(140.dp, 280.dp)
+    val side = (minOf(maxWidth, maxHeight) * 0.80f).coerceIn(minSide.coerceAtMost(280.dp), 280.dp)
     Surface(
         shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -1031,7 +1180,7 @@ private fun ListenVinylDisc(
 }
 
 /**
- * 黑胶唱片盘体 + 中央标签纸 + 中心轴孔（由 [ListenScreen] 与 `PlayerCustomizationPage` 共用，保证 1:1 一致）。
+ * 黑胶唱片盘体 + 中央标签纸 + 中心轴孔（由 [ListenMainContent] 统一驱动，保证真实聆听与预览 1:1 一致）。
  *
  * 无封面图时，中央标签围绕中心轴孔绘制对称极简黑胶唱片环纹，避免任何居中图标与黑色轴孔重叠冲突。
  */
@@ -1163,6 +1312,7 @@ internal fun ListenVinylDiscVisual(
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun ListenTransportRow(
     config: ListenLayoutConfig,
@@ -1209,14 +1359,17 @@ internal fun ListenTransportRow(
             onSelect = { onSelectSlot?.invoke(CenterSlotPosition.InnerLeft) },
             onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.InnerLeft, rect) } },
         )
-        FilledIconButton(
-            onClick = onTogglePlayPause,
-            modifier = Modifier.size(64.dp),
-            shape = CircleShape,
-            colors = IconButtonDefaults.filledIconButtonColors(
+        FilledIconToggleButton(
+            checked = isPlaying,
+            onCheckedChange = { onTogglePlayPause() },
+            shapes = IconButtonDefaults.toggleableShapes(),
+            colors = IconButtonDefaults.filledIconToggleButtonColors(
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
+                checkedContainerColor = MaterialTheme.colorScheme.primary,
+                checkedContentColor = MaterialTheme.colorScheme.onPrimary,
             ),
+            modifier = Modifier.size(64.dp).handCursor(),
         ) {
             Icon(
                 imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
@@ -1253,6 +1406,7 @@ internal fun ListenTransportRow(
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ListenSideSlotButton(
     slot: CenterSlotConfig,
@@ -1356,7 +1510,8 @@ private fun ListenSideSlotButton(
         FilledTonalIconButton(
             onClick = onClick,
             enabled = enabled,
-            modifier = boundsMod.size(sizeDp).then(selectMod),
+            shapes = IconButtonDefaults.shapes(),
+            modifier = boundsMod.size(sizeDp).then(selectMod).handCursor(enabled),
         ) {
             Icon(icon, contentDescription = label, modifier = Modifier.size(iconSize))
         }
@@ -1364,38 +1519,36 @@ private fun ListenSideSlotButton(
         IconButton(
             onClick = onClick,
             enabled = enabled,
-            modifier = boundsMod.size(sizeDp).then(selectMod),
+            shapes = IconButtonDefaults.shapes(),
+            modifier = boundsMod.size(sizeDp).then(selectMod).handCursor(enabled),
         ) {
             Icon(icon, contentDescription = label, modifier = Modifier.size(iconSize))
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun ListenActionPill(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: ImageVector,
     label: String,
     highlighted: Boolean,
     onClick: () -> Unit,
 ) {
-    Surface(
-        onClick = onClick,
-        shape = CircleShape,
-        color = if (highlighted) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentColor = if (highlighted) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+    val isEInk = LocalAppearance.current.isEInk
+    FilledTonalToggleButton(
+        checked = highlighted,
+        onCheckedChange = { onClick() },
+        border = if (isEInk) BorderStroke(1.dp, MaterialTheme.colorScheme.outline) else null,
+        modifier = Modifier.handCursor(),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-        ) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge.tabular,
-                maxLines = 1,
-            )
-        }
+        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge.tabular,
+            maxLines = 1,
+        )
     }
 }
 
