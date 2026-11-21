@@ -10,6 +10,7 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.value
 import platform.AVFAudio.AVAudioSession
 import platform.AVFAudio.AVAudioSessionCategoryPlayback
+import platform.AVFAudio.setActive
 import platform.Foundation.NSError
 import platform.UIKit.UIApplication
 import platform.UIKit.UISceneActivationStateForegroundActive

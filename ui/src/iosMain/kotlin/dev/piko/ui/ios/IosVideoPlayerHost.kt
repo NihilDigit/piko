@@ -516,7 +516,7 @@ private class PlayerSession(
         val options = group.options.filterIsInstance<AVMediaSelectionOption>()
         if (options.isEmpty()) return
         val preferredTags = when (PikoLocale.effectiveLanguage) {
-            AppLanguage.ZH_TW -> listOf("zh-hant", "zh-tw", "zh-hk", "cht", "zht", "zh")
+            AppLanguage.ZH_HANT -> listOf("zh-hant", "zh-tw", "zh-hk", "cht", "zht", "zh")
             AppLanguage.JA -> listOf("ja", "jpn")
             AppLanguage.KO -> listOf("ko", "kor")
             AppLanguage.EN -> listOf("en", "eng")
