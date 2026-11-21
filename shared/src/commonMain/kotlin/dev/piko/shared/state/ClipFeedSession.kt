@@ -79,7 +79,7 @@ const val CLIP_LENGTH_MS = 30_000L
 class ClipFeedSession(
     private val clients: PikoClientProvider,
     private val driveRepo: PikoDriveRepository,
-    private val media: PikoMediaRepository,
+    private val media: dev.piko.shared.media.MediaService,
     private val cacheStore: PikoCacheStore?,
     private val scope: CoroutineScope,
 ) {

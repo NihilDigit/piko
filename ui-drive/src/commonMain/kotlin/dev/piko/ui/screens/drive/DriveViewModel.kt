@@ -18,13 +18,13 @@ import dev.piko.shared.data.ImportPreviewLocation
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.isImportPreview
-import dev.piko.shared.download.PikoDownloadCoordinator
+import dev.piko.shared.download.DownloadService
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 import dev.piko.shared.log.logFolder
-import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.media.MediaService
 import dev.piko.shared.media.proxy.openForExternalPlayer
 import dev.piko.shared.naming.av.canonicalAvNameOf
 import dev.piko.shared.presentation.ActionAvailability
@@ -150,9 +150,9 @@ internal class DriveViewModel(
     private val duplicateSession: DuplicateSession,
     private val archiveSession: ArchiveExtractSession,
     private val vaultSession: FolderVaultSession,
-    private val downloadManager: PikoDownloadCoordinator,
+    private val downloadManager: DownloadService,
     private val uploadManager: PikoUploadCoordinator,
-    private val mediaRepository: PikoMediaRepository,
+    private val mediaRepository: MediaService,
     private val instantSession: InstantSession,
 ) : ViewModel() {
 

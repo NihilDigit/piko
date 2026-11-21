@@ -28,11 +28,13 @@ import io.ktor.client.engine.okhttp.OkHttp
 import dev.piko.shared.data.InstantMagnetRepository
 import dev.piko.shared.data.PikoClientManager
 import java.io.File
+import dev.piko.shared.download.DownloadService
 import dev.piko.shared.download.PikoDownloadCoordinator
 import dev.piko.shared.i18n.PikoLocale
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.FileClipCache
+import dev.piko.shared.media.MediaService
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.cache.CachePolicy
 import dev.piko.shared.media.cache.createJvmCacheManager
@@ -80,8 +82,8 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
     val clientManager: PikoClientManager get() = services.clientManager
     val driveRepository: DriveRepository get() = services.driveRepository
     val instantMagnetRepository: InstantMagnetRepository get() = services.instantMagnetRepository
-    val mediampMediaRepository: PikoMediaRepository get() = services.mediaRepository
-    val downloadManager: PikoDownloadCoordinator get() = services.downloadManager
+    val mediampMediaRepository: MediaService get() = services.mediaRepository
+    val downloadManager: DownloadService get() = services.downloadManager
     val uploadManager: PikoUploadCoordinator get() = services.uploadManager
     val instantSession: InstantSession get() = services.instantSession
 

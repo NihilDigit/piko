@@ -197,10 +197,10 @@ open class PikoDriveRepository(
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val _folderChanges = MutableSharedFlow<DriveChange>(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
-    override val folderChanges: SharedFlow<DriveChange> = _folderChanges.asSharedFlow()
+    final override val folderChanges: SharedFlow<DriveChange> = _folderChanges.asSharedFlow()
 
     private val _clientRevision = MutableStateFlow(0L)
-    override val clientRevision: StateFlow<Long> = _clientRevision.asStateFlow()
+    final override val clientRevision: StateFlow<Long> = _clientRevision.asStateFlow()
 
     private val ctx = DriveRepoContext(
         clientManager = clientManager,
@@ -220,7 +220,7 @@ open class PikoDriveRepository(
     private val mutationExecutor = DriveMutationExecutor(ctx).also { ctx.mutations = it }
     private val librarySource = DriveLibraryAndSearchSource(ctx).also { ctx.library = it }
 
-    override val changes = DriveChangeJournal(this, backgroundScope)
+    final override val changes = DriveChangeJournal(this, backgroundScope)
 
     init {
         indexCoordinator.enterAccount(clientManager.currentClient.value?.account)
@@ -270,15 +270,15 @@ open class PikoDriveRepository(
         tr("未找到文件夹「$name」", "Folder “$name” not found", "フォルダー「$name」が見つかりません", "“$name” 폴더를 찾을 수 없습니다", "找不到資料夾「$name」"),
     )
 
-    override val localMounts: LocalMounts get() = overlay.localMounts
+    final override val localMounts: LocalMounts get() = overlay.localMounts
     protected val folderMeaninglessCache: Map<String, Boolean> get() = listingEngine.folderMeaninglessCache
-    override val quotaFlow: StateFlow<QuotaResponse?> get() = mutationExecutor.quotaFlow
-    override val quotaUpdates: SharedFlow<Pair<String, QuotaResponse>> get() = mutationExecutor.quotaUpdates
-    override val transferQuotaFlow: StateFlow<TransferQuota?> get() = mutationExecutor.transferQuotaFlow
-    override val isFreeAccountFlow: StateFlow<Boolean?> get() = mutationExecutor.isFreeAccountFlow
+    final override val quotaFlow: StateFlow<QuotaResponse?> get() = mutationExecutor.quotaFlow
+    final override val quotaUpdates: SharedFlow<Pair<String, QuotaResponse>> get() = mutationExecutor.quotaUpdates
+    final override val transferQuotaFlow: StateFlow<TransferQuota?> get() = mutationExecutor.transferQuotaFlow
+    final override val isFreeAccountFlow: StateFlow<Boolean?> get() = mutationExecutor.isFreeAccountFlow
     internal val folderIndex: FolderIndex get() = indexCoordinator.folderIndex
     internal val driveTreeIndex: DriveTreeIndex get() = indexCoordinator.driveTreeIndex
-    override val treeBuildProgressFlow: StateFlow<TreeBuildProgress> get() = indexCoordinator.treeBuildProgressFlow
+    final override val treeBuildProgressFlow: StateFlow<TreeBuildProgress> get() = indexCoordinator.treeBuildProgressFlow
     override val currentAccount: String? get() = clientManager.currentClient.value?.account
     override val accountChanges: Flow<String?> = clientManager.currentClient.map { it?.account }.distinctUntilChanged()
     internal val accountGeneration: Long get() = indexCoordinator.accountGeneration

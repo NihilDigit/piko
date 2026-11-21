@@ -15,8 +15,8 @@ import dev.piko.data.repository.isPlayableAudio
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFile
 import dev.piko.shared.media.AUTO_QUALITY
+import dev.piko.shared.media.MediaService
 import dev.piko.shared.media.ORIGINAL_QUALITY
-import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.media.PlayableMediaInfo
 import dev.piko.shared.media.PlayableMediaKind
 import dev.piko.shared.media.PreparedPlayback
@@ -66,7 +66,7 @@ import kotlin.time.TimeSource
  * 形状与 DriveScreenState 相同：Compose State、派生值走 derivedStateOf、一次性提示走 [messages]。
  */
 class PlayerScreenState(
-    private val repository: PikoMediaRepository,
+    private val repository: MediaService,
     private val backend: PlaybackBackend,
     private val scope: CoroutineScope,
     initialFileId: String,

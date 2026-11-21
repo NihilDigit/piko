@@ -6,7 +6,7 @@ import androidx.compose.runtime.LaunchedEffect
 import dev.piko.desktop.winrt.TaskbarProgress
 import dev.piko.desktop.winrt.WindowChrome
 import dev.piko.download.DownloadStatus
-import dev.piko.shared.download.PikoDownloadCoordinator
+import dev.piko.shared.download.DownloadService
 import java.awt.Component
 import java.awt.Container
 import java.awt.Dimension
@@ -82,7 +82,7 @@ fun TitleBarThemeEffect(window: Window, dark: Boolean) {
 
 /** 任务栏按钮（macOS 是 Dock 图标）上显示正在进行的下载的总进度。暂停与失败的任务不计入，没有进行中的任务时清除。 */
 @Composable
-fun TaskbarDownloadProgress(window: Window, downloads: PikoDownloadCoordinator) {
+fun TaskbarDownloadProgress(window: Window, downloads: DownloadService) {
     LaunchedEffect(window, downloads) {
         var lastMode = 0
         var lastPermille = -1

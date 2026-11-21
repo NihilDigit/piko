@@ -1,6 +1,6 @@
 package dev.piko.shared.media.reader
 
-import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.media.MediaPlaybackService
 import dev.piko.shared.memory.MemoryWorkKind
 import dev.piko.shared.memory.PikoMemoryGovernor
 import dev.piko.shared.memory.cacheBudget
@@ -31,7 +31,7 @@ object DocumentLoader {
     }
 
     suspend fun loadBytes(
-        mediaRepository: PikoMediaRepository,
+        mediaRepository: MediaPlaybackService,
         fileId: String,
         localPath: String? = null,
         governor: PikoMemoryGovernor = PikoMemoryGovernor.Shared,

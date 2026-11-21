@@ -594,6 +594,7 @@ fun DriveScreen(
         onRequestLibraryConfirm = viewModel::requestLibraryConfirm,
         onRequestImagePreview = run {
             val detachedImageViewer = LocalDetachedImageViewer.current
+            val latestRevealInDrive by rememberUpdatedState(onRevealInDrive)
             if (detachedImageViewer != null) {
                 { file ->
                     val peers = displayedFiles.filter { it.isPreviewableImage() && it.previewImageCoverUrl().isNotBlank() }
@@ -603,17 +604,19 @@ fun DriveScreen(
                         null
                     } else {
                         { target ->
-                            if (galleryActive) {
+                            if (gallery.shown && state.acceptsActions) {
                                 val path = gallery.pathTo(target.parentId)
                                 gallery.close()
                                 if (path != null) {
                                     navigation.updateFolderStack(path)
                                     state.highlight(setOf(target.id))
                                 } else {
-                                    onRevealInDrive?.invoke(target) ?: state.revealInDrive(target)
+                                    latestRevealInDrive?.invoke(target) ?: state.revealInDrive(target)
                                 }
+                            } else if (state.acceptsActions) {
+                                latestRevealInDrive?.invoke(target) ?: state.revealInDrive(target)
                             } else {
-                                onRevealInDrive?.invoke(target) ?: state.revealInDrive(target)
+                                latestRevealInDrive?.invoke(target)
                             }
                         }
                     }

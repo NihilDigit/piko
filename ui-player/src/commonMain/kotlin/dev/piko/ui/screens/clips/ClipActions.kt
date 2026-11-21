@@ -8,7 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.PikoDriveRepository
-import dev.piko.shared.download.PikoDownloadCoordinator
+import dev.piko.shared.download.DownloadService
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFile
 import dev.piko.shared.state.Clip
@@ -25,7 +25,7 @@ import kotlinx.coroutines.launch
 internal class ClipActions(
     private val session: ClipFeedSession,
     private val driveRepo: PikoDriveRepository,
-    private val downloads: PikoDownloadCoordinator,
+    private val downloads: DownloadService,
     private val scope: CoroutineScope,
     private val onMessage: (String) -> Unit,
 ) {

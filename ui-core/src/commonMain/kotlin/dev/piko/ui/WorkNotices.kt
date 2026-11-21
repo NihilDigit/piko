@@ -8,7 +8,7 @@ import androidx.compose.runtime.snapshotFlow
 import dev.piko.download.DownloadBatch
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.data.PikoClientProvider
-import dev.piko.shared.download.PikoDownloadCoordinator
+import dev.piko.shared.download.DownloadService
 import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.state.ArchiveExtractSession
 import dev.piko.shared.state.DuplicateFinderState
@@ -70,7 +70,7 @@ fun PikoServices.serverWorkNotices(withUndoable: Boolean = true): Flow<WorkNotic
     folderVaultSession.outcomes.filter { withUndoable || !it.undoable }.map { WorkNotice(it.title, it.message) },
 )
 
-private fun downloadNotices(downloads: PikoDownloadCoordinator): Flow<WorkNotice> = flow {
+private fun downloadNotices(downloads: DownloadService): Flow<WorkNotice> = flow {
     var previousStatuses: Map<String, DownloadStatus>? = null
     downloads.tasks.collect { tasks ->
         val previous = previousStatuses

@@ -229,7 +229,7 @@ enum class TransferKind(private val labelText: () -> String) {
  */
 @Stable
 class TransfersState(
-    private val coordinator: PikoDownloadCoordinator,
+    private val coordinator: dev.piko.shared.download.DownloadService,
     private val taskRepo: TaskRepository,
     private val packTracker: OfflinePackTracker,
     private val scope: CoroutineScope,

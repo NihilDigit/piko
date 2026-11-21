@@ -126,7 +126,7 @@ fun ClipFeedWindow(
                     title = tr("信息流 - Piko", "Feed - Piko", "フィード - Piko", "피드 - Piko", "資訊流 - Piko"),
                     icon = icon,
                     colors = ClipTitleBarColors,
-                    showTitleBar = windowState.placement != WindowPlacement.Fullscreen && !shortcutsOpen,
+                    showTitleBar = windowState.placement != WindowPlacement.Fullscreen,
                     onCloseInContent = links.dock,
                     immersiveFullscreen = windowState.placement == WindowPlacement.Fullscreen,
                 ) {

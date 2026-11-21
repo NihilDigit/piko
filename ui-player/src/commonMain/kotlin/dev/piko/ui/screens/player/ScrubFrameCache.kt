@@ -14,7 +14,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.graphics.ImageBitmap
-import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.media.MediaService
 import dev.piko.shared.media.player.PlayerScreenState
 import dev.piko.shared.media.storyboard.StoryboardCache
 import dev.piko.shared.media.storyboard.StoryboardEngine
@@ -240,7 +240,7 @@ internal val LocalAutoResolvedQuality = compositionLocalOf<String?> { null }
 fun rememberScrubFrameCache(
     state: PlayerScreenState,
     storyboardCache: StoryboardCache,
-    mediaRepository: PikoMediaRepository,
+    mediaRepository: MediaService,
     platform: PikoPlatform,
 ): ScrubFrameCache? {
     val source: StoryboardSource? = state.storyboardSource

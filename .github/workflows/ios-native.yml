@@ -103,7 +103,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x gradlew
-          ./gradlew :shared:iosSimulatorArm64Test :ui:iosSimulatorArm64Test \
+          ./gradlew :shared:iosSimulatorArm64Test :ui-core:iosSimulatorArm64Test :ui:iosSimulatorArm64Test \
             -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8" \
             -Dkotlin.daemon.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=768m" \
             --max-workers=1 --no-configuration-cache --build-cache --no-daemon --console=plain --stacktrace
@@ -231,6 +231,10 @@ jobs:
           path: |
             shared/build/reports/tests/
             shared/build/test-results/
+            ui-core/build/reports/tests/
+            ui-core/build/test-results/
+            ui-*/build/reports/tests/
+            ui-*/build/test-results/
             ui/build/reports/tests/
             ui/build/test-results/
             ${{ runner.temp }}/piko-ios-build.log

@@ -59,7 +59,7 @@ data class ClipDisplayDemand(
  * 所有条目的 [ConsumerIntent] 均由单一权威 [ClipDisplayDemand] 快照与挂起态纯函数投影，不保留平行的前后台/急迫布尔开关。
  */
 class ClipStreams internal constructor(
-    private val repository: PikoMediaRepository,
+    private val repository: dev.piko.shared.media.MediaService,
     private val onReady: (Clip) -> Unit,
     private val onDead: (Clip) -> Unit,
     coroutineContext: kotlin.coroutines.CoroutineContext = Dispatchers.Main.immediate,
@@ -68,7 +68,7 @@ class ClipStreams internal constructor(
     },
 ) {
     internal constructor(
-        repository: PikoMediaRepository,
+        repository: dev.piko.shared.media.MediaService,
         onReady: (Clip) -> Unit,
         onDead: (Clip) -> Unit,
         coroutineContext: kotlin.coroutines.CoroutineContext,

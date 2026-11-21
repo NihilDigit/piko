@@ -27,7 +27,9 @@ import dev.piko.shared.data.PikoAccountRepository
 import dev.piko.shared.data.PikoClientManager
 import dev.piko.shared.data.PreviewTempFolder
 import dev.piko.shared.data.TaskRepository
+import dev.piko.shared.download.DownloadService
 import dev.piko.shared.download.PikoDownloadCoordinator
+import dev.piko.shared.media.MediaService
 import dev.piko.shared.media.PikoMediaRepository
 import dev.piko.shared.state.ArchiveBrowser
 import dev.piko.shared.state.ArchiveExtractSession
@@ -70,8 +72,8 @@ import kotlin.time.Clock
 class PikoServices(
     platformPreferences: PikoUserPreferences,
     val clientManager: PikoClientManager,
-    val downloadManager: PikoDownloadCoordinator,
-    val mediaRepository: PikoMediaRepository,
+    val downloadManager: DownloadService,
+    val mediaRepository: MediaService,
     uploadSources: PikoUploadSources,
     /** 记下的文件夹内容跨进程保留在这里，见 FolderContentMemory。 */
     val cacheStore: PikoCacheStore? = null,
@@ -116,8 +118,10 @@ class PikoServices(
         it.localMounts.access = localFileAccess?.invoke { folder ->
             repository.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(setOf(folder)))
         }
-        mediaRepository.localMounts = it.localMounts
-        mediaRepository.metadataSink = it.metadataSink
+        (mediaRepository as? PikoMediaRepository)?.let { repo ->
+            repo.localMounts = it.localMounts
+            repo.metadataSink = it.metadataSink
+        }
     }
     val presentationStores = dev.piko.ui.workbench.AccountPresentationStores()
     val fileExecutionScopes = dev.piko.shared.state.AccountExecutionScopes(
@@ -159,7 +163,7 @@ class PikoServices(
 
     init {
         // 打开归档条目时借的对象放进 Piko-Temp：取到直链就删，偶有删不掉的也随 Piko-Temp 一起清走
-        mediaRepository.leaseFolder = { owner -> previewTempFolder.folderId(owner).getOrThrow() }
+        (mediaRepository as? PikoMediaRepository)?.leaseFolder = { owner -> previewTempFolder.folderId(owner).getOrThrow() }
         // 绑定默认文件夹下载源，使在递归列目录（Listing）阶段退出的文件夹下载可在下次冷启动后自动接续展开
         downloadManager.bindDefaultFolderSource(DriveDownloadFolderSource(driveRepository))
         this.cacheManager.startPeriodicMaintenance()

@@ -15,7 +15,7 @@ import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.fileCategory
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.download.DownloadFolderSource
-import dev.piko.shared.download.PikoDownloadCoordinator
+import dev.piko.shared.download.DownloadService
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.DownloadQuality
@@ -227,7 +227,7 @@ internal val DEFAULT_QUALITY_AND_LOCATION_SAVED_NOTICE: String
  */
 @Stable
 class DownloadLauncher internal constructor(
-    private val coordinator: PikoDownloadCoordinator,
+    private val coordinator: DownloadService,
     private val preferences: PikoUserPreferences,
     private val scope: CoroutineScope,
     private val canPickLocation: Boolean = false,

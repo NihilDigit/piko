@@ -115,6 +115,7 @@ fun PikoSheet(
         rememberModalBottomSheetState(skipPartiallyExpanded = skipPartiallyExpanded)
     }
     val latestDismiss by rememberUpdatedState(onDismissRequest)
+    dev.piko.ui.platform.ModalCaptionBlocker()
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = sheetState,

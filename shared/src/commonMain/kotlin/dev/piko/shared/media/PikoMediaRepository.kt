@@ -49,6 +49,7 @@ interface MediaPlaybackService {
 
     fun currentAccountClient(): PikPakClient?
     suspend fun localPath(fileId: String, subtitle: Boolean = false): String?
+    fun knownContentMetadata(fileId: String): ContentMetadata?
     fun knownDurationMs(fileId: String, gcid: String = "", sizeBytes: Long = 0L): Long?
 
     suspend fun prepareMedia(fileId: String, preferredResolution: String? = null): Result<PlayableMediaInfo>
@@ -93,6 +94,8 @@ interface MediaPlaybackService {
 @Stable
 interface MediaVariantProber {
     suspend fun openRandomAccess(fileId: String, retainedBy: String? = null, mediaId: String? = null): Result<RandomAccessMediaSource>
+    fun knownUnreadableTranscodeIds(fileId: String, gcid: String, sizeBytes: Long): Set<String>
+    fun knownTranscodeStreamSizeFor(fileId: String, gcid: String, sizeBytes: Long, mediaId: String): Long?
     fun downloadQualities(fileId: String): Flow<List<DownloadQuality>>
     fun prefetchDownloadQualities(fileId: String)
     suspend fun downloadVariant(fileId: String, name: String?, maxHeight: Int): Result<DownloadQuality?>
@@ -242,7 +245,7 @@ class PikoMediaRepository(
         }
     }
 
-    internal fun knownContentMetadata(fileId: String): ContentMetadata? =
+    override fun knownContentMetadata(fileId: String): ContentMetadata? =
         detailResolver.knownContentMetadata(fileId)
 
     override fun knownDurationMs(fileId: String, gcid: String, sizeBytes: Long): Long? =
@@ -286,10 +289,10 @@ class PikoMediaRepository(
     ): Pair<Map<String, Float>, Set<String>> =
         sessionPreparer.cachedRenditionCoverage(info, positionMillis, durationMillis)
 
-    internal fun knownUnreadableTranscodeIds(fileId: String, gcid: String, sizeBytes: Long): Set<String> =
+    override fun knownUnreadableTranscodeIds(fileId: String, gcid: String, sizeBytes: Long): Set<String> =
         qualityProber.knownUnreadableTranscodeIds(fileId, gcid, sizeBytes)
 
-    internal fun knownTranscodeStreamSizeFor(fileId: String, gcid: String, sizeBytes: Long, mediaId: String): Long? =
+    override fun knownTranscodeStreamSizeFor(fileId: String, gcid: String, sizeBytes: Long, mediaId: String): Long? =
         qualityProber.knownTranscodeStreamSizeFor(fileId, gcid, sizeBytes, mediaId)
 
     override fun downloadQualities(fileId: String): Flow<List<DownloadQuality>> =

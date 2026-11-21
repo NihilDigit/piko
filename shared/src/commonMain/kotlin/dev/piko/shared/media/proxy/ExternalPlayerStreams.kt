@@ -3,7 +3,7 @@ package dev.piko.shared.media.proxy
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFile
-import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.media.MediaPlaybackService
 import dev.piko.shared.media.PreparedPlayback
 import dev.piko.shared.memory.PikoMemoryGovernor
 import dev.piko.shared.util.PikoLock
@@ -32,7 +32,7 @@ private const val TAG = "ExternalPlayer"
  * 取原画：外部播放器自己解码，也不会随网速换清晰度。没有 gcid 或代理不可用时建不起代理会话，
  * 这时宁可失败也不交出直链：直链几小时后过期，外部播放器拖动或续播时就断了，代理会重取。
  */
-suspend fun PikoMediaRepository.openForExternalPlayer(fileId: String): Result<String> {
+suspend fun MediaPlaybackService.openForExternalPlayer(fileId: String): Result<String> {
     val playback = preparePlayback(fileId).getOrElse { return Result.failure(it) }
     val fileLabel = logFile(fileId, playback.info.name)
     val url = playback.proxyUrl

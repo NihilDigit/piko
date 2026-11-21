@@ -82,12 +82,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -355,8 +357,11 @@ fun ImageViewerSurface(
                                 }
                             }
                             PointerEventType.Exit -> {
-                                pointerNearTop = false
-                                pointerNearBottom = false
+                                val change = event.changes.firstOrNull()
+                                if (change == null || !Rect(Offset.Zero, size.toSize()).contains(change.position)) {
+                                    pointerNearTop = false
+                                    pointerNearBottom = false
+                                }
                             }
                         }
                     }

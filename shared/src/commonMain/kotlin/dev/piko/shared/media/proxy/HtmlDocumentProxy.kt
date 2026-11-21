@@ -4,7 +4,7 @@ import dev.piko.shared.data.LocalLocation
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.log.PikoLog
-import dev.piko.shared.media.PikoMediaRepository
+import dev.piko.shared.media.MediaPlaybackService
 import dev.piko.shared.media.player.BasicSubtitleTextTranscoder
 import dev.piko.shared.util.PikoLock
 import dev.piko.shared.util.withPikoLock
@@ -257,7 +257,7 @@ class DriveHtmlDocumentResolver(
     private val parentFolderId: String?,
     private val localPath: String?,
     private val driveRepository: PikoDriveRepository,
-    private val mediaRepository: PikoMediaRepository,
+    private val mediaRepository: MediaPlaybackService,
     private val maxAssetBytes: Int = MAX_SINGLE_ASSET_BYTES,
     private val maxCacheBytes: Int = MAX_SESSION_CACHE_BYTES,
     maxConcurrentFetches: Int = MAX_CONCURRENT_FETCHES,
@@ -505,7 +505,7 @@ object HtmlDocumentProxySessions {
         parentFolderId: String?,
         localPath: String?,
         driveRepository: PikoDriveRepository,
-        mediaRepository: PikoMediaRepository,
+        mediaRepository: MediaPlaybackService,
     ): Result<DocumentProxyHandle> = try {
         val resolver = DriveHtmlDocumentResolver(
             entryFileId = fileId,
