@@ -18,8 +18,8 @@ import kotlinx.coroutines.withContext
 /**
  * Android 端持久化单一 HEVC `MediaCodec` 雪碧图 IDR 解码器：
  * - 单视频生命周期内仅初始化一次 `MediaCodec`，每帧经 `flush()` 直接送入 `VPS/SPS/PPS + Annex B IDR`；
- * - 从 `getOutputImage()` 按实际 `rowStride` / `pixelStride` 直接子采样转码为 `<= 384px` 紧凑 JPEG，
- *   避免全尺寸 NV21 往返拷贝及厂商 stride 对齐差异；退出时确定性释放 `MediaCodec`。
+ * - 兼容 8-bit `YUV_420_888` 与 10-bit `YCBCR_P010`（读取 16-bit 小端样本高字节 MSB），
+ *   从 `getOutputImage()` 按实际 `rowStride` / `pixelStride` 子采样转码为 `<= 384px` 紧凑 JPEG。
  */
 internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
     private val lock = Any()
@@ -27,6 +27,7 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
     private var configuredWidth = 0
     private var configuredHeight = 0
     private var configuredCsdHash = 0
+    private var configuredMaxInputBytes = 0
     private var closed = false
 
     override suspend fun decodeToJpeg(
@@ -41,11 +42,13 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
         synchronized(lock) {
             if (closed) return@withContext null
             try {
+                val safeWidth = if (width > 0) width.coerceAtLeast(64) else DEFAULT_DECODE_WIDTH
+                val safeHeight = if (height > 0) height.coerceAtLeast(64) else DEFAULT_DECODE_HEIGHT
                 decodeSynchronized(
                     csdAnnexB = csdAnnexB,
                     idrAccessUnitAnnexB = idrAccessUnitAnnexB,
-                    width = width.coerceAtLeast(16),
-                    height = height.coerceAtLeast(16),
+                    width = safeWidth,
+                    height = safeHeight,
                     maxWidthPx = maxWidthPx,
                     jpegQuality = jpegQuality,
                 )
@@ -70,7 +73,6 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
         maxWidthPx: Int,
         jpegQuality: Int,
     ): ByteArray? {
-        val activeCodec = ensureCodec(csdAnnexB, width, height) ?: return null
         val payload = if (csdAnnexB.isNotEmpty() && !startsWithVps(idrAccessUnitAnnexB)) {
             ByteArray(csdAnnexB.size + idrAccessUnitAnnexB.size).also { out ->
                 csdAnnexB.copyInto(out, 0)
@@ -80,13 +82,21 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
             idrAccessUnitAnnexB
         }
 
+        var activeCodec = ensureCodec(csdAnnexB, width, height, payload.size) ?: return null
         activeCodec.flush()
 
-        val inputIndex = activeCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
+        var inputIndex = activeCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
         if (inputIndex < 0) return null
-        val inputBuffer = activeCodec.getInputBuffer(inputIndex) ?: return null
+        var inputBuffer = activeCodec.getInputBuffer(inputIndex) ?: return null
+        if (inputBuffer.capacity() < payload.size) {
+            releaseCodecLocked()
+            activeCodec = ensureCodec(csdAnnexB, width, height, payload.size * 2) ?: return null
+            inputIndex = activeCodec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
+            if (inputIndex < 0) return null
+            inputBuffer = activeCodec.getInputBuffer(inputIndex) ?: return null
+            if (inputBuffer.capacity() < payload.size) return null
+        }
         inputBuffer.clear()
-        if (inputBuffer.capacity() < payload.size) return null
         inputBuffer.put(payload)
         activeCodec.queueInputBuffer(
             inputIndex,
@@ -138,21 +148,43 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
         return null
     }
 
-    private fun ensureCodec(csdAnnexB: ByteArray, width: Int, height: Int): MediaCodec? {
+    private fun ensureCodec(csdAnnexB: ByteArray, width: Int, height: Int, requiredInputBytes: Int): MediaCodec? {
         val csdHash = csdAnnexB.contentHashCode()
+        val maxInputBytes = maxOf(DEFAULT_MAX_INPUT_BYTES, requiredInputBytes)
         val existing = codec
-        if (existing != null && configuredWidth == width && configuredHeight == height && configuredCsdHash == csdHash) {
+        if (
+            existing != null &&
+            configuredWidth == width &&
+            configuredHeight == height &&
+            configuredCsdHash == csdHash &&
+            configuredMaxInputBytes >= requiredInputBytes
+        ) {
             return existing
         }
         releaseCodecLocked()
+        return configureNewCodec(csdAnnexB, width, height, csdHash, maxInputBytes, explicitFlexibleColor = true)
+            ?: configureNewCodec(csdAnnexB, width, height, csdHash, maxInputBytes, explicitFlexibleColor = false)
+    }
+
+    private fun configureNewCodec(
+        csdAnnexB: ByteArray,
+        width: Int,
+        height: Int,
+        csdHash: Int,
+        maxInputBytes: Int,
+        explicitFlexibleColor: Boolean,
+    ): MediaCodec? {
         val created = runCatching { MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC) }.getOrNull()
             ?: return null
         return try {
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, width, height)
-            format.setInteger(
-                MediaFormat.KEY_COLOR_FORMAT,
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
-            )
+            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, maxInputBytes)
+            if (explicitFlexibleColor) {
+                format.setInteger(
+                    MediaFormat.KEY_COLOR_FORMAT,
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
+                )
+            }
             if (csdAnnexB.isNotEmpty()) {
                 format.setByteBuffer("csd-0", ByteBuffer.wrap(csdAnnexB))
             }
@@ -162,6 +194,7 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
             configuredWidth = width
             configuredHeight = height
             configuredCsdHash = csdHash
+            configuredMaxInputBytes = maxInputBytes
             created
         } catch (_: Throwable) {
             runCatching { created.release() }
@@ -182,9 +215,14 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
         val outW = ((srcW * scale).roundToInt() and 1.inv()).coerceAtLeast(2)
         val outH = ((srcH * scale).roundToInt() and 1.inv()).coerceAtLeast(2)
 
+        // YCBCR_P010 (0x36) 使用 16-bit 小端存储，有效 10-bit 位于高 10 位（bits 15..6），offset + 1 即高 8 位 MSB
+        val msbOffset = if (image.format == IMAGE_FORMAT_YCBCR_P010) 1 else 0
         val yBuf = planes[0].buffer
         val uBuf = planes[1].buffer
         val vBuf = planes[2].buffer
+        val yLimit = yBuf.limit()
+        val uLimit = uBuf.limit()
+        val vLimit = vBuf.limit()
         val yRowStride = planes[0].rowStride
         val yPixStride = planes[0].pixelStride
         val uRowStride = planes[1].rowStride
@@ -203,9 +241,14 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
             for (dx in 0 until outW) {
                 val sx = crop.left + (dx * srcW) / outW
                 val chromaX = sx ushr 1
-                val yVal = (yBuf.get(yRowOffset + sx * yPixStride).toInt() and 0xFF) - 16
-                val uVal = (uBuf.get(uRowOffset + chromaX * uPixStride).toInt() and 0xFF) - 128
-                val vVal = (vBuf.get(vRowOffset + chromaX * vPixStride).toInt() and 0xFF) - 128
+                val yIdx = yRowOffset + sx * yPixStride + msbOffset
+                val uIdx = uRowOffset + chromaX * uPixStride + msbOffset
+                val vIdx = vRowOffset + chromaX * vPixStride + msbOffset
+                if (yIdx >= yLimit || uIdx >= uLimit || vIdx >= vLimit) return null
+
+                val yVal = (yBuf.get(yIdx).toInt() and 0xFF) - 16
+                val uVal = (uBuf.get(uIdx).toInt() and 0xFF) - 128
+                val vVal = (vBuf.get(vIdx).toInt() and 0xFF) - 128
 
                 val y1192 = 1192 * yVal.coerceAtLeast(0)
                 val r = ((y1192 + 1634 * vVal) shr 10).coerceIn(0, 255)
@@ -241,6 +284,7 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
         configuredWidth = 0
         configuredHeight = 0
         configuredCsdHash = 0
+        configuredMaxInputBytes = 0
         if (existing != null) {
             runCatching { existing.stop() }
             runCatching { existing.release() }
@@ -258,6 +302,10 @@ internal class AndroidStoryboardIdrDecoder : StoryboardIdrDecoder {
     companion object {
         private const val DEQUEUE_TIMEOUT_US = 25_000L
         private const val MAX_OUTPUT_POLLS = 24
+        private const val DEFAULT_DECODE_WIDTH = 1920
+        private const val DEFAULT_DECODE_HEIGHT = 1080
+        private const val DEFAULT_MAX_INPUT_BYTES = 2 * 1024 * 1024
+        private const val IMAGE_FORMAT_YCBCR_P010 = 0x36
 
         fun decodeEncodedImage(bytes: ByteArray): ImageBitmap? {
             if (bytes.isEmpty()) return null

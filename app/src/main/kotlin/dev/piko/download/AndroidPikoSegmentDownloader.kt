@@ -64,6 +64,7 @@ class AndroidPikoSegmentDownloader(private val context: Context) : PikoSegmentDo
                 .map { request.destinationPath }
         }
         // 抽取成功后才在下载目录里建文件：先建的话，失败会在那里留下一个 0 字节的空文件
+        var createdTargetUri: Uri? = null
         try {
             val (treeUri, rootId) = safTarget
             val targetUri = findOrCreateChildFileUri(
@@ -73,14 +74,17 @@ class AndroidPikoSegmentDownloader(private val context: Context) : PikoSegmentDo
                 displayName = request.fileName,
                 mimeType = "video/mp4",
             ) ?: error(tr("无法创建分段文件", "Cannot create segment file", "分割ファイルを作成できません", "분할 파일을 만들 수 없습니다", "無法建立片段檔案"))
+            createdTargetUri = targetUri
             val written = exportFileToSafUri(context.contentResolver, stagingFile!!, targetUri)
             if (!written) {
                 error(tr("无法打开目标文件", "Cannot open destination file", "出力ファイルを開けません", "대상 파일을 열 수 없습니다", "無法開啟目標檔案"))
             }
             Result.success(targetUri.toString())
         } catch (e: CancellationException) {
+            createdTargetUri?.let { deleteSafDocument(context.contentResolver, it) }
             throw e
         } catch (error: Throwable) {
+            createdTargetUri?.let { deleteSafDocument(context.contentResolver, it) }
             PikoLog.w(TAG, "Failed to write extracted segment to SAF folder for ${logFile(null, request.fileName)}", error)
             Result.failure(error)
         } finally {

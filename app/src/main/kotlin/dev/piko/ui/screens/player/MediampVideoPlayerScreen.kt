@@ -68,6 +68,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import dev.piko.PikoApplication
 import dev.piko.download.DownloadStatus
+import dev.piko.platform.isAndroidLocalPathPresent
 import dev.piko.shared.media.player.PlayerScreenState
 import dev.piko.shared.media.player.SubtitleStylePrefs
 import io.github.nihildigit.pikpak.FileStat
@@ -97,7 +98,7 @@ fun MediampVideoPlayerScreen(
     var siblingVideos by remember(initialFileId) { mutableStateOf<List<FileStat>>(emptyList()) }
 
     val preferences = LocalPikoServices.current.preferences
-    val backend = remember {
+    val backend = remember(initialFileId) {
         // 启动时已预热内存偏好快照，无锁直取，不在组合首帧阻塞主线程
         val snapshot = preferences.currentSnapshot
         MpvPlaybackBackend(
@@ -106,7 +107,7 @@ fun MediampVideoPlayerScreen(
             initialSubtitleStyle = snapshot.subtitleStyle,
         )
     }
-    val state = remember(initialFileId) {
+    val state = remember(initialFileId, backend) {
         PlayerScreenState(
             repository = app.mediampMediaRepository,
             backend = backend,
@@ -116,19 +117,21 @@ fun MediampVideoPlayerScreen(
             initialLocalPath = initialLocalPath,
             initialStartMillis = initialStartMillis,
             resolveLocalPath = { fileId, hint ->
-                // SAF 目录里的下载是 content: URI，File 判断不了存在与否，交给后端去打开
-                hint?.takeIf { it.startsWith("content:") || File(it).exists() }
-                    ?: completedDownloadPath(fileId)
+                hint?.takeIf { isAndroidLocalPathPresent(context, it) }
+                    ?: completedDownloadPath(context, fileId)
                     ?: siblingVideos.find { it.id == fileId }?.let { app.downloadManager.findCompletedLocalPath(it) }
             },
             defaultMaxHeight = { preferences.playbackMaxHeightFlow.first() },
         )
     }
-    DisposableEffect(state) {
-        onDispose { state.release() }
-    }
-    DisposableEffect(backend) {
-        onDispose { backend.release() }
+    DisposableEffect(state, backend) {
+        onDispose {
+            try {
+                state.release()
+            } finally {
+                backend.release()
+            }
+        }
     }
 
     // 是否处于主动开启的沉浸全屏。原先把 isLandscape 当全屏只适合手机：平板本来就是横屏，或手机开启自动旋转后
@@ -700,8 +703,8 @@ private const val MEDIA_NOTIFICATION_ID = 9528
  *
  * 分段下载的片段不算，路径对应的文件也要还在。
  */
-private fun completedDownloadPath(fileId: String): String? =
+private fun completedDownloadPath(context: Context, fileId: String): String? =
     PikoApplication.instance.downloadManager.tasks.value.values
         .find { it.fileId == fileId && it.status == DownloadStatus.COMPLETED && !it.isSegment }
         ?.destinationPath
-        ?.takeIf { File(it).exists() }
+        ?.takeIf { isAndroidLocalPathPresent(context, it) }

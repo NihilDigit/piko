@@ -557,13 +557,13 @@ class AndroidPikoPlatform(
 
     private inner class AndroidLocalFiles : LocalFileActions {
         override fun thumbnailModel(path: String): Any? = when {
-            path.startsWith("content:") -> path
+            path.startsWith("content:") -> path.takeIf(::exists)
             path.startsWith("file:", ignoreCase = true) -> runCatching { File(java.net.URI(path)) }.getOrNull()?.takeIf { it.exists() }
             File(path).exists() -> File(path)
             else -> null
         }
 
-        override fun exists(path: String): Boolean = File(path).exists()
+        override fun exists(path: String): Boolean = isAndroidLocalPathPresent(context, path)
 
         override fun openExternally(path: String, isMedia: Boolean) {
             // 文件夹下载的「打开文件夹」传进来的是文件夹，交给文件管理器；按文件的 MIME 发出去没有应用接
@@ -793,6 +793,44 @@ class AndroidPikoPlatform(
     private companion object {
         const val TAG = "Platform"
     }
+}
+
+internal fun isAndroidLocalPathPresent(context: Context, path: String): Boolean {
+    if (path.isBlank()) return false
+    if (path.startsWith("content:")) {
+        val uri = Uri.parse(path)
+        val resolver = context.contentResolver
+        if (DocumentsContract.isDocumentUri(context, uri)) {
+            return runCatching {
+                resolver.query(
+                    uri,
+                    arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                    null,
+                    null,
+                    null,
+                )?.use { cursor -> cursor.moveToFirst() } == true
+            }.getOrDefault(false)
+        }
+        if (DocumentsContract.isTreeUri(uri)) {
+            return runCatching {
+                val docUri = DocumentsContract.buildDocumentUriUsingTree(uri, DocumentsContract.getTreeDocumentId(uri))
+                resolver.query(
+                    docUri,
+                    arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                    null,
+                    null,
+                    null,
+                )?.use { cursor -> cursor.moveToFirst() } == true
+            }.getOrDefault(false)
+        }
+        return runCatching {
+            resolver.openAssetFileDescriptor(uri, "r")?.use { true } == true
+        }.getOrDefault(false)
+    }
+    if (path.startsWith("file:", ignoreCase = true)) {
+        return runCatching { File(java.net.URI(path)).exists() }.getOrDefault(false)
+    }
+    return File(path).exists()
 }
 
 /**

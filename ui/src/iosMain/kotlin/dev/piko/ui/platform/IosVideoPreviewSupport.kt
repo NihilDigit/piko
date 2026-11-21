@@ -58,6 +58,7 @@ import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
 import kotlin.math.abs
 import kotlin.math.roundToLong
+import kotlin.time.TimeSource
 
 /**
  * iOS 片段预览与信息流播放支持：基于原生 `AVPlayer` + `AVPlayerLayer` + `UIKitView`，
@@ -182,6 +183,7 @@ internal class IosPreviewBackend(
     private var failureEmitted = false
     private var released = false
     private var audioSessionConfigured = false
+    private var lastPlayCommandMark: TimeSource.Monotonic.ValueTimeMark? = null
 
     private var currentItem: AVPlayerItem? = null
     private var wrappedUrl: WrappedAvPlayerUrl? = null
@@ -360,6 +362,8 @@ internal class IosPreviewBackend(
             queue = NSOperationQueue.mainQueue,
         ) { _ ->
             if (released || ticket != openTicket || currentItem !== item) return@addObserverForName
+            desiredPlaying = false
+            isPlaying = false
             isBuffering = false
             if (durationMillis > 0L) {
                 positionMillis = durationMillis
@@ -421,6 +425,23 @@ internal class IosPreviewBackend(
             val aheadSec = (bufferedEndSec - positionMillis / 1000.0).coerceAtLeast(0.0)
             feedback.sample(feedback.generation, aheadSec, currentSpeed)
         }
+        if (readyEmitted && !isLoadingItem && !isSeeking) {
+            when (player.timeControlStatus) {
+                AVPlayerTimeControlStatusPlaying -> {
+                    desiredPlaying = true
+                    isPlaying = true
+                }
+                AVPlayerTimeControlStatusPaused -> {
+                    val recentlyRequestedPlay = lastPlayCommandMark?.let {
+                        it.elapsedNow().inWholeMilliseconds < PLAY_COMMAND_GRACE_MS
+                    } == true
+                    if (desiredPlaying && !recentlyRequestedPlay && player.rate == 0f) {
+                        desiredPlaying = false
+                        isPlaying = false
+                    }
+                }
+            }
+        }
         updateBufferingState()
     }
 
@@ -468,6 +489,7 @@ internal class IosPreviewBackend(
         if (currentVolume > 0f) {
             ensureAudioSession()
         }
+        lastPlayCommandMark = TimeSource.Monotonic.markNow()
         player.play()
         if (abs(currentSpeed - 1f) > 0.01f) {
             player.rate = currentSpeed
@@ -651,5 +673,6 @@ internal class IosPreviewBackend(
         const val PERIODIC_INTERVAL_SECONDS = 0.1
         const val READY_POLL_MS = 50L
         const val STEADY_POLL_MS = 180L
+        const val PLAY_COMMAND_GRACE_MS = 150L
     }
 }

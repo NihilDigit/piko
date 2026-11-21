@@ -57,8 +57,28 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
 ) {
     private class ActiveInstall(val sessionId: Int, val update: AvailableUpdate)
 
+    private data class PersistedInstallUpdate(
+        override val version: String,
+        override val notes: String,
+        override val pageUrl: String,
+        override val canInstallInApp: Boolean,
+        override val downloadSize: Long,
+        override val localizedNotes: Map<AppLanguage, String> = emptyMap(),
+        override val modeLabel: String = "APK",
+    ) : AvailableUpdate
+
+    private val sessionPrefs by lazy {
+        context.getSharedPreferences(SESSION_PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
     @Volatile
     private var activeInstall: ActiveInstall? = null
+
+    init {
+        if (sessionPrefs.getString(KEY_PENDING_VERSION, null) == BuildConfig.VERSION_NAME) {
+            clearPersistedSession()
+        }
+    }
 
     override suspend fun resolve(release: LatestRelease): AndroidUpdate? {
         val apk = pickApk(release) ?: return null
@@ -200,6 +220,7 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
                 val flags = PendingIntent.FLAG_UPDATE_CURRENT or
                     (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0)
                 val pending = PendingIntent.getBroadcast(context, sessionId, callback, flags)
+                persistPendingSession(sessionId, update)
                 activeInstall = ActiveInstall(sessionId, update)
                 status = UpdateStatus.Installing(update)
                 session.commit(pending.intentSender)
@@ -211,6 +232,7 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
                 if (activeInstall?.sessionId == sessionId) {
                     activeInstall = null
                 }
+                clearPersistedSession(sessionId)
                 runCatching { installer.abandonSession(sessionId) }
             }
         }
@@ -290,13 +312,28 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
             .digest(signature.toByteArray())
             .joinToString("") { "%02x".format(it) }
 
-    internal fun isActiveSession(sessionId: Int): Boolean =
-        sessionId != -1 && activeInstall?.sessionId == sessionId
+    internal fun isActiveSession(sessionId: Int, requireSessionOwnership: Boolean = false): Boolean {
+        if (sessionId == -1) return false
+        val knownInMemory = activeInstall?.sessionId == sessionId
+        val knownPersisted = sessionPrefs.getInt(KEY_PENDING_SESSION_ID, -1) == sessionId &&
+            sessionPrefs.getString(KEY_PENDING_PACKAGE, null) == context.packageName
+        if (!knownInMemory && !knownPersisted) return false
+        if (!requireSessionOwnership) return true
+        val info = runCatching { context.packageManager.packageInstaller.getSessionInfo(sessionId) }.getOrNull()
+        val valid = info != null &&
+            info.installerPackageName == context.packageName &&
+            (info.appPackageName == null || info.appPackageName == context.packageName)
+        if (!valid && !knownInMemory) {
+            clearPersistedSession(sessionId)
+        }
+        return valid
+    }
 
     internal fun onInstallSucceeded(sessionId: Int) {
         if (activeInstall?.sessionId == sessionId) {
             activeInstall = null
         }
+        clearPersistedSession(sessionId)
     }
 
     internal fun onInstallFailed(
@@ -305,17 +342,53 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
         logReason: String,
         cause: Throwable? = null,
     ) {
-        val active = activeInstall?.takeIf { it.sessionId == sessionId } ?: run {
+        val update = resolveSessionUpdate(sessionId) ?: run {
             PikoLog.w(TAG, "Ignoring PackageInstaller failure for non-active sessionId=$sessionId: $logReason", cause)
             return
         }
-        activeInstall = null
+        if (activeInstall?.sessionId == sessionId) {
+            activeInstall = null
+        }
+        clearPersistedSession(sessionId)
+        runCatching { context.packageManager.packageInstaller.abandonSession(sessionId) }
         PikoLog.w(TAG, "System package installation did not complete (sessionId=$sessionId): $logReason", cause)
         status = UpdateStatus.Failed(
             tr("安装未完成", "Installation incomplete", "インストールが未完了です", "설치 미완료", "安裝未完成"),
-            active.update,
+            update,
         )
         mutableMessages.tryEmit(userMessage)
+    }
+
+    private fun persistPendingSession(sessionId: Int, update: AndroidUpdate) {
+        sessionPrefs.edit()
+            .putInt(KEY_PENDING_SESSION_ID, sessionId)
+            .putString(KEY_PENDING_PACKAGE, context.packageName)
+            .putString(KEY_PENDING_VERSION, update.version)
+            .putString(KEY_PENDING_NOTES, update.notes)
+            .putString(KEY_PENDING_PAGE_URL, update.pageUrl)
+            .putLong(KEY_PENDING_SIZE, update.downloadSize)
+            .commit()
+    }
+
+    private fun clearPersistedSession(expectedSessionId: Int? = null) {
+        val stored = sessionPrefs.getInt(KEY_PENDING_SESSION_ID, -1)
+        if (expectedSessionId != null && stored != -1 && stored != expectedSessionId) return
+        sessionPrefs.edit().clear().apply()
+    }
+
+    private fun resolveSessionUpdate(sessionId: Int): AvailableUpdate? {
+        if (sessionId == -1) return null
+        activeInstall?.takeIf { it.sessionId == sessionId }?.let { return it.update }
+        if (sessionPrefs.getInt(KEY_PENDING_SESSION_ID, -1) != sessionId) return null
+        if (sessionPrefs.getString(KEY_PENDING_PACKAGE, null) != context.packageName) return null
+        val version = sessionPrefs.getString(KEY_PENDING_VERSION, null)?.takeIf { it.isNotBlank() } ?: return null
+        return PersistedInstallUpdate(
+            version = version,
+            notes = sessionPrefs.getString(KEY_PENDING_NOTES, null).orEmpty(),
+            pageUrl = sessionPrefs.getString(KEY_PENDING_PAGE_URL, null).orEmpty(),
+            canInstallInApp = !BuildConfig.DEBUG,
+            downloadSize = sessionPrefs.getLong(KEY_PENDING_SIZE, 0L),
+        )
     }
 
     private fun pickApk(release: LatestRelease): ReleaseAsset? =
@@ -326,6 +399,13 @@ class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpda
         const val TAG = "Update"
         const val UPDATE_DIR = "updates"
         const val INSTALL_COPY_BUFFER_BYTES = 256 * 1024
+        const val SESSION_PREFS_NAME = "piko_pending_update_session"
+        const val KEY_PENDING_SESSION_ID = "session_id"
+        const val KEY_PENDING_PACKAGE = "package_name"
+        const val KEY_PENDING_VERSION = "version"
+        const val KEY_PENDING_NOTES = "notes"
+        const val KEY_PENDING_PAGE_URL = "page_url"
+        const val KEY_PENDING_SIZE = "download_size"
     }
 }
 

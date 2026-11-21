@@ -22,7 +22,8 @@ class UpdateInstallReceiver : BroadcastReceiver() {
         val detail = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)?.takeIf { it.isNotBlank() }
         val statusSummary = if (detail != null) "sessionId=$sessionId, status=$status, detail=$detail" else "sessionId=$sessionId, status=$status"
         val updater = PikoApplication.instance.appUpdater
-        if (!updater.isActiveSession(sessionId)) {
+        val requireOwnership = status == PackageInstaller.STATUS_PENDING_USER_ACTION
+        if (!updater.isActiveSession(sessionId, requireSessionOwnership = requireOwnership)) {
             PikoLog.w("Update", "Ignoring PackageInstaller callback for non-active session ($statusSummary)")
             return
         }

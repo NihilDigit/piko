@@ -1,5 +1,7 @@
 package dev.piko.ui.ios
 
+import coil3.PlatformContext
+import coil3.SingletonImageLoader
 import dev.piko.shared.auth.createIosSessionStore
 import dev.piko.shared.data.FilePikoCacheStore
 import dev.piko.shared.data.PikoCacheStore
@@ -19,10 +21,12 @@ import dev.piko.shared.sync.PortableSyncCipher
 import dev.piko.shared.upload.createIosUploadSources
 import dev.piko.ui.PikoServices
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * iOS 入口拼一份 [PikoServices]，与桌面 `createServices` 同构：会话存 Keychain，切片缓存落
@@ -71,6 +75,19 @@ fun createIosServices(
             maxTotalBytes = initialCacheSnapshot.cacheMaxBytes,
             maxAgeDays = initialCacheSnapshot.cacheMaxAgeDays,
         ),
+        clearImageCache = {
+            val loader = SingletonImageLoader.get(PlatformContext.INSTANCE)
+            withContext(Dispatchers.Main) {
+                loader.memoryCache?.clear()
+            }
+            val diskCache = loader.diskCache
+            if (diskCache != null) {
+                diskCache.clear()
+                true
+            } else {
+                false
+            }
+        },
     )
     appScope.launch {
         combine(preferences.cacheMaxBytesFlow, preferences.cacheMaxAgeDaysFlow) { cap, days -> cap to days }

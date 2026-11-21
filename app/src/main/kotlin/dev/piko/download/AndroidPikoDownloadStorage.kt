@@ -107,6 +107,7 @@ class AndroidPikoDownloadStorage(
         val folderSegments = segments.dropLast(1)
         // 同一文件夹下载的几个文件并行交付，同时发现子文件夹不存在时会各建一个，
         // 系统给后建的改名成「文件夹 (1)」，所以找与建放在一把锁里
+        var targetParentId: String? = null
         val targetUri = folderLock.withLock {
             var parentId = resolveFolderId(tree, rootId, folderSegments, createFolders = true)
             if (parentId == null) {
@@ -115,13 +116,21 @@ class AndroidPikoDownloadStorage(
             }
             val resolvedParentId = parentId
                 ?: error(tr("无法创建下载文件夹", "Cannot create download folder", "ダウンロード先を作成できません", "다운로드 폴더를 만들 수 없습니다", "無法建立下載資料夾"))
+            targetParentId = resolvedParentId
             findOrCreateChildFileUri(context.contentResolver, tree, resolvedParentId, name, "application/octet-stream")
                 ?.also { invalidateDirCache(tree, resolvedParentId) }
                 ?: error(tr("无法创建下载文件", "Cannot create download file", "ダウンロードファイルを作成できません", "다운로드 파일을 만들 수 없습니다", "無法建立下載檔案"))
         }
-        val written = exportFileToSafUri(context.contentResolver, staged, targetUri)
-        if (!written) {
-            error(tr("无法写入下载文件", "Cannot write download file", "ダウンロードファイルに書き込めません", "다운로드 파일에 쓸 수 없습니다", "無法寫入下載檔案"))
+        try {
+            val written = exportFileToSafUri(context.contentResolver, staged, targetUri)
+            if (!written) {
+                error(tr("无法写入下载文件", "Cannot write download file", "ダウンロードファイルに書き込めません", "다운로드 파일에 쓸 수 없습니다", "無法寫入下載檔案"))
+            }
+        } catch (t: Throwable) {
+            deleteSafDocument(context.contentResolver, targetUri)
+            targetParentId?.let { invalidateDirCache(tree, it) }
+            invalidateParentCacheForPath(tree, rootId, folderSegments)
+            throw t
         }
         invalidateParentCacheForPath(tree, rootId, folderSegments)
         staged.delete()
@@ -421,7 +430,7 @@ internal suspend fun exportFileToSafUri(
     if (exportedViaChannel) return true
     currentCoroutineContext().ensureActive()
     val output = runCatching { resolver.openOutputStream(targetUri, "wt") }.getOrNull()
-        ?: runCatching { resolver.openOutputStream(targetUri) }.getOrNull()
+        ?: runCatching { resolver.openOutputStream(targetUri, "rwt") }.getOrNull()
         ?: return false
     output.use { sink ->
         sourceFile.inputStream().use { input ->

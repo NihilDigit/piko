@@ -317,7 +317,7 @@ class IosPikoPlatform(
                 val host = IosHostBridge.topViewController() ?: return@presentFiles
                 val picker = UIDocumentPickerViewController(
                     documentTypes = listOf("public.item"),
-                    inMode = UIDocumentPickerMode.UIDocumentPickerModeImport,
+                    inMode = UIDocumentPickerMode.UIDocumentPickerModeOpen,
                 )
                 picker.allowsMultipleSelection = true
                 picker.delegate = delegate
@@ -694,7 +694,20 @@ private fun cgImageToComposeBitmap(cgImage: platform.CoreGraphics.CGImageRef): I
     return skiaBitmap.asComposeImageBitmap()
 }
 
-/** 文件选择器的回调对象；选择器给的 URL 只在回调期间有效，导入在回调里立刻开始。 */
+private class ScopedUrlLease(
+    val url: NSURL,
+    private val accessed: Boolean,
+) {
+    private val released = kotlin.concurrent.AtomicInt(0)
+
+    fun release() {
+        if (accessed && released.compareAndSet(0, 1)) {
+            url.stopAccessingSecurityScopedResource()
+        }
+    }
+}
+
+/** 文件选择器的回调对象；安全作用域授权须在主线程代理回调返回前同步获取，导入结束后配对释放。 */
 @OptIn(kotlinx.cinterop.BetaInteropApi::class)
 private class IosDocumentPickerDelegate(
     private val onPicked: (List<String>) -> Unit,
@@ -705,35 +718,44 @@ private class IosDocumentPickerDelegate(
 
     override fun documentPicker(controller: UIDocumentPickerViewController, didPickDocumentsAtURLs: List<*>) {
         val urls = didPickDocumentsAtURLs.filterIsInstance<NSURL>()
+        if (urls.isEmpty()) return
         val scope = scope ?: return
         val directories = directories ?: return
-        scope.launch {
-            val imported = mutableListOf<String>()
-            var failed = 0
-            for (url in urls) {
-                val uri = try {
-                    importIosUploadDocument(directories, url, limitBytes)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Throwable) {
-                    failed++
-                    PikoLog.w("Upload", "Failed to import selected iOS upload document (limitBytes=$limitBytes)", e)
-                    null
+        val leases = urls.map { url -> ScopedUrlLease(url, url.startAccessingSecurityScopedResource()) }
+        val job = scope.launch {
+            try {
+                val imported = mutableListOf<String>()
+                var failed = 0
+                for (lease in leases) {
+                    val uri = try {
+                        importIosUploadDocument(directories, lease.url, limitBytes)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        failed++
+                        PikoLog.w("Upload", "Failed to import selected iOS upload document (limitBytes=$limitBytes)", e)
+                        null
+                    } finally {
+                        lease.release()
+                    }
+                    if (uri != null) imported += uri
                 }
-                if (uri != null) imported += uri
-            }
-            if (imported.isNotEmpty()) {
-                onPicked(imported)
-            } else if (failed > 0) {
-                presentPlatformAlert(
-                    tr("无法导入所选文件（可能超出大小限制或无法读取）", "Unable to import selected file(s); they may exceed the size limit or be unreadable", "選択したファイルを読み込めません（サイズ上限を超えているか読み取れません）", "선택한 파일을 가져올 수 없습니다(크기 제한 초과 또는 읽기 불가)", "無法匯入所選檔案（可能超出大小限制或無法讀取）"),
-                )
+                if (imported.isNotEmpty()) {
+                    onPicked(imported)
+                } else if (failed > 0) {
+                    presentPlatformAlert(
+                        tr("无法导入所选文件（可能超出大小限制或无法读取）", "Unable to import selected file(s); they may exceed the size limit or be unreadable", "選択したファイルを読み込めません（サイズ上限を超えているか読み取れません）", "선택한 파일을 가져올 수 없습니다(크기 제한 초과 또는 읽기 불가)", "無法匯入所選檔案（可能超出大小限制或無法讀取）"),
+                    )
+                }
+            } finally {
+                leases.forEach(ScopedUrlLease::release)
             }
         }
+        job.invokeOnCompletion { leases.forEach(ScopedUrlLease::release) }
     }
 }
 
-/** 文件夹选择器的回调对象；选中的 URL 只在回调期间有效，整棵导入在回调里立刻开始。 */
+/** 文件夹选择器的回调对象；安全作用域授权须在主线程代理回调返回前同步获取，整棵导入结束后配对释放。 */
 @OptIn(kotlinx.cinterop.BetaInteropApi::class)
 private class IosFolderPickerDelegate(
     private val onPicked: (String) -> Unit,
@@ -747,20 +769,26 @@ private class IosFolderPickerDelegate(
         val url = didPickDocumentsAtURLs.filterIsInstance<NSURL>().firstOrNull() ?: return
         val scope = scope ?: return
         val directories = directories ?: return
-        scope.launch {
-            val uri = try {
-                importIosUploadFolder(directories, url, limitBytes, totalLimitBytes)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                PikoLog.w("Upload", "Failed to import selected iOS upload folder (fileLimit=$limitBytes, totalLimit=$totalLimitBytes)", e)
-                presentPlatformAlert(
-                    tr("无法导入所选文件夹（可能超出大小限制或无法读取）", "Unable to import selected folder; it may exceed the size limit or be unreadable", "選択したフォルダーを読み込めません（サイズ上限を超えているか読み取れません）", "선택한 폴더를 가져올 수 없습니다(크기 제한 초과 또는 읽기 불가)", "無法匯入所選資料夾（可能超出大小限制或無法讀取）"),
-                )
-                null
+        val lease = ScopedUrlLease(url, url.startAccessingSecurityScopedResource())
+        val job = scope.launch {
+            try {
+                val uri = try {
+                    importIosUploadFolder(directories, url, limitBytes, totalLimitBytes)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    PikoLog.w("Upload", "Failed to import selected iOS upload folder (fileLimit=$limitBytes, totalLimit=$totalLimitBytes)", e)
+                    presentPlatformAlert(
+                        tr("无法导入所选文件夹（可能超出大小限制或无法读取）", "Unable to import selected folder; it may exceed the size limit or be unreadable", "選択したフォルダーを読み込めません（サイズ上限を超えているか読み取れません）", "선택한 폴더를 가져올 수 없습니다(크기 제한 초과 또는 읽기 불가)", "無法匯入所選資料夾（可能超出大小限制或無法讀取）"),
+                    )
+                    null
+                }
+                if (uri != null) onPicked(uri)
+            } finally {
+                lease.release()
             }
-            if (uri != null) onPicked(uri)
         }
+        job.invokeOnCompletion { lease.release() }
     }
 }
 

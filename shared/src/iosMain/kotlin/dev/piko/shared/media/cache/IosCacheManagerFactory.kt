@@ -35,9 +35,15 @@ fun createIosCacheManager(
     clipCache: IosClipCache?,
     treeIndexDir: String,
     initialPolicy: CachePolicy = CachePolicy(),
+    clearImageCache: (suspend () -> Boolean)? = null,
 ): PikoCacheManager {
     val backends = LinkedHashMap<CacheCategory, CacheCategoryBackend>(5)
-    backends[CacheCategory.IMAGES] = IosDirectoryCacheBackend(CacheCategory.IMAGES, imageCacheDir, clearable = true)
+    backends[CacheCategory.IMAGES] = IosDirectoryCacheBackend(
+        category = CacheCategory.IMAGES,
+        directoryPath = imageCacheDir,
+        clearable = true,
+        customClear = clearImageCache,
+    )
     backends[CacheCategory.PLAYBACK] = fileCachePool.asCacheBackend()
     backends[CacheCategory.STORYBOARD] = storyboardCache.asCacheBackend()
     if (clipCache != null) {
@@ -69,6 +75,7 @@ private class IosDirectoryCacheBackend(
     override val category: CacheCategory,
     private val directoryPath: String,
     override val clearable: Boolean,
+    private val customClear: (suspend () -> Boolean)? = null,
 ) : CacheCategoryBackend {
     private val files = NSFileManager.defaultManager
 
@@ -95,7 +102,15 @@ private class IosDirectoryCacheBackend(
     }
 
     override suspend fun clear(): Long = withContext(Dispatchers.IO) {
-        if (!clearable || !files.fileExistsAtPath(directoryPath)) return@withContext 0L
+        if (!clearable) return@withContext 0L
+        if (customClear != null) {
+            val before = if (files.fileExistsAtPath(directoryPath)) scan().bytes else 0L
+            if (customClear.invoke()) {
+                val after = if (files.fileExistsAtPath(directoryPath)) scan().bytes else 0L
+                return@withContext (before - after).coerceAtLeast(0L)
+            }
+        }
+        if (!files.fileExistsAtPath(directoryPath)) return@withContext 0L
         var freed = 0L
         fun clearDir(dir: String) {
             val children = files.contentsOfDirectoryAtPath(dir, error = null)?.filterIsInstance<String>() ?: return

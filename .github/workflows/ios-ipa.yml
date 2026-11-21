@@ -195,11 +195,16 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
           security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
           security find-identity -v -p codesigning "$KEYCHAIN"
+          SIGN_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk '/1\)/ {print $2; exit}')"
+          test -n "$SIGN_IDENTITY"
+          echo "PIKO_SIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
           if [ -n "${PROFILE:-}" ]; then
             printf '%s' "$PROFILE" | openssl base64 -d -A -out "$RUNNER_TEMP/profile.mobileprovision"
             UUID_VALUE="$(security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" | plutil -extract UUID raw -)"
             mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
             cp "$RUNNER_TEMP/profile.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID_VALUE.mobileprovision"
+            echo "PIKO_PROFILE_UUID=$UUID_VALUE" >> "$GITHUB_ENV"
+            rm -f "$RUNNER_TEMP/profile.mobileprovision"
           fi
           rm -f "$RUNNER_TEMP/cert.p12"
 
@@ -208,22 +213,71 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (
-            cd iosApp
-            xcodebuild archive \
-              -project Piko.xcodeproj \
-              -scheme Piko \
-              -configuration "$CONFIGURATION_NAME" \
-              -destination "generic/platform=iOS" \
+          BUNDLE_ID="${PIKO_BUNDLE_ID:-dev.piko.pikpak.ios}"
+          if [ -n "${PIKO_PROFILE_UUID:-}" ]; then
+            (
+              cd iosApp
+              xcodebuild archive \
+                -project Piko.xcodeproj \
+                -scheme Piko \
+                -configuration "$CONFIGURATION_NAME" \
+                -destination "generic/platform=iOS" \
+                -archivePath "$RUNNER_TEMP/Piko.xcarchive" \
+                "CODE_SIGN_STYLE=Manual" \
+                "DEVELOPMENT_TEAM=$PIKO_TEAM_ID" \
+                "CODE_SIGN_IDENTITY=$PIKO_SIGN_IDENTITY" \
+                "PROVISIONING_PROFILE_SPECIFIER=$PIKO_PROFILE_UUID" \
+                "MARKETING_VERSION=$VERSION" \
+                "CURRENT_PROJECT_VERSION=$VERSION_CODE" \
+                "PIKO_TEAM_ID=$PIKO_TEAM_ID" \
+                "PIKO_BUNDLE_ID=$BUNDLE_ID" \
+                2>&1 | tee "$RUNNER_TEMP/archive-signed.log"
+            )
+            cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>$EXPORT_METHOD</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>$PIKO_SIGN_IDENTITY</string>
+            <key>stripSwiftSymbols</key><true/>
+            <key>compileBitcode</key><false/>
+            <key>destination</key><string>export</string>
+            <key>teamID</key><string>$PIKO_TEAM_ID</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>$BUNDLE_ID</key><string>$PIKO_PROFILE_UUID</string>
+            </dict>
+          </dict>
+          </plist>
+          PLIST
+            plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
+            rm -rf "$RUNNER_TEMP/export"
+            xcodebuild -exportArchive \
               -archivePath "$RUNNER_TEMP/Piko.xcarchive" \
-              -allowProvisioningUpdates \
-              "MARKETING_VERSION=$VERSION" \
-              "CURRENT_PROJECT_VERSION=$VERSION_CODE" \
-              "PIKO_TEAM_ID=$PIKO_TEAM_ID" \
-              "PIKO_BUNDLE_ID=${PIKO_BUNDLE_ID:-dev.piko.pikpak.ios}" \
-              2>&1 | tee "$RUNNER_TEMP/archive-signed.log"
-          )
-          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+              -exportPath "$RUNNER_TEMP/export" \
+              -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+              2>&1 | tee "$RUNNER_TEMP/export.log"
+          else
+            (
+              cd iosApp
+              xcodebuild archive \
+                -project Piko.xcodeproj \
+                -scheme Piko \
+                -configuration "$CONFIGURATION_NAME" \
+                -destination "generic/platform=iOS" \
+                -archivePath "$RUNNER_TEMP/Piko.xcarchive" \
+                -allowProvisioningUpdates \
+                "CODE_SIGN_STYLE=Automatic" \
+                "DEVELOPMENT_TEAM=$PIKO_TEAM_ID" \
+                "MARKETING_VERSION=$VERSION" \
+                "CURRENT_PROJECT_VERSION=$VERSION_CODE" \
+                "PIKO_TEAM_ID=$PIKO_TEAM_ID" \
+                "PIKO_BUNDLE_ID=$BUNDLE_ID" \
+                2>&1 | tee "$RUNNER_TEMP/archive-signed.log"
+            )
+            cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -237,14 +291,15 @@ jobs:
           </dict>
           </plist>
           PLIST
-          plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
-          rm -rf "$RUNNER_TEMP/export"
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/Piko.xcarchive" \
-            -exportPath "$RUNNER_TEMP/export" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -allowProvisioningUpdates \
-            2>&1 | tee "$RUNNER_TEMP/export.log"
+            plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
+            rm -rf "$RUNNER_TEMP/export"
+            xcodebuild -exportArchive \
+              -archivePath "$RUNNER_TEMP/Piko.xcarchive" \
+              -exportPath "$RUNNER_TEMP/export" \
+              -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+              -allowProvisioningUpdates \
+              2>&1 | tee "$RUNNER_TEMP/export.log"
+          fi
 
       - name: Archive unsigned app
         if: env.HAS_SIGNING != 'true'
