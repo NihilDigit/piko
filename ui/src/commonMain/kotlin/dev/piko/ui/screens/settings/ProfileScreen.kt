@@ -85,6 +85,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
@@ -110,6 +111,8 @@ import io.github.nihildigit.pikpak.TransferAllowances
 import dev.piko.ui.format.dailyQuotaResetLabel as formatDailyQuotaResetLabel
 import dev.piko.ui.format.formatOffsetDate
 import dev.piko.ui.format.monthlyQuotaResetLabel
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.islandBorderColor
 import dev.piko.ui.theme.tabular
 import kotlinx.coroutines.launch
@@ -400,10 +403,11 @@ internal fun AccountCard(
     val allowancesError = account.allowancesError
     // 圆角与设置的分组相同：桌面设置页里它与下面的账号列表是同一套卡片
     val borderColor = MaterialTheme.colorScheme.islandBorderColor
+    val isEInk = LocalAppearance.current.isEInk
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = settingsStyle().groupShape,
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = if (isEInk) Color.White else MaterialTheme.colorScheme.surfaceContainer,
         border = borderColor?.let { BorderStroke(1.dp, it) },
     ) {
         Column(modifier = Modifier.padding(16.dp)) {

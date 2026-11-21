@@ -18,6 +18,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import dev.piko.shared.data.DriveAppearancePrefs
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.player.PlayerLayoutPrefs
+import dev.piko.shared.media.player.SubtitleStylePrefs
 import dev.piko.shared.media.player.decodePlayerLayoutPrefs
 import dev.piko.shared.media.player.encodePlayerLayoutPrefs
 import dev.piko.shared.net.ProxySetting
@@ -143,11 +144,14 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
                     }
                 }
             }
+            val rawSeed = prefs[PreferencesKeys.THEME_SEED]
+            val legacyEink = rawSeed.equals("EINK", ignoreCase = true)
             return PikoPreferencesSnapshot(
                 appLanguage = AppLanguage.fromStorage(prefs[appLanguageKey]),
                 themeMode = prefs[PreferencesKeys.THEME_MODE],
-                themeSeed = prefs[PreferencesKeys.THEME_SEED],
+                themeSeed = rawSeed?.takeUnless { it.equals("EINK", ignoreCase = true) },
                 pureBlack = prefs[PreferencesKeys.PURE_BLACK] ?: false,
+                einkMode = prefs[PreferencesKeys.EINK_MODE] ?: legacyEink,
                 spoilerBlurEnabled = prefs[PreferencesKeys.SPOILER_BLUR_ENABLED] ?: false,
                 reduceMotion = prefs[PreferencesKeys.REDUCE_MOTION] ?: false,
                 hardwareDecoding = prefs[PreferencesKeys.HARDWARE_DECODING] ?: true,
@@ -159,6 +163,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
                 proxySetting = ProxySetting.decode(prefs[PreferencesKeys.PROXY_SETTING].orEmpty()),
                 tileSizes = tileSizes,
                 playerLayout = decodePlayerLayoutPrefs(prefs[PreferencesKeys.PLAYER_LAYOUT]),
+                subtitleStyle = SubtitleStylePrefs.decodeJson(prefs[PreferencesKeys.SUBTITLE_STYLE]),
                 driveAppearance = DriveAppearancePrefs.decodeJson(prefs[PreferencesKeys.DRIVE_APPEARANCE]),
                 skipFeedExitConfirm = prefs[PreferencesKeys.SKIP_FEED_EXIT_CONFIRM] ?: false,
                 cacheMaxBytes = (prefs[PreferencesKeys.CACHE_MAX_BYTES] ?: CachePolicyDefaults.DEFAULT_MAX_BYTES).coerceAtLeast(0L),
@@ -190,6 +195,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val PLAYER_BOOST_SPEED = floatPreferencesKey("player_boost_speed")
         val CLIP_AUTO_EXTEND = booleanPreferencesKey("clip_auto_extend")
         val PLAYER_LAYOUT = stringPreferencesKey("player_layout")
+        val SUBTITLE_STYLE = stringPreferencesKey("subtitle_style")
         val DRIVE_APPEARANCE = stringPreferencesKey("drive_appearance")
         val SKIP_FEED_EXIT_CONFIRM = booleanPreferencesKey("skip_feed_exit_confirm")
         val CACHE_MAX_BYTES = longPreferencesKey("cache_max_bytes")
@@ -216,6 +222,7 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val THEME_SEED = stringPreferencesKey("theme_seed")
         val PURE_BLACK = booleanPreferencesKey("pure_black")
+        val EINK_MODE = booleanPreferencesKey("eink_mode")
         val LAST_FOLDER_ID = stringPreferencesKey("last_folder_id")
         val LAST_FOLDER_NAME = stringPreferencesKey("last_folder_name")
         val LAST_FOLDER_STACK_SERIALIZED = stringPreferencesKey("last_folder_stack")
@@ -380,6 +387,16 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
+    override val subtitleStylePrefsFlow: Flow<SubtitleStylePrefs> =
+        preference { SubtitleStylePrefs.decodeJson(it[PreferencesKeys.SUBTITLE_STYLE]) }
+
+    override suspend fun setSubtitleStylePrefs(prefs: SubtitleStylePrefs) {
+        val encoded = prefs.sanitize().encodeJson()
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SUBTITLE_STYLE] = encoded
+        }
+    }
+
     override val driveAppearancePrefsFlow: Flow<DriveAppearancePrefs> =
         preference { DriveAppearancePrefs.decodeJson(it[PreferencesKeys.DRIVE_APPEARANCE]) }
 
@@ -511,12 +528,15 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         cachedMainPreferences = context.dataStore.edit { it[PreferencesKeys.THEME_MODE] = mode }
     }
 
-    /** 内置主题的名字，null 表示系统取色。 */
-    override val themeSeedFlow: Flow<String?> = preference { it[PreferencesKeys.THEME_SEED] }
+    /** 内置主题的名字，null 表示系统取色。旧版遗留的 EINK 自动视为未指定种子色并转交 [einkModeFlow]。 */
+    override val themeSeedFlow: Flow<String?> = preference {
+        it[PreferencesKeys.THEME_SEED]?.takeUnless { seed -> seed.equals("EINK", ignoreCase = true) }
+    }
 
     override suspend fun setThemeSeed(seed: String?) {
+        val sanitized = seed?.takeUnless { it.equals("EINK", ignoreCase = true) }
         cachedMainPreferences = context.dataStore.edit { preferences ->
-            if (seed == null) preferences.remove(PreferencesKeys.THEME_SEED) else preferences[PreferencesKeys.THEME_SEED] = seed
+            if (sanitized == null) preferences.remove(PreferencesKeys.THEME_SEED) else preferences[PreferencesKeys.THEME_SEED] = sanitized
         }
     }
 
@@ -525,6 +545,19 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setPureBlack(enabled: Boolean) {
         cachedMainPreferences = context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.PURE_BLACK] = enabled
+        }
+    }
+
+    override val einkModeFlow: Flow<Boolean> = preference {
+        it[PreferencesKeys.EINK_MODE] ?: it[PreferencesKeys.THEME_SEED].equals("EINK", ignoreCase = true)
+    }
+
+    override suspend fun setEinkMode(enabled: Boolean) {
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.EINK_MODE] = enabled
+            if (preferences[PreferencesKeys.THEME_SEED].equals("EINK", ignoreCase = true)) {
+                preferences.remove(PreferencesKeys.THEME_SEED)
+            }
         }
     }
 

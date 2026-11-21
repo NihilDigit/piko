@@ -163,6 +163,10 @@ class AndroidPikoPlatform(
         clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
     }
 
+    override suspend fun listSubtitleFonts(): List<String> = withContext(Dispatchers.IO) {
+        AndroidSubtitleFonts.discoverFontFamilies()
+    }
+
     override val localFiles: LocalFileActions = AndroidLocalFiles()
 
     override val downloadLocation: DownloadLocationPicker = AndroidDownloadLocation()
@@ -198,6 +202,8 @@ class AndroidPikoPlatform(
     }
 
     override val videoPreview: VideoPreviewSupport = MpvPreviewSupport()
+
+    override val htmlViewer: dev.piko.ui.platform.HtmlViewerSupport = AndroidHtmlViewerSupport()
 
     // 清单里的 intent-filter 已让 Piko 出现在磁力链接与种子文件的选择器里，默认由用户在选择器里点「始终」。
     // 应用没有接口替用户设定：RoleManager 只管浏览器、电话、短信这类角色，「默认打开」页只管验证过的 http 链接
@@ -807,5 +813,166 @@ private fun ImmersiveSystemBars(visible: Boolean) {
         } else {
             controller.hide(WindowInsetsCompat.Type.systemBars())
         }
+    }
+}
+
+/**
+ * 扫描 Android 系统字体目录（与 `MpvConfig.fontsConfig` 交给 libass fontconfig 的目录完全一致）
+ * 并直接解析 OpenType `name` 表（Name ID 16 优先，回退 Name ID 1），确保返回的每个字体族名都能被 libass 精确命中。
+ */
+internal object AndroidSubtitleFonts {
+    @Volatile
+    private var cachedFamilies: List<String>? = null
+
+    private val FONT_DIRS = listOf("/system/fonts", "/product/fonts")
+    private val PRIORITY_FONTS = listOf(
+        "Noto Sans CJK SC",
+        "Noto Sans CJK TC",
+        "Noto Sans CJK JP",
+        "Noto Sans CJK KR",
+        "Noto Serif CJK SC",
+        "Noto Serif CJK TC",
+        "MiSans",
+        "HarmonyOS Sans SC",
+        "HarmonyOS Sans",
+        "OPPO Sans",
+        "Roboto",
+        "Noto Sans",
+        "Noto Serif",
+        "Droid Sans Mono",
+        "Roboto Mono",
+    )
+
+    fun discoverFontFamilies(): List<String> {
+        cachedFamilies?.let { return it }
+        return synchronized(this) {
+            cachedFamilies?.let { return@synchronized it }
+            val seen = LinkedHashMap<String, String>()
+            for (dirPath in FONT_DIRS) {
+                val dir = File(dirPath)
+                val files = dir.listFiles() ?: continue
+                for (file in files) {
+                    if (!file.isFile) continue
+                    val ext = file.extension.lowercase()
+                    if (ext != "ttf" && ext != "otf" && ext != "ttc") continue
+                    runCatching { extractOpenTypeFamilyNames(file) }
+                        .getOrDefault(emptyList())
+                        .forEach { raw ->
+                            val name = raw.trim()
+                            val key = name.lowercase()
+                            if (name.isEmpty() || name.startsWith(".")) return@forEach
+                            if ("emoji" in key || "clock" in key || "symbol" in key || "signwriting" in key || "math" in key) return@forEach
+                            seen.putIfAbsent(key, name)
+                        }
+                }
+            }
+            val priority = PRIORITY_FONTS.withIndex().associate { it.value.lowercase() to it.index }
+            val sorted = seen.values.sortedWith(
+                compareBy<String>({ priority[it.lowercase()] ?: Int.MAX_VALUE }, { it.lowercase() }),
+            )
+            cachedFamilies = sorted
+            sorted
+        }
+    }
+
+    fun findCachedFamily(requested: String): String? {
+        val target = requested.trim()
+        if (target.isEmpty()) return null
+        return cachedFamilies?.firstOrNull { it.equals(target, ignoreCase = true) }
+    }
+
+    fun findInstalledFamily(requested: String): String? {
+        val target = requested.trim()
+        if (target.isEmpty()) return null
+        return discoverFontFamilies().firstOrNull { it.equals(target, ignoreCase = true) }
+    }
+
+    private fun extractOpenTypeFamilyNames(file: File): List<String> {
+        java.io.RandomAccessFile(file, "r").use { raf ->
+            val fileLen = raf.length()
+            if (fileLen < 12L) return emptyList()
+            val tag = raf.readInt()
+            if (tag == 0x74746366) { // 'ttcf' TrueType Collection
+                raf.skipBytes(4) // version
+                val numFonts = raf.readInt().coerceIn(0, 64)
+                val offsets = IntArray(numFonts) { raf.readInt() }
+                val names = LinkedHashSet<String>()
+                for (offset in offsets) {
+                    if (offset > 0 && offset.toLong() + 12L <= fileLen) {
+                        readSfntFamilyName(raf, offset.toLong(), fileLen)?.let(names::add)
+                    }
+                }
+                return names.toList()
+            }
+            return listOfNotNull(readSfntFamilyName(raf, 0L, fileLen))
+        }
+    }
+
+    private fun readSfntFamilyName(raf: java.io.RandomAccessFile, baseOffset: Long, fileLen: Long): String? {
+        raf.seek(baseOffset)
+        val sfntVersion = raf.readInt()
+        if (sfntVersion != 0x00010000 && sfntVersion != 0x4F54544F && sfntVersion != 0x74727565) return null
+        val numTables = raf.readUnsignedShort().coerceAtMost(256)
+        raf.skipBytes(6) // searchRange, entrySelector, rangeShift
+        var nameTableOffset = -1L
+        var nameTableLength = 0
+        for (i in 0 until numTables) {
+            if (raf.filePointer + 16L > fileLen) break
+            val tableTag = raf.readInt()
+            raf.skipBytes(4) // checksum
+            val offset = raf.readInt().toLong() and 0xFFFFFFFFL
+            val length = raf.readInt()
+            if (tableTag == 0x6E616D65) { // 'name'
+                nameTableOffset = offset
+                nameTableLength = length
+                break
+            }
+        }
+        if (nameTableOffset <= 0L || nameTableLength <= 6 || nameTableOffset + nameTableLength > fileLen) return null
+        // Limit single name table read to 256 KiB to avoid excessive allocation on malformed files.
+        val readLen = minOf(nameTableLength, 256 * 1024)
+        val bytes = ByteArray(readLen)
+        raf.seek(nameTableOffset)
+        raf.readFully(bytes)
+        val buf = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.BIG_ENDIAN)
+        buf.short // format
+        val count = buf.short.toInt() and 0xFFFF
+        val stringOffset = buf.short.toInt() and 0xFFFF
+        var bestTypographic: String? = null
+        var bestFamily: String? = null
+        var bestTypographicScore = -1
+        var bestFamilyScore = -1
+        for (i in 0 until count) {
+            if (buf.remaining() < 12) break
+            val platformId = buf.short.toInt() and 0xFFFF
+            val encodingId = buf.short.toInt() and 0xFFFF
+            val languageId = buf.short.toInt() and 0xFFFF
+            val nameId = buf.short.toInt() and 0xFFFF
+            val length = buf.short.toInt() and 0xFFFF
+            val offset = buf.short.toInt() and 0xFFFF
+            if (nameId != 1 && nameId != 16) continue
+            val start = stringOffset + offset
+            if (start < 0 || length <= 0 || start + length > bytes.size) continue
+            val decoded = when (platformId) {
+                3, 0 -> String(bytes, start, length, Charsets.UTF_16BE)
+                1 -> if (encodingId == 0) String(bytes, start, length, Charsets.ISO_8859_1) else null
+                else -> null
+            }?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+            val score = when {
+                platformId == 3 && languageId == 0x0409 -> 4 // Windows English US
+                platformId == 3 -> 3
+                platformId == 0 -> 2
+                platformId == 1 && languageId == 0 -> 1
+                else -> 0
+            }
+            if (nameId == 16 && score > bestTypographicScore) {
+                bestTypographic = decoded
+                bestTypographicScore = score
+            } else if (nameId == 1 && score > bestFamilyScore) {
+                bestFamily = decoded
+                bestFamilyScore = score
+            }
+        }
+        return bestTypographic ?: bestFamily
     }
 }

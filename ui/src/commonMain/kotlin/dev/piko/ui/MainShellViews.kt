@@ -3,6 +3,7 @@ package dev.piko.ui
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -48,6 +49,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.FilledTonalToggleButton
+import androidx.compose.material3.FilledTonalToggleButtonDefaults
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteItem
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
@@ -123,6 +125,8 @@ import dev.piko.ui.screens.settings.ProfileScreen
 import dev.piko.ui.screens.transfers.TransfersScreen
 import dev.piko.ui.theme.LocalPikoMotion
 import dev.piko.ui.theme.ThemeMode
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.frame
 import kotlinx.coroutines.launch
 import dev.piko.ui.workbench.ClaimDialog
@@ -193,6 +197,7 @@ internal fun MainHomeContent(
     onTabClick: (MainTab) -> Unit,
     onMeasuredContentSize: (IntSize) -> Unit,
     onPlayVideo: (FileStat, List<FileStat>) -> Unit,
+    onOpenDocument: (FileStat) -> Unit = {},
     onPlayLocal: (String, String, String?) -> Unit,
     onRevealById: (String) -> Unit,
     onOpenCloudFile: suspend (String, String) -> Boolean,
@@ -228,6 +233,7 @@ internal fun MainHomeContent(
                     WorkspaceContextHost(
                         model = workspaceModel,
                         onPlay = onPlayVideo,
+                        onOpenDocument = onOpenDocument,
                         onReveal = { file -> onRevealById(file.id) },
                         onTransfers = onOpenTransfers,
                         onOpenSpaceMap = onOpenSpaceMap,
@@ -237,6 +243,7 @@ internal fun MainHomeContent(
                         key(fileBrowser) {
                             FilesScreen(
                                 onNavigateToVideoPlayer = onPlayVideo,
+                                onOpenDocument = onOpenDocument,
                                 scrollToTopRequests = filesScrollToTop,
                                 onOpenTransfers = onOpenTransfers,
                                 onOpenDuplicateReport = onOpenDuplicateReport,
@@ -704,6 +711,8 @@ private fun MainTabSwitch(currentTab: MainTab?, onTabClick: (MainTab) -> Unit, c
         }
         return
     }
+    val isEInk = LocalAppearance.current.isEInk
+    val colors = MaterialTheme.colorScheme
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
@@ -714,6 +723,17 @@ private fun MainTabSwitch(currentTab: MainTab?, onTabClick: (MainTab) -> Unit, c
                 checked = selected,
                 onCheckedChange = { onTabClick(tab) },
                 shapes = connectedToggleShapes(index, tabs.size),
+                colors = if (isEInk) {
+                    FilledTonalToggleButtonDefaults.colors(
+                        containerColor = Color.White,
+                        contentColor = Color.Black,
+                        checkedContainerColor = Color.Black,
+                        checkedContentColor = Color.White,
+                    )
+                } else {
+                    FilledTonalToggleButtonDefaults.colors()
+                },
+                border = if (isEInk) BorderStroke(1.dp, colors.outline) else null,
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                 modifier = Modifier.weight(1f).height(48.dp),
             ) {

@@ -54,6 +54,23 @@ sealed interface Screen : NavKey {
         /** 从这里开播，不查续播记录。 */
         val startMillis: Long? = null,
     ) : Screen
+
+    @Serializable
+    data class DocumentReader(
+        val fileId: String,
+        val fileName: String,
+        val parentFolderId: String? = null,
+        val localPath: String? = null,
+        val sizeBytes: Long = 0L,
+    ) : Screen
+
+    @Serializable
+    data class HtmlViewer(
+        val fileId: String,
+        val fileName: String,
+        val parentFolderId: String? = null,
+        val localPath: String? = null,
+    ) : Screen
 }
 
 enum class MainTab(private val titleText: () -> String) {

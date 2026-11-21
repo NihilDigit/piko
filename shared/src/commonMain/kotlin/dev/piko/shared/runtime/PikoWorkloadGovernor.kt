@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
@@ -110,6 +110,11 @@ class PikoWorkloadGovernor {
         budget.first { it.allowBackgroundSync }
     }
 
+    /** 播放器处于冷启动、定位拖动或缓冲不足（[WorkPhase.Urgent]）时暂缓非紧急后台预热与树写库，避免争抢网络与 SQLite 写锁。 */
+    suspend fun awaitNoUrgentPlayback() {
+        budget.first { !it.hasUrgentPlayback }
+    }
+
     private fun recomputeLocked() {
         val playbacks = entries.values.filter { it.purpose == WorkPurpose.Playback }
         val hasPlayback = playbacks.any { it.phase == WorkPhase.Steady || it.phase == WorkPhase.Urgent }
@@ -131,7 +136,7 @@ class PikoWorkloadGovernor {
  */
 class AppPresence(
     private val timeSource: TimeSource = TimeSource.Monotonic,
-    private val backgroundGrace: Duration = 800.milliseconds,
+    private val backgroundGrace: Duration = 3.seconds,
 ) {
     private val lock = PikoLock()
     private val focusedWindows = LinkedHashSet<String>()

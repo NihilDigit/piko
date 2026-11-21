@@ -20,11 +20,14 @@ class PikoMotionScale : MotionDurationScale {
      */
     var systemScale by mutableFloatStateOf(1f)
 
-    /** 设置里的「减少动画」。与系统设置取或：任一开着就减少。 */
+    /** 设置里的「减少动画」。与系统设置、水墨屏模式取或：任一开着就减少。 */
     var appReduced by mutableStateOf(false)
 
+    /** 水墨屏模式自动关闭动画。 */
+    var einkReduced by mutableStateOf(false)
+
     override val scaleFactor: Float
-        get() = if (appReduced) 0f else systemScale
+        get() = if (appReduced || einkReduced) 0f else systemScale
 
     val reduced: Boolean
         get() = scaleFactor == 0f

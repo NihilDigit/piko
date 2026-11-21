@@ -78,6 +78,7 @@ private fun WorkspaceStateProvider(holder: SaveableStateHolder, key: Long, conte
 internal fun WorkspaceContextHost(
     model: WorkspaceViewModel,
     onPlay: (FileStat, List<FileStat>) -> Unit,
+    onOpenDocument: (FileStat) -> Unit = {},
     onReveal: (FileStat) -> Unit,
     onTransfers: () -> Unit,
     onOpenSpaceMap: ((folderId: String, folderName: String) -> Unit)? = null,
@@ -116,6 +117,7 @@ internal fun WorkspaceContextHost(
                                     if (context.id in model.duplicateSessions) DriveScreen(
                                         onNavigateToFolder = { _, _ -> },
                                         onNavigateToVideoPlayer = onPlay,
+                                        onOpenDocument = onOpenDocument,
                                         browserSession = model.duplicateBrowser(context.id),
                                         onRevealInDrive = onReveal,
                                         onOpenSpaceMap = onOpenSpaceMap,

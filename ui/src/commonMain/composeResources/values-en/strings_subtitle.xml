@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="subtitle_style_title">Subtitle style</string>
+    <string name="subtitle_style_entry">Customize subtitle style</string>
+    <string name="subtitle_style_background">Subtitle background</string>
+    <string name="subtitle_style_background_desc">Add a translucent dark backdrop behind text</string>
+    <string name="subtitle_style_background_color">Background color</string>
+    <string name="subtitle_style_background_opacity">Opacity</string>
+    <string name="subtitle_style_background_opacity_decrease">Decrease opacity</string>
+    <string name="subtitle_style_background_opacity_increase">Increase opacity</string>
+    <string name="subtitle_style_bg_black">Black</string>
+    <string name="subtitle_style_bg_charcoal">Charcoal</string>
+    <string name="subtitle_style_bg_midnight">Midnight blue</string>
+    <string name="subtitle_style_bg_forest">Deep forest</string>
+    <string name="subtitle_style_bg_plum">Deep plum</string>
+    <string name="subtitle_style_bg_espresso">Warm espresso</string>
+    <string name="subtitle_style_image_notice">Current track is an image subtitle (%1$s). Font, size, and background apply to text subtitles only.</string>
+    <string name="subtitle_style_image_notice_generic">Current track is an image subtitle. Font, size, and background apply to text subtitles only.</string>
+    <string name="subtitle_style_font">Font</string>
+    <string name="subtitle_style_font_default">Default</string>
+    <string name="subtitle_style_font_serif">Serif</string>
+    <string name="subtitle_style_font_monospace">Monospace</string>
+    <string name="subtitle_style_font_system">System font</string>
+    <string name="subtitle_style_font_choose">Choose system font</string>
+    <string name="subtitle_style_font_missing_fallback">Not installed on this device, using system default</string>
+    <string name="subtitle_style_size">Font size</string>
+    <string name="subtitle_style_size_decrease">Decrease font size</string>
+    <string name="subtitle_style_size_increase">Increase font size</string>
+    <string name="subtitle_style_position">Vertical position</string>
+    <string name="subtitle_style_position_up">Move subtitles up</string>
+    <string name="subtitle_style_position_down">Move subtitles down</string>
+    <string name="subtitle_style_position_top">Top</string>
+    <string name="subtitle_style_position_middle">Middle</string>
+    <string name="subtitle_style_position_bottom">Bottom</string>
+    <string name="subtitle_style_override_ass">Override ASS styles</string>
+    <string name="subtitle_style_override_ass_desc">Apply font, size, and background to styled ASS subtitles</string>
+    <string name="subtitle_style_reset">Reset to defaults</string>
+</resources>

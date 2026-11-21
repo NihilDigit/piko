@@ -35,6 +35,8 @@ import dev.piko.data.repository.fileCategory
 import dev.piko.shared.data.isImportPreview
 import dev.piko.shared.data.isLocalMountRoot
 import dev.piko.shared.data.isVaulted
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
 import io.github.nihildigit.pikpak.videoThumbnailUrlOf
@@ -203,7 +205,12 @@ internal fun FileOverlaySelectionControl(
     ).semantics { selection.label?.let { contentDescription = it } }
     else Modifier.clearAndSetSemantics {}
     val selected = selection.state != ToggleableState.Off
-    val fill = if (selected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.38f)
+    val isEInk = LocalAppearance.current.isEInk
+    val fill = when {
+        selected -> MaterialTheme.colorScheme.primary
+        isEInk -> Color.White
+        else -> Color.Black.copy(alpha = 0.38f)
+    }
     val mark = MaterialTheme.colorScheme.onPrimary
     val focusRing = MaterialTheme.colorScheme.primary
     Box(modifier.size(24.dp).then(interaction), contentAlignment = Alignment.Center) {
@@ -212,7 +219,11 @@ internal fun FileOverlaySelectionControl(
             drawRoundRect(fill, cornerRadius = CornerRadius(4.dp.toPx()), alpha = alpha)
             if (!selected) {
                 val stroke = 1.5.dp.toPx()
-                val ringColor = if (focused) focusRing else Color.White
+                val ringColor = when {
+                    focused -> focusRing
+                    isEInk -> Color.Black
+                    else -> Color.White
+                }
                 drawRoundRect(
                     ringColor, topLeft = Offset(stroke / 2, stroke / 2),
                     size = size.copy(width = size.width - stroke, height = size.height - stroke),

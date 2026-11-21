@@ -17,6 +17,12 @@ private val AUDIO_EXTENSIONS = setOf(
 private val ARCHIVE_EXTENSIONS = setOf("zip", "rar", "7z", "tar", "gz", "xz", "bz2")
 // 种子里常夹带字幕，单列一类，不与 nfo、txt 一起算作文档
 private val SUBTITLE_EXTENSIONS = setOf("srt", "ass", "ssa", "vtt", "sub", "sup", "idx", "smi", "sami")
+private val MARKDOWN_EXTENSIONS = setOf("md", "markdown", "mdown", "mkd")
+private val PLAIN_TEXT_EXTENSIONS = setOf(
+    "txt", "log", "json", "yaml", "yml", "xml", "ini", "conf", "cfg",
+    "csv", "tsv", "toml", "nfo", "srt", "ass", "ssa", "vtt",
+)
+private val HTML_EXTENSIONS = setOf("html", "htm", "xhtml")
 
 /** 只按扩展名的文件大类。网盘列表的图标、秒传面板的按类勾选共用这一套。 */
 enum class FileCategory { VIDEO, AUDIO, IMAGE, ARCHIVE, SUBTITLE, DOCUMENT }
@@ -87,4 +93,23 @@ fun FileStat.fileCategory(): FileCategory {
 
 fun FileStat.isPreviewableImage(): Boolean = !isFolder && (
     name.isPreviewableImage() || mimeType.startsWith("image/")
+    )
+
+fun String.isMarkdownDocument(): Boolean = substringAfterLast('.', "").lowercase() in MARKDOWN_EXTENSIONS
+
+fun String.isPlainTextDocument(): Boolean = substringAfterLast('.', "").lowercase() in PLAIN_TEXT_EXTENSIONS
+
+fun String.isReadableTextDocument(): Boolean = isMarkdownDocument() || isPlainTextDocument()
+
+fun String.isHtmlDocument(): Boolean = substringAfterLast('.', "").lowercase() in HTML_EXTENSIONS
+
+fun FileStat.isMarkdownDocument(): Boolean = !isFolder && name.isMarkdownDocument()
+
+fun FileStat.isReadableTextDocument(): Boolean = !isFolder && (
+    name.isReadableTextDocument() ||
+        (mimeType.startsWith("text/") && !name.isHtmlDocument() && mimeType != "text/html" && mimeType != "application/xhtml+xml")
+    )
+
+fun FileStat.isHtmlDocument(): Boolean = !isFolder && (
+    name.isHtmlDocument() || mimeType == "text/html" || mimeType == "application/xhtml+xml"
     )

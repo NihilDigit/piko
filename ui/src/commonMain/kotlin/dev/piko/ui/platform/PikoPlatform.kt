@@ -115,6 +115,12 @@ interface PikoPlatform {
     /** 为 null 表示该平台不提供片段下载的画面预览，入口随之隐藏。 */
     val videoPreview: VideoPreviewSupport?
 
+    /**
+     * 平台内嵌 HTML 查看器（Android WebView / iOS WKWebView）。
+     * 返回 null 的平台（如桌面端）直接通过系统默认浏览器打开本机回环代理地址。
+     */
+    val htmlViewer: HtmlViewerSupport? get() = null
+
     /** 为 null 表示该平台不能由应用自己登记为磁力链接与种子文件的打开方式，设置页不给入口。 */
     val linkAssociation: LinkAssociation?
 
@@ -224,6 +230,12 @@ interface PikoPlatform {
      * 将紧凑雪碧图 JPEG/WebP 字节直接解码为 Compose [ImageBitmap]（用于磁盘缓存命中 `< 0.5ms` 展示）。
      */
     fun decodeEncodedImageBitmap(bytes: ByteArray): ImageBitmap? = null
+
+    /**
+     * 枚举本机已安装且可供 libmpv / libass 渲染字幕的系统字体族名称，按常用度与字母序去重排序。
+     * 不支持枚举的平台返回空列表。
+     */
+    suspend fun listSubtitleFonts(): List<String> = emptyList()
 }
 
 /** 播放器全屏状态栏的电池与网络快照，由各平台实现经 [PikoPlatform.observeSystemStatus] 推送。 */
@@ -349,6 +361,28 @@ interface VideoPreviewSupport {
 
     @Composable
     fun Surface(backend: PreviewBackend, modifier: Modifier)
+}
+
+/**
+ * 平台原生沙箱 HTML 查看器（Android `WebView` / iOS `WKWebView`）。
+ * 严禁暴露 JS Bridge、严禁访问 `file://` 或 `content://`，并严格限定回环请求仅在 [allowedUrlPrefix] 内。
+ */
+interface HtmlViewerSupport {
+    @Composable
+    fun Content(
+        url: String,
+        allowedUrlPrefix: String,
+        javascriptEnabled: Boolean,
+        darkTheme: Boolean,
+        isEInk: Boolean,
+        reloadTrigger: Int,
+        onCanGoBackChanged: (Boolean) -> Unit,
+        onTitleChanged: (String?) -> Unit,
+        onLoadingChanged: (Boolean) -> Unit,
+        onOpenExternalUrl: (String) -> Unit,
+        goBackEvents: Flow<Unit>,
+        modifier: Modifier,
+    )
 }
 
 /**

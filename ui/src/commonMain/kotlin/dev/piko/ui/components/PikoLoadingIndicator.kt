@@ -1,7 +1,6 @@
 package dev.piko.ui.components
 
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -29,13 +28,9 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Constraints
@@ -43,8 +38,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.media.player.observeLoadingSpeed
 import dev.piko.ui.adaptive.isDesktopLayout
+import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.LocalPikoMotion
 import dev.piko.ui.theme.LocalWindowVisible
+import dev.piko.ui.theme.isEInk
 import kotlinx.coroutines.delay
 
 /*
@@ -70,46 +67,19 @@ fun PikoLoadingIndicator(
         contentAlignment = Alignment.Center,
     ) {
         if (staticMode) {
-            StaticLoadingRing(size = size, color = color)
+            // 遵循 M3E m3-loading-indicator-reduced-motion 规避方案：静态定态 LoadingIndicator(progress = { 1f })
+            // 零协程、零帧调度，直接绘制标准 M3E SoftBurst 徽记，不再画成易被误认为卡住的 70% 环形进度条
+            LoadingIndicator(
+                progress = { 1f },
+                modifier = Modifier.size(size),
+                color = color,
+            )
         } else {
             LoadingIndicator(
                 modifier = Modifier.size(size),
                 color = color,
             )
         }
-    }
-}
-
-/**
- * 减少动画开启或窗口不可见时的静态等待指示器：避免形变 `LoadingIndicator` 在 `MotionDurationScale = 0` 下
- * 停留在任意中间多边形畸变帧，同时在最小化窗口期间停止无限循环帧调度。
- */
-@Composable
-private fun StaticLoadingRing(size: Dp, color: Color, modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier.size(size)) {
-        val strokeWidth = (size.toPx() * 0.11f).coerceIn(2.dp.toPx(), 4.dp.toPx())
-        val inset = strokeWidth * 1.6f
-        val diameter = (this.size.minDimension - inset * 2f).coerceAtLeast(1f)
-        val topLeft = Offset((this.size.width - diameter) / 2f, (this.size.height - diameter) / 2f)
-        val arcSize = Size(diameter, diameter)
-        drawArc(
-            color = color.copy(alpha = 0.24f),
-            startAngle = 0f,
-            sweepAngle = 360f,
-            useCenter = false,
-            topLeft = topLeft,
-            size = arcSize,
-            style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
-        )
-        drawArc(
-            color = color,
-            startAngle = -90f,
-            sweepAngle = 250f,
-            useCenter = false,
-            topLeft = topLeft,
-            size = arcSize,
-            style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
-        )
     }
 }
 
@@ -245,18 +215,10 @@ fun MediaLoadingIndicator(
     val staticMode = LocalPikoMotion.current.reduced || !LocalWindowVisible.current
     val indicator: @Composable (Modifier) -> Unit = { indicatorModifier ->
         if (staticMode) {
-            Box(
-                modifier = indicatorModifier
-                    .size(LoadingIndicatorDefaults.ContainerWidth, LoadingIndicatorDefaults.ContainerHeight)
-                    .clip(LoadingIndicatorDefaults.containerShape)
-                    .background(LoadingIndicatorDefaults.containedContainerColor),
-                contentAlignment = Alignment.Center,
-            ) {
-                StaticLoadingRing(
-                    size = 32.dp,
-                    color = LoadingIndicatorDefaults.containedIndicatorColor,
-                )
-            }
+            ContainedLoadingIndicator(
+                progress = { 1f },
+                modifier = indicatorModifier,
+            )
         } else {
             ContainedLoadingIndicator(modifier = indicatorModifier)
         }
@@ -341,18 +303,21 @@ private fun StaticRefreshIndicator(
 ) {
     val progress = if (isRefreshing) 1f else distanceFraction.coerceIn(0f, 1f)
     if (progress <= 0.01f) return
+    val isEInk = LocalAppearance.current.isEInk
     Surface(
         modifier = modifier
             .padding(top = (16f * progress).dp)
             .size(LoadingIndicatorDefaults.ContainerWidth, LoadingIndicatorDefaults.ContainerHeight),
         shape = LoadingIndicatorDefaults.containerShape,
-        color = LoadingIndicatorDefaults.containedContainerColor,
-        shadowElevation = 3.dp,
+        color = if (isEInk) Color.White else LoadingIndicatorDefaults.containedContainerColor,
+        border = if (isEInk) BorderStroke(1.dp, MaterialTheme.colorScheme.outline) else null,
+        shadowElevation = if (isEInk) 0.dp else 3.dp,
     ) {
         Box(contentAlignment = Alignment.Center) {
-            StaticLoadingRing(
-                size = 24.dp,
-                color = LoadingIndicatorDefaults.containedIndicatorColor,
+            LoadingIndicator(
+                progress = { progress },
+                modifier = Modifier.size(LoadingIndicatorDefaults.IndicatorSize),
+                color = if (isEInk) Color.Black else LoadingIndicatorDefaults.containedIndicatorColor,
             )
         }
     }

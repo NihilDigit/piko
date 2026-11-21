@@ -10,6 +10,7 @@ import androidx.compose.material.icons.outlined.Image
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -54,6 +55,8 @@ import androidx.compose.material3.SplitButtonDefaults
 import androidx.compose.material3.SplitButtonLayout
 import androidx.compose.material3.Surface
 import androidx.compose.ui.graphics.graphicsLayer
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.tabular
 import dev.piko.ui.components.connectedToggleShapes
 import dev.piko.ui.components.AdaptiveBar
@@ -208,8 +211,13 @@ internal fun ExplorerSearchField(
         }
     }
     val textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface)
+    val isEInk = LocalAppearance.current.isEInk
     val focusBorderColor by animateColorAsState(
-        targetValue = if (focused) colors.primary else Color.Transparent,
+        targetValue = when {
+            focused -> colors.primary
+            isEInk -> colors.outline
+            else -> Color.Transparent
+        },
         animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
         label = "search_focus_ring",
     )
@@ -219,9 +227,9 @@ internal fun ExplorerSearchField(
             .height(40.dp)
             // 点到列表或别处即失焦；没有字时随之收起
             .releasesFocusOnOutsidePress()
+            .border(if (isEInk && !focused) 1.dp else 1.5.dp, focusBorderColor, CircleShape)
             .clip(CircleShape)
             .background(colors.headerFieldColor)
-            .border(1.5.dp, focusBorderColor, CircleShape)
             .padding(start = 12.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -490,11 +498,12 @@ internal fun ViewSwitcher(
     onGalleryShowImagesChange: ((Boolean) -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
+    val isEInk = LocalAppearance.current.isEInk
     val toggleColors = OutlinedToggleButtonDefaults.colors(
-        containerColor = Color.Transparent,
-        contentColor = colors.onSurfaceVariant,
-        checkedContainerColor = colors.secondaryContainer,
-        checkedContentColor = colors.onSecondaryContainer,
+        containerColor = if (isEInk) Color.White else Color.Transparent,
+        contentColor = if (isEInk) Color.Black else colors.onSurfaceVariant,
+        checkedContainerColor = if (isEInk) Color.Black else colors.secondaryContainer,
+        checkedContentColor = if (isEInk) Color.White else colors.onSecondaryContainer,
     )
     var menuOpen by remember { mutableStateOf(false) }
     val count = 1 + (if (onGalleryShownChange != null) 1 else 0) + (if (onFeedShownChange != null) 1 else 0)
@@ -720,11 +729,24 @@ private fun NewActionSplitButton(actions: List<SheetAction>) {
         animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
         label = "new_split_chevron",
     )
+    val isEInk = LocalAppearance.current.isEInk
+    val colors = MaterialTheme.colorScheme
+    val eInkTonalColors = if (isEInk) {
+        ButtonDefaults.filledTonalButtonColors(
+            containerColor = Color.White,
+            contentColor = Color.Black,
+        )
+    } else {
+        ButtonDefaults.filledTonalButtonColors()
+    }
+    val eInkBorder = if (isEInk) BorderStroke(1.dp, colors.outline) else null
     Box {
         SplitButtonLayout(
             leadingButton = {
                 SplitButtonDefaults.TonalLeadingButton(
                     onClick = primary.onClick,
+                    colors = eInkTonalColors,
+                    border = eInkBorder,
                     contentPadding = PaddingValues(start = 12.dp, end = 10.dp),
                     modifier = Modifier.height(36.dp),
                 ) {
@@ -737,6 +759,15 @@ private fun NewActionSplitButton(actions: List<SheetAction>) {
                 SplitButtonDefaults.TonalTrailingButton(
                     checked = expanded,
                     onCheckedChange = { expanded = it },
+                    colors = if (isEInk && expanded) {
+                        ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color.Black,
+                            contentColor = Color.White,
+                        )
+                    } else {
+                        eInkTonalColors
+                    },
+                    border = eInkBorder,
                     contentPadding = PaddingValues(horizontal = 8.dp),
                     modifier = Modifier.height(36.dp),
                 ) {

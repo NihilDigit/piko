@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -23,11 +25,13 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.piko.data.repository.isHtmlDocument
 import dev.piko.data.repository.isPlayableMedia
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.shared.data.FolderUsage
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFolder
+import dev.piko.ui.components.ActionGroup
 import dev.piko.shared.state.DriveItemName
 import dev.piko.ui.components.ActionTier
 import dev.piko.ui.components.FileListLeadingVisual
@@ -148,6 +152,7 @@ internal class FileActionHandlers(
     val openSource: (() -> Unit)?,
     /** 平台交不出去时为 null。 */
     val openInExternalPlayer: (() -> Unit)?,
+    val openDocument: (() -> Unit)? = null,
     /** 工作区支持文件标签时提供，窄窗口从标签总览恢复。 */
     val openInNewTab: (() -> Unit)?,
     /** 固定或取消固定到快速访问；固定项也可从路径面板和命令面板打开。 */
@@ -189,6 +194,21 @@ internal fun fileActions(file: FileStat, commands: ItemCommands, on: FileActionH
         ),
     )
     if (commands.extract) add(DriveActions.extract(on.extract))
+    on.openDocument?.let { open ->
+        val isHtml = file.isHtmlDocument()
+        add(
+            SheetAction(
+                icon = if (isHtml) Icons.Outlined.Language else Icons.AutoMirrored.Outlined.Article,
+                label = if (isHtml) {
+                    tr("打开网页", "Open web page", "ウェブページを開く", "웹 페이지 열기", "開啟網頁")
+                } else {
+                    tr("阅读", "Read", "閲覧", "읽기", "閱讀")
+                },
+                onClick = open,
+                group = ActionGroup.Open,
+            ),
+        )
+    }
     if (commands.downloadAtQuality) add(DriveActions.downloadAtQuality(on.prepareQualities.takeIf { video }, on.downloadAtQuality))
     if (video) add(DriveActions.downloadSegment(on.downloadSegment, on.prepareQualities))
     if (!file.isFolder && commands.download) on.copyDownloadLink?.let { add(DriveActions.copyDownloadLink(it)) }

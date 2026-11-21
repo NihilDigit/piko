@@ -10,10 +10,14 @@ import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.request.HttpRequestData
 import io.ktor.client.request.HttpResponseData
+import io.ktor.http.content.OutgoingContent
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.availableForRead
@@ -59,6 +63,12 @@ internal class FakePikPakCloud(
     private val beforeCdnRange: (suspend (Long) -> Unit)? = null,
     private val beforeCdnChunk: (suspend (Long) -> Unit)? = null,
 ) {
+    data class RecordedPlayEvent(
+        val fileId: String,
+        val playSeconds: Long,
+        val playDuration: Long,
+    )
+
     val detailCalls = AtomicInteger()
     val cdnRequests = AtomicInteger()
     val expiredResponses = AtomicInteger()
@@ -66,6 +76,7 @@ internal class FakePikPakCloud(
     val deliveredCdnBytes = java.util.concurrent.atomic.AtomicLong()
     val activeCdnRequests: Int get() = inFlightByUrl.values.sumOf { it.get() }
     val cdnRanges = java.util.concurrent.CopyOnWriteArrayList<LongRange>()
+    val playEvents = java.util.concurrent.CopyOnWriteArrayList<RecordedPlayEvent>()
 
     private val generationLock = Any()
     private var generation = 1
@@ -98,6 +109,24 @@ internal class FakePikPakCloud(
             path.endsWith("/v1/shield/captcha/init") -> json("""{"captcha_token":"C","expires_in":300,"url":""}""")
             path.endsWith("/v1/auth/signin") ->
                 json("""{"access_token":"AT","refresh_token":"RT","sub":"U","expires_in":3600}""")
+            request.method == HttpMethod.Post && path.endsWith("/drive/v1/events") -> {
+                val raw = when (val b = request.body) {
+                    is OutgoingContent.ByteArrayContent -> b.bytes().decodeToString()
+                    else -> ""
+                }
+                if (raw.isNotBlank()) {
+                    val event = Json.parseToJsonElement(raw).jsonObject["event"]?.jsonObject
+                    val fileId = event?.get("file_id")?.jsonPrimitive?.content.orEmpty()
+                    val params = event?.get("params")?.jsonObject
+                    val playSec = params?.get("play_seconds")?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
+                    val playDur = params?.get("play_duration")?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
+                    playEvents += RecordedPlayEvent(fileId = fileId, playSeconds = playSec, playDuration = playDur)
+                }
+                json("{}")
+            }
+            request.method == HttpMethod.Get && path.endsWith("/drive/v1/events") -> {
+                json("""{"events":[],"next_page_token":""}""")
+            }
             request.method == HttpMethod.Get && path.contains("/drive/v1/files/") -> {
                 detailCalls.incrementAndGet()
                 val full = detailJson()
@@ -264,8 +293,9 @@ internal class FakePikPakCloud(
  * 别处给接口加成员时跟着编译失败。suspend 函数在代理里多一个 Continuation 参数，
  * 直接返回结果即视为同步完成。
  */
-internal class RecordedPositions {
+internal class RecordedPositions(syncPlayHistory: Boolean = false) {
     val saved = ConcurrentHashMap<String, Long>()
+    val syncPlayHistoryFlow = MutableStateFlow(syncPlayHistory)
 
     val preferences: PikoUserPreferences = Proxy.newProxyInstance(
         PikoUserPreferences::class.java.classLoader,
@@ -277,8 +307,7 @@ internal class RecordedPositions {
                 Unit
             }
             "getPlaybackPosition" -> saved[args[0] as String] ?: 0L
-            // 假服务端没有事件接口，播放记录不同步
-            "getSyncPlayHistoryFlow" -> MutableStateFlow(false)
+            "getSyncPlayHistoryFlow" -> syncPlayHistoryFlow
             else -> throw UnsupportedOperationException(method.name)
         }
     } as PikoUserPreferences

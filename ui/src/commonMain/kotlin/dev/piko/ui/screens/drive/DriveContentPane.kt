@@ -319,9 +319,9 @@ internal fun DriveContentBody(
                             start = if (addLinkSideOpen) 8.dp else 0.dp,
                             bottom = if (addLinkSideOpen) 8.dp else 0.dp,
                         )
+                        .then(if (islandBorder != null) Modifier.border(1.dp, islandBorder, islandShape) else Modifier)
                         .clip(islandShape)
                         .background(colors.islandSurface)
-                        .then(if (islandBorder != null) Modifier.border(1.dp, islandBorder, islandShape) else Modifier)
                 } else {
                     Modifier
                 },

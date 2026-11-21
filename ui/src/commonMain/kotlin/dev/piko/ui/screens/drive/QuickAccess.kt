@@ -25,6 +25,7 @@ import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.fileDropTarget
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ColumnScope
@@ -70,6 +71,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.QuickAccessState
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 
 /**
  * 大窗口侧边栏里的快速访问，资源管理器导航窗格的同名一组：常驻的网盘根目录与 My Pack，其后是用户固定的文件夹
@@ -222,8 +225,13 @@ internal fun SidebarItem(
         )
         return
     }
+    val isEInk = LocalAppearance.current.isEInk
     val containerColor by animateColorAsState(
-        targetValue = if (selected) colors.secondaryContainer else Color.Transparent,
+        targetValue = when {
+            selected && isEInk -> Color.Black
+            selected -> colors.secondaryContainer
+            else -> Color.Transparent
+        },
         animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
         label = "sidebarItemBg",
     )
@@ -258,6 +266,7 @@ internal fun SidebarItem(
             imageVector = if (selected || bold) selectedIcon else icon,
             contentDescription = null,
             tint = when {
+                selected && isEInk -> Color.White
                 selected -> colors.onSecondaryContainer
                 accent -> colors.tertiary
                 else -> colors.onSurfaceVariant
@@ -267,7 +276,11 @@ internal fun SidebarItem(
         Text(
             text = label,
             style = MaterialTheme.typography.labelLarge,
-            color = if (selected) colors.onSecondaryContainer else colors.onSurface,
+            color = when {
+                selected && isEInk -> Color.White
+                selected -> colors.onSecondaryContainer
+                else -> colors.onSurface
+            },
             fontWeight = if (bold) FontWeight.Bold else null,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -297,9 +310,14 @@ private fun CollapsedSidebarItem(
     badgeDot: Boolean,
 ) {
     val colors = MaterialTheme.colorScheme
+    val isEInk = LocalAppearance.current.isEInk
     val pillShape = if (trailing != null) CollapsedExpandedPillShape else CircleShape
     val containerColor by animateColorAsState(
-        targetValue = if (selected) colors.secondaryContainer else Color.Transparent,
+        targetValue = when {
+            selected && isEInk -> Color.Black
+            selected -> colors.secondaryContainer
+            else -> Color.Transparent
+        },
         animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
         label = "railItemBg",
     )
@@ -334,6 +352,7 @@ private fun CollapsedSidebarItem(
                     imageVector = if (selected || bold) selectedIcon else icon,
                     contentDescription = label,
                     tint = when {
+                        selected && isEInk -> Color.White
                         selected -> colors.onSecondaryContainer
                         accent -> colors.tertiary
                         else -> colors.onSurfaceVariant

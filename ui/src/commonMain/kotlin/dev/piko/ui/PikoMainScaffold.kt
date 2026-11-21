@@ -1,5 +1,7 @@
 package dev.piko.ui
 
+import dev.piko.data.repository.isHtmlDocument
+
 import androidx.compose.animation.core.animateDp
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
@@ -196,6 +198,8 @@ private val NavKeyConfiguration = SavedStateConfiguration {
             subclass(Screen.PlayerCustomization::class)
             subclass(Screen.DriveAppearanceCustomization::class)
             subclass(Screen.VideoPlayer::class)
+            subclass(Screen.DocumentReader::class)
+            subclass(Screen.HtmlViewer::class)
         }
     }
 }
@@ -368,6 +372,59 @@ fun PikoMainScaffold(
         when (videoPlayer) {
             is VideoPlayerHost.InApp -> backStack.add(Screen.VideoPlayer(fileId, fileName, localPath))
             is VideoPlayerHost.Detached -> videoPlayer.open(VideoPlayerRequest(fileId, fileName, localPath))
+        }
+    }
+
+    val platform = LocalPikoPlatform.current
+    fun openDocument(file: FileStat) {
+        val localTask = services.downloadManager.tasks.value.values.find {
+            it.fileId == file.id && it.status == DownloadStatus.COMPLETED && !it.isSegment
+        }
+        val localPath = localTask?.destinationPath?.takeIf(localFiles::exists)
+            ?: file.params["local_path"]?.takeIf { it.isNotBlank() && !it.startsWith("content://") }
+        val parentFolderId = file.parentId.takeIf { it.isNotBlank() }
+        val sizeBytes = file.size.toLongOrNull() ?: 0L
+        when {
+            file.isHtmlDocument() -> {
+                if (platform.htmlViewer != null) {
+                    backStack.add(
+                        Screen.HtmlViewer(
+                            fileId = file.id,
+                            fileName = file.name,
+                            parentFolderId = parentFolderId,
+                            localPath = localPath,
+                        ),
+                    )
+                } else {
+                    coroutineScope.launch {
+                        dev.piko.shared.media.proxy.HtmlDocumentProxySessions.openForExternalBrowser(
+                            fileId = file.id,
+                            fileName = file.name,
+                            parentFolderId = parentFolderId,
+                            localPath = localPath,
+                            driveRepository = services.driveRepository,
+                            mediaRepository = services.mediaRepository,
+                        ).onSuccess { handle ->
+                            platform.openUrl(handle.url)
+                        }.onFailure { err ->
+                            services.postAppNotice(
+                                err.message ?: tr("无法打开网页文档", "Unable to open HTML document", "HTML ドキュメントを開けませんでした", "HTML 문서를 열 수 없습니다", "無法開啟網頁文件"),
+                            )
+                        }
+                    }
+                }
+            }
+            else -> {
+                backStack.add(
+                    Screen.DocumentReader(
+                        fileId = file.id,
+                        fileName = file.name,
+                        parentFolderId = parentFolderId,
+                        localPath = localPath,
+                        sizeBytes = sizeBytes,
+                    ),
+                )
+            }
         }
     }
 
@@ -876,9 +933,9 @@ fun PikoMainScaffold(
                                 Modifier
                                     .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom + WindowInsetsSides.Start))
                                     .padding(start = IslandGap, top = IslandGap, bottom = IslandGap)
+                                    .then(if (sidebarBorder != null) Modifier.border(1.dp, sidebarBorder, FrameCardShape) else Modifier)
                                     .clip(FrameCardShape)
-                                    .background(sidebarColors.islandSurface)
-                                    .then(if (sidebarBorder != null) Modifier.border(1.dp, sidebarBorder, FrameCardShape) else Modifier),
+                                    .background(sidebarColors.islandSurface),
                             ) {
                                 MainSidebarSlot(
                                     width = inlineSidebarWidth,
@@ -951,6 +1008,7 @@ fun PikoMainScaffold(
                                             onTabClick = ::onTabClick,
                                             onMeasuredContentSize = { if (latestResizing) pendingContentSize = it else contentSize = it },
                                             onPlayVideo = { file, playlist -> playVideo(file, playlist) },
+                                            onOpenDocument = ::openDocument,
                                             onPlayLocal = ::playLocal,
                                             onRevealById = { id -> coroutineScope.launch { revealInDrive(id) } },
                                             onOpenCloudFile = { fileId, _ -> revealInDrive(fileId) },
@@ -1005,6 +1063,7 @@ fun PikoMainScaffold(
                                         }
                                         FilesScreen(
                                             onNavigateToVideoPlayer = { file, playlist -> playVideo(file, playlist) },
+                                            onOpenDocument = ::openDocument,
                                             onOpenTransfers = ::openTransfers,
                                             onOpenDuplicateReport = ::openDuplicateReport,
                                             addressDestinations = tabDestinations() + pageDestinations(),
@@ -1084,6 +1143,36 @@ fun PikoMainScaffold(
                                     }
                                     entry<Screen.VideoPlayer> { screen ->
                                         (videoPlayer as? VideoPlayerHost.InApp)?.content?.invoke(screen, ::popBack)
+                                    }
+                                    entry<Screen.DocumentReader> { screen ->
+                                        val isLocal = !screen.localPath.isNullOrBlank() || dev.piko.shared.data.LocalLocation.isLocal(screen.fileId)
+                                        dev.piko.ui.screens.reader.DocumentReaderScreen(
+                                            fileId = screen.fileId,
+                                            fileName = screen.fileName,
+                                            localPath = screen.localPath,
+                                            sizeBytes = screen.sizeBytes,
+                                            onBackClick = ::popBack,
+                                            onDownloadFullFile = if (isLocal) null else ({
+                                                services.downloadManager.enqueue(
+                                                    FileStat(
+                                                        id = screen.fileId,
+                                                        name = screen.fileName,
+                                                        parentId = screen.parentFolderId.orEmpty(),
+                                                        size = screen.sizeBytes.toString(),
+                                                    ),
+                                                )
+                                                openTransfers()
+                                            }),
+                                        )
+                                    }
+                                    entry<Screen.HtmlViewer> { screen ->
+                                        dev.piko.ui.screens.reader.HtmlViewerScreen(
+                                            fileId = screen.fileId,
+                                            fileName = screen.fileName,
+                                            parentFolderId = screen.parentFolderId,
+                                            localPath = screen.localPath,
+                                            onBackClick = ::popBack,
+                                        )
                                     }
                                 },
                             )

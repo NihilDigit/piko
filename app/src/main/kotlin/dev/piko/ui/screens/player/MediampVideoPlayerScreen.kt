@@ -69,6 +69,7 @@ import coil3.compose.AsyncImage
 import dev.piko.PikoApplication
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.media.player.PlayerScreenState
+import dev.piko.shared.media.player.SubtitleStylePrefs
 import io.github.nihildigit.pikpak.FileStat
 import java.io.File
 
@@ -98,8 +99,12 @@ fun MediampVideoPlayerScreen(
     val preferences = LocalPikoServices.current.preferences
     val backend = remember {
         // 启动时已预热内存偏好快照，无锁直取，不在组合首帧阻塞主线程
-        val hardwareDecoding = preferences.currentSnapshot.hardwareDecoding
-        MpvPlaybackBackend(context.applicationContext, hardwareDecoding = hardwareDecoding)
+        val snapshot = preferences.currentSnapshot
+        MpvPlaybackBackend(
+            context.applicationContext,
+            hardwareDecoding = snapshot.hardwareDecoding,
+            initialSubtitleStyle = snapshot.subtitleStyle,
+        )
     }
     val state = remember(initialFileId) {
         PlayerScreenState(
@@ -154,6 +159,11 @@ fun MediampVideoPlayerScreen(
         .collectAsStateWithLifecycle(initialValue = PlayerGestureDefaults.BOOST_SPEED)
     val playerLayoutPrefs by preferences.playerLayoutPrefsFlow
         .collectAsStateWithLifecycle(initialValue = preferences.currentSnapshot.playerLayout)
+    val subtitleStyle by preferences.subtitleStylePrefsFlow
+        .collectAsStateWithLifecycle(initialValue = preferences.currentSnapshot.subtitleStyle)
+    LaunchedEffect(backend, subtitleStyle) {
+        backend.setSubtitleStyle(subtitleStyle)
+    }
     var listenMode by rememberSaveable(initialFileId) { mutableStateOf(false) }
     val showListen = !state.isImage && (state.isAudioFile || listenMode)
 
@@ -220,7 +230,10 @@ fun MediampVideoPlayerScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, state) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP && !latestShowListen) state.pause()
+            if (event == Lifecycle.Event.ON_STOP) {
+                state.flushProgress()
+                if (!latestShowListen) state.pause()
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -490,6 +503,16 @@ fun MediampVideoPlayerScreen(
     val pickDriveSubtitle: (FileStat) -> Unit = remember(state) {
         { file -> state.addDriveSubtitle(file.id, file.name) }
     }
+    val handleSubtitleStylePreview: (SubtitleStylePrefs) -> Unit = remember(backend) {
+        { backend.setSubtitleStyle(it) }
+    }
+    val handleSubtitleStyleChange: (SubtitleStylePrefs) -> Unit = remember(backend, scope, preferences) {
+        { updated ->
+            val sanitized = updated.sanitize()
+            backend.setSubtitleStyle(sanitized)
+            scope.launch { preferences.setSubtitleStylePrefs(sanitized) }
+        }
+    }
 
     CompositionLocalProvider(LocalPlayerLayoutPrefs provides playerLayoutPrefs) {
         Box(modifier.fillMaxSize().background(Color.Black)) {
@@ -595,6 +618,9 @@ fun MediampVideoPlayerScreen(
                     onRotationChange = handleRotationChange,
                     onPickLocalSubtitle = pickLocalSubtitle.takeIf { state.canAddSubtitle },
                     onPickDriveSubtitle = pickDriveSubtitle.takeIf { state.canAddSubtitle },
+                    subtitleStyle = subtitleStyle,
+                    onSubtitleStylePreview = handleSubtitleStylePreview,
+                    onSubtitleStyleChange = handleSubtitleStyleChange,
                     onSwitchToListen = {
                         if (isFullscreen) exitFullscreen()
                         listenMode = true

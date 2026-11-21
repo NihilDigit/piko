@@ -44,9 +44,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.PathBreadcrumb
+import dev.piko.data.repository.isHtmlDocument
 import dev.piko.data.repository.isPlayableAudio
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
+import dev.piko.data.repository.isReadableTextDocument
 import dev.piko.shared.data.ArchiveEntryId
 import dev.piko.shared.data.DriveClipboard
 import dev.piko.shared.data.DriveLibrary
@@ -169,6 +171,7 @@ private class DriveViewEvents(
     val onOpenSelectedFeed: ((List<FileStat>) -> Unit)?,
     val onResumeFeed: (() -> Unit)?,
     val onNavigateToPlayer: (FileStat, List<FileStat>) -> Unit,
+    val onOpenDocument: (FileStat) -> Unit,
     val onOpenTransfers: () -> Unit,
     val onPickFiles: () -> Unit,
     val onPickFolder: () -> Unit,
@@ -243,6 +246,7 @@ fun DriveScreen(
     currentFolderName: String = tr("我的网盘", "My drive", "マイドライブ", "내 드라이브", "我的雲端硬碟"),
     onNavigateToFolder: (folderId: String, folderName: String) -> Unit,
     onNavigateToVideoPlayer: (file: FileStat, playlist: List<FileStat>) -> Unit,
+    onOpenDocument: (file: FileStat) -> Unit = {},
     scrollToTopRequests: Int = 0,
     onOpenTransfers: () -> Unit = {},
     onOpenDuplicateReport: (() -> Unit)? = null,
@@ -343,6 +347,7 @@ fun DriveScreen(
 
     val openTransfers by rememberUpdatedState(onOpenTransfers)
     val navigateToPlayer by rememberUpdatedState(onNavigateToVideoPlayer)
+    val openDocumentAction by rememberUpdatedState(onOpenDocument)
     LaunchedEffect(viewModel) {
         viewModel.effects.collect { effect ->
             when (effect) {
@@ -587,6 +592,7 @@ fun DriveScreen(
         onOpenSelectedFeed = onOpenSelectedFeed,
         onResumeFeed = onResumeFeed,
         onNavigateToPlayer = navigateToPlayer,
+        onOpenDocument = openDocumentAction,
         onOpenTransfers = openTransfers,
         onPickFiles = { pickFiles() },
         onPickFolder = { pickFolder() },
@@ -932,6 +938,7 @@ private fun DriveScreenContent(
         onOpenInNewTab = openInNewTab,
         onTogglePin = events.onTogglePinFolder,
         onPlayVideo = events.onNavigateToPlayer,
+        onOpenDocument = events.onOpenDocument,
         onPreviewImage = events.onRequestImagePreview,
         onOpenSelectedGallery = events.onOpenSelectedGallery,
         onOpenFolderInGallery = { folder ->
@@ -987,6 +994,7 @@ private fun DriveScreenContent(
                 if (latestIntents.galleryActive) emptyList() else currentFiles.filter { it.isPlayableAudio() && (!it.isImportPreview || it.hash.isNotBlank()) },
             )
             file.isPreviewableImage() && file.previewImageCoverUrl().isNotBlank() -> latestEvents.onRequestImagePreview(file)
+            file.isReadableTextDocument() || file.isHtmlDocument() -> latestEvents.onOpenDocument(file)
             file.isLocal -> platform.localFiles.openExternally(file.params["local_path"].orEmpty(), false)
             else -> latestEvents.onRequestDownload(listOf(file), false)
         }

@@ -21,7 +21,7 @@ enum class ThemeMode(private val labelText: () -> String) {
     val label: String get() = labelText()
 }
 
-/** 用户的外观选择。[seed] 为 null 表示系统取色；[pureBlack] 仅在深色模式下生效。 */
+/** 用户的外观选择。[seed] 为 null 表示系统取色；[pureBlack] 仅在深色模式下生效；[einkMode] 为设备本地水墨屏显示模式。 */
 @Immutable
 data class Appearance(
     val mode: ThemeMode = ThemeMode.SYSTEM,
@@ -30,24 +30,28 @@ data class Appearance(
     val dynamicColorAvailable: Boolean = false,
     /** 深色模式下启用纯黑 OLED 表面阶梯（Oklab 插值，见 [toPureBlack]）。 */
     val pureBlack: Boolean = false,
+    /** 水墨屏模式（纯黑白高对比度、清晰描边与自动关闭动画），仅对当前设备生效，不跨设备同步。 */
+    val einkMode: Boolean = false,
 )
 
 val LocalAppearance = staticCompositionLocalOf { Appearance() }
 
 // 不分大小写：桌面端旧设置里存的是小写的 system、light、dark
 fun PikoUserPreferences.appearanceFlow(dynamicColorAvailable: Boolean): Flow<Appearance> =
-    combine(themeModeFlow, themeSeedFlow, pureBlackFlow) { mode, seed, pureBlack ->
+    combine(themeModeFlow, themeSeedFlow, pureBlackFlow, einkModeFlow) { mode, seed, pureBlack, einkMode ->
+        val legacyEink = seed.equals(SeedTheme.EINK.name, ignoreCase = true)
         Appearance(
             mode = ThemeMode.entries.find { it.name.equals(mode, ignoreCase = true) } ?: ThemeMode.SYSTEM,
-            seed = SeedTheme.entries.find { it.name == seed },
+            seed = SeedTheme.colorEntries.find { it.name == seed },
             dynamicColorAvailable = dynamicColorAvailable,
             pureBlack = pureBlack,
+            einkMode = einkMode || legacyEink,
         )
     }
 
-/** 当前外观是否处于水墨屏（E-Ink）主题。 */
+/** 当前外观是否处于水墨屏（E-Ink）模式。兼容旧测试直接构造 `Appearance(seed = SeedTheme.EINK)`。 */
 val Appearance.isEInk: Boolean
-    get() = effectiveSeed == SeedTheme.EINK
+    get() = einkMode || seed == SeedTheme.EINK
 
 @Composable
 fun Appearance.isDark(): Boolean = if (isEInk) {
@@ -60,9 +64,10 @@ fun Appearance.isDark(): Boolean = if (isEInk) {
     }
 }
 
-/** 没有系统取色的平台，选了系统取色也落到第一个内置主题上。 */
+/** 没有系统取色的平台，选了系统取色也落到第一个内置彩色主题上。 */
 val Appearance.effectiveSeed: SeedTheme?
-    get() = seed ?: SeedTheme.entries.first().takeUnless { dynamicColorAvailable }
+    get() = seed?.takeUnless { it == SeedTheme.EINK }
+        ?: SeedTheme.colorEntries.first().takeUnless { dynamicColorAvailable }
 
 @Composable
 fun Appearance.colorScheme(dark: Boolean): ColorScheme {
@@ -74,3 +79,8 @@ fun Appearance.colorScheme(dark: Boolean): ColorScheme {
     }
     return if (dark && pureBlack) base.toPureBlack() else base
 }
+
+/** 播放器覆盖层专用配色：常规模式沿用当前种子色的深色方案，水墨屏模式使用高对比度深色单色方案以免亮白覆盖视频。 */
+@Composable
+fun Appearance.playerColorScheme(): ColorScheme =
+    if (isEInk) EInkPlayerColorScheme else colorScheme(dark = true)

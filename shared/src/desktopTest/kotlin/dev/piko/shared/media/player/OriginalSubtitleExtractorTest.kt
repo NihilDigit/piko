@@ -80,6 +80,105 @@ class OriginalSubtitleExtractorTest {
         assertTrue(srt.contains("Hello Piko"), "Expected cue text in SRT: $srt")
     }
 
+    @Test
+    fun `detects Blu-ray PGS and VobSub tracks as unextracted without scanning clusters`() = runBlocking {
+        val tracksPayload = buildTrackEntry(
+            trackNumber = 3,
+            trackType = 17,
+            codecId = "S_HDMV/PGS",
+            language = "jpn",
+            name = "",
+        ) + buildTrackEntry(
+            trackNumber = 4,
+            trackType = 17,
+            codecId = "S_HDMV/PGS",
+            language = "chi",
+            name = "简体",
+        ) + buildTrackEntry(
+            trackNumber = 5,
+            trackType = 17,
+            codecId = "S_VOBSUB",
+            language = "eng",
+            name = "English",
+        )
+        // Small MKV with binary PGS payload in Cluster — even with canScanFullMkv = true, must NOT scan or extract!
+        val pgsBlock = byteArrayOf(0x83.toByte(), 0x00, 0x10, 0x00, 0x16, 0x00, 0x0B)
+        val clusterPayload = buildEbmlElement(0xE7L, byteArrayOf(0x03, 0xE8.toByte())) +
+            buildEbmlElement(0xA3L, pgsBlock)
+        val segmentBody = buildEbmlElement(0x1654AE6BL, tracksPayload) + buildEbmlElement(0x1F43B675L, clusterPayload)
+        val fileBytes = buildEbmlElement(0x1A45DFA3L, byteArrayOf(0x42, 0x86.toByte(), 0x81.toByte(), 0x01)) +
+            buildEbmlElement(0x18538067L, segmentBody)
+
+        var rangeReads = 0
+        val result = OriginalSubtitleExtractor.extract(
+            fileSize = fileBytes.size.toLong(),
+            readRange = { offset, length ->
+                rangeReads++
+                val start = offset.toInt()
+                if (start !in fileBytes.indices) null
+                else fileBytes.copyOfRange(start, minOf(fileBytes.size, start + length))
+            },
+            canScanFullMkv = true,
+        )
+
+        assertTrue(result.extracted.isEmpty(), "Bitmap subtitle tracks must never be text-extracted")
+        assertEquals(1, rangeReads, "Header probe alone must suffice when only bitmap subtitle tracks exist")
+        assertEquals(3, result.unextracted.size)
+        assertEquals("S_HDMV/PGS", result.unextracted[0].codecId)
+        assertEquals("sup", result.unextracted[0].extension)
+        assertEquals("jpn", result.unextracted[0].language)
+        assertTrue(result.unextracted[0].isImage)
+        assertEquals("S_HDMV/PGS", result.unextracted[1].codecId)
+        assertEquals("chi", result.unextracted[1].language)
+        assertTrue(result.unextracted[1].isImage)
+        assertEquals("S_VOBSUB", result.unextracted[2].codecId)
+        assertEquals("sub", result.unextracted[2].extension)
+        assertTrue(result.unextracted[2].isImage)
+    }
+
+    @Test
+    fun `mixed MKV extracts text SRT while keeping PGS in unextracted`() = runBlocking {
+        val tracksPayload = buildTrackEntry(
+            trackNumber = 2,
+            trackType = 17,
+            codecId = "S_TEXT/UTF8",
+            language = "chi",
+            name = "简体",
+        ) + buildTrackEntry(
+            trackNumber = 3,
+            trackType = 17,
+            codecId = "S_HDMV/PGS",
+            language = "jpn",
+            name = "日本語",
+        )
+        val srtBlock = byteArrayOf(0x82.toByte(), 0x00, 0x00, 0x00) + "你好世界".encodeToByteArray()
+        val pgsBlock = byteArrayOf(0x83.toByte(), 0x00, 0x00, 0x00, 0x16, 0x00, 0x0A, 0xFF.toByte())
+        val clusterPayload = buildEbmlElement(0xE7L, byteArrayOf(0x03, 0xE8.toByte())) +
+            buildEbmlElement(0xA3L, srtBlock) +
+            buildEbmlElement(0xA3L, pgsBlock)
+        val segmentBody = buildEbmlElement(0x1654AE6BL, tracksPayload) + buildEbmlElement(0x1F43B675L, clusterPayload)
+        val fileBytes = buildEbmlElement(0x1A45DFA3L, byteArrayOf(0x42, 0x86.toByte(), 0x81.toByte(), 0x01)) +
+            buildEbmlElement(0x18538067L, segmentBody)
+
+        val result = OriginalSubtitleExtractor.extract(
+            fileSize = fileBytes.size.toLong(),
+            readRange = { offset, length ->
+                val start = offset.toInt()
+                if (start !in fileBytes.indices) null
+                else fileBytes.copyOfRange(start, minOf(fileBytes.size, start + length))
+            },
+            canScanFullMkv = true,
+        )
+
+        assertEquals(1, result.extracted.size)
+        assertEquals(2, result.extracted.single().info.trackNumber)
+        assertTrue(result.extracted.single().bytes.decodeToString().contains("你好世界"))
+        assertEquals(1, result.unextracted.size)
+        assertEquals(3, result.unextracted.single().trackNumber)
+        assertEquals("S_HDMV/PGS", result.unextracted.single().codecId)
+        assertTrue(result.unextracted.single().isImage)
+    }
+
     private fun buildTrackEntry(
         trackNumber: Int,
         trackType: Int,

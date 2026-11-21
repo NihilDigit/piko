@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reader_action_read">읽기</string>
+    <string name="reader_action_open_html">웹 페이지 열기</string>
+    <string name="reader_action_search">찾기</string>
+    <string name="reader_action_display_settings">읽기 설정</string>
+    <string name="reader_action_raw_source">원본 보기</string>
+    <string name="reader_action_rendered_view">렌더링 보기</string>
+    <string name="reader_action_copy_all">전체 복사</string>
+    <string name="reader_action_copy_code">코드 복사</string>
+    <string name="reader_action_open_external">외부 앱으로 열기</string>
+    <string name="reader_action_download_full">전체 파일 다운로드</string>
+    <string name="reader_action_retry">다시 시도</string>
+    <string name="reader_action_reload">새로고침</string>
+    <string name="reader_action_open_browser">브라우저에서 열기</string>
+    <string name="reader_action_javascript">JavaScript</string>
+    <string name="reader_search_placeholder">문서에서 찾기</string>
+    <string name="reader_search_prev">이전 항목</string>
+    <string name="reader_search_next">다음 항목</string>
+    <string name="reader_search_no_matches">결과 없음</string>
+    <string name="reader_settings_title">읽기 설정</string>
+    <string name="reader_settings_font_size">글꼴 크기</string>
+    <string name="reader_settings_font_smaller">글꼴 작게</string>
+    <string name="reader_settings_font_larger">글꼴 크게</string>
+    <string name="reader_settings_line_spacing">줄 간격</string>
+    <string name="reader_settings_spacing_compact">좁게</string>
+    <string name="reader_settings_spacing_normal">보통</string>
+    <string name="reader_settings_spacing_relaxed">넓게</string>
+    <string name="reader_settings_font_family">글꼴</string>
+    <string name="reader_settings_font_sans">기본</string>
+    <string name="reader_settings_font_serif">명조</string>
+    <string name="reader_settings_font_mono">고정폭</string>
+    <string name="reader_settings_encoding">텍스트 인코딩</string>
+    <string name="reader_settings_encoding_auto">자동 감지(%1$s)</string>
+    <string name="reader_truncated_notice">파일이 커서 앞부분 %1$s만 미리 봅니다(전체 %2$s)</string>
+    <string name="reader_binary_notice">이 파일에는 바이너리 데이터가 포함되어 있을 수 있으며 텍스트로 표시합니다</string>
+    <string name="reader_empty_document">빈 파일</string>
+    <string name="reader_load_failed">문서를 읽을 수 없습니다</string>
+    <string name="reader_copied_notice">클립보드에 복사했습니다</string>
+    <string name="reader_html_open_failed">HTML 문서를 열 수 없습니다</string>
+    <string name="reader_html_js_disabled_notice">JavaScript가 비활성화되었습니다. 새로고침하면 적용됩니다</string>
+    <string name="reader_html_js_enabled_notice">JavaScript가 활성화되었습니다. 새로고침하면 적용됩니다</string>
+</resources>

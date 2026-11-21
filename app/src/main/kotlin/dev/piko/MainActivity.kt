@@ -101,9 +101,10 @@ class MainActivity : ComponentActivity() {
         val initialSnapshot = app.sessionManager.currentSnapshot
         val initialAppearance = Appearance(
             mode = ThemeMode.entries.find { it.name.equals(initialSnapshot.themeMode, ignoreCase = true) } ?: ThemeMode.SYSTEM,
-            seed = SeedTheme.entries.find { it.name == initialSnapshot.themeSeed },
+            seed = SeedTheme.colorEntries.find { it.name == initialSnapshot.themeSeed },
             dynamicColorAvailable = app.platform.supportsDynamicColor,
             pureBlack = initialSnapshot.pureBlack,
+            einkMode = initialSnapshot.einkMode,
         )
         // 播放器仍在 app 模块，以应用内覆盖层的方式交给共享主界面
         val videoPlayer = VideoPlayerHost.InApp { screen, onClose ->

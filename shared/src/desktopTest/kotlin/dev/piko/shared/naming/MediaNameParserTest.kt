@@ -46,6 +46,27 @@ class MediaNameParserTest {
             "One Piece Wano Arc | Soushuuhen 02 | SPECIAL",
         "[KTXP][Baka_Test_Shoukanjuu_1][06][GB_CN][HEVC_opus][1080p][Remaster].mkv" to "Baka Test Shoukanjuu 1 | 06 | -",
         "[Nekomoe kissaten][Kimi ga Shinu made Koi wo Shitai][12][1080p][JPTC].mp4" to "Kimi ga Shinu made Koi wo Shitai | 12 | -",
+        // 纯中文片名的全方括号 BDRip 发布，含合集特典与多碟菜单编号
+        "[DBD-Raws][胜者即是正义][10][1080P][BDRip][HEVC-10bit][FLAC].mkv" to "胜者即是正义 | 10 | -",
+        "[DBD-Raws][胜者即是正义][NCOP+NCED][1080P][BDRip][HEVC-10bit][FLAC].mkv" to "胜者即是正义 | NCOP+NCED | CREDITLESS",
+        "[DBD-Raws][胜者即是正义][menu][D1][01][1080P][BDRip][HEVC-10bit][FLAC].mkv" to "胜者即是正义 | menu D1 01 | MENU",
+        "[DBD-Raws][胜者即是正义][menu][D1][02][1080P][BDRip][HEVC-10bit][FLAC].mkv" to "胜者即是正义 | menu D1 02 | MENU",
+        "[DBD-Raws][胜者即是正义][menu][D2][01][1080P][BDRip][HEVC-10bit][FLAC].mkv" to "胜者即是正义 | menu D2 01 | MENU",
+        "[DBD-Raws][胜者即是正义][menu][D1][1080P][BDRip][HEVC-10bit][FLAC].mkv" to "胜者即是正义 | menu D1 | MENU",
+        // 合集范围方括号不误当作拉丁作品名顶掉中文片名
+        "[DBD-Raws][胜者即是正义][01-11TV][1080P][BDRip][HEVC-10bit][FLAC].mkv" to "胜者即是正义 | 胜者即是正义 | -",
+        "[DBD-Raws][胜者即是正义][01-11+SP][1080P][BDRip][HEVC-10bit][FLAC].mkv" to "胜者即是正义 | 胜者即是正义 | -",
+        "[DBD-Raws][胜者即是正义][01-11 Fin][1080P][BDRip][HEVC-10bit][FLAC].mkv" to "胜者即是正义 | 胜者即是正义 | -",
+        "[胜者即是正义][01-11TV全集+特典映像][1080P][BDRip][HEVC-10bit][FLAC].mkv" to "胜者即是正义 | 胜者即是正义 | -",
+    )
+
+    @Test
+    fun `pure release group and technical brackets are not mistaken for titles`() = assertParses(
+        "[DBD-Raws][1080P][BDRip][HEVC-10bit][FLAC].mkv" to "未识别",
+        "[DBD-Raws][01][1080P][BDRip][HEVC-10bit][FLAC].mkv" to "- | 01 | -",
+        "[1080P][BDRip][HEVC-10bit][FLAC].mkv" to "未识别",
+        "[DBD-Raws][01-11TV全集+特典映像][1080P][BDRip][HEVC-10bit][FLAC].mkv" to "未识别",
+        "[01-11TV全集][1080P][BDRip].mkv" to "未识别",
     )
 
     @Test

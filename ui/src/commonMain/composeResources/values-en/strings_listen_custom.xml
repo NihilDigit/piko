@@ -89,6 +89,24 @@
     <string name="player_custom_ctrl_open_folder">Open folder</string>
     <string name="player_custom_ctrl_download">Download</string>
     <string name="player_custom_ctrl_hide_chrome">Hide controls</string>
+    <string name="player_custom_palette_hint">Drag to preview, or tap to add</string>
+    <string name="player_custom_palette_drop_remove">Drop here to remove</string>
+    <string name="player_custom_palette_drop_required">Required control</string>
+    <string name="player_custom_palette_bar_controls">Bar controls</string>
+    <string name="player_custom_palette_center_actions">Center actions</string>
+    <string name="player_custom_palette_all_placed">All controls placed</string>
+    <string name="player_custom_presets">Presets</string>
+    <string name="player_custom_action_label">Action</string>
+    <string name="player_custom_custom_option">Custom…</string>
+    <string name="player_custom_seek_seconds_hint">Range %1$d to %2$d seconds</string>
+    <string name="player_custom_clear_slot">Clear slot</string>
+    <string name="player_custom_move_up">Move up</string>
+    <string name="player_custom_move_down">Move down</string>
+    <string name="player_custom_right_rail">Right action rail</string>
+    <string name="player_custom_inspector_drag_hint">Drag controls in the preview to reorder or move across bars, drop on the tray to remove, or tap to edit</string>
+    <string name="player_custom_listen_drag_hint">Drag quick actions onto the side slots, or tap a slot to edit</string>
+    <string name="player_custom_portrait_fullscreen_prompt">Portrait fullscreen button</string>
+    <string name="player_custom_portrait_fullscreen_prompt_desc">Show a floating fullscreen button below landscape videos in portrait mode</string>
 
     <!-- Listen customization -->
     <string name="player_custom_listen_cover">Cover style</string>

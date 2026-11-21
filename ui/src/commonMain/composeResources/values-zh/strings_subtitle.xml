@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="subtitle_style_title">字幕外观</string>
+    <string name="subtitle_style_entry">调整字幕外观</string>
+    <string name="subtitle_style_background">字幕底色</string>
+    <string name="subtitle_style_background_desc">为字幕添加半透明深色底框</string>
+    <string name="subtitle_style_background_color">底框颜色</string>
+    <string name="subtitle_style_background_opacity">不透明度</string>
+    <string name="subtitle_style_background_opacity_decrease">降低不透明度</string>
+    <string name="subtitle_style_background_opacity_increase">提高不透明度</string>
+    <string name="subtitle_style_bg_black">纯黑</string>
+    <string name="subtitle_style_bg_charcoal">炭灰</string>
+    <string name="subtitle_style_bg_midnight">深海蓝</string>
+    <string name="subtitle_style_bg_forest">墨绿</string>
+    <string name="subtitle_style_bg_plum">深梅紫</string>
+    <string name="subtitle_style_bg_espresso">深棕</string>
+    <string name="subtitle_style_image_notice">当前为图像字幕（%1$s），字体、字号和底色仅对文本字幕生效</string>
+    <string name="subtitle_style_image_notice_generic">当前为图像字幕，字体、字号和底色仅对文本字幕生效</string>
+    <string name="subtitle_style_font">字体</string>
+    <string name="subtitle_style_font_default">系统默认</string>
+    <string name="subtitle_style_font_serif">衬线</string>
+    <string name="subtitle_style_font_monospace">等宽</string>
+    <string name="subtitle_style_font_system">系统字体</string>
+    <string name="subtitle_style_font_choose">选择系统字体</string>
+    <string name="subtitle_style_font_missing_fallback">当前设备未安装此字体，已回退至系统默认</string>
+    <string name="subtitle_style_size">字号</string>
+    <string name="subtitle_style_size_decrease">减小字号</string>
+    <string name="subtitle_style_size_increase">增大字号</string>
+    <string name="subtitle_style_position">字幕位置</string>
+    <string name="subtitle_style_position_up">上移字幕</string>
+    <string name="subtitle_style_position_down">下移字幕</string>
+    <string name="subtitle_style_position_top">顶部</string>
+    <string name="subtitle_style_position_middle">居中</string>
+    <string name="subtitle_style_position_bottom">底部</string>
+    <string name="subtitle_style_override_ass">覆盖 ASS 样式</string>
+    <string name="subtitle_style_override_ass_desc">将字体、字号和底色同步应用到特效字幕</string>
+    <string name="subtitle_style_reset">恢复默认</string>
+</resources>

@@ -428,6 +428,106 @@ class PlayerScreenStateSmokeTest {
         leavePlayer(state)
     }
 
+    @Test
+    fun releaseFlushesCloudPlayHistoryEvenWhenBackendStopZeroesDuration() = runBlocking {
+        // 服务端 metadata 不带时长（durationSeconds=0），时长完全依赖后端；且模拟真实后端 stop() 立即将 durationMillis 清零
+        val zeroDurCloud = FakePikPakCloud(
+            origin = FakePikPakCloud.payload(1024 * 1024),
+            transcode = FakePikPakCloud.payload(512 * 1024),
+            durationSeconds = 0,
+        )
+        val syncPositions = RecordedPositions(syncPlayHistory = true)
+        val syncRepo = PikoMediaRepository(zeroDurCloud.provider, syncPositions.preferences)
+        backend.zeroDurationOnStop = true
+
+        val state = withContext(stateThread) {
+            PlayerScreenState(
+                repository = syncRepo,
+                backend = backend,
+                scope = scope,
+                initialFileId = "f1",
+                initialFileName = zeroDurCloud.fileName,
+            ).apply { playlist = emptyList() }
+        }
+        backend.awaitOpens(1)
+        backend.emit(PlaybackBackendEvent.Ready)
+        backend.progress(positionMillis = 130_000L, durationMillis = 600_000L)
+
+        leavePlayer(state)
+        syncRepo.flushPlayHistory(timeoutMillis = 3_000L)
+
+        assertEquals(130_000L, syncPositions.saved["f1"])
+        assertEquals(1, zeroDurCloud.playEvents.size, "Closing must report cloud play history using cached duration before stop() zeroes it")
+        assertEquals("f1", zeroDurCloud.playEvents[0].fileId)
+        assertEquals(130L, zeroDurCloud.playEvents[0].playSeconds)
+        assertEquals(600L, zeroDurCloud.playEvents[0].playDuration)
+    }
+
+    @Test
+    fun closingDuringQualitySwitchReloadPreservesAccumulatedProgress() = runBlocking {
+        positions.syncPlayHistoryFlow.value = true
+        val state = newState()
+        backend.awaitOpens(1)
+        backend.emit(PlaybackBackendEvent.Ready)
+        backend.progress(positionMillis = 180_000L, durationMillis = 600_000L)
+
+        // 切换画质重新打开 480P，但新流尚未出首帧（startedThisAttempt=false, resumePositionVerified=false）即关闭播放器
+        withContext(stateThread) { state.selectQuality("480P") }
+        backend.awaitOpens(2)
+        leavePlayer(state)
+        repository.flushPlayHistory(timeoutMillis = 3_000L)
+
+        assertEquals(180_000L, positions.saved["f1"], "Local progress accumulated before quality reload must not be lost")
+        assertTrue(
+            cloud.playEvents.any { it.fileId == "f1" && it.playSeconds == 180L && it.playDuration == 600L },
+            "Cloud play history must retain verified progress when closing during quality reload, got: ${cloud.playEvents}",
+        )
+    }
+
+    @Test
+    fun preReadyPositionUpdateStillVerifiesResumeAndReportsProgress() = runBlocking {
+        positions.syncPlayHistoryFlow.value = true
+        positions.saved["f1"] = 120_000L
+        val state = newState()
+        backend.awaitOpens(1)
+
+        // 模拟后端在 Ready 事件之前就先把位置与时长推进到续播落点，之后不再变动位置
+        backend.progress(positionMillis = 120_500L, durationMillis = 600_000L)
+        backend.emit(PlaybackBackendEvent.Ready)
+        delay(150)
+
+        withContext(stateThread) { state.pause() }
+        repository.flushPlayHistory(timeoutMillis = 3_000L)
+
+        assertTrue(
+            cloud.playEvents.any { it.fileId == "f1" && it.playSeconds == 120L && it.playDuration == 600L },
+            "Pre-Ready position update must verify resume once Ready arrives, got: ${cloud.playEvents}",
+        )
+        leavePlayer(state)
+    }
+
+    @Test
+    fun switchToImmediatelyFollowedByCloseStillReportsPreviousEpisode() = runBlocking {
+        positions.syncPlayHistoryFlow.value = true
+        val state = newState()
+        backend.awaitOpens(1)
+        backend.emit(PlaybackBackendEvent.Ready)
+        backend.progress(positionMillis = 95_000L, durationMillis = 600_000L)
+
+        // 切集后立刻关闭窗口并取消播放器 UI scope：上一集进度仍须经仓库级队列可靠提交
+        withContext(stateThread) {
+            state.switchTo("f2", "ep2.mkv")
+        }
+        leavePlayer(state)
+        repository.flushPlayHistory(timeoutMillis = 3_000L)
+
+        assertEquals(95_000L, positions.saved["f1"])
+        assertTrue(
+            cloud.playEvents.any { it.fileId == "f1" && it.playSeconds == 95L && it.playDuration == 600L },
+            "Previous episode report must survive immediate player close after switchTo, got: ${cloud.playEvents}",
+        )
+    }
+
     private fun java.net.HttpURLConnection.useCode(): Int = try {
         responseCode
     } finally {
@@ -462,6 +562,7 @@ class PlayerScreenStateSmokeTest {
         val opens = CopyOnWriteArrayList<Opened>()
         var onOpen: suspend FakeBackend.() -> Unit = {}
         var simulateNativeGenerations: Boolean = false
+        var zeroDurationOnStop: Boolean = false
         override var requiresAsyncStopDrain: Boolean = false
         @Volatile var stopCalls: Int = 0
         var onStopDrain: suspend () -> Unit = {}
@@ -519,6 +620,10 @@ class PlayerScreenStateSmokeTest {
         override fun stop() {
             check(Thread.currentThread().name.startsWith("player-state")) {
                 "PlaybackBackend.stop() must be invoked on the main state thread, was ${Thread.currentThread().name}"
+            }
+            if (zeroDurationOnStop) {
+                durationMillis = 0L
+                positionMillis = 0L
             }
             stopCalls += 1
         }

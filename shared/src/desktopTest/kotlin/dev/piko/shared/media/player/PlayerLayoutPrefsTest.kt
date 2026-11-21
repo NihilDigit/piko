@@ -187,4 +187,104 @@ class PlayerLayoutPrefsTest {
         assertFalse(decoded.statusBar.showIcons)
         assertFalse(PlayerStatusBarConfig(false, false, false, false).hasAnyItem)
     }
+
+    @Test
+    fun `isItemAllowedInBar enforces per-bar allowlists across video and clips modes`() {
+        val clips = PlayerLayoutPrefs.Default.clipsPortrait
+        assertTrue(clips.isItemAllowedInBar(PlayerPanelItem.Spacer, PlayerBarSlot.Top, PlayerLayoutMode.ClipsPortrait))
+        assertFalse(clips.isItemAllowedInBar(PlayerPanelItem.Spacer, PlayerBarSlot.Bottom, PlayerLayoutMode.ClipsPortrait))
+        assertFalse(clips.isItemAllowedInBar(PlayerPanelItem.Control(PlayerControlId.Star), PlayerBarSlot.Top, PlayerLayoutMode.ClipsPortrait))
+        assertTrue(clips.isItemAllowedInBar(PlayerPanelItem.Control(PlayerControlId.Star), PlayerBarSlot.Bottom, PlayerLayoutMode.ClipsPortrait))
+        assertTrue(clips.isItemAllowedInBar(PlayerPanelItem.Control(PlayerControlId.Back), PlayerBarSlot.Top, PlayerLayoutMode.ClipsPortrait))
+        assertFalse(clips.isItemAllowedInBar(PlayerPanelItem.Control(PlayerControlId.Back), PlayerBarSlot.Bottom, PlayerLayoutMode.ClipsPortrait))
+        assertTrue(clips.isItemAllowedInBar(PlayerPanelItem.Control(PlayerControlId.PlayPause), PlayerBarSlot.Top, PlayerLayoutMode.ClipsPortrait))
+        assertTrue(clips.isItemAllowedInBar(PlayerPanelItem.Control(PlayerControlId.PlayPause), PlayerBarSlot.Bottom, PlayerLayoutMode.ClipsPortrait))
+
+        val video = PlayerLayoutPrefs.Default.videoLandscape
+        assertTrue(video.isItemAllowedInBar(PlayerPanelItem.Spacer, PlayerBarSlot.Top, PlayerLayoutMode.VideoLandscape))
+        assertTrue(video.isItemAllowedInBar(PlayerPanelItem.Spacer, PlayerBarSlot.Bottom, PlayerLayoutMode.VideoLandscape))
+        assertFalse(video.isItemAllowedInBar(PlayerPanelItem.Control(PlayerControlId.Star), PlayerBarSlot.Bottom, PlayerLayoutMode.VideoLandscape))
+    }
+
+    @Test
+    fun `insertIntoBar and moveBarItemToBarAt support drag-and-drop across video and clips modes`() {
+        // Video: Back pinned at topBar[0], inserting at index 0 clamps to 1
+        val videoBase = PlayerLayoutPrefs.Default.videoLandscape
+        val insertedInTop = videoBase.insertIntoBar(
+            bar = PlayerBarSlot.Top,
+            index = 0,
+            item = PlayerPanelItem.Control(PlayerControlId.PinOnTop),
+            mode = PlayerLayoutMode.VideoLandscape,
+        )
+        assertEquals(PlayerPanelItem.Control(PlayerControlId.Back), insertedInTop.topBar[0])
+        assertEquals(PlayerPanelItem.Control(PlayerControlId.PinOnTop), insertedInTop.topBar[1])
+
+        // Video: moving Back from topBar[0] is ignored
+        val unchangedBack = insertedInTop.moveBarItemToBarAt(
+            fromBar = PlayerBarSlot.Top,
+            fromIndex = 0,
+            toBar = PlayerBarSlot.Bottom,
+            toIndex = 0,
+            mode = PlayerLayoutMode.VideoLandscape,
+        )
+        assertEquals(insertedInTop, unchangedBack)
+
+        // ClipsPortrait: insert into bottom rail at index 0, reject Spacer in bottom rail
+        val clipsBase = PlayerLayoutPrefs.Default.clipsPortrait
+        val insertedRail = clipsBase.insertIntoBar(
+            bar = PlayerBarSlot.Bottom,
+            index = 0,
+            item = PlayerPanelItem.Control(PlayerControlId.PlayPause),
+            mode = PlayerLayoutMode.ClipsPortrait,
+        )
+        assertEquals(PlayerPanelItem.Control(PlayerControlId.PlayPause), insertedRail.bottomBar[0])
+        val rejectedSpacer = insertedRail.insertIntoBar(
+            bar = PlayerBarSlot.Bottom,
+            index = 0,
+            item = PlayerPanelItem.Spacer,
+            mode = PlayerLayoutMode.ClipsPortrait,
+        )
+        assertEquals(insertedRail, rejectedSpacer)
+
+        // ClipsPortrait: reorder within bottom rail & move PlayPause across bars to topBar[0]
+        val reorderedRail = insertedRail.moveBarItemToBarAt(
+            fromBar = PlayerBarSlot.Bottom,
+            fromIndex = 0,
+            toBar = PlayerBarSlot.Bottom,
+            toIndex = insertedRail.bottomBar.size,
+            mode = PlayerLayoutMode.ClipsPortrait,
+        )
+        assertEquals(PlayerPanelItem.Control(PlayerControlId.PlayPause), reorderedRail.bottomBar.last())
+
+        val movedToTop = reorderedRail.moveBarItemToBarAt(
+            fromBar = PlayerBarSlot.Bottom,
+            fromIndex = reorderedRail.bottomBar.lastIndex,
+            toBar = PlayerBarSlot.Top,
+            toIndex = 0,
+            mode = PlayerLayoutMode.ClipsPortrait,
+        )
+        assertEquals(PlayerPanelItem.Control(PlayerControlId.PlayPause), movedToTop.topBar[0])
+        assertFalse(movedToTop.hasInBottomBar(PlayerControlId.PlayPause))
+
+        // ClipsLandscape: Back can be reordered within topBar, but cannot move to bottomBar
+        val clipsLand = PlayerLayoutPrefs.Default.clipsLandscape
+        val backIdx = clipsLand.topBar.indexOfFirst { it is PlayerPanelItem.Control && it.id == PlayerControlId.Back }
+        assertTrue(backIdx >= 0)
+        val reorderedBack = clipsLand.moveBarItemToBarAt(
+            fromBar = PlayerBarSlot.Top,
+            fromIndex = backIdx,
+            toBar = PlayerBarSlot.Top,
+            toIndex = 0,
+            mode = PlayerLayoutMode.ClipsLandscape,
+        )
+        assertEquals(PlayerPanelItem.Control(PlayerControlId.Back), reorderedBack.topBar[0])
+        val blockedCrossBar = reorderedBack.moveBarItemToBarAt(
+            fromBar = PlayerBarSlot.Top,
+            fromIndex = 0,
+            toBar = PlayerBarSlot.Bottom,
+            toIndex = 0,
+            mode = PlayerLayoutMode.ClipsLandscape,
+        )
+        assertEquals(reorderedBack, blockedCrossBar)
+    }
 }

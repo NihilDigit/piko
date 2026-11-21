@@ -85,8 +85,48 @@ fun inferSubtitleLanguageCode(label: String?, fileName: String? = null): String?
 }
 
 /**
- * 轨道在列表里的名字：区分简体中文 / 繁体中文 / 通用中文，保留额外描述（如「简日双语」「繁日双语」），
- * 同时避免重复拼接相同含义的文字（例如不会出现「简体中文（简体中文）」或「CHS（简体中文）」）。
+ * 为自动匹配的同目录外挂字幕计算传给 mpv `sub-add` 的标题：
+ * - 优先保留文件名解析器识别出的丰富标签（如「简日」「繁」）；
+ * - 其次保留字幕文件名相对视频主名多出的区分后缀（如字幕组名）；
+ * - 当语言已识别且无额外区分后缀时传空串，让界面直接以语言名呈现（避免无意义的「外挂字幕」占位）；
+ * - 当语言未知时按扩展名（如 `SRT`、`SUP`）或真实文件名命名，永不退化为裸「外挂字幕」导致重复拼接。
+ */
+fun externalSubtitleTitleFor(
+    ref: SubtitleRef,
+    videoTitle: String,
+    detectedLang: String?,
+): String {
+    val parsedLabel = ref.language?.trim()?.takeIf { it.isNotEmpty() }
+    if (parsedLabel != null) return parsedLabel
+    val distinctTag = extractDistinctSubtitleTag(ref.name, videoTitle)
+    if (distinctTag != null) return distinctTag
+    if (detectedLang != null) return ""
+    val ext = ref.name.substringAfterLast('.', "").trim().uppercase()
+    if (ext.isNotEmpty() && ext.lowercase() in PLAYER_SUBTITLE_EXTENSIONS) {
+        val subStem = extractFilenameStem(ref.name)
+        val videoStem = extractFilenameStem(videoTitle)
+        if (subStem.equals(videoStem, ignoreCase = true)) return ext
+    }
+    return ref.name.trim().ifEmpty {
+        tr("外挂字幕", "External subtitles", "外部字幕", "외부 자막", "外掛字幕")
+    }
+}
+
+internal fun extractDistinctSubtitleTag(subtitleFileName: String, videoFileName: String): String? {
+    val subStem = extractFilenameStem(subtitleFileName).trim()
+    val videoStem = extractFilenameStem(videoFileName).trim()
+    if (subStem.isEmpty() || videoStem.isEmpty()) return null
+    if (subStem.equals(videoStem, ignoreCase = true)) return null
+    if (subStem.length > videoStem.length && subStem.startsWith(videoStem, ignoreCase = true)) {
+        val suffix = subStem.substring(videoStem.length).trim('.', ' ', '-', '_', '[', ']', '(', ')')
+        if (suffix.isNotEmpty()) return suffix
+    }
+    return null
+}
+
+/**
+ * 轨道在列表里的名字：语言信息优先呈现，区分简体中文 / 繁体中文 / 通用中文，保留额外描述（如「简日双语」「繁日双语」），
+ * 避免重复拼接相同含义的文字（如「简体中文（简体中文）」「CHS（简体中文）」「外挂字幕 外挂」）。
  */
 fun trackDisplayName(track: MediaTrack, index: Int): String {
     val variant = track.chineseVariant
@@ -96,15 +136,144 @@ fun trackDisplayName(track: MediaTrack, index: Int): String {
         ChineseSubtitleVariant.Generic -> tr("中文", "Chinese", "中国語", "중국어", "中文")
         null -> track.language?.let(::languageName)
     }
-    val title = track.title?.trim()?.takeIf { it.isNotEmpty() }
-    val base = when {
-        title == null -> language ?: tr("轨道 ${index + 1}", "Track ${index + 1}", "トラック ${index + 1}", "트랙 ${index + 1}", "軌道 ${index + 1}")
-        language == null -> title
-        isPureLanguagePlaceholder(title, variant, language) -> language
-        titleAlreadyExpressesLanguage(title, variant, language) -> title
-        else -> tr("$title（$language）", "$title ($language)", "$title（$language）", "$title ($language)", "$title（$language）")
+    val rawTitle = track.title?.trim()?.takeIf { it.isNotEmpty() }
+    val title = rawTitle?.takeUnless(::isGenericPlaceholderTitle)
+    return when {
+        language != null -> when {
+            title == null -> language
+            isPureLanguagePlaceholder(title, variant, language) -> language
+            titleAlreadyExpressesLanguage(title, variant, language) -> title
+            isPlayerSubtitleName(title) -> formatParenthesized(language, title)
+            else -> formatParenthesized(title, language)
+        }
+        title != null -> title
+        track.isExternal -> cleanExternalFilenameLabel(track.externalFilename)
+            ?: tr("外挂字幕", "External subtitles", "外部字幕", "외부 자막", "外掛字幕")
+        else -> tr("轨道 ${index + 1}", "Track ${index + 1}", "トラック ${index + 1}", "트랙 ${index + 1}", "軌道 ${index + 1}")
     }
-    return if (track.isExternal) tr("$base 外挂", "$base external", "$base 外部", "$base 외부", "$base 外掛") else base
+}
+
+/**
+ * 为同一面板内的全部轨道生成去重展示名：单条清晰呈现语言名，仅当多条轨道基础名相同时，
+ * 按「外挂 / 格式（ASS/SRT/PGS 等）/ 序号」逐级补充简短区分标签。
+ */
+fun trackDisplayNames(tracks: List<MediaTrack>): List<String> {
+    if (tracks.isEmpty()) return emptyList()
+    val baseNames = tracks.mapIndexed { index, track -> trackDisplayName(track, index) }.toMutableList()
+    val groups = baseNames.indices.groupBy { baseNames[it] }
+    for ((base, indices) in groups) {
+        if (indices.size <= 1) continue
+        val hasExternal = indices.any { tracks[it].isExternal }
+        val hasEmbedded = indices.any { !tracks[it].isExternal }
+        if (hasExternal && hasEmbedded) {
+            val extWord = tr("外挂", "External", "外部", "외부", "外掛")
+            for (i in indices) {
+                if (tracks[i].isExternal && !containsExternalKeyword(baseNames[i])) {
+                    baseNames[i] = formatParenthesized(baseNames[i], extWord)
+                }
+            }
+        }
+        val subGroupsAfterExt = indices.groupBy { baseNames[it] }
+        for ((_, subIndices) in subGroupsAfterExt) {
+            if (subIndices.size <= 1) continue
+            val formats = subIndices.map { trackFormatLabel(tracks[it]) }
+            if (formats.filterNotNull().distinct().size > 1) {
+                for ((pos, i) in subIndices.withIndex()) {
+                    val fmt = formats[pos] ?: continue
+                    if (!baseNames[i].contains(fmt, ignoreCase = true)) {
+                        baseNames[i] = formatParenthesized(baseNames[i], fmt)
+                    }
+                }
+            }
+        }
+        val finalSubGroups = indices.groupBy { baseNames[it] }
+        for ((_, stillColliding) in finalSubGroups) {
+            if (stillColliding.size <= 1) continue
+            stillColliding.forEachIndexed { rank, i ->
+                baseNames[i] = "${baseNames[i]} #${rank + 1}"
+            }
+        }
+    }
+    return baseNames
+}
+
+private fun formatParenthesized(primary: String, detail: String): String =
+    tr("$primary（$detail）", "$primary ($detail)", "$primary（$detail）", "$primary ($detail)", "$primary（$detail）")
+
+private fun trackFormatLabel(track: MediaTrack): String? {
+    imageSubtitleFormatLabel(track.codec)?.let { return it }
+    val ext = track.externalFilename
+        ?.let(::extractCleanFileName)
+        ?.substringAfterLast('.', "")
+        ?.trim()
+        ?.lowercase()
+        ?.takeIf { it in PLAYER_SUBTITLE_EXTENSIONS }
+    if (ext != null) return ext.uppercase()
+    val codec = track.codec?.trim()?.lowercase() ?: return null
+    return when {
+        codec == "ass" || codec == "ssa" -> "ASS"
+        codec == "subrip" || codec == "srt" -> "SRT"
+        codec == "webvtt" || codec == "vtt" -> "VTT"
+        codec == "mov_text" || codec == "tx3g" -> "TX3G"
+        else -> null
+    }
+}
+
+private fun extractCleanFileName(raw: String): String? {
+    val withoutQuery = raw.substringBefore('?').substringBefore('#')
+    val tail = withoutQuery.substringAfterLast('/').substringAfterLast('\\').trim()
+    if (tail.isEmpty()) return null
+    return decodeSimplePercentEncoding(tail).trim().takeIf { it.isNotEmpty() }
+}
+
+private fun cleanExternalFilenameLabel(externalFilename: String?): String? {
+    val fileName = externalFilename?.let(::extractCleanFileName) ?: return null
+    if (isGenericPlaceholderTitle(fileName)) return null
+    val stem = fileName.substringBeforeLast('.', fileName).trim()
+    val ext = fileName.substringAfterLast('.', "").trim().lowercase()
+    if (stem.isEmpty() || stem.all { it.isDigit() || it == '-' || it == '_' }) {
+        return ext.takeIf { it in PLAYER_SUBTITLE_EXTENSIONS }?.uppercase()
+    }
+    return fileName
+}
+
+private fun decodeSimplePercentEncoding(input: String): String {
+    if ('%' !in input) return input
+    val bytes = ArrayList<Byte>(input.length)
+    var i = 0
+    while (i < input.length) {
+        val ch = input[i]
+        if (ch == '%' && i + 2 < input.length) {
+            val hi = hexDigitValue(input[i + 1])
+            val lo = hexDigitValue(input[i + 2])
+            if (hi >= 0 && lo >= 0) {
+                bytes.add(((hi shl 4) or lo).toByte())
+                i += 3
+                continue
+            }
+        }
+        val encoded = ch.toString().encodeToByteArray()
+        for (b in encoded) bytes.add(b)
+        i++
+    }
+    return bytes.toByteArray().decodeToString()
+}
+
+private fun hexDigitValue(c: Char): Int = when (c) {
+    in '0'..'9' -> c - '0'
+    in 'a'..'f' -> c - 'a' + 10
+    in 'A'..'F' -> c - 'A' + 10
+    else -> -1
+}
+
+private fun isGenericPlaceholderTitle(title: String): Boolean {
+    val compact = title.trim().lowercase().replace('_', '-').replace(WHITESPACE_RUN_REGEX, " ")
+    return compact in GENERIC_PLACEHOLDER_TITLES
+}
+
+private fun containsExternalKeyword(text: String): Boolean {
+    val lower = text.lowercase()
+    return "外挂" in lower || "外掛" in lower || "external" in lower || "外部" in lower || "외부" in lower
 }
 
 /** 常见语言代码的本地化名称；认不出的原样返回。mpv 报的是 ISO 639-2 三字母码，也有文件写两字母码或区域码。 */

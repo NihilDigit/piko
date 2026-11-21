@@ -13,6 +13,7 @@ data class OriginalSubtitleTrackInfo(
     val title: String?,
     val language: String?,
     val extension: String,
+    val isImage: Boolean = false,
 )
 
 /**
@@ -133,17 +134,18 @@ internal object OriginalSubtitleExtractor {
     ): OriginalEmbeddedSubtitlesResult {
         val header = parseMkvHeader(head) ?: return OriginalEmbeddedSubtitlesResult()
         if (header.tracks.isEmpty()) return OriginalEmbeddedSubtitlesResult()
-        if (!allowFullScan) {
+        val extractableTracks = header.tracks.filterNot { it.info.isImage }
+        if (!allowFullScan || extractableTracks.isEmpty()) {
             return OriginalEmbeddedSubtitlesResult(
                 extracted = emptyList(),
                 unextracted = header.tracks.map { it.info },
             )
         }
-        val tracksByNum = header.tracks.associateBy { it.info.trackNumber }
-        val cuesByTrack = header.tracks.associate { it.info.trackNumber to ArrayList<MkvCue>() }
+        val tracksByNum = extractableTracks.associateBy { it.info.trackNumber }
+        val cuesByTrack = extractableTracks.associate { it.info.trackNumber to ArrayList<MkvCue>() }
         val timecodeScaleNs = header.timecodeScaleNs.takeIf { it > 0L } ?: 1_000_000L
 
-        // 流式顺序扫描 Cluster（仅当文件较小或已命中本地缓存时执行）
+        // 流式顺序扫描 Cluster（仅当文件较小或已命中本地缓存时执行；位图字幕如 PGS/VobSub 不参与文本扫描）
         var filePos = header.firstClusterOffset.coerceAtLeast(0L)
         val chunkBytes = 1024 * 1024
         var carry = ByteArray(0)
@@ -184,6 +186,10 @@ internal object OriginalSubtitleExtractor {
         val extracted = ArrayList<ExtractedOriginalSubtitle>()
         val unextracted = ArrayList<OriginalSubtitleTrackInfo>()
         for (track in header.tracks) {
+            if (track.info.isImage) {
+                unextracted += track.info
+                continue
+            }
             val cues = cuesByTrack[track.info.trackNumber].orEmpty()
             if (cues.isEmpty()) {
                 unextracted += track.info
@@ -330,10 +336,12 @@ internal object OriginalSubtitleExtractor {
 
         if (trackType != 17 || trackNumber <= 0) return null
         val codec = codecId ?: return null
-        val ext = when (codec) {
-            "S_TEXT/UTF8" -> "srt"
-            "S_TEXT/ASS", "S_TEXT/SSA" -> "ass"
-            "S_TEXT/WEBVTT" -> "vtt"
+        val (ext, isImage) = when (codec) {
+            "S_TEXT/UTF8" -> "srt" to false
+            "S_TEXT/ASS", "S_TEXT/SSA" -> "ass" to false
+            "S_TEXT/WEBVTT" -> "vtt" to false
+            "S_HDMV/PGS" -> "sup" to true
+            "S_VOBSUB", "S_DVBSUB" -> "sub" to true
             else -> return null
         }
         return MkvSubTrack(
@@ -343,8 +351,9 @@ internal object OriginalSubtitleExtractor {
                 title = name,
                 language = languageBcp47 ?: language,
                 extension = ext,
+                isImage = isImage,
             ),
-            codecPrivate = codecPrivate,
+            codecPrivate = if (isImage) null else codecPrivate,
             defaultDurationNs = defaultDurationNs,
         )
     }

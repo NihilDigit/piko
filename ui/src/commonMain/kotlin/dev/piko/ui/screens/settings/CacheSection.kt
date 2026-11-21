@@ -1,6 +1,7 @@
 package dev.piko.ui.screens.settings
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.material.icons.outlined.ViewCarousel
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -370,9 +372,25 @@ private fun CacheOverviewCard(
                         onClick = onRefresh,
                         enabled = !busy,
                     )
+                    val clearAllEnabled = !busy && summary.clearableBytes > 0L
                     FilledTonalButton(
                         onClick = onRequestClearAll,
-                        enabled = !busy && summary.clearableBytes > 0L,
+                        enabled = clearAllEnabled,
+                        colors = if (eInk) {
+                            ButtonDefaults.filledTonalButtonColors(
+                                containerColor = Color.White,
+                                contentColor = Color.Black,
+                                disabledContainerColor = Color.White,
+                                disabledContentColor = Color(0xFF555555),
+                            )
+                        } else {
+                            ButtonDefaults.filledTonalButtonColors()
+                        },
+                        border = if (eInk) {
+                            BorderStroke(1.dp, if (clearAllEnabled) Color.Black else Color(0xFF555555))
+                        } else {
+                            null
+                        },
                     ) {
                         Text(tr("清理全部缓存", "Clear all", "すべて消去", "모두 지우기", "清理全部快取"), maxLines = 1)
                     }

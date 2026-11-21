@@ -7,6 +7,7 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.media.player.PlayHistoryReporter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -22,6 +23,20 @@ class HistoryMutations(private val repository: PikoDriveRepository, scope: Corou
     private val _outcomes = MutableSharedFlow<HistoryEditOutcome>(extraBufferCapacity = 16)
     val outcomes = _outcomes.asSharedFlow()
     private val pending = MutableStateFlow<Map<Long, Pair<String, HistoryEditCommand>>>(emptyMap())
+
+    init {
+        scope.launch {
+            PlayHistoryReporter.reportedEvents.collect { event ->
+                notifyPlayHistoryReported(event.account)
+            }
+        }
+    }
+
+    /** 云端播放历史成功上报后递增 [HistoryKind.PLAY] 修订号，使已打开的历史记录页即时刷新。 */
+    fun notifyPlayHistoryReported(account: String? = null) {
+        if (account != null && repository.currentAccount != account) return
+        changed(HistoryKind.PLAY)
+    }
 
     fun hidden(kind: HistoryKind, eventId: String): Boolean = pending.value.values.filter { it.first == repository.currentAccount }.map { it.second }.any {
         it.kind == kind && (it == HistoryEditCommand.ClearPlay || it is HistoryEditCommand.Remove && eventId in it.eventIds)

@@ -243,6 +243,30 @@ class AndroidLocalFileAccess(private val context: Context, scope: CoroutineScope
         } finally { retriever.release() }
     }
 
+    override suspend fun readBytes(mount: LocalMount, location: LocalLocation, maxBytes: Int): Pair<ByteArray, Long>? = withContext(Dispatchers.IO) {
+        if (maxBytes <= 0) return@withContext null
+        val resolved = resolveDocument(mount, location)
+        val knownSize = resolved.entry?.size ?: -1L
+        resolver.openInputStream(resolved.uri)?.use { input ->
+            val buf = ByteArray(minOf(maxBytes, 64 * 1024))
+            val out = java.io.ByteArrayOutputStream(if (knownSize in 1..maxBytes.toLong()) knownSize.toInt() else 16 * 1024)
+            var remaining = maxBytes
+            while (remaining > 0) {
+                val n = input.read(buf, 0, minOf(buf.size, remaining))
+                if (n <= 0) break
+                out.write(buf, 0, n)
+                remaining -= n
+            }
+            val bytes = out.toByteArray()
+            val total = if (knownSize >= bytes.size.toLong()) knownSize else {
+                // 若已知大小缺失且读满上限，探测是否还有后续字节以准确标记截断
+                val hasMore = remaining == 0 && input.read() >= 0
+                if (hasMore) bytes.size.toLong() + 1L else bytes.size.toLong()
+            }
+            bytes to total
+        }
+    }
+
     private companion object {
         const val TAG = "LocalMount"
         const val CHILDREN_CACHE_TTL_MS = 2_000L

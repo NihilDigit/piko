@@ -366,6 +366,11 @@ private val VERSION = Regex("""^(?:[vV]([0-9]{1,2})|(Beta|Alpha)(?:[.\s]?Ver\.?)
 private val DESCRIBED_WITH_NUMBER = Regex("""^(.*\p{L}.*?)[\s_]+([0-9]{1,3})$""")
 private val GROUP_LIKE = Regex("""(?i)raws?\b|subs?\b|fansub|studio|字幕|&|组|組|社|team|\.com|\.net""")
 private val PART_WORD = Regex("""^(?:Part|Pt)[.\s]?([0-9]{1,2})$""", RegexOption.IGNORE_CASE)
+private val MARKER_SUB_QUALIFIER = Regex("""^(?:D|Disc|BD|DVD|Vol\.?|Part|Pt\.?|CD)[\s._-]?([0-9]{1,2})([a-e])?$""", RegexOption.IGNORE_CASE)
+private val BATCH_RANGE_BRACKET = Regex(
+    """^(?:第|E|EP)?([0-9]{1,4})\s*[-~～到]\s*(?:E|EP)?([0-9]{1,4})(?:[\s_+&/.-]|TV|BD|DVD|OVA|OAD|SP|Fin|END|Batch|Complete|全|完|话|話|集|回|特典|剧场版|劇場版).*$""",
+    RegexOption.IGNORE_CASE,
+)
 private val GLUED_LETTERS_NUMBER = Regex("""^([A-Za-z]{2,})([0-9]{1,4})$""")
 private val GLUED_TITLE_NUMBER = Regex("""^([^0-9].*?)-([0-9]{2,4})$""")
 
@@ -552,15 +557,34 @@ private fun findHits(tokens: List<NameToken>, bodyStart: Int): List<Hit> {
 
 private fun bracketHits(tokens: List<NameToken>, i: Int, bodyStart: Int): Hit? {
     val content = (tokens[i] as NameToken.Bracket).content.trim()
-    // 「[PV][01]」「[menu][03]」「[Images][55]」：标记方括号后面跟纯数字方括号，合成一个条目
+    // 「[PV][01]」「[menu][03]」「[Images][55]」：标记方括号后面跟纯数字方括号，合成一个条目；
+    // 「[menu][D1][01]」「[menu][Disc 1][02]」：标记与编号之间夹着碟号/卷号限定符，一并合成条目，避免丢掉末尾编号导致同碟条目撞车
     val next = tokens.getOrNull(i + 1)
     val section = markerSection(content)
     if (section != null && next is NameToken.Bracket) {
         val nextTrimmed = next.content.trim()
         if (nextTrimmed.isNotEmpty() && nextTrimmed[0] in '0'..'9') {
             PLAIN_NUMBER.matchEntire(nextTrimmed)?.let { number ->
-                return Hit(i, i + 2, plainEpisode(number), section, content, "$content $nextTrimmed", STRENGTH_BRACKET)
+                if (!isYearNumber(number.groupValues[1])) {
+                    return Hit(i, i + 2, plainEpisode(number), section, content, "$content $nextTrimmed", STRENGTH_BRACKET)
+                }
             }
+        }
+        MARKER_SUB_QUALIFIER.matchEntire(nextTrimmed)?.let { qualifier ->
+            val afterNext = tokens.getOrNull(i + 2)
+            if (afterNext is NameToken.Bracket) {
+                val afterTrimmed = afterNext.content.trim()
+                if (afterTrimmed.isNotEmpty() && afterTrimmed[0] in '0'..'9') {
+                    PLAIN_NUMBER.matchEntire(afterTrimmed)?.let { number ->
+                        if (!isYearNumber(number.groupValues[1])) {
+                            val marker = "$content $nextTrimmed"
+                            return Hit(i, i + 3, plainEpisode(number), section, marker, "$marker $afterTrimmed", STRENGTH_BRACKET)
+                        }
+                    }
+                }
+            }
+            val episode = episodeOf(qualifier.groupValues[1], suffix = qualifier.groupValues[2])
+            return Hit(i, i + 2, episode, section, content, "$content $nextTrimmed", STRENGTH_BRACKET)
         }
     }
     bracketHit(content, i)?.let { return it }
@@ -716,7 +740,7 @@ internal fun parseSeriesStem(rawStem: String): SeriesParse {
     if (tokens.isEmpty()) return unknownParse()
 
     val first = tokens.first() as? NameToken.Bracket
-    var group = first?.takeIf { tokens.size > 1 && !isTagBracket(it) && bracketHit(it.content, 0) == null }?.content
+    var group = first?.takeIf { tokens.size > 1 && !isTagBracket(it) && !isBatchRangeBracket(it.content) && bracketHit(it.content, 0) == null }?.content
     // 组名之后先跳过标签方括号：「[桜都字幕组][720P][メリー・ジェーン]巨乳…」的作品名在标签之后
     var bodyStart = if (group != null) 1 else 0
     while (bodyStart < tokens.size - 1 && (tokens[bodyStart] as? NameToken.Bracket)?.let(::isStrongTagBracket) == true) bodyStart++
@@ -1081,17 +1105,30 @@ private fun taggedBracketNumber(tokens: List<NameToken>, tagStart: Int): Hit? {
 // 只收两三位：写在这个位置的集号都补零到两位，一位数与音轨数一类分不开
 private val TAGGED_EPISODE = Regex("""^([0-9]{2,3})(?:\s*(?:Fin|END|完))?$""", RegexOption.IGNORE_CASE)
 
-/** 第一个标签段的位置：方括号整体是标签，或词在标签词表里。没有时为记号总数。 */
+/** 第一个标签段的位置：方括号整体是标签或合集集数范围段，或词在标签词表里。没有时为记号总数。 */
 private fun firstTagIndex(tokens: List<NameToken>, from: Int): Int {
     for (i in from until tokens.size) {
         when (val token = tokens[i]) {
-            is NameToken.Bracket -> if (isStrongTagBracket(token) && !isYearOnly(token.content)) return i
+            is NameToken.Bracket -> if ((isStrongTagBracket(token) && !isYearOnly(token.content)) || isBatchRangeBracket(token.content)) return i
             // 「BD Menu」「DVD Menu」里的 BD 是标记的一部分，不是片源标签
             is NameToken.Word -> if (i > from && isTitleStoppingTag(token.text) && !startsMarkerPhrase(tokens, i) && !isYearInProse(tokens, i)) return i
             NameToken.Dash -> Unit
         }
     }
     return tokens.size
+}
+
+/** 合集级集数范围方括号（「[01-11TV全集+特典映像]」「[01-11TV]」「[01-11+SP]」「[01-11 Fin]」），不是作品名也不是单集标题。 */
+private fun isBatchRangeBracket(content: String): Boolean {
+    val trimmed = content.trim()
+    if (trimmed.length < 4) return false
+    val first = trimmed[0]
+    if (first !in '0'..'9' && first != '第' && first != 'e' && first != 'E') return false
+    val m = BATCH_RANGE_BRACKET.matchEntire(trimmed) ?: return false
+    val startText = m.groupValues[1]
+    val endText = m.groupValues[2]
+    if (isYearNumber(startText) || isYearNumber(endText)) return false
+    return startText.toInt() < endText.toInt()
 }
 
 private fun isYearOnly(text: String) = isYearNumber(text.trim())
@@ -1163,10 +1200,30 @@ private fun buildTitle(tokens: List<NameToken>, from: Int, to: Int): Pair<String
     if (brackets.isEmpty()) return null to used
     used += brackets
     // 「[葬送的芙莉莲 第二季][Sousou no Frieren Season 2]」：中文名与罗马字名各占一个方括号，是同一个名字的两种写法。
-    // 拼起来既长又会把季号埋在中间，取罗马字名，与文件夹名的双语取舍一致
-    val latin = brackets.filter { bracket -> bracket.content.none(::isCjk) }
+    // 拼起来既长又会把季号埋在中间，取罗马字名，与文件夹名的双语取舍一致；
+    // 但不含真正拉丁片名词汇的编号/限定括号（「[01-11+SP]」「[TV+SP]」「[D1]」）不算拉丁作品名，不能顶掉中文片名
+    val latin = brackets.filter { bracket -> isLatinTitleBracket(bracket.content) }
     val named = if (latin.isNotEmpty() && latin.size < brackets.size) latin else brackets
     return named.joinToString(" ") { it.content.trim() } to used
+}
+
+private fun isLatinTitleBracket(content: String): Boolean {
+    val trimmed = content.trim()
+    if (trimmed.isEmpty() || trimmed.any(::isCjk)) return false
+    var letters = 0
+    var digits = 0
+    for (i in 0 until trimmed.length) {
+        val c = trimmed[i]
+        when {
+            c in 'A'..'Z' || c in 'a'..'z' -> letters++
+            c in '0'..'9' -> digits++
+        }
+    }
+    if (letters < 2 || letters <= digits) return false
+    val parts = trimmed.split(MENTION_SEPARATORS).filter { it.isNotEmpty() }
+    return parts.any { part ->
+        part.any(Char::isAsciiLetter) && lookupTagWord(part) == null && markerSection(part) == null
+    }
 }
 
 private val TITLE_HEAD_MARKERS = setOf("gekijouban", "gekijou-ban", "劇場版", "剧场版", "映画")

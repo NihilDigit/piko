@@ -89,6 +89,24 @@
     <string name="player_custom_ctrl_open_folder">定位目錄</string>
     <string name="player_custom_ctrl_download">下載</string>
     <string name="player_custom_ctrl_hide_chrome">沉浸隱藏</string>
+    <string name="player_custom_palette_hint">拖曳至預覽區，或輕點加入</string>
+    <string name="player_custom_palette_drop_remove">放開移除此控制項</string>
+    <string name="player_custom_palette_drop_required">必需控制項，不可移除</string>
+    <string name="player_custom_palette_bar_controls">欄列控制項</string>
+    <string name="player_custom_palette_center_actions">中央與播放快捷動作</string>
+    <string name="player_custom_palette_all_placed">全部控制項已放置</string>
+    <string name="player_custom_presets">版面預設</string>
+    <string name="player_custom_action_label">動作</string>
+    <string name="player_custom_custom_option">自訂…</string>
+    <string name="player_custom_seek_seconds_hint">範圍 %1$d 至 %2$d 秒</string>
+    <string name="player_custom_clear_slot">清空槽位</string>
+    <string name="player_custom_move_up">上移</string>
+    <string name="player_custom_move_down">下移</string>
+    <string name="player_custom_right_rail">右側操作欄</string>
+    <string name="player_custom_inspector_drag_hint">拖曳預覽中的控制項重排或跨欄，拖回上方托盤移除，點選可細調屬性</string>
+    <string name="player_custom_listen_drag_hint">拖曳下方快捷動作至播放鍵兩側槽位，或點選槽位調整</string>
+    <string name="player_custom_portrait_fullscreen_prompt">直向全螢幕懸浮按鈕</string>
+    <string name="player_custom_portrait_fullscreen_prompt_desc">直向播放橫向影片時，在畫面下方懸浮顯示一鍵全螢幕按鈕</string>
 
     <!-- 聽音訊設定 -->
     <string name="player_custom_listen_cover">封面樣式</string>

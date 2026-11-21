@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="subtitle_style_title">字幕のスタイル</string>
+    <string name="subtitle_style_entry">字幕のスタイルを調整</string>
+    <string name="subtitle_style_background">字幕の背景</string>
+    <string name="subtitle_style_background_desc">字幕の後ろに半透明の暗い背景を表示します</string>
+    <string name="subtitle_style_background_color">背景色</string>
+    <string name="subtitle_style_background_opacity">不透明度</string>
+    <string name="subtitle_style_background_opacity_decrease">不透明度を下げる</string>
+    <string name="subtitle_style_background_opacity_increase">不透明度を上げる</string>
+    <string name="subtitle_style_bg_black">ブラック</string>
+    <string name="subtitle_style_bg_charcoal">チャコール</string>
+    <string name="subtitle_style_bg_midnight">ミッドナイトブルー</string>
+    <string name="subtitle_style_bg_forest">ディープグリーン</string>
+    <string name="subtitle_style_bg_plum">ディーププラム</string>
+    <string name="subtitle_style_bg_espresso">エスプレッソ</string>
+    <string name="subtitle_style_image_notice">現在の字幕は画像字幕（%1$s）です。フォント、サイズ、背景はテキスト字幕にのみ適用されます。</string>
+    <string name="subtitle_style_image_notice_generic">現在の字幕は画像字幕です。フォント、サイズ、背景はテキスト字幕にのみ適用されます。</string>
+    <string name="subtitle_style_font">フォント</string>
+    <string name="subtitle_style_font_default">デフォルト</string>
+    <string name="subtitle_style_font_serif">明朝体</string>
+    <string name="subtitle_style_font_monospace">等幅</string>
+    <string name="subtitle_style_font_system">システムフォント</string>
+    <string name="subtitle_style_font_choose">システムフォントを選択</string>
+    <string name="subtitle_style_font_missing_fallback">この端末にインストールされていないためデフォルトを使用します</string>
+    <string name="subtitle_style_size">フォントサイズ</string>
+    <string name="subtitle_style_size_decrease">フォントサイズを小さくする</string>
+    <string name="subtitle_style_size_increase">フォントサイズを大きくする</string>
+    <string name="subtitle_style_position">表示位置</string>
+    <string name="subtitle_style_position_up">字幕を上に移動</string>
+    <string name="subtitle_style_position_down">字幕を下に移動</string>
+    <string name="subtitle_style_position_top">上部</string>
+    <string name="subtitle_style_position_middle">中央</string>
+    <string name="subtitle_style_position_bottom">下部</string>
+    <string name="subtitle_style_override_ass">ASS スタイルを上書き</string>
+    <string name="subtitle_style_override_ass_desc">フォント、サイズ、背景を装飾付き ASS 字幕にも適用します</string>
+    <string name="subtitle_style_reset">デフォルトに戻す</string>
+</resources>

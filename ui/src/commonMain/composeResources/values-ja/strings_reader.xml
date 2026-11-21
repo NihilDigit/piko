@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reader_action_read">閲覧</string>
+    <string name="reader_action_open_html">ウェブページを開く</string>
+    <string name="reader_action_search">検索</string>
+    <string name="reader_action_display_settings">表示設定</string>
+    <string name="reader_action_raw_source">ソースを表示</string>
+    <string name="reader_action_rendered_view">プレビュー表示</string>
+    <string name="reader_action_copy_all">全文をコピー</string>
+    <string name="reader_action_copy_code">コードをコピー</string>
+    <string name="reader_action_open_external">外部アプリで開く</string>
+    <string name="reader_action_download_full">完全版をダウンロード</string>
+    <string name="reader_action_retry">再試行</string>
+    <string name="reader_action_reload">再読み込み</string>
+    <string name="reader_action_open_browser">ブラウザーで開く</string>
+    <string name="reader_action_javascript">JavaScript</string>
+    <string name="reader_search_placeholder">ドキュメント内を検索</string>
+    <string name="reader_search_prev">前の一致</string>
+    <string name="reader_search_next">次の一致</string>
+    <string name="reader_search_no_matches">一致なし</string>
+    <string name="reader_settings_title">表示設定</string>
+    <string name="reader_settings_font_size">文字サイズ</string>
+    <string name="reader_settings_font_smaller">文字を小さく</string>
+    <string name="reader_settings_font_larger">文字を大きく</string>
+    <string name="reader_settings_line_spacing">行間</string>
+    <string name="reader_settings_spacing_compact">狭い</string>
+    <string name="reader_settings_spacing_normal">標準</string>
+    <string name="reader_settings_spacing_relaxed">広い</string>
+    <string name="reader_settings_font_family">フォント</string>
+    <string name="reader_settings_font_sans">既定</string>
+    <string name="reader_settings_font_serif">明朝</string>
+    <string name="reader_settings_font_mono">等幅</string>
+    <string name="reader_settings_encoding">文字エンコーディング</string>
+    <string name="reader_settings_encoding_auto">自動判定（%1$s）</string>
+    <string name="reader_truncated_notice">ファイルが大きいため、先頭 %1$s（合計 %2$s）のみ表示しています</string>
+    <string name="reader_binary_notice">バイナリデータが含まれている可能性がありますが、テキストとして表示しています</string>
+    <string name="reader_empty_document">ファイルは空です</string>
+    <string name="reader_load_failed">ドキュメントを読み込めませんでした</string>
+    <string name="reader_copied_notice">クリップボードにコピーしました</string>
+    <string name="reader_html_open_failed">HTML ドキュメントを開けませんでした</string>
+    <string name="reader_html_js_disabled_notice">JavaScript を無効にしました。再読み込みすると適用されます</string>
+    <string name="reader_html_js_enabled_notice">JavaScript を有効にしました。再読み込みすると適用されます</string>
+</resources>

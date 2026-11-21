@@ -24,6 +24,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.concurrent.Volatile
 import kotlin.math.abs
 import kotlin.time.Clock
 
@@ -81,6 +82,7 @@ class StoryboardEngine(
     private var workerJob: Job? = null
     private var dirtyNewFrames = 0
     private var continuationFetches = 0
+    @Volatile private var sawPositiveBufferAhead = false
 
     fun start() {
         if (workerJob != null) return
@@ -231,6 +233,19 @@ class StoryboardEngine(
         }
     }
 
+    private fun isBufferCriticallyLow(gate: StoryboardPlaybackGate): Boolean {
+        if (gate.bufferedAheadMs > 0L) sawPositiveBufferAhead = true
+        if (!gate.isPlaying) return false
+        return if (gate.bufferedAheadMs > 0L) {
+            gate.bufferedAheadMs < CRITICAL_BUFFER_AHEAD_MS
+        } else {
+            sawPositiveBufferAhead
+        }
+    }
+
+    private fun shouldYieldForBackground(gate: StoryboardPlaybackGate): Boolean =
+        gate.isPlaybackBusy || isBufferCriticallyLow(gate)
+
     private suspend fun awaitStartupTrigger() {
         var smoothPlayingSinceMs: Long? = null
         while (true) {
@@ -240,8 +255,9 @@ class StoryboardEngine(
             if (gate.firstFrameReady) {
                 // 首帧就绪且暂停时零等待立即启动（典型场景：暂停后直接悬停或打开「速览」）
                 if (!gate.isPlaying) return
+                val criticallyLow = isBufferCriticallyLow(gate)
                 if (!gate.isPlaybackBusy && gate.bufferedAheadMs >= HEALTHY_BUFFER_AHEAD_MS) return
-                if (!gate.isPlaybackBusy) {
+                if (!gate.isPlaybackBusy && !criticallyLow) {
                     val since = smoothPlayingSinceMs ?: now.also { smoothPlayingSinceMs = it }
                     val remaining = SMOOTH_PLAYBACK_TRIGGER_MS - (now - since)
                     if (remaining <= 0L) return
@@ -253,6 +269,7 @@ class StoryboardEngine(
                                     !g.firstFrameReady ||
                                     !g.isPlaying ||
                                     g.isPlaybackBusy ||
+                                    isBufferCriticallyLow(g) ||
                                     g.bufferedAheadMs >= HEALTHY_BUFFER_AHEAD_MS
                             }
                     }
@@ -262,19 +279,19 @@ class StoryboardEngine(
             smoothPlayingSinceMs = null
             combine(playbackGate, priorityTargetMs) { g, boost -> g to boost }
                 .first { (g, boost) ->
-                    boost != null || (g.firstFrameReady && (!g.isPlaying || !g.isPlaybackBusy))
+                    boost != null || (g.firstFrameReady && (!g.isPlaying || (!g.isPlaybackBusy && !isBufferCriticallyLow(g))))
                 }
         }
     }
 
     private suspend fun awaitPlaybackIdleIfBackground() {
-        while (playbackGate.value.isPlaybackBusy) {
+        while (shouldYieldForBackground(playbackGate.value)) {
             // 用户主动交互时仅短暂礼让，避免卡顿重连期间彻底无响应；后台抓取则事件挂起直至恢复
             if (priorityTargetMs.value != null) {
                 delay(USER_BOOST_YIELD_MS)
                 return
             }
-            combine(playbackGate, priorityTargetMs) { g, boost -> !g.isPlaybackBusy || boost != null }
+            combine(playbackGate, priorityTargetMs) { g, boost -> !shouldYieldForBackground(g) || boost != null }
                 .first { it }
         }
     }
@@ -283,11 +300,16 @@ class StoryboardEngine(
         gate: StoryboardPlaybackGate,
         boosted: Boolean,
         wave1Active: Boolean,
-    ): Int = when {
-        gate.isPlaybackBusy -> if (boosted) BUSY_BOOSTED_CONCURRENCY else 0
-        !gate.isPlaying || boosted -> PAUSED_OR_BOOSTED_CONCURRENCY
-        wave1Active -> WAVE1_PLAYING_CONCURRENCY
-        else -> WAVE2_PLAYING_CONCURRENCY
+    ): Int {
+        val criticallyLow = isBufferCriticallyLow(gate)
+        return when {
+            gate.isPlaybackBusy -> if (boosted) BUSY_BOOSTED_CONCURRENCY else 0
+            !gate.isPlaying || boosted -> PAUSED_OR_BOOSTED_CONCURRENCY
+            criticallyLow -> 0
+            gate.bufferedAheadMs < COMFORTABLE_BUFFER_AHEAD_MS -> LOW_BUFFER_PLAYING_CONCURRENCY
+            wave1Active -> WAVE1_PLAYING_CONCURRENCY
+            else -> WAVE2_PLAYING_CONCURRENCY
+        }
     }
 
     private suspend fun runUnifiedScheduler(
@@ -610,13 +632,19 @@ class StoryboardEngine(
         const val TAG = "Storyboard"
         /** 单次 HTTP Range 严格不超过 64 KiB，确保命中 SDK `MICRO_PROBE_PRIORITY = 12`。 */
         const val PROBE_CHUNK_BYTES = StoryboardPlanner.DEFAULT_PROBE_BYTES
-        const val HEALTHY_BUFFER_AHEAD_MS = 2_000L
-        const val SMOOTH_PLAYBACK_TRIGGER_MS = 600L
+        /** 前方缓冲低于 3 秒时后台雪碧图完全停发，优先保证前景播放不卡顿。 */
+        const val CRITICAL_BUFFER_AHEAD_MS = 3_000L
+        /** 起播后前方缓冲达到 5 秒视为健康，可开始低并发后台预取。 */
+        const val HEALTHY_BUFFER_AHEAD_MS = 5_000L
+        /** 前方缓冲达 8 秒以上才放宽至 2 路 Wave 1 后台并发；3–8 秒仅限单路。 */
+        const val COMFORTABLE_BUFFER_AHEAD_MS = 8_000L
+        const val SMOOTH_PLAYBACK_TRIGGER_MS = 4_000L
         const val USER_BOOST_YIELD_MS = 120L
         const val MAX_CONCURRENCY = 6
         const val PAUSED_OR_BOOSTED_CONCURRENCY = 6
-        const val WAVE1_PLAYING_CONCURRENCY = 4
-        const val WAVE2_PLAYING_CONCURRENCY = 3
+        const val LOW_BUFFER_PLAYING_CONCURRENCY = 1
+        const val WAVE1_PLAYING_CONCURRENCY = 2
+        const val WAVE2_PLAYING_CONCURRENCY = 1
         const val BUSY_BOOSTED_CONCURRENCY = 2
         const val USER_BOOST_WINDOW_SLOTS = 16
         const val PERSIST_BATCH_INTERVAL = 16

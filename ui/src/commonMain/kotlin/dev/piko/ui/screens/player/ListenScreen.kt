@@ -98,8 +98,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -115,6 +117,8 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -1154,6 +1158,8 @@ internal fun ListenTransportRow(
     previewMode: Boolean = false,
     selectedSlot: CenterSlotPosition? = null,
     onSelectSlot: ((CenterSlotPosition) -> Unit)? = null,
+    dropTargetSlot: CenterSlotPosition? = null,
+    onSlotBounds: ((CenterSlotPosition, Rect) -> Unit)? = null,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -1168,7 +1174,9 @@ internal fun ListenTransportRow(
             onSeekBySeconds = onSeekBySeconds,
             previewMode = previewMode,
             selected = previewMode && selectedSlot == CenterSlotPosition.OuterLeft,
+            dropHighlighted = previewMode && dropTargetSlot == CenterSlotPosition.OuterLeft,
             onSelect = { onSelectSlot?.invoke(CenterSlotPosition.OuterLeft) },
+            onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.OuterLeft, rect) } },
         )
         ListenSideSlotButton(
             slot = config.innerLeft,
@@ -1179,7 +1187,9 @@ internal fun ListenTransportRow(
             onSeekBySeconds = onSeekBySeconds,
             previewMode = previewMode,
             selected = previewMode && selectedSlot == CenterSlotPosition.InnerLeft,
+            dropHighlighted = previewMode && dropTargetSlot == CenterSlotPosition.InnerLeft,
             onSelect = { onSelectSlot?.invoke(CenterSlotPosition.InnerLeft) },
+            onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.InnerLeft, rect) } },
         )
         FilledIconButton(
             onClick = onTogglePlayPause,
@@ -1205,7 +1215,9 @@ internal fun ListenTransportRow(
             onSeekBySeconds = onSeekBySeconds,
             previewMode = previewMode,
             selected = previewMode && selectedSlot == CenterSlotPosition.InnerRight,
+            dropHighlighted = previewMode && dropTargetSlot == CenterSlotPosition.InnerRight,
             onSelect = { onSelectSlot?.invoke(CenterSlotPosition.InnerRight) },
+            onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.InnerRight, rect) } },
         )
         ListenSideSlotButton(
             slot = config.outerRight,
@@ -1216,7 +1228,9 @@ internal fun ListenTransportRow(
             onSeekBySeconds = onSeekBySeconds,
             previewMode = previewMode,
             selected = previewMode && selectedSlot == CenterSlotPosition.OuterRight,
+            dropHighlighted = previewMode && dropTargetSlot == CenterSlotPosition.OuterRight,
             onSelect = { onSelectSlot?.invoke(CenterSlotPosition.OuterRight) },
+            onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.OuterRight, rect) } },
         )
     }
 }
@@ -1231,29 +1245,51 @@ private fun ListenSideSlotButton(
     onSeekBySeconds: (Int) -> Unit,
     previewMode: Boolean = false,
     selected: Boolean = false,
+    dropHighlighted: Boolean = false,
     onSelect: () -> Unit = {},
+    onBounds: ((Rect) -> Unit)? = null,
 ) {
     val action = slot.action
     val sizeDp = (54.dp * slot.scale.ratio).coerceIn(36.dp, 54.dp)
     val primary = MaterialTheme.colorScheme.primary
+    val boundsMod = if (previewMode && onBounds != null) {
+        Modifier.onGloballyPositioned { coords ->
+            if (coords.isAttached) onBounds(coords.boundsInWindow())
+        }
+    } else {
+        Modifier
+    }
     if (action == CenterSlotAction.None) {
         if (!previewMode) return
+        val strokeColor = if (dropHighlighted || selected) primary else MaterialTheme.colorScheme.outlineVariant
+        val strokeWidth = if (dropHighlighted) 2.5.dp else if (selected) 2.dp else 1.2.dp
         Box(
-            modifier = Modifier
+            modifier = boundsMod
                 .size(sizeDp)
                 .clip(CircleShape)
-                .border(
-                    width = if (selected) 2.dp else 1.dp,
-                    color = if (selected) primary else MaterialTheme.colorScheme.outlineVariant,
-                    shape = CircleShape,
-                )
-                .clickable(onClick = onSelect),
+                .background(if (dropHighlighted) primary.copy(alpha = 0.20f) else Color.Transparent)
+                .clickable(onClick = onSelect)
+                .handCursor(),
             contentAlignment = Alignment.Center,
         ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val strokePx = strokeWidth.toPx()
+                val radius = (size.minDimension - strokePx) / 2f
+                if (radius > 0f) {
+                    drawCircle(
+                        color = strokeColor,
+                        radius = radius,
+                        style = Stroke(
+                            width = strokePx,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f),
+                        ),
+                    )
+                }
+            }
             Icon(
                 imageVector = Icons.Filled.Add,
                 contentDescription = null,
-                tint = if (selected) primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = if (dropHighlighted || selected) primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size((sizeDp * 0.46f).coerceIn(16.dp, 22.dp)),
             )
         }
@@ -1291,16 +1327,18 @@ private fun ListenSideSlotButton(
             CenterSlotAction.None -> ({})
         }
     }
-    val selectMod = if (previewMode && selected) {
-        Modifier.border(2.dp, primary, CircleShape)
-    } else {
-        Modifier
+    val selectMod = when {
+        previewMode && dropHighlighted -> Modifier
+            .background(primary.copy(alpha = 0.22f), CircleShape)
+            .border(2.5.dp, primary, CircleShape)
+        previewMode && selected -> Modifier.border(2.dp, primary, CircleShape)
+        else -> Modifier
     }
     if (slot.showBackground) {
         FilledTonalIconButton(
             onClick = onClick,
             enabled = enabled,
-            modifier = Modifier.size(sizeDp).then(selectMod),
+            modifier = boundsMod.size(sizeDp).then(selectMod),
         ) {
             Icon(icon, contentDescription = label, modifier = Modifier.size(iconSize))
         }
@@ -1308,7 +1346,7 @@ private fun ListenSideSlotButton(
         IconButton(
             onClick = onClick,
             enabled = enabled,
-            modifier = Modifier.size(sizeDp).then(selectMod),
+            modifier = boundsMod.size(sizeDp).then(selectMod),
         ) {
             Icon(icon, contentDescription = label, modifier = Modifier.size(iconSize))
         }

@@ -71,6 +71,7 @@ import dev.piko.desktop.winrt.WindowsFullscreen
 import dev.piko.desktop.winrt.WindowsSmtcSession
 import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.shared.media.player.PlayerScreenState
+import dev.piko.shared.media.player.SubtitleStylePrefs
 import dev.piko.shared.i18n.PikoLocale
 import dev.piko.ui.LocalAppLanguage
 import dev.piko.ui.LocalPikoServices
@@ -378,9 +379,14 @@ private fun VideoPlayerContent(
     val playerScope = remember(playerJob) { CoroutineScope(Dispatchers.Main.immediate + playerJob) }
     val player = remember(playerScope) { MediampPlayer(Unit, playerScope.coroutineContext) }
     // 从已预热的内存偏好快照无锁直取，不在组合首帧阻塞 EDT
-    val hardwareDecoding = remember { services.preferences.currentSnapshot.hardwareDecoding }
+    val initialSnapshot = remember { services.preferences.currentSnapshot }
     val backend = remember(player) {
-        MediampPlaybackBackend(player, playerScope, hardwareDecoding = hardwareDecoding).also { created ->
+        MediampPlaybackBackend(
+            player,
+            playerScope,
+            hardwareDecoding = initialSnapshot.hardwareDecoding,
+            initialSubtitleStyle = initialSnapshot.subtitleStyle,
+        ).also { created ->
             // mpv 的音量在换文件时保留，只需在开窗时设一次
             settings.get(KEY_PLAYER_VOLUME).toFloatOrNull()?.let(created::setVolume)
         }
@@ -423,6 +429,11 @@ private fun VideoPlayerContent(
     val seekStepSeconds by services.preferences.playerSeekStepSecondsFlow
         .collectAsState(initial = PlayerGestureDefaults.SEEK_STEP_SECONDS)
     val longPressSpeed by services.preferences.playerBoostSpeedFlow.collectAsState(initial = PlayerGestureDefaults.BOOST_SPEED)
+    val subtitleStyle by services.preferences.subtitleStylePrefsFlow
+        .collectAsState(initial = initialSnapshot.subtitleStyle)
+    LaunchedEffect(backend, subtitleStyle) {
+        backend.setSubtitleStyle(subtitleStyle)
+    }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(request) {
@@ -642,6 +653,16 @@ private fun VideoPlayerContent(
             val pickDriveSubtitle: (FileStat) -> Unit = remember(state) {
                 { file -> state.addDriveSubtitle(file.id, file.name) }
             }
+            val handleSubtitleStylePreview: (SubtitleStylePrefs) -> Unit = remember(backend) {
+                { backend.setSubtitleStyle(it) }
+            }
+            val handleSubtitleStyleChange: (SubtitleStylePrefs) -> Unit = remember(backend, scope, services.preferences) {
+                { updated ->
+                    val sanitized = updated.sanitize()
+                    backend.setSubtitleStyle(sanitized)
+                    scope.launch { services.preferences.setSubtitleStylePrefs(sanitized) }
+                }
+            }
 
             val platform = LocalPikoPlatform.current
             val scrubFrameCache = rememberScrubFrameCache(
@@ -715,6 +736,9 @@ private fun VideoPlayerContent(
                 onRotationChange = handleRotationChange,
                 onPickLocalSubtitle = pickLocalSubtitle.takeIf { state.canAddSubtitle },
                 onPickDriveSubtitle = pickDriveSubtitle.takeIf { state.canAddSubtitle },
+                subtitleStyle = subtitleStyle,
+                onSubtitleStylePreview = handleSubtitleStylePreview,
+                onSubtitleStyleChange = handleSubtitleStyleChange,
                 registerKeyFallback = registerKeyFallback,
                 windowActions = windowActions,
                 onSwitchToListen = { listenMode = true },

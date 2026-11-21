@@ -147,6 +147,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
         PikoLocale.bindSystemLocale(systemLocale.toLanguageTag())
         PikoLocale.apply(sessionManager.currentAppLanguage())
         dev.piko.shared.media.player.SubtitleEncoding.install(dev.piko.shared.media.player.JvmSubtitleTextTranscoder)
+        dev.piko.shared.media.reader.DocumentTextDecoder.install(dev.piko.shared.media.reader.JvmDocumentCharsetDecoder)
         installProxy()
         val clientManager = PikoClientManager(
             sessionStore = AndroidPikoSessionStore(this),
@@ -236,6 +237,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
         }
         val motionScale = PikoMotionScale().apply { followSystemAnimatorScale(this@PikoApplication) }
         appScope.launch { sessionManager.reduceMotionFlow.collect { motionScale.appReduced = it } }
+        appScope.launch { sessionManager.einkModeFlow.collect { motionScale.einkReduced = it } }
         platform = AndroidPikoPlatform(this, { appUpdater }, motionScale)
         val notifier = WorkResultNotifier(this, services, appScope).also { it.start() }
         appScope.launch {

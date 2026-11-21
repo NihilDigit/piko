@@ -42,18 +42,19 @@ import io.github.nihildigit.pikpak.batchGetFileDetails
 import io.github.nihildigit.pikpak.fileHandle
 import io.github.nihildigit.pikpak.getFile
 import io.github.nihildigit.pikpak.listPlayHistory
-import io.github.nihildigit.pikpak.reportPlay
 import io.github.nihildigit.pikpak.resolveVariant
 import io.github.nihildigit.pikpak.streamRangeFromUrl
 import io.github.nihildigit.pikpak.withApiPriority
 import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -71,7 +72,9 @@ import dev.piko.shared.media.player.InMemoryProxyByteSource
 import dev.piko.shared.media.player.OriginalEmbeddedSubtitlesResult
 import dev.piko.shared.media.player.OriginalSubtitleExtractor
 import dev.piko.shared.media.player.OriginalSubtitleTrackInfo
+import dev.piko.shared.media.player.PlayHistoryReporter
 import dev.piko.shared.media.player.SubtitleEncoding
+import dev.piko.shared.media.player.detectSubtitleLanguageFromUtf8Bytes
 import dev.piko.shared.media.player.inferSubtitleLanguageCode
 import dev.piko.shared.media.player.isTextSubtitleName
 import kotlinx.coroutines.IO
@@ -294,6 +297,19 @@ class PikoMediaRepository(
     // 按磁盘记录重建的切片在这里提前取直链，见 cachedClip
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    /** 跨播放器窗口生命周期的云端播放历史上报队列，负责同文件冷却合并、账号捕获与失败退避重试。 */
+    val playHistoryReporter: PlayHistoryReporter = PlayHistoryReporter(
+        scope = backgroundScope,
+        isPlayHistorySynced = ::isPlayHistorySynced,
+    )
+
+    private sealed interface LocalPositionOp {
+        data class Save(val key: String, val positionMillis: Long) : LocalPositionOp
+        data class Flush(val done: CompletableDeferred<Unit>) : LocalPositionOp
+    }
+
+    private val localPositionOps = Channel<LocalPositionOp>(Channel.UNLIMITED)
+
     // 随机片段挑段时查转码拿到的详情，紧接着建 handle 直接用：handle 连第一条直链都从详情里取，
     // 一段省下全部的详情查询。直链的有效期远长于这几分钟
     private val freshDetails = HashMap<String, Pair<FileDetail, TimeMark>>()
@@ -319,6 +335,18 @@ class PikoMediaRepository(
 
     init {
         backgroundScope.launch {
+            for (op in localPositionOps) {
+                when (op) {
+                    is LocalPositionOp.Save -> {
+                        runSuspendCatching {
+                            preferences?.savePlaybackPosition(op.key, op.positionMillis)
+                        }.logFailure(TAG, "Failed to save local playback position: ${logFile(op.key, "")}")
+                    }
+                    is LocalPositionOp.Flush -> op.done.complete(Unit)
+                }
+            }
+        }
+        backgroundScope.launch {
             clientManager.currentClient.collect { owner ->
                 freshDetailsLock.withLock {
                     if (freshDetailsOwner !== owner) {
@@ -338,6 +366,9 @@ class PikoMediaRepository(
 
     // 进程内一个就够：端口按需绑定，没有会话时只占一个监听 socket
     private val proxy get() = sharedProxy
+
+    /** 进程级回环代理入口，供 HTML 文档代理会话与播放器共用同一个回环端口。 */
+    val loopbackProxy: PikoMediaProxy get() = proxy
 
     suspend fun prepareMedia(fileId: String, preferredResolution: String? = null): Result<PlayableMediaInfo> =
         withContext(Dispatchers.Default) {
@@ -362,6 +393,83 @@ class PikoMediaRepository(
                 detail.downloadUrl?.takeIf { it.isNotBlank() } ?: error(tr("未获取到下载链接", "Download link unavailable", "ダウンロードリンクを取得できません", "다운로드 링크를 가져올 수 없습니다", "無法取得下載連結"))
             }
         }
+
+    /**
+     * 读取文档文件的前 [maxBytes] 字节（支持普通云端文件、归档条目、压缩包内条目与本地挂载文件）。
+     * 通过 HTTP Range 严格封顶下载字节数，避免超大日志或文本文件耗尽内存。
+     */
+    suspend fun readDocumentBytes(
+        fileId: String,
+        maxBytes: Int,
+        localPath: String? = null,
+    ): Result<dev.piko.shared.media.reader.DocumentByteResult> = withContext(Dispatchers.IO) {
+        runSuspendCatching {
+            require(maxBytes > 0) { "maxBytes must be positive" }
+            if (!localPath.isNullOrBlank()) {
+                dev.piko.shared.media.reader.DocumentTextDecoder.readLocalBounded(localPath, maxBytes)?.let { (bytes, total) ->
+                    return@runSuspendCatching dev.piko.shared.media.reader.DocumentByteResult(
+                        bytes = bytes,
+                        totalBytes = total,
+                        truncated = total > bytes.size.toLong(),
+                    )
+                }
+            }
+            if (dev.piko.shared.data.LocalLocation.isLocal(fileId)) {
+                val read = localMounts?.readBytes(fileId, maxBytes)
+                    ?: localMounts?.resolve(fileId)?.let { dev.piko.shared.media.reader.DocumentTextDecoder.readLocalBounded(it, maxBytes) }
+                    ?: error(tr("本机文件夹不可访问", "Local folder is unavailable", "ローカルフォルダーにアクセスできません", "로컬 폴더에 액세스할 수 없습니다", "本機資料夾無法存取"))
+                return@runSuspendCatching dev.piko.shared.media.reader.DocumentByteResult(
+                    bytes = read.first,
+                    totalBytes = read.second,
+                    truncated = read.second > read.first.size.toLong(),
+                )
+            }
+            val accountClient = client
+            val detail = takeFreshDetail(accountClient, fileId)
+                ?: withApiPriority(ApiRequestPriority.INTERACTIVE) { detailOf(accountClient, fileId) }
+                    .also { rememberFreshDetail(accountClient, fileId, it) }
+            val url = detail.downloadUrl?.takeIf { it.isNotBlank() }
+                ?: detail.links.values.firstOrNull { it.url.isNotBlank() }?.url
+                ?: detail.webContentLink.takeIf { it.isNotBlank() }
+                ?: error(tr("未获取到下载链接", "Download link unavailable", "ダウンロードリンクを取得できません", "다운로드 링크를 가져올 수 없습니다", "無法取得下載連結"))
+            val knownSize = detail.sizeBytes
+            if (knownSize == 0L) {
+                return@runSuspendCatching dev.piko.shared.media.reader.DocumentByteResult(
+                    bytes = ByteArray(0),
+                    totalBytes = 0L,
+                    truncated = false,
+                )
+            }
+            val requestLen = if (knownSize > 0L) minOf(knownSize, maxBytes.toLong()) else maxBytes.toLong()
+            accountClient.streamRangeFromUrl(url, start = 0L, length = requestLen) { stream ->
+                val cap = requestLen.toInt().coerceAtMost(maxBytes)
+                val chunks = ArrayList<ByteArray>()
+                val buf = ByteArray(minOf(cap, 64 * 1024).coerceAtLeast(1))
+                var totalRead = 0
+                while (totalRead < cap) {
+                    val toRead = minOf(buf.size, cap - totalRead)
+                    val n = stream.channel.readAvailable(buf, 0, toRead)
+                    if (n <= 0) break
+                    chunks += buf.copyOf(n)
+                    totalRead += n
+                }
+                val out = ByteArray(totalRead)
+                var pos = 0
+                for (chunk in chunks) {
+                    chunk.copyInto(out, pos)
+                    pos += chunk.size
+                }
+                val totalSize = stream.totalSize?.takeIf { it >= totalRead.toLong() }
+                    ?: knownSize.takeIf { it >= totalRead.toLong() }
+                    ?: totalRead.toLong()
+                dev.piko.shared.media.reader.DocumentByteResult(
+                    bytes = out,
+                    totalBytes = totalSize,
+                    truncated = totalSize > out.size.toLong(),
+                )
+            }
+        }
+    }
 
     /** 为即将发起的播放或片段请求开启账号级传输需求凭据。 */
     fun openTransferDemand(initialIntent: ConsumerIntent = ConsumerIntent()): TransferDemand =
@@ -1014,6 +1122,16 @@ class PikoMediaRepository(
      * 解码导致的乱码；二进制 `.sup` 或超大文件沿用原样流式代理。开不起来返回 null，调用方跳过这一条。
      */
     suspend fun prepareSubtitle(fileId: String): ProxyStream? =
+        prepareExternalSubtitle(fileId)?.stream
+
+    /**
+     * 准备云端外挂字幕代理流；当文本字幕已读入内存规范化为 UTF-8 且调用方尚未确定语言码时，
+     * 同步基于字幕正文探测语言（零额外网络请求）。
+     */
+    suspend fun prepareExternalSubtitle(
+        fileId: String,
+        knownLanguage: String? = null,
+    ): PreparedSubtitle? =
         withContext(Dispatchers.Default) {
             var resolvedName = ""
             runSuspendCatching {
@@ -1030,14 +1148,21 @@ class PikoMediaRepository(
                         readAndNormalizeTextSubtitle(client, detail, resolved, leased, expectedSize.toInt())
                     }.getOrNull()
                     if (transcoded != null) {
-                        return@runSuspendCatching registerProxy(
+                        val sniffedLang = knownLanguage ?: detectSubtitleLanguageFromUtf8Bytes(transcoded, detail.name)
+                        val stream = registerProxy(
                             source = InMemoryProxyByteSource(transcoded),
                             fileName = detail.name,
                             fileLabel = logFile(detail.id, detail.name),
+                        ) ?: return@runSuspendCatching null
+                        return@runSuspendCatching PreparedSubtitle(
+                            stream = stream,
+                            detectedLanguage = sniffedLang,
                         )
                     }
                 }
-                openProxyStream(client, detail, resolved, leased = leased)
+                openProxyStream(client, detail, resolved, leased = leased)?.let { stream ->
+                    PreparedSubtitle(stream = stream, detectedLanguage = knownLanguage)
+                }
             }.logFailure(TAG, "Failed to prepare external subtitle stream: ${logFile(fileId, resolvedName)}").getOrNull()
         }
 
@@ -1070,16 +1195,63 @@ class PikoMediaRepository(
     private suspend fun isPlayHistorySynced(): Boolean = preferences?.syncPlayHistoryFlow?.first() ?: false
 
     /**
-     * 把播放进度上报到 PikPak 的播放历史。同步关闭时不做事；失败不抛，上报是附带的，不能打断播放。
-     * 服务端会悄悄丢掉同一文件间隔太短的上报（实测 1.5 秒丢、6 秒收），节流由调用方负责。
+     * 同步捕获当前登录账号并入队云端播放历史上报，由 [playHistoryReporter] 在仓库后台作用域中完成冷却等待与失败重试。
+     * 即使随后关闭播放器、切换集数、退出登录或切换账号，本次上报仍以原账号客户端安全提交。
      */
-    suspend fun reportPlay(fileId: String, positionMillis: Long, durationMillis: Long) {
-        // 归档条目与压缩包里的文件在网盘里没有常驻的文件，播放历史记不上；续播位置照样记在本机
-        if (dev.piko.shared.data.LocalLocation.isLocal(fileId) || fileId.isBlank() || LeasedFile.isLeased(fileId) || positionMillis <= 0L || durationMillis <= 0L) return
-        withContext(Dispatchers.Default) {
-            runSuspendCatching {
-                if (isPlayHistorySynced()) client.reportPlay(fileId, positionMillis / 1000, durationMillis / 1000)
-            }.logFailure(TAG, "Failed to report cloud play history: ${logFile(fileId, "")}")
+    fun enqueuePlayHistory(
+        fileId: String,
+        positionMillis: Long,
+        durationMillis: Long,
+        urgent: Boolean = false,
+        title: String = "",
+    ): Boolean {
+        val owner = clientManager.currentClient.value
+        if (owner == null) {
+            PikoLog.d(TAG, "Skipped cloud play history report (not logged in): ${logFile(fileId, title)}")
+            return false
+        }
+        return playHistoryReporter.submit(
+            client = owner,
+            fileId = fileId,
+            positionMillis = positionMillis,
+            durationMillis = durationMillis,
+            urgent = urgent,
+            title = title,
+        )
+    }
+
+    /**
+     * 把播放进度上报到 PikPak 的播放历史（挂起入口，内部委托 [playHistoryReporter]）。
+     */
+    suspend fun reportPlay(
+        fileId: String,
+        positionMillis: Long,
+        durationMillis: Long,
+        urgent: Boolean = true,
+        title: String = "",
+    ) {
+        if (enqueuePlayHistory(fileId, positionMillis, durationMillis, urgent = urgent, title = title)) {
+            playHistoryReporter.flushAll()
+        }
+    }
+
+    /**
+     * 等待异步本机续播写入与云端播放历史上报完成（带总超时上限），供桌面端退出前调用以防 `exitProcess(0)` 截断在途上报。
+     */
+    suspend fun flushPlayHistory(timeoutMillis: Long = PlayHistoryReporter.DEFAULT_FLUSH_TIMEOUT_MILLIS) {
+        val bounded = timeoutMillis.coerceAtLeast(0L)
+        withTimeoutOrNull(bounded) {
+            coroutineScope {
+                launch {
+                    val localDone = CompletableDeferred<Unit>()
+                    if (localPositionOps.trySend(LocalPositionOp.Flush(localDone)).isSuccess) {
+                        localDone.await()
+                    }
+                }
+                launch {
+                    playHistoryReporter.flushAll(bounded)
+                }
+            }
         }
     }
 
@@ -1103,6 +1275,14 @@ class PikoMediaRepository(
 
     suspend fun savePlaybackPosition(fileId: String, positionMillis: Long) {
         preferences?.savePlaybackPosition(fileId, positionMillis)
+    }
+
+    /**
+     * 在仓库后台作用域按 FIFO 顺序异步保存本机续播位置，避免播放器作用域取消时丢失末尾进度。
+     */
+    fun savePlaybackPositionAsync(fileId: String, positionMillis: Long) {
+        if (fileId.isBlank() || preferences == null) return
+        localPositionOps.trySend(LocalPositionOp.Save(fileId, positionMillis))
     }
 
     suspend fun getPlaybackPosition(fileId: String): Long =
@@ -1967,10 +2147,11 @@ class PikoMediaRepository(
                     fileName = sub.fileName,
                     fileLabel = logFile(fileId, sub.fileName),
                 ) ?: continue
+                val lang = inferSubtitleLanguageCode(sub.info.language, sub.info.title ?: sub.fileName)
+                    ?: detectSubtitleLanguageFromUtf8Bytes(sub.bytes, sub.fileName)
                 val title = sub.info.title
                     ?: sub.info.language?.uppercase()
-                    ?: tr("原画字幕", "Original subtitles", "オリジナル字幕", "원본 자막", "原畫字幕")
-                val lang = inferSubtitleLanguageCode(sub.info.language, sub.info.title ?: sub.fileName)
+                    ?: if (lang != null) "" else tr("原画字幕", "Original subtitles", "オリジナル字幕", "원본 자막", "原畫字幕")
                 attached += ExternalSubtitle(url = stream.url, title = title, language = lang) to stream
             }
             PreparedOriginalSubtitles(attached = attached, unextracted = result.unextracted)
@@ -2081,6 +2262,12 @@ private val FRESH_DETAIL_FOR = 5.minutes
 
 // 各档的大小随内容而定，不会变；读不出的档有可能被服务端修好，所以也不留太久
 private val QUALITY_PROBE_FOR = 10.minutes
+
+/** 云端外挂字幕代理流及可选内容探测语言码。 */
+class PreparedSubtitle(
+    val stream: ProxyStream,
+    val detectedLanguage: String? = null,
+)
 
 /** 转码流尝试提取原画内封字幕的会话结果。 */
 class PreparedOriginalSubtitles(

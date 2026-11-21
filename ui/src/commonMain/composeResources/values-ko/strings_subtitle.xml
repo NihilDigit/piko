@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="subtitle_style_title">자막 스타일</string>
+    <string name="subtitle_style_entry">자막 스타일 설정</string>
+    <string name="subtitle_style_background">자막 배경</string>
+    <string name="subtitle_style_background_desc">자막 뒤에 반투명 어두운 배경을 표시합니다</string>
+    <string name="subtitle_style_background_color">배경 색상</string>
+    <string name="subtitle_style_background_opacity">불투명도</string>
+    <string name="subtitle_style_background_opacity_decrease">불투명도 낮추기</string>
+    <string name="subtitle_style_background_opacity_increase">불투명도 높이기</string>
+    <string name="subtitle_style_bg_black">검정</string>
+    <string name="subtitle_style_bg_charcoal">차콜</string>
+    <string name="subtitle_style_bg_midnight">미드나잇 블루</string>
+    <string name="subtitle_style_bg_forest">딥 포레스트</string>
+    <string name="subtitle_style_bg_plum">딥 플럼</string>
+    <string name="subtitle_style_bg_espresso">에스프레소</string>
+    <string name="subtitle_style_image_notice">현재 자막은 이미지 자막(%1$s)입니다. 글꼴, 크기, 배경은 텍스트 자막에만 적용됩니다.</string>
+    <string name="subtitle_style_image_notice_generic">현재 자막은 이미지 자막입니다. 글꼴, 크기, 배경은 텍스트 자막에만 적용됩니다.</string>
+    <string name="subtitle_style_font">글꼴</string>
+    <string name="subtitle_style_font_default">기본값</string>
+    <string name="subtitle_style_font_serif">명조체</string>
+    <string name="subtitle_style_font_monospace">고정폭</string>
+    <string name="subtitle_style_font_system">시스템 글꼴</string>
+    <string name="subtitle_style_font_choose">시스템 글꼴 선택</string>
+    <string name="subtitle_style_font_missing_fallback">이 기기에 설치되지 않아 시스템 기본 글꼴을 사용합니다</string>
+    <string name="subtitle_style_size">글자 크기</string>
+    <string name="subtitle_style_size_decrease">글자 크기 줄이기</string>
+    <string name="subtitle_style_size_increase">글자 크기 키우기</string>
+    <string name="subtitle_style_position">자막 위치</string>
+    <string name="subtitle_style_position_up">자막 위로 이동</string>
+    <string name="subtitle_style_position_down">자막 아래로 이동</string>
+    <string name="subtitle_style_position_top">상단</string>
+    <string name="subtitle_style_position_middle">중앙</string>
+    <string name="subtitle_style_position_bottom">하단</string>
+    <string name="subtitle_style_override_ass">ASS 스타일 덮어쓰기</string>
+    <string name="subtitle_style_override_ass_desc">글꼴, 크기, 배경을 스타일이 적용된 ASS 자막에도 적용합니다</string>
+    <string name="subtitle_style_reset">기본값으로 재설정</string>
+</resources>

@@ -104,6 +104,8 @@ import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.releasesFocusOnOutsidePress
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -152,9 +154,14 @@ internal fun DrivePathTitle(model: AddressBarModel, editRequests: Int) {
     val colors = MaterialTheme.colorScheme
     val platform = LocalPikoPlatform.current
     val pathText = model.stack.joinToString("/") { it.name }
+    val isEInk = LocalAppearance.current.isEInk
     var barWidth by remember { mutableIntStateOf(0) }
     val focusBorderColor by animateColorAsState(
-        targetValue = if (editing) colors.primary else Color.Transparent,
+        targetValue = when {
+            editing -> colors.primary
+            isEInk -> colors.outline
+            else -> Color.Transparent
+        },
         animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
         label = "address_focus_ring",
     )
@@ -174,9 +181,9 @@ internal fun DrivePathTitle(model: AddressBarModel, editRequests: Int) {
                 .onSizeChanged { barWidth = it.width }
                 // 点到列表、命令栏、侧边栏这些不可聚焦的地方也要收起输入：输入框失焦即收起，见 AddressField
                 .releasesFocusOnOutsidePress()
+                .border(if (isEInk && !editing) 1.dp else 1.5.dp, focusBorderColor, CircleShape)
                 .clip(CircleShape)
                 .background(colors.headerFieldColor)
-                .border(1.5.dp, focusBorderColor, CircleShape)
                 // 各段自己接住单击；落在段外的（路径后面的空白）进入输入
                 .then(if (editing) Modifier else Modifier.clickable(onClickLabel = tr("输入路径", "Enter path", "パスを入力", "경로 입력", "輸入路徑")) { editing = true })
                 .padding(start = 8.dp),

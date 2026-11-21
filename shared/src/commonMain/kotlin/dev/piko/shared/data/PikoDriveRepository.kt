@@ -15,7 +15,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.io.Buffer
 import io.ktor.utils.io.toByteArray
+import dev.piko.shared.runtime.PikoWorkloadGovernor
+import io.github.nihildigit.pikpak.ApiRequestPriority
 import io.github.nihildigit.pikpak.UploadStart
+import io.github.nihildigit.pikpak.withApiPriority
 import io.github.nihildigit.pikpak.cancelUpload
 import io.github.nihildigit.pikpak.continueUpload
 import io.github.nihildigit.pikpak.startUpload
@@ -93,6 +96,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -360,6 +364,61 @@ open class PikoDriveRepository(
     private val _clientRevision = MutableStateFlow(0L)
     val clientRevision: StateFlow<Long> = _clientRevision.asStateFlow()
     internal val accountGeneration: Long get() = changeMarks.value.accountResetAt
+    internal class SyncFolderCache {
+        private data class CachedListing(val folderId: String, val entries: List<FileStat>, val fetchedAt: TimeMark)
+
+        val resolveLock = Mutex()
+        private val stateLock = PikoLock()
+        private val folderIds = HashMap<String, String>()
+        private val listings = HashMap<String, CachedListing>()
+
+        fun folderId(account: String): String? = withPikoLock(stateLock) { folderIds[account] }
+
+        fun rememberFolderId(account: String, folderId: String) {
+            withPikoLock(stateLock) {
+                folderIds[account] = folderId
+            }
+        }
+
+        fun freshListing(account: String, ttl: Duration): Pair<String, List<FileStat>>? = withPikoLock(stateLock) {
+            val cached = listings[account] ?: return@withPikoLock null
+            if (cached.fetchedAt.elapsedNow() > ttl) return@withPikoLock null
+            cached.folderId to cached.entries
+        }
+
+        fun rememberListing(account: String, folderId: String, entries: List<FileStat>) {
+            withPikoLock(stateLock) {
+                folderIds[account] = folderId
+                listings[account] = CachedListing(folderId, entries, TimeSource.Monotonic.markNow())
+            }
+        }
+
+        fun invalidateListing(account: String) {
+            withPikoLock(stateLock) {
+                listings.remove(account)
+            }
+        }
+
+        fun invalidateAccount(account: String) {
+            withPikoLock(stateLock) {
+                folderIds.remove(account)
+                listings.remove(account)
+            }
+        }
+
+        fun clear() {
+            withPikoLock(stateLock) {
+                folderIds.clear()
+                listings.clear()
+            }
+        }
+    }
+
+    internal val syncFolderCache = SyncFolderCache()
+
+    // 播放启播与详情回写走有界异步队列，避免 preparePlayback 阻塞在全盘重建的 SQLite 写锁后方。
+    private val metadataObserveQueue = Channel<() -> Unit>(capacity = 256, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+
     val metadataSink = object : DriveMetadataSink {
         override fun capture(owner: PikPakClient): DriveDetailObserver? =
             withPikoLock(treeStateLock) {
@@ -367,21 +426,25 @@ open class PikoDriveRepository(
                     val generation = accountGeneration
                     val boundIndex = driveTreeIndex
                     object : BatchDriveDetailObserver {
-                        override fun observe(originalFileId: String, detail: FileDetail) {
-                            withPikoLock(treeStateLock) {
-                                if (clientManager.currentClient.value === owner && generation == accountGeneration) {
-                                    boundIndex.observeDetail(detail)
+                        private inline fun enqueueObservation(crossinline write: () -> Unit) {
+                            metadataObserveQueue.trySend {
+                                val stillValid = withPikoLock(treeStateLock) {
+                                    clientManager.currentClient.value === owner &&
+                                        generation == accountGeneration &&
+                                        driveTreeIndex === boundIndex
                                 }
+                                if (stillValid) write()
                             }
+                        }
+
+                        override fun observe(originalFileId: String, detail: FileDetail) {
+                            enqueueObservation { boundIndex.observeDetail(detail) }
                         }
 
                         override fun observeBatch(details: Collection<FileDetail>) {
                             if (details.isEmpty()) return
-                            withPikoLock(treeStateLock) {
-                                if (clientManager.currentClient.value === owner && generation == accountGeneration) {
-                                    boundIndex.observeDetails(details)
-                                }
-                            }
+                            val snapshot = details.toList()
+                            enqueueObservation { boundIndex.observeDetails(snapshot) }
                         }
 
                         override fun observeTranscodeSize(
@@ -391,10 +454,8 @@ open class PikoDriveRepository(
                             streamSizeBytes: Long?,
                             unreadable: Boolean,
                         ) {
-                            withPikoLock(treeStateLock) {
-                                if (clientManager.currentClient.value === owner && generation == accountGeneration) {
-                                    boundIndex.observeTranscodeSize(gcid, fileSizeBytes, mediaId, streamSizeBytes, unreadable)
-                                }
+                            enqueueObservation {
+                                boundIndex.observeTranscodeSize(gcid, fileSizeBytes, mediaId, streamSizeBytes, unreadable)
                             }
                         }
                     }
@@ -540,6 +601,7 @@ open class PikoDriveRepository(
             }
             listingRequests.value = emptyMap()
             listings.value = emptyMap()
+            syncFolderCache.clear()
             folderIndex.clear()
             if (driveTreeIndex.isPersistent) populateDerivedFromTreeLocked()
             folderMeaninglessCacheFlow.value = emptyMap()
@@ -1665,6 +1727,11 @@ open class PikoDriveRepository(
 
     init {
         enterAccount(clientManager.currentClient.value?.account)
+        backgroundScope.launch {
+            for (task in metadataObserveQueue) {
+                runCatching(task).logFailure(TAG, "Async metadata observation failed")
+            }
+        }
         backgroundScope.launch {
             dev.piko.shared.memory.PikoMemoryGovernor.Shared.policy.collect { policy ->
                 if (policy != dev.piko.shared.memory.MemoryPolicy.Normal) {
@@ -3101,12 +3168,16 @@ open class PikoDriveRepository(
                             fun incrementPrefetchedCount(): Int = withPikoLock(prefetchCountLock) { ++prefetchedCount }
                             val prefetchWorkers = List(MANIFEST_WARMUP_CONCURRENCY) {
                                 launch {
-                                    for (manifestStat in prefetchQueue) {
-                                        if (!isCurrent()) break
-                                        store.prefetchManifest(manifestStat)
-                                        val done = incrementPrefetchedCount()
-                                        _treeBuildProgressFlow.update { cur ->
-                                            if (cur.manifestsTotal > 0) cur.copy(manifestsRead = done.coerceAtMost(cur.manifestsTotal)) else cur
+                                    withApiPriority(ApiRequestPriority.BACKGROUND) {
+                                        for (manifestStat in prefetchQueue) {
+                                            if (!isCurrent()) break
+                                            PikoWorkloadGovernor.Shared.awaitNoUrgentPlayback()
+                                            if (!isCurrent()) break
+                                            store.prefetchManifest(manifestStat)
+                                            val done = incrementPrefetchedCount()
+                                            _treeBuildProgressFlow.update { cur ->
+                                                if (cur.manifestsTotal > 0) cur.copy(manifestsRead = done.coerceAtMost(cur.manifestsTotal)) else cur
+                                            }
                                         }
                                     }
                                 }
@@ -3117,23 +3188,25 @@ open class PikoDriveRepository(
                                 val pageChannel = kotlinx.coroutines.channels.Channel<io.github.nihildigit.pikpak.FileListPage>(capacity = 4)
                                 coroutineScope {
                                     val producer = launch {
-                                        try {
-                                            var nextToken = startToken
-                                            val seenTokens = HashSet<String>()
-                                            if (nextToken.isNotEmpty()) seenTokens.add(nextToken)
-                                            do {
-                                                currentCoroutineContext().ensureActive()
-                                                if (!isCurrent()) throw CancellationException("Account changed")
-                                                val page = asked.listFileChangesPage(sinceSyncTime = "", pageToken = nextToken, pageSize = 500)
-                                                pagesFetchedInPass++
-                                                pageChannel.send(page)
-                                                nextToken = page.nextPageToken
-                                                check(nextToken.isEmpty() || seenTokens.add(nextToken)) { "Repeated file sync page token" }
-                                            } while (nextToken.isNotEmpty())
-                                            pageChannel.close()
-                                        } catch (t: Throwable) {
-                                            pageChannel.close(t)
-                                            throw t
+                                        withApiPriority(ApiRequestPriority.BACKGROUND) {
+                                            try {
+                                                var nextToken = startToken
+                                                val seenTokens = HashSet<String>()
+                                                if (nextToken.isNotEmpty()) seenTokens.add(nextToken)
+                                                do {
+                                                    currentCoroutineContext().ensureActive()
+                                                    if (!isCurrent()) throw CancellationException("Account changed")
+                                                    val page = asked.listFileChangesPage(sinceSyncTime = "", pageToken = nextToken, pageSize = 500)
+                                                    pagesFetchedInPass++
+                                                    pageChannel.send(page)
+                                                    nextToken = page.nextPageToken
+                                                    check(nextToken.isEmpty() || seenTokens.add(nextToken)) { "Repeated file sync page token" }
+                                                } while (nextToken.isNotEmpty())
+                                                pageChannel.close()
+                                            } catch (t: Throwable) {
+                                                pageChannel.close(t)
+                                                throw t
+                                            }
                                         }
                                     }
                                     try {
@@ -3161,6 +3234,10 @@ open class PikoDriveRepository(
                                                 )
                                             } else {
                                                 null
+                                            }
+                                            if (isShadowRebuild) {
+                                                PikoWorkloadGovernor.Shared.awaitNoUrgentPlayback()
+                                                if (!isCurrent()) throw CancellationException("Account changed")
                                             }
                                             index.appendCandidate(candidate, enriched, checkpoint)
                                             if (checkpoint != null) hasSavedCheckpoint = true
@@ -3286,14 +3363,18 @@ open class PikoDriveRepository(
                                 val manifestPermits = Semaphore(MANIFEST_WARMUP_CONCURRENCY)
                                 val fetched = uncachedManifestFolders.map { (folderId, manifests) ->
                                     async {
-                                        manifestPermits.withPermit {
-                                            if (!isCurrent()) throw CancellationException("Account changed")
-                                            val entries = store.read(folderId, manifests).getOrElse { throw it }
-                                            withPikoLock(resolvedVaultLock) {
-                                                doneManifestFolders++
-                                                _treeBuildProgressFlow.update { it.copy(manifestsRead = doneManifestFolders) }
+                                        withApiPriority(ApiRequestPriority.BACKGROUND) {
+                                            manifestPermits.withPermit {
+                                                if (!isCurrent()) throw CancellationException("Account changed")
+                                                PikoWorkloadGovernor.Shared.awaitNoUrgentPlayback()
+                                                if (!isCurrent()) throw CancellationException("Account changed")
+                                                val entries = store.read(folderId, manifests).getOrElse { throw it }
+                                                withPikoLock(resolvedVaultLock) {
+                                                    doneManifestFolders++
+                                                    _treeBuildProgressFlow.update { it.copy(manifestsRead = doneManifestFolders) }
+                                                }
+                                                folderId to entries
                                             }
-                                            folderId to entries
                                         }
                                     }
                                 }.awaitAll()
@@ -3360,6 +3441,7 @@ open class PikoDriveRepository(
                     } finally {
                         val preserveCheckpoint = !abortOnExit && hasSavedCheckpoint && !isShadowRebuild
                         if (!committed && !preserveCheckpoint) index.abortCandidate(candidate)
+                        if (index.isComplete) index.pruneMutationHistory(index.currentMutationSeq)
                         withPikoLock(treeStateLock) {
                             if (isCurrent() && activeBuildToken === token) {
                                 activeBuildToken = null
@@ -3394,7 +3476,7 @@ open class PikoDriveRepository(
                     )
                 }
                 try {
-                    val folders = asked.listAllDriveFolders(pageSize = 500)
+                    val folders = withApiPriority(ApiRequestPriority.BACKGROUND) { asked.listAllDriveFolders(pageSize = 500) }
                     if (!isCurrent()) throw CancellationException("Account changed")
                     val activeFolderCount = folders.count { !it.trashed }
                     withPikoLock(treeStateLock) {
@@ -3420,26 +3502,28 @@ open class PikoDriveRepository(
                     var fileCount = 0
                     val allFiles = ArrayList<FileStat>()
                     val manifestByFolder = LinkedHashMap<String, MutableList<FileStat>>()
-                    asked.listAllDriveEntriesFlow(pageSize = 500, extraFilters = mapOf(FileFilter.kind(FileKind.FILE))).collect { page ->
-                        if (!isCurrent()) throw CancellationException("Account changed")
-                        val activePage = page.filterNot { it.trashed }
-                        fileCount += activePage.size
-                        val enriched = withPikoLock(treeStateLock) {
+                    withApiPriority(ApiRequestPriority.BACKGROUND) {
+                        asked.listAllDriveEntriesFlow(pageSize = 500, extraFilters = mapOf(FileFilter.kind(FileKind.FILE))).collect { page ->
                             if (!isCurrent()) throw CancellationException("Account changed")
-                            _treeBuildProgressFlow.update { it.copy(filesRead = fileCount) }
-                            sourceLedger.enrich(activePage)
-                        }
-                        allFiles.addAll(enriched)
-                        if (!isShadowRebuild) {
-                            withPikoLock(treeStateLock) {
-                                if (isCurrent()) {
-                                    index.putFiles(enriched)
+                            val activePage = page.filterNot { it.trashed }
+                            fileCount += activePage.size
+                            val enriched = withPikoLock(treeStateLock) {
+                                if (!isCurrent()) throw CancellationException("Account changed")
+                                _treeBuildProgressFlow.update { it.copy(filesRead = fileCount) }
+                                sourceLedger.enrich(activePage)
+                            }
+                            allFiles.addAll(enriched)
+                            if (!isShadowRebuild) {
+                                withPikoLock(treeStateLock) {
+                                    if (isCurrent()) {
+                                        index.putFiles(enriched)
+                                    }
                                 }
                             }
-                        }
-                        for (entry in enriched) {
-                            if (VaultStore.looksLikeManifest(entry)) {
-                                manifestByFolder.getOrPut(entry.parentId) { mutableListOf() }.add(entry)
+                            for (entry in enriched) {
+                                if (VaultStore.looksLikeManifest(entry)) {
+                                    manifestByFolder.getOrPut(entry.parentId) { mutableListOf() }.add(entry)
+                                }
                             }
                         }
                     }
@@ -3466,17 +3550,21 @@ open class PikoDriveRepository(
                         val loaded = coroutineScope {
                             uncachedManifestFolders.map { (folderId, manifests) ->
                                 async {
-                                    manifestPermits.withPermit {
-                                        if (!isCurrent()) throw CancellationException("Account changed")
-                                        val entries = store.read(folderId, manifests)
-                                            .logFailure(TAG, "In-memory tree build failed to read vault manifest in ${logFolder(folderId)} (acct=$acctSlot)")
-                                            .getOrDefault(emptyList())
-                                        withPikoLock(treeStateLock) {
-                                            if (isCurrent() && !store.hasPending(folderId)) {
-                                                vaultEntriesKnown(folderId, entries, expectedManifestId = VaultStore.winnerOf(manifests)?.id, requireMatch = true)
+                                    withApiPriority(ApiRequestPriority.BACKGROUND) {
+                                        manifestPermits.withPermit {
+                                            if (!isCurrent()) throw CancellationException("Account changed")
+                                            PikoWorkloadGovernor.Shared.awaitNoUrgentPlayback()
+                                            if (!isCurrent()) throw CancellationException("Account changed")
+                                            val entries = store.read(folderId, manifests)
+                                                .logFailure(TAG, "In-memory tree build failed to read vault manifest in ${logFolder(folderId)} (acct=$acctSlot)")
+                                                .getOrDefault(emptyList())
+                                            withPikoLock(treeStateLock) {
+                                                if (isCurrent() && !store.hasPending(folderId)) {
+                                                    vaultEntriesKnown(folderId, entries, expectedManifestId = VaultStore.winnerOf(manifests)?.id, requireMatch = true)
+                                                }
                                             }
+                                            folderId to entries
                                         }
-                                        folderId to entries
                                     }
                                 }
                             }.awaitAll()
@@ -4139,7 +4227,7 @@ open class PikoDriveRepository(
         private const val MAX_LOCATE_DEPTH = 64
         private const val CHILD_NAME_PAGE = 20
         private const val CHILD_NAME_CONCURRENCY = 2
-        private const val MANIFEST_WARMUP_CONCURRENCY = 24
+        private const val MANIFEST_WARMUP_CONCURRENCY = 4
         private const val MAX_REMEMBERED_CHILD_NAMES = 200
         private val QUOTA_JSON = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 

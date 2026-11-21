@@ -358,4 +358,112 @@ class AdaptiveBitrateControllerTest {
         assertNotNull(drop)
         assertEquals("480P", drop!!.targetName)
     }
+
+    @Test
+    fun startupGracePreventsPrematureBolaDowngradeWithoutBandwidthSample() {
+        val abr = AdaptiveBitrateController()
+        abr.resetSession(nowMillis = 0L, clearBandwidth = true)
+        abr.notePlaybackReady(nowMillis = 1_000L)
+
+        // 首帧后初始缓冲尚在 1.5s 爬坡且尚无活跃突发带宽样本（ewmaBps == null），但画面平稳播放未卡顿：
+        // 绝不可误触发 BOLA 降档切入无索引 MPEG-TS 转码流
+        var now = 1_000L
+        repeat(12) {
+            now += 1_000L
+            val decision = abr.evaluate(
+                AbrObservation(
+                    nowMillis = now,
+                    candidates = candidates,
+                    currentName = ORIGINAL_QUALITY,
+                    playbackSpeed = 1f,
+                    bufferSeconds = 1.5,
+                    isBuffering = false,
+                    isPlaying = true,
+                ),
+            )
+            assertNull(decision, "Must not prematurely downgrade from Original at t=${now}ms without bandwidth sample or buffering")
+        }
+    }
+
+    @Test
+    fun startupGraceStillDowngradesOnRealContinuousStallAfterDecreaseCooldown() {
+        val abr = AdaptiveBitrateController()
+        abr.resetSession(nowMillis = 0L, clearBandwidth = true)
+        abr.notePlaybackReady(nowMillis = 1_000L)
+
+        // 前 3 秒在 MIN_DECREASE_INTERVAL_MS (4s) 冷却内不降档；满 4s 且连续卡顿 >= 3s 时及时降档止损
+        var droppedAt: Long? = null
+        var decision: AbrDecision? = null
+        var now = 1_000L
+        repeat(6) {
+            now += 1_000L
+            val d = abr.evaluate(
+                AbrObservation(
+                    nowMillis = now,
+                    candidates = candidates,
+                    currentName = ORIGINAL_QUALITY,
+                    playbackSpeed = 1f,
+                    bufferSeconds = 0.5,
+                    isBuffering = true,
+                    isPlaying = true,
+                ),
+            )
+            if (d != null && decision == null) {
+                decision = d
+                droppedAt = now
+            }
+        }
+        assertNotNull(decision, "Real continuous buffering stall must still downgrade")
+        assertTrue((droppedAt ?: 0L) >= 5_000L, "Must respect MIN_DECREASE_INTERVAL_MS after first frame, dropped at $droppedAt")
+    }
+
+    @Test
+    fun notePlaybackReadyPreservesSpeedStepDownForNormalSpeedRestore() {
+        val abr = AdaptiveBitrateController()
+        var now = 0L
+        repeat(4) {
+            now += 1_000L
+            abr.recordActiveBurst(deltaBytes = 600L * 1024L, deltaNanos = 1_000_000_000L, nowMillis = now)
+        }
+        var current = ORIGINAL_QUALITY
+        repeat(4) {
+            now += 1_000L
+            abr.evaluate(
+                AbrObservation(
+                    nowMillis = now,
+                    candidates = candidates,
+                    currentName = current,
+                    playbackSpeed = 3.5f,
+                    bufferSeconds = 8.0,
+                    isBuffering = false,
+                    isPlaying = true,
+                ),
+            )?.let { current = it.targetName }
+        }
+        assertEquals("720P", current)
+
+        // 切档后的新流到达首帧触发 notePlaybackReady，不应抹掉 steppedDownForSpeed
+        now += 500L
+        abr.notePlaybackReady(now)
+
+        var restored: AbrDecision? = null
+        repeat(6) {
+            now += 1_000L
+            val d = abr.evaluate(
+                AbrObservation(
+                    nowMillis = now,
+                    candidates = candidates,
+                    currentName = current,
+                    playbackSpeed = 1.0f,
+                    bufferSeconds = 12.0,
+                    isBuffering = false,
+                    isPlaying = true,
+                ),
+            )
+            if (d != null && restored == null) restored = d
+        }
+        assertNotNull(restored)
+        assertEquals(ORIGINAL_QUALITY, restored!!.targetName)
+        assertEquals("speed-restore", restored!!.reason)
+    }
 }

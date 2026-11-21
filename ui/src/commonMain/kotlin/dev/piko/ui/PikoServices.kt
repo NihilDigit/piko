@@ -223,17 +223,20 @@ class PikoServices(
         appPresence.onWindowClosed(windowId)
     }
 
-    /** 窗口重新获得焦点或应用回到前台时轻量增量拉取固定标签与设置（10 秒冷却防抖），无需重启应用即可跨端实时同步。 */
+    /** 窗口重新获得焦点或应用回到前台时轻量增量拉取固定标签与设置（60 秒冷却防抖），无需重启应用即可跨端实时同步。 */
     fun onAppForegrounded() {
         val now = Clock.System.now().toEpochMilliseconds()
-        if (now - lastForegroundSyncMs < 10_000L) return
+        if (now - lastForegroundSyncMs < FOREGROUND_SYNC_COOLDOWN_MS) return
         lastForegroundSyncMs = now
         backgroundScope.launch {
             workloadGovernor.awaitBackgroundSyncAllowed()
+            workloadGovernor.awaitNoUrgentPlayback()
             if (clientManager.currentClient.value != null) {
-                pinnedTabSync.syncNow()
-                settingsSync.syncNow()
-                metaTubeSync?.syncNow()
+                io.github.nihildigit.pikpak.withApiPriority(io.github.nihildigit.pikpak.ApiRequestPriority.BACKGROUND) {
+                    pinnedTabSync.syncNow()
+                    settingsSync.syncNow()
+                    metaTubeSync?.syncNow()
+                }
             }
         }
     }
@@ -484,6 +487,7 @@ class PikoServices(
             clipFeedSession.endAccount(left)
             folderVaultSession.cancel()
             dev.piko.shared.media.proxy.ExternalPlayerStreams.closeAll()
+            dev.piko.shared.media.proxy.HtmlDocumentProxySessions.closeAll()
         }
         backgroundScope.launch {
             val cleanedAccounts = mutableSetOf<String>()
@@ -502,6 +506,7 @@ class PikoServices(
 }
 
 private const val TAG = "Services"
+private const val FOREGROUND_SYNC_COOLDOWN_MS = 60_000L
 
 enum class PassphraseUpdateResult {
     SavedAndSynced,

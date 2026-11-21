@@ -222,4 +222,23 @@ class MediaBatchRulesTest {
         val release = batch("ABC-123.mp4" to 5_000_000_000, "推广.mp4" to 30_000_000)
         assertEquals(1, release.secondary.size)
     }
+
+    @Test
+    fun `all-bracketed cjk bdrip groups episodes specials and multi-disc menus without collision`() {
+        val result = batch(
+            "[DBD-Raws][胜者即是正义][01][1080P][BDRip][HEVC-10bit][FLAC].mkv" to 2_000_000_000,
+            "[DBD-Raws][胜者即是正义][10][1080P][BDRip][HEVC-10bit][FLAC].mkv" to 2_000_000_000,
+            "[DBD-Raws][胜者即是正义][NCOP+NCED][1080P][BDRip][HEVC-10bit][FLAC].mkv" to 120_000_000,
+            "[DBD-Raws][胜者即是正义][menu][D1][01][1080P][BDRip][HEVC-10bit][FLAC].mkv" to 40_000_000,
+            "[DBD-Raws][胜者即是正义][menu][D1][02][1080P][BDRip][HEVC-10bit][FLAC].mkv" to 35_000_000,
+            "[DBD-Raws][胜者即是正义][menu][D2][01][1080P][BDRip][HEVC-10bit][FLAC].mkv" to 42_000_000,
+        )
+        val work = result.works.single()
+        assertEquals("胜者即是正义", work.title)
+        assertEquals(setOf("DBD-Raws", "1080p", "BDRip", "HEVC", "10bit", "FLAC"), work.commonTags.map { it.text }.toSet())
+        val bySection = work.sections.associate { section -> section.section to section.entries.mapNotNull { it.label } }
+        assertEquals(listOf("01", "10"), bySection[Section.MAIN])
+        assertEquals(listOf("NCOP+NCED"), bySection[Section.CREDITLESS])
+        assertEquals(listOf("menu D1 01", "menu D1 02", "menu D2 01"), bySection[Section.MENU])
+    }
 }

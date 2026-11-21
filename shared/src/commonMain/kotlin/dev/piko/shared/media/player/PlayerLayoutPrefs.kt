@@ -399,7 +399,7 @@ data class PlayerFormFactorLayout(
         }.sanitize(mode)
     }
 
-    private fun isItemAllowedInBar(item: PlayerPanelItem, bar: PlayerBarSlot, mode: PlayerLayoutMode): Boolean = when (item) {
+    fun isItemAllowedInBar(item: PlayerPanelItem, bar: PlayerBarSlot, mode: PlayerLayoutMode): Boolean = when (item) {
         PlayerPanelItem.Spacer -> allowsSpacerIn(mode, bar)
         is PlayerPanelItem.Control -> item.id in allowedControlsFor(mode, bar)
     }

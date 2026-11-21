@@ -25,16 +25,21 @@ fun readMpvTracks(property: (String) -> String?): MpvTrackSnapshot {
     for (i in 0 until count) {
         val prefix = "track-list/$i"
         val id = property("$prefix/id") ?: continue
+        val type = property("$prefix/type") ?: continue
         val isExternal = property("$prefix/external") == "yes"
+        val codec = property("$prefix/codec")?.takeIf { it.isNotBlank() }
+        val isImage = type == "sub" && (property("$prefix/image") == "yes" || isImageSubtitleCodec(codec))
         val track = MediaTrack(
             id = id,
             title = property("$prefix/title")?.takeIf { it.isNotBlank() },
             language = property("$prefix/lang")?.takeIf { it.isNotBlank() },
             isExternal = isExternal,
             externalFilename = if (isExternal) property("$prefix/external-filename")?.takeIf { it.isNotBlank() } else null,
+            codec = codec,
+            isImage = isImage,
         )
         val selected = property("$prefix/selected") == "yes"
-        when (property("$prefix/type")) {
+        when (type) {
             "audio" -> {
                 audio += track
                 if (selected) selectedAudio = id
@@ -94,6 +99,36 @@ val PLAYER_SUBTITLE_EXTENSIONS = setOf("ass", "ssa", "srt", "vtt", "sup")
 
 fun isPlayerSubtitleName(name: String): Boolean =
     name.substringAfterLast('.', "").lowercase() in PLAYER_SUBTITLE_EXTENSIONS
+
+private val IMAGE_SUBTITLE_CODECS = setOf(
+    "hdmv_pgs_subtitle",
+    "dvd_subtitle",
+    "dvb_subtitle",
+    "xsub",
+    "pgssub",
+    "vobsub",
+    "dvbsub",
+)
+
+/** 判断 mpv 字幕编解码器名是否属于位图/图像字幕（如 Blu-ray PGS、DVD VobSub、DVB）。 */
+fun isImageSubtitleCodec(codec: String?): Boolean {
+    val normalized = codec?.trim()?.lowercase() ?: return false
+    return normalized in IMAGE_SUBTITLE_CODECS ||
+        normalized.contains("pgs") ||
+        normalized.contains("vobsub")
+}
+
+/** 图像字幕格式的简洁可读标签（如 `PGS`、`VobSub`、`DVB`、`XSUB`），未知时返回 null。 */
+fun imageSubtitleFormatLabel(codec: String?): String? {
+    val normalized = codec?.trim()?.lowercase() ?: return null
+    return when {
+        normalized == "hdmv_pgs_subtitle" || normalized == "pgssub" || normalized.contains("pgs") -> "PGS"
+        normalized == "dvd_subtitle" || normalized == "vobsub" || normalized.contains("vobsub") -> "VobSub"
+        normalized == "dvb_subtitle" || normalized == "dvbsub" -> "DVB"
+        normalized == "xsub" -> "XSUB"
+        else -> null
+    }
+}
 
 /**
  * 两端 mpv 共用的字幕语言偏好（slang）：按当前界面语言自动切换简体/繁体优先级。

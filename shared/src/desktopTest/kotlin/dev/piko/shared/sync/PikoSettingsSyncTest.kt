@@ -110,4 +110,62 @@ class PikoSettingsSyncTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun `eink mode and legacy EINK themeSeed are never pushed or pulled across devices`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            withTimeout(5_000) {
+                assertTrue(SyncedSettings.none { it.key.equals("einkMode", ignoreCase = true) })
+
+                val clients = accountProvider()
+                val remote = MemoryRemote()
+                var time = 1_000L
+                val clock = { time++ }
+
+                // Device A enables E-Ink locally and has a legacy EINK seed value.
+                val prefsA = MemoryPreferences().apply {
+                    setEinkMode(true)
+                    setThemeSeed("EINK")
+                }
+                val syncA = PikoSettingsSync(
+                    clients = clients,
+                    remote = remote,
+                    preferences = prefsA,
+                    cacheStore = MemoryCacheStore(),
+                    scope = scope,
+                    enabled = MutableStateFlow(true),
+                    settings = SyncedSettings,
+                    now = clock,
+                )
+                assertTrue(syncA.syncNow())
+                val pushedFromA = remote.text!!
+                assertTrue("EINK" !in pushedFromA, pushedFromA)
+                assertTrue("einkMode" !in pushedFromA, pushedFromA)
+
+                // Simulate an older client having pushed themeSeed=EINK remotely.
+                remote.text = """{"version":1,"values":{"themeSeed":{"value":"EINK","updatedAt":999999}}}"""
+                val prefsB = MemoryPreferences().apply {
+                    setEinkMode(false)
+                    setThemeSeed("RURI")
+                }
+                val syncB = PikoSettingsSync(
+                    clients = clients,
+                    remote = remote,
+                    preferences = prefsB,
+                    cacheStore = MemoryCacheStore(),
+                    scope = scope,
+                    enabled = MutableStateFlow(true),
+                    settings = SyncedSettings,
+                    now = clock,
+                )
+                assertTrue(syncB.syncNow())
+                assertEquals("RURI", prefsB.themeSeedFlow.value)
+                assertEquals(false, prefsB.einkModeFlow.value)
+                assertTrue("EINK" !in remote.text!!, remote.text!!)
+            }
+        } finally {
+            scope.cancel()
+        }
+    }
 }

@@ -89,6 +89,24 @@
     <string name="player_custom_ctrl_open_folder">フォルダーを開く</string>
     <string name="player_custom_ctrl_download">ダウンロード</string>
     <string name="player_custom_ctrl_hide_chrome">操作を隠す</string>
+    <string name="player_custom_palette_hint">プレビューへドラッグ、またはタップで追加</string>
+    <string name="player_custom_palette_drop_remove">ここにドロップして削除</string>
+    <string name="player_custom_palette_drop_required">必須コントロールのため削除できません</string>
+    <string name="player_custom_palette_bar_controls">バーのコントロール</string>
+    <string name="player_custom_palette_center_actions">中央アクション</string>
+    <string name="player_custom_palette_all_placed">すべてのコントロールを配置済み</string>
+    <string name="player_custom_presets">プリセット</string>
+    <string name="player_custom_action_label">アクション</string>
+    <string name="player_custom_custom_option">カスタム…</string>
+    <string name="player_custom_seek_seconds_hint">%1$d から %2$d 秒の範囲</string>
+    <string name="player_custom_clear_slot">スロットをクリア</string>
+    <string name="player_custom_move_up">上へ移動</string>
+    <string name="player_custom_move_down">下へ移動</string>
+    <string name="player_custom_right_rail">右アクションレール</string>
+    <string name="player_custom_inspector_drag_hint">プレビュー内の操作をドラッグして並べ替えや移動、トレイへ戻して削除、タップで詳細設定</string>
+    <string name="player_custom_listen_drag_hint">下のアクションを左右スロットへドラッグ、またはスロットをタップして編集</string>
+    <string name="player_custom_portrait_fullscreen_prompt">縦画面の全画面ボタン</string>
+    <string name="player_custom_portrait_fullscreen_prompt_desc">縦画面で横向き動画を再生するとき、下部に全画面ボタンを表示します</string>
 
     <!-- 音声再生設定 -->
     <string name="player_custom_listen_cover">カバー表示</string>

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reader_action_read">阅读</string>
+    <string name="reader_action_open_html">打开网页</string>
+    <string name="reader_action_search">查找</string>
+    <string name="reader_action_display_settings">阅读设置</string>
+    <string name="reader_action_raw_source">查看源码</string>
+    <string name="reader_action_rendered_view">渲染视图</string>
+    <string name="reader_action_copy_all">复制全文</string>
+    <string name="reader_action_copy_code">复制代码</string>
+    <string name="reader_action_open_external">外部打开</string>
+    <string name="reader_action_download_full">下载完整文件</string>
+    <string name="reader_action_retry">重试</string>
+    <string name="reader_action_reload">重新加载</string>
+    <string name="reader_action_open_browser">在浏览器中打开</string>
+    <string name="reader_action_javascript">JavaScript</string>
+    <string name="reader_search_placeholder">在文档中查找</string>
+    <string name="reader_search_prev">上一个匹配项</string>
+    <string name="reader_search_next">下一个匹配项</string>
+    <string name="reader_search_no_matches">无匹配</string>
+    <string name="reader_settings_title">阅读设置</string>
+    <string name="reader_settings_font_size">字号</string>
+    <string name="reader_settings_font_smaller">减小字号</string>
+    <string name="reader_settings_font_larger">增大字号</string>
+    <string name="reader_settings_line_spacing">行距</string>
+    <string name="reader_settings_spacing_compact">紧凑</string>
+    <string name="reader_settings_spacing_normal">适中</string>
+    <string name="reader_settings_spacing_relaxed">宽松</string>
+    <string name="reader_settings_font_family">字体</string>
+    <string name="reader_settings_font_sans">默认</string>
+    <string name="reader_settings_font_serif">衬线</string>
+    <string name="reader_settings_font_mono">等宽</string>
+    <string name="reader_settings_encoding">文本编码</string>
+    <string name="reader_settings_encoding_auto">自动识别（%1$s）</string>
+    <string name="reader_truncated_notice">文件较大，当前仅预览前 %1$s（共 %2$s）</string>
+    <string name="reader_binary_notice">此文件可能包含二进制数据，已按纯文本尝试显示</string>
+    <string name="reader_empty_document">文件为空</string>
+    <string name="reader_load_failed">无法读取文档</string>
+    <string name="reader_copied_notice">已复制到剪贴板</string>
+    <string name="reader_html_open_failed">无法打开网页文档</string>
+    <string name="reader_html_js_disabled_notice">已关闭 JavaScript，重新加载后生效</string>
+    <string name="reader_html_js_enabled_notice">已启用 JavaScript，重新加载后生效</string>
+</resources>

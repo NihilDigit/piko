@@ -94,6 +94,23 @@ class StoredPikoPreferencesTest {
     }
 
     @Test
+    fun legacyEinkThemeSeedMigratesToLocalEinkMode() = runBlocking {
+        val settings = FakeSettings(mapOf("ui.themeSeed" to "EINK"))
+        val prefs = preferences(settings)
+        assertEquals(true, prefs.einkModeFlow.first())
+        assertEquals(true, prefs.currentSnapshot.einkMode)
+        assertNull(prefs.themeSeedFlow.first())
+        assertNull(prefs.currentSnapshot.themeSeed)
+        assertEquals("true", settings.get("ui.einkMode"))
+        assertEquals("", settings.get("ui.themeSeed"))
+
+        prefs.setEinkMode(false)
+        prefs.setThemeSeed("RURI")
+        assertEquals(false, preferences(settings.reopen()).einkModeFlow.first())
+        assertEquals("RURI", preferences(settings.reopen()).themeSeedFlow.first())
+    }
+
+    @Test
     fun tileFlowsCreatedConcurrentlyKeepReceivingTheSameUpdates() = runBlocking {
         val settings = FakeSettings(mapOf("ui.drive.tileSize.POSTER" to "SMALL"))
         val prefs = preferences(settings)

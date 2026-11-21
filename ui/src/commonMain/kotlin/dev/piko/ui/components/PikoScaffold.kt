@@ -96,9 +96,9 @@ fun PikoScaffold(
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding(), end = IslandGap, bottom = bottom)
                 .consumeWindowInsets(innerPadding)
+                .then(if (borderColor != null) Modifier.border(1.dp, borderColor, cardShape) else Modifier)
                 .clip(cardShape)
-                .background(colors.islandSurface)
-                .then(if (borderColor != null) Modifier.border(1.dp, borderColor, cardShape) else Modifier),
+                .background(colors.islandSurface),
         ) {
             content(PaddingValues())
         }
@@ -151,9 +151,9 @@ internal fun IslandSurface(
     val borderColor = colors.islandBorderColor
     Column(
         modifier
+            .then(if (borderColor != null) Modifier.border(1.dp, borderColor, outerShape) else Modifier)
             .clip(outerShape)
-            .background(colors.islandHeader)
-            .then(if (borderColor != null) Modifier.border(1.dp, borderColor, outerShape) else Modifier),
+            .background(colors.islandHeader),
     ) {
         header()
         Box(

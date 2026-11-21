@@ -3,6 +3,7 @@ package dev.piko.ui.screens.player
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -41,11 +42,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.i18n.tr
@@ -167,6 +171,9 @@ internal fun ControlBarTransportCluster(
     selectedSlot: CenterSlotPosition? = null,
     isPlaySelected: Boolean = false,
     onSelectSlot: ((CenterSlotPosition) -> Unit)? = null,
+    dropTargetSlot: CenterSlotPosition? = null,
+    showEmptySlots: Boolean = false,
+    onSlotBounds: ((CenterSlotPosition, Rect) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val primary = MaterialTheme.colorScheme.primary
@@ -188,7 +195,10 @@ internal fun ControlBarTransportCluster(
             tooltipBelow = tooltipBelow,
             previewMode = previewMode,
             selected = previewMode && selectedSlot == CenterSlotPosition.OuterLeft,
+            dropHighlighted = previewMode && dropTargetSlot == CenterSlotPosition.OuterLeft,
+            showEmpty = previewMode && showEmptySlots,
             onSelect = { onSelectSlot?.invoke(CenterSlotPosition.OuterLeft) },
+            onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.OuterLeft, rect) } },
         )
         ControlBarTransportSideButton(
             slot = config.innerLeft,
@@ -203,7 +213,10 @@ internal fun ControlBarTransportCluster(
             tooltipBelow = tooltipBelow,
             previewMode = previewMode,
             selected = previewMode && selectedSlot == CenterSlotPosition.InnerLeft,
+            dropHighlighted = previewMode && dropTargetSlot == CenterSlotPosition.InnerLeft,
+            showEmpty = previewMode && showEmptySlots,
             onSelect = { onSelectSlot?.invoke(CenterSlotPosition.InnerLeft) },
+            onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.InnerLeft, rect) } },
         )
         Box(
             modifier = if (previewMode && isPlaySelected) {
@@ -233,7 +246,10 @@ internal fun ControlBarTransportCluster(
             tooltipBelow = tooltipBelow,
             previewMode = previewMode,
             selected = previewMode && selectedSlot == CenterSlotPosition.InnerRight,
+            dropHighlighted = previewMode && dropTargetSlot == CenterSlotPosition.InnerRight,
+            showEmpty = previewMode && showEmptySlots,
             onSelect = { onSelectSlot?.invoke(CenterSlotPosition.InnerRight) },
+            onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.InnerRight, rect) } },
         )
         ControlBarTransportSideButton(
             slot = config.outerRight,
@@ -248,7 +264,10 @@ internal fun ControlBarTransportCluster(
             tooltipBelow = tooltipBelow,
             previewMode = previewMode,
             selected = previewMode && selectedSlot == CenterSlotPosition.OuterRight,
+            dropHighlighted = previewMode && dropTargetSlot == CenterSlotPosition.OuterRight,
+            showEmpty = previewMode && showEmptySlots,
             onSelect = { onSelectSlot?.invoke(CenterSlotPosition.OuterRight) },
+            onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.OuterRight, rect) } },
         )
     }
 }
@@ -268,10 +287,61 @@ private fun ControlBarTransportSideButton(
     tooltipBelow: Boolean,
     previewMode: Boolean = false,
     selected: Boolean = false,
+    dropHighlighted: Boolean = false,
+    showEmpty: Boolean = false,
     onSelect: () -> Unit = {},
+    onBounds: ((Rect) -> Unit)? = null,
 ) {
     val action = slot.action.sanitized()
-    if (action == CenterSlotAction.None) return
+    // 底栏主控组清晰尺寸层次：中央 Play/Pause 40dp > 内侧 34dp > 外侧 30dp
+    val diameter = if (isOuter) ControlBarOuterSideSize else ControlBarInnerSideSize
+    val iconSize = if (isOuter) ControlBarOuterSideIconSize else ControlBarInnerSideIconSize
+    val fixed = LocalFixedColors.current
+    val primary = MaterialTheme.colorScheme.primary
+    val boundsMod = if (previewMode && onBounds != null) {
+        Modifier.onGloballyPositioned { coords ->
+            if (coords.isAttached) onBounds(coords.boundsInWindow())
+        }
+    } else {
+        Modifier
+    }
+
+    if (action == CenterSlotAction.None) {
+        if (!previewMode || (!showEmpty && !selected && !dropHighlighted)) return
+        val strokeColor = if (dropHighlighted || selected) primary else fixed.OnMedia.copy(alpha = 0.45f)
+        val strokeWidth = if (dropHighlighted || selected) 2.dp else 1.2.dp
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = boundsMod
+                .size(diameter)
+                .clip(CircleShape)
+                .background(if (dropHighlighted) primary.copy(alpha = 0.28f) else Color.Transparent)
+                .clickable(onClick = onSelect)
+                .handCursor(),
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val strokePx = strokeWidth.toPx()
+                val radius = (size.minDimension - strokePx) / 2f
+                if (radius > 0f) {
+                    drawCircle(
+                        color = strokeColor,
+                        radius = radius,
+                        style = Stroke(
+                            width = strokePx,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 5f), 0f),
+                        ),
+                    )
+                }
+            }
+            Icon(
+                imageVector = Icons.Filled.Add,
+                contentDescription = null,
+                tint = strokeColor,
+                modifier = Modifier.size((iconSize - 2.dp).coerceAtLeast(12.dp)),
+            )
+        }
+        return
+    }
     val visible = previewMode || when (action) {
         CenterSlotAction.Previous, CenterSlotAction.Next -> showEpisodeSkip && (canPrevious || canNext)
         is CenterSlotAction.SeekBackward, is CenterSlotAction.SeekForward -> allowSeek
@@ -316,23 +386,26 @@ private fun ControlBarTransportSideButton(
         }
     }
 
-    // 底栏主控组清晰尺寸层次：中央 Play/Pause 40dp > 内侧 34dp > 外侧 30dp
-    val diameter = if (isOuter) ControlBarOuterSideSize else ControlBarInnerSideSize
-    val iconSize = if (isOuter) ControlBarOuterSideIconSize else ControlBarInnerSideIconSize
-    val fixed = LocalFixedColors.current
-    val primary = MaterialTheme.colorScheme.primary
     val contentAlpha = if (enabled) 1f else 0.38f
 
     val buttonContent: @Composable () -> Unit = {
         Surface(
             shape = CircleShape,
-            color = if (slot.showBackground) playerContainerColor() else Color.Transparent,
+            color = when {
+                previewMode && dropHighlighted -> primary.copy(alpha = 0.35f)
+                slot.showBackground -> playerContainerColor()
+                else -> Color.Transparent
+            },
             contentColor = fixed.OnMedia.copy(alpha = contentAlpha),
-            modifier = Modifier
+            modifier = boundsMod
                 .size(diameter)
                 .clip(CircleShape)
                 .then(
-                    if (previewMode && selected) Modifier.border(2.dp, primary, CircleShape) else Modifier,
+                    if (previewMode && (dropHighlighted || selected)) {
+                        Modifier.border(if (dropHighlighted) 2.5.dp else 2.dp, primary, CircleShape)
+                    } else {
+                        Modifier
+                    },
                 )
                 .clickable(enabled = enabled, onClick = onClick)
                 .handCursor(enabled),
@@ -391,9 +464,12 @@ internal fun PlayerCenterCluster(
     onNext: () -> Unit,
     onSeekDeltaMillis: (Long) -> Unit,
     loadingSpeedText: String? = null,
+    interactive: Boolean = centerVisible,
     previewMode: Boolean = false,
     selectedSlot: CenterSlotPosition? = null,
     onSelectSlot: ((CenterSlotPosition) -> Unit)? = null,
+    dropTargetSlot: CenterSlotPosition? = null,
+    onSlotBounds: ((CenterSlotPosition, Rect) -> Unit)? = null,
     scaleMultiplier: Float = 1f,
     modifier: Modifier = Modifier,
 ) {
@@ -451,7 +527,9 @@ internal fun PlayerCenterCluster(
                 onSeekDeltaMillis = onSeekDeltaMillis,
                 previewMode = previewMode,
                 selected = selectedSlot == CenterSlotPosition.OuterLeft,
+                dropHighlighted = previewMode && dropTargetSlot == CenterSlotPosition.OuterLeft,
                 onSelect = { onSelectSlot?.invoke(CenterSlotPosition.OuterLeft) },
+                onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.OuterLeft, rect) } },
             )
         }
         if (showInnerPair) {
@@ -467,7 +545,9 @@ internal fun PlayerCenterCluster(
                 onSeekDeltaMillis = onSeekDeltaMillis,
                 previewMode = previewMode,
                 selected = selectedSlot == CenterSlotPosition.InnerLeft,
+                dropHighlighted = previewMode && dropTargetSlot == CenterSlotPosition.InnerLeft,
                 onSelect = { onSelectSlot?.invoke(CenterSlotPosition.InnerLeft) },
+                onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.InnerLeft, rect) } },
             )
         }
 
@@ -486,6 +566,7 @@ internal fun PlayerCenterCluster(
                 DashedCenterSlotPlaceholder(
                     diameter = baseHeight.coerceAtLeast(40.dp),
                     selected = centerSelected,
+                    dropHighlighted = false,
                     onClick = { onSelectSlot?.invoke(CenterSlotPosition.Center) },
                 )
             } else {
@@ -502,6 +583,7 @@ internal fun PlayerCenterCluster(
                 Box(modifier = centerBoxModifier, contentAlignment = Alignment.Center) {
                     PlayerCenterControls(
                         visible = previewMode || centerVisible,
+                        interactive = previewMode || interactive,
                         isPlaying = isPlaying,
                         isLoading = isLoading,
                         indicator = indicator,
@@ -531,7 +613,9 @@ internal fun PlayerCenterCluster(
                 onSeekDeltaMillis = onSeekDeltaMillis,
                 previewMode = previewMode,
                 selected = selectedSlot == CenterSlotPosition.InnerRight,
+                dropHighlighted = previewMode && dropTargetSlot == CenterSlotPosition.InnerRight,
                 onSelect = { onSelectSlot?.invoke(CenterSlotPosition.InnerRight) },
+                onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.InnerRight, rect) } },
             )
         }
         if (showOuterPair) {
@@ -547,7 +631,9 @@ internal fun PlayerCenterCluster(
                 onSeekDeltaMillis = onSeekDeltaMillis,
                 previewMode = previewMode,
                 selected = selectedSlot == CenterSlotPosition.OuterRight,
+                dropHighlighted = previewMode && dropTargetSlot == CenterSlotPosition.OuterRight,
                 onSelect = { onSelectSlot?.invoke(CenterSlotPosition.OuterRight) },
+                onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.OuterRight, rect) } },
             )
         }
     }
@@ -566,16 +652,25 @@ private fun CenterSideSlotContainer(
     onSeekDeltaMillis: (Long) -> Unit,
     previewMode: Boolean,
     selected: Boolean,
+    dropHighlighted: Boolean = false,
     onSelect: () -> Unit,
+    onBounds: ((Rect) -> Unit)? = null,
 ) {
     val visualDiameter = (baseHeight * slot.scale.ratio).coerceAtLeast(28.dp)
     if (!visible) {
         Box(modifier = Modifier.width(slotWidth))
         return
     }
+    val boundsMod = if (previewMode && onBounds != null) {
+        Modifier.onGloballyPositioned { coords ->
+            if (coords.isAttached) onBounds(coords.boundsInWindow())
+        }
+    } else {
+        Modifier
+    }
     Box(
         contentAlignment = Alignment.Center,
-        modifier = Modifier
+        modifier = boundsMod
             .width(slotWidth)
             .then(
                 if (previewMode) Modifier else Modifier.sizeIn(minWidth = MinTouchTarget, minHeight = MinTouchTarget),
@@ -586,6 +681,7 @@ private fun CenterSideSlotContainer(
                 DashedCenterSlotPlaceholder(
                     diameter = visualDiameter,
                     selected = selected,
+                    dropHighlighted = dropHighlighted,
                     onClick = onSelect,
                 )
             }
@@ -616,6 +712,7 @@ private fun CenterSideSlotContainer(
         val secondsBadge = slot.action.seekSecondsOrNull()
         val iconSize = (visualDiameter * (if (secondsBadge != null) 0.42f else 0.52f)).coerceIn(14.dp, 28.dp)
         val fixed = LocalFixedColors.current
+        val primary = MaterialTheme.colorScheme.primary
 
         Surface(
             onClick = {
@@ -633,13 +730,17 @@ private fun CenterSideSlotContainer(
             },
             enabled = enabled,
             shape = CircleShape,
-            color = if (slot.showBackground) playerContainerColor() else Color.Transparent,
+            color = when {
+                previewMode && dropHighlighted -> primary.copy(alpha = 0.35f)
+                slot.showBackground -> playerContainerColor()
+                else -> Color.Transparent
+            },
             contentColor = fixed.OnMedia.copy(alpha = contentAlpha),
             modifier = Modifier
                 .size(visualDiameter)
                 .then(
-                    if (previewMode && selected) {
-                        Modifier.border(2.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                    if (previewMode && (dropHighlighted || selected)) {
+                        Modifier.border(if (dropHighlighted) 2.5.dp else 2.dp, primary, CircleShape)
                     } else {
                         Modifier
                     },
@@ -683,20 +784,23 @@ private fun CenterSideSlotContainer(
 private fun DashedCenterSlotPlaceholder(
     diameter: Dp,
     selected: Boolean,
+    dropHighlighted: Boolean = false,
     onClick: () -> Unit,
 ) {
     val fixed = LocalFixedColors.current
-    val strokeColor = if (selected) {
-        MaterialTheme.colorScheme.primary
+    val primary = MaterialTheme.colorScheme.primary
+    val strokeColor = if (dropHighlighted || selected) {
+        primary
     } else {
         fixed.OnMedia.copy(alpha = 0.42f)
     }
-    val strokeWidth = if (selected) 2.dp else 1.5.dp
+    val strokeWidth = if (dropHighlighted) 2.5.dp else if (selected) 2.dp else 1.5.dp
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .size(diameter)
             .clip(CircleShape)
+            .background(if (dropHighlighted) primary.copy(alpha = 0.28f) else Color.Transparent)
             .clickable(onClick = onClick)
             .handCursor(),
     ) {

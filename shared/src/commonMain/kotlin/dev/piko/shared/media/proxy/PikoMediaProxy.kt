@@ -58,6 +58,7 @@ class PikoMediaProxy(
 
     private val sessionsLock = Mutex()
     private val sessions = HashMap<String, ProxySession>()
+    private val docSessions = HashMap<String, DocumentProxySession>()
 
     /**
      * 登记一个媒体会话，返回播放器可读的 URL。关闭返回值即释放票据、需求租约与来源。
@@ -80,6 +81,38 @@ class PikoMediaProxy(
                 sessionsLock.withLock { if (sessions[token] === session) sessions.remove(token) }
             }
         }
+    }
+
+    /**
+     * 登记一个 HTML 文档会话，返回 `http://127.0.0.1:<port>/doc/<高熵令牌>/<入口文件名>`。
+     * 仅允许按相对路径访问同一目录子树内的资源；严禁目录穿越且不输出 `Access-Control-Allow-Origin`。
+     */
+    suspend fun registerDocument(
+        entryFileName: String,
+        resolver: DocumentProxyResolver,
+        onActivity: (() -> Unit)? = null,
+    ): DocumentProxyHandle {
+        val port = ensureStarted()
+        val token = newDocumentToken()
+        val safeEntryName = sanitizeDocumentEntryName(entryFileName)
+        val session = DocumentProxySession(
+            entryFileName = safeEntryName,
+            resolver = resolver,
+            onActivity = onActivity,
+        )
+        sessionsLock.withLock { docSessions[token] = session }
+        val encodedEntry = percentEncodePathSegment(safeEntryName)
+        val prefix = "http://$LOOPBACK:$port/doc/$token/"
+        return DocumentProxyHandle(
+            url = "$prefix$encodedEntry",
+            allowedUrlPrefix = prefix,
+            onClose = {
+                session.close()
+                scope.launch {
+                    sessionsLock.withLock { if (docSessions[token] === session) docSessions.remove(token) }
+                }
+            },
+        )
     }
 
     private suspend fun ensureStarted(): Int = startLock.withLock {
@@ -149,14 +182,19 @@ class PikoMediaProxy(
 
     private suspend fun respond(request: ProxyRequest, output: LoopbackSocketWriter) {
         val isHead = request.method == "HEAD"
-        val token = request.target.removePrefix("/").substringBefore('/').substringBefore('?')
-        val shortToken = token.take(8).ifEmpty { "empty" }
         if (!isHead && request.method != "GET") {
-            PikoLog.d(TAG, "Proxy 405 method not allowed: method=${request.method}, session=$shortToken")
+            val shortTarget = request.target.take(16)
+            PikoLog.d(TAG, "Proxy 405 method not allowed: method=${request.method}, target=$shortTarget")
             output.writeHead(405, "Method Not Allowed", listOf("Allow" to "GET, HEAD", "Content-Length" to "0"))
             output.flushAndClose()
             return
         }
+        if (request.target.startsWith("/doc/")) {
+            respondDocument(request, output, isHead)
+            return
+        }
+        val token = request.target.removePrefix("/").substringBefore('/').substringBefore('?')
+        val shortToken = token.take(8).ifEmpty { "empty" }
         val session = sessionsLock.withLock { sessions[token] }?.takeUnless { it.isClosed }
         if (session == null) {
             PikoLog.w(TAG, "Proxy 404 session not found or closed: method=${request.method}, session=$shortToken")
@@ -256,10 +294,90 @@ class PikoMediaProxy(
         }
     }
 
+    private suspend fun respondDocument(
+        request: ProxyRequest,
+        output: LoopbackSocketWriter,
+        isHead: Boolean,
+    ) {
+        val pathOnly = request.target.substringBefore('?').substringBefore('#')
+        val afterDoc = pathOnly.removePrefix("/doc/")
+        val slash = afterDoc.indexOf('/')
+        val token = if (slash < 0) afterDoc else afterDoc.substring(0, slash)
+        val rawSubPath = if (slash < 0) "" else afterDoc.substring(slash + 1)
+        val session = sessionsLock.withLock { docSessions[token] }?.takeUnless { it.isClosed }
+        if (session == null) {
+            output.writeHead(404, "Not Found", listOf("Content-Length" to "0"))
+            output.flushAndClose()
+            return
+        }
+        val segments = if (rawSubPath.isEmpty()) {
+            listOf(session.entryFileName)
+        } else {
+            normalizeDocumentRelativePath(rawSubPath)
+        }
+        if (segments == null) {
+            PikoLog.w(TAG, "Document proxy blocked traversal/invalid path: session=${token.take(8)}")
+            output.writeHead(403, "Forbidden", listOf("Content-Length" to "0"))
+            output.flushAndClose()
+            return
+        }
+        session.notifyActivity()
+        val resource = try {
+            session.resolver.resolve(segments)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            PikoLog.w(TAG, "Document proxy failed to resolve asset: session=${token.take(8)}, cause=${e::class.simpleName}")
+            output.writeHead(502, "Bad Gateway", listOf("Content-Length" to "0"))
+            output.flushAndClose()
+            return
+        }
+        if (resource == null) {
+            output.writeHead(404, "Not Found", listOf("Content-Length" to "0"))
+            output.flushAndClose()
+            return
+        }
+        val bytes = resource.bytes
+        val size = bytes.size.toLong()
+        when (val range = parseByteRange(request.headers["range"], size)) {
+            ByteRange.Unsatisfiable -> {
+                output.writeHead(
+                    416,
+                    "Range Not Satisfiable",
+                    listOf("Content-Range" to "bytes */$size", "Content-Length" to "0"),
+                )
+                output.flushAndClose()
+            }
+            is ByteRange.Satisfiable -> {
+                // 严禁输出 Access-Control-Allow-Origin，保持严格同源隔离
+                val headers = buildList {
+                    add("Content-Type" to resource.contentType)
+                    add("X-Content-Type-Options" to "nosniff")
+                    add("Referrer-Policy" to "no-referrer")
+                    add("Cache-Control" to "private, max-age=300")
+                    add("Accept-Ranges" to "bytes")
+                    add("Content-Length" to range.length.toString())
+                    if (range.isPartial) {
+                        add("Content-Range" to "bytes ${range.start}-${range.endExclusive - 1}/$size")
+                    }
+                }
+                if (range.isPartial) {
+                    output.writeHead(206, "Partial Content", headers)
+                } else {
+                    output.writeHead(200, "OK", headers)
+                }
+                if (!isHead && range.length > 0L) {
+                    output.writeFully(bytes, range.start.toInt(), range.length.toInt())
+                }
+                output.flushAndClose()
+            }
+        }
+    }
+
     /** 关闭监听与全部会话。进程内常驻时不需要调用，主要给测试用。 */
     override fun close() {
         val activePort = runCatching { server?.takeUnless { it.isClosed }?.port }.getOrNull()
-        val activeSessions = runCatching { sessions.size }.getOrDefault(0)
+        val activeSessions = runCatching { sessions.size + docSessions.size }.getOrDefault(0)
         if (activePort != null || activeSessions > 0) {
             PikoLog.i(TAG, "Closing loopback proxy: port=${activePort ?: "none"}, sessions=$activeSessions")
         }
@@ -269,6 +387,7 @@ class PikoMediaProxy(
         runCatching { selector?.close() }
         // 作用域已取消，拿不到锁也不再有并发写入，直接遍历快照
         runCatching { sessions.values.toList() }.getOrNull()?.forEach { it.close() }
+        runCatching { docSessions.values.toList() }.getOrNull()?.forEach { it.close() }
     }
 
     private companion object {
@@ -397,6 +516,9 @@ internal fun parseByteRange(header: String?, size: Long): ByteRange {
 
 @OptIn(ExperimentalUuidApi::class)
 private fun newToken(): String = Uuid.random().toHexString()
+
+@OptIn(ExperimentalUuidApi::class)
+private fun newDocumentToken(): String = Uuid.random().toHexString() + Uuid.random().toHexString()
 
 private fun pathNameOf(fileName: String?): String {
     val extension = fileName?.substringAfterLast('.', "")?.lowercase()

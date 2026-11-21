@@ -1,6 +1,7 @@
 package dev.piko.ui.screens.settings
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.i18n.tr
@@ -50,6 +52,8 @@ import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.PikoPlatform
 import dev.piko.ui.resources.*
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.tabular
 import dev.piko.update.AvailableUpdate
 import dev.piko.update.UpdateDialog
@@ -247,7 +251,26 @@ private fun AboutCard(
                             Text(actionLabel, maxLines = 1)
                         }
                     } else {
-                        FilledTonalButton(onClick = onUpdateClick, enabled = updateStatus != UpdateStatus.Checking) {
+                        val isEInk = LocalAppearance.current.isEInk
+                        FilledTonalButton(
+                            onClick = onUpdateClick,
+                            enabled = updateStatus != UpdateStatus.Checking,
+                            colors = if (isEInk) {
+                                ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = Color.White,
+                                    contentColor = Color.Black,
+                                    disabledContainerColor = Color.White,
+                                    disabledContentColor = Color(0xFF555555),
+                                )
+                            } else {
+                                ButtonDefaults.filledTonalButtonColors()
+                            },
+                            border = if (isEInk) {
+                                BorderStroke(1.dp, if (updateStatus != UpdateStatus.Checking) Color.Black else Color(0xFF555555))
+                            } else {
+                                null
+                            },
+                        ) {
                             if (updateStatus == UpdateStatus.Checking) {
                                 // 按钮在检查期间是禁用态，指示器跟着用禁用的内容色，不然一块亮色压在灰按钮上
                                 InlineLoadingIndicator(color = LocalContentColor.current)
@@ -269,6 +292,19 @@ private fun AboutCard(
                 UpdateDownloadProgressBlock(status = updateStatus)
             }
             Spacer(modifier = Modifier.height(14.dp))
+            val isEInk = LocalAppearance.current.isEInk
+            val linkButtonColors = if (isEInk) {
+                ButtonDefaults.filledTonalButtonColors(
+                    containerColor = Color.White,
+                    contentColor = Color.Black,
+                )
+            } else {
+                ButtonDefaults.filledTonalButtonColors(
+                    containerColor = colors.surfaceContainerHighest,
+                    contentColor = colors.onSurface,
+                )
+            }
+            val linkButtonBorder = if (isEInk) BorderStroke(1.dp, colors.outline) else null
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -276,10 +312,8 @@ private fun AboutCard(
                 FilledTonalButton(
                     onClick = onOpenRepository,
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = colors.surfaceContainerHighest,
-                        contentColor = colors.onSurface,
-                    ),
+                    colors = linkButtonColors,
+                    border = linkButtonBorder,
                 ) {
                     Icon(Icons.Outlined.Code, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
@@ -290,10 +324,8 @@ private fun AboutCard(
                 FilledTonalButton(
                     onClick = onOpenChannel,
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = colors.surfaceContainerHighest,
-                        contentColor = colors.onSurface,
-                    ),
+                    colors = linkButtonColors,
+                    border = linkButtonBorder,
                 ) {
                     Icon(Icons.Outlined.Campaign, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))

@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusTarget
 import androidx.compose.ui.focus.onFocusChanged
@@ -68,6 +69,7 @@ import dev.piko.shared.media.player.PlaybackStatsSection
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlayerControlId
 import dev.piko.shared.media.player.PlaylistEntry
+import dev.piko.shared.media.player.SubtitleStylePrefs
 import dev.piko.shared.media.player.VideoCropRegion
 import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.SheetAction
@@ -140,6 +142,9 @@ fun MobilePlayerControls(
     onRotationChange: (Int) -> Unit = {},
     onPickLocalSubtitle: (() -> Unit)? = null,
     onPickDriveSubtitle: ((FileStat) -> Unit)? = null,
+    subtitleStyle: SubtitleStylePrefs = SubtitleStylePrefs.DEFAULT,
+    onSubtitleStylePreview: ((SubtitleStylePrefs) -> Unit)? = null,
+    onSubtitleStyleChange: ((SubtitleStylePrefs) -> Unit)? = null,
     seekStepSeconds: Int = PlayerGestureDefaults.SEEK_STEP_SECONDS,
     onSeekStepChange: ((Int) -> Unit)? = null,
     longPressSpeed: Float = PlayerGestureDefaults.BOOST_SPEED,
@@ -344,12 +349,10 @@ fun MobilePlayerControls(
 
     val bottomBarVisible = (chromeVisible || seekPreviewMillis != null) && !ui.isEditingCropRegion && !speedController.active
     val showCenterCluster = transportInCenter && chromeVisible && !ui.isBoosting && errorMessage == null
-    val centerVisible = (
-        showCenterCluster ||
-            (isLoading && (chromeVisible || stalledLoading)) ||
-            centerIndicator != null
-        ) && errorMessage == null && !ui.isEditingCropRegion &&
+    val centerUnblocked = errorMessage == null && !ui.isEditingCropRegion &&
         activeSeekGesture == null && activeEpisodeSwipe == null && !speedController.active
+    val centerInteractive = (showCenterCluster || (isLoading && (chromeVisible || stalledLoading))) && centerUnblocked
+    val centerVisible = centerInteractive || (centerIndicator != null && centerUnblocked)
 
     BackHandler(enabled = isFullscreen && !ui.isEditingCropRegion && !ui.isSpeedPopupOpen && !ui.isQualityPopupOpen && !ui.isShortcutsOverlayOpen && !speedController.active && ui.openSheet == null, onBack = onToggleFullscreen)
     BackHandler(enabled = ui.isShortcutsOverlayOpen) { ui.isShortcutsOverlayOpen = false }
@@ -385,13 +388,15 @@ fun MobilePlayerControls(
         originalSubtitleHints.isNotEmpty() ||
         onPickLocalSubtitle != null || onPickDriveSubtitle != null
     val hasSettingsEntry = hasTracksEntry || fileActions.isNotEmpty() || playbackSpeed != null ||
-        qualityOptions.isNotEmpty() || aspectRatio != null || onSeekStepChange != null
+        qualityOptions.isNotEmpty() || aspectRatio != null || onSeekStepChange != null ||
+        onSubtitleStyleChange != null
     val episodeLabel = playlist.find { it.fileId == currentFileId }
         ?.takeIf { hasPlaylist && it.label.length <= SUBTITLE_LABEL_MAX_LENGTH }
         ?.label
         ?.let { if (it.matches(PLAIN_EPISODE)) tr("第 $it 集", "Episode $it", "第 $it 話", "에피소드 $it", "第 $it 集") else it }
 
-    val hideCursor = idleCursor != null && ui.isMouseIdle && !ui.controlsVisible && isPlaying && !speedController.active
+    val hideCursor = idleCursor != null && !pointerSource.isTouchLike &&
+        ui.isMouseIdle && !ui.controlsVisible && isPlaying && !speedController.active
 
     // 保留上次电平条停靠边，确保滑出退场与入场同侧一致
     var lastLevelDockEnd by remember { mutableStateOf(true) }
@@ -431,7 +436,8 @@ fun MobilePlayerControls(
                     rootSelfFocused = state.isFocused
                 }
                 .focusRequester(focusRequester)
-                .then(if (!pointerSource.isTouchLike) Modifier.focusTarget() else Modifier)
+                .focusProperties { canFocus = !pointerSource.isTouchLike }
+                .focusTarget()
                 .pointerInput(speedController) {
                     var lastMousePosition: Offset? = null
                     awaitPointerEventScope {
@@ -451,7 +457,16 @@ fun MobilePlayerControls(
                         }
                     }
                 }
-                .then(if (hideCursor) Modifier.pointerHoverIcon(idleCursor) else Modifier),
+                // 桌面光标显隐必须就地替换 PointerIcon 参数而非增删修饰符节点：
+                // HoverIconModifierNode 实现 PointerInputModifierNode，若长按倍速激活瞬间将其从父链卸载，
+                // HitPathTracker 会连带移除整个子孙命中子树并向 PlayerGestureLayer 发送合成取消事件。
+                .then(
+                    if (idleCursor != null) {
+                        Modifier.pointerHoverIcon(if (hideCursor) idleCursor else PointerIcon.Default)
+                    } else {
+                        Modifier
+                    },
+                ),
         ) {
             PlayerGestureLayer(
                 isLocked = ui.isLocked || ui.isEditingCropRegion,
@@ -470,6 +485,15 @@ fun MobilePlayerControls(
                         ui.controlsVisible = !ui.controlsVisible
                     } else {
                         if (!rootSelfFocused) runCatching { focusRequester.requestFocus() }
+                        if (!ui.controlsVisible) {
+                            ui.flash(
+                                CenterIndicator(
+                                    if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                    if (isPlaying) tr("暂停", "Pause", "一時停止", "일시 중지", "暫停") else tr("播放", "Play", "再生", "재생", "播放"),
+                                    if (isPlaying) tr("已暂停", "Paused", "一時停止中", "일시 중지됨", "已暫停") else tr("继续播放", "Continue playback", "再生を続ける", "계속 재생", "繼續播放"),
+                                ),
+                            )
+                        }
                         ui.interacted()
                         onPlayPause()
                     }
@@ -794,6 +818,7 @@ fun MobilePlayerControls(
             PlayerCenterCluster(
                 config = activeLayout.center,
                 centerVisible = centerVisible,
+                interactive = centerInteractive,
                 showSideButtons = showCenterCluster && !isLoading,
                 isPlaying = isPlaying,
                 isLoading = isLoading,
@@ -827,7 +852,9 @@ fun MobilePlayerControls(
                         stepMillis = abs(deltaMillis),
                     )
                 },
-                modifier = Modifier.align(Alignment.Center).hoverable(controlsHover),
+                // 控件收起或仅展示被动中心读数时必须禁用 hoverable（HoverableNode 不与同级共享指针输入，
+                // 常驻开启会在画面正中形成不可见盲区，吞掉长按倍速、单击唤出与双击暂停）。
+                modifier = Modifier.align(Alignment.Center).hoverable(controlsHover, enabled = centerInteractive),
             )
 
             // 锁屏键：若用户已在顶/底栏放置 Lock 则未锁定时不重复显示悬浮锁（严格 DRY）；已锁定时常驻右侧解锁入口
@@ -935,6 +962,9 @@ fun MobilePlayerControls(
                 onSelectSubtitleTrack = onSelectSubtitleTrack,
                 onPickLocalSubtitle = onPickLocalSubtitle,
                 onPickDriveSubtitle = onPickDriveSubtitle,
+                subtitleStyle = subtitleStyle,
+                onSubtitleStylePreview = onSubtitleStylePreview,
+                onSubtitleStyleChange = onSubtitleStyleChange,
                 playbackStats = playbackStats,
                 hasTracks = hasTracksEntry,
                 hasSettings = hasSettingsEntry,

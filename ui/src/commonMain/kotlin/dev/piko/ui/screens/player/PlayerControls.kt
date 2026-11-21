@@ -509,9 +509,11 @@ internal fun PlayerCenterControls(
     onPlayPause: () -> Unit,
     modifier: Modifier = Modifier,
     loadingSpeedText: String? = null,
+    interactive: Boolean = visible,
 ) {
     PlayPauseButton(
         visible = visible,
+        interactive = interactive,
         isPlaying = isPlaying,
         isLoading = isLoading,
         indicator = indicator,
@@ -595,6 +597,7 @@ private fun PlayPauseButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     loadingSpeedText: String? = null,
+    interactive: Boolean = visible,
 ) {
     val motion = MaterialTheme.motionScheme
     val colors = MaterialTheme.colorScheme
@@ -665,6 +668,7 @@ private fun PlayPauseButton(
         MorphContainer(
             targetState = target,
             visible = visible,
+            interactive = interactive,
             contentKey = { it.contentKey },
             width = ::widthOf,
             corner = ::cornerOf,

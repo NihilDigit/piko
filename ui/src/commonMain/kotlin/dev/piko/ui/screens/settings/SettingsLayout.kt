@@ -33,6 +33,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -42,25 +43,34 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.ToggleButtonDefaults
+import kotlin.math.roundToInt
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.adaptive.isDesktopLayout
@@ -159,16 +169,62 @@ internal fun SettingsSectionTitle(text: String, first: Boolean, modifier: Modifi
     )
 }
 
+internal class SettingsGroupBounds {
+    var coordinates: LayoutCoordinates? = null
+    var heightPx by mutableIntStateOf(0)
+}
+
+private val LocalSettingsGroupBounds = staticCompositionLocalOf<SettingsGroupBounds?> { null }
+
+internal fun settingsItemShape(
+    style: SettingsStyle,
+    topOuter: Boolean,
+    bottomOuter: Boolean,
+): RoundedCornerShape = RoundedCornerShape(
+    topStart = if (topOuter) style.outerCorner else style.innerCorner,
+    topEnd = if (topOuter) style.outerCorner else style.innerCorner,
+    bottomEnd = if (bottomOuter) style.outerCorner else style.innerCorner,
+    bottomStart = if (bottomOuter) style.outerCorner else style.innerCorner,
+)
+
+/**
+ * 计算设置行/卡片在所属 [SettingsGroup] 中的真实分段圆角：首行顶部用外侧大圆角、末行底部用外侧大圆角、
+ * 单项组四角均为外侧大圆角，[DependentRow] 展开或收起时自动跟随父容器高度重算，不再靠父容器 `clip` 强切
+ * 子项的 `4.dp` 边框导致水墨屏外侧圆角描边缺口。
+ */
+@Composable
+private fun rememberSettingsItemShape(style: SettingsStyle): Pair<Shape, Modifier> {
+    val groupBounds = LocalSettingsGroupBounds.current ?: return style.groupShape to Modifier
+    var topPx by remember { mutableIntStateOf(-1) }
+    var bottomPx by remember { mutableIntStateOf(-1) }
+    val groupHeight = groupBounds.heightPx
+    val topOuter = topPx in 0..1
+    val bottomOuter = groupHeight > 0 && bottomPx > 0 && (groupHeight - bottomPx) <= 1
+    val shape = remember(style, topOuter, bottomOuter) {
+        settingsItemShape(style, topOuter = topOuter, bottomOuter = bottomOuter)
+    }
+    val trackModifier = Modifier.onPlaced { coords ->
+        val parent = groupBounds.coordinates
+        if (parent != null && parent.isAttached && coords.isAttached) {
+            val top = parent.localPositionOf(coords, Offset.Zero).y.roundToInt()
+            topPx = top
+            bottomPx = top + coords.size.height
+        }
+    }
+    return shape to trackModifier
+}
+
 /**
  * 一组设置：可选的组标题，下面是连成一块的几行。只有一组的类不给组标题，类标题已说明了它。
  *
- * 圆角由组统一裁出，各行只画内侧的小圆角：首尾行的外侧自然是大圆角，只有一行的组四角都是，
- * 不必逐行传位置（原来逐行传 index、count，单项组拿到的是库的默认小圆角，ux-review M14），
- * 随开关收起的行也不会把相邻行的形状留错。
+ * 首尾外侧大圆角与内侧小圆角由各行经 [rememberSettingsItemShape] 按实际布局边界自动计算，
+ * 单项组与随开关收起的 [DependentRow] 均无需手动传递位置，且水墨屏 `1dp` 描边沿完整外侧大圆角绘制不被裁断。
  */
 @Composable
 internal fun SettingsGroup(title: String?, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     val style = settingsStyle()
+    val eInk = LocalAppearance.current.isEInk
+    val groupBounds = remember { SettingsGroupBounds() }
     Column(modifier = modifier.fillMaxWidth()) {
         if (title != null) {
             Text(
@@ -180,11 +236,19 @@ internal fun SettingsGroup(title: String?, modifier: Modifier = Modifier, conten
         } else {
             Spacer(Modifier.height(12.dp))
         }
-        Column(
-            modifier = Modifier.fillMaxWidth().clip(style.groupShape),
-            verticalArrangement = Arrangement.spacedBy(style.itemGap),
-            content = content,
-        )
+        CompositionLocalProvider(LocalSettingsGroupBounds provides groupBounds) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (eInk) Modifier else Modifier.clip(style.groupShape))
+                    .onPlaced { coords ->
+                        groupBounds.coordinates = coords
+                        groupBounds.heightPx = coords.size.height
+                    },
+                verticalArrangement = Arrangement.spacedBy(style.itemGap),
+                content = content,
+            )
+        }
     }
 }
 
@@ -193,11 +257,12 @@ internal fun SettingsGroup(title: String?, modifier: Modifier = Modifier, conten
 internal fun SettingsCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     val style = settingsStyle()
     val eInk = LocalAppearance.current.isEInk
+    val (shape, trackModifier) = rememberSettingsItemShape(style)
     Surface(
-        shape = style.itemShape,
+        shape = shape,
         color = if (eInk) Color.White else MaterialTheme.colorScheme.surfaceContainer,
         border = if (eInk) BorderStroke(1.dp, MaterialTheme.colorScheme.outline) else null,
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().then(trackModifier),
         content = content,
     )
 }
@@ -240,18 +305,23 @@ internal fun SettingsRow(
         onClick != null -> Modifier.clickable(enabled = enabled, role = Role.Button, onClick = onClick)
         else -> Modifier
     }
-    val contentColor = if (selected) colors.onSecondaryContainer else colors.onSurface
+    val contentColor = when {
+        selected && LocalAppearance.current.isEInk -> Color.White
+        selected -> colors.onSecondaryContainer
+        else -> colors.onSurface
+    }
     val dimmed = if (enabled) 1f else DisabledContentAlpha
     val eInk = LocalAppearance.current.isEInk
+    val (shape, trackModifier) = rememberSettingsItemShape(style)
     Surface(
-        shape = style.itemShape,
+        shape = shape,
         color = when {
-            selected -> colors.secondaryContainer
+            selected -> if (eInk) Color.Black else colors.secondaryContainer
             eInk -> Color.White
             else -> colors.surfaceContainer
         },
         border = if (eInk) BorderStroke(1.dp, colors.outline) else null,
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().then(trackModifier),
     ) {
         Column(
             modifier = Modifier
@@ -270,7 +340,13 @@ internal fun SettingsRow(
                         Icon(
                             imageVector = icon,
                             contentDescription = null,
-                            tint = (if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant).copy(alpha = dimmed),
+                            tint = (
+                                when {
+                                    selected && eInk -> Color.White
+                                    selected -> colors.onSecondaryContainer
+                                    else -> colors.onSurfaceVariant
+                                }
+                            ).copy(alpha = dimmed),
                             modifier = Modifier.size(style.iconSize),
                         )
                         Spacer(Modifier.width(style.iconGap))
@@ -330,6 +406,25 @@ internal fun SettingsSwitchRow(
     enabled: Boolean = true,
     extraTrailing: (@Composable () -> Unit)? = null,
 ) {
+    val eInk = LocalAppearance.current.isEInk
+    val switchColors = if (eInk) {
+        SwitchDefaults.colors(
+            checkedThumbColor = Color.White,
+            checkedTrackColor = Color.Black,
+            checkedBorderColor = Color.Black,
+            uncheckedThumbColor = Color.Black,
+            uncheckedTrackColor = Color.White,
+            uncheckedBorderColor = Color.Black,
+            disabledCheckedThumbColor = Color.Black,
+            disabledCheckedTrackColor = Color.White,
+            disabledCheckedBorderColor = Color.Black,
+            disabledUncheckedThumbColor = Color(0xFF555555),
+            disabledUncheckedTrackColor = Color.White,
+            disabledUncheckedBorderColor = Color(0xFF555555),
+        )
+    } else {
+        SwitchDefaults.colors()
+    }
     SettingsRow(
         title = title,
         icon = icon,
@@ -338,7 +433,7 @@ internal fun SettingsSwitchRow(
         toggle = checked to onCheckedChange,
         trailing = {
             extraTrailing?.invoke()
-            Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+            Switch(checked = checked, onCheckedChange = null, enabled = enabled, colors = switchColors)
         },
     )
 }
@@ -377,10 +472,21 @@ internal fun SettingsNavigationRow(
  */
 @Composable
 internal fun SettingsRowButton(label: String, onClick: () -> Unit, enabled: Boolean = true, primary: Boolean = true) {
-    if (primary) {
-        FilledTonalButton(onClick = onClick, enabled = enabled) { Text(label, maxLines = 1) }
-    } else {
-        OutlinedButton(onClick = onClick, enabled = enabled) { Text(label, maxLines = 1) }
+    val eInk = LocalAppearance.current.isEInk
+    when {
+        eInk -> OutlinedButton(
+            onClick = onClick,
+            enabled = enabled,
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = Color.White,
+                contentColor = Color.Black,
+                disabledContainerColor = Color.White,
+                disabledContentColor = Color(0xFF555555),
+            ),
+            border = BorderStroke(1.dp, if (enabled) Color.Black else Color(0xFF555555)),
+        ) { Text(label, maxLines = 1) }
+        primary -> FilledTonalButton(onClick = onClick, enabled = enabled) { Text(label, maxLines = 1) }
+        else -> OutlinedButton(onClick = onClick, enabled = enabled) { Text(label, maxLines = 1) }
     }
 }
 
@@ -396,6 +502,7 @@ internal fun <T> SettingsSegmentedChoice(
     onSelect: (T) -> Unit,
     fill: Boolean,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = modifier.then(if (fill) Modifier.fillMaxWidth() else Modifier).selectableGroup(),
@@ -403,14 +510,27 @@ internal fun <T> SettingsSegmentedChoice(
     ) {
         // 未选的段默认是 surfaceContainer，与设置行同色，放在行里只剩一行字，看不出是按钮
         val eInk = LocalAppearance.current.isEInk
-        val colors = ToggleButtonDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest)
+        val colors = if (eInk) {
+            ToggleButtonDefaults.colors(
+                containerColor = Color.White,
+                contentColor = Color.Black,
+                checkedContainerColor = Color.Black,
+                checkedContentColor = Color.White,
+                disabledContainerColor = Color.White,
+                disabledContentColor = Color(0xFF555555),
+            )
+        } else {
+            ToggleButtonDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest)
+        }
+        val borderColor = if (enabled) MaterialTheme.colorScheme.outline else Color(0xFF555555)
         options.forEachIndexed { index, option ->
             ToggleButton(
                 checked = option == selected,
                 onCheckedChange = { onSelect(option) },
+                enabled = enabled,
                 shapes = connectedToggleShapes(index, options.size),
                 colors = colors,
-                border = if (eInk) BorderStroke(1.dp, MaterialTheme.colorScheme.outline) else null,
+                border = if (eInk) BorderStroke(1.dp, borderColor) else null,
                 modifier = if (fill) Modifier.weight(1f) else Modifier,
             ) {
                 Text(label(option), maxLines = 1)

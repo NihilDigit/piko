@@ -2,6 +2,7 @@ package dev.piko.ui.screens.drive
 
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.ContentPaste
@@ -10,6 +11,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DriveFolderUpload
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -29,10 +31,12 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
 import dev.piko.data.repository.PathBreadcrumb
+import dev.piko.data.repository.isHtmlDocument
 import dev.piko.data.repository.isPlayableAudio
 import dev.piko.data.repository.isPlayableMedia
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
+import dev.piko.data.repository.isReadableTextDocument
 import dev.piko.shared.data.DriveLibrary
 import dev.piko.shared.data.LocalLocation
 import dev.piko.shared.data.formatLocalPathForDisplay
@@ -134,6 +138,7 @@ internal class DriveItemActionIntents(
     val onOpenInNewTab: ((FileStat) -> Unit)?,
     val onTogglePin: (FileStat) -> Unit,
     val onPlayVideo: (FileStat, List<FileStat>) -> Unit,
+    val onOpenDocument: (FileStat) -> Unit = {},
     val onPreviewImage: (FileStat) -> Unit,
     val onOpenSelectedGallery: (List<FileStat>) -> Unit,
     val onOpenFolderInGallery: (FileStat) -> Unit,
@@ -381,6 +386,25 @@ internal fun buildDriveOperations(
                     ),
                 )
             }
+            if (file.isReadableTextDocument()) {
+                add(
+                    SheetAction(
+                        Icons.AutoMirrored.Outlined.Article,
+                        tr("阅读", "Read", "閲覧", "읽기", "閱讀"),
+                        { intents.onOpenDocument(file) },
+                        group = ActionGroup.Open,
+                    ),
+                )
+            } else if (file.isHtmlDocument()) {
+                add(
+                    SheetAction(
+                        Icons.Outlined.Language,
+                        tr("打开网页", "Open web page", "ウェブページを開く", "웹 페이지 열기", "開啟網頁"),
+                        { intents.onOpenDocument(file) },
+                        group = ActionGroup.Open,
+                    ),
+                )
+            }
             if (file.isFolder) {
                 add(SheetAction(Icons.Outlined.FolderOpen, tr("打开", "Open", "開く", "열기", "開啟"), { state.openFolder(file.id, file.name) }, group = ActionGroup.Open))
                 intents.onOpenInNewTab?.let { open -> add(DriveActions.openInNewTab { open(file) }) }
@@ -476,6 +500,7 @@ internal fun buildDriveOperations(
         copySource = { intents.onCopySource(file) },
         openSource = { file.sourceUrl?.let(intents.onOpenSourceUrl) },
         openInExternalPlayer = if (intents.hasExternalPlayer) ({ intents.onOpenInExternalPlayer(file) }) else null,
+        openDocument = if (!file.isFolder && !file.isUploading && (file.isReadableTextDocument() || file.isHtmlDocument())) ({ intents.onOpenDocument(file) }) else null,
         openInNewTab = intents.onOpenInNewTab?.takeIf { !file.isImportPreview }?.let { { it(file) } },
         togglePin = { intents.onTogglePin(file) },
         isPinned = intents.pinnedFolders.any { it.id == file.id },

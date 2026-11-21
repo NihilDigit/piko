@@ -3,6 +3,7 @@
 package dev.piko.ui.platform
 
 import dev.piko.shared.i18n.tr
+import dev.piko.ui.ios.IosHostBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -24,8 +25,7 @@ internal class IosExternalVideoPlayer : ExternalVideoPlayer {
 
     override suspend fun open(url: String, fileName: String): Boolean = withContext(Dispatchers.Main) {
         suspendCancellableCoroutine { result ->
-            var host = UIApplication.sharedApplication.keyWindow?.rootViewController
-            while (host?.presentedViewController != null) host = host?.presentedViewController
+            val host = IosHostBridge.topViewController()
             if (host == null) {
                 result.resume(false)
                 return@suspendCancellableCoroutine

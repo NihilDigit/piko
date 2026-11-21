@@ -28,6 +28,8 @@ import androidx.compose.ui.unit.dp
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.adaptive.isHeightCompact
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.islandBorderColor
 
 internal class DetailPanelSpec(
@@ -144,11 +146,12 @@ internal fun <T : Any> DetailHost(
                     },
             )
             val borderColor = MaterialTheme.colorScheme.islandBorderColor
+            val isEInk = LocalAppearance.current.isEInk
             Surface(
                 shape = MaterialTheme.shapes.extraLarge,
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
                 border = borderColor?.let { BorderStroke(1.dp, it) },
-                shadowElevation = 8.dp,
+                shadowElevation = if (isEInk) 0.dp else 8.dp,
                 modifier = Modifier
                     .padding(horizontal = 24.dp, vertical = 16.dp)
                     .widthIn(min = spec.minWidth, max = spec.maxWidth)

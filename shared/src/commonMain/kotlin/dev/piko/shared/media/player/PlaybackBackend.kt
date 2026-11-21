@@ -83,6 +83,9 @@ interface PlaybackBackend {
      */
     fun addSubtitle(subtitle: ExternalSubtitle) = Unit
 
+    /** 实时更新字幕外观（底色、字体、字号、纵向位置与 ASS 覆盖），播放期间即时生效。 */
+    fun setSubtitleStyle(style: SubtitleStylePrefs) = Unit
+
     /** 为 false 时控件不给旋转入口。 */
     val supportsRotation: Boolean get() = false
 
@@ -144,6 +147,8 @@ data class MediaTrack(
     val language: String?,
     val isExternal: Boolean = false,
     val externalFilename: String? = null,
+    val codec: String? = null,
+    val isImage: Boolean = false,
 )
 
 /** 随视频一起加载的外挂字幕。[url] 是后端能直接读的地址，[title] 用来在列表里区分。 */

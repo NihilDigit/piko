@@ -17,7 +17,10 @@ import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.shared.media.player.PlaybackBackendEvent
 import dev.piko.shared.media.player.PlaybackTarget
 import dev.piko.shared.media.player.PlayerAspectRatio
+import dev.piko.shared.media.player.SubtitleFontPreset
+import dev.piko.shared.media.player.SubtitleStylePrefs
 import dev.piko.shared.media.player.VideoCropRegion
+import org.jetbrains.skia.FontMgr
 import kotlin.math.ln
 import dev.piko.shared.media.player.mpvSubtitleAddCommands
 import dev.piko.shared.media.player.mpvSubtitleCodepage
@@ -70,6 +73,7 @@ internal class MediampPlaybackBackend(
     private val keyframeStart: Boolean = false,
     /** 设置里的「硬件解码」，见 PikoUserPreferences.hardwareDecodingFlow。 */
     private val hardwareDecoding: Boolean = true,
+    initialSubtitleStyle: SubtitleStylePrefs = SubtitleStylePrefs.DEFAULT,
 ) : PlaybackBackend {
     private val bufferingFeature = player.features[Buffering.Key]
     private val speedFeature = player.features[PlaybackSpeed.Key]
@@ -176,15 +180,12 @@ internal class MediampPlaybackBackend(
         }
         mpv?.setPropertyString("slang", mpvSubtitleLanguages())
         mpv?.setPropertyString("sub-codepage", mpvSubtitleCodepage())
-        // libass 缺字时在 Windows 上经 DirectWrite 找回退字体，传的语言是空串，非中文系统上给汉字挑的多是日文字体：
-        // 繁体字在里面有，「这」「们」这类简体字没有，回退失败后落到 sub-font。默认的 sans-serif 在 Windows 上也不含中文，
-        // 按当前平台与语言偏好挑选自带简繁字体（见 SUBTITLE_FALLBACK_FONT）
-        mpv?.setPropertyString("sub-font", SUBTITLE_FALLBACK_FONT)
         // 纯文本字幕（SRT/VTT）按实际视频画面高度缩放而非整个窗口高度，避免竖窄窗口下字幕暴涨并落入上下大黑边
         mpv?.setPropertyString("sub-scale-with-window", "no")
         mpv?.setPropertyString("sub-use-margins", "no")
-        mpv?.setPropertyString("sub-font-size", "38")
-        mpv?.setPropertyString("sub-border-size", "2")
+        if (!preview) {
+            applySubtitleStyleProperties(initialSubtitleStyle)
+        }
         if (preview) {
             // MediaMP 让 mpv 往后囤 64 MiB，暂停时也照读不误。随机片段同时开着三个预览播放器，
             // 各自以前台身份往后读几百 MB，把账号的连接占满，其余请求首字节要等十几秒
@@ -372,6 +373,21 @@ internal class MediampPlaybackBackend(
             return
         }
         handle.command(*mpvSubtitleSelectCommand(subtitle))
+    }
+
+    override fun setSubtitleStyle(style: SubtitleStylePrefs) {
+        if (closing || preview) return
+        applySubtitleStyleProperties(style)
+    }
+
+    private fun applySubtitleStyleProperties(style: SubtitleStylePrefs) {
+        val handle = mpv ?: return
+        style.toMpvProperties(
+            platformDefaultFont = SUBTITLE_FALLBACK_FONT,
+            resolveFontFamily = ::resolveDesktopSubtitleFont,
+        ).forEach { (key, value) ->
+            runCatching { handle.setPropertyString(key, value) }
+        }
     }
 
     override val supportsRotation: Boolean get() = mpv != null
@@ -693,15 +709,62 @@ private fun mpvHandleOf(player: MediampPlayer): MPVHandle? = runCatching {
 // 取界面用的那个中文字体，都没装时交给 fontconfig 按 sans-serif 挑
 private val SUBTITLE_FALLBACK_FONT: String
     get() {
-        val preferTraditional = dev.piko.shared.i18n.PikoLocale.effectiveLanguage == dev.piko.data.auth.AppLanguage.ZH_HANT ||
-            (dev.piko.shared.i18n.PikoLocale.effectiveLanguage == dev.piko.data.auth.AppLanguage.EN &&
-                dev.piko.shared.i18n.PikoLocale.systemLanguage == dev.piko.data.auth.AppLanguage.ZH_HANT)
+        val preferTraditional = preferTraditionalChineseSubtitleFont()
         return when {
             isMacOs -> if (preferTraditional) "PingFang TC" else "PingFang SC"
             isLinux -> LinuxDesktop.cjkFontFamily ?: "sans-serif"
             else -> if (preferTraditional) "Microsoft JhengHei" else "Microsoft YaHei"
         }
     }
+
+private fun preferTraditionalChineseSubtitleFont(): Boolean =
+    dev.piko.shared.i18n.PikoLocale.effectiveLanguage == dev.piko.data.auth.AppLanguage.ZH_HANT ||
+        (dev.piko.shared.i18n.PikoLocale.effectiveLanguage == dev.piko.data.auth.AppLanguage.EN &&
+            dev.piko.shared.i18n.PikoLocale.systemLanguage == dev.piko.data.auth.AppLanguage.ZH_HANT)
+
+private fun desktopFontInstalled(familyName: String): Boolean = runCatching {
+    FontMgr.default.matchFamily(familyName).use { it.count() > 0 }
+}.getOrDefault(false)
+
+private fun resolveDesktopSubtitleFont(style: SubtitleStylePrefs): String {
+    val defaultFont = SUBTITLE_FALLBACK_FONT
+    val preferTraditional = preferTraditionalChineseSubtitleFont()
+    return when (style.fontPreset) {
+        SubtitleFontPreset.Default -> defaultFont
+        SubtitleFontPreset.Serif -> {
+            val candidates = when {
+                isMacOs -> if (preferTraditional) {
+                    listOf("Songti TC", "Songti SC", "STSong", "Hiragino Mincho ProN", "Georgia")
+                } else {
+                    listOf("Songti SC", "Songti TC", "STSong", "Hiragino Mincho ProN", "Georgia")
+                }
+                isLinux -> if (preferTraditional) {
+                    listOf("Noto Serif CJK TC", "Noto Serif CJK SC", "Source Han Serif TC", "Source Han Serif SC", "serif")
+                } else {
+                    listOf("Noto Serif CJK SC", "Noto Serif CJK TC", "Source Han Serif SC", "Source Han Serif TC", "serif")
+                }
+                else -> if (preferTraditional) {
+                    listOf("PMingLiU", "MingLiU", "Noto Serif CJK TC", "Source Han Serif TC", "SimSun", "Georgia")
+                } else {
+                    listOf("SimSun", "NSimSun", "Noto Serif CJK SC", "Source Han Serif SC", "PMingLiU", "Georgia")
+                }
+            }
+            candidates.firstOrNull { it != "serif" && desktopFontInstalled(it) } ?: "serif"
+        }
+        SubtitleFontPreset.Monospace -> {
+            val candidates = when {
+                isMacOs -> listOf("Noto Sans Mono CJK SC", "SF Mono", "Menlo", "Courier New")
+                isLinux -> listOf("Noto Sans Mono CJK SC", "Noto Sans Mono CJK TC", "Sarasa Mono SC", "DejaVu Sans Mono", "monospace")
+                else -> listOf("Sarasa Mono SC", "Noto Sans Mono CJK SC", "NSimSun", "Cascadia Mono", "Consolas")
+            }
+            candidates.firstOrNull { it != "monospace" && desktopFontInstalled(it) } ?: "monospace"
+        }
+        SubtitleFontPreset.Custom -> {
+            val requested = style.customFontFamily?.trim().orEmpty()
+            if (requested.isNotEmpty() && desktopFontInstalled(requested)) requested else defaultFont
+        }
+    }
+}
 
 private const val MIB = 1024 * 1024
 
@@ -710,8 +773,11 @@ private const val PREVIEW_CACHE_SECONDS = 8
 private const val PREVIEW_PROBE_BYTES = 1024 * 1024
 private const val PREVIEW_ANALYZE_SECONDS = 1
 private const val DEFAULT_LAVF_PROBE_BYTES = 5_000_000
-private const val MPEGTS_TRANSCODE_PROBE_BYTES = 512 * 1024
-private const val MPEGTS_TRANSCODE_ANALYZE_SECONDS = 1
+// 1080P HEVC MPEG-TS 转码流单个 GOP 常为 2–5 秒；512 KiB / 1s 过紧会导致 avformat_find_stream_info
+// 漏采 VPS/SPS/PPS 与首个 IDR，引发中途拖动 seek 反复报错 PPS id out of range 并停顿 7s+。
+// 放宽至 2 MiB / 3s（仍较 FFmpeg 默认 5 MiB / 5s 削减 60%），同时不影响原画 MKV/MP4 起播。
+private const val MPEGTS_TRANSCODE_PROBE_BYTES = 2 * MIB
+private const val MPEGTS_TRANSCODE_ANALYZE_SECONDS = 3
 private const val STOP_IDLE_TIMEOUT_MILLIS = 2_000L
 private const val POSITION_THROTTLE_NANOS = 33_000_000L // ~30fps
 private const val POSITION_JUMP_IMMEDIATE_MILLIS = 500L

@@ -89,6 +89,24 @@
     <string name="player_custom_ctrl_open_folder">폴더 열기</string>
     <string name="player_custom_ctrl_download">다운로드</string>
     <string name="player_custom_ctrl_hide_chrome">컨트롤 숨기기</string>
+    <string name="player_custom_palette_hint">미리 보기로 드래그하거나 탭하여 추가</string>
+    <string name="player_custom_palette_drop_remove">여기에 놓아 제거</string>
+    <string name="player_custom_palette_drop_required">필수 컨트롤이므로 제거할 수 없음</string>
+    <string name="player_custom_palette_bar_controls">바 컨트롤</string>
+    <string name="player_custom_palette_center_actions">중앙 동작</string>
+    <string name="player_custom_palette_all_placed">모든 컨트롤 배치됨</string>
+    <string name="player_custom_presets">프리셋</string>
+    <string name="player_custom_action_label">동작</string>
+    <string name="player_custom_custom_option">사용자 지정…</string>
+    <string name="player_custom_seek_seconds_hint">%1$d에서 %2$d초 사이</string>
+    <string name="player_custom_clear_slot">슬롯 비우기</string>
+    <string name="player_custom_move_up">위로 이동</string>
+    <string name="player_custom_move_down">아래로 이동</string>
+    <string name="player_custom_right_rail">오른쪽 작업 레일</string>
+    <string name="player_custom_inspector_drag_hint">미리 보기의 컨트롤을 드래그하여 정렬하거나 이동하고, 트레이로 끌어 제거하거나 탭하여 편집</string>
+    <string name="player_custom_listen_drag_hint">아래 동작을 좌우 슬롯으로 드래그하거나 슬롯을 탭하여 편집</string>
+    <string name="player_custom_portrait_fullscreen_prompt">세로 화면 전체 화면 버튼</string>
+    <string name="player_custom_portrait_fullscreen_prompt_desc">세로 화면에서 가로 동영상 재생 시 하단에 전체 화면 버튼 표시</string>
 
     <!-- 오디오 듣기 설정 -->
     <string name="player_custom_listen_cover">커버 스타일</string>

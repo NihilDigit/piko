@@ -11,10 +11,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.i18n.PikoLocale
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
+import dev.piko.shared.memory.MemoryTrim
+import dev.piko.shared.network.createIosAuxiliaryHttpClient
 import dev.piko.shared.storage.SandboxPaths
 import dev.piko.shared.storage.createIosAppDirectories
 import dev.piko.ui.PikoApp
 import dev.piko.ui.PikoServices
+import dev.piko.ui.image.installIosImageLoader
 import dev.piko.ui.platform.IosPikoPlatform
 import dev.piko.ui.theme.appearanceFlow
 import kotlin.native.Platform
@@ -25,6 +28,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import platform.Foundation.NSBundle
@@ -34,6 +38,8 @@ import platform.Foundation.NSOperationQueue
 import platform.Foundation.currentLocale
 import platform.Foundation.localeIdentifier
 import platform.UIKit.UIApplicationDidBecomeActiveNotification
+import platform.UIKit.UIApplicationDidEnterBackgroundNotification
+import platform.UIKit.UIApplicationDidReceiveMemoryWarningNotification
 import platform.UIKit.UIDevice
 import platform.UIKit.UIViewController
 
@@ -45,7 +51,10 @@ import platform.UIKit.UIViewController
  * 作用域一致。日志装一次，写进应用私有 support 目录的 logs，`导出日志` 也读这一份。
  */
 fun MainViewController(): UIViewController = ComposeUIViewController {
-    IosRoot(services = IosProcess.services, directories = IosProcess.directories)
+    IosRoot(
+        services = IosProcess.services,
+        platform = IosProcess.platform,
+    )
 }
 
 /** UIKit entrypoints run on the main thread; service ownership outlives every controller. */
@@ -54,6 +63,8 @@ private object IosProcess {
     val directories = createIosAppDirectories()
     val keychainService = NSBundle.mainBundle.bundleIdentifier ?: DEFAULT_KEYCHAIN_SERVICE
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val imageHttpClient = createIosAuxiliaryHttpClient()
+
     init {
         val isDebug = Platform.isDebugBinary
         PikoLog.install(SandboxPaths.resolveDirectory(directories.support, "logs")) { level, tag, message, error ->
@@ -68,29 +79,62 @@ private object IosProcess {
             val prev = previousHook
             if (prev != null) prev(error) else terminateWithUnhandledException(error)
         }
+        // 在首个图片请求前显式安装 Coil Ktor3 Darwin 网络层与定向磁盘缓存
+        installIosImageLoader(
+            httpClient = imageHttpClient,
+            imageCacheDir = SandboxPaths.resolveDirectory(directories.caches, "image_cache"),
+        )
         val appVersion = (NSBundle.mainBundle.objectForInfoDictionaryKey("CFBundleShortVersionString") as? String)
             ?.takeIf { it.isNotBlank() } ?: "dev"
         val device = UIDevice.currentDevice
         PikoLog.i("App", "App started: Piko $appVersion on ${device.systemName} ${device.systemVersion} (${device.model})")
     }
+
     val services = createIosServices(directories, appScope, keychainService)
+    val platform = IosPikoPlatform(directories)
     private val playerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    val videoPlayer = iosVideoPlayerHost(services, playerScope)
+    val videoPlayer = iosVideoPlayerHost(services, playerScope, platform = platform)
 }
 
 @Composable
-private fun IosRoot(services: PikoServices, directories: dev.piko.shared.storage.IosAppDirectories) {
-    val platform = remember { IosPikoPlatform(directories) }
-    DisposableEffect(platform) {
+private fun IosRoot(
+    services: PikoServices,
+    platform: IosPikoPlatform,
+) {
+    DisposableEffect(platform, services) {
         platform.refreshSystemMotion()
-        val observer = NSNotificationCenter.defaultCenter.addObserverForName(
+        val center = NSNotificationCenter.defaultCenter
+        val activeObserver = center.addObserverForName(
             name = UIApplicationDidBecomeActiveNotification,
             `object` = null,
             queue = NSOperationQueue.mainQueue,
         ) { _ ->
             platform.refreshSystemMotion()
+            services.memoryGovernor.onVisibilityChanged(true)
+            services.onAppForegrounded()
         }
-        onDispose { NSNotificationCenter.defaultCenter.removeObserver(observer) }
+        val backgroundObserver = center.addObserverForName(
+            name = UIApplicationDidEnterBackgroundNotification,
+            `object` = null,
+            queue = NSOperationQueue.mainQueue,
+        ) { _ ->
+            services.memoryGovernor.onVisibilityChanged(false)
+            IosProcess.appScope.launch {
+                services.mediaRepository.flushPlayHistory(2_000L)
+            }
+        }
+        val memoryObserver = center.addObserverForName(
+            name = UIApplicationDidReceiveMemoryWarningNotification,
+            `object` = null,
+            queue = NSOperationQueue.mainQueue,
+        ) { _ ->
+            services.memoryGovernor.onPlatformTrim(MemoryTrim.Critical)
+        }
+        onDispose {
+            center.removeObserver(activeObserver)
+            center.removeObserver(backgroundObserver)
+            center.removeObserver(memoryObserver)
+        }
     }
     val videoPlayer = IosProcess.videoPlayer
     // 首帧之前同步读出外观，否则先按默认配色画一帧再跳成用户选的主题，与另外两端一样

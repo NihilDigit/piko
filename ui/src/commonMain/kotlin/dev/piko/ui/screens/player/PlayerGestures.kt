@@ -18,9 +18,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputChange
-import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.input.pointer.isBackPressed
+import androidx.compose.ui.input.pointer.isForwardPressed
+import androidx.compose.ui.input.pointer.isPrimaryPressed
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
@@ -179,7 +186,7 @@ internal fun PlayerGestureLayer(
                 }
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = true)
-                    if (speedController?.active == true) return@awaitEachGesture
+                    if (isNonPrimaryMouseDown(down) || speedController?.active == true) return@awaitEachGesture
                     val zone = zoneAt(down.position.x)
                     val continuesSeek = zone != DoubleTapZone.PlayPause && seekTapActiveState()
 
@@ -216,7 +223,7 @@ internal fun PlayerGestureLayer(
                 try {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = true)
-                        if (speedController?.active == true) return@awaitEachGesture
+                        if (isNonPrimaryMouseDown(down) || speedController?.active == true) return@awaitEachGesture
 
                         val pointerId = down.id
                         val startPosition = down.position
@@ -289,9 +296,10 @@ internal fun PlayerGestureLayer(
                                     break
                                 }
                                 if (!change.pressed) {
+                                    val releasedCleanly = change.changedToUp()
                                     change.consume()
                                     if (speedOwned) {
-                                        if (change.changedToUpIgnoreConsumed()) {
+                                        if (releasedCleanly) {
                                             controller.releaseHoldDrag()
                                         } else {
                                             controller.cancel()
@@ -476,7 +484,7 @@ internal fun PlayerGestureLayer(
                             val event = awaitPointerEvent(PointerEventPass.Main)
                             val change = event.changes.firstOrNull { it.id == pointerId }
                             if (change == null || !change.pressed) {
-                                val committed = change != null && change.changedToUpIgnoreConsumed()
+                                val committed = change != null && change.changedToUp()
                                 if (committed) {
                                     change?.consume()
                                     when (val finished = activeGesture) {
@@ -525,6 +533,16 @@ internal fun PlayerGestureLayer(
                 }
             },
     )
+}
+
+private fun AwaitPointerEventScope.isNonPrimaryMouseDown(down: PointerInputChange): Boolean {
+    if (down.type != PointerType.Mouse) return false
+    val buttons = currentEvent.buttons
+    val anyNonPrimary = buttons.isSecondaryPressed ||
+        buttons.isTertiaryPressed ||
+        buttons.isBackPressed ||
+        buttons.isForwardPressed
+    return anyNonPrimary && !buttons.isPrimaryPressed
 }
 
 private fun levelFor(

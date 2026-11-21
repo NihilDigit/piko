@@ -89,6 +89,24 @@
     <string name="player_custom_ctrl_open_folder">定位目录</string>
     <string name="player_custom_ctrl_download">下载</string>
     <string name="player_custom_ctrl_hide_chrome">沉浸隐藏</string>
+    <string name="player_custom_palette_hint">拖到预览区，或轻点加入</string>
+    <string name="player_custom_palette_drop_remove">松手移除此控件</string>
+    <string name="player_custom_palette_drop_required">必需控件，不可移除</string>
+    <string name="player_custom_palette_bar_controls">栏位控件</string>
+    <string name="player_custom_palette_center_actions">中央与播放快捷动作</string>
+    <string name="player_custom_palette_all_placed">全部控件已放置</string>
+    <string name="player_custom_presets">布局预设</string>
+    <string name="player_custom_action_label">动作</string>
+    <string name="player_custom_custom_option">自定义…</string>
+    <string name="player_custom_seek_seconds_hint">范围 %1$d 至 %2$d 秒</string>
+    <string name="player_custom_clear_slot">清空槽位</string>
+    <string name="player_custom_move_up">上移</string>
+    <string name="player_custom_move_down">下移</string>
+    <string name="player_custom_right_rail">右侧操作栏</string>
+    <string name="player_custom_inspector_drag_hint">拖动预览中的控件重排或跨栏，拖回上方托盘移除，点选可细调属性</string>
+    <string name="player_custom_listen_drag_hint">拖动下方快捷动作到播放键两侧槽位，或点选槽位调整</string>
+    <string name="player_custom_portrait_fullscreen_prompt">竖屏全屏悬浮按钮</string>
+    <string name="player_custom_portrait_fullscreen_prompt_desc">竖屏播放横屏视频时，在画面下方悬浮显示一键全屏按钮</string>
 
     <!-- 听音频配置 -->
     <string name="player_custom_listen_cover">封面样式</string>

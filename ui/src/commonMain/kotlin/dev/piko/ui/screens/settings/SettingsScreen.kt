@@ -55,6 +55,7 @@ import androidx.compose.material.icons.outlined.Lan
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Minimize
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PlayCircle
@@ -108,6 +109,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -458,14 +460,15 @@ fun SettingsScreen(
                     val appearance = LocalAppearance.current
                     val motionScale = platform.motionScale
                     val matchLang = match("语言", "Language", "言語", "언어", "語言", systemLanguageLabel, appLanguage.nativeLabel)
+                    val matchEink = match("水墨屏模式", "水墨屏", "水墨螢幕", "E-Ink mode", "e-ink", "eink", "电子墨水", "墨水屏", "monochrome", "黑白", "E-Inkモード", "E-Ink 모드")
                     val matchThemeMode = match("深色模式", "Theme mode", "dark", "light", "system", "テーマモード", "테마 모드")
                     val matchPureBlack = !appearance.isEInk && appearance.mode != ThemeMode.LIGHT && match("纯黑深色模式", "Pure black", "OLED", "amoled", "true black", "ピュアブラック", "순수 블랙", "純黑")
-                    val matchThemeColor = match("主题色", "Theme color", "dynamic", "accent", "color", "水墨屏", "e-ink", "eink", "テーマカラー", "테마 색상", "主題色", appearance.effectiveSeed?.label.orEmpty())
+                    val matchThemeColor = match("主题色", "Theme color", "dynamic", "accent", "color", "テーマカラー", "테마 색상", "主題色", appearance.effectiveSeed?.label.orEmpty())
                     val matchStartup = platform.launchAtStartup != null && match("开机自动启动", "Launch at startup", "autostart", "Windows", "ログイン時に起動", "시작 시 실행", "開機自動啟動")
                     val matchTray = platform.closeToTray != null && match("关闭时最小化到托盘", "Minimize to tray on close", "tray", "トレイ", "트레이", "系統匣")
                     val matchCompactBar = platform.compactTitleBar != null && match("紧凑标题栏", "Compact title bar", "titlebar", "タイトルバー", "제목 표시줄", "精簡標題列")
                     val matchMotion = match("减少动画", "Reduce motion", "animation", "アニメーション", "애니메이션", "減少動畫")
-                    if (matchLang || matchThemeMode || matchPureBlack || matchThemeColor || matchStartup || matchTray || matchCompactBar || matchMotion) {
+                    if (matchLang || matchEink || matchThemeMode || matchPureBlack || matchThemeColor || matchStartup || matchTray || matchCompactBar || matchMotion) {
                         section(SettingsSection.Appearance) {
                             SettingsGroup(null) {
                                 if (matchLang) {
@@ -476,9 +479,36 @@ fun SettingsScreen(
                                         onClick = { showLanguage = true },
                                     )
                                 }
+                                if (matchEink) {
+                                    SettingsSwitchRow(
+                                        icon = Icons.Outlined.MenuBook,
+                                        title = tr("水墨屏模式", "E-Ink mode", "E-Inkモード", "E-Ink 모드", "水墨螢幕模式"),
+                                        supporting = tr(
+                                            "高对比度纯黑白界面与清晰描边，自动关闭动画，仅对当前设备生效",
+                                            "High-contrast monochrome with crisp borders and no animations, for this device only",
+                                            "高コントラストの白黒表示と輪郭線、アニメーションを自動オフ（この端末のみ）",
+                                            "고대비 흑백 화면과 선명한 테두리, 애니메이션 자동 끄기 (이 기기 전용)",
+                                            "高對比純黑白介面與清晰描邊，自動關閉動畫，僅對目前裝置生效",
+                                        ),
+                                        checked = appearance.isEInk,
+                                        onCheckedChange = { scope.launch { sessionManager.setEinkMode(it) } },
+                                    )
+                                }
                                 if (matchThemeMode) {
                                     ThemeModeRow(
                                         mode = appearance.mode,
+                                        enabled = !appearance.isEInk,
+                                        supporting = if (appearance.isEInk) {
+                                            tr(
+                                                "水墨屏模式下固定为高对比度白底黑字",
+                                                "Fixed to high-contrast monochrome in E-Ink mode",
+                                                "E-Inkモードでは高コントラストの白黒表示に固定されます",
+                                                "E-Ink 모드에서는 고대비 흑백 화면으로 고정됩니다",
+                                                "水墨螢幕模式下固定為高對比白底黑字",
+                                            )
+                                        } else {
+                                            null
+                                        },
                                         onModeChange = { scope.launch { sessionManager.setThemeMode(it.name) } },
                                     )
                                 }
@@ -556,7 +586,7 @@ fun SettingsScreen(
                                         icon = Icons.Outlined.Animation,
                                         title = tr("减少动画", "Reduce motion", "アニメーションを減らす", "애니메이션 줄이기", "減少動畫"),
                                         supporting = when {
-                                            appearance.isEInk -> tr("水墨屏主题已自动关闭过渡动画", "Transitions are disabled automatically in E-Ink theme", "E-Inkテーマではアニメーションが自動的に無効になります", "E-Ink 테마에서는 전환 애니메이션이 자동으로 꺼집니다", "水墨螢幕主題已自動關閉轉場動畫")
+                                            appearance.isEInk -> tr("水墨屏模式已自动关闭过渡动画", "Transitions are disabled automatically in E-Ink mode", "E-Inkモードではアニメーションが自動的に無効になります", "E-Ink 모드에서는 전환 애니메이션이 자동으로 꺼집니다", "水墨螢幕模式已自動關閉轉場動畫")
                                             motionScale.systemScale == 0f -> tr("系统已关闭动画", "Animations disabled by system", "システムでアニメーションが無効です", "시스템에서 애니메이션을 껐습니다", "系統已關閉動畫")
                                             else -> tr("界面切换不播放过渡", "Disable transition animations", "画面切り替えのアニメーションを無効にする", "화면 전환 애니메이션 끄기", "切換介面時不播放轉場動畫")
                                         },
@@ -1500,7 +1530,12 @@ private fun LinkAssociationRow(
 
 /** 深色模式三选一。放在行尾（照 Windows 设置的下拉位置）；手机竖握时行尾放不下，挪到标题下方占满一行。 */
 @Composable
-private fun ThemeModeRow(mode: ThemeMode, onModeChange: (ThemeMode) -> Unit) {
+private fun ThemeModeRow(
+    mode: ThemeMode,
+    onModeChange: (ThemeMode) -> Unit,
+    enabled: Boolean = true,
+    supporting: String? = null,
+) {
     val style = settingsStyle()
     val choice: @Composable (Boolean) -> Unit = { fill ->
         SettingsSegmentedChoice(
@@ -1509,18 +1544,22 @@ private fun ThemeModeRow(mode: ThemeMode, onModeChange: (ThemeMode) -> Unit) {
             label = { it.label },
             onSelect = onModeChange,
             fill = fill,
+            enabled = enabled,
         )
     }
     SettingsRow(
         title = tr("深色模式", "Theme mode", "テーマモード", "테마 모드", "深色模式"),
         icon = Icons.Outlined.DarkMode,
+        supporting = supporting,
+        enabled = enabled,
         trailing = if (style.trailingChoices) ({ choice(false) }) else null,
         below = if (style.trailingChoices) null else ({ choice(true) }),
     )
 }
 
 /**
- * 主题色：系统取色加内置主题，一排圆形色块，选中的打勾，名字写在标题下方。
+ * 主题色：系统取色加内置彩色主题，一排圆形色块，选中的打勾，名字写在标题下方。
+ * 水墨屏模式已独立为外观顶部的设备本地开关，此处不再混排黑白圆点，开启水墨屏时整行置灰并说明原因。
  *
  * 色块显示的是该主题在当前深浅下的 primary，即选中后按钮与强调色的实际颜色，而非种子色：
  * 种子色经 TonalSpot 调和后会变淡，按种子色画会与结果对不上。
@@ -1528,6 +1567,7 @@ private fun ThemeModeRow(mode: ThemeMode, onModeChange: (ThemeMode) -> Unit) {
  */
 @Composable
 private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> Unit) {
+    val enabled = !appearance.isEInk
     val dark = appearance.isDark()
     val platform = LocalPikoPlatform.current
     val style = settingsStyle()
@@ -1536,12 +1576,24 @@ private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> 
     SettingsRow(
         title = tr("主题色", "Theme color", "テーマカラー", "테마 색상", "主題色"),
         icon = Icons.Outlined.Palette,
-        supporting = appearance.effectiveSeed?.label ?: tr("系统取色", "System color", "システムの色", "시스템 색상", "系統取色"),
+        supporting = if (appearance.isEInk) {
+            tr(
+                "水墨屏模式已接管界面配色",
+                "Overridden by E-Ink mode",
+                "E-Inkモードが配色を上書きしています",
+                "E-Ink 모드가 색상을 대체하고 있습니다",
+                "水墨螢幕模式已接管介面配色",
+            )
+        } else {
+            appearance.effectiveSeed?.label ?: tr("系统取色", "System color", "システムの色", "시스템 색상", "系統取色")
+        },
+        enabled = enabled,
         below = {
             val swatchScroll = rememberScrollState()
             Row(
                 modifier = Modifier
                     .offset(x = -swatchInset)
+                    .alpha(if (enabled) 1f else 0.38f)
                     .selectableGroup()
                     .verticalWheelScrollsRow(swatchScroll)
                     .horizontalScroll(swatchScroll),
@@ -1552,18 +1604,19 @@ private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> 
                         scheme = scheme,
                         label = tr("系统取色", "System color", "システムの色", "시스템 색상", "系統取色"),
                         selected = appearance.seed == null,
+                        enabled = enabled,
                         idleIcon = Icons.Outlined.Wallpaper,
                         onClick = { onSeedChange(null) },
                     )
                 }
-                SeedTheme.entries.forEach { theme ->
+                SeedTheme.colorEntries.forEach { theme ->
                     val scheme = if (dark) theme.dark else theme.light
                     ColorSwatch(
                         scheme = scheme,
                         label = theme.label,
                         selected = appearance.effectiveSeed == theme,
+                        enabled = enabled,
                         onClick = { onSeedChange(theme) },
-                        isEInkSwatch = theme == SeedTheme.EINK,
                     )
                 }
             }
@@ -1581,8 +1634,8 @@ private fun ColorSwatch(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
+    enabled: Boolean = true,
     idleIcon: ImageVector? = null,
-    isEInkSwatch: Boolean = false,
 ) {
     val style = settingsStyle()
     val ringColor = MaterialTheme.colorScheme.primary
@@ -1590,7 +1643,7 @@ private fun ColorSwatch(
         modifier = Modifier
             .size(style.swatchTarget)
             .clip(CircleShape)
-            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
@@ -1598,12 +1651,12 @@ private fun ColorSwatch(
             modifier = Modifier
                 .size(style.swatchSize)
                 .then(
-                    when {
-                        selected -> Modifier
+                    if (selected) {
+                        Modifier
                             .border(2.dp, ringColor, CircleShape)
                             .padding(3.dp)
-                        isEInkSwatch -> Modifier.border(1.dp, Color.Black, CircleShape)
-                        else -> Modifier
+                    } else {
+                        Modifier
                     },
                 )
                 .clip(CircleShape),
@@ -1613,49 +1666,30 @@ private fun ColorSwatch(
                 val diameter = size.minDimension
                 val topLeft = Offset((size.width - diameter) / 2f, (size.height - diameter) / 2f)
                 val arcSize = Size(diameter, diameter)
-                if (isEInkSwatch) {
-                    drawArc(
-                        color = Color.Black,
-                        startAngle = 180f,
-                        sweepAngle = 180f,
-                        useCenter = true,
-                        topLeft = topLeft,
-                        size = arcSize,
-                    )
-                    drawArc(
-                        color = Color.White,
-                        startAngle = 0f,
-                        sweepAngle = 180f,
-                        useCenter = true,
-                        topLeft = topLeft,
-                        size = arcSize,
-                    )
-                } else {
-                    drawArc(
-                        color = scheme.primary,
-                        startAngle = 180f,
-                        sweepAngle = 180f,
-                        useCenter = true,
-                        topLeft = topLeft,
-                        size = arcSize,
-                    )
-                    drawArc(
-                        color = scheme.primaryContainer,
-                        startAngle = 90f,
-                        sweepAngle = 90f,
-                        useCenter = true,
-                        topLeft = topLeft,
-                        size = arcSize,
-                    )
-                    drawArc(
-                        color = scheme.tertiary,
-                        startAngle = 0f,
-                        sweepAngle = 90f,
-                        useCenter = true,
-                        topLeft = topLeft,
-                        size = arcSize,
-                    )
-                }
+                drawArc(
+                    color = scheme.primary,
+                    startAngle = 180f,
+                    sweepAngle = 180f,
+                    useCenter = true,
+                    topLeft = topLeft,
+                    size = arcSize,
+                )
+                drawArc(
+                    color = scheme.primaryContainer,
+                    startAngle = 90f,
+                    sweepAngle = 90f,
+                    useCenter = true,
+                    topLeft = topLeft,
+                    size = arcSize,
+                )
+                drawArc(
+                    color = scheme.tertiary,
+                    startAngle = 0f,
+                    sweepAngle = 90f,
+                    useCenter = true,
+                    topLeft = topLeft,
+                    size = arcSize,
+                )
             }
             if (selected) {
                 Box(

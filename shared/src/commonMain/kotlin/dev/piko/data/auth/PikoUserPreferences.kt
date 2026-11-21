@@ -2,6 +2,7 @@ package dev.piko.data.auth
 
 import dev.piko.shared.data.DriveAppearancePrefs
 import dev.piko.shared.media.player.PlayerLayoutPrefs
+import dev.piko.shared.media.player.SubtitleStylePrefs
 import dev.piko.shared.net.ProxySetting
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -101,6 +102,7 @@ data class PikoPreferencesSnapshot(
     val themeMode: String? = null,
     val themeSeed: String? = null,
     val pureBlack: Boolean = false,
+    val einkMode: Boolean = false,
     val spoilerBlurEnabled: Boolean = false,
     val reduceMotion: Boolean = false,
     val hardwareDecoding: Boolean = true,
@@ -112,6 +114,7 @@ data class PikoPreferencesSnapshot(
     val proxySetting: ProxySetting = ProxySetting(),
     val tileSizes: Map<String, String> = emptyMap(),
     val playerLayout: PlayerLayoutPrefs = PlayerLayoutPrefs.Default,
+    val subtitleStyle: SubtitleStylePrefs = SubtitleStylePrefs.DEFAULT,
     val driveAppearance: DriveAppearancePrefs = DriveAppearancePrefs.DEFAULT,
     val skipFeedExitConfirm: Boolean = false,
     val cacheMaxBytes: Long = CachePolicyDefaults.DEFAULT_MAX_BYTES,
@@ -189,6 +192,10 @@ interface PikoUserPreferences {
     /** 纯黑深色模式（OLED），仅在深色外观下生效，默认关闭。随设置跨设备同步。 */
     val pureBlackFlow: Flow<Boolean> get() = flowOf(false)
     suspend fun setPureBlack(enabled: Boolean) {}
+
+    /** 水墨屏模式（纯黑白高对比度、清晰描边与自动关闭动画），默认关闭。每台设备各自独立，不随账号跨设备同步。 */
+    val einkModeFlow: Flow<Boolean> get() = flowOf(false)
+    suspend fun setEinkMode(enabled: Boolean) {}
 
     /**
      * 网盘列表的视图，存 ui 里 DriveViewMode 的名字：列表、海报墙或图库。全局记住，不随进出目录或重启复位。
@@ -352,6 +359,10 @@ interface PikoUserPreferences {
     /** 播放器四态自定义布局、听音频与手势配置。跟着设置同步。 */
     val playerLayoutPrefsFlow: Flow<PlayerLayoutPrefs> get() = flowOf(PlayerLayoutPrefs.Default)
     suspend fun setPlayerLayoutPrefs(prefs: PlayerLayoutPrefs) {}
+
+    /** 播放器字幕外观偏好（底色、字体、字号、纵向位置与 ASS 覆盖）。跟着设置同步。 */
+    val subtitleStylePrefsFlow: Flow<SubtitleStylePrefs> get() = flowOf(SubtitleStylePrefs.DEFAULT)
+    suspend fun setSubtitleStylePrefs(prefs: SubtitleStylePrefs) {}
 
     /** 网盘三视图（列表 / 网格 / 瀑布流）文件外观自定义配置。跟着设置同步。 */
     val driveAppearancePrefsFlow: Flow<DriveAppearancePrefs> get() = flowOf(DriveAppearancePrefs.DEFAULT)

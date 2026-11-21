@@ -148,6 +148,7 @@ internal class AdaptiveBitrateController(
     val estimator: DualEwmaBandwidthEstimator = DualEwmaBandwidthEstimator(),
 ) {
     private var lastSwitchMillis: Long = Long.MIN_VALUE
+    private var sessionStartMillis: Long = Long.MIN_VALUE
     private var steppedDownForSpeed: Boolean = false
     private var consecutiveBufferingSecs: Int = 0
     private var consecutiveStableSecs: Int = 0
@@ -159,11 +160,20 @@ internal class AdaptiveBitrateController(
     fun resetSession(nowMillis: Long = Long.MIN_VALUE, clearBandwidth: Boolean = false) {
         if (clearBandwidth) estimator.reset()
         lastSwitchMillis = nowMillis
+        sessionStartMillis = nowMillis
         steppedDownForSpeed = false
         consecutiveBufferingSecs = 0
         consecutiveStableSecs = 0
         highSpeedSinceMillis = null
         normalSpeedSinceMillis = null
+    }
+
+    /** 首帧就绪时刷新开播暖机起点与降档冷却，同时保留高倍速降档记忆以支持回常速恢复。 */
+    fun notePlaybackReady(nowMillis: Long) {
+        lastSwitchMillis = nowMillis
+        sessionStartMillis = nowMillis
+        consecutiveBufferingSecs = 0
+        consecutiveStableSecs = 0
     }
 
     fun noteManualSwitch(nowMillis: Long) {
@@ -286,6 +296,8 @@ internal class AdaptiveBitrateController(
         } else {
             (now - lastSwitchMillis).coerceAtLeast(0L)
         }
+        val inStartupGrace = sessionStartMillis != Long.MIN_VALUE &&
+            (now - sessionStartMillis).coerceAtLeast(0L) < STARTUP_GRACE_MS
 
         // 1. 持续高倍速降档（>= 2.0x 持续 >= 1.2s）：
         // 若当前档位前方窗口或主体已缓存在本地磁盘且未发生真实卡顿，SSD 读盘轻松撑住 3.5x，无需降档。
@@ -315,7 +327,7 @@ internal class AdaptiveBitrateController(
         // 计算 DASH.js BOLA 效用最优索引（在 candidates 高->低 坐标系中的索引）
         val bolaIndex = bufferSec?.let { computeBolaCandidateIndex(candidates, speed, it) }
 
-        // 2. 弱网 / 卡顿 / BOLA 低缓冲降档（reload 感知冷却 >= 4s）
+        // 2. 弱网 / 卡顿 / BOLA 低缓冲降档（reload 感知冷却 >= 4s；开播暖机期内不因初始缓冲爬坡或无带宽样本误降）
         // 真实卡顿（stalling，例如命中未缓存空洞）始终打破缓存亲和性；但前方窗口已命中本地缓存且未卡顿时不因历史测速误降。
         if (curIndex < candidates.lastIndex && sinceLastSwitchMs >= MIN_DECREASE_INTERVAL_MS) {
             val stalling = consecutiveBufferingSecs >= STALL_STEP_DOWN_SECS
@@ -324,10 +336,14 @@ internal class AdaptiveBitrateController(
             val throughputStarved = estimatedBps != null &&
                 currentDemand > (estimatedBps * STARVED_SAFETY_FACTOR).toLong() &&
                 (bufferSec == null || bufferSec < LOW_BUFFER_GUARD_SECONDS)
-            val bolaDemandsDrop = lowBuffer && bolaIndex != null && bolaIndex > curIndex &&
-                (estimatedBps == null || throughputBelowCurrent)
+            val bolaDemandsDrop = !inStartupGrace &&
+                lowBuffer &&
+                bolaIndex != null &&
+                bolaIndex > curIndex &&
+                (throughputBelowCurrent || (estimatedBps == null && obs.isBuffering))
+            val effectiveThroughputStarved = throughputStarved && (!inStartupGrace || obs.isBuffering)
 
-            val shouldDrop = stalling || (!currentHasWindow && (bolaDemandsDrop || throughputStarved))
+            val shouldDrop = stalling || (!currentHasWindow && (bolaDemandsDrop || effectiveThroughputStarved))
             if (shouldDrop) {
                 val safeBudget = estimatedBps?.let { (it * DOWN_SAFETY_FACTOR).toLong() }
                 val throughputSafeIndex = safeBudget?.let { budget ->
@@ -562,6 +578,8 @@ internal class AdaptiveBitrateController(
         const val HIGH_SPEED_HOLD_MS = 1_200L
         const val SPEED_RESTORE_INTERVAL_MS = 4_000L
         const val MIN_DECREASE_INTERVAL_MS = 4_000L
+        /** 开播/切档首帧后的暖机保护窗，防止初始缓冲爬坡阶段无样本误降到无索引转码流。 */
+        const val STARTUP_GRACE_MS = 8_000L
         const val MIN_INCREASE_INTERVAL_MS = 20_000L
         const val MIN_STABLE_SECS_FOR_INCREASE = 20
         const val STALL_STEP_DOWN_SECS = 3

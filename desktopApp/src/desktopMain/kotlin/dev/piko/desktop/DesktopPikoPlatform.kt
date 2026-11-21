@@ -257,6 +257,19 @@ class DesktopPikoPlatform(
     override fun decodeEncodedImageBitmap(bytes: ByteArray): ImageBitmap? =
         PreviewFrameDecoder.decodeEncodedImage(bytes)
 
+    @Volatile
+    private var cachedSubtitleFonts: List<String>? = null
+
+    override suspend fun listSubtitleFonts(): List<String> {
+        cachedSubtitleFonts?.let { return it }
+        return withContext(Dispatchers.IO) {
+            cachedSubtitleFonts?.let { return@withContext it }
+            val discovered = runCatching { discoverDesktopSubtitleFonts() }.getOrDefault(emptyList())
+            cachedSubtitleFonts = discovered
+            discovered
+        }
+    }
+
     override fun blurCoilBitmap(input: Bitmap, radiusPx: Int): Bitmap? {
         val w = input.width
         val h = input.height
@@ -524,4 +537,70 @@ private fun desktopPrimaryFontCandidates(
             listOf("Microsoft YaHei UI", "Microsoft YaHei")
         }
     }
+}
+
+private val DESKTOP_PRIORITY_SUBTITLE_FONTS = listOf(
+    "Microsoft YaHei",
+    "Microsoft JhengHei",
+    "PingFang SC",
+    "PingFang TC",
+    "Noto Sans CJK SC",
+    "Noto Sans CJK TC",
+    "Noto Sans SC",
+    "Source Han Sans SC",
+    "Source Han Sans CN",
+    "LXGW WenKai",
+    "LXGW WenKai Screen",
+    "Sarasa Gothic SC",
+    "Sarasa Mono SC",
+    "SimHei",
+    "SimSun",
+    "KaiTi",
+    "FangSong",
+    "Songti SC",
+    "Songti TC",
+    "Hiragino Sans",
+    "Hiragino Mincho ProN",
+    "Yu Gothic",
+    "Malgun Gothic",
+    "Noto Serif CJK SC",
+    "Source Han Serif SC",
+    "Segoe UI",
+    "SF Pro Text",
+    "Arial",
+    "Georgia",
+    "Consolas",
+)
+
+private val DESKTOP_EXCLUDED_SUBTITLE_FONTS = setOf(
+    "marlett",
+    "symbol",
+    "webdings",
+    "wingdings",
+    "wingdings 2",
+    "wingdings 3",
+    "segoe mdl2 assets",
+    "segoe fluent icons",
+    "hololens mdl2 assets",
+    "segoe ui emoji",
+    "segoe ui symbol",
+    "apple color emoji",
+    "noto color emoji",
+)
+
+private fun discoverDesktopSubtitleFonts(): List<String> {
+    val fontMgr = FontMgr.default
+    val seen = LinkedHashMap<String, String>()
+    for (i in 0 until fontMgr.familiesCount) {
+        val raw = fontMgr.getFamilyName(i).trim()
+        if (raw.isEmpty() || raw.startsWith("@") || raw.startsWith(".")) continue
+        val key = raw.lowercase()
+        if (key in DESKTOP_EXCLUDED_SUBTITLE_FONTS) continue
+        if ("emoji" in key || "icon" in key || "wingding" in key || "webding" in key) continue
+        seen.putIfAbsent(key, raw)
+    }
+    val priorityOrder = DESKTOP_PRIORITY_SUBTITLE_FONTS.withIndex().associate { it.value.lowercase() to it.index }
+    return seen.values.sortedWith(
+        compareBy<String>({ priorityOrder[it.lowercase()] ?: Int.MAX_VALUE }, { it.lowercase() }),
+    )
 }

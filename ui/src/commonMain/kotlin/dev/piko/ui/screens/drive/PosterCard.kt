@@ -36,6 +36,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
@@ -44,6 +45,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.runtime.getValue
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
@@ -69,6 +71,8 @@ import dev.piko.ui.components.MediaTagRow
 import dev.piko.ui.components.SkeletonBlock
 import dev.piko.ui.components.SkeletonTextLine
 import dev.piko.ui.format.formatDurationMillis
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.tabular
 import io.github.nihildigit.pikpak.FileStat
 import dev.piko.ui.components.*
@@ -193,9 +197,11 @@ internal fun PosterCard(
         marks = item.marks,
         extension = extensionText,
     )
+    val isEInk = LocalAppearance.current.isEInk
+    val effectiveFolderStyle = resolveEffectiveFolderStyle(gridPrefs.folderStyle, isEInk)
     val showSelectionOverlay = isSelectionMode || (hover.mouseHovered && onStartSelection != null)
-    val showsMediaCover = item.visual.thumbnail != null && (!file.isFolder || gridPrefs.folderStyle == FolderStyle.MINIMAL_ICON)
-    val showMinimalFolderBadge = file.isFolder && gridPrefs.folderStyle == FolderStyle.MINIMAL_ICON && showsMediaCover
+    val showsMediaCover = item.visual.thumbnail != null && (!file.isFolder || effectiveFolderStyle == FolderStyle.MINIMAL_ICON)
+    val showMinimalFolderBadge = file.isFolder && effectiveFolderStyle == FolderStyle.MINIMAL_ICON && showsMediaCover
     val hasTopStart = showSelectionOverlay || badgeData.hasContent(corners.topStart)
     val hasTopEnd = badgeData.hasContent(corners.topEnd)
     val hasBottomStart = showMinimalFolderBadge || badgeData.hasContent(corners.bottomStart)
@@ -233,13 +239,15 @@ internal fun PosterCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(COVER_ASPECT)
-                .clip(coverShape)
                 .then(
-                    if (showsMediaCover) {
-                        Modifier.border(1.dp, fixedColors.HudSpecularBorder, coverShape)
-                    } else Modifier,
+                    when {
+                        selectionBorderColor.alpha > 0f -> Modifier.border(3.dp, selectionBorderColor, coverShape)
+                        isEInk -> Modifier.border(1.dp, colors.outline, coverShape)
+                        showsMediaCover -> Modifier.border(1.dp, fixedColors.HudSpecularBorder, coverShape)
+                        else -> Modifier
+                    },
                 )
-                .then(if (selectionBorderColor.alpha > 0f) Modifier.border(3.dp, selectionBorderColor, coverShape) else Modifier)
+                .clip(coverShape)
                 .locateHighlight(isHighlighted, coverShape),
         ) {
             FileArtwork(
@@ -517,10 +525,26 @@ private fun CardTrailing(
     onMoreClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-        // 盖在标题上时要有底色，否则图标压在字上读不清
-        FilledTonalIconButton(onClick = onMoreClick, modifier = modifier.size(28.dp).ownsClicks()) {
-            Icon(Icons.Outlined.MoreVert, contentDescription = tr("更多操作", "More actions", "その他の操作", "추가 작업", "更多操作"), modifier = Modifier.size(18.dp))
-        }
+    val isEInk = LocalAppearance.current.isEInk
+    val colors = MaterialTheme.colorScheme
+    // 盖在标题上时要有底色，否则图标压在字上读不清；水墨屏下改为白底黑框黑图标，避免灰底低对比
+    FilledTonalIconButton(
+        onClick = onMoreClick,
+        colors = if (isEInk) {
+            IconButtonDefaults.filledTonalIconButtonColors(
+                containerColor = Color.White,
+                contentColor = Color.Black,
+            )
+        } else {
+            IconButtonDefaults.filledTonalIconButtonColors()
+        },
+        modifier = modifier
+            .size(28.dp)
+            .then(if (isEInk) Modifier.border(1.dp, colors.outline, CircleShape) else Modifier)
+            .ownsClicks(),
+    ) {
+        Icon(Icons.Outlined.MoreVert, contentDescription = tr("更多操作", "More actions", "その他の操作", "추가 작업", "更多操作"), modifier = Modifier.size(18.dp))
+    }
 }
 
 

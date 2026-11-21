@@ -408,7 +408,9 @@ class ProxyLoopbackReplayTest {
                     bufferBudget = BufferBudget(maxReadAheadBytes = 512L * 1024),
                 ),
             )
-            awaitUntil("epoch 推进在 0ms 内取消旧世代投机预读") { speculativeInFlight.get() == 0 }
+            awaitUntil("epoch 推进在 0ms 内取消旧世代投机预读") {
+                speculativeInFlight.get() == 0 && harness.activeCdnRequests.get() <= 1
+            }
             assertFalse(lookAheadGate.isCompleted)
             assertEquals(1, harness.activeCdnRequests.get(), "旧连接当前正在读的单块 Required 不得被误杀")
 

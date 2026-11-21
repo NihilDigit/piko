@@ -51,6 +51,8 @@ kotlin {
             api(libs.pikpak.kotlin)
             // 本机回环代理的服务端：只需 GET/HEAD 加 Range，原始 socket 足够
             implementation(libs.ktor.network)
+            // 纯 Kotlin Multiplatform Markdown AST 解析器（GFM 表格、删除线、任务列表、自动链接）
+            implementation(libs.jetbrains.markdown)
         }
         val desktopMain by getting {
             dependencies {

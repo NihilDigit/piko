@@ -1,6 +1,7 @@
 package dev.piko.shared.media.player
 
 import dev.piko.data.auth.AppLanguage
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.charset.Charset
 import java.nio.charset.CodingErrorAction
@@ -46,6 +47,26 @@ object JvmSubtitleTextTranscoder : SubtitleTextTranscoder {
             return bytes
         }
         return decodeLegacyCharset(bytes, effectiveLanguage, systemLanguage).toByteArray(Charsets.UTF_8)
+    }
+
+    override fun readLocalSample(path: String, maxBytes: Int): ByteArray? {
+        if (path.isBlank() || maxBytes <= 0 || path.startsWith("content:", ignoreCase = true)) return null
+        return runCatching {
+            val file = File(path)
+            if (!file.isFile || !file.canRead()) return@runCatching null
+            val limit = minOf(file.length(), maxBytes.toLong()).toInt()
+            if (limit <= 0) return@runCatching null
+            file.inputStream().use { input ->
+                val out = ByteArray(limit)
+                var filled = 0
+                while (filled < limit) {
+                    val n = input.read(out, filled, limit - filled)
+                    if (n <= 0) break
+                    filled += n
+                }
+                if (filled <= 0) null else if (filled == limit) out else out.copyOf(filled)
+            }
+        }.getOrNull()
     }
 
     private fun decodeLegacyCharset(

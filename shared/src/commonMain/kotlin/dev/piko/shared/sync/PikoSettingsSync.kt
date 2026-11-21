@@ -8,6 +8,7 @@ import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.media.player.SubtitleStylePrefs
 import dev.piko.shared.media.player.decodePlayerLayoutPrefs
 import dev.piko.shared.media.player.encodePlayerLayoutPrefs
 import io.github.nihildigit.pikpak.FileStat
@@ -63,7 +64,16 @@ val SyncedSettings: List<SyncedSetting> = listOf(
     bool("renameRegexTextMode", { it.renameRegexTextModeFlow }) { setRenameRegexTextMode(it) },
     // 空串是「跟随系统」。设置接口没有写回跟随系统的入口，远端的空值不往本机写
     SyncedSetting("themeMode", { prefs -> prefs.themeModeFlow.map { it.orEmpty() } }, { prefs, value -> if (value.isNotEmpty()) prefs.setThemeMode(value) }),
-    SyncedSetting("themeSeed", { prefs -> prefs.themeSeedFlow.map { it.orEmpty() } }, { prefs, value -> prefs.setThemeSeed(value.ifEmpty { null }) }),
+    // 水墨屏模式（EINK）为设备本地硬件显示特性，不随账号跨设备同步；旧客户端推送的 EINK 一律忽略
+    SyncedSetting(
+        "themeSeed",
+        { prefs -> prefs.themeSeedFlow.map { seed -> seed.takeUnless { it.equals("EINK", ignoreCase = true) }.orEmpty() } },
+        { prefs, value ->
+            if (!value.equals("EINK", ignoreCase = true)) {
+                prefs.setThemeSeed(value.ifEmpty { null })
+            }
+        },
+    ),
     bool("pureBlack", { it.pureBlackFlow }) { setPureBlack(it) },
     SyncedSetting("driveViewMode", { it.driveViewModeFlow }, { prefs, value -> prefs.setDriveViewMode(value) }),
     // 最近移动到的目录：换一台设备也用得上
@@ -88,6 +98,11 @@ val SyncedSettings: List<SyncedSetting> = listOf(
         "playerLayout",
         { prefs -> prefs.playerLayoutPrefsFlow.map(::encodePlayerLayoutPrefs) },
         { prefs, value -> prefs.setPlayerLayoutPrefs(decodePlayerLayoutPrefs(value)) },
+    ),
+    SyncedSetting(
+        "subtitleStyle",
+        { prefs -> prefs.subtitleStylePrefsFlow.map(SubtitleStylePrefs::encodeJson) },
+        { prefs, value -> prefs.setSubtitleStylePrefs(SubtitleStylePrefs.decodeJson(value)) },
     ),
     SyncedSetting(
         "driveAppearance",
@@ -217,6 +232,7 @@ class PikoSettingsSync(
             null
         }
         val remoteValues = remoteDoc?.values.orEmpty()
+            .filterNot { (key, entry) -> key == "themeSeed" && entry.value.equals("EINK", ignoreCase = true) }
 
         // 远端带着已停用的项时，合并结果与远端不同，下面随即写一份不含它的新文件，旧文件随之删掉
         val merged = (mine.keys + remoteValues.keys - RetiredSettingKeys).associateWith { key ->
@@ -350,26 +366,33 @@ class DriveSettingsStore(
 ) : RemoteSettingsStore {
     private data class CachedRemoteFile(val fileId: String, val stamp: Long, val text: String)
 
-    // 各账号的 .piko 文件夹 ID：找它要列整个根目录，每次同步都找一遍太贵
-    private val folderIds = HashMap<String, String>()
     private val lastRead = HashMap<String, CachedRemoteFile>()
     private val cacheLock = Mutex()
 
-    override suspend fun read(account: String): String? {
+    private suspend inline fun <T> withBackgroundPriorityIfUnset(crossinline block: suspend () -> T): T =
+        if (kotlinx.coroutines.currentCoroutineContext()[io.github.nihildigit.pikpak.ApiRequestPriority] != null) {
+            block()
+        } else {
+            io.github.nihildigit.pikpak.withApiPriority(io.github.nihildigit.pikpak.ApiRequestPriority.BACKGROUND) {
+                block()
+            }
+        }
+
+    override suspend fun read(account: String): String? = withBackgroundPriorityIfUnset {
         val (_, entries) = folderAndEntriesOf(account)
         // 上传分创建元数据与传输内容两步；进程若在两步之间中断会留下 phase != COMPLETE 的空壳文件且无下载直链，
         // 必须过滤掉未完成条目，避免因其时间戳最新而阻塞后续读取与清理。
         val file = entries
             .filter { it.isSettingsFile() && it.phase == TaskPhase.COMPLETE }
             .maxByOrNull { it.stamp() }
-            ?: return null
+            ?: return@withBackgroundPriorityIfUnset null
         val stamp = file.stamp()
         val cached = cacheLock.withLock {
             lastRead[account]?.takeIf { it.fileId == file.id && it.stamp == stamp }?.text
         }
         if (cached != null) {
             requireCurrent(account)
-            return cached
+            return@withBackgroundPriorityIfUnset cached
         }
         val text = driveRepo.readBytes(file.id).getOrThrow().decodeToString()
         // 读回来的要并进本机的那一份，那时本机已换成别的账号的，就并错了地方
@@ -377,14 +400,15 @@ class DriveSettingsStore(
         cacheLock.withLock {
             lastRead[account] = CachedRemoteFile(file.id, stamp, text)
         }
-        return text
+        text
     }
 
-    override suspend fun write(account: String, text: String, stamp: Long) {
+    override suspend fun write(account: String, text: String, stamp: Long) = withBackgroundPriorityIfUnset {
         val folder = folderOf(account)
         val name = "$filePrefix$stamp$FILE_SUFFIX"
         requireCurrent(account)
         val createdId = driveRepo.uploadBytes(folder, name, text.encodeToByteArray()).getOrThrow()
+        driveRepo.syncFolderCache.invalidateListing(account)
         cacheLock.withLock {
             lastRead[account] = CachedRemoteFile(createdId, stamp, text)
         }
@@ -396,48 +420,60 @@ class DriveSettingsStore(
             requireCurrent(account)
             driveRepo.delete(stale.map { it.id })
                 .logFailure(tag, "Failed to delete ${stale.size} stale $filePrefix files")
+            driveRepo.syncFolderCache.invalidateListing(account)
         }
     }
 
-    override suspend fun latestStamp(account: String): Long {
+    override suspend fun latestStamp(account: String): Long = withBackgroundPriorityIfUnset {
         val (_, entries) = folderAndEntriesOf(account)
         requireCurrent(account)
-        return entries
+        entries
             .filter { it.isSettingsFile() && it.phase == TaskPhase.COMPLETE }
             .maxOfOrNull { it.stamp() } ?: 0L
     }
 
-    override suspend fun writeBackup(account: String, text: String, stamp: Long) {
+    override suspend fun writeBackup(account: String, text: String, stamp: Long) = withBackgroundPriorityIfUnset {
         val folder = folderOf(account)
         val name = "backup-$filePrefix$stamp$FILE_SUFFIX"
         requireCurrent(account)
         driveRepo.uploadBytes(folder, name, text.encodeToByteArray()).getOrThrow()
+        driveRepo.syncFolderCache.invalidateListing(account)
         PikoLog.i(tag, "Saved encrypted sync backup before reset: $name")
     }
 
-    // 记着的文件夹可能已被删掉或移走：列不出来就忘掉它，重新找一次。多个同步器在登录后并发启动，
-    // 查找与创建共用静态 folderLock，防止并发在根目录建出重复的 .piko 文件夹。
-    private suspend fun folderAndEntriesOf(account: String): Pair<String, List<FileStat>> = folderLock.withLock {
-        requireCurrent(account)
-        folderIds[account]?.let { known ->
-            val listed = driveRepo.listAllFiles(known)
-                .logFailure(tag, "Failed to list cached .piko folder $known; re-resolving from root")
-            if (listed.isSuccess) return@withLock known to listed.getOrThrow()
-            folderIds.remove(account)
+    // 记着的文件夹可能已被删掉或移走：列不出来就忘掉它，重新找一次。多个同步器在登录后或切回前台时
+    // 连续启动，共用 driveRepo.syncFolderCache 的互斥锁与短 TTL 目录列表缓存，既防并发建出重复
+    // .piko 文件夹，又避免 PinnedTabSync / SettingsSync / MetaTubeSync 等连续重复列举 .piko。
+    private suspend fun folderAndEntriesOf(account: String): Pair<String, List<FileStat>> =
+        driveRepo.syncFolderCache.resolveLock.withLock {
+            requireCurrent(account)
+            driveRepo.syncFolderCache.freshListing(account, LISTING_CACHE_TTL)?.let { return@withLock it }
+            driveRepo.syncFolderCache.folderId(account)?.let { known ->
+                val listed = driveRepo.listAllFiles(known)
+                    .logFailure(tag, "Failed to list cached .piko folder $known; re-resolving from root")
+                if (listed.isSuccess) {
+                    requireCurrent(account)
+                    val entries = listed.getOrThrow()
+                    driveRepo.syncFolderCache.rememberListing(account, known, entries)
+                    return@withLock known to entries
+                }
+                driveRepo.syncFolderCache.invalidateAccount(account)
+            }
+            val root = driveRepo.listAllFiles("").getOrThrow()
+            requireCurrent(account)
+            val existingId = root.firstOrNull { it.isFolder && it.name == PikoSettingsSync.FOLDER_NAME && !it.trashed }?.id
+            if (existingId != null) {
+                val entries = driveRepo.listAllFiles(existingId).getOrThrow()
+                requireCurrent(account)
+                driveRepo.syncFolderCache.rememberListing(account, existingId, entries)
+                return@withLock existingId to entries
+            }
+            val created = driveRepo.createFolder("", PikoSettingsSync.FOLDER_NAME).getOrThrow()
+                .also { PikoLog.i(tag, "Created missing .piko sync folder: $it") }
+            requireCurrent(account)
+            driveRepo.syncFolderCache.rememberListing(account, created, emptyList())
+            created to emptyList()
         }
-        val root = driveRepo.listAllFiles("").getOrThrow()
-        requireCurrent(account)
-        val existingId = root.firstOrNull { it.isFolder && it.name == PikoSettingsSync.FOLDER_NAME && !it.trashed }?.id
-        if (existingId != null) {
-            folderIds[account] = existingId
-            val entries = driveRepo.listAllFiles(existingId).getOrThrow()
-            return@withLock existingId to entries
-        }
-        val created = driveRepo.createFolder("", PikoSettingsSync.FOLDER_NAME).getOrThrow()
-            .also { PikoLog.i(tag, "Created missing .piko sync folder: $it") }
-        folderIds[account] = created
-        created to emptyList()
-    }
 
     private suspend fun folderOf(account: String): String = folderAndEntriesOf(account).first
 
@@ -459,7 +495,7 @@ class DriveSettingsStore(
     private fun FileStat.stamp() = stampOrNull() ?: 0L
 
     private companion object {
-        val folderLock = Mutex()
+        val LISTING_CACHE_TTL = kotlin.time.Duration.parse("8s")
         const val FILE_SUFFIX = ".json"
         const val DEFAULT_TAG = "SettingsSync"
     }

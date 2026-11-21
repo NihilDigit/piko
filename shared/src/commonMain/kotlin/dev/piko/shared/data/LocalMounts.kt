@@ -80,6 +80,7 @@ interface LocalFileAccess {
     suspend fun playbackPath(mount: LocalMount, location: LocalLocation): String
     suspend fun subtitlePath(mount: LocalMount, location: LocalLocation): String = playbackPath(mount, location)
     suspend fun probe(mount: LocalMount, location: LocalLocation): FileStat?
+    suspend fun readBytes(mount: LocalMount, location: LocalLocation, maxBytes: Int): Pair<ByteArray, Long>? = null
     fun folderCover(mount: LocalMount, location: LocalLocation = mount.location): String = ""
     fun cancelPending() {}
 }
@@ -212,6 +213,12 @@ class LocalMounts(
         val location = LocalLocation.of(id) ?: return null
         val mount = find(id) ?: return null
         return safeRead("probe", mount.mountId) { access?.probe(mount, location) }
+    }
+    suspend fun readBytes(id: String, maxBytes: Int): Pair<ByteArray, Long>? {
+        val location = LocalLocation.of(id) ?: return null
+        val mount = find(id) ?: error("本地文件夹已取消挂载")
+        val reader = requireNotNull(access) { "本机文件夹不可访问" }
+        return safeRead("read-bytes", mount.mountId) { reader.readBytes(mount, location, maxBytes) }
     }
     /** 文件系统异常包含本机路径，跨出访问边界时只传递不含路径的可展示错误，诊断日志仅记录挂载槽位与异常类型。 */
     private suspend fun <T> safeRead(op: String, mountId: String, read: suspend () -> T): T = try {

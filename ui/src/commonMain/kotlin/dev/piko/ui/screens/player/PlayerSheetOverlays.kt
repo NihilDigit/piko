@@ -45,6 +45,7 @@ import dev.piko.shared.media.player.OriginalSubtitleTrackInfo
 import dev.piko.shared.media.player.PlaybackStatsSection
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlaylistEntry
+import dev.piko.shared.media.player.SubtitleStylePrefs
 import dev.piko.shared.media.player.VideoCropRegion
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.i18n.stringResource
@@ -90,6 +91,9 @@ internal fun PlayerSheetsOverlay(
     onSelectSubtitleTrack: (MediaTrack?) -> Unit,
     onPickLocalSubtitle: (() -> Unit)?,
     onPickDriveSubtitle: ((FileStat) -> Unit)?,
+    subtitleStyle: SubtitleStylePrefs = SubtitleStylePrefs.DEFAULT,
+    onSubtitleStylePreview: ((SubtitleStylePrefs) -> Unit)? = null,
+    onSubtitleStyleChange: ((SubtitleStylePrefs) -> Unit)? = null,
     playbackStats: (() -> List<PlaybackStatsSection>)?,
     hasTracks: Boolean = false,
     hasSettings: Boolean = true,
@@ -151,6 +155,7 @@ internal fun PlayerSheetsOverlay(
                 onSeekStepChange = onSeekStepChange,
                 longPressSpeed = longPressSpeed,
                 onLongPressSpeedChange = onLongPressSpeedChange,
+                onOpenSubtitleStyle = onSubtitleStyleChange?.let { { onOpenSheet(PlayerSheet.SubtitleStyle) } },
             )
             PlayerSheet.Tracks -> TracksPanel(
                 audioTracks = audioTracks,
@@ -179,6 +184,17 @@ internal fun PlayerSheetsOverlay(
                 },
                 modifier = Modifier.weight(1f),
             )
+            PlayerSheet.SubtitleStyle -> onSubtitleStyleChange?.let { onCommit ->
+                val selectedSubtitleTrack = remember(subtitleTracks, selectedSubtitleTrackId) {
+                    selectedSubtitleTrackId?.let { id -> subtitleTracks.firstOrNull { it.id == id } }
+                }
+                SubtitleStylePanel(
+                    style = subtitleStyle,
+                    onPreview = onSubtitleStylePreview ?: onCommit,
+                    onCommit = onCommit,
+                    selectedSubtitleTrack = selectedSubtitleTrack,
+                )
+            }
             PlayerSheet.Stats -> playbackStats?.let { PlaybackStatsPanel(read = it) }
             PlayerSheet.Speed -> playbackSpeed?.let { speed ->
                 ExpandedSpeedPanel(

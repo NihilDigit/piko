@@ -52,25 +52,34 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeveloperBoard
 import androidx.compose.material.icons.outlined.FileOpen
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Movie
+import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Subtitles
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -79,6 +88,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
@@ -111,10 +121,17 @@ import dev.piko.shared.media.player.MediaTrack
 import dev.piko.shared.media.player.OriginalSubtitleTrackInfo
 import dev.piko.shared.media.player.PlayerAspectRatio
 import dev.piko.shared.media.player.PlaylistEntry
+import dev.piko.shared.media.player.SubtitleBackgroundPreset
+import dev.piko.shared.media.player.SubtitleFontPreset
+import dev.piko.shared.media.player.SubtitleStylePrefs
+import dev.piko.shared.media.player.imageSubtitleFormatLabel
 import dev.piko.shared.media.player.preferredVersion
-import dev.piko.shared.media.player.trackDisplayName
+import dev.piko.shared.media.player.trackDisplayNames
 import dev.piko.ui.components.ListSpoilerBlur
+import dev.piko.ui.components.MenuMotion
+import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.connectedToggleShapes
+import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.SpoilerThumbnail
 import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.components.wheelStaysInSheet
@@ -144,11 +161,51 @@ import dev.piko.ui.resources.player_tab_episodes
 import dev.piko.ui.resources.player_tab_settings
 import dev.piko.ui.resources.player_tab_stats
 import dev.piko.ui.resources.player_tab_tracks
+import dev.piko.ui.resources.subtitle_style_background
+import dev.piko.ui.resources.subtitle_style_background_color
+import dev.piko.ui.resources.subtitle_style_background_desc
+import dev.piko.ui.resources.subtitle_style_background_opacity
+import dev.piko.ui.resources.subtitle_style_background_opacity_decrease
+import dev.piko.ui.resources.subtitle_style_background_opacity_increase
+import dev.piko.ui.resources.subtitle_style_bg_black
+import dev.piko.ui.resources.subtitle_style_bg_charcoal
+import dev.piko.ui.resources.subtitle_style_bg_espresso
+import dev.piko.ui.resources.subtitle_style_bg_forest
+import dev.piko.ui.resources.subtitle_style_bg_midnight
+import dev.piko.ui.resources.subtitle_style_bg_plum
+import dev.piko.ui.resources.subtitle_style_font
+import dev.piko.ui.resources.subtitle_style_font_choose
+import dev.piko.ui.resources.subtitle_style_font_default
+import dev.piko.ui.resources.subtitle_style_font_missing_fallback
+import dev.piko.ui.resources.subtitle_style_font_monospace
+import dev.piko.ui.resources.subtitle_style_font_serif
+import dev.piko.ui.resources.subtitle_style_font_system
+import dev.piko.ui.resources.subtitle_style_image_notice
+import dev.piko.ui.resources.subtitle_style_image_notice_generic
+import dev.piko.ui.resources.subtitle_style_override_ass
+import dev.piko.ui.resources.subtitle_style_override_ass_desc
+import dev.piko.ui.resources.subtitle_style_position
+import dev.piko.ui.resources.subtitle_style_position_bottom
+import dev.piko.ui.resources.subtitle_style_position_down
+import dev.piko.ui.resources.subtitle_style_position_middle
+import dev.piko.ui.resources.subtitle_style_position_top
+import dev.piko.ui.resources.subtitle_style_position_up
+import dev.piko.ui.resources.subtitle_style_reset
+import dev.piko.ui.resources.subtitle_style_size
+import dev.piko.ui.resources.subtitle_style_size_decrease
+import dev.piko.ui.resources.subtitle_style_size_increase
+import dev.piko.ui.resources.subtitle_style_title
 import dev.piko.ui.theme.LocalFixedColors
 import dev.piko.ui.theme.tabular
 import kotlin.math.roundToInt
 
-internal enum class PlayerSheet { Episodes, Settings, Tracks, DriveSubtitles, Stats, Speed, Quality }
+internal enum class PlayerSheet { Episodes, Settings, Tracks, DriveSubtitles, SubtitleStyle, Stats, Speed, Quality }
+
+private fun PlayerSheet.parentSheet(): PlayerSheet? = when (this) {
+    PlayerSheet.DriveSubtitles -> PlayerSheet.Tracks
+    PlayerSheet.SubtitleStyle -> PlayerSheet.Settings
+    else -> null
+}
 
 /**
  * 播放器的面板容器：横屏是贴右侧的浮动 side sheet，竖屏是 bottom sheet。
@@ -191,16 +248,17 @@ internal fun PlayerSheetHost(
             val fixedHeight = sheet == PlayerSheet.Episodes || sheet == PlayerSheet.DriveSubtitles
             val height = if (fixedHeight) Modifier.fillMaxHeight(EPISODE_SHEET_HEIGHT_FRACTION) else Modifier
             Column(height.wheelStaysInSheet()) {
-                if (sheet == PlayerSheet.DriveSubtitles) {
+                val parentSheet = sheet.parentSheet()
+                if (parentSheet != null) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 24.dp, bottom = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        IconButton(onClick = { onSelectTab(PlayerSheet.Tracks) }, shapes = IconButtonDefaults.shapes()) {
+                        IconButton(onClick = { onSelectTab(parentSheet) }, shapes = IconButtonDefaults.shapes()) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("返回", "Back", "戻る", "뒤로", "返回"))
                         }
                         Spacer(Modifier.width(4.dp))
-                        Text(text = sheet.title, style = MaterialTheme.typography.titleLarge)
+                        Text(text = sheet.sheetTitle(), style = MaterialTheme.typography.titleLarge)
                     }
                 } else if (availableTabs.size > 1 && sheet in availableTabs) {
                     PlayerSheetTabStrip(
@@ -211,7 +269,7 @@ internal fun PlayerSheetHost(
                     )
                 } else {
                     Text(
-                        text = sheet.title,
+                        text = sheet.sheetTitle(),
                         style = MaterialTheme.typography.titleLarge,
                         modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 16.dp),
                     )
@@ -228,8 +286,9 @@ private fun PlayerSheet.tabLabel(): String = when (this) {
     PlayerSheet.Tracks -> stringResource(Res.string.player_tab_tracks)
     PlayerSheet.Settings -> stringResource(Res.string.player_tab_settings)
     PlayerSheet.Stats -> stringResource(Res.string.player_tab_stats)
-    PlayerSheet.DriveSubtitles -> title
-    PlayerSheet.Speed -> title
+    PlayerSheet.DriveSubtitles -> sheetTitle()
+    PlayerSheet.SubtitleStyle -> stringResource(Res.string.subtitle_style_title)
+    PlayerSheet.Speed -> sheetTitle()
     PlayerSheet.Quality -> stringResource(Res.string.player_quality)
 }
 
@@ -264,16 +323,17 @@ private fun PlayerSheetTabStrip(
     }
 }
 
-private val PlayerSheet.title: String
-    get() = when (this) {
-        PlayerSheet.Episodes -> tr("选集", "Playlist", "再生リスト", "재생 목록", "選集")
-        PlayerSheet.Settings -> tr("播放设置", "Playback settings", "再生設定", "재생 설정", "播放設定")
-        PlayerSheet.Tracks -> tr("音轨与字幕", "Audio and subtitles", "音声と字幕", "오디오 및 자막", "音軌與字幕")
-        PlayerSheet.DriveSubtitles -> tr("从网盘选择字幕", "Choose subtitles from drive", "ドライブから字幕を選択", "드라이브에서 자막 선택", "從雲端硬碟選擇字幕")
-        PlayerSheet.Stats -> tr("详细信息", "Details", "詳細情報", "세부 정보", "詳細資訊")
-        PlayerSheet.Speed -> tr("倍速", "Speed", "再生速度", "재생 속도", "倍速")
-        PlayerSheet.Quality -> tr("清晰度", "Quality", "画質", "화질", "畫質")
-    }
+@Composable
+private fun PlayerSheet.sheetTitle(): String = when (this) {
+    PlayerSheet.Episodes -> tr("选集", "Playlist", "再生リスト", "재생 목록", "選集")
+    PlayerSheet.Settings -> tr("播放设置", "Playback settings", "再生設定", "재생 설정", "播放設定")
+    PlayerSheet.Tracks -> tr("音轨与字幕", "Audio and subtitles", "音声と字幕", "오디오 및 자막", "音軌與字幕")
+    PlayerSheet.DriveSubtitles -> tr("从网盘选择字幕", "Choose subtitles from drive", "ドライブから字幕を選択", "드라이브에서 자막 선택", "從雲端硬碟選擇字幕")
+    PlayerSheet.SubtitleStyle -> stringResource(Res.string.subtitle_style_title)
+    PlayerSheet.Stats -> tr("详细信息", "Details", "詳細情報", "세부 정보", "詳細資訊")
+    PlayerSheet.Speed -> tr("倍速", "Speed", "再生速度", "재생 속도", "倍速")
+    PlayerSheet.Quality -> tr("清晰度", "Quality", "画質", "화질", "畫質")
+}
 
 private data class DecodeBadgeInfo(val isHardware: Boolean, val backend: String?)
 
@@ -460,7 +520,10 @@ private fun PlayerSideSheet(
         PlayerSheet.Speed -> (windowWidth * SIDE_SHEET_WIDTH_FRACTION).coerceIn(SIDE_SHEET_MIN_WIDTH, SIDE_SHEET_SPEED_MAX_WIDTH)
         else -> (windowWidth * SIDE_SHEET_WIDTH_FRACTION).coerceIn(SIDE_SHEET_MIN_WIDTH, SIDE_SHEET_WIDTH)
     }
-    BackHandler(enabled = visible, onBack = onDismiss)
+    BackHandler(enabled = visible) {
+        val parent = activeSheet?.parentSheet()
+        if (parent != null) onSelectTab(parent) else onDismiss()
+    }
     Box(Modifier.fillMaxSize()) {
         AnimatedVisibility(
             visible = visible,
@@ -497,11 +560,12 @@ private fun PlayerSideSheet(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (activeSheet == PlayerSheet.DriveSubtitles) {
-                            IconButton(onClick = { onSelectTab(PlayerSheet.Tracks) }, shapes = IconButtonDefaults.shapes()) {
+                        val parentSheet = activeSheet?.parentSheet()
+                        if (parentSheet != null && activeSheet != null) {
+                            IconButton(onClick = { onSelectTab(parentSheet) }, shapes = IconButtonDefaults.shapes()) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("返回", "Back", "戻る", "뒤로", "返回"))
                             }
-                            Text(activeSheet.title, style = MaterialTheme.typography.titleMediumEmphasized, modifier = Modifier.weight(1f))
+                            Text(activeSheet.sheetTitle(), style = MaterialTheme.typography.titleMediumEmphasized, modifier = Modifier.weight(1f))
                         } else if (availableTabs.size > 1 && activeSheet != null && activeSheet in availableTabs) {
                             PlayerSheetTabStrip(
                                 tabs = availableTabs,
@@ -511,7 +575,7 @@ private fun PlayerSideSheet(
                             )
                         } else {
                             Text(
-                                text = activeSheet?.title.orEmpty(),
+                                text = activeSheet?.sheetTitle().orEmpty(),
                                 style = MaterialTheme.typography.titleMediumEmphasized,
                                 modifier = Modifier.weight(1f).padding(start = 4.dp),
                             )
@@ -1303,6 +1367,7 @@ internal fun PlayerSettingsPanel(
     onSeekStepChange: ((Int) -> Unit)? = null,
     longPressSpeed: Float = PlayerGestureDefaults.BOOST_SPEED,
     onLongPressSpeedChange: ((Float) -> Unit)? = null,
+    onOpenSubtitleStyle: (() -> Unit)? = null,
 ) {
     Column(
         modifier = modifier
@@ -1363,6 +1428,44 @@ internal fun PlayerSettingsPanel(
                 )
             }
         }
+        if (onOpenSubtitleStyle != null) {
+            SettingsSection(tr("字幕", "Subtitles", "字幕", "자막", "字幕")) {
+                Surface(
+                    onClick = onOpenSubtitleStyle,
+                    shape = RoundedCornerShape(SEGMENT_OUTER_CORNER),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).handCursor(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Tune,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            text = stringResource(Res.string.subtitle_style_title),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 8.dp).size(20.dp),
+                        )
+                    }
+                }
+            }
+        }
         if (onSeekStepChange != null) {
             SettingsSection(tr("进退步长", "Seek step", "シーク間隔", "탐색 간격", "快轉與倒轉間隔"), trailing = tr("$seekStepSeconds 秒", "$seekStepSeconds sec", "$seekStepSeconds 秒", "${seekStepSeconds}초", "$seekStepSeconds 秒")) {
                 ConnectedChoiceRow(
@@ -1407,6 +1510,8 @@ internal fun TracksPanel(
     originalSubtitleHints: List<OriginalSubtitleTrackInfo> = emptyList(),
     onSwitchToOriginalQuality: (() -> Unit)? = null,
 ) {
+    val audioLabels = trackDisplayNames(audioTracks)
+    val subtitleLabels = trackDisplayNames(subtitleTracks)
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -1418,7 +1523,7 @@ internal fun TracksPanel(
             TrackSection(tr("音轨", "Audio track", "音声トラック", "오디오 트랙", "音軌")) {
                 audioTracks.forEachIndexed { index, track ->
                     TrackRow(
-                        label = trackDisplayName(track, index),
+                        label = audioLabels[index],
                         selected = track.id == selectedAudioTrackId,
                         index = index,
                         count = audioTracks.size,
@@ -1442,7 +1547,7 @@ internal fun TracksPanel(
             )
             subtitleTracks.forEachIndexed { index, track ->
                 TrackRow(
-                    label = trackDisplayName(track, index),
+                    label = subtitleLabels[index],
                     selected = track.id == selectedSubtitleTrackId,
                     index = index + 1,
                     count = totalSubtitleRows,
@@ -1503,6 +1608,673 @@ internal fun TracksPanel(
     }
 }
 
+/**
+ * 字幕外观实时调节面板：支持开关半透明深色底色、切换字体预设与已安装系统字体、调节字号与纵向位置，
+ * 以及可选覆盖 ASS 特效样式。在横屏侧边栏与竖屏底部面板中拖动滑块或点击开关均即时作用于播放画面。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+internal fun SubtitleStylePanel(
+    style: SubtitleStylePrefs,
+    onPreview: (SubtitleStylePrefs) -> Unit,
+    onCommit: (SubtitleStylePrefs) -> Unit,
+    modifier: Modifier = Modifier,
+    selectedSubtitleTrack: MediaTrack? = null,
+) {
+    val platform = LocalPikoPlatform.current
+    var draft by remember(style) { mutableStateOf(style.sanitize()) }
+    var availableFonts by remember { mutableStateOf<List<String>>(emptyList()) }
+    var fontsLoaded by remember { mutableStateOf(false) }
+    LaunchedEffect(platform) {
+        availableFonts = platform.listSubtitleFonts()
+        fontsLoaded = true
+    }
+
+    val applyInstant: (SubtitleStylePrefs) -> Unit = { updated ->
+        val clean = updated.sanitize()
+        draft = clean
+        onCommit(clean)
+    }
+
+    val presetOptions = remember {
+        listOf(
+            SubtitleFontPreset.Default,
+            SubtitleFontPreset.Serif,
+            SubtitleFontPreset.Monospace,
+        )
+    }
+    val defaultFontLabel = stringResource(Res.string.subtitle_style_font_default)
+    val serifFontLabel = stringResource(Res.string.subtitle_style_font_serif)
+    val monoFontLabel = stringResource(Res.string.subtitle_style_font_monospace)
+    val customFontMissing = fontsLoaded &&
+        draft.fontPreset == SubtitleFontPreset.Custom &&
+        draft.customFontFamily != null &&
+        availableFonts.isNotEmpty() &&
+        availableFonts.none { it.equals(draft.customFontFamily, ignoreCase = true) }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(start = 16.dp, end = 16.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        if (selectedSubtitleTrack?.isImage == true) {
+            val formatLabel = imageSubtitleFormatLabel(selectedSubtitleTrack.codec)
+            val noticeText = if (formatLabel != null) {
+                stringResource(Res.string.subtitle_style_image_notice, formatLabel)
+            } else {
+                stringResource(Res.string.subtitle_style_image_notice_generic)
+            }
+            Surface(
+                shape = RoundedCornerShape(SEGMENT_OUTER_CORNER),
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Info,
+                        contentDescription = null,
+                        modifier = Modifier.padding(top = 1.dp).size(18.dp),
+                    )
+                    Text(
+                        text = noticeText,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+
+        SubtitleBackgroundCard(
+            draft = draft,
+            onToggle = { checked -> applyInstant(draft.copy(showBackground = checked)) },
+            onSelectColor = { rgb -> applyInstant(draft.copy(backgroundColorRgb = rgb)) },
+            onPreviewOpacity = { nextOpacity ->
+                val next = draft.copy(backgroundOpacity = nextOpacity)
+                draft = next
+                onPreview(next)
+            },
+            onCommitOpacity = { onCommit(draft) },
+            onStepOpacity = { nextOpacity ->
+                applyInstant(draft.copy(backgroundOpacity = nextOpacity))
+            },
+        )
+
+        SettingsSection(
+            title = stringResource(Res.string.subtitle_style_font),
+        ) {
+            ConnectedChoiceRow(
+                options = presetOptions,
+                isSelected = { preset -> draft.fontPreset == preset },
+                optionLabel = { preset ->
+                    when (preset) {
+                        SubtitleFontPreset.Default -> defaultFontLabel
+                        SubtitleFontPreset.Serif -> serifFontLabel
+                        SubtitleFontPreset.Monospace -> monoFontLabel
+                        SubtitleFontPreset.Custom -> defaultFontLabel
+                    }
+                },
+                onSelect = { preset ->
+                    applyInstant(draft.copy(fontPreset = preset, customFontFamily = null))
+                },
+            )
+            if (availableFonts.isNotEmpty() || draft.fontPreset == SubtitleFontPreset.Custom) {
+                Spacer(Modifier.height(10.dp))
+                var fontMenuExpanded by remember { mutableStateOf(false) }
+                Surface(
+                    shape = RoundedCornerShape(SEGMENT_OUTER_CORNER),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = stringResource(Res.string.subtitle_style_font_system),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Box {
+                            FilledTonalButton(
+                                onClick = { if (availableFonts.isNotEmpty()) fontMenuExpanded = true },
+                                enabled = availableFonts.isNotEmpty(),
+                                shapes = ButtonDefaults.shapes(),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                modifier = Modifier.heightIn(min = 36.dp).handCursor(availableFonts.isNotEmpty()),
+                            ) {
+                                Text(
+                                    text = if (draft.fontPreset == SubtitleFontPreset.Custom && !draft.customFontFamily.isNullOrBlank()) {
+                                        draft.customFontFamily.orEmpty()
+                                    } else {
+                                        stringResource(Res.string.subtitle_style_font_choose)
+                                    },
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 160.dp),
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = Icons.Outlined.ArrowDropDown,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                            MenuMotion {
+                                PikoDropdownMenu(
+                                    expanded = fontMenuExpanded,
+                                    onDismissRequest = { fontMenuExpanded = false },
+                                    modifier = Modifier.heightIn(max = SUBTITLE_FONT_MENU_MAX_HEIGHT),
+                                ) {
+                                    availableFonts.forEachIndexed { index, family ->
+                                        val isChosen = draft.fontPreset == SubtitleFontPreset.Custom &&
+                                            draft.customFontFamily.equals(family, ignoreCase = true)
+                                        DropdownMenuItem(
+                                            onClick = {
+                                                fontMenuExpanded = false
+                                                applyInstant(
+                                                    draft.copy(
+                                                        fontPreset = SubtitleFontPreset.Custom,
+                                                        customFontFamily = family,
+                                                    ),
+                                                )
+                                            },
+                                            text = {
+                                                Text(
+                                                    text = family,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            },
+                                            shape = menuItemShape(index, availableFonts.size),
+                                            trailingContent = if (isChosen) {
+                                                {
+                                                    Icon(
+                                                        imageVector = Icons.Filled.Check,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(18.dp),
+                                                    )
+                                                }
+                                            } else {
+                                                null
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (customFontMissing) {
+                    Text(
+                        text = stringResource(Res.string.subtitle_style_font_missing_fallback),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 8.dp, top = 6.dp),
+                    )
+                }
+            }
+        }
+
+        val sizeLabel = stringResource(Res.string.subtitle_style_size)
+        val sizeDecreaseLabel = stringResource(Res.string.subtitle_style_size_decrease)
+        val sizeIncreaseLabel = stringResource(Res.string.subtitle_style_size_increase)
+        SettingsSection(
+            title = sizeLabel,
+            trailing = draft.fontSize.toString(),
+        ) {
+            Surface(
+                shape = RoundedCornerShape(SEGMENT_OUTER_CORNER),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val canDecrease = draft.fontSize > SubtitleStylePrefs.MIN_FONT_SIZE
+                    FilledTonalIconButton(
+                        onClick = {
+                            applyInstant(draft.copy(fontSize = draft.fontSize - SubtitleStylePrefs.FONT_SIZE_STEP))
+                        },
+                        enabled = canDecrease,
+                        shapes = IconButtonDefaults.shapes(),
+                        modifier = Modifier
+                            .size(36.dp)
+                            .semantics { contentDescription = sizeDecreaseLabel }
+                            .handCursor(canDecrease),
+                    ) {
+                        Icon(Icons.Filled.Remove, contentDescription = null, modifier = Modifier.size(18.dp))
+                    }
+                    Slider(
+                        value = draft.fontSize.toFloat(),
+                        onValueChange = { raw ->
+                            val nextSize = raw.roundToInt()
+                                .coerceIn(SubtitleStylePrefs.MIN_FONT_SIZE, SubtitleStylePrefs.MAX_FONT_SIZE)
+                            if (nextSize != draft.fontSize) {
+                                val next = draft.copy(fontSize = nextSize)
+                                draft = next
+                                onPreview(next)
+                            }
+                        },
+                        onValueChangeFinished = { onCommit(draft) },
+                        valueRange = SubtitleStylePrefs.MIN_FONT_SIZE.toFloat()..SubtitleStylePrefs.MAX_FONT_SIZE.toFloat(),
+                        modifier = Modifier
+                            .weight(1f)
+                            .semantics { contentDescription = sizeLabel },
+                    )
+                    val canIncrease = draft.fontSize < SubtitleStylePrefs.MAX_FONT_SIZE
+                    FilledTonalIconButton(
+                        onClick = {
+                            applyInstant(draft.copy(fontSize = draft.fontSize + SubtitleStylePrefs.FONT_SIZE_STEP))
+                        },
+                        enabled = canIncrease,
+                        shapes = IconButtonDefaults.shapes(),
+                        modifier = Modifier
+                            .size(36.dp)
+                            .semantics { contentDescription = sizeIncreaseLabel }
+                            .handCursor(canIncrease),
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+        }
+
+        val posLabel = stringResource(Res.string.subtitle_style_position)
+        val posUpLabel = stringResource(Res.string.subtitle_style_position_up)
+        val posDownLabel = stringResource(Res.string.subtitle_style_position_down)
+        SettingsSection(
+            title = posLabel,
+            trailing = "${draft.position}%",
+        ) {
+            Surface(
+                shape = RoundedCornerShape(SEGMENT_OUTER_CORNER),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        val canMoveUp = draft.position > SubtitleStylePrefs.MIN_POSITION
+                        FilledTonalIconButton(
+                            onClick = {
+                                applyInstant(draft.copy(position = draft.position - SubtitleStylePrefs.POSITION_STEP))
+                            },
+                            enabled = canMoveUp,
+                            shapes = IconButtonDefaults.shapes(),
+                            modifier = Modifier
+                                .size(36.dp)
+                                .semantics { contentDescription = posUpLabel }
+                                .handCursor(canMoveUp),
+                        ) {
+                            Icon(Icons.Filled.ArrowUpward, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                        Slider(
+                            value = draft.position.toFloat(),
+                            onValueChange = { raw ->
+                                val nextPos = raw.roundToInt()
+                                    .coerceIn(SubtitleStylePrefs.MIN_POSITION, SubtitleStylePrefs.MAX_POSITION)
+                                if (nextPos != draft.position) {
+                                    val next = draft.copy(position = nextPos)
+                                    draft = next
+                                    onPreview(next)
+                                }
+                            },
+                            onValueChangeFinished = { onCommit(draft) },
+                            valueRange = SubtitleStylePrefs.MIN_POSITION.toFloat()..SubtitleStylePrefs.MAX_POSITION.toFloat(),
+                            modifier = Modifier
+                                .weight(1f)
+                                .semantics { contentDescription = posLabel },
+                        )
+                        val canMoveDown = draft.position < SubtitleStylePrefs.MAX_POSITION
+                        FilledTonalIconButton(
+                            onClick = {
+                                applyInstant(draft.copy(position = draft.position + SubtitleStylePrefs.POSITION_STEP))
+                            },
+                            enabled = canMoveDown,
+                            shapes = IconButtonDefaults.shapes(),
+                            modifier = Modifier
+                                .size(36.dp)
+                                .semantics { contentDescription = posDownLabel }
+                                .handCursor(canMoveDown),
+                        ) {
+                            Icon(Icons.Filled.ArrowDownward, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 44.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        val ticks = listOf(
+                            0 to stringResource(Res.string.subtitle_style_position_top),
+                            50 to stringResource(Res.string.subtitle_style_position_middle),
+                            100 to stringResource(Res.string.subtitle_style_position_bottom),
+                        )
+                        ticks.forEach { (value, label) ->
+                            val active = draft.position == value
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .clip(MaterialTheme.shapes.extraSmall)
+                                    .clickable(role = Role.Button) { applyInstant(draft.copy(position = value)) }
+                                    .handCursor()
+                                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        SubtitleStyleSwitchCard(
+            title = stringResource(Res.string.subtitle_style_override_ass),
+            description = stringResource(Res.string.subtitle_style_override_ass_desc),
+            checked = draft.overrideAssStyles,
+            onCheckedChange = { checked -> applyInstant(draft.copy(overrideAssStyles = checked)) },
+        )
+
+        if (!draft.isDefault) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(
+                    onClick = { applyInstant(SubtitleStylePrefs.DEFAULT) },
+                    modifier = Modifier.handCursor(),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.RestartAlt,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(Res.string.subtitle_style_reset))
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun SubtitleBackgroundCard(
+    draft: SubtitleStylePrefs,
+    onToggle: (Boolean) -> Unit,
+    onSelectColor: (Int) -> Unit,
+    onPreviewOpacity: (Int) -> Unit,
+    onCommitOpacity: () -> Unit,
+    onStepOpacity: (Int) -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(SEGMENT_OUTER_CORNER),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(role = Role.Switch) { onToggle(!draft.showBackground) }
+                    .handCursor()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = stringResource(Res.string.subtitle_style_background),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = stringResource(Res.string.subtitle_style_background_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = draft.showBackground,
+                    onCheckedChange = null,
+                )
+            }
+
+            if (draft.showBackground) {
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        text = stringResource(Res.string.subtitle_style_background_color),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectableGroup(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        SubtitleBackgroundPreset.entries.forEach { preset ->
+                            val isSelected = (draft.backgroundColorRgb and 0x00FFFFFF) == preset.rgb
+                            val swatchLabel = preset.localizedName()
+                            val swatchColor = Color(0xFF000000L or preset.rgb.toLong())
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .selectable(
+                                        selected = isSelected,
+                                        role = Role.RadioButton,
+                                        onClick = { onSelectColor(preset.rgb) },
+                                    )
+                                    .semantics { contentDescription = swatchLabel }
+                                    .handCursor(),
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = swatchColor,
+                                    border = BorderStroke(
+                                        width = if (isSelected) 2.5.dp else 1.dp,
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.outlineVariant
+                                        },
+                                    ),
+                                    modifier = Modifier.size(34.dp),
+                                ) {
+                                    if (isSelected) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Check,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    val opacityLabel = stringResource(Res.string.subtitle_style_background_opacity)
+                    val opacityDecreaseLabel = stringResource(Res.string.subtitle_style_background_opacity_decrease)
+                    val opacityIncreaseLabel = stringResource(Res.string.subtitle_style_background_opacity_increase)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = opacityLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "${draft.backgroundOpacity}%",
+                            style = MaterialTheme.typography.titleMediumEmphasized.tabular,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        val canDecrease = draft.backgroundOpacity > SubtitleStylePrefs.MIN_BACKGROUND_OPACITY
+                        FilledTonalIconButton(
+                            onClick = {
+                                val next = (draft.backgroundOpacity - SubtitleStylePrefs.BACKGROUND_OPACITY_STEP)
+                                    .coerceIn(
+                                        SubtitleStylePrefs.MIN_BACKGROUND_OPACITY,
+                                        SubtitleStylePrefs.MAX_BACKGROUND_OPACITY,
+                                    )
+                                onStepOpacity(next)
+                            },
+                            enabled = canDecrease,
+                            shapes = IconButtonDefaults.shapes(),
+                            modifier = Modifier
+                                .size(36.dp)
+                                .semantics { contentDescription = opacityDecreaseLabel }
+                                .handCursor(canDecrease),
+                        ) {
+                            Icon(Icons.Filled.Remove, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                        Slider(
+                            value = draft.backgroundOpacity.toFloat(),
+                            onValueChange = { raw ->
+                                val step = SubtitleStylePrefs.BACKGROUND_OPACITY_STEP
+                                val snapped = ((raw / step).roundToInt() * step).coerceIn(
+                                    SubtitleStylePrefs.MIN_BACKGROUND_OPACITY,
+                                    SubtitleStylePrefs.MAX_BACKGROUND_OPACITY,
+                                )
+                                if (snapped != draft.backgroundOpacity) {
+                                    onPreviewOpacity(snapped)
+                                }
+                            },
+                            onValueChangeFinished = onCommitOpacity,
+                            valueRange = SubtitleStylePrefs.MIN_BACKGROUND_OPACITY.toFloat()..SubtitleStylePrefs.MAX_BACKGROUND_OPACITY.toFloat(),
+                            modifier = Modifier
+                                .weight(1f)
+                                .semantics { contentDescription = opacityLabel },
+                        )
+                        val canIncrease = draft.backgroundOpacity < SubtitleStylePrefs.MAX_BACKGROUND_OPACITY
+                        FilledTonalIconButton(
+                            onClick = {
+                                val next = (draft.backgroundOpacity + SubtitleStylePrefs.BACKGROUND_OPACITY_STEP)
+                                    .coerceIn(
+                                        SubtitleStylePrefs.MIN_BACKGROUND_OPACITY,
+                                        SubtitleStylePrefs.MAX_BACKGROUND_OPACITY,
+                                    )
+                                onStepOpacity(next)
+                            },
+                            enabled = canIncrease,
+                            shapes = IconButtonDefaults.shapes(),
+                            modifier = Modifier
+                                .size(36.dp)
+                                .semantics { contentDescription = opacityIncreaseLabel }
+                                .handCursor(canIncrease),
+                        ) {
+                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubtitleBackgroundPreset.localizedName(): String = when (this) {
+    SubtitleBackgroundPreset.Black -> stringResource(Res.string.subtitle_style_bg_black)
+    SubtitleBackgroundPreset.Charcoal -> stringResource(Res.string.subtitle_style_bg_charcoal)
+    SubtitleBackgroundPreset.MidnightBlue -> stringResource(Res.string.subtitle_style_bg_midnight)
+    SubtitleBackgroundPreset.DeepForest -> stringResource(Res.string.subtitle_style_bg_forest)
+    SubtitleBackgroundPreset.DeepPlum -> stringResource(Res.string.subtitle_style_bg_plum)
+    SubtitleBackgroundPreset.WarmEspresso -> stringResource(Res.string.subtitle_style_bg_espresso)
+}
+
+@Composable
+private fun SubtitleStyleSwitchCard(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(SEGMENT_OUTER_CORNER),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(SEGMENT_OUTER_CORNER))
+            .clickable(role = Role.Switch) { onCheckedChange(!checked) }
+            .handCursor(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = checked,
+                onCheckedChange = null,
+            )
+        }
+    }
+}
+
 /** 字幕列表末尾的入口行：与轨道行同高，前面带图标，看得出它不是一条轨道。 */
 @Composable
 internal fun PickerRow(icon: ImageVector, label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
@@ -1536,6 +2308,7 @@ private fun SegmentedPickerRow(
     index: Int,
     count: Int,
     onClick: () -> Unit,
+    showChevron: Boolean = false,
 ) {
     Surface(
         onClick = onClick,
@@ -1558,6 +2331,14 @@ private fun SegmentedPickerRow(
                 overflow = TextOverflow.MiddleEllipsis,
                 modifier = Modifier.weight(1f),
             )
+            if (showChevron) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 8.dp).size(20.dp),
+                )
+            }
         }
     }
 }
@@ -1772,3 +2553,4 @@ private val SEGMENT_GAP = 2.dp
 private val VERSION_INDENT = 24.dp
 private val SEGMENT_OUTER_CORNER = 16.dp
 private val SEGMENT_INNER_CORNER = 4.dp
+private val SUBTITLE_FONT_MENU_MAX_HEIGHT = 320.dp

@@ -830,4 +830,102 @@ class StoryboardPlannerAndCacheTest {
         assertNotNull(splitExtracted, "EOF IDR whose IRAP NALU begins in TS packet #2+ must not be skipped")
         assertEquals(splitPtsMs, splitExtracted.ptsMs)
     }
+
+    @Test
+    fun engineYieldsDuringCriticallyLowBufferAndThrottlesPlayingConcurrency() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val streamSize = 188L * 40_000L
+            val durationMs = 120_000L
+            val slots = StoryboardPlanner.buildSlots(durationMillis = durationMs, streamSizeBytes = streamSize)
+            val headerChunk = buildSyntheticHeaderChunk()
+            val slotByOffset = slots.associateBy { it.byteOffset }
+
+            val networkCalls = AtomicInteger(0)
+            val inFlight = AtomicInteger(0)
+            val maxInFlightWhileLowHealthy = AtomicInteger(0)
+
+            // 1. 首帧就绪且正在播放，但前方缓冲仅 1.2s（低于 3s 临界线）：后台雪碧图必须按兵不动（0 请求）
+            val gate = MutableStateFlow(
+                StoryboardPlaybackGate(
+                    firstFrameReady = true,
+                    bufferedAheadMs = 1_200L,
+                    isPlaying = true,
+                    isPlaybackBusy = false,
+                ),
+            )
+            val source = StoryboardSource(
+                fileId = "f-slow",
+                gcid = "GCID_LOW_BUFFER",
+                mediaId = "m360",
+                url = "https://cdn.example/360.ts",
+                width = 640,
+                height = 360,
+                durationMillis = durationMs,
+                streamSizeBytes = streamSize,
+            )
+            val engine = StoryboardEngine(
+                source = source,
+                cache = InMemoryStoryboardCache(),
+                resolveStreamSize = { streamSize },
+                fetchRange = { offset, length ->
+                    networkCalls.incrementAndGet()
+                    if (offset == 0L) {
+                        headerChunk.copyOfRange(0, minOf(length, headerChunk.size))
+                    } else {
+                        val cur = inFlight.incrementAndGet()
+                        maxInFlightWhileLowHealthy.accumulateAndGet(cur, ::maxOf)
+                        try {
+                            delay(25L)
+                            val plan = slotByOffset[offset]
+                            buildSyntheticSlotChunk(ptsMs = plan?.estimatedMs ?: 1_000L, sizeBytes = length)
+                        } finally {
+                            inFlight.decrementAndGet()
+                        }
+                    }
+                },
+                decoderFactory = {
+                    object : StoryboardIdrDecoder {
+                        override suspend fun decodeToJpeg(
+                            csdAnnexB: ByteArray,
+                            idrAccessUnitAnnexB: ByteArray,
+                            width: Int,
+                            height: Int,
+                            maxWidthPx: Int,
+                            jpegQuality: Int,
+                        ): ByteArray = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 5)
+                        override fun close() {}
+                    }
+                },
+                playbackGate = gate,
+                scope = scope,
+            )
+            engine.start()
+            delay(400L)
+            assertEquals(0, networkCalls.get(), "Background storyboard must not fetch while playback buffer is critically low (<3s)")
+
+            // 2. 缓冲回升至 5.5s（3s..8s 区间）：放行启动，但严格限流为单路并发，不抢占主播放带宽
+            gate.value = gate.value.copy(bufferedAheadMs = 5_500L)
+            withTimeout(2_000L) {
+                while (networkCalls.get() < 4) delay(20L)
+            }
+            assertEquals(1, maxInFlightWhileLowHealthy.get(), "Moderate buffer (3–8s) during active playback must cap storyboard to 1 worker")
+
+            // 3. 缓冲再次跌破 3s：后台抓取立即暂停退让
+            gate.value = gate.value.copy(bufferedAheadMs = 1_000L)
+            delay(80L)
+            val pausedCount = networkCalls.get()
+            delay(200L)
+            assertEquals(pausedCount, networkCalls.get(), "Background storyboard must yield immediately when buffer drops below 3s")
+
+            // 4. 用户悬停/速览交互（boostAround）仍可即时打破等待
+            engine.boostAround(60_000L)
+            withTimeout(2_000L) {
+                while (networkCalls.get() <= pausedCount) delay(20L)
+            }
+            engine.close()
+        } finally {
+            scope.cancel()
+        }
+    }
 }

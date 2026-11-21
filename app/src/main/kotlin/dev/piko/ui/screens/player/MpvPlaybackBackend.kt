@@ -13,6 +13,7 @@ import androidx.compose.runtime.setValue
 import dev.jdtech.mpv.MPVLib
 import dev.jdtech.mpv.MPVLib.MpvEvent
 import dev.jdtech.mpv.MPVLib.MpvFormat
+import dev.piko.platform.AndroidSubtitleFonts
 import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.player.ExternalSubtitle
@@ -22,6 +23,8 @@ import dev.piko.shared.media.player.PlaybackBackend
 import dev.piko.shared.media.player.PlaybackBackendEvent
 import dev.piko.shared.media.player.PlaybackTarget
 import dev.piko.shared.media.player.PlayerAspectRatio
+import dev.piko.shared.media.player.SubtitleFontPreset
+import dev.piko.shared.media.player.SubtitleStylePrefs
 import dev.piko.shared.media.player.VideoCropRegion
 import dev.piko.shared.media.player.mpvSubtitleAddCommands
 import dev.piko.shared.media.player.mpvSubtitleCodepage
@@ -61,6 +64,7 @@ internal class MpvPlaybackBackend(
     private val headless: Boolean = false,
     /** 设置里的「硬件解码」，见 PikoUserPreferences.hardwareDecodingFlow。 */
     private val hardwareDecoding: Boolean = true,
+    initialSubtitleStyle: SubtitleStylePrefs = SubtitleStylePrefs.DEFAULT,
 ) : PlaybackBackend, MPVLib.EventObserver, MPVLib.LogObserver {
 
     private val mpv: MPVLib = MPVLib.create(context) ?: error(tr("libmpv 初始化失败", "libmpv initialization failed", "libmpvの初期化に失敗しました", "libmpv 초기화 실패", "libmpv 初始化失敗"))
@@ -147,6 +151,7 @@ internal class MpvPlaybackBackend(
 
     @Volatile private var stopping = false
     private var transcodeProbeTightened = false
+    @Volatile private var currentSubtitleStyle: SubtitleStylePrefs = initialSubtitleStyle.sanitize()
     private val hwdecFallback = AndroidHwdecFallbackState(hardwareDecoding)
     @Volatile private var lastLoadTarget: PlaybackTarget? = null
     @Volatile private var lastLoadPlayWhenReady: Boolean = true
@@ -183,11 +188,19 @@ internal class MpvPlaybackBackend(
         mpv.setOptionString("sub-codepage", mpvSubtitleCodepage())
         // 纯文本字幕（SRT/VTT）默认 sub-scale-with-window=yes 会按整个 SurfaceView 窗口高度缩放：
         // 手机竖屏（如 1080x2400）播放 16:9 视频（1080x607）时字号会被窗口高度放大近 4 倍并掉进底部黑边；
-        // 统一改为按实际视频画面尺寸缩放、贴合画面下沿，并将基准字号对齐现代 mpv 0.38+ 的 38（720p 基准）
+        // 统一改为按实际视频画面尺寸缩放、贴合画面下沿，并同步应用用户保存的字幕样式
         mpv.setOptionString("sub-scale-with-window", "no")
         mpv.setOptionString("sub-use-margins", "no")
-        mpv.setOptionString("sub-font-size", "38")
-        mpv.setOptionString("sub-border-size", "2")
+        if (!preview) {
+            // init runs synchronously on the Android main thread during composition; avoid blocking disk font scans
+            // here and let the follow-up LaunchedEffect -> setSubtitleStyle() on the mpv worker thread resolve Custom fonts.
+            currentSubtitleStyle.toMpvProperties(
+                platformDefaultFont = ANDROID_DEFAULT_SUBTITLE_FONT,
+                resolveFontFamily = { resolveAndroidSubtitleFont(it, allowDiskScan = false) },
+            ).forEach { (key, value) ->
+                mpv.setOptionString(key, value)
+            }
+        }
         mpv.setOptionString("network-timeout", "30")
         // 仅向 JNI 与 logcat 输出警告及错误，阻断 C 层每秒上千条 verbose 字符串跨界回调拖慢主线程与 GC
         mpv.setOptionString("msg-level", "all=warn")
@@ -538,6 +551,29 @@ internal class MpvPlaybackBackend(
             return
         }
         onMpv { mpv.command(mpvSubtitleSelectCommand(subtitle)) }
+    }
+
+    override fun setSubtitleStyle(style: SubtitleStylePrefs) {
+        if (released || preview) return
+        val sanitized = style.sanitize()
+        currentSubtitleStyle = sanitized
+        onMpv {
+            sanitized.toMpvProperties(
+                platformDefaultFont = ANDROID_DEFAULT_SUBTITLE_FONT,
+                resolveFontFamily = { resolveAndroidSubtitleFont(it, allowDiskScan = true) },
+            ).forEach { (key, value) ->
+                runCatching { mpv.setPropertyString(key, value) }
+            }
+        }
+    }
+
+    private fun resolveAndroidSubtitleFont(style: SubtitleStylePrefs, allowDiskScan: Boolean): String = when (style.fontPreset) {
+        SubtitleFontPreset.Default -> ANDROID_DEFAULT_SUBTITLE_FONT
+        SubtitleFontPreset.Serif -> "serif"
+        SubtitleFontPreset.Monospace -> "monospace"
+        SubtitleFontPreset.Custom -> style.customFontFamily
+            ?.let { if (allowDiskScan) AndroidSubtitleFonts.findInstalledFamily(it) else AndroidSubtitleFonts.findCachedFamily(it) }
+            ?: ANDROID_DEFAULT_SUBTITLE_FONT
     }
 
     override val supportsRotation: Boolean = true
@@ -949,8 +985,12 @@ internal class MpvPlaybackBackend(
         const val PREVIEW_PROBE_BYTES = 1024 * 1024
         const val PREVIEW_ANALYZE_SECONDS = 1
         const val DEFAULT_LAVF_PROBE_BYTES = 5_000_000
-        const val MPEGTS_TRANSCODE_PROBE_BYTES = 512 * 1024
-        const val MPEGTS_TRANSCODE_ANALYZE_SECONDS = 1
+        // 1080P HEVC MPEG-TS 转码流单个 GOP 常为 2–5 秒；512 KiB / 1s 过紧会导致 avformat_find_stream_info
+        // 漏采 VPS/SPS/PPS 与首个 IDR，引发中途拖动 seek 反复报错 PPS id out of range 并停顿 7s+。
+        // 放宽至 2 MiB / 3s（仍较 FFmpeg 默认 5 MiB / 5s 削减 60%），同时不影响原画 MKV/MP4 起播。
+        const val MPEGTS_TRANSCODE_PROBE_BYTES = 2 * MIB
+        const val MPEGTS_TRANSCODE_ANALYZE_SECONDS = 3
+        const val ANDROID_DEFAULT_SUBTITLE_FONT = "sans-serif"
         const val POSITION_GRANULARITY_MILLIS = 250L
         val FFMPEG_NUMBER_PATTERN = Regex("-?[0-9]+")
 
@@ -1002,7 +1042,38 @@ internal object MpvConfig {
             <prefer>
               <family>Roboto</family>
               <family>Noto Sans CJK SC</family>
+              <family>Noto Sans CJK TC</family>
+              <family>Noto Sans CJK JP</family>
+              <family>Noto Sans CJK KR</family>
               <family>Noto Sans SC</family>
+              <family>Noto Sans TC</family>
+              <family>Droid Sans Fallback</family>
+            </prefer>
+          </alias>
+          <alias>
+            <family>serif</family>
+            <prefer>
+              <family>Noto Serif</family>
+              <family>Noto Serif CJK SC</family>
+              <family>Noto Serif CJK TC</family>
+              <family>Noto Serif CJK JP</family>
+              <family>Noto Serif CJK KR</family>
+              <family>Noto Serif SC</family>
+              <family>Noto Serif TC</family>
+              <family>Droid Serif</family>
+              <family>Noto Sans CJK SC</family>
+              <family>Droid Sans Fallback</family>
+            </prefer>
+          </alias>
+          <alias>
+            <family>monospace</family>
+            <prefer>
+              <family>Droid Sans Mono</family>
+              <family>Roboto Mono</family>
+              <family>Noto Sans Mono CJK SC</family>
+              <family>Noto Sans Mono CJK TC</family>
+              <family>Cutive Mono</family>
+              <family>Noto Sans CJK SC</family>
               <family>Droid Sans Fallback</family>
             </prefer>
           </alias>

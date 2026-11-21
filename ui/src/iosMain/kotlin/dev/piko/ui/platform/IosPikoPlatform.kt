@@ -1,4 +1,4 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, kotlinx.cinterop.BetaInteropApi::class)
 
 package dev.piko.ui.platform
 
@@ -6,40 +6,102 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import coil3.BitmapImage
+import coil3.PlatformContext
+import coil3.SingletonImageLoader
+import coil3.request.CachePolicy
+import coil3.request.ImageRequest
+import coil3.size.Precision
+import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.storage.IosAppDirectories
 import dev.piko.shared.upload.importIosUploadDocument
 import dev.piko.shared.upload.importIosUploadFolder
 import dev.piko.ui.adaptive.FormFactor
+import dev.piko.ui.i18n.syncPlatformResourceLocale
+import dev.piko.ui.ios.IosHostBridge
 import dev.piko.ui.screens.clips.BackdropBlurKernel
 import dev.piko.ui.theme.MotionStyle
 import dev.piko.ui.theme.PikoMotionScale
 import dev.piko.update.AppUpdateService
-import org.jetbrains.skia.Bitmap
-import org.jetbrains.skia.ColorAlphaType
-import org.jetbrains.skia.ColorType
-import org.jetbrains.skia.ImageInfo
+import kotlinx.cinterop.ObjCObjectVar
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.useContents
+import kotlinx.cinterop.usePinned
+import kotlinx.cinterop.value
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.writeString
+import org.jetbrains.skia.Bitmap
+import org.jetbrains.skia.ColorAlphaType
+import org.jetbrains.skia.ColorType
+import org.jetbrains.skia.Image as SkiaImage
+import org.jetbrains.skia.ImageInfo
+import platform.AVFoundation.AVAssetImageGenerator
+import platform.AVFoundation.AVURLAsset
+import platform.CoreGraphics.CGBitmapContextCreate
+import platform.CoreGraphics.CGColorSpaceCreateDeviceRGB
+import platform.CoreGraphics.CGColorSpaceRelease
+import platform.CoreGraphics.CGContextDrawImage
+import platform.CoreGraphics.CGContextRelease
+import platform.CoreGraphics.CGImageAlphaInfo
+import platform.CoreGraphics.CGImageGetHeight
+import platform.CoreGraphics.CGImageGetWidth
+import platform.CoreGraphics.CGImageRelease
+import platform.CoreGraphics.CGRectMake
+import platform.CoreGraphics.CGSizeMake
+import platform.CoreGraphics.kCGBitmapByteOrder32Little
+import platform.CoreMedia.CMTimeMake
+import platform.CoreMedia.CMTimeMakeWithSeconds
 import platform.Foundation.NSBundle
+import platform.Foundation.NSError
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSFileSystemFreeSize
 import platform.Foundation.NSFileSystemSize
+import platform.Foundation.NSNotificationCenter
 import platform.Foundation.NSNumber
+import platform.Foundation.NSOperationQueue
 import platform.Foundation.NSURL
+import platform.Network.nw_interface_type_cellular
+import platform.Network.nw_interface_type_wifi
+import platform.Network.nw_interface_type_wired
+import platform.Network.nw_path_get_status
+import platform.Network.nw_path_monitor_cancel
+import platform.Network.nw_path_monitor_create
+import platform.Network.nw_path_monitor_set_queue
+import platform.Network.nw_path_monitor_set_update_handler
+import platform.Network.nw_path_monitor_start
+import platform.Network.nw_path_status_satisfied
+import platform.Network.nw_path_uses_interface_type
 import platform.UIKit.UIAccessibilityIsReduceMotionEnabled
 import platform.UIKit.UIActivityViewController
 import platform.UIKit.UIAlertAction
@@ -48,13 +110,22 @@ import platform.UIKit.UIAlertController
 import platform.UIKit.UIAlertControllerStyleAlert
 import platform.UIKit.UIApplication
 import platform.UIKit.UIDevice
+import platform.UIKit.UIDeviceBatteryLevelDidChangeNotification
+import platform.UIKit.UIDeviceBatteryState
+import platform.UIKit.UIDeviceBatteryStateDidChangeNotification
 import platform.UIKit.UIDocumentPickerDelegateProtocol
 import platform.UIKit.UIDocumentPickerMode
 import platform.UIKit.UIDocumentPickerViewController
+import platform.UIKit.UIFont
+import platform.UIKit.UIKeyboardWillHideNotification
+import platform.UIKit.UIKeyboardWillShowNotification
 import platform.UIKit.UIPasteboard
-import platform.UIKit.UIViewController
 import platform.UIKit.popoverPresentationController
 import platform.darwin.NSObject
+import platform.darwin.dispatch_async
+import platform.darwin.dispatch_get_main_queue
+import kotlin.concurrent.Volatile
+import kotlin.math.roundToInt
 
 /**
  * Piko 在 iOS 上的平台能力。只如实声明系统确实能做的事：
@@ -79,10 +150,12 @@ class IosPikoPlatform(
     // 桌面用 Standard（原文 "utilitarian products"）。iOS 的界面转场同样短，不跟着 Android 的 expressive 回弹
     override val motionStyle: MotionStyle = MotionStyle.Standard
 
+    override val revealsLastTypedPassword: Boolean = true
+
     override val appVersion: String = (NSBundle.mainBundle.objectForInfoDictionaryKey("CFBundleShortVersionString") as? String)
         ?.takeIf { it.isNotBlank() } ?: "dev"
 
-    // App Store 管更新，应用自己既不下载也不替换包
+    // App Store / 侧载管更新，应用自己既不下载也不替换包
     override val updater: AppUpdateService? = null
 
     // iOS 没有 Monet 那样的整套取色，外观走内置主题
@@ -98,6 +171,11 @@ class IosPikoPlatform(
     override val deviceSummary: String = UIDevice.currentDevice.let {
         "${it.systemName} ${it.systemVersion}，${it.model}"
     }
+
+    private val previewDecodeSemaphore = Semaphore(2)
+
+    @Volatile
+    private var cachedSubtitleFonts: List<String>? = null
 
     init {
         refreshSystemMotion()
@@ -144,13 +222,36 @@ class IosPikoPlatform(
     }
 
     override fun openUrl(url: String) {
-        val target = NSURL(string = url)
+        val target = NSURL.URLWithString(url) ?: return
         UIApplication.sharedApplication.openURL(target, options = emptyMap<Any?, Any>(), completionHandler = null)
     }
 
-    // 软键盘的显隐要靠 UIKeyboardWillShow 通知，宿主接上键盘通知前恒为 false
     @Composable
-    override fun isImeVisible(): Boolean = false
+    override fun isImeVisible(): Boolean {
+        var visible by remember { mutableStateOf(false) }
+        DisposableEffect(Unit) {
+            val center = NSNotificationCenter.defaultCenter
+            val showObserver = center.addObserverForName(
+                name = UIKeyboardWillShowNotification,
+                `object` = null,
+                queue = NSOperationQueue.mainQueue,
+            ) { _ ->
+                visible = true
+            }
+            val hideObserver = center.addObserverForName(
+                name = UIKeyboardWillHideNotification,
+                `object` = null,
+                queue = NSOperationQueue.mainQueue,
+            ) { _ ->
+                visible = false
+            }
+            onDispose {
+                center.removeObserver(showObserver)
+                center.removeObserver(hideObserver)
+            }
+        }
+        return visible
+    }
 
     override fun readClipboardText(): String? = UIPasteboard.generalPasteboard.string
 
@@ -213,7 +314,7 @@ class IosPikoPlatform(
             val scope = rememberCoroutineScope()
             val delegate = remember(onPicked) { IosDocumentPickerDelegate(onPicked) }
             return presentFiles@{
-                val host = topViewController() ?: return@presentFiles
+                val host = IosHostBridge.topViewController() ?: return@presentFiles
                 val picker = UIDocumentPickerViewController(
                     documentTypes = listOf("public.item"),
                     inMode = UIDocumentPickerMode.UIDocumentPickerModeImport,
@@ -232,7 +333,7 @@ class IosPikoPlatform(
             val scope = rememberCoroutineScope()
             val delegate = remember(onPicked) { IosFolderPickerDelegate(onPicked) }
             return presentFolder@{
-                val host = topViewController() ?: return@presentFolder
+                val host = IosHostBridge.topViewController() ?: return@presentFolder
                 // 选文件夹只能用 Open 模式（public.folder），Import 模式只对文件有效
                 val picker = UIDocumentPickerViewController(
                     documentTypes = listOf("public.folder"),
@@ -251,7 +352,9 @@ class IosPikoPlatform(
 
     override val externalPlayer: ExternalVideoPlayer = IosExternalVideoPlayer()
 
-    override val videoPreview: VideoPreviewSupport? = null
+    override val videoPreview: VideoPreviewSupport = IosVideoPreviewSupport()
+
+    override val htmlViewer: HtmlViewerSupport = IosHtmlViewerSupport()
 
     override val linkAssociation: LinkAssociation? = null
 
@@ -262,9 +365,43 @@ class IosPikoPlatform(
         systemBarsVisible: Boolean,
         content: @Composable () -> Unit,
     ) {
-        // 铺满整屏由 usePlatformDefaultWidth = false 给出；沉浸式下状态栏的浅色与收放属于宿主
-        // UIViewController 的 preferredStatusBarStyle，这里不越权改
+        if (immersive) {
+            DisposableEffect(systemBarsVisible) {
+                val release = IosHostBridge.acquireImmersiveBars(
+                    hidden = !systemBarsVisible,
+                    lightContent = true,
+                )
+                onDispose(release)
+            }
+        }
         Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            content()
+        }
+    }
+
+    @Composable
+    override fun HideSystemBars() {
+        DisposableEffect(Unit) {
+            val release = IosHostBridge.acquireStatusBarHidden()
+            onDispose(release)
+        }
+    }
+
+    @Composable
+    override fun rememberLandscapeLock(): LandscapeLock? {
+        if (!IosHostBridge.supportsLandscapeLock) return null
+        val lock = remember { IosLandscapeLock() }
+        DisposableEffect(lock) { onDispose(lock::release) }
+        return lock
+    }
+
+    @Composable
+    override fun ProvideLocalizedEnvironment(
+        language: AppLanguage,
+        content: @Composable () -> Unit,
+    ) {
+        syncPlatformResourceLocale(language.tag)
+        key(language) {
             content()
         }
     }
@@ -275,6 +412,33 @@ class IosPikoPlatform(
 
     @Composable
     override fun ListScrollbar(state: LazyGridState, modifier: Modifier) = Unit
+
+    override suspend fun loadPreblurredBackdrop(
+        model: Any,
+        containerWidthPx: Int,
+        containerHeightPx: Int,
+        targetBlurPx: Float,
+    ): ImageBitmap? = withContext(Dispatchers.Default) {
+        try {
+            val request = ImageRequest.Builder(PlatformContext.INSTANCE)
+                .data(model)
+                .size(BackdropBlurKernel.DECODE_MAX_SIDE_PX)
+                .precision(Precision.INEXACT)
+                .memoryCachePolicy(CachePolicy.DISABLED)
+                .build()
+            val skiaBitmap = (SingletonImageLoader.get(PlatformContext.INSTANCE).execute(request).image as? BitmapImage)?.bitmap
+                ?: return@withContext null
+            val w = skiaBitmap.width
+            val h = skiaBitmap.height
+            if (w <= 0 || h <= 0) return@withContext null
+            val radius = BackdropBlurKernel.equivalentRadiusPx(w, h, containerWidthPx, containerHeightPx, targetBlurPx)
+            blurCoilBitmap(skiaBitmap, radius)?.asComposeImageBitmap()
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (_: Throwable) {
+            null
+        }
+    }
 
     override fun blurCoilBitmap(input: Bitmap, radiusPx: Int): Bitmap? {
         val w = input.width
@@ -308,6 +472,226 @@ class IosPikoPlatform(
         outBitmap.setImmutable()
         return outBitmap
     }
+
+    override fun observeSystemStatus(): Flow<PlayerSystemStatusInfo?> = callbackFlow {
+        var batteryPercent: Int? = null
+        var isCharging = false
+        var networkType: PlayerNetworkType? = null
+        var previousBatteryMonitoring = false
+
+        fun readBattery(): Pair<Int?, Boolean> {
+            val device = UIDevice.currentDevice
+            val rawLevel = device.batteryLevel
+            val pct = if (rawLevel >= 0f) (rawLevel * 100f).roundToInt().coerceIn(0, 100) else null
+            val charging = device.batteryState == UIDeviceBatteryState.UIDeviceBatteryStateCharging ||
+                device.batteryState == UIDeviceBatteryState.UIDeviceBatteryStateFull
+            return pct to charging
+        }
+
+        fun emitCurrent() {
+            trySend(
+                PlayerSystemStatusInfo(
+                    batteryPercent = batteryPercent,
+                    isCharging = isCharging,
+                    networkType = networkType,
+                ),
+            )
+        }
+
+        val center = NSNotificationCenter.defaultCenter
+        val levelObserver = center.addObserverForName(
+            name = UIDeviceBatteryLevelDidChangeNotification,
+            `object` = null,
+            queue = NSOperationQueue.mainQueue,
+        ) { _ ->
+            val (pct, charging) = readBattery()
+            batteryPercent = pct
+            isCharging = charging
+            emitCurrent()
+        }
+        val stateObserver = center.addObserverForName(
+            name = UIDeviceBatteryStateDidChangeNotification,
+            `object` = null,
+            queue = NSOperationQueue.mainQueue,
+        ) { _ ->
+            val (pct, charging) = readBattery()
+            batteryPercent = pct
+            isCharging = charging
+            emitCurrent()
+        }
+
+        dispatch_async(dispatch_get_main_queue()) {
+            val device = UIDevice.currentDevice
+            previousBatteryMonitoring = device.batteryMonitoringEnabled
+            device.batteryMonitoringEnabled = true
+            val (pct, charging) = readBattery()
+            batteryPercent = pct
+            isCharging = charging
+            emitCurrent()
+        }
+
+        val monitor = nw_path_monitor_create()
+        if (monitor != null) {
+            nw_path_monitor_set_update_handler(monitor) { path ->
+                networkType = if (path == null || nw_path_get_status(path) != nw_path_status_satisfied) {
+                    PlayerNetworkType.Offline
+                } else {
+                    when {
+                        nw_path_uses_interface_type(path, nw_interface_type_wifi) -> PlayerNetworkType.Wifi
+                        nw_path_uses_interface_type(path, nw_interface_type_wired) -> PlayerNetworkType.Ethernet
+                        nw_path_uses_interface_type(path, nw_interface_type_cellular) -> PlayerNetworkType.Cellular
+                        else -> null
+                    }
+                }
+                emitCurrent()
+            }
+            nw_path_monitor_set_queue(monitor, dispatch_get_main_queue())
+            nw_path_monitor_start(monitor)
+        }
+
+        awaitClose {
+            center.removeObserver(levelObserver)
+            center.removeObserver(stateObserver)
+            if (monitor != null) {
+                nw_path_monitor_cancel(monitor)
+            }
+            dispatch_async(dispatch_get_main_queue()) {
+                UIDevice.currentDevice.batteryMonitoringEnabled = previousBatteryMonitoring
+            }
+        }
+    }.distinctUntilChanged()
+
+    override fun decodeEncodedImageBitmap(bytes: ByteArray): ImageBitmap? {
+        if (bytes.isEmpty()) return null
+        return runCatching {
+            val image = SkiaImage.makeFromEncoded(bytes)
+            try {
+                Bitmap.makeFromImage(image).apply { setImmutable() }.asComposeImageBitmap()
+            } finally {
+                image.close()
+            }
+        }.getOrNull()
+    }
+
+    override suspend fun decodeLocalVideoPreviewFrame(
+        path: String,
+        positionMillis: Long,
+        maxWidthPx: Int,
+    ): ImageBitmap? {
+        if (path.isBlank() || !NSFileManager.defaultManager.fileExistsAtPath(path)) return null
+        return previewDecodeSemaphore.withPermit {
+            withContext(Dispatchers.IO) {
+                try {
+                    val targetMax = maxWidthPx.coerceIn(64, 640)
+                    val asset = AVURLAsset.URLAssetWithURL(NSURL.fileURLWithPath(path), options = null)
+                    val generator = AVAssetImageGenerator(asset = asset)
+                    generator.appliesPreferredTrackTransform = true
+                    generator.maximumSize = CGSizeMake(targetMax.toDouble(), targetMax.toDouble())
+                    generator.requestedTimeToleranceBefore = CMTimeMakeWithSeconds(1.0, 600)
+                    generator.requestedTimeToleranceAfter = CMTimeMakeWithSeconds(1.0, 600)
+
+                    val cgImage = memScoped {
+                        val err = alloc<ObjCObjectVar<NSError?>>()
+                        err.value = null
+                        generator.copyCGImageAtTime(
+                            requestedTime = CMTimeMake(positionMillis.coerceAtLeast(0L), 1000),
+                            actualTime = null,
+                            error = err.ptr,
+                        )
+                    } ?: return@withContext null
+
+                    try {
+                        cgImageToComposeBitmap(cgImage)
+                    } finally {
+                        CGImageRelease(cgImage)
+                    }
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+        }
+    }
+
+    override suspend fun listSubtitleFonts(): List<String> {
+        cachedSubtitleFonts?.let { return it }
+        return withContext(Dispatchers.Main) {
+            cachedSubtitleFonts?.let { return@withContext it }
+            val installed = UIFont.familyNames.filterIsInstance<String>()
+            val seen = LinkedHashMap<String, String>(installed.size)
+            for (name in installed) {
+                val trimmed = name.trim()
+                if (trimmed.isNotEmpty()) {
+                    val key = trimmed.lowercase()
+                    if (key !in seen) seen[key] = trimmed
+                }
+            }
+            val ordered = ArrayList<String>(seen.size)
+            for (priority in PRIORITY_SUBTITLE_FONTS) {
+                seen.remove(priority.lowercase())?.let(ordered::add)
+            }
+            ordered.addAll(seen.values.sortedBy { it.lowercase() })
+            cachedSubtitleFonts = ordered
+            ordered
+        }
+    }
+
+    private class IosLandscapeLock : LandscapeLock {
+        private var locked = false
+
+        override fun lock() {
+            if (locked) return
+            locked = true
+            IosHostBridge.setLandscapeLocked(true)
+        }
+
+        override fun release() {
+            if (!locked) return
+            locked = false
+            IosHostBridge.setLandscapeLocked(false)
+        }
+    }
+}
+
+private fun cgImageToComposeBitmap(cgImage: platform.CoreGraphics.CGImageRef): ImageBitmap? {
+    val w = CGImageGetWidth(cgImage).toInt()
+    val h = CGImageGetHeight(cgImage).toInt()
+    if (w <= 0 || h <= 0) return null
+    val bytesPerRow = w * 4
+    val pixels = ByteArray(bytesPerRow * h)
+    val colorSpace = CGColorSpaceCreateDeviceRGB() ?: return null
+    val bitmapInfo = kCGBitmapByteOrder32Little or CGImageAlphaInfo.kCGImageAlphaPremultipliedFirst.value
+    val drawn = try {
+        pixels.usePinned { pinned ->
+            val context = CGBitmapContextCreate(
+                data = pinned.addressOf(0),
+                width = w.toULong(),
+                height = h.toULong(),
+                bitsPerComponent = 8uL,
+                bytesPerRow = bytesPerRow.toULong(),
+                space = colorSpace,
+                bitmapInfo = bitmapInfo,
+            ) ?: return@usePinned false
+            try {
+                CGContextDrawImage(context, CGRectMake(0.0, 0.0, w.toDouble(), h.toDouble()), cgImage)
+                true
+            } finally {
+                CGContextRelease(context)
+            }
+        }
+    } finally {
+        CGColorSpaceRelease(colorSpace)
+    }
+    if (!drawn) return null
+    val info = ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.PREMUL)
+    val skiaBitmap = Bitmap()
+    if (!skiaBitmap.installPixels(info, pixels, bytesPerRow)) {
+        skiaBitmap.close()
+        return null
+    }
+    skiaBitmap.setImmutable()
+    return skiaBitmap.asComposeImageBitmap()
 }
 
 /** 文件选择器的回调对象；选择器给的 URL 只在回调期间有效，导入在回调里立刻开始。 */
@@ -380,15 +764,8 @@ private class IosFolderPickerDelegate(
     }
 }
 
-/** 最上层的展示控制器，分享面板与文稿选择器都要挂在它上面。 */
-private fun topViewController(): UIViewController? {
-    var controller = UIApplication.sharedApplication.keyWindow?.rootViewController
-    while (controller?.presentedViewController != null) controller = controller.presentedViewController
-    return controller
-}
-
 private fun presentPlatformAlert(message: String) {
-    val host = topViewController() ?: return
+    val host = IosHostBridge.topViewController() ?: return
     val dialog = UIAlertController.alertControllerWithTitle(
         title = null,
         message = message,
@@ -405,12 +782,32 @@ private fun presentPlatformAlert(message: String) {
 }
 
 private fun shareItems(items: List<Any>): Boolean {
-    val host = topViewController() ?: return false
+    val host = IosHostBridge.topViewController() ?: return false
     val controller = UIActivityViewController(activityItems = items, applicationActivities = null)
-    // iPad 上分享面板是 popover，缺锚点会直接崩
-    controller.popoverPresentationController?.sourceView = host.view
+    // iPad 上分享面板是 popover，缺锚点会直接崩；居中展示避免箭头落在左上角 (0, 0)
+    controller.popoverPresentationController?.let { popover ->
+        popover.sourceView = host.view
+        popover.sourceRect = host.view.bounds.useContents {
+            CGRectMake(size.width / 2.0, size.height / 2.0, 1.0, 1.0)
+        }
+        popover.permittedArrowDirections = 0uL
+    }
     host.presentViewController(controller, animated = true, completion = null)
     return true
 }
+
+private val PRIORITY_SUBTITLE_FONTS = listOf(
+    "PingFang SC",
+    "PingFang TC",
+    "PingFang HK",
+    "Hiragino Sans",
+    "Apple SD Gothic Neo",
+    "Heiti SC",
+    "Heiti TC",
+    "Helvetica Neue",
+    "Avenir Next",
+    "Georgia",
+    "Menlo",
+)
 
 private const val TAG = "Platform"

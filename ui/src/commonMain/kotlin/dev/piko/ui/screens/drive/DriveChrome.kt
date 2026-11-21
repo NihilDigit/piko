@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -87,6 +88,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.data.repository.PathBreadcrumb
@@ -124,6 +126,8 @@ import dev.piko.ui.resources.text_paste
 import dev.piko.ui.resources.text_upload_files
 import dev.piko.ui.theme.IslandCorner
 import dev.piko.ui.theme.IslandGap
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.islandHeader
 import io.github.nihildigit.pikpak.FileStat
 
@@ -581,6 +585,7 @@ internal fun DriveSelectionFloatingToolbar(
     }
     val motion = MaterialTheme.motionScheme
     val colors = MaterialTheme.colorScheme
+    val isEInk = LocalAppearance.current.isEInk
     AnimatedVisibility(
         visible = visible,
         enter = slideInVertically(motion.fastSpatialSpec()) { it / 2 } + fadeIn(motion.fastEffectsSpec()),
@@ -641,8 +646,9 @@ internal fun DriveSelectionFloatingToolbar(
                         Surface(
                             onClick = destructiveAction.onClick,
                             shape = CircleShape,
-                            color = colors.errorContainer,
-                            contentColor = colors.onErrorContainer,
+                            color = if (isEInk) Color.White else colors.errorContainer,
+                            contentColor = if (isEInk) Color.Black else colors.onErrorContainer,
+                            border = if (isEInk) BorderStroke(1.dp, Color.Black) else null,
                             modifier = Modifier.padding(horizontal = 2.dp).size(40.dp),
                         ) {
                             Box(contentAlignment = Alignment.Center) {

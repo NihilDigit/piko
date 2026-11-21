@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reader_action_read">Read</string>
+    <string name="reader_action_open_html">Open web page</string>
+    <string name="reader_action_search">Find</string>
+    <string name="reader_action_display_settings">Reading settings</string>
+    <string name="reader_action_raw_source">View source</string>
+    <string name="reader_action_rendered_view">Rendered view</string>
+    <string name="reader_action_copy_all">Copy all</string>
+    <string name="reader_action_copy_code">Copy code</string>
+    <string name="reader_action_open_external">Open externally</string>
+    <string name="reader_action_download_full">Download full file</string>
+    <string name="reader_action_retry">Retry</string>
+    <string name="reader_action_reload">Reload</string>
+    <string name="reader_action_open_browser">Open in browser</string>
+    <string name="reader_action_javascript">JavaScript</string>
+    <string name="reader_search_placeholder">Find in document</string>
+    <string name="reader_search_prev">Previous match</string>
+    <string name="reader_search_next">Next match</string>
+    <string name="reader_search_no_matches">No matches</string>
+    <string name="reader_settings_title">Reading settings</string>
+    <string name="reader_settings_font_size">Font size</string>
+    <string name="reader_settings_font_smaller">Decrease font size</string>
+    <string name="reader_settings_font_larger">Increase font size</string>
+    <string name="reader_settings_line_spacing">Line spacing</string>
+    <string name="reader_settings_spacing_compact">Compact</string>
+    <string name="reader_settings_spacing_normal">Normal</string>
+    <string name="reader_settings_spacing_relaxed">Relaxed</string>
+    <string name="reader_settings_font_family">Font</string>
+    <string name="reader_settings_font_sans">Default</string>
+    <string name="reader_settings_font_serif">Serif</string>
+    <string name="reader_settings_font_mono">Monospace</string>
+    <string name="reader_settings_encoding">Text encoding</string>
+    <string name="reader_settings_encoding_auto">Auto (%1$s)</string>
+    <string name="reader_truncated_notice">Large file, previewing first %1$s of %2$s</string>
+    <string name="reader_binary_notice">This file may contain binary data and is shown as plain text</string>
+    <string name="reader_empty_document">Empty file</string>
+    <string name="reader_load_failed">Unable to read document</string>
+    <string name="reader_copied_notice">Copied to clipboard</string>
+    <string name="reader_html_open_failed">Unable to open HTML document</string>
+    <string name="reader_html_js_disabled_notice">JavaScript disabled, reload to apply</string>
+    <string name="reader_html_js_enabled_notice">JavaScript enabled, reload to apply</string>
+</resources>

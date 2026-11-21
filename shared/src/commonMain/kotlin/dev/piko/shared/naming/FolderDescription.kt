@@ -24,9 +24,10 @@ data class FolderDescription(
 
 /**
  * 描述一个文件夹。文件夹名多半就是种子标题，作品名常写成中文（「[DBD-Raws][命运石之门][01-24TV全集+SP+剧场版]…」），
- * 而里面的文件名是罗马音（「[DBD-Raws][Steins;Gate][01]…」），所以这类文件夹的作品名优先取自 [content]。
- * 内容可能只列出一部分（网盘生成封面时只给前几项），集数范围与包含的分区因此优先采信文件夹名。
- * 文件夹名只有中文、又没有可用内容时，如实报告未识别。
+ * 而里面的文件名可能是罗马音（「[DBD-Raws][Steins;Gate][01]…」），也可能是纯中文（「[DBD-Raws][胜者即是正义][10]…」）。
+ * 因此有拉丁片名时优先采用 [content] 或双语标题里的罗马音/英文写法；纯中日韩作品在内容确认或目录名具备明确发布结构
+ * （如 `[发布组][片名][集数范围][技术标签]`）时同样提取出作品名，普通中文描述目录（如「【标签】某某的JK制服合集」）
+ * 仍保持未识别。内容可能只列出一部分（网盘生成封面时只给前几项），集数范围与包含的分区因此优先采信文件夹名。
  */
 fun describeFolder(folderName: String, content: List<MediaFileInput> = emptyList()): FolderDescription {
     matchAv(folderName.trim(), allowLanguageSuffix = false)?.let { match ->
@@ -72,14 +73,27 @@ fun describeFolder(folderName: String, content: List<MediaFileInput> = emptyList
     // 解析器把季号从作品名里拆进了集号，文件夹只剩「Yuru Camp」就和第一季、剧场版同名了，这里拼回去
     val season = mainWork?.let(::uniformSeason) ?: folderSeason(folderName)
     val range = nameRange ?: mainWork?.let(::mainRange)
-    val extras = (sectionsMentioned(folderName) + mainWork?.sections.orEmpty().map { it.section })
+    val nameExtras = sectionsMentioned(folderName)
+    val extras = (nameExtras + mainWork?.sections.orEmpty().map { it.section })
         .filter { it != Section.MAIN }
         .distinct()
         .sortedBy { it.ordinal }
     val tags = mergeTags(mainWork?.commonTags.orEmpty(), nameTags)
-    // 文件夹名本就含着作品名时用文件夹自己的写法，内容只补集数与标签：「MomoYIH」不该变成内容里小写的「momoyih」
-    val bareTitle = mainWork?.title?.takeIf { hasLatin(it) && !sameWork(it, washed) }
-        ?: fromName.title?.takeIf { worthRewriting(folderName, fromName, nameTags, nameRange, season, extras) }?.let(::latinAlternative)?.let(::stripSeasonWord)
+    // 文件夹名本就含着作品名时用文件夹自己的写法，内容只补集数与标签：「MomoYIH」不该变成内容里小写的「momoyih」；
+    // 文件夹名只有中文而内容有罗马音/英文写法时（「命运石之门」→「Steins;Gate」），优先用内容的拉丁片名；
+    // 纯中日韩发布目录（如「[DBD-Raws][胜者即是正义][01-11TV全集+特典映像][1080P][BDRip][HEVC-10bit][FLAC][MKV]」）
+    // 在内容确认或具备明确发布结构时提取中文片名，普通描述目录（「【标签】某某的JK制服合集」）仍不改写。
+    val rewriteFromName = worthRewriting(folderName, fromName, nameTags, nameRange, season, nameExtras)
+    val folderLatin = fromName.title?.takeIf { rewriteFromName }?.let(::latinAlternative)?.let(::stripSeasonWord)
+    val folderCjk = fromName.title?.takeIf {
+        folderLatin == null &&
+            rewriteFromName &&
+            (mainWork?.title != null || isStructuredCjkRelease(fromName, nameTags, nameRange, season))
+    }?.let(::stripSeasonWord)
+    val contentTitle = mainWork?.title?.takeIf { workTitle ->
+        !sameWork(workTitle, washed) && (hasLatin(workTitle) || folderLatin == null)
+    }
+    val bareTitle = contentTitle ?: folderLatin ?: folderCjk
     val title = bareTitle?.let { if (season != null && season > 0) "$it Season $season" else it }
         ?: washed.takeIf { it != folderName.trim() }
     return FolderDescription(
@@ -149,6 +163,31 @@ private fun latinAlternative(title: String): String? {
 }
 
 private fun latinCount(text: String): Int = text.count { it in 'A'..'Z' || it in 'a'..'z' }
+
+private val RELEASE_TECH_KINDS = setOf(
+    TagKind.RESOLUTION,
+    TagKind.VIDEO_CODEC,
+    TagKind.BIT_DEPTH,
+    TagKind.AUDIO_CODEC,
+    TagKind.SOURCE,
+    TagKind.PLATFORM,
+)
+
+/**
+ * 纯中日韩标题只有在目录名具备明确发布结构时才改写（至少两类媒体技术标签，或带集数范围/季号且同时有发布组或技术标签），
+ * 避免把「【标签】某某的JK制服合集」「【某组】7月28-29号 活动」「【中字】某某日常」这类普通描述目录误裁掉前缀。
+ */
+private fun isStructuredCjkRelease(
+    fromName: SeriesParse,
+    nameTags: List<MediaTag>,
+    range: String?,
+    season: Int?,
+): Boolean {
+    val techKinds = nameTags.mapNotNullTo(HashSet()) { it.kind.takeIf { kind -> kind in RELEASE_TECH_KINDS } }.size
+    if (techKinds >= 2) return true
+    val hasReleaseContext = fromName.group != null || techKinds >= 1
+    return (range != null || season != null) && hasReleaseContext
+}
 
 /** 标签方括号里的「+」连接写法，parseSeriesStem 只收整体是标签的方括号，这里补上零散的。 */
 private fun scanFolderTags(name: String): List<MediaTag> =

@@ -140,6 +140,7 @@ private const val BACKGROUND_HINT_SHOWN_KEY = "window.backgroundHintShown"
 fun main(args: Array<String>) {
     PikoLocale.bindSystemLocale(Locale.getDefault().toLanguageTag())
     dev.piko.shared.media.player.SubtitleEncoding.install(dev.piko.shared.media.player.JvmSubtitleTextTranscoder)
+    dev.piko.shared.media.reader.DocumentTextDecoder.install(dev.piko.shared.media.reader.JvmDocumentCharsetDecoder)
     // 最先做：之后任何一处碰到 JNA / SQLite JDBC 都会让它们按当时的属性初始化
     useBundledJnaDispatch()
     useBundledSqlite()
@@ -207,7 +208,9 @@ fun main(args: Array<String>) {
     val motionScale = PikoMotionScale()
     SystemReducedMotion.follow(motionScale)
     motionScale.appReduced = runBlocking { preferences.reduceMotionFlow.first() }
+    motionScale.einkReduced = runBlocking { preferences.einkModeFlow.first() }
     CoroutineScope(Dispatchers.Default).launch { preferences.reduceMotionFlow.collect { motionScale.appReduced = it } }
+    CoroutineScope(Dispatchers.Default).launch { preferences.einkModeFlow.collect { motionScale.einkReduced = it } }
     val platform = DesktopPikoPlatform(settings, motionScale)
     val services = createServices(settings, preferences)
     val invalidTorrentNotices = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -333,6 +336,11 @@ fun main(args: Array<String>) {
         }
         val quitNow = remember(services, settings) {
             {
+                runBlocking {
+                    withTimeoutOrNull(PLAY_HISTORY_FLUSH_TIMEOUT_MILLIS) {
+                        services.mediaRepository.flushPlayHistory(PLAY_HISTORY_FLUSH_TIMEOUT_MILLIS)
+                    }
+                }
                 armExitWatchdog()
                 runCatching { settings.flush() }
                     .onFailure { PikoLog.w("Settings", "Failed to flush desktop settings before exit", it) }
@@ -643,12 +651,18 @@ fun main(args: Array<String>) {
             }
         }
     } }
+    runBlocking {
+        withTimeoutOrNull(PLAY_HISTORY_FLUSH_TIMEOUT_MILLIS) {
+            services.mediaRepository.flushPlayHistory(PLAY_HISTORY_FLUSH_TIMEOUT_MILLIS)
+        }
+    }
     runCatching { settings.flush() }
         .onFailure { PikoLog.w("Settings", "Failed to flush desktop settings on shutdown", it) }
     // 照 application {} 的默认做法当场结束进程，否则关窗后进程还要挂一到四秒才退
     exitProcess(0)
 }
 
+private const val PLAY_HISTORY_FLUSH_TIMEOUT_MILLIS = 4_500L
 private const val EXIT_WATCHDOG_GRACE_MILLIS = 5_000L
 private const val EXIT_WATCHDOG_HALT_DELAY_MILLIS = 3_000L
 

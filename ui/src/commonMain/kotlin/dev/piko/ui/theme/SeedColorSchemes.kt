@@ -646,7 +646,52 @@ enum class SeedTheme(private val labelText: () -> String, val seed: Color, val l
     ;
 
     val label: String get() = labelText()
+
+    companion object {
+        /** 供「主题色」色板展示的彩色种子集合，不含已独立为设备本地显示开关的水墨屏模式。 */
+        val colorEntries: List<SeedTheme> = entries.filter { it != EINK }
+    }
 }
+
+/** 播放器覆盖层在水墨屏模式下的高对比度纯黑单色配色：保留视频画面的深色遮罩语义，同时避免亮白卡片压在黑色视频上。 */
+internal val EInkPlayerColorScheme = darkColorScheme(
+    primary = Color(0xFFFFFFFF),
+    onPrimary = Color(0xFF000000),
+    primaryContainer = Color(0xFF222222),
+    onPrimaryContainer = Color(0xFFFFFFFF),
+    inversePrimary = Color(0xFF000000),
+    secondary = Color(0xFFFFFFFF),
+    onSecondary = Color(0xFF000000),
+    secondaryContainer = Color(0xFF262626),
+    onSecondaryContainer = Color(0xFFFFFFFF),
+    tertiary = Color(0xFFE6E6E6),
+    onTertiary = Color(0xFF000000),
+    tertiaryContainer = Color(0xFF262626),
+    onTertiaryContainer = Color(0xFFFFFFFF),
+    background = Color(0xFF000000),
+    onBackground = Color(0xFFFFFFFF),
+    surface = Color(0xFF000000),
+    onSurface = Color(0xFFFFFFFF),
+    surfaceVariant = Color(0xFF141414),
+    onSurfaceVariant = Color(0xFFD9D9D9),
+    surfaceTint = Color.Transparent,
+    inverseSurface = Color(0xFFFFFFFF),
+    inverseOnSurface = Color(0xFF000000),
+    error = Color(0xFFFFFFFF),
+    onError = Color(0xFF000000),
+    errorContainer = Color(0xFF262626),
+    onErrorContainer = Color(0xFFFFFFFF),
+    outline = Color(0xFFFFFFFF),
+    outlineVariant = Color(0xFF555555),
+    scrim = Color(0xCC000000),
+    surfaceBright = Color(0xFF242424),
+    surfaceContainer = Color(0xFF121212),
+    surfaceContainerHigh = Color(0xFF1A1A1A),
+    surfaceContainerHighest = Color(0xFF262626),
+    surfaceContainerLow = Color(0xFF0A0A0A),
+    surfaceContainerLowest = Color(0xFF000000),
+    surfaceDim = Color(0xFF000000),
+)
 
 private val EInkColorScheme = lightColorScheme(
     primary = Color(0xFF000000),

@@ -12,6 +12,7 @@ import dev.piko.shared.data.DriveAppearancePrefs
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.media.player.PlayerLayoutPrefs
+import dev.piko.shared.media.player.SubtitleStylePrefs
 import dev.piko.shared.media.player.decodePlayerLayoutPrefs
 import dev.piko.shared.media.player.encodePlayerLayoutPrefs
 import dev.piko.shared.net.ProxySetting
@@ -58,6 +59,14 @@ class StoredPikoPreferences(
         val sanitized = prefs.sanitize()
         settings.set(KEY_PLAYER_LAYOUT, encodePlayerLayoutPrefs(sanitized))
         playerLayout.value = sanitized
+    }
+
+    private val subtitleStyle = MutableStateFlow(SubtitleStylePrefs.decodeJson(settings.get(KEY_SUBTITLE_STYLE)))
+    override val subtitleStylePrefsFlow: Flow<SubtitleStylePrefs> = subtitleStyle.asStateFlow()
+    override suspend fun setSubtitleStylePrefs(prefs: SubtitleStylePrefs) {
+        val sanitized = prefs.sanitize()
+        settings.set(KEY_SUBTITLE_STYLE, sanitized.encodeJson())
+        subtitleStyle.value = sanitized
     }
 
     private val driveAppearance = MutableStateFlow(DriveAppearancePrefs.decodeJson(settings.get(KEY_DRIVE_APPEARANCE)))
@@ -146,8 +155,22 @@ class StoredPikoPreferences(
     private val settingsSync = MutableStateFlow(settings.get(KEY_SETTINGS_SYNC, "true").toBoolean())
     private val syncPlayHistory = MutableStateFlow(settings.get(KEY_SYNC_PLAY_HISTORY, "true").toBoolean())
     private val themeMode = MutableStateFlow(settings.get(KEY_THEME_MODE).ifEmpty { null })
-    private val themeSeed = MutableStateFlow(settings.get(KEY_THEME_SEED).ifEmpty { null })
+    // 兼容旧版将水墨屏存成 themeSeed == "EINK" 的本机配置：平滑迁至设备本地开关 ui.einkMode，不再污染同步主题色
+    private val rawThemeSeed = settings.get(KEY_THEME_SEED).ifEmpty { null }
+    private val legacyEinkSeed = rawThemeSeed.equals("EINK", ignoreCase = true)
+    private val themeSeed = MutableStateFlow(rawThemeSeed.takeUnless { it.equals("EINK", ignoreCase = true) })
     private val pureBlack = MutableStateFlow(settings.get(KEY_PURE_BLACK) == "true")
+    private val einkMode = MutableStateFlow(
+        when (val stored = settings.get(KEY_EINK_MODE)) {
+            "" -> legacyEinkSeed
+            else -> stored == "true"
+        },
+    ).also {
+        if (legacyEinkSeed) {
+            if (settings.get(KEY_EINK_MODE).isEmpty()) settings.set(KEY_EINK_MODE, "true")
+            settings.set(KEY_THEME_SEED, "")
+        }
+    }
     // 旧版只存了是否海报墙，没有新键时由它换算
     private val driveViewMode = MutableStateFlow(
         // 没选过时是海报墙，与 Android 相同；旧版只存了是否网格，明确关掉过的仍是列表
@@ -316,8 +339,9 @@ class StoredPikoPreferences(
 
     override val themeSeedFlow: Flow<String?> = themeSeed.asStateFlow()
     override suspend fun setThemeSeed(seed: String?) {
-        settings.set(KEY_THEME_SEED, seed.orEmpty())
-        themeSeed.value = seed
+        val sanitized = seed?.takeUnless { it.equals("EINK", ignoreCase = true) }
+        settings.set(KEY_THEME_SEED, sanitized.orEmpty())
+        themeSeed.value = sanitized
     }
 
     override val pureBlackFlow: Flow<Boolean> = pureBlack.asStateFlow()
@@ -326,12 +350,19 @@ class StoredPikoPreferences(
         pureBlack.value = enabled
     }
 
+    override val einkModeFlow: Flow<Boolean> = einkMode.asStateFlow()
+    override suspend fun setEinkMode(enabled: Boolean) {
+        settings.set(KEY_EINK_MODE, enabled.toString())
+        einkMode.value = enabled
+    }
+
     override val currentSnapshot: PikoPreferencesSnapshot
         get() = PikoPreferencesSnapshot(
             appLanguage = language.value,
             themeMode = themeMode.value,
             themeSeed = themeSeed.value,
             pureBlack = pureBlack.value,
+            einkMode = einkMode.value,
             spoilerBlurEnabled = spoiler.value,
             reduceMotion = reduceMotion.value,
             hardwareDecoding = hardwareDecoding.value,
@@ -343,6 +374,7 @@ class StoredPikoPreferences(
             proxySetting = proxySetting.value,
             tileSizes = tileSizes.value.mapValues { it.value.value },
             playerLayout = playerLayout.value,
+            subtitleStyle = subtitleStyle.value,
             driveAppearance = driveAppearance.value,
             skipFeedExitConfirm = skipFeedExitConfirm.value,
             cacheMaxBytes = cacheMaxBytes.value,
@@ -582,6 +614,7 @@ class StoredPikoPreferences(
         const val KEY_PLAYER_SEEK_STEP_SECONDS = "player.seekStepSeconds"
         const val KEY_PLAYER_BOOST_SPEED = "player.boostSpeed"
         const val KEY_PLAYER_LAYOUT = "player.layout"
+        const val KEY_SUBTITLE_STYLE = "player.subtitleStyle"
         const val KEY_DRIVE_APPEARANCE = "drive.appearance"
         const val KEY_SKIP_FEED_EXIT_CONFIRM = "ui.skipFeedExitConfirm"
         const val KEY_CACHE_MAX_BYTES = "cache.maxBytes"
@@ -609,6 +642,7 @@ class StoredPikoPreferences(
         const val KEY_THEME_MODE = "themeMode"
         const val KEY_THEME_SEED = "ui.themeSeed"
         const val KEY_PURE_BLACK = "ui.pureBlack"
+        const val KEY_EINK_MODE = "ui.einkMode"
         const val KEY_DOWNLOAD_DIR = "download.directory"
         const val KEY_LAST_FOLDER_ID = "drive.lastFolderId"
         const val KEY_LAST_FOLDER_NAME = "drive.lastFolderName"

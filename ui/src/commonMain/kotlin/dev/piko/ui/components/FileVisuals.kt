@@ -14,9 +14,11 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderZip
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Movie
+import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Icon
@@ -52,6 +54,8 @@ import coil3.size.Precision
 import kotlinx.coroutines.CancellationException
 import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.fileCategory
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.tabular
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
@@ -278,6 +282,7 @@ fun FileStat.placeholderColors(): Pair<Color, Color> {
 @Composable
 @ReadOnlyComposable
 internal fun FileVisual.placeholderColors(): Pair<Color, Color> {
+    if (LocalAppearance.current.isEInk) return Color.White to Color.Black
     val colors = MaterialTheme.colorScheme
     return when (kind()) {
         FileKind.VIDEO, FileKind.AUDIO -> colors.tertiaryContainer to colors.onTertiaryContainer
@@ -334,22 +339,28 @@ fun FileTypeIcon(
 
 @Composable
 internal fun FileTypeIcon(file: FileVisual, iconSize: Dp, modifier: Modifier = Modifier) {
-    val container = if (file.isFolder) {
-        MaterialTheme.colorScheme.secondaryContainer
-    } else {
-        MaterialTheme.colorScheme.surfaceContainerHighest
+    val isEInk = LocalAppearance.current.isEInk
+    val container = when {
+        isEInk -> Color.White
+        file.isFolder -> MaterialTheme.colorScheme.secondaryContainer
+        else -> MaterialTheme.colorScheme.surfaceContainerHighest
     }
-    val tint = if (file.isFolder) {
-        MaterialTheme.colorScheme.onSecondaryContainer
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
+    val tint = when {
+        isEInk -> Color.Black
+        file.isFolder -> MaterialTheme.colorScheme.onSecondaryContainer
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val vector = when {
+        isEInk && file.isFolder && file.isLocalMount -> Icons.Outlined.Storage
+        isEInk && file.isFolder -> Icons.Outlined.Folder
+        else -> file.typeIcon()
     }
     Box(
         modifier = modifier.background(container),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            imageVector = file.typeIcon(),
+            imageVector = vector,
             contentDescription = null,
             tint = tint,
             modifier = Modifier.size(iconSize),

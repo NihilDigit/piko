@@ -36,13 +36,66 @@ class FolderDescriptionTest {
     }
 
     @Test
-    fun `chinese folder name without content is reported as unrecognized`() {
+    fun `structured chinese release folder without content extracts its title and metadata`() {
         val folder = describeFolder(steinsGateFolder)
-        assertNull(folder.title)
-        // 集数范围、分区与标签不依赖作品名，照样给出
+        assertEquals("命运石之门", folder.title)
         assertEquals("01–24", folder.episodeRange)
         assertTrue(Section.MOVIE in folder.extras)
         assertTrue(folder.tags.any { it.kind == TagKind.GROUP && it.text == "DBD-Raws" })
+    }
+
+    @Test
+    fun `pure cjk all-bracketed bdrip folder extracts title with and without content`() {
+        val folderName = "[DBD-Raws][胜者即是正义][01-11TV全集+特典映像][1080P][BDRip][HEVC-10bit][FLAC][MKV]"
+        val content = (1..11).map { ep ->
+            "[DBD-Raws][胜者即是正义][${ep.toString().padStart(2, '0')}][1080P][BDRip][HEVC-10bit][FLAC].mkv"
+        } + listOf(
+            "[DBD-Raws][胜者即是正义][NCOP+NCED][1080P][BDRip][HEVC-10bit][FLAC].mkv",
+            "[DBD-Raws][胜者即是正义][menu][D1][01][1080P][BDRip][HEVC-10bit][FLAC].mkv",
+        )
+
+        val withoutContent = describeFolder(folderName)
+        assertEquals("胜者即是正义", withoutContent.title)
+        assertEquals("01–11", withoutContent.episodeRange)
+        assertEquals(listOf(Section.BONUS), withoutContent.extras)
+        val tags = withoutContent.tags.map { it.kind to it.text }.toSet()
+        assertTrue((TagKind.GROUP to "DBD-Raws") in tags)
+        assertTrue((TagKind.RESOLUTION to "1080p") in tags)
+        assertTrue((TagKind.SOURCE to "BDRip") in tags)
+        assertTrue((TagKind.VIDEO_CODEC to "HEVC") in tags)
+        assertTrue((TagKind.BIT_DEPTH to "10bit") in tags)
+        assertTrue((TagKind.AUDIO_CODEC to "FLAC") in tags)
+
+        val withContent = describeFolder(folderName, content)
+        assertEquals("胜者即是正义", withContent.title)
+        assertEquals("01–11", withContent.episodeRange)
+        assertEquals(listOf(Section.CREDITLESS, Section.BONUS, Section.MENU), withContent.extras)
+
+        // 集数范围段不含「全集」或分区标记时也不误当作拉丁标题
+        assertEquals("胜者即是正义", describeFolder("[DBD-Raws][胜者即是正义][01-11TV][1080P][BDRip][HEVC-10bit][FLAC][MKV]").title)
+        assertEquals("胜者即是正义", describeFolder("[DBD-Raws][胜者即是正义][01-11+SP][1080P][BDRip][HEVC-10bit][FLAC][MKV]").title)
+
+        // 普通归类目录装满同一部纯中文剧集时采用该作品名；本就干净同名的目录不重复改写
+        val genericFolder = describeFolder("日剧", content)
+        assertEquals("胜者即是正义", genericFolder.title)
+        assertEquals("01–11", genericFolder.episodeRange)
+        val cleanFolder = describeFolder("胜者即是正义", content)
+        assertNull(cleanFolder.title)
+        assertEquals("01–11", cleanFolder.episodeRange)
+    }
+
+    @Test
+    fun `plain cjk descriptive folders and tag-only folders stay unrecognized`() {
+        listOf(
+            "【标签】某某的JK制服合集",
+            "【某组】7月28-29号 活动",
+            "【中字】某某的日常合集",
+            "[DBD-Raws][1080P][BDRip][HEVC-10bit][FLAC]",
+            "[DBD-Raws][01-11TV全集+特典映像][1080P][BDRip][HEVC-10bit][FLAC][MKV]",
+            "[1080P][BDRip][HEVC-10bit][FLAC]",
+        ).forEach { name ->
+            assertNull(describeFolder(name).title, name)
+        }
     }
 
     @Test

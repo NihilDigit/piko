@@ -4,15 +4,18 @@ import androidx.compose.animation.Animatable
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -23,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
@@ -65,6 +69,7 @@ fun <S> MorphContainer(
     modifier: Modifier = Modifier,
     containerModifier: Modifier = Modifier,
     interactionSource: MutableInteractionSource? = null,
+    interactive: Boolean = visible,
     content: @Composable (S) -> Unit,
 ) {
     val motion = MaterialTheme.motionScheme
@@ -129,23 +134,18 @@ fun <S> MorphContainer(
     val drawn by remember { derivedStateOf { presence.value > 0f } }
     Box(modifier.size(anchorSize), contentAlignment = Alignment.Center) {
         if (drawn || visible) {
-            Surface(
-                onClick = onClick,
-                // 弹簧会冲过头；负的圆角让 CornerBasedShape 当场抛异常，见 ConnectedShapes.kt
-                shape = RoundedCornerShape(animatedCorner.value.coerceAtLeast(0.dp)),
-                color = animatedColor.value,
-                contentColor = contentColor(live),
-                interactionSource = interactionSource,
-                modifier = Modifier
-                    .requiredSize(animatedWidth.value.coerceAtLeast(0.dp), anchorSize.height)
-                    .graphicsLayer {
-                        alpha = presence.value
-                        val scale = lerp(ENTER_SCALE, 1f, presence.value)
-                        scaleX = scale
-                        scaleY = scale
-                    }
-                    .then(containerModifier),
-            ) {
+            // 弹簧会冲过头；负的圆角让 CornerBasedShape 当场抛异常，见 ConnectedShapes.kt
+            val shape = RoundedCornerShape(animatedCorner.value.coerceAtLeast(0.dp))
+            val containerMod = Modifier
+                .requiredSize(animatedWidth.value.coerceAtLeast(0.dp), anchorSize.height)
+                .graphicsLayer {
+                    alpha = presence.value
+                    val scale = lerp(ENTER_SCALE, 1f, presence.value)
+                    scaleX = scale
+                    scaleY = scale
+                }
+                .then(if (interactive) containerModifier else Modifier)
+            val innerContent: @Composable () -> Unit = {
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -158,6 +158,30 @@ fun <S> MorphContainer(
                     contentAlignment = Alignment.Center,
                 ) {
                     content(live)
+                }
+            }
+            // 被动读数或退场动画期间既不挂 clickable，也不调无点击重载的 Material3 Surface（Surface.kt:78 会挂载
+            // `.pointerInput(Unit) {}` 吞掉背后手势），直接以纯绘制 Box 透传指针命中。
+            if (interactive) {
+                Surface(
+                    onClick = onClick,
+                    shape = shape,
+                    color = animatedColor.value,
+                    contentColor = contentColor(live),
+                    interactionSource = interactionSource,
+                    modifier = containerMod,
+                    content = innerContent,
+                )
+            } else {
+                CompositionLocalProvider(LocalContentColor provides contentColor(live)) {
+                    Box(
+                        modifier = containerMod
+                            .clip(shape)
+                            .background(animatedColor.value),
+                        propagateMinConstraints = true,
+                    ) {
+                        innerContent()
+                    }
                 }
             }
         }

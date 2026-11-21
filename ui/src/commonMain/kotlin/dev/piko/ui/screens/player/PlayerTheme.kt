@@ -6,20 +6,21 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MotionScheme
 import androidx.compose.runtime.Composable
 import dev.piko.ui.theme.LocalAppearance
-import dev.piko.ui.theme.colorScheme
+import dev.piko.ui.theme.playerColorScheme
 
 /**
  * 播放器控件固定使用深色配色。
  *
  * 控件叠在视频画面上，背景是黑色渐变遮罩而不是应用的 surface；跟随浅色主题时
- * onSurface 为深色，在遮罩上不可读。主题色仍与应用其余部分一致。
+ * onSurface 为深色，在遮罩上不可读。主题色仍与应用其余部分一致；水墨屏模式使用
+ * 专用高对比度深色单色方案，避免浅色底面与黑底主容器压在视频画面上。
  * 字体与形状沿用外层主题。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun PlayerTheme(content: @Composable () -> Unit) {
     // 深色方案跟随用户选的主题色，深浅则不跟随：固定取深色
-    val colorScheme = LocalAppearance.current.colorScheme(dark = true)
+    val colorScheme = LocalAppearance.current.playerColorScheme()
     MaterialExpressiveTheme(
         colorScheme = colorScheme,
         motionScheme = MotionScheme.expressive(),

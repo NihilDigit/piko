@@ -7,6 +7,7 @@ import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import dev.piko.shared.i18n.PikoLocale
@@ -38,6 +39,11 @@ fun PikoTheme(
     val isEInk = appearance.isEInk
     val darkTheme = appearance.isDark()
     val platform = LocalPikoPlatform.current
+    SideEffect {
+        if (platform.motionScale.einkReduced != isEInk) {
+            platform.motionScale.einkReduced = isEInk
+        }
+    }
     val reduced = platform.motionScale.reduced || isEInk
     val motion = remember(platform.motionStyle, reduced) { PikoMotion.of(platform.motionStyle, reduced) }
     val motionScheme = when (platform.motionStyle) {

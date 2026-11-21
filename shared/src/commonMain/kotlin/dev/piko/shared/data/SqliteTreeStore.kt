@@ -111,6 +111,7 @@ internal class SqliteTreeStore(
         db.execute("CREATE TABLE IF NOT EXISTS tree_vault_revision (folder TEXT PRIMARY KEY, seq INTEGER NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS tree_vault_state (generation INTEGER NOT NULL, folder TEXT NOT NULL, manifest_id TEXT, PRIMARY KEY(generation,folder))")
         db.execute("CREATE TABLE IF NOT EXISTS tree_deleted (id TEXT PRIMARY KEY, seq INTEGER NOT NULL)")
+        db.execute("CREATE INDEX IF NOT EXISTS tree_deleted_seq ON tree_deleted(seq)")
         db.execute("CREATE TABLE IF NOT EXISTS tree_overrides (id TEXT PRIMARY KEY, name TEXT, name_seq INTEGER NOT NULL DEFAULT 0, parent TEXT, parent_seq INTEGER NOT NULL DEFAULT 0)")
         db.execute("CREATE TABLE IF NOT EXISTS tree_aggregate (folder TEXT NOT NULL, virtual INTEGER NOT NULL, bytes INTEGER NOT NULL, count INTEGER NOT NULL, duration INTEGER NOT NULL, known INTEGER NOT NULL, unknown INTEGER NOT NULL, PRIMARY KEY(folder,virtual))")
         db.execute("CREATE TABLE IF NOT EXISTS tree_sources (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
@@ -669,7 +670,8 @@ internal class SqliteTreeStore(
                 if (detached.isNotEmpty()) invalidateFolderProjection()
                 if (cachedManifestRows?.values?.any { it.parentId == parent } == true) cachedManifestRows = null
                 detached.forEach { coverage(it, true) }
-                db.execute("INSERT OR REPLACE INTO tree_deleted SELECT id,? FROM tree_nodes WHERE generation=0 AND parent=? AND virtual=0 AND id NOT IN (SELECT id FROM tree_observed)", listOf(sequence, parent))
+                // 一次列举只能证明缺失项已离开此父目录（可能已被移至别处），不能写入全局递归墓碑 tree_deleted；
+                // 候选提交阶段会按 tree_coverage(dirty=0) 仅替换该父目录子项并清理真正失联的孤儿后代。
                 db.execute("DELETE FROM tree_nodes WHERE generation=0 AND parent=? AND virtual=0 AND id NOT IN (SELECT id FROM tree_observed)", listOf(parent))
                 coverage(parent, false)
             }
@@ -909,19 +911,25 @@ internal class SqliteTreeStore(
             val roots = batch.joinToString(",") { "(?)" }
             db.execute("WITH RECURSIVE removed(id) AS (SELECT column1 FROM (VALUES $roots) UNION SELECT n.id FROM removed r CROSS JOIN tree_nodes n ON n.generation=0 AND n.parent=r.id) INSERT OR REPLACE INTO tree_deleted SELECT id,? FROM removed", batch + sequence)
         }
-        rows("SELECT DISTINCT parent FROM tree_nodes WHERE generation=0 AND id IN (SELECT id FROM tree_deleted)") { touchedFolders += it.string(0)!! }
-        db.execute("DELETE FROM tree_nodes WHERE generation=0 AND id IN (SELECT id FROM tree_deleted)")
-        db.execute("DELETE FROM tree_coverage WHERE id IN (SELECT id FROM tree_deleted)")
-        db.execute("DELETE FROM tree_vault WHERE generation=0 AND folder IN (SELECT id FROM tree_deleted)")
-        db.execute("DELETE FROM tree_instances WHERE id IN (SELECT id FROM tree_deleted)")
-        db.execute("DELETE FROM tree_vault_state WHERE generation=0 AND folder IN (SELECT id FROM tree_deleted)")
+        val currentSeq = listOf(sequence)
+        rows("SELECT DISTINCT parent FROM tree_nodes WHERE generation=0 AND id IN (SELECT id FROM tree_deleted WHERE seq=?)", currentSeq) { touchedFolders += it.string(0)!! }
+        db.execute("DELETE FROM tree_nodes WHERE generation=0 AND id IN (SELECT id FROM tree_deleted WHERE seq=?)", currentSeq)
+        db.execute("DELETE FROM tree_coverage WHERE id IN (SELECT id FROM tree_deleted WHERE seq=?)", currentSeq)
+        db.execute("DELETE FROM tree_vault WHERE generation=0 AND folder IN (SELECT id FROM tree_deleted WHERE seq=?)", currentSeq)
+        db.execute("DELETE FROM tree_instances WHERE id IN (SELECT id FROM tree_deleted WHERE seq=?)", currentSeq)
+        db.execute("DELETE FROM tree_vault_state WHERE generation=0 AND folder IN (SELECT id FROM tree_deleted WHERE seq=?)", currentSeq)
+        if (candidates.isEmpty()) {
+            db.execute("DELETE FROM tree_deleted WHERE seq<=?", currentSeq)
+        }
         for ((folder, previous) in manifestParents) if (previous != winner(folder)?.id) clearVault(folder)
     }
     fun change(change: DriveChange) = mutate {
         when (change) {
             is DriveChange.Renamed -> {
-                db.execute("INSERT OR IGNORE INTO tree_overrides(id) VALUES (?)", listOf(change.id))
-                db.execute("UPDATE tree_overrides SET name=?,name_seq=? WHERE id=?", listOf(change.name, sequence, change.id))
+                if (candidates.isNotEmpty()) {
+                    db.execute("INSERT OR IGNORE INTO tree_overrides(id) VALUES (?)", listOf(change.id))
+                    db.execute("UPDATE tree_overrides SET name=?,name_seq=? WHERE id=?", listOf(change.name, sequence, change.id))
+                }
                 file(change.id)?.let { current ->
                     if (current.name != change.name) {
                         val renamed = clean(current.copy(name = change.name))
@@ -952,8 +960,10 @@ internal class SqliteTreeStore(
             is DriveChange.Moved -> {
                 val manifestParents = HashMap<String, String?>()
                 for (id in change.ids) {
-                    db.execute("INSERT OR IGNORE INTO tree_overrides(id) VALUES (?)", listOf(id))
-                    db.execute("UPDATE tree_overrides SET parent=?,parent_seq=? WHERE id=?", listOf(change.to, sequence, id))
+                    if (candidates.isNotEmpty()) {
+                        db.execute("INSERT OR IGNORE INTO tree_overrides(id) VALUES (?)", listOf(id))
+                        db.execute("UPDATE tree_overrides SET parent=?,parent_seq=? WHERE id=?", listOf(change.to, sequence, id))
+                    }
                     val known = file(id)
                     if (known != null) {
                         if (known.isFolder && isPikoInternalFolder(known, known.parentId) != isPikoInternalFolder(known, change.to)) {
@@ -987,6 +997,12 @@ internal class SqliteTreeStore(
             }
             is DriveChange.Copied -> change.folders.orEmpty().forEach { coverage(it, true) }
             is DriveChange.Restored, is DriveChange.ContentsChanged -> {
+                if (change is DriveChange.Restored) {
+                    for (chunk in change.ids.chunked(400)) {
+                        val placeholders = chunk.joinToString(",") { "?" }
+                        db.execute("DELETE FROM tree_deleted WHERE id IN ($placeholders)", chunk)
+                    }
+                }
                 if (change.folders == null) {
                     rebuildAll = true
                     meta("complete", "false")
@@ -1079,6 +1095,7 @@ internal class SqliteTreeStore(
         db.transaction {
             db.execute("DELETE FROM tree_deleted WHERE seq<=?", listOf(cutoff))
             db.execute("DELETE FROM tree_overrides WHERE name_seq<=? AND parent_seq<=?", listOf(cutoff, cutoff))
+            db.execute("DELETE FROM tree_vault_revision WHERE seq<=?", listOf(cutoff))
         }
     }
 
@@ -1185,6 +1202,11 @@ internal class SqliteTreeStore(
                     db.execute("DELETE FROM $table WHERE generation=?", listOf(generation))
                 }
             }
+            if (candidates.isEmpty()) {
+                db.execute("DELETE FROM tree_deleted WHERE seq<=?", listOf(sequence))
+                db.execute("DELETE FROM tree_overrides WHERE name_seq<=? AND parent_seq<=?", listOf(sequence, sequence))
+                db.execute("DELETE FROM tree_vault_revision WHERE seq<=?", listOf(sequence))
+            }
         }
     }
     fun commitCandidate(generation: Long, usage: Long?, syncedAt: Long, syncCursor: String? = null): Set<String> {
@@ -1195,9 +1217,15 @@ internal class SqliteTreeStore(
             db.execute("CREATE TEMP TABLE IF NOT EXISTS tree_candidate_folders(id TEXT PRIMARY KEY)")
             db.execute("DELETE FROM tree_candidate_folders")
             db.execute("INSERT INTO tree_candidate_folders SELECT id FROM tree_nodes WHERE generation=? AND folder=1", listOf(generation))
-            // Preserve authoritative foreground listings and every subsequent per-instance write.
+            // Preserve authoritative (dirty=0) foreground listings and every subsequent per-instance write.
+            db.execute("CREATE TEMP TABLE IF NOT EXISTS tree_replaced_folders(id TEXT PRIMARY KEY)")
+            db.execute("DELETE FROM tree_replaced_folders")
+            db.execute(
+                "INSERT INTO tree_replaced_folders SELECT id FROM tree_nodes WHERE generation=? AND folder=1 AND parent IN (SELECT id FROM tree_coverage WHERE seq>? AND dirty=0)",
+                listOf(generation, baseline),
+            )
             db.execute("DELETE FROM tree_nodes WHERE generation=? AND parent IN (SELECT id FROM tree_coverage WHERE seq>? AND dirty=0)", listOf(generation, baseline))
-            db.execute("INSERT OR REPLACE INTO tree_nodes SELECT ?,id,parent,folder,virtual,name,norm_name,excluded,bytes,gcid,duration,video,payload,seq FROM tree_nodes WHERE generation=0 AND (seq>? OR parent IN (SELECT id FROM tree_coverage WHERE seq>?))", listOf(generation, baseline, baseline))
+            db.execute("INSERT OR REPLACE INTO tree_nodes SELECT ?,id,parent,folder,virtual,name,norm_name,excluded,bytes,gcid,duration,video,payload,seq FROM tree_nodes WHERE generation=0 AND (seq>? OR parent IN (SELECT id FROM tree_coverage WHERE seq>? AND dirty=0))", listOf(generation, baseline, baseline))
             rows("SELECT id,name,name_seq,parent,parent_seq FROM tree_overrides WHERE name_seq>? OR parent_seq>?", listOf(baseline, baseline)) { c ->
                 file(c.string(0)!!, generation)?.let { f ->
                     val ownSeq = scalar("SELECT seq FROM tree_nodes WHERE generation=? AND id=?", listOf(generation, f.id))?.toLongOrNull() ?: 0L
@@ -1207,10 +1235,16 @@ internal class SqliteTreeStore(
                 }
             }
             db.execute("WITH RECURSIVE removed(id) AS (SELECT id FROM tree_deleted WHERE seq>? UNION SELECT n.id FROM removed r CROSS JOIN tree_nodes n ON n.generation=? AND n.parent=r.id) DELETE FROM tree_nodes WHERE generation=? AND id IN (SELECT id FROM removed)", listOf(baseline, generation, generation))
+            // Clean up descendants of folders removed by an authoritative parent listing only if those folders
+            // did not reappear under another parent in candidate (preserving moved subtrees).
+            db.execute(
+                "WITH RECURSIVE orphans(id) AS (SELECT r.id FROM tree_replaced_folders r WHERE NOT EXISTS (SELECT 1 FROM tree_nodes n WHERE n.generation=? AND n.id=r.id) UNION SELECT n.id FROM orphans o CROSS JOIN tree_nodes n ON n.generation=? AND n.parent=o.id) DELETE FROM tree_nodes WHERE generation=? AND id IN (SELECT id FROM orphans)",
+                listOf(generation, generation, generation),
+            )
             val liveVaultFolders = HashSet<String>()
             rows("SELECT folder FROM tree_vault_state WHERE generation=0 UNION SELECT folder FROM tree_vault_revision WHERE seq>?", listOf(baseline)) { liveVaultFolders += it.string(0)!! }
             for (folder in liveVaultFolders) {
-                val preserve = (scalar("SELECT seq FROM tree_coverage WHERE id=?", listOf(folder))?.toLongOrNull() ?: 0L) > baseline ||
+                val preserve = (scalar("SELECT seq FROM tree_coverage WHERE id=? AND dirty=0", listOf(folder))?.toLongOrNull() ?: 0L) > baseline ||
                     (scalar("SELECT seq FROM tree_vault_revision WHERE folder=?", listOf(folder))?.toLongOrNull() ?: 0L) > baseline
                 val sameManifest = winner(folder)?.id?.let { it == winner(folder, generation)?.id } == true
                 val candidateHasVault = scalar("SELECT folder FROM tree_vault_state WHERE generation=? AND folder=?", listOf(generation, folder)) != null
@@ -1245,11 +1279,15 @@ internal class SqliteTreeStore(
             db.execute("DELETE FROM tree_vault_state WHERE generation=0")
             db.execute("UPDATE tree_vault_state SET generation=0 WHERE generation=?", listOf(generation))
             db.execute("DELETE FROM tree_coverage WHERE seq<=?", listOf(baseline))
+            db.execute("DELETE FROM tree_coverage WHERE id<>'' AND id NOT IN (SELECT id FROM tree_nodes WHERE generation=0 AND folder=1)")
             db.execute("INSERT OR IGNORE INTO tree_coverage SELECT id,1,? FROM tree_nodes WHERE generation=0 AND folder=1 AND id NOT IN (SELECT id FROM tree_candidate_folders)", listOf(sequence))
             db.execute("INSERT OR IGNORE INTO tree_coverage SELECT id,0,? FROM tree_nodes WHERE generation=0 AND folder=1", listOf(sequence))
             db.execute("INSERT OR IGNORE INTO tree_coverage VALUES ('',0,?)", listOf(sequence))
             db.execute("DELETE FROM tree_instances WHERE id NOT IN (SELECT id FROM tree_nodes WHERE generation=0)")
             db.execute("INSERT OR REPLACE INTO tree_instances SELECT r.id,r.original_created FROM tree_restores r JOIN tree_nodes n ON n.generation=0 AND n.id=r.id AND n.gcid=r.gcid AND n.bytes=r.bytes AND n.folder=0")
+            db.execute("DELETE FROM tree_deleted WHERE seq<=?", listOf(sequence))
+            db.execute("DELETE FROM tree_overrides WHERE name_seq<=? AND parent_seq<=?", listOf(sequence, sequence))
+            db.execute("DELETE FROM tree_vault_revision WHERE seq<=?", listOf(sequence))
             clearCandidateCheckpointMeta()
             meta("complete", "true")
             if ((meta("usage_seq")?.toLongOrNull() ?: 0L) <= baseline && usage != null) meta("usage", usage.toString())

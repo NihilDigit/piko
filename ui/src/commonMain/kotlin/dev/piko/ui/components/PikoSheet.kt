@@ -50,6 +50,8 @@ import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.screens.drive.withoutSavedState
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.islandBorderColor
 
 /** [PikoSheet] 内容所在的作用域。 */
@@ -169,11 +171,12 @@ private fun ModalSideSheet(
                 modifier = Modifier.align(Alignment.CenterEnd),
             ) {
                 val borderColor = MaterialTheme.colorScheme.islandBorderColor
+                val isEInk = LocalAppearance.current.isEInk
                 Surface(
                     shape = MaterialTheme.shapes.largeIncreased,
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
                     border = borderColor?.let { BorderStroke(1.dp, it) },
-                    shadowElevation = 6.dp,
+                    shadowElevation = if (isEInk) 0.dp else 6.dp,
                     modifier = Modifier
                         .windowInsetsPadding(WindowInsets.safeDrawing)
                         .padding(16.dp)

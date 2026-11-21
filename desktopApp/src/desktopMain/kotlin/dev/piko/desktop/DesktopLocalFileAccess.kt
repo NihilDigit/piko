@@ -193,6 +193,31 @@ class DesktopLocalFileAccess(private val scope: CoroutineScope, private val chan
             throw IllegalStateException("Local folder is not accessible", e)
         }
     }
+    override suspend fun readBytes(mount: LocalMount, location: LocalLocation, maxBytes: Int): Pair<ByteArray, Long>? = withContext(Dispatchers.IO) {
+        if (maxBytes <= 0) return@withContext null
+        try {
+            val target = path(mount, location)
+            val attrs = Files.readAttributes(target, BasicFileAttributes::class.java)
+            if (attrs.isDirectory) return@withContext null
+            val total = attrs.size()
+            val limit = minOf(total, maxBytes.toLong()).toInt()
+            if (limit <= 0) return@withContext ByteArray(0) to total
+            Files.newInputStream(target, NOFOLLOW_LINKS).use { input ->
+                val out = ByteArray(limit)
+                var filled = 0
+                while (filled < limit) {
+                    val n = input.read(out, filled, limit - filled)
+                    if (n <= 0) break
+                    filled += n
+                }
+                (if (filled == limit) out else out.copyOf(filled)) to total
+            }
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (e: Exception) {
+            throw IllegalStateException("Local folder is not accessible", e)
+        }
+    }
     private suspend fun metadata(mount: LocalMount, location: LocalLocation, file: FileStat, output: File, gen: Long = generation.get()): LocalMediaMetadata? {
         val context = currentCoroutineContext()
         if (!context.isActive || generation.get() != gen) throw CancellationException("Local media probe cancelled")

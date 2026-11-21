@@ -5,6 +5,8 @@ import dev.piko.ui.i18n.stringResource
 
 import dev.piko.shared.i18n.tr
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
@@ -40,11 +42,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.data.auth.SnailMode
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.screens.settings.SnailModeDialog
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import kotlinx.coroutines.launch
 
 /**
@@ -64,6 +69,7 @@ fun SnailModeToggle(modifier: Modifier = Modifier) {
     val mode by preferences.snailModeFlow.collectAsStateWithLifecycle(initialValue = SnailMode())
     var editing by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
+    val isEInk = LocalAppearance.current.isEInk
     val full = CornerSize(50)
     val inner = CornerSize(4.dp)
     val leading = RoundedCornerShape(topStart = full, topEnd = inner, bottomEnd = inner, bottomStart = full)
@@ -80,10 +86,20 @@ fun SnailModeToggle(modifier: Modifier = Modifier) {
                 checked = mode.enabled,
                 onCheckedChange = { enabled -> scope.launch { preferences.setSnailMode(mode.copy(enabled = enabled)) } },
                 shapes = ToggleButtonShapes(shape = leading, pressedShape = leading, checkedShape = leading),
-                colors = FilledTonalToggleButtonDefaults.colors(
-                    checkedContainerColor = colors.tertiaryContainer,
-                    checkedContentColor = colors.onTertiaryContainer,
-                ),
+                colors = if (isEInk) {
+                    FilledTonalToggleButtonDefaults.colors(
+                        containerColor = Color.White,
+                        contentColor = Color.Black,
+                        checkedContainerColor = Color.Black,
+                        checkedContentColor = Color.White,
+                    )
+                } else {
+                    FilledTonalToggleButtonDefaults.colors(
+                        checkedContainerColor = colors.tertiaryContainer,
+                        checkedContentColor = colors.onTertiaryContainer,
+                    )
+                },
+                border = if (isEInk) BorderStroke(1.dp, colors.outline) else null,
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 modifier = Modifier.height(height),
             ) {
@@ -103,15 +119,24 @@ fun SnailModeToggle(modifier: Modifier = Modifier) {
             FilledTonalIconButton(
                 onClick = { editing = true },
                 shape = trailing,
-                colors = if (mode.enabled) {
-                    IconButtonDefaults.filledTonalIconButtonColors(
+                colors = when {
+                    isEInk && mode.enabled -> IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = Color.Black,
+                        contentColor = Color.White,
+                    )
+                    isEInk -> IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = Color.White,
+                        contentColor = Color.Black,
+                    )
+                    mode.enabled -> IconButtonDefaults.filledTonalIconButtonColors(
                         containerColor = colors.tertiaryContainer,
                         contentColor = colors.onTertiaryContainer,
                     )
-                } else {
-                    IconButtonDefaults.filledTonalIconButtonColors()
+                    else -> IconButtonDefaults.filledTonalIconButtonColors()
                 },
-                modifier = Modifier.size(width = 36.dp, height = height),
+                modifier = Modifier
+                    .size(width = 36.dp, height = height)
+                    .then(if (isEInk) Modifier.border(1.dp, colors.outline, trailing) else Modifier),
             ) {
                 Icon(Icons.Outlined.Tune, contentDescription = tr("设置上限", "Set limit", "上限を設定", "한도 설정", "設定上限"), modifier = Modifier.size(18.dp))
             }

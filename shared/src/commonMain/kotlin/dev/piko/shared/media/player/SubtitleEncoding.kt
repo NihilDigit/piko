@@ -32,6 +32,9 @@ interface SubtitleTextTranscoder {
         effectiveLanguage: AppLanguage = PikoLocale.effectiveLanguage,
         systemLanguage: AppLanguage = PikoLocale.systemLanguage,
     ): ByteArray
+
+    /** 读取本地字幕文件前 [maxBytes] 字节供语言探测使用；不支持或文件不可读时返回 null。 */
+    fun readLocalSample(path: String, maxBytes: Int = 32 * 1024): ByteArray? = null
 }
 
 object SubtitleEncoding {
