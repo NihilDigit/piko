@@ -383,7 +383,10 @@ fun DriveScreen(
                     else downloads.download(effect.targets, source, onQueued)
                 }
                 is DriveUiEffect.EnqueueResolvedDownload -> {
-                    downloads.downloadResolved(effect.files, effect.parentId) { openTransfers() }
+                    downloads.downloadResolved(effect.files, effect.parentId) { notice ->
+                        notice?.let(services::noticeOnTransfers)
+                        openTransfers()
+                    }
                 }
                 DriveUiEffect.OpenTransfers -> openTransfers()
             }

@@ -1099,6 +1099,7 @@ private fun ShareTreeList(
     modifier: Modifier = Modifier,
     retainedListState: LazyListState? = null,
 ) {
+    val services = LocalPikoServices.current
     val downloads = rememberDownloadLauncher()
     val editable = state.canEdit
     val rows = remember(browser, browser.revision) { browser.visibleRows() }
@@ -1177,7 +1178,8 @@ private fun ShareTreeList(
                                             downloads.downloadResolved(
                                                 listOf(ResolvedFile(node.name, node.sizeBytes, node.hash)),
                                                 state.target?.id.orEmpty(),
-                                            ) {
+                                            ) { notice ->
+                                                notice?.let(services::noticeOnTransfers)
                                                 onDownloaded()
                                             }
                                         },

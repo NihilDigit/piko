@@ -346,6 +346,7 @@ internal fun DriveSystemOverlays(
         )
     }
 
+    val services = LocalPikoServices.current
     val segmentTarget = segmentSession.file
     if (segmentTarget != null) {
         SegmentDownloadSheet(
@@ -360,6 +361,7 @@ internal fun DriveSystemOverlays(
                     startByte = startByte,
                     lengthBytes = lengthBytes,
                     quality = quality,
+                    onNotice = services::noticeOnTransfers,
                     onQueued = {
                         segmentSession.end()
                         onOpenTransfers()

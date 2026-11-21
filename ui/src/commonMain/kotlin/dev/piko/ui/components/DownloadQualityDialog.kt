@@ -1,10 +1,6 @@
 package dev.piko.ui.components
 
-import dev.piko.ui.resources.*
-import dev.piko.ui.i18n.stringResource
-
-import dev.piko.shared.i18n.tr
-
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,10 +8,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material3.Checkbox
@@ -25,6 +23,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -33,37 +32,61 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import dev.piko.data.auth.PlayerGestureDefaults
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFile
 import dev.piko.shared.media.DownloadQuality
 import dev.piko.shared.media.chooseDownloadQuality
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.i18n.stringResource
+import dev.piko.ui.resources.Res
+import dev.piko.ui.resources.common_cancel
+import dev.piko.ui.resources.text_choose_download_quality
+import dev.piko.ui.resources.text_unable_to_get_video_qualities_try_again_later
+import dev.piko.ui.resources.text_use_the_highest_quality_within_the_limit_or_the_lowest_if_none_fits_transcod
+import dev.piko.ui.resources.text_use_this_quality_for_future_downloads
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
 
 /**
- * 点「下载指定画质」时选择，入口见 [DownloadLauncher]；普通下载不打开对话框。
+ * 点「下载指定画质」时选择，入口见 [DownloadLauncher]；普通下载不打开画质对话框。
  * 单个视频列出原画与各档转码及其大小；几项一起（多选、文件夹）只列画质级别，每个视频各自按 downloadQualityOrder 挑，
  * 不逐个探测：文件夹里上千个视频，逐个查详情太慢。
+ * 开启「每次下载前选择位置」时，在同对话框内嵌保存位置卡片，避免连续弹出两个模态框。
  */
 @Composable
 internal fun DownloadQualityDialog(
     request: DownloadRequest,
-    onConfirm: (choice: DownloadChoice, keep: Boolean) -> Unit,
+    onPickLocation: () -> Unit,
+    onConfirm: (choice: DownloadChoice, keepQuality: Boolean, keepLocation: Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var keep by remember(request) { mutableStateOf(false) }
+    var keepQuality by remember(request) { mutableStateOf(false) }
+    var keepLocation by remember(request) { mutableStateOf(false) }
     val video = request.video
     if (video != null) {
-        SingleVideoDialog(video, keep, { keep = it }, onConfirm, onDismiss)
+        SingleVideoDialog(
+            request = request,
+            file = video,
+            keepQuality = keepQuality,
+            onKeepQualityChange = { keepQuality = it },
+            keepLocation = keepLocation,
+            onKeepLocationChange = { keepLocation = it },
+            onPickLocation = onPickLocation,
+            onConfirm = onConfirm,
+            onDismiss = onDismiss,
+        )
     } else {
         var picked by remember(request) { mutableStateOf(ORIGINAL_MAX_HEIGHT) }
         QualityDialogFrame(
+            focusKey = request,
             confirmEnabled = true,
-            onConfirm = { onConfirm(DownloadChoice.Cap(picked), keep) },
+            onConfirm = { onConfirm(DownloadChoice.Cap(picked), keepQuality, keepLocation) },
             onDismiss = onDismiss,
         ) {
             Text(stringResource(Res.string.text_use_the_highest_quality_within_the_limit_or_the_lowest_if_none_fits_transcod), style = MaterialTheme.typography.bodyMedium)
@@ -77,7 +100,17 @@ internal fun DownloadQualityDialog(
                     ) { picked = height }
                 }
             }
-            KeepChoiceRow(keep) { keep = it }
+            KeepChoiceRow(keepQuality) { keepQuality = it }
+            if (request.askLocation) {
+                DownloadLocationCard(
+                    targetDirectory = request.targetDirectory,
+                    onPickLocation = onPickLocation,
+                )
+                RememberDownloadLocationRow(
+                    checked = keepLocation,
+                    onCheckedChange = { keepLocation = it },
+                )
+            }
         }
     }
 }
@@ -95,10 +128,14 @@ private class Picked(val name: String?)
 /** 单个视频：转码档的大小要逐档探测，先列出档位、大小随后补上。 */
 @Composable
 private fun SingleVideoDialog(
+    request: DownloadRequest,
     file: FileStat,
-    keep: Boolean,
-    onKeepChange: (Boolean) -> Unit,
-    onConfirm: (choice: DownloadChoice, keep: Boolean) -> Unit,
+    keepQuality: Boolean,
+    onKeepQualityChange: (Boolean) -> Unit,
+    keepLocation: Boolean,
+    onKeepLocationChange: (Boolean) -> Unit,
+    onPickLocation: () -> Unit,
+    onConfirm: (choice: DownloadChoice, keepQuality: Boolean, keepLocation: Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val services = LocalPikoServices.current
@@ -122,13 +159,26 @@ private fun SingleVideoDialog(
     val selected = if (pickedUnreadable) null else pickedOption ?: options?.let { chooseDownloadQuality(it, ORIGINAL_MAX_HEIGHT) ?: it.first() }
 
     QualityDialogFrame(
+        focusKey = request,
         confirmEnabled = selected != null,
-        onConfirm = { selected?.let { onConfirm(DownloadChoice.Exact(it), keep) } },
+        onConfirm = { selected?.let { onConfirm(DownloadChoice.Exact(it), keepQuality, keepLocation) } },
         onDismiss = onDismiss,
     ) {
         when {
             choices.failed -> Text(stringResource(Res.string.text_unable_to_get_video_qualities_try_again_later), style = MaterialTheme.typography.bodyMedium)
-            options == null -> QualityListSkeleton()
+            options == null -> {
+                QualityListSkeleton()
+                if (request.askLocation) {
+                    DownloadLocationCard(
+                        targetDirectory = request.targetDirectory,
+                        onPickLocation = onPickLocation,
+                    )
+                    RememberDownloadLocationRow(
+                        checked = keepLocation,
+                        onCheckedChange = onKeepLocationChange,
+                    )
+                }
+            }
             else -> {
                 Text(
                     if (options.size > 1) tr("转码视频将保存为 MP4 格式。", "Transcoded videos are saved as MP4.", "変換動画はMP4形式で保存されます。", "변환 동영상은 MP4 형식으로 저장됩니다.", "轉碼影片將儲存為 MP4 格式。") else tr("此视频无可用转码版本，仅可下载原画。", "No transcoded versions available. Only the original can be downloaded.", "利用可能な変換バージョンがないため、オリジナルのみダウンロードできます。", "사용 가능한 변환 버전이 없어 원본만 다운로드할 수 있습니다.", "此影片無可用轉碼版本，僅可下載原畫。"),
@@ -154,7 +204,17 @@ private fun SingleVideoDialog(
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
-                KeepChoiceRow(keep, onKeepChange)
+                KeepChoiceRow(keepQuality, onKeepQualityChange)
+                if (request.askLocation) {
+                    DownloadLocationCard(
+                        targetDirectory = request.targetDirectory,
+                        onPickLocation = onPickLocation,
+                    )
+                    RememberDownloadLocationRow(
+                        checked = keepLocation,
+                        onCheckedChange = onKeepLocationChange,
+                    )
+                }
             }
         }
     }
@@ -162,18 +222,35 @@ private fun SingleVideoDialog(
 
 @Composable
 private fun QualityDialogFrame(
+    focusKey: Any,
     confirmEnabled: Boolean,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
     content: @Composable () -> Unit,
 ) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(focusKey) {
+        focusRequester.requestFocus()
+    }
     PikoDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.HighQuality, contentDescription = null) },
         title = { Text(stringResource(Res.string.text_choose_download_quality)) },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(16.dp)) { content() } },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .focusRequester(focusRequester)
+                    .focusable()
+                    .onDialogEnterConfirm(enabled = confirmEnabled, onConfirm = onConfirm),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                content()
+            }
+        },
         confirmButton = {
-            PikoDialogConfirm(label = tr("下载", "Downloads", "ダウンロード", "다운로드", "下載"), onClick = onConfirm, enabled = confirmEnabled)
+            PikoDialogConfirm(label = tr("下载", "Download", "ダウンロード", "다운로드", "下載"), onClick = onConfirm, enabled = confirmEnabled)
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text(stringResource(Res.string.common_cancel)) }

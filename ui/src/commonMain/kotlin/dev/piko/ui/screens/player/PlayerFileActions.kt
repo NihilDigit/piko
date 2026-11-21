@@ -117,8 +117,8 @@ fun rememberPlayerFileActions(fileId: String, isLocalPlayback: Boolean, onMessag
                         onClick = {
                             val resolved = LeasedFile.resolvedFileOf(fileId)
                             if (resolved != null) {
-                                downloads.downloadResolved(listOf(resolved), "") {
-                                    message(tr("已加入下载", "Added to downloads", "ダウンロードに追加しました", "다운로드에 추가했습니다", "已加入下載"))
+                                downloads.downloadResolved(listOf(resolved), "") { notice ->
+                                    message(notice ?: tr("已加入下载", "Added to downloads", "ダウンロードに追加しました", "다운로드에 추가했습니다", "已加入下載"))
                                 }
                             } else {
                                 withFile { file -> downloads.download(listOf(file)) { notice -> message(notice ?: tr("已加入下载", "Added to downloads", "ダウンロードに追加しました", "다운로드에 추가했습니다", "已加入下載")) } }

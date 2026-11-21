@@ -420,6 +420,7 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
     val entryById = entries.associateBy { it.file.id }
     val byId = all.associateBy { it.id }
     val sourceByKey = sources.associateBy { it.key }
+    val services = LocalPikoServices.current
     val downloads = rememberDownloadLauncher()
     val platform = LocalPikoPlatform.current
     val detail = browser.detail
@@ -476,7 +477,8 @@ private fun ImportResultBrowser(sources: List<ImportSource>, browser: ImportBrow
         if (index != null && state.canPreview(index)) add(SheetAction(Icons.Outlined.PlayCircle, tr("预览", "Preview", "プレビュー", "미리 보기", "預覽"), { state.preview(index) }))
         if (index != null && state.items.getOrNull(index)?.isInstantReady == true) add(SheetAction(Icons.Outlined.CloudDownload, tr("下载", "Downloads", "ダウンロード", "다운로드", "下載"), download@{
             val item = state.items.getOrNull(index)?.takeIf { it.isInstantReady } ?: return@download
-            downloads.downloadResolved(listOf(item.file.copy(path = file.name)), state.target?.id.orEmpty()) {
+            downloads.downloadResolved(listOf(item.file.copy(path = file.name)), state.target?.id.orEmpty()) { notice ->
+                notice?.let(services::noticeOnTransfers)
                 onDownloaded()
             }
         }))
