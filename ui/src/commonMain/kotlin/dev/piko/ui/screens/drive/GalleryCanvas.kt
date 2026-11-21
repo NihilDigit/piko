@@ -100,16 +100,20 @@ import dev.piko.ui.components.FileArtworkFormat
 import dev.piko.ui.components.FileItemMarks
 import dev.piko.ui.components.FileItemSelection
 import dev.piko.ui.components.FileOverlaySelectionControl
+import dev.piko.ui.components.MediaCardScaffold
 import dev.piko.ui.components.MetaRow
 import dev.piko.ui.components.PikoBrandIcons
+import dev.piko.ui.components.PosterCornerData
 import dev.piko.ui.components.PosterSpoilerBlur
 import dev.piko.ui.components.SpoilerThumbnail
+import dev.piko.ui.components.contains
 import dev.piko.ui.components.detailLineParts
 import dev.piko.ui.components.displayTitle
 import dev.piko.ui.components.extensionLabel
 import dev.piko.ui.components.fileDurationMillis
 import dev.piko.ui.components.fileItemHover
 import dev.piko.ui.components.fileItemMarks
+import dev.piko.ui.components.filePresentation
 import dev.piko.ui.components.fileVisual
 import dev.piko.ui.components.focusIndication
 import dev.piko.ui.components.locateHighlight
@@ -506,10 +510,6 @@ internal fun GalleryCanvas(
     }
 }
 
-private val GalleryCoverScrimBrush = Brush.verticalGradient(
-    listOf(Color.Transparent, Color.Black.copy(alpha = 0.28f), Color.Black.copy(alpha = 0.72f)),
-)
-
 private fun galleryHeightResolutionLabel(file: FileStat): String? {
     val height = file.params["height"]?.toIntOrNull() ?: return null
     return when {
@@ -603,8 +603,8 @@ private fun GalleryCanvasCover(
 }
 
 /**
- * 瀑布流单格真实组件：供 [GalleryCanvas] 与外观自定义页实时预览共用，确保四角徽标、底栏标题、
- * 详情行与边框遮罩在真实网盘与自定义预览中像素级一致。
+ * 瀑布流单格真实组件：直接复用单一权威 [dev.piko.ui.components.MediaCardScaffold]，
+ * 与 [PosterCard] 及外观自定义页实时预览 100% 共用四角徽标、水墨屏 `1.dp` 描边、`TypePlaceholder`、底栏标题与详情/位置行。
  */
 @Composable
 internal fun GalleryCanvasTile(
@@ -632,14 +632,9 @@ internal fun GalleryCanvasTile(
     val galleryPrefs = appearancePrefs.gallery
     val folderStyle = appearancePrefs.grid.folderStyle
     val corners = galleryPrefs.corners
-    val hover = fileItemHover()
-    val shape = MaterialTheme.shapes.medium
-    val colors = MaterialTheme.colorScheme
     val coverUrl = remember(file.id, file.thumbnailLink, file.hash) { file.galleryCoverUrl() }
-    var coverFailed by remember(coverUrl) { mutableStateOf(false) }
 
     val hasResolutionCorner = corners.contains(CardBadgeKind.RESOLUTION)
-    val hasStatusCorner = corners.contains(CardBadgeKind.STATUS_BADGES)
     val hasTagsCorner = corners.contains(CardBadgeKind.PARSED_TAGS)
     val needsParsed = hasTagsCorner || hasResolutionCorner ||
         (galleryPrefs.showDetailLine && DetailField.PARSED_TAGS in galleryPrefs.detailFields)
@@ -655,6 +650,21 @@ internal fun GalleryCanvasTile(
         allTags.filter { !hasResolutionCorner || it != resolutionLabel }.take(2)
     }
     val code = parsed?.av?.code
+    val baseItem = file.filePresentation(
+        tags = allTags,
+        code = code,
+        resolution = resolutionLabel,
+        folderHasVault = false,
+        locationLabel = locationLabel,
+    )
+    val item = remember(baseItem, coverUrl) {
+        val resolvedThumb = coverUrl.takeIf { it.isNotEmpty() } ?: baseItem.visual.thumbnail
+        if (resolvedThumb == baseItem.visual.thumbnail) {
+            baseItem
+        } else {
+            baseItem.copy(visual = baseItem.visual.copy(thumbnail = resolvedThumb))
+        }
+    }
     val durationLabel = remember(file, folderDurationMillis) {
         val ms = if (file.isFolder) folderDurationMillis?.takeIf { it > 0L } else file.fileDurationMillis()
         ms?.let { formatDurationMillis(it) }
@@ -663,7 +673,6 @@ internal fun GalleryCanvasTile(
         val bytes = if (file.isFolder) folderSizeBytes?.takeIf { it > 0L } else file.sizeBytes.takeIf { it >= 0L }
         bytes?.toReadableSize()
     }
-    val marks = remember(file) { file.fileItemMarks(folderHasVault = false) }
     val extensionText = remember(file) { if (file.isFolder) null else file.extensionLabel() }
     val badgeData = PosterCornerData(
         duration = durationLabel,
@@ -671,16 +680,9 @@ internal fun GalleryCanvasTile(
         tags = cornerTags,
         code = code,
         fileSize = sizeLabel,
-        marks = marks,
+        marks = item.marks,
         extension = extensionText,
     )
-    val showSelectionOverlay = isSelectionMode || (hover.mouseHovered && onStartSelection != null)
-    val hasTopStart = showSelectionOverlay || badgeData.hasContent(corners.topStart)
-    val hasTopEnd = badgeData.hasContent(corners.topEnd)
-    val hasBottomStart = badgeData.hasContent(corners.bottomStart)
-    val hasBottomEnd = badgeData.hasContent(corners.bottomEnd)
-    val showsMediaCover = (!file.isFolder && coverUrl.isNotEmpty() && !coverFailed) ||
-        (file.isFolder && folderStyle == FolderStyle.MINIMAL_ICON && coverUrl.isNotEmpty() && !coverFailed)
 
     val detailParts = remember(
         file, galleryPrefs.showDetailLine, galleryPrefs.detailFields, hasTagsCorner, allTags,
@@ -700,180 +702,37 @@ internal fun GalleryCanvasTile(
             emptyList()
         }
     }
-    val showFooter = galleryPrefs.showTitle || galleryPrefs.showDetailLine
 
-    Column(
-        modifier = modifier
-            .then(hover.modifier)
-            .focusIndication(shape, showPointerFocus = !isSelectionMode)
-            .clip(shape)
-            .background(
-                when {
-                    isSelected -> colors.secondaryContainer.copy(alpha = 0.42f)
-                    hover.mouseHovered && showFooter -> colors.surfaceContainerLow
-                    else -> Color.Transparent
-                },
-            )
-            .cardInteraction(isSelectionMode, isSelected, onClick, onLongClick, onSelectToggle),
-    ) {
-        val coverModifier = if (coverAspectRatio != null) {
-            Modifier.fillMaxWidth().aspectRatio(coverAspectRatio)
-        } else {
-            Modifier.fillMaxWidth().weight(1f)
-        }
-        Box(
-            coverModifier
-                .clip(shape)
-                .border(
-                    if (isSelected) 3.dp else 1.dp,
-                    if (isSelected) colors.primary else colors.outlineVariant.copy(alpha = 0.25f),
-                    shape,
-                )
-                .locateHighlight(isHighlighted, shape),
-        ) {
-            if (file.isFolder) {
-                FileArtwork(
-                    file = file.fileVisual(),
-                    format = FileArtworkFormat.Poster,
-                    isSpoilerBlurred = isBlurred,
-                    modifier = Modifier.fillMaxSize(),
-                    folderStyle = folderStyle,
-                )
-            } else if (coverUrl.isEmpty() || coverFailed) {
-                val (container, content) = file.placeholderColors()
-                Box(Modifier.fillMaxSize().background(container), contentAlignment = Alignment.Center) {
-                    Icon(
-                        file.watermarkIcon(),
-                        contentDescription = null,
-                        tint = content.copy(alpha = 0.6f),
-                        modifier = Modifier.size(40.dp),
-                    )
-                }
-            } else {
-                SpoilerThumbnail(
-                    coverUrl,
-                    isBlurred,
-                    PosterSpoilerBlur,
-                    Modifier.fillMaxSize(),
-                    onAspectRatio = onAspectRatio,
-                    onError = {
-                        coverFailed = true
-                        onCoverFailed?.invoke(file.id)
-                    },
-                    stableId = file.hash.takeIf { it.isNotBlank() } ?: file.id.takeUnless { file.isFolder }?.takeIf { it.isNotBlank() },
-                )
-            }
-            if ((hasBottomStart || hasBottomEnd) && showsMediaCover) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .height(44.dp)
-                        .background(GalleryCoverScrimBrush),
-                )
-            }
-            if (hasTopStart || hasTopEnd) {
-                val topEndFlex = corners.topEnd == CardBadgeKind.PARSED_TAGS && !showSelectionOverlay && corners.topStart != CardBadgeKind.PARSED_TAGS
-                Row(
-                    modifier = Modifier.align(Alignment.TopStart).fillMaxWidth().padding(6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.Top,
-                ) {
-                    Box(
-                        modifier = if (topEndFlex) Modifier else Modifier.weight(1f),
-                        contentAlignment = Alignment.TopStart,
-                    ) {
-                        if (showSelectionOverlay) {
-                            FileOverlaySelectionControl(
-                                FileItemSelection(
-                                    if (isSelected) ToggleableState.On else ToggleableState.Off,
-                                    { if (isSelectionMode) onSelectToggle(!isSelected) else onStartSelection?.invoke() },
-                                    label = tr("选择 ${file.name}", "Select ${file.name}", "${file.name} を選択", "${file.name} 선택", "選取 ${file.name}"),
-                                ),
-                                modifier = if (!isSelectionMode) Modifier.ownsClicks() else Modifier,
-                                interactive = !isSelectionMode,
-                            )
-                        } else if (badgeData.hasContent(corners.topStart)) {
-                            PosterCornerBadge(corners.topStart, badgeData)
-                        }
-                    }
-                    if (hasTopEnd) {
-                        Box(
-                            modifier = if (topEndFlex) Modifier.weight(1f) else Modifier,
-                            contentAlignment = Alignment.TopEnd,
-                        ) {
-                            PosterCornerBadge(corners.topEnd, badgeData)
-                        }
-                    }
-                }
-            }
-            if (hasBottomStart || hasBottomEnd) {
-                val bottomEndFlex = corners.bottomEnd == CardBadgeKind.PARSED_TAGS && corners.bottomStart != CardBadgeKind.PARSED_TAGS
-                Row(
-                    modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
-                        modifier = if (bottomEndFlex) Modifier else Modifier.weight(1f),
-                        contentAlignment = Alignment.BottomStart,
-                    ) {
-                        if (hasBottomStart) {
-                            PosterCornerBadge(corners.bottomStart, badgeData)
-                        }
-                    }
-                    if (hasBottomEnd) {
-                        Box(
-                            modifier = if (bottomEndFlex) Modifier.weight(1f) else Modifier,
-                            contentAlignment = Alignment.BottomEnd,
-                        ) {
-                            PosterCornerBadge(corners.bottomEnd, badgeData)
-                        }
-                    }
-                }
-            }
-            if (coverOverlay != null) {
-                coverOverlay()
-            }
-        }
-        if (showFooter) {
-            val showMarksBelowTitle = marks.isNotEmpty() && !hasStatusCorner
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
-                if (showMarksBelowTitle) {
-                    Box(Modifier.padding(top = 2.dp, end = 4.dp)) {
-                        FileItemMarks(marks)
-                    }
-                }
-                Column(Modifier.weight(1f)) {
-                    if (galleryPrefs.showTitle) {
-                        Text(
-                            text = file.displayTitle(),
-                            color = colors.onSurface,
-                            style = MaterialTheme.typography.bodySmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    if (galleryPrefs.showDetailLine) {
-                        val parts = if (detailParts.isNotEmpty()) detailParts else listOfNotNull(locationLabel?.takeIf { it.isNotBlank() })
-                        if (parts.isNotEmpty()) {
-                            MetaRow(
-                                parts = parts,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = colors.onSurfaceVariant,
-                                modifier = if (galleryPrefs.showTitle) Modifier.padding(top = 2.dp) else Modifier,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
+    MediaCardScaffold(
+        item = item,
+        corners = corners,
+        badgeData = badgeData,
+        detailParts = detailParts,
+        folderStyle = folderStyle,
+        showTitle = galleryPrefs.showTitle,
+        showSecondaryName = false,
+        showDetailLine = galleryPrefs.showDetailLine,
+        alwaysShowLocation = false,
+        isSelectionMode = isSelectionMode,
+        isSelected = isSelected,
+        isSpoilerBlurred = isBlurred,
+        isHighlighted = isHighlighted,
+        onClick = onClick,
+        onLongClick = onLongClick,
+        onStartSelection = onStartSelection,
+        onSelectToggle = onSelectToggle,
+        modifier = modifier,
+        coverAspectRatio = coverAspectRatio,
+        titleStyle = MaterialTheme.typography.bodySmall,
+        titleMaxLines = 1,
+        footerTopPadding = 4.dp,
+        showVideoPlayMark = false,
+        scaleCoverOnHover = false,
+        alwaysOutlineCover = true,
+        onAspectRatio = onAspectRatio,
+        onCoverFailed = if (onCoverFailed != null) ({ onCoverFailed(file.id) }) else null,
+        coverOverlay = coverOverlay,
+    )
 }
 
 /** Inclusive, bounded by the actual dataset even when an old scroll anchor outlives it. */

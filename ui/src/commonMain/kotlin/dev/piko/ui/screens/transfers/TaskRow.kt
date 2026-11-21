@@ -1,31 +1,40 @@
 package dev.piko.ui.screens.transfers
 
-import dev.piko.shared.i18n.tr
-
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.piko.shared.i18n.tr
 import dev.piko.shared.state.TransferItem
+import dev.piko.ui.WorkMeter
+import dev.piko.ui.components.CanonicalListItemShell
+import dev.piko.ui.components.FileListLeadingVisual
+import dev.piko.ui.components.FolderListLeadingVisual
+import dev.piko.ui.components.ListLeadingIcon
+import dev.piko.ui.components.ListLeadingSize
+import dev.piko.ui.components.LocalPointerSource
+import dev.piko.ui.components.MetaRow
+import dev.piko.ui.components.SheetAction
+import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.WorkMeterBar
+import dev.piko.ui.components.ownsClicks
+import dev.piko.ui.theme.tabular
 import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
-import dev.piko.ui.WorkMeter
-import dev.piko.ui.components.*
-import dev.piko.ui.theme.tabular
 
 internal data class TaskRowLayout(
     val wide: Boolean,
@@ -45,30 +54,10 @@ internal data class TaskRowLayout(
     }
 }
 
-/** 无缩略图的文件前导块：按文件大类配容器底色，标准 56.dp 圆角块。 */
+/** 兼容同包详情面板复用的薄转发器，直接委托至单一权威 [FileListLeadingVisual]。 */
 @Composable
 internal fun TaskFileTypeIcon(name: String, fallbackIcon: ImageVector? = null) {
-    val visual = remember(name) { FileVisual(name) }
-    val hasExt = remember(name) { visual.extensionLabel() != null }
-    val (container, content) = if (hasExt) {
-        visual.placeholderColors()
-    } else {
-        MaterialTheme.colorScheme.surfaceContainerHighest to MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    Box(
-        modifier = Modifier
-            .size(ListLeadingSize)
-            .clip(MaterialTheme.shapes.small)
-            .background(container),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = if (hasExt) visual.typeIcon() else (fallbackIcon ?: visual.typeIcon()),
-            contentDescription = null,
-            tint = content,
-            modifier = Modifier.size(ListLeadingIconSize),
-        )
-    }
+    FileListLeadingVisual(fileName = name, fallbackIcon = fallbackIcon)
 }
 
 /** 文件夹批次前导块：与网盘列表文件夹一致的前导视觉组件。 */
@@ -79,132 +68,136 @@ internal fun TaskFolderVisual(name: String, size: Dp = ListLeadingSize) {
 
 @Composable
 internal fun TaskRow(
-    model: TaskRowModel, selection: RowSelection, layout: TaskRowLayout,
-    index: Int, count: Int, item: TransferItem, completed: Boolean, attention: Boolean,
-    onOpen: () -> Unit, onToggle: () -> Unit,
-    quickAction: SheetAction?, extraAction: SheetAction? = null,
+    model: TaskRowModel,
+    selection: RowSelection,
+    layout: TaskRowLayout,
+    index: Int,
+    count: Int,
+    item: TransferItem,
+    completed: Boolean,
+    attention: Boolean,
+    onOpen: () -> Unit,
+    onToggle: () -> Unit,
+    quickAction: SheetAction?,
+    extraAction: SheetAction? = null,
     onLeadingClick: (() -> Unit)? = null,
     leadingVisual: (@Composable () -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
-    val byteStream = item is TransferItem.Local || item is TransferItem.LocalBatch ||
-        item is TransferItem.Upload || item is TransferItem.UploadBatch ||
-        item is TransferItem.Cloud || item is TransferItem.Pack
+    val pointers = LocalPointerSource.current
     val timestamp = remember(item.createdAtMs, completed) {
         if (completed && item.createdAtMs > 0) {
             val time = Instant.fromEpochMilliseconds(item.createdAtMs).toLocalDateTime(TimeZone.currentSystemDefault())
             "${time.monthNumber}/${time.dayOfMonth} ${time.hour.toString().padStart(2, '0')}:${time.minute.toString().padStart(2, '0')}"
         } else null
     }
-    val pointers = LocalPointerSource.current
-    val shownExtraAction = extraAction
-    val rowShape = MaterialTheme.shapes.medium
-    val containerColor = if (selection.selected) colors.secondaryContainer else colors.surfaceContainerLow
-    val contentColor = if (selection.selected) colors.onSecondaryContainer else colors.onSurface
-    @OptIn(ExperimentalFoundationApi::class)
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 2.dp),
-        shape = rowShape,
-        color = containerColor,
-        contentColor = contentColor,
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .combinedClickable(
-                    onClick = { if (selection.active) onToggle() else if (pointers.isTouchLike) onOpen() },
-                    // 按触发长按时的输入来源判断，避免首个触摸事件切换回调后取消正在进行的手势。
-                    onLongClick = { if (pointers.isTouchLike) selection.onLongClick?.invoke() },
-                )
-                .heightIn(min = if (completed) 72.dp else 80.dp)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(ListLeadingSize)
-                    .then(
-                        if (!selection.active && onLeadingClick != null) {
-                            Modifier.clip(MaterialTheme.shapes.small).clickable(onClickLabel = tr("播放", "Play", "再生", "재생", "播放"), onClick = onLeadingClick)
-                        } else {
-                            Modifier
-                        },
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (selection.active) {
-                    Checkbox(selection.selected, null, Modifier.semantics { contentDescription = tr("选择任务：${model.title}", "Select task: ${model.title}", "タスクを選択：${model.title}", "작업 선택: ${model.title}", "選取任務：${model.title}") })
-                } else if (leadingVisual != null) {
-                    leadingVisual()
-                } else {
-                    ListLeadingIcon(model.icon)
-                }
-            }
-            if (completed) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        model.title,
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    val detailPart = model.detail?.takeIf { it.isNotBlank() && it != tr("已完成", "Completed", "完了", "완료", "已完成") }
-                        ?: model.status.takeIf { it.isNotBlank() && it != tr("已完成", "Completed", "完了", "완료", "已完成") }
-                    val metaParts = listOfNotNull(
-                        model.kind,
-                        detailPart,
-                        model.destination?.takeIf { it.isNotBlank() },
-                        timestamp,
-                    ).distinct()
-                    if (metaParts.isNotEmpty()) {
-                        MetaRow(
-                            parts = metaParts,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = colors.onSurfaceVariant,
-                        )
-                    }
-                }
-            } else {
-                val meterColor = when {
-                    attention -> colors.error
-                    item is TransferItem.Local || item is TransferItem.LocalBatch -> colors.primary
-                    item is TransferItem.Upload || item is TransferItem.UploadBatch -> colors.secondary
-                    else -> colors.tertiary
-                }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        model.title,
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    TaskProgressCell(model, attention, meterColor, Modifier.fillMaxWidth(), showDetail = true)
-                }
-            }
-            if (quickAction != null || shownExtraAction != null) {
-                Row(horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                    quickAction?.let { TooltipIconButton(it.icon, it.label, it.onClick) }
-                    shownExtraAction?.let { TooltipIconButton(it.icon, it.label, it.onClick) }
-                }
-            }
+    val completedMetaParts = remember(completed, model, timestamp) {
+        if (!completed) {
+            emptyList()
+        } else {
+            val doneLabel = tr("已完成", "Completed", "完了", "완료", "已完成")
+            val detailPart = model.detail?.takeIf { it.isNotBlank() && it != doneLabel }
+                ?: model.status.takeIf { it.isNotBlank() && it != doneLabel }
+            listOfNotNull(
+                model.kind,
+                detailPart,
+                model.destination?.takeIf { it.isNotBlank() },
+                timestamp,
+            ).distinct()
         }
     }
-}
+    val meterColor = when {
+        attention -> colors.error
+        item is TransferItem.Local || item is TransferItem.LocalBatch -> colors.primary
+        item is TransferItem.Upload || item is TransferItem.UploadBatch -> colors.secondary
+        else -> colors.tertiary
+    }
+    val hasTrailing = quickAction != null || extraAction != null
 
-@Composable
-private fun TaskMetric(value: String?, modifier: Modifier = Modifier) {
-    Text(value?.takeIf { it.isNotBlank() } ?: "—", modifier, style = MaterialTheme.typography.bodySmall.tabular,
-        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    CanonicalListItemShell(
+        selectionLabel = tr(
+            "选择任务：${model.title}",
+            "Select task: ${model.title}",
+            "タスクを選択：${model.title}",
+            "작업 선택: ${model.title}",
+            "選取任務：${model.title}",
+        ),
+        leading = {
+            if (leadingVisual != null) {
+                leadingVisual()
+            } else {
+                ListLeadingIcon(model.icon)
+            }
+        },
+        headline = {
+            Text(
+                text = model.title,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        onClick = { if (pointers.isTouchLike) onOpen() },
+        headlineStyle = MaterialTheme.typography.titleSmall,
+        supportingStyle = MaterialTheme.typography.bodySmall,
+        supporting = if (completed && completedMetaParts.isNotEmpty()) {
+            {
+                MetaRow(
+                    parts = completedMetaParts,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+        } else null,
+        progressSlot = if (!completed) {
+            {
+                TaskProgressCell(
+                    model = model,
+                    attention = attention,
+                    meterColor = meterColor,
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    showDetail = true,
+                )
+            }
+        } else null,
+        trailing = if (hasTrailing) {
+            {
+                Row(
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.ownsClicks(),
+                ) {
+                    quickAction?.let { TooltipIconButton(it.icon, it.label, it.onClick) }
+                    extraAction?.let { TooltipIconButton(it.icon, it.label, it.onClick) }
+                }
+            }
+        } else null,
+        leadingSize = ListLeadingSize,
+        leadingGap = 16.dp,
+        trailingGap = if (hasTrailing) 12.dp else 0.dp,
+        rowMinHeight = if (completed) 72.dp else 80.dp,
+        outerPadding = PaddingValues(horizontal = 4.dp, vertical = 1.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        segmentedIndex = index,
+        segmentedCount = count,
+        restingContainerColor = colors.surfaceContainerLow,
+        onLeadingClick = onLeadingClick,
+        leadingClickLabel = tr("播放", "Play", "再生", "재생", "播放"),
+        onLongClick = selection.onLongClick,
+        onStartSelection = onToggle,
+        isSelectionMode = selection.active,
+        isSelected = selection.selected,
+        onSelectToggle = { onToggle() },
+        keepTrailingInSelectionMode = true,
+    )
 }
 
 @Composable
 private fun TaskProgressCell(
     model: TaskRowModel,
     attention: Boolean,
-    meterColor: androidx.compose.ui.graphics.Color,
+    meterColor: Color,
     modifier: Modifier,
     showDetail: Boolean = false,
 ) {
@@ -219,7 +212,13 @@ private fun TaskProgressCell(
         if (model.meter != WorkMeter.None) {
             WorkMeterBar(
                 meter = model.meter,
-                label = tr("任务进度：${model.title}", "Task progress: ${model.title}", "タスクの進捗：${model.title}", "작업 진행 상황: ${model.title}", "任務進度：${model.title}"),
+                label = tr(
+                    "任务进度：${model.title}",
+                    "Task progress: ${model.title}",
+                    "タスクの進捗：${model.title}",
+                    "작업 진행 상황: ${model.title}",
+                    "任務進度：${model.title}",
+                ),
                 modifier = Modifier.fillMaxWidth(),
                 color = meterColor,
             )

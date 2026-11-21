@@ -49,6 +49,7 @@ import dev.piko.shared.upload.UploadStatus
 import dev.piko.ui.PikoServices
 import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.ContextMenuArea
+import dev.piko.ui.components.FileListLeadingVisual
 import dev.piko.ui.components.FolderListLeadingVisual
 import dev.piko.ui.components.ListLeadingIcon
 import dev.piko.ui.components.ListLeadingMedia
@@ -446,14 +447,19 @@ internal fun TransferItemLeadingVisual(
             } ?: item.task.fileId?.let(state::thumbnailOf)
             ListLeadingMedia(
                 thumbnail = uploadThumb,
-                fallback = { TaskFileTypeIcon(item.task.fileName, Icons.Outlined.Upload) },
+                fallback = { FileListLeadingVisual(fileName = item.task.fileName, fallbackIcon = Icons.Outlined.Upload) },
                 isSpoilerBlurred = isBlurred,
                 showPlayOverlay = item.task.canPlayVideo,
             )
         }
         is TransferItem.Cloud -> ListLeadingMedia(
             thumbnail = state.thumbnailOf(item.task.fileId),
-            fallback = { TaskFileTypeIcon(item.task.fileName.ifEmpty { item.task.displayName }, Icons.Outlined.CloudDownload) },
+            fallback = {
+                FileListLeadingVisual(
+                    fileName = item.task.fileName.ifEmpty { item.task.displayName },
+                    fallbackIcon = Icons.Outlined.CloudDownload,
+                )
+            },
             isSpoilerBlurred = isBlurred,
             showPlayOverlay = item.task.canPlayVideo,
         )
@@ -462,7 +468,7 @@ internal fun TransferItemLeadingVisual(
             if (item.job.folderName.isPlayableMedia()) {
                 ListLeadingMedia(
                     thumbnail = packThumb,
-                    fallback = { TaskFileTypeIcon(item.job.folderName, Icons.Outlined.CloudDownload) },
+                    fallback = { FileListLeadingVisual(fileName = item.job.folderName, fallbackIcon = Icons.Outlined.CloudDownload) },
                     isSpoilerBlurred = isBlurred,
                     showPlayOverlay = item.job.canOpen,
                 )
@@ -486,13 +492,13 @@ internal fun TransferItemLeadingVisual(
             } else {
                 ListLeadingMedia(
                     thumbnail = instantThumb,
-                    fallback = { TaskFileTypeIcon(item.record.name, Icons.Outlined.Bolt) },
+                    fallback = { FileListLeadingVisual(fileName = item.record.name, fallbackIcon = Icons.Outlined.Bolt) },
                     isSpoilerBlurred = isBlurred,
                     showPlayOverlay = item.record.canPlayVideo,
                 )
             }
         }
-        is TransferItem.Extract -> TaskFileTypeIcon(item.job.file.name, Icons.Outlined.Unarchive)
+        is TransferItem.Extract -> FileListLeadingVisual(fileName = item.job.file.name, fallbackIcon = Icons.Outlined.Unarchive)
         is TransferItem.Vault -> TaskFolderVisual(item.folderName)
         else -> ListLeadingIcon(taskPresenter.present(item).icon)
     }
@@ -550,7 +556,6 @@ internal fun TransferItemRowSlot(
         { actionCtx.buildRowContextActions(item) }
     }
     val trailingCount = (if (quickAction != null) 1 else 0) + (if (extraAction != null) 1 else 0)
-    val hasLeadingClick = !checkboxActive && playAction != null
     val selection = RowSelection(
         active = checkboxActive,
         selected = isSelected,
@@ -570,7 +575,8 @@ internal fun TransferItemRowSlot(
                     onExtend = onExtendSelect,
                     onOpen = onOpen,
                     trailingPassThrough = if (trailingCount == 0) 0.dp else (trailingCount * 48 + 12).dp,
-                    leadingPassThrough = if (hasLeadingClick) 68.dp else 0.dp,
+                    // 非多选态允许前导槽的悬停复选框与播放直达按钮独立接收点击
+                    leadingPassThrough = if (!checkboxActive) 68.dp else 0.dp,
                 ),
         ) {
             TaskRow(

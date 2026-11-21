@@ -129,6 +129,7 @@ import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.components.selectionClicks
+import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.components.zoomOnWheel
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.platform.LocalPikoPlatform
@@ -671,6 +672,7 @@ private fun DriveCell(
                 isSelected = isSelected,
                 isSpoilerBlurred = isBlurred,
                 isHighlighted = isHighlighted,
+                locationLabel = locationLabel,
                 onClick = { callbacks.onOpen(file) },
                 onStartSelection = callbacks.onStartSelection?.let { select -> ({ select(file) }) },
                 onLongClick = { callbacks.onLongClick(file) },
@@ -810,8 +812,11 @@ private fun TypeFilterChipRow(
     onTypeFilterChange: (FileCategory?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val scrollState = rememberScrollState()
     Row(
-        modifier = modifier.horizontalScroll(rememberScrollState()),
+        modifier = modifier
+            .verticalWheelScrollsRow(scrollState)
+            .horizontalScroll(scrollState),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

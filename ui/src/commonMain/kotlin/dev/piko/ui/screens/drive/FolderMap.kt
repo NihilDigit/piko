@@ -93,9 +93,16 @@ import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.LocalLocation
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.isDriveFolderId
+import androidx.compose.foundation.border
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.runtime.collectAsState
 import dev.piko.ui.components.FileVisual
+import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.filePresentation
 import dev.piko.ui.components.fileVisual
 import dev.piko.ui.components.typeIcon
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.isEInk
 import io.github.nihildigit.pikpak.FileStat
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.FolderMapLevel
@@ -508,7 +515,10 @@ private fun FolderMapTree(
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
+    val isEInk = LocalAppearance.current.isEInk
     val driveRepo = dev.piko.ui.LocalPikoServices.current.driveRepository
+    val emptyFolders by driveRepo.folderEmptiness.collectAsState()
+    val vaultedFolders by driveRepo.vaultedFolders.collectAsState()
     val query = state.query
     val filterShown = state.filterShown
     val currentId = current.lastOrNull()?.id
@@ -628,14 +638,15 @@ private fun FolderMapTree(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp)
+                .then(if (isEInk) Modifier.border(1.dp, colors.outline, CircleShape) else Modifier)
                 .clip(CircleShape)
-                .background(colors.surfaceContainerHighest)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .background(if (isEInk) Color.White else colors.surfaceContainerHighest)
+                .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Icon(Icons.Outlined.Search, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
-            Box(Modifier.weight(1f)) {
+            Box(Modifier.weight(1f).padding(vertical = 4.dp)) {
                 if (query.isEmpty()) Text(stringResource(Res.string.text_filter_expanded_contents), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                 BasicTextField(
                     value = query,
@@ -644,6 +655,27 @@ private fun FolderMapTree(
                     textStyle = MaterialTheme.typography.bodyMedium.copy(color = colors.onSurface),
                     cursorBrush = SolidColor(colors.primary),
                     modifier = Modifier.fillMaxWidth().onFocusChanged { state.filterFocused = it.isFocused },
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .clickable(
+                        role = Role.Button,
+                        onClick = { if (query.isNotEmpty()) state.query = "" else state.toggleFilter() },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Close,
+                    contentDescription = if (query.isNotEmpty()) {
+                        tr("清除", "Clear", "消去", "지우기", "清除")
+                    } else {
+                        tr("关闭过滤", "Close filter", "絞り込みを閉じる", "필터 닫기", "關閉篩選")
+                    },
+                    tint = colors.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp),
                 )
             }
         }
@@ -666,6 +698,9 @@ private fun FolderMapTree(
                     else -> MapNodeRow(
                         row = row,
                         state = state,
+                        driveRepo = driveRepo,
+                        emptyFolders = emptyFolders,
+                        vaultedFolders = vaultedFolders,
                         current = current,
                         highlighted = row.key == highlighted,
                         showPath = showPath,
@@ -681,6 +716,9 @@ private fun FolderMapTree(
 private fun MapNodeRow(
     row: MapRow,
     state: FolderMapState,
+    driveRepo: PikoDriveRepository,
+    emptyFolders: Map<String, Boolean>,
+    vaultedFolders: Set<String>,
     current: List<PikoPathBreadcrumb>,
     highlighted: Boolean,
     showPath: Boolean,
@@ -696,26 +734,54 @@ private fun MapNodeRow(
     val leaf = !node.expandable || (loaded != null && loaded.nodes.isEmpty() && !state.isExpanded(id))
     val bring = remember { BringIntoViewRequester() }
     LaunchedEffect(highlighted) { if (highlighted) bring.bringIntoView() }
-    val visual = remember(node) {
+
+    val knownFile = node.file ?: if (isDriveFolderId(id) || node.isArchive) driveRepo.knownFile(id) else null
+    val isEmptyFolder = (loaded != null && loaded.nodes.isEmpty()) ||
+        (knownFile?.isFolder == true && emptyFolders[id] == true)
+    val folderHasVault = knownFile?.isFolder == true && id in vaultedFolders
+    val pathSupporting = if (showPath && row.stack.size > 2) {
+        row.stack.drop(1).dropLast(1).joinToString(" › ") { it.localizedName }
+    } else null
+
+    val rawPresentation = knownFile?.filePresentation(
+        folderHasVault = folderHasVault,
+        emptyFolder = isEmptyFolder,
+        locationLabel = pathSupporting,
+    )
+    val item = remember(rawPresentation) {
+        rawPresentation?.copy(metadata = emptyList())
+    }
+    val fallbackVisual = remember(node, isEmptyFolder) {
         when {
-            node.file != null -> node.file!!.fileVisual()
+            node.file != null -> node.file!!.fileVisual(emptyFolder = isEmptyFolder)
             node.isArchive -> FileVisual(node.crumb.name, isFolder = false, category = FileCategory.ARCHIVE)
-            else -> FileVisual(node.crumb.name, isFolder = true, isLocalMount = LocalLocation.isLocal(node.crumb.id))
+            else -> FileVisual(
+                name = node.crumb.name,
+                isFolder = true,
+                isEmptyFolder = isEmptyFolder,
+                isLocalMount = LocalLocation.isLocal(node.crumb.id),
+            )
         }
     }
     dev.piko.ui.components.WorkspaceTreeRow(
-        name = node.crumb.localizedName, depth = row.depth,
-        icon = node.file?.typeIcon() ?: if (node.isArchive) Icons.Outlined.FolderZip else Icons.Outlined.Folder,
+        name = node.crumb.localizedName,
+        depth = row.depth,
+        icon = knownFile?.typeIcon() ?: if (node.isArchive) Icons.Outlined.FolderZip else Icons.Outlined.Folder,
         expanded = if (leaf) null else state.isExpanded(id),
         onExpand = { if (state.isExpanded(id)) state.collapse(id) else state.expand(id) },
-        onOpen = { onActivate(row) }, emphasized = here || onPath,
-        supporting = if (showPath && row.stack.size > 2) row.stack.drop(1).dropLast(1).joinToString(" › ") { it.localizedName } else null,
-        visual = visual,
+        onOpen = { onActivate(row) },
+        emphasized = here || onPath,
+        highlighted = highlighted,
+        supporting = if (item == null) pathSupporting else null,
+        item = item,
+        visual = item?.visual ?: fallbackVisual,
         visualSize = 28.dp,
-        modifier = Modifier.bringIntoViewRequester(bring).padding(horizontal = 4.dp)
+        startBasePadding = 0.dp,
+        expandButtonSize = 28.dp,
+        modifier = Modifier
+            .bringIntoViewRequester(bring)
+            .padding(horizontal = 4.dp)
             .then(if (node.expandable) Modifier.fileDropTarget("map:$id", node.crumb) else Modifier)
-            .clip(MaterialTheme.shapes.medium)
-            .background(if (highlighted) colors.secondaryContainer else Color.Transparent)
             .treeGuides(row, colors.outlineVariant, childrenBelow = node.expandable && !leaf && state.isExpanded(id)),
     )
 }
@@ -788,19 +854,45 @@ internal fun FolderMapSheet(
     val root = remember { listOf(PikoDriveRepository.ROOT_BREADCRUMB) }
     val dismiss = { state.dispatch(FolderMapEvent.Close) }
     LaunchedEffect(current.lastOrNull()?.id) { state.reveal(root, current) }
-    PikoSheet(onDismissRequest = dismiss, sideSheetTitle = tr("目录图", "Folder map", "フォルダーマップ", "폴더 맵", "目錄圖")) {
-        Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).padding(12.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(stringResource(Res.string.text_folder_map), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                TextButton(onClick = state::toggleFilter) { Text(stringResource(Res.string.text_filter)) }
-                TextButton(onClick = dismiss) { Text(stringResource(Res.string.common_close)) }
+    PikoSheet(
+        onDismissRequest = dismiss,
+        sideSheetTitle = tr("目录图", "Folder map", "フォルダーマップ", "폴더 맵", "目錄圖"),
+        sideSheetButtons = { sheetDismiss ->
+            PanelHeaderToggle(
+                icon = Icons.Outlined.Search,
+                checkedIcon = Icons.Filled.Search,
+                label = tr("过滤", "Filter", "絞り込み", "필터", "篩選"),
+                checked = state.filterShown,
+                onClick = state::toggleFilter,
+            )
+            TooltipIconButton(
+                icon = Icons.Outlined.Close,
+                label = tr("关闭", "Close", "閉じる", "닫기", "關閉"),
+                onClick = sheetDismiss,
+                shortcut = "Esc",
+            )
+        },
+    ) {
+        val sideSheet = isSideSheet
+        val containerModifier = if (sideSheet) {
+            Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 4.dp)
+        } else {
+            Modifier.fillMaxWidth().heightIn(max = 600.dp).padding(12.dp)
+        }
+        Column(containerModifier) {
+            if (!sideSheet) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(Res.string.text_folder_map), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                    TextButton(onClick = state::toggleFilter) { Text(stringResource(Res.string.text_filter)) }
+                    TextButton(onClick = dismiss) { Text(stringResource(Res.string.common_close)) }
+                }
             }
             FolderMapTree(
                 state, root, current,
                 onOpen = { onOpen(it); dismiss() },
                 onOpenFile = { parent, file -> onOpenFile(parent, file); dismiss() },
                 onDismiss = dismiss,
-                modifier = Modifier.weight(1f, fill = false),
+                modifier = Modifier.weight(1f, fill = sideSheet),
             )
         }
     }

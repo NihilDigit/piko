@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.*
 import dev.piko.ui.theme.LocalFixedColors
@@ -138,6 +139,45 @@ fun FolderListLeadingVisual(
     )
 }
 
+/**
+ * 仅有文件名（如传输任务、解压或云端保存记录）时的单权威无缩略图前导视觉块：
+ * 有可信扩展名时按文件大类容器色与图标渲染，无扩展名时回退至 [fallbackIcon]（若提供），并在水墨屏下绘制 `1.dp` 描边。
+ */
+@Composable
+fun FileListLeadingVisual(
+    fileName: String,
+    modifier: Modifier = Modifier,
+    size: Dp = ListLeadingSize,
+    fallbackIcon: ImageVector? = null,
+) {
+    val visual = remember(fileName) { FileVisual(fileName) }
+    val hasExt = remember(fileName) { visual.extensionLabel() != null }
+    val isEInk = LocalAppearance.current.isEInk
+    val shape = RoundedCornerShape(leadingCornerRadiusFor(size))
+    val iconSize = leadingIconSizeFor(size)
+    val (container, content) = when {
+        isEInk -> Color.White to Color.Black
+        hasExt -> visual.placeholderColors()
+        else -> MaterialTheme.colorScheme.surfaceContainerHighest to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Box(
+        modifier = modifier
+            .size(size)
+            .then(if (isEInk) Modifier.border(1.dp, MaterialTheme.colorScheme.outline, shape) else Modifier)
+            .clip(shape)
+            .background(container)
+            .testTag(FILE_LEADING_MEDIA_TAG),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = if (hasExt) visual.typeIcon() else (fallbackIcon ?: visual.typeIcon()),
+            contentDescription = null,
+            tint = content,
+            modifier = Modifier.size(iconSize),
+        )
+    }
+}
+
 @Composable
 internal fun FileListLeadingVisual(
     file: FileVisual,
@@ -148,6 +188,7 @@ internal fun FileListLeadingVisual(
     showMinimalFolderBadge: Boolean = true,
     showPlayOverlay: Boolean = false,
     folderStyle: FolderStyle = resolveLeadingFolderStyle(LocalDriveAppearancePrefs.current),
+    watchProgress: Float? = null,
 ) {
     val isEInk = LocalAppearance.current.isEInk
     val effectiveFolderStyle = resolveEffectiveFolderStyle(folderStyle, isEInk)
@@ -214,18 +255,27 @@ internal fun FileListLeadingVisual(
                 }
             }
         }
-        else -> ListLeadingMedia(
-            thumbnail = effectiveThumbnail,
-            fallback = { FileTypeIcon(file, iconSize, Modifier.fillMaxSize()) },
-            isSpoilerBlurred = isSpoilerBlurred,
-            showPlayOverlay = showPlayOverlay,
-            size = size,
-            shape = shape,
-            modifier = modifier
-                .then(if (isEInk) Modifier.border(1.dp, MaterialTheme.colorScheme.outline, shape) else Modifier)
-                .testTag(FILE_LEADING_MEDIA_TAG),
-            stableId = file.stableId,
-        )
+        else -> Box(modifier = modifier.size(size)) {
+            ListLeadingMedia(
+                thumbnail = effectiveThumbnail,
+                fallback = { FileTypeIcon(file, iconSize, Modifier.fillMaxSize()) },
+                isSpoilerBlurred = isSpoilerBlurred,
+                showPlayOverlay = showPlayOverlay,
+                size = size,
+                shape = shape,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (isEInk) Modifier.border(1.dp, MaterialTheme.colorScheme.outline, shape) else Modifier)
+                    .testTag(FILE_LEADING_MEDIA_TAG),
+                stableId = file.stableId,
+            )
+            if (watchProgress != null && watchProgress > 0f) {
+                WatchProgressStrip(
+                    progress = watchProgress,
+                    modifier = Modifier.align(Alignment.BottomCenter).clip(shape),
+                )
+            }
+        }
     }
 }
 
@@ -243,8 +293,12 @@ internal fun FileArtwork(
     },
     /** 列表前导视觉的边长；仅 [FileArtworkFormat.Leading] 使用。 */
     leadingSize: Dp = ListLeadingSize,
-    /** 极简图标模式下有封面文件夹是否在封面内部绘制轻巧文件夹角标；`PosterCard` 会在左下角徽标行自行并排绘制，避免重叠。 */
+    /** 极简图标模式下有封面文件夹是否在封面内部绘制轻巧文件夹角标；`MediaCardScaffold` 会在左下角徽标行自行并排绘制，避免重叠。 */
     showMinimalFolderBadge: Boolean = true,
+    /** 海报封面中央是否叠加视频播放圆钮；瀑布流默认关闭以免满屏视频重复叠加。 */
+    showVideoPlayMark: Boolean = true,
+    onAspectRatio: ((Float) -> Unit)? = null,
+    onCoverError: (() -> Unit)? = null,
 ) {
     val isEInk = LocalAppearance.current.isEInk
     val effectiveFolderStyle = resolveEffectiveFolderStyle(folderStyle, isEInk)
@@ -261,11 +315,27 @@ internal fun FileArtwork(
         FileArtworkFormat.Poster -> Box(modifier) {
             var coverFailed by remember(file.thumbnail) { mutableStateOf(false) }
             val cover = file.thumbnail?.takeUnless { coverFailed }
+            val handleError: () -> Unit = {
+                coverFailed = true
+                onCoverError?.invoke()
+            }
             when {
                 file.isFolder && effectiveFolderStyle == FolderStyle.SKEUOMORPHIC -> StackedSheets(
                     Modifier.fillMaxSize().testTag(FILE_POSTER_SKEUOMORPHIC_FOLDER_TAG),
                     empty = file.isEmptyFolder,
-                    cover = cover?.let { { SpoilerThumbnail(it, isSpoilerBlurred, PosterSpoilerBlur, Modifier.fillMaxSize(), onError = { coverFailed = true }, stableId = file.stableId) } },
+                    cover = cover?.let {
+                        {
+                            SpoilerThumbnail(
+                                model = it,
+                                isBlurred = isSpoilerBlurred,
+                                blur = PosterSpoilerBlur,
+                                modifier = Modifier.fillMaxSize(),
+                                onAspectRatio = onAspectRatio,
+                                onError = handleError,
+                                stableId = file.stableId,
+                            )
+                        }
+                    },
                 )
                 cover != null -> {
                     val coverMod = if (file.isFolder && effectiveFolderStyle == FolderStyle.MINIMAL_ICON) {
@@ -273,7 +343,16 @@ internal fun FileArtwork(
                     } else {
                         Modifier.fillMaxSize()
                     }
-                    SpoilerThumbnail(cover, isSpoilerBlurred, PosterSpoilerBlur, coverMod, showBlurIcon = !file.isVideo, onError = { coverFailed = true }, stableId = file.stableId)
+                    SpoilerThumbnail(
+                        model = cover,
+                        isBlurred = isSpoilerBlurred,
+                        blur = PosterSpoilerBlur,
+                        modifier = coverMod,
+                        showBlurIcon = !(file.isVideo && showVideoPlayMark),
+                        onAspectRatio = onAspectRatio,
+                        onError = handleError,
+                        stableId = file.stableId,
+                    )
                     if (file.isFolder && effectiveFolderStyle == FolderStyle.MINIMAL_ICON && showMinimalFolderBadge) {
                         MinimalFolderBadge(
                             compact = false,
@@ -290,8 +369,32 @@ internal fun FileArtwork(
                     },
                 )
             }
-            if (file.isVideo && cover != null) VideoPlayMark(Modifier.align(Alignment.Center))
+            if (showVideoPlayMark && file.isVideo && cover != null) VideoPlayMark(Modifier.align(Alignment.Center))
         }
+    }
+}
+
+@Composable
+internal fun WatchProgressStrip(
+    progress: Float,
+    modifier: Modifier = Modifier,
+) {
+    val clamped = progress.coerceIn(0f, 1f)
+    val isEInk = LocalAppearance.current.isEInk
+    val trackColor = if (isEInk) Color.White else Color.Black.copy(alpha = 0.45f)
+    val fillColor = if (isEInk) Color.Black else MaterialTheme.colorScheme.primary
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(3.dp)
+            .background(trackColor),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(clamped)
+                .fillMaxHeight()
+                .background(fillColor),
+        )
     }
 }
 
@@ -476,7 +579,7 @@ private fun VideoPlayMark(modifier: Modifier = Modifier) {
  * 扩展名是这一格最有用的信息：同是文档，TXT 与 PDF 打开的方式完全不同，只看图标分不出来。
  */
 @Composable
-private fun TypePlaceholder(file: FileVisual, modifier: Modifier = Modifier) {
+internal fun TypePlaceholder(file: FileVisual, modifier: Modifier = Modifier) {
     val isEInk = LocalAppearance.current.isEInk
     val (container, content) = file.placeholderColors()
     Box(modifier.background(container), contentAlignment = Alignment.Center) {

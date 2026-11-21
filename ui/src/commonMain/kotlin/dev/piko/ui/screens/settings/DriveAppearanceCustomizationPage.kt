@@ -1,6 +1,7 @@
 package dev.piko.ui.screens.settings
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -9,16 +10,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,25 +29,23 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ViewList
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.AspectRatio
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.HighQuality
-import androidx.compose.material.icons.outlined.Label
 import androidx.compose.material.icons.outlined.RestartAlt
-import androidx.compose.material.icons.outlined.Subtitles
-import androidx.compose.material.icons.outlined.Title
-import androidx.compose.material.icons.outlined.ViewAgenda
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedToggleButton
 import androidx.compose.material3.OutlinedToggleButtonDefaults
+import androidx.compose.material3.SplitButtonDefaults
+import androidx.compose.material3.SplitButtonLayout
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -63,16 +60,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipRect
-import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -81,39 +73,39 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.CardBadgeKind
 import dev.piko.shared.data.CornerPosition
 import dev.piko.shared.data.CornerSlots
-import dev.piko.shared.data.DetailField
 import dev.piko.shared.data.DriveAppearanceMode
 import dev.piko.shared.data.DriveAppearancePrefs
-import dev.piko.shared.data.FolderStyle
-import dev.piko.shared.data.ListViewStylePrefs
 import dev.piko.shared.data.ThumbnailClarity
 import dev.piko.shared.data.ThumbnailScale
-import dev.piko.shared.data.toggleDetailField
 import dev.piko.shared.i18n.tr
+import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.adaptive.readableWidth
+import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.FileListItem
 import dev.piko.ui.components.IslandHeaderSpace
 import dev.piko.ui.components.IslandPage
 import dev.piko.ui.components.IslandTitle
 import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.LocalPreviewArtworkRenderer
+import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.PikoScaffold
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.PinnedPriority
+import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.connectedToggleShapes
-import dev.piko.ui.components.iconBarItem
+import dev.piko.ui.components.menuItemShape
 import dev.piko.ui.i18n.stringResource
+import dev.piko.ui.platform.captionExclusion
 import dev.piko.ui.resources.*
 import dev.piko.ui.screens.drive.GalleryCanvasTile
 import dev.piko.ui.screens.drive.LocalDriveAppearancePrefs
 import dev.piko.ui.screens.drive.PosterCard
+import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.LocalFixedColors
+import dev.piko.ui.theme.isEInk
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
-
-private const val PREVIEW_COVER_VIDEO = "piko-preview://video-night-sky"
-private const val PREVIEW_COVER_FOLDER = "piko-preview://folder-sunset-dusk"
 
 private const val SAMPLE_VIDEO_SIZE_BYTES = 1_524_713_390L // ~1.42 GB
 private const val SAMPLE_FOLDER_THUMB_SIZE_BYTES = 26_628_797_235L // ~24.8 GB
@@ -122,20 +114,20 @@ private const val SAMPLE_FOLDER_NO_THUMB_SIZE_BYTES = 4_509_715_660L // ~4.2 GB
 private const val SAMPLE_FOLDER_NO_THUMB_DURATION_MS = 2_700_000L // 45:00
 
 /** 交互式预览画布上可直接点按选中的编辑区域。 */
-private sealed interface DrivePreviewSlot {
+internal sealed interface DrivePreviewSlot {
     data class Corner(val position: CornerPosition) : DrivePreviewSlot
     data object Folder : DrivePreviewSlot
     data object TitleRow : DrivePreviewSlot
     data object Details : DrivePreviewSlot
 }
 
-private fun defaultSlotFor(mode: DriveAppearanceMode): DrivePreviewSlot = when (mode) {
+internal fun defaultSlotFor(mode: DriveAppearanceMode): DrivePreviewSlot = when (mode) {
     DriveAppearanceMode.LIST -> DrivePreviewSlot.Folder
     DriveAppearanceMode.GRID -> DrivePreviewSlot.Corner(CornerPosition.BOTTOM_END)
     DriveAppearanceMode.GALLERY -> DrivePreviewSlot.Corner(CornerPosition.BOTTOM_END)
 }
 
-private fun availableSlotsFor(mode: DriveAppearanceMode): List<DrivePreviewSlot> = when (mode) {
+internal fun availableSlotsFor(mode: DriveAppearanceMode): List<DrivePreviewSlot> = when (mode) {
     DriveAppearanceMode.LIST -> listOf(
         DrivePreviewSlot.Folder,
         DrivePreviewSlot.TitleRow,
@@ -159,7 +151,7 @@ private fun availableSlotsFor(mode: DriveAppearanceMode): List<DrivePreviewSlot>
     )
 }
 
-private data class DrivePreviewSamples(
+internal data class DrivePreviewSamples(
     val videoFile: FileStat,
     val videoTitle: String,
     val videoRaw: String,
@@ -171,7 +163,7 @@ private data class DrivePreviewSamples(
 )
 
 @Composable
-private fun rememberDrivePreviewSamples(): DrivePreviewSamples {
+internal fun rememberDrivePreviewSamples(): DrivePreviewSamples {
     val videoTitle = stringResource(Res.string.drive_custom_sample_video_title)
     val videoRaw = stringResource(Res.string.drive_custom_sample_video_raw)
     val subTag = stringResource(Res.string.drive_custom_sample_sub_tag)
@@ -221,9 +213,9 @@ private fun rememberDrivePreviewSamples(): DrivePreviewSamples {
 /**
  * 网盘文件外观自定义页面：直接挂载真实的 `FileListItem`、`PosterCard` 与 `GalleryCanvasTile` 组件实时预览，
  * 列表与网格同时呈现 3 组典型样本（视频文件、有缩略图文件夹、无缩略图文件夹），瀑布流仅呈现媒体样本。
- * 点按预览中的任意区域或下方槽位芯片，即可原地调节该区域的外观选项。
+ * 点按预览中的任意区域或下方槽位切换按钮，即可原地调节该区域的外观选项。
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun DriveAppearanceCustomizationPage(
     prefs: DriveAppearancePrefs,
@@ -234,7 +226,6 @@ fun DriveAppearanceCustomizationPage(
 ) {
     var mode by rememberSaveable { mutableStateOf(initialMode) }
     var selectedSlot by remember { mutableStateOf(defaultSlotFor(initialMode)) }
-    var resetMenuOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(mode) {
         if (selectedSlot !in availableSlotsFor(mode)) {
@@ -244,28 +235,42 @@ fun DriveAppearanceCustomizationPage(
 
     val pageTitle = stringResource(Res.string.drive_custom_title)
     val resetLabel = stringResource(Res.string.drive_custom_reset)
+    val resetCurrentLabel = stringResource(Res.string.drive_custom_reset_current)
+    val resetAllLabel = stringResource(Res.string.drive_custom_reset_all)
     val isCurrentDefault = when (mode) {
         DriveAppearanceMode.LIST -> prefs.list == DriveAppearancePrefs.DEFAULT.list
         DriveAppearanceMode.GRID -> prefs.grid == DriveAppearancePrefs.DEFAULT.grid
         DriveAppearanceMode.GALLERY -> prefs.gallery == DriveAppearancePrefs.DEFAULT.gallery
     }
     val isAllDefault = prefs == DriveAppearancePrefs.DEFAULT
+    val resetOverflow = buildList {
+        if (!isCurrentDefault) {
+            add(SheetAction(Icons.Outlined.RestartAlt, resetCurrentLabel, { onUpdate(prefs.reset(mode)) }))
+        }
+        if (!isAllDefault) {
+            add(SheetAction(Icons.Outlined.RestartAlt, resetAllLabel, { onUpdate(DriveAppearancePrefs.DEFAULT) }))
+        }
+    }
 
     PikoScaffold(
         modifier = modifier.fillMaxSize(),
         island = IslandPage(header = {
             TooltipIconButton(
                 icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                label = stringResource(Res.string.common_close),
+                label = tr("返回", "Back", "戻る", "뒤로", "返回"),
                 onClick = onBackClick,
             )
             IslandTitle(pageTitle, Modifier.padding(start = 4.dp))
             IslandHeaderSpace()
-            TooltipIconButton(
-                icon = Icons.Outlined.RestartAlt,
-                label = resetLabel,
-                onClick = { resetMenuOpen = true },
-                enabled = !isAllDefault,
+            ResetAppearanceSplitButton(
+                resetLabel = resetLabel,
+                resetCurrentLabel = resetCurrentLabel,
+                resetAllLabel = resetAllLabel,
+                canResetCurrent = !isCurrentDefault,
+                canResetAll = !isAllDefault,
+                onResetCurrent = { onUpdate(prefs.reset(mode)) },
+                onResetAll = { onUpdate(DriveAppearancePrefs.DEFAULT) },
+                modifier = Modifier.captionExclusion(),
             )
         }),
         topBar = {
@@ -273,13 +278,22 @@ fun DriveAppearanceCustomizationPage(
                 title = pageTitle,
                 onBackClick = onBackClick,
                 actions = listOf(
-                    iconBarItem(
-                        icon = Icons.Outlined.RestartAlt,
-                        label = resetLabel,
-                        onClick = { resetMenuOpen = true },
+                    BarItem(
+                        key = "reset_appearance",
                         priority = PinnedPriority,
-                        enabled = !isAllDefault,
-                    ),
+                        overflow = resetOverflow,
+                    ) {
+                        ResetAppearanceSplitButton(
+                            resetLabel = resetLabel,
+                            resetCurrentLabel = resetCurrentLabel,
+                            resetAllLabel = resetAllLabel,
+                            canResetCurrent = !isCurrentDefault,
+                            canResetAll = !isAllDefault,
+                            onResetCurrent = { onUpdate(prefs.reset(mode)) },
+                            onResetAll = { onUpdate(DriveAppearancePrefs.DEFAULT) },
+                            compact = true,
+                        )
+                    },
                 ),
             )
         },
@@ -325,30 +339,101 @@ fun DriveAppearanceCustomizationPage(
             }
         }
     }
+}
 
-    if (resetMenuOpen) {
-        SettingsChoiceDialog(
-            icon = Icons.Outlined.RestartAlt,
-            title = resetLabel,
-            onDismiss = { resetMenuOpen = false },
-        ) {
-            if (!isCurrentDefault) {
-                SettingsChoiceOption(
-                    title = stringResource(Res.string.drive_custom_reset_current),
-                    selected = false,
-                    onClick = {
-                        resetMenuOpen = false
-                        onUpdate(prefs.reset(mode))
+/**
+ * M3 Expressive `SplitButtonLayout` 恢复默认操作：
+ * 主段一键恢复当前视图默认（或当当前视图已为默认时恢复全部默认），尾段展开菜单提供「恢复全部默认」，彻底消除一次性动作误用单选弹窗。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun ResetAppearanceSplitButton(
+    resetLabel: String,
+    resetCurrentLabel: String,
+    resetAllLabel: String,
+    canResetCurrent: Boolean,
+    canResetAll: Boolean,
+    onResetCurrent: () -> Unit,
+    onResetAll: () -> Unit,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "reset_appearance_split_chevron",
+    )
+    val isEInk = LocalAppearance.current.isEInk
+    val colors = MaterialTheme.colorScheme
+    val tonalColors = if (isEInk) {
+        ButtonDefaults.filledTonalButtonColors(
+            containerColor = Color.White,
+            contentColor = Color.Black,
+        )
+    } else {
+        ButtonDefaults.filledTonalButtonColors()
+    }
+    val eInkBorder = if (isEInk) BorderStroke(1.dp, colors.outline) else null
+    val primaryAction = if (canResetCurrent) onResetCurrent else onResetAll
+    val primaryText = if (compact) resetLabel else if (canResetCurrent) resetCurrentLabel else resetAllLabel
+
+    Box(modifier = modifier) {
+        SplitButtonLayout(
+            leadingButton = {
+                SplitButtonDefaults.TonalLeadingButton(
+                    onClick = primaryAction,
+                    enabled = canResetAll,
+                    colors = tonalColors,
+                    border = eInkBorder,
+                    contentPadding = PaddingValues(start = 12.dp, end = 10.dp),
+                    modifier = Modifier.height(36.dp),
+                ) {
+                    Icon(Icons.Outlined.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(primaryText, maxLines = 1)
+                }
+            },
+            trailingButton = {
+                SplitButtonDefaults.TonalTrailingButton(
+                    checked = expanded,
+                    onCheckedChange = { expanded = it },
+                    enabled = canResetAll,
+                    colors = if (isEInk && expanded) {
+                        ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color.Black,
+                            contentColor = Color.White,
+                        )
+                    } else {
+                        tonalColors
                     },
-                )
+                    border = eInkBorder,
+                    contentPadding = PaddingValues(horizontal = 8.dp),
+                    modifier = Modifier.height(36.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.ArrowDropDown,
+                        contentDescription = resetLabel,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .graphicsLayer { rotationZ = chevronRotation },
+                    )
+                }
+            },
+        )
+        PikoDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            val items = buildList {
+                if (canResetCurrent) add(resetCurrentLabel to onResetCurrent)
+                if (canResetAll) add(resetAllLabel to onResetAll)
             }
-            if (!isAllDefault) {
-                SettingsChoiceOption(
-                    title = stringResource(Res.string.drive_custom_reset_all),
-                    selected = false,
+            items.forEachIndexed { index, (title, action) ->
+                DropdownMenuItem(
+                    text = { Text(title) },
+                    leadingIcon = { Icon(Icons.Outlined.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    shape = menuItemShape(index, items.size),
                     onClick = {
-                        resetMenuOpen = false
-                        onUpdate(DriveAppearancePrefs.DEFAULT)
+                        expanded = false
+                        action()
                     },
                 )
             }
@@ -363,11 +448,13 @@ private fun DriveModeSelector(
     onSelect: (DriveAppearanceMode) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
+    val isEInk = LocalAppearance.current.isEInk
+    val minHeight = if (isDesktopLayout()) 40.dp else 48.dp
     val toggleColors = OutlinedToggleButtonDefaults.colors(
-        containerColor = Color.Transparent,
-        contentColor = colors.onSurfaceVariant,
-        checkedContainerColor = colors.secondaryContainer,
-        checkedContentColor = colors.onSecondaryContainer,
+        containerColor = if (isEInk) Color.White else Color.Transparent,
+        contentColor = if (isEInk) Color.Black else colors.onSurfaceVariant,
+        checkedContainerColor = if (isEInk) Color.Black else colors.secondaryContainer,
+        checkedContentColor = if (isEInk) Color.White else colors.onSecondaryContainer,
     )
     val modes = DriveAppearanceMode.entries
     Row(
@@ -375,6 +462,7 @@ private fun DriveModeSelector(
         horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
     ) {
         modes.forEachIndexed { index, item ->
+            val checked = item == selected
             val icon = when (item) {
                 DriveAppearanceMode.LIST -> Icons.AutoMirrored.Outlined.ViewList
                 DriveAppearanceMode.GRID -> Icons.Outlined.GridView
@@ -386,12 +474,17 @@ private fun DriveModeSelector(
                 DriveAppearanceMode.GALLERY -> stringResource(Res.string.drive_custom_mode_gallery)
             }
             OutlinedToggleButton(
-                checked = item == selected,
-                onCheckedChange = { onSelect(item) },
+                checked = checked,
+                onCheckedChange = { if (!checked) onSelect(item) },
                 shapes = connectedToggleShapes(index, modes.size),
                 colors = toggleColors,
+                border = if (isEInk) {
+                    BorderStroke(1.dp, colors.outline)
+                } else {
+                    OutlinedToggleButtonDefaults.border(enabled = true, checked = checked)
+                },
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                modifier = Modifier.weight(1f).height(38.dp),
+                modifier = Modifier.weight(1f).heightIn(min = minHeight),
             ) {
                 Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
@@ -410,6 +503,7 @@ private fun InteractiveDrivePreviewCard(
     onSelectSlot: (DrivePreviewSlot) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
+    val isEInk = LocalAppearance.current.isEInk
     val samples = rememberDrivePreviewSamples()
     val previewArtworkRenderer: @Composable (Any, Modifier) -> Boolean = remember {
         { model, mod ->
@@ -428,9 +522,9 @@ private fun InteractiveDrivePreviewCard(
     }
 
     Surface(
-        color = colors.surfaceContainerLow,
+        color = if (isEInk) Color.White else colors.surfaceContainerLow,
         shape = MaterialTheme.shapes.large,
-        border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.45f)),
+        border = BorderStroke(1.dp, if (isEInk) colors.outline else colors.outlineVariant.copy(alpha = 0.45f)),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(
@@ -496,7 +590,6 @@ private fun RealListPreview(
     val showMoreButton = LocalPointerSource.current.isTouchLike
 
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        // 样本 1：视频文件（真实 FileListItem）
         PreviewItemFocusFrame(selected = videoSelected) {
             FileListItem(
                 file = samples.videoFile,
@@ -521,7 +614,6 @@ private fun RealListPreview(
             )
         }
 
-        // 样本 2：有缩略图文件夹（真实 FileListItem）
         PreviewItemFocusFrame(selected = folderSelected) {
             FileListItem(
                 file = samples.folderWithThumbFile,
@@ -541,7 +633,6 @@ private fun RealListPreview(
             )
         }
 
-        // 样本 3：无缩略图文件夹（真实 FileListItem）
         PreviewItemFocusFrame(selected = folderSelected) {
             FileListItem(
                 file = samples.folderNoThumbFile,
@@ -580,34 +671,30 @@ private fun RealGridPreview(
 
     val videoCard: @Composable (Modifier) -> Unit = { cellModifier ->
         PreviewItemFocusFrame(selected = detailsSelected, modifier = cellModifier) {
-            Box(modifier = Modifier.fillMaxWidth()) {
-                PosterCard(
-                    file = samples.videoFile,
-                    isSelectionMode = false,
-                    isSelected = false,
-                    isSpoilerBlurred = false,
-                    isHighlighted = false,
-                    onClick = { onSelectSlot(DrivePreviewSlot.Details) },
-                    onLongClick = null,
-                    onSelectToggle = {},
-                    onMoreClick = {},
-                    moreButton = showMoreButton,
-                    title = samples.videoTitle,
-                    original = samples.videoRaw,
-                    tags = samples.videoTags,
-                    resolution = "1080p",
-                )
-                // 仅在封面四角叠加轻量透明点按热区与空角 + 号 / 选中角标框，绝不重绘真实 PosterCornerBadge
-                InteractiveCornerQuadrantsOverlay(
-                    corners = corners,
-                    selectedCorner = selectedCorner,
-                    onSelectCorner = { onSelectSlot(DrivePreviewSlot.Corner(it)) },
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .fillMaxWidth()
-                        .aspectRatio(16f / 9f),
-                )
-            }
+            PosterCard(
+                file = samples.videoFile,
+                isSelectionMode = false,
+                isSelected = false,
+                isSpoilerBlurred = false,
+                isHighlighted = false,
+                onClick = { onSelectSlot(DrivePreviewSlot.Details) },
+                onLongClick = null,
+                onSelectToggle = {},
+                onMoreClick = {},
+                moreButton = showMoreButton,
+                title = samples.videoTitle,
+                original = samples.videoRaw,
+                tags = samples.videoTags,
+                resolution = "1080p",
+                coverOverlay = {
+                    InteractiveCornerQuadrantsOverlay(
+                        corners = corners,
+                        selectedCorner = selectedCorner,
+                        onSelectCorner = { onSelectSlot(DrivePreviewSlot.Corner(it)) },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                },
+            )
         }
     }
 
@@ -820,9 +907,14 @@ private fun CornerQuadrantTarget(
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
+    val isEInk = LocalAppearance.current.isEInk
     val fixed = LocalFixedColors.current
     val ringColor by animateColorAsState(
-        targetValue = if (selected) colors.primary else fixed.HudSpecularBorder,
+        targetValue = when {
+            isEInk -> Color.Black
+            selected -> colors.primary
+            else -> fixed.HudSpecularBorder
+        },
         animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
         label = "corner_target_${position.name}",
     )
@@ -837,19 +929,31 @@ private fun CornerQuadrantTarget(
                     .padding(6.dp)
                     .size(22.dp)
                     .clip(CircleShape)
-                    .background(if (selected) colors.primary.copy(alpha = 0.88f) else fixed.ScrimOnMedia.copy(alpha = 0.45f))
-                    .border(if (selected) 2.dp else 0.75.dp, ringColor, CircleShape),
+                    .background(
+                        when {
+                            isEInk && selected -> Color.Black
+                            isEInk -> Color.White
+                            selected -> colors.primary.copy(alpha = 0.88f)
+                            else -> fixed.ScrimOnMedia.copy(alpha = 0.45f)
+                        },
+                    )
+                    .border(if (selected) 2.dp else 1.dp, ringColor, CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     imageVector = Icons.Outlined.Add,
                     contentDescription = cornerPositionLabel(position),
-                    tint = if (selected) colors.onPrimary else fixed.OnMedia.copy(alpha = 0.85f),
+                    tint = when {
+                        isEInk && selected -> Color.White
+                        isEInk -> Color.Black
+                        selected -> colors.onPrimary
+                        else -> fixed.OnMedia.copy(alpha = 0.85f)
+                    },
                     modifier = Modifier.size(12.dp),
                 )
             }
         } else if (selected) {
-            val accent = colors.primary
+            val accent = if (isEInk) Color.Black else colors.primary
             Canvas(modifier = Modifier.padding(3.dp).size(18.dp)) {
                 val stroke = 2.5.dp.toPx()
                 val half = stroke / 2f
@@ -880,172 +984,6 @@ private fun CornerQuadrantTarget(
                     }
                 }
                 drawPath(path, color = accent, style = Stroke(width = stroke, cap = StrokeCap.Round))
-            }
-        }
-    }
-}
-
-private enum class PreviewArtworkVariant {
-    VideoNightSky,
-    FolderSunsetDusk,
-}
-
-/** 100% 原创矢量程序封面（无网络依赖、无版权海报），经 `LocalPreviewArtworkRenderer` 注入真实组件渲染。 */
-@Composable
-private fun PreviewProceduralArtwork(
-    variant: PreviewArtworkVariant,
-    modifier: Modifier = Modifier,
-) {
-    val colors = MaterialTheme.colorScheme
-    val accentGlow = colors.primary
-    val tertiaryGlow = colors.tertiary
-    val scale = LocalDriveAppearancePrefs.current.thumbnailScale
-    val intrinsicAspect = when (variant) {
-        PreviewArtworkVariant.VideoNightSky -> 16f / 9f
-        PreviewArtworkVariant.FolderSunsetDusk -> 4f / 3f
-    }
-
-    Box(
-        modifier = modifier
-            .clipToBounds()
-            .then(if (scale == ThumbnailScale.FIT) Modifier.background(colors.surfaceContainerHighest) else Modifier),
-        contentAlignment = Alignment.Center,
-    ) {
-        // 严格按真实 AsyncImage 的 ContentScale.Fit / ContentScale.Crop 数学公式计算目标矩形
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val cw = size.width
-            val ch = size.height
-            if (cw <= 0f || ch <= 0f) return@Canvas
-            val containerAspect = cw / ch
-            val drawW: Float
-            val drawH: Float
-            if (scale == ThumbnailScale.FIT) {
-                if (containerAspect > intrinsicAspect) {
-                    drawH = ch
-                    drawW = ch * intrinsicAspect
-                } else {
-                    drawW = cw
-                    drawH = cw / intrinsicAspect
-                }
-            } else {
-                if (containerAspect > intrinsicAspect) {
-                    drawW = cw
-                    drawH = cw / intrinsicAspect
-                } else {
-                    drawH = ch
-                    drawW = ch * intrinsicAspect
-                }
-            }
-            val left = (cw - drawW) / 2f
-            val top = (ch - drawH) / 2f
-            val minDim = minOf(drawW, drawH)
-
-            clipRect(
-                left = left.coerceAtLeast(0f),
-                top = top.coerceAtLeast(0f),
-                right = (left + drawW).coerceAtMost(cw),
-                bottom = (top + drawH).coerceAtMost(ch),
-            ) {
-                translate(left = left, top = top) {
-                    val w = drawW
-                    val h = drawH
-                    when (variant) {
-                        PreviewArtworkVariant.VideoNightSky -> {
-                            drawRect(
-                                brush = Brush.verticalGradient(
-                                    colors = listOf(Color(0xFF15192E), Color(0xFF28204B), Color(0xFF5A335C)),
-                                    startY = 0f,
-                                    endY = h,
-                                ),
-                                size = Size(w, h),
-                            )
-                            drawCircle(
-                                brush = Brush.radialGradient(
-                                    colors = listOf(accentGlow.copy(alpha = 0.48f), Color.Transparent),
-                                    center = Offset(w * 0.72f, h * 0.30f),
-                                    radius = minDim * 0.62f,
-                                ),
-                                center = Offset(w * 0.72f, h * 0.30f),
-                                radius = minDim * 0.62f,
-                            )
-                            drawCircle(
-                                color = Color(0xFFF6E7D8).copy(alpha = 0.88f),
-                                radius = minDim * 0.13f,
-                                center = Offset(w * 0.72f, h * 0.30f),
-                            )
-                            drawLine(
-                                brush = Brush.linearGradient(
-                                    colors = listOf(Color.Transparent, tertiaryGlow.copy(alpha = 0.45f), Color.Transparent),
-                                    start = Offset(0f, h * 0.78f),
-                                    end = Offset(w, h * 0.22f),
-                                ),
-                                start = Offset(0f, h * 0.78f),
-                                end = Offset(w, h * 0.22f),
-                                strokeWidth = (minDim * 0.045f).coerceAtLeast(2f),
-                                cap = StrokeCap.Round,
-                            )
-                            val ridge = Path().apply {
-                                moveTo(0f, h)
-                                lineTo(0f, h * 0.66f)
-                                lineTo(w * 0.22f, h * 0.66f)
-                                lineTo(w * 0.22f, h * 0.56f)
-                                lineTo(w * 0.44f, h * 0.56f)
-                                lineTo(w * 0.54f, h * 0.70f)
-                                lineTo(w * 0.80f, h * 0.70f)
-                                lineTo(w * 0.80f, h * 0.60f)
-                                lineTo(w, h * 0.60f)
-                                lineTo(w, h)
-                                close()
-                            }
-                            drawPath(ridge, color = Color(0xFF0E1122).copy(alpha = 0.78f))
-                        }
-                        PreviewArtworkVariant.FolderSunsetDusk -> {
-                            drawRect(
-                                brush = Brush.verticalGradient(
-                                    colors = listOf(Color(0xFF2B1C3D), Color(0xFF8C3B4A), Color(0xFFE07A47)),
-                                    startY = 0f,
-                                    endY = h,
-                                ),
-                                size = Size(w, h),
-                            )
-                            drawCircle(
-                                brush = Brush.radialGradient(
-                                    colors = listOf(Color(0xFFFFD88A).copy(alpha = 0.75f), Color.Transparent),
-                                    center = Offset(w * 0.34f, h * 0.44f),
-                                    radius = minDim * 0.58f,
-                                ),
-                                center = Offset(w * 0.34f, h * 0.44f),
-                                radius = minDim * 0.58f,
-                            )
-                            drawCircle(
-                                color = Color(0xFFFFF1C6).copy(alpha = 0.92f),
-                                radius = minDim * 0.14f,
-                                center = Offset(w * 0.34f, h * 0.44f),
-                            )
-                            val farPeak = Path().apply {
-                                moveTo(0f, h)
-                                lineTo(0f, h * 0.68f)
-                                lineTo(w * 0.28f, h * 0.52f)
-                                lineTo(w * 0.58f, h * 0.66f)
-                                lineTo(w * 0.82f, h * 0.48f)
-                                lineTo(w, h * 0.62f)
-                                lineTo(w, h)
-                                close()
-                            }
-                            drawPath(farPeak, color = Color(0xFF47213E).copy(alpha = 0.72f))
-                            val nearPeak = Path().apply {
-                                moveTo(0f, h)
-                                lineTo(0f, h * 0.80f)
-                                lineTo(w * 0.36f, h * 0.68f)
-                                lineTo(w * 0.70f, h * 0.78f)
-                                lineTo(w, h * 0.64f)
-                                lineTo(w, h)
-                                close()
-                            }
-                            drawPath(nearPeak, color = Color(0xFF20132B).copy(alpha = 0.84f))
-                        }
-                    }
-                }
             }
         }
     }
@@ -1111,325 +1049,4 @@ private fun ThumbnailOptionsCard(
             },
         )
     }
-}
-
-/** 紧随预览下方的上下文槽位检查器：顶部快速切换芯片 + 当前选中区域的精简控件。 */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun SlotInspectorCard(
-    mode: DriveAppearanceMode,
-    prefs: DriveAppearancePrefs,
-    selectedSlot: DrivePreviewSlot,
-    onSelectSlot: (DrivePreviewSlot) -> Unit,
-    onUpdate: (DriveAppearancePrefs) -> Unit,
-) {
-    val colors = MaterialTheme.colorScheme
-    val slots = remember(mode) { availableSlotsFor(mode) }
-
-    Surface(
-        color = colors.surfaceContainer,
-        shape = MaterialTheme.shapes.large,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                slots.forEach { slot ->
-                    val isSelected = slot == selectedSlot
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { onSelectSlot(slot) },
-                        label = { Text(slotLabel(slot, mode), maxLines = 1) },
-                    )
-                }
-            }
-
-            HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.45f))
-
-            when (selectedSlot) {
-                is DrivePreviewSlot.Corner -> {
-                    val corners = when (mode) {
-                        DriveAppearanceMode.GRID -> prefs.grid.corners
-                        DriveAppearanceMode.GALLERY -> prefs.gallery.corners
-                        DriveAppearanceMode.LIST -> return@Column
-                    }
-                    CornerBadgeChips(
-                        selected = corners[selectedSlot.position],
-                        onSelect = { badge ->
-                            val next = corners.assign(selectedSlot.position, badge)
-                            when (mode) {
-                                DriveAppearanceMode.GRID -> onUpdate(prefs.copy(grid = prefs.grid.copy(corners = next)))
-                                DriveAppearanceMode.GALLERY -> onUpdate(prefs.copy(gallery = prefs.gallery.copy(corners = next)))
-                                DriveAppearanceMode.LIST -> Unit
-                            }
-                        },
-                    )
-                }
-                DrivePreviewSlot.Folder -> {
-                    val currentStyle = when (mode) {
-                        DriveAppearanceMode.LIST -> prefs.list.folderStyle
-                        DriveAppearanceMode.GRID -> prefs.grid.folderStyle
-                        DriveAppearanceMode.GALLERY -> return@Column
-                    }
-                    FolderStyleInspector(
-                        selected = currentStyle,
-                        onSelect = { style ->
-                            when (mode) {
-                                DriveAppearanceMode.LIST -> onUpdate(prefs.copy(list = prefs.list.copy(folderStyle = style)))
-                                DriveAppearanceMode.GRID -> onUpdate(prefs.copy(grid = prefs.grid.copy(folderStyle = style)))
-                                DriveAppearanceMode.GALLERY -> Unit
-                            }
-                        },
-                    )
-                }
-                DrivePreviewSlot.TitleRow -> {
-                    if (mode == DriveAppearanceMode.LIST) {
-                        ListTitleRowInspector(
-                            prefs = prefs.list,
-                            onChange = { onUpdate(prefs.copy(list = it)) },
-                        )
-                    }
-                }
-                DrivePreviewSlot.Details -> when (mode) {
-                    DriveAppearanceMode.LIST -> DetailFieldsChipGroup(
-                        selected = prefs.list.detailFields,
-                        onToggle = { field ->
-                            onUpdate(
-                                prefs.copy(
-                                    list = prefs.list.copy(
-                                        detailFields = toggleDetailField(prefs.list.detailFields, field),
-                                    ),
-                                ),
-                            )
-                        },
-                    )
-                    DriveAppearanceMode.GRID -> CardDetailsInspector(
-                        showTitle = prefs.grid.showTitle,
-                        showDetailLine = prefs.grid.showDetailLine,
-                        detailFields = prefs.grid.detailFields,
-                        onShowTitle = { onUpdate(prefs.copy(grid = prefs.grid.copy(showTitle = it))) },
-                        onShowDetailLine = { onUpdate(prefs.copy(grid = prefs.grid.copy(showDetailLine = it))) },
-                        onToggleField = { field ->
-                            onUpdate(
-                                prefs.copy(
-                                    grid = prefs.grid.copy(
-                                        detailFields = toggleDetailField(prefs.grid.detailFields, field),
-                                    ),
-                                ),
-                            )
-                        },
-                    )
-                    DriveAppearanceMode.GALLERY -> CardDetailsInspector(
-                        showTitle = prefs.gallery.showTitle,
-                        showDetailLine = prefs.gallery.showDetailLine,
-                        detailFields = prefs.gallery.detailFields,
-                        onShowTitle = { onUpdate(prefs.copy(gallery = prefs.gallery.copy(showTitle = it))) },
-                        onShowDetailLine = { onUpdate(prefs.copy(gallery = prefs.gallery.copy(showDetailLine = it))) },
-                        onToggleField = { field ->
-                            onUpdate(
-                                prefs.copy(
-                                    gallery = prefs.gallery.copy(
-                                        detailFields = toggleDetailField(prefs.gallery.detailFields, field),
-                                    ),
-                                ),
-                            )
-                        },
-                    )
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun CornerBadgeChips(
-    selected: CardBadgeKind,
-    onSelect: (CardBadgeKind) -> Unit,
-) {
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        CardBadgeKind.entries.forEach { kind ->
-            val isSelected = kind == selected
-            FilterChip(
-                selected = isSelected,
-                onClick = { onSelect(kind) },
-                label = { Text(badgeKindLabel(kind), maxLines = 1) },
-                leadingIcon = if (isSelected) {
-                    { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                } else {
-                    null
-                },
-            )
-        }
-    }
-}
-
-@Composable
-private fun FolderStyleInspector(
-    selected: FolderStyle,
-    onSelect: (FolderStyle) -> Unit,
-) {
-    val skeuomorphicLabel = stringResource(Res.string.drive_custom_folder_skeuomorphic)
-    val minimalLabel = stringResource(Res.string.drive_custom_folder_minimal)
-    SettingsSegmentedChoice(
-        options = FolderStyle.entries,
-        selected = selected,
-        label = { folderStyle ->
-            when (folderStyle) {
-                FolderStyle.SKEUOMORPHIC -> skeuomorphicLabel
-                FolderStyle.MINIMAL_ICON -> minimalLabel
-            }
-        },
-        onSelect = onSelect,
-        fill = true,
-    )
-}
-
-@Composable
-private fun ListTitleRowInspector(
-    prefs: ListViewStylePrefs,
-    onChange: (ListViewStylePrefs) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        SettingsSwitchRow(
-            icon = Icons.Outlined.Subtitles,
-            title = stringResource(Res.string.drive_custom_show_secondary_name),
-            supporting = null,
-            checked = prefs.showSecondaryName,
-            onCheckedChange = { onChange(prefs.copy(showSecondaryName = it)) },
-        )
-        SettingsSwitchRow(
-            icon = Icons.Outlined.Label,
-            title = stringResource(Res.string.drive_custom_show_parsed_tags),
-            supporting = null,
-            checked = prefs.showParsedTags,
-            onCheckedChange = { onChange(prefs.copy(showParsedTags = it)) },
-        )
-        SettingsSwitchRow(
-            icon = Icons.Outlined.ViewAgenda,
-            title = stringResource(Res.string.drive_custom_compact_density),
-            supporting = null,
-            checked = prefs.compactDensity,
-            onCheckedChange = { onChange(prefs.copy(compactDensity = it)) },
-        )
-    }
-}
-
-@Composable
-private fun CardDetailsInspector(
-    showTitle: Boolean,
-    showDetailLine: Boolean,
-    detailFields: List<DetailField>,
-    onShowTitle: (Boolean) -> Unit,
-    onShowDetailLine: (Boolean) -> Unit,
-    onToggleField: (DetailField) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        SettingsSwitchRow(
-            icon = Icons.Outlined.Title,
-            title = stringResource(Res.string.drive_custom_show_title),
-            supporting = null,
-            checked = showTitle,
-            onCheckedChange = onShowTitle,
-        )
-        SettingsSwitchRow(
-            icon = Icons.Outlined.Subtitles,
-            title = stringResource(Res.string.drive_custom_show_detail_line),
-            supporting = null,
-            checked = showDetailLine,
-            onCheckedChange = onShowDetailLine,
-        )
-        DependentRow(visible = showDetailLine) {
-            Column(
-                modifier = Modifier.padding(top = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    text = stringResource(Res.string.drive_custom_detail_fields_label),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                DetailFieldsChipGroup(
-                    selected = detailFields,
-                    onToggle = onToggleField,
-                )
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun DetailFieldsChipGroup(
-    selected: List<DetailField>,
-    onToggle: (DetailField) -> Unit,
-) {
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        DetailField.entries.forEach { field ->
-            val isSelected = field in selected
-            FilterChip(
-                selected = isSelected,
-                onClick = { onToggle(field) },
-                label = { Text(detailFieldLabel(field), maxLines = 1) },
-                leadingIcon = if (isSelected) {
-                    { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                } else {
-                    null
-                },
-            )
-        }
-    }
-}
-
-@Composable
-private fun slotLabel(slot: DrivePreviewSlot, mode: DriveAppearanceMode): String = when (slot) {
-    is DrivePreviewSlot.Corner -> cornerPositionLabel(slot.position)
-    DrivePreviewSlot.Folder -> stringResource(Res.string.drive_custom_section_folder)
-    DrivePreviewSlot.TitleRow -> stringResource(Res.string.drive_custom_slot_title_row)
-    DrivePreviewSlot.Details -> if (mode == DriveAppearanceMode.LIST) {
-        stringResource(Res.string.drive_custom_detail_fields_label)
-    } else {
-        stringResource(Res.string.drive_custom_section_text)
-    }
-}
-
-@Composable
-private fun cornerPositionLabel(position: CornerPosition): String = when (position) {
-    CornerPosition.TOP_START -> stringResource(Res.string.drive_custom_corner_top_start)
-    CornerPosition.TOP_END -> stringResource(Res.string.drive_custom_corner_top_end)
-    CornerPosition.BOTTOM_START -> stringResource(Res.string.drive_custom_corner_bottom_start)
-    CornerPosition.BOTTOM_END -> stringResource(Res.string.drive_custom_corner_bottom_end)
-}
-
-@Composable
-private fun badgeKindLabel(kind: CardBadgeKind): String = when (kind) {
-    CardBadgeKind.NONE -> stringResource(Res.string.drive_custom_badge_none)
-    CardBadgeKind.DURATION -> stringResource(Res.string.drive_custom_badge_duration)
-    CardBadgeKind.RESOLUTION -> stringResource(Res.string.drive_custom_badge_resolution)
-    CardBadgeKind.PARSED_TAGS -> stringResource(Res.string.drive_custom_badge_parsed_tags)
-    CardBadgeKind.FILE_SIZE -> stringResource(Res.string.drive_custom_badge_file_size)
-    CardBadgeKind.STATUS_BADGES -> stringResource(Res.string.drive_custom_badge_status)
-    CardBadgeKind.EXTENSION -> stringResource(Res.string.drive_custom_badge_extension)
-}
-
-@Composable
-private fun detailFieldLabel(field: DetailField): String = when (field) {
-    DetailField.SIZE -> stringResource(Res.string.drive_custom_field_size)
-    DetailField.DURATION -> stringResource(Res.string.drive_custom_field_duration)
-    DetailField.ADDED_TIME -> stringResource(Res.string.drive_custom_field_added_time)
-    DetailField.PARSED_TAGS -> stringResource(Res.string.drive_custom_field_parsed_tags)
-    DetailField.ITEM_COUNT -> stringResource(Res.string.drive_custom_field_item_count)
-    DetailField.EXTENSION -> stringResource(Res.string.drive_custom_field_extension)
-    DetailField.VAULT_STATUS -> stringResource(Res.string.drive_custom_field_vault_status)
 }

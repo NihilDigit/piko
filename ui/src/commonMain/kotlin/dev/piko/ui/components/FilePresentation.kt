@@ -37,10 +37,36 @@ import dev.piko.shared.data.isLocalMountRoot
 import dev.piko.shared.data.isVaulted
 import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.isEInk
+import dev.piko.ui.theme.tabular
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.ResolvedFile
 import io.github.nihildigit.pikpak.videoThumbnailUrlOf
 import io.github.nihildigit.pikpak.imageThumbnailUrlOf
+
+private const val FILE_CONTEXT_NOTE_PREFIX = "\u2060"
+private const val FILE_CONTEXT_NOTE_DELIMITER = "\u2003"
+
+/**
+ * 将结构化上下文片段（如播放历史的时间与播放进度、最近添加的来源、回收站的清除期限）编码为单行字符串，
+ * 既可在属性面板中自然呈现为空格间隔文本，又可由列表行与卡片无损还原为 [MetaRow] 等宽数字分段。
+ */
+internal fun encodeFileContextNote(parts: List<String>): String? {
+    val clean = parts.map { it.trim() }.filter { it.isNotEmpty() }
+    return if (clean.isEmpty()) null else FILE_CONTEXT_NOTE_PREFIX + clean.joinToString(FILE_CONTEXT_NOTE_DELIMITER)
+}
+
+internal fun parseFileLocationLabel(locationLabel: String?): Pair<List<String>, String?> {
+    if (locationLabel.isNullOrBlank()) return emptyList<String>() to null
+    if (locationLabel.startsWith(FILE_CONTEXT_NOTE_PREFIX) || FILE_CONTEXT_NOTE_DELIMITER in locationLabel) {
+        val parts = locationLabel
+            .removePrefix(FILE_CONTEXT_NOTE_PREFIX)
+            .split(FILE_CONTEXT_NOTE_DELIMITER)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        return parts to null
+    }
+    return emptyList<String>() to locationLabel
+}
 
 internal data class FileItemName(val title: String, val original: String? = null, val fullName: String = title)
 
@@ -69,6 +95,9 @@ internal data class FilePresentation(
     val code: String? = null,
     val resolution: String? = null,
     val status: FileItemStatus? = null,
+    val contextNote: List<String> = emptyList(),
+    val locationPath: String? = null,
+    val watchProgress: Float? = null,
 )
 
 internal fun FileStat.fileVisual(emptyFolder: Boolean = false): FileVisual {
@@ -98,14 +127,19 @@ internal fun FileStat.fileVisual(emptyFolder: Boolean = false): FileVisual {
 internal fun FileStat.filePresentation(
     title: String? = null, original: String? = null, tags: List<String> = emptyList(), code: String? = null,
     resolution: String? = null, folderHasVault: Boolean = false, emptyFolder: Boolean = false,
+    locationLabel: String? = null, watchProgress: Float? = null,
 ): FilePresentation {
     val showExt = LocalShowExtensions.current
     val resolvedTitle = title ?: displayTitle()
-    return remember(this, resolvedTitle, original, tags, code, resolution, folderHasVault, emptyFolder, showExt) {
+    return remember(this, resolvedTitle, original, tags, code, resolution, folderHasVault, emptyFolder, locationLabel, watchProgress, showExt) {
+        val (contextNote, locationPath) = parseFileLocationLabel(locationLabel)
         FilePresentation(
             key = id, name = FileItemName(resolvedTitle, original, name), visual = fileVisual(emptyFolder),
             metadata = metaParts(), tags = tags, code = code, resolution = resolution,
             marks = fileItemMarks(folderHasVault),
+            contextNote = contextNote,
+            locationPath = locationPath,
+            watchProgress = watchProgress,
         )
     }
 }
@@ -143,11 +177,31 @@ internal fun FileItemInformation(
     item: FilePresentation,
     showMetadata: Boolean = item.tags.isEmpty() || !item.visual.isFolder,
     showOriginal: Boolean = true,
+    showTags: Boolean = true,
 ) {
     Column {
         if (showOriginal) FileItemOriginal(item.name, MaterialTheme.typography.labelMedium)
-        if (item.tags.isNotEmpty() || item.code != null) MediaTagRow(item.tags, lead = item.code, modifier = Modifier.padding(vertical = 2.dp))
+        val tags = if (showTags) item.tags else emptyList()
+        val code = if (showTags) item.code else null
+        if (tags.isNotEmpty() || code != null) MediaTagRow(tags, lead = code, modifier = Modifier.padding(vertical = 2.dp))
         if (showMetadata && item.metadata.isNotEmpty()) MetaRow(item.metadata, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (item.contextNote.isNotEmpty()) {
+            MetaRow(
+                parts = item.contextNote,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        item.locationPath?.takeIf { it.isNotEmpty() }?.let { path ->
+            // 路径从头截断：离命中项最近的末级目录最有辨识度
+            Text(
+                text = path,
+                style = MaterialTheme.typography.labelMedium.tabular,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.StartEllipsis,
+            )
+        }
         item.status?.let { status ->
             Text(status.text, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 color = if (status.needsAttention) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant)
