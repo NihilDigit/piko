@@ -139,4 +139,28 @@ class DocumentParserTest {
         assertTrue("song.flac".isPlayableAudio())
         assertTrue("photo.png".isPreviewableImage())
     }
+
+    @Test
+    fun capsDeepBlockQuotesAndNestedInlinesWithoutStackOverflow() {
+        val deepQuote = ">".repeat(5_000) + " Deep quote survivor"
+        val deepInline = "*".repeat(1_500) + "inline-survivor" + "*".repeat(1_500)
+        val fencedArrows = "```txt\n" + ">".repeat(40) + " literal\n```"
+        val blocks = parseMarkdown("$deepQuote\n\n$deepInline\n\n$fencedArrows")
+
+        val outerQuote = assertIs<DocumentBlock.BlockQuote>(blocks[0])
+        assertEquals("Deep quote survivor", outerQuote.plainText)
+        var depth = 0
+        var cursor: DocumentBlock = outerQuote
+        while (cursor is DocumentBlock.BlockQuote) {
+            depth++
+            cursor = cursor.children.first()
+        }
+        assertTrue(depth in 1..MAX_MARKDOWN_NESTING_DEPTH, "BlockQuote nesting depth ($depth) must not exceed $MAX_MARKDOWN_NESTING_DEPTH")
+
+        val inlinePara = assertIs<DocumentBlock.Paragraph>(blocks[1])
+        assertTrue(inlinePara.plainText.contains("inline-survivor"))
+
+        val codeBlock = assertIs<DocumentBlock.CodeBlock>(blocks[2])
+        assertEquals(">".repeat(40) + " literal", codeBlock.code)
+    }
 }

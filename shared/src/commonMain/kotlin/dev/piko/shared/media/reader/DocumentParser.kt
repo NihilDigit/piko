@@ -13,6 +13,7 @@ import org.intellij.markdown.parser.MarkdownParser
 private const val MAX_CHUNK_LINES = 24
 private const val MAX_CHUNK_CHARS = 2400
 private const val MAX_SINGLE_LINE_CHARS = 2000
+internal const val MAX_MARKDOWN_NESTING_DEPTH = 16
 
 /**
  * 将解码后的纯文本或 Markdown 正文解析为面向 `LazyColumn` 虚拟化的分块文档模型。
@@ -125,17 +126,119 @@ fun chunkPlainText(
  */
 fun parseMarkdown(markdown: String): List<DocumentBlock> {
     if (markdown.isBlank()) return emptyList()
+    val safeMarkdown = clampExcessBlockQuoteMarkers(markdown, MAX_MARKDOWN_NESTING_DEPTH)
     val flavour = GFMFlavourDescriptor()
     val root = MarkdownParser(flavour, cancellationToken = org.intellij.markdown.parser.CancellationToken.NonCancellable)
-        .buildMarkdownTreeFromString(markdown as CharSequence)
-    val linkDefinitions = collectLinkDefinitions(root, markdown)
-    val walker = MarkdownAstWalker(markdown, linkDefinitions)
+        .buildMarkdownTreeFromString(safeMarkdown as CharSequence)
+    val linkDefinitions = collectLinkDefinitions(root, safeMarkdown)
+    val walker = MarkdownAstWalker(safeMarkdown, linkDefinitions)
     return walker.walkDocument(root)
+}
+
+private fun clampExcessBlockQuoteMarkers(markdown: String, maxDepth: Int): String {
+    if (!hasExcessBlockQuoteLine(markdown, maxDepth)) return markdown
+    val sb = StringBuilder(markdown.length)
+    var fenceChar = '\u0000'
+    var fenceLen = 0
+    var pos = 0
+    val n = markdown.length
+    while (pos <= n) {
+        val nl = markdown.indexOf('\n', pos)
+        val lineEnd = if (nl < 0) n else nl
+        val hasCr = lineEnd > pos && markdown[lineEnd - 1] == '\r'
+        val contentEnd = if (hasCr) lineEnd - 1 else lineEnd
+
+        var i = pos
+        var quoteCount = 0
+        while (i < contentEnd) {
+            var spaces = 0
+            while (i + spaces < contentEnd && markdown[i + spaces] == ' ' && spaces < 3) spaces++
+            if (i + spaces < contentEnd && markdown[i + spaces] == '>') {
+                quoteCount++
+                i += spaces + 1
+                if (i < contentEnd && markdown[i] == ' ') i++
+            } else {
+                break
+            }
+        }
+
+        // Track fenced code blocks so literal `>>>>...` lines inside code fences are preserved verbatim
+        var fPos = i
+        var leadingSpaces = 0
+        while (fPos < contentEnd && markdown[fPos] == ' ' && leadingSpaces < 3) {
+            fPos++
+            leadingSpaces++
+        }
+        if (fPos < contentEnd && (markdown[fPos] == '`' || markdown[fPos] == '~')) {
+            val ch = markdown[fPos]
+            var run = 0
+            while (fPos + run < contentEnd && markdown[fPos + run] == ch) run++
+            if (run >= 3) {
+                val restStart = fPos + run
+                if (fenceChar == '\u0000') {
+                    val validOpen = ch != '`' || (restStart until contentEnd).none { markdown[it] == '`' }
+                    if (validOpen) {
+                        fenceChar = ch
+                        fenceLen = run
+                    }
+                } else if (ch == fenceChar && run >= fenceLen) {
+                    val onlyWhitespaceAfter = (restStart until contentEnd).all { markdown[it] == ' ' || markdown[it] == '\t' }
+                    if (onlyWhitespaceAfter) {
+                        fenceChar = '\u0000'
+                        fenceLen = 0
+                    }
+                }
+            }
+        }
+
+        if (fenceChar == '\u0000' && quoteCount > maxDepth) {
+            repeat(maxDepth) { sb.append('>') }
+            if (i < contentEnd) {
+                sb.append(' ')
+                sb.append(markdown, i, contentEnd)
+            }
+        } else {
+            sb.append(markdown, pos, contentEnd)
+        }
+        if (hasCr) sb.append('\r')
+        if (nl < 0) break
+        sb.append('\n')
+        pos = nl + 1
+    }
+    return sb.toString()
+}
+
+private fun hasExcessBlockQuoteLine(markdown: String, maxDepth: Int): Boolean {
+    var pos = 0
+    val n = markdown.length
+    while (pos < n) {
+        var i = pos
+        var quotes = 0
+        while (i < n && markdown[i] != '\n' && markdown[i] != '\r') {
+            var spaces = 0
+            while (i + spaces < n && markdown[i + spaces] == ' ' && spaces < 3) spaces++
+            if (i + spaces < n && markdown[i + spaces] == '>') {
+                quotes++
+                if (quotes > maxDepth) return true
+                i += spaces + 1
+                if (i < n && markdown[i] == ' ') i++
+            } else {
+                break
+            }
+        }
+        val nl = markdown.indexOf('\n', pos)
+        if (nl < 0) break
+        pos = nl + 1
+    }
+    return false
 }
 
 private fun collectLinkDefinitions(root: ASTNode, source: String): Map<String, String> {
     val map = HashMap<String, String>()
-    fun scan(node: ASTNode) {
+    val stack = ArrayDeque<ASTNode>()
+    stack.addLast(root)
+    while (stack.isNotEmpty()) {
+        val node = stack.removeLast()
         if (node.type == MarkdownElementTypes.LINK_DEFINITION) {
             val label = node.findChild(MarkdownElementTypes.LINK_LABEL)
                 ?.let { normalizeLinkLabel(it.getTextInNode(source).toString()) }
@@ -144,13 +247,13 @@ private fun collectLinkDefinitions(root: ASTNode, source: String): Map<String, S
             if (!label.isNullOrEmpty() && !dest.isNullOrEmpty() && label !in map) {
                 map[label] = dest
             }
-            return
+            continue
         }
-        for (child in node.children) {
-            scan(child)
+        val children = node.children
+        for (idx in children.lastIndex downTo 0) {
+            stack.addLast(children[idx])
         }
     }
-    scan(root)
     return map
 }
 
@@ -162,15 +265,24 @@ private class MarkdownAstWalker(
 
     fun walkDocument(root: ASTNode): List<DocumentBlock> {
         val out = ArrayList<DocumentBlock>()
-        walkBlockChildren(root.children, out)
+        walkBlockChildren(root.children, out, blockDepth = 0)
         return out
     }
 
-    private fun walkBlockChildren(children: List<ASTNode>, out: MutableList<DocumentBlock>) {
+    private fun walkBlockChildren(
+        children: List<ASTNode>,
+        out: MutableList<DocumentBlock>,
+        blockDepth: Int,
+    ) {
+        if (blockDepth >= MAX_MARKDOWN_NESTING_DEPTH) {
+            walkBlockChildrenFlatIterative(children, out, baseListDepth = MAX_MARKDOWN_NESTING_DEPTH)
+            return
+        }
         for (node in children) {
             when (node.type) {
                 MarkdownTokenTypes.EOL,
                 MarkdownTokenTypes.WHITE_SPACE,
+                MarkdownTokenTypes.BLOCK_QUOTE,
                 MarkdownElementTypes.LINK_DEFINITION,
                 -> continue
 
@@ -186,9 +298,9 @@ private class MarkdownAstWalker(
                 MarkdownElementTypes.PARAGRAPH -> addParagraphOrImage(node, out)
                 MarkdownElementTypes.CODE_FENCE -> addCodeFence(node, out)
                 MarkdownElementTypes.CODE_BLOCK -> addIndentedCodeBlock(node, out)
-                MarkdownElementTypes.BLOCK_QUOTE -> addBlockQuote(node, out)
-                MarkdownElementTypes.UNORDERED_LIST -> walkList(node, ordered = false, depth = 0, out = out)
-                MarkdownElementTypes.ORDERED_LIST -> walkList(node, ordered = true, depth = 0, out = out)
+                MarkdownElementTypes.BLOCK_QUOTE -> addBlockQuote(node, out, blockDepth)
+                MarkdownElementTypes.UNORDERED_LIST -> walkList(node, ordered = false, depth = 0, blockDepth = blockDepth + 1, out = out)
+                MarkdownElementTypes.ORDERED_LIST -> walkList(node, ordered = true, depth = 0, blockDepth = blockDepth + 1, out = out)
                 MarkdownTokenTypes.HORIZONTAL_RULE -> out += DocumentBlock.ThematicBreak(nextId++)
                 GFMElementTypes.TABLE -> addTable(node, out)
                 MarkdownElementTypes.HTML_BLOCK -> {
@@ -199,7 +311,99 @@ private class MarkdownAstWalker(
                 }
                 else -> {
                     if (node.children.isNotEmpty()) {
-                        walkBlockChildren(node.children, out)
+                        walkBlockChildren(node.children, out, blockDepth + 1)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 达到最大嵌套层数后改用显式栈扁平展开后续块节点，彻底杜绝深层嵌套引用/列表引发 `StackOverflowError`。
+     */
+    private fun walkBlockChildrenFlatIterative(
+        initialChildren: List<ASTNode>,
+        out: MutableList<DocumentBlock>,
+        baseListDepth: Int,
+    ) {
+        val stack = ArrayDeque<ASTNode>(initialChildren.size)
+        for (idx in initialChildren.lastIndex downTo 0) {
+            stack.addLast(initialChildren[idx])
+        }
+        while (stack.isNotEmpty()) {
+            val node = stack.removeLast()
+            when (node.type) {
+                MarkdownTokenTypes.EOL,
+                MarkdownTokenTypes.WHITE_SPACE,
+                MarkdownTokenTypes.BLOCK_QUOTE,
+                MarkdownTokenTypes.LIST_BULLET,
+                MarkdownTokenTypes.LIST_NUMBER,
+                GFMTokenTypes.CHECK_BOX,
+                MarkdownElementTypes.LINK_DEFINITION,
+                -> continue
+
+                MarkdownElementTypes.ATX_1 -> addHeading(node, 1, out)
+                MarkdownElementTypes.ATX_2 -> addHeading(node, 2, out)
+                MarkdownElementTypes.ATX_3 -> addHeading(node, 3, out)
+                MarkdownElementTypes.ATX_4 -> addHeading(node, 4, out)
+                MarkdownElementTypes.ATX_5 -> addHeading(node, 5, out)
+                MarkdownElementTypes.ATX_6 -> addHeading(node, 6, out)
+                MarkdownElementTypes.SETEXT_1 -> addHeading(node, 1, out)
+                MarkdownElementTypes.SETEXT_2 -> addHeading(node, 2, out)
+
+                MarkdownElementTypes.PARAGRAPH -> addParagraphOrImage(node, out)
+                MarkdownElementTypes.CODE_FENCE -> addCodeFence(node, out)
+                MarkdownElementTypes.CODE_BLOCK -> addIndentedCodeBlock(node, out)
+                MarkdownTokenTypes.HORIZONTAL_RULE -> out += DocumentBlock.ThematicBreak(nextId++)
+                GFMElementTypes.TABLE -> addTable(node, out)
+                MarkdownElementTypes.HTML_BLOCK -> {
+                    val raw = node.getTextInNode(source).toString().trimEnd('\n')
+                    if (raw.isNotBlank()) {
+                        out += DocumentBlock.CodeBlock(nextId++, language = "html", code = raw)
+                    }
+                }
+                MarkdownElementTypes.LIST_ITEM -> {
+                    val checkboxNode = node.findChild(GFMTokenTypes.CHECK_BOX)
+                    val checked: Boolean? = checkboxNode?.getTextInNode(source)?.toString()?.let { raw ->
+                        raw.contains('x', ignoreCase = true)
+                    }
+                    val inlineSpans = ArrayList<InlineSpan>()
+                    val trailing = ArrayList<ASTNode>()
+                    for (itemChild in node.children) {
+                        when (itemChild.type) {
+                            MarkdownTokenTypes.LIST_BULLET,
+                            MarkdownTokenTypes.LIST_NUMBER,
+                            GFMTokenTypes.CHECK_BOX,
+                            MarkdownTokenTypes.EOL,
+                            MarkdownTokenTypes.WHITE_SPACE,
+                            -> continue
+                            MarkdownElementTypes.PARAGRAPH -> {
+                                if (inlineSpans.isNotEmpty()) inlineSpans += InlineSpan.LineBreak
+                                inlineSpans += trimEdgeWhitespace(extractInlines(itemChild))
+                            }
+                            else -> trailing += itemChild
+                        }
+                    }
+                    val normalizedSpans = trimEdgeWhitespace(inlineSpans)
+                    if (normalizedSpans.isNotEmpty() || checked != null) {
+                        out += DocumentBlock.ListItemBlock(
+                            id = nextId++,
+                            ordered = false,
+                            number = null,
+                            depth = baseListDepth.coerceAtMost(MAX_MARKDOWN_NESTING_DEPTH),
+                            checked = checked,
+                            spans = normalizedSpans,
+                            plainText = normalizedSpans.flattenPlainText(),
+                        )
+                    }
+                    for (idx in trailing.lastIndex downTo 0) {
+                        stack.addLast(trailing[idx])
+                    }
+                }
+                else -> {
+                    val ch = node.children
+                    for (idx in ch.lastIndex downTo 0) {
+                        stack.addLast(ch[idx])
                     }
                 }
             }
@@ -273,17 +477,31 @@ private class MarkdownAstWalker(
         }
     }
 
-    private fun addBlockQuote(node: ASTNode, out: MutableList<DocumentBlock>) {
-        val inner = ArrayList<DocumentBlock>()
+    private fun addBlockQuote(node: ASTNode, out: MutableList<DocumentBlock>, blockDepth: Int) {
         val filtered = node.children.filter { it.type != MarkdownTokenTypes.BLOCK_QUOTE }
-        walkBlockChildren(filtered, inner)
+        if (blockDepth >= MAX_MARKDOWN_NESTING_DEPTH) {
+            walkBlockChildrenFlatIterative(filtered, out, baseListDepth = MAX_MARKDOWN_NESTING_DEPTH)
+            return
+        }
+        val inner = ArrayList<DocumentBlock>()
+        walkBlockChildren(filtered, inner, blockDepth + 1)
         if (inner.isNotEmpty()) {
             val plain = inner.joinToString("\n") { it.plainText }
             out += DocumentBlock.BlockQuote(nextId++, inner, plain)
         }
     }
 
-    private fun walkList(listNode: ASTNode, ordered: Boolean, depth: Int, out: MutableList<DocumentBlock>) {
+    private fun walkList(
+        listNode: ASTNode,
+        ordered: Boolean,
+        depth: Int,
+        blockDepth: Int,
+        out: MutableList<DocumentBlock>,
+    ) {
+        if (blockDepth >= MAX_MARKDOWN_NESTING_DEPTH || depth >= MAX_MARKDOWN_NESTING_DEPTH) {
+            walkBlockChildrenFlatIterative(listNode.children, out, baseListDepth = depth.coerceAtMost(MAX_MARKDOWN_NESTING_DEPTH))
+            return
+        }
         var autoNumber = 1
         for (child in listNode.children) {
             if (child.type != MarkdownElementTypes.LIST_ITEM) continue
@@ -322,7 +540,7 @@ private class MarkdownAstWalker(
                     }
                     MarkdownElementTypes.UNORDERED_LIST -> nestedLists += itemChild to false
                     MarkdownElementTypes.ORDERED_LIST -> nestedLists += itemChild to true
-                    else -> walkBlockChildren(listOf(itemChild), extraBlocks)
+                    else -> walkBlockChildren(listOf(itemChild), extraBlocks, blockDepth + 1)
                 }
             }
 
@@ -340,7 +558,7 @@ private class MarkdownAstWalker(
             }
             out.addAll(extraBlocks)
             for ((nested, nestedOrdered) in nestedLists) {
-                walkList(nested, ordered = nestedOrdered, depth = depth + 1, out = out)
+                walkList(nested, ordered = nestedOrdered, depth = depth + 1, blockDepth = blockDepth + 1, out = out)
             }
         }
     }
@@ -401,23 +619,31 @@ private class MarkdownAstWalker(
 
     private fun extractInlines(node: ASTNode): List<InlineSpan> {
         val out = ArrayList<InlineSpan>()
-        appendInlines(node.children, out)
+        appendInlines(node.children, out, inlineDepth = 0)
         return mergeAdjacentText(out)
     }
 
-    private fun appendInlines(children: List<ASTNode>, out: MutableList<InlineSpan>) {
+    private fun appendInlines(
+        children: List<ASTNode>,
+        out: MutableList<InlineSpan>,
+        inlineDepth: Int,
+    ) {
+        if (inlineDepth >= MAX_MARKDOWN_NESTING_DEPTH) {
+            appendInlinesFlatIterative(children, out)
+            return
+        }
         for (child in children) {
             when (child.type) {
                 MarkdownElementTypes.STRONG -> {
-                    val inner = extractDelimitedInlines(child, MarkdownTokenTypes.EMPH)
+                    val inner = extractDelimitedInlines(child, MarkdownTokenTypes.EMPH, inlineDepth + 1)
                     if (inner.isNotEmpty()) out += InlineSpan.Bold(inner)
                 }
                 MarkdownElementTypes.EMPH -> {
-                    val inner = extractDelimitedInlines(child, MarkdownTokenTypes.EMPH)
+                    val inner = extractDelimitedInlines(child, MarkdownTokenTypes.EMPH, inlineDepth + 1)
                     if (inner.isNotEmpty()) out += InlineSpan.Italic(inner)
                 }
                 GFMElementTypes.STRIKETHROUGH -> {
-                    val inner = extractDelimitedInlines(child, GFMTokenTypes.TILDE)
+                    val inner = extractDelimitedInlines(child, GFMTokenTypes.TILDE, inlineDepth + 1)
                     if (inner.isNotEmpty()) out += InlineSpan.Strikethrough(inner)
                 }
                 MarkdownElementTypes.CODE_SPAN -> {
@@ -428,7 +654,7 @@ private class MarkdownAstWalker(
                     val dest = child.findChild(MarkdownElementTypes.LINK_DESTINATION)
                         ?.let { cleanDestination(it.getTextInNode(source).toString()) }.orEmpty()
                     val textNode = child.findChild(MarkdownElementTypes.LINK_TEXT)
-                    val labelSpans = textNode?.let { extractBracketedInlines(it) }.orEmpty()
+                    val labelSpans = textNode?.let { extractBracketedInlines(it, inlineDepth + 1) }.orEmpty()
                     val finalSpans = labelSpans.ifEmpty { listOf(InlineSpan.Text(dest)) }
                     if (dest.isNotEmpty()) {
                         out += InlineSpan.Link(dest, finalSpans)
@@ -443,7 +669,7 @@ private class MarkdownAstWalker(
                     val textNode = child.findChild(MarkdownElementTypes.LINK_TEXT) ?: labelNode
                     val lookupKey = labelNode?.let { normalizeLinkLabel(it.getTextInNode(source).toString()) }
                     val dest = lookupKey?.let { linkDefinitions[it] }
-                    val labelSpans = textNode?.let { extractBracketedInlines(it) }.orEmpty()
+                    val labelSpans = textNode?.let { extractBracketedInlines(it, inlineDepth + 1) }.orEmpty()
                     if (!dest.isNullOrEmpty()) {
                         out += InlineSpan.Link(dest, labelSpans.ifEmpty { listOf(InlineSpan.Text(dest)) })
                     } else {
@@ -484,7 +710,7 @@ private class MarkdownAstWalker(
                             ?.let { linkDefinitions[normalizeLinkLabel(it.getTextInNode(source).toString())] }
                         ?: ""
                     val alt = linkNode?.findChild(MarkdownElementTypes.LINK_TEXT)
-                        ?.let { extractBracketedInlines(it).flattenPlainText() }
+                        ?.let { extractBracketedInlines(it, inlineDepth + 1).flattenPlainText() }
                         .orEmpty()
                     if (dest.isNotEmpty() || alt.isNotEmpty()) {
                         out += InlineSpan.Image(dest, alt)
@@ -506,14 +732,63 @@ private class MarkdownAstWalker(
                         val raw = child.getTextInNode(source).toString()
                         out += InlineSpan.Text(unescapeMarkdownText(raw))
                     } else {
-                        appendInlines(child.children, out)
+                        appendInlines(child.children, out, inlineDepth + 1)
                     }
                 }
             }
         }
     }
 
-    private fun extractDelimitedInlines(node: ASTNode, delimiterType: org.intellij.markdown.IElementType): List<InlineSpan> {
+    private fun appendInlinesFlatIterative(
+        initialChildren: List<ASTNode>,
+        out: MutableList<InlineSpan>,
+    ) {
+        val stack = ArrayDeque<ASTNode>(initialChildren.size)
+        for (idx in initialChildren.lastIndex downTo 0) {
+            stack.addLast(initialChildren[idx])
+        }
+        while (stack.isNotEmpty()) {
+            val node = stack.removeLast()
+            when (node.type) {
+                MarkdownElementTypes.CODE_SPAN -> {
+                    val raw = node.getTextInNode(source).toString()
+                    out += InlineSpan.Code(stripCodeSpanTicks(raw))
+                }
+                MarkdownElementTypes.LINK_DESTINATION,
+                MarkdownElementTypes.LINK_TITLE,
+                MarkdownTokenTypes.EMPH,
+                GFMTokenTypes.TILDE,
+                MarkdownTokenTypes.LBRACKET,
+                MarkdownTokenTypes.RBRACKET,
+                MarkdownTokenTypes.LPAREN,
+                MarkdownTokenTypes.RPAREN,
+                -> continue
+                MarkdownTokenTypes.HARD_LINE_BREAK -> out += InlineSpan.LineBreak
+                MarkdownTokenTypes.EOL,
+                MarkdownTokenTypes.WHITE_SPACE,
+                -> out += InlineSpan.Text(" ")
+                else -> {
+                    val ch = node.children
+                    if (ch.isEmpty()) {
+                        val raw = node.getTextInNode(source).toString()
+                        if (raw.isNotEmpty()) {
+                            out += InlineSpan.Text(unescapeMarkdownText(raw))
+                        }
+                    } else {
+                        for (idx in ch.lastIndex downTo 0) {
+                            stack.addLast(ch[idx])
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun extractDelimitedInlines(
+        node: ASTNode,
+        delimiterType: org.intellij.markdown.IElementType,
+        inlineDepth: Int,
+    ): List<InlineSpan> {
         val children = node.children
         var start = 0
         var end = children.size
@@ -521,11 +796,11 @@ private class MarkdownAstWalker(
         while (end > start && children[end - 1].type == delimiterType) end--
         if (start >= end) return emptyList()
         val out = ArrayList<InlineSpan>()
-        appendInlines(children.subList(start, end), out)
+        appendInlines(children.subList(start, end), out, inlineDepth)
         return mergeAdjacentText(out)
     }
 
-    private fun extractBracketedInlines(node: ASTNode): List<InlineSpan> {
+    private fun extractBracketedInlines(node: ASTNode, inlineDepth: Int): List<InlineSpan> {
         val children = node.children
         if (children.isEmpty()) {
             val raw = node.getTextInNode(source).toString().removePrefix("[").removeSuffix("]")
@@ -537,7 +812,7 @@ private class MarkdownAstWalker(
         if (end > start && children[end - 1].type == MarkdownTokenTypes.RBRACKET) end--
         if (start >= end) return emptyList()
         val out = ArrayList<InlineSpan>()
-        appendInlines(children.subList(start, end), out)
+        appendInlines(children.subList(start, end), out, inlineDepth)
         return mergeAdjacentText(out)
     }
 }

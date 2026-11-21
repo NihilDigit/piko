@@ -134,6 +134,7 @@ import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.LocalPikoMotion
 import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.tabular
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 private enum class ReaderFontChoice { Default, Serif, Monospace }
@@ -207,7 +208,7 @@ fun DocumentReaderScreen(
         ).onSuccess { result ->
             rawBytes = result
         }.onFailure { err ->
-            errorMessage = err.message
+            errorMessage = err.message.orEmpty()
             loading = false
         }
     }
@@ -215,12 +216,21 @@ fun DocumentReaderScreen(
     LaunchedEffect(rawBytes, encodingOption, fileName) {
         val loaded = rawBytes ?: return@LaunchedEffect
         loading = true
-        parsed = DocumentLoader.decodeAndParse(
-            fileName = fileName,
-            raw = loaded,
-            forcedCharset = encodingOption.charsetId,
-        )
-        loading = false
+        errorMessage = null
+        try {
+            parsed = DocumentLoader.decodeAndParse(
+                fileName = fileName,
+                raw = loaded,
+                forcedCharset = encodingOption.charsetId,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            parsed = null
+            errorMessage = e.message.orEmpty()
+        } finally {
+            loading = false
+        }
     }
 
     val listState = rememberLazyListState()
@@ -235,6 +245,15 @@ fun DocumentReaderScreen(
         }
     }
 
+    val renderItems by remember(activeBlocks, showRawSource) {
+        derivedStateOf {
+            expandDocumentBlocksForViewport(
+                blocks = activeBlocks,
+                keyPrefix = if (showRawSource) "raw" else "doc",
+            )
+        }
+    }
+
     val searchResult by remember(activeBlocks, searchQuery, searchOpen) {
         derivedStateOf {
             if (!searchOpen || searchQuery.isBlank()) null
@@ -242,22 +261,40 @@ fun DocumentReaderScreen(
         }
     }
 
+    fun resolveLazyTargetIndex(targetBlock: Int): Int {
+        val doc = parsed
+        val bannerOffset = (if (doc?.truncated == true) 1 else 0) + (if (doc?.looksBinary == true) 1 else 0)
+        val trimmedQuery = searchQuery.trim()
+        val matchedSliceIdx = if (trimmedQuery.isNotEmpty()) {
+            renderItems.indexOfFirst { it.sourceBlockIndex == targetBlock && it.containsQuery(trimmedQuery) }
+        } else {
+            -1
+        }
+        val sliceIdx = if (matchedSliceIdx >= 0) {
+            matchedSliceIdx
+        } else {
+            renderItems.indexOfFirst { it.sourceBlockIndex == targetBlock }.coerceAtLeast(0)
+        }
+        return bannerOffset + sliceIdx
+    }
+
     LaunchedEffect(searchResult) {
         activeMatchPos = 0
         val firstBlock = searchResult?.matches?.firstOrNull()?.blockIndex
-        if (firstBlock != null) {
-            if (reducedMotion) listState.scrollToItem(firstBlock) else listState.animateScrollToItem(firstBlock)
+        if (firstBlock != null && renderItems.isNotEmpty()) {
+            val targetIdx = resolveLazyTargetIndex(firstBlock)
+            if (reducedMotion) listState.scrollToItem(targetIdx) else listState.animateScrollToItem(targetIdx)
         }
     }
 
     fun jumpToMatch(delta: Int) {
         val matches = searchResult?.matches.orEmpty()
-        if (matches.isEmpty()) return
+        if (matches.isEmpty() || renderItems.isEmpty()) return
         val next = ((activeMatchPos + delta) % matches.size + matches.size) % matches.size
         activeMatchPos = next
-        val targetBlock = matches[next].blockIndex
+        val targetIdx = resolveLazyTargetIndex(matches[next].blockIndex)
         scope.launch {
-            if (reducedMotion) listState.scrollToItem(targetBlock) else listState.animateScrollToItem(targetBlock)
+            if (reducedMotion) listState.scrollToItem(targetIdx) else listState.animateScrollToItem(targetIdx)
         }
     }
 
@@ -449,13 +486,14 @@ fun DocumentReaderScreen(
                                 )
                             }
                         } else {
+                            val blockGap = if (isMarkdown && !showRawSource) 12.dp else 6.dp
                             SelectionContainer {
                                 LazyColumn(
                                     state = listState,
                                     modifier = Modifier.fillMaxSize(),
                                     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 20.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(if (isMarkdown && !showRawSource) 12.dp else 6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(0.dp),
                                 ) {
                                     if (doc.truncated) {
                                         item(key = "reader_truncated_banner") {
@@ -468,7 +506,10 @@ fun DocumentReaderScreen(
                                                 actionLabel = if (!isLocalFile && onDownloadFullFile != null) downloadFullLabel else null,
                                                 onAction = onDownloadFullFile,
                                                 isEInk = isEInk,
-                                                modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth(),
+                                                modifier = Modifier
+                                                    .widthIn(max = 720.dp)
+                                                    .fillMaxWidth()
+                                                    .padding(bottom = blockGap),
                                             )
                                         }
                                     }
@@ -479,25 +520,30 @@ fun DocumentReaderScreen(
                                                 actionLabel = null,
                                                 onAction = null,
                                                 isEInk = isEInk,
-                                                modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth(),
+                                                modifier = Modifier
+                                                    .widthIn(max = 720.dp)
+                                                    .fillMaxWidth()
+                                                    .padding(bottom = blockGap),
                                             )
                                         }
                                     }
                                     itemsIndexed(
-                                        items = activeBlocks,
-                                        key = { _, block -> "${if (showRawSource) "raw" else "doc"}_${block.id}" },
-                                        contentType = { _, block -> block::class },
-                                    ) { index, block ->
+                                        items = renderItems,
+                                        key = { _, item -> item.key },
+                                        contentType = { _, item -> item.contentType },
+                                    ) { index, item ->
+                                        val bottomPad = if (item.isLastInBlock && index < renderItems.lastIndex) blockGap else 0.dp
                                         Box(
                                             modifier = Modifier
                                                 .widthIn(max = 720.dp)
-                                                .fillMaxWidth(),
+                                                .fillMaxWidth()
+                                                .padding(bottom = bottomPad),
                                         ) {
-                                            DocumentBlockView(
-                                                block = block,
+                                            ReaderRenderItemView(
+                                                item = item,
                                                 style = readerStyle,
                                                 searchQuery = if (searchOpen) searchQuery else "",
-                                                isActiveMatchBlock = activeBlockIndex == index,
+                                                isActiveMatchBlock = activeBlockIndex == item.sourceBlockIndex,
                                                 onOpenUrl = { url ->
                                                     if (isSafeExternalLink(url)) platform.openUrl(url)
                                                 },

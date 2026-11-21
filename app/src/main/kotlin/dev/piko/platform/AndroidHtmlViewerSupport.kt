@@ -113,43 +113,45 @@ internal class AndroidHtmlViewerSupport : HtmlViewerSupport {
                             val uri = request?.url ?: return true
                             val raw = uri.toString()
                             if (raw == "about:blank") return false
-                            if (raw.startsWith(latestAllowedPrefix)) return false
+                            val prefix = latestAllowedPrefix
+                            val host = uri.host?.lowercase()
+                            val isLoopback = host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]"
+                            if (
+                                prefix.isNotEmpty() &&
+                                isLoopback &&
+                                uri.pathSegments.none { it == "." || it == ".." } &&
+                                raw.startsWith(prefix)
+                            ) {
+                                return false
+                            }
                             val scheme = uri.scheme?.lowercase()
-                            if (scheme == "http" || scheme == "https") {
+                            if ((scheme == "http" || scheme == "https") && request.isForMainFrame && request.hasGesture()) {
                                 latestExternal(raw)
                                 return true
                             }
-                            // 阻止 file: / content: / javascript: / intent: / data: 等顶层跳转
+                            // 阻止非用户手势跳转、子框架跳转及 file: / content: / javascript: / intent: / data: 等顶层跳转
                             return true
                         }
 
                         override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                            val uri = request?.url ?: return null
-                            val host = uri.host?.lowercase()
+                            val uri = request?.url ?: return blockedResponse()
                             val raw = uri.toString()
-                            // 纵深防御：禁止向回环地址上不属于当前文档令牌的任何其他路径（如媒体代理会话）发起子资源请求
-                            if ((host == "127.0.0.1" || host == "localhost" || host == "::1") && !raw.startsWith(latestAllowedPrefix)) {
-                                return WebResourceResponse(
-                                    "text/plain",
-                                    "utf-8",
-                                    403,
-                                    "Forbidden",
-                                    emptyMap(),
-                                    ByteArrayInputStream(ByteArray(0)),
-                                )
-                            }
+                            if (raw == "about:blank") return null
                             val scheme = uri.scheme?.lowercase()
-                            if (scheme == "file" || scheme == "content") {
-                                return WebResourceResponse(
-                                    "text/plain",
-                                    "utf-8",
-                                    403,
-                                    "Forbidden",
-                                    emptyMap(),
-                                    ByteArrayInputStream(ByteArray(0)),
-                                )
+                            if (scheme == "data") return null
+                            val host = uri.host?.lowercase()
+                            val prefix = latestAllowedPrefix
+                            val isLoopback = host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]"
+                            if (
+                                prefix.isNotEmpty() &&
+                                (scheme == "http" || scheme == "https") &&
+                                isLoopback &&
+                                uri.pathSegments.none { it == "." || it == ".." } &&
+                                raw.startsWith(prefix)
+                            ) {
+                                return super.shouldInterceptRequest(view, request)
                             }
-                            return super.shouldInterceptRequest(view, request)
+                            return blockedResponse()
                         }
 
                         override fun onPageStarted(view: WebView?, pageUrl: String?, favicon: Bitmap?) {
@@ -240,6 +242,15 @@ internal class AndroidHtmlViewerSupport : HtmlViewerSupport {
         """.trimIndent()
         webView.evaluateJavascript(script, null)
     }
+
+    private fun blockedResponse(): WebResourceResponse = WebResourceResponse(
+        "text/plain",
+        "utf-8",
+        403,
+        "Forbidden",
+        emptyMap(),
+        ByteArrayInputStream(ByteArray(0)),
+    )
 
     private fun jsStringLiteral(text: String): String =
         "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\""

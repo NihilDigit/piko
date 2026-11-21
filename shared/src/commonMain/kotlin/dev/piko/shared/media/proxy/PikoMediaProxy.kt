@@ -299,6 +299,11 @@ class PikoMediaProxy(
         output: LoopbackSocketWriter,
         isHead: Boolean,
     ) {
+        val securityHeaders = listOf(
+            "Content-Security-Policy" to DOCUMENT_CSP,
+            "X-Content-Type-Options" to "nosniff",
+            "Referrer-Policy" to "no-referrer",
+        )
         val pathOnly = request.target.substringBefore('?').substringBefore('#')
         val afterDoc = pathOnly.removePrefix("/doc/")
         val slash = afterDoc.indexOf('/')
@@ -306,7 +311,7 @@ class PikoMediaProxy(
         val rawSubPath = if (slash < 0) "" else afterDoc.substring(slash + 1)
         val session = sessionsLock.withLock { docSessions[token] }?.takeUnless { it.isClosed }
         if (session == null) {
-            output.writeHead(404, "Not Found", listOf("Content-Length" to "0"))
+            output.writeHead(404, "Not Found", securityHeaders + ("Content-Length" to "0"))
             output.flushAndClose()
             return
         }
@@ -317,7 +322,14 @@ class PikoMediaProxy(
         }
         if (segments == null) {
             PikoLog.w(TAG, "Document proxy blocked traversal/invalid path: session=${token.take(8)}")
-            output.writeHead(403, "Forbidden", listOf("Content-Length" to "0"))
+            output.writeHead(403, "Forbidden", securityHeaders + ("Content-Length" to "0"))
+            output.flushAndClose()
+            return
+        }
+        val isEntry = segments.size == 1 && segments[0] == session.entryFileName
+        if (!isEntry && !isAllowedDocumentSubresource(segments)) {
+            PikoLog.w(TAG, "Document proxy blocked disallowed subresource: session=${token.take(8)}")
+            output.writeHead(403, "Forbidden", securityHeaders + ("Content-Length" to "0"))
             output.flushAndClose()
             return
         }
@@ -328,12 +340,12 @@ class PikoMediaProxy(
             throw e
         } catch (e: Exception) {
             PikoLog.w(TAG, "Document proxy failed to resolve asset: session=${token.take(8)}, cause=${e::class.simpleName}")
-            output.writeHead(502, "Bad Gateway", listOf("Content-Length" to "0"))
+            output.writeHead(502, "Bad Gateway", securityHeaders + ("Content-Length" to "0"))
             output.flushAndClose()
             return
         }
         if (resource == null) {
-            output.writeHead(404, "Not Found", listOf("Content-Length" to "0"))
+            output.writeHead(404, "Not Found", securityHeaders + ("Content-Length" to "0"))
             output.flushAndClose()
             return
         }
@@ -344,16 +356,15 @@ class PikoMediaProxy(
                 output.writeHead(
                     416,
                     "Range Not Satisfiable",
-                    listOf("Content-Range" to "bytes */$size", "Content-Length" to "0"),
+                    securityHeaders + listOf("Content-Range" to "bytes */$size", "Content-Length" to "0"),
                 )
                 output.flushAndClose()
             }
             is ByteRange.Satisfiable -> {
-                // 严禁输出 Access-Control-Allow-Origin，保持严格同源隔离
+                // 严禁输出 Access-Control-Allow-Origin，保持严格同源隔离并注入 CSP 阻断外发
                 val headers = buildList {
                     add("Content-Type" to resource.contentType)
-                    add("X-Content-Type-Options" to "nosniff")
-                    add("Referrer-Policy" to "no-referrer")
+                    addAll(securityHeaders)
                     add("Cache-Control" to "private, max-age=300")
                     add("Accept-Ranges" to "bytes")
                     add("Content-Length" to range.length.toString())
@@ -394,6 +405,19 @@ class PikoMediaProxy(
         const val TAG = "MediaProxy"
         const val LOOPBACK = "127.0.0.1"
         const val LOOPBACK_SEND_BUFFER_BYTES = 16 * 1024
+        const val DOCUMENT_CSP =
+            "default-src 'self' data: blob:; " +
+                "script-src 'self' 'unsafe-inline' blob: data:; " +
+                "style-src 'self' 'unsafe-inline' data: blob:; " +
+                "img-src 'self' data: blob:; " +
+                "font-src 'self' data: blob:; " +
+                "media-src 'self' data: blob:; " +
+                "worker-src 'self' blob:; " +
+                "connect-src 'self'; " +
+                "object-src 'none'; " +
+                "base-uri 'none'; " +
+                "form-action 'none'; " +
+                "frame-ancestors 'self'"
     }
 }
 

@@ -57,6 +57,7 @@ import dev.piko.ui.theme.LocalPikoMotion
 import dev.piko.ui.theme.LocalWindowVisible
 import dev.piko.ui.theme.isDark
 import dev.piko.ui.theme.isEInk
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 
@@ -116,6 +117,8 @@ fun HtmlViewerScreen(
                 entryFileName = fileName,
                 resolver = resolver,
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
             proxyError = e.message
         }

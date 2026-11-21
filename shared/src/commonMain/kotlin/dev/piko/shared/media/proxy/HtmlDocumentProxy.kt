@@ -11,13 +11,21 @@ import dev.piko.shared.util.withPikoLock
 import io.github.nihildigit.pikpak.FileStat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import kotlin.concurrent.Volatile
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -35,6 +43,7 @@ class DocumentProxyResource(
  */
 fun interface DocumentProxyResolver {
     suspend fun resolve(segments: List<String>): DocumentProxyResource?
+    fun close() = Unit
 }
 
 internal class DocumentProxySession(
@@ -51,7 +60,9 @@ internal class DocumentProxySession(
     }
 
     override fun close() {
+        if (isClosed) return
         isClosed = true
+        runCatching { resolver.close() }
     }
 }
 
@@ -160,6 +171,32 @@ private fun decodePercentStrict(segment: String): String? {
 }
 
 /**
+ * 校验相对子资源路径是否为受允许的静态网页/文档子资源：
+ * - 严禁访问任何以 `.` 开头的隐藏文件或目录（如 `.piko`、`.env`、`.git`、`.ssh`）；
+ * - 仅允许静态网页常见子资源扩展名（样式、脚本、WASM、图片、字体、音视频、网页清单与嵌入页），
+ *   拒绝数据库、密钥、压缩包、任意本地配置等敏感同目录文件。
+ */
+fun isAllowedDocumentSubresource(segments: List<String>): Boolean {
+    if (segments.isEmpty()) return false
+    if (segments.any { it.isEmpty() || it.startsWith('.') }) return false
+    val fileName = segments.last()
+    val dot = fileName.lastIndexOf('.')
+    if (dot <= 0 || dot >= fileName.lastIndex) return false
+    val ext = fileName.substring(dot + 1).lowercase()
+    return ext in ALLOWED_SUBRESOURCE_EXTENSIONS
+}
+
+private val ALLOWED_SUBRESOURCE_EXTENSIONS = setOf(
+    "html", "htm", "xhtml",
+    "css", "js", "mjs", "wasm",
+    "json", "webmanifest", "xml", "xsl", "xslt",
+    "svg", "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "cur", "apng", "jfif",
+    "woff2", "woff", "ttf", "otf", "eot",
+    "mp4", "webm", "ogv", "mp3", "ogg", "oga", "opus", "wav", "m4a", "aac", "flac",
+    "vtt", "srt", "pdf",
+)
+
+/**
  * 按文件名扩展名与内容推断响应 `Content-Type`。
  * HTML 文件若本身不是有效 UTF-8（如带 `<meta charset="gbk">` 的旧归档），不强行附加 `charset=utf-8`，交由浏览器按文档声明解析。
  */
@@ -173,27 +210,36 @@ fun documentMimeTypeFor(fileName: String, bytes: ByteArray? = null): String {
         "xhtml" -> "application/xhtml+xml; charset=utf-8"
         "css" -> "text/css; charset=utf-8"
         "js", "mjs" -> "application/javascript; charset=utf-8"
+        "wasm" -> "application/wasm"
         "json" -> "application/json; charset=utf-8"
-        "xml" -> "application/xml; charset=utf-8"
+        "webmanifest" -> "application/manifest+json; charset=utf-8"
+        "xml", "xsl", "xslt" -> "application/xml; charset=utf-8"
         "svg" -> "image/svg+xml"
-        "png" -> "image/png"
-        "jpg", "jpeg" -> "image/jpeg"
+        "png", "apng" -> "image/png"
+        "jpg", "jpeg", "jfif" -> "image/jpeg"
         "gif" -> "image/gif"
         "webp" -> "image/webp"
         "avif" -> "image/avif"
         "bmp" -> "image/bmp"
-        "ico" -> "image/x-icon"
+        "ico", "cur" -> "image/x-icon"
         "woff2" -> "font/woff2"
         "woff" -> "font/woff"
         "ttf" -> "font/ttf"
         "otf" -> "font/otf"
-        "txt", "md", "markdown", "log", "csv" -> "text/plain; charset=utf-8"
+        "eot" -> "application/vnd.ms-fontobject"
+        "vtt" -> "text/vtt; charset=utf-8"
+        "txt", "md", "markdown", "log", "csv", "srt" -> "text/plain; charset=utf-8"
         "pdf" -> "application/pdf"
         "mp4" -> "video/mp4"
         "webm" -> "video/webm"
+        "ogv" -> "video/ogg"
         "mp3" -> "audio/mpeg"
-        "ogg" -> "audio/ogg"
+        "ogg", "oga" -> "audio/ogg"
+        "opus" -> "audio/opus"
         "wav" -> "audio/wav"
+        "m4a" -> "audio/mp4"
+        "aac" -> "audio/aac"
+        "flac" -> "audio/flac"
         else -> "application/octet-stream"
     }
 }
@@ -201,7 +247,8 @@ fun documentMimeTypeFor(fileName: String, bytes: ByteArray? = null): String {
 /**
  * 基于网盘目录树（或本机挂载目录）的相对路径文档资源解析器：
  * - 入口 HTML 文件直接按 [entryFileId] 读取；
- * - 同目录及子目录内的相对引用资源（CSS、图片、JS、字体等）在 [parentFolderId] 范围内逐层查找并按会话级有界 LRU 缓存；
+ * - 同目录及子目录内的受允许静态网页子资源在 [parentFolderId] 范围内逐层查找并按会话级有界 LRU 缓存；
+ * - 通过有界并发信号量与同键在途合并防止大量图片并发拉取撑爆内存；
  * - 无有效父目录（如压缩包内或归档条目）时安全退化为仅提供入口文件。
  */
 class DriveHtmlDocumentResolver(
@@ -213,44 +260,119 @@ class DriveHtmlDocumentResolver(
     private val mediaRepository: PikoMediaRepository,
     private val maxAssetBytes: Int = MAX_SINGLE_ASSET_BYTES,
     private val maxCacheBytes: Int = MAX_SESSION_CACHE_BYTES,
+    maxConcurrentFetches: Int = MAX_CONCURRENT_FETCHES,
 ) : DocumentProxyResolver {
+    private class InFlightAsset(
+        val deferred: Deferred<DocumentProxyResource?>,
+        var waiters: Int = 1,
+    )
+
+    private class InFlightFolder(
+        val deferred: Deferred<List<FileStat>?>,
+        var waiters: Int = 1,
+    )
+
     private val safeEntryName = sanitizeDocumentEntryName(entryFileName)
+    private val loaderScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val fetchSemaphore = Semaphore(maxConcurrentFetches.coerceAtLeast(1))
     private val lock = Mutex()
     private val folderChildrenCache = HashMap<String, List<FileStat>>()
     private val assetCache = LinkedHashMap<String, DocumentProxyResource>()
+    private val inFlightAssets = HashMap<String, InFlightAsset>()
+    private val inFlightFolders = HashMap<String, InFlightFolder>()
     private var cachedBytes = 0
 
+    @Volatile
+    private var closed = false
+
+    internal var assetLoaderOverride: (suspend (List<String>) -> DocumentProxyResource?)? = null
+
     override suspend fun resolve(segments: List<String>): DocumentProxyResource? {
+        if (closed || segments.isEmpty()) return null
+        val isEntry = segments.size == 1 && segments[0] == safeEntryName
+        if (!isEntry && !isAllowedDocumentSubresource(segments)) return null
+
         val cacheKey = segments.joinToString("/")
-        lock.withLock {
+        val flight = lock.withLock {
+            if (closed) return null
             assetCache.remove(cacheKey)?.let { hit ->
                 assetCache[cacheKey] = hit
                 return hit
             }
-        }
-
-        val resolved = if (segments.size == 1 && segments[0] == safeEntryName) {
-            fetchFileResource(entryFileId, safeEntryName, localPath)
-        } else {
-            resolveRelativeAsset(segments)
-        } ?: return null
-
-        if (resolved.bytes.size <= maxCacheBytes) {
-            lock.withLock {
-                assetCache.remove(cacheKey)?.let { cachedBytes -= it.bytes.size }
-                while (cachedBytes + resolved.bytes.size > maxCacheBytes && assetCache.isNotEmpty()) {
-                    val eldestKey = assetCache.keys.first()
-                    val removed = assetCache.remove(eldestKey)
-                    if (removed != null) cachedBytes -= removed.bytes.size
+            val existing = inFlightAssets[cacheKey]
+            if (existing != null) {
+                existing.waiters++
+                existing
+            } else {
+                lateinit var created: InFlightAsset
+                val deferred = loaderScope.async {
+                    try {
+                        val resolved = fetchSemaphore.withPermit {
+                            lock.withLock { assetCache[cacheKey] } ?: run {
+                                val overrideLoader = assetLoaderOverride
+                                when {
+                                    overrideLoader != null -> overrideLoader(segments)
+                                    isEntry -> fetchFileResource(entryFileId, safeEntryName, localPath)
+                                    else -> resolveRelativeAsset(segments)
+                                }
+                            }
+                        }
+                        if (resolved != null && resolved.bytes.size <= maxCacheBytes) {
+                            lock.withLock {
+                                if (!closed) {
+                                    assetCache.remove(cacheKey)?.let { cachedBytes -= it.bytes.size }
+                                    while (cachedBytes + resolved.bytes.size > maxCacheBytes && assetCache.isNotEmpty()) {
+                                        val eldestKey = assetCache.keys.first()
+                                        val removed = assetCache.remove(eldestKey)
+                                        if (removed != null) cachedBytes -= removed.bytes.size
+                                    }
+                                    assetCache[cacheKey] = resolved
+                                    cachedBytes += resolved.bytes.size
+                                }
+                            }
+                        }
+                        resolved
+                    } finally {
+                        withContext(NonCancellable) {
+                            lock.withLock {
+                                if (inFlightAssets[cacheKey] === created) {
+                                    inFlightAssets.remove(cacheKey)
+                                }
+                            }
+                        }
+                    }
                 }
-                assetCache[cacheKey] = resolved
-                cachedBytes += resolved.bytes.size
+                created = InFlightAsset(deferred = deferred, waiters = 1)
+                inFlightAssets[cacheKey] = created
+                created
             }
         }
-        return resolved
+
+        return try {
+            flight.deferred.await()
+        } finally {
+            withContext(NonCancellable) {
+                lock.withLock {
+                    flight.waiters--
+                    if (flight.waiters <= 0 && !flight.deferred.isCompleted) {
+                        if (inFlightAssets[cacheKey] === flight) {
+                            inFlightAssets.remove(cacheKey)
+                        }
+                        flight.deferred.cancel()
+                    }
+                }
+            }
+        }
+    }
+
+    override fun close() {
+        if (closed) return
+        closed = true
+        loaderScope.cancel()
     }
 
     private suspend fun resolveRelativeAsset(segments: List<String>): DocumentProxyResource? {
+        if (!isAllowedDocumentSubresource(segments)) return null
         val localEntry = LocalLocation.of(entryFileId)
         if (localEntry != null) {
             val baseParent = localEntry.parent ?: return null
@@ -280,14 +402,56 @@ class DriveHtmlDocumentResolver(
     }
 
     private suspend fun listFolderCached(folderId: String): List<FileStat>? {
-        lock.withLock { folderChildrenCache[folderId]?.let { return it } }
-        val listed = driveRepository.listAllFiles(folderId).getOrNull() ?: return null
-        lock.withLock {
-            if (folderChildrenCache.size < MAX_CACHED_FOLDERS) {
-                folderChildrenCache[folderId] = listed
+        val flight = lock.withLock {
+            if (closed) return null
+            folderChildrenCache[folderId]?.let { return it }
+            val existing = inFlightFolders[folderId]
+            if (existing != null) {
+                existing.waiters++
+                existing
+            } else {
+                lateinit var created: InFlightFolder
+                val deferred = loaderScope.async {
+                    try {
+                        val listed = driveRepository.listAllFiles(folderId).getOrNull()
+                        if (listed != null) {
+                            lock.withLock {
+                                if (!closed && folderChildrenCache.size < MAX_CACHED_FOLDERS) {
+                                    folderChildrenCache[folderId] = listed
+                                }
+                            }
+                        }
+                        listed
+                    } finally {
+                        withContext(NonCancellable) {
+                            lock.withLock {
+                                if (inFlightFolders[folderId] === created) {
+                                    inFlightFolders.remove(folderId)
+                                }
+                            }
+                        }
+                    }
+                }
+                created = InFlightFolder(deferred = deferred, waiters = 1)
+                inFlightFolders[folderId] = created
+                created
             }
         }
-        return listed
+        return try {
+            flight.deferred.await()
+        } finally {
+            withContext(NonCancellable) {
+                lock.withLock {
+                    flight.waiters--
+                    if (flight.waiters <= 0 && !flight.deferred.isCompleted) {
+                        if (inFlightFolders[folderId] === flight) {
+                            inFlightFolders.remove(folderId)
+                        }
+                        flight.deferred.cancel()
+                    }
+                }
+            }
+        }
     }
 
     private suspend fun fetchFileResource(
@@ -309,6 +473,7 @@ class DriveHtmlDocumentResolver(
     companion object {
         const val MAX_SINGLE_ASSET_BYTES: Int = 16 * 1024 * 1024
         const val MAX_SESSION_CACHE_BYTES: Int = 16 * 1024 * 1024
+        const val MAX_CONCURRENT_FETCHES: Int = 4
         private const val MAX_CACHED_FOLDERS: Int = 64
     }
 }
