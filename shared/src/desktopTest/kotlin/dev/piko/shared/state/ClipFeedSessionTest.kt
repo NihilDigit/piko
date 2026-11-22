@@ -24,6 +24,61 @@ import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
 
 class ClipFeedSessionTest {
+    @Test fun audioSettingsSurviveSessionRecreation() = runSession { server, drive, _, cache ->
+        var storedVolume = 1f
+        var storedMuted = false
+        val prefs = object : dev.piko.data.auth.PikoUserPreferences by MemoryPreferences() {
+            override val currentSnapshot: dev.piko.data.auth.PikoPreferencesSnapshot
+                get() = dev.piko.data.auth.PikoPreferencesSnapshot(clipVolume = storedVolume, clipMuted = storedMuted)
+            override val clipVolumeFlow: kotlinx.coroutines.flow.Flow<Float>
+                get() = kotlinx.coroutines.flow.flowOf(storedVolume)
+            override val clipMutedFlow: kotlinx.coroutines.flow.Flow<Boolean>
+                get() = kotlinx.coroutines.flow.flowOf(storedMuted)
+            override suspend fun setClipAudio(volume: Float, muted: Boolean) {
+                storedVolume = volume
+                storedMuted = muted
+            }
+        }
+        val testScope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
+        try {
+            fun create() = ClipFeedSession(server.provider(), drive, PikoMediaRepository(server.provider()), cache, testScope, prefs)
+            val first = create()
+            first.updateVolume(0.27f)
+            first.toggleMute()
+            first.close()
+            val second = create()
+            assertEquals(0.27f, second.volume)
+            assertTrue(second.muted)
+            second.toggleMute()
+            second.close()
+            val third = create()
+            assertEquals(0.27f, third.volume)
+            assertFalse(third.muted)
+            third.close()
+        } finally {
+            testScope.cancel()
+        }
+    }
+
+    @Test fun volumeAndMutePreserveLevelAndRecoverFromZero() = runSession { _, _, session, _ ->
+        session.updateVolume(0.35f)
+        session.toggleMute()
+        assertTrue(session.muted)
+        assertEquals(0.35f, session.volume)
+        session.toggleMute()
+        assertFalse(session.muted)
+        assertEquals(0.35f, session.volume)
+        session.updateVolume(0f)
+        assertTrue(session.muted)
+        session.toggleMute()
+        assertFalse(session.muted)
+        assertEquals(1f, session.volume)
+        session.updateVolume(2f)
+        assertEquals(1f, session.volume)
+        session.updateVolume(-1f)
+        assertEquals(0f, session.volume)
+    }
+
     private val path = listOf(PikoDriveRepository.ROOT_BREADCRUMB)
 
     private fun runSession(block: suspend (FakePikPakServer, PikoDriveRepository, ClipFeedSession, MemoryCacheStore) -> Unit) {

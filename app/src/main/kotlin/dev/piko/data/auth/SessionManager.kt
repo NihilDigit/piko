@@ -170,6 +170,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
                 cacheMaxBytes = (prefs[PreferencesKeys.CACHE_MAX_BYTES] ?: CachePolicyDefaults.DEFAULT_MAX_BYTES).coerceAtLeast(0L),
                 cacheMaxAgeDays = (prefs[PreferencesKeys.CACHE_MAX_AGE_DAYS] ?: CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS).coerceAtLeast(0),
                 askDownloadLocation = prefs[PreferencesKeys.ASK_DOWNLOAD_LOCATION] ?: true,
+                clipVolume = prefs[PreferencesKeys.CLIP_VOLUME]?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f,
+                clipMuted = prefs[PreferencesKeys.CLIP_MUTED] ?: false,
             )
         }
 
@@ -197,6 +199,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val PLAYER_SEEK_STEP_SECONDS = intPreferencesKey("player_seek_step_seconds")
         val PLAYER_BOOST_SPEED = floatPreferencesKey("player_boost_speed")
         val CLIP_AUTO_EXTEND = booleanPreferencesKey("clip_auto_extend")
+        val CLIP_VOLUME = floatPreferencesKey("clip_volume")
+        val CLIP_MUTED = booleanPreferencesKey("clip_muted")
         val PLAYER_LAYOUT = stringPreferencesKey("player_layout")
         val SUBTITLE_STYLE = stringPreferencesKey("subtitle_style")
         val DRIVE_APPEARANCE = stringPreferencesKey("drive_appearance")
@@ -379,6 +383,20 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
     override suspend fun setClipAutoExtend(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.CLIP_AUTO_EXTEND] = enabled
+        }
+    }
+
+    override val clipVolumeFlow: Flow<Float> =
+        preference { it[PreferencesKeys.CLIP_VOLUME]?.takeIf { v -> v.isFinite() }?.coerceIn(0f, 1f) ?: 1f }
+
+    override val clipMutedFlow: Flow<Boolean> =
+        preference { it[PreferencesKeys.CLIP_MUTED] ?: false }
+
+    override suspend fun setClipAudio(volume: Float, muted: Boolean) {
+        val clamped = if (volume.isFinite()) volume.coerceIn(0f, 1f) else 1f
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.CLIP_VOLUME] = clamped
+            preferences[PreferencesKeys.CLIP_MUTED] = muted
         }
     }
 

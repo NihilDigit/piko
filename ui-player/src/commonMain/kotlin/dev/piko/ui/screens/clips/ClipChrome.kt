@@ -174,6 +174,8 @@ internal fun ClipFeedTopBar(
     onClose: (() -> Unit)?,
     compact: Boolean,
     modifier: Modifier = Modifier,
+    volume: Float = 1f,
+    onVolumeChange: (Float) -> Unit = {},
     autoAdvance: Boolean = false,
     onToggleAutoAdvance: (() -> Unit)? = null,
     onPopOut: (() -> Unit)? = null,
@@ -385,18 +387,33 @@ internal fun ClipFeedTopBar(
                         }
 
                         PlayerControlId.Volume -> RenderEditableSlot(editScope, PlayerBarSlot.Top, index, item) { mod ->
-                            ChromeIconButton(
-                                icon = if (muted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                                label = if (muted) tr("取消静音", "Unmute", "ミュートを解除", "음소거 해제", "取消靜音") else tr("静音", "Mute", "ミュート", "음소거", "靜音"),
-                                onClick = selectOrRun(onToggleMute),
-                                size = buttonSize,
-                                iconSize = defaultIconSize,
-                                tooltip = !isPreview,
-                                shortcut = "M",
-                                showBackground = item.showBackground,
-                                inTopBar = !isPreview,
-                                modifier = mod,
-                            )
+                            val isPointer = !dev.piko.ui.components.LocalPointerSource.current.isTouchLike
+                            if (isPointer && !isPreview) {
+                                dev.piko.ui.screens.player.PlayerVolumeControl(
+                                    volume = if (muted) 0f else volume,
+                                    showSlider = true,
+                                    collapseWhenIdle = true,
+                                    onVolumeChange = onVolumeChange,
+                                    onToggleMute = onToggleMute,
+                                    showBackground = item.showBackground,
+                                    tooltipBelow = true,
+                                    shortcutHint = null,
+                                    modifier = mod,
+                                )
+                            } else {
+                                ChromeIconButton(
+                                    icon = if (muted || volume <= 0f) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                                    label = if (muted || volume <= 0f) tr("取消静音", "Unmute", "ミュートを解除", "음소거 해제", "取消靜音") else tr("静音", "Mute", "ミュート", "음소거", "靜音"),
+                                    onClick = selectOrRun(onToggleMute),
+                                    size = buttonSize,
+                                    iconSize = defaultIconSize,
+                                    tooltip = !isPreview,
+                                    shortcut = "M",
+                                    showBackground = item.showBackground,
+                                    inTopBar = !isPreview,
+                                    modifier = mod,
+                                )
+                            }
                         }
 
                         PlayerControlId.PinOnTop -> if (onDock != null || isPreview) {

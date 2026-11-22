@@ -137,6 +137,7 @@ private class PlayerSession(
                     dynamicColorAvailable = false,
                     pureBlack = snap.pureBlack,
                     einkMode = snap.einkMode || legacyEink,
+                    motionPreference = snap.motionPreference,
                 )
             }
             val appearance by services.preferences.appearanceFlow(dynamicColorAvailable = false)

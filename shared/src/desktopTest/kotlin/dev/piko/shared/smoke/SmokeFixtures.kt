@@ -107,6 +107,17 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setPikpakDomain(root: String) = Unit
     override val snailModeFlow: Flow<SnailMode> = MutableStateFlow(SnailMode())
     override suspend fun setSnailMode(mode: SnailMode) = Unit
+    override val clipVolumeFlow = MutableStateFlow(1f)
+    override val clipMutedFlow = MutableStateFlow(false)
+    override suspend fun setClipAudio(volume: Float, muted: Boolean) {
+        clipVolumeFlow.value = volume.coerceIn(0f, 1f)
+        clipMutedFlow.value = muted
+    }
+    override val currentSnapshot: dev.piko.data.auth.PikoPreferencesSnapshot
+        get() = dev.piko.data.auth.PikoPreferencesSnapshot(
+            clipVolume = clipVolumeFlow.value,
+            clipMuted = clipMutedFlow.value,
+        )
     override val downloadDirPathFlow: Flow<String> = MutableStateFlow("")
     override suspend fun setDownloadDirPath(path: String) = Unit
     override suspend fun getDownloadDirPath(): String = ""
