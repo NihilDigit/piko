@@ -2,6 +2,7 @@ package dev.piko.ui.screens.player
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -61,7 +62,9 @@ import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.resources.Res
 import dev.piko.ui.resources.player_seek_backward_seconds
 import dev.piko.ui.resources.player_seek_forward_seconds
+import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.LocalFixedColors
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.tabular
 
 private val ControlBarPlayHeight = 40.dp
@@ -71,7 +74,7 @@ private val ControlBarOuterSideSize = 30.dp
 private val ControlBarInnerSideIconSize = 18.dp
 private val ControlBarOuterSideIconSize = 16.dp
 private const val ControlBarPlayingWidthRatio = 1.20f
-private const val ControlBarPlayingCornerRatio = 0.30f
+private const val ControlBarPlayingCornerRatio = 0.32f
 private val MinTouchTarget = 48.dp
 private val CenterBaseHeight = 52.dp
 private val CenterBaseHeightLarge = 60.dp
@@ -86,6 +89,7 @@ private val BorderlessLabelShadow = Shadow(color = Color.Black.copy(alpha = 0.6f
 internal fun ControlBarPlayButton(
     isPlaying: Boolean,
     onClick: () -> Unit,
+    showBackground: Boolean = true,
     tooltipBelow: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
@@ -101,16 +105,37 @@ internal fun ControlBarPlayButton(
         label = "control-bar-play-corner",
     )
     val colors = MaterialTheme.colorScheme
+    val fixed = LocalFixedColors.current
+    val isEInk = LocalAppearance.current.isEInk
+    val translucent = LocalPlayerLayoutPrefs.current.translucentPlayButton
     val container by animateColorAsState(
-        targetValue = if (isPlaying) colors.primaryContainer else colors.primary,
+        targetValue = when {
+            !showBackground -> Color.Transparent
+            isEInk -> if (!translucent && isPlaying) colors.onSurface else colors.surface
+            translucent -> fixed.ScrimOnMediaStrong
+            isPlaying -> colors.primaryContainer
+            else -> colors.primary
+        },
         animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
         label = "control-bar-play-container",
     )
     val contentColor by animateColorAsState(
-        targetValue = if (isPlaying) colors.onPrimaryContainer else colors.onPrimary,
+        targetValue = when {
+            !showBackground -> fixed.OnMedia
+            isEInk -> if (!translucent && isPlaying) colors.surface else colors.onSurface
+            translucent -> fixed.OnMedia
+            isPlaying -> colors.onPrimaryContainer
+            else -> colors.onPrimary
+        },
         animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
         label = "control-bar-play-content",
     )
+    val border = when {
+        !showBackground -> null
+        isEInk -> BorderStroke(1.dp, colors.outline)
+        translucent -> BorderStroke(1.dp, fixed.HudSpecularBorder)
+        else -> null
+    }
     val label = if (isPlaying) {
         tr("暂停", "Pause", "一時停止", "일시 중지", "暫停")
     } else {
@@ -135,6 +160,7 @@ internal fun ControlBarPlayButton(
                 shape = RoundedCornerShape(corner),
                 color = container,
                 contentColor = contentColor,
+                border = border,
                 modifier = Modifier.size(width = width, height = height),
             ) {
                 Box(contentAlignment = Alignment.Center) {
@@ -166,6 +192,7 @@ internal fun ControlBarTransportCluster(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onSeekDeltaMillis: (Long) -> Unit,
+    showPlayBackground: Boolean = true,
     tooltipBelow: Boolean = false,
     previewMode: Boolean = false,
     selectedSlot: CenterSlotPosition? = null,
@@ -230,6 +257,7 @@ internal fun ControlBarTransportCluster(
             ControlBarPlayButton(
                 isPlaying = isPlaying,
                 onClick = onTogglePlayPause,
+                showBackground = showPlayBackground,
                 tooltipBelow = tooltipBelow,
             )
         }
@@ -572,7 +600,7 @@ internal fun PlayerCenterCluster(
             } else {
                 val centerBoxModifier = if (scaleMultiplier != 1f) {
                     Modifier
-                        .size(64.dp * scaleMultiplier, 56.dp * scaleMultiplier)
+                        .size(68.dp * scaleMultiplier, 56.dp * scaleMultiplier)
                         .graphicsLayer {
                             scaleX = scaleMultiplier
                             scaleY = scaleMultiplier

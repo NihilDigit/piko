@@ -1,8 +1,13 @@
 package dev.piko.ui.screens.settings
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -11,7 +16,10 @@ import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.SlowMotionVideo
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -19,13 +27,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.piko.data.auth.DownloadConcurrencyDefaults
 import dev.piko.data.auth.SnailMode
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.net.ProxySetting
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.theme.tabular
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
 @Composable
@@ -51,11 +65,12 @@ internal fun hasTransferSectionMatches(searchQuery: String): Boolean {
         "ask",
     )
     val matchDlQuality = match("默认下载画质", "Default download quality", "ダウンロード画質", "기본 다운로드 화질", "預設下載畫質")
+    val matchDlConcurrency = match("同时下载", "同时下载数", "并发下载", "Concurrent downloads", "simultaneous", "同時ダウンロード", "동시 다운로드", "同時下載")
     val matchBgTransfer = platform.backgroundTransferAccess != null &&
         match("后台持续传输", "Unrestricted background transfers", "battery", "バックグラウンド", "백그라운드", "背景持續傳輸")
     val matchSnail = match("蜗牛模式", "Snail mode", "speed limit", "限速", "低速モード", "저속 모드", "蝸牛模式")
     val matchSnailLimit = snailMode.enabled && match("速度上限", "Speed limit", "速度上限", "속도 한도")
-    return matchDlDir || matchAskDlLoc || matchDlQuality || matchBgTransfer || matchSnail || matchSnailLimit
+    return matchDlDir || matchAskDlLoc || matchDlQuality || matchDlConcurrency || matchBgTransfer || matchSnail || matchSnailLimit
 }
 
 internal fun hasStorageSectionMatches(searchQuery: String): Boolean {
@@ -89,6 +104,9 @@ internal fun TransferSettingsSection(
     val downloadDirPath by sessionManager.downloadDirPathFlow.collectAsStateWithLifecycle(initialValue = "")
     val askDownloadLocation by sessionManager.askDownloadLocationFlow.collectAsStateWithLifecycle(
         initialValue = sessionManager.currentSnapshot.askDownloadLocation,
+    )
+    val maxConcurrentDownloads by sessionManager.maxConcurrentDownloadsFlow.collectAsStateWithLifecycle(
+        initialValue = sessionManager.currentSnapshot.maxConcurrentDownloads,
     )
     var showDownloadQuality by remember { mutableStateOf(false) }
     val downloadMaxHeight by sessionManager.downloadMaxHeightFlow.collectAsStateWithLifecycle(initialValue = null)
@@ -166,9 +184,10 @@ internal fun TransferSettingsSection(
         "ask",
     )
     val matchDlQuality = match("默认下载画质", "Default download quality", "ダウンロード画質", "기본 다운로드 화질", "預設下載畫質")
+    val matchDlConcurrency = match("同时下载", "同时下载数", "并发下载", "Concurrent downloads", "simultaneous", "同時ダウンロード", "동시 다운로드", "同時下載")
     val matchBgTransfer = backgroundTransferAccess != null &&
         match("后台持续传输", "Unrestricted background transfers", "battery", "バックグラウンド", "백그라운드", "背景持續傳輸")
-    val matchDlGroup = matchDlDir || matchAskDlLoc || matchDlQuality || matchBgTransfer
+    val matchDlGroup = matchDlDir || matchAskDlLoc || matchDlQuality || matchDlConcurrency || matchBgTransfer
 
     val matchSnail = match("蜗牛模式", "Snail mode", "speed limit", "限速", "低速モード", "저속 모드", "蝸牛模式")
     val matchSnailLimit = snailMode.enabled && match("速度上限", "Speed limit", "速度上限", "속도 한도")
@@ -213,6 +232,49 @@ internal fun TransferSettingsSection(
                             supporting = downloadQualitySummary(downloadMaxHeight),
                             onClick = { showDownloadQuality = true },
                             trailingIcon = null,
+                        )
+                    }
+                    if (matchDlConcurrency) {
+                        val effectiveConcurrency = DownloadConcurrencyDefaults.sanitize(maxConcurrentDownloads)
+                        val min = DownloadConcurrencyDefaults.MIN
+                        val max = DownloadConcurrencyDefaults.MAX
+                        SettingsRow(
+                            icon = Icons.Outlined.Download,
+                            title = tr("同时下载", "Concurrent downloads", "同時ダウンロード数", "동시 다운로드 수", "同時下載"),
+                            supporting = tr(
+                                "调小可集中带宽先下完单个文件，调大可加快多文件队列下载",
+                                "Lower to finish one file at a time on slower links; raise to speed up multi-file queues",
+                                "小さくすると帯域を集中して1ファイルずつ完了し、大きくすると複数ファイルの並列転送を速めます",
+                                "줄이면 대역폭을 집중해 한 파일씩 먼저 완료하고, 늘리면 여러 파일 대기열 전송을 앞당깁니다",
+                                "調小可集中頻寬先下完單一檔案，調大可加快多檔案佇列下載",
+                            ),
+                            trailing = {
+                                Text(
+                                    text = tr("$effectiveConcurrency 个", "$effectiveConcurrency", "$effectiveConcurrency 件", "${effectiveConcurrency}개", "$effectiveConcurrency 個"),
+                                    style = MaterialTheme.typography.titleMedium.tabular,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            },
+                            below = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Slider(
+                                        value = effectiveConcurrency.toFloat(),
+                                        onValueChange = { raw ->
+                                            val snapped = raw.roundToInt().coerceIn(min, max)
+                                            if (snapped != effectiveConcurrency) {
+                                                scope.launch { sessionManager.setMaxConcurrentDownloads(snapped) }
+                                            }
+                                        },
+                                        valueRange = min.toFloat()..max.toFloat(),
+                                        steps = (max - min - 1).coerceAtLeast(0),
+                                        modifier = Modifier.weight(1f).widthIn(min = 160.dp),
+                                    )
+                                }
+                            },
                         )
                     }
                     if (matchBgTransfer && backgroundTransferAccess != null) {

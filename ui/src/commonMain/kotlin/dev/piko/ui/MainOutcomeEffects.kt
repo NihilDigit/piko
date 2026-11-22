@@ -121,6 +121,36 @@ internal fun MainOutcomeEffects(
 
     LaunchedEffect(services.instantSession, lifecycle, account) {
         val session = services.instantSession
+        session.acceptedSubmissions.collect { accepted ->
+            if (accepted.isLegacySheet && services.addLink.state?.isBlank == true) {
+                services.addLink.forceDiscard()
+            }
+            kotlinx.coroutines.delay(150)
+            if (session.executingSaves.none { it.draftId == accepted.draftId }) return@collect
+            lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
+            if (session.executingSaves.none { it.draftId == accepted.draftId }) return@collect
+            val namePart = accepted.title.trim().takeIf { it.isNotEmpty() }?.let { "「$it」" }.orEmpty()
+            val message = if (accepted.isReference) {
+                tr("正在后台以引用保存$namePart", "Saving $namePart as references in background", "バックグラウンドで${namePart}を参照として保存中", "백그라운드에서 $namePart 참조로 저장 중", "正在背景以引用儲存$namePart")
+            } else {
+                tr("正在后台提交保存$namePart", "Submitting $namePart in background", "バックグラウンドで${namePart}を保存中", "백그라운드에서 $namePart 저장 제출 중", "正在背景提交儲存$namePart")
+            }
+            launch {
+                val result = rootSnackbar.showSnackbar(
+                    message,
+                    actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기", "檢視任務"),
+                    withDismissAction = true,
+                    duration = androidx.compose.material3.SnackbarDuration.Short,
+                )
+                if (result == SnackbarResult.ActionPerformed && services.driveRepository.currentAccount == account) {
+                    latestOpenTransfers()
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(services.instantSession, lifecycle, account) {
+        val session = services.instantSession
         session.pendingCompletions
             .map { it.firstOrNull() }
             .distinctUntilChanged()
@@ -130,9 +160,14 @@ internal fun MainOutcomeEffects(
                 if (session.pendingCompletions.value.none { it.id == completion.id }) return@collect
                 val outcome = completion.outcome
                 val message = when (outcome) {
-                    is InstantSaveOutcome.InstantSaved -> tr("已保存 ${outcome.createdIds.size} 个文件", "Saved ${enCount(outcome.createdIds.size, "file", "files")}", "${outcome.createdIds.size} ファイルを保存しました", "파일 ${outcome.createdIds.size}개 저장 완료", "已儲存 ${outcome.createdIds.size} 個檔案")
+                    is InstantSaveOutcome.InstantSaved -> if (outcome.isReference) {
+                        tr("已以引用保存 ${outcome.itemCount} 个文件", "Saved ${enCount(outcome.itemCount, "file", "files")} as references", "${outcome.itemCount} 件を参照として保存しました", "파일 ${outcome.itemCount}개를 참조로 저장 완료", "已以引用儲存 ${outcome.itemCount} 個檔案")
+                    } else {
+                        tr("已保存 ${outcome.itemCount} 个文件", "Saved ${enCount(outcome.itemCount, "file", "files")}", "${outcome.itemCount} ファイルを保存しました", "파일 ${outcome.itemCount}개 저장 완료", "已儲存 ${outcome.itemCount} 個檔案")
+                    }
                     is InstantSaveOutcome.OfflineTaskCreated -> tr("已提交云端保存", "Cloud save submitted", "クラウドへの保存を送信しました", "클라우드 저장 제출 완료", "已提交雲端儲存")
                 }
+                rootSnackbar.currentSnackbarData?.dismiss()
                 val result = rootSnackbar.showSnackbar(message, actionLabel = tr("查看", "View", "表示", "보기", "檢視"), withDismissAction = true)
                 if (session.pendingCompletions.value.none { it.id == completion.id }) return@collect
                 session.acknowledgeCompletion(completion.id)
@@ -160,7 +195,7 @@ internal fun MainOutcomeEffects(
         services.instantSaveRecords.outcomes.collect { outcome ->
             if (outcome.account != services.driveRepository.currentAccount) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
-            if (outcome.account != services.driveRepository.currentAccount || services.instantSaveRecords.attempts.value.none { it.id == outcome.id } || latestViewingImport()) return@collect
+            if (outcome.account != services.driveRepository.currentAccount) return@collect
             val answer = rootSnackbar.showSnackbar(outcome.message, actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기", "檢視任務"), withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) latestOpenTransfers()
         }
@@ -181,7 +216,7 @@ internal fun MainOutcomeEffects(
         submissions.outcomes.collect { outcome ->
             if (outcome.account != services.driveRepository.currentAccount || outcome.status == OfflineSubmitStatus.COMPLETE) return@collect
             lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.STARTED) }
-            if (outcome.account != services.driveRepository.currentAccount || submissions.works.value.none { it.id == outcome.id } || latestViewingImport()) return@collect
+            if (outcome.account != services.driveRepository.currentAccount || submissions.works.value.none { it.id == outcome.id }) return@collect
             val answer = rootSnackbar.showSnackbar(outcome.message, actionLabel = tr("查看任务", "View tasks", "タスクを表示", "작업 보기", "檢視任務"), withDismissAction = true)
             if (answer == SnackbarResult.ActionPerformed && outcome.account == services.driveRepository.currentAccount) latestOpenTransfers()
         }

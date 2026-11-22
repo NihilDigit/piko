@@ -32,13 +32,15 @@ data class Appearance(
     val pureBlack: Boolean = false,
     /** 水墨屏模式（纯黑白高对比度、清晰描边与自动关闭动画），仅对当前设备生效，不跨设备同步。 */
     val einkMode: Boolean = false,
+    /** 动画程度显式偏好（"Reduced" / "Standard" / "Expressive"），null 时跟随平台默认档。 */
+    val motionPreference: String? = null,
 )
 
 val LocalAppearance = staticCompositionLocalOf { Appearance() }
 
 // 不分大小写：桌面端旧设置里存的是小写的 system、light、dark
 fun PikoUserPreferences.appearanceFlow(dynamicColorAvailable: Boolean): Flow<Appearance> =
-    combine(themeModeFlow, themeSeedFlow, pureBlackFlow, einkModeFlow) { mode, seed, pureBlack, einkMode ->
+    combine(themeModeFlow, themeSeedFlow, pureBlackFlow, einkModeFlow, motionPreferenceFlow) { mode, seed, pureBlack, einkMode, motionPref ->
         val legacyEink = seed.equals(SeedTheme.EINK.name, ignoreCase = true)
         Appearance(
             mode = ThemeMode.entries.find { it.name.equals(mode, ignoreCase = true) } ?: ThemeMode.SYSTEM,
@@ -46,6 +48,7 @@ fun PikoUserPreferences.appearanceFlow(dynamicColorAvailable: Boolean): Flow<App
             dynamicColorAvailable = dynamicColorAvailable,
             pureBlack = pureBlack,
             einkMode = einkMode || legacyEink,
+            motionPreference = motionPref,
         )
     }
 

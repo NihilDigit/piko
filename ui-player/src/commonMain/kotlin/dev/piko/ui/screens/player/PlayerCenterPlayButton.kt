@@ -1,5 +1,6 @@
 package dev.piko.ui.screens.player
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -39,7 +40,21 @@ import dev.piko.shared.i18n.tr
 import dev.piko.ui.components.MediaLoadingCaption
 import dev.piko.ui.components.MorphContainer
 import dev.piko.ui.components.PikoLoadingIndicator
+import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.LocalFixedColors
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.tabular
+
+internal enum class PlayButtonSurfaceStyle {
+    /** 视频画面叠层：半透明暗色玻璃底配微光描边，避免厚重色块遮挡画面主体。 */
+    OnMediaScrim,
+
+    /** 实心主题色容器：在纯色页面或关闭半透明底色时保持鲜明主操作重心。 */
+    ThemeFilled,
+
+    /** 听视频页面半透明底色：主题色低透玻璃底配细描边，兼容浅色与深色背景。 */
+    ThemeTonalScrim,
+}
 
 /**
  * 画面中央只有播放键。原先两侧还有快进快退与换集：进退触屏靠双击两侧、鼠标与键盘靠方向键和进度条，
@@ -59,6 +74,7 @@ internal fun PlayerCenterControls(
     loadingSpeedText: String? = null,
     interactive: Boolean = visible,
 ) {
+    val translucent = LocalPlayerLayoutPrefs.current.translucentPlayButton
     PlayPauseButton(
         visible = visible,
         interactive = interactive,
@@ -67,9 +83,10 @@ internal fun PlayerCenterControls(
         indicator = indicator,
         loadingSpeedText = loadingSpeedText,
         size = PlayContainerSize,
-        iconSize = IconButtonDefaults.mediumIconSize,
-        squareCorner = 16.dp,
-        pressedCorner = 12.dp,
+        iconSize = 28.dp,
+        squareCorner = 18.dp,
+        pressedCorner = 14.dp,
+        surfaceStyle = if (translucent) PlayButtonSurfaceStyle.OnMediaScrim else PlayButtonSurfaceStyle.ThemeFilled,
         onClick = onPlayPause,
         modifier = modifier,
     )
@@ -129,7 +146,7 @@ private val CenterFace.contentKey: Any
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun PlayPauseButton(
+internal fun PlayPauseButton(
     visible: Boolean,
     isPlaying: Boolean,
     isLoading: Boolean,
@@ -140,10 +157,13 @@ private fun PlayPauseButton(
     pressedCorner: Dp,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    surfaceStyle: PlayButtonSurfaceStyle = PlayButtonSurfaceStyle.OnMediaScrim,
     loadingSpeedText: String? = null,
     interactive: Boolean = visible,
 ) {
     val colors = MaterialTheme.colorScheme
+    val fixed = LocalFixedColors.current
+    val isEInk = LocalAppearance.current.isEInk
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
     val target = when {
@@ -180,14 +200,41 @@ private fun PlayPauseButton(
         else -> roundCorner
     }
     fun containerColorOf(face: CenterFace): Color = when {
+        isEInk && surfaceStyle == PlayButtonSurfaceStyle.ThemeFilled ->
+            if (isPlaying) colors.onSurface else colors.surface
+        isEInk -> colors.surface
+        surfaceStyle == PlayButtonSurfaceStyle.OnMediaScrim -> when {
+            face is CenterFace.Readout -> Color.Black.copy(alpha = 0.72f)
+            pressed -> Color.Black.copy(alpha = 0.68f)
+            else -> fixed.ScrimOnMediaStrong
+        }
+        surfaceStyle == PlayButtonSurfaceStyle.ThemeTonalScrim -> when {
+            face is CenterFace.Readout -> colors.tertiaryContainer.copy(alpha = 0.85f)
+            pressed -> colors.primary.copy(alpha = 0.24f)
+            else -> colors.primary.copy(alpha = 0.16f)
+        }
         face is CenterFace.Readout -> colors.tertiary
         face == CenterFace.Loading -> colors.primaryContainer
         else -> colors.primary
     }
     fun contentColorOf(face: CenterFace): Color = when {
+        isEInk && surfaceStyle == PlayButtonSurfaceStyle.ThemeFilled ->
+            if (isPlaying) colors.surface else colors.onSurface
+        isEInk -> colors.onSurface
+        surfaceStyle == PlayButtonSurfaceStyle.OnMediaScrim -> fixed.OnMedia
+        surfaceStyle == PlayButtonSurfaceStyle.ThemeTonalScrim -> when {
+            face is CenterFace.Readout -> colors.onTertiaryContainer
+            else -> colors.primary
+        }
         face is CenterFace.Readout -> colors.onTertiary
         face == CenterFace.Loading -> colors.onPrimaryContainer
         else -> colors.onPrimary
+    }
+    fun borderOf(face: CenterFace): BorderStroke? = when {
+        isEInk -> BorderStroke(1.dp, colors.outline)
+        surfaceStyle == PlayButtonSurfaceStyle.OnMediaScrim -> BorderStroke(1.dp, fixed.HudSpecularBorder)
+        surfaceStyle == PlayButtonSurfaceStyle.ThemeTonalScrim -> BorderStroke(1.dp, colors.primary.copy(alpha = 0.36f))
+        else -> null
     }
     // 按钮的标签只说点下去做什么：读数形态下点击照样是播放或暂停，标签换成读数的话，读屏念完读数却不知道这一下做了什么
     val actionLabel = when {
@@ -217,6 +264,7 @@ private fun PlayPauseButton(
             corner = ::cornerOf,
             containerColor = ::containerColorOf,
             contentColor = ::contentColorOf,
+            border = ::borderOf,
             anchorSize = size,
             onClick = onClick,
             interactionSource = interactionSource,
@@ -284,4 +332,4 @@ private const val LOADING_INDICATOR_FRACTION = 0.75f
 
 // Medium 的 56 高，宽度取标准 56 与宽版 72 之间：方形显得局促，宽版又抢过了两侧。方角与按压圆角取自
 // icon button 规格的 16 与 12
-private val PlayContainerSize = DpSize(64.dp, 56.dp)
+private val PlayContainerSize = DpSize(68.dp, 56.dp)

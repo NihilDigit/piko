@@ -226,10 +226,17 @@ private fun runCli(args: Array<String>) {
         "share" -> runBlocking {
             val url = options.positional.firstOrNull() ?: usage()
             val passCode = options.value("--pass").orEmpty()
-            if ("--restore" in options.flags) {
-                probeShareRestore(appClient(), url, passCode)
-            } else {
-                describeShare(appClient(), url, passCode).forEach(::println)
+            val saveRefTarget = options.value("--save-ref")
+            val client = appClient()
+            try {
+                when {
+                    saveRefTarget != null -> saveShareAsReferenceCli(client, url, passCode, saveRefTarget)
+                    "--tree" in options.flags -> inspectShareTree(client, url, passCode)
+                    "--restore" in options.flags -> probeShareRestore(client, url, passCode)
+                    else -> describeShare(client, url, passCode).forEach(::println)
+                }
+            } finally {
+                client.close()
             }
         }
         "login" -> runBlocking {
@@ -331,6 +338,6 @@ private class Options(args: List<String>) {
 
     companion object {
         // 不带值的开关
-        val FLAGS = setOf("--visited", "--restore", "--sequential", "--playing", "--background-first", "--combined", "--cached", "--no-browser")
+        val FLAGS = setOf("--visited", "--restore", "--tree", "--sequential", "--playing", "--background-first", "--combined", "--cached", "--no-browser")
     }
 }

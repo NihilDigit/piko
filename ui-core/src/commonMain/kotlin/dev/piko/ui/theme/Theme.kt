@@ -44,9 +44,14 @@ fun PikoTheme(
             platform.motionScale.einkReduced = isEInk
         }
     }
-    val reduced = platform.motionScale.reduced || isEInk
-    val motion = remember(platform.motionStyle, reduced) { PikoMotion.of(platform.motionStyle, reduced) }
-    val motionScheme = when (platform.motionStyle) {
+    val motionLevel = MotionLevel.fromPreference(appearance.motionPreference, platform.motionStyle)
+    val effectiveMotionStyle = when (motionLevel) {
+        MotionLevel.Expressive -> MotionStyle.Expressive
+        MotionLevel.Standard, MotionLevel.Reduced -> MotionStyle.Standard
+    }
+    val reduced = platform.motionScale.reduced || isEInk || motionLevel == MotionLevel.Reduced
+    val motion = remember(effectiveMotionStyle, reduced) { PikoMotion.of(effectiveMotionStyle, reduced) }
+    val motionScheme = when (effectiveMotionStyle) {
         MotionStyle.Expressive -> MotionScheme.expressive()
         MotionStyle.Standard -> MotionScheme.standard()
     }

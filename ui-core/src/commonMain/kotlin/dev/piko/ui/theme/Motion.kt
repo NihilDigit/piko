@@ -15,10 +15,11 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.material3.MotionScheme
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
+import dev.piko.shared.i18n.tr
 
 /**
- * 这个平台用哪一套动效，由 PikoPlatform 给出。按平台分，不按输入方式分：按输入方式分时，动画手感会随着
- * 一会儿用触屏、一会儿用鼠标来回变。
+ * 这个平台默认推荐哪一套动效，由 PikoPlatform 给出。按平台分，不按输入方式分：按输入方式分时，动画手感会随着
+ * 一会儿用触屏、一会儿用鼠标来回变。用户可在设置页「动画程度」中显式覆盖（见 [MotionLevel]）。
  */
 enum class MotionStyle {
     /** Android：M3 默认推荐的 expressive，组件形变带回弹。 */
@@ -29,6 +30,58 @@ enum class MotionStyle {
      * 约 160–220ms 到位，expressive 要 340–400ms。转场时长取 WinUI 的 83、167、250ms 三档。
      */
     Standard,
+}
+
+/**
+ * 界面动画程度三档。未显式存储时落到所在平台默认档：桌面端默认 [Standard]，移动端默认 [Expressive]。
+ */
+enum class MotionLevel {
+    Reduced,
+    Standard,
+    Expressive,
+    ;
+
+    val label: String
+        get() = when (this) {
+            Reduced -> tr("减弱", "Reduced", "控えめ", "약하게", "減弱")
+            Standard -> tr("标准", "Standard", "標準", "표준", "標準")
+            Expressive -> tr("灵动", "Expressive", "表現豊か", "생동감", "靈動")
+        }
+
+    val subtitle: String
+        get() = when (this) {
+            Reduced -> tr(
+                "简化页面转场并关闭弹簧与持续装饰动效",
+                "Use simple transitions and disable spring and continuous decorative motion",
+                "画面遷移を簡略化し、スプリングと継続的な装飾アニメーションを無効にします",
+                "화면 전환을 단순화하고 스프링 및 지속 장식 애니메이션을 끕니다",
+                "簡化頁面轉場並關閉彈簧與持續裝飾動效",
+            )
+            Standard -> tr(
+                "干脆平稳的物理弹簧，减少回弹",
+                "Crisp, controlled springs with minimal bounce",
+                "反発を抑えた軽快で安定したスプリング動作",
+                "반동을 줄인 깔끔하고 안정적인 물리 스프링",
+                "乾脆平穩的物理彈簧，減少回彈",
+            )
+            Expressive -> tr(
+                "带弹性回弹的 Material 3 Expressive 物理动效",
+                "Bouncy Material 3 Expressive physics motion",
+                "弾むような Material 3 Expressive の物理アニメーション",
+                "탄성 있는 Material 3 Expressive 물리 애니메이션",
+                "帶彈性回彈的 Material 3 Expressive 物理動效",
+            )
+        }
+
+    companion object {
+        fun defaultFor(platformStyle: MotionStyle): MotionLevel = when (platformStyle) {
+            MotionStyle.Expressive -> Expressive
+            MotionStyle.Standard -> Standard
+        }
+
+        fun fromPreference(raw: String?, platformStyle: MotionStyle): MotionLevel =
+            entries.firstOrNull { it.name.equals(raw, ignoreCase = true) } ?: defaultFor(platformStyle)
+    }
 }
 
 /**

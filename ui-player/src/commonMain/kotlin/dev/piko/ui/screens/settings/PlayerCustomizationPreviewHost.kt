@@ -60,6 +60,7 @@ import dev.piko.ui.screens.clips.ClipFeedTopBar
 import dev.piko.ui.screens.player.CustomizablePlayerBottomBar
 import dev.piko.ui.screens.player.CustomizablePlayerTopBar
 import dev.piko.ui.screens.player.FullscreenPromptButtonContent
+import dev.piko.ui.screens.player.LocalPlayerLayoutPrefs
 import dev.piko.ui.screens.player.PlayerBarEditScope
 import dev.piko.ui.screens.player.PlayerBarEnvironment
 import dev.piko.ui.screens.player.PlayerCenterCluster
@@ -87,41 +88,43 @@ internal fun PreviewCanvasSection(
     compactPreviewHeight: Dp?,
     onTogglePortraitFullscreenPrompt: () -> Unit,
 ) {
-    when {
-        activeMode != null && activeLayout != null -> {
-            PlayerPreviewCanvas(
-                mode = activeMode,
-                layout = activeLayout,
-                statusBar = prefs.statusBar,
-                seekButtonSeconds = prefs.seekButtonSeconds,
-                showPortraitFullscreenPrompt = prefs.showPortraitFullscreenPrompt,
-                transportInCenter = transportInCenter,
-                selection = selection,
-                dragState = dragState,
-                dropTarget = dropTarget,
-                compactMaxHeight = compactPreviewHeight,
-                onSelect = onSelect,
-                onFinishDrag = onFinishDrag,
-                onTogglePortraitFullscreenPrompt = onTogglePortraitFullscreenPrompt,
-            )
-        }
+    CompositionLocalProvider(LocalPlayerLayoutPrefs provides prefs) {
+        when {
+            activeMode != null && activeLayout != null -> {
+                PlayerPreviewCanvas(
+                    mode = activeMode,
+                    layout = activeLayout,
+                    statusBar = prefs.statusBar,
+                    seekButtonSeconds = prefs.seekButtonSeconds,
+                    showPortraitFullscreenPrompt = prefs.showPortraitFullscreenPrompt,
+                    transportInCenter = transportInCenter,
+                    selection = selection,
+                    dragState = dragState,
+                    dropTarget = dropTarget,
+                    compactMaxHeight = compactPreviewHeight,
+                    onSelect = onSelect,
+                    onFinishDrag = onFinishDrag,
+                    onTogglePortraitFullscreenPrompt = onTogglePortraitFullscreenPrompt,
+                )
+            }
 
-        activeTab == CustomizationTab.Listen -> {
-            ListenPreviewCanvas(
-                config = prefs.listen,
-                selectedSlot = selectedListenSlot,
-                dropTargetSlot = (dropTarget as? DropTarget.CenterSlot)?.position,
-                compactMaxHeight = compactPreviewHeight,
-                onSelectSlot = onSelectListenSlot,
-                onSlotBounds = { pos, rect -> dragState.centerSlotBounds[pos] = rect },
-            )
-        }
+            activeTab == CustomizationTab.Listen -> {
+                ListenPreviewCanvas(
+                    config = prefs.listen,
+                    selectedSlot = selectedListenSlot,
+                    dropTargetSlot = (dropTarget as? DropTarget.CenterSlot)?.position,
+                    compactMaxHeight = compactPreviewHeight,
+                    onSelectSlot = onSelectListenSlot,
+                    onSlotBounds = { pos, rect -> dragState.centerSlotBounds[pos] = rect },
+                )
+            }
 
-        activeTab == CustomizationTab.Gestures -> {
-            GesturePreviewCanvas(
-                prefs = prefs,
-                compactMaxHeight = compactPreviewHeight,
-            )
+            activeTab == CustomizationTab.Gestures -> {
+                GesturePreviewCanvas(
+                    prefs = prefs,
+                    compactMaxHeight = compactPreviewHeight,
+                )
+            }
         }
     }
 }

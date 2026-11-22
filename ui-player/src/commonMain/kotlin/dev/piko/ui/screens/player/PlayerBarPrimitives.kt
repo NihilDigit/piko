@@ -162,10 +162,13 @@ internal fun PlayerVolumeControl(
     showSlider: Boolean,
     onVolumeChange: (Float) -> Unit,
     onToggleMute: () -> Unit,
-    onDraggingChange: (Boolean) -> Unit,
+    onDraggingChange: (Boolean) -> Unit = {},
     showBackground: Boolean = true,
     tooltipBelow: Boolean = false,
     suppressTooltip: Boolean = false,
+    collapseWhenIdle: Boolean = false,
+    shortcutHint: String? = "(↑ / ↓)",
+    modifier: Modifier = Modifier,
 ) {
     val currentVolume by rememberUpdatedState(volume)
     val currentOnVolumeChange by rememberUpdatedState(onVolumeChange)
@@ -175,7 +178,8 @@ internal fun PlayerVolumeControl(
     var sliderDragging by remember { mutableStateOf(false) }
     val expanded = containerHovered || sliderDragging
 
-    val scrollModifier = Modifier
+    val scrollModifier = modifier
+        .captionExclusion()
         .hoverable(containerHover)
         .pointerInput(Unit) {
             awaitPointerEventScope {
@@ -209,6 +213,9 @@ internal fun PlayerVolumeControl(
             PlayerVolumeSlider(
                 volume = volume,
                 expanded = expanded,
+                collapseWhenIdle = collapseWhenIdle,
+                bubbleBelow = tooltipBelow,
+                shortcutHint = shortcutHint,
                 onVolumeChange = onVolumeChange,
                 onDraggingChange = { dragging ->
                     sliderDragging = dragging
@@ -216,7 +223,9 @@ internal fun PlayerVolumeControl(
                 },
                 suppressBubble = suppressTooltip,
             )
-            Spacer(Modifier.width(6.dp))
+            if (!collapseWhenIdle || expanded) {
+                Spacer(Modifier.width(6.dp))
+            }
         }
     }
 
@@ -242,6 +251,9 @@ private fun PlayerVolumeSlider(
     expanded: Boolean,
     onVolumeChange: (Float) -> Unit,
     onDraggingChange: (Boolean) -> Unit,
+    collapseWhenIdle: Boolean = false,
+    bubbleBelow: Boolean = false,
+    shortcutHint: String? = "(↑ / ↓)",
     suppressBubble: Boolean = false,
 ) {
     var dragging by remember { mutableStateOf(false) }
@@ -254,7 +266,12 @@ private fun PlayerVolumeSlider(
     val trackColors = SeekTrackColors(active = scheme.primary, inactive = inactive, buffered = inactive)
     val motion = MaterialTheme.motionScheme
     val engaged = dragging || hovered || focused
-    val sliderWidth by animateDpAsState(if (expanded || focused) VolumeSliderExpandedWidth else VolumeSliderWidth, motion.fastSpatialSpec())
+    val targetWidth = when {
+        expanded || focused -> VolumeSliderExpandedWidth
+        collapseWhenIdle -> 0.dp
+        else -> VolumeSliderWidth
+    }
+    val sliderWidth by animateDpAsState(targetWidth, motion.fastSpatialSpec())
     val thickness by animateDpAsState(if (engaged) SeekTrackEngagedThickness else SeekTrackThickness, motion.fastSpatialSpec())
     val thumbRadius by animateDpAsState(if (dragging) SeekThumbDraggingRadius else SeekThumbRadius, motion.fastSpatialSpec())
     val focusRingColor = scheme.secondary
@@ -273,6 +290,7 @@ private fun PlayerVolumeSlider(
                 val inset = SeekThumbDraggingRadius.toPx()
                 awaitEachGesture {
                     val down = awaitFirstDown()
+                    if (size.width <= 0) return@awaitEachGesture
                     down.consume()
                     dragging = true
                     currentOnDraggingChange(true)
@@ -291,6 +309,7 @@ private fun PlayerVolumeSlider(
                 }
             }
             .drawBehind {
+                if (size.width <= 4.dp.toPx()) return@drawBehind
                 drawSeekTrack(
                     fraction = volume,
                     bufferedFraction = 0f,
@@ -312,8 +331,9 @@ private fun PlayerVolumeSlider(
                 }
             },
     ) {
-        if (!suppressBubble && (dragging || hovered)) {
+        if (!suppressBubble && sliderWidth > 8.dp && (dragging || hovered)) {
             val density = LocalDensity.current
+            val suffix = if (shortcutHint != null) " $shortcutHint" else ""
             Surface(
                 shape = MaterialTheme.shapes.small,
                 color = if (dragging) scheme.primary else LocalFixedColors.current.ScrimOnMediaStrong,
@@ -322,13 +342,18 @@ private fun PlayerVolumeSlider(
                 modifier = Modifier.layout { measurable, constraints ->
                     val placeable = measurable.measure(Constraints())
                     val inset = with(density) { SeekThumbDraggingRadius.toPx() }
-                    val anchor = inset + volume * (constraints.maxWidth - 2 * inset)
+                    val anchor = inset + volume * (constraints.maxWidth - 2 * inset).coerceAtLeast(0f)
                     val drop = with(density) { VolumeBubbleDrop.roundToPx() }
-                    layout(0, 0) { placeable.place((anchor - placeable.width / 2f).roundToInt(), -placeable.height + drop) }
+                    val y = if (bubbleBelow) constraints.maxHeight - drop else -placeable.height + drop
+                    layout(0, 0) { placeable.place((anchor - placeable.width / 2f).roundToInt(), y) }
                 },
             ) {
                 Text(
-                    text = if (dragging) "$percent%" else tr("音量 $percent% (↑ / ↓)", "Volume $percent% (↑ / ↓)", "音量 $percent% (↑ / ↓)", "볼륨 $percent% (↑ / ↓)", "音量 $percent% (↑ / ↓)"),
+                    text = if (dragging) {
+                        "$percent%"
+                    } else {
+                        tr("音量 $percent%$suffix", "Volume $percent%$suffix", "音量 $percent%$suffix", "볼륨 $percent%$suffix", "音量 $percent%$suffix")
+                    },
                     style = TimeTextStyle(),
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,

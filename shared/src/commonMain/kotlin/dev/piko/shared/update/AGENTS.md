@@ -26,7 +26,7 @@ Android 与桌面端均支持应用内检查与安装更新。跨平台版本检
 
 1. **传统补丁与 MSI 通道（`files.json`、`app.zip`、`.msi` 及 zstd 差分包）**：
    - `app.zip` 除包含每次编译必变的启动器、应用 jar、AOT 缓存与 `Piko.cfg` 外，还包含相对于所有仍在服役的已公开旧版（`1.0.0` 以外全部带清单的已发布版本，由 `.github/scripts/update-bases.sh` 拉取比对）新增或发生变化的 JRE 运行时、mpv 与原生库文件，并在 `files.json` 中统一标记 `patch = true`（`UpdateArtifactsTask`）。
-   - 针对近期版本的 zstd 二进制差分包（`piko-windows-<架构>-<版本>-from-<旧版本>.zip`）在客户端通过 FFM 直接调用随包 `app/resources/zstd/` 目录下的原生 `libzstd`（`desktopApp/.../update/ZstdPatch.kt`），x64 与 arm64 完全同路：由于 `zstd-jni` 的 `win_aarch64` 动态库仅导出标准 C 函数而未编译 JNI 桥接符号，其 Java 包装类在 Windows ARM64 上不可用，因此运行时彻底剥离 `zstd-jni` Java 依赖，仅在构建期从各平台 jar 提取原生 DLL（`1.1.0` 及更早的 ARM64 客户端仍调用 `zstd-jni` 类，会自动降级回退至整文件替换；`release.yml` 在 `windows-11-arm` 打包机上直接运行 `:desktopApp:desktopTest` 验证真实 DLL 加载与差分还原）。
+   - 针对近期版本（当前与上一 `minor` 系列并上最近 5 个已公开版本，见 `.github/scripts/delta-updates.sh`）的 zstd 二进制差分包（`piko-windows-<架构>-<版本>-from-<旧版本>.zip`）在客户端通过 FFM 直接调用随包 `app/resources/zstd/` 目录下的原生 `libzstd`（`desktopApp/.../update/ZstdPatch.kt`），x64 与 arm64 完全同路：由于 `zstd-jni` 的 `win_aarch64` 动态库仅导出标准 C 函数而未编译 JNI 桥接符号，其 Java 包装类在 Windows ARM64 上不可用，因此运行时彻底剥离 `zstd-jni` Java 依赖，仅在构建期从各平台 jar 提取原生 DLL（`1.1.0` 及更早的 ARM64 客户端仍调用 `zstd-jni` 类，会自动降级回退至整文件替换；`release.yml` 在 `windows-11-arm` 打包机上直接运行 `:desktopApp:desktopTest` 验证真实 DLL 加载与差分还原）。
 2. **便携版全量按需提取通道（`image.zip`）**：包含整个应用目录的逐条目压缩包。当新版客户端的便携版因本机文件被改动或版本早于补丁基准而无法通过 `app.zip` 补丁校验时，`ImageZip.kt` 通过 HTTP Range 先拉取 `image.zip` 末尾的 ZIP 中央目录，计算差异后仅按 Range 下载本机缺失或哈希不一致的条目（例如跨 JDK 升级仅需下载约 `34 MB` 而非全量 `116 MB`；若镜像不支持 Range 则回退整包下载）。MSI 安装版在补丁失配时照常回退至 `.msi` 整包重装。
 
 ### 不可破坏的老客户端发版契约

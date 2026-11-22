@@ -169,4 +169,54 @@ class FolderDownloadSmokeTest {
         awaitUntil("确认后排进任务表") { coordinator.tasks.value.size == 1 && coordinator.listings.value.isEmpty() }
         directory.deleteRecursively()
     }
+
+    @Test
+    fun `maxConcurrentDownloads setting dynamically caps and expands parallel downloads`() = smoke { scope ->
+        val server = FakePikPakServer()
+        val folder = server.addFolder("Videos")
+        for (i in 1..4) {
+            server.addFile("ep$i.mp4", folder.id, ByteArray(1024) { i.toByte() }, hash = "HASH-EP-$i")
+        }
+        val gate = Channel<Unit>(Channel.UNLIMITED)
+        server.beforeCdnRange = {
+            gate.receive()
+        }
+        val provider = server.provider()
+        val prefs = MemoryPreferences()
+        prefs.setMaxConcurrentDownloads(1)
+        val repo = PikoDriveRepository(provider, prefs)
+        val directory = Files.createTempDirectory("piko-concurrency").toFile()
+        val coordinator = PikoDownloadCoordinator(provider, prefs, DirectoryStorage(directory), scope)
+        val root = repo.listAllFiles().getOrThrow().single { it.id == folder.id }
+
+        coordinator.enqueueFolders(listOf(root), DriveDownloadFolderSource(repo), maxHeight = 0)
+        awaitUntil("单并发下仅启动 1 个下载任务，其余 3 个排队") {
+            val statuses = coordinator.tasks.value.values.map { it.status }
+            statuses.size == 4 &&
+                statuses.count { it == DownloadStatus.DOWNLOADING } == 1 &&
+                statuses.count { it == DownloadStatus.PENDING } == 3
+        }
+
+        // Expand concurrency to 3 live -> 2 more queued tasks start immediately!
+        prefs.setMaxConcurrentDownloads(3)
+        awaitUntil("调大并发至 3 后立即拉起至 3 个并行下载") {
+            val statuses = coordinator.tasks.value.values.map { it.status }
+            statuses.count { it == DownloadStatus.DOWNLOADING } == 3 &&
+                statuses.count { it == DownloadStatus.PENDING } == 1
+        }
+
+        // Reduce concurrency back to 1 live -> 2 excess DOWNLOADING tasks return to PENDING!
+        prefs.setMaxConcurrentDownloads(1)
+        awaitUntil("调小并发回 1 后多余下载任务退回排队") {
+            val statuses = coordinator.tasks.value.values.map { it.status }
+            statuses.count { it == DownloadStatus.DOWNLOADING } == 1 &&
+                statuses.count { it == DownloadStatus.PENDING } == 3
+        }
+
+        repeat(20) { gate.trySend(Unit) }
+        awaitUntil("放行后全部 4 个文件依次下载完成") {
+            coordinator.tasks.value.values.all { it.status == DownloadStatus.COMPLETED }
+        }
+        directory.deleteRecursively()
+    }
 }

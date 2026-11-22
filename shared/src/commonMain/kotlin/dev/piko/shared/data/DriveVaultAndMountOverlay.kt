@@ -236,13 +236,6 @@ internal class DriveVaultAndMountOverlay(
                     }
                 }
             },
-            onWritten = { folder, entries ->
-                withPikoLock(ctx.index.treeStateLock) {
-                    if (ctx.clientManager.currentClient.value === asked && ctx.index.driveTreeIndex === boundIndex) {
-                        vaultEntriesKnown(folder, entries)
-                    }
-                }
-            },
             onCommitted = { folder, entries, snapshot ->
                 withPikoLock(ctx.index.treeStateLock) {
                     if (ctx.clientManager.currentClient.value === asked && ctx.index.driveTreeIndex === boundIndex) {
@@ -267,7 +260,11 @@ internal class DriveVaultAndMountOverlay(
         return store.takeIf { ctx.clientManager.currentClient.value === asked && (binding == null || binding.client === asked) }
     }
 
-    suspend fun listBrowsable(parentId: String, sortOrder: PikoFileSortOrder): Result<List<FileStat>> {
+    suspend fun listBrowsable(
+        parentId: String,
+        sortOrder: PikoFileSortOrder,
+        strictVaultRead: Boolean = false,
+    ): Result<List<FileStat>> {
         if (LocalLocation.isLocal(parentId)) {
             return runSuspendCatching { ctx.listing.sortFiles(localMounts.list(parentId), sortOrder, parentId) }
         }
@@ -275,7 +272,7 @@ internal class DriveVaultAndMountOverlay(
         val asked = ctx.clientManager.currentClient.value ?: return Result.failure(
             IllegalStateException(tr("未登录", "Not signed in", "ログインしていません", "로그인하지 않았습니다", "尚未登入")),
         )
-        return listBrowsable(parentId, sortOrder, asked, ctx.vaultAccessor())
+        return listBrowsable(parentId, sortOrder, asked, ctx.vaultAccessor(), strictVaultRead = strictVaultRead)
     }
 
     fun browsableReader(expectedAccount: String): (suspend (String) -> Result<List<FileStat>>)? {
@@ -357,12 +354,20 @@ internal class DriveVaultAndMountOverlay(
         sortOrder: PikoFileSortOrder,
         asked: PikPakClient,
         store: VaultStore,
+        strictVaultRead: Boolean = false,
     ): Result<List<FileStat>> = withContext(Dispatchers.Default) {
         runSuspendCatching {
             if (ctx.clientManager.currentClient.value !== asked) throw kotlinx.coroutines.CancellationException("Account changed")
             val listing = ctx.listing.fetchListing(parentId, asked)
             if (ctx.clientManager.currentClient.value !== asked) throw kotlinx.coroutines.CancellationException("Account changed")
-            val entries = readAndRecordVaultEntries(parentId, listing, store, asked, logFailure = true)
+            val entries = readAndRecordVaultEntries(
+                parentId,
+                listing,
+                store,
+                asked,
+                logFailure = true,
+                rethrowFailure = strictVaultRead,
+            )
             if (ctx.clientManager.currentClient.value !== asked) throw kotlinx.coroutines.CancellationException("Account changed")
             withVaulted(parentId, listing, entries, sortOrder)
         }
@@ -535,6 +540,48 @@ internal class DriveVaultAndMountOverlay(
         return (fromVault ?: VaultMediaMeta()).mergeWith(fromTree).takeUnless { it.isEmpty }
     }
 
+    /** 按整批条目一次性批量预取 SQLite 内容元数据，避免数千条引用保存逐行触发单键查询。 */
+    fun knownVaultMetaLookupFor(items: Collection<InstantFileItem>): (String, Long) -> VaultMediaMeta? {
+        val store = vaultBinding.value?.store
+        val missingTreeKeys = HashSet<ContentKey>()
+        for (item in items) {
+            val base = item.meta
+            if (base != null && base.cid != null && base.duration != null &&
+                base.width != null && base.height != null && base.mimeType != null
+            ) {
+                continue
+            }
+            val gcid = item.file.gcid ?: continue
+            val key = ContentKey.of(gcid, item.file.size) ?: continue
+            val fromVault = store?.knownMetaOf(gcid, item.file.size)
+            val combined = (base ?: VaultMediaMeta()).mergeWith(fromVault)
+            if (combined.cid == null || combined.duration == null ||
+                combined.width == null || combined.height == null || combined.mimeType == null
+            ) {
+                missingTreeKeys += key
+            }
+        }
+        val treeBatch = if (missingTreeKeys.isEmpty()) {
+            emptyMap()
+        } else {
+            ctx.index.driveTreeIndex.contentMetadataBatch(missingTreeKeys)
+        }
+        return lookup@{ gcid, size ->
+            if (gcid.isBlank()) return@lookup null
+            val fromVault = store?.knownMetaOf(gcid, size)
+            val fromTree = ContentKey.of(gcid, size)?.let(treeBatch::get)?.let {
+                VaultMediaMeta(
+                    cid = it.cid,
+                    duration = it.durationMillis?.let { millis -> (millis / 1000.0).toString() },
+                    width = it.width?.toString(),
+                    height = it.height?.toString(),
+                    mimeType = it.mimeType,
+                )
+            }
+            (fromVault ?: VaultMediaMeta()).mergeWith(fromTree).takeUnless { it.isEmpty }
+        }
+    }
+
     fun rememberFullyVaulted(folderIds: Set<String>) {
         ctx.listing.childContents.markFullyVaulted(folderIds, knownVaultParents())
     }
@@ -557,8 +604,26 @@ internal class DriveVaultAndMountOverlay(
         if (reconcileStars) {
             vaultStars.reconcileFolder(folderId, entries, expectedAccount = ctx.currentAccount)
         }
-        ctx.listing.childContents.markVaulted(folderId, entries.any { it.isArchived })
+        val hasArchived = entries.any { it.isArchived }
+        ctx.listing.childContents.markVaulted(folderId, hasArchived)
         ctx.listing.childContents.rememberCover(folderId, entries.coverGcid().orEmpty())
+        if (folderId.isNotEmpty()) {
+            val maxNames = DriveListingEngine.MAX_REMEMBERED_CHILD_NAMES
+            val realChildren = ctx.index.driveTreeIndex.realChildren(folderId).files
+                .filterNot { it.isFolder || it.trashed || VaultStore.looksLikeManifest(it) || VaultStore.isRecoveryFile(it) }
+            val childFiles = buildList {
+                realChildren.asSequence().take(maxNames).forEach { add(ChildFile.of(it)) }
+                if (size < maxNames && hasArchived) {
+                    entries.asSequence()
+                        .filter { it.isArchived }
+                        .take(maxNames - size)
+                        .forEach { add(ChildFile.of(it.toFileStat(folderId))) }
+                }
+            }
+            if (childFiles.isNotEmpty() || ctx.listing.childContents.get(folderId) != null) {
+                ctx.listing.childContents.put(folderId, childFiles)
+            }
+        }
     }
 
     internal fun commitVaultListing(
@@ -569,7 +634,10 @@ internal class DriveVaultAndMountOverlay(
     ) {
         when (snapshot) {
             null -> {
-                if (ctx.currentAccount == asked.account) ctx.mutations.applyChange(DriveChange.ContentsChanged(setOf(folderId)))
+                if (ctx.currentAccount == asked.account) {
+                    vaultEntriesKnown(folderId, entries)
+                    ctx.mutations.applyChange(DriveChange.ContentsChanged(setOf(folderId)))
+                }
             }
             is VaultCommitSnapshot.IncrementalFiles -> {
                 val enrichedAdded = sourceLedger.enrich(snapshot.added)
@@ -631,6 +699,7 @@ internal class DriveVaultAndMountOverlay(
         asked: PikPakClient,
         logFailure: Boolean = false,
         logTagSuffix: String = "",
+        rethrowFailure: Boolean = false,
     ): List<VaultEntry> {
         val boundIndex = withPikoLock(ctx.index.treeStateLock) { ctx.index.driveTreeIndex }
         val startedFromPending = store.hasPending(folderId)
@@ -642,7 +711,7 @@ internal class DriveVaultAndMountOverlay(
                 it
             }
         }
-        val entries = result.getOrNull() ?: return emptyList()
+        val entries = if (rethrowFailure) result.getOrThrow() else (result.getOrNull() ?: return emptyList())
         withPikoLock(ctx.index.treeStateLock) {
             if (ctx.clientManager.currentClient.value !== asked || ctx.index.driveTreeIndex !== boundIndex) return entries
             val currentlyPending = store.hasPending(folderId)

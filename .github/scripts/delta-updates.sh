@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 应用内差分更新的附件：新版本 M.m.p 为已公开的 M.(m-1).x、M.m.x 与最近三个已公开的版本各出一份
+# 应用内差分更新的附件：新版本 M.m.p 为已公开的 M.(m-1).x、M.m.x 与最近五个已公开的版本各出一份
 # piko-windows-<架构>-<新版本>-from-<旧版本>.zip，里面是补丁包每个文件以旧版对应文件为前缀字典的
 # zstd 差分（--patch-from），客户端的还原见 UpdateManifest.kt 的 applyDelta 与 ZstdPatch.kt。
 #
@@ -48,11 +48,11 @@ else
         .[] | select(.draft | not) | select(.prerelease | not) |
         .tag_name | ltrimstr("v") | select(. != $self)
     ' <<< "$releases_json" | tr -d '\r')
-    # 原规则之外再并上最近三个已公开的版本，不限主版本：连续发大版本、次版本跳得快时，原规则选出的旧版太少，
+    # 原规则之外再并上最近五个已公开的版本，不限主版本：连续发大版本、次版本跳得快时，原规则选出的旧版太少，
     # 发 2.0.0 时只剩 2.0.x，甚至一个都没有，刚升到上一版的用户就都得下完整的补丁包
     bases=$( {
         awk -F. -v M="$major" -v m="$minor" '$1 == M && ($2 == m || $2 == m - 1)' <<< "$published"
-        head -n 3 <<< "$published"
+        head -n 5 <<< "$published"
     } | awk 'NF && !seen[$0]++')
 fi
 

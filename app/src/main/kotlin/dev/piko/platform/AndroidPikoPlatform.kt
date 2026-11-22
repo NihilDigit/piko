@@ -111,6 +111,7 @@ class AndroidPikoPlatform(
 
     override val formFactor: FormFactor = FormFactor.Mobile
     override val motionStyle: MotionStyle = MotionStyle.Expressive
+    override val supportsPredictiveBack: Boolean = true
 
     override val revealsLastTypedPassword: Boolean = true
 

@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -34,19 +35,25 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
+import androidx.compose.material.icons.outlined.AccountTree
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedToggleButton
+import androidx.compose.material3.OutlinedToggleButtonDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -65,9 +72,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import dev.piko.shared.data.PikoPathBreadcrumb
+import dev.piko.shared.data.isDriveFolderId
+import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.rename.BatchRenameMemory
 import dev.piko.shared.rename.BatchRenameState
 import dev.piko.shared.rename.BatchRenameState.Phase
+import dev.piko.shared.rename.CanonicalTreeScan
 import dev.piko.shared.rename.RenamePlan
 import dev.piko.shared.rename.RenameProblem
 import dev.piko.shared.rename.RenameRow
@@ -75,7 +86,10 @@ import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.adaptive.isHeightCompact
+import dev.piko.ui.components.BarItem
+import dev.piko.ui.components.PinnedPriority
 import dev.piko.ui.components.PikoTopBar
+import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.FrameCardShape
@@ -96,6 +110,7 @@ import kotlinx.coroutines.flow.first
  * 有失败或中途停止时留着，列出没改成的项，由用户点「完成」关闭。执行期间不能关闭，
  * 状态的协程作用域随对话框走，关掉就断在半路。
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun BatchRenameDialog(
     files: List<FileStat>,
@@ -103,17 +118,130 @@ fun BatchRenameDialog(
     onFinished: (message: String) -> Unit,
     /** 打开时即换上「按番号规范命名」，命令面板的同名命令经这里进来。 */
     startWithAvNaming: Boolean = false,
+    /** 当前所在网盘目录；非空时顶栏提供「扫描目录树」按钮，可一键递归扫描整个当前目录树（含归档引用子目录）。 */
+    currentFolder: PikoPathBreadcrumb? = null,
 ) {
     val services = LocalPikoServices.current
     val (memory, textMode) = rememberRenameMemory() ?: return
     val scope = rememberCoroutineScope()
-    val state = remember(files) {
+    val scanRoot = currentFolder?.takeIf { isDriveFolderId(it.id) }
+    var recursiveTree by remember(files, scanRoot?.id) { mutableStateOf(false) }
+
+    val baseState = remember(files) {
         BatchRenameState(services.driveRepository, services.preferences, scope, files, memory, textMode, startWithAvNaming, services.metaTube)
     }
-    CloseWhenFinished(state, onDismiss, onFinished)
-    val dismiss = { if (state.phase != Phase.RUNNING) onDismiss() }
+    val scanScope = remember(recursiveTree, scanRoot?.id) {
+        if (recursiveTree && scanRoot != null) {
+            kotlinx.coroutines.CoroutineScope(
+                scope.coroutineContext + kotlinx.coroutines.SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job]),
+            )
+        } else {
+            null
+        }
+    }
+    DisposableEffect(scanScope) {
+        onDispose {
+            scanScope?.coroutineContext?.get(kotlinx.coroutines.Job)?.cancel()
+        }
+    }
+    val scan = remember(scanScope, scanRoot?.id) {
+        if (scanScope != null && scanRoot != null) {
+            CanonicalTreeScan(services.clientManager, services.driveRepository, scanScope, scanRoot, includeRoot = false)
+        } else {
+            null
+        }
+    }
+    val title = if (recursiveTree && scanRoot != null) {
+        tr(
+            "批量重命名「${scanRoot.localizedName}」目录树",
+            "Batch rename “${scanRoot.localizedName}” tree",
+            "「${scanRoot.localizedName}」ツリーを一括改名",
+            "“${scanRoot.localizedName}” 트리 일괄 이름 변경",
+            "批次重新命名「${scanRoot.localizedName}」目錄樹",
+        )
+    } else {
+        tr("批量重命名", "Batch rename", "一括で名前を変更", "이름 일괄 변경", "批次重新命名")
+    }
+
+    if (recursiveTree && scan != null && scan.tree == null) {
+        val exitRecursive = { recursiveTree = false }
+        BatchRenameWindow(onDismiss = exitRecursive) { _, fullscreen ->
+            ScanContent(scan, title, onClose = exitRecursive, fullscreen = fullscreen)
+        }
+        return
+    }
+
+    val tree = scan?.tree
+    val treeState = remember(tree) {
+        tree?.let { scannedTree ->
+            BatchRenameState(
+                driveRepo = services.driveRepository,
+                preferences = services.preferences,
+                scope = scope,
+                files = scan.files,
+                memory = memory,
+                initialTextMode = textMode,
+                initialAvNaming = startWithAvNaming,
+                metaTube = services.metaTube,
+                tree = scannedTree,
+                fixedCanonicalTree = false,
+            ).also { it.copyDraftFrom(baseState) }
+        }
+    }
+    val activeState = if (recursiveTree && treeState != null) treeState else baseState
+
+    CloseWhenFinished(activeState, onDismiss, onFinished)
+    val dismiss = { if (activeState.phase != Phase.RUNNING) onDismiss() }
+    val topActions = if (scanRoot != null && activeState.phase == Phase.EDITING) {
+        val toggleRecursive: () -> Unit = {
+            if (recursiveTree) {
+                treeState?.let { baseState.copyDraftFrom(it) }
+                recursiveTree = false
+            } else {
+                recursiveTree = true
+            }
+        }
+        val toggleLabel = tr("包含子目录", "Include subfolders", "サブフォルダーを含む", "하위 폴더 포함", "包含子資料夾")
+        listOf(
+            BarItem(
+                key = "recursive_subtree",
+                priority = PinnedPriority,
+                overflow = listOf(
+                    SheetAction(
+                        icon = if (recursiveTree) Icons.Outlined.Check else Icons.Outlined.AccountTree,
+                        label = toggleLabel,
+                        onClick = toggleRecursive,
+                    ),
+                ),
+            ) {
+                OutlinedToggleButton(
+                    checked = recursiveTree,
+                    onCheckedChange = { toggleRecursive() },
+                    shapes = OutlinedToggleButtonDefaults.shapesFor(OutlinedToggleButtonDefaults.size),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    Icon(
+                        imageVector = if (recursiveTree) Icons.Outlined.Check else Icons.Outlined.AccountTree,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(toggleLabel, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                }
+            },
+        )
+    } else {
+        emptyList()
+    }
     BatchRenameWindow(dismiss) { twoPane, fullscreen ->
-        BatchRenameContent(state, tr("批量重命名", "Batch rename", "一括で名前を変更", "이름 일괄 변경", "批次重新命名"), dismiss, twoPane, fullscreen)
+        BatchRenameContent(
+            state = activeState,
+            title = title,
+            onClose = dismiss,
+            twoPane = twoPane,
+            fullscreen = fullscreen,
+            topActions = topActions,
+        )
     }
 }
 
@@ -210,10 +338,11 @@ internal fun BatchRenameContent(
     twoPane: Boolean,
     fullscreen: Boolean,
     treeSummary: String? = null,
+    topActions: List<BarItem> = emptyList(),
 ) {
     val focusSearch = !fullscreen && !state.isNamingTree
     // 一棵树里多数项不改名，几千行里找改动的那几行，所以默认只列变更项
-    var changedOnly by remember { mutableStateOf(state.isNamingTree) }
+    var changedOnly by remember(state.isNamingTree) { mutableStateOf(state.isNamingTree) }
     var editing by remember { mutableStateOf<RenameRow?>(null) }
     val searchFocus = remember { FocusRequester() }
     // 触屏上一打开就弹出键盘会盖住预览，只在宽窗口里直接把焦点给查找框
@@ -249,7 +378,7 @@ internal fun BatchRenameContent(
     val onEdit: ((RenameRow) -> Unit)? = if (state.isNamingTree && editable) ({ editing = it }) else null
 
     Column(modifier = Modifier.fillMaxSize()) {
-        RenameTopBar(title, onClose, fullscreen, closeEnabled = state.phase != Phase.RUNNING)
+        RenameTopBar(title, onClose, fullscreen, closeEnabled = state.phase != Phase.RUNNING, actions = topActions)
         if (twoPane) {
             Row(modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp)) {
                 if (showRules) {
@@ -299,7 +428,13 @@ internal fun BatchRenameContent(
  * 标题栏。关闭照 M3：全屏对话框才在左上角放关闭；浮着的基本对话框不画关闭，底栏「取消」在主按钮左边。
  */
 @Composable
-internal fun RenameTopBar(title: String, onClose: () -> Unit, fullscreen: Boolean, closeEnabled: Boolean = true) {
+internal fun RenameTopBar(
+    title: String,
+    onClose: () -> Unit,
+    fullscreen: Boolean,
+    closeEnabled: Boolean = true,
+    actions: List<BarItem> = emptyList(),
+) {
     PikoTopBar(
         title = title,
         navigationIcon = if (fullscreen) {
@@ -311,6 +446,7 @@ internal fun RenameTopBar(title: String, onClose: () -> Unit, fullscreen: Boolea
         } else {
             null
         },
+        actions = actions,
         colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
     )
 }

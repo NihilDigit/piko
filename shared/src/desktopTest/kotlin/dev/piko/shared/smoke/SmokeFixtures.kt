@@ -107,16 +107,27 @@ class MemoryPreferences : PikoUserPreferences {
     override suspend fun setPikpakDomain(root: String) = Unit
     override val snailModeFlow: Flow<SnailMode> = MutableStateFlow(SnailMode())
     override suspend fun setSnailMode(mode: SnailMode) = Unit
+    override val maxConcurrentDownloadsFlow = MutableStateFlow(dev.piko.data.auth.DownloadConcurrencyDefaults.DEFAULT)
+    override suspend fun setMaxConcurrentDownloads(count: Int) {
+        maxConcurrentDownloadsFlow.value = dev.piko.data.auth.DownloadConcurrencyDefaults.sanitize(count)
+    }
     override val clipVolumeFlow = MutableStateFlow(1f)
     override val clipMutedFlow = MutableStateFlow(false)
     override suspend fun setClipAudio(volume: Float, muted: Boolean) {
         clipVolumeFlow.value = volume.coerceIn(0f, 1f)
         clipMutedFlow.value = muted
     }
+    override val motionPreferenceFlow = MutableStateFlow<String?>(null)
+    override suspend fun setMotionPreference(level: String?) { motionPreferenceFlow.value = level }
+    override val predictiveBackFlow = MutableStateFlow(true)
+    override suspend fun setPredictiveBack(enabled: Boolean) { predictiveBackFlow.value = enabled }
     override val currentSnapshot: dev.piko.data.auth.PikoPreferencesSnapshot
         get() = dev.piko.data.auth.PikoPreferencesSnapshot(
             clipVolume = clipVolumeFlow.value,
             clipMuted = clipMutedFlow.value,
+            motionPreference = motionPreferenceFlow.value,
+            predictiveBack = predictiveBackFlow.value,
+            maxConcurrentDownloads = maxConcurrentDownloadsFlow.value,
         )
     override val downloadDirPathFlow: Flow<String> = MutableStateFlow("")
     override suspend fun setDownloadDirPath(path: String) = Unit

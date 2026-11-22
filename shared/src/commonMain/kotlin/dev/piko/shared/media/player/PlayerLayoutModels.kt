@@ -406,6 +406,7 @@ data class PlayerStatusBarConfig(
 @Serializable
 data class ListenLayoutConfig(
     val coverStyle: ListenCoverStyle = ListenCoverStyle.VinylDisc,
+    val translucentPlayButton: Boolean = false,
     val symmetricSideSlots: Boolean = true,
     val outerLeft: CenterSlotConfig = CenterSlotConfig(CenterSlotAction.None, CenterSlotScale.Small),
     val innerLeft: CenterSlotConfig = CenterSlotConfig(CenterSlotAction.Previous, CenterSlotScale.Medium),
@@ -498,6 +499,8 @@ data class PlayerLayoutPrefs(
     val clipsLandscape: PlayerFormFactorLayout = DefaultClipsLandscape,
     val clipsPortrait: PlayerFormFactorLayout = DefaultClipsPortrait,
     val showCenterControlsOnTouch: Boolean = true,
+    /** 视频播放器中央与控制栏播放按钮采用半透明暗色毛玻璃底，默认开启。 */
+    val translucentPlayButton: Boolean = true,
     /** 竖屏播放横屏视频时在画面下方悬浮展示一键全屏入口，默认开启。 */
     val showPortraitFullscreenPrompt: Boolean = true,
     val seekButtonSeconds: Int = DEFAULT_SEEK_SECONDS,

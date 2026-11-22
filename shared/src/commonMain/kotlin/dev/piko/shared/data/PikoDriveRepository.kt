@@ -354,7 +354,10 @@ open class PikoDriveRepository(
 
     internal fun vaultForClient(asked: PikPakClient): VaultStore = overlay.vaultForClient(asked)
     override fun vaultAccess(expectedAccount: String): VaultStore? = overlay.vaultAccess(expectedAccount)
-    override suspend fun listBrowsable(parentId: String, sortOrder: PikoFileSortOrder): Result<List<FileStat>> = overlay.listBrowsable(parentId, sortOrder)
+    override suspend fun listBrowsable(parentId: String, sortOrder: PikoFileSortOrder): Result<List<FileStat>> =
+        overlay.listBrowsable(parentId, sortOrder)
+    internal suspend fun listBrowsableStrict(parentId: String, sortOrder: PikoFileSortOrder): Result<List<FileStat>> =
+        overlay.listBrowsable(parentId, sortOrder, strictVaultRead = true)
     internal fun browsableReader(expectedAccount: String): (suspend (String) -> Result<List<FileStat>>)? = overlay.browsableReader(expectedAccount)
     internal fun browsableReaderForClient(asked: PikPakClient, store: VaultStore, requireActiveClient: Boolean = false): suspend (String) -> Result<List<FileStat>> =
         overlay.browsableReaderForClient(asked, store, requireActiveClient)
@@ -366,6 +369,8 @@ open class PikoDriveRepository(
     override fun knownChildContents(folderId: String): List<ChildFile>? = listingEngine.knownChildContents(folderId)
     internal fun knownVaultParents(): Map<String, String> = overlay.knownVaultParents()
     internal fun knownVaultMetaOf(gcid: String, size: Long): VaultMediaMeta? = overlay.knownVaultMetaOf(gcid, size)
+    internal fun knownVaultMetaLookupFor(items: Collection<InstantFileItem>): (String, Long) -> VaultMediaMeta? =
+        overlay.knownVaultMetaLookupFor(items)
     internal fun rememberFullyVaulted(folderIds: Set<String>) = overlay.rememberFullyVaulted(folderIds)
     internal fun vaultEntriesKnown(folderId: String, entries: List<VaultEntry>, expectedManifestId: String? = null, requireMatch: Boolean = false, reconcileStars: Boolean = true) =
         overlay.vaultEntriesKnown(folderId, entries, expectedManifestId, requireMatch, reconcileStars)

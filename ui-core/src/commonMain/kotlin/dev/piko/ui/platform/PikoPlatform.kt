@@ -77,6 +77,9 @@ interface PikoPlatform {
     /** 动效的风格与转场时长，见 [MotionStyle]。 */
     val motionStyle: MotionStyle
 
+    /** 当前平台是否支持系统侧滑预测性返回手势（Android 支持，桌面端不支持）。 */
+    val supportsPredictiveBack: Boolean get() = false
+
     /** 入口注入到 Recomposer 的那一份动画时长缩放；主题从它读出「减少动画」。 */
     val motionScale: PikoMotionScale
 

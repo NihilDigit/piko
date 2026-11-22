@@ -254,8 +254,8 @@ fun InstantSheetContent(
         @Composable
         fun Footer() {
             if (action != null) {
-                if (!isTreeMaximized || splitSelection) SaveSettings(showReferenceCheckbox = false)
-                SaveBar(state = state, action = action, onSave = saveMagnet, referenceToggle = referenceToggle)
+                if (!isTreeMaximized || splitSelection) SaveSettings(showReferenceCheckbox = true)
+                SaveBar(state = state, action = action, onSave = saveMagnet, saveAsReference = reference, referenceToggle = null)
             }
         }
         Column(
@@ -287,15 +287,18 @@ fun InstantSheetContent(
                         else ImportBatchStatus(batch, notice)
                     },
                     saveBar = {
-                        if (batch != null) {
-                            SaveButton(
-                                label = if (reference) tr("全部以引用保存", "Save all as references", "すべて参照として保存", "모두 참조로 저장", "全部以引用儲存") else tr("全部保存", "Save all", "すべて保存", "모두 저장", "全部儲存"),
-                                enabled = batch.canSaveAll,
-                                isSaving = batch.isSaving,
-                                onClick = batch::saveAll,
-                            )
-                        } else if (action != null) {
-                            SaveBar(state = state, action = action, onSave = saveMagnet, showProblems = false, referenceToggle = null)
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SaveSettings(showReferenceCheckbox = true)
+                            if (batch != null) {
+                                SaveButton(
+                                    label = if (reference) tr("全部以引用保存", "Save all as references", "すべて参照として保存", "모두 참조로 저장", "全部以引用儲存") else tr("全部保存", "Save all", "すべて保存", "모두 저장", "全部儲存"),
+                                    enabled = batch.canSaveAll,
+                                    isSaving = batch.isSaving,
+                                    onClick = batch::saveAll,
+                                )
+                            } else if (action != null) {
+                                SaveBar(state = state, action = action, onSave = saveMagnet, showProblems = false, saveAsReference = reference, referenceToggle = null)
+                            }
                         }
                     },
                     config = {
@@ -319,7 +322,6 @@ fun InstantSheetContent(
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
-                        SaveSettings(showReferenceCheckbox = true)
                     },
                 )
                 return@Column
@@ -337,7 +339,7 @@ fun InstantSheetContent(
                         showTitle = !inSideSheet && !headerShown,
                         fillHeight = inSideSheet || fillHeight,
                         referenceToggle = referenceToggle,
-                        saveSettings = { SaveSettings(showReferenceCheckbox = false) },
+                        saveSettings = { SaveSettings(showReferenceCheckbox = true) },
                     )
                 }
                 return@Column

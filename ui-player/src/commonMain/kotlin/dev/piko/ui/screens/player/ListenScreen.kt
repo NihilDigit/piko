@@ -130,6 +130,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import dev.piko.shared.media.player.CenterSlotAction
@@ -1331,7 +1332,7 @@ internal fun ListenTransportRow(
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         ListenSideSlotButton(
             slot = config.outerLeft,
@@ -1359,24 +1360,18 @@ internal fun ListenTransportRow(
             onSelect = { onSelectSlot?.invoke(CenterSlotPosition.InnerLeft) },
             onBounds = onSlotBounds?.let { cb -> { rect -> cb(CenterSlotPosition.InnerLeft, rect) } },
         )
-        FilledIconToggleButton(
-            checked = isPlaying,
-            onCheckedChange = { onTogglePlayPause() },
-            shapes = IconButtonDefaults.toggleableShapes(),
-            colors = IconButtonDefaults.filledIconToggleButtonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                checkedContainerColor = MaterialTheme.colorScheme.primary,
-                checkedContentColor = MaterialTheme.colorScheme.onPrimary,
-            ),
-            modifier = Modifier.size(64.dp).handCursor(),
-        ) {
-            Icon(
-                imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                contentDescription = stringResource(Res.string.player_custom_ctrl_play_pause),
-                modifier = Modifier.size(32.dp),
-            )
-        }
+        PlayPauseButton(
+            visible = true,
+            isPlaying = isPlaying,
+            isLoading = false,
+            indicator = null,
+            size = DpSize(68.dp, 56.dp),
+            iconSize = 28.dp,
+            squareCorner = 18.dp,
+            pressedCorner = 14.dp,
+            surfaceStyle = if (config.translucentPlayButton) PlayButtonSurfaceStyle.ThemeTonalScrim else PlayButtonSurfaceStyle.ThemeFilled,
+            onClick = onTogglePlayPause,
+        )
         ListenSideSlotButton(
             slot = config.innerRight,
             hasPrevious = hasPrevious,
@@ -1422,7 +1417,8 @@ private fun ListenSideSlotButton(
     onBounds: ((Rect) -> Unit)? = null,
 ) {
     val action = slot.action
-    val sizeDp = (54.dp * slot.scale.ratio).coerceIn(36.dp, 54.dp)
+    val sizeDp = (44.dp * slot.scale.ratio).coerceIn(34.dp, 46.dp)
+    val placeholderDp = (38.dp * slot.scale.ratio).coerceIn(32.dp, 38.dp)
     val primary = MaterialTheme.colorScheme.primary
     val boundsMod = if (previewMode && onBounds != null) {
         Modifier.onGloballyPositioned { coords ->
@@ -1437,7 +1433,7 @@ private fun ListenSideSlotButton(
         val strokeWidth = if (dropHighlighted) 2.5.dp else if (selected) 2.dp else 1.2.dp
         Box(
             modifier = boundsMod
-                .size(sizeDp)
+                .size(placeholderDp)
                 .clip(CircleShape)
                 .background(if (dropHighlighted) primary.copy(alpha = 0.20f) else Color.Transparent)
                 .clickable(onClick = onSelect)
@@ -1462,12 +1458,12 @@ private fun ListenSideSlotButton(
                 imageVector = Icons.Filled.Add,
                 contentDescription = null,
                 tint = if (dropHighlighted || selected) primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size((sizeDp * 0.46f).coerceIn(16.dp, 22.dp)),
+                modifier = Modifier.size((placeholderDp * 0.44f).coerceIn(14.dp, 18.dp)),
             )
         }
         return
     }
-    val iconSize = (sizeDp * 0.54f).coerceIn(20.dp, 28.dp)
+    val iconSize = (sizeDp * 0.50f).coerceIn(18.dp, 22.dp)
     val enabled = previewMode || when (action) {
         CenterSlotAction.Previous -> hasPrevious
         CenterSlotAction.Next -> hasNext

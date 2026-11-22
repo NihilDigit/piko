@@ -318,6 +318,19 @@ internal class DriveMutationExecutor(
                                 )
                             }
                         }
+                        change is DriveChange.Created && id == change.parentId && (change.isFolder || change.stat != null) -> {
+                            val added = change.stat ?: FileStat(
+                                kind = FileKind.FOLDER,
+                                id = change.id,
+                                parentId = change.parentId,
+                                name = change.name,
+                            )
+                            DriveListingEngine.Listing(
+                                listing.files.filterNot { it.id == added.id } + added,
+                                listing.listedAt,
+                                listing.stale,
+                            )
+                        }
                         folders == null || id in folders -> listing.expired()
                         else -> listing
                     }

@@ -36,6 +36,7 @@ internal class InstantSaveExecutor(
         referenceSource: String?,
         ledgerSource: String?,
         parentId: String?,
+        onProgress: (done: Int, total: Int, status: String?, detail: String?) -> Unit = { _, _, _, _ -> },
     ): InstantExecutionResult {
         val preResolvedFolders = if (!targetIsFreshFolder && plan.keepStructure) {
             val neededDirs = submitted.map { it.file }.filter { it.gcid != null }
@@ -56,8 +57,9 @@ internal class InstantSaveExecutor(
         }
         val result = if (reference) {
             val vault = driveRepo.vaultAccess(requireNotNull(saveAccount)) ?: throw kotlinx.coroutines.CancellationException(tr("账号会话已结束", "Account session ended", "アカウントのセッションが終了しました", "계정 세션이 종료되었습니다", "帳號工作階段已結束"))
+            val ready = submitted.filter { it.file.gcid != null }
             instantRepo.saveReferences(
-                items = submitted.filter { it.file.gcid != null },
+                items = ready,
                 targetParentId = plan.target.id,
                 keepStructure = plan.keepStructure,
                 names = plan.names,
@@ -65,12 +67,13 @@ internal class InstantSaveExecutor(
                 vault = vault,
                 source = referenceSource,
                 targetIsFreshFolder = targetIsFreshFolder,
-                knownMetaLookup = driveRepo::knownVaultMetaOf,
+                knownMetaLookup = driveRepo.knownVaultMetaLookupFor(ready),
                 onFolderCreated = recordNewFolder,
                 onFoldersResolved = { resolvedFoldersSnapshot = it },
                 onFreshVaultFolders = { freshIds ->
                     if (driveRepo.currentAccount == saveAccount) driveRepo.rememberFullyVaulted(freshIds)
                 },
+                onProgress = onProgress,
             ) { members ->
                 if (driveRepo.currentAccount == saveAccount) driveRepo.vaultTrees.merge(members)
             }
@@ -78,6 +81,7 @@ internal class InstantSaveExecutor(
             submitted, plan.target.id, reuse = previewed, keepStructure = plan.keepStructure,
             names = plan.names, existingFolders = preResolvedFolders, onFolderCreated = recordNewFolder,
             onFoldersResolved = { resolvedFoldersSnapshot = it },
+            onProgress = onProgress,
         )
         if (driveRepo.currentAccount != saveAccount) throw kotlinx.coroutines.CancellationException(tr("账号会话已结束", "Account session ended", "アカウントのセッションが終了しました", "계정 세션이 종료되었습니다", "帳號工作階段已結束"))
         val current = (result.exceptionOrNull() as? InstantSaveIncomplete)?.receipt ?: if (result.isSuccess) {

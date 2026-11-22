@@ -179,6 +179,7 @@ class InstantMagnetRepository(
         existingFolders: Map<String, String> = emptyMap(),
         onFolderCreated: (parentId: String, id: String, name: String) -> Unit = { _, _, _ -> },
         onFoldersResolved: (Map<String, String>) -> Unit = {},
+        onProgress: (done: Int, total: Int, status: String?, detail: String?) -> Unit = { _, _, _, _ -> },
     ): Result<List<String>> {
         val owner = clientManager.currentClient.value ?: return Result.failure(IllegalStateException("Not logged in"))
         val accepted = items.toList()
@@ -188,7 +189,7 @@ class InstantMagnetRepository(
         return withContext(Dispatchers.Default) {
             saveFiles(
                 owner, accepted, targetParentId, previews, keepStructure, acceptedNames, folders,
-                onFolderCreated = onFolderCreated, onFoldersResolved = onFoldersResolved,
+                onFolderCreated = onFolderCreated, onFoldersResolved = onFoldersResolved, onProgress = onProgress,
             )
         }
     }
@@ -206,6 +207,7 @@ class InstantMagnetRepository(
         onFolderCreated: (parentId: String, id: String, name: String) -> Unit = { _, _, _ -> },
         onFoldersResolved: (Map<String, String>) -> Unit = {},
         onFreshVaultFolders: (Set<String>) -> Unit = {},
+        onProgress: (done: Int, total: Int, status: String?, detail: String?) -> Unit = { _, _, _, _ -> },
         onReferencesSaved: (Map<String, Set<String>>) -> Unit = {},
     ): Result<List<String>> {
         val owner = clientManager.currentClient.value ?: return Result.failure(IllegalStateException("未登录"))
@@ -226,6 +228,7 @@ class InstantMagnetRepository(
                 onFreshVaultFolders = onFreshVaultFolders,
                 onFolderCreated = onFolderCreated,
                 onFoldersResolved = onFoldersResolved,
+                onProgress = onProgress,
             )
         }
     }
@@ -246,6 +249,7 @@ class InstantMagnetRepository(
         onFreshVaultFolders: (Set<String>) -> Unit = {},
         onFolderCreated: (parentId: String, id: String, name: String) -> Unit = { _, _, _ -> },
         onFoldersResolved: (Map<String, String>) -> Unit = {},
+        onProgress: (done: Int, total: Int, status: String?, detail: String?) -> Unit = { _, _, _, _ -> },
     ): Result<List<String>> {
         val started = TimeSource.Monotonic.markNow()
         val readyItems = items.filter { it.file.gcid != null }
@@ -260,8 +264,19 @@ class InstantMagnetRepository(
         }
         var creatingFolder: String? = null
         val directories = if (keepStructure) files.flatMap { ancestorsOf(it.path) }.distinct().sortedBy { it.count { c -> c == '/' } } else emptyList()
+        val dirsToCreate = directories.count { it !in folderIds }
+        var createdDirCount = 0
+        val dirLock = dev.piko.shared.util.PikoLock()
         if (referenceVault != null) {
             PikoLog.i(TAG, "Reference save started: $summary, subdirs=${directories.size}")
+        }
+        if (dirsToCreate > 0) {
+            onProgress(
+                0,
+                dirsToCreate,
+                tr("正在创建目录", "Creating folders", "フォルダーを作成中", "폴더 생성 중", "正在建立資料夾"),
+                null,
+            )
         }
         val prepared = runSuspendCatching {
             for (level in directories.groupBy { it.count { c -> c == '/' } }.entries.sortedBy { it.key }.map { it.value }) {
@@ -274,6 +289,14 @@ class InstantMagnetRepository(
                             Triple(dir, parentId to folderName, runSuspendCatching {
                                 savePermits.withPermit {
                                     owner.createFolder(parentId, folderName)
+                                }.also {
+                                    val doneNow = dev.piko.shared.util.withPikoLock(dirLock) { ++createdDirCount }
+                                    onProgress(
+                                        doneNow,
+                                        dirsToCreate,
+                                        tr("正在创建目录", "Creating folders", "フォルダーを作成中", "폴더 생성 중", "正在建立資料夾"),
+                                        folderName,
+                                    )
                                 }
                             })
                         }
@@ -329,6 +352,14 @@ class InstantMagnetRepository(
                     meta = item.meta,
                 )
             }
+            var writtenItems = 0
+            val writeProgressLock = dev.piko.shared.util.PikoLock()
+            onProgress(
+                0,
+                files.size,
+                tr("正在写入引用清单", "Writing reference manifests", "参照リストを書き込み中", "참조 목록 작성 중", "正在寫入引用清單"),
+                directoryByFolderId.values.firstOrNull { it.isNotEmpty() }?.substringAfterLast('/'),
+            )
             val writes = VaultIngest.ingestFolders(
                 batches = batches,
                 folderPermits = savePermits,
@@ -339,6 +370,19 @@ class InstantMagnetRepository(
                 },
                 verifyCommittedOnFailure = { folderId ->
                     referenceVault.committed(folderId).getOrNull()
+                },
+                onFolderCommitted = { folderId, drafts, _ ->
+                    val doneNow = dev.piko.shared.util.withPikoLock(writeProgressLock) {
+                        writtenItems += drafts.size
+                        writtenItems
+                    }
+                    val folderLabel = directoryByFolderId[folderId].orEmpty().substringAfterLast('/').takeIf { it.isNotEmpty() }
+                    onProgress(
+                        doneNow,
+                        files.size,
+                        tr("正在写入引用清单", "Writing reference manifests", "参照リストを書き込み中", "참조 목록 작성 중", "正在寫入引用清單"),
+                        folderLabel,
+                    )
                 },
             )
             for (outcome in writes) {
@@ -388,6 +432,11 @@ class InstantMagnetRepository(
         val previews = files.associate { file ->
             file.path to reuse[file.gcid]?.takeIf { consumedPreviews.add(it) }
         }
+        var savedFilesProgress = 0
+        val fileProgressLock = dev.piko.shared.util.PikoLock()
+        if (files.isNotEmpty()) {
+            onProgress(0, files.size, tr("正在保存", "Saving", "保存中", "저장 중", "正在儲存"), null)
+        }
         val outcomes = runSuspendCatching {
             // 逐个串行时 84 个文件约 20 秒。并发数取得保守：SDK 自带限流，再高也快不了多少
             coroutineScope {
@@ -397,7 +446,7 @@ class InstantMagnetRepository(
                             val parentId = folderIds[file.path.substringBeforeLast('/', "")] ?: targetParentId
                             val existing = previews[file.path]
                             val name = names[file.path] ?: file.name
-                            if (existing == null) {
+                            val out = if (existing == null) {
                                 val created = runSuspendCatching { owner.instantCreate(file = file, parentId = parentId, name = name) }
                                 InstantFileOutcome(file.path, created.getOrNull(), created.exceptionOrNull())
                             } else {
@@ -409,6 +458,9 @@ class InstantMagnetRepository(
                                     InstantFileOutcome(file.path, existing, renamed.exceptionOrNull(), namingUnconfirmed = renamed.isFailure)
                                 }
                             }
+                            val doneNow = dev.piko.shared.util.withPikoLock(fileProgressLock) { ++savedFilesProgress }
+                            onProgress(doneNow, files.size, tr("正在保存", "Saving", "保存中", "저장 중", "正在儲存"), name)
+                            out
                         }
                     }
                 }.awaitAll()

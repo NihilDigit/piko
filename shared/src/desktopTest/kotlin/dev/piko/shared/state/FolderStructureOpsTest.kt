@@ -2,6 +2,8 @@ package dev.piko.shared.state
 
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.VaultEdits
+import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.smoke.FakePikPakServer
 import dev.piko.shared.smoke.MemoryPreferences
 import dev.piko.shared.smoke.smoke
@@ -221,21 +223,80 @@ class FolderStructureOpsTest {
     }
 
     @Test
-    fun `vaulted folders or folders containing vault manifests are safely blocked`() = runBlocking {
-        val backend = FakeBackend()
-        val work = backend.addFolder("work", "Root")
-        val folder = backend.addFolder("vaulted", "Archived", parentId = work.id)
-        backend.addFile("m1", ".piko-vault-v1-0123456789abcdef.json", parentId = folder.id)
-        val ops = FolderStructureOps(backend)
+    fun `flattening unvisited vaulted folders lazy-loads manifests, migrates VaultEntry items with collision suffix, and trashes emptied folders`() = smoke {
+        val server = FakePikPakServer()
+        val work = server.addFolder("Dramas")
+        val subA = server.addFolder("SeasonA", parentId = work.id)
+        val subB = server.addFolder("SeasonB", parentId = work.id)
 
+        // Seed existing vaulted item in work + unvisited vaulted items in subA and subB via server.addFile so CDN serves real bytes.
+        val seeder = dev.piko.shared.data.VaultStore(
+            object : dev.piko.shared.data.VaultFolderIo {
+                override suspend fun list(folderId: String): List<FileStat> = emptyList()
+                override suspend fun read(fileId: String): ByteArray = server.node(fileId)!!.content
+                override suspend fun upload(folderId: String, name: String, bytes: ByteArray): String =
+                    server.addFile(name, folderId, content = bytes).id
+                override suspend fun delete(ids: List<String>) = Unit
+            },
+            confirmDelay = kotlin.time.Duration.ZERO,
+        )
+        val ts = 1_700_000_000_000L
+        seeder.update(
+            work.id,
+            VaultEdits.add(listOf(VaultEntry.create(name = "ep01.mkv", size = 1000L, gcid = "GCID-WORK-1", source = null, addedAt = ts))),
+            freshlyCreatedFolder = true,
+        ).getOrThrow()
+        seeder.update(
+            subA.id,
+            VaultEdits.add(
+                listOf(
+                    VaultEntry.create(name = "ep01.mkv", size = 2000L, gcid = "GCID-SUBA-1", source = null, addedAt = ts),
+                    VaultEntry.create(name = "ep02.mkv", size = 3000L, gcid = "GCID-SUBA-2", source = null, addedAt = ts),
+                ),
+            ),
+            freshlyCreatedFolder = true,
+        ).getOrThrow()
+        seeder.update(
+            subB.id,
+            VaultEdits.add(listOf(VaultEntry.create(name = "ep03.mkv", size = 4000L, gcid = "GCID-SUBB-3", source = null, addedAt = ts))),
+            freshlyCreatedFolder = true,
+        ).getOrThrow()
+
+        // Fresh repository that has NEVER opened subA or subB!
+        val repo = PikoDriveRepository(server.provider(), MemoryPreferences())
+        val topListing = repo.listBrowsable(work.id, dev.piko.shared.data.PikoFileSortOrder.NAME_ASC).getOrThrow()
+        val selected = topListing.filter { it.isFolder }
+        assertEquals(2, selected.size)
+
+        val ops = FolderStructureOps(repo.asFolderStructureBackend())
         val plan = ops.plan(
             workingFolderId = work.id,
             workingFolderName = work.name,
-            selectedFolders = listOf(folder),
-            options = FolderStructureOptions(FolderStructureMode.UNWRAP),
+            selectedFolders = selected,
+            options = FolderStructureOptions(FolderStructureMode.FLATTEN, collisionStrategy = CollisionStrategy.RENAME_SUFFIX),
         ).getOrThrow()
-        assertNotNull(plan.blockedReason)
-        assertFalse(plan.canExecute)
+
+        assertNull(plan.blockedReason)
+        assertTrue(plan.canExecute)
+        assertEquals(3, plan.moves.size)
+        assertEquals(1, plan.renamedCollisions.size)
+        assertEquals("ep01 (2).mkv", plan.renamedCollisions.single().resolvedName)
+        assertEquals(setOf(subA.id, subB.id), plan.foldersToTrash.map { it.id }.toSet())
+
+        val outcome = ops.execute(plan)
+        assertTrue(outcome.isSuccess)
+        assertEquals(3, outcome.movedCount)
+        assertEquals(1, outcome.renamedCount)
+        assertEquals(2, outcome.trashedFolderCount)
+
+        val afterNames = repo.listBrowsable(work.id, dev.piko.shared.data.PikoFileSortOrder.NAME_ASC)
+            .getOrThrow()
+            .filterNot { it.isFolder }
+            .map { it.name }
+            .toSet()
+        assertEquals(setOf("ep01.mkv", "ep01 (2).mkv", "ep02.mkv", "ep03.mkv"), afterNames)
+        assertTrue(server.node(subA.id)?.trashed == true)
+        assertTrue(server.node(subB.id)?.trashed == true)
     }
 
     @Test

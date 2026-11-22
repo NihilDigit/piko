@@ -2,6 +2,7 @@ package dev.piko.shared.preferences
 
 import dev.piko.data.auth.AppLanguage
 import dev.piko.data.auth.CachePolicyDefaults
+import dev.piko.data.auth.DownloadConcurrencyDefaults
 import dev.piko.data.auth.PikoPreferencesSnapshot
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.auth.PlayerGestureDefaults
@@ -150,7 +151,19 @@ class StoredPikoPreferences(
     private val spoiler = MutableStateFlow(settings.get(KEY_SPOILER, "false").toBoolean())
     private val autoCheckUpdates = MutableStateFlow(settings.get(KEY_AUTO_CHECK_UPDATES, "true").toBoolean())
     private val autoDetectClipboardLinks = MutableStateFlow(settings.get("ui.autoDetectClipboardLinks") == "true")
-    private val reduceMotion = MutableStateFlow(settings.get(KEY_REDUCE_MOTION) == "true")
+    private val reduceMotion = MutableStateFlow(
+        settings.get(KEY_MOTION_PREFERENCE).equals("Reduced", ignoreCase = true) ||
+            (settings.get(KEY_MOTION_PREFERENCE).isEmpty() && settings.get(KEY_REDUCE_MOTION) == "true"),
+    )
+    private val motionPreference = MutableStateFlow(
+        settings.get(KEY_MOTION_PREFERENCE).ifEmpty {
+            if (settings.get(KEY_REDUCE_MOTION) == "true") "Reduced" else null
+        },
+    )
+    private val predictiveBack = MutableStateFlow(settings.get(KEY_PREDICTIVE_BACK, "true") != "false")
+    private val maxConcurrentDownloads = MutableStateFlow(
+        DownloadConcurrencyDefaults.sanitize(settings.get(KEY_MAX_CONCURRENT_DOWNLOADS).toIntOrNull()),
+    )
     private val hardwareDecoding = MutableStateFlow(settings.get(KEY_HARDWARE_DECODING, "true").toBoolean())
     private val playbackMaxHeight = MutableStateFlow(
         settings.get(KEY_PLAYBACK_MAX_HEIGHT).toIntOrNull() ?: PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT,
@@ -268,6 +281,36 @@ class StoredPikoPreferences(
     override suspend fun setReduceMotion(enabled: Boolean) {
         settings.set(KEY_REDUCE_MOTION, enabled.toString())
         reduceMotion.value = enabled
+        if (enabled) {
+            settings.set(KEY_MOTION_PREFERENCE, "Reduced")
+            motionPreference.value = "Reduced"
+        } else if (motionPreference.value.equals("Reduced", ignoreCase = true)) {
+            settings.remove(KEY_MOTION_PREFERENCE)
+            motionPreference.value = null
+        }
+    }
+
+    override val motionPreferenceFlow: Flow<String?> = motionPreference.asStateFlow()
+    override suspend fun setMotionPreference(style: String?) {
+        val cleaned = style?.trim()?.takeIf { it.isNotEmpty() }
+        val isReduced = cleaned.equals("Reduced", ignoreCase = true)
+        if (cleaned == null) settings.remove(KEY_MOTION_PREFERENCE) else settings.set(KEY_MOTION_PREFERENCE, cleaned)
+        settings.set(KEY_REDUCE_MOTION, isReduced.toString())
+        motionPreference.value = cleaned
+        reduceMotion.value = isReduced
+    }
+
+    override val predictiveBackFlow: Flow<Boolean> = predictiveBack.asStateFlow()
+    override suspend fun setPredictiveBack(enabled: Boolean) {
+        settings.set(KEY_PREDICTIVE_BACK, enabled.toString())
+        predictiveBack.value = enabled
+    }
+
+    override val maxConcurrentDownloadsFlow: Flow<Int> = maxConcurrentDownloads.asStateFlow()
+    override suspend fun setMaxConcurrentDownloads(count: Int) {
+        val clamped = DownloadConcurrencyDefaults.sanitize(count)
+        settings.set(KEY_MAX_CONCURRENT_DOWNLOADS, clamped.toString())
+        maxConcurrentDownloads.value = clamped
     }
 
     override val hardwareDecodingFlow: Flow<Boolean> = hardwareDecoding.asStateFlow()
@@ -382,6 +425,9 @@ class StoredPikoPreferences(
             einkMode = einkMode.value,
             spoilerBlurEnabled = spoiler.value,
             reduceMotion = reduceMotion.value,
+            motionPreference = motionPreference.value,
+            predictiveBack = predictiveBack.value,
+            maxConcurrentDownloads = maxConcurrentDownloads.value,
             hardwareDecoding = hardwareDecoding.value,
             playbackMaxHeight = playbackMaxHeight.value,
             driveViewMode = driveViewMode.value,
@@ -694,6 +740,9 @@ class StoredPikoPreferences(
         const val KEY_SPOILER = "ui.spoilerBlur"
         const val KEY_AUTO_CHECK_UPDATES = "update.autoCheck"
         const val KEY_REDUCE_MOTION = "ui.reduceMotion"
+        const val KEY_MOTION_PREFERENCE = "ui.motionPreference"
+        const val KEY_PREDICTIVE_BACK = "ui.predictiveBack"
+        const val KEY_MAX_CONCURRENT_DOWNLOADS = "download.maxConcurrent"
         const val KEY_HARDWARE_DECODING = "player.hardwareDecoding"
         const val KEY_PLAYBACK_MAX_HEIGHT = "player.maxHeight"
         // 不沿用开发期的 download.maxHeight，理由同 Android 的 DOWNLOAD_MAX_HEIGHT

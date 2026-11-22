@@ -68,11 +68,44 @@ class InstantSaveRecords(
         val key = id ?: "${now()}-${Random.nextInt(0, Int.MAX_VALUE)}"
         _attempts.update { all ->
             val old = all.firstOrNull { it.id == key && it.account == account }
-            val work = old?.copy(finishedAtMs = null) ?: InstantSaveAttempt(key, account, title, target, files.toList(), now(),
+            val work = old?.copy(
+                finishedAtMs = null,
+                progressDone = 0,
+                progressTotal = files.size,
+                progressStatus = null,
+                progressDetail = null,
+                errorMessage = null,
+                locateOverrideId = null,
+            ) ?: InstantSaveAttempt(key, account, title, target, files.toList(), now(),
                 containerName = containerName, names = names.toMap(), keepStructure = keepStructure, reference = reference)
             all.filterNot { it.id == key } + work
         }
         return key
+    }
+
+    fun updateAttemptProgress(
+        id: String,
+        account: String,
+        done: Int = 0,
+        total: Int = 0,
+        status: String? = null,
+        detail: String? = null,
+    ) {
+        if (clientProvider.currentClient.value?.account != account) return
+        _attempts.update { all ->
+            all.map { work ->
+                if (work.id == id && work.account == account && work.isRunning) {
+                    work.copy(
+                        progressDone = done.coerceAtLeast(0),
+                        progressTotal = total.coerceAtLeast(0),
+                        progressStatus = status,
+                        progressDetail = detail,
+                    )
+                } else {
+                    work
+                }
+            }
+        }
     }
 
     fun finishAttempt(id: String, receipt: dev.piko.shared.data.InstantSaveReceipt) {
@@ -151,6 +184,39 @@ class InstantSaveRecords(
         if (_attempts.value.any { it.id == id && it.isRunning }) return false
         _attempts.update { all -> all.filterNot { it.id == id } }
         return true
+    }
+
+    fun dismissRunningAttempt(id: String, account: String) {
+        _attempts.update { all -> all.filterNot { it.id == id && it.account == account } }
+    }
+
+    fun failStreamingAttempt(
+        id: String,
+        account: String,
+        message: String,
+        confirmedCount: Int = 0,
+        locateId: String? = null,
+    ) {
+        val work = _attempts.value.firstOrNull { it.id == id && it.account == account } ?: return
+        _attempts.update { all ->
+            all.map { item ->
+                if (item.id == id && item.account == account) {
+                    item.copy(
+                        finishedAtMs = now(),
+                        progressDone = confirmedCount.coerceAtLeast(0),
+                        progressStatus = null,
+                        progressDetail = null,
+                        errorMessage = message,
+                        locateOverrideId = locateId ?: item.locateOverrideId,
+                    )
+                } else {
+                    item
+                }
+            }
+        }
+        if (clientProvider.currentClient.value?.account == account) {
+            _outcomes.tryEmit(InstantSaveAttemptOutcome(id, account, work.title, message))
+        }
     }
 
     fun clearAttempts(account: String) { _attempts.update { all -> all.filterNot { it.account == account } } }

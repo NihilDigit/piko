@@ -61,6 +61,8 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation3.runtime.NavEntryDecorator
+import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.NavDisplay
@@ -722,9 +724,28 @@ fun PikoMainScaffold(
                     Column(Modifier.weight(1f).fillMaxHeight()) {
                         Box(Modifier.weight(1f).fillMaxWidth()) {
                             val motion = LocalPikoMotion.current
+                            val predictiveBack by preferences.predictiveBackFlow.collectAsStateWithLifecycle(
+                                initialValue = preferences.currentSnapshot.predictiveBack,
+                            )
+                            val predictiveBackState = rememberUpdatedState(predictiveBack)
+                            val popBackState = rememberUpdatedState(nav::popBack)
+                            val predictiveBackToggleDecorator = remember(backStack) {
+                                NavEntryDecorator<NavKey>(
+                                    decorate = { entry ->
+                                        BackHandler(enabled = !predictiveBackState.value && backStack.size > 1) {
+                                            popBackState.value()
+                                        }
+                                        entry.Content()
+                                    },
+                                    onPop = {},
+                                )
+                            }
                             NavDisplay(
                                 backStack = backStack,
-                                entryDecorators = listOf(rememberSaveableStateHolderNavEntryDecorator()),
+                                entryDecorators = listOf(
+                                    rememberSaveableStateHolderNavEntryDecorator(),
+                                    predictiveBackToggleDecorator,
+                                ),
                                 onBack = nav::popBack,
                                 transitionSpec = {
                                     if (sidebarMode && isDesktopTopLevelContentKey(initialState.entries.lastOrNull()?.contentKey) &&

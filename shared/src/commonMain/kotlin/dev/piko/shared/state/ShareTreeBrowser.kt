@@ -12,7 +12,6 @@ import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFolder
 import dev.piko.shared.memory.MemoryPolicy
-import dev.piko.shared.memory.MemoryWorkKind
 import dev.piko.shared.memory.PikoMemoryGovernor
 import dev.piko.shared.notice.PikoErrorMapper
 import dev.piko.shared.util.PikoLock
@@ -745,18 +744,25 @@ class ShareTreeBrowser(
      * on arbitrarily large shares (no 64-folder limit, no 20-page limit).
      *
      * Walks only selected subtrees, flushes collected GCID files in chunks to [onBatch], and
-     * releases each chunk immediately so RAM stays bounded. All reads of browser state are
-     * synchronized under [stateLock] to remain thread-safe across `Main` and `Dispatchers.Default`.
+     * releases each chunk immediately so RAM stays bounded. Reads [PikoMemoryGovernor.policy]
+     * dynamically for batch/concurrency sizing without holding the non-reentrant governor permit
+     * across [onBatch] (whose vault manifest cache flush acquires [MemoryWorkKind.Persistence]).
      */
     suspend fun streamSelectedForVault(
+        onProgress: (ShareVaultProgress) -> Unit = {},
         onBatch: suspend (List<InstantFileItem>) -> Result<Int>,
     ): Result<Int> = withContext(Dispatchers.Default) {
-        val permit = memoryGovernor.acquire(MemoryWorkKind.TreeBuild, 0L)
         val visitedFolders = HashSet<String>()
         var foldersScanned = 0
         var filesCollected = 0
         var filesSaved = 0
         val buffer = ArrayList<InstantFileItem>(VAULT_BATCH_NORMAL)
+
+        fun publishProgress(folderName: String) {
+            val next = ShareVaultProgress(foldersScanned, filesCollected, filesSaved, folderName)
+            vaultProgress = next
+            onProgress(next)
+        }
 
         // Snapshot selection state once at save start so background traversal is consistent & lock-free.
         val selectionSnapshot = withPikoLock(stateLock) {
@@ -774,13 +780,19 @@ class ShareTreeBrowser(
             buffer.clear()
             val savedNow = onBatch(batch).getOrThrow()
             filesSaved += savedNow
-            vaultProgress = ShareVaultProgress(foldersScanned, filesCollected, filesSaved, vaultProgress?.currentFolderName.orEmpty())
+            publishProgress(vaultProgress?.currentFolderName.orEmpty())
         }
 
         fun currentBatchLimit(): Int = when (memoryGovernor.policy.value) {
             MemoryPolicy.Normal -> VAULT_BATCH_NORMAL
             MemoryPolicy.Constrained -> VAULT_BATCH_CONSTRAINED
             MemoryPolicy.Critical, MemoryPolicy.Background -> VAULT_BATCH_CRITICAL
+        }
+
+        fun singleFolderSafetyLimit(): Int = when (memoryGovernor.policy.value) {
+            MemoryPolicy.Normal -> VAULT_SINGLE_FOLDER_MAX_NORMAL
+            MemoryPolicy.Constrained -> VAULT_SINGLE_FOLDER_MAX_CONSTRAINED
+            MemoryPolicy.Critical, MemoryPolicy.Background -> VAULT_SINGLE_FOLDER_MAX_CRITICAL
         }
 
         fun currentConcurrency(): Int = when (memoryGovernor.policy.value) {
@@ -797,7 +809,7 @@ class ShareTreeBrowser(
             val wholeSelected: Boolean,
         )
 
-        vaultProgress = ShareVaultProgress(0, 0, 0, title)
+        publishProgress(title)
         try {
             runSuspendCatching {
                 val queue = ArrayDeque<FolderTask>()
@@ -820,11 +832,13 @@ class ShareTreeBrowser(
                         wave += queue.removeFirst()
                     }
 
-                    // Stream each folder in this wave page by page.
+                    // Stream each folder in this wave page by page, keeping a single folder's files together
+                    // so newly created subfolders write one complete v1 manifest via the fast path instead of
+                    // rewriting v1..vN every 200 items.
                     for (task in wave) {
                         currentCoroutineContext().ensureActive()
                         foldersScanned++
-                        vaultProgress = ShareVaultProgress(foldersScanned, filesCollected, filesSaved, task.name)
+                        publishProgress(task.name)
 
                         val cachedSnapshot = withPikoLock(stateLock) {
                             folders[task.folderId]?.takeIf { it.loaded }?.let { state ->
@@ -833,6 +847,8 @@ class ShareTreeBrowser(
                         }
                         var nextToken = ""
                         var firstLoop = true
+                        val folderItems = ArrayList<InstantFileItem>()
+                        val folderSafetyCap = singleFolderSafetyLimit()
 
                         while (firstLoop || nextToken.isNotEmpty()) {
                             currentCoroutineContext().ensureActive()
@@ -874,14 +890,28 @@ class ShareTreeBrowser(
                                     val gcid = stat.hash.ifBlank { null } ?: continue
                                     val resolved = ResolvedFile(relPath, stat.sizeBytes, gcid)
                                     val meta = VaultMediaMeta.fromFileStat(stat).takeUnless { it.isEmpty }
-                                    buffer += InstantFileItem(resolved, isInstantReady = true, meta = meta)
+                                    folderItems += InstantFileItem(resolved, isInstantReady = true, meta = meta)
                                     filesCollected++
-                                    if (buffer.size >= currentBatchLimit()) {
+                                    if (folderItems.size >= folderSafetyCap) {
+                                        if (buffer.isNotEmpty()) flushBuffer()
+                                        buffer.addAll(folderItems)
+                                        folderItems.clear()
                                         flushBuffer()
                                     }
                                 }
                             }
-                            vaultProgress = ShareVaultProgress(foldersScanned, filesCollected, filesSaved, task.name)
+                            publishProgress(task.name)
+                        }
+
+                        if (folderItems.isNotEmpty()) {
+                            val batchLimit = currentBatchLimit()
+                            if (buffer.isNotEmpty() && buffer.size + folderItems.size > batchLimit) {
+                                flushBuffer()
+                            }
+                            buffer.addAll(folderItems)
+                            if (buffer.size >= batchLimit) {
+                                flushBuffer()
+                            }
                         }
                     }
                 }
@@ -890,7 +920,6 @@ class ShareTreeBrowser(
             }
         } finally {
             vaultProgress = null
-            permit.release()
         }
     }
 
@@ -1170,6 +1199,9 @@ class ShareTreeBrowser(
         private const val VAULT_BATCH_NORMAL = 200
         private const val VAULT_BATCH_CONSTRAINED = 100
         private const val VAULT_BATCH_CRITICAL = 50
+        private const val VAULT_SINGLE_FOLDER_MAX_NORMAL = 25_000
+        private const val VAULT_SINGLE_FOLDER_MAX_CONSTRAINED = 5_000
+        private const val VAULT_SINGLE_FOLDER_MAX_CRITICAL = 1_000
         private const val VAULT_CONCURRENCY_NORMAL = 4
         private const val VAULT_CONCURRENCY_CONSTRAINED = 2
 

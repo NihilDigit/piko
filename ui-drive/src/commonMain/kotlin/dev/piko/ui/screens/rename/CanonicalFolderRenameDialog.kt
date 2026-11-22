@@ -87,7 +87,7 @@ fun CanonicalFolderRenameDialog(
 /** 扫描中与扫描失败时对话框里的样子：进度在中间，底栏是停止与取消。 */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun ScanContent(scan: CanonicalTreeScan, title: String, onClose: () -> Unit, fullscreen: Boolean) {
+internal fun ScanContent(scan: CanonicalTreeScan, title: String, onClose: () -> Unit, fullscreen: Boolean) {
     val colors = MaterialTheme.colorScheme
     val failed = scan.phase == CanonicalTreeScan.Phase.FAILED
     Column(modifier = Modifier.fillMaxSize()) {

@@ -473,8 +473,24 @@ internal class DriveListingEngine(
     internal fun rememberChildContents(folderId: String, files: List<FileStat>, complete: Boolean = true) {
         val (manifests, real) = files.partition(VaultStore::looksLikeManifest)
         val visibleReal = real.filterNot { it.trashed || VaultStore.isRecoveryFile(it) }
-        childContents.put(folderId, visibleReal.filterNot(FileStat::isFolder).take(MAX_REMEMBERED_CHILD_NAMES).map(ChildFile::of))
-        val hasEntries = manifests.isNotEmpty() && ctx.vaultAccessor().cached(folderId, files)?.any { it.isArchived } != false
+        val resolvedVaultEntries = if (manifests.isNotEmpty()) {
+            ctx.vaultAccessor().cached(folderId, files) ?: ctx.index.driveTreeIndex.vaultEntries(folderId)
+        } else {
+            emptyList()
+        }
+        if (manifests.isEmpty() || resolvedVaultEntries != null) {
+            val childFiles = buildList {
+                visibleReal.asSequence().filterNot(FileStat::isFolder).take(MAX_REMEMBERED_CHILD_NAMES).forEach { add(ChildFile.of(it)) }
+                if (size < MAX_REMEMBERED_CHILD_NAMES && !resolvedVaultEntries.isNullOrEmpty()) {
+                    resolvedVaultEntries.asSequence()
+                        .filter { it.isArchived }
+                        .take(MAX_REMEMBERED_CHILD_NAMES - size)
+                        .forEach { add(ChildFile.of(it.toFileStat(folderId))) }
+                }
+            }
+            childContents.put(folderId, childFiles)
+        }
+        val hasEntries = manifests.isNotEmpty() && resolvedVaultEntries?.any { it.isArchived } != false
         if (hasEntries || complete) childContents.markVaulted(folderId, hasEntries)
         val subfolders = visibleReal.filter { it.isFolder }.mapTo(mutableSetOf()) { it.id }
         val hasRealFiles = visibleReal.any { !it.isFolder && !it.isVaulted }
@@ -485,7 +501,7 @@ internal class DriveListingEngine(
         ) {
             ctx.overlay.vaultTrees.merge(mapOf(folderId to subfolders))
         }
-        _folderEmptiness.update { it + (folderId to files.isEmpty()) }
+        _folderEmptiness.update { it + (folderId to (visibleReal.isEmpty() && !hasEntries)) }
     }
 
     suspend fun probeFolderEmptiness(folderId: String) = withContext(Dispatchers.Default) {
@@ -515,7 +531,32 @@ internal class DriveListingEngine(
         if (treeChildren.coverage == DriveTreeIndex.FolderCoverage.COMPLETE ||
             (state.complete && treeChildren.coverage != DriveTreeIndex.FolderCoverage.DIRTY && (folderId.isEmpty() || folderId in state.entries))
         ) {
-            rememberChildContents(folderId, treeChildren.files, complete = true)
+            val treeFiles = treeChildren.files
+            val (askedBefore, serialBefore) = withPikoLock(ctx.index.treeStateLock) {
+                ctx.clientManager.currentClient.value to ctx.index.currentSerial
+            }
+            if (askedBefore == null) return@withContext null
+            if (treeFiles.any(VaultStore::looksLikeManifest) &&
+                ctx.vaultAccessor().cached(folderId, treeFiles) == null &&
+                driveTreeIndex.vaultEntries(folderId) == null
+            ) {
+                childNameFetches.withPermit {
+                    childContents.get(folderId)?.let { return@withPermit }
+                    if (ctx.clientManager.currentClient.value !== askedBefore) return@withPermit
+                    runSuspendCatching {
+                        ctx.overlay.readAndRecordVaultEntries(folderId, treeFiles, ctx.vaultAccessor(), askedBefore, logFailure = false)
+                    }
+                }
+            }
+            withPikoLock(ctx.index.treeStateLock) {
+                if (ctx.clientManager.currentClient.value !== askedBefore ||
+                    ctx.index.driveTreeIndex !== driveTreeIndex ||
+                    !ctx.index.unchangedSince(folderId, serialBefore)
+                ) {
+                    return@withContext childContents.get(folderId)
+                }
+                rememberChildContents(folderId, treeFiles, complete = true)
+            }
             return@withContext childContents.get(folderId)
         }
         childNameFetches.withPermit {
@@ -524,6 +565,11 @@ internal class DriveListingEngine(
             val serial = withPikoLock(ctx.index.treeStateLock) { ctx.index.currentSerial }
             val files = runSuspendCatching { asked.listFilesPaged(parentId = folderId, pageSize = CHILD_NAME_PAGE).files }
                 .getOrNull() ?: return@withPermit null
+            if (files.any(VaultStore::looksLikeManifest) && ctx.vaultAccessor().cached(folderId, files) == null) {
+                runSuspendCatching {
+                    ctx.overlay.readAndRecordVaultEntries(folderId, files, ctx.vaultAccessor(), asked, logFailure = false)
+                }
+            }
             val complete = files.size < CHILD_NAME_PAGE
             val indexUpdated = withPikoLock(ctx.index.treeStateLock) {
                 if (ctx.clientManager.currentClient.value !== asked || !ctx.index.unchangedSince(folderId, serial)) {
@@ -726,7 +772,7 @@ internal class DriveListingEngine(
 
     private fun FileStat.isMyPacksFolder(): Boolean = isFolder && name.lowercase() in MY_PACKS_FOLDER_NAMES
 
-    private companion object {
+    internal companion object {
         const val FOLDER_USAGE_CONCURRENCY = 4
         const val CHILD_NAME_PAGE = 20
         const val CHILD_NAME_CONCURRENCY = 2

@@ -20,12 +20,19 @@ data class InstantSaveAttempt(
     val reference: Boolean = false,
     val receipt: InstantSaveReceipt? = null,
     val finishedAtMs: Long? = null,
+    val progressDone: Int = 0,
+    val progressTotal: Int = files.size,
+    val progressStatus: String? = null,
+    val progressDetail: String? = null,
+    val errorMessage: String? = null,
+    val locateOverrideId: String? = null,
 ) {
     val isRunning: Boolean get() = finishedAtMs == null
-    val isComplete: Boolean get() = !isRunning && receipt?.let {
+    val isComplete: Boolean get() = !isRunning && errorMessage == null && receipt?.let {
         !it.requiresInspection && it.failed.isEmpty() && it.notAttempted.isEmpty() &&
             it.confirmed.keys.containsAll(files.filter { file -> file.gcid != null }.map { file -> file.path })
     } == true
-    val locateId: String? get() = receipt?.folders?.get("")?.takeIf { it.isNotEmpty() }
+    val locateId: String? get() = locateOverrideId?.takeIf { it.isNotEmpty() }
+        ?: receipt?.folders?.get("")?.takeIf { it.isNotEmpty() }
         ?: receipt?.confirmed?.values?.firstOrNull() ?: target.id
 }

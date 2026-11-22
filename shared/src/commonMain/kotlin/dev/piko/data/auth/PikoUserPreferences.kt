@@ -62,6 +62,14 @@ object CachePolicyDefaults {
     val MaxAgeDaysChoices: List<Int> = listOf(3, 7, 14, 30, 0)
 }
 
+/** 同时下载文件数的默认值与范围（设备本地设置，不参与跨设备同步）。 */
+object DownloadConcurrencyDefaults {
+    const val MIN = 1
+    const val MAX = 8
+    const val DEFAULT = 3
+    fun sanitize(value: Int?): Int = (value ?: DEFAULT).coerceIn(MIN, MAX)
+}
+
 enum class AppLanguage(val tag: String, val nativeLabel: String) {
     SYSTEM("system", ""),
     ZH_CN("zh-CN", "简体中文"),
@@ -110,6 +118,9 @@ data class PikoPreferencesSnapshot(
     val einkMode: Boolean = false,
     val spoilerBlurEnabled: Boolean = false,
     val reduceMotion: Boolean = false,
+    val motionPreference: String? = null,
+    val predictiveBack: Boolean = true,
+    val maxConcurrentDownloads: Int = DownloadConcurrencyDefaults.DEFAULT,
     val hardwareDecoding: Boolean = true,
     val playbackMaxHeight: Int = PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT,
     val driveViewMode: String = "POSTER",
@@ -387,6 +398,21 @@ interface PikoUserPreferences {
     val clipVolumeFlow: Flow<Float> get() = flowOf(1f)
     val clipMutedFlow: Flow<Boolean> get() = flowOf(false)
     suspend fun setClipAudio(volume: Float, muted: Boolean) {}
+
+    /**
+     * 界面动画程度（"Reduced" / "Standard" / "Expressive"，null 表示跟随当前平台默认档：桌面 Standard，移动 Expressive）。
+     * 仅保存在当前设备，不参与跨设备同步。
+     */
+    val motionPreferenceFlow: Flow<String?> get() = flowOf(null)
+    suspend fun setMotionPreference(style: String?) {}
+
+    /** 系统预测性返回手势（侧滑实时预览上一页），默认开启。仅在支持该能力的平台展示，保存在当前设备。 */
+    val predictiveBackFlow: Flow<Boolean> get() = flowOf(true)
+    suspend fun setPredictiveBack(enabled: Boolean) {}
+
+    /** 同时下载文件数上限（1..8，默认 3）。仅保存在当前设备，不参与跨设备同步。 */
+    val maxConcurrentDownloadsFlow: Flow<Int> get() = flowOf(DownloadConcurrencyDefaults.DEFAULT)
+    suspend fun setMaxConcurrentDownloads(count: Int) {}
 
     /** 播放器四态自定义布局、听音频与手势配置。跟着设置同步。 */
     val playerLayoutPrefsFlow: Flow<PlayerLayoutPrefs> get() = flowOf(PlayerLayoutPrefs.Default)

@@ -19,6 +19,7 @@ import androidx.compose.material.icons.outlined.Animation
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Contrast
 import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.Gesture
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.MenuBook
@@ -60,6 +61,7 @@ import dev.piko.ui.components.verticalWheelScrollsRow
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.MotionLevel
 import dev.piko.ui.theme.SeedTheme
 import dev.piko.ui.theme.ThemeMode
 import dev.piko.ui.theme.effectiveSeed
@@ -89,9 +91,11 @@ internal fun hasAppearanceSectionMatches(searchQuery: String): Boolean {
         match("关闭时最小化到托盘", "Minimize to tray on close", "tray", "トレイ", "트레이", "系統匣")
     val matchCompactBar = platform.compactTitleBar != null &&
         match("紧凑标题栏", "Compact title bar", "titlebar", "タイトルバー", "제목 표시줄", "精簡標題列")
-    val matchMotion = match("减少动画", "Reduce motion", "animation", "アニメーション", "애니메이션", "減少動畫")
+    val matchMotion = match("动画程度", "减少动画", "减弱", "标准", "灵动", "Motion", "Reduce motion", "Reduced", "Standard", "Expressive", "animation", "アニメーション", "애니메이션", "減少動畫", "動畫程度")
+    val matchPredictiveBack = platform.supportsPredictiveBack &&
+        match("预测性返回手势", "预测性返回", "Predictive back", "侧滑返回", "エッジスワイプ", "예측형 뒤로", "預測性返回手勢")
     return matchLang || matchEink || matchThemeMode || matchPureBlack || matchThemeColor ||
-        matchStartup || matchTray || matchCompactBar || matchMotion
+        matchStartup || matchTray || matchCompactBar || matchMotion || matchPredictiveBack
 }
 
 internal fun hasCustomizeSectionMatches(searchQuery: String): Boolean {
@@ -126,6 +130,9 @@ internal fun AppearanceSettingsSection(
     val scope = rememberCoroutineScope()
 
     val appLanguage by sessionManager.appLanguageFlow.collectAsStateWithLifecycle(initialValue = AppLanguage.SYSTEM)
+    val predictiveBack by sessionManager.predictiveBackFlow.collectAsStateWithLifecycle(
+        initialValue = sessionManager.currentSnapshot.predictiveBack,
+    )
     var showLanguage by remember { mutableStateOf(false) }
     val systemLanguageLabel = systemLanguageOptionLabel()
 
@@ -162,10 +169,12 @@ internal fun AppearanceSettingsSection(
         match("关闭时最小化到托盘", "Minimize to tray on close", "tray", "トレイ", "트레이", "系統匣")
     val matchCompactBar = platform.compactTitleBar != null &&
         match("紧凑标题栏", "Compact title bar", "titlebar", "タイトルバー", "제목 표시줄", "精簡標題列")
-    val matchMotion = match("减少动画", "Reduce motion", "animation", "アニメーション", "애니메이션", "減少動畫")
+    val matchMotion = match("动画程度", "减少动画", "减弱", "标准", "灵动", "Motion", "Reduce motion", "Reduced", "Standard", "Expressive", "animation", "アニメーション", "애니메이션", "減少動畫", "動畫程度")
+    val matchPredictiveBack = platform.supportsPredictiveBack &&
+        match("预测性返回手势", "预测性返回", "Predictive back", "侧滑返回", "エッジスワイプ", "예측형 뒤로", "預測性返回手勢")
 
     if (matchLang || matchEink || matchThemeMode || matchPureBlack || matchThemeColor ||
-        matchStartup || matchTray || matchCompactBar || matchMotion
+        matchStartup || matchTray || matchCompactBar || matchMotion || matchPredictiveBack
     ) {
         SettingsSectionBlock(
             section = SettingsSection.Appearance,
@@ -307,18 +316,35 @@ internal fun AppearanceSettingsSection(
                     }
                 }
                 if (matchMotion) {
-                    // 与系统设置及水墨屏模式取或，见 PikoMotionScale 与 PikoTheme。
-                    SettingsSwitchRow(
-                        icon = Icons.Outlined.Animation,
-                        title = tr("减少动画", "Reduce motion", "アニメーションを減らす", "애니메이션 줄이기", "減少動畫"),
+                    val selectedMotion = if (appearance.isEInk) {
+                        MotionLevel.Reduced
+                    } else {
+                        MotionLevel.fromPreference(appearance.motionPreference, platform.motionStyle)
+                    }
+                    MotionLevelRow(
+                        selected = selectedMotion,
+                        enabled = !appearance.isEInk,
                         supporting = when {
                             appearance.isEInk -> tr("水墨屏模式已自动关闭过渡动画", "Transitions are disabled automatically in E-Ink mode", "E-Inkモードではアニメーションが自動的に無効になります", "E-Ink 모드에서는 전환 애니메이션이 자동으로 꺼집니다", "水墨螢幕模式已自動關閉轉場動畫")
                             motionScale.systemScale == 0f -> tr("系统已关闭动画", "Animations disabled by system", "システムでアニメーションが無効です", "시스템에서 애니메이션을 껐습니다", "系統已關閉動畫")
-                            else -> tr("界面切换不播放过渡", "Disable transition animations", "画面切り替えのアニメーションを無効にする", "화면 전환 애니메이션 끄기", "切換介面時不播放轉場動畫")
+                            else -> selectedMotion.subtitle
                         },
-                        checked = motionScale.appReduced || appearance.isEInk,
-                        enabled = !appearance.isEInk,
-                        onCheckedChange = { scope.launch { sessionManager.setReduceMotion(it) } },
+                        onSelect = { level -> scope.launch { sessionManager.setMotionPreference(level.name) } },
+                    )
+                }
+                if (matchPredictiveBack) {
+                    SettingsSwitchRow(
+                        icon = Icons.Outlined.Gesture,
+                        title = tr("预测性返回手势", "Predictive back gesture", "予測型「戻る」ジェスチャー", "예측형 뒤로 제스처", "預測性返回手勢"),
+                        supporting = tr(
+                            "侧滑返回时实时预览上一页过渡动画",
+                            "Preview the previous screen while swiping back",
+                            "画面端からのスワイプ時に前の画面の遷移をリアルタイムでプレビュー",
+                            "측면 스와이프로 뒤로 갈 때 이전 화면 전환을 실시간 미리 보기",
+                            "側滑返回時即時預覽上一頁轉場動畫",
+                        ),
+                        checked = predictiveBack,
+                        onCheckedChange = { scope.launch { sessionManager.setPredictiveBack(it) } },
                     )
                 }
             }
@@ -406,6 +432,34 @@ private fun ThemeModeRow(
     SettingsRow(
         title = tr("深色模式", "Theme mode", "テーマモード", "테마 모드", "深色模式"),
         icon = Icons.Outlined.DarkMode,
+        supporting = supporting,
+        enabled = enabled,
+        trailing = if (style.trailingChoices) ({ choice(false) }) else null,
+        below = if (style.trailingChoices) null else ({ choice(true) }),
+    )
+}
+
+@Composable
+private fun MotionLevelRow(
+    selected: MotionLevel,
+    onSelect: (MotionLevel) -> Unit,
+    enabled: Boolean = true,
+    supporting: String? = null,
+) {
+    val style = settingsStyle()
+    val choice: @Composable (Boolean) -> Unit = { fill ->
+        SettingsSegmentedChoice(
+            options = MotionLevel.entries,
+            selected = selected,
+            label = { it.label },
+            onSelect = onSelect,
+            fill = fill,
+            enabled = enabled,
+        )
+    }
+    SettingsRow(
+        title = tr("动画程度", "Motion", "アニメーション", "애니메이션 강도", "動畫程度"),
+        icon = Icons.Outlined.Animation,
         supporting = supporting,
         enabled = enabled,
         trailing = if (style.trailingChoices) ({ choice(false) }) else null,

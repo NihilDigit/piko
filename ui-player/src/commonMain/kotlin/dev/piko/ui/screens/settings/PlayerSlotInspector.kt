@@ -71,6 +71,7 @@ import dev.piko.shared.media.player.PlayerLayoutPrefs
 import dev.piko.shared.media.player.PlayerLayoutPreset
 import dev.piko.shared.media.player.PlayerPanelItem
 import dev.piko.shared.media.player.SEEK_SECONDS_PRESETS
+import dev.piko.shared.i18n.tr
 import dev.piko.ui.components.MenuMotion
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.PikoTextField
@@ -148,29 +149,60 @@ internal fun PresetAndTouchStrip(
             if (showTouchCenterToggle) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .toggleable(
-                            value = prefs.showCenterControlsOnTouch,
-                            role = Role.Switch,
-                            onValueChange = { enabled ->
-                                onUpdate { it.copy(showCenterControlsOnTouch = enabled) }
-                            },
-                        )
-                        .handCursor()
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Text(
-                        text = stringResource(Res.string.player_custom_show_center_on_touch),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                    )
-                    Switch(
-                        checked = prefs.showCenterControlsOnTouch,
-                        onCheckedChange = null,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .toggleable(
+                                value = prefs.translucentPlayButton,
+                                role = Role.Switch,
+                                onValueChange = { enabled ->
+                                    onUpdate { it.copy(translucentPlayButton = enabled) }
+                                },
+                            )
+                            .handCursor()
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            text = tr("半透明播放按钮", "Translucent play button", "半透明の再生ボタン", "반투명 재생 버튼", "半透明播放按鈕"),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                        Switch(
+                            checked = prefs.translucentPlayButton,
+                            onCheckedChange = null,
+                        )
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .toggleable(
+                                value = prefs.showCenterControlsOnTouch,
+                                role = Role.Switch,
+                                onValueChange = { enabled ->
+                                    onUpdate { it.copy(showCenterControlsOnTouch = enabled) }
+                                },
+                            )
+                            .handCursor()
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            text = stringResource(Res.string.player_custom_show_center_on_touch),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                        Switch(
+                            checked = prefs.showCenterControlsOnTouch,
+                            onCheckedChange = null,
+                        )
+                    }
                 }
             }
         }

@@ -804,6 +804,9 @@ abstract class WriteDevLaunchArgsTask : DefaultTask() {
     @get:Input
     abstract val devSocketPath: Property<String>
 
+    @get:Input
+    abstract val gradleUserHomePath: Property<String>
+
     @get:Classpath
     abstract val runtimeClasspath: ConfigurableFileCollection
 
@@ -815,7 +818,32 @@ abstract class WriteDevLaunchArgsTask : DefaultTask() {
         val dir = outputDir.get().asFile.apply { mkdirs() }
         dir.resolve("java-exec.txt").writeText(javaExecutable.get(), Charsets.UTF_8)
         dir.resolve("dev-socket.txt").writeText(devSocketPath.get(), Charsets.UTF_8)
-        val cp = runtimeClasspath.files.joinToString(File.pathSeparator) { it.absolutePath }
+        val gradleHome = Path.of(gradleUserHomePath.get()).toAbsolutePath().normalize()
+        val jarsDir = dir.resolve("jars").apply { mkdirs() }
+        val activeSnapshots = HashSet<String>()
+        // 将本仓库及复合构建产出的模块 jar 快照拷贝至 dev-launch/jars/（带时间戳与体积文件名），
+        // 避免后台运行 :shared:desktopTest 等重打模块 jar 时原地覆盖正在运行的 -NoBuild 开发窗口类路径，
+        // 引发懒加载类的 NoClassDefFoundError / NoSuchMethodError，同时规避 Windows 文件句柄占用冲突。
+        val resolvedClasspath = runtimeClasspath.files.mapIndexed { index, file ->
+            val normalized = file.toPath().toAbsolutePath().normalize()
+            if (file.isFile && file.extension.equals("jar", ignoreCase = true) && !normalized.startsWith(gradleHome)) {
+                val snapshotName = "%03d-%d-%d-%s".format(index, file.lastModified(), file.length(), file.name)
+                val target = jarsDir.resolve(snapshotName)
+                if (!target.isFile || target.length() != file.length()) {
+                    file.copyTo(target, overwrite = true)
+                }
+                activeSnapshots.add(snapshotName)
+                target
+            } else {
+                file
+            }
+        }
+        jarsDir.listFiles()?.forEach { existing ->
+            if (existing.name !in activeSnapshots) {
+                runCatching { existing.delete() }
+            }
+        }
+        val cp = resolvedClasspath.joinToString(File.pathSeparator) { it.absolutePath }
         val lines = buildList {
             jvmArgs.get().forEach { add(quoteArg(it)) }
             add("-cp")
@@ -847,6 +875,7 @@ tasks.register<WriteDevLaunchArgsTask>("prepareDevLaunch") {
     devSocketPath.set(
         Path.of(System.getProperty("java.io.tmpdir"), "piko@${Integer.toHexString(normalizedDevRoot.hashCode())}.sock").toString(),
     )
+    gradleUserHomePath.set(gradle.gradleUserHomeDir.absolutePath)
     runtimeClasspath.from(tasks.named("desktopJar"))
     runtimeClasspath.from(configurations.named("desktopRuntimeClasspath"))
     outputDir.set(layout.buildDirectory.dir("dev-launch"))

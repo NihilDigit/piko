@@ -1010,6 +1010,7 @@ class TransfersState(
         is TransferItem.InstantAttempt -> when {
             item.work.isRunning -> Section.PROGRESS
             item.work.isComplete -> Section.COMPLETED
+            item.work.errorMessage != null -> Section.ATTENTION
             item.work.receipt?.let { it.failed.isNotEmpty() || it.notAttempted.isNotEmpty() } == true -> Section.ATTENTION
             else -> Section.PROGRESS
         }

@@ -722,6 +722,7 @@ private fun RowScope.RenderVideoPanelItems(
                                         onPrevious = {},
                                         onNext = {},
                                         onSeekDeltaMillis = {},
+                                        showPlayBackground = item.showBackground,
                                         tooltipBelow = inTopBar,
                                         previewMode = true,
                                         selectedSlot = editScope.selectedCenterSlot,
@@ -745,6 +746,7 @@ private fun RowScope.RenderVideoPanelItems(
                                 onPrevious = env.onPrevious,
                                 onNext = env.onNext,
                                 onSeekDeltaMillis = env.onSeekDeltaMillis,
+                                showPlayBackground = item.showBackground,
                                 tooltipBelow = inTopBar,
                             )
                         }
@@ -841,7 +843,8 @@ private fun RowScope.RenderVideoPanelItems(
                             Box(mod) {
                                 PlayerVolumeControl(
                                     volume = env.volume,
-                                    showSlider = !env.compactWidth && !inTopBar,
+                                    showSlider = !env.compactWidth,
+                                    collapseWhenIdle = inTopBar,
                                     onVolumeChange = if (editScope != null) ({ editScope.onSelectSlot(barSlot, index) }) else env.onVolumeChange,
                                     onToggleMute = selectOrRun(env.onToggleMute),
                                     onDraggingChange = env.onVolumeDraggingChange,

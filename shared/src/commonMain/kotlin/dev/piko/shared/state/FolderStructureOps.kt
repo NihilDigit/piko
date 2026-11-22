@@ -1,7 +1,11 @@
 package dev.piko.shared.state
 
 import dev.piko.shared.data.ArchiveEntryId
+import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.PikoFileSortOrder
+import dev.piko.shared.data.VaultEdits
+import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.data.VaultStore
 import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.isImportPreview
@@ -114,12 +118,22 @@ interface FolderStructureBackend {
 
     suspend fun trashFiles(ids: List<String>): Result<Unit>
 
-    fun isVaultedFolder(folderId: String): Boolean
+    /**
+     * Moves archived [VaultEntry] items (`sourceParentId -> (entryId -> optionalNewName)`) into
+     * [targetFolderId]'s manifest first, then removes them from each source folder's manifest.
+     * Returns the exact set of `(sourceParentId, entryId)` pairs confirmed migrated.
+     */
+    suspend fun moveVaultEntries(
+        targetFolderId: String,
+        movesBySourceFolder: Map<String, Map<String, String?>>,
+    ): Result<Set<Pair<String, String>>> = Result.success(emptySet())
+
+    fun isVaultedFolder(folderId: String): Boolean = false
 }
 
 fun PikoDriveRepository.asFolderStructureBackend(): FolderStructureBackend = object : FolderStructureBackend {
     override suspend fun listChildren(folderId: String): Result<List<FileStat>> =
-        runSuspendCatching { scanRealChildren(folderId) }
+        listBrowsableStrict(folderId, PikoFileSortOrder.NAME_ASC)
 
     override suspend fun moveFiles(ids: List<String>, targetParentId: String): Result<Unit> =
         move(ids, targetParentId)
@@ -129,6 +143,51 @@ fun PikoDriveRepository.asFolderStructureBackend(): FolderStructureBackend = obj
 
     override suspend fun trashFiles(ids: List<String>): Result<Unit> =
         trash(ids)
+
+    override suspend fun moveVaultEntries(
+        targetFolderId: String,
+        movesBySourceFolder: Map<String, Map<String, String?>>,
+    ): Result<Set<Pair<String, String>>> = runSuspendCatching {
+        if (movesBySourceFolder.isEmpty()) return@runSuspendCatching emptySet()
+        val account = currentAccount ?: error("Not signed in")
+        val store = vaultAccess(account) ?: error("Vault store unavailable")
+        val movedEntries = ArrayList<VaultEntry>()
+        val sourceRemovals = LinkedHashMap<String, Set<String>>()
+        val migratedPairs = LinkedHashSet<Pair<String, String>>()
+
+        for ((sourceFolderId, entryRenames) in movesBySourceFolder) {
+            if (entryRenames.isEmpty()) continue
+            val currentEntries = store.committed(sourceFolderId).getOrThrow()
+            val byId = currentEntries.associateBy { it.id }
+            val matchedIds = LinkedHashSet<String>()
+            for ((entryId, newName) in entryRenames) {
+                val entry = byId[entryId]?.takeIf { it.isArchived } ?: continue
+                movedEntries += if (newName != null && newName != entry.name) entry.copy(name = newName) else entry
+                matchedIds += entryId
+                migratedPairs += sourceFolderId to entryId
+            }
+            if (matchedIds.isNotEmpty()) {
+                sourceRemovals[sourceFolderId] = matchedIds
+            }
+        }
+        if (movedEntries.isEmpty()) return@runSuspendCatching emptySet()
+
+        // 1. Commit all moved entries into destination manifest in a single batch first (zero data loss if interrupted).
+        store.update(targetFolderId, VaultEdits.add(movedEntries)).getOrThrow()
+
+        // 2. Remove moved entry IDs from each source folder manifest.
+        for ((sourceFolderId, removeIds) in sourceRemovals) {
+            if (sourceFolderId == targetFolderId) continue
+            store.update(sourceFolderId, VaultEdits.remove(removeIds)).getOrThrow()
+        }
+
+        val touched = buildSet {
+            add(targetFolderId)
+            addAll(sourceRemovals.keys)
+        }
+        applyChange(DriveChange.ContentsChanged(touched))
+        migratedPairs
+    }
 
     override fun isVaultedFolder(folderId: String): Boolean =
         folderId in vaultedFolders.value
@@ -171,7 +230,8 @@ class FolderStructureOps(
             suspend fun childrenOf(folderId: String): List<FileStat> {
                 childrenCache[folderId]?.let { return it }
                 currentCoroutineContext().ensureActive()
-                val loaded = backend.listChildren(folderId).getOrThrow().filterNot { it.trashed }
+                val loaded = backend.listChildren(folderId).getOrThrow()
+                    .filterNot { it.trashed || VaultStore.looksLikeManifest(it) || VaultStore.isRecoveryFile(it) }
                 childrenCache[folderId] = loaded
                 return loaded
             }
@@ -179,27 +239,7 @@ class FolderStructureOps(
             // Compute direct child counts for all selected folders (also drives default Merge target).
             val directChildCounts = LinkedHashMap<String, Int>(selectedFolders.size)
             for (folder in selectedFolders) {
-                if (backend.isVaultedFolder(folder.id)) {
-                    return@runSuspendCatching emptyPlan(
-                        options = options,
-                        workingFolderId = workingFolderId,
-                        workingFolderName = workingFolderName,
-                        selectedFolders = selectedFolders,
-                        directChildCounts = directChildCounts,
-                        blockedReason = VAULT_UNSUPPORTED_REASON,
-                    )
-                }
                 val direct = childrenOf(folder.id)
-                if (direct.any(VaultStore::looksLikeManifest)) {
-                    return@runSuspendCatching emptyPlan(
-                        options = options,
-                        workingFolderId = workingFolderId,
-                        workingFolderName = workingFolderName,
-                        selectedFolders = selectedFolders,
-                        directChildCounts = directChildCounts,
-                        blockedReason = VAULT_UNSUPPORTED_REASON,
-                    )
-                }
                 directChildCounts[folder.id] = direct.size
             }
 
@@ -269,27 +309,7 @@ class FolderStructureOps(
                             while (currentChildren.size == 1 && currentChildren[0].isFolder && depth < MAX_UNWRAP_DEPTH) {
                                 val nextFolder = currentChildren[0]
                                 if (!chain.add(nextFolder.id)) break
-                                if (backend.isVaultedFolder(nextFolder.id)) {
-                                    return@runSuspendCatching emptyPlan(
-                                        options = effectiveOptions,
-                                        workingFolderId = workingFolderId,
-                                        workingFolderName = workingFolderName,
-                                        selectedFolders = selectedFolders,
-                                        directChildCounts = directChildCounts,
-                                        blockedReason = VAULT_UNSUPPORTED_REASON,
-                                    )
-                                }
                                 val nextChildren = childrenOf(nextFolder.id)
-                                if (nextChildren.any(VaultStore::looksLikeManifest)) {
-                                    return@runSuspendCatching emptyPlan(
-                                        options = effectiveOptions,
-                                        workingFolderId = workingFolderId,
-                                        workingFolderName = workingFolderName,
-                                        selectedFolders = selectedFolders,
-                                        directChildCounts = directChildCounts,
-                                        blockedReason = VAULT_UNSUPPORTED_REASON,
-                                    )
-                                }
                                 current = nextFolder
                                 currentChildren = nextChildren
                                 penetratedWrapperCount++
@@ -317,9 +337,6 @@ class FolderStructureOps(
 
                         suspend fun walk(folder: FileStat, ancestors: Set<String>): Boolean {
                             val children = childrenOf(folder.id)
-                            if (backend.isVaultedFolder(folder.id) || children.any(VaultStore::looksLikeManifest)) {
-                                throw VaultManifestBlockedException()
-                            }
                             var skippedHere = false
                             for (child in children) {
                                 if (child.isFolder) {
@@ -337,32 +354,21 @@ class FolderStructureOps(
                             return skippedHere
                         }
 
-                        try {
-                            val rootHasSkipped = walk(root, setOf(root.id))
-                            if (!rootHasSkipped) {
-                                foldersToTrash += root
-                            } else {
-                                // Only trash inner subtrees that became completely empty!
-                                fun collectEmptySubtrees(parentId: String) {
-                                    for (sub in childFoldersByParent[parentId].orEmpty()) {
-                                        if (sub.id !in hasSkippedDescendant) {
-                                            foldersToTrash += sub
-                                        } else {
-                                            collectEmptySubtrees(sub.id)
-                                        }
+                        val rootHasSkipped = walk(root, setOf(root.id))
+                        if (!rootHasSkipped) {
+                            foldersToTrash += root
+                        } else {
+                            // Only trash inner subtrees that became completely empty!
+                            fun collectEmptySubtrees(parentId: String) {
+                                for (sub in childFoldersByParent[parentId].orEmpty()) {
+                                    if (sub.id !in hasSkippedDescendant) {
+                                        foldersToTrash += sub
+                                    } else {
+                                        collectEmptySubtrees(sub.id)
                                     }
                                 }
-                                collectEmptySubtrees(root.id)
                             }
-                        } catch (_: VaultManifestBlockedException) {
-                            return@runSuspendCatching emptyPlan(
-                                options = effectiveOptions,
-                                workingFolderId = workingFolderId,
-                                workingFolderName = workingFolderName,
-                                selectedFolders = selectedFolders,
-                                directChildCounts = directChildCounts,
-                                blockedReason = VAULT_UNSUPPORTED_REASON,
-                            )
+                            collectEmptySubtrees(root.id)
                         }
                     }
                 }
@@ -426,9 +432,12 @@ class FolderStructureOps(
         var firstError: String? = null
 
         try {
-            // Phase 1: Rename colliding items that use RENAME_SUFFIX before moving.
-            val movesToRename = plan.moves.filter { it.renamedTo != null }
-            val readyToMove = ArrayList<PlannedMove>(plan.moves.size)
+            val (vaultPlanned, realPlanned) = plan.moves.partition { it.item.isVaulted }
+
+            // Phase 1: Rename colliding real items that use RENAME_SUFFIX before moving.
+            // (Archived VaultEntry renames are applied atomically inside Phase 2's manifest write.)
+            val movesToRename = realPlanned.filter { it.renamedTo != null }
+            val readyRealMoves = ArrayList<PlannedMove>(realPlanned.size)
             val renameFailedIds = HashSet<String>()
 
             if (movesToRename.isNotEmpty()) {
@@ -454,17 +463,18 @@ class FolderStructureOps(
                 }
             }
 
-            for (planned in plan.moves) {
+            for (planned in realPlanned) {
                 if (planned.item.id !in renameFailedIds) {
-                    readyToMove += planned
+                    readyRealMoves += planned
                 }
             }
 
-            // Phase 2: Batch-move items to plan.targetFolderId.
-            if (readyToMove.isNotEmpty()) {
-                onProgress(FolderStructureProgress(FolderStructurePhase.MOVING, 0, readyToMove.size))
+            // Phase 2: Batch-move real items & atomically migrate archived VaultEntry manifests to plan.targetFolderId.
+            val totalMoveItems = readyRealMoves.size + vaultPlanned.size
+            if (totalMoveItems > 0) {
+                onProgress(FolderStructureProgress(FolderStructurePhase.MOVING, 0, totalMoveItems))
                 var processed = 0
-                for (chunk in readyToMove.chunked(BATCH_LIMIT)) {
+                for (chunk in readyRealMoves.chunked(BATCH_LIMIT)) {
                     currentCoroutineContext().ensureActive()
                     val ids = chunk.map { it.item.id }
                     val result = backend.moveFiles(ids, plan.targetFolderId)
@@ -483,7 +493,48 @@ class FolderStructureOps(
                         }
                     }
                     processed += chunk.size
-                    onProgress(FolderStructureProgress(FolderStructurePhase.MOVING, processed, readyToMove.size))
+                    onProgress(FolderStructureProgress(FolderStructurePhase.MOVING, processed, totalMoveItems))
+                }
+
+                if (vaultPlanned.isNotEmpty()) {
+                    currentCoroutineContext().ensureActive()
+                    val movesBySource = LinkedHashMap<String, MutableMap<String, String?>>()
+                    for (planned in vaultPlanned) {
+                        val entryId = VaultEntry.entryIdOf(planned.item.id)
+                        if (entryId == null) {
+                            failedAncestors.addAll(planned.ancestorFolderIds)
+                            failedCount++
+                            continue
+                        }
+                        movesBySource.getOrPut(planned.sourceParentId) { LinkedHashMap() }[entryId] = planned.renamedTo
+                    }
+                    val vaultResult = backend.moveVaultEntries(plan.targetFolderId, movesBySource)
+                    if (vaultResult.isSuccess) {
+                        val migratedPairs = vaultResult.getOrDefault(emptySet())
+                        for (planned in vaultPlanned) {
+                            val entryId = VaultEntry.entryIdOf(planned.item.id)
+                            if (entryId != null && (planned.sourceParentId to entryId) in migratedPairs) {
+                                movedCount++
+                                if (planned.renamedTo != null) renamedCount++
+                            } else {
+                                failedAncestors.addAll(planned.ancestorFolderIds)
+                                failedCount++
+                            }
+                        }
+                    } else {
+                        val err = vaultResult.exceptionOrNull()
+                        if (err is CancellationException) throw err
+                        PikoLog.w(TAG, "FolderStructure vault entry migration failed (count=${vaultPlanned.size}, target=${logFolder(plan.targetFolderId)})", err)
+                        for (planned in vaultPlanned) {
+                            failedAncestors.addAll(planned.ancestorFolderIds)
+                        }
+                        failedCount += vaultPlanned.size
+                        if (firstError == null && err != null) {
+                            firstError = PikoErrorMapper.failure(tr("移动归档条目", "Move archived items", "アーカイブ項目を移動", "보관 항목 이동", "移動歸檔項目"), err)
+                        }
+                    }
+                    processed += vaultPlanned.size
+                    onProgress(FolderStructureProgress(FolderStructurePhase.MOVING, processed, totalMoveItems))
                 }
             }
 
@@ -575,21 +626,10 @@ class FolderStructureOps(
         blockedReason = blockedReason,
     )
 
-    private class VaultManifestBlockedException : Exception()
-
     companion object {
         private const val TAG = "FolderStructure"
         private const val BATCH_LIMIT = 500
         private const val MAX_UNWRAP_DEPTH = 64
-
-        private val VAULT_UNSUPPORTED_REASON: String
-            get() = tr(
-                "包含归档清单的文件夹暂不支持此操作，请先取消归档",
-                "Folders containing archived items are not supported yet; unarchive first",
-                "アーカイブを含むフォルダーはこの操作に対応していません。先にアーカイブを解除してください",
-                "보관 항목이 포함된 폴더는 아직 지원하지 않습니다. 먼저 보관을 해제해 주세요",
-                "包含歸檔清單的資料夾暫不支援此操作，請先取消歸檔",
-            )
 
         /** Checks whether [file] is a real cloud folder eligible for unwrap/flatten/merge. */
         fun isEligibleCloudFolder(file: FileStat): Boolean =

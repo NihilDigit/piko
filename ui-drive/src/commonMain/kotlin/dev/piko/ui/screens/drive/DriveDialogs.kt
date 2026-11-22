@@ -138,6 +138,7 @@ internal fun DriveDialogHost(
                 onDismiss = onDismiss,
                 onFinished = onBatchRenameFinished,
                 startWithAvNaming = dialog.startWithAvNaming,
+                currentFolder = PathBreadcrumb(activeFolderId, activeFolderName).takeIf { isDriveFolderId(it.id) },
             )
         }
         is DriveDialog.CanonicalFolder -> {

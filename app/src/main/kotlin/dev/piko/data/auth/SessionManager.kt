@@ -147,6 +147,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
             }
             val rawSeed = prefs[PreferencesKeys.THEME_SEED]
             val legacyEink = rawSeed.equals("EINK", ignoreCase = true)
+            val motionPref = prefs[PreferencesKeys.MOTION_PREFERENCE]?.takeIf { it.isNotBlank() }
+                ?: if (prefs[PreferencesKeys.REDUCE_MOTION] == true) "Reduced" else null
             return PikoPreferencesSnapshot(
                 appLanguage = AppLanguage.fromStorage(prefs[appLanguageKey]),
                 themeMode = prefs[PreferencesKeys.THEME_MODE],
@@ -154,7 +156,10 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
                 pureBlack = prefs[PreferencesKeys.PURE_BLACK] ?: false,
                 einkMode = prefs[PreferencesKeys.EINK_MODE] ?: legacyEink,
                 spoilerBlurEnabled = prefs[PreferencesKeys.SPOILER_BLUR_ENABLED] ?: false,
-                reduceMotion = prefs[PreferencesKeys.REDUCE_MOTION] ?: false,
+                reduceMotion = motionPref.equals("Reduced", ignoreCase = true),
+                motionPreference = motionPref,
+                predictiveBack = prefs[PreferencesKeys.PREDICTIVE_BACK] ?: true,
+                maxConcurrentDownloads = DownloadConcurrencyDefaults.sanitize(prefs[PreferencesKeys.MAX_CONCURRENT_DOWNLOADS]),
                 hardwareDecoding = prefs[PreferencesKeys.HARDWARE_DECODING] ?: true,
                 playbackMaxHeight = prefs[PreferencesKeys.PLAYBACK_MAX_HEIGHT] ?: PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT,
                 driveViewMode = driveView,
@@ -192,6 +197,9 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         val AUTO_DETECT_CLIPBOARD_LINKS = booleanPreferencesKey("auto_detect_clipboard_links")
         val REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
+        val MOTION_PREFERENCE = stringPreferencesKey("motion_preference")
+        val PREDICTIVE_BACK = booleanPreferencesKey("predictive_back")
+        val MAX_CONCURRENT_DOWNLOADS = intPreferencesKey("max_concurrent_downloads")
         val HARDWARE_DECODING = booleanPreferencesKey("hardware_decoding")
         val PLAYBACK_MAX_HEIGHT = intPreferencesKey("playback_max_height")
         // 不沿用开发期的 download_max_height：那时它只是对话框的默认选中，存过的值换到新语义就成了「不再询问」
@@ -325,11 +333,53 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         }
     }
 
-    override val reduceMotionFlow: Flow<Boolean> = preference { it[PreferencesKeys.REDUCE_MOTION] ?: false }
+    override val reduceMotionFlow: Flow<Boolean> = preference {
+        val motion = it[PreferencesKeys.MOTION_PREFERENCE]?.takeIf { s -> s.isNotBlank() }
+        if (motion != null) motion.equals("Reduced", ignoreCase = true) else (it[PreferencesKeys.REDUCE_MOTION] ?: false)
+    }
 
     override suspend fun setReduceMotion(enabled: Boolean) {
         cachedMainPreferences = context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.REDUCE_MOTION] = enabled
+            if (enabled) {
+                preferences[PreferencesKeys.MOTION_PREFERENCE] = "Reduced"
+            } else if (preferences[PreferencesKeys.MOTION_PREFERENCE].equals("Reduced", ignoreCase = true)) {
+                preferences.remove(PreferencesKeys.MOTION_PREFERENCE)
+            }
+        }
+    }
+
+    override val motionPreferenceFlow: Flow<String?> = preference {
+        it[PreferencesKeys.MOTION_PREFERENCE]?.takeIf { s -> s.isNotBlank() }
+            ?: if (it[PreferencesKeys.REDUCE_MOTION] == true) "Reduced" else null
+    }
+
+    override suspend fun setMotionPreference(style: String?) {
+        val cleaned = style?.trim()?.takeIf { it.isNotEmpty() }
+        val isReduced = cleaned.equals("Reduced", ignoreCase = true)
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            if (cleaned == null) preferences.remove(PreferencesKeys.MOTION_PREFERENCE)
+            else preferences[PreferencesKeys.MOTION_PREFERENCE] = cleaned
+            preferences[PreferencesKeys.REDUCE_MOTION] = isReduced
+        }
+    }
+
+    override val predictiveBackFlow: Flow<Boolean> = preference { it[PreferencesKeys.PREDICTIVE_BACK] ?: true }
+
+    override suspend fun setPredictiveBack(enabled: Boolean) {
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PREDICTIVE_BACK] = enabled
+        }
+    }
+
+    override val maxConcurrentDownloadsFlow: Flow<Int> = preference {
+        DownloadConcurrencyDefaults.sanitize(it[PreferencesKeys.MAX_CONCURRENT_DOWNLOADS])
+    }
+
+    override suspend fun setMaxConcurrentDownloads(count: Int) {
+        val clamped = DownloadConcurrencyDefaults.sanitize(count)
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.MAX_CONCURRENT_DOWNLOADS] = clamped
         }
     }
 

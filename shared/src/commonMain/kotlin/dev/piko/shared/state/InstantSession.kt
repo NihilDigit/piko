@@ -8,13 +8,17 @@ import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+data class LinkSaveAccepted(val draftId: Long, val title: String, val isReference: Boolean, val isLegacySheet: Boolean = false)
 data class LinkSaveCompletion(val id: Long, val outcome: InstantSaveOutcome, val draftId: Long = id)
 data class InstantSaveExecution(val draftId: Long, val trackedOffline: Boolean, val trackedInstantAttempt: Boolean)
 
@@ -101,6 +105,9 @@ class InstantSession(
     val endNeedsConfirm: Boolean get() = legacyDraft?.endNeedsConfirm == true
     val hasUncommittedWork: Boolean get() = legacyDraft?.hasUncommittedWork == true
 
+    private val _acceptedSubmissions = MutableSharedFlow<LinkSaveAccepted>(extraBufferCapacity = 16)
+    val acceptedSubmissions: SharedFlow<LinkSaveAccepted> = _acceptedSubmissions.asSharedFlow()
+
     private val _pendingCompletions = MutableStateFlow<List<LinkSaveCompletion>>(emptyList())
     val pendingCompletions: StateFlow<List<LinkSaveCompletion>> = _pendingCompletions.asStateFlow()
     private var completionId = 0L
@@ -152,10 +159,16 @@ class InstantSession(
         fun observe(editor: InstantSheetState) {
             fun detach() {
                 if (draft.isClosed || draft.state !== editor) return
+                val acceptedTitle = editor.shareTree?.title?.takeIf { it.isNotBlank() }
+                    ?: editor.resolution?.resource?.name?.takeIf { it.isNotBlank() }
+                    ?: editor.folderNameToSave
+                val acceptedAsRef = editor.saveAsReference && editor.supportsReferenceSave
+                val fromLegacy = legacyDraft === draft
                 draft.submitted += editor
                 val next = createEditor("")
                 draft.state = next
                 executionRevision++
+                _acceptedSubmissions.tryEmit(LinkSaveAccepted(draft.id, acceptedTitle, acceptedAsRef, isLegacySheet = fromLegacy))
                 observe(next)
                 saveScope.launch {
                     snapshotFlow { editor.hasLocalSave ||

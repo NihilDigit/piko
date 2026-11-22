@@ -162,7 +162,17 @@ internal fun WorkspaceContextHost(
                                             summary.status?.let { Text(it, style = MaterialTheme.typography.labelMedium, maxLines = 1) }
                                         }
                                     },
-                                    content = content,
+                                    content = {
+                                        Box(Modifier.fillMaxSize()) {
+                                            content()
+                                            SnackbarHost(
+                                                hostState = dev.piko.ui.LocalRootSnackbar.current,
+                                                modifier = androidx.compose.ui.Alignment.BottomCenter.let { align ->
+                                                    Modifier.align(align).padding(horizontal = 16.dp, vertical = 12.dp)
+                                                },
+                                            )
+                                        }
+                                    },
                                 )
                             } else {
                                 CompositionLocalProvider(LocalWorkspaceSurface provides WorkspaceSurface(context.id, onMinimize)) {

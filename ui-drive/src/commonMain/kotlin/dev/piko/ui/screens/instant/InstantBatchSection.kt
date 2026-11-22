@@ -127,7 +127,6 @@ internal fun ColumnScope.BatchList(
             enabled = batch.canSaveAll,
             isSaving = batch.isSaving,
             onClick = batch::saveAll,
-            options = buildReferenceMenuOptions(referenceToggle),
         )
         val skipped = batch.rows.count { it.status == InstantBatchRowStatus.NOTHING_SELECTED }
         // 批量时不逐条确认离线，只在这里写明要用几次，想换成秒传的点开那一行改

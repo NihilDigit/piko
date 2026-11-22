@@ -450,12 +450,34 @@ class VaultStore(
         trustedPendingIds.update { it + id }
     }
 
-    private suspend fun recordCommittedBaseline(folderId: String, manifestId: String, version: Int) {
+    private suspend fun recordCommittedBaseline(
+        folderId: String,
+        manifestId: String,
+        version: Int,
+        grantPendingTrustOnCommit: Boolean = false,
+    ) {
+        val before = lastCommittedByFolder.value[folderId]
         lastCommittedByFolder.update { current ->
             val prev = current[folderId]
             if (prev != null && prev.second > version) current else current + (folderId to (manifestId to version))
         }
-        cacheWriter?.flushThrough(scheduleSave())
+        try {
+            cacheWriter?.flushThrough(scheduleSave())
+        } catch (failure: Throwable) {
+            lastCommittedByFolder.update { current ->
+                if (current[folderId] != (manifestId to version)) {
+                    current
+                } else if (before == null) {
+                    current - folderId
+                } else {
+                    current + (folderId to before)
+                }
+            }
+            throw failure
+        }
+        if (grantPendingTrustOnCommit) {
+            trustedPendingIds.update { it + manifestId }
+        }
     }
 
     private fun lookupParsed(file: FileStat): List<VaultEntry>? = parsed.value[file.id]
@@ -522,27 +544,42 @@ class VaultStore(
         }
     }
 
+    private class MetaIndexCache(
+        val knownRef: Map<String, List<VaultEntry>>,
+        val parsedRef: Map<String, List<VaultEntry>>,
+        val byKey: Map<ContentKey, VaultMediaMeta>,
+    )
+
+    @kotlin.concurrent.Volatile
+    private var metaIndexCache: MetaIndexCache? = null
+
     /** 从本机已缓存的清单条目中按内容哈希与字节数零网络查找已知媒体与校验元数据（含取样 CID、时长、分辨率与 MIME）。 */
     fun knownMetaOf(gcid: String, size: Long): VaultMediaMeta? {
-        if (gcid.isBlank()) return null
-        var merged = VaultMediaMeta()
-        fun absorb(entriesMap: Map<String, List<VaultEntry>>): Boolean {
-            for (entries in entriesMap.values) {
-                for (entry in entries) {
-                    if (entry.size == size && entry.gcid.equals(gcid, ignoreCase = true)) {
-                        merged = merged.mergeWith(VaultMediaMeta.fromVaultEntry(entry))
-                        if (merged.cid != null && merged.duration != null && merged.width != null &&
-                            merged.height != null && merged.mimeType != null
-                        ) {
-                            return true
-                        }
+        val key = ContentKey.of(gcid, size) ?: return null
+        val k = known.value
+        val p = parsed.value
+        val cached = metaIndexCache
+        val index = if (cached != null && cached.knownRef === k && cached.parsedRef === p) {
+            cached.byKey
+        } else {
+            val built = HashMap<ContentKey, VaultMediaMeta>(maxOf(16, (k.size + p.size) * 4))
+            fun absorbAll(entriesMap: Map<String, List<VaultEntry>>) {
+                for (entries in entriesMap.values) {
+                    for (entry in entries) {
+                        val entryKey = ContentKey.of(entry.gcid, entry.size) ?: continue
+                        val meta = VaultMediaMeta.fromVaultEntry(entry)
+                        if (meta.isEmpty) continue
+                        val prev = built[entryKey]
+                        built[entryKey] = if (prev == null) meta else prev.mergeWith(meta)
                     }
                 }
             }
-            return false
+            absorbAll(k)
+            absorbAll(p)
+            metaIndexCache = MetaIndexCache(k, p, built)
+            built
         }
-        if (!absorb(known.value)) absorb(parsed.value)
-        return merged.takeUnless { it.isEmpty }
+        return index[key]?.takeUnless { it.isEmpty }
     }
 
     /** 从本机已缓存的清单条目中按内容哈希与字节数查找已知的非空取样 CID，命中时归档免去重复请求 CDN。 */
@@ -690,10 +727,9 @@ class VaultStore(
                     onAttempt(VaultWrite(before, after))
                     val manifestName = nameOf(version, token)
                     val id = io.upload(folderId, manifestName, manifestBytes)
-                    rememberParsed(id, after, awaitPersist = true)
-
                     if (useFastNewFolderPath) {
-                        recordCommittedBaseline(folderId, id, version)
+                        parsed.update { current -> current + (id to after) }
+                        recordCommittedBaseline(folderId, id, version, grantPendingTrustOnCommit = true)
                         val syntheticManifest = FileStat(
                             kind = FileKind.FILE,
                             id = id,
@@ -706,6 +742,7 @@ class VaultStore(
                         PikoLog.i(TAG, "Vault manifest written for new ${logFolder(folderId)} (v$version, entries=0->${after.size})")
                         return@runSuspendCatching VaultWrite(before, after)
                     }
+                    rememberParsed(id, after, awaitPersist = true)
 
                     val firstCheck = confirmWin(folderId, id, version, token, afterDelay = false, requireRemoteComplete = requireRemoteComplete)
                     val secondCheck = if (firstCheck is ConfirmOutcome.Won) {

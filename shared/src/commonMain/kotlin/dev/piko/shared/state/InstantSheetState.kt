@@ -1,5 +1,6 @@
 package dev.piko.shared.state
 
+import dev.piko.shared.i18n.enCount
 import dev.piko.shared.i18n.tr
 
 import androidx.compose.runtime.derivedStateOf
@@ -79,6 +80,8 @@ sealed interface InstantSaveOutcome {
     data class InstantSaved(
         val createdIds: List<String>,
         override val target: PikoPathBreadcrumb,
+        val itemCount: Int = createdIds.size,
+        val isReference: Boolean = false,
     ) : InstantSaveOutcome
 
     data class OfflineTaskCreated(
@@ -831,9 +834,10 @@ class InstantSheetState private constructor(
                     SaveRoute.INSTANT -> if (willCreateFolder) {
                         saveIntoNewFolder(targetBread, toSave).onSuccess { _outcomes.emit(it) }
                     } else {
+                        val ref = effectiveSaveAsReference
                         saveInstantOrOffline(targetBread, toSave).onSuccess { ids ->
                             _outcomes.emit(
-                                if (ids != null) InstantSaveOutcome.InstantSaved(ids, targetBread) else InstantSaveOutcome.OfflineTaskCreated(targetBread),
+                                if (ids != null) InstantSaveOutcome.InstantSaved(ids, targetBread, isReference = ref) else InstantSaveOutcome.OfflineTaskCreated(targetBread),
                             )
                         }
                     }
@@ -862,22 +866,53 @@ class InstantSheetState private constructor(
         browser: ShareTreeBrowser,
     ): Result<InstantSaveOutcome.InstantSaved> {
         if (!canReceiveAt(target)) return Result.failure(IllegalStateException(errorMessage))
+        val account = saveAccount?.takeIf { it == driveRepo.currentAccount }
+            ?: return Result.failure(IllegalStateException(tr("当前保存会话已结束", "This save session has ended", "保存セッションは終了しました", "현재 저장 세션이 종료되었습니다", "目前的儲存工作階段已結束")))
+        val title = browser.title.ifBlank { target.name }
+        val attemptId = saveRecords.beginAttempt(account, title, target, emptyList(), keepStructure = true, reference = false)
+        instantAttemptId = attemptId
+        if (attemptId != null) {
+            saveRecords.updateAttemptProgress(
+                id = attemptId,
+                account = account,
+                status = tr("正在提交云端转存", "Submitting share save", "共有ファイルの保存を送信中", "공유 파일 저장 제출 중", "正在提交雲端轉存"),
+            )
+        }
         acceptSave()
-        return browser.restoreSelected(target.id)
-            .map { count ->
-                if (count > 0) {
-                    saveRecords.add(
-                        browser.title.ifBlank { target.name },
-                        count,
-                        0L,
-                        target.name,
-                        locateId = target.id,
-                        expectedAccount = saveAccount,
-                    )
+        var settled = false
+        return try {
+            browser.restoreSelected(target.id)
+                .map { count ->
+                    settled = true
+                    if (count > 0) {
+                        saveRecords.add(
+                            title,
+                            count,
+                            0L,
+                            target.name,
+                            locateId = target.id,
+                            id = attemptId,
+                            expectedAccount = account,
+                        )
+                    } else if (attemptId != null) {
+                        saveRecords.dismissRunningAttempt(attemptId, account)
+                    }
+                    InstantSaveOutcome.InstantSaved(emptyList(), target, itemCount = count, isReference = false)
                 }
-                InstantSaveOutcome.InstantSaved(emptyList(), target)
+                .onFailure { err ->
+                    settled = true
+                    if (attemptId != null) {
+                        val msg = dev.piko.shared.notice.PikoErrorMapper.failure(tr("转存分享", "Save shared files", "共有ファイルの保存", "공유 파일 저장", "轉存分享"), err)
+                        saveRecords.failStreamingAttempt(attemptId, account, msg)
+                    }
+                }
+                .reportSaveFailure()
+        } finally {
+            if (!settled && attemptId != null) {
+                saveRecords.dismissRunningAttempt(attemptId, account)
             }
-            .reportSaveFailure()
+            if (instantAttemptId == attemptId) instantAttemptId = null
+        }
     }
 
     private suspend fun saveShareTreeAsReferences(
@@ -889,55 +924,144 @@ class InstantSheetState private constructor(
             ?: return Result.failure(IllegalStateException(tr("当前保存会话已结束", "This save session has ended", "保存セッションは終了しました", "현재 저장 세션이 종료되었습니다", "目前的儲存工作階段已結束")))
         val vault = driveRepo.vaultAccess(account)
             ?: return Result.failure(IllegalStateException(tr("账号会话已结束", "Account session ended", "アカウントのセッションが終了しました", "계정 세션이 종료되었습니다", "帳號工作階段已結束")))
+        val title = browser.title.ifBlank { target.name }
+        val attemptId = saveRecords.beginAttempt(account, title, target, emptyList(), keepStructure = true, reference = true)
+        instantAttemptId = attemptId
         acceptSave()
         var resolvedFolders = mapOf("" to target.id)
         val createdIds = mutableListOf<String>()
         var totalBytes = 0L
+        var settled = false
         val source = referenceSource()
         val recordNewFolder: (String, String, String) -> Unit = { parentId, id, name ->
             if (driveRepo.currentAccount == account) {
                 driveRepo.applyChange(dev.piko.shared.data.DriveChange.Created(parentId, id, name, isFolder = true))
             }
         }
-        val streamResult = browser.streamSelectedForVault { batch ->
-            val ids = instantRepo.saveReferences(
-                items = batch,
-                targetParentId = target.id,
-                keepStructure = true,
-                names = emptyMap(),
-                existingFolders = resolvedFolders,
-                vault = vault,
-                source = source,
-                targetIsFreshFolder = false,
-                knownMetaLookup = driveRepo::knownVaultMetaOf,
-                onFolderCreated = recordNewFolder,
-                onFoldersResolved = { resolvedFolders = it },
-                onFreshVaultFolders = { freshIds ->
-                    if (driveRepo.currentAccount == account) driveRepo.rememberFullyVaulted(freshIds)
+        fun locateFolderId(): String =
+            resolvedFolders.entries.filter { it.key.isNotEmpty() && '/' !in it.key }.singleOrNull()?.value ?: target.id
+        return try {
+            val streamResult = browser.streamSelectedForVault(
+                onProgress = { progress ->
+                    if (attemptId != null) {
+                        val currentName = progress.currentFolderName.takeIf { it.isNotBlank() }
+                        val scanSummary = buildString {
+                            append(
+                                tr(
+                                    "已扫描 ${progress.foldersScanned} 个目录，读取 ${progress.filesCollected} 项",
+                                    "Scanned ${enCount(progress.foldersScanned, "folder", "folders")}, read ${enCount(progress.filesCollected, "item", "items")}",
+                                    "${progress.foldersScanned} フォルダーをスキャン、${progress.filesCollected} 項目を読み込み",
+                                    "폴더 ${progress.foldersScanned}개 스캔, ${progress.filesCollected}개 항목 읽음",
+                                    "已掃描 ${progress.foldersScanned} 個目錄，讀取 ${progress.filesCollected} 項",
+                                ),
+                            )
+                            if (currentName != null && currentName != title) {
+                                append("（")
+                                append(currentName)
+                                append("）")
+                            }
+                        }
+                        val hasSavedAny = progress.filesSaved > 0
+                        saveRecords.updateAttemptProgress(
+                            id = attemptId,
+                            account = account,
+                            done = progress.filesSaved,
+                            total = if (hasSavedAny) maxOf(progress.filesCollected, progress.filesSaved) else 0,
+                            status = if (hasSavedAny) {
+                                tr("正在以引用保存", "Saving as references", "参照として保存中", "참조로 저장 중", "正在以引用儲存")
+                            } else {
+                                tr("正在扫描分享目录", "Scanning shared folders", "共有フォルダーをスキャン中", "공유 폴더 스캔 중", "正在掃描分享目錄")
+                            },
+                            detail = scanSummary,
+                        )
+                    }
                 },
-            ) { members ->
-                if (driveRepo.currentAccount == account) driveRepo.vaultTrees.merge(members)
-            }.getOrThrow()
-            createdIds += ids
-            totalBytes += batch.sumOf { it.file.size }
-            Result.success(ids.size)
-        }
-        if (driveRepo.currentAccount == account && resolvedFolders.isNotEmpty()) {
-            driveRepo.notifyFoldersRefreshed(resolvedFolders.values.toSet() + target.id)
-        }
-        return streamResult.map {
-            if (createdIds.isNotEmpty()) {
-                saveRecords.add(
-                    browser.title.ifBlank { target.name },
-                    createdIds.size,
-                    totalBytes,
-                    target.name,
-                    locateId = target.id,
-                    expectedAccount = account,
-                )
+            ) { batch ->
+                val batchTotal = maxOf(createdIds.size + batch.size, browser.vaultProgress?.filesCollected ?: 0)
+                val ids = instantRepo.saveReferences(
+                    items = batch,
+                    targetParentId = target.id,
+                    keepStructure = true,
+                    names = emptyMap(),
+                    existingFolders = resolvedFolders,
+                    vault = vault,
+                    source = source,
+                    targetIsFreshFolder = false,
+                    knownMetaLookup = driveRepo.knownVaultMetaLookupFor(batch),
+                    onFolderCreated = recordNewFolder,
+                    onFoldersResolved = { resolvedFolders = it },
+                    onFreshVaultFolders = { freshIds ->
+                        if (driveRepo.currentAccount == account) driveRepo.rememberFullyVaulted(freshIds)
+                    },
+                    onProgress = { batchDone, _, status, detail ->
+                        if (attemptId != null) {
+                            saveRecords.updateAttemptProgress(
+                                id = attemptId,
+                                account = account,
+                                done = createdIds.size + batchDone.coerceAtMost(batch.size),
+                                total = batchTotal,
+                                status = status,
+                                detail = detail,
+                            )
+                        }
+                    },
+                ) { members ->
+                    if (driveRepo.currentAccount == account) driveRepo.vaultTrees.merge(members)
+                }.getOrThrow()
+                createdIds += ids
+                totalBytes += batch.sumOf { it.file.size }
+                Result.success(ids.size)
             }
-            InstantSaveOutcome.InstantSaved(createdIds, target)
-        }.reportSaveFailure()
+            if (driveRepo.currentAccount == account) {
+                driveRepo.notifyFoldersRefreshed(setOf(target.id))
+            }
+            streamResult.map {
+                settled = true
+                if (createdIds.isNotEmpty()) {
+                    saveRecords.add(
+                        title,
+                        createdIds.size,
+                        totalBytes,
+                        target.name,
+                        locateId = locateFolderId(),
+                        id = attemptId,
+                        expectedAccount = account,
+                    )
+                } else if (attemptId != null) {
+                    saveRecords.dismissRunningAttempt(attemptId, account)
+                }
+                InstantSaveOutcome.InstantSaved(createdIds, target, itemCount = createdIds.size, isReference = true)
+            }.onFailure { err ->
+                settled = true
+                if (attemptId != null) {
+                    val msg = dev.piko.shared.notice.PikoErrorMapper.failure(tr("以引用保存", "Save as references", "参照として保存", "참조로 저장", "以引用儲存"), err)
+                    saveRecords.failStreamingAttempt(
+                        id = attemptId,
+                        account = account,
+                        message = msg,
+                        confirmedCount = createdIds.size,
+                        locateId = locateFolderId(),
+                    )
+                }
+            }.reportSaveFailure()
+        } finally {
+            if (!settled && attemptId != null) {
+                if (createdIds.isNotEmpty()) {
+                    saveRecords.add(
+                        title,
+                        createdIds.size,
+                        totalBytes,
+                        target.name,
+                        locateId = locateFolderId(),
+                        id = attemptId,
+                        expectedAccount = account,
+                    )
+                } else {
+                    saveRecords.dismissRunningAttempt(attemptId, account)
+                }
+            }
+            if (instantAttemptId == attemptId) instantAttemptId = null
+        }
     }
 
     fun saveSelectionInstantly() {
@@ -989,13 +1113,14 @@ class InstantSheetState private constructor(
         val folder = PikoPathBreadcrumb(folderId, name)
         savedContainer = folder
         instantAttemptId?.let { saveRecords.observeContainer(it, requireNotNull(saveAccount), folderId) }
+        val ref = effectiveSaveAsReference
         return instantSave(folder, toSave, naming, keepStructure = true, targetIsFreshFolder = true).map { ids ->
             saveRecords.add(name, ids.size, toSave.sumOf { it.file.size }, target.name, locateId = folderId,
                 id = instantAttemptId, expectedAccount = saveAccount)
             instantAttemptId = null
             savedContainer = null
             saveParent = null
-            InstantSaveOutcome.InstantSaved(ids, folder)
+            InstantSaveOutcome.InstantSaved(ids, folder, isReference = ref)
         }
     }
 
@@ -1253,10 +1378,30 @@ class InstantSheetState private constructor(
         submitted: List<InstantFileItem>,
         targetIsFreshFolder: Boolean = false,
     ): Result<List<String>> {
-        val execution = InstantSaveExecutor(instantRepo, driveRepo, requireNotNull(saveAccount)).execute(
-            plan, submitted, targetIsFreshFolder, effectiveSaveAsReference, previewedIds.toMap(),
-            referenceSource(), normalizedMagnet ?: findShareLink(input), saveParent?.id,
-        )
+        val account = requireNotNull(saveAccount)
+        val attemptId = instantAttemptId
+        val execution = try {
+            InstantSaveExecutor(instantRepo, driveRepo, account).execute(
+                plan, submitted, targetIsFreshFolder, effectiveSaveAsReference, previewedIds.toMap(),
+                referenceSource(), normalizedMagnet ?: findShareLink(input), saveParent?.id,
+                onProgress = { done, total, status, detail ->
+                    if (attemptId != null) {
+                        saveRecords.updateAttemptProgress(
+                            id = attemptId,
+                            account = account,
+                            done = done,
+                            total = total,
+                            status = status,
+                            detail = detail,
+                        )
+                    }
+                },
+            )
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            instantAttemptId?.let { saveRecords.dismissRunningAttempt(it, account) }
+            instantAttemptId = null
+            throw cancelled
+        }
         val result = execution.response
         val receipt = execution.receipt
         if (!effectiveSaveAsReference) submitted.filter { it.file.path in execution.confirmedPaths }

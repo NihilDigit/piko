@@ -184,8 +184,7 @@ internal fun offlineConfirmOf(state: InstantSheetState, action: InstantPrimaryAc
 }
 
 /**
- * 保存栏主操作：紧凑面板与侧栏通过 M3E `SplitButtonLayout` 将「保存文件 / 以引用保存」与仅存已收录回退
- * 收纳在主按钮右侧菜单，省去上方额外的复选框行，把高度让给文件树。
+ * 保存栏主操作：常规与引用保存开关已固定置于上方显式开关行，右侧拆分箭头仅在存在「仅保存已收录文件」回退选项时展开。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -194,6 +193,7 @@ internal fun SaveBar(
     action: InstantPrimaryAction,
     onSave: () -> Unit,
     showProblems: Boolean = true,
+    saveAsReference: Boolean = false,
     referenceToggle: ReferenceSaveToggle? = null,
 ) {
     val plan = state.savePlan.takeIf { state.resolution != null && !state.contentMissing && !state.hasInstantRetry && state.saveIssue?.requiresInspection != true }
@@ -240,7 +240,7 @@ internal fun SaveBar(
                     state.hasInstantRetry && state.retryFileCount > 0 -> tr("重试未保存的 ${state.retryFileCount} 个文件", "Retry ${state.retryFileCount} unsaved files", "未保存の ${state.retryFileCount} ファイルを再試行", "저장 안 된 파일 ${state.retryFileCount}개 다시 시도", "重試未儲存的 ${state.retryFileCount} 個檔案")
                     state.saveIssue?.requiresInspection == true -> tr("请先核对保存结果", "Check save results first", "先に保存結果を確認してください", "먼저 저장 결과를 확인하세요", "請先核對儲存結果")
                     state.contentMissing -> tr("离线下载", "Cloud download", "クラウドダウンロード", "클라우드 다운로드", "離線下載")
-                    referenceToggle?.checked == true -> stringResourceFallbackSaveAsRef()
+                    saveAsReference || referenceToggle?.checked == true -> stringResourceFallbackSaveAsRef()
                     else -> tr("保存", "Save", "保存", "저장", "儲存")
                 },
                 enabled = action.enabled,

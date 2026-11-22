@@ -697,28 +697,99 @@ internal class SqliteTreeStore(
     private fun writeVaultFolderInTx(folder: String, entries: List<VaultEntry>, starred: Set<String>, generation: Long) {
         clearVault(folder, generation)
         db.execute("INSERT INTO tree_vault_state VALUES (?,?,?)", listOf(generation, folder, winner(folder, generation)?.id))
+        if (entries.isEmpty()) return
+
+        val wantedKeys = entries.mapNotNullTo(HashSet(entries.size)) { ContentKey.of(it.gcid, it.size) }
+        val usePrefetch = generation == 0L && wantedKeys.size > 8
+        val txContent: MutableMap<ContentKey, ContentMetadata> = if (usePrefetch) {
+            contentBatch(wantedKeys).toMutableMap()
+        } else {
+            HashMap(wantedKeys.size)
+        }
+
+        // Pass 1: Finalize all ContentKey metadata merges & live duration updates first so duplicate GCIDs
+        // within the same folder neither clobber each other's fields nor leave earlier buffered nodes with stale durations.
         for (entry in entries) {
-            db.execute("INSERT OR REPLACE INTO tree_vault VALUES (?,?,?,?)", listOf(generation, folder, entry.id, json.encodeToString(VaultEntry.serializer(), entry)))
-            if (entry.isArchived) put(entry.toFileStat(folder, starred = entry.id in starred), generation)
-            else {
+            val statForMeta = entry.toFileStat(folder, starred = entry.id in starred)
+            val key = ContentKey.of(entry.gcid, entry.size) ?: continue
+            val observed = ContentMetadata.of(statForMeta)
+            val previousKnown = key in txContent || usePrefetch
+            val previous = if (key in txContent) {
+                txContent[key]
+            } else if (usePrefetch) {
+                null
+            } else {
+                lookupContentForWrite(key, generation)
+            }
+            val merged = if (previous != null) previous.merge(observed) else observed
+            txContent[key] = merged
+            putContent(
+                key = key,
+                metadata = merged,
+                previousKnown = previousKnown,
+                previousValue = previous,
+                updateLiveDuration = generation == 0L,
+                cacheInCandidate = generation != 0L,
+            )
+        }
+
+        val vaultArgs = ArrayList<Any?>(minOf(entries.size, 80) * 4)
+        var vaultRowsInBatch = 0
+        fun flushVaultRows() {
+            if (vaultRowsInBatch == 0) return
+            val placeholders = List(vaultRowsInBatch) { "(?,?,?,?)" }.joinToString(",")
+            db.execute("INSERT OR REPLACE INTO tree_vault VALUES $placeholders", vaultArgs)
+            vaultArgs.clear()
+            vaultRowsInBatch = 0
+        }
+
+        val nodeArgs = ArrayList<Any?>(minOf(entries.size, 60) * 14)
+        var nodeRowsInBatch = 0
+        fun flushNodeRows() {
+            if (nodeRowsInBatch == 0) return
+            val placeholders = List(nodeRowsInBatch) { "(?,?,?,?,?,?,?,?,?,?,?,?,?,?)" }.joinToString(",")
+            db.execute("INSERT OR REPLACE INTO tree_nodes VALUES $placeholders", nodeArgs)
+            nodeArgs.clear()
+            nodeRowsInBatch = 0
+        }
+
+        // Pass 2: Batch-insert tree_vault and archived tree_nodes using finalized txContent durations.
+        val seqValue = if (generation == 0L) sequence else 0L
+        for (entry in entries) {
+            vaultArgs.add(generation)
+            vaultArgs.add(folder)
+            vaultArgs.add(entry.id)
+            vaultArgs.add(json.encodeToString(VaultEntry.serializer(), entry))
+            if (++vaultRowsInBatch >= 80) flushVaultRows()
+
+            if (entry.isArchived) {
+                val stat = entry.toFileStat(folder, starred = entry.id in starred)
+                val key = ContentKey.of(stat)
+                val finalizedDuration = if (key != null) txContent[key]?.durationMillis else ContentMetadata.of(stat).durationMillis
+                val cleanStat = clean(stat)
+                nodeArgs.add(generation)
+                nodeArgs.add(cleanStat.id)
+                nodeArgs.add(cleanStat.parentId)
+                nodeArgs.add(0)
+                nodeArgs.add(1)
+                nodeArgs.add(cleanStat.name)
+                nodeArgs.add(dev.piko.shared.search.normalizeCjk(cleanStat.name))
+                nodeArgs.add(0)
+                nodeArgs.add(cleanStat.sizeBytes.coerceAtLeast(0))
+                nodeArgs.add(key?.gcid)
+                nodeArgs.add(finalizedDuration)
+                nodeArgs.add(if (cleanStat.isPlayableVideo()) 1 else 0)
+                nodeArgs.add(encode(cleanStat))
+                nodeArgs.add(seqValue)
+                if (++nodeRowsInBatch >= 60) flushNodeRows()
+            } else {
                 val id = entry.restoredFileId!!
                 if (ContentKey.of(entry.gcid, entry.size) != null) db.execute("INSERT OR REPLACE INTO tree_restores VALUES (?,?,?,?)", listOf(id, entry.gcid.uppercase(), entry.size, entry.createdAt ?: entry.addedAt))
                 file(id, generation)?.let(::bindRestoredInstance)
-                ContentKey.of(entry.gcid, entry.size)?.let { key ->
-                    val observed = ContentMetadata.of(entry.toFileStat(folder))
-                    val previous = lookupContentForWrite(key, generation)
-                    val merged = previous?.merge(observed) ?: observed
-                    putContent(
-                        key = key,
-                        metadata = merged,
-                        previousKnown = true,
-                        previousValue = previous,
-                        updateLiveDuration = generation == 0L,
-                        cacheInCandidate = generation != 0L,
-                    )
-                }
             }
         }
+        flushVaultRows()
+        flushNodeRows()
     }
 
     fun vault(folder: String, entries: List<VaultEntry>, expected: String?, requireMatch: Boolean, starred: Set<String>, generation: Long = 0, optimistic: Boolean = false): Boolean {

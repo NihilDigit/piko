@@ -38,11 +38,30 @@ fun dev.piko.shared.state.OfflineSubmitWork.workProgress(): WorkProgress = WorkP
     }, message,
 )
 
-fun dev.piko.shared.state.InstantSaveAttempt.workProgress(): WorkProgress = WorkProgress(
-    WorkKind.FILES, title, if (isRunning) WorkMeter.Indeterminate else WorkMeter.None,
-    if (isRunning) tr("正在保存", "Saving", "保存中", "저장 중", "正在儲存") else if (isComplete) tr("已完成", "Completed", "完了", "완료", "已完成") else if (receipt?.requiresInspection == true) tr("结果需要核对", "Results need inspection", "結果の確認が必要です", "결과 확인이 필요합니다", "結果需要核對") else if (receipt?.confirmed?.isEmpty() != false) tr("未保存", "Not saved", "未保存", "저장되지 않음", "未儲存") else tr("部分保存未完成", "Some saves incomplete", "一部の保存が未完了です", "일부 저장이 완료되지 않았습니다", "部分儲存未完成"),
-    receipt?.message,
-)
+fun dev.piko.shared.state.InstantSaveAttempt.workProgress(): WorkProgress {
+    val meter = when {
+        !isRunning -> WorkMeter.None
+        progressTotal > 0 -> WorkMeter.Determinate((progressDone.toFloat() / progressTotal).coerceIn(0f, 1f))
+        else -> WorkMeter.Indeterminate
+    }
+    val statusText = when {
+        isRunning -> progressStatus ?: tr("正在保存", "Saving", "保存中", "저장 중", "正在儲存")
+        isComplete -> tr("已完成", "Completed", "完了", "완료", "已完成")
+        errorMessage != null && progressDone > 0 -> tr(
+            "部分保存未完成（已保存 $progressDone 项）",
+            "Partially saved ($progressDone items saved)",
+            "一部のみ保存完了（$progressDone 項目を保存済み）",
+            "일부만 저장됨 (${progressDone}개 항목 저장됨)",
+            "部分儲存未完成（已儲存 $progressDone 項）",
+        )
+        errorMessage != null -> tr("未保存", "Not saved", "未保存", "저장되지 않음", "未儲存")
+        receipt?.requiresInspection == true -> tr("结果需要核对", "Results need inspection", "結果の確認が必要です", "결과 확인이 필요합니다", "結果需要核對")
+        receipt?.confirmed?.isEmpty() != false -> tr("未保存", "Not saved", "未保存", "저장되지 않음", "未儲存")
+        else -> tr("部分保存未完成", "Some saves incomplete", "一部の保存が未完了です", "일부 저장이 완료되지 않았습니다", "部分儲存未完成")
+    }
+    val detailText = if (isRunning) progressDetail else (errorMessage ?: receipt?.message)
+    return WorkProgress(WorkKind.FILES, title, meter, statusText, detailText)
+}
 
 fun dev.piko.shared.state.FileWriteWork.workProgress(undo: DriveChangeJournal.UndoResult? = null): WorkProgress {
     val status = undo?.message ?: result?.let {

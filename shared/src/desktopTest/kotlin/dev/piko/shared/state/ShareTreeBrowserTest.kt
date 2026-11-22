@@ -325,6 +325,49 @@ class ShareTreeBrowserTest {
     }
 
     @Test
+    fun `streamSelectedForVault keeps large single folder together, reports progress, and does not deadlock Persistence permit`() = runBlocking {
+        val source = FakeShareSource(pageSize = 100)
+        val bigFolder = source.addFolder("season-1", "Season 1")
+        for (i in 1..450) {
+            source.addFile("ep-$i", "ep-$i.mp4", parentId = bigFolder.id, size = 1024L)
+        }
+        val governor = dev.piko.shared.memory.PikoMemoryGovernor()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val browser = ShareTreeBrowser(
+                shareId = "share-single-folder",
+                info = source.rootInfo(),
+                dataSource = source,
+                scope = scope,
+                memoryGovernor = governor,
+                autoExpandSingleRoot = false,
+            )
+            val progressSnapshots = mutableListOf<ShareVaultProgress>()
+            val batchSizes = mutableListOf<Int>()
+            val totalSaved = kotlinx.coroutines.withTimeout(5_000) {
+                browser.streamSelectedForVault(
+                    onProgress = { progressSnapshots += it },
+                ) { batch ->
+                    // Simulate SnapshotWriter acquiring Persistence permit inside onBatch!
+                    val persistPermit = governor.acquire(dev.piko.shared.memory.MemoryWorkKind.Persistence, 0L)
+                    try {
+                        batchSizes += batch.size
+                    } finally {
+                        persistPermit.release()
+                    }
+                    Result.success(batch.size)
+                }.getOrThrow()
+            }
+            assertEquals(450, totalSaved)
+            assertEquals(listOf(450), batchSizes, "All 450 items of a single folder must flush in one v1 batch")
+            assertTrue(progressSnapshots.isNotEmpty())
+            assertEquals(450, progressSnapshots.last().filesSaved)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
     fun `20000-item selection uses O(1) compact representation and masks shareId in logs`() = runBlocking {
         assertEquals("***", ShareTreeBrowser.maskShareId("abc123"))
         assertEquals("VP18…", ShareTreeBrowser.maskShareId("VP18nKwD3Y-8azUkWrFGLGnmo2"))

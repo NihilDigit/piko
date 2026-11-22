@@ -3,6 +3,7 @@
 
 package dev.piko.shared.download
 
+import dev.piko.data.auth.DownloadConcurrencyDefaults
 import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.download.DownloadStatus
 import dev.piko.download.DownloadTask
@@ -63,6 +64,8 @@ internal class DownloadTaskExecutor(
     private val queueLock = Mutex()
     private val partialPlaybackEpoch = MutableStateFlow(0L)
     private var lastGroup: String? = null
+    @kotlin.concurrent.Volatile
+    private var maxParallel: Int = DownloadConcurrencyDefaults.sanitize(preferences.currentSnapshot.maxConcurrentDownloads)
 
     fun isJobActive(taskId: String): Boolean = jobs.value[taskId]?.isActive == true
 
@@ -79,6 +82,15 @@ internal class DownloadTaskExecutor(
                 .collect { (mode, client) ->
                     limiter.bytesPerSecond = if (mode.enabled) mode.downloadKiBps * 1024L else null
                     client?.downloadLimiter?.bytesPerSecond = limiter.bytesPerSecond
+                }
+        }
+        scope.launch {
+            preferences.maxConcurrentDownloadsFlow
+                .map(DownloadConcurrencyDefaults::sanitize)
+                .distinctUntilChanged()
+                .collect { limit ->
+                    maxParallel = limit
+                    rebalanceConcurrency(limit)
                 }
         }
         scope.launch {
@@ -250,11 +262,11 @@ internal class DownloadTaskExecutor(
         pumpQueue()
     }
 
-    /** 所有批次与单文件共用三个位置，各组轮流获得位置，取消中的任务收尾后才腾出位置。 */
+    /** 所有批次与单文件共用并发上限 [maxParallel]，各组轮流获得位置，取消中的任务收尾后才腾出位置。 */
     fun pumpQueue() {
         scope.launch {
             queueLock.withLock {
-                var slots = (BATCH_PARALLEL - jobs.value.size).coerceAtLeast(0)
+                var slots = (maxParallel - jobs.value.size).coerceAtLeast(0)
                 val pending = store.tasks.value.values.filter {
                     it.status == DownloadStatus.PENDING && store.belongsToCurrent(it) && it.taskId !in jobs.value
                 }.sortedWith(compareBy({ it.createdAtMs }, { it.fileName }))
@@ -277,6 +289,34 @@ internal class DownloadTaskExecutor(
                     }
                 }
             }
+        }
+    }
+
+    private suspend fun rebalanceConcurrency(limit: Int) {
+        val toRequeue = queueLock.withLock {
+            val activeIds = jobs.value.keys
+            val excess = activeIds.size - limit
+            if (excess <= 0) return@withLock emptyList()
+            val candidates = store.tasks.value.values
+                .filter { it.taskId in activeIds && it.status == DownloadStatus.DOWNLOADING && !it.converting && !it.isSegment }
+                .sortedByDescending { it.createdAtMs }
+                .take(excess)
+                .map { it.taskId }
+            if (candidates.isNotEmpty()) {
+                store.updateTasks { tasks ->
+                    tasks + candidates.mapNotNull { id ->
+                        tasks[id]?.takeIf { it.status == DownloadStatus.DOWNLOADING }?.let {
+                            id to it.copy(status = DownloadStatus.PENDING, speedBytesPerSec = 0L)
+                        }
+                    }
+                }
+            }
+            candidates
+        }
+        if (toRequeue.isNotEmpty()) {
+            toRequeue.forEach { jobs.value[it]?.cancel() }
+        } else {
+            pumpQueue()
         }
     }
 

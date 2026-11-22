@@ -46,7 +46,18 @@ internal class TaskPresenter(private val state: TransfersState, private val vaul
             is TransferItem.Cloud -> base.copy(amount = item.task.sizeParts().joinToString(partSeparator))
             is TransferItem.Pack -> base.copy(amount = item.job.sizeLabel())
             is TransferItem.Instant -> base.copy(amount = item.record.details().joinToString(partSeparator))
-            is TransferItem.InstantAttempt -> base.copy(destination = item.work.target.localizedName)
+            is TransferItem.InstantAttempt -> base.copy(
+                amount = if (item.work.isRunning && item.work.progressTotal > 0) {
+                    tr(
+                        "${item.work.progressDone} / ${item.work.progressTotal} 项",
+                        "${item.work.progressDone} / ${enCount(item.work.progressTotal, "item", "items")}",
+                        "${item.work.progressDone} / ${item.work.progressTotal} 項目",
+                        "${item.work.progressDone} / ${item.work.progressTotal}개 항목",
+                        "${item.work.progressDone} / ${item.work.progressTotal} 項",
+                    )
+                } else null,
+                destination = item.work.target.localizedName,
+            )
             else -> base
         }
     }

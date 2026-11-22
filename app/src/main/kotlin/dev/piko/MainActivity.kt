@@ -105,6 +105,7 @@ class MainActivity : ComponentActivity() {
             dynamicColorAvailable = app.platform.supportsDynamicColor,
             pureBlack = initialSnapshot.pureBlack,
             einkMode = initialSnapshot.einkMode,
+            motionPreference = initialSnapshot.motionPreference,
         )
         // 播放器仍在 app 模块，以应用内覆盖层的方式交给共享主界面
         val videoPlayer = VideoPlayerHost.InApp { screen, onClose ->

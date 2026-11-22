@@ -4,7 +4,9 @@ import androidx.compose.animation.Animatable
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -68,6 +70,7 @@ fun <S> MorphContainer(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     containerModifier: Modifier = Modifier,
+    border: ((S) -> BorderStroke?)? = null,
     interactionSource: MutableInteractionSource? = null,
     interactive: Boolean = visible,
     content: @Composable (S) -> Unit,
@@ -162,12 +165,14 @@ fun <S> MorphContainer(
             }
             // 被动读数或退场动画期间既不挂 clickable，也不调无点击重载的 Material3 Surface（Surface.kt:78 会挂载
             // `.pointerInput(Unit) {}` 吞掉背后手势），直接以纯绘制 Box 透传指针命中。
+            val currentBorder = border?.invoke(live)
             if (interactive) {
                 Surface(
                     onClick = onClick,
                     shape = shape,
                     color = animatedColor.value,
                     contentColor = contentColor(live),
+                    border = currentBorder,
                     interactionSource = interactionSource,
                     modifier = containerMod,
                     content = innerContent,
@@ -177,7 +182,8 @@ fun <S> MorphContainer(
                     Box(
                         modifier = containerMod
                             .clip(shape)
-                            .background(animatedColor.value),
+                            .background(animatedColor.value)
+                            .let { mod -> if (currentBorder != null) mod.border(currentBorder, shape) else mod },
                         propagateMinConstraints = true,
                     ) {
                         innerContent()

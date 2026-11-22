@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.outlined.DeleteOutline
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Tune
+import dev.piko.shared.i18n.tr
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -243,7 +245,7 @@ internal fun ListenCustomizationEditor(
         }
     }
 
-    // 2. 封面样式与底部快捷入口
+    // 2. 封面样式、播放按钮样式与底部快捷入口
     SettingsGroup(null) {
         SettingsRow(
             icon = Icons.Filled.Headphones,
@@ -258,6 +260,13 @@ internal fun ListenCustomizationEditor(
                     fill = true,
                 )
             },
+        )
+        SettingsSwitchRow(
+            icon = Icons.Filled.PlayArrow,
+            title = tr("半透明播放按钮", "Translucent play button", "半透明の再生ボタン", "반투명 재생 버튼", "半透明播放按鈕"),
+            supporting = null,
+            checked = config.translucentPlayButton,
+            onCheckedChange = { enabled -> onUpdate { it.updateListen { l -> l.copy(translucentPlayButton = enabled) } } },
         )
         SettingsRow(
             icon = Icons.Outlined.Tune,
