@@ -82,6 +82,7 @@ class ClipFeedSession(
     private val media: dev.piko.shared.media.MediaService,
     private val cacheStore: PikoCacheStore?,
     private val scope: CoroutineScope,
+    private val audioPreferences: dev.piko.data.auth.PikoUserPreferences? = null,
 ) {
     var root by mutableStateOf<PikoPathBreadcrumb?>(null)
         private set
@@ -133,8 +134,66 @@ class ClipFeedSession(
     var isCollecting by mutableStateOf(false)
         private set
 
-    /** 静音。放在会话上而不是页面上：打开完整播放器或换到独立窗口时页面会重建，静音要跟着走。 */
-    var muted by mutableStateOf(false)
+    /** 音量（0..1）与静音状态。放在会话上并持久化到当前设备：换片、切换独立窗口或重启客户端均保留。 */
+    private var audioTouchedLocally = false
+    var muted by mutableStateOf(audioPreferences?.currentSnapshot?.clipMuted ?: false)
+        private set
+
+    var volume by mutableStateOf(
+        audioPreferences?.currentSnapshot?.clipVolume?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f,
+    )
+        private set
+
+    init {
+        if (audioPreferences != null) {
+            scope.launch {
+                kotlinx.coroutines.flow.combine(
+                    audioPreferences.clipVolumeFlow,
+                    audioPreferences.clipMutedFlow,
+                ) { storedVolume, storedMuted ->
+                    storedVolume to storedMuted
+                }.collect { (storedVolume, storedMuted) ->
+                    if (!audioTouchedLocally) {
+                        volume = if (storedVolume.isFinite()) storedVolume.coerceIn(0f, 1f) else 1f
+                        muted = storedMuted
+                    }
+                }
+            }
+        }
+    }
+
+    private fun persistAudio() {
+        val prefs = audioPreferences ?: return
+        val targetVolume = volume
+        val targetMuted = muted
+        scope.launch {
+            prefs.setClipAudio(targetVolume, targetMuted)
+        }
+    }
+
+    fun toggleMute() {
+        audioTouchedLocally = true
+        if (muted && volume <= 0f) {
+            volume = 1f
+            muted = false
+        } else {
+            muted = !muted
+        }
+        persistAudio()
+    }
+
+    fun updateVolume(value: Float) {
+        audioTouchedLocally = true
+        val clamped = when {
+            value.isNaN() -> volume
+            value == Float.POSITIVE_INFINITY -> 1f
+            value == Float.NEGATIVE_INFINITY -> 0f
+            else -> value.coerceIn(0f, 1f)
+        }
+        volume = clamped
+        muted = clamped == 0f
+        persistAudio()
+    }
 
     /** 控件连同顶栏全部藏起。与 [muted] 同理放在会话上，关掉信息流时清零，不存盘。 */
     var immersive by mutableStateOf(false)

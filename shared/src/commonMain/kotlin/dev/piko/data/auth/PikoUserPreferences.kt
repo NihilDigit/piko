@@ -125,6 +125,8 @@ data class PikoPreferencesSnapshot(
     val cacheMaxBytes: Long = CachePolicyDefaults.DEFAULT_MAX_BYTES,
     val cacheMaxAgeDays: Int = CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS,
     val askDownloadLocation: Boolean = true,
+    val clipVolume: Float = 1f,
+    val clipMuted: Boolean = false,
 ) {
     fun tileSize(view: String): String = tileSizes[view].orEmpty()
 }
@@ -380,6 +382,11 @@ interface PikoUserPreferences {
     /** 信息流 30 秒片段播完后自动顺延续播当前视频后续内容，默认开启。跟着设置同步。 */
     val clipAutoExtendFlow: Flow<Boolean>
     suspend fun setClipAutoExtend(enabled: Boolean)
+
+    /** 信息流本机音量（0..1）与静音状态。仅保存在当前设备，不参与跨设备同步。 */
+    val clipVolumeFlow: Flow<Float> get() = flowOf(1f)
+    val clipMutedFlow: Flow<Boolean> get() = flowOf(false)
+    suspend fun setClipAudio(volume: Float, muted: Boolean) {}
 
     /** 播放器四态自定义布局、听音频与手势配置。跟着设置同步。 */
     val playerLayoutPrefsFlow: Flow<PlayerLayoutPrefs> get() = flowOf(PlayerLayoutPrefs.Default)

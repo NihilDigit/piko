@@ -55,6 +55,20 @@ class StoredPikoPreferences(
         clipAutoExtend.value = enabled
     }
 
+    private val clipVolume = MutableStateFlow(
+        settings.get(KEY_CLIP_VOLUME).toFloatOrNull()?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f,
+    )
+    private val clipMuted = MutableStateFlow(settings.get(KEY_CLIP_MUTED) == "true")
+    override val clipVolumeFlow: Flow<Float> = clipVolume.asStateFlow()
+    override val clipMutedFlow: Flow<Boolean> = clipMuted.asStateFlow()
+    override suspend fun setClipAudio(volume: Float, muted: Boolean) {
+        val clamped = if (volume.isFinite()) volume.coerceIn(0f, 1f) else 1f
+        settings.set(KEY_CLIP_VOLUME, clamped.toString())
+        settings.set(KEY_CLIP_MUTED, muted.toString())
+        clipVolume.value = clamped
+        clipMuted.value = muted
+    }
+
     private val playerLayout = MutableStateFlow(decodePlayerLayoutPrefs(settings.get(KEY_PLAYER_LAYOUT)))
     override val playerLayoutPrefsFlow: Flow<PlayerLayoutPrefs> = playerLayout.asStateFlow()
     override suspend fun setPlayerLayoutPrefs(prefs: PlayerLayoutPrefs) {
@@ -383,6 +397,8 @@ class StoredPikoPreferences(
             cacheMaxBytes = cacheMaxBytes.value,
             cacheMaxAgeDays = cacheMaxAgeDays.value,
             askDownloadLocation = askDownloadLocation.value,
+            clipVolume = clipVolume.value,
+            clipMuted = clipMuted.value,
         )
 
     override fun currentTileSize(view: String): String = tileSize(view).value
@@ -684,6 +700,8 @@ class StoredPikoPreferences(
         const val KEY_DOWNLOAD_MAX_HEIGHT = "download.defaultMaxHeight"
         const val KEY_PLAYER_SEEK_STEP_SECONDS = "player.seekStepSeconds"
         const val KEY_PLAYER_BOOST_SPEED = "player.boostSpeed"
+        const val KEY_CLIP_VOLUME = "player.clipVolume"
+        const val KEY_CLIP_MUTED = "player.clipMuted"
         const val KEY_PLAYER_LAYOUT = "player.layout"
         const val KEY_SUBTITLE_STYLE = "player.subtitleStyle"
         const val KEY_DRIVE_APPEARANCE = "drive.appearance"
