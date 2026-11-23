@@ -1,25 +1,44 @@
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
-    alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
-    alias(libs.plugins.compose)
-    alias(libs.plugins.android.kotlin.multiplatform.library)
 }
 
+val enableAndroid: Boolean = providers.gradleProperty("piko.enableAndroid").map { it.toBoolean() }.orNull
+    ?: providers.gradleProperty("piko.desktopOnly").map { !it.toBoolean() }.orNull
+    ?: (
+        providers.environmentVariable("CI").orNull.equals("true", ignoreCase = true) ||
+            providers.gradleProperty("android.injected.invoked.from.ide").orNull.equals("true", ignoreCase = true) ||
+            gradle.startParameter.taskNames.any {
+                it.startsWith(":app:") || it == ":app" ||
+                    it.contains("Android", ignoreCase = true) ||
+                    it.contains("Debug", ignoreCase = true) ||
+                    it.contains("assembleRelease", ignoreCase = true) ||
+                    it.contains("bundleRelease", ignoreCase = true)
+            }
+        )
+if (enableAndroid) {
+    pluginManager.apply("com.android.kotlin.multiplatform.library")
+}
 val enableIosTargets = providers.gradleProperty("piko.enableIos")
     .map { it.toBoolean() }
     .orElse(providers.systemProperty("os.name").map { it.startsWith("Mac", ignoreCase = true) })
     .get()
 
 kotlin {
-    android {
-        namespace = "dev.piko.shared"
-        compileSdk {
-            version = release(37) { minorApiLevel = 1 }
+    if (enableAndroid) {
+        (this as org.gradle.api.plugins.ExtensionAware).extensions.configure<com.android.build.api.dsl.KotlinMultiplatformAndroidLibraryTarget>("android") {
+            namespace = "dev.piko.shared"
+            compileSdk {
+                version = release(37) { minorApiLevel = 1 }
+            }
+            minSdk = 26
         }
-        minSdk = 26
     }
-    jvm("desktop")
+    jvm("desktop") {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+        }
+    }
     if (enableIosTargets) {
         listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
             target.binaries.configureEach {
@@ -83,20 +102,15 @@ kotlin {
     }
 }
 
-compose {
-    dependencyCompatibility {
-        // 依赖版本已由 libs.versions.toml 统一锁定，跳过每次构建的兼容检查任务以提速。
-        enabled = false
-    }
-}
-
-if (providers.gradleProperty("pikoTestLowHeap").isPresent) {
-    tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+val lowHeapTest = providers.gradleProperty("pikoTestLowHeap").isPresent
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    // 短生命周期单元测试关闭 C2 JIT，并按半数逻辑核并行（8cx Gen 3 上为 4，正好吃满 4 颗性能大核）
+    maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 4)
+    jvmArgs("-XX:TieredStopAtLevel=1", "-XX:+UseParallelGC", "--enable-native-access=ALL-UNNAMED")
+    if (lowHeapTest) {
         maxHeapSize = "256m"
         systemProperty("piko.test.lowheap", "true")
+    } else {
+        maxHeapSize = "512m"
     }
-}
-
-composeCompiler {
-    stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("compose-stability.conf"))
 }

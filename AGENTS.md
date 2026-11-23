@@ -20,19 +20,23 @@ Piko 是 PikPak 的第三方跨平台客户端。Android、Windows、macOS 与 L
 
 - **以 `/expressive-ui`（`rtx`）为单一权威依据**：凡涉及界面设计、组件选型、Compose Multiplatform / Material 3 Expressive API、设计 Token、桌面渲染互操作或界面文案的修改，须优先使用 `/expressive-ui`（`rtx spec`、`rtx component`、`rtx api`、`rtx source`、`rtx token`、`rtx copy`）核对上游规范与源码后再实现，不凭记忆猜测组件形态、默认参数或交互模式。若环境中尚未安装 `rtx`，可从 https://github.com/NihilDigit/the-road-to-expressive 获取并安装。
 - **界面与文案 DRY 原则（单一入口、不重复表意）**：在同一个界面内，严禁为同一功能提供两个重复的可见入口（遵循单一权威入口原则），亦不得在相近位置用两段文字重复表达同一含义（如标题与副标题、状态行与按钮文案、页眉与图例之间重复表述同一状态或数值）。
+- **界面文案标点规范（禁用中点）**：界面文案中严禁使用中点/间隔号（`·`、`•`）拼接短语或状态，须改用自然中文标点（逗号、顿号）或独立布局元素表达停顿与分隔。
 - **`AGENTS.md` 随现状演进（非不可推翻教条）**：各目录 `AGENTS.md` 用于记录当前现状与已知边界，并非不可推翻的死规则；凡存在更优实现或与 `/expressive-ui` 等官方文档冲突的内容，均可基于充分依据予以推翻，并须在完工后同步更新受影响的 `AGENTS.md` 以匹配最新现状。
 
 ## 常用命令
 
 ```bash
-./gradlew :app:compileDebugKotlin                 # Android 编译（最快的语法与类型检查）
-./gradlew :desktopApp:compileKotlinDesktop        # Desktop 编译（注意不是 compileKotlinJvm）
+./gradlew :app:compileDebugKotlin                 # Android 编译（自动启用 Android 目标）
+./gradlew :desktopApp:compileKotlinDesktop        # Desktop 编译（默认 Desktop-only，不加载 Android 目标）
 ./gradlew :app:installDebug                       # 安装至已连接 Android 设备（包名 dev.piko.debug）
-pwsh -File scripts/run-desktop.ps1                # 导出 @argfile 并以独立 JVM 启动桌面开发版（推荐，不占用 Gradle Daemon）
+./gradlew :desktopApp:hotRunDesktop               # 使用 JBR 25 启动支持 Compose Hot Reload 的桌面开发版
+./gradlew :desktopApp:reload                      # 向运行中的 hotRunDesktop 窗口推送增量热重载
+pwsh -File scripts/run-desktop.ps1                # 导出 @argfile 并以独立 JVM 启动桌面开发版（不占用 Gradle Daemon）
 pwsh -File scripts/run-desktop.ps1 -NoBuild       # 跳过 Gradle 构建，直接重开上次编好的桌面开发版
 ./gradlew :desktopApp:prepareDevLaunch            # 仅生成 desktopApp/build/dev-launch/ 启动参数与随包原生资源
 ./gradlew :desktopApp:run                         # 通过 Gradle 直接启动桌面开发版（运行期间会持续占用 Gradle Daemon）
-./gradlew :shared:desktopTest                     # shared 模块单元测试与冒烟测试
+./gradlew :shared:desktopTest                     # shared 模块单元测试与冒烟测试（并行 + TieredStopAtLevel=1）
+./gradlew :shared:desktopTest -Dpiko.test.bench=true  # 开启大规模索引/查重基准压测
 ./gradlew :shared:desktopTest --tests '*ReleaseNotesTest*'  # 运行单个测试类
 ./gradlew :ui-core:desktopTest :ui-drive:desktopTest :ui-player:desktopTest :ui-settings:desktopTest :ui-transfers:desktopTest :ui-reader:desktopTest :ui:desktopTest  # 界面各模块纯函数与组合规则测试
 ./gradlew :desktopApp:desktopTest                 # 桌面端原生测试（含 WinRT、窗口过程与虚拟触摸，仅限 Windows）
@@ -42,8 +46,8 @@ gh workflow run test.yml -f desktop=true          # 手动触发全量 CI 测试
 gh workflow run release.yml -f version=9.9.9      # 发版演练：完整执行测试、构建与产物汇总，不创建 Release
 ```
 
-- **解耦桌面启动与热 Daemon**：Windows 本地调试桌面端优先使用 `pwsh -File scripts/run-desktop.ps1`（内部先执行 `:desktopApp:prepareDevLaunch` 导出 JDK 25 路径、`piko.args` `@argfile`、`dev-launch/jars/` 本仓与复合构建模块 JAR 快照及 `bundledAppResources` 资源目录，再直接拉起独立 JVM，既避免 `:desktopApp:run` 在窗口打开期间持续占用 Gradle Daemon，又使 `-NoBuild` 窗口不受后台 `:shared:desktopTest` 等任务重打模块 JAR 影响）；仅需重启窗口时附加 `-NoBuild`。重新编译 `:desktopApp` 前仍会通过 `~/.piko-dev` 单实例通道尝试优雅退出开发版（传入 `-Ppiko.keepDevInstance=true` 可跳过）；关闭用户系统中已安装的正式版 Piko 前仍须先征得用户确认。
-- **构建缓存、配置缓存与目标裁剪**：`gradle.properties` 已统一开启并行构建、`org.gradle.caching=true`、`org.gradle.configuration-cache=true` 与 ParallelGC 堆配额（Gradle `-Xmx4g`，Kotlin Daemon `-Xmx3g`）。非 macOS 宿主默认跳过注册 `iosArm64` / `iosSimulatorArm64` 与 `pikoSqlite` cinterop（macOS 宿主自动启用，需要强制开启时传 `-Ppiko.enableIos=true`）；Android Debug 默认关闭 ABI 分包以单包快速构建，包含 `Release` 的任务（如 `assembleRelease`）自动恢复全架构与通用包分包（可用 `-Ppiko.enableAbiSplits=true|false` 显式覆写）；各 Compose 模块已关闭与 `libs.versions.toml` 重复的 `dependencyCompatibility` 检查，`:app` 已移除未使用的 `ksp` 插件。修改 `shared` 或 `ui` 后须分两条命令分别执行 `:app:compileDebugKotlin` 与 `:desktopApp:compileKotlinDesktop` 验证双端编译（避免单条命令同时拉起 JDK 21 与 JDK 25 双套 Kotlin Daemon 争抢内存；双端现已统一至 Material 3 `1.5.0-rc01` / CMP `1.13.0-rc01`，详见 `desktopApp/AGENTS.md`）。
+- **桌面开发调试与 JBR 25 热重载**：高频调 UI 时优先在终端运行 `./gradlew :desktopApp:hotRunDesktop`（通过 `gradle.properties` 的 `compose.reload.jbr.version=25` 绑定 JBR 25，与 Release 打包的 Azul Zulu 25 解耦，且热重载任务不会向 `~/.piko-dev` 发送退出信号），改完代码后执行 `./gradlew :desktopApp:reload` 增量热更新窗口。注意 Windows ReFS Dev Drive（`D:`）不支持 `ReadDirectoryChangesW` 目录监视（`error = 1`），`hotRunDesktop --auto` 连续构建会直接退出，故统一使用显式 `:desktopApp:reload` 推送，且**切勿**全局设置 `org.gradle.vfs.watch=false`。不需要热重载时，使用 `pwsh -File scripts/run-desktop.ps1`（经 `:desktopApp:prepareDevLaunch` 导出 `@argfile`、`dev-launch/jars/` JAR 快照及 `bundledAppResources` 独立拉起 JVM，不占用 Gradle Daemon；仅需重启窗口时附加 `-NoBuild`）。普通 `:desktopApp:compileKotlinDesktop` 前仍会通过 `~/.piko-dev` 单实例通道尝试优雅退出开发版（传入 `-Ppiko.keepDevInstance=true` 可跳过）；关闭用户系统中已安装的正式版 Piko 前仍须先征得用户确认。
+- **构建缓存、默认 Desktop-only 裁剪与测试加速**：`gradle.properties` 已统一开启并行构建、`org.gradle.caching=true`、`org.gradle.configuration-cache=true` 与 ParallelGC 堆配额（Gradle `-Xmx4g`，Kotlin Daemon `-Xmx3g`）。本地桌面开发与测试**默认跳过注册 `:app` 与全部 Android KMP 目标**（冷配置提速约 3.7×），仅当传入 `-Ppiko.enableAndroid=true`、`CI=true`、IDE 同步或任务名匹配 `:app`/`Android`/`Debug`/`assembleRelease`/`bundleRelease` 时自动启用 Android（PowerShell 传参须加引号如 `"-Ppiko.enableAndroid=true"`）；非 macOS 宿主同样默认跳过 `iosArm64` / `iosSimulatorArm64` 与 `pikoSqlite` cinterop（强制开启传 `-Ppiko.enableIos=true`）。`:shared`、`:ui-*` 与 `:cli` 统一运行在 JDK 25 工具链下输出 `JVM_21` 字节码，全程复用单套 Kotlin Daemon；`:shared` 已移除 `kotlin.compose` 编译器插件，由根 `compose-stability.conf` 统一维护跨模块稳定类型白名单。`desktopTest` 默认按半数逻辑核并行（2~4 进程）并启用 `-XX:TieredStopAtLevel=1`，大规模压测由 `-Dpiko.test.bench=true` 门控。Android Debug 默认关闭 ABI 分包，Release 自动恢复全架构分包（可用 `-Ppiko.enableAbiSplits=true|false` 覆写）；修改 `shared` 或 `ui` 后仍须分两条命令依次执行 `:desktopApp:compileKotlinDesktop` 与 `:app:compileDebugKotlin` 验证双端编译（避免并发拉起双套 Gradle 进程争抢内存；双端现已统一至 Material 3 `1.5.0-rc01` / CMP `1.13.0-rc01`，详见 `desktopApp/AGENTS.md`）。
 
 应用版本号读取环境变量 `PIKO_VERSION_NAME` 与 `PIKO_VERSION_CODE`，本地未设置时自动回退至默认值，无需额外配置。
 

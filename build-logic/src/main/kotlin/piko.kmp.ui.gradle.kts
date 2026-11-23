@@ -5,7 +5,6 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("org.jetbrains.compose")
-    id("com.android.kotlin.multiplatform.library")
 }
 
 val libs = extensions.getByType<VersionCatalogsExtension>().named("libs")
@@ -21,6 +20,22 @@ composeCompiler {
     stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("compose-stability.conf"))
 }
 
+val enableAndroid: Boolean = providers.gradleProperty("piko.enableAndroid").map { it.toBoolean() }.orNull
+    ?: providers.gradleProperty("piko.desktopOnly").map { !it.toBoolean() }.orNull
+    ?: (
+        providers.environmentVariable("CI").orNull.equals("true", ignoreCase = true) ||
+            providers.gradleProperty("android.injected.invoked.from.ide").orNull.equals("true", ignoreCase = true) ||
+            gradle.startParameter.taskNames.any {
+                it.startsWith(":app:") || it == ":app" ||
+                    it.contains("Android", ignoreCase = true) ||
+                    it.contains("Debug", ignoreCase = true) ||
+                    it.contains("assembleRelease", ignoreCase = true) ||
+                    it.contains("bundleRelease", ignoreCase = true)
+            }
+        )
+if (enableAndroid) {
+    pluginManager.apply("com.android.kotlin.multiplatform.library")
+}
 val enableIosTargets = providers.gradleProperty("piko.enableIos")
     .map { it.toBoolean() }
     .orElse(providers.systemProperty("os.name").map { it.startsWith("Mac", ignoreCase = true) })
@@ -46,17 +61,23 @@ val hostArch = providers.systemProperty("os.arch").map {
 val cmpVersion = libs.findVersion("composeMultiplatform").get().requiredVersion
 
 kotlin {
-    android {
-        namespace = defaultNamespace
-        compileSdk {
-            version = release(37) { minorApiLevel = 1 }
-        }
-        minSdk = 26
-        androidResources {
-            enable = enableAndroidResources
+    if (enableAndroid) {
+        (this as org.gradle.api.plugins.ExtensionAware).extensions.configure<com.android.build.api.dsl.KotlinMultiplatformAndroidLibraryTarget>("android") {
+            namespace = defaultNamespace
+            compileSdk {
+                version = release(37) { minorApiLevel = 1 }
+            }
+            minSdk = 26
+            androidResources {
+                enable = enableAndroidResources
+            }
         }
     }
-    jvm("desktop")
+    jvm("desktop") {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+        }
+    }
     if (enableIosTargets) {
         listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
             target.binaries.configureEach {
@@ -89,12 +110,20 @@ kotlin {
         commonTest.dependencies {
             implementation(kotlin("test"))
         }
-        androidMain.dependencies {
-            implementation(project.dependencies.platform(libs.findLibrary("androidx-compose-bom").get()))
+        if (enableAndroid) {
+            getByName("androidMain").dependencies {
+                implementation(project.dependencies.platform(libs.findLibrary("androidx-compose-bom").get()))
+            }
         }
         getByName("desktopTest").dependencies {
             implementation(kotlin("test"))
             runtimeOnly("org.jetbrains.compose.desktop:desktop-jvm-$hostOs-$hostArch:$cmpVersion")
         }
     }
+}
+
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 4)
+    maxHeapSize = "512m"
+    jvmArgs("-XX:TieredStopAtLevel=1", "-XX:+UseParallelGC")
 }

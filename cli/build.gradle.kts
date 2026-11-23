@@ -7,8 +7,11 @@ plugins {
 }
 
 kotlin {
-    // 与 shared 的字节码版本一致，本机默认的 JDK 21 即可运行
-    jvmToolchain(21)
+    // 统一使用 JDK 25 工具链避免拉起第二套 Kotlin Daemon 争抢内存，同时保持 JVM 21 字节码兼容
+    jvmToolchain(25)
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+    }
 }
 
 application {

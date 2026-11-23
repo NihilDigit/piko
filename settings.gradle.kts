@@ -28,7 +28,25 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "piko"
-include(":app")
+// 本地默认纯桌面模式（跳过 :app 与各 KMP 模块的 Android target 注册）；
+// 遇到 :app:* / Android / Debug / assembleRelease / bundleRelease 任务、Android Studio 同步、CI=true
+// 或显式传 -Ppiko.enableAndroid=true 时自动开启 Android。
+val enableAndroid: Boolean = providers.gradleProperty("piko.enableAndroid").map { it.toBoolean() }.orNull
+    ?: providers.gradleProperty("piko.desktopOnly").map { !it.toBoolean() }.orNull
+    ?: (
+        providers.environmentVariable("CI").orNull.equals("true", ignoreCase = true) ||
+            providers.gradleProperty("android.injected.invoked.from.ide").orNull.equals("true", ignoreCase = true) ||
+            gradle.startParameter.taskNames.any {
+                it.startsWith(":app:") || it == ":app" ||
+                    it.contains("Android", ignoreCase = true) ||
+                    it.contains("Debug", ignoreCase = true) ||
+                    it.contains("assembleRelease", ignoreCase = true) ||
+                    it.contains("bundleRelease", ignoreCase = true)
+            }
+        )
+if (enableAndroid) {
+    include(":app")
+}
 include(":shared")
 include(":ui-core")
 include(":ui-drive")

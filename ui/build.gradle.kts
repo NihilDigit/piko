@@ -2,6 +2,19 @@ plugins {
     id("piko.kmp.ui")
 }
 
+val enableAndroid: Boolean = providers.gradleProperty("piko.enableAndroid").map { it.toBoolean() }.orNull
+    ?: providers.gradleProperty("piko.desktopOnly").map { !it.toBoolean() }.orNull
+    ?: (
+        providers.environmentVariable("CI").orNull.equals("true", ignoreCase = true) ||
+            providers.gradleProperty("android.injected.invoked.from.ide").orNull.equals("true", ignoreCase = true) ||
+            gradle.startParameter.taskNames.any {
+                it.startsWith(":app:") || it == ":app" ||
+                    it.contains("Android", ignoreCase = true) ||
+                    it.contains("Debug", ignoreCase = true) ||
+                    it.contains("assembleRelease", ignoreCase = true) ||
+                    it.contains("bundleRelease", ignoreCase = true)
+            }
+        )
 val enableIosTargets = providers.gradleProperty("piko.enableIos")
     .map { it.toBoolean() }
     .orElse(providers.systemProperty("os.name").map { it.startsWith("Mac", ignoreCase = true) })
@@ -38,9 +51,11 @@ kotlin {
                 implementation(libs.coil.network.ktor3)
             }
         }
-        androidMain.dependencies {
-            implementation(libs.androidx.navigation3.ui)
-            implementation(libs.androidx.adaptive.navigation3)
+        if (enableAndroid) {
+            getByName("androidMain").dependencies {
+                implementation(libs.androidx.navigation3.ui)
+                implementation(libs.androidx.adaptive.navigation3)
+            }
         }
     }
 }

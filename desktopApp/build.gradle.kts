@@ -745,7 +745,14 @@ tasks.register<UpdateArtifactsTask>("packageReleaseUpdate") {
 // compose 的 run 任务在 afterEvaluate 里重写 jvmArgs，会盖掉上面的配置，
 // 这里后注册、后执行，把 flag 补回去（注册顺序：插件先、脚本后）。
 val devHomeDir: File = File(System.getProperty("user.home"), ".piko-dev")
-val keepDevInstance = providers.gradleProperty("piko.keepDevInstance").orNull == "true"
+val isHotReloadRequested = gradle.startParameter.taskNames.any {
+    it.contains("hotRun", ignoreCase = true) ||
+        it.contains("hotDev", ignoreCase = true) ||
+        it.contains("hotReload", ignoreCase = true) ||
+        it.equals("reload", ignoreCase = true) ||
+        it.endsWith(":reload", ignoreCase = true)
+}
+val keepDevInstance = providers.gradleProperty("piko.keepDevInstance").orNull == "true" || isHotReloadRequested
 
 tasks.matching { it.name == "compileKotlinDesktop" }.configureEach {
     // 仅在 desktopApp 编译前尝试优雅关闭开发版实例，不跨项目配置 rootProject.allprojects 以兼容 Configuration Cache。
@@ -889,6 +896,25 @@ project.afterEvaluate {
         // 开发版的数据放在 ~/.piko-dev，与安装版的 ~/.piko 分开，见 PikoHome。不放进 build 目录：clean 一次就要重新登录
         jvmArgs("-Dpiko.home=" + devHomeDir.path)
         jvmArgs("-Dpiko.dev-run=true")
+    }
+    // Compose Hot Reload（JBR 25 DCEVM）运行任务对齐开发版启动参数与随包原生资源目录。
+    // 使用: ./gradlew :desktopApp:hotRunDesktop --auto
+    tasks.matching {
+        it.name == "hotRunDesktop" || it.name == "hotRunDesktopAsync" ||
+            it.name == "hotDevDesktop" || it.name == "hotDevDesktopAsync"
+    }.configureEach {
+        dependsOn(bundledAppResources)
+        if (this is JavaExec) {
+            if (name.startsWith("hotRun")) {
+                mainClass.set("dev.piko.desktop.MainKt")
+            }
+            jvmArgs("--enable-native-access=ALL-UNNAMED")
+            jvmArgs("-XX:+ExplicitGCInvokesConcurrent")
+            jvmArgs(linuxJvmArgs)
+            jvmArgs("-Dcompose.application.resources.dir=" + bundledAppResourcesDir.get().asFile.absolutePath)
+            jvmArgs("-Dpiko.home=" + devHomeDir.path)
+            jvmArgs("-Dpiko.dev-run=true")
+        }
     }
 }
 
