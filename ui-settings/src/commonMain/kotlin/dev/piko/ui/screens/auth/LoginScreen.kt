@@ -1,5 +1,12 @@
 package dev.piko.ui.screens.auth
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -32,11 +39,14 @@ import androidx.compose.foundation.text.input.TextObfuscationMode
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Person
@@ -55,6 +65,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedSecureTextField
 import androidx.compose.material3.OutlinedTextField
@@ -82,8 +93,12 @@ import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.semantics.semantics
@@ -96,6 +111,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.i18n.tr
+import dev.piko.shared.net.ProxyMode
 import dev.piko.shared.net.ProxySetting
 import dev.piko.shared.state.BrowserAuthState
 import dev.piko.shared.state.LoginAccountMode
@@ -119,6 +135,7 @@ import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.platform.windowDragArea
 import dev.piko.ui.resources.*
 import dev.piko.ui.screens.settings.ProxySettingsDialog
+import dev.piko.ui.theme.LocalPikoMotion
 import dev.piko.ui.theme.frame
 import dev.piko.ui.theme.islandBorderColor
 import dev.piko.ui.theme.islandSurface
@@ -126,6 +143,9 @@ import dev.piko.ui.theme.tabular
 import kotlin.time.Clock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+private const val PIKPAK_SIGN_UP_URL = "https://mypikpak.com/drive/login"
+private const val PIKO_GITHUB_URL = "https://github.com/NihilDigit/piko"
 
 /**
  * 登录页。整页一块，表单居中限宽，品牌是表单顶上的图标。
@@ -151,9 +171,18 @@ fun LoginScreen(
     val proxySetting by preferences.proxySettingFlow.collectAsState(initialSnapshot.proxySetting)
     val appLanguage by preferences.appLanguageFlow.collectAsState(initialSnapshot.appLanguage)
     var showProxyDialog by remember { mutableStateOf(false) }
-    val wideSplit = currentWidthClass() == WidthClass.Expanded
+    val allowWelcome = onCancel == null && state.reauthContext == null
+    var showWelcome by remember(allowWelcome) {
+        mutableStateOf(allowWelcome && state.browserAuth is BrowserAuthState.Idle)
+    }
+    LaunchedEffect(state.browserAuth) {
+        if (state.browserAuth !is BrowserAuthState.Idle) showWelcome = false
+    }
     val handleBack: (() -> Unit)? = when {
         state.browserAuth is BrowserAuthState.AwaitingConfirmation -> state::cancelGoogleLogin
+        !showWelcome && allowWelcome -> {
+            { showWelcome = true }
+        }
         onCancel != null -> {
             {
                 state.cancelGoogleLogin()
@@ -168,9 +197,12 @@ fun LoginScreen(
     windowCaption?.Host()
     val caption = rememberCaptionSlot()
     val colors = MaterialTheme.colorScheme
+    val platform = LocalPikoPlatform.current
+    val expressive = remember { MotionScheme.expressive() }
+
     Surface(
         modifier = modifier.fillMaxSize(),
-        color = if (wideSplit) colors.frame else colors.surface,
+        color = colors.surface,
     ) {
         Column(Modifier.fillMaxSize()) {
             if (windowCaption != null) {
@@ -182,82 +214,85 @@ fun LoginScreen(
                     caption.buttons?.invoke()
                 }
             }
-            if (wideSplit) {
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .safeDrawingPadding()
-                        .padding(start = 24.dp, end = 24.dp, top = if (windowCaption != null) 4.dp else 16.dp, bottom = 20.dp),
-                    horizontalArrangement = Arrangement.spacedBy(24.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    LoginBrandCanvas(
-                        appLanguage = appLanguage,
-                        onSelectLanguage = { lang -> scope.launch { preferences.setAppLanguage(lang) } },
-                        proxySummary = proxySetting.summary(),
-                        onOpenProxy = { showProxyDialog = true },
-                        isLoggingIn = state.isLoggingIn,
-                        onCancel = onCancel?.let { cancel ->
-                            {
-                                state.cancelGoogleLogin()
-                                cancel()
-                            }
-                        },
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                    )
-                    Box(
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        val borderColor = colors.islandBorderColor
-                        Surface(
-                            shape = RoundedCornerShape(20.dp),
-                            color = colors.islandSurface,
-                            border = borderColor?.let { BorderStroke(1.dp, it) },
-                            shadowElevation = 2.dp,
-                            modifier = Modifier
-                                .widthIn(max = 468.dp)
-                                .fillMaxWidth(),
-                        ) {
-                            LoginForm(
-                                state = state,
-                                adding = onCancel != null,
-                                proxySummary = proxySetting.summary(),
-                                appLanguage = appLanguage,
-                                onSelectLanguage = { lang -> scope.launch { preferences.setAppLanguage(lang) } },
-                                onOpenProxy = { showProxyDialog = true },
-                                showHeroLogo = false,
-                                showUtilityBar = false,
-                            )
-                        }
-                    }
-                }
-            } else {
-                Box(Modifier.weight(1f).fillMaxWidth().safeDrawingPadding()) {
-                    LoginForm(
-                        state = state,
-                        adding = onCancel != null,
-                        proxySummary = proxySetting.summary(),
-                        appLanguage = appLanguage,
-                        onSelectLanguage = { lang -> scope.launch { preferences.setAppLanguage(lang) } },
-                        onOpenProxy = { showProxyDialog = true },
-                        showHeroLogo = true,
-                        showUtilityBar = true,
-                        modifier = Modifier.align(Alignment.Center),
-                    )
-                    if (onCancel != null) {
+            // 统一极简顶栏：左侧按需显示返回/取消，右侧收拢语言与代理入口
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (windowCaption == null) Modifier.safeDrawingPadding() else Modifier)
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                when {
+                    !showWelcome && allowWelcome && state.browserAuth !is BrowserAuthState.AwaitingConfirmation -> {
                         TooltipIconButton(
-                            Icons.Outlined.Close,
-                            tr("取消", "Cancel", "キャンセル", "취소", "取消"),
+                            icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                            label = tr("返回", "Back", "戻る", "뒤로", "返回"),
+                            onClick = { showWelcome = true },
+                            enabled = !state.isBusy,
+                        )
+                    }
+                    onCancel != null -> {
+                        TooltipIconButton(
+                            icon = Icons.Outlined.Close,
+                            label = tr("取消", "Cancel", "キャンセル", "취소", "取消"),
                             onClick = {
                                 state.cancelGoogleLogin()
                                 onCancel()
                             },
                             enabled = !state.isLoggingIn,
-                            modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
                         )
                     }
+                    else -> Spacer(Modifier.width(4.dp))
+                }
+                Spacer(Modifier.weight(1f))
+                LanguageQuickPill(
+                    current = appLanguage,
+                    enabled = !state.isLoggingIn,
+                    onSelect = { lang -> scope.launch { preferences.setAppLanguage(lang) } },
+                )
+                Spacer(Modifier.width(4.dp))
+                TextButton(
+                    onClick = { showProxyDialog = true },
+                    enabled = !state.isLoggingIn,
+                    shapes = ButtonDefaults.shapes(),
+                ) {
+                    Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = if (proxySetting.mode == ProxyMode.SYSTEM) {
+                            tr("网络代理", "Proxy", "プロキシ", "프록시", "網路代理")
+                        } else {
+                            proxySetting.summary()
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            AnimatedContent(
+                targetState = showWelcome,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                transitionSpec = {
+                    val forward = !targetState
+                    val slideIn = slideInHorizontally(expressive.defaultSpatialSpec()) { w -> if (forward) w / 6 else -w / 6 }
+                    val slideOut = slideOutHorizontally(expressive.defaultSpatialSpec()) { w -> if (forward) -w / 6 else w / 6 }
+                    (slideIn + fadeIn(expressive.fastEffectsSpec())) togetherWith
+                        (slideOut + fadeOut(expressive.fastEffectsSpec()))
+                },
+                label = "login-onboarding-step",
+            ) { welcoming ->
+                if (welcoming) {
+                    LoginWelcomeStep(
+                        onGetStarted = { showWelcome = false },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    LoginForm(
+                        state = state,
+                        adding = onCancel != null,
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 }
             }
         }
@@ -275,96 +310,110 @@ fun LoginScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun LoginBrandCanvas(
-    appLanguage: AppLanguage,
-    onSelectLanguage: (AppLanguage) -> Unit,
-    proxySummary: String,
-    onOpenProxy: () -> Unit,
-    isLoggingIn: Boolean,
-    onCancel: (() -> Unit)?,
+private fun LoginWelcomeStep(
+    onGetStarted: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
-    val gradient = Brush.verticalGradient(
-        colors = listOf(
-            colors.primaryContainer.copy(alpha = 0.34f),
-            colors.tertiaryContainer.copy(alpha = 0.18f),
-            colors.surfaceContainerLow.copy(alpha = 0.55f),
-        ),
-    )
-    val borderColor = colors.islandBorderColor
-    Box(
+    val compact = currentWidthClass() == WidthClass.Compact
+    val reduced = LocalPikoMotion.current.reduced
+    val expressive = remember { MotionScheme.expressive() }
+
+    // 顺序编排：先看画布演完（投文件 -> 憋劲 -> Bang!），再依次浮现「标题 + Slogan」与「开始使用」
+    var bangTriggered by remember(reduced) { mutableStateOf(reduced) }
+    val copyAlpha = remember(reduced) { Animatable(if (reduced) 1f else 0f) }
+    val copySlide = remember(reduced) { Animatable(if (reduced) 0f else 1f) }
+    val ctaAlpha = remember(reduced) { Animatable(if (reduced) 1f else 0f) }
+    val ctaSlide = remember(reduced) { Animatable(if (reduced) 0f else 1f) }
+
+    LaunchedEffect(bangTriggered, reduced) {
+        if (!bangTriggered || reduced) return@LaunchedEffect
+        delay(220)
+        launch { copyAlpha.animateTo(1f, expressive.defaultEffectsSpec()) }
+        launch { copySlide.animateTo(0f, expressive.defaultSpatialSpec()) }
+        delay(180)
+        launch { ctaAlpha.animateTo(1f, expressive.defaultEffectsSpec()) }
+        launch { ctaSlide.animateTo(0f, expressive.defaultSpatialSpec()) }
+    }
+
+    Column(
         modifier = modifier
-            .clip(MaterialTheme.shapes.extraLarge)
-            .background(gradient)
-            .then(
-                if (borderColor != null) {
-                    Modifier.border(1.dp, borderColor, MaterialTheme.shapes.extraLarge)
-                } else {
-                    Modifier
-                },
-            ),
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        if (onCancel != null) {
-            TooltipIconButton(
-                icon = Icons.Outlined.Close,
-                label = tr("取消", "Cancel", "キャンセル", "취소", "取消"),
-                onClick = onCancel,
-                enabled = !isLoggingIn,
-                modifier = Modifier.align(Alignment.TopStart).padding(12.dp),
-            )
-        }
         Column(
             modifier = Modifier
-                .align(Alignment.Center)
-                .widthIn(max = 360.dp)
+                .widthIn(max = 420.dp)
                 .fillMaxWidth()
-                .padding(horizontal = 36.dp, vertical = 32.dp),
+                .padding(bottom = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
+            PikoOnboardingCanvas(
+                modifier = Modifier
+                    .widthIn(max = 380.dp)
+                    .fillMaxWidth(),
+                onBang = { bangTriggered = true },
+            )
+            Spacer(Modifier.height(20.dp))
             Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        alpha = copyAlpha.value
+                        translationY = copySlide.value * 18.dp.toPx()
+                    },
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Icon(
-                    imageVector = PikoBrandIcons.Logo,
-                    contentDescription = null,
-                    tint = Color.Unspecified,
-                    modifier = Modifier.size(72.dp).clip(MaterialTheme.shapes.extraLarge),
-                )
                 Text(
                     text = "Piko",
                     style = MaterialTheme.typography.displaySmall,
                     fontWeight = FontWeight.Bold,
                     color = colors.onSurface,
                 )
-            }
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                LanguageQuickPill(
-                    current = appLanguage,
-                    enabled = !isLoggingIn,
-                    onSelect = onSelectLanguage,
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = tr(
+                        "轻快、顺手的 PikPak 第三方客户端",
+                        "A fast, effortless third-party PikPak client",
+                        "軽快で心地よい PikPak サードパーティクライアント",
+                        "가볍고 손에 익는 PikPak 서드파티 클라이언트",
+                        "輕快、順手的 PikPak 第三方用戶端",
+                    ),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = colors.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
                 )
-                FilledTonalButton(
-                    onClick = onOpenProxy,
-                    enabled = !isLoggingIn,
-                    shapes = ButtonDefaults.shapes(),
-                    contentPadding = ButtonDefaults.ContentPadding,
-                ) {
-                    Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = tr("代理：$proxySummary", "Proxy: $proxySummary", "プロキシ：$proxySummary", "프록시: $proxySummary", "代理：$proxySummary"),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+            }
+            Spacer(Modifier.height(32.dp))
+            Button(
+                onClick = onGetStarted,
+                modifier = (if (compact) {
+                    Modifier.fillMaxWidth()
+                } else {
+                    Modifier.widthIn(min = 220.dp)
+                })
+                    .height(ButtonDefaults.MediumContainerHeight)
+                    .graphicsLayer {
+                        alpha = ctaAlpha.value
+                        translationY = ctaSlide.value * 16.dp.toPx()
+                        val s = 0.94f + 0.06f * (1f - ctaSlide.value).coerceIn(0f, 1.05f)
+                        scaleX = s
+                        scaleY = s
+                    },
+                contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
+                shapes = ButtonDefaults.shapes(),
+            ) {
+                Text(tr("开始使用", "Get started", "はじめる", "시작하기", "開始使用"))
+                Spacer(Modifier.width(8.dp))
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.ArrowForward,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
     }
@@ -381,14 +430,13 @@ private fun LanguageQuickPill(
     val systemLabel = tr("跟随系统", "System", "システムに従う", "시스템 설정", "跟隨系統")
     val currentLabel = if (current == AppLanguage.SYSTEM) systemLabel else current.nativeLabel
     Box {
-        FilledTonalButton(
+        TextButton(
             onClick = { expanded = true },
             enabled = enabled,
             shapes = ButtonDefaults.shapes(),
-            contentPadding = ButtonDefaults.ContentPadding,
         ) {
             Icon(Icons.Outlined.Language, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(6.dp))
             Text(currentLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.width(2.dp))
             Icon(Icons.Outlined.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -424,17 +472,11 @@ private fun LanguageQuickPill(
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun LoginForm(
     state: LoginState,
     adding: Boolean,
-    proxySummary: String,
-    appLanguage: AppLanguage,
-    onSelectLanguage: (AppLanguage) -> Unit,
-    onOpenProxy: () -> Unit,
-    showHeroLogo: Boolean,
-    showUtilityBar: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val platform = LocalPikoPlatform.current
@@ -457,59 +499,62 @@ private fun LoginForm(
             .fillMaxWidth()
             .imePadding()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = if (showHeroLogo) 24.dp else 32.dp, vertical = if (showHeroLogo) 40.dp else 32.dp),
+            .padding(horizontal = 24.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
         Column(modifier = Modifier.widthIn(max = FormMaxWidth).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            if (showHeroLogo) {
-                Icon(
-                    imageVector = PikoBrandIcons.Logo,
-                    contentDescription = null,
-                    tint = Color.Unspecified,
-                    modifier = Modifier.size(72.dp).clip(MaterialTheme.shapes.extraLarge),
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.Start,
+            ) {
+                Text(
+                    text = when {
+                        reauthContext != null -> tr("重新登录", "Sign in again", "再ログイン", "다시 로그인", "重新登入")
+                        adding -> tr("添加账号", "Add account", "アカウントを追加", "계정 추가", "新增帳號")
+                        else -> tr("登录", "Sign in", "ログイン", "로그인", "登入")
+                    },
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
-                Spacer(Modifier.height(24.dp))
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = when {
+                        reauthContext != null -> tr(
+                            "目标账号：${reauthContext.displayName}",
+                            "Account: ${reauthContext.displayName}",
+                            "対象アカウント：${reauthContext.displayName}",
+                            "대상 계정: ${reauthContext.displayName}",
+                            "目標帳號：${reauthContext.displayName}",
+                        )
+                        adding -> tr(
+                            "当前账号保持登录，可随时切换",
+                            "Your current account stays signed in and can be switched anytime",
+                            "現在のアカウントはログイン状態のまま、いつでも切り替えられます",
+                            "현재 계정의 로그인은 유지되며 언제든 전환할 수 있습니다",
+                            "目前帳號將保持登入，可隨時切換",
+                        )
+                        else -> tr(
+                            "使用 PikPak 账号",
+                            "Use your PikPak account",
+                            "PikPakアカウントでログイン",
+                            "PikPak 계정으로 로그인",
+                            "使用 PikPak 帳號",
+                        )
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Start,
+                )
             }
-            Text(
-                text = when {
-                    reauthContext != null -> tr("重新登录", "Sign in again", "再ログイン", "다시 로그인", "重新登入")
-                    adding -> tr("添加账号", "Add account", "アカウントを追加", "계정 추가", "新增帳號")
-                    else -> tr("登录", "Sign in", "ログイン", "로그인", "登入")
-                },
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = when {
-                    reauthContext != null -> tr(
-                        "目标账号：${reauthContext.displayName}",
-                        "Account: ${reauthContext.displayName}",
-                        "対象アカウント：${reauthContext.displayName}",
-                        "대상 계정: ${reauthContext.displayName}",
-                        "目標帳號：${reauthContext.displayName}",
-                    )
-                    adding -> tr(
-                        "当前账号保持登录，可随时切换",
-                        "Your current account stays signed in and can be switched anytime",
-                        "現在のアカウントはログイン状態のまま、いつでも切り替えられます",
-                        "현재 계정의 로그인은 유지되며 언제든 전환할 수 있습니다",
-                        "目前帳號將保持登入，可隨時切換",
-                    )
-                    else -> tr(
-                        "使用 PikPak 账号",
-                        "Use your PikPak account",
-                        "PikPakアカウントでログイン",
-                        "PikPak 계정으로 로그인",
-                        "使用 PikPak 帳號",
-                    )
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
             if (reauthContext != null && browserAuth is BrowserAuthState.Idle) {
-                TextButton(onClick = state::clearReauthTarget, enabled = !isBusy, shapes = ButtonDefaults.shapes()) {
+                TextButton(
+                    onClick = state::clearReauthTarget,
+                    enabled = !isBusy,
+                    shapes = ButtonDefaults.shapes(),
+                    modifier = Modifier.align(Alignment.Start),
+                ) {
                     Text(
                         tr(
                             "换用其他账号登录",
@@ -523,7 +568,7 @@ private fun LoginForm(
                 }
                 Spacer(Modifier.height(8.dp))
             } else {
-                Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(24.dp))
             }
 
             if (browserAuth is BrowserAuthState.AwaitingConfirmation) {
@@ -540,64 +585,6 @@ private fun LoginForm(
                     onCancel = state::cancelGoogleLogin,
                 )
             } else {
-                val isStartingGoogle = browserAuth is BrowserAuthState.Starting
-                OutlinedButton(
-                    onClick = { state.startGoogleLogin(platform::openUrl) },
-                    enabled = !isBusy,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(ButtonDefaults.MediumContainerHeight),
-                    contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
-                    shapes = ButtonDefaults.shapes(),
-                ) {
-                    if (isStartingGoogle) {
-                        InlineLoadingIndicator(color = LocalContentColor.current)
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            tr(
-                                "正在请求授权码…",
-                                "Requesting sign-in code…",
-                                "認証コードをリクエスト中…",
-                                "인증 코드 요청 중…",
-                                "正在請求授權碼…",
-                            ),
-                        )
-                    } else {
-                        Icon(
-                            imageVector = PikoBrandIcons.Google,
-                            contentDescription = null,
-                            tint = Color.Unspecified,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            tr(
-                                "使用 Google 继续",
-                                "Continue with Google",
-                                "Google で続行",
-                                "Google로 계속하기",
-                                "使用 Google 繼續",
-                            ),
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(20.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    HorizontalDivider(Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant)
-                    Text(
-                        text = tr("或使用密码登录", "or sign in with password", "またはパスワードでログイン", "또는 비밀번호로 로그인", "或使用密碼登入"),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    HorizontalDivider(Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant)
-                }
-                Spacer(Modifier.height(16.dp))
-
                 val accountModes = remember { listOf(LoginAccountMode.EMAIL, LoginAccountMode.PHONE) }
                 val toggleColors = ToggleButtonDefaults.colors(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -724,17 +711,6 @@ private fun LoginForm(
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                val passwordSupporting = errorMessage ?: if (state.accountMode == LoginAccountMode.PHONE) {
-                    tr(
-                        "需已在 PikPak 设置登录密码；支持直接粘贴含区号号码",
-                        "Requires a password set in PikPak; pasting numbers with country code is supported",
-                        "PikPak で設定済みのパスワードが必要です（国番号付きの貼り付けに対応）",
-                        "PikPak에 설정된 비밀번호가 필요합니다 (국가 번호 포함 붙여넣기 지원)",
-                        "需已於 PikPak 設定登入密碼；支援直接貼上含區碼號碼",
-                    )
-                } else {
-                    null
-                }
                 OutlinedSecureTextField(
                     state = passwordField,
                     label = { Text(stringResource(Res.string.text_password)) },
@@ -754,7 +730,7 @@ private fun LoginForm(
                     },
                     enabled = !isBusy,
                     isError = errorMessage != null,
-                    supportingText = passwordSupporting?.let { msg -> { Text(msg) } },
+                    supportingText = errorMessage?.let { msg -> { Text(msg) } },
                     modifier = Modifier
                         .fillMaxWidth()
                         .focusRequester(passwordFocus)
@@ -781,43 +757,129 @@ private fun LoginForm(
                         Text(stringResource(Res.string.text_sign_in))
                     }
                 }
-            }
 
-            if (showUtilityBar) {
-                Spacer(Modifier.height(24.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                Spacer(Modifier.height(20.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    LanguageQuickPill(
-                        current = appLanguage,
-                        enabled = !state.isLoggingIn,
-                        onSelect = onSelectLanguage,
+                    HorizontalDivider(Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant)
+                    Text(
+                        text = tr("或", "or", "または", "또는", "或"),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    TextButton(onClick = onOpenProxy, enabled = !state.isLoggingIn, shapes = ButtonDefaults.shapes()) {
-                        Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
+                    HorizontalDivider(Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant)
+                }
+                Spacer(Modifier.height(16.dp))
+
+                val isStartingGoogle = browserAuth is BrowserAuthState.Starting
+                OutlinedButton(
+                    onClick = { state.startGoogleLogin(platform::openUrl) },
+                    enabled = !isBusy,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(ButtonDefaults.MediumContainerHeight),
+                    contentPadding = ButtonDefaults.contentPaddingFor(ButtonDefaults.MediumContainerHeight),
+                    shapes = ButtonDefaults.shapes(),
+                ) {
+                    if (isStartingGoogle) {
+                        InlineLoadingIndicator(color = LocalContentColor.current)
+                        Spacer(Modifier.width(10.dp))
                         Text(
-                            tr("网络代理：$proxySummary", "Proxy: $proxySummary", "プロキシ：$proxySummary", "프록시: $proxySummary", "網路代理：$proxySummary"),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                            tr(
+                                "正在请求授权码…",
+                                "Requesting sign-in code…",
+                                "認証コードをリクエスト中…",
+                                "인증 코드 요청 중…",
+                                "正在請求授權碼…",
+                            ),
+                        )
+                    } else {
+                        Icon(
+                            imageVector = PikoBrandIcons.Google,
+                            contentDescription = null,
+                            tint = Color.Unspecified,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            tr(
+                                "使用 Google 继续",
+                                "Continue with Google",
+                                "Google で続行",
+                                "Google로 계속하기",
+                                "使用 Google 繼續",
+                            ),
                         )
                     }
                 }
+
+                Spacer(Modifier.height(10.dp))
+                TextButton(
+                    onClick = { platform.openUrl(PIKPAK_SIGN_UP_URL) },
+                    enabled = !isBusy,
+                    shapes = ButtonDefaults.shapes(),
+                ) {
+                    Text(
+                        tr(
+                            "前往 PikPak 官网注册",
+                            "Create an account on PikPak",
+                            "PikPak 公式サイトで登録",
+                            "PikPak 공식 사이트에서 가입",
+                            "前往 PikPak 官網註冊",
+                        ),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.OpenInNew,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
             }
-            Spacer(Modifier.height(if (showUtilityBar) 12.dp else 20.dp))
-            Text(
-                text = tr(
-                    "Piko 是 PikPak 第三方非官方客户端，与 PikPak 官方无关",
-                    "Piko is an unofficial third-party client and is not affiliated with PikPak",
-                    "Piko は PikPak の非公式サードパーティクライアントであり、公式とは関係ありません",
-                    "Piko는 PikPak 비공식 서드파티 클라이언트로, 공식 서비스와 무관합니다",
-                    "Piko 是 PikPak 第三方非官方用戶端，與 PikPak 官方無關",
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
+
+            Spacer(Modifier.height(20.dp))
+            Surface(
+                onClick = { platform.openUrl(PIKO_GITHUB_URL) },
+                enabled = !isBusy,
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Info,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = tr(
+                            "Piko 是开源的 PikPak 第三方客户端，与 PikPak 官方无关",
+                            "Piko is an open-source third-party client, not affiliated with PikPak",
+                            "Piko はオープンソースの非公式 PikPak クライアントであり、公式とは関係ありません",
+                            "Piko는 오픈소스 비공식 PikPak 클라이언트로, 공식 서비스와 무관합니다",
+                            "Piko 是開源的 PikPak 第三方用戶端，與 PikPak 官方無關",
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.OpenInNew,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        modifier = Modifier.size(15.dp),
+                    )
+                }
+            }
         }
     }
 
