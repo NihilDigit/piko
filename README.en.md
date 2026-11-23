@@ -1,11 +1,16 @@
 <p align="right"><a href="README.md">简体中文</a> | <a href="README.zh-Hant.md">繁體中文</a> | <a href="README.ko.md">한국어</a> | <a href="README.ja.md">日本語</a> | <b>English</b></p>
 
-<p align="center"><img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/icon.png" alt="Piko" width="96"></p>
-
-<h1 align="center">Piko</h1>
+<p align="center">
+<picture>
+<source media="(prefers-color-scheme: dark)" type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/banner-dark.avif">
+<source type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/banner.avif">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/banner-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/banner.jpg" alt="Piko">
+</picture>
+</p>
 
 <p align="center">
-<b>A fast, cross-platform PikPak client</b><br>
+<b>An elegant, easy-to-use, high-performance PikPak client</b><br>
 <sub>Available on Android, Windows, macOS, Linux, iOS, and iPadOS</sub>
 </p>
 
@@ -17,90 +22,87 @@
 
 <p align="center">Telegram Channel <a href="https://t.me/piko_dev">@piko_dev</a> | <a href="https://t.me/+mTkqVFyYnjszMjA1">Chat Group</a></p>
 
-<p align="center"><a href="https://trendshift.io/repositories/263280?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-263280" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/263280/weekly?language=Kotlin" alt="Trendshift: NihilDigit/piko" width="250" height="53"/></a></p>
+## Workspace
 
-## Adaptive layout
-
-Built for mouse and keyboard on desktop, clean and intuitive on mobile. Supports multi-tab workspaces, pinned folders, Gallery browsing for videos and photos, and read-only mounting of local folders inside cloud directories.
+Built for large directories and multitasking with a consistent, responsive experience across desktop and mobile, supporting tabs, pinned folders, and local folder mounting.
 
 <p align="center">
 <picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero.jpg" alt="Poster wall on desktop and phone">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero-en-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero-en.jpg" alt="Adaptive workspace on desktop and phone">
 </picture>
 </p>
 
-## Feed
+## Browsing
 
-Plays random clips from the current folder or selected videos. Swipe up or down to switch, with optional auto-extend and auto-advance.
+Use Gallery and Feed to quickly browse and locate what you want across large collections of videos and images.
 
 <p align="center">
 <picture>
-<source media="(prefers-color-scheme: dark)" type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-dark.avif">
-<source type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed.avif">
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed.jpg" alt="The feed beside the drive, swiping between clips">
+<source media="(prefers-color-scheme: dark)" type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-en-dark.avif">
+<source type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-en.avif">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-en-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-en.jpg" alt="Masonry gallery beside live clip feed playback">
 </picture>
 </p>
 
 ## Links and archives
 
-Parses magnet, torrent, ed2k, thunder, direct download, and share links—preview and pick files before saving, or save as zero-quota references. Browse cloud archives directly without extracting. Episodes are grouped automatically with samples and extras folded away.
+Pre-parse magnet, torrent, and share links to preview and pick files before saving or save as zero-quota references; browse cloud archives without extracting.
 
 <p align="center">
 <picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links.jpg" alt="Episodes grouped by work, with a parsed magnet link in the side panel">
-</picture>
-</p>
-
-## Playback and transfers
-
-Parallel connections route around slow nodes for responsive streaming and downloads over high-latency or proxy networks, with a built-in hardware-accelerated player and external player handoff. Snail mode caps background transfers without affecting playback.
-
-<p align="center">
-<picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/transfers-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/transfers.jpg" alt="Transfers: active and finished downloads, uploads and cloud tasks">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links-en-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links-en.jpg" alt="Pending virtual folder preview with parsed magnet file tree">
 </picture>
 </p>
 
 ## File tools
 
-Local directory tree for instant drive-wide search and a drill-down space map, plus zero-quota archiving, lossless clip extraction, metadata-driven batch renaming, and cross-folder duplicate detection.
+Extract lossless video clips, batch rename, find duplicates across folders, and archive to reclaim quota, alongside instant drive-wide search and a space map powered by a local index.
 
 <p align="center">
 <picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools.jpg" alt="Clip download and duplicate finder on a phone">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools-en-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools-en.jpg" alt="Lossless clip extraction, batch renaming, and duplicate finder on mobile">
 </picture>
 </p>
 
-## Accounts and sync
+## Customization
 
-Sign in with password or Google and switch accounts anytime. Settings, pinned tabs, and stars sync automatically across devices through your drive, while archive passwords and scraper configs use an optional independent passphrase.
+Customize file views and player layouts to match how you work.
+
+<p align="center">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/customize-en-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/customize-en.jpg" alt="File appearance customization on mobile and player HUD customization on desktop">
+</picture>
+</p>
+
+## Transfers, accounts, and sync
+
+Parallel connections route around slow nodes for smooth playback and downloads over high-latency or proxy networks, while snail mode caps background transfers without affecting playback.
+
+Sign in with password or Google and switch accounts anytime. Settings, pinned tabs, and stars sync across devices through your drive, while archive passwords and scraper configs support an independent passphrase.
 
 ## Install
 
-Download from [Releases](https://github.com/NihilDigit/piko/releases/latest). Every package is built from source by GitHub Actions, with in-app updates on desktop and Android.
+Download from [Releases](https://github.com/NihilDigit/piko/releases/latest). Piko is fully open source: every package is built publicly from source by GitHub Actions with [SLSA Build L3 provenance attestations](https://github.com/NihilDigit/piko/attestations) for an auditable build chain. Desktop and Android support in-app updates.
 
-- **Android**: Android 8.0+, pick the APK for your architecture (`universal` if unsure).
-- **Windows**: Windows 10+ on x64, Windows 11+ on arm64. `.msi` installer or `.7z` portable build (use [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) or 7-Zip on Windows 10).
-- **macOS** (experimental): macOS 12+ on Apple silicon; allow once under System Settings → Privacy & Security.
-- **Linux** (experimental): x64 with glibc 2.38+ (Ubuntu 24.04, Debian 13, Fedora 39+); make the AppImage executable and run.
-- **iOS / iPadOS** (experimental): iOS 15+, unsigned `.ipa` for sideloading via AltStore, SideStore, Sideloadly, or TrollStore.
+| Platform | Status | Requirements | Package and notes |
+| --- | --- | --- | --- |
+| **Android** | Stable | Android 8.0+ | Pick the APK for your architecture (`universal` if unsure) |
+| **Windows** | Stable | Windows 10+ (x64), Windows 11+ (arm64) | `.msi` installer or `.7z` portable build (use [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) or 7-Zip on Windows 10) |
+| **macOS** | Experimental | macOS 12+ (Apple silicon) | Allow once under System Settings → Privacy & Security |
+| **Linux** | Experimental | x64, glibc 2.38+ (Ubuntu 24.04, Debian 13, Fedora 39+) | Make the AppImage executable and run |
+| **iOS / iPadOS** | Experimental | iOS 15+ | Unsigned `.ipa` for sideloading via AltStore, SideStore, Sideloadly, or TrollStore |
 
 ## Contributing
 
-The roadmap is in [#10](https://github.com/NihilDigit/piko/issues/10).
-
-Issues and pull requests are welcome. Small bug fixes, crash reports and documentation fixes can go straight in as a pull request.
-
-For a new feature or an architectural change, open an issue first describing the use case and the approach, so the direction is agreed before the work starts.
-
-If you write code with the help of an LLM, make sure you understand what it adds and test it on a real device.
-
-Pull requests require signing the [Contributor License Agreement](CLA.md) once, by replying to the bot on the pull request; see [CONTRIBUTING.md](CONTRIBUTING.md).
+- Issues and pull requests are welcome; small bug fixes, crash reports, and documentation fixes can go straight in as a PR.
+- **Open an issue first for major new features or architectural changes** to align on the use case and approach before writing code.
+- **If you use an LLM to help write code, make sure you understand every change and verify it on a real device**.
+- Pull requests require signing the [Contributor License Agreement](CLA.md); see [CONTRIBUTING.md](CONTRIBUTING.md) for building from source and submission details.
 
 ## License and credits
 

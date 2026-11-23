@@ -1,11 +1,16 @@
 <p align="right"><a href="README.md">简体中文</a> | <a href="README.zh-Hant.md">繁體中文</a> | <a href="README.ko.md">한국어</a> | <b>日本語</b> | <a href="README.en.md">English</a></p>
 
-<p align="center"><img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/icon.png" alt="Piko" width="96"></p>
-
-<h1 align="center">Piko</h1>
+<p align="center">
+<picture>
+<source media="(prefers-color-scheme: dark)" type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/banner-dark.avif">
+<source type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/banner.avif">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/banner-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/banner.jpg" alt="Piko">
+</picture>
+</p>
 
 <p align="center">
-<b>高速なクロスプラットフォームの PikPak クライアント</b><br>
+<b>洗練された、使いやすく高速な PikPak クライアント</b><br>
 <sub>Android、Windows、macOS、Linux、iOS、iPadOS に対応</sub>
 </p>
 
@@ -17,95 +22,91 @@
 
 <p align="center">Telegram 更新チャンネル <a href="https://t.me/piko_dev">@piko_dev</a> ｜ <a href="https://t.me/+mTkqVFyYnjszMjA1">チャットグループ</a></p>
 
-<p align="center"><a href="https://trendshift.io/repositories/263280?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-263280" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/263280/weekly?language=Kotlin" alt="Trendshift: NihilDigit/piko" width="250" height="53"/></a></p>
+## ワークスペース
 
-## アダプティブレイアウト
-
-デスクトップではマウスとキーボードに最適化し、モバイルでは簡潔に扱えます。マルチタブとフォルダー固定、ギャラリーでの動画と画像の閲覧、ローカルフォルダーの読み取り専用マウントに対応しています。
+大規模フォルダーの閲覧や並行作業向けに設計され、デスクトップとモバイルの双方で一貫した快適な操作感を提供します。マルチタブ、フォルダー固定、ローカルフォルダーのマウントに対応しています。
 
 <p align="center">
 <picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero.jpg" alt="デスクトップとスマートフォンのポスター壁">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero-ja-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero-ja.jpg" alt="デスクトップとスマートフォンのアダプティブワークスペース">
 </picture>
 </p>
 
-## クリップフィード
+## 閲覧モード
 
-現在のフォルダーや選択した動画からランダムにクリップを再生し、上下スワイプで切り替えます。自動延長と自動送りに対応しています。
+ギャラリーとフィードを活用して、大量の動画や画像の中から見たいコンテンツをすばやく見つけられます。
 
 <p align="center">
 <picture>
-<source media="(prefers-color-scheme: dark)" type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-dark.avif">
-<source type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed.avif">
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed.jpg" alt="ドライブ右側のクリップフィード">
+<source media="(prefers-color-scheme: dark)" type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-ja-dark.avif">
+<source type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-ja.avif">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-ja-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-ja.jpg" alt="左側のギャラリー閲覧と右側のフィード再生">
 </picture>
 </p>
 
-## リンクとアーカイブ
+## リンク解析とアーカイブ
 
-マグネット、トレント、ed2k、thunder、直リンク、共有リンクを解析し、保存前に選択するか容量消費なしの参照として保存できます。クラウド上の圧縮ファイルは展開せずそのまま閲覧でき、エピソードの自動整理とサンプル類の折りたたみに対応しています。
-
-<p align="center">
-<picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links.jpg" alt="作品ごとに整理されたエピソードとマグネットリンクの解析パネル">
-</picture>
-</p>
-
-## 再生と転送
-
-並列接続で遅いノードを自動回避し、高遅延やプロキシ経由でも快適な再生とダウンロードを実現します。ハードウェアデコード内蔵プレーヤーと外部プレーヤー連携を備え、低速モードは再生に影響しません。
+マグネット、トレント、共有リンクを事前解析し、保存前の選択や容量消費なしの参照保存に対応します。クラウド上の圧縮ファイルも展開せずそのまま閲覧できます。
 
 <p align="center">
 <picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/transfers-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/transfers.jpg" alt="転送画面：進行中および完了したダウンロード、アップロード、クラウドタスク">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links-ja-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links-ja.jpg" alt="保存前フォルダーのプレビューとマグネットリンクのファイルツリー解析パネル">
 </picture>
 </p>
 
 ## ファイル処理
 
-ローカルツリーによる即時の全体検索と容量マップに対応し、空き容量を確保するアーカイブ、無劣化での動画切り出し、メタデータ取得による一括リネーム、フォルダー横断の重複検出を備えています。
+無劣化での動画クリップ切り出し、一括リネーム、フォルダー横断の重複検索、空き容量を確保するアーカイブを備え、ローカルインデックスによる即時の全体検索と容量マップに対応します。
 
 <p align="center">
 <picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools.jpg" alt="スマートフォンでの動画クリップ切り出しと重複ファイル検出">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools-ja-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools-ja.jpg" alt="スマートフォンでの無劣化動画切り出し、一括リネーム、重複検索">
 </picture>
 </p>
 
-## アカウントと同期
+## カスタマイズ
+
+使い慣れたスタイルに合わせて、ファイル表示とプレーヤー画面を自由に調整できます。
+
+<p align="center">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/customize-ja-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/customize-ja.jpg" alt="モバイルのファイル外観カスタマイズとデスクトップのプレーヤーカスタマイズ">
+</picture>
+</p>
+
+## 転送、アカウントと同期
+
+並列接続で遅いノードを回避し、高遅延やプロキシ経由でも快適な再生とダウンロードを実現します。低速モードは再生に影響しません。
 
 パスワードと Google ログイン、複数アカウントの切り替えに対応。設定、ピン留めタブ、スターはドライブ経由で自動同期され、書庫パスワードとメタデータ設定は独立パスフレーズで暗号化できます。
 
 ## インストール
 
-[Releases](https://github.com/NihilDigit/piko/releases/latest) からダウンロードしてください。すべて GitHub Actions でソースからビルドされ、デスクトップ版と Android 版はアプリ内更新に対応しています。
+[Releases](https://github.com/NihilDigit/piko/releases/latest) からダウンロードしてください。ソースコードは完全オープンソースであり、すべてのパッケージは GitHub Actions 上でソースから公開ビルドされ、[SLSA Build L3 来歴証明](https://github.com/NihilDigit/piko/attestations)が付与されるためビルド過程を監査できます。デスクトップ版と Android 版はアプリ内更新に対応しています。
 
-- **Android**：Android 8.0 以降。アーキテクチャに合った APK（不明な場合は `universal`）を選択してください。
-- **Windows**：x64 は Windows 10 以降、arm64 は Windows 11 以降。`.msi` はインストーラー版、`.7z` はポータブル版です（Windows 10 では [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) または 7-Zip で展開）。
-- **macOS**（実験的）：macOS 12 以降（Apple シリコン）。初回起動時は「システム設定 → プライバシーとセキュリティ」から許可してください。
-- **Linux**（実験的）：x64、glibc 2.38 以降（Ubuntu 24.04、Debian 13、Fedora 39 以降）。AppImage に実行権限を付与して起動してください。
-- **iOS / iPadOS**（実験的）：iOS 15 以降。未署名 `.ipa` を AltStore、SideStore、Sideloadly、TrollStore 等でサイドロードしてください。
+| プラットフォーム | 対応状況 | 動作環境 | パッケージと補足 |
+| --- | --- | --- | --- |
+| **Android** | 正式対応 | Android 8.0 以降 | アーキテクチャに合った APK（不明な場合は `universal`） |
+| **Windows** | 正式対応 | x64 は Windows 10+、arm64 は Windows 11+ | `.msi` インストーラー版または `.7z` ポータブル版（Win10 では [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) または 7-Zip で展開） |
+| **macOS** | 実験的 | macOS 12 以降（Apple シリコン） | 初回起動時は「システム設定 → プライバシーとセキュリティ」から許可 |
+| **Linux** | 実験的 | x64、glibc 2.38 以降（Ubuntu 24.04、Debian 13、Fedora 39+） | AppImage に実行権限を付与して起動 |
+| **iOS / iPadOS** | 実験的 | iOS 15 以降 | 未署名 `.ipa` を AltStore、SideStore、Sideloadly、TrollStore 等でサイドロード |
 
 ## コントリビューション
 
-ロードマップは [#10](https://github.com/NihilDigit/piko/issues/10) にあります。
-
-Issue や PR を歓迎します。軽微なバグ修正、クラッシュ調査、ドキュメントの補足はそのまま PR を送ってください。
-
-新機能の追加やアーキテクチャの変更を予定している場合は、先に Issue を立てて利用場面と方針を共有し、方向性を確認してから実装に入ってください。
-
-LLM を補助としてコードを書く場合は、追加されるロジックを理解したうえで実機で検証してください。
-
-PR の提出には[コントリビューターライセンス契約](CLA.md)への署名が必要です。手順は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
+- Issue や PR を歓迎します（軽微なバグ修正、クラッシュ調査、ドキュメント補足はそのまま PR を送ってください）。
+- **大規模な機能追加やアーキテクチャ変更は、実装前に必ず Issue を立てて**利用場面と方針を共有してください。
+- **LLM を補助としてコードを書く場合は、追加されるロジックを十分に理解し、必ず実機で検証してください**。
+- PR の提出には[コントリビューターライセンス契約](CLA.md)への署名が必要です。ソースからのビルドと提出手順は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
 
 ## ライセンスと謝辞
 
-- ソースコードは [AGPL-3.0-or-later](LICENSE) ライセンスのもとで公開されています。1.1.0 以前のバージョンは MIT ライセンスで配布されました。
-  Android パッケージには GPLv3 でビルドされた mpv と FFmpeg が同梱されています。
+- ソースコードは [AGPL-3.0-or-later](LICENSE) ライセンスのもとで公開されています。1.1.0 以前のバージョンは MIT ライセンスで配布されました。Android パッケージには GPLv3 でビルドされた mpv と FFmpeg が同梱されています。
 - PikPak API の実装は [52funny/pikpakcli](https://github.com/52funny/pikpakcli) を参考にしました。
 - いくつかの機能設計は PikPak Web 拡張スクリプト [digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master) を参考にしました。
 - Windows 版における mpv のゼロコピー描画は [MediaMP](https://github.com/open-ani/mediamp) により実現されています。

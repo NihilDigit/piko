@@ -1,11 +1,16 @@
 <p align="right"><a href="README.md">简体中文</a> | <b>繁體中文</b> | <a href="README.ko.md">한국어</a> | <a href="README.ja.md">日本語</a> | <a href="README.en.md">English</a></p>
 
-<p align="center"><img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/icon.png" alt="Piko" width="96"></p>
-
-<h1 align="center">Piko</h1>
+<p align="center">
+<picture>
+<source media="(prefers-color-scheme: dark)" type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/banner-dark.avif">
+<source type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/banner.avif">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/banner-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/banner.jpg" alt="Piko">
+</picture>
+</p>
 
 <p align="center">
-<b>高效能、跨平台的 PikPak 用戶端</b><br>
+<b>優雅、易用、高效能的 PikPak 用戶端</b><br>
 <sub>支援 Android、Windows、macOS、Linux、iOS 與 iPadOS</sub>
 </p>
 
@@ -17,95 +22,91 @@
 
 <p align="center">Telegram 更新頻道 <a href="https://t.me/piko_dev">@piko_dev</a> ｜ <a href="https://t.me/+mTkqVFyYnjszMjA1">交流群</a></p>
 
-<p align="center"><a href="https://trendshift.io/repositories/263280?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-263280" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/263280/weekly?language=Kotlin" alt="Trendshift: NihilDigit/piko" width="250" height="53"/></a></p>
+## 工作區
 
-## 自適應版面配置
-
-桌面端貼合鍵盤與滑鼠操作，行動端簡潔易用。支援多分頁與釘選資料夾、瀑布流看影片與圖片，以及唯讀掛載本機資料夾統一檢視。
+面向大目錄瀏覽與多工整理，在桌面端與行動端均保持一致的流暢體驗，支援多分頁、釘選資料夾與本機資料夾掛載。
 
 <p align="center">
 <picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero.jpg" alt="桌面端與手機端的海報牆">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero-zh-Hant-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/hero-zh-Hant.jpg" alt="桌面端與手機端的自適應工作區">
 </picture>
 </p>
 
-## 資訊流
+## 瀏覽方式
 
-隨機播放目前資料夾或所選影片中的片段，上下滑動切換，支援自動順延與自動連播。
+利用瀑布流和資訊流，在大量影片與圖片中快速定位感興趣的內容。
 
 <p align="center">
 <picture>
-<source media="(prefers-color-scheme: dark)" type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-dark.avif">
-<source type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed.avif">
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed.jpg" alt="雲端硬碟右側的資訊流，上下滑動切換影片片段">
+<source media="(prefers-color-scheme: dark)" type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-zh-Hant-dark.avif">
+<source type="image/avif" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-zh-Hant.avif">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-zh-Hant-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/feed-zh-Hant.jpg" alt="左側瀑布流瀏覽與右側資訊流即時播放">
 </picture>
 </p>
 
-## 連結與壓縮檔
+## 連結解析與壓縮檔
 
-解析磁力、種子、ed2k、thunder、直連與分享連結，儲存前可預覽挑選或以參照形式免空間儲存；雲端壓縮檔免解壓縮直接瀏覽。劇集自動歸組，收起樣片與花絮。
-
-<p align="center">
-<picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links.jpg" alt="雲端硬碟中按作品整理的劇集，右側為解析磁力連結的面板">
-</picture>
-</p>
-
-## 播放與傳輸
-
-多連線並行繞開慢節點，最佳化高延遲與代理線路下的播放與下載；內建硬體解碼播放器，亦可呼叫外部播放器。蝸牛模式獨立限速，不影響播放。
+預解析磁力、種子與分享連結，儲存前預覽挑選或免空間參照；雲端壓縮檔免解壓縮直接瀏覽。
 
 <p align="center">
 <picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/transfers-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/transfers.jpg" alt="傳輸頁：進行中與已完成的下載、上傳與雲端任務">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links-zh-Hant-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/links-zh-Hant.jpg" alt="待儲存虛擬目錄預覽與磁力連結檔案樹解析面板">
 </picture>
 </p>
 
 ## 檔案處理
 
-本機目錄樹支援全盤秒搜與空間分布圖，提供歸檔釋放空間、無損擷取片段、刮削批次重新命名與跨目錄查重。
+支援無損擷取影片片段、批次規範重新命名、跨目錄查重與歸檔釋放空間，並基於本機索引提供全盤秒搜與空間分布圖。
 
 <p align="center">
 <picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools-dark.jpg">
-<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools.jpg" alt="手機上的擷取影片片段與尋找重複檔案">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools-zh-Hant-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/tools-zh-Hant.jpg" alt="手機端無損片段擷取、批次重新命名與跨目錄查重">
 </picture>
 </p>
 
-## 帳號與同步
+## 自訂
 
-支援密碼與 Google 登入、多帳號切換。設定、釘選分頁與星標透過雲端硬碟自動跨裝置同步，壓縮檔密碼與刮削設定支援獨立口令加密。
+按照你的使用習慣，自由調整檔案檢視與播放器介面。
+
+<p align="center">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/customize-zh-Hant-dark.jpg">
+<img src="https://raw.githubusercontent.com/NihilDigit/piko/main/docs/screenshots/customize-zh-Hant.jpg" alt="手機端檔案外觀自訂與桌面端播放器控制項自訂">
+</picture>
+</p>
+
+## 傳輸、帳號與同步
+
+多連線並行繞開慢節點，最佳化高延遲與代理線路下的播放與下載；蝸牛模式獨立限速，不影響播放。
+
+支援密碼與 Google 登入及多帳號切換。設定、釘選分頁與星標透過雲端硬碟跨裝置同步，壓縮檔密碼與刮削設定支援獨立口令加密。
 
 ## 安裝
 
-前往 [Releases](https://github.com/NihilDigit/piko/releases/latest) 下載。安裝包均由 GitHub Actions 從原始碼建置，桌面端與 Android 端均支援應用程式內更新。
+前往 [Releases](https://github.com/NihilDigit/piko/releases/latest) 下載。專案原始碼完全開源，所有安裝包均由 GitHub Actions 從原始碼公開建置，附帶 [SLSA Build L3 來源證明](https://github.com/NihilDigit/piko/attestations)，建置流程全程可稽核；桌面端與 Android 端均支援應用程式內更新。
 
-- **Android**：Android 8.0 及以上，按架構選 APK，不確定時選 `universal`。
-- **Windows**：x64 需 Windows 10+，arm64 需 Windows 11+。`.msi` 為安裝版，`.7z` 為可攜版（Win10 可用 [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) 或 7-Zip 解壓縮）。
-- **macOS**（實驗性）：macOS 12+（Apple 晶片），首次開啟需於「系統設定 → 隱私權與安全性」中放行。
-- **Linux**（實驗性）：x64，需 glibc 2.38+（Ubuntu 24.04、Debian 13、Fedora 39+），AppImage 加上執行權限後即可執行。
-- **iOS / iPadOS**（實驗性）：iOS 15+，未簽章 `.ipa`，透過 AltStore、SideStore、Sideloadly 或 TrollStore 自簽側載。
+| 平台 | 支援狀態 | 系統需求 | 安裝包與說明 |
+| --- | --- | --- | --- |
+| **Android** | 正式支援 | Android 8.0+ | 按架構選擇 APK，不確定時選 `universal` |
+| **Windows** | 正式支援 | x64 需 Windows 10+，arm64 需 Windows 11+ | `.msi` 安裝版或 `.7z` 可攜版（Win10 可用 [NanaZip](https://apps.microsoft.com/detail/9n8g7tscl18r) 或 7-Zip 解壓縮） |
+| **macOS** | 實驗性 | macOS 12+（Apple 晶片） | 首次開啟需於「系統設定 → 隱私權與安全性」中放行 |
+| **Linux** | 實驗性 | x64，glibc 2.38+（Ubuntu 24.04、Debian 13、Fedora 39+） | AppImage 加上執行權限後即可執行 |
+| **iOS / iPadOS** | 實驗性 | iOS 15+ | 未簽章 `.ipa`，透過 AltStore、SideStore、Sideloadly 或 TrollStore 側載 |
 
 ## 貢獻
 
-路線圖見 [#10](https://github.com/NihilDigit/piko/issues/10)。
-
-歡迎提交 Issue 與 PR。小型錯誤修復、崩潰排查與文件補充可直接提交。
-
-計畫新增功能或調整架構時，請先建立 Issue 說明使用情境與擬定方案，確認方向後再實作。
-
-使用 LLM 輔助編寫程式碼時，請理解新增程式碼的邏輯，並在實體裝置上驗證。
-
-提交 PR 前須簽署[貢獻者協議](CLA.md)，簽署方式見 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- 歡迎提交 Issue 與 PR；小型錯誤修復、崩潰排查與文件補充可直接提交 PR。
+- **計畫新增較大功能或調整架構前請先建立 Issue**，說明使用情境與擬定方案，確認方向後再實作。
+- **使用 LLM 輔助編寫程式碼時，須充分理解新增邏輯，並在實體裝置上完成驗證**。
+- 提交 PR 前須簽署[貢獻者協議](CLA.md)，原始碼建置與提交流程詳見 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 授權與致謝
 
-- 原始碼以 [AGPL-3.0-or-later](LICENSE) 授權條款開放原始碼。1.1.0 及更早版本以 MIT 授權條款發布。
-  Android 安裝包內建以 GPLv3 建置的 mpv 與 FFmpeg。
+- 原始碼以 [AGPL-3.0-or-later](LICENSE) 授權條款開放原始碼。1.1.0 及更早版本以 MIT 授權條款發布。Android 安裝包內建以 GPLv3 建置的 mpv 與 FFmpeg。
 - PikPak 介面實作參考了 [52funny/pikpakcli](https://github.com/52funny/pikpakcli)。
 - 多項功能設計參考了 PikPak 網頁端增強腳本 [digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master)。
 - Windows 端 mpv 的零拷貝渲染由 [MediaMP](https://github.com/open-ani/mediamp) 實作。
