@@ -13,7 +13,15 @@
 ./gradlew :shots:run --args="shot starred --size 1100x800 --click 我的 --click 星标 --wait Dune"
 ./gradlew :shots:run --args="texts --click 任务"              # 不出图，打印当前画面语义树中的全部文本与无障碍描述，供编写 --click 定位目标
 ./gradlew :shots:run --args="adaptive-prototypes"            # 在 build/shots/adaptive-prototypes/ 生成自适应工作区静态设计原型及 index.html 对照页
+./gradlew :shots:run --args="banner"                         # 渲染 README 顶部动态 Banner 浅/深色 30fps 帧序列至 build/shots/banner-*-frames/
+./gradlew :shots:run --args="readme-shots --lang zh-cn --theme light --only hero,feed"  # 只读克隆 ~/.piko 生成 README 真实数据截图与信息流帧序列
+pwsh -File scripts/render-readme-assets.ps1 -Mode all -Install  # 一键渲染并编码 Banner + 五语 × 浅/深双色 README 截图（含 AVIF）并同步至 docs/
 ```
+
+### README 动态 Banner 与五语截图生成
+
+- **统一入口脚本**：`scripts/render-readme-assets.ps1` 封装了 `:shots:run` 渲染、`ffmpeg`（`libsvtav1 -crf 34 -preset 5`）AVIF 封装、`build/shots/readme/preview.html` 本地对照页生成以及 `-Install` 同步至 `docs/` 与 `docs/screenshots/`，支持 `-Mode banner|shots|all`、`-Lang all|zh-cn|zh-hant|en|ja|ko`、`-Theme all|light|dark` 与 `-Only hero,feed,links,customize,tools`。
+- **只读隔离真实数据**：`ReadmeShotsRenderer.kt` 启动时将本机 `~/.piko` 的登录态与目录索引复制到 `build/shots/readme-real-home/` 独立沙箱，绝不修改原数据目录；同时依赖 `PikoMpvVideoSurface` 在 headless 模式下开放 Windows `D3D11_READBACK` 路径以驱动信息流真实 `libmpv` 30fps 录帧。
 
 ### 自适应框架交互验证套件
 

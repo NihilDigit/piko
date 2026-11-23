@@ -811,7 +811,7 @@ private class PikoSurfaceController(private val mediamp: MpvMediampPlayer) {
 
     private fun configureIfReadyLocked(width: Int, height: Int, env: SkikoRenderEnvironment): Boolean {
         if (isTeardownStarted() || width <= 0 || height <= 0 || handlePtr == 0L) return false
-        if (!env.hasRenderer) return false
+        if (!env.hasRenderer && !java.awt.GraphicsEnvironment.isHeadless()) return false
 
         return when {
             WinRTSupport.isWindows -> configureWindows(width, height, env)

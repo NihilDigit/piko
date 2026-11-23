@@ -28,7 +28,7 @@ private const val DESKTOP_IMAGE_MAX_MEMORY_BYTES = 128L * 1024L * 1024L
  * 被 Coil 默认比例缩得过小，使海报墙与列表缩略图跨重启稳定复用。
  * 显式调高 OkHttp 单主机并发上限（默认仅 5），避免高 RTT 线路下瀑布流与海报墙几十张同域缩略图串行排队。
  */
-internal fun installImageLoader() {
+fun installImageLoader() {
     val maxHeap = Runtime.getRuntime().maxMemory()
     val baseMemoryBytes = (maxHeap / 8L)
         .coerceIn(DESKTOP_IMAGE_MIN_MEMORY_BYTES.coerceAtMost(maxHeap / 4L), DESKTOP_IMAGE_MAX_MEMORY_BYTES)

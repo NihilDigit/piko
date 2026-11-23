@@ -565,7 +565,7 @@ fun <T> edt(block: () -> T): T {
  * 截图里的窗口按钮：尺寸与间距照 desktopApp 的 WindowFrame（三个 40dp 圆钮、间隔 2dp），只画三个字形，不接窗口过程。
  * 桌面端窄窗口里各页顶栏放不放得下，看的就是这一截宽度；场景本身没有窗口外框，不加它看不出来。
  */
-private object ShotWindowCaption : WindowCaption {
+internal object ShotWindowCaption : WindowCaption {
     @Composable
     override fun Host() = Unit
 

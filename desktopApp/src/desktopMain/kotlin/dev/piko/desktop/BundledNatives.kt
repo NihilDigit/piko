@@ -43,7 +43,7 @@ internal fun useBundledSqlite() {
  * 不挡首帧；建播放器之前再经 [ensure] 等它做完。不等的话，后台还没做完时建出的播放器找不到运行库：
  * 安装包的类路径里没有 mpv 运行库的 jar，mediamp 退不到解压那条路，直接报错。
  */
-internal object BundledMpvRuntime {
+object BundledMpvRuntime {
     private val started = AtomicBoolean(false)
     private val done = CountDownLatch(1)
 

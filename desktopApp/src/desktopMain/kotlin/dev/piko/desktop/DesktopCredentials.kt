@@ -20,7 +20,7 @@ private fun primarySecretVault(directory: Path): SecretVault? = when {
     else -> SecretServiceVault.open()
 }
 
-internal fun desktopSessionStore(root: Path = PikoHome.root): DesktopSessionStore = DesktopSessionStore(root, ::primarySecretVault)
+fun desktopSessionStore(root: Path = PikoHome.root): DesktopSessionStore = DesktopSessionStore(root, ::primarySecretVault)
 
 /**
  * 不属于某个账号会话的机密（解压密码、上传凭据），与登录态用同一处系统保管处，兜底文件放在 `secrets` 目录。
