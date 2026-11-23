@@ -750,6 +750,7 @@ fun main(args: Array<String>) {
     val code = try {
         when (args[0]) {
             "banner" -> { renderBannerFrames(outDir); 0 }
+            "social-preview" -> { renderSocialPreview(outDir); 0 }
             "readme-shots" -> { renderReadmeShots(rest, outDir); 0 }
             "adaptive-prototypes" -> { renderAdaptivePrototypes(outDir); 0 }
             "verify-workspaces" -> { verifyWorkspaceContexts(option(rest, "--only")); 0 }

@@ -20,7 +20,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'banner', 'shots')]
+    [ValidateSet('all', 'banner', 'social', 'shots')]
     [string]$Mode = 'all',
 
     [ValidateSet('all', 'zh-cn', 'zh-hant', 'en', 'ja', 'ko')]
@@ -120,6 +120,17 @@ try {
         Invoke-AvifEncode -InputPattern "build/shots/banner-dark-frames/frame_%04d.png" -OutputAvif "$bannerOutDir/banner-dark.avif"
         & ffmpeg -y -i "build/shots/banner-light-frames/frame_0000.png" -q:v 3 "$bannerOutDir/banner.jpg"
         & ffmpeg -y -i "build/shots/banner-dark-frames/frame_0000.png" -q:v 3 "$bannerOutDir/banner-dark.jpg"
+    }
+
+    if ($Mode -eq 'all' -or $Mode -eq 'social') {
+        Write-Host "==> Rendering Social Preview (1280x640, light + dark) ..." -ForegroundColor Green
+        & ./gradlew :shots:run "--args=social-preview" --console=plain
+        if ($LASTEXITCODE -ne 0) { throw "Social preview render failed" }
+
+        if ($Install) {
+            Copy-Item -Path "build/shots/social-preview.png" -Destination "docs/social-preview.png" -Force
+            Write-Host "Installed docs/social-preview.png" -ForegroundColor Green
+        }
     }
 
     if ($Mode -eq 'all' -or $Mode -eq 'shots') {

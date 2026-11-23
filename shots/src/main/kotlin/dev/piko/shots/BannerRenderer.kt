@@ -652,7 +652,7 @@ private fun PikoBannerCanvas(phase: Float) {
     }
 }
 
-private fun DrawScope.drawBannerIntakeToken(
+internal fun DrawScope.drawBannerIntakeToken(
     center: Offset,
     scale: Float,
     alpha: Float,
