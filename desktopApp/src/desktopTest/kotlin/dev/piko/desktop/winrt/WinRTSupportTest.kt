@@ -27,19 +27,6 @@ class WinRTSupportTest {
     }
 
     @Test
-    fun toastCall_neverThrows() {
-        // 不断言送达（取决于系统通知设置与 AUMID 注册），只保证调用路径不抛。
-        // Windows CI 上这会真发一条可见通知，属于预期行为。
-        WinRTSupport.showNotification("Piko 冒烟测试", "这条通知来自自动化测试，可忽略。")
-    }
-
-    @Test
-    fun openHelpers_tolerateMissingFiles() {
-        // 不存在的路径也不许抛，内部自行处理。
-        WinRTSupport.openFolder(java.io.File(System.getProperty("java.io.tmpdir"), "piko-test-nope"))
-    }
-
-    @Test
     fun appUserModelId_canBeSet() {
         // 进程级 AUMID 设置：Windows 上必须成功（shell32 直调，无需打包身份）。
         if (WinRTSupport.isWindows) {

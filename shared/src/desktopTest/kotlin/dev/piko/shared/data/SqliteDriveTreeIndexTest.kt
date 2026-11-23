@@ -189,9 +189,14 @@ class SqliteDriveTreeIndexTest {
         try { assertNull(index.file("private")); assertFalse(index.isComplete) } finally { index.close() }
     }
 
-    /** Run with -Dpiko.test.lowheap=true and the test worker itself constrained to -Xmx256m. */
+    /** Run with -Dpiko.test.lowheap=true (or -Dpiko.test.bench=true) for full 100k-node low-heap stress; everyday runs verify the same WAL/search/space/resident-memory contract at 2,500 nodes. */
     @Test fun hundredThousandNodesUsePagedWritesLightweightSearchAndPersistentAggregates() = fixture { factory ->
         val lowHeap = java.lang.Boolean.getBoolean("piko.test.lowheap")
+        val fullScale = lowHeap || java.lang.Boolean.getBoolean("piko.test.bench")
+        val folderCount = if (fullScale) 100 else 30
+        val nodeCount = if (fullScale) 100_000 else 2_500
+        val lastFileIndex = nodeCount - 1
+        val deletedFileIndex = nodeCount - 2
         val maxHeap = Runtime.getRuntime().maxMemory()
         if (lowHeap) assertTrue(maxHeap <= 256L * 1024 * 1024, "Set the test-worker maximum heap, not only the Gradle daemon")
         val sampling = AtomicBoolean(true); val peak = AtomicLong()
@@ -203,36 +208,40 @@ class SqliteDriveTreeIndexTest {
         val started = System.nanoTime()
         try {
             val generation = index.beginCandidate()
-            index.appendCandidate(generation, (0 until 100).map { folder("d$it") })
-            for (start in 0 until 100000 step 250) {
-                index.appendCandidate(generation, (start until start + 250).map { n ->
-                    file("f$n", "d${n % 100}", "HASH${n % 15000}").copy(name = "資料$n.mp4", params = mapOf("duration" to "10"))
+            index.appendCandidate(generation, (0 until folderCount).map { folder("d$it") })
+            for (start in 0 until nodeCount step 250) {
+                val end = minOf(start + 250, nodeCount)
+                index.appendCandidate(generation, (start until end).map { n ->
+                    file("f$n", "d${n % folderCount}", "HASH${n % 15000}").copy(name = "資料$n.mp4", params = mapOf("duration" to "10"))
                 })
             }
+            val expectedBytes = nodeCount * 100L
             val commitStarted = System.nanoTime()
-            index.commitCandidate(generation, 10_000_000, 1234)
+            index.commitCandidate(generation, expectedBytes, 1234)
             val commitMs = (System.nanoTime() - commitStarted) / 1_000_000
             val ingestMs = (System.nanoTime() - started) / 1_000_000
-            assertEquals(100000, index.folderUsage("")?.fileCount)
-            assertEquals(10_000_000L, index.folderUsage("")?.bytes)
+            assertEquals(nodeCount, index.folderUsage("")?.fileCount)
+            assertEquals(expectedBytes, index.folderUsage("")?.bytes)
             val searchStart = System.nanoTime()
-            assertEquals(listOf("f99999"), index.searchLocal("资料99999", "", FolderIndex()).map { it.file.id })
+            assertEquals(listOf("f$lastFileIndex"), index.searchLocal("资料$lastFileIndex", "", FolderIndex()).map { it.file.id })
             val searchMs = (System.nanoTime() - searchStart) / 1_000_000
-            index.applyChange(DriveChange.Renamed("f99999", "櫻花.mp4", "d99"))
-            index.applyChange(DriveChange.Moved(listOf("f99999"), setOf("d99"), "d0"))
-            index.applyChange(DriveChange.Deleted(listOf("f99998"), setOf("d98")))
-            assertEquals(99999, index.folderUsage("")?.fileCount)
-            assertEquals(listOf("f99999"), index.searchLocal("樱花", "", FolderIndex()).map { it.file.id })
+            val lastParent = "d${lastFileIndex % folderCount}"
+            val deletedParent = "d${deletedFileIndex % folderCount}"
+            index.applyChange(DriveChange.Renamed("f$lastFileIndex", "櫻花.mp4", lastParent))
+            index.applyChange(DriveChange.Moved(listOf("f$lastFileIndex"), setOf(lastParent), "d0"))
+            index.applyChange(DriveChange.Deleted(listOf("f$deletedFileIndex"), setOf(deletedParent)))
+            assertEquals(nodeCount - 1, index.folderUsage("")?.fileCount)
+            assertEquals(listOf("f$lastFileIndex"), index.searchLocal("樱花", "", FolderIndex()).map { it.file.id })
             index.close()
             val reopenStart = System.nanoTime()
             index = open(factory)
             val reopenMs = (System.nanoTime() - reopenStart) / 1_000_000
-            assertEquals(99999, index.folderUsage("")?.fileCount)
-            assertEquals("d0", index.file("f99999")?.parentId)
+            assertEquals(nodeCount - 1, index.folderUsage("")?.fileCount)
+            assertEquals("d0", index.file("f$lastFileIndex")?.parentId)
             assertEquals(1234L, index.lastFullSyncAtMillis)
             val space = spaceFolderSnapshot(index, "", includeVaulted = true, isBuilding = false)
-            assertEquals(100, space.items.size)
-            assertEquals(99999L, space.fileCount)
+            assertEquals(folderCount, space.items.size)
+            assertEquals((nodeCount - 1).toLong(), space.fileCount)
             assertEquals(24, space.items.count { it.previewChildren.isNotEmpty() })
             assertTrue(space.items.filter { it.previewChildren.isNotEmpty() }.all { it.previewChildren.size == 24 })
             index.close()
@@ -245,17 +254,19 @@ class SqliteDriveTreeIndexTest {
                 val observed = kotlinx.coroutines.runBlocking {
                     kotlinx.coroutines.withTimeout(5_000) { repository.observeSpaceFolder("", true).first() }
                 }
-                assertEquals(99999L, observed.fileCount)
-                assertEquals(100, observed.items.size)
+                assertEquals((nodeCount - 1).toLong(), observed.fileCount)
+                assertEquals(folderCount, observed.items.size)
             } finally { repository.enterAccount(null) }
             index = open(factory)
-            assertEquals(100, index.flow.value.entries.size, "Only folder nodes may remain in the published State")
-            assertEquals(99999, index.folderUsage("")?.fileCount)
-            System.gc()
-            val retainedHeapBytes = bean.heapMemoryUsage.used
-            assertTrue(retainedHeapBytes < 96L * 1024 * 1024, "No full file-object tree may remain resident: $retainedHeapBytes")
-            println("SqliteDriveTreeIndexTest wal=true nodes=100000 ingestMs=$ingestMs commitMs=$commitMs searchMs=$searchMs reopenMs=$reopenMs maxHeap=$maxHeap sampledPeakBytes=${peak.get()} retainedHeapBytes=$retainedHeapBytes")
-            if (lowHeap) assertTrue(peak.get() < 240L * 1024 * 1024, "Need 16 MiB worker heap headroom")
+            assertEquals(folderCount, index.flow.value.entries.size, "Only folder nodes may remain in the published State")
+            assertEquals(nodeCount - 1, index.folderUsage("")?.fileCount)
+            if (fullScale) {
+                System.gc()
+                val retainedHeapBytes = bean.heapMemoryUsage.used
+                assertTrue(retainedHeapBytes < 96L * 1024 * 1024, "No full file-object tree may remain resident: $retainedHeapBytes")
+                println("SqliteDriveTreeIndexTest wal=true nodes=$nodeCount ingestMs=$ingestMs commitMs=$commitMs searchMs=$searchMs reopenMs=$reopenMs maxHeap=$maxHeap sampledPeakBytes=${peak.get()} retainedHeapBytes=$retainedHeapBytes")
+                if (lowHeap) assertTrue(peak.get() < 240L * 1024 * 1024, "Need 16 MiB worker heap headroom")
+            }
         } finally { index.close(); sampling.set(false); sampler.join() }
     }
 

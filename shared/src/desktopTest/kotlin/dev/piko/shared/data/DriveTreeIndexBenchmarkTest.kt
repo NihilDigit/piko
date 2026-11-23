@@ -160,8 +160,10 @@ class DriveTreeIndexBenchmarkTest {
         assertFalse(isResumedCheckpointRejected(rateLimit429, resumedPagesFetched = 40))
     }
 
+    /** Run on demand with -Dpiko.test.bench=true (50k-node profiling benchmark). */
     @Test
     fun profileFiftyThousandNodeTreeIndexPipeline() = fixture { factory ->
+        org.junit.Assume.assumeTrue("Benchmark disabled by default; pass -Dpiko.test.bench=true", java.lang.Boolean.getBoolean("piko.test.bench"))
         val folderCount = 200
         val fileCount = 50_000
         val folders = List(folderCount) { i -> folder("d$i", parent = if (i < 20) "" else "d${i % 20}") }

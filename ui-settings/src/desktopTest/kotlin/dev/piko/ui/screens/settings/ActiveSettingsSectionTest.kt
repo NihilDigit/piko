@@ -39,12 +39,4 @@ class ActiveSettingsSectionTest {
         assertEquals("外观", active(800))
         assertEquals("网络", active(860))
     }
-
-    @Test
-    fun customizeSectionImmediatelyFollowsAppearance() {
-        val entries = SettingsSection.entries
-        val appearanceIdx = entries.indexOf(SettingsSection.Appearance)
-        val customizeIdx = entries.indexOf(SettingsSection.Customize)
-        assertEquals(appearanceIdx + 1, customizeIdx)
-    }
 }

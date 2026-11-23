@@ -61,6 +61,7 @@ class PlayerScreenStateSmokeTest {
                 initialFileId = "f1",
                 initialFileName = cloud.fileName,
                 resolveLocalPath = resolveLocalPath,
+                recoveryDelaysMillis = longArrayOf(20L, 40L, 80L),
             ).apply {
                 // 与两端调用方一致：列表总会填一次。不填时第一次打开要等满播放列表的超时
                 playlist = emptyList()
@@ -160,7 +161,7 @@ class PlayerScreenStateSmokeTest {
         assertEquals(1, messages.count { "转码" in it })
 
         // 走完三级就停下，不能在失败之间来回打转
-        delay(1_000)
+        delay(200)
         assertEquals(3, backend.opens.size)
     }
 
@@ -173,14 +174,14 @@ class PlayerScreenStateSmokeTest {
         }
         val state = newState()
 
-        // 首次打开加三次退避重连（0.5 s、1.5 s、4 s），之后才把错误交给用户
+        // 首次打开加三次退避重连，之后才把错误交给用户
         val opens = backend.awaitOpens(4, timeoutMillis = 20_000)
         opens.drop(1).forEach { reconnect ->
             assertTrue(reconnect.urlOrNull()!!.startsWith("http://127.0.0.1:"), "重连应当原路走代理，不是换源")
             assertEquals(50_000L, reconnect.startMillis, "重连应当从断点续上")
         }
         eventually("退避用尽后报错") { state.errorMessage != null }
-        delay(1_000)
+        delay(200)
         assertEquals(4, backend.opens.size)
     }
 
@@ -664,7 +665,7 @@ class PlayerScreenStateSmokeTest {
                 Snapshot.sendApplyNotifications()
             }
             // 让 state holder 里的 snapshotFlow 收集者先跑完
-            delay(200)
+            delay(40)
         }
 
         suspend fun awaitOpens(count: Int, timeoutMillis: Long = 10_000): List<Opened> {

@@ -189,7 +189,7 @@ class SourceLedgerTest {
                 }
                 override suspend fun write(account: String, text: String, stamp: Long) { writtenRead.send(text) }
             }
-            SourceLedgerSync(provider, remoteRead, ledgerA, scope, flowOf(true)).start()
+            SourceLedgerSync(provider, remoteRead, ledgerA, scope, flowOf(true), pushDelayMs = 20L).start()
             withTimeout(5_000) { enteredRead.receive() }
             ledgerA.record("magnet:?xt=urn:btih:first", listOf(ResolvedFile("first.mkv", 1, "FIRST")))
             releaseRead.send(Unit)
@@ -212,7 +212,7 @@ class SourceLedgerTest {
                     writtenWrite.send(text)
                 }
             }
-            SourceLedgerSync(provider, remoteWrite, ledgerB, scope, flowOf(true)).start()
+            SourceLedgerSync(provider, remoteWrite, ledgerB, scope, flowOf(true), pushDelayMs = 20L).start()
             withTimeout(5_000) { enteredWrite.receive() }
             ledgerB.record("magnet:?xt=urn:btih:second", listOf(ResolvedFile("second.mkv", 1, "SECOND")))
             releaseWrite.send(Unit)
@@ -294,7 +294,7 @@ class SourceLedgerTest {
                     }
                     override suspend fun write(account: String, text: String, stamp: Long) = error("网盘不可写")
                 }
-                SourceLedgerSync(provider, brokenRemote, driveRepo.sourceLedger, scope, flowOf(true)).start()
+                SourceLedgerSync(provider, brokenRemote, driveRepo.sourceLedger, scope, flowOf(true), pushDelayMs = 20L).start()
                 awaitUntil("初次账本同步已尝试") { attempts.get() >= 1 }
                 val state = InstantSheetState(
                     instantRepo,

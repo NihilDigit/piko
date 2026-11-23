@@ -263,12 +263,17 @@ class FakePikPakServer(
 
     fun count(prefix: String): Int = calls.count { it.startsWith(prefix) }
 
-    /** 直接构造的客户端：不限流，会话放内存里，已登录。 */
-    fun client(sessionStore: SessionStore = InMemorySessionStore(), account: String = "smoke@piko.dev"): PikPakClient = PikPakClient(
+    /** 直接构造的客户端：不限流、不走真实指数退避重试，会话放内存里，已登录。 */
+    fun client(
+        sessionStore: SessionStore = InMemorySessionStore(),
+        account: String = "smoke@piko.dev",
+        retryPolicy: io.github.nihildigit.pikpak.RetryPolicy = io.github.nihildigit.pikpak.RetryPolicy.None,
+    ): PikPakClient = PikPakClient(
         account = account,
         password = "pw",
         sessionStore = sessionStore,
         rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
+        retryPolicy = retryPolicy,
         httpClient = httpClient(),
     )
 

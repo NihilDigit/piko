@@ -41,8 +41,13 @@ class ArchiveBrowser(
     private val vault: ArchivePasswordVault,
     /** 引导解压与借出对象放在哪个目录，即 Piko-Temp。 */
     private val scratchFolder: suspend (PikPakClient) -> Result<String>,
+    primePollInterval: kotlin.time.Duration? = null,
 ) {
-    private val repository = ArchiveRepository(clientProvider)
+    private val repository = if (primePollInterval != null) {
+        ArchiveRepository(clientProvider, primePollInterval)
+    } else {
+        ArchiveRepository(clientProvider)
+    }
 
     val savedPasswords: Flow<List<String>> = vault.passwords
 

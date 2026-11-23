@@ -78,7 +78,8 @@ class MetaTubeSyncTest {
         var derives = 0
         override fun deriveKey(secret: String, salt: ByteArray, iterations: Int): ByteArray {
             derives++
-            return delegate.deriveKey(secret, salt, iterations)
+            // 真实 600,000 轮 PBKDF2 已由 PortableSyncCipherTest 守护；此处截顶至 16 轮避免同步逻辑测试白烧数秒 CPU。
+            return delegate.deriveKey(secret, salt, iterations.coerceAtMost(16))
         }
     }
 
@@ -215,7 +216,7 @@ class MetaTubeSyncTest {
             preferences = prefsA,
             cacheStore = cacheA,
             keyProvider = SyncKeyProvider { activeKey },
-            cipher = JvmSyncCipher(),
+            cipher = CountingCipher(),
             scope = scope,
             enabled = flowOf(true),
             now = { 10_000L },
@@ -240,7 +241,7 @@ class MetaTubeSyncTest {
             preferences = prefsB,
             cacheStore = cacheB,
             keyProvider = SyncKeyProvider { dev.piko.shared.data.EncryptedSyncKey("rotated-pass", isPassphrase = false) },
-            cipher = JvmSyncCipher(),
+            cipher = CountingCipher(),
             scope = scope,
             enabled = flowOf(true),
             now = { 20_000L },
@@ -300,7 +301,7 @@ class MetaTubeSyncTest {
             preferences = prefs,
             cacheStore = cache,
             passwordOf = { acct -> "pw-$acct" },
-            cipher = JvmSyncCipher(),
+            cipher = CountingCipher(),
             scope = scope,
             enabled = flowOf(true),
             now = { clock },

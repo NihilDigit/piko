@@ -88,6 +88,7 @@ class OfflinePackTracker(
     private val driveRepo: PikoDriveRepository,
     private val preferences: PikoUserPreferences,
     private val now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+    private val pollDelay: (Duration) -> Duration = ::offlinePollDelay,
 ) {
     private val lock = Mutex()
 
@@ -266,7 +267,7 @@ class OfflinePackTracker(
 
     private fun dueAt(job: OfflinePackJob): Long {
         val last = lastCheckedMs[job.taskId] ?: return 0
-        return last + offlinePollDelay((last - job.createdAtMs).milliseconds).inWholeMilliseconds
+        return last + pollDelay((last - job.createdAtMs).milliseconds).inWholeMilliseconds
     }
 
     private suspend fun step(job: OfflinePackJob) {

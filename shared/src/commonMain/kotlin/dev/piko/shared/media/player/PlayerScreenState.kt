@@ -85,6 +85,7 @@ class PlayerScreenState(
      * 挂起取值而不是收集成 State：头一集准备时收集多半还没拿到第一个值，会按默认值开。
      */
     private val defaultMaxHeight: suspend () -> Int = { PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT },
+    private val recoveryDelaysMillis: LongArray = RECOVERY_DELAYS_MILLIS,
 ) {
     var fileId by mutableStateOf(initialFileId)
         private set
@@ -1432,7 +1433,7 @@ class PlayerScreenState(
         isRecovering = true
         recoveryJob?.cancel()
         recoveryJob = scope.launch {
-            delay(RECOVERY_DELAYS_MILLIS[retryAttempt])
+            delay(recoveryDelaysMillis[retryAttempt])
             retryAttempt += 1
             pendingStartMillis = resumeFrom
             reload()

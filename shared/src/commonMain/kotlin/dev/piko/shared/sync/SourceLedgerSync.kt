@@ -32,6 +32,7 @@ class SourceLedgerSync(
     private val scope: CoroutineScope,
     private val enabled: Flow<Boolean>,
     private val now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+    private val pushDelayMs: Long = PUSH_DELAY_MS,
 ) {
     constructor(
         clients: PikoClientProvider,
@@ -52,7 +53,7 @@ class SourceLedgerSync(
                     val before = ledger.flow.value
                     var handled = syncSnapshot(account).getOrElse { before }
                     // 一批秒传连着记好几次，等停下来再推
-                    ledger.flow.debounce(PUSH_DELAY_MS).collect { records ->
+                    ledger.flow.debounce(pushDelayMs).collect { records ->
                         if (records != handled) handled = syncSnapshot(account).getOrElse { records }
                     }
                 }

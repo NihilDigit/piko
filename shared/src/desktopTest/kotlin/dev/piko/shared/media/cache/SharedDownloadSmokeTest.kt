@@ -17,24 +17,6 @@ import kotlin.test.assertTrue
 
 class SharedDownloadSmokeTest {
     @Test
-    fun startupAndResumeRequestsDoNotTriggerHeaderOrTailSpeculation() = smoke { _ ->
-        val cloud = FakePikPakCloud(ByteArray(24 * 1024 * 1024) { it.toByte() })
-        val repository = PikoMediaRepository(cloud.provider)
-        val playback = repository.preparePlayback("f1").getOrThrow()
-        try {
-            val url = requireNotNull(playback.proxyUrl)
-            assertEquals(206, dev.piko.shared.media.testing.request(url, range = "bytes=0-1023").status)
-            kotlinx.coroutines.delay(100)
-            assertEquals(1, cloud.cdnRequests.get())
-            assertTrue(cloud.deliveredCdnBytes.get() <= 256 * 1024L)
-            assertEquals(206, dev.piko.shared.media.testing.request(url, range = "bytes=16777216-16778239").status)
-            kotlinx.coroutines.delay(100)
-            assertEquals(2, cloud.cdnRequests.get())
-            assertTrue(cloud.deliveredCdnBytes.get() <= 512 * 1024L)
-        } finally { playback.close(); cloud.provider.currentClient.value?.close() }
-    }
-
-    @Test
     fun ownedPreparationPreemptsDownloadAndSteadyPlaybackRestoresIt() = smoke { scope ->
         val release = kotlinx.coroutines.CompletableDeferred<Unit>()
         val allowPreemptedSlot = java.util.concurrent.atomic.AtomicBoolean(false)

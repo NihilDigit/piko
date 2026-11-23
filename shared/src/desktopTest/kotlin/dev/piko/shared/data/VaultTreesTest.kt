@@ -93,7 +93,7 @@ class VaultTreesTest {
                     written.send(text)
                 }
             }
-            VaultTreeSync(provider, remote, trees, scope, flowOf(true)).start()
+            VaultTreeSync(provider, remote, trees, scope, flowOf(true), pushDelayMs = 20L).start()
             withTimeout(5_000) { entered.receive() }
             trees.merge(mapOf("root" to setOf("second")))
             release.send(Unit)

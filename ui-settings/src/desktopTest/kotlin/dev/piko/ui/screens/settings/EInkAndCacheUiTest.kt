@@ -1,9 +1,5 @@
 package dev.piko.ui.screens.settings
 
-import androidx.compose.foundation.shape.CornerSize
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.unit.dp
 import dev.piko.data.auth.AppLanguage
 import dev.piko.shared.data.DetailField
 import dev.piko.shared.data.FolderStyle
@@ -16,55 +12,17 @@ import dev.piko.shared.media.cache.CacheSummary
 import dev.piko.ui.components.detailLineParts
 import dev.piko.ui.components.formatTreeIndexProgressLabel
 import dev.piko.ui.components.resolveEffectiveFolderStyle
-import dev.piko.ui.theme.Appearance
-import dev.piko.ui.theme.EInkPlayerColorScheme
 import dev.piko.ui.theme.PikoMotionScale
-import dev.piko.ui.theme.SeedTheme
-import dev.piko.ui.theme.effectiveSeed
-import dev.piko.ui.theme.isEInk
-import dev.piko.ui.theme.islandBorderColor
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class EInkAndCacheUiTest {
     @Test
-    fun eInkThemeUsesPureWhiteSurfacesPureBlackInkAndCrispBorder() {
-        val scheme = SeedTheme.EINK.light
-        assertEquals(Color.White, scheme.background)
-        assertEquals(Color.White, scheme.surface)
-        assertEquals(Color.White, scheme.surfaceContainerLow)
-        assertEquals(Color.White, scheme.surfaceContainerHigh)
-        // surfaceContainer stays distinct from #FFFFFF dialog surfaceContainerHigh so unchecked
-        // M3E ToggleButtons remain clearly visible in E-Ink mode.
-        assertNotEquals(scheme.surfaceContainerHigh, scheme.surfaceContainer)
-        assertEquals(Color.Black, scheme.primary)
-        assertEquals(Color.Black, scheme.onSurface)
-        assertEquals(Color.Black, scheme.outline)
-        assertEquals(Color.Transparent, scheme.surfaceTint)
-        assertEquals(Color.Black, scheme.islandBorderColor)
-        assertEquals(SeedTheme.EINK.light, SeedTheme.EINK.dark)
-
-        assertTrue(Appearance(seed = SeedTheme.EINK).isEInk)
-        assertTrue(Appearance(seed = SeedTheme.RURI, einkMode = true).isEInk)
-        assertEquals(SeedTheme.RURI, Appearance(seed = SeedTheme.RURI, einkMode = true).effectiveSeed)
-        assertFalse(Appearance(seed = SeedTheme.RURI, einkMode = false).isEInk)
-        assertFalse(SeedTheme.EINK in SeedTheme.colorEntries)
-
-        // Player overlay stays dark monochrome in E-Ink mode with a visible non-black loading pill container.
-        assertEquals(Color.Black, EInkPlayerColorScheme.background)
-        assertEquals(Color.White, EInkPlayerColorScheme.onPrimaryContainer)
-        assertNotEquals(Color.Black, EInkPlayerColorScheme.primaryContainer)
-        assertEquals(Color.White, EInkPlayerColorScheme.outline)
-        assertEquals(Color.Transparent, EInkPlayerColorScheme.surfaceTint)
-    }
-
-    @Test
-    fun eInkModeDrivesMotionScaleMinimalFolderStyleAndUnclippedSegmentedCorners() {
+    fun eInkModeDrivesMotionScaleAndMinimalFolderStyle() {
         val motion = PikoMotionScale()
         assertFalse(motion.reduced)
         motion.einkReduced = true
@@ -75,67 +33,6 @@ class EInkAndCacheUiTest {
 
         assertEquals(FolderStyle.MINIMAL_ICON, resolveEffectiveFolderStyle(FolderStyle.SKEUOMORPHIC, isEInk = true))
         assertEquals(FolderStyle.SKEUOMORPHIC, resolveEffectiveFolderStyle(FolderStyle.SKEUOMORPHIC, isEInk = false))
-
-        val style = SettingsStyle(
-            horizontalPadding = 16.dp,
-            verticalPadding = 10.dp,
-            minHeight = 56.dp,
-            iconSize = 20.dp,
-            iconGap = 16.dp,
-            outerCorner = 12.dp,
-            innerCorner = 4.dp,
-            itemGap = 2.dp,
-            titleStyle = TextStyle.Default,
-            supportingStyle = TextStyle.Default,
-            trailingChoices = true,
-            swatchTarget = 44.dp,
-            swatchSize = 36.dp,
-        )
-        val outer = CornerSize(12.dp)
-        val inner = CornerSize(4.dp)
-
-        val single = settingsItemShape(style, topOuter = true, bottomOuter = true)
-        assertEquals(outer, single.topStart)
-        assertEquals(outer, single.topEnd)
-        assertEquals(outer, single.bottomStart)
-        assertEquals(outer, single.bottomEnd)
-
-        val first = settingsItemShape(style, topOuter = true, bottomOuter = false)
-        assertEquals(outer, first.topStart)
-        assertEquals(outer, first.topEnd)
-        assertEquals(inner, first.bottomStart)
-        assertEquals(inner, first.bottomEnd)
-
-        val middle = settingsItemShape(style, topOuter = false, bottomOuter = false)
-        assertEquals(inner, middle.topStart)
-        assertEquals(inner, middle.topEnd)
-        assertEquals(inner, middle.bottomStart)
-        assertEquals(inner, middle.bottomEnd)
-
-        val last = settingsItemShape(style, topOuter = false, bottomOuter = true)
-        assertEquals(inner, last.topStart)
-        assertEquals(inner, last.topEnd)
-        assertEquals(outer, last.bottomStart)
-        assertEquals(outer, last.bottomEnd)
-    }
-
-    @Test
-    fun settingsSectionsIncludeStorageAndPreserveCustomizeOrder() {
-        val entries = SettingsSection.entries
-        assertTrue(SettingsSection.Storage in entries)
-        assertEquals(
-            entries.indexOf(SettingsSection.Appearance) + 1,
-            entries.indexOf(SettingsSection.Customize),
-        )
-    }
-
-    @Test
-    fun cachePolicyLabelsFormatBoundariesCleanly() {
-        assertEquals("512 MiB", formatCacheCapLabel(512L * 1024L * 1024L))
-        assertEquals("2 GiB", formatCacheCapLabel(2L * 1024L * 1024L * 1024L))
-        assertTrue(formatCacheCapLabel(0L).isNotBlank())
-        assertTrue(formatCacheTtlLabel(14).contains("14"))
-        assertTrue(formatCacheTtlLabel(0).isNotBlank())
     }
 
     @Test

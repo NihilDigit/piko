@@ -31,6 +31,7 @@ class VaultTreeSync(
     private val scope: CoroutineScope,
     private val enabled: Flow<Boolean>,
     private val now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+    private val pushDelayMs: Long = PUSH_DELAY_MS,
 ) {
     constructor(
         clients: PikoClientProvider,
@@ -50,7 +51,7 @@ class VaultTreeSync(
                     if (account == null) return@collectLatest
                     val before = trees.flow.value
                     var handled = syncSnapshot(account).getOrElse { before }
-                    trees.flow.debounce(PUSH_DELAY_MS).collect { records ->
+                    trees.flow.debounce(pushDelayMs).collect { records ->
                         if (records != handled) handled = syncSnapshot(account).getOrElse { records }
                     }
                 }

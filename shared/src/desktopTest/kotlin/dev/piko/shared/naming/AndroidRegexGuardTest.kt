@@ -38,10 +38,12 @@ class AndroidRegexGuardTest {
     private val root = File("..").canonicalFile
 
     private fun androidSources(): List<File> {
-        val sourceSets = listOf(
-            "shared/src/commonMain", "shared/src/jvmSharedMain", "shared/src/androidMain",
-            "ui/src/commonMain", "ui/src/androidMain",
-            "app/src/main",
+        val uiModules = listOf("ui-core", "ui-drive", "ui-player", "ui-settings", "ui-transfers", "ui-reader", "ui")
+        val sourceSets = (
+            listOf(
+                "shared/src/commonMain", "shared/src/jvmSharedMain", "shared/src/androidMain",
+                "app/src/main",
+            ) + uiModules.flatMap { listOf("$it/src/commonMain", "$it/src/androidMain") }
         ).map(root::resolve).filter(File::isDirectory)
         assertTrue(sourceSets.isNotEmpty(), "找不到源码目录：${root.absolutePath}")
         return sourceSets.flatMap { dir -> dir.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList() }

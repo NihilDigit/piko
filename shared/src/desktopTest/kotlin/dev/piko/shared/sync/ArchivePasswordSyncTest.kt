@@ -51,12 +51,17 @@ class ArchivePasswordSyncTest {
         override val currentClient = MutableStateFlow<PikPakClient?>(a)
     }
 
+    private class FastTestCipher(private val delegate: SyncCipher = JvmSyncCipher()) : SyncCipher by delegate {
+        override fun deriveKey(secret: String, salt: ByteArray, iterations: Int): ByteArray =
+            delegate.deriveKey(secret, salt, iterations.coerceAtMost(16))
+    }
+
     private class Device(val vault: ArchivePasswordVault, val sync: ArchivePasswordSync)
 
     private fun device(remote: RemoteSettingsStore, scope: CoroutineScope, accountPassword: () -> String): Device {
         val provider = FakePikPakServer().provider()
         val vault = ArchivePasswordVault(provider, MemorySessionStore(), MemoryPreferences())
-        val sync = ArchivePasswordSync(provider, remote, vault, { accountPassword() }, JvmSyncCipher(), scope, flowOf(true))
+        val sync = ArchivePasswordSync(provider, remote, vault, { accountPassword() }, FastTestCipher(), scope, flowOf(true))
         return Device(vault, sync)
     }
 
@@ -136,7 +141,7 @@ class ArchivePasswordSyncTest {
                     keyProvider = SyncKeyProvider {
                         passphrase?.let { dev.piko.shared.data.EncryptedSyncKey(it, isPassphrase = true) }
                     },
-                    cipher = JvmSyncCipher(),
+                    cipher = FastTestCipher(),
                     scope = scope,
                     enabled = flowOf(true),
                 )
@@ -156,7 +161,7 @@ class ArchivePasswordSyncTest {
                     remote = remote,
                     vault = vaultB,
                     keyProvider = SyncKeyProvider { dev.piko.shared.data.EncryptedSyncKey("shared-passphrase-2026", isPassphrase = true) },
-                    cipher = JvmSyncCipher(),
+                    cipher = FastTestCipher(),
                     scope = scope,
                     enabled = flowOf(true),
                 )
@@ -177,7 +182,7 @@ class ArchivePasswordSyncTest {
                 val remote = PerAccountRemote()
                 val store = MemorySessionStore()
                 val vault = ArchivePasswordVault(accounts, store, MemoryPreferences())
-                val sync = ArchivePasswordSync(accounts, remote, vault, { "login-$it" }, JvmSyncCipher(), scope, flowOf(true))
+                val sync = ArchivePasswordSync(accounts, remote, vault, { "login-$it" }, FastTestCipher(), scope, flowOf(true))
 
                 vault.remember("from-a")
                 assertTrue(sync.syncNow())
@@ -189,7 +194,7 @@ class ArchivePasswordSyncTest {
                 assertFalse("from-a" in store.archivePasswords.getValue("b@piko.dev"))
 
                 val otherDevice = ArchivePasswordVault(accounts, MemorySessionStore(), MemoryPreferences())
-                ArchivePasswordSync(accounts, remote, otherDevice, { "login-$it" }, JvmSyncCipher(), scope, flowOf(true)).syncNow()
+                ArchivePasswordSync(accounts, remote, otherDevice, { "login-$it" }, FastTestCipher(), scope, flowOf(true)).syncNow()
                 assertEquals(listOf("from-b"), otherDevice.passwords.first())
 
                 accounts.currentClient.value = accounts.a
@@ -236,7 +241,7 @@ class ArchivePasswordSyncTest {
                     remote = remote,
                     vault = vaultA,
                     keyProvider = SyncKeyProvider { activeKey },
-                    cipher = JvmSyncCipher(),
+                    cipher = FastTestCipher(),
                     scope = scope,
                     enabled = flowOf(true),
                     now = { 10_000L },
@@ -265,7 +270,7 @@ class ArchivePasswordSyncTest {
                     remote = remote,
                     vault = vaultB,
                     keyProvider = SyncKeyProvider { dev.piko.shared.data.EncryptedSyncKey("rotated-passphrase", isPassphrase = false) },
-                    cipher = JvmSyncCipher(),
+                    cipher = FastTestCipher(),
                     scope = scope,
                     enabled = flowOf(true),
                     now = { 20_000L },
@@ -283,7 +288,7 @@ class ArchivePasswordSyncTest {
                     remote = remote,
                     vault = vaultC,
                     keyProvider = SyncKeyProvider { null },
-                    cipher = JvmSyncCipher(),
+                    cipher = FastTestCipher(),
                     scope = scope,
                     enabled = flowOf(true),
                 )
@@ -300,7 +305,7 @@ class ArchivePasswordSyncTest {
                     remote = remote,
                     vault = vaultA,
                     keyProvider = SyncKeyProvider { dev.piko.shared.data.EncryptedSyncKey("fresh-key", isPassphrase = true) },
-                    cipher = JvmSyncCipher(),
+                    cipher = FastTestCipher(),
                     scope = scope,
                     enabled = flowOf(true),
                     now = { 5_000L },

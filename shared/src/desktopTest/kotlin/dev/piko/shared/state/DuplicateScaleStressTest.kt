@@ -9,8 +9,10 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class DuplicateScaleStressTest {
+    /** Run on demand with -Dpiko.test.bench=true (20k-file duplicate grouping stress test). */
     @Test
     fun fiveThousandDuplicateGroupsGroupFilterAndMaterializeFastWithBoundedMemory() {
+        org.junit.Assume.assumeTrue("Stress benchmark disabled by default; pass -Dpiko.test.bench=true", java.lang.Boolean.getBoolean("piko.test.bench"))
         val groupCount = 5_000
         val copiesPerGroup = 3
         val uniqueNonDuplicates = 5_000

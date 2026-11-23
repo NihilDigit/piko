@@ -28,7 +28,9 @@ import kotlin.time.Duration.Companion.milliseconds
 class ArchiveResultsSmokeTest {
     private fun client(http: HttpClient) = PikPakClient(
         account = "smoke@piko.dev", password = "pw", sessionStore = InMemorySessionStore(),
-        rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0), httpClient = http,
+        rateLimiter = RateLimiter(capacity = 1000, refillPerSecond = 1000.0),
+        retryPolicy = io.github.nihildigit.pikpak.RetryPolicy.None,
+        httpClient = http,
     )
 
     @Test
@@ -38,7 +40,7 @@ class ArchiveResultsSmokeTest {
         val provider = server.provider()
         val prefs = MemoryPreferences()
         val drive = PikoDriveRepository(provider, prefs)
-        val session = ArchiveExtractSession(provider, drive, ArchivePasswordVault(provider, MemorySessionStore(), prefs), scope)
+        val session = ArchiveExtractSession(provider, drive, ArchivePasswordVault(provider, MemorySessionStore(), prefs), scope, 1.milliseconds)
         val file = drive.listAllFiles("").getOrThrow().single { it.id == archive.node.id }
         session.extractEntries(file, listOf("a.txt"), "secret")
         awaitUntil("无页面订阅仍保留解压结局") { session.completedJobs.size == 1 }
@@ -108,7 +110,7 @@ class ArchiveResultsSmokeTest {
         val provider = server.provider(client(http))
         val prefs = MemoryPreferences()
         val drive = PikoDriveRepository(provider, prefs)
-        val session = ArchiveExtractSession(provider, drive, ArchivePasswordVault(provider, MemorySessionStore(), prefs), scope)
+        val session = ArchiveExtractSession(provider, drive, ArchivePasswordVault(provider, MemorySessionStore(), prefs), scope, 1.milliseconds)
         val file = drive.listAllFiles("").getOrThrow().single { it.id == archive.node.id }
         session.extract(listOf(file))
         awaitUntil("提交响应丢失留下待确认结果") { session.completedJobs.size == 1 }

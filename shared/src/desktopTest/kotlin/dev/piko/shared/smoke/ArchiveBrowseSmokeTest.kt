@@ -27,7 +27,7 @@ class ArchiveBrowseSmokeTest {
         val prefs = MemoryPreferences()
         val provider = server.provider()
         val vault = ArchivePasswordVault(provider, MemorySessionStore(), prefs)
-        val browser = ArchiveBrowser(provider, vault, scratchFolder = { Result.success(scratch.id) })
+        val browser = ArchiveBrowser(provider, vault, scratchFolder = { Result.success(scratch.id) }, primePollInterval = kotlin.time.Duration.parse("1ms"))
         val drive = DriveScreenState(PikoDriveRepository(provider, prefs), prefs, scope, archives = browser)
         return Setup(server, drive, scratch.id, vault)
     }
