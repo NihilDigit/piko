@@ -379,6 +379,7 @@ internal fun GesturePreviewCanvas(
                 }
 
                 // 左侧真实贴边电平指示器（映射左侧或右侧纵划：触屏纵划在真实播放时停靠对侧，预览直接展示在对应热区内便于对照）
+                val showIndicatorBg = prefs.videoLandscape.showIndicatorBackground
                 val leftAdjust = if (gestures.swipeBrightnessVolumeEnabled) {
                     gestures.leftVerticalSwipe.toVerticalAdjustOrNull()?.let { kind ->
                         PlayerGesture.Adjust(kind = kind, fraction = 0.68f, dockEnd = false)
@@ -390,6 +391,7 @@ internal fun GesturePreviewCanvas(
                     adjust = leftAdjust,
                     dockEnd = false,
                     large = false,
+                    showBackground = showIndicatorBg,
                     modifier = Modifier
                         .align(Alignment.CenterStart)
                         .padding(start = 10.dp)
@@ -411,6 +413,7 @@ internal fun GesturePreviewCanvas(
                     adjust = rightAdjust,
                     dockEnd = true,
                     large = false,
+                    showBackground = showIndicatorBg,
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .padding(end = 10.dp)
@@ -425,6 +428,7 @@ internal fun GesturePreviewCanvas(
                     visible = gestures.doubleTapSeekEnabled,
                     forward = true,
                     seconds = effectiveDoubleTapSeconds,
+                    showBackground = showIndicatorBg,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(top = 10.dp, end = 10.dp)
@@ -446,6 +450,7 @@ internal fun GesturePreviewCanvas(
                         null
                     },
                     durationMillis = 2_700_000L,
+                    showBackground = showIndicatorBg,
                     modifier = Modifier
                         .align(Alignment.Center)
                         .graphicsLayer {
@@ -464,6 +469,7 @@ internal fun GesturePreviewCanvas(
                     direction = 1,
                     armed = true,
                     available = true,
+                    showBackground = showIndicatorBg,
                     modifier = Modifier
                         .align(if (gestures.swipeSeekEnabled) Alignment.BottomCenter else Alignment.Center)
                         .padding(bottom = if (gestures.swipeSeekEnabled) 10.dp else 0.dp)
@@ -500,7 +506,10 @@ internal fun GestureCustomizationEditor(
         VerticalSwipeAction.Episode to stringResource(Res.string.player_custom_gesture_act_episode),
         VerticalSwipeAction.None to stringResource(Res.string.player_custom_gesture_act_none),
     )
-    SettingsGroup(stringResource(Res.string.player_custom_mode_gestures)) {
+    // 1. 进度手势（双击与横划）
+    SettingsGroup(
+        tr("进度手势", "Seek gestures", "シークジェスチャー", "탐색 제스처", "進度手勢"),
+    ) {
         SettingsSwitchRow(
             icon = Icons.Filled.FastForward,
             title = stringResource(Res.string.player_custom_gesture_double_tap),
@@ -508,21 +517,52 @@ internal fun GestureCustomizationEditor(
             checked = g.doubleTapSeekEnabled,
             onCheckedChange = { enabled -> onUpdate { p -> p.updateGestures { it.copy(doubleTapSeekEnabled = enabled) } } },
         )
-        SettingsSwitchRow(
-            icon = Icons.Outlined.Speed,
-            title = stringResource(Res.string.player_custom_gesture_long_press),
-            supporting = null,
-            checked = g.longPressSpeedEnabled,
-            onCheckedChange = { enabled -> onUpdate { p -> p.updateGestures { it.copy(longPressSpeedEnabled = enabled) } } },
-        )
-        DependentRow(visible = g.longPressSpeedEnabled) {
-            SettingsSwitchRow(
-                icon = Icons.Filled.Speed,
-                title = stringResource(Res.string.player_custom_gesture_speed_dial),
-                supporting = null,
-                checked = g.longPressSpeedDialEnabled,
-                onCheckedChange = { enabled -> onUpdate { p -> p.updateGestures { it.copy(longPressSpeedDialEnabled = enabled) } } },
-            )
+        DependentRow(visible = g.doubleTapSeekEnabled) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                SettingsSwitchRow(
+                    icon = Icons.Outlined.Timer,
+                    title = stringResource(Res.string.player_custom_sync_double_tap),
+                    supporting = null,
+                    checked = prefs.syncDoubleTapWithSeekButton,
+                    onCheckedChange = { synced -> onUpdate { it.copy(syncDoubleTapWithSeekButton = synced) } },
+                )
+                DependentRow(visible = !prefs.syncDoubleTapWithSeekButton) {
+                    SettingsCard {
+                        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                            SeekSecondsDropdownRow(
+                                title = stringResource(Res.string.player_custom_double_tap_seconds),
+                                seconds = prefs.doubleTapSeekSeconds,
+                                onSecondsChange = { sec ->
+                                    onUpdate { it.copy(doubleTapSeekSeconds = sec.coerceIn(MIN_SEEK_SECONDS, MAX_SEEK_SECONDS)).sanitize() }
+                                },
+                            )
+                        }
+                    }
+                }
+                SettingsRow(
+                    icon = Icons.Outlined.SwapHoriz,
+                    title = stringResource(Res.string.player_custom_gesture_double_tap_zone),
+                    supporting = "${(g.doubleTapZoneFraction * 100).roundToInt()}%",
+                    below = {
+                        Slider(
+                            value = g.doubleTapZoneFraction,
+                            onValueChange = { value -> onUpdate { p -> p.updateGestures { it.copy(doubleTapZoneFraction = value) } } },
+                            valueRange = MIN_DOUBLE_TAP_ZONE_FRACTION..MAX_DOUBLE_TAP_ZONE_FRACTION,
+                        )
+                    },
+                )
+            }
+        }
+        SettingsCard {
+            Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                SeekSecondsDropdownRow(
+                    title = stringResource(Res.string.player_custom_seek_seconds),
+                    seconds = prefs.seekButtonSeconds,
+                    onSecondsChange = { sec ->
+                        onUpdate { it.copy(seekButtonSeconds = sec.coerceIn(MIN_SEEK_SECONDS, MAX_SEEK_SECONDS)).sanitize() }
+                    },
+                )
+            }
         }
         SettingsSwitchRow(
             icon = Icons.Outlined.SwapHoriz,
@@ -556,6 +596,34 @@ internal fun GestureCustomizationEditor(
                 )
             }
         }
+    }
+
+    // 2. 倍速手势
+    SettingsGroup(
+        tr("倍速手势", "Speed gestures", "速度ジェスチャー", "속도 제스처", "倍速手勢"),
+    ) {
+        SettingsSwitchRow(
+            icon = Icons.Outlined.Speed,
+            title = stringResource(Res.string.player_custom_gesture_long_press),
+            supporting = null,
+            checked = g.longPressSpeedEnabled,
+            onCheckedChange = { enabled -> onUpdate { p -> p.updateGestures { it.copy(longPressSpeedEnabled = enabled) } } },
+        )
+        DependentRow(visible = g.longPressSpeedEnabled) {
+            SettingsSwitchRow(
+                icon = Icons.Filled.Speed,
+                title = stringResource(Res.string.player_custom_gesture_speed_dial),
+                supporting = null,
+                checked = g.longPressSpeedDialEnabled,
+                onCheckedChange = { enabled -> onUpdate { p -> p.updateGestures { it.copy(longPressSpeedDialEnabled = enabled) } } },
+            )
+        }
+    }
+
+    // 3. 纵划手势（亮度、音量与切集）
+    SettingsGroup(
+        tr("纵划手势", "Vertical swipe gestures", "上下スワイプ", "세로 스와이프", "縱劃手勢"),
+    ) {
         SettingsSwitchRow(
             icon = Icons.Filled.SwapVert,
             title = stringResource(Res.string.player_custom_gesture_vertical),
@@ -607,49 +675,6 @@ internal fun GestureCustomizationEditor(
                 )
             }
         }
-        SettingsCard {
-            Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
-                SeekSecondsDropdownRow(
-                    title = stringResource(Res.string.player_custom_seek_seconds),
-                    seconds = prefs.seekButtonSeconds,
-                    onSecondsChange = { sec ->
-                        onUpdate { it.copy(seekButtonSeconds = sec.coerceIn(MIN_SEEK_SECONDS, MAX_SEEK_SECONDS)).sanitize() }
-                    },
-                )
-            }
-        }
-        SettingsSwitchRow(
-            icon = Icons.Outlined.Timer,
-            title = stringResource(Res.string.player_custom_sync_double_tap),
-            supporting = null,
-            checked = prefs.syncDoubleTapWithSeekButton,
-            onCheckedChange = { synced -> onUpdate { it.copy(syncDoubleTapWithSeekButton = synced) } },
-        )
-        DependentRow(visible = !prefs.syncDoubleTapWithSeekButton) {
-            SettingsCard {
-                Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
-                    SeekSecondsDropdownRow(
-                        title = stringResource(Res.string.player_custom_double_tap_seconds),
-                        seconds = prefs.doubleTapSeekSeconds,
-                        onSecondsChange = { sec ->
-                            onUpdate { it.copy(doubleTapSeekSeconds = sec.coerceIn(MIN_SEEK_SECONDS, MAX_SEEK_SECONDS)).sanitize() }
-                        },
-                    )
-                }
-            }
-        }
-        SettingsRow(
-            icon = Icons.Outlined.SwapHoriz,
-            title = stringResource(Res.string.player_custom_gesture_double_tap_zone),
-            supporting = "${(g.doubleTapZoneFraction * 100).roundToInt()}%",
-            below = {
-                Slider(
-                    value = g.doubleTapZoneFraction,
-                    onValueChange = { value -> onUpdate { p -> p.updateGestures { it.copy(doubleTapZoneFraction = value) } } },
-                    valueRange = MIN_DOUBLE_TAP_ZONE_FRACTION..MAX_DOUBLE_TAP_ZONE_FRACTION,
-                )
-            },
-        )
     }
 }
 

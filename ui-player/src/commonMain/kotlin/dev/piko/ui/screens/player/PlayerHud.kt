@@ -68,12 +68,11 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private val HUD_BAR_WIDTH = 96.dp
-private val SeekBarHudWidth = 172.dp
-private val LevelEdgePillWidth = 36.dp
+private val LevelEdgePillWidth = 32.dp
 private val LevelEdgeTrackWidth = 4.dp
 private val LevelEdgeTrackHeightCompact = 72.dp
 private val LevelEdgeTrackHeightLarge = 104.dp
-private val LevelEdgeIconSize = 18.dp
+private val LevelEdgeIconSize = 16.dp
 private const val LevelEdgeTrackBgAlpha = 0.24f
 private const val SecondaryTextAlpha = 0.7f
 
@@ -81,7 +80,11 @@ private const val SecondaryTextAlpha = 0.7f
  * 顶部居中瞬态开关/提示胶囊（供信息流自动连刷、键盘切换提示等复用）。
  */
 @Composable
-internal fun PlayerHud(indicator: CenterIndicator?, modifier: Modifier = Modifier) {
+internal fun PlayerHud(
+    indicator: CenterIndicator?,
+    showBackground: Boolean = true,
+    modifier: Modifier = Modifier,
+) {
     val retained = remember { mutableStateOf<CenterIndicator?>(null) }
     if (indicator != null) SideEffect { retained.value = indicator }
     val shown = indicator ?: retained.value
@@ -89,7 +92,8 @@ internal fun PlayerHud(indicator: CenterIndicator?, modifier: Modifier = Modifie
     val fixed = LocalFixedColors.current
     val motion = MaterialTheme.motionScheme
     val reduced = LocalPikoMotion.current.reduced
-    val style = MaterialTheme.typography.labelLarge.tabular
+    val baseStyle = MaterialTheme.typography.labelLarge.tabular
+    val style = if (showBackground) baseStyle else baseStyle.copy(shadow = PlayerTextShadow)
     val textMeasurer = rememberTextMeasurer()
     val density = LocalDensity.current
     val dir = shown?.direction ?: 0
@@ -117,20 +121,27 @@ internal fun PlayerHud(indicator: CenterIndicator?, modifier: Modifier = Modifie
     ) {
         val content = shown ?: return@AnimatedVisibility
         val textWidth = with(density) {
-            val measured = textMeasurer.measure(content.text, style).size.width
-            val reserved = content.textTemplate?.let { textMeasurer.measure(it, style).size.width } ?: 0
+            val measured = textMeasurer.measure(content.text, baseStyle).size.width
+            val reserved = content.textTemplate?.let { textMeasurer.measure(it, baseStyle).size.width } ?: 0
             maxOf(measured, reserved).toDp()
         }
         Row(
             modifier = Modifier
-                .background(fixed.ScrimOnMedia, CircleShape)
-                .border(1.dp, fixed.HudSpecularBorder, CircleShape)
-                .padding(horizontal = 14.dp, vertical = 8.dp)
+                .then(
+                    if (showBackground) {
+                        Modifier
+                            .background(fixed.ScrimOnMedia, CircleShape)
+                            .border(1.dp, fixed.HudSpecularBorder, CircleShape)
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    } else {
+                        Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                    },
+                )
                 .semantics {
                     liveRegion = LiveRegionMode.Polite
                     contentDescription = content.description
                 },
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (content.direction > 0) {
@@ -171,14 +182,15 @@ internal fun PlayerHud(indicator: CenterIndicator?, modifier: Modifier = Modifie
 }
 
 /**
- * 横划进退中央胶囊指示器（移植自 Bilby `PlayerHudOverlay`）：
- * 展示目标时刻、总时长、相对位移秒数与 4dp 胶囊进度轨；拖入顶部两角取消区后就地切换为「松手取消进退」，
- * 避免与顶部独立提示重复表意。
+ * 横划进退中央轻量胶囊指示器：
+ * 单行紧凑展示目标时刻、总时长与相对位移秒数（进度由底栏真实进度条同步呈现，避免中央重复叠轨遮挡画面）；
+ * 拖入顶部两角取消区后就地切换为「松手取消进退」。
  */
 @Composable
 internal fun SeekHudOverlay(
     seek: PlayerGesture.Seek?,
     durationMillis: Long,
+    showBackground: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val retained = remember { mutableStateOf<PlayerGesture.Seek?>(null) }
@@ -207,97 +219,82 @@ internal fun SeekHudOverlay(
                 "跳至 ${formatTime(targetMillis)}",
             )
         }
+        val primaryTimeStyle = MaterialTheme.typography.titleMedium.tabular.let {
+            if (showBackground) it else it.copy(shadow = PlayerTextShadow)
+        }
+        val secondaryTimeStyle = MaterialTheme.typography.bodySmall.tabular.let {
+            if (showBackground) it else it.copy(shadow = PlayerTextShadow)
+        }
+        val deltaStyle = MaterialTheme.typography.labelMedium.tabular.let {
+            if (showBackground) it else it.copy(shadow = PlayerTextShadow)
+        }
+        val cancelStyle = MaterialTheme.typography.labelLarge.let {
+            if (showBackground) it else it.copy(shadow = PlayerTextShadow)
+        }
 
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier
-                .clip(CircleShape)
-                .background(fixed.ScrimOnMedia)
-                .border(1.dp, fixed.HudSpecularBorder, CircleShape)
-                .padding(horizontal = 18.dp, vertical = 12.dp)
+                .then(
+                    if (showBackground) {
+                        Modifier
+                            .clip(CircleShape)
+                            .background(fixed.ScrimOnMedia)
+                            .border(1.dp, fixed.HudSpecularBorder, CircleShape)
+                            .padding(horizontal = 12.dp, vertical = 7.dp)
+                    } else {
+                        Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                    },
+                )
                 .semantics {
                     liveRegion = LiveRegionMode.Polite
                     contentDescription = desc
                 },
         ) {
             if (current.cancelled) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Close,
-                        contentDescription = null,
-                        tint = fixed.OnMedia,
-                        modifier = Modifier.size(20.dp),
-                    )
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = null,
+                    tint = fixed.OnMedia,
+                    modifier = Modifier.size(LevelEdgeIconSize),
+                )
+                Text(
+                    text = stringResource(Res.string.player_seek_release_to_cancel),
+                    style = cancelStyle,
+                    color = fixed.OnMedia,
+                    maxLines = 1,
+                )
+            } else {
+                val seconds = abs(deltaMillis) / 1_000L
+                Icon(
+                    imageVector = if (deltaMillis >= 0L) Icons.Filled.FastForward else Icons.Filled.FastRewind,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(LevelEdgeIconSize),
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = stringResource(Res.string.player_seek_release_to_cancel),
-                        style = MaterialTheme.typography.labelLarge,
+                        text = formatTime(targetMillis),
+                        style = primaryTimeStyle,
                         color = fixed.OnMedia,
                         maxLines = 1,
                     )
-                }
-            } else {
-                val seconds = abs(deltaMillis) / 1_000L
-                val progress = if (durationMillis > 0L) {
-                    (targetMillis.toFloat() / durationMillis).coerceIn(0f, 1f)
-                } else {
-                    0f
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Icon(
-                        imageVector = if (deltaMillis >= 0L) Icons.Filled.FastForward else Icons.Filled.FastRewind,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(LevelEdgeIconSize),
+                    Text(
+                        text = " / ${formatTime(durationMillis)}",
+                        style = secondaryTimeStyle,
+                        color = fixed.OnMedia.copy(alpha = SecondaryTextAlpha),
+                        maxLines = 1,
                     )
-                    Row(verticalAlignment = Alignment.Bottom) {
-                        Text(
-                            text = formatTime(targetMillis),
-                            style = MaterialTheme.typography.titleLarge.tabular,
-                            color = fixed.OnMedia,
-                            maxLines = 1,
-                        )
-                        Text(
-                            text = " / ${formatTime(durationMillis)}",
-                            style = MaterialTheme.typography.bodySmall.tabular,
-                            color = fixed.OnMedia.copy(alpha = SecondaryTextAlpha),
-                            maxLines = 1,
-                            modifier = Modifier.padding(bottom = 2.dp),
-                        )
-                    }
-                    if (seconds > 0L) {
-                        val sign = if (deltaMillis > 0L) "+" else "−"
-                        Text(
-                            text = "$sign${seconds}s",
-                            style = MaterialTheme.typography.labelMedium.tabular,
-                            color = MaterialTheme.colorScheme.primary,
-                            maxLines = 1,
-                        )
-                    }
                 }
-                Box(
-                    contentAlignment = Alignment.CenterStart,
-                    modifier = Modifier
-                        .width(SeekBarHudWidth)
-                        .height(LevelEdgeTrackWidth)
-                        .clip(CircleShape)
-                        .background(fixed.OnMedia.copy(alpha = LevelEdgeTrackBgAlpha)),
-                ) {
-                    if (progress > 0f) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxHeight()
-                                .fillMaxWidth(progress)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary),
-                        )
-                    }
+                if (seconds > 0L) {
+                    val sign = if (deltaMillis > 0L) "+" else "−"
+                    Text(
+                        text = "$sign${seconds}s",
+                        style = deltaStyle,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                    )
                 }
             }
         }
@@ -313,6 +310,7 @@ internal fun DoubleTapSeekHint(
     visible: Boolean,
     forward: Boolean,
     seconds: Int,
+    showBackground: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val retainedForward = remember { mutableStateOf(forward) }
@@ -341,14 +339,24 @@ internal fun DoubleTapSeekHint(
             if (shownForward) Res.string.player_seek_forward_seconds else Res.string.player_seek_backward_seconds,
             shownSeconds,
         )
+        val textStyle = MaterialTheme.typography.labelMedium.tabular.let {
+            if (showBackground) it else it.copy(shadow = PlayerTextShadow)
+        }
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
             modifier = Modifier
-                .clip(CircleShape)
-                .background(fixed.ScrimOnMedia)
-                .border(1.dp, fixed.HudSpecularBorder, CircleShape)
-                .padding(horizontal = 14.dp, vertical = 8.dp)
+                .then(
+                    if (showBackground) {
+                        Modifier
+                            .clip(CircleShape)
+                            .background(fixed.ScrimOnMedia)
+                            .border(1.dp, fixed.HudSpecularBorder, CircleShape)
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    } else {
+                        Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                    },
+                )
                 .semantics {
                     liveRegion = LiveRegionMode.Polite
                     contentDescription = label
@@ -362,7 +370,7 @@ internal fun DoubleTapSeekHint(
             )
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelLarge.tabular,
+                style = textStyle,
                 color = fixed.OnMedia,
                 maxLines = 1,
                 softWrap = false,
@@ -380,6 +388,7 @@ internal fun PlayerLevelEdgeBar(
     adjust: PlayerGesture.Adjust?,
     dockEnd: Boolean,
     large: Boolean,
+    showBackground: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val retained = remember { mutableStateOf<PlayerGesture.Adjust?>(null) }
@@ -414,16 +423,26 @@ internal fun PlayerLevelEdgeBar(
             tr("音量 $percent%", "Volume $percent%", "音量 $percent%", "볼륨 $percent%", "音量 $percent%")
         }
         val trackHeight = if (large) LevelEdgeTrackHeightLarge else LevelEdgeTrackHeightCompact
+        val percentStyle = MaterialTheme.typography.labelSmall.tabular.let {
+            if (showBackground) it else it.copy(shadow = PlayerTextShadow)
+        }
 
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
             modifier = Modifier
                 .width(LevelEdgePillWidth)
-                .clip(CircleShape)
-                .background(fixed.ScrimOnMedia)
-                .border(1.dp, fixed.HudSpecularBorder, CircleShape)
-                .padding(horizontal = 6.dp, vertical = 10.dp)
+                .then(
+                    if (showBackground) {
+                        Modifier
+                            .clip(CircleShape)
+                            .background(fixed.ScrimOnMedia)
+                            .border(1.dp, fixed.HudSpecularBorder, CircleShape)
+                    } else {
+                        Modifier
+                    },
+                )
+                .padding(horizontal = 5.dp, vertical = 8.dp)
                 .semantics(mergeDescendants = true) {
                     liveRegion = LiveRegionMode.Polite
                     contentDescription = desc
@@ -431,7 +450,7 @@ internal fun PlayerLevelEdgeBar(
         ) {
             Text(
                 text = "$percent",
-                style = MaterialTheme.typography.labelSmall.tabular,
+                style = percentStyle,
                 color = fixed.OnMedia,
                 maxLines = 1,
                 softWrap = false,
@@ -471,6 +490,7 @@ internal fun EpisodeSwipeHud(
     direction: Int,
     armed: Boolean,
     available: Boolean,
+    showBackground: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val retainedDir = remember { mutableStateOf(direction) }
@@ -506,14 +526,24 @@ internal fun EpisodeSwipeHud(
             else -> Res.string.player_gesture_episode_swipe_down
         }
         val label = stringResource(labelRes)
+        val textStyle = MaterialTheme.typography.labelMedium.let {
+            if (showBackground) it else it.copy(shadow = PlayerTextShadow)
+        }
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier
-                .clip(CircleShape)
-                .background(fixed.ScrimOnMedia)
-                .border(1.dp, fixed.HudSpecularBorder, CircleShape)
-                .padding(horizontal = 14.dp, vertical = 8.dp)
+                .then(
+                    if (showBackground) {
+                        Modifier
+                            .clip(CircleShape)
+                            .background(fixed.ScrimOnMedia)
+                            .border(1.dp, fixed.HudSpecularBorder, CircleShape)
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    } else {
+                        Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                    },
+                )
                 .semantics {
                     liveRegion = LiveRegionMode.Polite
                     contentDescription = label
@@ -523,11 +553,11 @@ internal fun EpisodeSwipeHud(
                 imageVector = if (isNext) Icons.Filled.SkipNext else Icons.Filled.SkipPrevious,
                 contentDescription = null,
                 tint = tint,
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(18.dp),
             )
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelLarge,
+                style = textStyle,
                 color = tint,
                 maxLines = 1,
             )

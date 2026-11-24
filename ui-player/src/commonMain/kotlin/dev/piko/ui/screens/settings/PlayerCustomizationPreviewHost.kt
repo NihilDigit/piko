@@ -27,8 +27,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -36,11 +38,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.media.player.CenterSlotPosition
+import dev.piko.shared.media.player.IndicatorVerticalPosition
 import dev.piko.shared.media.player.PlayerBarSlot
 import dev.piko.shared.media.player.PlayerControlId
 import dev.piko.shared.media.player.PlayerFormFactorLayout
@@ -59,13 +66,18 @@ import dev.piko.ui.screens.clips.ClipControls
 import dev.piko.ui.screens.clips.ClipFeedTopBar
 import dev.piko.ui.screens.player.CustomizablePlayerBottomBar
 import dev.piko.ui.screens.player.CustomizablePlayerTopBar
+import dev.piko.ui.screens.player.DoubleTapSeekHint
 import dev.piko.ui.screens.player.FullscreenPromptButtonContent
 import dev.piko.ui.screens.player.LocalPlayerLayoutPrefs
 import dev.piko.ui.screens.player.PlayerBarEditScope
 import dev.piko.ui.screens.player.PlayerBarEnvironment
 import dev.piko.ui.screens.player.PlayerCenterCluster
+import dev.piko.ui.screens.player.PlayerGesture
+import dev.piko.ui.screens.player.PlayerLevelEdgeBar
 import dev.piko.ui.screens.player.PlayerSeekBar
 import dev.piko.ui.screens.player.PlayerTheme
+import dev.piko.ui.screens.player.SeekHudOverlay
+import dev.piko.ui.screens.player.VerticalAdjust
 import dev.piko.ui.screens.player.handCursor
 import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.LocalFixedColors
@@ -78,6 +90,7 @@ internal fun PreviewCanvasSection(
     activeLayout: PlayerFormFactorLayout?,
     prefs: PlayerLayoutPrefs,
     transportInCenter: Boolean,
+    previewIndicators: Boolean,
     selection: SlotSelection?,
     onSelect: (SlotSelection) -> Unit,
     selectedListenSlot: CenterSlotPosition,
@@ -98,6 +111,7 @@ internal fun PreviewCanvasSection(
                     seekButtonSeconds = prefs.seekButtonSeconds,
                     showPortraitFullscreenPrompt = prefs.showPortraitFullscreenPrompt,
                     transportInCenter = transportInCenter,
+                    previewIndicators = previewIndicators,
                     selection = selection,
                     dragState = dragState,
                     dropTarget = dropTarget,
@@ -142,6 +156,7 @@ internal fun PlayerPreviewCanvas(
     seekButtonSeconds: Int,
     showPortraitFullscreenPrompt: Boolean,
     transportInCenter: Boolean,
+    previewIndicators: Boolean = false,
     selection: SlotSelection?,
     dragState: PlayerEditorDragState,
     dropTarget: DropTarget?,
@@ -159,24 +174,27 @@ internal fun PlayerPreviewCanvas(
     val draggingCenterAction = mode.isVideo &&
         dragState.activeDrag?.payload?.toCenterSlotActionOrNull(seekButtonSeconds) != null
 
-    val canvasModifier = when {
-        mode.isLandscape -> {
-            val base = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
-            if (compactMaxHeight != null) base.heightIn(max = compactMaxHeight) else base
-        }
-        mode == PlayerLayoutMode.ClipsPortrait -> {
-            val targetH = compactMaxHeight ?: 450.dp
-            Modifier.widthIn(max = if (compactMaxHeight != null) 276.dp else 316.dp)
-                .fillMaxWidth()
-                .height(targetH)
-        }
-        else -> {
-            val targetH = compactMaxHeight ?: 420.dp
-            Modifier.widthIn(max = if (compactMaxHeight != null) 276.dp else 316.dp)
-                .fillMaxWidth()
-                .height(targetH)
-        }
+    // 固定真实逻辑参考画布尺寸，再通过 LocalDensity 等比缩放到容器可用视口：
+    // 无论桌面小窗还是手机窄屏，竖屏始终拥有完整 390dp 逻辑宽度，按钮绝不截断、全屏胶囊绝不压进度条，
+    // 同时砍掉无意义纯黑死区（竖屏视频 310dp 紧凑纵深，刚好舒展容纳顶栏 + 中央簇/指示器 + 全屏按钮 + 底栏）。
+    val logicalWidth = if (mode.isLandscape) 720.dp else 412.dp
+    val logicalHeight = when {
+        mode.isLandscape -> 405.dp
+        mode == PlayerLayoutMode.ClipsPortrait -> 430.dp
+        else -> 310.dp
     }
+    val baseDensity = LocalDensity.current
+    var hostWidthPx by remember { mutableIntStateOf(0) }
+    val availableWidthDp = with(baseDensity) { hostWidthPx.toDp() }
+    val widthScale = if (availableWidthDp > 0.dp) (availableWidthDp / logicalWidth).coerceAtMost(1f) else 1f
+    val heightScale = if (compactMaxHeight != null) (compactMaxHeight / logicalHeight).coerceAtMost(1f) else 1f
+    val viewportScale = minOf(widthScale, heightScale).coerceIn(0.42f, 1f)
+    val scaledDensity = remember(baseDensity, viewportScale) {
+        Density(density = baseDensity.density * viewportScale, fontScale = baseDensity.fontScale)
+    }
+    val canvasModifier = Modifier
+        .width(logicalWidth * viewportScale)
+        .height(logicalHeight * viewportScale)
     val sampleFolder = stringResource(Res.string.drive_custom_sample_folder_title)
     val sampleTitle = stringResource(Res.string.player_custom_sample_title)
     val sampleClip = remember(sampleTitle) {
@@ -399,7 +417,9 @@ internal fun PlayerPreviewCanvas(
         // 预览画布内禁用 M3 默认 48dp 最小触控尺寸外扩，避免微缩圆形按钮的阴影与边框重叠
         CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
             Box(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onSizeChanged { hostWidthPx = it.width },
                 contentAlignment = Alignment.Center,
             ) {
                 Surface(
@@ -413,15 +433,16 @@ internal fun PlayerPreviewCanvas(
                         if (coords.isAttached) dragState.previewCanvasBounds = coords.boundsInWindow()
                     },
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(Color(0xFF18202B), Color(0xFF0C0F14), Color(0xFF141922)),
+                    CompositionLocalProvider(LocalDensity provides scaledDensity) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(Color(0xFF18202B), Color(0xFF0C0F14), Color(0xFF141922)),
+                                    ),
                                 ),
-                            ),
-                    ) {
+                        ) {
                         if (mode.isVideo) {
                             val previewEnv = remember(
                                 mode,
@@ -438,17 +459,20 @@ internal fun PlayerPreviewCanvas(
                                     seekButtonSeconds = seekButtonSeconds,
                                     transportInCenter = transportInCenter,
                                     sampleTitle = sampleTitle,
-                                    previewCompactScale = 0.86f,
+                                    previewCompactScale = 1f,
                                 )
                             }
 
+                            val chromeAlpha = if (previewIndicators) 0.24f else 1f
                             CustomizablePlayerTopBar(
                                 env = previewEnv,
                                 editScope = editScope,
-                                modifier = Modifier.align(Alignment.TopCenter),
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .alpha(chromeAlpha),
                             )
 
-                            if (transportInCenter) {
+                            if (transportInCenter && !previewIndicators) {
                                 PlayerCenterCluster(
                                     config = layout.center,
                                     centerVisible = true,
@@ -474,13 +498,12 @@ internal fun PlayerPreviewCanvas(
                                 )
                             }
 
-                            if (mode == PlayerLayoutMode.VideoPortrait) {
+                            if (mode == PlayerLayoutMode.VideoPortrait && !previewIndicators) {
                                 val promptSelected = selection == SlotSelection.PortraitFullscreenPrompt
-                                val bottomPad = if (compactMaxHeight != null && compactMaxHeight < 300.dp) 68.dp else 94.dp
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.BottomCenter)
-                                        .padding(bottom = bottomPad)
+                                        .padding(bottom = 96.dp)
                                         .then(
                                             if (promptSelected) {
                                                 Modifier
@@ -507,9 +530,12 @@ internal fun PlayerPreviewCanvas(
                                 onScrubPositionChange = {},
                                 onScrubbingChange = {},
                                 editScope = editScope,
-                                modifier = Modifier.align(Alignment.BottomCenter),
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .alpha(chromeAlpha),
                             )
                         } else {
+                            val chromeAlpha = if (previewIndicators) 0.24f else 1f
                             ClipFeedTopBar(
                                 title = sampleFolder,
                                 muted = false,
@@ -521,14 +547,17 @@ internal fun PlayerPreviewCanvas(
                                 paused = true,
                                 editScope = editScope,
                                 statusBarConfig = statusBar,
-                                modifier = Modifier.align(Alignment.TopCenter),
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .alpha(chromeAlpha),
                             )
 
                             Box(
                                 modifier = Modifier
                                     .align(Alignment.BottomCenter)
                                     .fillMaxWidth()
-                                    .fillMaxHeight(if (mode.isLandscape) 0.48f else 0.62f),
+                                    .fillMaxHeight(if (mode.isLandscape) 0.48f else 0.62f)
+                                    .alpha(chromeAlpha),
                             ) {
                                 Box(
                                     modifier = Modifier
@@ -567,6 +596,69 @@ internal fun PlayerPreviewCanvas(
                                         .padding(horizontal = 6.dp),
                                 )
                             }
+                        }
+
+                        if (previewIndicators) {
+                            val hudScale = if (mode.isLandscape) 0.92f else 0.86f
+                            val seekAlignment = when (layout.indicatorPosition) {
+                                IndicatorVerticalPosition.Top -> Alignment.TopCenter
+                                IndicatorVerticalPosition.Center -> Alignment.Center
+                                IndicatorVerticalPosition.Bottom -> Alignment.BottomCenter
+                            }
+                            val seekPadding = when (layout.indicatorPosition) {
+                                IndicatorVerticalPosition.Top -> Modifier.padding(top = 56.dp)
+                                IndicatorVerticalPosition.Center -> Modifier
+                                IndicatorVerticalPosition.Bottom -> Modifier.padding(bottom = 68.dp)
+                            }
+                            if (mode.isVideo) {
+                                PlayerLevelEdgeBar(
+                                    adjust = PlayerGesture.Adjust(
+                                        kind = VerticalAdjust.Brightness,
+                                        fraction = 0.68f,
+                                        dockEnd = false,
+                                    ),
+                                    dockEnd = false,
+                                    large = false,
+                                    showBackground = layout.showIndicatorBackground,
+                                    modifier = Modifier
+                                        .align(Alignment.CenterStart)
+                                        .padding(start = 12.dp)
+                                        .graphicsLayer {
+                                            scaleX = hudScale
+                                            scaleY = hudScale
+                                        },
+                                )
+                                DoubleTapSeekHint(
+                                    visible = true,
+                                    forward = true,
+                                    seconds = seekButtonSeconds,
+                                    showBackground = layout.showIndicatorBackground,
+                                    modifier = Modifier
+                                        .align(Alignment.CenterEnd)
+                                        .padding(end = 16.dp)
+                                        .graphicsLayer {
+                                            scaleX = hudScale
+                                            scaleY = hudScale
+                                        },
+                                )
+                            }
+                            SeekHudOverlay(
+                                seek = PlayerGesture.Seek(
+                                    startPositionMillis = if (mode.isVideo) 754_000L else 12_000L,
+                                    deltaMillis = if (mode.isVideo) 45_000L else 8_000L,
+                                    cancelled = false,
+                                ),
+                                durationMillis = if (mode.isVideo) 2_700_000L else 30_000L,
+                                showBackground = layout.showIndicatorBackground,
+                                modifier = Modifier
+                                    .align(seekAlignment)
+                                    .then(seekPadding)
+                                    .graphicsLayer {
+                                        scaleX = hudScale
+                                        scaleY = hudScale
+                                    },
+                            )
+                        }
                         }
                     }
                 }

@@ -287,4 +287,64 @@ class PlayerLayoutPrefsTest {
         )
         assertEquals(reorderedBack, blockedCrossBar)
     }
+
+    @Test
+    fun `bulk control background and indicator background toggles work per mode and preserve individual overrides`() {
+        val base = PlayerLayoutPrefs.Default
+        for (mode in PlayerLayoutMode.entries) {
+            assertTrue(base.layoutFor(mode).hasAnyControlBackground(mode), "Default should have control bg in $mode")
+            assertTrue(base.layoutFor(mode).showIndicatorBackground, "Default should have indicator bg in $mode")
+        }
+
+        // 关闭横屏视频的全部控件背景与指示器背景，不影响竖屏视频或信息流
+        val stripped = base.updateLayout(PlayerLayoutMode.VideoLandscape) { layout ->
+            layout
+                .withAllControlBackgrounds(false, PlayerLayoutMode.VideoLandscape)
+                .withIndicatorBackground(false, PlayerLayoutMode.VideoLandscape)
+        }
+        assertFalse(stripped.videoLandscape.hasAnyControlBackground(PlayerLayoutMode.VideoLandscape))
+        assertFalse(stripped.videoLandscape.showIndicatorBackground)
+        assertFalse(stripped.videoLandscape.center.innerLeft.showBackground)
+        assertFalse(stripped.videoLandscape.center.innerRight.showBackground)
+        assertTrue(stripped.videoPortrait.hasAnyControlBackground(PlayerLayoutMode.VideoPortrait))
+        assertTrue(stripped.videoPortrait.showIndicatorBackground)
+        assertTrue(stripped.clipsLandscape.hasAnyControlBackground(PlayerLayoutMode.ClipsLandscape))
+
+        // 单个控件可独立重新开启背景，状态反映为已开启，且再次一键开启会恢复全部控件背景
+        val singleOn = stripped.updateLayout(PlayerLayoutMode.VideoLandscape) { layout ->
+            layout.withBarItemBackground(PlayerBarSlot.Top, 0, true, PlayerLayoutMode.VideoLandscape)
+        }
+        assertTrue(singleOn.videoLandscape.hasAnyControlBackground(PlayerLayoutMode.VideoLandscape))
+        assertFalse(singleOn.videoLandscape.center.innerLeft.showBackground)
+
+        val allOn = singleOn.updateLayout(PlayerLayoutMode.VideoLandscape) { layout ->
+            layout.withAllControlBackgrounds(true, PlayerLayoutMode.VideoLandscape)
+        }
+        assertTrue(allOn.videoLandscape.center.innerLeft.showBackground)
+        assertTrue(allOn.videoLandscape.center.innerRight.showBackground)
+
+        // 重置当前模式恢复默认背景状态
+        val reset = stripped.resetMode(PlayerLayoutMode.VideoLandscape)
+        assertTrue(reset.videoLandscape.hasAnyControlBackground(PlayerLayoutMode.VideoLandscape))
+        assertTrue(reset.videoLandscape.showIndicatorBackground)
+    }
+
+    @Test
+    fun `legacy json without showIndicatorBackground deserializes losslessly with default true`() {
+        val custom = PlayerLayoutPrefs.Default.updateLayout(PlayerLayoutMode.VideoPortrait) {
+            it.withIndicatorBackground(false, PlayerLayoutMode.VideoPortrait)
+        }
+        val encoded = encodePlayerLayoutPrefs(custom)
+        val roundTripped = decodePlayerLayoutPrefs(encoded)
+        assertFalse(roundTripped.videoPortrait.showIndicatorBackground)
+        assertTrue(roundTripped.videoLandscape.showIndicatorBackground)
+
+        // 模拟老版本保存的 JSON（移除 showIndicatorBackground 字段）
+        val legacyJson = encoded.replace(Regex(""",?"showIndicatorBackground":(true|false)"""), "")
+        assertFalse(legacyJson.contains("showIndicatorBackground"))
+        val decodedLegacy = decodePlayerLayoutPrefs(legacyJson)
+        for (mode in PlayerLayoutMode.entries) {
+            assertTrue(decodedLegacy.layoutFor(mode).showIndicatorBackground, "Legacy JSON must default showIndicatorBackground=true for $mode")
+        }
+    }
 }

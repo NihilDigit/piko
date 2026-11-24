@@ -856,4 +856,74 @@ class PlayerGesturesTest {
         assertTrue(controller.lockedByHold)
         assertEquals(3.0f, currentSpeed)
     }
+
+    @Test
+    fun gestureIndicatorsRenderCleanlyWithAndWithoutBackground() {
+        val executor = Executors.newSingleThreadExecutor()
+        val dispatcher = executor.asCoroutineDispatcher()
+        try {
+            runBlocking(dispatcher) {
+                for (showBackground in listOf(true, false)) {
+                    val scene = ImageComposeScene(width = 640, height = 360, coroutineContext = dispatcher) {
+                        ProvideTestPlayerEnvironment(PikoMotionScale()) {
+                            PlayerTheme {
+                                Box(Modifier.fillMaxSize()) {
+                                    SeekHudOverlay(
+                                        seek = PlayerGesture.Seek(
+                                            startPositionMillis = 60_000L,
+                                            deltaMillis = 30_000L,
+                                            cancelled = false,
+                                        ),
+                                        durationMillis = 600_000L,
+                                        showBackground = showBackground,
+                                    )
+                                    DoubleTapSeekHint(
+                                        visible = true,
+                                        forward = true,
+                                        seconds = 10,
+                                        showBackground = showBackground,
+                                    )
+                                    PlayerLevelEdgeBar(
+                                        adjust = PlayerGesture.Adjust(
+                                            kind = VerticalAdjust.Volume,
+                                            fraction = 0.65f,
+                                            dockEnd = true,
+                                        ),
+                                        dockEnd = true,
+                                        large = false,
+                                        showBackground = showBackground,
+                                    )
+                                    EpisodeSwipeHud(
+                                        visible = true,
+                                        direction = 1,
+                                        armed = true,
+                                        available = true,
+                                        showBackground = showBackground,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    try {
+                        scene.render(0L)
+                        assertTrue(scene.hasContentDescription("01:30"), "SeekHudOverlay semantics missing (showBackground=$showBackground)")
+                        assertTrue(scene.hasContentDescription("65%"), "PlayerLevelEdgeBar semantics missing (showBackground=$showBackground)")
+                    } finally {
+                        scene.close()
+                    }
+                }
+            }
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    private fun collectContentDescriptions(node: SemanticsNode): List<String> {
+        val result = mutableListOf<String>()
+        if (SemanticsProperties.ContentDescription in node.config) {
+            result += node.config[SemanticsProperties.ContentDescription]
+        }
+        node.children.forEach { result += collectContentDescriptions(it) }
+        return result
+    }
 }

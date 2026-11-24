@@ -318,6 +318,7 @@ fun ClipFeedScreen(
             }
             PlayerHud(
                 indicator = autoAdvanceHud,
+                showBackground = layoutPrefs.clipsLayout(isLandscape = inLandscape).showIndicatorBackground,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))

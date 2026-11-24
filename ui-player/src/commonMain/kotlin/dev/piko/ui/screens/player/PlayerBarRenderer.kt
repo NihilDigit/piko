@@ -437,8 +437,8 @@ internal fun CustomizablePlayerBottomBar(
                 },
             )
             .padding(
-                start = (if (editScope != null) 12.dp else 16.dp) * scale,
-                end = (if (editScope != null) 12.dp else 16.dp) * scale,
+                start = (if (editScope != null) (if (env.isLandscape) 12.dp else 10.dp) else (if (env.isLandscape) 16.dp else 12.dp)) * scale,
+                end = (if (editScope != null) (if (env.isLandscape) 12.dp else 10.dp) else (if (env.isLandscape) 16.dp else 12.dp)) * scale,
                 top = (if (editScope != null) 8.dp else 12.dp) * scale,
                 bottom = (if (env.isLandscape) 10.dp else 14.dp) * scale,
             ),
@@ -469,7 +469,7 @@ internal fun CustomizablePlayerBottomBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(editScope?.barContainerModifier(PlayerBarSlot.Bottom) ?: Modifier),
-            horizontalArrangement = Arrangement.spacedBy(6.dp * scale),
+            horizontalArrangement = Arrangement.spacedBy((if (env.isLandscape) 6.dp else 4.dp) * scale),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             RenderVideoPanelItems(

@@ -165,27 +165,38 @@ private fun rememberSpeedHintState(
 private fun SpeedHintCapsule(
     text: String,
     lockedIcon: Boolean,
+    showBackground: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val fixed = LocalFixedColors.current
+    val textStyle = MaterialTheme.typography.labelMedium.tabular.let {
+        if (showBackground) it else it.copy(shadow = PlayerTextShadow)
+    }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         modifier = modifier
-            .clip(CircleShape)
-            .background(fixed.ScrimOnMedia)
-            .border(1.dp, fixed.HudSpecularBorder, CircleShape)
-            .padding(horizontal = 14.dp, vertical = 7.dp),
+            .then(
+                if (showBackground) {
+                    Modifier
+                        .clip(CircleShape)
+                        .background(fixed.ScrimOnMedia)
+                        .border(1.dp, fixed.HudSpecularBorder, CircleShape)
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                } else {
+                    Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                },
+            ),
     ) {
         Icon(
             imageVector = if (lockedIcon) Icons.Filled.Lock else Icons.Filled.FastForward,
             contentDescription = null,
             tint = fixed.OnMedia,
-            modifier = Modifier.size(18.dp),
+            modifier = Modifier.size(16.dp),
         )
         Text(
             text = text,
-            style = MaterialTheme.typography.labelMedium.tabular,
+            style = textStyle,
             color = fixed.OnMedia,
             maxLines = 1,
         )
@@ -204,6 +215,7 @@ internal fun SpeedDialOverlay(
     controller: PlaybackSpeedController,
     isFullscreen: Boolean = false,
     showDial: Boolean = true,
+    showIndicatorBackground: Boolean = true,
     durationMillis: Long = 0L,
     modifier: Modifier = Modifier,
 ) {
@@ -383,13 +395,7 @@ internal fun SpeedDialOverlay(
                     vertical = vertical,
                     modifier = Modifier
                         .background(scrim)
-                        .then(
-                            if (isFullscreen) {
-                                Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(insetSides))
-                            } else {
-                                Modifier
-                            },
-                        )
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(insetSides))
                         .then(
                             if (vertical) Modifier.width(SpeedDialSize.VerticalThickness).fillMaxHeight()
                             else Modifier.height(SpeedDialSize.HorizontalThickness).fillMaxWidth(),
@@ -405,7 +411,7 @@ internal fun SpeedDialOverlay(
             modifier = Modifier
                 .align(Alignment.Center)
                 .fillMaxWidth()
-                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                .windowInsetsPadding(WindowInsets.safeDrawing)
                 .padding(horizontal = 20.dp),
         ) {
             RapidScrubFilmstripOverlay(
@@ -431,7 +437,11 @@ internal fun SpeedDialOverlay(
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(hintInsetSides))
                 .padding(16.dp),
         ) {
-            SpeedHintCapsule(text = hintState.text, lockedIcon = hintState.lockedIcon)
+            SpeedHintCapsule(
+                text = hintState.text,
+                lockedIcon = hintState.lockedIcon,
+                showBackground = showIndicatorBackground,
+            )
         }
     }
 }

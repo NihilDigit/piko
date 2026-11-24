@@ -37,6 +37,7 @@ import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -61,6 +62,7 @@ import dev.piko.shared.media.player.CenterSlotAction
 import dev.piko.shared.media.player.CenterSlotConfig
 import dev.piko.shared.media.player.CenterSlotPosition
 import dev.piko.shared.media.player.CenterSlotScale
+import dev.piko.shared.media.player.IndicatorVerticalPosition
 import dev.piko.shared.media.player.MAX_SEEK_SECONDS
 import dev.piko.shared.media.player.MIN_SEEK_SECONDS
 import dev.piko.shared.media.player.PlayerBarSlot
@@ -71,7 +73,7 @@ import dev.piko.shared.media.player.PlayerLayoutPrefs
 import dev.piko.shared.media.player.PlayerLayoutPreset
 import dev.piko.shared.media.player.PlayerPanelItem
 import dev.piko.shared.media.player.SEEK_SECONDS_PRESETS
-import dev.piko.shared.i18n.tr
+import dev.piko.shared.media.player.supportsControlBackground
 import dev.piko.ui.components.MenuMotion
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.PikoTextField
@@ -86,12 +88,15 @@ import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.tabular
 
-/** 紧凑的预设下拉 + 触屏中央控件开关条（避免铺满一排高权重 FilterChip）。 */
-@OptIn(ExperimentalLayoutApi::class)
+/**
+ * 当前布局形态的外观与预设卡片：
+ * 严格按「控件 / 指示器」当前预览视角分区，采用左文右控的单列整齐排版，避免 FlowRow 参差换行与无关开关混排。
+ */
 @Composable
 internal fun PresetAndTouchStrip(
     prefs: PlayerLayoutPrefs,
-    showTouchCenterToggle: Boolean,
+    activeMode: PlayerLayoutMode?,
+    showIndicators: Boolean,
     onUpdate: ((PlayerLayoutPrefs) -> PlayerLayoutPrefs) -> Unit,
 ) {
     val eInk = LocalAppearance.current.isEInk
@@ -105,6 +110,8 @@ internal fun PresetAndTouchStrip(
     val presetOptions = PlayerLayoutPreset.entries.map { it to presetLabel(it) }
     val selectedPresetLabel = matchedPreset?.let { presetLabel(it) }
         ?: stringResource(Res.string.player_custom_custom_option).trimEnd('…')
+    val activeLayout = activeMode?.let(prefs::layoutFor)
+    val dividerColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (eInk) 0.7f else 0.35f)
 
     Surface(
         shape = MaterialTheme.shapes.large,
@@ -115,92 +122,130 @@ internal fun PresetAndTouchStrip(
         ),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        FlowRow(
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 8.dp),
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Tune,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
+        Column(modifier = Modifier.fillMaxWidth()) {
+            if (activeMode != null && activeLayout != null && showIndicators) {
+                StripSwitchRow(
+                    label = if (activeMode.isVideo) {
+                        tr(
+                            "手势与指示器背景",
+                            "Gesture & indicator backdrop",
+                            "ジェスチャーと表示の背景",
+                            "제스처 및 표시기 배경",
+                            "手勢與指示器背景",
+                        )
+                    } else {
+                        tr(
+                            "指示器半透明背景",
+                            "Indicator backdrop",
+                            "インジケーター背景",
+                            "표시기 배경",
+                            "指示器半透明背景",
+                        )
+                    },
+                    checked = activeLayout.showIndicatorBackground,
+                    onCheckedChange = { enabled ->
+                        onUpdate { p ->
+                            p.updateLayout(activeMode) { it.withIndicatorBackground(enabled, activeMode) }
+                        }
+                    },
                 )
-                Text(
-                    text = stringResource(Res.string.player_custom_presets),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-                InspectorDropdownButton(
-                    selectedLabel = selectedPresetLabel,
-                    options = presetOptions,
-                    isSelected = { it == matchedPreset },
-                    onSelect = { preset -> onUpdate { PlayerLayoutPrefs.preset(preset) } },
-                )
-            }
-
-            if (showTouchCenterToggle) {
+                HorizontalDivider(color = dividerColor, modifier = Modifier.padding(horizontal = 14.dp))
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                ) {
+                    Text(
+                        text = tr("指示器位置", "Indicator position", "表示位置", "표시기 위치", "指示器位置"),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                    )
+                    SettingsSegmentedChoice(
+                        options = IndicatorVerticalPosition.entries,
+                        selected = activeLayout.indicatorPosition,
+                        label = { pos ->
+                            when (pos) {
+                                IndicatorVerticalPosition.Top -> tr("偏上", "Top", "上部", "상단", "偏上")
+                                IndicatorVerticalPosition.Center -> tr("居中", "Center", "中央", "중앙", "置中")
+                                IndicatorVerticalPosition.Bottom -> tr("偏下", "Bottom", "下部", "하단", "偏下")
+                            }
+                        },
+                        onSelect = { pos ->
+                            onUpdate { p ->
+                                p.updateLayout(activeMode) { it.withIndicatorPosition(pos, activeMode) }
+                            }
+                        },
+                        fill = true,
+                    )
+                }
+            } else {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .toggleable(
-                                value = prefs.translucentPlayButton,
-                                role = Role.Switch,
-                                onValueChange = { enabled ->
-                                    onUpdate { it.copy(translucentPlayButton = enabled) }
-                                },
-                            )
-                            .handCursor()
-                            .padding(horizontal = 6.dp, vertical = 2.dp),
                     ) {
-                        Text(
-                            text = tr("半透明播放按钮", "Translucent play button", "半透明の再生ボタン", "반투명 재생 버튼", "半透明播放按鈕"),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
+                        Icon(
+                            imageVector = Icons.Outlined.Tune,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
                         )
-                        Switch(
-                            checked = prefs.translucentPlayButton,
-                            onCheckedChange = null,
+                        Text(
+                            text = stringResource(Res.string.player_custom_presets),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
                         )
                     }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .toggleable(
-                                value = prefs.showCenterControlsOnTouch,
-                                role = Role.Switch,
-                                onValueChange = { enabled ->
-                                    onUpdate { it.copy(showCenterControlsOnTouch = enabled) }
-                                },
-                            )
-                            .handCursor()
-                            .padding(horizontal = 6.dp, vertical = 2.dp),
-                    ) {
-                        Text(
-                            text = stringResource(Res.string.player_custom_show_center_on_touch),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
+                    InspectorDropdownButton(
+                        selectedLabel = selectedPresetLabel,
+                        options = presetOptions,
+                        isSelected = { it == matchedPreset },
+                        onSelect = { preset -> onUpdate { PlayerLayoutPrefs.preset(preset) } },
+                    )
+                }
+
+                if (activeMode != null && activeLayout != null) {
+                    HorizontalDivider(color = dividerColor, modifier = Modifier.padding(horizontal = 14.dp))
+                    StripSwitchRow(
+                        label = tr(
+                            "控件半透明背景",
+                            "Control backdrops",
+                            "コントロール背景",
+                            "컨트롤 배경",
+                            "控制項半透明背景",
+                        ),
+                        checked = activeLayout.hasAnyControlBackground(activeMode),
+                        onCheckedChange = { enabled ->
+                            onUpdate { p ->
+                                p.updateLayout(activeMode) { it.withAllControlBackgrounds(enabled, activeMode) }
+                            }
+                        },
+                    )
+                    if (activeMode.isVideo) {
+                        HorizontalDivider(color = dividerColor, modifier = Modifier.padding(horizontal = 14.dp))
+                        StripSwitchRow(
+                            label = tr("半透明播放按钮", "Translucent play button", "半透明の再生ボタン", "반투명 재생 버튼", "半透明播放按鈕"),
+                            checked = prefs.translucentPlayButton,
+                            onCheckedChange = { enabled ->
+                                onUpdate { it.copy(translucentPlayButton = enabled) }
+                            },
                         )
-                        Switch(
+                        HorizontalDivider(color = dividerColor, modifier = Modifier.padding(horizontal = 14.dp))
+                        StripSwitchRow(
+                            label = stringResource(Res.string.player_custom_show_center_on_touch),
                             checked = prefs.showCenterControlsOnTouch,
-                            onCheckedChange = null,
+                            onCheckedChange = { enabled ->
+                                onUpdate { it.copy(showCenterControlsOnTouch = enabled) }
+                            },
                         )
                     }
                 }
@@ -209,10 +254,38 @@ internal fun PresetAndTouchStrip(
     }
 }
 
-private fun supportsBackgroundToggle(id: PlayerControlId, mode: PlayerLayoutMode): Boolean = when (id) {
-    PlayerControlId.TimeLabel, PlayerControlId.PlayPause -> false
-    PlayerControlId.Title -> mode.isClips
-    else -> true
+@Composable
+private fun StripSwitchRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = onCheckedChange,
+            )
+            .handCursor()
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f).padding(end = 12.dp),
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = null,
+        )
+    }
 }
 
 /**
@@ -581,7 +654,7 @@ internal fun SelectionInspectorCard(
                                     },
                                 )
                             }
-                            if (supportsBackgroundToggle(item.id, mode)) {
+                            if (supportsControlBackground(item.id, mode)) {
                                 CompactSwitchRow(
                                     title = stringResource(Res.string.player_custom_show_bg),
                                     checked = item.showBackground,

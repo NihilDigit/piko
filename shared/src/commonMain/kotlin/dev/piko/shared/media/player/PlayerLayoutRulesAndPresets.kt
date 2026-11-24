@@ -70,6 +70,50 @@ fun allowedControlsFor(mode: PlayerLayoutMode, bar: PlayerBarSlot): Set<PlayerCo
 fun allowsSpacerIn(mode: PlayerLayoutMode, bar: PlayerBarSlot): Boolean =
     mode.isVideo || bar == PlayerBarSlot.Top
 
+fun supportsControlBackground(id: PlayerControlId, mode: PlayerLayoutMode): Boolean = when (id) {
+    PlayerControlId.TimeLabel, PlayerControlId.PlayPause -> false
+    PlayerControlId.Title -> mode.isClips
+    else -> true
+}
+
+internal fun hasAnyControlBackgroundRule(
+    layout: PlayerFormFactorLayout,
+    mode: PlayerLayoutMode,
+): Boolean {
+    val barHasBg = (layout.topBar + layout.bottomBar).any { item ->
+        item is PlayerPanelItem.Control &&
+            supportsControlBackground(item.id, mode) &&
+            item.showBackground
+    }
+    if (barHasBg) return true
+    if (!mode.isVideo) return false
+    return listOf(
+        layout.center.outerLeft,
+        layout.center.innerLeft,
+        layout.center.innerRight,
+        layout.center.outerRight,
+    ).any { it.action != CenterSlotAction.None && it.showBackground }
+}
+
+internal fun withAllControlBackgroundsRule(
+    layout: PlayerFormFactorLayout,
+    showBackground: Boolean,
+    mode: PlayerLayoutMode,
+): PlayerFormFactorLayout {
+    fun updateItems(items: List<PlayerPanelItem>): List<PlayerPanelItem> = items.map { item ->
+        if (item is PlayerPanelItem.Control && supportsControlBackground(item.id, mode)) {
+            item.copy(showBackground = showBackground)
+        } else {
+            item
+        }
+    }
+    return layout.copy(
+        center = if (mode.isVideo) layout.center.withAllSlotBackgrounds(showBackground) else layout.center,
+        topBar = updateItems(layout.topBar),
+        bottomBar = updateItems(layout.bottomBar),
+    ).sanitize(mode)
+}
+
 internal fun withSymmetricSideSlotsRule(
     layout: PlayerFormFactorLayout,
     symmetric: Boolean,
@@ -395,6 +439,8 @@ internal fun sanitizeFormFactorLayout(
         center = cleanCenter,
         topBar = cleanTop,
         bottomBar = cleanBottom,
+        showIndicatorBackground = layout.showIndicatorBackground,
+        indicatorPosition = layout.indicatorPosition,
     )
 }
 

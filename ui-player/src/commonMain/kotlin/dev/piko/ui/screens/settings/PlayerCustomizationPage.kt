@@ -1,5 +1,11 @@
 package dev.piko.ui.screens.settings
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,13 +25,17 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.RestartAlt
+import androidx.compose.material.icons.outlined.ScreenRotation
+import dev.piko.shared.i18n.tr
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalToggleButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -41,6 +51,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isAltPressed
@@ -72,6 +83,7 @@ import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.MenuMotion
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.PikoScaffold
+import dev.piko.ui.components.PikoSheet
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.PinnedPriority
 import dev.piko.ui.components.SheetAction
@@ -83,21 +95,18 @@ import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.platform.captionExclusion
 import dev.piko.ui.resources.*
 import dev.piko.ui.screens.player.handCursor
+import dev.piko.ui.theme.LocalPikoMotion
 
 internal enum class CustomizationTab {
-    VideoLandscape,
-    VideoPortrait,
-    ClipsLandscape,
-    ClipsPortrait,
+    Video,
+    Clips,
     Listen,
     Gestures,
     ;
 
-    fun toLayoutModeOrNull(): PlayerLayoutMode? = when (this) {
-        VideoLandscape -> PlayerLayoutMode.VideoLandscape
-        VideoPortrait -> PlayerLayoutMode.VideoPortrait
-        ClipsLandscape -> PlayerLayoutMode.ClipsLandscape
-        ClipsPortrait -> PlayerLayoutMode.ClipsPortrait
+    fun toLayoutModeOrNull(landscape: Boolean): PlayerLayoutMode? = when (this) {
+        Video -> if (landscape) PlayerLayoutMode.VideoLandscape else PlayerLayoutMode.VideoPortrait
+        Clips -> if (landscape) PlayerLayoutMode.ClipsLandscape else PlayerLayoutMode.ClipsPortrait
         Listen, Gestures -> null
     }
 }
@@ -126,11 +135,14 @@ fun PlayerCustomizationPage(
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var activeTab by rememberSaveable { mutableStateOf(CustomizationTab.VideoLandscape) }
-    val activeMode = activeTab.toLayoutModeOrNull()
+    var activeTab by rememberSaveable { mutableStateOf(CustomizationTab.Video) }
+    var isLandscape by rememberSaveable { mutableStateOf(true) }
+    val activeMode = activeTab.toLayoutModeOrNull(isLandscape)
     val activeLayout = activeMode?.let(prefs::layoutFor)
     val defaultTouchPreview = LocalPointerSource.current.isTouchLike
     var previewTouchMode by rememberSaveable { mutableStateOf(defaultTouchPreview) }
+    var previewIndicators by rememberSaveable { mutableStateOf(false) }
+    var showAddControlSheet by remember { mutableStateOf(false) }
     var selection by remember { mutableStateOf<SlotSelection?>(null) }
     var selectedListenSlot by rememberSaveable { mutableStateOf(CenterSlotPosition.InnerLeft) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
@@ -148,18 +160,25 @@ fun PlayerCustomizationPage(
         prefs.isCenterControlsActive(previewTouchMode) &&
         activeLayout.center.showCenterPlay
 
-    // 切换模式、布局形态或视角时取消进行中拖拽并清空过期坐标缓存
-    LaunchedEffect(activeTab, isWideTwoPane, previewTouchMode) {
+    // 切换模式、横竖屏、布局形态或视角时取消进行中拖拽并清空过期坐标缓存
+    LaunchedEffect(activeTab, isLandscape, isWideTwoPane, previewTouchMode) {
         dragState.cancelDrag()
         dragState.clearBounds()
+        if (activeMode == null) previewIndicators = false
+    }
+
+    LaunchedEffect(dragState.activeDrag != null) {
+        if (dragState.activeDrag != null && previewIndicators) {
+            previewIndicators = false
+        }
     }
 
     LaunchedEffect(transportInCenter) {
         dragState.centerSlotBounds.clear()
     }
 
-    // 切换模式或栏位长度变化时自动修正越界选中索引与清理越界边界
-    LaunchedEffect(activeTab, activeLayout?.topBar?.size, activeLayout?.bottomBar?.size) {
+    // 切换模式、横竖屏或栏位长度变化时自动修正越界选中索引与清理越界边界
+    LaunchedEffect(activeTab, isLandscape, activeLayout?.topBar?.size, activeLayout?.bottomBar?.size) {
         if (activeLayout != null) {
             dragState.pruneBarBounds(activeLayout.topBar.size, activeLayout.bottomBar.size)
         }
@@ -545,7 +564,7 @@ fun PlayerCustomizationPage(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             CustomizationTabSelector(
@@ -553,44 +572,78 @@ fun PlayerCustomizationPage(
                                 onSelect = { activeTab = it },
                                 modifier = Modifier.weight(1f),
                             )
-                            if (activeMode?.isVideo == true) {
-                                PreviewPointerModeToggle(
-                                    isTouch = previewTouchMode,
-                                    onTouchChange = { previewTouchMode = it },
+                            if (activeMode != null) {
+                                OrientationRotateButton(
+                                    isLandscape = isLandscape,
+                                    onToggle = { isLandscape = !isLandscape },
                                 )
                             }
                         }
 
-                        PreviewCanvasSection(
-                            activeTab = activeTab,
-                            activeMode = activeMode,
-                            activeLayout = activeLayout,
-                            prefs = prefs,
-                            transportInCenter = transportInCenter,
-                            selection = selection,
-                            onSelect = { selection = it },
-                            selectedListenSlot = selectedListenSlot,
-                            onSelectListenSlot = { selectedListenSlot = it },
-                            dragState = dragState,
-                            dropTarget = currentDropTarget,
-                            onFinishDrag = finishDrag,
-                            compactPreviewHeight = null,
-                            onTogglePortraitFullscreenPrompt = {
-                                onUpdate { it.copy(showPortraitFullscreenPrompt = !it.showPortraitFullscreenPrompt) }
-                                selection = SlotSelection.PortraitFullscreenPrompt
+                        val motion = LocalPikoMotion.current
+                        AnimatedContent(
+                            targetState = activeMode to activeTab,
+                            transitionSpec = {
+                                if (motion.reduced) {
+                                    fadeIn() togetherWith fadeOut()
+                                } else {
+                                    (fadeIn() + scaleIn(initialScale = 0.94f)) togetherWith fadeOut()
+                                }
                             },
-                        )
+                            label = "player-preview-orientation",
+                        ) { (modeState, tabState) ->
+                            val layoutState = modeState?.let(prefs::layoutFor)
+                            val centerTransport = modeState != null &&
+                                layoutState != null &&
+                                modeState.isVideo &&
+                                prefs.isCenterControlsActive(previewTouchMode) &&
+                                layoutState.center.showCenterPlay
+                            PreviewCanvasSection(
+                                activeTab = tabState,
+                                activeMode = modeState,
+                                activeLayout = layoutState,
+                                prefs = prefs,
+                                transportInCenter = centerTransport,
+                                previewIndicators = previewIndicators,
+                                selection = selection,
+                                onSelect = { selection = it },
+                                selectedListenSlot = selectedListenSlot,
+                                onSelectListenSlot = { selectedListenSlot = it },
+                                dragState = dragState,
+                                dropTarget = currentDropTarget,
+                                onFinishDrag = finishDrag,
+                                compactPreviewHeight = null,
+                                onTogglePortraitFullscreenPrompt = {
+                                    onUpdate { it.copy(showPortraitFullscreenPrompt = !it.showPortraitFullscreenPrompt) }
+                                    selection = SlotSelection.PortraitFullscreenPrompt
+                                },
+                            )
+                        }
 
                         if (activeMode != null) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                PreviewLayerToggle(
+                                    showIndicators = previewIndicators,
+                                    onShowIndicatorsChange = { previewIndicators = it },
+                                )
+                                if (activeMode.isVideo) {
+                                    PreviewPointerModeToggle(
+                                        isTouch = previewTouchMode,
+                                        onTouchChange = { previewTouchMode = it },
+                                    )
+                                }
+                            }
+                        }
+
+                        if (activeMode != null || activeTab == CustomizationTab.Listen) {
                             PresetAndTouchStrip(
                                 prefs = prefs,
-                                showTouchCenterToggle = activeMode.isVideo,
-                                onUpdate = onUpdate,
-                            )
-                        } else if (activeTab == CustomizationTab.Listen) {
-                            PresetAndTouchStrip(
-                                prefs = prefs,
-                                showTouchCenterToggle = false,
+                                activeMode = activeMode,
+                                showIndicators = previewIndicators,
                                 onUpdate = onUpdate,
                             )
                         }
@@ -623,23 +676,28 @@ fun PlayerCustomizationPage(
                     }
                 }
             } else {
-                val inlinePointerToggle = containerWidthDp >= 520.dp
-                val maxPortraitPreviewHeight = if (containerHeightDp > 0.dp) {
-                    minOf(340.dp, (containerHeightDp * 0.44f).coerceAtLeast(200.dp))
+                val maxPortraitVideoPreviewHeight = if (containerHeightDp > 0.dp) {
+                    minOf(240.dp, (containerHeightDp * 0.30f).coerceAtLeast(168.dp))
                 } else {
-                    300.dp
+                    216.dp
+                }
+                val maxPortraitClipsPreviewHeight = if (containerHeightDp > 0.dp) {
+                    minOf(270.dp, (containerHeightDp * 0.34f).coerceAtLeast(180.dp))
+                } else {
+                    240.dp
                 }
                 val maxLandscapePreviewHeight = if (containerHeightDp > 0.dp) {
-                    (containerHeightDp * 0.36f).coerceAtLeast(160.dp)
+                    minOf(210.dp, (containerHeightDp * 0.28f).coerceAtLeast(148.dp))
                 } else {
-                    220.dp
+                    188.dp
                 }
                 val compactHeightLimit = when {
-                    activeMode != null && !activeMode.isLandscape -> maxPortraitPreviewHeight
+                    activeMode == PlayerLayoutMode.VideoPortrait -> maxPortraitVideoPreviewHeight
+                    activeMode == PlayerLayoutMode.ClipsPortrait -> maxPortraitClipsPreviewHeight
                     activeTab == CustomizationTab.Listen -> if (containerHeightDp > 0.dp) {
-                        (containerHeightDp * 0.42f).coerceAtLeast(190.dp)
+                        minOf(240.dp, (containerHeightDp * 0.34f).coerceAtLeast(172.dp))
                     } else {
-                        260.dp
+                        220.dp
                     }
                     else -> maxLandscapePreviewHeight
                 }
@@ -656,33 +714,75 @@ fun PlayerCustomizationPage(
                             .fillMaxWidth()
                             .padding(top = 8.dp, bottom = 10.dp),
                     ) {
-                        if (activeMode?.isVideo == true && inlinePointerToggle) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                CustomizationTabSelector(
-                                    selected = activeTab,
-                                    onSelect = { activeTab = it },
-                                    modifier = Modifier.weight(1f),
-                                )
-                                PreviewPointerModeToggle(
-                                    isTouch = previewTouchMode,
-                                    onTouchChange = { previewTouchMode = it },
-                                )
-                            }
-                        } else {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
                             CustomizationTabSelector(
                                 selected = activeTab,
                                 onSelect = { activeTab = it },
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.weight(1f),
                             )
-                            if (activeMode?.isVideo == true) {
-                                Row(
-                                    horizontalArrangement = Arrangement.End,
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
+                            if (activeMode != null) {
+                                OrientationRotateButton(
+                                    isLandscape = isLandscape,
+                                    onToggle = { isLandscape = !isLandscape },
+                                )
+                            }
+                        }
+
+                        val motion = LocalPikoMotion.current
+                        AnimatedContent(
+                            targetState = activeMode to activeTab,
+                            transitionSpec = {
+                                if (motion.reduced) {
+                                    fadeIn() togetherWith fadeOut()
+                                } else {
+                                    (fadeIn() + scaleIn(initialScale = 0.94f)) togetherWith fadeOut()
+                                }
+                            },
+                            label = "player-preview-orientation-compact",
+                        ) { (modeState, tabState) ->
+                            val layoutState = modeState?.let(prefs::layoutFor)
+                            val centerTransport = modeState != null &&
+                                layoutState != null &&
+                                modeState.isVideo &&
+                                prefs.isCenterControlsActive(previewTouchMode) &&
+                                layoutState.center.showCenterPlay
+                            PreviewCanvasSection(
+                                activeTab = tabState,
+                                activeMode = modeState,
+                                activeLayout = layoutState,
+                                prefs = prefs,
+                                transportInCenter = centerTransport,
+                                previewIndicators = previewIndicators,
+                                selection = selection,
+                                onSelect = { selection = it },
+                                selectedListenSlot = selectedListenSlot,
+                                onSelectListenSlot = { selectedListenSlot = it },
+                                dragState = dragState,
+                                dropTarget = currentDropTarget,
+                                onFinishDrag = finishDrag,
+                                compactPreviewHeight = compactHeightLimit,
+                                onTogglePortraitFullscreenPrompt = {
+                                    onUpdate { it.copy(showPortraitFullscreenPrompt = !it.showPortraitFullscreenPrompt) }
+                                    selection = SlotSelection.PortraitFullscreenPrompt
+                                },
+                            )
+                        }
+
+                        if (activeMode != null) {
+                            Row(
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                PreviewLayerToggle(
+                                    showIndicators = previewIndicators,
+                                    onShowIndicatorsChange = { previewIndicators = it },
+                                )
+                                if (activeMode.isVideo) {
                                     PreviewPointerModeToggle(
                                         isTouch = previewTouchMode,
                                         onTouchChange = { previewTouchMode = it },
@@ -690,26 +790,6 @@ fun PlayerCustomizationPage(
                                 }
                             }
                         }
-
-                        PreviewCanvasSection(
-                            activeTab = activeTab,
-                            activeMode = activeMode,
-                            activeLayout = activeLayout,
-                            prefs = prefs,
-                            transportInCenter = transportInCenter,
-                            selection = selection,
-                            onSelect = { selection = it },
-                            selectedListenSlot = selectedListenSlot,
-                            onSelectListenSlot = { selectedListenSlot = it },
-                            dragState = dragState,
-                            dropTarget = currentDropTarget,
-                            onFinishDrag = finishDrag,
-                            compactPreviewHeight = compactHeightLimit,
-                            onTogglePortraitFullscreenPrompt = {
-                                onUpdate { it.copy(showPortraitFullscreenPrompt = !it.showPortraitFullscreenPrompt) }
-                                selection = SlotSelection.PortraitFullscreenPrompt
-                            },
-                        )
                     }
 
                     Column(
@@ -720,34 +800,103 @@ fun PlayerCustomizationPage(
                             .verticalScroll(rememberScrollState())
                             .padding(bottom = 16.dp),
                     ) {
-                        EditorSupportingPaneContent(
-                            activeTab = activeTab,
-                            activeMode = activeMode,
-                            activeLayout = activeLayout,
-                            prefs = prefs,
-                            selection = selection,
-                            onSelect = { selection = it },
-                            selectedListenSlot = selectedListenSlot,
-                            dragState = dragState,
-                            dropTarget = currentDropTarget,
-                            onFinishDrag = finishDrag,
-                            onQuickAddControl = onQuickAddControl,
-                            onQuickAddSpacer = onQuickAddSpacer,
-                            onQuickTapCenterAction = onQuickTapCenterAction,
-                            onUpdate = onUpdate,
-                        )
-                        if (activeMode != null) {
-                            PresetAndTouchStrip(
+                        if (activeMode != null && activeLayout != null) {
+                            if (previewIndicators) {
+                                PresetAndTouchStrip(
+                                    prefs = prefs,
+                                    activeMode = activeMode,
+                                    showIndicators = true,
+                                    onUpdate = onUpdate,
+                                )
+                            } else {
+                                SelectionInspectorCard(
+                                    mode = activeMode,
+                                    layout = activeLayout,
+                                    prefs = prefs,
+                                    selection = selection,
+                                    onSelect = { selection = it },
+                                    onUpdate = onUpdate,
+                                )
+                                FilledTonalButton(
+                                    onClick = { showAddControlSheet = true },
+                                    modifier = Modifier.fillMaxWidth().handCursor(),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Add,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(tr("添加控件到栏位", "Add control to bar", "コントロールを追加", "컨트롤 추가", "新增控制項到欄位"))
+                                }
+                                PresetAndTouchStrip(
+                                    prefs = prefs,
+                                    activeMode = activeMode,
+                                    showIndicators = false,
+                                    onUpdate = onUpdate,
+                                )
+                            }
+                        } else {
+                            EditorSupportingPaneContent(
+                                activeTab = activeTab,
+                                activeMode = activeMode,
+                                activeLayout = activeLayout,
                                 prefs = prefs,
-                                showTouchCenterToggle = activeMode.isVideo,
+                                selection = selection,
+                                onSelect = { selection = it },
+                                selectedListenSlot = selectedListenSlot,
+                                dragState = dragState,
+                                dropTarget = currentDropTarget,
+                                onFinishDrag = finishDrag,
+                                onQuickAddControl = onQuickAddControl,
+                                onQuickAddSpacer = onQuickAddSpacer,
+                                onQuickTapCenterAction = onQuickTapCenterAction,
                                 onUpdate = onUpdate,
                             )
-                        } else if (activeTab == CustomizationTab.Listen) {
-                            PresetAndTouchStrip(
-                                prefs = prefs,
-                                showTouchCenterToggle = false,
-                                onUpdate = onUpdate,
-                            )
+                            if (activeTab == CustomizationTab.Listen) {
+                                PresetAndTouchStrip(
+                                    prefs = prefs,
+                                    activeMode = null,
+                                    showIndicators = false,
+                                    onUpdate = onUpdate,
+                                )
+                            }
+                        }
+                    }
+
+                    if (showAddControlSheet && activeMode != null && activeLayout != null) {
+                        PikoSheet(
+                            onDismissRequest = { showAddControlSheet = false },
+                            sideSheetTitle = tr("添加控件", "Add control", "コントロールを追加", "컨트롤 추가", "新增控制項"),
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                ControlPaletteTray(
+                                    mode = activeMode,
+                                    layout = activeLayout,
+                                    seekButtonSeconds = prefs.seekButtonSeconds,
+                                    dragState = dragState,
+                                    dropTarget = currentDropTarget,
+                                    onFinishDrag = finishDrag,
+                                    onQuickAddControl = { id ->
+                                        onQuickAddControl(id)
+                                        showAddControlSheet = false
+                                    },
+                                    onQuickAddSpacer = {
+                                        onQuickAddSpacer()
+                                        showAddControlSheet = false
+                                    },
+                                    onQuickTapCenterAction = { action ->
+                                        onQuickTapCenterAction(action)
+                                        showAddControlSheet = false
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -883,6 +1032,73 @@ private fun CustomizationTabSelector(
     }
 }
 
+/** 横竖屏旋转切换按钮：点击时图标顺滑旋转 90°，将原本 6 个 Tab 精简为 4 个。 */
+@Composable
+private fun OrientationRotateButton(
+    isLandscape: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val reduced = LocalPikoMotion.current.reduced
+    val rotation by animateFloatAsState(
+        targetValue = if (isLandscape) 0f else 90f,
+        label = "player-orientation-icon",
+    )
+    FilledTonalButton(
+        onClick = onToggle,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        modifier = modifier.handCursor(),
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.ScreenRotation,
+            contentDescription = null,
+            modifier = Modifier
+                .size(16.dp)
+                .graphicsLayer { rotationZ = if (reduced) (if (isLandscape) 0f else 90f) else rotation },
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = if (isLandscape) {
+                tr("横屏", "Landscape", "横向き", "가로", "橫向")
+            } else {
+                tr("竖屏", "Portrait", "縦向き", "세로", "直向")
+            },
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+        )
+    }
+}
+
+/** 预览图层切换（控件 / 指示器）：与触屏/键鼠视角对称成组，调整控件或指示器外观与位置时互不遮挡、所见即所得。 */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun PreviewLayerToggle(
+    showIndicators: Boolean,
+    onShowIndicatorsChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val options = listOf(
+        false to tr("控件", "Controls", "コントロール", "컨트롤", "控制項"),
+        true to tr("指示器", "Indicators", "インジケーター", "표시기", "指示器"),
+    )
+    Row(
+        modifier = modifier.selectableGroup(),
+        horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
+    ) {
+        options.forEachIndexed { index, (isIndicator, label) ->
+            FilledTonalToggleButton(
+                checked = showIndicators == isIndicator,
+                onCheckedChange = { if (it) onShowIndicatorsChange(isIndicator) },
+                shapes = connectedToggleShapes(index, options.size),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                modifier = Modifier.handCursor(),
+            ) {
+                Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            }
+        }
+    }
+}
+
 /** 预览视角切换（触屏 / 键鼠）：仅切换视频预览中主控组在画面中央或底栏的呈现位置，不拆分配置。 */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -979,10 +1195,8 @@ private fun EditorSupportingPaneContent(
 
 @Composable
 private fun tabLabel(tab: CustomizationTab): String = when (tab) {
-    CustomizationTab.VideoLandscape -> stringResource(Res.string.player_custom_mode_video_land)
-    CustomizationTab.VideoPortrait -> stringResource(Res.string.player_custom_mode_video_port)
-    CustomizationTab.ClipsLandscape -> stringResource(Res.string.player_custom_mode_clips_land)
-    CustomizationTab.ClipsPortrait -> stringResource(Res.string.player_custom_mode_clips_port)
+    CustomizationTab.Video -> tr("视频", "Video", "動画", "동영상", "影片")
+    CustomizationTab.Clips -> tr("信息流", "Clips", "フィード", "피드", "資訊流")
     CustomizationTab.Listen -> stringResource(Res.string.player_custom_mode_listen)
     CustomizationTab.Gestures -> stringResource(Res.string.player_custom_mode_gestures)
 }

@@ -248,6 +248,21 @@ data class CenterClusterConfig(
             outerRight = if (outerRight.action.toControlIdOrNull() == id) outerRight.copy(action = CenterSlotAction.None) else outerRight,
         )
     }
+
+    fun withAllSlotBackgrounds(showBackground: Boolean): CenterClusterConfig = copy(
+        outerLeft = outerLeft.copy(showBackground = showBackground),
+        innerLeft = innerLeft.copy(showBackground = showBackground),
+        innerRight = innerRight.copy(showBackground = showBackground),
+        outerRight = outerRight.copy(showBackground = showBackground),
+    )
+}
+
+/** 手势与状态指示器的垂直位置偏好（偏上、居中、偏下），按布局独立配置。 */
+@Serializable
+enum class IndicatorVerticalPosition {
+    Top,
+    Center,
+    Bottom,
 }
 
 @Immutable
@@ -256,6 +271,8 @@ data class PlayerFormFactorLayout(
     val center: CenterClusterConfig,
     val topBar: List<PlayerPanelItem>,
     val bottomBar: List<PlayerPanelItem>,
+    val showIndicatorBackground: Boolean = true,
+    val indicatorPosition: IndicatorVerticalPosition = IndicatorVerticalPosition.Center,
 ) {
     fun itemsFor(bar: PlayerBarSlot): List<PlayerPanelItem> = when (bar) {
         PlayerBarSlot.Top -> topBar
@@ -310,6 +327,27 @@ data class PlayerFormFactorLayout(
         mode: PlayerLayoutMode,
     ): PlayerFormFactorLayout =
         withBarItemBackgroundRule(this, bar, index, showBackground, mode)
+
+    fun hasAnyControlBackground(mode: PlayerLayoutMode): Boolean =
+        hasAnyControlBackgroundRule(this, mode)
+
+    fun withAllControlBackgrounds(
+        showBackground: Boolean,
+        mode: PlayerLayoutMode,
+    ): PlayerFormFactorLayout =
+        withAllControlBackgroundsRule(this, showBackground, mode)
+
+    fun withIndicatorBackground(
+        showBackground: Boolean,
+        mode: PlayerLayoutMode,
+    ): PlayerFormFactorLayout =
+        copy(showIndicatorBackground = showBackground).sanitize(mode)
+
+    fun withIndicatorPosition(
+        position: IndicatorVerticalPosition,
+        mode: PlayerLayoutMode,
+    ): PlayerFormFactorLayout =
+        copy(indicatorPosition = position).sanitize(mode)
 
     fun isItemAllowedInBar(item: PlayerPanelItem, bar: PlayerBarSlot, mode: PlayerLayoutMode): Boolean =
         isItemAllowedInBarRule(item, bar, mode)

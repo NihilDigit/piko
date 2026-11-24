@@ -779,11 +779,26 @@ fun MobilePlayerControls(
                 }
             }
 
-            // Bilby 三分式手势 HUD：横划进退（含取消态）居中、音量/亮度贴对侧边缘、双击快进/快退贴同侧边缘
+            // Bilby 三分式手势 HUD：横划进退（含取消态）支持按布局微调垂直位置、音量/亮度贴对侧边缘、双击快进/快退贴同侧边缘
+            val showIndicatorBackground = activeLayout.showIndicatorBackground
+            val hudAlignment = when (activeLayout.indicatorPosition) {
+                dev.piko.shared.media.player.IndicatorVerticalPosition.Top -> Alignment.TopCenter
+                dev.piko.shared.media.player.IndicatorVerticalPosition.Center -> Alignment.Center
+                dev.piko.shared.media.player.IndicatorVerticalPosition.Bottom -> Alignment.BottomCenter
+            }
+            val hudVerticalPadding = when (activeLayout.indicatorPosition) {
+                dev.piko.shared.media.player.IndicatorVerticalPosition.Top -> Modifier.padding(top = 64.dp)
+                dev.piko.shared.media.player.IndicatorVerticalPosition.Center -> Modifier
+                dev.piko.shared.media.player.IndicatorVerticalPosition.Bottom -> Modifier.padding(bottom = 76.dp)
+            }
             SeekHudOverlay(
                 seek = if (modalOverlayOpen) null else activeSeekGesture,
                 durationMillis = durationMillis,
-                modifier = Modifier.align(Alignment.Center),
+                showBackground = showIndicatorBackground,
+                modifier = Modifier
+                    .align(hudAlignment)
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .then(hudVerticalPadding),
             )
 
             EpisodeSwipeHud(
@@ -791,18 +806,24 @@ fun MobilePlayerControls(
                 direction = activeEpisodeSwipe?.direction ?: 0,
                 armed = activeEpisodeSwipe?.armed == true,
                 available = if ((activeEpisodeSwipe?.direction ?: 1) > 0) hasNext else hasPrevious,
-                modifier = Modifier.align(Alignment.Center),
+                showBackground = showIndicatorBackground,
+                modifier = Modifier
+                    .align(hudAlignment)
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .then(hudVerticalPadding),
             )
 
             PlayerLevelEdgeBar(
                 adjust = if (modalOverlayOpen) null else activeLevel,
                 dockEnd = levelDockEnd,
                 large = isLandscape || !compactWidth,
+                showBackground = showIndicatorBackground,
                 modifier = Modifier
                     .align(if (levelDockEnd) Alignment.CenterEnd else Alignment.CenterStart)
                     .windowInsetsPadding(
                         WindowInsets.safeDrawing.only(
-                            if (levelDockEnd) WindowInsetsSides.End else WindowInsetsSides.Start,
+                            WindowInsetsSides.Vertical +
+                                if (levelDockEnd) WindowInsetsSides.End else WindowInsetsSides.Start,
                         ),
                     )
                     .padding(horizontal = 16.dp),
@@ -812,11 +833,13 @@ fun MobilePlayerControls(
                 visible = !modalOverlayOpen && ui.doubleTapVisible,
                 forward = doubleTapForwardSide,
                 seconds = ui.doubleTapSeconds,
+                showBackground = showIndicatorBackground,
                 modifier = Modifier
                     .align(if (doubleTapForwardSide) Alignment.CenterEnd else Alignment.CenterStart)
                     .windowInsetsPadding(
                         WindowInsets.safeDrawing.only(
-                            if (doubleTapForwardSide) WindowInsetsSides.End else WindowInsetsSides.Start,
+                            WindowInsetsSides.Vertical +
+                                if (doubleTapForwardSide) WindowInsetsSides.End else WindowInsetsSides.Start,
                         ),
                     )
                     .padding(horizontal = 16.dp),
@@ -895,6 +918,7 @@ fun MobilePlayerControls(
                     controller = speedController,
                     isFullscreen = isFullscreen,
                     showDial = layoutPrefs.gestures.longPressSpeedDialEnabled,
+                    showIndicatorBackground = showIndicatorBackground,
                     durationMillis = durationMillis,
                     modifier = Modifier.fillMaxSize(),
                 )
