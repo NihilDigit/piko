@@ -138,7 +138,11 @@ internal class Ffmpeg private constructor(avutil: SymbolLookup, avcodec: SymbolL
             val files = names.map { name ->
                 directory.resolve(name).takeIf { it.isFile } ?: throw FfmpegException("FFmpeg library not found: $name")
             }
-            if (os.startsWith("Windows")) files.forEach(WindowsDllLoader::load)
+            if (os.startsWith("Windows")) {
+                files.forEach(WindowsDllLoader::load)
+            } else if (!os.startsWith("Mac")) {
+                dev.piko.desktop.LinuxDesktop.preloadHostLibva()
+            }
             val (avutil, avcodec, avformat, swscale) = files.map { SymbolLookup.libraryLookup(it.toPath(), Arena.global()) }
             return Ffmpeg(avutil, avcodec, avformat, swscale)
         }

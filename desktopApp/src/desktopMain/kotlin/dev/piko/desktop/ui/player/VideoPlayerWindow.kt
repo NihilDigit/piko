@@ -61,6 +61,8 @@ import dev.piko.desktop.TitleBarColors
 import dev.piko.desktop.TitleBarThemeEffect
 import dev.piko.desktop.WindowFrame
 import dev.piko.desktop.LinuxDesktop
+import dev.piko.desktop.LinuxFullscreen
+import dev.piko.desktop.ObserveLinuxFullscreenEffect
 import dev.piko.desktop.isLinux
 import dev.piko.desktop.isMacOs
 import dev.piko.desktop.rememberRememberedWindowState
@@ -222,7 +224,9 @@ fun VideoPlayerWindow(
         DisposableEffect(windowId) {
             onDispose { services.onWindowClosed(windowId) }
         }
-        val fullscreen = remember(window) { WindowsFullscreen(window) }
+        val windowsFullscreen = remember(window) { if (WinRTSupport.isWindows) WindowsFullscreen(window) else null }
+        val linuxFullscreen = remember(window) { if (isLinux) LinuxFullscreen(window) else null }
+        ObserveLinuxFullscreenEffect(window, linuxFullscreen) { isFullscreen = it }
         // 播放窗口是独立的组合树，主窗口根部的输入来源追踪与播放器布局偏好需要显式注入；桌面端初始按鼠标/键盘落点就绪
         val pointerSource = remember { PointerSource(initialTouchLike = false) }
         val effectiveLanguage by PikoLocale.effectiveLanguageState
@@ -239,9 +243,9 @@ fun VideoPlayerWindow(
             LocalPlayerLayoutPrefs provides playerLayoutPrefs,
             dev.piko.ui.screens.drive.LocalDriveAppearancePrefs provides driveAppearancePrefs,
         ) {
-            // 只有 Windows 自己铺满屏幕（WindowsFullscreen），别处用系统的全屏
-            val usesSystemFullscreen = !WinRTSupport.isWindows
-            val inFullscreen = if (usesSystemFullscreen) windowState.placement == WindowPlacement.Fullscreen else isFullscreen
+            // Windows 走无边框全屏（WindowsFullscreen），Linux 优先走 X11 EWMH _NET_WM_STATE_FULLSCREEN（LinuxFullscreen），
+            // macOS 与 Linux 回退路径走 WindowPlacement.Fullscreen
+            val inFullscreen = isFullscreen || windowState.placement == WindowPlacement.Fullscreen
             PikoTheme(appearance = appearance) {
                 WindowFrame(
                     title = tr("$title - Piko 播放器", "$title - Piko Player", "$title - Pikoプレーヤー", "$title - Piko 플레이어", "$title - Piko 播放器"),
@@ -254,18 +258,32 @@ fun VideoPlayerWindow(
                     immersiveFullscreen = inFullscreen,
                 ) {
                     val toggleFullscreen = {
-                        if (usesSystemFullscreen) {
-                            // macOS 走系统的全屏空间，Linux 经 _NET_WM_STATE_FULLSCREEN 交给窗口管理器。
-                            // WindowsFullscreen 绕开的崩溃出在 Skiko 的 D3D 路径上，macOS 走 Metal、Linux 走 OpenGL，
-                            // 都不经过它；按标题栏绿灯进出全屏时 placement 同样跟着变
-                            windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
-                                WindowPlacement.Floating
-                            } else {
-                                WindowPlacement.Fullscreen
+                        when {
+                            windowsFullscreen != null -> {
+                                if (windowsFullscreen.isFullscreen) windowsFullscreen.exit() else windowsFullscreen.enter()
+                                isFullscreen = windowsFullscreen.isFullscreen
                             }
-                        } else {
-                            if (fullscreen.isFullscreen) fullscreen.exit() else fullscreen.enter()
-                            isFullscreen = fullscreen.isFullscreen
+                            linuxFullscreen != null -> {
+                                // 优先经 X11 EWMH _NET_WM_STATE_FULLSCREEN 交由窗口管理器全屏，避免 AWT 独占全屏在 KDE/XWayland + GLX 下冻结；
+                                // 若 libX11 或 X11 句柄不可用则安全回退到 WindowPlacement.Fullscreen。
+                                if (windowState.placement == WindowPlacement.Fullscreen) {
+                                    windowState.placement = WindowPlacement.Floating
+                                } else if (linuxFullscreen.isFullscreen) {
+                                    if (linuxFullscreen.exit()) isFullscreen = false
+                                } else if (linuxFullscreen.enter()) {
+                                    isFullscreen = true
+                                } else {
+                                    windowState.placement = WindowPlacement.Fullscreen
+                                }
+                            }
+                            else -> {
+                                // macOS 走系统的全屏空间；按标题栏绿灯进出全屏时 placement 同样跟着变
+                                windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
+                                    WindowPlacement.Floating
+                                } else {
+                                    WindowPlacement.Fullscreen
+                                }
+                            }
                         }
                     }
                     val framelessWindow = dev.piko.ui.platform.LocalFramelessWindow.current

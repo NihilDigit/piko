@@ -22,6 +22,13 @@ internal object MacObjc {
 
     private val getClass = handle("objc_getClass", FunctionDescriptor.of(ADDRESS, ADDRESS))
     private val registerName = handle("sel_registerName", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    private val getInstanceMethod = handle("class_getInstanceMethod", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS))
+    private val getMethodImplementation = handle("method_getImplementation", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    private val getMethodTypeEncoding = handle("method_getTypeEncoding", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    private val replaceMethod = handle(
+        "class_replaceMethod",
+        FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS),
+    )
     private val poolPush = handle("objc_autoreleasePoolPush", FunctionDescriptor.of(ADDRESS))
     private val poolPop = handle("objc_autoreleasePoolPop", FunctionDescriptor.ofVoid(ADDRESS))
     private val msgSend = libobjc.find("objc_msgSend").orElseThrow()
@@ -51,10 +58,33 @@ internal object MacObjc {
         SymbolLookup.libraryLookup("/System/Library/Frameworks/$name.framework/$name", Arena.global())
     }
 
-    fun cls(name: String): MemorySegment = Arena.ofConfined().use { arena ->
+    fun clsOrNull(name: String): MemorySegment? = Arena.ofConfined().use { arena ->
         val cls = getClass.invokeWithArguments(arena.allocateFrom(name)) as MemorySegment
-        check(cls != MemorySegment.NULL) { "Objective-C class not found: $name" }
-        cls
+        cls.takeUnless { it == MemorySegment.NULL }
+    }
+
+    fun cls(name: String): MemorySegment =
+        clsOrNull(name) ?: error("Objective-C class not found: $name")
+
+    /**
+     * 将 [className] 的实例方法 [selectorName] 替换为 [superClassName] 的同名实现，
+     * 相当于去除子类的覆写、直接沿用父类（如 NSView/NSResponder）的默认转发逻辑。
+     */
+    fun replaceInstanceMethodWithSuperclass(
+        className: String,
+        superClassName: String,
+        selectorName: String,
+    ): Boolean {
+        val targetCls = clsOrNull(className) ?: return false
+        val superCls = clsOrNull(superClassName) ?: return false
+        val selector = sel(selectorName)
+        val superMethod = getInstanceMethod.invokeWithArguments(superCls, selector) as MemorySegment
+        if (superMethod == MemorySegment.NULL) return false
+        val superImp = getMethodImplementation.invokeWithArguments(superMethod) as MemorySegment
+        val typeEncoding = getMethodTypeEncoding.invokeWithArguments(superMethod) as MemorySegment
+        if (superImp == MemorySegment.NULL || typeEncoding == MemorySegment.NULL) return false
+        replaceMethod.invokeWithArguments(targetCls, selector, superImp, typeEncoding)
+        return true
     }
 
     private fun sel(name: String): MemorySegment = Arena.ofConfined().use { arena ->

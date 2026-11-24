@@ -23,12 +23,15 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowPlacement
 import dev.piko.desktop.DesktopSettingsStore
+import dev.piko.desktop.LinuxFullscreen
+import dev.piko.desktop.ObserveLinuxFullscreenEffect
 import dev.piko.desktop.PikoWindow
 import dev.piko.desktop.PixelAlignedContentEffect
 import dev.piko.desktop.TitleBarColors
 import dev.piko.desktop.TitleBarThemeEffect
 import dev.piko.desktop.WindowFrame
 import dev.piko.desktop.bringToFront
+import dev.piko.desktop.isLinux
 import dev.piko.desktop.rememberRememberedWindowState
 import dev.piko.desktop.winrt.WinRTSupport
 import dev.piko.shared.i18n.PikoLocale
@@ -70,7 +73,13 @@ fun ClipFeedWindow(
     icon: Painter?,
     pausedByHost: Boolean = false,
 ) {
-    val windowState = rememberRememberedWindowState(settings, "clips", DpSize(1000.dp, 620.dp))
+    var isFullscreen by remember { mutableStateOf(false) }
+    val windowState = rememberRememberedWindowState(
+        settings = settings,
+        name = "clips",
+        defaultSize = DpSize(1000.dp, 620.dp),
+        isBorderlessFullscreen = { isFullscreen },
+    )
     val windowVisible = !windowState.isMinimized
     var shortcutsOpen by remember { mutableStateOf(false) }
     val shortcutModifier = platform.shortcutModifier
@@ -97,6 +106,8 @@ fun ClipFeedWindow(
     ) {
         TitleBarThemeEffect(window, dark = true)
         PixelAlignedContentEffect(window)
+        val linuxFullscreen = remember(window) { if (isLinux) LinuxFullscreen(window) else null }
+        ObserveLinuxFullscreenEffect(window, linuxFullscreen) { isFullscreen = it }
         val focused = LocalWindowInfo.current.isWindowFocused
         LaunchedEffect(focused) {
             services.onWindowFocusChanged("clips", focused)
@@ -121,29 +132,34 @@ fun ClipFeedWindow(
             LocalPlayerLayoutPrefs provides playerLayoutPrefs,
             dev.piko.ui.screens.drive.LocalDriveAppearancePrefs provides driveAppearancePrefs,
         ) {
+            val inFullscreen = isFullscreen || windowState.placement == WindowPlacement.Fullscreen
             PikoTheme(appearance = appearance) {
                 WindowFrame(
                     title = tr("信息流 - Piko", "Feed - Piko", "フィード - Piko", "피드 - Piko", "資訊流 - Piko"),
                     icon = icon,
                     colors = ClipTitleBarColors,
-                    showTitleBar = windowState.placement != WindowPlacement.Fullscreen,
+                    showTitleBar = !inFullscreen,
                     onCloseInContent = links.dock,
-                    immersiveFullscreen = windowState.placement == WindowPlacement.Fullscreen,
+                    immersiveFullscreen = inFullscreen,
                 ) {
                     val framelessWindow = LocalFramelessWindow.current
                     var alwaysOnTop by remember(window) { mutableStateOf(window.isAlwaysOnTop) }
                     val effectiveAlwaysOnTop = framelessWindow?.isAlwaysOnTop ?: alwaysOnTop
                     val windowActions = PlayerWindowActions(
                         isMaximized = windowState.placement == WindowPlacement.Maximized,
-                        isFullscreen = windowState.placement == WindowPlacement.Fullscreen,
+                        isFullscreen = inFullscreen,
                         isAlwaysOnTop = effectiveAlwaysOnTop,
                         showWindowButtons = WinRTSupport.isWindows,
                         onMinimize = { windowState.isMinimized = true },
                         onToggleMaximize = {
-                            windowState.placement = if (windowState.placement == WindowPlacement.Maximized) {
-                                WindowPlacement.Floating
+                            if (linuxFullscreen?.isFullscreen == true) {
+                                if (linuxFullscreen.exit()) isFullscreen = false
                             } else {
-                                WindowPlacement.Maximized
+                                windowState.placement = if (windowState.placement == WindowPlacement.Maximized) {
+                                    WindowPlacement.Floating
+                                } else {
+                                    WindowPlacement.Maximized
+                                }
                             }
                         },
                         onToggleAlwaysOnTop = {

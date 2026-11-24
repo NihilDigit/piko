@@ -23,11 +23,14 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowPlacement
 import dev.piko.desktop.DesktopSettingsStore
+import dev.piko.desktop.LinuxFullscreen
+import dev.piko.desktop.ObserveLinuxFullscreenEffect
 import dev.piko.desktop.PikoWindow
 import dev.piko.desktop.PixelAlignedContentEffect
 import dev.piko.desktop.TitleBarColors
 import dev.piko.desktop.TitleBarThemeEffect
 import dev.piko.desktop.WindowFrame
+import dev.piko.desktop.isLinux
 import dev.piko.desktop.isMacOs
 import dev.piko.desktop.rememberRememberedWindowState
 import dev.piko.desktop.winrt.WinRTSupport
@@ -155,7 +158,9 @@ fun ImageViewerWindow(
         DisposableEffect(windowId) {
             onDispose { services.onWindowClosed(windowId) }
         }
-        val fullscreen = remember(window) { WindowsFullscreen(window) }
+        val windowsFullscreen = remember(window) { if (WinRTSupport.isWindows) WindowsFullscreen(window) else null }
+        val linuxFullscreen = remember(window) { if (isLinux) LinuxFullscreen(window) else null }
+        ObserveLinuxFullscreenEffect(window, linuxFullscreen) { isFullscreen = it }
         val pointerSource = remember { PointerSource(initialTouchLike = false) }
         val effectiveLanguage by PikoLocale.effectiveLanguageState
         val playerLayoutPrefs by services.preferences.playerLayoutPrefsFlow
@@ -172,8 +177,7 @@ fun ImageViewerWindow(
             LocalPlayerLayoutPrefs provides playerLayoutPrefs,
             LocalDriveAppearancePrefs provides driveAppearancePrefs,
         ) {
-            val usesSystemFullscreen = !WinRTSupport.isWindows
-            val inFullscreen = if (usesSystemFullscreen) windowState.placement == WindowPlacement.Fullscreen else isFullscreen
+            val inFullscreen = isFullscreen || windowState.placement == WindowPlacement.Fullscreen
             PikoTheme(appearance = appearance) {
                 WindowFrame(
                     title = windowTitle,
@@ -184,15 +188,29 @@ fun ImageViewerWindow(
                     immersiveFullscreen = inFullscreen,
                 ) {
                     val toggleFullscreen = {
-                        if (usesSystemFullscreen) {
-                            windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
-                                WindowPlacement.Floating
-                            } else {
-                                WindowPlacement.Fullscreen
+                        when {
+                            windowsFullscreen != null -> {
+                                if (windowsFullscreen.isFullscreen) windowsFullscreen.exit() else windowsFullscreen.enter()
+                                isFullscreen = windowsFullscreen.isFullscreen
                             }
-                        } else {
-                            if (fullscreen.isFullscreen) fullscreen.exit() else fullscreen.enter()
-                            isFullscreen = fullscreen.isFullscreen
+                            linuxFullscreen != null -> {
+                                if (windowState.placement == WindowPlacement.Fullscreen) {
+                                    windowState.placement = WindowPlacement.Floating
+                                } else if (linuxFullscreen.isFullscreen) {
+                                    if (linuxFullscreen.exit()) isFullscreen = false
+                                } else if (linuxFullscreen.enter()) {
+                                    isFullscreen = true
+                                } else {
+                                    windowState.placement = WindowPlacement.Fullscreen
+                                }
+                            }
+                            else -> {
+                                windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
+                                    WindowPlacement.Floating
+                                } else {
+                                    WindowPlacement.Fullscreen
+                                }
+                            }
                         }
                     }
                     val framelessWindow = LocalFramelessWindow.current

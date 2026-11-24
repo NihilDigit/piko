@@ -601,10 +601,11 @@ private fun FrameWindowScope.MacTitleBarEffect() {
     LaunchedEffect(window) {
         while (!window.isShowing) delay(16)
         findSkiaLayer(window)?.disableTitleBar(TitleBarHeight.value)
+        MacOs.patchTitleBarDoubleClick()
     }
 }
 
-private fun findSkiaLayer(container: Container): SkiaLayer? {
+internal fun findSkiaLayer(container: Container): SkiaLayer? {
     for (component in container.components) {
         if (component is SkiaLayer) return component
         if (component is Container) findSkiaLayer(component)?.let { return it }

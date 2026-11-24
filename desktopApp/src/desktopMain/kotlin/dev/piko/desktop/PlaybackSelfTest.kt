@@ -62,6 +62,7 @@ internal fun playbackSelfTest(
         report("no such file: $file")
         return false
     }
+    LinuxDesktop.preloadHostLibva()
     System.getProperty("compose.application.resources.dir")?.let { File(it, "mpv") }
         ?.takeIf { it.resolve(System.mapLibraryName("mediampv")).isFile }
         ?.let { MpvMediampPlayer.prepareLibraries(it.absolutePath, false) }

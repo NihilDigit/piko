@@ -59,6 +59,8 @@ object BundledMpvRuntime {
     }
 
     private fun prepare() {
+        // 赶在 libmediampv / libmpv / libavutil 加载前预载宿主 libva，避免与随包旧版 libva 产生 VA-API 驱动 ABI 冲突
+        LinuxDesktop.preloadHostLibva()
         val dir = bundledResources?.resolve("mpv") ?: return
         // Windows 上是 mediampv.dll，macOS 上是 libmediampv.dylib，Linux 上是 libmediampv.so
         if (!dir.resolve(System.mapLibraryName("mediampv")).isFile) return

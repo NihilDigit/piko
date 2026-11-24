@@ -103,4 +103,27 @@ internal object MacOs {
         }
     }
 
+    private var titleBarDoubleClickPatched = false
+
+    /**
+     * 修复 Skiko `disableTitleBar` 在 macOS 上双击标题栏放大后立刻缩回的缺陷：
+     * Skiko 的 `WindowDragView`（挂在 `NSTitlebarView` 内的子视图）在 `-mouseUp:` 中先判断
+     * `event.clickCount == 2` 主动调用 `[self.window performZoom:nil]`，紧接着又调用 `[super mouseUp:event]`
+     * 将双击事件沿响应链继续派发给 `NSTitlebarView` / `NSThemeFrame`，触发 macOS 原生标题栏双击缩放/填充，
+     * 导致窗口连续缩放两次（先放大、再还原）。
+     *
+     * 将 `WindowDragView` 的 `-mouseUp:` 替换为父类 `NSView`（即 `NSResponder`）的默认实现后，
+     * 双击事件只经响应链交由 `NSThemeFrame` 处理一次，同时完整遵循 macOS 系统设置中的标题栏双击行为
+     * （填充 / 缩放 / 最小化 / 无操作），且不影响 `WindowDragView` 的 `-mouseDown:` 窗口拖动。
+     */
+    @Synchronized
+    fun patchTitleBarDoubleClick() {
+        if (!isMacOs || titleBarDoubleClickPatched) return
+        runCatching {
+            if (MacObjc.replaceInstanceMethodWithSuperclass("WindowDragView", "NSView", "mouseUp:")) {
+                titleBarDoubleClickPatched = true
+            }
+        }.onFailure { PikoLog.w(TAG, "Failed to patch Skiko WindowDragView mouseUp: double-zoom workaround", it) }
+    }
+
 }
