@@ -160,7 +160,7 @@ internal fun CacheSectionContent(
             val map = HashMap<String, Pair<String, String>>(candidates.size)
             for (c in candidates) {
                 val hash = fileCacheName(PikoFileCachePool.identity(account, c.gcid, c.sizeBytes, null))
-                map.putIfAbsent(hash, c.id to c.name)
+                if (hash !in map) map[hash] = c.id to c.name
             }
             map
         }

@@ -4,8 +4,8 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.10")
-        classpath("com.google.devtools.ksp:symbol-processing-gradle-plugin:2.3.11")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.21")
+        classpath("com.google.devtools.ksp:symbol-processing-gradle-plugin:2.3.14")
     }
 }
 

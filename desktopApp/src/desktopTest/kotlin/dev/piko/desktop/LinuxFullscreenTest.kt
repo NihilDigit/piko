@@ -1,6 +1,7 @@
 package dev.piko.desktop
 
 import java.awt.Frame
+import java.awt.GraphicsEnvironment
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -17,6 +18,7 @@ class LinuxFullscreenTest {
 
     @Test
     fun nonLinuxOrUndisplayableWindowSafelyDeclinesEwmhEnter() {
+        if (GraphicsEnvironment.isHeadless()) return
         val frame = Frame()
         try {
             val fullscreen = LinuxFullscreen(frame)
