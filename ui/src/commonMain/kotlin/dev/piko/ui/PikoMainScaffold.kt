@@ -114,6 +114,7 @@ import dev.piko.ui.screens.reader.DocumentReaderScreen
 import dev.piko.ui.screens.reader.HtmlViewerScreen
 import dev.piko.ui.screens.settings.DriveAppearanceCustomizationPage
 import dev.piko.ui.screens.settings.PlayerCustomizationPage
+import dev.piko.ui.screens.settings.OperationHistoryScreen
 import dev.piko.ui.screens.settings.SettingsScreen
 import dev.piko.ui.screens.settings.WebDavScreen
 import dev.piko.ui.screens.share.MySharesScreen
@@ -856,6 +857,7 @@ fun PikoMainScaffold(
                                         )
                                     }
                                     entry<Screen.MyShares> { MySharesScreen(onBackClick = paneBack, onLocate = nav::revealInDrive) }
+                                    entry<Screen.OperationHistory> { OperationHistoryScreen(onBackClick = paneBack) }
                                     entry<Screen.SpaceMap> { screen ->
                                         SpaceMapScreen(
                                             rootFolderId = screen.rootFolderId,
@@ -899,6 +901,7 @@ fun PikoMainScaffold(
                                             onOpenWebDav = { backStack.add(Screen.WebDav) },
                                             onOpenPlayerCustomization = { backStack.add(Screen.PlayerCustomization) },
                                             onOpenDriveAppearanceCustomization = { backStack.add(Screen.DriveAppearanceCustomization) },
+                                            onOpenCachedVideo = { fileId, fileName -> nav.playLocal(fileId, fileName, localPath = null) },
                                             account = if (sidebarWindow) ({ AccountSettings(onLogout, onOpenSpaceMap = { nav.openPage(Screen.SpaceMap()) }) }) else null,
                                             showAbout = sidebarWindow,
                                         )

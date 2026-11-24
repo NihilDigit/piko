@@ -35,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.Logout
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.ExpandLess
@@ -249,6 +250,32 @@ fun ProfileScreen(
                     supporting = tr("按文件夹与文件大小查看空间占用", "View space usage by folders and files", "フォルダーとファイル別の容量内訳を確認", "폴더 및 파일별 공간 사용량 확인", "依資料夾與檔案大小檢視空間佔用"),
                     onClick = { onOpenPane(Screen.SpaceMap()) },
                     selected = selectedPane is Screen.SpaceMap,
+                )
+                val journalState by LocalPikoServices.current.driveRepository.changes.state.collectAsStateWithLifecycle()
+                val undoableCount = journalState.available.size
+                SettingsNavigationRow(
+                    icon = Icons.Outlined.History,
+                    selectedIcon = Icons.Filled.History,
+                    title = tr("操作记录", "Operation history", "操作履歴", "작업 기록", "操作記錄"),
+                    supporting = if (undoableCount > 0) {
+                        tr(
+                            "本次会话有 $undoableCount 项可撤销操作",
+                            "$undoableCount undoable actions in this session",
+                            "このセッションで $undoableCount 件を元に戻せます",
+                            "이번 세션에서 ${undoableCount}개 작업을 실행 취소할 수 있습니다",
+                            "本次工作階段有 $undoableCount 項可復原操作",
+                        )
+                    } else {
+                        tr(
+                            "查看并撤销本次会话的文件更改",
+                            "Review and undo file changes from this session",
+                            "このセッションのファイル変更を確認して元に戻す",
+                            "이번 세션의 파일 변경 기록 확인 및 실행 취소",
+                            "檢視並復原本次工作階段的檔案變更",
+                        )
+                    },
+                    onClick = { onOpenPane(Screen.OperationHistory) },
+                    selected = selectedPane == Screen.OperationHistory,
                 )
                 SettingsNavigationRow(
                     icon = DriveLibrary.TRASH.icon,

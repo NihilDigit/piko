@@ -37,6 +37,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
+import kotlin.time.Clock
 
 private val changeIds = MutableStateFlow(0L)
 private fun nextChangeId(): Long = changeIds.getAndUpdate { it + 1 } + 1
@@ -127,10 +128,15 @@ class DriveChangeJournal internal constructor(
     enum class UndoStatus { RUNNING, UNDONE, FAILED }
     data class UndoResult(val status: UndoStatus, val message: String, val activeFileIds: Set<String> = emptySet(), val activeManifestFolders: Set<String> = emptySet(), val activeTreeIds: Set<String> = emptySet(),
         val completedRenameSteps: Int = 0, val completedTrashItems: Int = 0, val restoredTrashIds: Set<String> = emptySet())
+    data class JournalEntry(
+        val change: Change,
+        val recordedAtEpochMillis: Long,
+    )
     data class JournalState(
         val generation: Long = 0,
         val available: List<Change> = emptyList(),
         val undo: Map<Long, UndoResult> = emptyMap(),
+        val history: List<JournalEntry> = emptyList(),
     )
     private val _state = MutableStateFlow(JournalState())
     val state: StateFlow<JournalState> = _state.asStateFlow()
@@ -144,10 +150,14 @@ class DriveChangeJournal internal constructor(
 
     fun record(change: Change, generation: Long): Boolean {
         if (!scope.isActive) return false
+        val now = Clock.System.now().toEpochMilliseconds()
         while (true) {
             val current = _state.value
             if (current.generation != generation) return false
-            val next = current.copy(available = (current.available + change).takeLast(LIMIT))
+            val next = current.copy(
+                available = (current.available + change).takeLast(LIMIT),
+                history = (current.history.filterNot { it.change.id == change.id } + JournalEntry(change, now)).takeLast(HISTORY_LIMIT),
+            )
             if (_state.compareAndSet(current, next)) break
         }
         if (_state.value.generation == generation) _events.tryEmit(Event(change.summary, change, generation = generation))
@@ -161,7 +171,11 @@ class DriveChangeJournal internal constructor(
             val current = _state.value
             if (current.generation != generation || current.undo[id] != null) return false
             val previous = current.available.filterIsInstance<Change.Rename>().firstOrNull { it.id == id } ?: return false
-            val next = current.copy(available = current.available.map { if (it === previous) previous.appended(more) else it })
+            val updated = previous.appended(more)
+            val next = current.copy(
+                available = current.available.map { if (it === previous) updated else it },
+                history = current.history.map { if (it.change.id == id) it.copy(change = updated) else it },
+            )
             if (_state.compareAndSet(current, next)) return true
         }
     }
@@ -170,9 +184,12 @@ class DriveChangeJournal internal constructor(
     suspend fun recordTrash(previousChange: Change.Trash?, ids: List<String>, summary: String): Change.Trash {
         val change = Change.Trash(ids, summary)
         val generation = _state.value.generation
+        val now = Clock.System.now().toEpochMilliseconds()
         _state.update { current ->
-            if (current.generation != generation) current else current.copy(available =
-                (current.available.filterNot { it === previousChange } + change).takeLast(LIMIT))
+            if (current.generation != generation) current else current.copy(
+                available = (current.available.filterNot { it === previousChange } + change).takeLast(LIMIT),
+                history = (current.history.filterNot { it.change === previousChange } + JournalEntry(change, now)).takeLast(HISTORY_LIMIT),
+            )
         }
         if (_state.value.generation == generation) _events.tryEmit(Event(summary, change, generation = generation))
         if (_state.value.generation != generation) throw kotlinx.coroutines.CancellationException("账号已改变")
@@ -505,5 +522,6 @@ class DriveChangeJournal internal constructor(
     private companion object {
         const val TAG = "DriveChangeJournal"
         const val LIMIT = 20
+        const val HISTORY_LIMIT = 40
     }
 }

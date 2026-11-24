@@ -124,6 +124,7 @@ fun SettingsScreen(
     onOpenWebDav: () -> Unit,
     onOpenPlayerCustomization: () -> Unit = {},
     onOpenDriveAppearanceCustomization: () -> Unit = {},
+    onOpenCachedVideo: ((fileId: String, fileName: String) -> Unit)? = null,
     modifier: Modifier = Modifier,
     /** 账号一类的内容（[dev.piko.ui.workbench.AccountSettings]）。桌面没有「我的」页，账号放在设置的最前；移动端为 null。 */
     account: (@Composable ColumnScope.() -> Unit)? = null,
@@ -333,6 +334,7 @@ fun SettingsScreen(
                         firstSection = firstVisibleSection,
                         onSectionPositioned = onSectionPositioned,
                         snackbarHostState = snackbarHostState,
+                        onOpenCachedVideo = onOpenCachedVideo,
                     )
                     NetworkSettingsSection(
                         searchQuery = searchQuery,

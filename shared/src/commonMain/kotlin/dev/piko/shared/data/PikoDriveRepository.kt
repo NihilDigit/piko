@@ -51,6 +51,14 @@ data class PikoPathBreadcrumb(val id: String, val name: String)
 /** 列表的滚动位置：首个可见项的下标与它已滚出顶端的像素数。 */
 data class ScrollAnchor(val index: Int, val offset: Int)
 
+/** 供旧版播放缓存按精确字节数与 GCID 反查真实文件名的轻量索引行。 */
+data class CachedFileLookupRow(
+    val id: String,
+    val name: String,
+    val gcid: String,
+    val sizeBytes: Long,
+)
+
 /** 目录的递归统计。[progress] 区分仍在统计、统计完、因到达上限而中止三种。 */
 data class FolderUsage(val fileCount: Int, val bytes: Long, val progress: Progress) {
     enum class Progress { COUNTING, COMPLETE, TRUNCATED }
@@ -116,6 +124,7 @@ interface DriveService {
     fun seedFolders(names: Map<String, String>, parents: Map<String, String>)
     fun knownParentOf(fileId: String): String?
     fun knownFile(fileId: String): FileStat?
+    fun findFilesByByteSizes(sizes: Collection<Long>): List<CachedFileLookupRow> = emptyList()
     suspend fun resolveFolderPath(names: List<String>, from: List<PikoPathBreadcrumb> = listOf(PikoDriveRepository.ROOT_BREADCRUMB)): Result<List<PikoPathBreadcrumb>>
     suspend fun subfolders(folderId: String, fresh: Boolean = false): Result<List<PikoPathBreadcrumb>>
     suspend fun folderMapLevel(folderId: String): Result<List<FileStat>>
@@ -345,6 +354,7 @@ open class PikoDriveRepository(
     override fun seedFolders(names: Map<String, String>, parents: Map<String, String>) = indexCoordinator.seedFolders(names, parents)
     override fun knownParentOf(fileId: String): String? = indexCoordinator.knownParentOf(fileId)
     override fun knownFile(fileId: String): FileStat? = indexCoordinator.knownFile(fileId)
+    override fun findFilesByByteSizes(sizes: Collection<Long>): List<CachedFileLookupRow> = indexCoordinator.findFilesByByteSizes(sizes)
     internal fun knownConfirmedFile(fileId: String): FileStat? = indexCoordinator.knownConfirmedFile(fileId)
     override suspend fun resolveFolderPath(names: List<String>, from: List<PikoPathBreadcrumb>): Result<List<PikoPathBreadcrumb>> =
         indexCoordinator.resolveFolderPath(names, from)

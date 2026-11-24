@@ -1,5 +1,10 @@
 package dev.piko.ui.screens.settings
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -9,17 +14,30 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.AutoDelete
 import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.DataUsage
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Movie
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Storage
@@ -27,11 +45,22 @@ import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.material.icons.outlined.ViewCarousel
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.style.TextOverflow
+import dev.piko.shared.data.DriveService
+import dev.piko.shared.media.cache.PikoFileCachePool
+import dev.piko.shared.media.cache.PlaybackCacheItem
+import dev.piko.shared.media.cache.fileCacheName
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -42,10 +71,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -56,9 +91,12 @@ import dev.piko.shared.i18n.tr
 import dev.piko.shared.media.cache.CacheCategory
 import dev.piko.shared.media.cache.CacheSummary
 import dev.piko.shared.media.cache.PikoCacheManager
+import dev.piko.ui.WorkMeter
+import dev.piko.ui.components.FileLeadingVisual
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
 import dev.piko.ui.components.TooltipIconButton
+import dev.piko.ui.components.WorkMeterBar
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.resources.Res
@@ -69,6 +107,8 @@ import dev.piko.ui.theme.LocalWindowVisible
 import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.tabular
 import kotlinx.coroutines.launch
+
+private const val MIN_DISPLAYED_PLAYBACK_CACHE_BYTES: Long = 1L * 1024L * 1024L
 
 /**
  * Telegram 风格「存储与缓存」管理分区：
@@ -81,6 +121,9 @@ internal fun CacheSectionContent(
     cacheManager: PikoCacheManager,
     preferences: PikoUserPreferences,
     snackbarHostState: SnackbarHostState,
+    currentAccount: String? = null,
+    driveRepository: DriveService? = null,
+    onOpenCachedVideo: ((fileId: String, fileName: String) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
     val summary by cacheManager.summary.collectAsStateWithLifecycle()
@@ -90,14 +133,82 @@ internal fun CacheSectionContent(
     val maxAgeDays by preferences.cacheMaxAgeDaysFlow.collectAsStateWithLifecycle(
         initialValue = preferences.currentSnapshot.cacheMaxAgeDays,
     )
+    val playbackCacheEnabled by preferences.playbackCacheEnabledFlow.collectAsStateWithLifecycle(
+        initialValue = preferences.currentSnapshot.playbackCacheEnabled,
+    )
 
     var showClearAllDialog by remember { mutableStateOf(false) }
     var confirmClearPlayback by remember { mutableStateOf(false) }
+    var playbackExpanded by remember { mutableStateOf(false) }
+    var playbackEntries by remember { mutableStateOf<List<PlaybackCacheItem>>(emptyList()) }
+    var loadingPlaybackEntries by remember { mutableStateOf(false) }
     var showCapDialog by remember { mutableStateOf(false) }
     var showTtlDialog by remember { mutableStateOf(false) }
 
+    suspend fun loadResolvedPlaybackEntries(): List<PlaybackCacheItem> {
+        val raw = cacheManager.listPlaybackEntries(currentAccount)
+        val account = currentAccount?.takeIf { it.isNotBlank() } ?: return raw
+        val repo = driveRepository ?: return raw
+        val unresolvedSizes = raw.asSequence()
+            .filter { it.fileName.isBlank() && it.totalBytes > 0L }
+            .map { it.totalBytes }
+            .distinct()
+            .toList()
+        if (unresolvedSizes.isEmpty()) return raw
+        val resolvedByHash = withContext(Dispatchers.IO) {
+            val candidates = runCatching { repo.findFilesByByteSizes(unresolvedSizes) }.getOrDefault(emptyList())
+            val map = HashMap<String, Pair<String, String>>(candidates.size)
+            for (c in candidates) {
+                val hash = fileCacheName(PikoFileCachePool.identity(account, c.gcid, c.sizeBytes, null))
+                map.putIfAbsent(hash, c.id to c.name)
+            }
+            map
+        }
+        if (resolvedByHash.isEmpty()) return raw
+        return raw.map { item ->
+            if (item.fileName.isNotBlank()) {
+                item
+            } else {
+                val hash = item.cachePath
+                    .substringAfterLast('/')
+                    .substringAfterLast('\\')
+                    .substringBefore('.')
+                val matched = resolvedByHash[hash]
+                if (matched != null) {
+                    val (fileId, fileName) = matched
+                    val quality = item.qualityLabel.ifBlank { "Original" }
+                    scope.launch {
+                        cacheManager.backfillPlaybackMetadata(
+                            cachePath = item.cachePath,
+                            fileId = fileId,
+                            fileName = fileName,
+                            qualityLabel = quality,
+                            account = account,
+                        )
+                    }
+                    item.copy(
+                        fileId = fileId,
+                        fileName = fileName,
+                        qualityLabel = quality,
+                        account = account,
+                    )
+                } else {
+                    item
+                }
+            }
+        }
+    }
+
     LaunchedEffect(cacheManager) {
         cacheManager.refresh()
+    }
+
+    LaunchedEffect(playbackExpanded, currentAccount, summary.lastUpdatedEpochMillis) {
+        if (playbackExpanded) {
+            loadingPlaybackEntries = playbackEntries.isEmpty()
+            playbackEntries = loadResolvedPlaybackEntries()
+            loadingPlaybackEntries = false
+        }
     }
 
     val colors = MaterialTheme.colorScheme
@@ -135,46 +246,449 @@ internal fun CacheSectionContent(
     }
 
     SettingsGroup(tr("缓存明细", "Breakdown", "キャッシュ内訳", "캐시 세부 내역", "快取明細")) {
+        val groupStyle = settingsStyle()
         CacheCategory.entries.forEach { category ->
             val stats = summary.statsOf(category)
             val color = categoryColors[category] ?: colors.outlineVariant
             val supportingText = formatCacheCategorySupporting(category, stats)
+            val isExpandablePlayback = category == CacheCategory.PLAYBACK && (stats.bytes > 0L || stats.fileCount > 0)
+            val playbackTreeOpen = isExpandablePlayback && playbackExpanded
+            val treeLineColor = if (eInk) colors.outline else color
 
-            SettingsRow(
-                title = cacheCategoryLabel(category),
-                supporting = supportingText,
-                leading = {
-                    CategoryBadgeLeading(
-                        icon = cacheCategoryIcon(category),
-                        dotColor = color,
-                    )
-                },
-                trailing = if (stats.clearable) {
-                    {
-                        SettingsRowButton(
-                            label = tr("清理", "Clear", "消去", "지우기", "清理"),
-                            onClick = {
-                                if (category == CacheCategory.PLAYBACK) {
-                                    confirmClearPlayback = true
-                                } else {
+            if (category == CacheCategory.PLAYBACK) {
+                SettingsCard {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(
+                                    if (playbackTreeOpen) {
+                                        Modifier.drawWithContent {
+                                            drawContent()
+                                            val centerX = groupStyle.horizontalPadding.toPx() + 5.dp.toPx()
+                                            val startY = size.height / 2f + 5.dp.toPx()
+                                            if (size.height > startY) {
+                                                drawLine(
+                                                    color = treeLineColor,
+                                                    start = Offset(centerX, startY),
+                                                    end = Offset(centerX, size.height),
+                                                    strokeWidth = 1.5.dp.toPx(),
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        Modifier
+                                    },
+                                )
+                                .then(
+                                    if (isExpandablePlayback) {
+                                        Modifier.clickable { playbackExpanded = !playbackExpanded }
+                                    } else {
+                                        Modifier
+                                    },
+                                )
+                                .padding(
+                                    horizontal = groupStyle.horizontalPadding,
+                                    vertical = groupStyle.verticalPadding,
+                                ),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CategoryBadgeLeading(
+                                icon = cacheCategoryIcon(category),
+                                dotColor = color,
+                            )
+                            Spacer(Modifier.width(16.dp))
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Text(
+                                    text = cacheCategoryLabel(category),
+                                    style = groupStyle.titleStyle,
+                                    color = colors.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = supportingText,
+                                    style = groupStyle.supportingStyle,
+                                    color = colors.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                if (isExpandablePlayback) {
+                                    Icon(
+                                        imageVector = if (playbackExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                                        contentDescription = if (playbackExpanded) {
+                                            tr("收起已缓存视频", "Collapse cached videos", "キャッシュ動画を折りたたむ", "캐시된 동영상 접기", "收合已快取影片")
+                                        } else {
+                                            tr("展开已缓存视频", "Expand cached videos", "キャッシュ動画を展開", "캐시된 동영상 펼치기", "展開已快取影片")
+                                        },
+                                        tint = colors.onSurfaceVariant,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
+                                SettingsRowButton(
+                                    label = tr("清理", "Clear", "消去", "지우기", "清理"),
+                                    onClick = { confirmClearPlayback = true },
+                                    enabled = !busy && stats.bytes > 0L,
+                                    primary = false,
+                                )
+                            }
+                        }
+
+                        AnimatedVisibility(
+                            visible = playbackTreeOpen,
+                            enter = fadeIn() + expandVertically(),
+                            exit = fadeOut() + shrinkVertically(),
+                        ) {
+                            val branchStartX = groupStyle.horizontalPadding + 5.dp
+                            val branchEndX = groupStyle.horizontalPadding + 19.dp
+                            val contentStartPad = groupStyle.horizontalPadding + 26.dp
+
+                            fun Modifier.treeBranch(isLast: Boolean): Modifier = drawBehind {
+                                val x = branchStartX.toPx()
+                                val endX = branchEndX.toPx()
+                                val midY = size.height / 2f
+                                val r = 6.dp.toPx().coerceAtMost((endX - x) / 2f).coerceAtMost(midY)
+                                val strokeWidth = 1.5.dp.toPx()
+                                val stroke = Stroke(
+                                    width = strokeWidth,
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round,
+                                )
+                                val path = Path().apply {
+                                    moveTo(x, 0f)
+                                    lineTo(x, (midY - r).coerceAtLeast(0f))
+                                    quadraticTo(x, midY, x + r, midY)
+                                    lineTo(endX, midY)
+                                }
+                                drawPath(path = path, color = treeLineColor, style = stroke)
+                                if (!isLast) {
+                                    drawLine(
+                                        color = treeLineColor,
+                                        start = Offset(x, (midY - r).coerceAtLeast(0f)),
+                                        end = Offset(x, size.height),
+                                        strokeWidth = strokeWidth,
+                                    )
+                                }
+                            }
+
+                            when {
+                                loadingPlaybackEntries -> {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .treeBranch(isLast = true)
+                                            .padding(start = contentStartPad, end = groupStyle.horizontalPadding, top = 8.dp, bottom = 14.dp),
+                                    ) {
+                                        Text(
+                                            text = tr("正在读取已缓存视频…", "Loading cached videos…", "キャッシュ動画を読み込み中…", "캐시된 동영상 불러오는 중…", "正在讀取已快取影片…"),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = colors.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                playbackEntries.isEmpty() -> {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .treeBranch(isLast = true)
+                                            .padding(start = contentStartPad, end = groupStyle.horizontalPadding, top = 8.dp, bottom = 14.dp),
+                                    ) {
+                                        Text(
+                                            text = tr("暂无可展示的视频缓存", "No cached videos found", "表示できるキャッシュ動画はありません", "표시할 캐시 동영상이 없습니다", "尚無可顯示的影片快取"),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = colors.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                else -> {
+                                    val identifiedEntries = remember(playbackEntries) {
+                                        playbackEntries.filter {
+                                            it.fileName.isNotBlank() && it.diskBytes >= MIN_DISPLAYED_PLAYBACK_CACHE_BYTES
+                                        }
+                                    }
+                                    val legacyEntries = remember(playbackEntries) {
+                                        playbackEntries.filter {
+                                            it.fileName.isBlank() && it.diskBytes >= MIN_DISPLAYED_PLAYBACK_CACHE_BYTES
+                                        }
+                                    }
+                                    val legacyTotalBytes = remember(legacyEntries) {
+                                        legacyEntries.sumOf { it.diskBytes }
+                                    }
+                                    val legacyDeletablePaths = remember(legacyEntries) {
+                                        legacyEntries.filterNot { it.isActive }.map { it.cachePath }
+                                    }
+                                    val sep = tr("，", ", ", "、", ", ", "，")
+                                    if (identifiedEntries.isEmpty() && legacyEntries.isEmpty()) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .treeBranch(isLast = true)
+                                                .padding(start = contentStartPad, end = groupStyle.horizontalPadding, top = 8.dp, bottom = 14.dp),
+                                        ) {
+                                            Text(
+                                                text = tr(
+                                                    "当前仅包含不足 1 MB 的零碎小缓存",
+                                                    "Only small cache files under 1 MB",
+                                                    "1 MB 未満の小さなキャッシュのみです",
+                                                    "1 MB 미만의 작은 캐시 파일만 있습니다",
+                                                    "目前僅包含不足 1 MB 的零碎小快取",
+                                                ),
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = colors.onSurfaceVariant,
+                                            )
+                                        }
+                                    } else {
+                                        LazyColumn(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .heightIn(max = 340.dp)
+                                                .padding(bottom = 6.dp),
+                                        ) {
+                                            itemsIndexed(identifiedEntries, key = { _, it -> it.cachePath }) { index, item ->
+                                                val isLastRow = index == identifiedEntries.lastIndex && legacyEntries.isEmpty()
+                                                val knownFile = remember(item.fileId, driveRepository) {
+                                                    if (item.fileId.isNotBlank()) driveRepository?.knownFile(item.fileId) else null
+                                                }
+                                                val percent = (item.coverageRatio * 100f).toInt().coerceIn(0, 100)
+                                                val localizedQuality = when {
+                                                    item.qualityLabel.isBlank() -> null
+                                                    item.qualityLabel.equals("Original", ignoreCase = true) ->
+                                                        tr("原画", "Original", "オリジナル", "원본", "原畫")
+                                                    else -> item.qualityLabel
+                                                }
+                                                val sizeReadout = if (item.totalBytes > 0L) {
+                                                    "${item.diskBytes.toReadableSize()} / ${item.totalBytes.toReadableSize()}"
+                                                } else {
+                                                    item.diskBytes.toReadableSize()
+                                                }
+                                                val metaParts = buildList {
+                                                    add(sizeReadout)
+                                                    add("$percent%")
+                                                    localizedQuality?.let(::add)
+                                                    if (item.isActive) {
+                                                        add(tr("播放中", "Playing", "再生中", "재생 중", "播放中"))
+                                                    }
+                                                }
+                                                val metaLine = metaParts.joinToString(sep)
+                                                val canOpen = onOpenCachedVideo != null && item.fileId.isNotBlank()
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .treeBranch(isLast = isLastRow)
+                                                        .then(
+                                                            if (canOpen) {
+                                                                Modifier.clickable {
+                                                                    onOpenCachedVideo.invoke(item.fileId, item.fileName)
+                                                                }
+                                                            } else {
+                                                                Modifier
+                                                            },
+                                                        )
+                                                        .padding(start = contentStartPad, end = 12.dp, top = 8.dp, bottom = 8.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                                ) {
+                                                    if (knownFile != null) {
+                                                        FileLeadingVisual(
+                                                            file = knownFile,
+                                                            isSpoilerBlurred = false,
+                                                            size = 40.dp,
+                                                        )
+                                                    } else {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .size(40.dp)
+                                                                .clip(RoundedCornerShape(10.dp))
+                                                                .background(if (eInk) Color.White else colors.surfaceContainerHighest),
+                                                            contentAlignment = Alignment.Center,
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Outlined.Movie,
+                                                                contentDescription = null,
+                                                                tint = colors.onSurfaceVariant,
+                                                                modifier = Modifier.size(20.dp),
+                                                            )
+                                                        }
+                                                    }
+                                                    Column(
+                                                        modifier = Modifier.weight(1f),
+                                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                                    ) {
+                                                        Text(
+                                                            text = item.fileName,
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            color = colors.onSurface,
+                                                            maxLines = 2,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                        )
+                                                        Text(
+                                                            text = metaLine,
+                                                            style = MaterialTheme.typography.bodySmall.tabular,
+                                                            color = colors.onSurfaceVariant,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                        )
+                                                        if (item.totalBytes > 0L) {
+                                                            WorkMeterBar(
+                                                                meter = WorkMeter.Determinate(item.coverageRatio),
+                                                                label = "${item.fileName} $percent%",
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .height(4.dp)
+                                                                    .clip(CircleShape),
+                                                                color = if (eInk) Color.Black else colors.primary,
+                                                            )
+                                                        }
+                                                    }
+                                                    TooltipIconButton(
+                                                        icon = Icons.Outlined.DeleteOutline,
+                                                        label = tr("删除此缓存", "Remove cache", "このキャッシュを削除", "이 캐시 삭제", "刪除此快取"),
+                                                        enabled = !busy && !item.isActive,
+                                                        onClick = {
+                                                            scope.launch {
+                                                                val freed = cacheManager.deletePlaybackEntry(item.cachePath)
+                                                                playbackEntries = loadResolvedPlaybackEntries()
+                                                                if (playbackEntries.isEmpty()) playbackExpanded = false
+                                                                if (freed > 0L) {
+                                                                    snackbarHostState.showSnackbar(freedNoticeText(freed))
+                                                                }
+                                                            }
+                                                        },
+                                                    )
+                                                }
+                                            }
+                                            if (legacyEntries.isNotEmpty()) {
+                                                item(key = "__legacy_playback_cache_group__") {
+                                                    val legacyCountText = tr(
+                                                        "${legacyEntries.size} 个文件",
+                                                        enCount(legacyEntries.size, "file", "files"),
+                                                        "${legacyEntries.size} 件",
+                                                        "${legacyEntries.size}개 파일",
+                                                        "${legacyEntries.size} 個檔案",
+                                                    )
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .treeBranch(isLast = true)
+                                                            .padding(start = contentStartPad, end = 12.dp, top = 8.dp, bottom = 8.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                                    ) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .size(40.dp)
+                                                                .clip(RoundedCornerShape(10.dp))
+                                                                .background(if (eInk) Color.White else colors.surfaceContainerHighest),
+                                                            contentAlignment = Alignment.Center,
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Outlined.Storage,
+                                                                contentDescription = null,
+                                                                tint = colors.onSurfaceVariant,
+                                                                modifier = Modifier.size(20.dp),
+                                                            )
+                                                        }
+                                                        Column(modifier = Modifier.weight(1f)) {
+                                                            Text(
+                                                                text = tr("旧版播放缓存", "Legacy playback cache", "旧再生キャッシュ", "이전 재생 캐시", "舊版播放快取"),
+                                                                style = MaterialTheme.typography.bodyMedium,
+                                                                color = colors.onSurfaceVariant,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis,
+                                                            )
+                                                            Text(
+                                                                text = "${legacyTotalBytes.toReadableSize()}$sep$legacyCountText",
+                                                                style = MaterialTheme.typography.bodySmall.tabular,
+                                                                color = colors.onSurfaceVariant,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis,
+                                                            )
+                                                        }
+                                                        TooltipIconButton(
+                                                            icon = Icons.Outlined.DeleteOutline,
+                                                            label = tr("清理旧版缓存", "Clear legacy cache", "旧キャッシュを消去", "이전 캐시 지우기", "清理舊版快取"),
+                                                            enabled = !busy && legacyDeletablePaths.isNotEmpty(),
+                                                            onClick = {
+                                                                scope.launch {
+                                                                    var freed = 0L
+                                                                    for (path in legacyDeletablePaths) {
+                                                                        freed += cacheManager.deletePlaybackEntry(path)
+                                                                    }
+                                                                    playbackEntries = loadResolvedPlaybackEntries()
+                                                                    if (playbackEntries.isEmpty()) playbackExpanded = false
+                                                                    if (freed > 0L) {
+                                                                        snackbarHostState.showSnackbar(freedNoticeText(freed))
+                                                                    }
+                                                                }
+                                                            },
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                SettingsRow(
+                    title = cacheCategoryLabel(category),
+                    supporting = supportingText,
+                    leading = {
+                        CategoryBadgeLeading(
+                            icon = cacheCategoryIcon(category),
+                            dotColor = color,
+                        )
+                    },
+                    trailing = if (stats.clearable) {
+                        {
+                            SettingsRowButton(
+                                label = tr("清理", "Clear", "消去", "지우기", "清理"),
+                                onClick = {
                                     scope.launch {
                                         val freed = cacheManager.clearCategory(category)
                                         snackbarHostState.showSnackbar(freedNoticeText(freed))
                                     }
-                                }
-                            },
-                            enabled = !busy && stats.bytes > 0L,
-                            primary = false,
-                        )
-                    }
-                } else {
-                    null
-                },
-            )
+                                },
+                                enabled = !busy && stats.bytes > 0L,
+                                primary = false,
+                            )
+                        }
+                    } else {
+                        null
+                    },
+                )
+            }
         }
     }
 
     SettingsGroup(tr("自动清理策略", "Auto-cleanup policy", "自動クリーンアップ", "자동 정리 정책", "自動清理策略")) {
+        SettingsSwitchRow(
+            icon = Icons.Outlined.PlayCircle,
+            title = tr("视频播放缓存", "Playback video cache", "動画再生キャッシュ", "동영상 재생 캐시", "影片播放快取"),
+            supporting = tr(
+                "网络良好时可关闭，播放时仅使用临时缓冲，关闭播放器后不保留磁盘缓存",
+                "Turn off on fast networks to avoid saving playback chunks to disk after closing the player",
+                "高速な回線ではオフにでき、再生終了後にディスクへキャッシュを残しません",
+                "네트워크가 빠른 환경에서는 끄고 재생 종료 후 디스크 캐시를 남기지 않을 수 있습니다",
+                "網路良好時可關閉，播放時僅使用暫時緩衝，關閉播放器後不保留磁碟快取",
+            ),
+            checked = playbackCacheEnabled,
+            onCheckedChange = { enabled ->
+                scope.launch { preferences.setPlaybackCacheEnabled(enabled) }
+            },
+        )
         SettingsNavigationRow(
             icon = Icons.Outlined.DataUsage,
             title = tr("缓存容量上限", "Maximum cache size", "キャッシュ容量の上限", "최대 캐시 용량", "快取容量上限"),
@@ -251,6 +765,8 @@ internal fun CacheSectionContent(
                     destructive = true,
                     onClick = {
                         confirmClearPlayback = false
+                        playbackExpanded = false
+                        playbackEntries = emptyList()
                         scope.launch {
                             val freed = cacheManager.clearCategory(CacheCategory.PLAYBACK)
                             snackbarHostState.showSnackbar(freedNoticeText(freed))

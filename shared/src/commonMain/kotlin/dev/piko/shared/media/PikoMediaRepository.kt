@@ -89,6 +89,7 @@ interface MediaPlaybackService {
     suspend fun savePlaybackPosition(fileId: String, positionMillis: Long)
     fun savePlaybackPositionAsync(fileId: String, positionMillis: Long)
     suspend fun getPlaybackPosition(fileId: String): Long
+    fun shouldResumePlayback(): Boolean = true
 }
 
 @Stable
@@ -199,6 +200,7 @@ class PikoMediaRepository(
         backgroundScope = backgroundScope,
         detailResolver = detailResolver,
         qualityProber = qualityProber,
+        playbackCacheEnabled = { preferences?.currentSnapshot?.playbackCacheEnabled ?: true },
     )
 
     private val subtitleService = MediaSubtitleService(
@@ -420,6 +422,9 @@ class PikoMediaRepository(
 
     override suspend fun getPlaybackPosition(fileId: String): Long =
         preferences?.getPlaybackPosition(fileId) ?: 0L
+
+    override fun shouldResumePlayback(): Boolean =
+        preferences?.currentSnapshot?.resumePlaybackEnabled ?: true
 
     private companion object {
         val sharedProxy by lazy { PikoMediaProxy() }

@@ -174,6 +174,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
                 skipFeedExitConfirm = prefs[PreferencesKeys.SKIP_FEED_EXIT_CONFIRM] ?: false,
                 cacheMaxBytes = (prefs[PreferencesKeys.CACHE_MAX_BYTES] ?: CachePolicyDefaults.DEFAULT_MAX_BYTES).coerceAtLeast(0L),
                 cacheMaxAgeDays = (prefs[PreferencesKeys.CACHE_MAX_AGE_DAYS] ?: CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS).coerceAtLeast(0),
+                playbackCacheEnabled = prefs[PreferencesKeys.PLAYBACK_CACHE_ENABLED] ?: true,
+                resumePlaybackEnabled = prefs[PreferencesKeys.RESUME_PLAYBACK_ENABLED] ?: true,
                 askDownloadLocation = prefs[PreferencesKeys.ASK_DOWNLOAD_LOCATION] ?: true,
                 clipVolume = prefs[PreferencesKeys.CLIP_VOLUME]?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f,
                 clipMuted = prefs[PreferencesKeys.CLIP_MUTED] ?: false,
@@ -215,6 +217,8 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val SKIP_FEED_EXIT_CONFIRM = booleanPreferencesKey("skip_feed_exit_confirm")
         val CACHE_MAX_BYTES = longPreferencesKey("cache_max_bytes")
         val CACHE_MAX_AGE_DAYS = intPreferencesKey("cache_max_age_days")
+        val PLAYBACK_CACHE_ENABLED = booleanPreferencesKey("playback_cache_enabled")
+        val RESUME_PLAYBACK_ENABLED = booleanPreferencesKey("resume_playback_enabled")
         val FOLDER_MAP_OPEN = booleanPreferencesKey("folder_map_open")
         val FOLDER_MAP_PINNED = booleanPreferencesKey("folder_map_pinned")
         val HEURISTIC_FILTER_ENABLED = booleanPreferencesKey("heuristic_filter_enabled")
@@ -506,6 +510,24 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val clamped = days.coerceAtLeast(0)
         cachedMainPreferences = context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.CACHE_MAX_AGE_DAYS] = clamped
+        }
+    }
+
+    override val playbackCacheEnabledFlow: Flow<Boolean> =
+        preference { it[PreferencesKeys.PLAYBACK_CACHE_ENABLED] ?: true }
+
+    override suspend fun setPlaybackCacheEnabled(enabled: Boolean) {
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYBACK_CACHE_ENABLED] = enabled
+        }
+    }
+
+    override val resumePlaybackEnabledFlow: Flow<Boolean> =
+        preference { it[PreferencesKeys.RESUME_PLAYBACK_ENABLED] ?: true }
+
+    override suspend fun setResumePlaybackEnabled(enabled: Boolean) {
+        cachedMainPreferences = context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.RESUME_PLAYBACK_ENABLED] = enabled
         }
     }
 

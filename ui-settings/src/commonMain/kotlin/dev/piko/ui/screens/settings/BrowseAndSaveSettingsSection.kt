@@ -7,6 +7,7 @@ import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.HighQuality
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Subtitles
@@ -44,11 +45,12 @@ internal fun hasBrowseSectionMatches(searchQuery: String): Boolean {
     val matchFoldersFirst = match("文件夹置顶", "Folders on top", "sort", "フォルダーを上部に固定", "폴더 상단 고정", "資料夾置頂")
     val matchPerFolderSort = match("各文件夹独立排序", "Sort each folder separately", "フォルダーごとに並べ替え", "폴더별 정렬", "各資料夾獨立排序")
     val matchPlayQuality = match("播放画质", "Playback quality", "resolution", "再生画質", "재생 화질", "播放畫質")
+    val matchResumePlayback = match("续播上次进度", "从头播放", "Resume playback", "start from beginning", "前回の続きから再生", "이어서 재생", "續播上次進度")
     val matchHwDec = match("硬件解码", "Hardware decoding", "mpv", "hwdec", "ハードウェアデコード", "하드웨어 디코딩", "硬體解碼")
     val matchClipAuto = match("信息流自动续播", "Auto-extend feed clips", "clips", "feed", "フィード", "피드 클립", "資訊流自動續播")
     val matchExitConfirm = match("退出瀑布流与信息流时确认", "Confirm before exiting", "gallery", "clips", "feed", "瀑布流", "信息流", "退出确认", "終了時に確認", "종료 시 확인", "結束時確認")
     return matchParse || matchHeuristic || matchBlur || matchFoldersFirst || matchPerFolderSort ||
-        matchPlayQuality || matchHwDec || matchClipAuto || matchExitConfirm
+        matchPlayQuality || matchResumePlayback || matchHwDec || matchClipAuto || matchExitConfirm
 }
 
 @Composable
@@ -86,6 +88,9 @@ internal fun BrowseSettingsSection(
     val foldersFirst by sessionManager.foldersFirstFlow.collectAsStateWithLifecycle(initialValue = true)
     val isPerFolderSortEnabled by sessionManager.perFolderSortFlow.collectAsStateWithLifecycle(initialValue = false)
     val isHardwareDecodingEnabled by sessionManager.hardwareDecodingFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isResumePlaybackEnabled by sessionManager.resumePlaybackEnabledFlow.collectAsStateWithLifecycle(
+        initialValue = sessionManager.currentSnapshot.resumePlaybackEnabled,
+    )
     val isClipAutoExtendEnabled by sessionManager.clipAutoExtendFlow.collectAsStateWithLifecycle(initialValue = true)
     val skipFeedExitConfirm by sessionManager.skipFeedExitConfirmFlow.collectAsStateWithLifecycle(
         initialValue = sessionManager.currentSnapshot.skipFeedExitConfirm,
@@ -114,10 +119,11 @@ internal fun BrowseSettingsSection(
     val matchFilesGroup = matchParse || matchHeuristic || matchBlur || matchFoldersFirst || matchPerFolderSort
 
     val matchPlayQuality = match("播放画质", "Playback quality", "resolution", "再生画質", "재생 화질", "播放畫質")
+    val matchResumePlayback = match("续播上次进度", "从头播放", "Resume playback", "start from beginning", "前回の続きから再生", "이어서 재생", "續播上次進度")
     val matchHwDec = match("硬件解码", "Hardware decoding", "mpv", "hwdec", "ハードウェアデコード", "하드웨어 디코딩", "硬體解碼")
     val matchClipAuto = match("信息流自动续播", "Auto-extend feed clips", "clips", "feed", "フィード", "피드 클립", "資訊流自動續播")
     val matchExitConfirm = match("退出瀑布流与信息流时确认", "Confirm before exiting", "gallery", "clips", "feed", "瀑布流", "信息流", "退出确认", "終了時に確認", "종료 시 확인", "結束時確認")
-    val matchPlayGroup = matchPlayQuality || matchHwDec || matchClipAuto || matchExitConfirm
+    val matchPlayGroup = matchPlayQuality || matchResumePlayback || matchHwDec || matchClipAuto || matchExitConfirm
 
     if (matchFilesGroup || matchPlayGroup) {
         SettingsSectionBlock(
@@ -216,6 +222,21 @@ internal fun BrowseSettingsSection(
                             supporting = playbackQualitySummary(playbackMaxHeight),
                             onClick = { showPlaybackQuality = true },
                             trailingIcon = null,
+                        )
+                    }
+                    if (matchResumePlayback) {
+                        SettingsSwitchRow(
+                            icon = Icons.Outlined.History,
+                            title = tr("续播上次进度", "Resume playback", "前回の続きから再生", "마지막 위치에서 이어서 재생", "續播上次進度"),
+                            supporting = tr(
+                                "关闭后每次打开视频都从头开始播放",
+                                "Start every video from the beginning when off",
+                                "オフにすると動画を毎回最初から再生します",
+                                "끄면 동영상을 열 때마다 처음부터 재생합니다",
+                                "關閉後每次開啟影片都從頭開始播放",
+                            ),
+                            checked = isResumePlaybackEnabled,
+                            onCheckedChange = { scope.launch { sessionManager.setResumePlaybackEnabled(it) } },
                         )
                     }
                     if (matchHwDec) {

@@ -468,6 +468,29 @@ internal class SqliteTreeStore(
         return result
     }
 
+    fun findFilesByByteSizes(sizes: Collection<Long>): List<CachedFileLookupRow> {
+        if (closed || sizes.isEmpty()) return emptyList()
+        val distinct = sizes.asSequence().filter { it > 0L }.distinct().toList()
+        if (distinct.isEmpty()) return emptyList()
+        val out = ArrayList<CachedFileLookupRow>()
+        for (chunk in distinct.chunked(200)) {
+            val placeholders = chunk.joinToString(",") { "?" }
+            rows(
+                "SELECT id, name, gcid, bytes FROM tree_nodes WHERE generation=0 AND folder=0 AND gcid IS NOT NULL AND gcid != '' AND bytes IN ($placeholders)",
+                chunk,
+            ) { c ->
+                val id = c.string(0) ?: return@rows
+                val name = c.string(1) ?: return@rows
+                val gcid = c.string(2) ?: return@rows
+                val bytes = c.long(3) ?: return@rows
+                if (gcid.isNotBlank() && bytes > 0L) {
+                    out += CachedFileLookupRow(id = id, name = name, gcid = gcid, sizeBytes = bytes)
+                }
+            }
+        }
+        return out
+    }
+
     private fun ensureFolderProjection(): FolderProjection {
         cachedFolderProjection?.let { return it }
         val folders = HashMap<String, FileStat>()

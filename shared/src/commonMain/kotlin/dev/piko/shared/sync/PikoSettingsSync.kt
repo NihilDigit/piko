@@ -137,6 +137,7 @@ val SyncedSettings: List<SyncedSetting> = listOf(
     ),
     bool("galleryShowImages", { it.galleryShowImagesFlow }) { setGalleryShowImages(it) },
     bool("skipFeedExitConfirm", { it.skipFeedExitConfirmFlow }) { setSkipFeedExitConfirm(it) },
+    bool("resumePlaybackEnabled", { it.resumePlaybackEnabledFlow }) { setResumePlaybackEnabled(it) },
 )
 
 /**

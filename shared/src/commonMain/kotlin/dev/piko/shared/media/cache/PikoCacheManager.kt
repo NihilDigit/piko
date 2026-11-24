@@ -91,6 +91,21 @@ interface CacheCategoryBackend {
      * 执行淘汰，返回释放的字节数。
      */
     suspend fun prune(maxAgeMillis: Long, targetMaxBytes: Long): Long = 0L
+
+    /** 列出本分类下的持久化播放缓存视频明细（仅 [CacheCategory.PLAYBACK] 实现）。 */
+    suspend fun listPlaybackEntries(account: String? = null): List<PlaybackCacheItem> = emptyList()
+
+    /** 删除单条持久化播放缓存条目并返回释放的字节数（仅 [CacheCategory.PLAYBACK] 实现）。 */
+    suspend fun deletePlaybackEntry(path: String): Long = 0L
+
+    /** 将反查到的真实文件元数据回写升级至 `.pplay` v2（仅 [CacheCategory.PLAYBACK] 实现）。 */
+    suspend fun backfillPlaybackMetadata(
+        cachePath: String,
+        fileId: String,
+        fileName: String,
+        qualityLabel: String,
+        account: String,
+    ) {}
 }
 
 /**
@@ -185,6 +200,52 @@ class PikoCacheManager(
             } finally {
                 _summary.update { it.copy(isClearing = false) }
             }
+        }
+    }
+
+    suspend fun listPlaybackEntries(account: String? = null): List<PlaybackCacheItem> = withContext(Dispatchers.IO) {
+        val backend = backends[CacheCategory.PLAYBACK] ?: return@withContext emptyList()
+        runCatching { backend.listPlaybackEntries(account) }
+            .onFailure { err ->
+                if (err is CancellationException) throw err
+                PikoLog.w(TAG, "Failed to list playback cache entries", err)
+            }
+            .getOrDefault(emptyList())
+    }
+
+    suspend fun deletePlaybackEntry(path: String): Long = withContext(Dispatchers.IO) {
+        val backend = backends[CacheCategory.PLAYBACK] ?: return@withContext 0L
+        opLock.withLock {
+            _summary.update { it.copy(isClearing = true) }
+            try {
+                val freed = runCatching { backend.deletePlaybackEntry(path) }
+                    .onFailure { err ->
+                        if (err is CancellationException) throw err
+                        PikoLog.w(TAG, "Failed to delete playback cache entry", err)
+                    }
+                    .getOrDefault(0L)
+                    .coerceAtLeast(0L)
+                scanAndPublishLocked()
+                freed
+            } finally {
+                _summary.update { it.copy(isClearing = false) }
+            }
+        }
+    }
+
+    suspend fun backfillPlaybackMetadata(
+        cachePath: String,
+        fileId: String,
+        fileName: String,
+        qualityLabel: String,
+        account: String,
+    ): Unit = withContext(Dispatchers.IO) {
+        val backend = backends[CacheCategory.PLAYBACK] ?: return@withContext
+        runCatching {
+            backend.backfillPlaybackMetadata(cachePath, fileId, fileName, qualityLabel, account)
+        }.onFailure { err ->
+            if (err is CancellationException) throw err
+            PikoLog.w(TAG, "Failed to backfill playback cache metadata", err)
         }
     }
 

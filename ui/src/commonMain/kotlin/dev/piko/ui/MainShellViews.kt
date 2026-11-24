@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.outlined.MenuOpen
 import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderShared
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.SwapVerticalCircle
@@ -672,6 +673,8 @@ private fun MainSidebar(
                     onFilesTab = selectedPage == null && currentTab == MainTab.FILES,
                     onOpen = onOpenQuickAccess,
                 )
+                val journalState by LocalPikoServices.current.driveRepository.changes.state.collectAsStateWithLifecycle()
+                val undoableCount = journalState.available.size
                 SectionLabel(tr("库", "Library", "ライブラリ", "라이브러리", "資料庫"))
                 for (entry in LibraryEntries) {
                     val library = entry.library
@@ -682,6 +685,7 @@ private fun MainSidebar(
                         label = entry.label,
                         selected = selectedPage == targetScreen,
                         onClick = { if (library != null) onToggleLibrary(library) else entry.screen?.let(onOpenPage) },
+                        badgeCount = if (targetScreen == Screen.OperationHistory) undoableCount else 0,
                     )
                 }
             }
@@ -816,6 +820,7 @@ private val LibraryEntries = listOf(
     LibraryEntry(DriveLibrary.HISTORY),
     LibraryEntry({ tr("我的分享", "My shares", "自分の共有", "내 공유", "我的分享") }, Icons.Outlined.FolderShared, Icons.Filled.FolderShared, screen = Screen.MyShares),
     LibraryEntry({ tr("空间分布", "Space usage", "ストレージ内訳", "공간 분포", "空間分佈") }, Icons.Outlined.PieChart, Icons.Filled.PieChart, screen = Screen.SpaceMap()),
+    LibraryEntry({ tr("操作记录", "Operation history", "操作履歴", "작업 기록", "操作記錄") }, Icons.Outlined.History, Icons.Filled.History, screen = Screen.OperationHistory),
     LibraryEntry(DriveLibrary.TRASH),
 )
 

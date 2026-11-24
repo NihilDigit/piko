@@ -135,6 +135,8 @@ data class PikoPreferencesSnapshot(
     val skipFeedExitConfirm: Boolean = false,
     val cacheMaxBytes: Long = CachePolicyDefaults.DEFAULT_MAX_BYTES,
     val cacheMaxAgeDays: Int = CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS,
+    val playbackCacheEnabled: Boolean = true,
+    val resumePlaybackEnabled: Boolean = true,
     val askDownloadLocation: Boolean = true,
     val clipVolume: Float = 1f,
     val clipMuted: Boolean = false,
@@ -437,6 +439,14 @@ interface PikoUserPreferences {
     /** 本地缓存过期自动清理天数（0 表示永不自动按时间清理）。仅保存在当前设备，不同步。 */
     val cacheMaxAgeDaysFlow: Flow<Int> get() = flowOf(CachePolicyDefaults.DEFAULT_MAX_AGE_DAYS)
     suspend fun setCacheMaxAgeDays(days: Int) {}
+
+    /** 在线播放时将视频分块持久化到磁盘供复播复用，默认开启。仅保存在当前设备，不同步。 */
+    val playbackCacheEnabledFlow: Flow<Boolean> get() = flowOf(true)
+    suspend fun setPlaybackCacheEnabled(enabled: Boolean) {}
+
+    /** 打开视频时自动续播上次进度，默认开启；关闭后每次从头播放。跨设备同步。 */
+    val resumePlaybackEnabledFlow: Flow<Boolean> get() = flowOf(true)
+    suspend fun setResumePlaybackEnabled(enabled: Boolean) {}
 
     /**
      * 网盘页的目录图（FolderMap）开着与钉着，默认都否。两项各自独立：× 关掉不改钉住，再打开照旧钉着；

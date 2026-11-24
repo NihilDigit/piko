@@ -499,6 +499,20 @@ internal class DriveTreeIndex(
         else state.value.entries.values.sumOf { if (it.isFolder || VaultEntry.isVaulted(it.id)) 0L else it.sizeBytes.coerceAtLeast(0L) }
     }
 
+    internal fun findFilesByByteSizes(sizes: Collection<Long>): List<CachedFileLookupRow> = withPikoLock(lock) {
+        if (sizes.isEmpty()) return@withPikoLock emptyList()
+        disk?.let { return@withPikoLock it.findFilesByByteSizes(sizes) }
+        val targetSet = sizes.asSequence().filter { it > 0L }.toHashSet()
+        if (targetSet.isEmpty()) return@withPikoLock emptyList()
+        state.value.entries.values.mapNotNull { file ->
+            if (!file.isFolder && file.hash.isNotBlank() && file.sizeBytes in targetSet) {
+                CachedFileLookupRow(id = file.id, name = file.name, gcid = file.hash, sizeBytes = file.sizeBytes)
+            } else {
+                null
+            }
+        }
+    }
+
     private fun children(folderId: String, realOnly: Boolean): FolderChildren {
         withPikoLock(lock) { disk?.let { return it.children(folderId, realOnly) } }
         val current = flow.value

@@ -454,6 +454,7 @@ internal class PlaybackSessionPreparer(
     private val backgroundScope: CoroutineScope,
     private val detailResolver: MediaDetailResolver,
     private val qualityProber: TranscodeQualityProber,
+    private val playbackCacheEnabled: () -> Boolean = { true },
 ) {
     suspend fun prepareMedia(fileId: String, preferredResolution: String? = null): Result<PlayableMediaInfo> =
         withContext(Dispatchers.Default) {
@@ -916,7 +917,8 @@ internal class PlaybackSessionPreparer(
                 mediaId = if (resolved.isOrigin) null else resolved.mediaId,
                 streamSize = knownStreamSize,
                 mediaBytesPerSecond = mediaRate,
-                retainForPlayback = retainedBy == null,
+                retainForPlayback = retainedBy == null && playbackCacheEnabled(),
+                qualityLabel = if (resolved.isOrigin) "Original" else resolved.video?.height?.let { "${it}P" } ?: resolved.mediaId.orEmpty(),
             )
             return PikPakByteSource(lease.entry.handle, lease.entry.cache, lease::close)
         }

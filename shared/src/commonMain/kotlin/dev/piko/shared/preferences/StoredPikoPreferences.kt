@@ -120,6 +120,20 @@ class StoredPikoPreferences(
         cacheMaxAgeDays.value = clamped
     }
 
+    private val playbackCacheEnabled = MutableStateFlow(settings.get(KEY_PLAYBACK_CACHE_ENABLED, "true") != "false")
+    override val playbackCacheEnabledFlow: Flow<Boolean> = playbackCacheEnabled.asStateFlow()
+    override suspend fun setPlaybackCacheEnabled(enabled: Boolean) {
+        settings.set(KEY_PLAYBACK_CACHE_ENABLED, enabled.toString())
+        playbackCacheEnabled.value = enabled
+    }
+
+    private val resumePlaybackEnabled = MutableStateFlow(settings.get(KEY_RESUME_PLAYBACK_ENABLED, "true") != "false")
+    override val resumePlaybackEnabledFlow: Flow<Boolean> = resumePlaybackEnabled.asStateFlow()
+    override suspend fun setResumePlaybackEnabled(enabled: Boolean) {
+        settings.set(KEY_RESUME_PLAYBACK_ENABLED, enabled.toString())
+        resumePlaybackEnabled.value = enabled
+    }
+
     private val perFolderSort = MutableStateFlow(settings.get("drive.perFolderSort") == "true")
     override val perFolderSortFlow: Flow<Boolean> = perFolderSort.asStateFlow()
     override suspend fun setPerFolderSort(enabled: Boolean) {
@@ -442,6 +456,8 @@ class StoredPikoPreferences(
             skipFeedExitConfirm = skipFeedExitConfirm.value,
             cacheMaxBytes = cacheMaxBytes.value,
             cacheMaxAgeDays = cacheMaxAgeDays.value,
+            playbackCacheEnabled = playbackCacheEnabled.value,
+            resumePlaybackEnabled = resumePlaybackEnabled.value,
             askDownloadLocation = askDownloadLocation.value,
             clipVolume = clipVolume.value,
             clipMuted = clipMuted.value,
@@ -757,6 +773,8 @@ class StoredPikoPreferences(
         const val KEY_SKIP_FEED_EXIT_CONFIRM = "ui.skipFeedExitConfirm"
         const val KEY_CACHE_MAX_BYTES = "cache.maxBytes"
         const val KEY_CACHE_MAX_AGE_DAYS = "cache.maxAgeDays"
+        const val KEY_PLAYBACK_CACHE_ENABLED = "cache.playbackEnabled"
+        const val KEY_RESUME_PLAYBACK_ENABLED = "player.resumePlayback"
         const val KEY_FOLDER_MAP_OPEN = "ui.folderMapOpen"
         const val KEY_FOLDER_MAP_PINNED = "ui.folderMapPinned"
         const val KEY_HEURISTIC = "ui.heuristicFilter"

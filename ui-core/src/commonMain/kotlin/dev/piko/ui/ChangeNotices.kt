@@ -15,7 +15,10 @@ import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun ObserveMessages(messages: Flow<String>, snackbarHostState: SnackbarHostState) {
     LaunchedEffect(messages, snackbarHostState) {
-        messages.collect { snackbarHostState.showSnackbar(it, withDismissAction = true) }
+        messages.collectLatest {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            snackbarHostState.showSnackbar(it, duration = SnackbarDuration.Short, withDismissAction = false)
+        }
     }
 }
 
@@ -46,11 +49,12 @@ suspend fun showChangeNotices(
         awaitVisible()
         if (!isCurrent(event)) return@collectLatest
         val change = event.change
+        host.currentSnackbarData?.dismiss()
         val result = host.showSnackbar(
             message = event.message,
             actionLabel = if (change != null) tr("撤销", "Undo", "元に戻す", "실행 취소", "復原") else null,
-            withDismissAction = true,
-            duration = if (change != null) SnackbarDuration.Indefinite else SnackbarDuration.Short,
+            withDismissAction = false,
+            duration = SnackbarDuration.Short,
         )
         if (change != null && result == SnackbarResult.ActionPerformed && isCurrent(event)) undo(change)
     }

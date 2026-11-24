@@ -44,6 +44,9 @@ sealed interface Screen : NavKey {
     ) : Screen
 
     @Serializable
+    data object OperationHistory : Screen
+
+    @Serializable
     data class Library(val libraryId: String) : Screen
 
     @Serializable

@@ -344,6 +344,7 @@ internal fun StorageSettingsSection(
     firstSection: SettingsSection?,
     onSectionPositioned: (SettingsSection, Int) -> Unit,
     snackbarHostState: SnackbarHostState,
+    onOpenCachedVideo: ((fileId: String, fileName: String) -> Unit)? = null,
 ) {
     if (hasStorageSectionMatches(searchQuery)) {
         val services = LocalPikoServices.current
@@ -356,6 +357,9 @@ internal fun StorageSettingsSection(
                 cacheManager = services.cacheManager,
                 preferences = services.preferences,
                 snackbarHostState = snackbarHostState,
+                currentAccount = services.driveRepository.currentAccount,
+                driveRepository = services.driveRepository,
+                onOpenCachedVideo = onOpenCachedVideo,
             )
         }
     }

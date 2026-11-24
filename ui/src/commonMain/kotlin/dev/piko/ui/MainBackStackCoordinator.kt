@@ -2,6 +2,7 @@ package dev.piko.ui
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PieChart
 import androidx.compose.material.icons.outlined.Settings
@@ -48,6 +49,7 @@ internal val NavKeyConfiguration = SavedStateConfiguration {
             subclass(Screen.Library::class)
             subclass(Screen.MyShares::class)
             subclass(Screen.SpaceMap::class)
+            subclass(Screen.OperationHistory::class)
             subclass(Screen.Settings::class)
             subclass(Screen.WebDav::class)
             subclass(Screen.PlayerCustomization::class)
@@ -294,6 +296,7 @@ internal class MainBackStackCoordinator(
         libraryDestination(DriveLibrary.HISTORY, "history"),
         PaletteItem(tr("我的分享", "My shares", "自分の共有", "내 공유", "我的分享"), Icons.Outlined.Share, tr("页面", "Page", "ページ", "페이지", "頁面"), keywords = "shares") { openPage(Screen.MyShares) },
         PaletteItem(tr("空间分布", "Space usage", "ストレージ内訳", "공간 분포", "空間分佈"), Icons.Outlined.PieChart, tr("页面", "Page", "ページ", "페이지", "頁面"), keywords = "space usage storage disk treemap 容量 空间 占用") { openPage(Screen.SpaceMap()) },
+        PaletteItem(tr("操作记录", "Operation history", "操作履歴", "작업 기록", "操作記錄"), Icons.Outlined.History, tr("页面", "Page", "ページ", "페이지", "頁面"), keywords = "history undo operations 撤销 操作记录") { openPage(Screen.OperationHistory) },
         libraryDestination(DriveLibrary.TRASH, "trash bin"),
         PaletteItem(tr("设置", "Settings", "設定", "설정", "設定"), Icons.Outlined.Settings, tr("页面", "Page", "ページ", "페이지", "頁面"), keywords = "settings preferences") { openPage(Screen.Settings) },
     )
@@ -333,7 +336,7 @@ internal fun rememberMainBackStackCoordinator(
 }
 
 private val LibraryScreens: Set<NavKey?> = DriveLibrary.entries.mapTo(mutableSetOf()) { Screen.Library(it.id) }
-private val ProfilePanes = setOf<NavKey?>(Screen.MyShares, Screen.Settings) + LibraryScreens
+private val ProfilePanes = setOf<NavKey?>(Screen.MyShares, Screen.OperationHistory, Screen.Settings) + LibraryScreens
 internal fun isProfilePane(key: NavKey?): Boolean = key in ProfilePanes || key is Screen.SpaceMap
 private val DesktopTopLevelScreens = ProfilePanes + Screen.Home
 private val DesktopTopLevelContentKeys = DesktopTopLevelScreens.mapTo(mutableSetOf()) { it.toString() }

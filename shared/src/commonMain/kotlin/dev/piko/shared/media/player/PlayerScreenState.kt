@@ -1036,17 +1036,19 @@ class PlayerScreenState(
         }
         val pending = pendingStartMillis
         pendingStartMillis = null
+        val shouldResume = pending == null && repository.shouldResumePlayback()
         // 同步开着时优先用 PikPak 播放历史里的位置：它含其他客户端看到的进度。查它要一次请求，
         // 与取流并行，到开播前才取结果，等不到就退回本机记录
         val prepareStarted = TimeSource.Monotonic.markNow()
-        val cloudPosition = if (pending == null) scope.async { repository.cloudPlaybackPosition(fileId) } else null
+        val cloudPosition = if (shouldResume) scope.async { repository.cloudPlaybackPosition(fileId) } else null
         try {
-            val localSaved = if (pending == null) {
+            val localSaved = if (shouldResume) {
                 repository.getPlaybackPosition(positionKey).takeIf { it > RESUME_THRESHOLD_MILLIS }
             } else null
             var saved: Long? = null
             suspend fun startPosition(): Long {
                 if (pending != null) return applyAttemptStart(pending)
+                if (!shouldResume) return applyAttemptStart(0L)
                 val waitBudget = if (localSaved != null) LOCAL_RESUME_WAIT_MILLIS else CLOUD_RESUME_WAIT_MILLIS
                 val remaining = (waitBudget - prepareStarted.elapsedNow().inWholeMilliseconds).coerceAtLeast(0L)
                 // 预算耗尽也要使用已经返回的云端结果；withTimeoutOrNull(0) 不会执行 await。

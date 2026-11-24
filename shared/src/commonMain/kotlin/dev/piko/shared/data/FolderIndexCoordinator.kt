@@ -498,6 +498,9 @@ internal class FolderIndexCoordinator(
         ctx.mutations.projectOptimisticFiles(listOf(it), trash = it.trashed).firstOrNull()
     }
 
+    fun findFilesByByteSizes(sizes: Collection<Long>): List<CachedFileLookupRow> =
+        driveTreeIndex.findFilesByByteSizes(sizes)
+
     internal fun knownConfirmedFile(fileId: String): FileStat? =
         ctx.listing.listings.value.values.asSequence().filter { !it.stale }
             .mapNotNull { it.files.firstOrNull { file -> file.id == fileId } }.firstOrNull()

@@ -308,6 +308,7 @@ internal class RecordedPositions(syncPlayHistory: Boolean = false) {
             }
             "getPlaybackPosition" -> saved[args[0] as String] ?: 0L
             "getSyncPlayHistoryFlow" -> syncPlayHistoryFlow
+            "getCurrentSnapshot" -> dev.piko.data.auth.PikoPreferencesSnapshot()
             else -> throw UnsupportedOperationException(method.name)
         }
     } as PikoUserPreferences

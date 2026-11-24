@@ -43,6 +43,25 @@ data class CachedRenditionInfo(
 )
 
 /**
+ * 持久化视频播放缓存的单条明细，供设置页「存储与缓存」展示具体缓存视频、直开播放与单条清理。
+ */
+data class PlaybackCacheItem(
+    val cachePath: String,
+    val fileId: String,
+    val fileName: String,
+    val qualityLabel: String,
+    val account: String,
+    val cachedBytes: Long,
+    val totalBytes: Long,
+    val diskBytes: Long,
+    val lastAccessEpochMillis: Long,
+    val isActive: Boolean,
+) {
+    val coverageRatio: Float
+        get() = if (totalBytes > 0L) (cachedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f) else 0f
+}
+
+/**
  * 同一账号的同一原文件共用句柄、缓存与稀疏存储；每个使用者单独释放引用。
  *
  * 暂存文件的位置每次都由内容身份经 [target] 推出，不从任务表里取：存下的绝对路径在便携目录挪位、
@@ -129,6 +148,10 @@ class PikoFileCachePool(
         internal var references: Int = 0,
         internal var retained: Boolean = false,
         internal var playbackCached: Boolean = false,
+        internal var fileId: String = "",
+        internal var fileName: String = "",
+        internal var qualityLabel: String = "",
+        internal var account: String = "",
     )
 
     class Lease internal constructor(val entry: Entry, private val release: suspend () -> Unit) : AutoCloseable {
@@ -160,6 +183,8 @@ class PikoFileCachePool(
         mediaBytesPerSecond: Long? = null,
         /** 是否作为持久化播放缓存保留在盘上（受 [PikoCacheManager] LRU+TTL 约束，独立于下载租约）。 */
         retainForPlayback: Boolean = false,
+        /** 供播放缓存明细展示的画质标签（如 Original / 1080P）。 */
+        qualityLabel: String = "",
     ): Lease {
         val key = identity(client.account, gcid, streamSize, mediaId)
         while (true) {
@@ -203,6 +228,10 @@ class PikoFileCachePool(
                                 store = store,
                                 retained = willRetain,
                                 playbackCached = willPlaybackCache,
+                                fileId = fileId,
+                                fileName = name,
+                                qualityLabel = qualityLabel,
+                                account = client.account,
                             ).also { entries[key] = it }
                         } catch (e: Throwable) {
                             handle.close()
@@ -210,6 +239,10 @@ class PikoFileCachePool(
                             throw e
                         }
                     }
+                    if (fileId.isNotBlank()) entry.fileId = fileId
+                    if (name.isNotBlank()) entry.fileName = name
+                    if (qualityLabel.isNotBlank()) entry.qualityLabel = qualityLabel
+                    if (client.account.isNotBlank()) entry.account = client.account
                     if (old != null && mediaBytesPerSecond != null && mediaBytesPerSecond > 0L) {
                         entry.cache.updateMediaBytesPerSecond(mediaBytesPerSecond)
                     }
@@ -221,7 +254,7 @@ class PikoFileCachePool(
                     if (willPlaybackCache) {
                         entry.playbackCached = true
                         entry.store.setDurable(true)
-                        touchPlaybackMarkerAccess(path, nowMillis())
+                        touchPlaybackMarkerAccess(path, nowMillis(), entry)
                     }
                     if (retained) {
                         paths.update { it + (key to entry.store.path) }
@@ -675,6 +708,140 @@ class PikoFileCachePool(
         freed
     }
 
+    /**
+     * 列出持久化播放缓存的视频明细（按最近访问时间降序），严格排除在途下载租约。
+     * 若指定 [account]，仅返回该账号或历史无账号元数据的条目。
+     */
+    suspend fun listPlaybackCacheEntries(account: String? = null): List<PlaybackCacheItem> = withContext(Dispatchers.IO) {
+        val candidates = runCatching { ownedCacheFiles(target("probe")) }.getOrDefault(emptyList())
+        val now = nowMillis()
+        val (downloadPaths, activePaths, liveByPath) = lock.withLock {
+            val pinned = paths.value.values.toSet()
+            val active = activePathsLocked()
+            val live = entries.values
+                .filter { it.playbackCached && !it.retained && it.store.path !in pinned }
+                .associate { entry ->
+                    entry.store.path to PlaybackCacheItem(
+                        cachePath = entry.store.path,
+                        fileId = entry.fileId,
+                        fileName = entry.fileName,
+                        qualityLabel = entry.qualityLabel,
+                        account = entry.account,
+                        cachedBytes = entry.store.heldBytes.value.coerceIn(0L, entry.store.size.coerceAtLeast(0L)),
+                        totalBytes = entry.store.size.coerceAtLeast(0L),
+                        diskBytes = estimateEntryDiskBytes(entry.store.path, entry.store.heldBytes.value),
+                        lastAccessEpochMillis = now,
+                        isActive = true,
+                    )
+                }
+            Triple(pinned, active, live)
+        }
+        val items = ArrayList<PlaybackCacheItem>()
+        val seen = HashSet<String>()
+        for (path in candidates) {
+            if (path in downloadPaths) continue
+            val live = liveByPath[path]
+            val marker = readPlaybackMarker(path)
+            val item = when {
+                live != null -> live.copy(
+                    fileId = live.fileId.ifBlank { marker?.fileId.orEmpty() },
+                    fileName = live.fileName.ifBlank { marker?.fileName.orEmpty() },
+                    qualityLabel = live.qualityLabel.ifBlank { marker?.qualityLabel.orEmpty() },
+                    account = live.account.ifBlank { marker?.account.orEmpty() },
+                )
+                marker != null -> PlaybackCacheItem(
+                    cachePath = path,
+                    fileId = marker.fileId,
+                    fileName = marker.fileName,
+                    qualityLabel = marker.qualityLabel,
+                    account = marker.account,
+                    cachedBytes = marker.cachedBytes.coerceIn(0L, marker.totalBytes.coerceAtLeast(0L)),
+                    totalBytes = marker.totalBytes.coerceAtLeast(0L),
+                    diskBytes = estimateEntryDiskBytes(path, marker.cachedBytes),
+                    lastAccessEpochMillis = marker.lastAccessEpochMillis,
+                    isActive = path in activePaths,
+                )
+                else -> null
+            } ?: continue
+            seen += path
+            if (account.isNullOrBlank() || item.account.isBlank() || item.account == account) {
+                items += item
+            }
+        }
+        for ((path, live) in liveByPath) {
+            if (path !in seen && live.cachedBytes > 0L) {
+                if (account.isNullOrBlank() || live.account.isBlank() || live.account == account) {
+                    items += live
+                }
+            }
+        }
+        items.sortedByDescending { it.lastAccessEpochMillis }
+    }
+
+    /**
+     * 将反查到的真实文件元数据回写升级至 `.pplay` v2 侧车，避免后续重复扫描目录树。
+     */
+    suspend fun backfillPlaybackMetadata(
+        cachePath: String,
+        fileId: String,
+        fileName: String,
+        qualityLabel: String,
+        account: String,
+    ): Unit = withContext(Dispatchers.IO) {
+        lock.withLock {
+            val existing = readPlaybackMarker(cachePath) ?: return@withLock
+            val nextFileId = existing.fileId.ifBlank { fileId }
+            val nextFileName = existing.fileName.ifBlank { fileName }
+            val nextQuality = existing.qualityLabel.ifBlank { qualityLabel }
+            val nextAccount = existing.account.ifBlank { account }
+            if (
+                nextFileId == existing.fileId &&
+                nextFileName == existing.fileName &&
+                nextQuality == existing.qualityLabel &&
+                nextAccount == existing.account
+            ) {
+                return@withLock
+            }
+            runCatching {
+                writePlaybackMarker(
+                    cachePath,
+                    existing.copy(
+                        fileId = nextFileId,
+                        fileName = nextFileName,
+                        qualityLabel = nextQuality,
+                        account = nextAccount,
+                    ),
+                )
+            }
+        }
+    }
+
+    /**
+     * 安全删除单条持久化播放缓存，返回释放的字节数。
+     * 若条目正被下载任务或活跃播放流占用则拒绝删除（下载租约仅摘除 `.pplay` 标记）。
+     */
+    suspend fun deletePlaybackCacheEntry(path: String): Long = withContext(Dispatchers.IO) {
+        lock.withLock {
+            val downloadPaths = paths.value.values.toSet()
+            val activePaths = activePathsLocked()
+            if (path in activePaths) return@withLock 0L
+            val marker = readPlaybackMarker(path)
+            if (path in downloadPaths) {
+                deletePlaybackMarkerSafe(path)
+                return@withLock 0L
+            }
+            val size = estimateEntryDiskBytes(path, marker?.cachedBytes ?: 0L)
+            runCatching {
+                deleteCacheFiles(path)
+                deletePlaybackMarkerSafe(path)
+                size
+            }.onFailure { err ->
+                if (err is CancellationException) throw err
+                PikoLog.w(TAG, "Failed to delete single playback cache entry", err)
+            }.getOrDefault(0L)
+        }
+    }
+
     /** 构造接入 [PikoCacheManager] 的 [CacheCategory.PLAYBACK] 后端适配器。 */
     fun asCacheBackend(): CacheCategoryBackend = object : CacheCategoryBackend {
         override val category: CacheCategory = CacheCategory.PLAYBACK
@@ -683,6 +850,17 @@ class PikoFileCachePool(
         override suspend fun clear(): Long = clearPlaybackCache()
         override suspend fun prune(maxAgeMillis: Long, targetMaxBytes: Long): Long =
             prunePlaybackCache(maxAgeMillis = maxAgeMillis, targetMaxBytes = targetMaxBytes)
+        override suspend fun listPlaybackEntries(account: String?): List<PlaybackCacheItem> =
+            listPlaybackCacheEntries(account)
+        override suspend fun deletePlaybackEntry(path: String): Long =
+            deletePlaybackCacheEntry(path)
+        override suspend fun backfillPlaybackMetadata(
+            cachePath: String,
+            fileId: String,
+            fileName: String,
+            qualityLabel: String,
+            account: String,
+        ) = this@PikoFileCachePool.backfillPlaybackMetadata(cachePath, fileId, fileName, qualityLabel, account)
     }
 
     private suspend fun release(entry: Entry) = lock.withLock {
@@ -710,7 +888,7 @@ class PikoFileCachePool(
                     .isSuccess
                 if (entry.playbackCached && entry.store.heldBytes.value > 0L) {
                     if (flushed) {
-                        writePlaybackMarkerSafe(entry.store, entry.key, nowMillis())
+                        writePlaybackMarkerSafe(entry, nowMillis())
                     } else {
                         deletePlaybackMarkerSafe(entry.store.path)
                     }
@@ -730,7 +908,7 @@ class PikoFileCachePool(
                     .isSuccess
                 if (flushed) {
                     try {
-                        writePlaybackMarkerSafe(entry.store, entry.key, nowMillis())
+                        writePlaybackMarkerSafe(entry, nowMillis())
                     } finally {
                         entry.store.close()
                     }
@@ -766,8 +944,11 @@ class PikoFileCachePool(
     private fun hasPlaybackMarker(path: String): Boolean =
         runCatching { SystemFileSystem.exists(Path("$path$PLAYBACK_MARKER_SUFFIX")) }.getOrDefault(false)
 
-    private suspend fun writePlaybackMarkerSafe(store: PersistentFileStore, key: String, accessTimeMs: Long) {
+    private suspend fun writePlaybackMarkerSafe(entry: Entry, accessTimeMs: Long) {
+        val store = entry.store
+        val key = entry.key
         runCatching {
+            val existing = readPlaybackMarker(store.path)
             val total = store.size.coerceAtLeast(0L)
             val held = store.heldBytes.value.coerceIn(0L, total)
             val blockCount = if (total == 0L) 0 else ((total + BLOCK_BYTES - 1L) / BLOCK_BYTES).toInt()
@@ -798,6 +979,10 @@ class PikoFileCachePool(
                     cachedBytes = held,
                     blockCount = blockCount,
                     packedBitmap = packed,
+                    fileId = entry.fileId.ifBlank { existing?.fileId.orEmpty() },
+                    fileName = entry.fileName.ifBlank { existing?.fileName.orEmpty() },
+                    qualityLabel = entry.qualityLabel.ifBlank { existing?.qualityLabel.orEmpty() },
+                    account = entry.account.ifBlank { existing?.account.orEmpty() },
                 ),
             )
         }.onFailure { err ->
@@ -806,11 +991,24 @@ class PikoFileCachePool(
         }
     }
 
-    private fun touchPlaybackMarkerAccess(path: String, accessTimeMs: Long) {
+    private fun touchPlaybackMarkerAccess(path: String, accessTimeMs: Long, entry: Entry) {
         val existing = readPlaybackMarker(path) ?: return
-        if (accessTimeMs - existing.lastAccessEpochMillis < TOUCH_THROTTLE_MS) return
+        val needsMetadata = (existing.fileId.isBlank() && entry.fileId.isNotBlank()) ||
+            (existing.fileName.isBlank() && entry.fileName.isNotBlank()) ||
+            (existing.qualityLabel.isBlank() && entry.qualityLabel.isNotBlank()) ||
+            (existing.account.isBlank() && entry.account.isNotBlank())
+        if (!needsMetadata && accessTimeMs - existing.lastAccessEpochMillis < TOUCH_THROTTLE_MS) return
         runCatching {
-            writePlaybackMarker(path, existing.copy(lastAccessEpochMillis = accessTimeMs))
+            writePlaybackMarker(
+                path,
+                existing.copy(
+                    lastAccessEpochMillis = accessTimeMs,
+                    fileId = entry.fileId.ifBlank { existing.fileId },
+                    fileName = entry.fileName.ifBlank { existing.fileName },
+                    qualityLabel = entry.qualityLabel.ifBlank { existing.qualityLabel },
+                    account = entry.account.ifBlank { existing.account },
+                ),
+            )
         }
     }
 
@@ -827,6 +1025,10 @@ class PikoFileCachePool(
         val cachedBytes: Long,
         val blockCount: Int,
         val packedBitmap: ByteArray,
+        val fileId: String = "",
+        val fileName: String = "",
+        val qualityLabel: String = "",
+        val account: String = "",
     ) {
         fun isRangeCached(startByte: Long, lengthBytes: Long): Boolean {
             if (totalBytes <= 0L || blockCount <= 0 || lengthBytes <= 0L) return false
@@ -852,13 +1054,25 @@ class PikoFileCachePool(
         try {
             SystemFileSystem.sink(tempPath).buffered().use { sink ->
                 sink.writeInt(PLAYBACK_MARKER_MAGIC)
-                sink.writeInt(PLAYBACK_MARKER_VERSION)
+                sink.writeInt(PLAYBACK_MARKER_VERSION_V2)
                 sink.writeLong(marker.lastAccessEpochMillis)
                 sink.writeLong(marker.totalBytes)
                 sink.writeLong(marker.cachedBytes)
                 sink.writeInt(marker.blockCount)
                 sink.writeInt(marker.packedBitmap.size)
                 sink.write(marker.packedBitmap)
+                val idBytes = marker.fileId.encodeToByteArray()
+                val nameBytes = marker.fileName.encodeToByteArray()
+                val qualityBytes = marker.qualityLabel.encodeToByteArray()
+                val accountBytes = marker.account.encodeToByteArray()
+                sink.writeInt(idBytes.size)
+                sink.write(idBytes)
+                sink.writeInt(nameBytes.size)
+                sink.write(nameBytes)
+                sink.writeInt(qualityBytes.size)
+                sink.write(qualityBytes)
+                sink.writeInt(accountBytes.size)
+                sink.write(accountBytes)
             }
             SystemFileSystem.atomicMove(tempPath, targetPath)
         } finally {
@@ -873,7 +1087,7 @@ class PikoFileCachePool(
             val magic = source.readInt()
             if (magic != PLAYBACK_MARKER_MAGIC) return@use null
             val version = source.readInt()
-            if (version != PLAYBACK_MARKER_VERSION) return@use null
+            if (version != PLAYBACK_MARKER_VERSION && version != PLAYBACK_MARKER_VERSION_V2) return@use null
             val lastAccess = source.readLong()
             val total = source.readLong()
             val cached = source.readLong()
@@ -881,12 +1095,31 @@ class PikoFileCachePool(
             val packedLen = source.readInt()
             if (total < 0L || cached < 0L || blockCount < 0 || packedLen < 0 || packedLen > MAX_BITMAP_BYTES) return@use null
             val packed = source.readByteArray(packedLen)
+            var fileId = ""
+            var fileName = ""
+            var qualityLabel = ""
+            var account = ""
+            if (version >= PLAYBACK_MARKER_VERSION_V2) {
+                fun readMetaString(): String? {
+                    val len = source.readInt()
+                    if (len < 0 || len > MAX_METADATA_STRING_BYTES) return null
+                    return if (len == 0) "" else source.readByteArray(len).decodeToString()
+                }
+                fileId = readMetaString() ?: return@use null
+                fileName = readMetaString() ?: return@use null
+                qualityLabel = readMetaString() ?: return@use null
+                account = readMetaString() ?: return@use null
+            }
             PlaybackCacheMarker(
                 lastAccessEpochMillis = lastAccess,
                 totalBytes = total,
                 cachedBytes = cached,
                 blockCount = blockCount,
                 packedBitmap = packed,
+                fileId = fileId,
+                fileName = fileName,
+                qualityLabel = qualityLabel,
+                account = account,
             )
         }
     }.getOrNull()
@@ -897,7 +1130,9 @@ class PikoFileCachePool(
         private const val PLAYBACK_MARKER_SUFFIX = ".pplay"
         private const val PLAYBACK_MARKER_MAGIC = 0x50504C59 // "PPLY"
         private const val PLAYBACK_MARKER_VERSION = 1
+        private const val PLAYBACK_MARKER_VERSION_V2 = 2
         private const val MAX_BITMAP_BYTES = 8 * 1024 * 1024
+        private const val MAX_METADATA_STRING_BYTES = 64 * 1024
         private const val TOUCH_THROTTLE_MS = 30_000L
 
         /**

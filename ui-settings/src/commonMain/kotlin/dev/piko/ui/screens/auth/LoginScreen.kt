@@ -377,11 +377,11 @@ private fun LoginWelcomeStep(
                 Spacer(Modifier.height(8.dp))
                 Text(
                     text = tr(
-                        "轻快、顺手的 PikPak 第三方客户端",
-                        "A fast, effortless third-party PikPak client",
-                        "軽快で心地よい PikPak サードパーティクライアント",
-                        "가볍고 손에 익는 PikPak 서드파티 클라이언트",
-                        "輕快、順手的 PikPak 第三方用戶端",
+                        "优雅、易用、高性能的 PikPak 客户端",
+                        "An elegant, easy-to-use, high-performance PikPak client",
+                        "洗練された、使いやすく高速な PikPak クライアント",
+                        "세련되고 사용하기 쉬우며 고성능인 PikPak 클라이언트",
+                        "優雅、易用、高效能的 PikPak 用戶端",
                     ),
                     style = MaterialTheme.typography.bodyLarge,
                     color = colors.onSurfaceVariant,
