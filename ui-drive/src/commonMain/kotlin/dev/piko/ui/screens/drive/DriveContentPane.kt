@@ -246,10 +246,12 @@ internal fun DriveContentBody(
     innerPadding: PaddingValues,
     listAreaWidth: Dp?,
     pathInTopBar: Boolean,
+    isWorkspaceBrowser: Boolean,
     canLeaveDuplicates: Boolean,
     addLinkSideOpen: Boolean,
     folderStack: List<PathBreadcrumb>,
     activeFolderId: String,
+    pinnedFolders: List<PathBreadcrumb>,
     clipboard: DriveClipboard?,
     canPaste: Boolean,
     viewMode: DriveViewMode,
@@ -265,6 +267,8 @@ internal fun DriveContentBody(
     selectedIdSet: Set<String>,
     rowNotes: Map<String, String>,
     vaultedFolders: Set<String>,
+    downloadedFileIds: Set<String> = emptySet(),
+    downloadingFileIds: Set<String> = emptySet(),
     locatedFileId: String?,
     activeCommandItemId: String?,
     keyboardFocusTarget: String?,
@@ -279,6 +283,8 @@ internal fun DriveContentBody(
     onDuplicateKindChange: (DuplicateKind) -> Unit,
     onEndDuplicates: () -> Unit,
     onLeaveDuplicates: () -> Unit,
+    onOpenPinned: (PathBreadcrumb) -> Unit,
+    onUnpinFolder: (PathBreadcrumb) -> Unit,
     onKeyboardFocusMoved: () -> Unit,
 ) {
     val folderEmptiness by state.folderEmptiness.collectAsStateWithLifecycle()
@@ -290,6 +296,19 @@ internal fun DriveContentBody(
                 endsWithCurrent = false,
                 firstIcon = folderStack.library?.icon ?: Icons.Outlined.Home,
                 onBreadcrumbClick = state::navigateToBreadcrumb,
+            )
+        }
+    }
+    val showCompactQuickAccess = !pathInTopBar && isWorkspaceBrowser && pinnedFolders.isNotEmpty() &&
+        state.libraryView == null && state.archiveView == null && state.importPreviewView == null &&
+        !state.isSearchOpen && state.searchQuery.isBlank() && !state.isGlobalSearchActive
+    val quickAccessStrip: @Composable () -> Unit = {
+        if (showCompactQuickAccess) {
+            CompactQuickAccessStrip(
+                pinnedFolders = pinnedFolders,
+                activeFolderId = activeFolderId,
+                onOpen = onOpenPinned,
+                onUnpin = onUnpinFolder,
             )
         }
     }
@@ -372,6 +391,8 @@ internal fun DriveContentBody(
                         isSelectionMode = state.isSelectionMode,
                         selectedIds = selectedIdSet,
                         highlightedIds = state.highlightedRowIds,
+                        downloadedFileIds = downloadedFileIds,
+                        downloadingFileIds = downloadingFileIds,
                         callbacks = callbacks,
                         folderName = gallery::folderName,
                         rootKey = listOf(activeFolderId, state.libraryView, state.isSearchOpen, state.searchQuery, state.isGlobalSearchActive),
@@ -435,6 +456,7 @@ internal fun DriveContentBody(
                         )
                     } else if (state.displayItems.isEmpty() && state.typeFilter == null && !state.thumbnailsOnly) {
                         breadcrumbs()
+                        quickAccessStrip()
                         DriveEmptyState(state = state, modifier = Modifier.weight(1f))
                     } else {
                         DriveFileGrid(
@@ -461,6 +483,8 @@ internal fun DriveContentBody(
                             activeItemId = activeCommandItemId,
                             emptyFolders = folderEmptiness,
                             vaultedFolders = vaultedFolders,
+                            downloadedFileIds = downloadedFileIds,
+                            downloadingFileIds = downloadingFileIds,
                             keyboardFocusTarget = keyboardFocusTarget,
                             onKeyboardFocusMoved = onKeyboardFocusMoved,
                             header = {
@@ -485,6 +509,7 @@ internal fun DriveContentBody(
                                             showControls = !pathInTopBar && !inDuplicates,
                                         )
                                     }
+                                    quickAccessStrip()
                                 }
                             },
                             foldBanner = foldBanner,

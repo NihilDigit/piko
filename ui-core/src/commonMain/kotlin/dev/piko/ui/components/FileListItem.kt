@@ -25,6 +25,8 @@ import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Downloading
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -66,6 +68,7 @@ import dev.piko.ui.screens.drive.LocalDriveAppearancePrefs
 import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.LocalFixedColors
 import dev.piko.ui.theme.LocalPikoMotion
+import dev.piko.ui.theme.LocalStatusColors
 import dev.piko.ui.theme.isEInk
 import io.github.nihildigit.pikpak.FileStat
 
@@ -433,6 +436,10 @@ fun FileListItem(
     folderItemCount: Int? = null,
     folderDurationMillis: Long? = null,
     folderSizeBytes: Long? = null,
+    /** 该文件是否已在本地下载完成，元信息行尾部显示语义成功绿圆圈对勾。 */
+    isDownloaded: Boolean = false,
+    /** 该文件是否正在下载或排队下载，元信息行尾部显示主色下载中图标。 */
+    isDownloading: Boolean = false,
 ) {
     val listPrefs = LocalDriveAppearancePrefs.current.list
     val leadingSize = if (listPrefs.compactDensity) CompactListLeadingSize else ListLeadingSize
@@ -447,6 +454,8 @@ fun FileListItem(
         emptyFolder = isEmptyFolder,
         locationLabel = locationLabel,
         watchProgress = watchProgress,
+        isDownloaded = isDownloaded,
+        isDownloading = isDownloading,
     )
     val detailParts = remember(
         file, listPrefs.detailFields, listPrefs.showParsedTags, tags,
@@ -466,7 +475,7 @@ fun FileListItem(
     val listMarks = displayItem.marks - FileItemMark.LocalMount
     val hasSupporting = (listPrefs.showSecondaryName && displayItem.name.original != null) ||
         displayItem.tags.isNotEmpty() || displayItem.code != null ||
-        detailParts.isNotEmpty() || displayItem.status != null ||
+        detailParts.isNotEmpty() || displayItem.isDownloaded || displayItem.isDownloading || displayItem.status != null ||
         displayItem.contextNote.isNotEmpty() || !displayItem.locationPath.isNullOrEmpty()
     FileListItem(
         headline = displayItem.name.title,
@@ -581,6 +590,42 @@ fun ListLeadingIcon(icon: ImageVector, modifier: Modifier = Modifier) {
         )
     }
 }
+
+/**
+ * 已下载到本地的条目标记：元信息行尾部的轻量圆圈对勾图标。
+ * 使用语义成功绿 [LocalStatusColors.current.success]，在浅色、深色、纯黑 OLED 及水墨屏下均保持高对比度。
+ */
+@Composable
+fun DownloadedMark(
+    modifier: Modifier = Modifier,
+    size: Dp = DownloadedMarkSize,
+) {
+    Icon(
+        imageVector = Icons.Outlined.CheckCircle,
+        contentDescription = tr("已下载到本地", "Downloaded locally", "ローカルにダウンロード済み", "로컬에 다운로드됨", "已下載至本機"),
+        tint = LocalStatusColors.current.success,
+        modifier = modifier.size(size),
+    )
+}
+
+/**
+ * 正在下载或排队下载的条目标记：位于元信息行尾部的轻量主色下载中图标。
+ */
+@Composable
+fun DownloadingMark(
+    modifier: Modifier = Modifier,
+    size: Dp = DownloadedMarkSize,
+) {
+    val isEInk = LocalAppearance.current.isEInk
+    Icon(
+        imageVector = Icons.Outlined.Downloading,
+        contentDescription = tr("正在下载", "Downloading", "ダウンロード中", "다운로드 중", "正在下載"),
+        tint = if (isEInk) Color.Black else MaterialTheme.colorScheme.primary,
+        modifier = modifier.size(size),
+    )
+}
+
+private val DownloadedMarkSize = 15.dp
 
 /**
  * 加了星标的条目标记：标题旁一颗实心星。用 tertiary：primary 已给了定位描边与选中态，

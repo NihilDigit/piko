@@ -98,6 +98,8 @@ data class FilePresentation(
     val contextNote: List<String> = emptyList(),
     val locationPath: String? = null,
     val watchProgress: Float? = null,
+    val isDownloaded: Boolean = false,
+    val isDownloading: Boolean = false,
 )
 
 fun FileStat.fileVisual(emptyFolder: Boolean = false): FileVisual {
@@ -127,11 +129,11 @@ fun FileStat.fileVisual(emptyFolder: Boolean = false): FileVisual {
 fun FileStat.filePresentation(
     title: String? = null, original: String? = null, tags: List<String> = emptyList(), code: String? = null,
     resolution: String? = null, folderHasVault: Boolean = false, emptyFolder: Boolean = false,
-    locationLabel: String? = null, watchProgress: Float? = null,
+    locationLabel: String? = null, watchProgress: Float? = null, isDownloaded: Boolean = false, isDownloading: Boolean = false,
 ): FilePresentation {
     val showExt = LocalShowExtensions.current
     val resolvedTitle = title ?: displayTitle()
-    return remember(this, resolvedTitle, original, tags, code, resolution, folderHasVault, emptyFolder, locationLabel, watchProgress, showExt) {
+    return remember(this, resolvedTitle, original, tags, code, resolution, folderHasVault, emptyFolder, locationLabel, watchProgress, isDownloaded, isDownloading, showExt) {
         val (contextNote, locationPath) = parseFileLocationLabel(locationLabel)
         FilePresentation(
             key = id, name = FileItemName(resolvedTitle, original, name), visual = fileVisual(emptyFolder),
@@ -140,6 +142,8 @@ fun FileStat.filePresentation(
             contextNote = contextNote,
             locationPath = locationPath,
             watchProgress = watchProgress,
+            isDownloaded = isDownloaded,
+            isDownloading = isDownloading,
         )
     }
 }
@@ -184,7 +188,18 @@ fun FileItemInformation(
         val tags = if (showTags) item.tags else emptyList()
         val code = if (showTags) item.code else null
         if (tags.isNotEmpty() || code != null) MediaTagRow(tags, lead = code, modifier = Modifier.padding(vertical = 2.dp))
-        if (showMetadata && item.metadata.isNotEmpty()) MetaRow(item.metadata, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        val hasDownloadMark = item.isDownloaded || item.isDownloading
+        if ((showMetadata && item.metadata.isNotEmpty()) || hasDownloadMark) {
+            MetaRow(
+                parts = if (showMetadata) item.metadata else emptyList(),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                trailing = when {
+                    item.isDownloaded -> ({ DownloadedMark() })
+                    item.isDownloading -> ({ DownloadingMark() })
+                    else -> null
+                },
+            )
+        }
         if (item.contextNote.isNotEmpty()) {
             MetaRow(
                 parts = item.contextNote,

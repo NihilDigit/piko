@@ -124,13 +124,40 @@ class DriveWorkspace(
         }
         if (!pin) pinnedTabs.unpin(pinId, expectedAccount = navigationAccount.value)
         else if (tab.stack.none { LocalLocation.isLocal(it.id) }) {
-            pinnedTabs.upsert(pinId, tab.stack.outsideArchives().map { PinnedTabCrumb(it.id, it.name) },
-                _tabs.value.indexOfFirst { it.id == id }, expectedAccount = navigationAccount.value)
+            pinnedTabs.upsert(
+                pinId = pinId,
+                crumbs = tab.stack.outsideArchives().map { PinnedTabCrumb(it.id, it.name) },
+                order = _tabs.value.indexOfFirst { it.id == id },
+                note = tab.note,
+                expectedAccount = navigationAccount.value,
+            )
         }
         normalizePinnedOrder()
         // An unpinned tab goes immediately after the fixed section, not to its old position.
         contexts.move(id, _tabs.value.indexOfFirst { it.id == id })
         pinnedTabs.reorder(_tabs.value.mapNotNull { it.pinId }, expectedAccount = navigationAccount.value)
+        publishTabs()
+        saveTabs(immediate = true)
+        return true
+    }
+
+    fun setTabNote(tabId: Long, note: String): Boolean {
+        val normalized = note.trim()
+        val tab = tabSnapshot(tabId) ?: return false
+        if (tab.note == normalized) return true
+        canRestoreSavedTabs = false
+        _tabs.update { tabs -> tabs.map { if (it.id == tabId) it.copy(note = normalized) else it } }
+        val pinId = tab.pinId
+        if (pinId != null && tab.stack.none { LocalLocation.isLocal(it.id) }) {
+            val order = _tabs.value.indexOfFirst { it.id == tabId }.coerceAtLeast(0)
+            pinnedTabs.upsert(
+                pinId = pinId,
+                crumbs = tab.stack.outsideArchives().map { PinnedTabCrumb(it.id, it.name) },
+                order = order,
+                note = normalized,
+                expectedAccount = navigationAccount.value,
+            )
+        }
         publishTabs()
         saveTabs(immediate = true)
         return true
@@ -179,7 +206,7 @@ class DriveWorkspace(
                         currentStack?.outsideArchives()?.map { PinnedTabCrumb(it.id, it.name) } == record.crumbs)) {
                     currentStack ?: stack
                 } else folderIndex.resolve(stack)
-                _tabs.update { tabs -> tabs.map { if (it.id == id) it.copy(pinId = record.pinId, stack = next) else it } }
+                _tabs.update { tabs -> tabs.map { if (it.id == id) it.copy(pinId = record.pinId, stack = next, note = record.note) else it } }
                 if (_activeTabId.value == id) _folderStackFlow.value = next
                 if (next.last().id.isNotEmpty() && isDriveFolderId(next.last().id)) {
                     if (tryClaimPinResolution(record.pinId, record.updatedAt)) workScope.launch {
@@ -278,7 +305,13 @@ class DriveWorkspace(
         if (!reconcilingPins) tabs.forEachIndexed { index, tab ->
             val pinId = tab.pinId ?: return@forEachIndexed
             if (tab.stack.none { LocalLocation.isLocal(it.id) }) {
-                pinnedTabs.upsert(pinId, tab.stack.outsideArchives().map { PinnedTabCrumb(it.id, it.name) }, index, expectedAccount = navigationAccount.value)
+                pinnedTabs.upsert(
+                    pinId = pinId,
+                    crumbs = tab.stack.outsideArchives().map { PinnedTabCrumb(it.id, it.name) },
+                    order = index,
+                    note = tab.note,
+                    expectedAccount = navigationAccount.value,
+                )
             }
         }
         navigations.value.forEach { navigation -> tabs.firstOrNull { it.id == navigation.tabId }?.let(navigation::update) }
@@ -340,6 +373,7 @@ class DriveWorkspace(
             active = tabs.indexOfFirst { it.id == _activeTabId.value }.coerceAtLeast(0),
             ids = tabs.map { it.id },
             pinIds = tabs.map { it.pinId },
+            notes = tabs.map { it.note },
         )
         pendingTabs.update { it + (account to saved) }
         tabsSave?.cancel()
@@ -406,7 +440,7 @@ class DriveWorkspace(
         val tabs = stacks.map { (savedIndex, stack) ->
             val id = savedIds?.get(savedIndex) ?: newTabId(allocated)
             allocated += id
-            DriveTab(id, stack, pinId = saved.pinIds.getOrNull(savedIndex))
+            DriveTab(id, stack, pinId = saved.pinIds.getOrNull(savedIndex), note = saved.notes.getOrNull(savedIndex).orEmpty())
         }
         val activeIndex = stacks.indexOfFirst { it.first >= saved.active }.takeIf { it >= 0 } ?: tabs.lastIndex
         val active = tabs[activeIndex]
@@ -426,7 +460,13 @@ class DriveWorkspace(
         _tabs.value.forEachIndexed { index, tab ->
             val pinId = tab.pinId ?: return@forEachIndexed
             if (pinId !in records && tab.stack.none { LocalLocation.isLocal(it.id) }) {
-                pinnedTabs.upsert(pinId, tab.stack.outsideArchives().map { PinnedTabCrumb(it.id, it.name) }, index, expectedAccount = account)
+                pinnedTabs.upsert(
+                    pinId = pinId,
+                    crumbs = tab.stack.outsideArchives().map { PinnedTabCrumb(it.id, it.name) },
+                    order = index,
+                    note = tab.note,
+                    expectedAccount = account,
+                )
             }
         }
         publishTabs()
@@ -878,6 +918,12 @@ class DriveWorkspace(
 private class SavedCrumb(val id: String, val name: String)
 
 @Serializable
-private class SavedTabs(val tabs: List<List<SavedCrumb>>, val active: Int, val ids: List<Long> = emptyList(), val pinIds: List<String?> = emptyList())
+private class SavedTabs(
+    val tabs: List<List<SavedCrumb>>,
+    val active: Int,
+    val ids: List<Long> = emptyList(),
+    val pinIds: List<String?> = emptyList(),
+    val notes: List<String> = emptyList(),
+)
 
 private val tabsJson = Json { ignoreUnknownKeys = true }

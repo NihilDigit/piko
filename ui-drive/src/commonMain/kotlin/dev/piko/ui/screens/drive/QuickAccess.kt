@@ -24,30 +24,43 @@ import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.fileDropTarget
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.ProvideTextStyle
+import androidx.compose.material3.Surface
 import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.focusIndication
+import dev.piko.ui.components.menuItemShape
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -149,4 +162,118 @@ fun QuickAccessState.highlights(pinned: List<PikoPathBreadcrumb>, stack: List<Pi
     if (stack.size == 1) return true
     val id = stack.lastOrNull()?.id ?: return false
     return id == myPacks?.id || pinned.any { it.id == id }
+}
+
+/**
+ * 窄窗口（无桌面侧边栏）网盘列表顶部的紧凑「快速访问」胶囊条：
+ * 仅在存在用户固定文件夹时渲染，点击直达对应目录，长按或右键可从快速访问取消固定。
+ */
+@Composable
+internal fun CompactQuickAccessStrip(
+    pinnedFolders: List<PikoPathBreadcrumb>,
+    activeFolderId: String,
+    onOpen: (PikoPathBreadcrumb) -> Unit,
+    onUnpin: (PikoPathBreadcrumb) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (pinnedFolders.isEmpty()) return
+    val isEInk = LocalAppearance.current.isEInk
+    val colors = MaterialTheme.colorScheme
+    val unpinLabel = tr("从快速访问取消固定", "Unpin from quick access", "クイックアクセスから外す", "빠른 액세스에서 고정 해제", "從快速存取取消釘選")
+
+    LazyRow(
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        items(pinnedFolders, key = { it.id }) { folder ->
+            val selected = folder.id == activeFolderId
+            var menuExpanded by remember(folder.id) { mutableStateOf(false) }
+            val containerColor = when {
+                isEInk -> if (selected) Color.Black else Color.White
+                selected -> colors.secondaryContainer
+                else -> colors.surfaceContainerLow
+            }
+            val contentColor = when {
+                isEInk -> if (selected) Color.White else Color.Black
+                selected -> colors.onSecondaryContainer
+                else -> colors.onSurfaceVariant
+            }
+            val border = when {
+                isEInk -> BorderStroke(1.dp, Color.Black)
+                selected -> null
+                else -> BorderStroke(0.5.dp, colors.outlineVariant)
+            }
+            Box {
+                ContextMenuArea(
+                    actions = {
+                        listOf(
+                            SheetAction(
+                                icon = Icons.Outlined.PushPin,
+                                label = unpinLabel,
+                                onClick = { onUnpin(folder) },
+                            ),
+                        )
+                    },
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = containerColor,
+                        contentColor = contentColor,
+                        border = border,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .combinedClickable(
+                                role = Role.Button,
+                                onClick = { onOpen(folder) },
+                                onLongClick = { menuExpanded = true },
+                                onLongClickLabel = unpinLabel,
+                            ),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .heightIn(min = 32.dp)
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.PushPin,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Text(
+                                text = folder.localizedName,
+                                style = MaterialTheme.typography.labelLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = 160.dp),
+                            )
+                        }
+                    }
+                }
+                PikoDropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(unpinLabel) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.PushPin,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
+                        shape = menuItemShape(0, 1),
+                        onClick = {
+                            menuExpanded = false
+                            onUnpin(folder)
+                        },
+                    )
+                }
+            }
+        }
+    }
 }

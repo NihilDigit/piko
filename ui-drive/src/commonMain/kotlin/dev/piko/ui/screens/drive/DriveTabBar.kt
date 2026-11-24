@@ -18,6 +18,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.filled.PushPin
@@ -133,6 +135,7 @@ fun DriveTabBar(
     canPin: (Long) -> Boolean = { false },
     isPinned: (Long) -> Boolean = { id -> tabs.any { it.id == id && it.isPinned } },
     onTogglePin: (Long) -> Unit = {},
+    onEditNote: ((Long) -> Unit)? = null,
     onCloseOthers: ((Long) -> Unit)? = null,
     onMove: ((Long, Int) -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -221,9 +224,10 @@ fun DriveTabBar(
                     val tabPinned = isPinned(tab.id)
                     val hasClosableOthers = onCloseOthers != null && tabs.any { it.id != tab.id && !isPinned(it.id) && canClose(it.id) }
                     key(tab.id) {
+                        val tabSession = sessionTab(tab)
                         TabChip(
                             tab,
-                            session = sessionTab(tab),
+                            session = tabSession,
                             fromFeed = tab.id == feedTabId,
                             active = index == activeIndex,
                             first = index == 0,
@@ -233,6 +237,7 @@ fun DriveTabBar(
                             onClose = if (!tabPinned && canClose(tab.id)) ({ onClose(tab.id) }) else null,
                             pinned = tabPinned,
                             onTogglePin = if (canPin(tab.id)) ({ onTogglePin(tab.id) }) else null,
+                            onEditNote = if (onEditNote != null && tab.session == null && tabSession == null) ({ onEditNote(tab.id) }) else null,
                             onCloseOthers = if (hasClosableOthers) ({ onCloseOthers.invoke(tab.id) }) else null,
                             closeOthersLabel = closeOthersLabel,
                             modifier = Modifier.zIndex(if (draggingId == tab.id) 1f else 0f)
@@ -290,12 +295,23 @@ fun DriveTabBar(
                                     val tabPinned = isPinned(tab.id)
                                     DropdownMenuItem(
                                         text = {
-                                            Text(
-                                                text = tabSession?.title ?: tab.title,
-                                                color = if (isActive) MaterialTheme.colorScheme.primary else Color.Unspecified,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
+                                            Column {
+                                                Text(
+                                                    text = tabSession?.title ?: tab.title,
+                                                    color = if (isActive) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                                if (tabSession == null && tab.note.isNotBlank()) {
+                                                    Text(
+                                                        text = tab.note,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                    )
+                                                }
+                                            }
                                         },
                                         leadingIcon = {
                                             Icon(
@@ -477,6 +493,7 @@ private fun TabChip(
     onClose: (() -> Unit)?,
     pinned: Boolean,
     onTogglePin: (() -> Unit)?,
+    onEditNote: (() -> Unit)?,
     onCloseOthers: (() -> Unit)?,
     closeOthersLabel: String,
     modifier: Modifier = Modifier,
@@ -491,16 +508,27 @@ private fun TabChip(
     val library = tab.stack.firstOrNull()?.let { DriveLibrary.of(it.id) }
     val icon = session?.icon ?: library?.icon ?: if (fromFeed) Icons.Outlined.SwipeVertical else Icons.Outlined.Folder
     val title = session?.title ?: tab.title
-    val tooltip = when {
+    val note = tab.note.takeIf { session == null && it.isNotBlank() }
+    val baseTooltip = when {
         fromFeed -> tr("从信息流打开：", "Opened from feed:", "フィードから開く：", "피드에서 열기:", "從資訊流開啟：") + tab.stack.joinToString(" › ") { it.localizedName }
         session != null -> session.tooltip
         else -> tab.stack.joinToString(" › ") { it.localizedName }
     }
-    val hasContextActions = onTogglePin != null || onClose != null || onCloseOthers != null
+    val tooltip = if (note != null) "$note\n$baseTooltip" else baseTooltip
+    val hasContextActions = onTogglePin != null || onEditNote != null || onClose != null || onCloseOthers != null
     ContextMenuArea(
         enabled = hasContextActions,
         actions = {
             buildList {
+                if (onEditNote != null) {
+                    add(
+                        SheetAction(
+                            icon = Icons.Outlined.EditNote,
+                            label = tr("编辑备注", "Edit note", "メモを編集", "메모 편집", "編輯備註"),
+                            onClick = onEditNote,
+                        ),
+                    )
+                }
                 if (onTogglePin != null) {
                     add(
                         SheetAction(
@@ -585,14 +613,33 @@ private fun TabChip(
                         modifier = Modifier.size(16.dp),
                     )
                 }
-                Text(
-                    title,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = contentColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = 8.dp).weight(1f),
-                )
+                if (note != null) {
+                    Column(modifier = Modifier.padding(start = 8.dp).weight(1f)) {
+                        Text(
+                            title,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = contentColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            note,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                } else {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = contentColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 8.dp).weight(1f),
+                    )
+                }
                 Box(Modifier.padding(start = 4.dp).size(24.dp), contentAlignment = Alignment.Center) {
                     if (pinned) {
                         Icon(

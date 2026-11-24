@@ -10,6 +10,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -23,6 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
@@ -103,6 +105,8 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                     val isActive = context.id == active
                     val file = files.firstOrNull { it.id == context.id }
                     val pinned = file?.isPinned == true
+                    val note = file?.note.orEmpty()
+                    val canEditNote = model.canEditContextNote(context.id)
                     val title = file?.stack?.lastOrNull()?.localizedName ?: workspaceTitle(model, context)
                     val icon = when (context) {
                         is WorkspaceContext.File -> Icons.Outlined.Folder
@@ -158,6 +162,38 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                                     }
                                     if (canClose) {
                                         TooltipIconButton(Icons.Outlined.Close, tr("关闭 $title", "Close $title", "$title を閉じる", "$title 닫기", "關閉 $title"), { model.requestCloseContext(context.id) })
+                                    }
+                                }
+                                if (canEditNote) {
+                                    val noteColor = if (note.isNotBlank()) {
+                                        if (isActive) colors.onSecondaryContainer.copy(alpha = 0.82f) else colors.onSurfaceVariant
+                                    } else {
+                                        if (isActive) colors.onSecondaryContainer.copy(alpha = 0.58f) else colors.onSurfaceVariant.copy(alpha = 0.65f)
+                                    }
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(start = 8.dp, end = 8.dp, bottom = 6.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { model.requestEditContextNote(context.id) }
+                                            .padding(horizontal = 4.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.EditNote,
+                                            contentDescription = tr("编辑备注", "Edit note", "メモを編集", "메모 편집", "編輯備註"),
+                                            tint = noteColor,
+                                            modifier = Modifier.size(14.dp),
+                                        )
+                                        Text(
+                                            text = note.ifBlank { tr("编辑备注", "Edit note", "メモを編集", "메모 편집", "編輯備註") },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = noteColor,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f),
+                                        )
                                     }
                                 }
                                 val snapshot = model.pageSnapshots[context.id]

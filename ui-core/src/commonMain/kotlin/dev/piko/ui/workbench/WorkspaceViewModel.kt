@@ -88,6 +88,8 @@ class WorkspaceViewModel(private val services: PikoServices, private val account
         private set
     var pendingCloseOtherNeedsAttention by mutableStateOf(false)
         private set
+    var editingNoteTabId by mutableStateOf<Long?>(null)
+        private set
     val duplicateSessions = mutableStateMapOf<Long, DuplicateSession>()
     val importDrafts = mutableStateMapOf<Long, InstantDraft>()
     val importModels = mutableStateMapOf<Long, AddLinkViewModel>()
@@ -211,6 +213,17 @@ class WorkspaceViewModel(private val services: PikoServices, private val account
     fun canPinContext(id: Long): Boolean = available && driveWorkspace.canPinTab(id)
     fun isContextPinned(id: Long): Boolean = driveWorkspace.isTabPinned(id)
     fun togglePinContext(id: Long): Boolean = available && driveWorkspace.togglePinTab(id)
+    fun canEditContextNote(id: Long): Boolean = available && contexts.contextsFlow.value.any { it.id == id && it is WorkspaceContext.File }
+    fun setContextNote(id: Long, note: String): Boolean = available && driveWorkspace.setTabNote(id, note)
+    fun requestEditContextNote(id: Long) {
+        if (canEditContextNote(id)) editingNoteTabId = id
+    }
+    fun dismissEditContextNote() { editingNoteTabId = null }
+    fun confirmEditContextNote(note: String) {
+        val id = editingNoteTabId ?: return
+        editingNoteTabId = null
+        setContextNote(id, note)
+    }
 
     fun pushLibrary(library: DriveLibrary, tab: MainTab = lastMainTab, screens: List<Screen> = lastNavigation) {
         if (!available) return
@@ -326,6 +339,7 @@ class WorkspaceViewModel(private val services: PikoServices, private val account
         importViews.remove(id)
         importDrafts.remove(id)?.close()
         if (pendingCloseId == id) pendingCloseId = null
+        if (editingNoteTabId == id) editingNoteTabId = null
     }
 
     fun duplicateBrowser(id: Long): DriveBrowserSession = duplicateBrowsers.getOrPut(id) {

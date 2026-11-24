@@ -170,9 +170,10 @@ fun MediaCardScaffold(
     val hasStatusCorner = corners.contains(CardBadgeKind.STATUS_BADGES)
     val showMarksBelowTitle = item.marks.isNotEmpty() && !hasStatusCorner
     val hasLocationContent = item.contextNote.isNotEmpty() || !item.locationPath.isNullOrEmpty()
+    val hasDownloadMark = item.isDownloaded || item.isDownloading
     val showFooter = showTitle ||
-        (showDetailLine && (detailParts.isNotEmpty() || (!alwaysShowLocation && hasLocationContent))) ||
-        (alwaysShowLocation && (detailParts.isNotEmpty() || hasLocationContent)) ||
+        (showDetailLine && (detailParts.isNotEmpty() || hasDownloadMark || (!alwaysShowLocation && hasLocationContent))) ||
+        (alwaysShowLocation && (detailParts.isNotEmpty() || (showDetailLine && hasDownloadMark) || hasLocationContent)) ||
         showMarksBelowTitle
 
     val hoverBg by animateColorAsState(
@@ -450,13 +451,20 @@ fun CardFooterBlock(
                         FileItemOriginal(item.name)
                     }
                 }
+                val downloadedTrailing: (@Composable () -> Unit)? = when {
+                    !showDetailLine -> null
+                    item.isDownloaded -> ({ DownloadedMark(size = 13.dp) })
+                    item.isDownloading -> ({ DownloadingMark(size = 13.dp) })
+                    else -> null
+                }
                 if (alwaysShowLocation) {
                     var hasAbove = showTitle
-                    if (detailParts.isNotEmpty()) {
+                    if (detailParts.isNotEmpty() || downloadedTrailing != null) {
                         MetaRow(
                             parts = detailParts,
                             style = MaterialTheme.typography.labelSmall,
                             color = colors.onSurfaceVariant,
+                            trailing = downloadedTrailing,
                             modifier = if (hasAbove) Modifier.padding(top = 2.dp) else Modifier,
                         )
                         hasAbove = true
@@ -487,20 +495,36 @@ fun CardFooterBlock(
                             parts = detailParts,
                             style = MaterialTheme.typography.labelSmall,
                             color = colors.onSurfaceVariant,
+                            trailing = downloadedTrailing,
                             modifier = topGap,
                         )
                         item.contextNote.isNotEmpty() -> MetaRow(
                             parts = item.contextNote,
                             style = MaterialTheme.typography.labelSmall,
                             color = colors.primary,
+                            trailing = downloadedTrailing,
                             modifier = topGap,
                         )
-                        !item.locationPath.isNullOrEmpty() -> Text(
-                            text = item.locationPath,
-                            style = MaterialTheme.typography.labelSmall.tabular,
-                            color = colors.primary,
-                            maxLines = 1,
-                            overflow = TextOverflow.StartEllipsis,
+                        !item.locationPath.isNullOrEmpty() -> Row(
+                            modifier = topGap,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = item.locationPath,
+                                style = MaterialTheme.typography.labelSmall.tabular,
+                                color = colors.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.StartEllipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            if (downloadedTrailing != null) downloadedTrailing()
+                        }
+                        downloadedTrailing != null -> MetaRow(
+                            parts = emptyList(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant,
+                            trailing = downloadedTrailing,
                             modifier = topGap,
                         )
                     }

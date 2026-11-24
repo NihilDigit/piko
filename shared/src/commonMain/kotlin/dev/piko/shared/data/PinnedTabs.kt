@@ -30,6 +30,7 @@ data class PinnedTabRecord(
     val order: Int = 0,
     val pinned: Boolean = true,
     val updatedAt: Long = 0L,
+    val note: String = "",
 )
 
 /** Account-owned LWW records, including unpin tombstones so another device cannot revive a pin. */
@@ -56,11 +57,19 @@ class PinnedTabs(
     fun activeRecords(): List<PinnedTabRecord> = state.value.records.values.filter { it.pinned }
         .sortedWith(compareBy({ it.order }, { it.pinId }))
 
-    fun upsert(pinId: String, crumbs: List<PinnedTabCrumb>, order: Int = 0, nowMs: Long = now(), expectedAccount: String? = null) {
+    fun upsert(
+        pinId: String,
+        crumbs: List<PinnedTabCrumb>,
+        order: Int = 0,
+        note: String = "",
+        nowMs: Long = now(),
+        expectedAccount: String? = null,
+    ) {
+        val normalizedNote = note.trim()
         mutate(expectedAccount, nowMs) { records ->
             val previous = records[pinId]
-            if (previous?.pinned == true && previous.crumbs == crumbs && previous.order == order) records
-            else records + (pinId to PinnedTabRecord(pinId, crumbs, order, true, maxOf(nowMs, (previous?.updatedAt ?: 0L) + 1)))
+            if (previous?.pinned == true && previous.crumbs == crumbs && previous.order == order && previous.note == normalizedNote) records
+            else records + (pinId to PinnedTabRecord(pinId, crumbs, order, true, maxOf(nowMs, (previous?.updatedAt ?: 0L) + 1), normalizedNote))
         }
     }
 

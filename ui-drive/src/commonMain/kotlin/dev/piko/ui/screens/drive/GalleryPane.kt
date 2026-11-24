@@ -56,6 +56,8 @@ internal fun GalleryPane(
     isSelectionMode: Boolean,
     selectedIds: Set<String>,
     highlightedIds: Set<String> = emptySet(),
+    downloadedFileIds: Set<String> = emptySet(),
+    downloadingFileIds: Set<String> = emptySet(),
     callbacks: DriveItemCallbacks,
     folderName: (String) -> String?,
     rootKey: Any,
@@ -124,6 +126,8 @@ internal fun GalleryPane(
                         isSelectionMode = isSelectionMode,
                         selectedIds = selectedIds,
                         highlightedIds = highlightedIds,
+                        downloadedFileIds = downloadedFileIds,
+                        downloadingFileIds = downloadingFileIds,
                         onZoom = onZoom,
                         locationLabel = { folderName(it.parentId) },
                         onVisibleFilesChanged = { ids ->

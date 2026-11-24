@@ -68,6 +68,9 @@ fun PosterCard(
     folderItemCount: Int? = null,
     folderDurationMillis: Long? = null,
     folderSizeBytes: Long? = null,
+    /** 该文件是否已在本地下载完成，在详情行尾部显示语义成功绿圆圈对勾。 */
+    isDownloaded: Boolean = false,
+    isDownloading: Boolean = false,
     coverOverlay: (@Composable BoxScope.() -> Unit)? = null,
 ) {
     val gridPrefs = LocalDriveAppearancePrefs.current.grid
@@ -82,6 +85,8 @@ fun PosterCard(
         emptyFolder = isEmptyFolder,
         locationLabel = locationLabel,
         watchProgress = watchProgress,
+        isDownloaded = isDownloaded,
+        isDownloading = isDownloading,
     )
     val hasResolutionCorner = corners.contains(CardBadgeKind.RESOLUTION)
     val hasTagsCorner = corners.contains(CardBadgeKind.PARSED_TAGS)

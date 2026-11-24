@@ -210,4 +210,52 @@ class PinnedTabsWorkspaceTest {
         assertTrue(tabs.awaitAccountReady("b")!!.isEmpty())
         assertNull(tabs.mergeAndSnapshot(a, expectedAccount = "a"))
     }
+
+    @Test
+    fun `tab notes persist across restart sync across devices and decode legacy json`() = smoke { scope ->
+        val legacyJson = """[{"pinId":"legacy","crumbs":[{"id":"","name":"Root"}],"order":0,"pinned":true,"updatedAt":100}]"""
+        val decodedLegacy = assertNotNull(PinnedTabs.decode(legacyJson))
+        assertEquals("", decodedLegacy.getValue("legacy").note)
+
+        val server = FakePikPakServer()
+        val folder = server.addFolder("Projects")
+        val provider = server.provider()
+        val cache = MemoryCacheStore()
+        val repository = PikoDriveRepository(provider, MemoryPreferences())
+        val first = DriveWorkspace(repository, cache, scope)
+        val pinnedTab = first.openTab(listOf(root, PikoPathBreadcrumb(folder.id, folder.name)))
+        val plainTab = first.openTab(listOf(DriveLibrary.STARRED.crumb))
+        assertTrue(first.togglePinTab(pinnedTab))
+        assertTrue(first.setTabNote(pinnedTab, "  Work assets  "))
+        assertTrue(first.setTabNote(plainTab, "Quick check"))
+        assertEquals("Work assets", first.tabsFlow.value.first { it.id == pinnedTab }.note)
+        assertEquals("Quick check", first.tabsFlow.value.first { it.id == plainTab }.note)
+        assertEquals("Work assets", first.pinnedTabs.activeRecords().single().note)
+
+        first.flushPersistence()
+        val pinId = first.tabsFlow.value.first { it.id == pinnedTab }.pinId!!
+        val remote = MemoryRemote()
+        val aSync = PinnedTabSync(provider, remote, first.pinnedTabs, scope, flowOf(true))
+        assertTrue(aSync.syncNow())
+
+        val peer = DriveWorkspace(PikoDriveRepository(provider, MemoryPreferences()), backgroundScope = scope)
+        val bSync = PinnedTabSync(provider, remote, peer.pinnedTabs, scope, flowOf(true))
+        assertTrue(bSync.syncNow())
+        awaitUntil("pinned tab note synced to peer") {
+            peer.tabsFlow.value.firstOrNull { it.pinId == pinId }?.note == "Work assets"
+        }
+
+        // Clearing note propagates and persists cleanly
+        assertTrue(first.setTabNote(plainTab, "   "))
+        assertEquals("", first.tabsFlow.value.first { it.id == plainTab }.note)
+        first.flushPersistence()
+        first.close()
+
+        val restored = DriveWorkspace(repository, cache, scope)
+        assertTrue(restored.restoreLocation())
+        assertEquals("Work assets", restored.tabsFlow.value.first { it.id == pinnedTab }.note)
+        assertEquals("", restored.tabsFlow.value.first { it.id == plainTab }.note)
+        restored.close()
+        peer.close()
+    }
 }

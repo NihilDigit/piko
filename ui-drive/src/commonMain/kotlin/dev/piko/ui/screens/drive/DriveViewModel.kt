@@ -10,6 +10,8 @@ import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.data.repository.PathBreadcrumb
 import dev.piko.data.repository.isPlayableVideo
 import dev.piko.data.repository.isPreviewableImage
+import dev.piko.download.DownloadStatus
+import dev.piko.download.DownloadTask
 import dev.piko.shared.data.ArchiveEntryId
 import dev.piko.shared.data.ArchiveLocation
 import dev.piko.shared.data.DriveLibrary
@@ -52,10 +54,47 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+/**
+ * 从下载任务集合中提取当前账号已完整下载到本地的文件 ID 集合。
+ * 片段截取任务（[DownloadTask.isSegment]）仅导出局部视频片段，不视为整文件已下载。
+ */
+internal fun completedDownloadFileIds(
+    tasks: Collection<DownloadTask>,
+    currentAccount: String?,
+): Set<String> {
+    if (tasks.isEmpty()) return emptySet()
+    val ids = HashSet<String>()
+    for (task in tasks) {
+        if (task.status != DownloadStatus.COMPLETED) continue
+        if (task.isSegment) continue
+        if (task.fileId.isBlank()) continue
+        if (currentAccount != null && !task.belongsTo(currentAccount)) continue
+        ids.add(task.fileId)
+    }
+    return ids
+}
+
+internal fun activeDownloadFileIds(
+    tasks: Collection<DownloadTask>,
+    currentAccount: String?,
+): Set<String> {
+    if (tasks.isEmpty()) return emptySet()
+    val ids = HashSet<String>()
+    for (task in tasks) {
+        if (task.status != DownloadStatus.DOWNLOADING && task.status != DownloadStatus.PENDING) continue
+        if (task.isSegment) continue
+        if (task.fileId.isBlank()) continue
+        if (currentAccount != null && !task.belongsTo(currentAccount)) continue
+        ids.add(task.fileId)
+    }
+    return ids
+}
 
 /** 网盘页互斥的用户触发模态对话框状态（Screen UI State）。 */
 @Stable
@@ -180,6 +219,32 @@ internal class DriveViewModel(
 
     val galleryShowImages: StateFlow<Boolean> = preferences.galleryShowImagesFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, initialPrefs.galleryShowImages)
+
+    /**
+     * 当前账号下已在本地下载完成的完整文件 ID 集合。
+     * 通过 `distinctUntilChanged` 过滤进行中任务的字节/速度高频刷新，避免下载期间触发网盘列表逐帧重组。
+     */
+    val downloadedFileIds: StateFlow<Set<String>> = downloadManager.tasks
+        .map { tasks -> completedDownloadFileIds(tasks.values, driveRepo.currentAccount) }
+        .distinctUntilChanged()
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            completedDownloadFileIds(downloadManager.tasks.value.values, driveRepo.currentAccount),
+        )
+
+    /**
+     * 当前账号下正在下载或排队中的完整文件 ID 集合。
+     * 同样经 `distinctUntilChanged` 过滤字节与速度高频刷新，仅在任务状态变化时发射。
+     */
+    val downloadingFileIds: StateFlow<Set<String>> = downloadManager.tasks
+        .map { tasks -> activeDownloadFileIds(tasks.values, driveRepo.currentAccount) }
+        .distinctUntilChanged()
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            activeDownloadFileIds(downloadManager.tasks.value.values, driveRepo.currentAccount),
+        )
 
     val viewMode: StateFlow<DriveViewMode> = preferences.driveViewModeFlow
         .map(DriveViewMode::of)

@@ -21,7 +21,15 @@ import dev.piko.ui.components.OwnClicks
 import dev.piko.ui.components.LocalOwnClicks
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -82,9 +90,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -134,7 +145,9 @@ import dev.piko.ui.components.zoomOnWheel
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.platform.ShortcutModifier
+import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.LocalPikoMotion
+import dev.piko.ui.theme.isEInk
 import dev.piko.ui.theme.tabular
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -252,6 +265,9 @@ internal fun DriveFileGrid(
     emptyFolders: Map<String, Boolean> = emptyMap(),
     /** 挂归档标记的文件夹，见 PikoDriveRepository.vaultedFolders。 */
     vaultedFolders: Set<String> = emptySet(),
+    /** 已在本地下载完成的文件 ID 集合，用于元信息行尾部绿色对勾标记。 */
+    downloadedFileIds: Set<String> = emptySet(),
+    downloadingFileIds: Set<String> = emptySet(),
     /** 要把键盘焦点移到的那一行（行的 key），移过去后回调 [onKeyboardFocusMoved]。 */
     keyboardFocusTarget: String?,
     onKeyboardFocusMoved: () -> Unit,
@@ -384,6 +400,8 @@ internal fun DriveFileGrid(
                             moreButton = moreButton,
                             isEmptyFolder = file.isFolder && emptyFolders[file.id] == true,
                             folderHasVault = file.isFolder && file.id in vaultedFolders,
+                            isDownloaded = !file.isFolder && file.id in downloadedFileIds,
+                            isDownloading = !file.isFolder && file.id in downloadingFileIds,
                             requestFocus = item.key == keyboardFocusTarget,
                             onFocusRequested = onKeyboardFocusMoved,
                             modifier = Modifier.animateItem(),
@@ -393,7 +411,103 @@ internal fun DriveFileGrid(
             }
         }
         }
+        DriveBackToTopPill(
+            gridState = gridState,
+            leadingItemCount = leadingItemCount,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 12.dp),
+        )
         LocalPikoPlatform.current.ListScrollbar(gridState, Modifier.align(Alignment.CenterEnd))
+    }
+}
+
+internal const val BACK_TO_TOP_MIN_ITEMS = 6
+
+/**
+ * 判断列表/网格是否应浮出「回到顶部」胶囊按钮：
+ * 当向下滚动超过首屏可见条数（且至少滚过 [BACK_TO_TOP_MIN_ITEMS] 个内容条目）时显示，回到顶部附近自动隐藏。
+ */
+internal fun shouldShowBackToTop(
+    firstVisibleItemIndex: Int,
+    leadingItemCount: Int,
+    visibleItemCount: Int,
+): Boolean {
+    if (visibleItemCount <= 0) return false
+    val scrolledContentItems = firstVisibleItemIndex - leadingItemCount
+    if (scrolledContentItems < BACK_TO_TOP_MIN_ITEMS) return false
+    val threshold = maxOf(BACK_TO_TOP_MIN_ITEMS, visibleItemCount)
+    return scrolledContentItems >= threshold
+}
+
+/**
+ * 顶部居中轻量浮出胶囊「回到顶部」：
+ * 独立叶子组件内聚 `derivedStateOf` 滚动阈值读取，避免滚动期间触发外层 `DriveFileGrid` 重组；
+ * 顶部居中定位永不与窄窗口右下角 `FloatingActionButtonMenu`、底部多选浮动工具栏及右侧滚动条冲突。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun DriveBackToTopPill(
+    gridState: LazyGridState,
+    leadingItemCount: Int,
+    modifier: Modifier = Modifier,
+) {
+    val visible by remember(gridState, leadingItemCount) {
+        derivedStateOf {
+            shouldShowBackToTop(
+                firstVisibleItemIndex = gridState.firstVisibleItemIndex,
+                leadingItemCount = leadingItemCount,
+                visibleItemCount = gridState.layoutInfo.visibleItemsInfo.size,
+            )
+        }
+    }
+    val reducedMotion = LocalPikoMotion.current.reduced
+    val isEInk = LocalAppearance.current.isEInk
+    val colors = MaterialTheme.colorScheme
+    val motion = MaterialTheme.motionScheme
+    val scope = rememberCoroutineScope()
+
+    AnimatedVisibility(
+        visible = visible,
+        enter = if (reducedMotion) EnterTransition.None else slideInVertically(motion.fastSpatialSpec()) { -it } + fadeIn(motion.fastEffectsSpec()),
+        exit = if (reducedMotion) ExitTransition.None else slideOutVertically(motion.fastSpatialSpec()) { -it } + fadeOut(motion.fastEffectsSpec()),
+        modifier = modifier,
+    ) {
+        Surface(
+            onClick = {
+                scope.launch {
+                    if (reducedMotion) gridState.scrollToItem(0) else gridState.animateScrollToItem(0)
+                }
+            },
+            shape = CircleShape,
+            color = if (isEInk) Color.White else colors.surfaceContainerHigh,
+            contentColor = if (isEInk) Color.Black else colors.onSurface,
+            shadowElevation = if (isEInk) 0.dp else 3.dp,
+            border = if (isEInk) {
+                BorderStroke(1.dp, Color.Black)
+            } else {
+                BorderStroke(0.5.dp, colors.outlineVariant.copy(alpha = 0.5f))
+            },
+        ) {
+            Row(
+                modifier = Modifier
+                    .heightIn(min = 36.dp)
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.ArrowUpward,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = tr("回到顶部", "Back to top", "トップへ戻る", "맨 위로", "回到頂部"),
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                )
+            }
+        }
     }
 }
 
@@ -595,6 +709,8 @@ private fun DriveCell(
     moreButton: Boolean,
     isEmptyFolder: Boolean,
     folderHasVault: Boolean,
+    isDownloaded: Boolean,
+    isDownloading: Boolean = false,
     requestFocus: Boolean,
     onFocusRequested: () -> Unit,
     modifier: Modifier,
@@ -689,6 +805,8 @@ private fun DriveCell(
                 folderItemCount = folderItemCount,
                 folderDurationMillis = folderDurationMillis,
                 folderSizeBytes = folderSizeBytes,
+                isDownloaded = isDownloaded,
+                isDownloading = isDownloading,
             )
             DriveViewMode.LIST -> FileListItem(
                 file = file,
@@ -712,6 +830,8 @@ private fun DriveCell(
                 folderItemCount = folderItemCount,
                 folderDurationMillis = folderDurationMillis,
                 folderSizeBytes = folderSizeBytes,
+                isDownloaded = isDownloaded,
+                isDownloading = isDownloading,
             )
         }
     }

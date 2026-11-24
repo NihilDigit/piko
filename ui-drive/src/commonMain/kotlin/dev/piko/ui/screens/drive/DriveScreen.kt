@@ -101,6 +101,8 @@ internal data class DriveViewSnapshot(
     val pinnedFolders: List<PathBreadcrumb>,
     val vaultedFolders: Set<String>,
     val fullyVaultedFolders: Set<String>,
+    val downloadedFileIds: Set<String> = emptySet(),
+    val downloadingFileIds: Set<String> = emptySet(),
     val viewMode: DriveViewMode,
     val tileSize: TileSize,
     val galleryActive: Boolean,
@@ -401,6 +403,8 @@ fun DriveScreen(
     val pinnedFolders by driveRepo.pinnedFoldersFlow.collectAsStateWithLifecycle(emptyList())
     val vaultedFolders by state.vaultedFolders.collectAsStateWithLifecycle()
     val fullyVaultedFolders by state.fullyVaultedFolders.collectAsStateWithLifecycle()
+    val downloadedFileIds by viewModel.downloadedFileIds.collectAsStateWithLifecycle()
+    val downloadingFileIds by viewModel.downloadingFileIds.collectAsStateWithLifecycle()
 
     val latestActiveFolder by rememberUpdatedState(activeFolder)
     val pickFiles = platform.uploadPicker.rememberFilesLauncher { viewModel.upload(UploadSelection(files = it), latestActiveFolder) }
@@ -531,6 +535,8 @@ fun DriveScreen(
         pinnedFolders = pinnedFolders,
         vaultedFolders = vaultedFolders,
         fullyVaultedFolders = fullyVaultedFolders,
+        downloadedFileIds = downloadedFileIds,
+        downloadingFileIds = downloadingFileIds,
         viewMode = viewMode,
         tileSize = tileSize,
         galleryActive = galleryActive,

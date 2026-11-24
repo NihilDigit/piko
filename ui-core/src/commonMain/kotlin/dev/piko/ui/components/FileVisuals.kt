@@ -210,6 +210,7 @@ fun MetaRow(
     modifier: Modifier = Modifier,
     style: TextStyle = LocalTextStyle.current,
     color: Color = Color.Unspecified,
+    trailing: (@Composable () -> Unit)? = null,
 ) {
     val tabularStyle = style.tabular
     Row(
@@ -227,6 +228,9 @@ fun MetaRow(
                 overflow = TextOverflow.Ellipsis,
                 modifier = if (index == parts.lastIndex) Modifier.weight(1f, fill = false) else Modifier,
             )
+        }
+        if (trailing != null) {
+            trailing()
         }
     }
 }

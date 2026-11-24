@@ -17,18 +17,22 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.SaveableStateHolder
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.data.PikoPathBreadcrumb
@@ -225,6 +229,7 @@ internal fun WorkspaceContextHost(
                 canClose = model::canCloseContext,
                 canPin = model::canPinContext,
                 onTogglePin = { model.togglePinContext(it) },
+                onEditNote = { id -> if (model.canEditContextNote(id)) model.requestEditContextNote(id) },
                 onCloseOthers = model::requestCloseOtherContexts,
                 onMove = model::moveContext,
                 onNewTab = model::newFileContext,
@@ -249,6 +254,42 @@ internal fun WorkspaceContextHost(
 
 @Composable
 internal fun WorkspaceContextDialogs(model: WorkspaceViewModel) {
+    model.editingNoteTabId?.let { tabId ->
+        val tab = model.driveWorkspace.tabsFlow.collectAsStateWithLifecycle().value.firstOrNull { it.id == tabId }
+        if (tab == null) {
+            LaunchedEffect(tabId) { model.dismissEditContextNote() }
+            return
+        }
+        var draft by rememberSaveable(tabId) { mutableStateOf(tab.note) }
+        PikoDialog(
+            onDismissRequest = model::dismissEditContextNote,
+            title = { Text(tr("标签页备注", "Tab note", "タブのメモ", "탭 메모", "分頁備註")) },
+            text = {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(tr("备注", "Note", "メモ", "메모", "備註")) },
+                    placeholder = { Text(tr("留空以清除备注", "Leave empty to clear", "空欄でメモを削除", "비워 두면 메모 삭제", "留空以清除備註")) },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { model.confirmEditContextNote(draft) }),
+                )
+            },
+            confirmButton = {
+                PikoDialogConfirm(
+                    label = tr("保存", "Save", "保存", "저장", "儲存"),
+                    onClick = { model.confirmEditContextNote(draft) },
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = model::dismissEditContextNote) {
+                    Text(stringResource(Res.string.common_cancel))
+                }
+            },
+        )
+        return
+    }
     model.blockedCloseMessage?.let { message ->
         PikoDialog(
             onDismissRequest = model::dismissBlockedClose,
