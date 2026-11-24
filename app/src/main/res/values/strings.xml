@@ -1,4 +1,6 @@
 <resources>
     <string name="app_name">Piko</string>
+    <string name="app_name_disguise_todo">Todo</string>
+    <string name="app_name_disguise_notes">Notes</string>
     <string name="app_tagline">Next-Gen Material 3 Expressive PikPak Client</string>
 </resources>

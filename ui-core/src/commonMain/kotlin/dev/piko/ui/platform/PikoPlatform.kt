@@ -134,6 +134,9 @@ interface PikoPlatform {
     /** 后台不受限运行（Android 电池优化白名单），桌面端为 null。 */
     val backgroundTransferAccess: BackgroundTransferAccess? get() = null
 
+    /** 应用锁、最近任务隐私遮罩与图标伪装能力（Android 端提供，其余平台为 null）。 */
+    val appSecurity: AppSecurityController? get() = null
+
     /** 当前是否尚未在系统「默认打开」中添加 PikPak 分享与跳转域名，用于「我的」页提醒卡片。 */
     suspend fun needsAppLinkPrompt(): Boolean = false
 
@@ -457,6 +460,28 @@ interface PreviewBackend : PlaybackBackend {
 
     /** 缓冲的设定与眼下缓存着的时长，只供日志核对 [setBufferAhead] 生效没有；取不到为 null。 */
     fun bufferReport(): String?
+}
+
+@Immutable
+data class AppDisguiseOption(
+    val id: String,
+    val title: String,
+    val description: String,
+)
+
+/**
+ * 移动端（Android）本地应用锁、最近任务隐私保护与图标伪装能力。
+ */
+interface AppSecurityController {
+    val appLockEnabled: StateFlow<Boolean>
+    val hideInRecents: StateFlow<Boolean>
+    val activeDisguiseId: StateFlow<String>
+    val disguiseOptions: List<AppDisguiseOption>
+
+    fun canUseDeviceLock(): Boolean
+    fun setAppLockEnabled(enabled: Boolean): Boolean
+    fun setHideInRecents(enabled: Boolean)
+    fun selectDisguise(id: String): Boolean
 }
 
 val LocalPikoPlatform = staticCompositionLocalOf<PikoPlatform> {

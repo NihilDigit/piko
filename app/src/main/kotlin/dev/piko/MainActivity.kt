@@ -7,7 +7,9 @@ import dev.piko.shared.log.PikoLog
 import dev.piko.data.auth.AppLanguage
 
 import android.Manifest
+import android.app.KeyguardManager
 import android.content.ContentResolver
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -20,16 +22,37 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.areStatusBarsVisible
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import dev.piko.ui.theme.PikoTheme
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import androidx.core.view.ViewCompat
@@ -82,6 +105,7 @@ import kotlinx.coroutines.withTimeout
 class MainActivity : ComponentActivity() {
 
     private var openTorrentJob: Job? = null
+    private var pendingLockedIntent: Intent? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val systemLocale = android.content.res.Resources.getSystem().configuration.locales.get(0) ?: Locale.getDefault()
@@ -123,6 +147,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             val appearance by appearanceFlow.collectAsStateWithLifecycle(initialAppearance)
             val darkTheme = appearance.isDark()
+            val appSecurity = app.platform.appSecurity
+            val hideInRecents by appSecurity.hideInRecents.collectAsStateWithLifecycle()
+            val appLockEnabled by appSecurity.appLockEnabled.collectAsStateWithLifecycle()
+            val isLocked by appSecurity.locked.collectAsStateWithLifecycle()
             // 系统栏图标的深浅默认看系统的夜间模式。应用强制浅色而系统是深色时，状态栏会是
             // 浅色图标压在浅色背景上，所以改为按应用实际的深浅判断。导航栏遮罩沿用库的默认值
             DisposableEffect(darkTheme) {
@@ -132,15 +160,47 @@ class MainActivity : ComponentActivity() {
                 )
                 onDispose {}
             }
-            PikoApp(
-                onLanguageChanged = ::applyLanguage,
-                services = app.services,
-                platform = app.platform,
-                appearance = appearance,
-                videoPlayer = videoPlayer,
-            )
-            AskForNotificationsOnFirstWork(app.services)
-            if (isHeightCompact()) HideStatusBarWhileShort()
+            LaunchedEffect(hideInRecents, appLockEnabled) {
+                appSecurity.applyWindowSecurity(this@MainActivity)
+            }
+            LaunchedEffect(isLocked) {
+                if (!isLocked) {
+                    pendingLockedIntent?.let { deferred ->
+                        pendingLockedIntent = null
+                        handleIntentNow(deferred)
+                    }
+                }
+            }
+            if (isLocked) {
+                PikoTheme(appearance = appearance) {
+                    AppLockOverlay(
+                        activity = this@MainActivity,
+                        appSecurity = appSecurity,
+                    )
+                }
+            } else {
+                PikoApp(
+                    onLanguageChanged = ::applyLanguage,
+                    services = app.services,
+                    platform = app.platform,
+                    appearance = appearance,
+                    videoPlayer = videoPlayer,
+                )
+                AskForNotificationsOnFirstWork(app.services)
+                if (isHeightCompact()) HideStatusBarWhileShort()
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        PikoApplication.instance.platform.appSecurity.onAppForegrounded()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations) {
+            PikoApplication.instance.platform.appSecurity.onAppBackgrounded()
         }
     }
 
@@ -167,6 +227,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
+        if (intent == null) return
+        if (PikoApplication.instance.platform.appSecurity.locked.value) {
+            pendingLockedIntent = intent
+            return
+        }
+        handleIntentNow(intent)
+    }
+
+    private fun handleIntentNow(intent: Intent?) {
         if (intent == null) return
         if (intent.getBooleanExtra(EXTRA_OPEN_TRANSFERS, false)) {
             PikoApplication.instance.services.requestOpenTransfers()
@@ -314,6 +383,92 @@ class MainActivity : ComponentActivity() {
  * 等第一次有工作要在后台跑时再问：这时说得清为什么要通知，一打开应用就问多半会被拒。
  * 每次 Activity 组合生命周期内最多问一次（Activity 重建后若仍未授权会再次检查）；拒绝两次后系统自己也不再弹。
  */
+@Composable
+private fun AppLockOverlay(
+    activity: ComponentActivity,
+    appSecurity: dev.piko.platform.AndroidAppSecurity,
+) {
+    var errorText by remember { mutableStateOf<String?>(null) }
+    val legacyCredentialLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            appSecurity.markUnlocked()
+        }
+    }
+
+    fun requestUnlock() {
+        errorText = null
+        val handled = appSecurity.promptBiometricUnlock(
+            activity = activity,
+            onSuccess = { errorText = null },
+            onError = { msg -> if (msg.isNotBlank()) errorText = msg },
+        )
+        if (!handled) {
+            val km = activity.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+            @Suppress("DEPRECATION")
+            val intent = km?.createConfirmDeviceCredentialIntent(
+                tr("解锁应用", "Unlock app", "ロックを解除", "앱 잠금 해제", "解鎖應用程式"),
+                tr("请验证设备锁屏以继续访问", "Confirm device screen lock to continue", "続行するには端末のロックを解除してください", "계속하려면 기기 잠금을 해제하세요", "請驗證裝置螢幕鎖定以繼續存取"),
+            )
+            if (intent != null) {
+                legacyCredentialLauncher.launch(intent)
+            } else if (!appSecurity.canUseDeviceLock()) {
+                // 设备锁屏密码已被用户在系统设置中关闭，自动停用应用锁避免永久锁死
+                appSecurity.setAppLockEnabled(false)
+            } else {
+                errorText = tr(
+                    "无法调起系统身份验证，请重试",
+                    "Unable to launch system authentication. Try again.",
+                    "システム認証を起動できませんでした。再試行してください。",
+                    "시스템 인증을 시작할 수 없습니다. 다시 시도해 주세요.",
+                    "無法啟動系統身分驗證，請重試",
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        requestUnlock()
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Lock,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(48.dp),
+            )
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = tr("应用已锁定", "App locked", "アプリはロックされています", "앱이 잠겨 있습니다", "應用程式已鎖定"),
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            if (!errorText.isNullOrBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = errorText.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Spacer(Modifier.height(24.dp))
+            Button(onClick = ::requestUnlock) {
+                Text(tr("验证并解锁", "Unlock", "ロックを解除", "잠금 해제", "驗證並解鎖"))
+            }
+        }
+    }
+}
+
 @Composable
 private fun AskForNotificationsOnFirstWork(services: PikoServices) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return

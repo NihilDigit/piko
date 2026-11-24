@@ -1,4 +1,8 @@
 <resources>
     <color name="ic_launcher_background">#306EFF</color>
+    <color name="ic_launcher_emerald_background">#1B813E</color>
+    <color name="ic_launcher_obsidian_background">#23262E</color>
+    <color name="ic_launcher_todo_background">#4A6572</color>
+    <color name="ic_launcher_notes_background">#8D6E63</color>
     <color name="piko_window_background">#F7F9FC</color>
 </resources>

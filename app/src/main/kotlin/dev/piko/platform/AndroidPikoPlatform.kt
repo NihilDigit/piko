@@ -135,6 +135,8 @@ class AndroidPikoPlatform(
 
     override val supportsBlur: Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
+    override val appSecurity: AndroidAppSecurity = AndroidAppSecurity(context)
+
     override fun observeSystemStatus(): Flow<PlayerSystemStatusInfo?> =
         AndroidSystemStatus.observe(context).map { snapshot ->
             PlayerSystemStatusInfo(

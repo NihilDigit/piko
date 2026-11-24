@@ -2,12 +2,16 @@ package dev.piko.ui.screens.settings
 
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.CloudSync
+import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Lan
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.VisibilityOff
+import dev.piko.ui.platform.LocalPikoPlatform
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
@@ -44,6 +48,7 @@ internal fun hasAccountSectionMatches(searchQuery: String): Boolean {
 internal fun hasDataSectionMatches(searchQuery: String): Boolean {
     if (searchQuery.isBlank()) return true
     val services = LocalPikoServices.current
+    val platform = LocalPikoPlatform.current
     val isFreeAccount by services.driveRepository.isFreeAccountFlow.collectAsStateWithLifecycle()
     fun match(vararg terms: String): Boolean = matchesSettingsQuery(searchQuery, *terms)
 
@@ -53,7 +58,11 @@ internal fun hasDataSectionMatches(searchQuery: String): Boolean {
     val matchEncSync = services.supportsEncryptedSync &&
         match("加密同步口令", "Encrypted sync passphrase", "passphrase", "encrypt", "暗号化同期", "암호화 동기화")
     val matchWebDav = isFreeAccount == false && match("WebDAV", "dav", "挂载", "播放器")
-    return matchSyncSettings || matchSyncHistory || matchArchivePw || matchEncSync || matchWebDav
+    val matchPrivacy = platform.appSecurity != null && match(
+        "应用锁", "App lock", "伪装", "图标", "隐藏", "最近任务", "隐私", "安全",
+        "disguise", "icon", "privacy", "security", "biometric", "アプリロック", "앱 잠금", "應用程式鎖",
+    )
+    return matchSyncSettings || matchSyncHistory || matchArchivePw || matchEncSync || matchWebDav || matchPrivacy
 }
 
 internal fun hasAboutSectionMatches(searchQuery: String): Boolean {
@@ -94,8 +103,11 @@ internal fun SyncAndDataSettingsSection(
     snackbarHostState: SnackbarHostState,
 ) {
     val services = LocalPikoServices.current
+    val platform = LocalPikoPlatform.current
+    val appSecurity = platform.appSecurity
     val sessionManager = services.preferences
     val scope = rememberCoroutineScope()
+    var showDisguiseDialog by remember { mutableStateOf(false) }
 
     val isSyncPlayHistoryEnabled by sessionManager.syncPlayHistoryFlow.collectAsStateWithLifecycle(initialValue = true)
     val isSettingsSyncEnabled by sessionManager.settingsSyncFlow.collectAsStateWithLifecycle(initialValue = true)
@@ -260,7 +272,12 @@ internal fun SyncAndDataSettingsSection(
     val matchWebDav = isFreeAccount == false && match("WebDAV", "dav", "挂载", "播放器")
     val matchCredGroup = matchArchivePw || matchEncSync || matchWebDav
 
-    if (matchSyncGroup || matchCredGroup) {
+    val matchAppLock = appSecurity != null && match("应用锁", "App lock", "biometric", "lock", "隐私", "安全", "アプリロック", "앱 잠금", "應用程式鎖")
+    val matchHideRecents = appSecurity != null && match("隐藏最近任务", "Hide in recents", "privacy", "screenshot", "最近任务", "防截屏", "プライバシー", "최근 앱 숨기기")
+    val matchDisguise = appSecurity != null && match("应用图标与名称", "伪装", "隐藏", "App icon", "disguise", "Todo", "Notes", "アイコン", "아이콘")
+    val matchPrivacyGroup = matchAppLock || matchHideRecents || matchDisguise
+
+    if (matchSyncGroup || matchCredGroup || matchPrivacyGroup) {
         SettingsSectionBlock(
             section = SettingsSection.Data,
             first = firstSection == SettingsSection.Data,
@@ -380,6 +397,119 @@ internal fun SyncAndDataSettingsSection(
                         )
                     }
                 }
+            }
+            if (appSecurity != null && matchPrivacyGroup) {
+                val appLockEnabled by appSecurity.appLockEnabled.collectAsStateWithLifecycle()
+                val hideInRecents by appSecurity.hideInRecents.collectAsStateWithLifecycle()
+                val activeDisguiseId by appSecurity.activeDisguiseId.collectAsStateWithLifecycle()
+                val disguiseOptions = remember(appSecurity) { appSecurity.disguiseOptions }
+                val activeDisguiseLabel = disguiseOptions.firstOrNull { it.id == activeDisguiseId }?.title
+                    ?: disguiseOptions.firstOrNull()?.title.orEmpty()
+
+                SettingsGroup(tr("隐私与安全", "Privacy & security", "プライバシーとセキュリティ", "개인정보 및 보안", "隱私與安全")) {
+                        if (matchAppLock) {
+                            SettingsSwitchRow(
+                                icon = Icons.Outlined.Fingerprint,
+                                title = tr("应用锁", "App lock", "アプリロック", "앱 잠금", "應用程式鎖"),
+                                supporting = tr(
+                                    "启动或从后台返回时通过指纹、面容或系统锁屏验证身份",
+                                    "Require biometric or device screen lock when opening or returning to the app",
+                                    "起動時やバックグラウンド復帰時に生体認証または端末ロックを要求します",
+                                    "앱을 열거나 백그라운드에서 돌아올 때 생체 인증 또는 기기 잠금을 요구합니다",
+                                    "啟動或從背景返回時透過指紋、臉部或系統螢幕鎖定驗證身分",
+                                ),
+                                checked = appLockEnabled,
+                                onCheckedChange = { enabled ->
+                                    val ok = appSecurity.setAppLockEnabled(enabled)
+                                    if (enabled && !ok) {
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar(
+                                                tr(
+                                                    "请先在系统设置中开启锁屏密码或生物识别",
+                                                    "Set up a device screen lock or biometrics in system settings first",
+                                                    "先に端末設定で画面ロックまたは生体認証を設定してください",
+                                                    "먼저 시스템 설정에서 화면 잠금 또는 생체 인증을 설정하세요",
+                                                    "請先在系統設定中開啟螢幕鎖定密碼或生物辨識",
+                                                ),
+                                            )
+                                        }
+                                    }
+                                },
+                            )
+                        }
+                        if (matchHideRecents) {
+                            SettingsSwitchRow(
+                                icon = Icons.Outlined.VisibilityOff,
+                                title = tr("隐藏最近任务内容", "Hide content in recents", "最近使ったアプリで内容を隠す", "최근 앱에서 내용 숨기기", "隱藏最近使用內容"),
+                                supporting = tr(
+                                    "在系统多任务视图中隐藏界面预览并阻止截屏",
+                                    "Hide preview in system recents and block screenshots",
+                                    "マルチタスク画面でのプレビュー表示とスクリーンショットを防止します",
+                                    "최근 앱 화면에서 미리 보기를 숨기고 스크린샷을 차단합니다",
+                                    "在系統多工檢視中隱藏介面預覽並阻止擷取螢幕",
+                                ),
+                                checked = hideInRecents,
+                                onCheckedChange = { appSecurity.setHideInRecents(it) },
+                            )
+                        }
+                        if (matchDisguise) {
+                            SettingsNavigationRow(
+                                icon = Icons.Outlined.Apps,
+                                title = tr("应用图标与名称", "App icon & name", "アプリアイコンと名前", "앱 아이콘 및 이름", "應用程式圖示與名稱"),
+                                supporting = activeDisguiseLabel,
+                                onClick = { showDisguiseDialog = true },
+                                trailingIcon = null,
+                            )
+                        }
+                    }
+
+                    if (showDisguiseDialog) {
+                        SettingsChoiceDialog(
+                            icon = Icons.Outlined.Apps,
+                            title = tr("应用图标与名称", "App icon & name", "アプリアイコンと名前", "앱 아이콘 및 이름", "應用程式圖示與名稱"),
+                            description = tr(
+                                "更换桌面图标配色或伪装为日常工具图标，切换后桌面会在数秒内刷新。",
+                                "Change the launcher icon color or disguise it as an everyday utility. The home screen updates within a few seconds.",
+                                "アプリアイコンの配色変更や別アプリへの偽装ができます。変更は数秒以内にホーム画面へ反映されます。",
+                                "런처 아이콘 색상을 바꾸거나 일반 도구 앱으로 위장합니다. 변경 사항은 몇 초 내에 홈 화면에 반영됩니다.",
+                                "更換桌面圖示配色或偽裝為日常工具圖示，切換後桌面會在數秒內重新整理。",
+                            ),
+                            onDismiss = { showDisguiseDialog = false },
+                        ) {
+                            disguiseOptions.forEach { option ->
+                                SettingsChoiceOption(
+                                    title = option.title,
+                                    supporting = option.description,
+                                    selected = activeDisguiseId == option.id,
+                                    onClick = {
+                                        showDisguiseDialog = false
+                                        val switched = appSecurity.selectDisguise(option.id)
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar(
+                                                if (switched) {
+                                                    tr(
+                                                        "已切换应用图标，桌面将在数秒内更新",
+                                                        "App icon updated; launcher will refresh shortly",
+                                                        "アイコンを変更しました。数秒以内に反映されます",
+                                                        "앱 아이콘이 변경되었습니다. 잠시 후 런처에 반영됩니다",
+                                                        "已切換應用程式圖示，桌面將於數秒內更新",
+                                                    )
+                                                } else {
+                                                    tr(
+                                                        "切换应用图标失败",
+                                                        "Failed to change app icon",
+                                                        "アイコンの変更に失敗しました",
+                                                        "앱 아이콘 변경에 실패했습니다",
+                                                        "切換應用程式圖示失敗",
+                                                    )
+                                                },
+                                            )
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
             }
         }
     }
