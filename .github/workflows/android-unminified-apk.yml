@@ -1,6 +1,6 @@
 name: Android Unminified APK (Play Protect Probe)
 
-# 临时诊断用：使用当前 Android 正式签名密钥，按需关闭混淆或剥离可疑 Manifest 特征构建 APK，
+# 临时诊断用：使用当前 Android 正式签名密钥，按需调整混淆、Manifest 或安装器实现构建 APK，
 # 用于二分定位 Google Play Protect 误报根因。
 # 仅支持手动触发（workflow_dispatch），验证完毕后可直接删除本文件。
 
@@ -14,11 +14,15 @@ on:
       minify:
         description: 启用 R8 混淆与资源压缩
         type: boolean
+        default: true
+      use_action_view:
+        description: 用 ACTION_VIEW + FileProvider 替换 PackageInstaller（移除 UpdateInstallReceiver）
+        type: boolean
         default: false
       strip_deeplinks:
         description: 移除官方域名与 pikpakapp:// Deep Link intent-filter
         type: boolean
-        default: true
+        default: false
       strip_disguise:
         description: 移除应用伪装 activity-alias（改由 MainActivity 直接作为 LAUNCHER）
         type: boolean
@@ -46,6 +50,7 @@ jobs:
       PIKO_VERSION_NAME: ${{ inputs.version }}
       PIKO_VERSION_CODE: '9009009'
       MINIFY: ${{ inputs.minify }}
+      USE_ACTION_VIEW: ${{ inputs.use_action_view }}
       STRIP_DEEPLINKS: ${{ inputs.strip_deeplinks }}
       STRIP_DISGUISE: ${{ inputs.strip_disguise }}
       STRIP_INSTALL_PACKAGES: ${{ inputs.strip_install_packages }}
@@ -62,7 +67,7 @@ jobs:
         if: inputs.sdk-main
         run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
 
-      - name: Patch AndroidManifest for probe
+      - name: Patch AndroidManifest and updater for probe
         run: |
           python3 - <<'PY'
           import os, xml.etree.ElementTree as ET
@@ -74,6 +79,199 @@ jobs:
           tree = ET.parse(manifest_path)
           root = tree.getroot()
           app = root.find("application")
+
+          if os.environ.get("USE_ACTION_VIEW") == "true":
+              for r in list(app.findall("receiver")):
+                  if r.get(f"{{{ANDROID_NS}}}name") == ".update.UpdateInstallReceiver":
+                      app.remove(r)
+              queries = ET.SubElement(root, "queries")
+              q_intent = ET.SubElement(queries, "intent")
+              ET.SubElement(q_intent, "action", {f"{{{ANDROID_NS}}}name": "android.intent.action.VIEW"})
+              ET.SubElement(q_intent, "category", {f"{{{ANDROID_NS}}}name": "android.intent.category.DEFAULT"})
+              ET.SubElement(
+                  q_intent,
+                  "data",
+                  {
+                      f"{{{ANDROID_NS}}}mimeType": "application/vnd.android.package-archive",
+                      f"{{{ANDROID_NS}}}scheme": "content",
+                  },
+              )
+
+              file_paths = Path("app/src/main/res/xml/file_paths.xml")
+              fp_text = file_paths.read_text(encoding="utf-8")
+              if 'path="updates/"' not in fp_text:
+                  fp_text = fp_text.replace(
+                      "</paths>",
+                      '    <cache-path name="updates" path="updates/" />\n</paths>',
+                  )
+                  file_paths.write_text(fp_text, encoding="utf-8")
+
+              receiver_file = Path("app/src/main/kotlin/dev/piko/update/UpdateInstallReceiver.kt")
+              if receiver_file.exists():
+                  receiver_file.unlink()
+
+              Path("app/src/main/kotlin/dev/piko/update/AppUpdater.kt").write_text(
+                  """package dev.piko.update
+
+          import android.content.ClipData
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.net.Uri
+          import android.os.Build
+          import android.provider.Settings
+          import androidx.core.content.FileProvider
+          import dev.piko.BuildConfig
+          import dev.piko.data.auth.AppLanguage
+          import dev.piko.shared.i18n.tr
+          import dev.piko.shared.log.PikoLog
+          import dev.piko.shared.update.ChecksumMismatchException
+          import dev.piko.shared.update.GithubReleaseClient
+          import dev.piko.shared.update.LatestRelease
+          import dev.piko.shared.update.ReleaseAsset
+          import io.ktor.client.HttpClient
+          import io.ktor.client.engine.okhttp.OkHttp
+          import kotlinx.coroutines.CancellationException
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.withContext
+          import java.io.File
+          import java.security.MessageDigest
+
+          data class AndroidUpdate(
+              override val version: String,
+              override val notes: String,
+              override val pageUrl: String,
+              override val canInstallInApp: Boolean,
+              val apk: ReleaseAsset,
+              override val localizedNotes: Map<AppLanguage, String> = emptyMap(),
+          ) : AvailableUpdate {
+              override val downloadSize: Long get() = apk.size
+              override val modeLabel: String get() = "APK"
+          }
+
+          class AppUpdater(private val context: Context) : GithubUpdateService<AndroidUpdate>(
+              releases = GithubReleaseClient(HttpClient(OkHttp), userAgent = "Piko/${BuildConfig.VERSION_NAME}"),
+              currentVersion = BuildConfig.VERSION_NAME,
+              checksOnStartup = !BuildConfig.DEBUG,
+              log = { message, cause -> PikoLog.w("Update", message, cause) },
+          ) {
+              override suspend fun resolve(release: LatestRelease): AndroidUpdate? {
+                  val apk = pickApk(release) ?: return null
+                  return AndroidUpdate(
+                      version = release.version,
+                      notes = release.notes,
+                      localizedNotes = release.localizedNotes,
+                      pageUrl = release.pageUrl,
+                      canInstallInApp = !BuildConfig.DEBUG,
+                      apk = apk,
+                  )
+              }
+
+              override fun prepareDownload(update: AndroidUpdate): Boolean {
+                  if (!context.packageManager.canRequestPackageInstalls()) {
+                      val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
+                          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                      runCatching { context.startActivity(intent) }
+                          .onFailure { PikoLog.w(TAG, "Failed to open unknown app sources settings", it) }
+                      return false
+                  }
+                  return true
+              }
+
+              override suspend fun performDownloadAndInstall(update: AndroidUpdate) {
+                  val file = try {
+                      download(update)
+                  } catch (e: CancellationException) {
+                      status = UpdateStatus.Available(update)
+                      throw e
+                  } catch (e: Exception) {
+                      status = downloadFailed(e, update)
+                      return
+                  }
+                  try {
+                      launchApkInstaller(file)
+                      status = UpdateStatus.Available(update)
+                  } catch (e: Exception) {
+                      PikoLog.w(TAG, "Failed to launch APK installer for ${update.apk.name}", e)
+                      status = UpdateStatus.Failed(
+                          tr("无法启动安装", "Unable to start installation", "インストールを開始できません", "설치를 시작할 수 없습니다", "無法啟動安裝"),
+                          update,
+                      )
+                  }
+              }
+
+              private suspend fun download(update: AndroidUpdate): File = withContext(Dispatchers.IO) {
+                  val expected = update.apk.sha256 ?: throw ChecksumMismatchException("Release asset has no SHA-256 digest")
+                  val dir = File(context.cacheDir, UPDATE_DIR).apply { deleteRecursively(); mkdirs() }
+                  val target = File(dir, update.apk.name)
+                  val digest = MessageDigest.getInstance("SHA-256")
+                  val total = update.apk.size
+                  val tracker = UpdateProgressTracker(total) { progress, downloaded, totalBytes, bytesPerSec ->
+                      reportDownloadProgress(update, progress, downloaded, totalBytes, bytesPerSec, update.modeLabel)
+                  }
+                  try {
+                      target.outputStream().use { out ->
+                          releases.download(
+                              update.apk,
+                              onChunk = { buffer, length ->
+                                  out.write(buffer, 0, length)
+                                  digest.update(buffer, 0, length)
+                                  tracker.onBytes(length)
+                              },
+                              onProgress = {},
+                          )
+                      }
+                  } catch (t: Throwable) {
+                      target.delete()
+                      throw t
+                  }
+                  transitionDownloadStage(
+                      update = update,
+                      stage = UpdateStage.Verifying,
+                      totalBytes = total,
+                      modeLabel = update.modeLabel,
+                  )
+                  val actual = digest.digest().joinToString("") { "%02x".format(it) }
+                  if (actual != expected) {
+                      target.delete()
+                      throw ChecksumMismatchException("${update.apk.name}: $actual != $expected")
+                  }
+                  target
+              }
+
+              private fun launchApkInstaller(apk: File) {
+                  val apkUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apk)
+                  val intent = Intent(Intent.ACTION_VIEW).apply {
+                      setDataAndType(apkUri, APK_MIME_TYPE)
+                      clipData = ClipData.newRawUri(apk.name, apkUri)
+                      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                  }
+                  context.packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+                      .asSequence()
+                      .map { it.activityInfo.packageName }
+                      .distinct()
+                      .forEach { pkg ->
+                          runCatching {
+                              context.grantUriPermission(pkg, apkUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                          }
+                      }
+                  context.startActivity(intent)
+              }
+
+              private fun pickApk(release: LatestRelease): ReleaseAsset? =
+                  Build.SUPPORTED_ABIS.firstNotNullOfOrNull { release.asset("piko-${release.version}-$it.apk") }
+                      ?: release.asset("piko-${release.version}-universal.apk")
+
+              private companion object {
+                  const val TAG = "Update"
+                  const val UPDATE_DIR = "updates"
+                  const val APK_MIME_TYPE = "application/vnd.android.package-archive"
+              }
+          }
+          """.replace("\n          ", "\n"),
+                  encoding="utf-8",
+              )
+              print("Replaced PackageInstaller with ACTION_VIEW + FileProvider.")
 
           if os.environ.get("STRIP_DEEPLINKS") == "true":
               main_act = next(
@@ -122,7 +320,7 @@ jobs:
 
           tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
           PY
-          git diff app/src/main/AndroidManifest.xml app/build.gradle.kts
+          git status -sb
 
       - uses: actions/setup-java@v5
         with:
@@ -152,7 +350,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           tag=""
-          [[ "$MINIFY" == "false" ]] && tag+="-unminified"
+          [[ "$MINIFY" == "true" ]] && tag+="-r8" || tag+="-unminified"
+          [[ "$USE_ACTION_VIEW" == "true" ]] && tag+="-actionview"
           [[ "$STRIP_DEEPLINKS" == "true" ]] && tag+="-nodeeplink"
           [[ "$STRIP_DISGUISE" == "true" ]] && tag+="-nodisguise"
           [[ "$STRIP_INSTALL_PACKAGES" == "true" ]] && tag+="-noinstallperm"
