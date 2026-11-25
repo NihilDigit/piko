@@ -442,6 +442,9 @@ jobs:
           TEST_APK="$(find apks -name '*androidTest*.apk' | head -n 1)"
           test -f "$APP_APK"
           test -f "$TEST_APK"
+          # 缓存 AVD 里可能残留上一次 CI 临时 debug.keystore 签名的旧包，先卸载避免 INSTALL_FAILED_UPDATE_INCOMPATIBLE
+          adb uninstall dev.piko.debug || true
+          adb uninstall dev.piko.debug.test || true
           adb install -r -t "$APP_APK"
           adb install -r -t "$TEST_APK"
           adb logcat -c || true
