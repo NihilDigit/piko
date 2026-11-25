@@ -430,7 +430,7 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-metrics -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
-          script: echo "AVD snapshot created"; pkill -9 crashpad_handler 2>/dev/null || true
+          script: echo "AVD snapshot created"; pkill -9 -f crashpad_handler 2>/dev/null || true
 
       - name: Prepare instrumentation runner script
         shell: bash
@@ -438,8 +438,9 @@ jobs:
           cat <<'EOF' > run-instrument.sh
           #!/usr/bin/env bash
           set -euo pipefail
-          # Android 模拟器退出后 crashpad_handler 常残留并占住 stdout/stderr 管道，导致 runner 无限挂起
-          trap 'pkill -9 crashpad_handler 2>/dev/null || true' EXIT
+          # Android 模拟器退出后 crashpad_handler 常残留并占住 stdout/stderr 管道，导致 runner 无限挂起；
+          # Linux /proc/<pid>/comm 上限 15 字符（crashpad_handler 为 16 字符），pkill 必须带 -f 匹配完整命令行
+          trap 'pkill -9 -f crashpad_handler 2>/dev/null || true' EXIT
           mkdir -p test-logs
           APP_APK="$(find apks -name '*debug.apk' ! -name '*androidTest*' | head -n 1)"
           TEST_APK="$(find apks -name '*androidTest*.apk' | head -n 1)"
