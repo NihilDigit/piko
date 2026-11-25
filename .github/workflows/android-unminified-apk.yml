@@ -1,0 +1,87 @@
+name: Android Unminified APK (Play Protect Probe)
+
+# 临时诊断用：使用当前 Android 正式签名密钥，关闭 R8 混淆与资源压缩构建 Piko Release APK，
+# 用于二分验证 Google Play Protect 是否由 R8 混淆触发。
+# 仅支持手动触发（workflow_dispatch），验证完毕后可直接删除本文件。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: APK 版本号（MAJOR.MINOR.PATCH）
+        required: true
+        default: '9.9.9'
+      sdk-main:
+        description: 使用 SDK main 源码（关闭则使用已发布版本）
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  android-unminified:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/piko-release.jks
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      PIKO_VERSION_NAME: ${{ inputs.version }}
+      PIKO_VERSION_CODE: '9009009'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        if: inputs.sdk-main
+        with:
+          repository: NihilDigit/pikpak-kotlin
+          path: pikpak-kotlin
+
+      - name: Build against the SDK source
+        if: inputs.sdk-main
+        run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Decode release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          chmod 600 "$ANDROID_KEYSTORE_PATH"
+
+      - name: Build signed unminified release APK
+        run: |
+          ./gradlew :app:assembleRelease \
+            -Ppiko.minifyRelease=false \
+            -Ppiko.enableAbiSplits=false \
+            --no-daemon --stacktrace
+
+      - name: Collect and verify APK
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/piko-${PIKO_VERSION_NAME}-unminified.apk"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          "$build_tools/apksigner" verify --verbose --print-certs "dist/piko-${PIKO_VERSION_NAME}-unminified.apk"
+          ls -lh dist
+
+      - name: Cleanup keystore
+        if: always()
+        run: rm -f "$ANDROID_KEYSTORE_PATH"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: piko-${{ inputs.version }}-unminified.apk
+          path: dist/piko-${{ inputs.version }}-unminified.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
