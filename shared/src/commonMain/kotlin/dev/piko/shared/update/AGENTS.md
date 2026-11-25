@@ -1,6 +1,6 @@
 # 应用内更新
 
-Android 与桌面端均支持应用内检查与安装更新。跨平台版本检查、多语言更新说明解析与分段下载位于本目录（`GithubReleaseClient`、`GithubReleases.kt`），具体安装落地由各平台分别实现：Android 移交系统 `PackageInstaller`；macOS 经 `apply-update-mac.sh` 整包替换 `Piko.app`；Linux 仅针对 AppImage 执行纯 Kotlin `.zsync` 块级差分替换（详见 `../../../../../../../../desktopApp/AGENTS.md`）；Windows 由 `DesktopAppUpdater` 复制随包 JRE 至临时目录并以 `javaw.exe -jar` 启动纯 `java.base` 更新器 `WindowsUpdateApplier`（彻底避免调用 `powershell.exe -ExecutionPolicy Bypass` 引发安全软件 LOLBin 行为误报），执行带事务回滚的补丁替换、便携版 `image.zip` 按需 Range 提取或 MSI 整包重装。
+Android 与桌面端均支持应用内检查与安装更新。跨平台版本检查、多语言更新说明解析与分段下载位于本目录（`GithubReleaseClient`、`GithubReleases.kt`），具体安装落地由各平台分别实现：Android 经 `FileProvider` + `ACTION_VIEW` 移交系统或第三方安装器（避免 `PackageInstaller` 会话触发 Google Play Protect 对侧载包的启发式误报）；macOS 经 `apply-update-mac.sh` 整包替换 `Piko.app`；Linux 仅针对 AppImage 执行纯 Kotlin `.zsync` 块级差分替换（详见 `../../../../../../../../desktopApp/AGENTS.md`）；Windows 由 `DesktopAppUpdater` 复制随包 JRE 至临时目录并以 `javaw.exe -jar` 启动纯 `java.base` 更新器 `WindowsUpdateApplier`（彻底避免调用 `powershell.exe -ExecutionPolicy Bypass` 引发安全软件 LOLBin 行为误报），执行带事务回滚的补丁替换、便携版 `image.zip` 按需 Range 提取或 MSI 整包重装。
 
 ## 版本检查、安全边界与多语言更新说明
 

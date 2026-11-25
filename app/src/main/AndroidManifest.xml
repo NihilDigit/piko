@@ -6,10 +6,20 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <!-- 应用内更新：经 PackageInstaller 安装从 GitHub Releases 下载的新版本 -->
+    <!-- 应用内更新：经 FileProvider + ACTION_VIEW 移交系统安装器安装从 GitHub Releases 下载的新版本 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- 生物识别应用锁：API 30+ BiometricPrompt.authenticate() 需要显式声明 -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data
+                android:mimeType="application/vnd.android.package-archive"
+                android:scheme="content" />
+        </intent>
+    </queries>
 
     <application
         android:name=".PikoApplication"
@@ -194,10 +204,6 @@
             android:name=".download.PikoDownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
-
-        <receiver
-            android:name=".update.UpdateInstallReceiver"
-            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

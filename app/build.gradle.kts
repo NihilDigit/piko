@@ -37,9 +37,6 @@ val isReleaseTaskRequested = gradle.startParameter.taskNames.any {
 val enableAbiSplits = providers.gradleProperty("piko.enableAbiSplits")
     .map { it.toBoolean() }
     .orElse(isReleaseTaskRequested)
-val minifyRelease = providers.gradleProperty("piko.minifyRelease")
-    .map { it.toBoolean() }
-    .orElse(true)
 
 android {
     namespace = "dev.piko"
@@ -84,8 +81,8 @@ android {
             versionNameSuffix = "-debug"
         }
         release {
-            isMinifyEnabled = minifyRelease.get()
-            isShrinkResources = minifyRelease.get()
+            isMinifyEnabled = true
+            isShrinkResources = true
             if (releaseSigningConfigured) {
                 signingConfig = signingConfigs.getByName("release")
             }
