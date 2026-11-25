@@ -816,7 +816,7 @@ class ProxyLoopbackReplayTest {
         val stream = proxy.register(harness.byteSource, "cached-seek-reuse.mkv", demand)
         var openConn: dev.piko.shared.media.testing.OpenResponse? = null
         try {
-            val conn = openRequest(stream.url, range = "bytes=0-").also {
+            val conn = openRequest(stream.url, range = "bytes=0-", receiveBufferSize = 16 * 1024).also {
                 it.socket.soTimeout = 10_000
                 openConn = it
             }
