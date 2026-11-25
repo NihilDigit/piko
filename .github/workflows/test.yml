@@ -431,7 +431,43 @@ jobs:
           disable-animations: false
           script: echo "AVD snapshot created"
 
+      - name: Prepare instrumentation runner script
+        shell: bash
+        run: |
+          cat <<'EOF' > run-instrument.sh
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p test-logs
+          APP_APK="$(find apks -name '*debug.apk' ! -name '*androidTest*' | head -n 1)"
+          TEST_APK="$(find apks -name '*androidTest*.apk' | head -n 1)"
+          test -f "$APP_APK"
+          test -f "$TEST_APK"
+          adb install -r -t "$APP_APK"
+          adb install -r -t "$TEST_APK"
+          adb logcat -c || true
+          set +e
+          adb shell am instrument -w -r ${INSTRUMENT_ARGS:-} dev.piko.debug.test/androidx.test.runner.AndroidJUnitRunner | tee test-logs/instrument.log
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          adb logcat -d -s AndroidSqliteSmoke:I AndroidRuntime:E SQLiteLog:E > test-logs/logcat.log || true
+          if [ "$STATUS" -ne 0 ]; then
+            echo "Instrumentation exited with status $STATUS"
+            exit "$STATUS"
+          fi
+          if grep -qE "FAILURES!!!|INSTRUMENTATION_FAILED|Process crashed|SHORTMSG=Process crashed|OK \(0 tests\)" test-logs/instrument.log; then
+            echo "Instrumentation reported failures or zero tests"
+            exit 1
+          fi
+          if ! grep -qE "OK \([1-9][0-9]* tests?\)" test-logs/instrument.log; then
+            echo "Instrumentation did not report passing test summary"
+            exit 1
+          fi
+          EOF
+          chmod +x run-instrument.sh
+
       - name: Instrumented tests (API ${{ matrix.api }} - ${{ matrix.suite }})
+        env:
+          INSTRUMENT_ARGS: ${{ matrix.instrument_args }}
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api }}
@@ -440,33 +476,7 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: |
-            set -euo pipefail
-            mkdir -p test-logs
-            APP_APK="$(find apks -name '*debug.apk' ! -name '*androidTest*' | head -n 1)"
-            TEST_APK="$(find apks -name '*androidTest*.apk' | head -n 1)"
-            test -f "$APP_APK"
-            test -f "$TEST_APK"
-            adb install -r -t "$APP_APK"
-            adb install -r -t "$TEST_APK"
-            adb logcat -c || true
-            set +e
-            adb shell am instrument -w -r ${{ matrix.instrument_args }} dev.piko.debug.test/androidx.test.runner.AndroidJUnitRunner | tee test-logs/instrument.log
-            STATUS=${PIPESTATUS[0]}
-            set -e
-            adb logcat -d -s AndroidSqliteSmoke:I AndroidRuntime:E SQLiteLog:E > test-logs/logcat.log || true
-            if [ "$STATUS" -ne 0 ]; then
-              echo "Instrumentation exited with status $STATUS"
-              exit "$STATUS"
-            fi
-            if grep -qE "FAILURES!!!|INSTRUMENTATION_FAILED|Process crashed|SHORTMSG=Process crashed|OK \(0 tests\)" test-logs/instrument.log; then
-              echo "Instrumentation reported failures or zero tests"
-              exit 1
-            fi
-            if ! grep -qE "OK \([1-9][0-9]* tests?\)" test-logs/instrument.log; then
-              echo "Instrumentation did not report passing test summary"
-              exit 1
-            fi
+          script: bash run-instrument.sh
 
       - name: Upload test reports
         if: failure()
