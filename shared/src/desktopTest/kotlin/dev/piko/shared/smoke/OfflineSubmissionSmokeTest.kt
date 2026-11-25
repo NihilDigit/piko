@@ -69,23 +69,17 @@ class OfflineSubmissionSmokeTest {
     }
 
     @Test
-    fun `a lost response retains an opaque submission and blocks repeats only for that target`() = smoke { scope ->
+    fun `a lost response records failed submission and remains forgettable`() = smoke { scope ->
         val f = Rig(scope)
         f.loseResponse()
         val outcome = scope.async(start = CoroutineStart.UNDISPATCHED) { f.instant.offlineSubmissions.outcomes.first() }
         val error = assertIs<OfflineSubmitException>(f.instant.enqueueOfflineTask(f.url, f.target.id).exceptionOrNull())
         val work = f.instant.offlineSubmissions.works.value.single()
-        assertEquals(OfflineSubmitStatus.UNCONFIRMED, work.status)
+        assertEquals(OfflineSubmitStatus.FAILED, work.status)
         assertEquals(work.id, error.workId)
         assertEquals(work, outcome.await())
         assertFalse(work.toString().contains("PRIVATE"))
-        assertEquals(1, f.server.tasksSnapshot().size)
-        repeat(4) { assertIs<OfflineSubmitException>(f.instant.enqueueOfflineTask(f.url, f.target.id).exceptionOrNull()) }
-        assertEquals(1, f.server.count("POST /drive/v1/files"))
-        f.instant.enqueueOfflineTask(f.url, "other")
-        assertEquals(2, f.server.count("POST /drive/v1/files"))
         assertTrue(f.instant.offlineSubmissions.forget(work.id))
-        assertEquals(2, f.server.tasksSnapshot().size, "移除本地回执不取消已创建的远端任务")
     }
 
     @Test
@@ -118,7 +112,7 @@ class OfflineSubmissionSmokeTest {
             execute(request)
         }
         assertIs<OfflineSubmitException>(f.instant.enqueueOfflineTask(f.url, f.target.id).exceptionOrNull())
-        assertEquals(OfflineSubmitStatus.REFUSED, f.instant.offlineSubmissions.works.value.single().status)
+        assertEquals(OfflineSubmitStatus.FAILED, f.instant.offlineSubmissions.works.value.single().status)
         assertTrue(f.server.tasksSnapshot().isEmpty())
         refused = false
         assertIs<CreateUrlResult.Queued>(f.instant.enqueueOfflineTask(f.url, f.target.id).getOrThrow())
@@ -126,56 +120,36 @@ class OfflineSubmissionSmokeTest {
     }
 
     @Test
-    fun `an unknown draft freezes its input and original target until explicitly forgotten`() = smoke { scope ->
+    fun `a failed submission remains editable without freezing the draft`() = smoke { scope ->
         val f = Rig(scope)
         f.loseResponse()
         val currentFolder = MutableStateFlow(f.bread)
         val state = f.state(SaveTargetContext({ currentFolder.value }, currentFolder))
         awaitUntil("目标及主操作就绪") { state.primaryAction?.enabled == true && state.target == f.bread }
         state.submitOfflineTask()
-        awaitUntil("未知回执进入草稿保护") { !state.isSaving && state.hasPendingOfflineSubmission }
-        assertFalse(state.canEdit)
-        assertFalse(state.primaryAction!!.enabled)
-        assertTrue(state.hasPickedFiles)
-        state.updateInput("https://example.invalid/other")
-        assertEquals(f.url, state.input)
-        val other = f.server.addFolder("other")
-        currentFolder.value = PikoPathBreadcrumb(other.id, other.name)
-        awaitUntil("可编辑状态仍被冻结") { !state.canEdit }
-        assertEquals(f.bread, state.target)
-        repeat(4) { state.submitOfflineTask() }
-        assertEquals(1, f.server.tasksSnapshot().size)
-        val id = f.instant.offlineSubmissions.works.value.single().id
-        assertTrue(state.containsOfflineSubmission(id))
-        assertTrue(f.instant.offlineSubmissions.forget(id))
-        awaitUntil("明确移除后恢复编辑与目录跟随") { state.canEdit && state.target?.id == other.id }
-        assertEquals(1, f.server.tasksSnapshot().size)
+        awaitUntil("提交失败后恢复可编辑") { !state.isSaving && state.errorMessage != null && state.canEdit }
+        assertFalse(state.hasPendingOfflineSubmission)
     }
 
     @Test
-    fun `an unknown pack submission is not adopted or pruned and cannot be submitted again`() = smoke { scope ->
+    fun `a failed pack submission is not adopted or pruned`() = smoke { scope ->
         val f = Rig(scope)
         f.loseResponse()
         scope.launch(start = CoroutineStart.UNDISPATCHED) { f.packs.run("offline@piko.dev") }
         suspend fun submit() = f.packs.submit(f.url, f.target.id, "pack", setOf("one.mkv"), 2, 200, 100)
         assertIs<OfflineSubmitException>(submit().exceptionOrNull())
         assertTrue(f.packs.jobs.value.isEmpty())
-        repeat(3) { assertIs<OfflineSubmitException>(submit().exceptionOrNull()) }
-        assertEquals(1, f.server.tasksSnapshot().count { it.url == f.url })
-        assertEquals(1, f.instant.offlineSubmissions.works.value.count { it.target.id == f.target.id })
     }
 
     @Test
-    fun `resubmitting a failed cloud task shares the same unknown submission guard`() = smoke { scope ->
+    fun `resubmitting a failed cloud task keeps original task when resubmission fails`() = smoke { scope ->
         val f = Rig(scope)
         val task = assertIs<CreateUrlResult.Queued>(f.instant.enqueueOfflineTask(f.url, f.target.id).getOrThrow()).task
             .copy(phase = TaskPhase.ERROR, params = mapOf("url" to f.url, "parent_folder_id" to f.target.id))
         f.loseResponse()
         val repository = TaskRepository(f.provider, f.drive, f.instant)
         assertIs<OfflineSubmitException>(repository.resubmitTask(task).exceptionOrNull())
-        repeat(3) { assertIs<OfflineSubmitException>(repository.resubmitTask(task).exceptionOrNull()) }
-        assertEquals(2, f.server.tasksSnapshot().size)
-        assertTrue(f.server.tasksSnapshot().any { it.id == task.id }, "未知的新提交不能删除原任务引用")
+        assertTrue(f.server.tasksSnapshot().any { it.id == task.id }, "失败的新提交不能删除原任务引用")
     }
 
     @Test
@@ -204,7 +178,7 @@ class OfflineSubmissionSmokeTest {
         val f = Rig(scope)
         f.server.offlineEmptyResponse = true
         assertIs<OfflineSubmitException>(f.instant.enqueueOfflineTask(f.url, f.target.id).exceptionOrNull())
-        assertEquals(OfflineSubmitStatus.UNCONFIRMED, f.instant.offlineSubmissions.works.value.single().status)
+        assertEquals(OfflineSubmitStatus.FAILED, f.instant.offlineSubmissions.works.value.single().status)
         f.server.offlineEmptyResponse = false
         f.server.offlineEmptyTaskResponse = true
         assertIs<OfflineSubmitException>(f.instant.enqueueOfflineTask("https://example.invalid/no-task-id", f.target.id).exceptionOrNull())
@@ -232,7 +206,7 @@ class OfflineSubmissionSmokeTest {
         scope.launch(start = CoroutineStart.UNDISPATCHED) { f.packs.run("offline@piko.dev") }
         assertIs<OfflineSubmitException>(f.packs.submit(f.url, f.target.id, "pack", setOf("one.mkv"), 2, 200, 100).exceptionOrNull())
         val work = f.instant.offlineSubmissions.works.value.single()
-        assertEquals(OfflineSubmitStatus.UNCONFIRMED, work.status)
+        assertEquals(OfflineSubmitStatus.FAILED, work.status)
         assertEquals(folder.id, work.outputId)
         assertTrue(f.packs.jobs.value.isEmpty())
         assertNotNull(f.server.node(keep.id))
@@ -241,7 +215,7 @@ class OfflineSubmissionSmokeTest {
     }
 
     @Test
-    fun `batch saving keeps an unknown row while handing successful submissions to cloud tasks`() = smoke { scope ->
+    fun `batch saving keeps a failed row while handing successful submissions to cloud tasks`() = smoke { scope ->
         val f = Rig(scope)
         val second = "https://example.invalid/second-file"
         f.http.plugin(HttpSend).intercept { request ->
@@ -254,27 +228,34 @@ class OfflineSubmissionSmokeTest {
         awaitUntil("批量两条 URL 就绪") { state.batch?.canSaveAll == true }
         val batch = assertNotNull(state.batch)
         batch.saveAll()
-        awaitUntil("成功行移除，未知行保留") { !batch.isSaving && batch.rows.size == 1 && batch.rows.single().state.hasPendingOfflineSubmission }
-        assertFalse(batch.canSaveAll)
-        assertFalse(state.canEdit)
-        assertEquals(2, f.server.tasksSnapshot().size)
-        repeat(3) { batch.saveAll() }
-        assertEquals(2, f.server.tasksSnapshot().size)
+        awaitUntil("成功行移除，失败行保留") { !batch.isSaving && batch.rows.size == 1 && batch.saveErrors.isNotEmpty() }
+        assertTrue(state.canEdit)
         assertEquals(1, f.instant.offlineSubmissions.works.value.size)
     }
 
     @Test
-    fun `equivalent magnet spellings cannot bypass an unknown submission while signed URLs stay distinct`() = smoke { scope ->
+    fun `equivalent magnet spellings conflict while running while signed URLs stay distinct`() = smoke { scope ->
         val f = Rig(scope)
-        f.loseResponse()
+        val entered = Channel<Unit>(1)
+        val release = Channel<Unit>(1)
+        f.http.plugin(HttpSend).intercept { request ->
+            if (request.method == HttpMethod.Post && request.url.encodedPath.endsWith("/drive/v1/files") &&
+                (request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString().contains("0".repeat(40))) {
+                entered.send(Unit)
+                release.receive()
+            }
+            execute(request)
+        }
         val hash = "0".repeat(40)
         val first = "magnet:?xt=urn:btih:$hash&dn=one"
-        assertIs<OfflineSubmitException>(f.instant.enqueueOfflineTask(first, f.target.id).exceptionOrNull())
+        val inFlight = scope.async { f.instant.enqueueOfflineTask(first, f.target.id) }
+        withTimeout(5_000) { entered.receive() }
         for (other in listOf("magnet:?xt=urn:btih:$hash&dn=two&tr=https://tracker.invalid", "magnet:?xt=urn:btih:${"A".repeat(32)}", hash))
             assertIs<OfflineSubmitException>(f.instant.enqueueOfflineTask(other, f.target.id).exceptionOrNull())
-        assertEquals(1, f.server.tasksSnapshot().size)
-        f.instant.enqueueOfflineTask("https://example.invalid/file?token=one", f.target.id)
-        f.instant.enqueueOfflineTask("https://example.invalid/file?token=two", f.target.id)
+        f.instant.enqueueOfflineTask("https://example.invalid/file?token=one", f.target.id).getOrThrow()
+        f.instant.enqueueOfflineTask("https://example.invalid/file?token=two", f.target.id).getOrThrow()
+        release.send(Unit)
+        inFlight.await().getOrThrow()
         assertEquals(3, f.server.tasksSnapshot().size)
     }
 

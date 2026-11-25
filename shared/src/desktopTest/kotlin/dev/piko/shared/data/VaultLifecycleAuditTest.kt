@@ -43,7 +43,7 @@ class VaultLifecycleAuditTest {
     ) {
         override val vault: VaultStore = VaultStore(
             io = object : VaultFolderIo {
-                override suspend fun list(folderId: String): List<FileStat> = listAllFiles(folderId).getOrThrow()
+                override suspend fun list(folderId: String): List<FileStat> = server.client().listFiles(folderId)
                 override suspend fun read(fileId: String): ByteArray = assertNotNull(server.node(fileId)).content
                 override suspend fun upload(folderId: String, name: String, bytes: ByteArray): String =
                     server.addFile(name, folderId, content = bytes).id

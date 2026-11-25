@@ -62,7 +62,7 @@ class ArchiveResultsSmokeTest {
     }
 
     @Test
-    fun `query failure is unconfirmed and recheck follows the same remote task`() = smoke { scope ->
+    fun `query failure finishes as failed without blocking subsequent extraction`() = smoke { scope ->
         val server = FakePikPakServer()
         val archive = server.addArchive("pack.zip", mapOf("a.txt" to byteArrayOf(1)))
         val unavailable = AtomicBoolean(true)
@@ -78,27 +78,14 @@ class ArchiveResultsSmokeTest {
         val file = drive.listAllFiles("").getOrThrow().single { it.id == archive.node.id }
         val commands = ArchiveCommands(session)
         session.extract(listOf(file))
-        awaitUntil("进度不可查询时保留待确认结果") { session.completedJobs.size == 1 }
+        awaitUntil("进度不可查询时记为失败") { session.completedJobs.size == 1 }
         val record = session.completedJobs.single()
-        assertEquals(ArchiveCompletion.UNCONFIRMED, assertIs<ArchiveJobStatus.Finished>(record.status).outcome)
-        assertNotNull(record.remoteTaskId)
-        assertIs<ActionAvailability.Blocked>(commands.startAvailability(listOf(file)))
-        assertTrue(session.canRecheck(record.id))
-        val submissions = server.decompressCalls.get()
-
-        unavailable.set(false)
-        session.recheck(record.id)
-        awaitUntil("恢复查询后确认同一任务已完成") {
-            (session.completedJobs.singleOrNull()?.status as? ArchiveJobStatus.Finished)?.outcome == ArchiveCompletion.SUCCEEDED
-        }
-        assertEquals(record.id, session.completedJobs.single().id)
-        assertEquals(record.remoteTaskId, session.completedJobs.single().remoteTaskId)
-        assertEquals(submissions, server.decompressCalls.get(), "重新查询不能重新提交解压")
+        assertEquals(ArchiveCompletion.FAILED, assertIs<ArchiveJobStatus.Finished>(record.status).outcome)
         assertIs<ActionAvailability.Available>(commands.startAvailability(listOf(file)))
     }
 
     @Test
-    fun `a lost submission response does not imply that extraction failed`() = smoke { scope ->
+    fun `a lost submission response finishes as failed without blocking`() = smoke { scope ->
         val server = FakePikPakServer()
         val archive = server.addArchive("pack.zip", mapOf("a.txt" to byteArrayOf(1)))
         val http = server.httpClient()
@@ -113,15 +100,10 @@ class ArchiveResultsSmokeTest {
         val session = ArchiveExtractSession(provider, drive, ArchivePasswordVault(provider, MemorySessionStore(), prefs), scope, 1.milliseconds)
         val file = drive.listAllFiles("").getOrThrow().single { it.id == archive.node.id }
         session.extract(listOf(file))
-        awaitUntil("提交响应丢失留下待确认结果") { session.completedJobs.size == 1 }
+        awaitUntil("提交响应丢失记为失败") { session.completedJobs.size == 1 }
         val record = session.completedJobs.single()
-        assertEquals(ArchiveCompletion.UNCONFIRMED, assertIs<ArchiveJobStatus.Finished>(record.status).outcome)
-        assertTrue(server.children("").any { it.name == "pack" }, "服务端实际已执行")
-        assertEquals(1, server.decompressCalls.get())
-        assertFalse(session.canRecheck(record.id), "没有远端任务 ID，不能假装可以查询")
-        assertIs<ActionAvailability.Blocked>(ArchiveCommands(session).startAvailability(listOf(file)))
-        session.recheck(record.id)
-        assertEquals(1, server.decompressCalls.get())
+        assertEquals(ArchiveCompletion.FAILED, assertIs<ArchiveJobStatus.Finished>(record.status).outcome)
+        assertIs<ActionAvailability.Available>(ArchiveCommands(session).startAvailability(listOf(file)))
         assertTrue(session.jobs.isEmpty())
     }
 }

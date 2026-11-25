@@ -95,11 +95,8 @@ internal class InstantSaveExecutor(
         val attempted = submitted.mapTo(HashSet()) { it.file.path }
         val confirmed = plan.receipt.confirmed + current.confirmed
         val receipt = current.copy(confirmed = confirmed,
-            unconfirmed = (plan.receipt.unconfirmed + current.unconfirmed) - confirmed.keys,
             failed = ((plan.receipt.failed - attempted) + current.failed) - confirmed.keys,
             notAttempted = ((plan.receipt.notAttempted - attempted) + current.notAttempted) - confirmed.keys,
-            namingUnconfirmed = plan.receipt.namingUnconfirmed + current.namingUnconfirmed,
-            unconfirmedFolder = plan.receipt.unconfirmedFolder ?: current.unconfirmedFolder,
             folders = plan.receipt.folders + current.folders)
         val touchedFolders = receipt.folders.values.toSet() + plan.target.id + listOfNotNull(parentId)
         if (reference && result.isSuccess) {

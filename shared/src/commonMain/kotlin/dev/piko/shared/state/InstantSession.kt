@@ -34,7 +34,7 @@ class InstantDraft internal constructor(
         internal set
     internal val submitted = androidx.compose.runtime.mutableStateListOf<InstantSheetState>()
     internal val hasRecoverableSave: Boolean get() = submitted.any {
-        it.hasRetainedInstantAttempt && (it.hasInstantRetry || it.saveIssue?.requiresInspection == true)
+        it.hasRetainedInstantAttempt && it.hasInstantRetry
     }
     internal val hasExecutingSave: Boolean get() = submitted.any { it.hasLocalSave } || state.hasLocalSave
 
@@ -172,7 +172,7 @@ class InstantSession(
                 observe(next)
                 saveScope.launch {
                     snapshotFlow { editor.hasLocalSave ||
-                        editor.hasRetainedInstantAttempt && (editor.hasInstantRetry || editor.saveIssue?.requiresInspection == true) }.first { !it }
+                        editor.hasRetainedInstantAttempt && editor.hasInstantRetry }.first { !it }
                     draft.submitted -= editor
                     editorScopes[editor]?.let { (editing, executing) -> editing.cancel(); executing.cancel() }
                     editorScopes -= editor

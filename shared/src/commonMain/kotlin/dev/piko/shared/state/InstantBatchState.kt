@@ -58,7 +58,7 @@ class InstantBatchRow internal constructor(
     val status: InstantBatchRowStatus by derivedStateOf {
         val s = state
         when {
-            s.saveBlockReason != null || (s.saveIssue?.requiresInspection == true && s.retryFileCount == 0) -> InstantBatchRowStatus.NEEDS_REVIEW
+            s.saveBlockReason != null -> InstantBatchRowStatus.NEEDS_REVIEW
             // 防抖期间还没开始请求，同样算解析中
             s.isResolving || (!s.needsSharePassCode && s.resolution == null && !s.isUnindexed && s.errorMessage == null) ->
                 InstantBatchRowStatus.RESOLVING
@@ -128,8 +128,7 @@ class InstantBatchState internal constructor(
         rows.filter {
             (it.status == InstantBatchRowStatus.READY || it.status == InstantBatchRowStatus.WHOLE_OFFLINE) &&
                 (!it.state.hasInstantRetry || it.state.retryFileCount > 0) &&
-                (it.state.saveIssue?.requiresInspection != true || it.state.retryFileCount > 0)
-                && it.state.saveBlockReason == null && (!it.state.effectiveSaveAsReference || it.state.isLazyShareMode || it.state.referenceItemsToSave.isNotEmpty())
+                it.state.saveBlockReason == null && (!it.state.effectiveSaveAsReference || it.state.isLazyShareMode || it.state.referenceItemsToSave.isNotEmpty())
         }
     }
 

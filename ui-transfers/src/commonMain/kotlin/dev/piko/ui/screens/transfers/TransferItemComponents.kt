@@ -206,26 +206,18 @@ internal fun buildTransferItemActions(
         is TransferItem.InstantAttempt -> instantAttemptActions(
             item.work,
             item.work.locateId?.let { id -> { ctx.onOpenCloudFileById(id, item.work.title) } },
-            {
-                if (item.work.receipt?.requiresInspection == true) ctx.onConfirmSingleSideEffectDelete(item.key)
-                else state.remove(item)
-            },
+            { state.remove(item) },
             onRetry = if (services.instantSession.canRetryAttempt(item.work.id)) ({ services.instantSession.retryAttempt(item.work.id); Unit }) else null,
-            onRecheck = if (services.instantSaveRecords.canRecheck(item.work.id)) ({ services.instantSaveRecords.recheck(item.work.id, services.driveRepository); Unit }) else null,
         )
         is TransferItem.OfflineSubmit -> offlineSubmitActions(
             item.work,
             (item.work.outputId ?: item.work.target.id).let { id -> { ctx.onOpenCloudFileById(id, item.work.title) } },
-            {
-                if (item.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED) ctx.onConfirmSingleSideEffectDelete(item.key)
-                else state.remove(item)
-            },
+            { state.remove(item) },
         )
         is TransferItem.Extract -> extractTransferActions(
             item = item,
             onShowInDrive = { ctx.onOpenCloudFileById(item.job.file.id, item.job.file.name) },
             onSkip = { state.skipExtract(item.job.id) },
-            onRecheck = { state.recheckExtract(item.job.id) },
             onInputPassword = if (item.job.status is ArchiveJobStatus.NeedsPassword) ({ state.promptExtractPassword(item.job.id); Unit }) else null,
         )
         is TransferItem.Vault -> vaultTransferActions(
@@ -244,13 +236,8 @@ internal fun buildTransferItemActions(
                 work,
                 state.writeUndoStatus(work),
                 state.canUndoWrite(work),
-                services.fileWrites.canRecheck(work.id),
                 { state.undoWrite(work) },
-                { services.fileWrites.recheck(work.id) },
-                {
-                    if (work.result?.unconfirmed?.isNotEmpty() == true) ctx.onConfirmSingleSideEffectDelete(item.key)
-                    else state.remove(item)
-                },
+                { state.remove(item) },
                 locateWriteIdOf(work)?.let { id -> { ctx.onOpenCloudFileById(id, work.command.title) } },
             )
         }
@@ -696,14 +683,6 @@ internal fun DeleteSelectedTasksDialog(
         tr("已下载的文件会从本机删除。", "Downloaded files will be deleted from this device.", "ダウンロード済みファイルをこの端末から削除します。", "다운로드한 파일이 기기에서 삭제됩니다.", "已下載的檔案會從本機刪除。").takeIf { deletesFiles },
         tr("未完成的上传任务将取消，云端未传完的临时文件将一并删除。", "Unfinished uploads will be cancelled and incomplete cloud files deleted.", "未完了のアップロードをキャンセルし、クラウド上の不完全なファイルも削除します。", "미완료 업로드를 취소하고 클라우드의 미완성 파일도 함께 삭제합니다.", "未完成的上傳任務將取消，雲端未傳完的暫存檔案將一併刪除。").takeIf { cancelsUploads },
         tr("仅移除云端任务记录，已保存至网盘的文件不受影响。", "Only cloud task records will be removed; files saved in drive are kept.", "クラウドタスクの記録のみを削除します。ドライブに保存済みのファイルは保持されます。", "클라우드 작업 기록만 삭제하며 드라이브에 저장된 파일은 유지됩니다.", "僅移除雲端任務記錄，已儲存至雲端硬碟的檔案不受影響。").takeIf { items.any { TransferKind.CLOUD.matches(it) } },
-        tr("待确认的文件操作可能已在服务端执行。移除记录不会取消已提交的操作，重试前请先核对实际文件。", "Unconfirmed file operations may have already run on the server. Removing records does not cancel them; inspect files before retrying.", "未確認のファイル操作はサーバーで既に実行されている可能性があります。記録を削除しても操作は取り消されないため、再試行前に実際のファイルを確認してください。", "미확인 파일 작업이 서버에서 이미 실행되었을 수 있습니다. 기록을 삭제해도 작업은 취소되지 않으므로 다시 시도하기 전에 실제 파일을 확인해 주세요.", "待確認的檔案操作可能已在伺服器執行。移除記錄不會取消已提交的操作，重試前請先核對實際檔案。").takeIf {
-            items.any { it is TransferItem.Write && it.work.result?.unconfirmed?.isNotEmpty() == true }
-        },        tr("部分保存请求可能已在服务端执行。移除记录不会取消请求，重新保存前请先核对目标文件夹。", "Some save requests may have already run. Removing records does not cancel them; check the destination folder before saving again.", "一部の保存リクエストは既に実行されている可能性があります。記録を削除しても取り消されないため、再保存前に保存先フォルダーを確認してください。", "일부 저장 요청이 이미 실행되었을 수 있습니다. 기록을 삭제해도 취소되지 않으므로 다시 저장하기 전에 대상 폴더를 확인해 주세요.", "部分儲存請求可能已在伺服器執行。移除記錄不會取消請求，重新儲存前請先核對目標資料夾。").takeIf {
-            items.any { it is TransferItem.InstantAttempt && it.work.receipt?.requiresInspection == true }
-        },
-        tr("离线下载请求可能已在服务端执行。移除记录不会取消云端任务，重新提交前请先核对云端任务列表。", "The cloud download request may have already run. Removing records does not cancel remote tasks; check cloud tasks before resubmitting.", "クラウドダウンロードは既に実行されている可能性があります。記録を削除してもリモートタスクは取り消されません。", "클라우드 다운로드 요청이 이미 실행되었을 수 있습니다. 기록을 삭제해도 원격 작업은 취소되지 않습니다.", "離線下載請求可能已在伺服器執行。移除記錄不會取消雲端任務，重新提交前請先核對雲端任務清單。").takeIf {
-            items.any { it is TransferItem.OfflineSubmit && it.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED }
-        },
         tr("上传准备可能已创建文件夹或将部分文件加入队列。移除此记录不会删除已创建的文件夹或取消队列中的上传任务。", "Upload preparation may have created folders or queued files. Removing this record does not delete created folders or cancel queued uploads.", "アップロード準備によりフォルダーの作成やキューへの追加が行われた可能性があります。この記録を削除しても、作成済みフォルダーやキュー内のアップロードは取り消されません。", "업로드 준비 중 폴더가 생성되었거나 파일이 대기열에 추가되었을 수 있습니다. 이 기록을 삭제해도 생성된 폴더나 대기열의 업로드는 취소되지 않습니다.", "上傳準備可能已建立資料夾或將部分檔案加入佇列。移除此記錄不會刪除已建立的資料夾或取消佇列中的上傳任務。").takeIf {
             items.any { it is TransferItem.UploadPreparing && it.work.hasSideEffects }
         },

@@ -587,7 +587,7 @@ class BatchRenameState(
             } finally {
                 val touched = plan.steps.filterNot { VaultEntry.isVaulted(it.source.id) }.mapTo(HashSet()) { it.source.parentId }
                 if (touched.isNotEmpty()) {
-                    if (wasStopped || run.failures.isNotEmpty() || run.unconfirmed.isNotEmpty()) {
+                    if (wasStopped || run.failures.isNotEmpty()) {
                         driveRepo.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(touched))
                     } else {
                         driveRepo.notifyFoldersRefreshed(touched)
@@ -597,7 +597,7 @@ class BatchRenameState(
                 PikoLog.i(
                     TAG,
                     "Batch rename finished: succeeded=$succeededCount/${plan.changeCount}, failed=${failures.size}, " +
-                        "unconfirmed=${run.unconfirmed.size}, steps=${run.renamed.size}, vaultFolders=${run.vaultReverts.size}, " +
+                        "steps=${run.renamed.size}, vaultFolders=${run.vaultReverts.size}, " +
                         "swaps=${run.swapsExecuted}, rolledBack=${run.rolledBack}, stopped=$wasStopped, elapsedMs=${started.elapsedNow().inWholeMilliseconds}",
                 )
                 phase = Phase.DONE

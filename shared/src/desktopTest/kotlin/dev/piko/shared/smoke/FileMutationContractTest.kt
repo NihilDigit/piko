@@ -260,10 +260,8 @@ class FileMutationContractTest {
         val commandsLost = FileCommands(repoLost, sessionLost)
         val commandLost = FileWriteCommand.Copy(listOf(fileLost.id), PikoPathBreadcrumb(targetLost.id, targetLost.name))
         val idLost = commandsLost.accept(commandLost)
-        awaitUntil("copy unconfirmed") { sessionLost.works.value.single().result != null }
-        assertEquals(FileWriteCompletion.UNCONFIRMED, sessionLost.works.value.single().result!!.completion)
-        assertIs<FileCommandResult.Rejected>(commandsLost.submit(commandLost))
-        assertFalse(sessionLost.recheck(idLost))
+        awaitUntil("copy failed") { sessionLost.works.value.single().result != null }
+        assertEquals(FileWriteCompletion.FAILED, sessionLost.works.value.single().result!!.completion)
         assertEquals(1, serverLost.tasksSnapshot().size)
         assertEquals(1, serverLost.count("POST /drive/v1/files:batchCopy"))
     }

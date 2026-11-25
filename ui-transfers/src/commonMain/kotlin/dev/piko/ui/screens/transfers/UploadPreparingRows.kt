@@ -43,8 +43,7 @@ internal fun UploadPreparingDetails(work: UploadPreparation, actions: List<Sheet
                 if (issues.isNotEmpty()) Text(when (kind) {
                     UploadPreparationIssueKind.SOURCE_UNREADABLE -> tr("来源读取失败", "Failed to read source", "ソースを読み込めませんでした", "원본 읽기 실패", "來源讀取失敗")
                     UploadPreparationIssueKind.EMPTY_FOLDER -> tr("文件夹中没有可上传文件", "No uploadable files in folder", "フォルダーにアップロードできるファイルがありません", "폴더에 업로드할 파일이 없습니다", "資料夾中沒有可上傳的檔案")
-                    UploadPreparationIssueKind.DIRECTORY_REFUSED -> tr("目录创建被拒绝", "Folder creation rejected", "フォルダーの作成を拒否されました", "폴더 생성이 거부되었습니다", "資料夾建立遭拒")
-                    UploadPreparationIssueKind.DIRECTORY_UNCONFIRMED -> tr("目录创建结果待确认", "Folder creation unconfirmed", "フォルダーの作成結果は未確認です", "폴더 생성 결과 미확인", "資料夾建立結果待確認")
+                    UploadPreparationIssueKind.DIRECTORY_REFUSED -> tr("目录创建失败", "Folder creation failed", "フォルダーの作成に失敗しました", "폴더 생성 실패", "資料夾建立失敗")
                     UploadPreparationIssueKind.NOT_ATTEMPTED -> tr("未入队", "Not queued", "キューに未追加", "대기열에 추가 안 됨", "未加入佇列")
                 } + ":\n${issues.joinToString("\n") { label(it.sourceKey, it.path) }}")
             }

@@ -122,7 +122,7 @@ class PikoLocaleTest {
             assertEquals("My drive", dev.piko.shared.data.PikoPathBreadcrumb("", "我的雲端硬碟").localizedName)
             assertEquals("Starred", dev.piko.shared.data.PikoPathBreadcrumb(DriveLibrary.STARRED.id, "星标").localizedName)
             assertEquals("我的文件夹", dev.piko.shared.data.PikoPathBreadcrumb("folder", "我的文件夹").localizedName)
-            assertEquals("Confirmed saved: 1 file; 2 files not saved", dev.piko.shared.data.InstantSaveReceipt(
+            assertEquals("Saved 1 file; 2 files failed", dev.piko.shared.data.InstantSaveReceipt(
                 "account", "target", confirmed = mapOf("one" to "id"), failed = setOf("two", "three"),
             ).message)
             assertEquals("Move failed: A file with the same name already exists at the destination", PikoErrorMapper.failure("Move", duplicate))

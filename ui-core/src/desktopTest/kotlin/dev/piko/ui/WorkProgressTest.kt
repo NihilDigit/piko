@@ -19,22 +19,22 @@ class WorkProgressTest {
     private fun job(name: String, status: ArchiveJobStatus) = ArchiveJob(FileStat(id = name, name = name), status)
 
     @Test
-    fun unconfirmedCopyKeepsItsResultWithoutAnimating() {
+    fun failedCopyKeepsItsResultWithoutAnimating() {
         val work = dev.piko.shared.state.FileWriteWork(
             1,
             "account",
             dev.piko.shared.state.FileWriteCommand.Copy(listOf("file"), dev.piko.shared.data.PikoPathBreadcrumb("target", "target")),
             1,
             result = dev.piko.shared.state.FileWriteResult(
-                dev.piko.shared.state.FileWriteCompletion.UNCONFIRMED,
-                "请检查实际文件",
-                unconfirmed = setOf("file"),
+                dev.piko.shared.state.FileWriteCompletion.FAILED,
+                "复制失败，请刷新后重试",
+                failed = setOf("file"),
                 finishedAtMs = 2,
             ),
         )
-        assertEquals("结果待确认", work.workProgress().status)
+        assertEquals("未完成", work.workProgress().status)
         assertEquals(WorkMeter.None, work.workProgress().meter)
-        assertEquals("请检查实际文件", work.workProgress().detail)
+        assertEquals("复制失败，请刷新后重试", work.workProgress().detail)
         val undo = DriveChangeJournal.UndoResult(DriveChangeJournal.UndoStatus.RUNNING, "正在撤销已确认部分")
         assertEquals(WorkMeter.Indeterminate, work.workProgress(undo).meter)
         assertEquals("正在撤销已确认部分", work.workProgress(undo).status)
@@ -96,10 +96,10 @@ class WorkProgressTest {
     }
 
     @Test
-    fun unconfirmedExtractionHasNoProgressBarAndIsNotReportedAsFailed() {
-        val work = job("pack.zip", ArchiveJobStatus.Finished(ArchiveCompletion.UNCONFIRMED, "查询暂不可用", 1)).workProgress()
+    fun failedExtractionHasNoProgressBar() {
+        val work = job("pack.zip", ArchiveJobStatus.Finished(ArchiveCompletion.FAILED, "查询暂不可用", 1)).workProgress()
         assertEquals(WorkMeter.None, work.meter)
-        assertEquals("结果待确认", work.status)
+        assertEquals("解压失败", work.status)
         assertEquals("查询暂不可用", work.detail)
         assertEquals(WorkMeter.Indeterminate, job("pack.zip", ArchiveJobStatus.Checking).workProgress().meter)
     }

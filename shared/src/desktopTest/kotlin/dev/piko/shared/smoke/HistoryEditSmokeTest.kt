@@ -78,9 +78,7 @@ class HistoryEditSmokeTest {
         val outcomes = observeMutationOutcomes(scope, session.outcomes)
         val id = assertIs<HistoryCommandResult.Accepted>(HistoryCommands(repo, session).submit(HistoryEditCommand.ClearPlay)).workId
         awaitUntil("存在新播放时无法认领清空结果") { outcomes.value.isNotEmpty() }
-        assertEquals(HistoryEditCompletion.UNCONFIRMED, outcomes.value.single().result!!.completion)
-        awaitUntil("只读重新查询结束") { outcomes.value.isNotEmpty() }
-        assertEquals(HistoryEditCompletion.UNCONFIRMED, outcomes.value.single().result!!.completion)
+        assertEquals(HistoryEditCompletion.FAILED, outcomes.value.single().result!!.completion)
         assertEquals(1, server.count("POST /drive/v1/events:clear"))
         assertEquals(1, server.eventsSnapshot().size)
         assertTrue(server.eventsSnapshot().single().id != old.id)

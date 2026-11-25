@@ -23,7 +23,6 @@ import dev.piko.shared.data.VaultIngest
 import dev.piko.shared.data.VaultMediaMeta
 import dev.piko.shared.data.VaultStore
 import dev.piko.shared.data.VaultWrite
-import dev.piko.shared.data.VaultWriteUnconfirmed
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.data.runSuspendCatching
 import dev.piko.shared.log.PikoLog
@@ -355,7 +354,7 @@ class FolderVaultSession internal constructor(
                         knownMetaLookup = ops::knownMeta,
                         beforeFolderWrite = { _, _, _ -> ensureCurrent(work) },
                         writeFolder = { folderId, entries, _ ->
-                            runSuspendCatching { ops.write(folderId, entries, requireRemoteComplete = delete) }
+                            runSuspendCatching { ops.write(folderId, entries) }
                         },
                         onFolderCommitted = { folderId, drafts, entries ->
                             val files = drafts.map { requireNotNull(it.originFile) }
@@ -744,16 +743,12 @@ class FolderVaultSession internal constructor(
                                 }
                             }
                         }
-                        .onFailure { err ->
+                        .onFailure {
                             lock.withLock {
                                 manifestsAttempted++
                                 manifestFailures++
-                                val attemptedBefore = (err as? VaultWriteUnconfirmed)?.attempted?.before
-                                val fallbackEntries = (attemptedBefore ?: entries).filter { it.id in restored }
-                                if (folderUndoTrashIds.isNotEmpty() || attemptedBefore != null) {
-                                    reverts[folderId] = VaultEdits.add(fallbackEntries)
-                                }
                                 if (folderUndoTrashIds.isNotEmpty()) {
+                                    reverts[folderId] = VaultEdits.add(entries.filter { it.id in restored })
                                     trashByFolder[folderId] = folderUndoTrashIds.toList()
                                 }
                             }
@@ -1015,10 +1010,9 @@ private class BoundDriveFolderVaultOperations(
     override fun knownCid(gcid: String, size: Long): String? = access.vault.knownCidOf(gcid, size)
     override fun knownMeta(gcid: String, size: Long): VaultMediaMeta? = access.knownVaultMetaOf(gcid, size)
     override suspend fun sampleCid(file: FileStat): String? = access.sampleCid(file.id).getOrNull()
-    override suspend fun write(folderId: String, entries: List<VaultEntry>, requireRemoteComplete: Boolean) {
-        access.vault.update(folderId, VaultEdits.add(entries), requireRemoteComplete = requireRemoteComplete).getOrThrow()
+    override suspend fun write(folderId: String, entries: List<VaultEntry>) {
+        access.vault.update(folderId, VaultEdits.add(entries)).getOrThrow()
     }
-    override suspend fun write(folderId: String, entries: List<VaultEntry>) = write(folderId, entries, false)
     override suspend fun remove(ids: List<String>, permanently: Boolean) {
         if (permanently) {
             access.delete(ids).onSuccess { access.publish(DriveChange.Deleted(ids, emptySet())) }.getOrThrow()

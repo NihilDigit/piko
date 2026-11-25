@@ -23,7 +23,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 
-enum class OfflineSubmitStatus { SUBMITTING, COMPLETE, REFUSED, UNCONFIRMED }
+enum class OfflineSubmitStatus { SUBMITTING, COMPLETE, FAILED }
 
 /** 只记录提交回执；有远端任务引用后由云端任务列表或整包跟踪器接管。 */
 data class OfflineSubmitWork(val id: Long, val account: String, val target: PikoPathBreadcrumb,
@@ -65,8 +65,7 @@ class OfflineSubmitSession(private val clients: PikoClientProvider) {
 
     fun conflict(account: String, url: String, targetId: String, snapshot: List<OfflineSubmitWork> = _works.value): OfflineSubmitWork? {
         val key = requestKey(url)
-        return snapshot.firstOrNull { it.account == account && it.target.id == targetId && it.requestKey == key &&
-            (it.isRunning || it.status == OfflineSubmitStatus.UNCONFIRMED) }
+        return snapshot.firstOrNull { it.account == account && it.target.id == targetId && it.requestKey == key && it.isRunning }
     }
 
     suspend fun submit(url: String, target: PikoPathBreadcrumb, title: String, expectedAccount: String?, requiresTask: Boolean = false): Result<CreateUrlResult> {
@@ -76,22 +75,20 @@ class OfflineSubmitSession(private val clients: PikoClientProvider) {
         while (true) {
             val before = _works.value
             val pending = conflict(owner.account, url, target.id, before)
-            if (pending != null) return Result.failure(OfflineSubmitException(pending.id, tr("此文件夹已有相同链接的待确认请求，请先在任务页核对", "A submission for this link in this folder is unconfirmed. Check Tasks first", "このフォルダーには同じリンクの未確認リクエストがあります。先にタスク画面で確認してください", "이 폴더에 동일한 링크의 미확인 요청이 있습니다. 먼저 작업 페이지에서 확인해 주세요", "此資料夾已有相同連結的待確認請求，請先至任務頁核對")))
+            if (pending != null) return Result.failure(OfflineSubmitException(pending.id, tr("此文件夹已有相同链接正在提交离线下载", "A cloud download for this link in this folder is already being submitted", "このフォルダーでは同じリンクのクラウドダウンロードを送信中です", "이 폴더에서 동일한 링크의 클라우드 다운로드를 이미 제출 중입니다", "此資料夾已有相同連結正在提交離線下載")))
             if (_works.compareAndSet(before, before + work)) break
         }
-        var sent = false
         fun finish(status: OfflineSubmitStatus, message: String, outputId: String? = null) {
             val result = work.copy(status = status, message = message, outputId = outputId, finishedAtMs = now())
             _works.update { all ->
                 val updated = all.map { if (it.id == work.id) result else it }
-                val retained = updated.filter { !it.isRunning && it.status != OfflineSubmitStatus.UNCONFIRMED }.takeLast(100).mapTo(HashSet()) { it.id }
-                updated.filter { it.isRunning || it.status == OfflineSubmitStatus.UNCONFIRMED || it.id in retained }
+                val retained = updated.filter { !it.isRunning }.takeLast(100).mapTo(HashSet()) { it.id }
+                updated.filter { it.isRunning || it.id in retained }
             }
             if (clients.currentClient.value?.account == work.account && _works.value.any { it.id == work.id }) _outcomes.tryEmit(result)
         }
         try {
             val result = withContext(Dispatchers.Default) {
-                sent = true
                 owner.createUrlFile(parentId = target.id, url = url)
             }
             when (result) {
@@ -102,17 +99,16 @@ class OfflineSubmitSession(private val clients: PikoClientProvider) {
                 }
                 is CreateUrlResult.InstantComplete -> {
                     val file = result.file
-                    // SDK 的无 task 分支并未固定协议；目录根或空响应不能证明整包已保存。
                     if (requiresTask || file == null || file.id.isBlank() || file.isFolder || file.trashed || file.phase != TaskPhase.COMPLETE || file.parentId != target.id) {
                         PikoLog.w(
                             TAG,
-                            "Cloud download returned unconfirmed instant result (work=${work.id}, target=${logFolder(target.id)}, " +
+                            "Cloud download returned incomplete instant result (work=${work.id}, target=${logFolder(target.id)}, " +
                                 "requiresTask=$requiresTask, fileId=${file?.id?.ifBlank { "none" } ?: "none"}, isFolder=${file?.isFolder}, " +
                                 "trashed=${file?.trashed}, phase=${file?.phase}, parent=${file?.parentId?.let(::logFolder) ?: "none"})",
                         )
                         val message = if (requiresTask && file?.id?.isNotBlank() == true) tr("云端已保存文件，但未返回任务 ID，未执行自动裁剪与重命名", "Files saved in cloud without a task ID; automatic trimming and renaming skipped", "クラウドに保存されましたがタスクIDが返されなかったため、自動整理と名前変更をスキップしました", "클라우드에 파일이 저장되었으나 작업 ID가 반환되지 않아 자동 정리 및 이름 변경을 건너뛰었습니다", "雲端已儲存檔案，但未傳回任務 ID，未執行自動裁剪與重新命名")
-                            else tr("离线下载未返回有效任务或文件，请核对云端任务与目标文件夹", "No verifiable task or file returned. Check cloud tasks and destination folder", "有効なタスクまたはファイルが返されませんでした。クラウドタスクと保存先フォルダーを確認してください", "확인 가능한 작업이나 파일이 반환되지 않았습니다. 클라우드 작업과 대상 폴더를 확인해 주세요", "離線下載未傳回有效任務或檔案，請核對雲端任務與目標資料夾")
-                        finish(OfflineSubmitStatus.UNCONFIRMED, message, file?.id?.takeIf { it.isNotBlank() })
+                            else tr("离线下载提交失败，未返回有效任务或文件", "Cloud download submission failed; no valid task or file returned", "クラウドダウンロードの送信に失敗しました。有効なタスクまたはファイルが返されませんでした", "클라우드 다운로드 제출에 실패했습니다. 유효한 작업이나 파일이 반환되지 않았습니다", "離線下載提交失敗，未傳回有效任務或檔案")
+                        finish(OfflineSubmitStatus.FAILED, message, file?.id?.takeIf { it.isNotBlank() })
                         return Result.failure(OfflineSubmitException(work.id, message))
                     }
                     finish(OfflineSubmitStatus.COMPLETE, tr("云端保存已完成", "Saved to cloud", "クラウドに保存しました", "클라우드에 저장했습니다", "雲端儲存已完成"), file.id)
@@ -120,22 +116,16 @@ class OfflineSubmitSession(private val clients: PikoClientProvider) {
             }
             return Result.success(result)
         } catch (error: CancellationException) {
-            if (sent) {
-                PikoLog.w(TAG, "Cloud download cancelled after request was sent; status unconfirmed (work=${work.id}, target=${logFolder(target.id)})")
-            }
-            finish(if (sent) OfflineSubmitStatus.UNCONFIRMED else OfflineSubmitStatus.REFUSED,
-                if (sent) tr("离线下载提交结果待确认，请核对云端任务与目标文件夹", "Cloud download submission unconfirmed. Check cloud tasks and destination folder", "クラウドダウンロードの送信結果が未確認です。クラウドタスクと保存先フォルダーを確認してください", "클라우드 다운로드 제출 결과가 미확인 상태입니다. 클라우드 작업과 대상 폴더를 확인해 주세요", "離線下載提交結果待確認，請核對雲端任務與目標資料夾") else tr("离线下载未提交", "Cloud download not submitted", "クラウドダウンロードは送信されませんでした", "클라우드 다운로드를 제출하지 않았습니다", "離線下載未提交"))
+            finish(OfflineSubmitStatus.FAILED, tr("离线下载未提交", "Cloud download not submitted", "クラウドダウンロードは送信されませんでした", "클라우드 다운로드를 제출하지 않았습니다", "離線下載未提交"))
             throw error
         } catch (error: Exception) {
-            val refused = error is PikPakException && error.httpStatus in setOf(400, 401, 403, 404, 409, 422)
             PikoLog.w(
                 TAG,
-                "Cloud download submission ${if (refused) "refused by server" else "unconfirmed"} " +
-                    "(work=${work.id}, target=${logFolder(target.id)}, httpStatus=${(error as? PikPakException)?.httpStatus})",
+                "Cloud download submission failed (work=${work.id}, target=${logFolder(target.id)}, httpStatus=${(error as? PikPakException)?.httpStatus})",
                 error,
             )
-            val message = if (refused) tr("服务端拒绝了离线下载请求", "Server rejected cloud download request", "サーバーがクラウドダウンロードを拒否しました", "서버에서 클라우드 다운로드 요청을 거부했습니다", "伺服器拒絕了離線下載請求") else tr("离线下载提交结果待确认，请核对云端任务与目标文件夹", "Cloud download submission unconfirmed. Check cloud tasks and destination folder", "クラウドダウンロードの送信結果が未確認です。クラウドタスクと保存先フォルダーを確認してください", "클라우드 다운로드 제출 결과가 미확인 상태입니다. 클라우드 작업과 대상 폴더를 확인해 주세요", "離線下載提交結果待確認，請核對雲端任務與目標資料夾")
-            finish(if (refused) OfflineSubmitStatus.REFUSED else OfflineSubmitStatus.UNCONFIRMED, message)
+            val message = dev.piko.shared.notice.PikoErrorMapper.failure(tr("提交离线下载", "Submit cloud download", "クラウドダウンロード送信", "클라우드 다운로드 제출", "提交離線下載"), error)
+            finish(OfflineSubmitStatus.FAILED, message)
             return Result.failure(OfflineSubmitException(work.id, message, error))
         }
     }

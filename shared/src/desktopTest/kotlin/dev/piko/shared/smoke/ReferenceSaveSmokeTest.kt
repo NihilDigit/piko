@@ -13,15 +13,13 @@ import kotlin.time.Duration
 
 class ReferenceSaveSmokeTest {
     @Test
-    fun unknownManifestConfirmationRetainsTheAttemptWithoutCreatingContent() = smoke { _ ->
+    fun uploadedManifestSucceedsEvenWhenListingLaterFails() = smoke { _ ->
         val server = FakePikPakServer()
         val io = MemoryManifestIo(failConfirmation = true)
         val vault = VaultStore(io, confirmDelay = Duration.ZERO)
         val files = listOf(InstantFileItem(ResolvedFile("原名.mkv", 100, "GCID1"), true))
-        val result = InstantMagnetRepository(server.provider()).saveReferences(files, "", false, emptyMap(), emptyMap(), vault, null)
-        val receipt = assertIs<InstantSaveIncomplete>(result.exceptionOrNull()).receipt
-        assertEquals(setOf("原名.mkv"), receipt.unconfirmed)
-        assertTrue(receipt.requiresInspection)
+        val ids = InstantMagnetRepository(server.provider()).saveReferences(files, "", false, emptyMap(), emptyMap(), vault, null).getOrThrow()
+        assertEquals(1, ids.size)
         assertEquals(0, server.instantCreates.get())
         assertEquals(1, io.uploads)
     }

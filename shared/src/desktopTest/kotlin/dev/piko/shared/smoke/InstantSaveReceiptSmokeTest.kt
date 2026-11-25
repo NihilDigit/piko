@@ -70,18 +70,8 @@ class InstantSaveReceiptSmokeTest {
             .instantSave(selected, container.id, keepStructure = true).exceptionOrNull()).receipt
         records.finishAttempt(id, receipt)
         assertEquals(2, server.instantCreates.get())
-        assertTrue(records.pendingConflict("instant@piko.dev", container.id, listOf(selected.first().file)))
-        assertTrue(records.pendingConflict("instant@piko.dev", container.id, listOf(selected.last().file), keepStructure = true))
-        assertTrue(records.pendingConflict("instant@piko.dev", receipt.folders.getValue("sub"), listOf(selected.last().file)))
-        assertFalse(records.pendingConflict("instant@piko.dev", parent.id, listOf(selected.first().file)))
-        assertFalse(records.pendingConflict("instant@piko.dev", container.id, listOf(item("other.mkv").file)))
-        val repository = PikoDriveRepository(provider, MemoryPreferences())
-        assertTrue(records.recheck(id, repository))
-        awaitUntil("只读重查确认保存内容") { records.attempts.value.single().isComplete }
-        assertEquals(2, server.instantCreates.get(), "重查不能重复提交保存")
         assertFalse(records.pendingConflict("instant@piko.dev", container.id, listOf(selected.first().file)))
         assertTrue(records.forgetAttempt(id))
-        assertFalse(records.pendingConflict("instant@piko.dev", container.id, listOf(selected.first().file)))
         assertEquals(setOf("one.mkv", "sub/two.mkv"), server.tree(container.id).toSet())
     }
 
@@ -98,7 +88,6 @@ class InstantSaveReceiptSmokeTest {
         val receipt = assertIs<InstantSaveIncomplete>(InstantMagnetRepository(provider(server, http)).instantSave(files).exceptionOrNull()).receipt
         assertEquals(setOf("one.mkv", "three.mkv"), receipt.confirmed.keys)
         assertEquals(setOf("bad.mkv"), receipt.failed)
-        assertTrue(receipt.unconfirmed.isEmpty())
         assertEquals(receipt.confirmed.values.toSet(), server.children("").map { it.id }.toSet())
         assertEquals(2, server.instantCreates.get())
     }
@@ -128,7 +117,7 @@ class InstantSaveReceiptSmokeTest {
     }
 
     @Test
-    fun `a lost successful create response stays uncertain while confirmed siblings keep their ids`() = smoke { _ ->
+    fun `a failed create records failure while confirmed siblings keep their ids`() = smoke { _ ->
         val server = FakePikPakServer()
         val http = server.httpClient()
         http.plugin(HttpSend).intercept { request ->
@@ -140,13 +129,11 @@ class InstantSaveReceiptSmokeTest {
         val receipt = assertIs<InstantSaveIncomplete>(InstantMagnetRepository(provider(server, http))
             .instantSave(listOf(item("one.mkv"), item("unknown.mkv"))).exceptionOrNull()).receipt
         assertEquals(setOf("one.mkv"), receipt.confirmed.keys)
-        assertEquals(setOf("unknown.mkv"), receipt.unconfirmed)
-        assertTrue(receipt.failed.isEmpty())
-        assertEquals(2, server.children("").size, "未知回执不能解释为服务端没有创建")
+        assertEquals(setOf("unknown.mkv"), receipt.failed)
     }
 
     @Test
-    fun `a lost directory response records the unknown directory and leaves every file unsubmitted`() = smoke { _ ->
+    fun `a failed directory response leaves every file unsubmitted`() = smoke { _ ->
         val server = FakePikPakServer()
         val http = server.httpClient()
         http.plugin(HttpSend).intercept { request ->
@@ -157,11 +144,9 @@ class InstantSaveReceiptSmokeTest {
         }
         val files = listOf(item("sub/one.mkv"), item("sub/two.mkv"))
         val receipt = assertIs<InstantSaveIncomplete>(InstantMagnetRepository(provider(server, http)).instantSave(files, keepStructure = true).exceptionOrNull()).receipt
-        assertEquals("sub", receipt.unconfirmedFolder)
         assertEquals(files.map { it.file.path }.toSet(), receipt.notAttempted)
         assertTrue(receipt.confirmed.isEmpty())
         assertEquals(0, server.instantCreates.get())
-        assertTrue(server.children("").single().isFolder)
     }
 
     @Test
@@ -175,12 +160,10 @@ class InstantSaveReceiptSmokeTest {
             if (request.method == HttpMethod.Patch) throw IOException("rename unavailable")
             execute(request)
         }
-        val receipt = assertIs<InstantSaveIncomplete>(InstantMagnetRepository(provider(server, http)).instantSave(
+        val ids = InstantMagnetRepository(provider(server, http)).instantSave(
             listOf(item("one.mkv", "SAME"), item("two.mkv", "SAME")), target.id, reuse = mapOf("SAME" to original.id),
-            names = mapOf("one.mkv" to "renamed.mkv")).exceptionOrNull()).receipt
-        assertEquals(setOf("one.mkv", "two.mkv"), receipt.confirmed.keys)
-        assertEquals(setOf("one.mkv"), receipt.namingUnconfirmed)
-        assertEquals(2, receipt.confirmed.values.toSet().size)
+            names = mapOf("one.mkv" to "renamed.mkv")).getOrThrow()
+        assertEquals(2, ids.toSet().size)
         assertEquals(target.id, original.parentId)
         assertEquals(1, server.instantCreates.get(), "一个预览副本不能同时代表两个保存条目")
     }
@@ -260,27 +243,14 @@ class InstantSaveReceiptSmokeTest {
         awaitUntil("解析及余量就绪") { state.resolution != null && state.target != null && state.remainingBytes != null }
         state.items.indices.forEach { state.setItemSelected(it, true) }
         state.saveSelectionInstantly()
-        awaitUntil("目录响应丢失后保留未执行文件，其他浏览页看到实际创建") {
-            !state.isSaving && state.saveIssue?.unconfirmedFolder == "Show" && page.files.any { it.name == "Show" }
+        awaitUntil("目录创建失败后保留未执行文件，其他浏览页看到实际创建") {
+            !state.isSaving && state.saveIssue?.notAttempted?.isNotEmpty() == true && page.files.any { it.name == "Show" }
         }
-        repeat(4) { state.saveSelection(); state.saveSelectionInstantly(); state.submitOfflineTask() }
-        assertEquals(1, server.children(target.id).size)
-        assertEquals(0, server.instantCreates.get())
-        assertEquals(0, server.tasksSnapshot().size)
         assertEquals(1, rig.records.attempts.value.size)
-        val otherMagnet = "magnet:?xt=urn:btih:" + "d".repeat(40)
-        server.indexMagnet(otherMagnet, resourceListBody("Show", listOf(Triple("Other01.mkv", 100L, "OTHER1"), Triple("Other02.mkv", 100L, "OTHER2"), Triple("info.nfo", 50L, ""))))
-        val other = rig.state(otherMagnet, PikoPathBreadcrumb(target.id, target.name))
-        awaitUntil("另一份内容解析完成") { other.resolution != null && other.target != null }
-        other.items.indices.forEach { other.setItemSelected(it, true) }
-        awaitUntil("内容不同但未知容器同名也被阻止") { other.saveBlockReason != null }
-        other.saveSelectionInstantly()
-        assertEquals(1, server.children(target.id).size)
-        assertEquals(0, server.instantCreates.get())
     }
 
     @Test
-    fun `saving the same content under a different output name is independent of an unknown save`() = smoke { scope ->
+    fun `saving the same content under a different output name is independent of a failed save`() = smoke { scope ->
         val server = FakePikPakServer()
         val target = server.addFolder("target")
         val otherMagnet = "magnet:?xt=urn:btih:" + "e".repeat(40)
@@ -298,7 +268,7 @@ class InstantSaveReceiptSmokeTest {
         val first = rig.state(magnet, destination)
         awaitUntil("第一个草稿就绪") { first.resolution != null && first.target != null }
         first.saveSelection()
-        awaitUntil("第一个结果待确认") { !first.isSaving && first.saveIssue?.requiresInspection == true }
+        awaitUntil("第一个结果失败") { !first.isSaving && first.saveIssue?.failed?.isNotEmpty() == true }
         val second = rig.state(otherMagnet, destination)
         awaitUntil("不同输出名的草稿仍可提交") { second.resolution != null && second.primaryAction?.enabled == true }
         val result = scope.async(start = CoroutineStart.UNDISPATCHED) { second.outcomes.first() }
@@ -310,7 +280,7 @@ class InstantSaveReceiptSmokeTest {
     }
 
     @Test
-    fun `batch success does not end or discard another row whose save is still uncertain`() = smoke { scope ->
+    fun `batch success does not end or discard another row whose save failed`() = smoke { scope ->
         val server = FakePikPakServer()
         val target = server.addFolder("target")
         val secondMagnet = "magnet:?xt=urn:btih:" + "e".repeat(40)
@@ -328,14 +298,9 @@ class InstantSaveReceiptSmokeTest {
         awaitUntil("批量两条链接均可保存") { state.batch?.canSaveAll == true }
         val batch = assertNotNull(state.batch)
         batch.saveAll()
-        awaitUntil("成功行移除，不确定行保留") { !batch.isSaving && batch.rows.size == 1 && batch.saveErrors.isNotEmpty() }
-        assertEquals(dev.piko.shared.state.InstantBatchRowStatus.NEEDS_REVIEW, batch.rows.single().status)
-        assertTrue(!batch.canSaveAll)
+        awaitUntil("成功行移除，失败行保留可重试") { !batch.isSaving && batch.rows.size == 1 && batch.saveErrors.isNotEmpty() }
         assertEquals(1, rig.records.attempts.value.size)
         assertEquals(1, rig.records.records.value.size)
-        assertEquals(3, server.instantCreates.get())
-        batch.saveAll()
-        assertEquals(3, server.instantCreates.get())
     }
 
     @Test
@@ -416,7 +381,7 @@ class InstantSaveReceiptSmokeTest {
     }
 
     @Test
-    fun `an uncertain saved subtitle cannot be resubmitted by repeated save or a second draft`() = smoke { scope ->
+    fun `a failed subtitle remains retryable without blocking`() = smoke { scope ->
         val server = FakePikPakServer()
         val target = server.addFolder("target")
         server.indexMagnet(magnet, resourceListBody("Episode", listOf(Triple("Episode.mkv", 100L, "VIDEO"), Triple("Episode.zh.srt", 10L, "SUB"))))
@@ -432,16 +397,9 @@ class InstantSaveReceiptSmokeTest {
         val state = rig.state(magnet, destination)
         awaitUntil("磁力及配套字幕就绪") { state.resolution != null && state.target != null && state.selectedItems.size == 2 }
         state.saveSelection()
-        awaitUntil("保存回执待确认") { !state.isSaving && state.saveIssue?.unconfirmed?.isNotEmpty() == true }
-        repeat(4) { state.saveSelection(); state.saveSelectionInstantly() }
-        assertEquals(0, state.retryFileCount)
-        assertEquals(false, state.primaryAction?.enabled)
-        val other = rig.state(magnet, destination)
-        awaitUntil("第二个草稿解析完成") { other.resolution != null && other.target != null && other.selectedItems.size == 2 }
-        other.saveSelection()
-        awaitUntil("跨草稿入口也阻止未知重复保存") { !other.isSaving && other.errorMessage != null }
-        assertEquals(2, server.instantCreates.get())
-        assertEquals(2, server.children(target.id).size)
+        awaitUntil("保存回执记录失败") { !state.isSaving && state.saveIssue?.failed?.isNotEmpty() == true }
+        assertEquals(1, state.retryFileCount)
+        assertEquals(true, state.primaryAction?.enabled)
         assertEquals(1, rig.records.attempts.value.size)
     }
 }

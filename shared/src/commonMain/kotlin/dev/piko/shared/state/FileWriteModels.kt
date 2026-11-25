@@ -40,14 +40,13 @@ sealed interface FileWriteCommand {
 }
 
 enum class FileWritePhase { PREPARING, COPYING, FINISHED }
-enum class FileWriteCompletion { SUCCEEDED, PARTIAL, FAILED, UNCONFIRMED }
+enum class FileWriteCompletion { SUCCEEDED, PARTIAL, FAILED }
 data class FileBefore(val name: String, val parentId: String)
 data class FileCopyTask(val id: String, val sources: List<String>, val phase: String = "", val progress: Int = 0)
 data class FileWriteResult(
     val completion: FileWriteCompletion,
     val message: String,
     val confirmed: Set<String> = emptySet(),
-    val unconfirmed: Set<String> = emptySet(),
     val notAttempted: Set<String> = emptySet(),
     val failed: Set<String> = emptySet(),
     val undoChangeIds: List<Long> = emptyList(),

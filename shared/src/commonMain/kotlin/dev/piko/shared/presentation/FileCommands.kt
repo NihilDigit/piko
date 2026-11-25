@@ -81,12 +81,10 @@ class FileCommands(
             (changesTree(command) && touchesFolders(command.ids, targets.manifests)))) return blocked(tr("相关文件正在归档或恢复，请待完成后重试", "Related files are being archived or restored. Try again when finished", "関連ファイルをアーカイブまたは復元中です。完了後にお試しください", "관련 파일을 보관 또는 복원 중입니다. 완료 후 다시 시도해 주세요", "相關檔案正在歸檔或還原，請待完成後重試"))
         if (changesTree(command) && touchesFolders(command.ids, repository.vault.editingFolders)) return blocked(editingReason())
         val conflict = session.works.value.firstOrNull { work ->
-            work.account == account &&
-                (work.isRunning || work.result?.unconfirmed?.isNotEmpty() == true) && conflicts(command, pendingCommand(work))
+            work.account == account && work.isRunning && conflicts(command, pendingCommand(work))
         }
         return if (conflict == null) ActionAvailability.Available else blocked(
-            if (conflict.isRunning) tr("「${conflict.command.title}」正在处理相关文件，请待完成后重试", "“${conflict.command.title}” is processing related files. Try again when finished", "「${conflict.command.title}」で関連ファイルを処理中です。完了後にお試しください", "“${conflict.command.title}”에서 관련 파일을 처리 중입니다. 완료 후 다시 시도해 주세요", "「${conflict.command.title}」正在處理相關檔案，請待完成後再試")
-            else tr("相关文件的上次操作尚未确认，请先在任务页查询或检查结果", "Previous file operations are unconfirmed. Check results in Tasks first", "関連ファイルの前回の操作が未確認です。先にタスク画面で結果を確認してください", "관련 파일의 이전 작업 결과가 미확인입니다. 먼저 작업 페이지에서 결과를 확인해 주세요", "相關檔案的上次操作尚未確認，請先至任務頁查詢或檢查結果"),
+            tr("「${conflict.command.title}」正在处理相关文件，请待完成后重试", "“${conflict.command.title}” is processing related files. Try again when finished", "「${conflict.command.title}」で関連ファイルを処理中です。完了後にお試しください", "“${conflict.command.title}”에서 관련 파일을 처리 중입니다. 완료 후 다시 시도해 주세요", "「${conflict.command.title}」正在處理相關檔案，請待完成後再試"),
         )
     }
 
@@ -102,10 +100,10 @@ class FileCommands(
         }
         if (tree && touchesFolders(ids, repository.vault.editingFolders)) return ActionAvailability.Blocked(editingReason())
         val work = session.works.value.firstOrNull {
-            it.account == account &&  (it.isRunning || it.result?.unconfirmed?.isNotEmpty() == true) &&
+            it.account == account && it.isRunning &&
                 pendingCommand(it).let { command -> overlaps(ids, command.ids) || command.target?.let { target -> ids.any { contains(it, target.id) } } == true }
         }
-        return if (work == null) ActionAvailability.Available else ActionAvailability.Blocked(tr("相关文件有进行中或待确认的操作，请先在任务页处理", "Related file operations are running or unconfirmed. Check Tasks first", "関連ファイルの操作が進行中か未確認です。先にタスク画面で確認してください", "관련 파일 작업이 진행 중이거나 미확인입니다. 먼저 작업 페이지에서 확인해 주세요", "相關檔案有進行中或待確認的操作，請先至任務頁處理"))
+        return if (work == null) ActionAvailability.Available else ActionAvailability.Blocked(tr("相关文件有进行中的操作，请待完成后重试", "Related file operations are running. Try again when finished", "関連ファイルの操作が進行中です。完了後にお試しください", "관련 파일 작업이 진행 중입니다. 완료 후 다시 시도해 주세요", "相關檔案有進行中的操作，請待完成後重試"))
     }
 
     fun manifestAvailability(folders: Set<String>): ActionAvailability {
@@ -175,7 +173,7 @@ class FileCommands(
     private fun changesTree(command: FileWriteCommand) = command is FileWriteCommand.Trash || command is FileWriteCommand.Move || command is FileWriteCommand.Delete || command is FileWriteCommand.Restore
 
     private fun pendingCommand(work: dev.piko.shared.state.FileWriteWork): FileWriteCommand.Copy =
-        if (work.isRunning) work.command else work.command.copy(ids = work.result?.unconfirmed.orEmpty().toList())
+        work.command
 
     fun submit(command: FileWriteCommand): FileCommandResult = when (val state = availability(command)) {
         is ActionAvailability.Blocked -> {

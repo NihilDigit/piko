@@ -29,7 +29,7 @@ data class InstantSaveAttempt(
 ) {
     val isRunning: Boolean get() = finishedAtMs == null
     val isComplete: Boolean get() = !isRunning && errorMessage == null && receipt?.let {
-        !it.requiresInspection && it.failed.isEmpty() && it.notAttempted.isEmpty() &&
+        it.failed.isEmpty() && it.notAttempted.isEmpty() &&
             it.confirmed.keys.containsAll(files.filter { file -> file.gcid != null }.map { file -> file.path })
     } == true
     val locateId: String? get() = locateOverrideId?.takeIf { it.isNotEmpty() }

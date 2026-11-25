@@ -172,7 +172,7 @@ fun LinkInputField(
 
 /** 免费账号这次保存要不要先确认离线；会员与秒传为 null。 */
 internal fun offlineConfirmOf(state: InstantSheetState, action: InstantPrimaryAction): OfflineConfirm? {
-    val plan = state.savePlan.takeIf { state.resolution != null && !state.contentMissing && !state.hasInstantRetry && state.saveIssue?.requiresInspection != true }
+    val plan = state.savePlan.takeIf { state.resolution != null && !state.contentMissing && !state.hasInstantRetry }
     val fallback = plan?.fallback
     return when {
         !state.confirmsOffline -> null
@@ -196,7 +196,7 @@ internal fun SaveBar(
     saveAsReference: Boolean = false,
     referenceToggle: ReferenceSaveToggle? = null,
 ) {
-    val plan = state.savePlan.takeIf { state.resolution != null && !state.contentMissing && !state.hasInstantRetry && state.saveIssue?.requiresInspection != true }
+    val plan = state.savePlan.takeIf { state.resolution != null && !state.contentMissing && !state.hasInstantRetry }
     val fallback = plan?.fallback
     val menuOptions = buildList {
         addAll(buildReferenceMenuOptions(referenceToggle))
@@ -238,7 +238,6 @@ internal fun SaveBar(
             SaveButton(
                 label = when {
                     state.hasInstantRetry && state.retryFileCount > 0 -> tr("重试未保存的 ${state.retryFileCount} 个文件", "Retry ${state.retryFileCount} unsaved files", "未保存の ${state.retryFileCount} ファイルを再試行", "저장 안 된 파일 ${state.retryFileCount}개 다시 시도", "重試未儲存的 ${state.retryFileCount} 個檔案")
-                    state.saveIssue?.requiresInspection == true -> tr("请先核对保存结果", "Check save results first", "先に保存結果を確認してください", "먼저 저장 결과를 확인하세요", "請先核對儲存結果")
                     state.contentMissing -> tr("离线下载", "Cloud download", "クラウドダウンロード", "클라우드 다운로드", "離線下載")
                     saveAsReference || referenceToggle?.checked == true -> stringResourceFallbackSaveAsRef()
                     else -> tr("保存", "Save", "保存", "저장", "儲存")

@@ -33,7 +33,6 @@ internal fun OfflineSubmitDetails(work: OfflineSubmitWork, actions: List<SheetAc
         metaParts = listOf(tr("离线下载请求", "Cloud download request", "クラウドダウンロードリクエスト", "클라우드 다운로드 요청", "離線下載請求"), progress.status), actions = actions, extraLines = {
             Text(tr("保存目标：${work.target.localizedName}", "Destination: ${work.target.localizedName}", "保存先：${work.target.localizedName}", "저장 대상: ${work.target.localizedName}", "儲存目標：${work.target.localizedName}"))
             Text(work.message)
-            if (work.status == OfflineSubmitStatus.UNCONFIRMED) Text(stringResource(Res.string.text_no_remote_task_reference_was_received_inspect_cloud_tasks_and_the_destinatio))
             Text(stringResource(Res.string.text_removing_the_record_does_not_cancel_requests_delete_outputs_or_establish_tha))
         })
 }

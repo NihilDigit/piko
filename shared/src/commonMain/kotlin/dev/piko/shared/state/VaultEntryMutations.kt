@@ -8,7 +8,6 @@ import dev.piko.shared.data.VaultEdit
 import dev.piko.shared.data.VaultEdits
 import dev.piko.shared.data.VaultEntry
 import dev.piko.shared.data.VaultStore
-import dev.piko.shared.data.VaultWriteUnconfirmed
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFolder
@@ -157,44 +156,23 @@ class VaultEntryMutations(private val repository: PikoDriveRepository, private v
                     // 先写入目标目录，再从源目录移除，避免中途网络失败导致归档引用丢失。
                     val addWrite = store.update(command.targetFolderId, VaultEdits.add(moving))
                     check()
-                    val targetBefore: List<VaultEntry>
-                    val targetAfter: List<VaultEntry>?
-                    if (addWrite.isSuccess) {
-                        val applied = addWrite.getOrThrow()
-                        targetBefore = applied.before
-                        targetAfter = applied.after
-                    } else {
-                        val attempted = (addWrite.exceptionOrNull() as? VaultWriteUnconfirmed)?.attempted
-                        if (attempted != null) {
-                            targetBefore = attempted.before
-                            targetAfter = store.committed(command.targetFolderId)
-                                .logFailure(TAG, "Vault move failed to recheck target ${logFolder(command.targetFolderId)} (work=$id)")
-                                .getOrNull()
-                        } else {
-                            addWrite.logFailure(TAG, "Vault move failed adding to ${logFolder(command.targetFolderId)} (work=$id)")
-                            targetBefore = emptyList()
-                            targetAfter = null
-                        }
+                    if (addWrite.isFailure) {
+                        addWrite.logFailure(TAG, "Vault move failed adding to ${logFolder(command.targetFolderId)} (work=$id)")
+                        break
                     }
-                    if (targetAfter == null) break
-                    check()
+                    val appliedAdd = addWrite.getOrThrow()
+                    val targetBefore = appliedAdd.before
+                    val targetAfter = appliedAdd.after
                     val landedIds = movingIds.filterTo(HashSet()) { entryId -> targetAfter.any { it.id == entryId && it.isArchived } }
                     if (landedIds.isEmpty()) break
                     repository.vaultStars.moveEntries(landedIds, command.targetFolderId, expectedAccount = account)
                     val removeWrite = store.update(sourceFolder, VaultEdits.remove(landedIds))
                     check()
-                    val sourceAfter = if (removeWrite.isSuccess) {
-                        removeWrite.getOrThrow().after
-                    } else if (removeWrite.exceptionOrNull() is VaultWriteUnconfirmed) {
-                        store.committed(sourceFolder)
-                            .logFailure(TAG, "Vault move failed to recheck source ${logFolder(sourceFolder)} (work=$id)")
-                            .getOrNull()
-                    } else {
+                    if (removeWrite.isFailure) {
                         removeWrite.logFailure(TAG, "Vault move failed removing from ${logFolder(sourceFolder)} (work=$id)")
-                        null
+                        break
                     }
-                    if (sourceAfter == null) break
-                    check()
+                    val sourceAfter = removeWrite.getOrThrow().after
                     val removedIds = landedIds.filterTo(HashSet()) { entryId -> sourceAfter.none { it.id == entryId } }
                     if (removedIds.isNotEmpty()) {
                         confirmed[sourceFolder] = confirmed[sourceFolder].orEmpty() + removedIds
@@ -246,30 +224,7 @@ class VaultEntryMutations(private val repository: PikoDriveRepository, private v
                         before[folder] = applied.before.filter { it.id in ids }
                         confirm(folder, ids, applied.after)
                     } else {
-                        val attempted = (write.exceptionOrNull() as? VaultWriteUnconfirmed)?.attempted
-                        if (attempted == null) {
-                            write.logFailure(TAG, "Vault manifest $opName failed in ${logFolder(folder)} (work=$id, items=${ids.size})")
-                            break
-                        }
-                        before[folder] = attempted.before.filter { it.id in ids }
-                        val committed = store.committed(folder)
-                            .logFailure(TAG, "Failed to recheck committed vault manifest after unconfirmed $opName in ${logFolder(folder)} (work=$id)")
-                            .getOrNull()
-                        if (committed != null) {
-                            check()
-                            confirm(folder, ids, committed)
-                            val left = remaining[folder]?.size ?: 0
-                            if (left == 0) {
-                                PikoLog.i(TAG, "Vault manifest $opName confirmed on recheck in ${logFolder(folder)} (work=$id, items=${ids.size})")
-                            } else {
-                                write.logFailure(
-                                    TAG,
-                                    "Vault manifest $opName incomplete after recheck in ${logFolder(folder)} (work=$id, remaining=$left/${ids.size})",
-                                )
-                            }
-                        } else {
-                            write.logFailure(TAG, "Vault manifest $opName unconfirmed in ${logFolder(folder)} (work=$id, items=${ids.size})")
-                        }
+                        write.logFailure(TAG, "Vault manifest $opName failed in ${logFolder(folder)} (work=$id, items=${ids.size})")
                         break
                     }
                 }

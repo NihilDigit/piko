@@ -105,42 +105,39 @@ class HistoryMutations(private val repository: PikoDriveRepository, scope: Corou
         repeat(10) {
             val page = access.list(command.kind, token).getOrElse { listErr ->
                 PikoLog.d(TAG, "History verification list failed (kind=${command.kind}, work=$workId): ${listErr.message}")
-                return result(targets, present, previous, complete, error)
+                return result(targets, present, previous, complete)
             }
             if (command == HistoryEditCommand.ClearPlay) {
-                val completion = if (page.events.isEmpty() && page.nextPageToken.isEmpty()) HistoryEditCompletion.SUCCEEDED else failureKind(error)
+                val completion = if (page.events.isEmpty() && page.nextPageToken.isEmpty()) HistoryEditCompletion.SUCCEEDED else HistoryEditCompletion.FAILED
                 val message = when (completion) {
                     HistoryEditCompletion.SUCCEEDED -> tr("播放历史已清空", "Playback history cleared", "再生履歴を消去しました", "재생 기록을 지웠습니다", "播放歷史已清空")
-                    HistoryEditCompletion.FAILED -> tr("未能清空播放历史", "Failed to clear playback history", "再生履歴を消去できませんでした", "재생 기록을 지우지 못했습니다", "未能清空播放歷史")
-                    else -> tr("清空结果待确认，请先核对播放历史", "Clear result unconfirmed. Check playback history first", "消去の結果が未確認です。先に再生履歴を確認してください", "비우기 결과가 미확인 상태입니다. 먼저 재생 기록을 확인해 주세요", "清空結果待確認，請先核對播放記錄")
+                    else -> tr("未能清空播放历史", "Failed to clear playback history", "再生履歴を消去できませんでした", "재생 기록을 지우지 못했습니다", "未能清空播放歷史")
                 }
                 return HistoryEditResult(completion, message, finishedAtMs = now())
             }
             present += page.events.map { it.id }.filter { it in targets }
-            if (page.nextPageToken.isEmpty()) { complete = true; return result(targets, present, previous, complete, error) }
-            if (present.containsAll(targets) || !tokens.add(page.nextPageToken)) return result(targets, present, previous, complete, error)
+            if (page.nextPageToken.isEmpty()) { complete = true; return result(targets, present, previous, complete) }
+            if (present.containsAll(targets) || !tokens.add(page.nextPageToken)) return result(targets, present, previous, complete)
             token = page.nextPageToken
         }
-        return result(targets, present, previous, complete, error)
+        return result(targets, present, previous, complete)
     }
 
-    private fun result(targets: Set<String>, present: Set<String>, previous: Set<String>, complete: Boolean, error: Throwable?): HistoryEditResult {
+    private fun result(targets: Set<String>, present: Set<String>, previous: Set<String>, complete: Boolean): HistoryEditResult {
         val confirmed = previous + if (complete) targets - present else emptySet()
         val completion = when {
             complete && present.isEmpty() -> HistoryEditCompletion.SUCCEEDED
             confirmed.isNotEmpty() -> HistoryEditCompletion.PARTIAL
-            else -> failureKind(error)
+            else -> HistoryEditCompletion.FAILED
         }
         val message = when (completion) {
             HistoryEditCompletion.SUCCEEDED -> tr("已移除记录", "Record removed", "記録を削除しました", "기록을 삭제했습니다", "已移除記錄")
-            HistoryEditCompletion.PARTIAL -> tr("已确认移除 ${confirmed.size} 项，其余结果尚未确认", "${confirmed.size} removals confirmed; remaining results unconfirmed", "${confirmed.size} 件の削除を確認しました。残りは未確認です", "${confirmed.size}개 삭제 확인 완료, 나머지 결과 미확인", "已確認移除 ${confirmed.size} 項，其餘結果尚未確認")
+            HistoryEditCompletion.PARTIAL -> tr("已移除 ${confirmed.size} 项，其余失败", "${confirmed.size} removed; others failed", "${confirmed.size} 件削除しましたが、残りは失敗しました", "${confirmed.size}개 삭제됨, 나머지 실패", "已移除 ${confirmed.size} 項，其餘失敗")
             HistoryEditCompletion.FAILED -> tr("未能移除记录", "Failed to remove record", "記録を削除できませんでした", "기록을 삭제하지 못했습니다", "未能移除記錄")
-            HistoryEditCompletion.UNCONFIRMED -> tr("暂未确认移除结果，请刷新历史记录", "Removal not confirmed; refresh history", "削除結果が未確認です。タスク画面で再確認できます", "삭제 결과가 미확인 상태입니다. 작업 페이지에서 다시 확인할 수 있습니다", "移除結果待確認，可至任務頁重新查詢")
         }
         return HistoryEditResult(completion, message, confirmed, now())
     }
 
-    private fun failureKind(error: Throwable?): HistoryEditCompletion = if (error is PikPakException && error.httpStatus in setOf(400, 401, 403, 404, 409, 422)) HistoryEditCompletion.FAILED else HistoryEditCompletion.UNCONFIRMED
     private fun now(): Long = Clock.System.now().toEpochMilliseconds()
 
     private companion object {

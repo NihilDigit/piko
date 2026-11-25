@@ -794,20 +794,7 @@ class TransfersState(
     }
 
     /** 可见期间轮询云端任务，挂起直到调用方的协程被取消。 */
-    suspend fun whileVisible() = kotlinx.coroutines.coroutineScope {
-        launch {
-            while (true) {
-                activity.active.forEach { item -> when (item) {
-                    is TransferItem.Write -> if (!item.work.isRunning) fileWrites?.recheck(item.work.id)
-                    is TransferItem.InstantAttempt -> if (!item.work.isRunning) instantSaves.recheck(item.work.id, driveRepo)
-                    is TransferItem.Extract -> if (item.job.status is ArchiveJobStatus.Finished) extracts.recheck(item.job.id)
-                    else -> Unit
-                } }
-                kotlinx.coroutines.delay(15_000)
-            }
-        }
-        cloud.pollWhileVisible()
-    }
+    suspend fun whileVisible() = cloud.pollWhileVisible()
 
     /** 下拉刷新。本机的下载与上传本就实时，只有云端任务要重新拉取。 */
     val isRefreshing: Boolean get() = cloud.isRefreshing
@@ -879,7 +866,6 @@ class TransfersState(
 
     /** 放弃待输密码的压缩包或移除已结束的记录；已提交的远端任务不受影响。 */
     fun skipExtract(jobId: String) = extracts.skip(jobId)
-    fun recheckExtract(jobId: String) = extracts.recheck(jobId)
     fun promptExtractPassword(jobId: String) = extracts.reopenPasswordPrompt(jobId)
 
     /** 停止归档或取消归档。进行中的文件夹处理完才停，期间 [isVaultStopping] 为真。 */
@@ -984,7 +970,7 @@ class TransfersState(
         is TransferItem.UploadBatch -> uploadSection(item.status)
         is TransferItem.Upload -> uploadSection(item.task.status)
         is TransferItem.UploadPreparing -> when {
-            item.work.isRunning || item.work.result?.completion == dev.piko.shared.upload.UploadPreparationCompletion.UNCONFIRMED -> Section.PROGRESS
+            item.work.isRunning -> Section.PROGRESS
             item.work.result?.completion == dev.piko.shared.upload.UploadPreparationCompletion.STOPPED -> when {
                 item.children.any { it.requiresLocalExecution() } -> Section.PROGRESS
                 item.children.any(::isResumable) -> Section.PAUSED
@@ -1010,21 +996,17 @@ class TransfersState(
         is TransferItem.InstantAttempt -> when {
             item.work.isRunning -> Section.PROGRESS
             item.work.isComplete -> Section.COMPLETED
-            item.work.errorMessage != null -> Section.ATTENTION
-            item.work.receipt?.let { it.failed.isNotEmpty() || it.notAttempted.isNotEmpty() } == true -> Section.ATTENTION
-            else -> Section.PROGRESS
+            else -> Section.ATTENTION
         }
         is TransferItem.OfflineSubmit -> when (item.work.status) {
             OfflineSubmitStatus.SUBMITTING -> Section.PROGRESS
             OfflineSubmitStatus.COMPLETE -> Section.COMPLETED
-            OfflineSubmitStatus.REFUSED -> Section.ATTENTION
-            OfflineSubmitStatus.UNCONFIRMED -> Section.PROGRESS
+            OfflineSubmitStatus.FAILED -> Section.ATTENTION
         }
         is TransferItem.Extract -> when (val status = item.job.status) {
             is ArchiveJobStatus.NeedsPassword -> Section.ATTENTION
             is ArchiveJobStatus.Finished -> when (status.outcome) {
                 ArchiveCompletion.SUCCEEDED -> Section.COMPLETED
-                ArchiveCompletion.UNCONFIRMED -> Section.PROGRESS
                 ArchiveCompletion.FAILED -> Section.ATTENTION
             }
             else -> Section.PROGRESS
@@ -1042,7 +1024,6 @@ class TransfersState(
             val undo = writeUndoStatus(item.work, currentJournal)
             when {
                 item.work.isRunning || undo?.status == DriveChangeJournal.UndoStatus.RUNNING -> Section.PROGRESS
-                item.work.result?.completion == FileWriteCompletion.UNCONFIRMED -> Section.PROGRESS
                 item.work.result?.completion != FileWriteCompletion.SUCCEEDED || undo?.status == DriveChangeJournal.UndoStatus.FAILED -> Section.ATTENTION
                 else -> Section.COMPLETED
             }

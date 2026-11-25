@@ -11,7 +11,6 @@ import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.VaultEdit
 import dev.piko.shared.data.VaultEdits
 import dev.piko.shared.data.VaultEntry
-import dev.piko.shared.data.VaultWriteUnconfirmed
 import io.github.nihildigit.pikpak.PikPakException
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logEntry
@@ -55,7 +54,6 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
 
     /** 成功的每一步，按执行顺序，撤销时倒着改回去。临时名称的那一步也在里面，撤销时同样倒着经过它。 */
     val renamed = mutableListOf<DriveChangeJournal.Renamed>()
-    val unconfirmed = mutableListOf<DriveChangeJournal.Renamed>()
 
     /** 已确认写入的归档清单批量改名反向编辑，按目录归并。 */
     val vaultReverts = linkedMapOf<String, VaultEdit>()
@@ -78,7 +76,6 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
         rolledBack = 0
         failures.clear()
         renamed.clear()
-        unconfirmed.clear()
         vaultReverts.clear()
         val failedIds = mutableSetOf<String>()
         val completedIds = mutableSetOf<String>()
@@ -128,7 +125,6 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
                         val row = targets.getValue(id)
                         val isSwap = step.to != row.newName
                         renamed += outcome.renamed
-                        unconfirmed += outcome.unconfirmed
                         if (outcome.success) {
                             currentNames[id] = step.source.parentId to step.to
                             if (isSwap) swapsExecuted++
@@ -145,18 +141,16 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
                 // Restore a temporary name only if its original slot is still free.
                 wave.steps.forEachIndexed { index, step ->
                     if (outcomes[index]?.success == false && step.from != step.source.name) {
-                        val hasUnconfirmed = unconfirmed.any { it.id == step.source.id }
                         val slotTaken = (step.source.parentId to step.source.name) in currentNames.values
-                        if (hasUnconfirmed || slotTaken) {
+                        if (slotTaken) {
                             PikoLog.w(
                                 tag,
                                 "Temporary swap name retained on ${logEntry(step.source.id, step.from, step.source.isFolder)} " +
-                                    "in ${logFolder(step.source.parentId)}: unconfirmed=$hasUnconfirmed, originalSlotTaken=$slotTaken",
+                                    "in ${logFolder(step.source.parentId)}: originalSlotTaken=true",
                             )
                         } else {
                             val restored = renameStep(step.copy(to = step.source.name), StepPhase.ROLLBACK)
                             renamed += restored.renamed
-                            unconfirmed += restored.unconfirmed
                             if (restored.success) {
                                 rolledBack++
                                 occupied -= step.source.parentId to step.from
@@ -176,19 +170,6 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
                             }
                         }
                     }
-                }
-                if (access != null && unconfirmed.isNotEmpty()) {
-                    val skipped = plan.rows.filter {
-                        it.isChanged && it.problem == null && !VaultEntry.isVaulted(it.source.id) &&
-                            it.source.id !in completedIds && it.source.id !in failedIds
-                    }
-                    failures += skipped
-                    processed = completedIds.size + failures.size
-                    PikoLog.w(
-                        tag,
-                        "Aborted remaining rename waves due to ${unconfirmed.size} unconfirmed step(s) (skipped=${skipped.size})",
-                    )
-                    break
                 }
             }
             if (vaultedRows.isNotEmpty()) {
@@ -239,40 +220,9 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
                             vaultReverts[folderId] = VaultEdits.renameAll(prevNames)
                         }
                     } else {
-                        val attempted = (write.exceptionOrNull() as? VaultWriteUnconfirmed)?.attempted
-                        val committed = if (attempted != null) {
-                            store.committed(folderId)
-                                .logFailure(tag, "Failed to recheck committed vault manifest after unconfirmed batch rename in ${logFolder(folderId)}")
-                                .getOrNull()
-                        } else null
-                        if (committed != null && attempted != null) {
-                            val beforeById = attempted.before.associateBy { it.id }
-                            val afterById = committed.associateBy { it.id }
-                            val prevNames = LinkedHashMap<String, String>()
-                            val confirmedStars = LinkedHashMap<String, String>()
-                            for ((entryId, row) in rowsByEntryId) {
-                                val afterEntry = afterById[entryId]
-                                if (afterEntry != null && afterEntry.name == row.newName) {
-                                    completedIds += row.source.id
-                                    confirmedStars[entryId] = row.newName
-                                    val oldName = beforeById[entryId]?.name ?: row.source.name
-                                    if (oldName != row.newName) prevNames[entryId] = oldName
-                                } else {
-                                    failures += row
-                                }
-                                processed++
-                            }
-                            if (confirmedStars.isNotEmpty()) {
-                                driveRepo.vaultStars.renameEntries(confirmedStars, expectedAccount = ownerAccount)
-                            }
-                            if (prevNames.isNotEmpty()) {
-                                vaultReverts[folderId] = VaultEdits.renameAll(prevNames)
-                            }
-                        } else {
-                            write.logFailure(tag, "Vault batch rename failed in ${logFolder(folderId)} (items=${targetNames.size})")
-                            failures += rowsByEntryId.values
-                            processed += rowsByEntryId.size
-                        }
+                        write.logFailure(tag, "Vault batch rename failed in ${logFolder(folderId)} (items=${targetNames.size})")
+                        failures += rowsByEntryId.values
+                        processed += rowsByEntryId.size
                     }
                 }
             }
@@ -287,7 +237,7 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
             if (access == null && renamed.isNotEmpty()) {
                 val touched = plan.rows.filterNot { VaultEntry.isVaulted(it.source.id) }.mapTo(HashSet()) { it.source.parentId }
                 if (touched.isNotEmpty()) {
-                    if (unconfirmed.isEmpty() && failures.isEmpty()) {
+                    if (failures.isEmpty()) {
                         driveRepo.notifyFoldersRefreshed(touched)
                     } else {
                         driveRepo.applyChange(DriveChange.ContentsChanged(touched))
@@ -302,7 +252,6 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
     private data class StepResult(
         val success: Boolean,
         val renamed: List<DriveChangeJournal.Renamed> = emptyList(),
-        val unconfirmed: List<DriveChangeJournal.Renamed> = emptyList(),
     )
 
     private suspend fun renameStep(step: RenameStep, phase: StepPhase): StepResult {
@@ -353,9 +302,8 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
         }
         result.logFailure(
             tag,
-            "Rename failed: $entryDesc in ${logFolder(parentId)} " +
-                "(phase=${phase.label}, retries=$retries, unconfirmed=${bound != null && !refused})",
+            "Rename failed: $entryDesc in ${logFolder(parentId)} (phase=${phase.label}, retries=$retries)",
         )
-        return StepResult(false, unconfirmed = if (bound != null && !refused) listOf(change) else emptyList())
+        return StepResult(false)
     }
 }

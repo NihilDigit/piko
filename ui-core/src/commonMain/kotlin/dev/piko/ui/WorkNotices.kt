@@ -64,7 +64,6 @@ fun PikoServices.serverWorkNotices(withUndoable: Boolean = true): Flow<WorkNotic
         WorkNotice(when (it.outcome) {
             dev.piko.shared.state.ArchiveCompletion.SUCCEEDED -> tr("解压完成", "Extraction complete", "解凍完了", "압축 해제 완료", "解壓縮完成")
             dev.piko.shared.state.ArchiveCompletion.FAILED -> tr("解压失败", "Extraction failed", "解凍失敗", "압축 해제 실패", "解壓縮失敗")
-            dev.piko.shared.state.ArchiveCompletion.UNCONFIRMED -> tr("解压结果待确认", "Extraction result unconfirmed", "解凍結果は未確認です", "압축 해제 결과 미확인", "解壓縮結果待確認")
         }, it.message)
     },
     folderVaultSession.outcomes.filter { withUndoable || !it.undoable }.map { WorkNotice(it.title, it.message) },

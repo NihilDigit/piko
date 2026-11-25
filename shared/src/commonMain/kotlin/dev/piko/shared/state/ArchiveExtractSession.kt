@@ -12,7 +12,6 @@ import dev.piko.shared.log.LogLevel
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFile
 import dev.piko.shared.data.ArchiveRepository
-import dev.piko.shared.data.ArchiveSubmissionUnconfirmed
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
@@ -36,7 +35,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Clock
 
-enum class ArchiveCompletion { SUCCEEDED, FAILED, UNCONFIRMED }
+enum class ArchiveCompletion { SUCCEEDED, FAILED }
 
 sealed interface ArchiveJobStatus {
     data object Waiting : ArchiveJobStatus
@@ -191,21 +190,6 @@ class ArchiveExtractSession(
         }
     }
 
-    fun canRecheck(jobId: String): Boolean = completedJobs.any {
-        it.id == jobId && it.remoteTaskId != null && (it.status as? ArchiveJobStatus.Finished)?.outcome == ArchiveCompletion.UNCONFIRMED
-    }
-
-    fun recheck(jobId: String) {
-        val job = completedJobs.firstOrNull { it.id == jobId } ?: return
-        if (!canRecheck(jobId)) return
-        PikoLog.i(TAG, "Rechecking unconfirmed archive extraction: job=$jobId, task=${job.remoteTaskId}, file=${logFile(job.file.id, job.file.name)}")
-        Snapshot.withMutableSnapshot {
-            completedJobs = completedJobs.filterNot { it.id == jobId }
-            jobs = jobs + job.copy(status = ArchiveJobStatus.Waiting)
-        }
-        ensureWorker()
-    }
-
     /**
      * 退出登录或换号时调用。已提交的解压在服务端照常完成，只是不再跟踪。
      * 不取消 [scope]：它由调用方持有，之后还要复用。
@@ -248,14 +232,6 @@ class ArchiveExtractSession(
                 )
                 // 没带密码时服务端报的是「缺少」；带了还被拒才算输错
                 update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
-            } else if (err is ArchiveSubmissionUnconfirmed) {
-                finish(
-                    job = job,
-                    message = tr("无法确认 ${job.file.name} 是否已提交解压，请先核对所在文件夹", "Unable to confirm extraction submission for ${job.file.name}. Check its containing folder first", "${job.file.name} の解凍リクエストを確認できません。先に保存先フォルダーを確認してください", "${job.file.name}의 압축 해제 요청 여부를 확인할 수 없습니다. 먼저 해당 폴더를 확인해 주세요", "無法確認 ${job.file.name} 是否已提交解壓縮，請先核對所在資料夾"),
-                    logMessage = "Archive extraction submission unconfirmed for ${logFile(job.file.id, job.file.name)} (job=${job.id})",
-                    outcome = ArchiveCompletion.UNCONFIRMED,
-                    cause = err,
-                )
             } else {
                 finish(
                     job = job,
@@ -291,9 +267,9 @@ class ArchiveExtractSession(
                 if (failures >= MAX_POLL_FAILURES) {
                     finish(
                         job = job,
-                        message = tr("无法确认 ${job.file.name} 的解压结果：${failureReason(err)}", "Unable to confirm extraction result for ${job.file.name}: ${failureReason(err)}", "${job.file.name} の解凍結果を確認できません：${failureReason(err)}", "${job.file.name}의 압축 해제 결과를 확인할 수 없습니다: ${failureReason(err)}", "無法確認 ${job.file.name} 的解壓縮結果：${failureReason(err)}"),
-                        logMessage = "Archive extraction result unconfirmed after $failures poll failures for ${logFile(job.file.id, job.file.name)} (job=${job.id}, task=$taskId)",
-                        outcome = ArchiveCompletion.UNCONFIRMED,
+                        message = tr("${job.file.name} 解压失败：${failureReason(err)}", "Failed to extract ${job.file.name}: ${failureReason(err)}", "${job.file.name} の解凍に失敗しました：${failureReason(err)}", "${job.file.name} 압축 해제 실패: ${failureReason(err)}", "${job.file.name} 解壓縮失敗：${failureReason(err)}"),
+                        logMessage = "Archive extraction polling failed after $failures attempts for ${logFile(job.file.id, job.file.name)} (job=${job.id}, task=$taskId)",
+                        outcome = ArchiveCompletion.FAILED,
                         cause = err,
                     )
                     return

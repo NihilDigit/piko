@@ -23,7 +23,6 @@ fun dev.piko.shared.upload.UploadPreparation.workProgress() = WorkProgress(
         dev.piko.shared.upload.UploadPreparationCompletion.SUCCEEDED -> tr("已入队", "Queued", "キューに追加しました", "대기열에 추가됨", "已加入佇列")
         dev.piko.shared.upload.UploadPreparationCompletion.PARTIAL -> tr("部分准备未完成", "Some preparation incomplete", "一部の準備が未完了です", "일부 준비 미완료", "部分準備未完成")
         dev.piko.shared.upload.UploadPreparationCompletion.FAILED -> tr("准备失败", "Preparation failed", "準備に失敗しました", "준비 실패", "準備失敗")
-        dev.piko.shared.upload.UploadPreparationCompletion.UNCONFIRMED -> tr("目录结果待确认", "Folder results unconfirmed", "フォルダーの結果未確認", "폴더 결과 확인 필요", "資料夾結果待確認")
         dev.piko.shared.upload.UploadPreparationCompletion.STOPPED -> tr("准备已停止", "Preparation stopped", "準備を停止しました", "준비 중지됨", "準備已停止")
     }, result?.message ?: tr("正在读取所选的 $selectedCount 项并建立目标目录", "Reading $selectedCount selected items and creating destination folders", "選択した $selectedCount 項目を読み込み、保存先フォルダーを作成中", "선택한 ${selectedCount}개 항목을 읽고 대상 폴더 생성 중", "正在讀取所選的 $selectedCount 個項目並建立目標資料夾"),
 )
@@ -33,8 +32,7 @@ fun dev.piko.shared.state.OfflineSubmitWork.workProgress(): WorkProgress = WorkP
     when (status) {
         dev.piko.shared.state.OfflineSubmitStatus.SUBMITTING -> tr("正在提交离线下载", "Submitting cloud download", "クラウドダウンロードを送信中", "클라우드 다운로드 제출 중", "正在提交離線下載")
         dev.piko.shared.state.OfflineSubmitStatus.COMPLETE -> tr("已保存", "Saved", "保存しました", "저장했습니다", "已儲存")
-        dev.piko.shared.state.OfflineSubmitStatus.REFUSED -> tr("未提交", "Not submitted", "未送信", "제출되지 않음", "未提交")
-        dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED -> tr("结果待确认", "Result unconfirmed", "結果未確認", "결과 확인 필요", "結果待確認")
+        dev.piko.shared.state.OfflineSubmitStatus.FAILED -> tr("提交失败", "Submission failed", "送信に失敗しました", "제출 실패", "提交失敗")
     }, message,
 )
 
@@ -55,7 +53,6 @@ fun dev.piko.shared.state.InstantSaveAttempt.workProgress(): WorkProgress {
             "部分儲存未完成（已儲存 $progressDone 項）",
         )
         errorMessage != null -> tr("未保存", "Not saved", "未保存", "저장되지 않음", "未儲存")
-        receipt?.requiresInspection == true -> tr("结果需要核对", "Results need inspection", "結果の確認が必要です", "결과 확인이 필요합니다", "結果需要核對")
         receipt?.confirmed?.isEmpty() != false -> tr("未保存", "Not saved", "未保存", "저장되지 않음", "未儲存")
         else -> tr("部分保存未完成", "Some saves incomplete", "一部の保存が未完了です", "일부 저장이 완료되지 않았습니다", "部分儲存未完成")
     }
@@ -69,7 +66,6 @@ fun dev.piko.shared.state.FileWriteWork.workProgress(undo: DriveChangeJournal.Un
             dev.piko.shared.state.FileWriteCompletion.SUCCEEDED -> tr("已完成", "Completed", "完了", "완료", "已完成")
             dev.piko.shared.state.FileWriteCompletion.PARTIAL -> tr("部分完成", "Partially completed", "一部完了", "일부 완료", "部分完成")
             dev.piko.shared.state.FileWriteCompletion.FAILED -> tr("未完成", "Incomplete", "未完了", "미완료", "未完成")
-            dev.piko.shared.state.FileWriteCompletion.UNCONFIRMED -> tr("结果待确认", "Result unconfirmed", "結果未確認", "결과 확인 필요", "結果待確認")
         }
     } ?: when (phase) {
         dev.piko.shared.state.FileWritePhase.PREPARING -> tr("正在核对文件", "Checking files", "ファイルを確認中", "파일 확인 중", "正在核對檔案")
@@ -178,7 +174,6 @@ fun ArchiveJob.workProgress(): WorkProgress {
             when (status.outcome) {
                 ArchiveCompletion.SUCCEEDED -> tr("解压完成", "Extraction complete", "解凍完了", "압축 해제 완료", "解壓縮完成")
                 ArchiveCompletion.FAILED -> tr("解压失败", "Extraction failed", "解凍失敗", "압축 해제 실패", "解壓縮失敗")
-                ArchiveCompletion.UNCONFIRMED -> tr("结果待确认", "Result unconfirmed", "結果未確認", "결과 확인 필요", "結果待確認")
             },
             status.message,
         )

@@ -18,7 +18,7 @@ sealed interface HistoryEditCommand {
     }
 }
 
-enum class HistoryEditCompletion { SUCCEEDED, PARTIAL, FAILED, UNCONFIRMED }
+enum class HistoryEditCompletion { SUCCEEDED, PARTIAL, FAILED }
 
 data class HistoryEditResult(
     val completion: HistoryEditCompletion,

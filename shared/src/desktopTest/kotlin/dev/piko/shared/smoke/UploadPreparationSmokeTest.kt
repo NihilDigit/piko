@@ -319,17 +319,12 @@ class UploadPreparationSmokeTest {
         assertIs<UploadEnqueueResult.Accepted>(f.uploads.enqueue(selection, f.target.id, f.target.name))
         f.finished()
         val work = f.uploads.preparations.value.single()
-        assertEquals(UploadPreparationCompletion.UNCONFIRMED, work.result?.completion)
+        assertEquals(UploadPreparationCompletion.FAILED, work.result?.completion)
         assertTrue(work.directories.isEmpty())
         assertTrue(work.files.isEmpty())
-        assertTrue(work.hasUnconfirmedDirectory)
         assertEquals(1, f.server.children(f.target.id).size)
         assertTrue(f.uploads.tasks.value.isEmpty())
         assertFalse(work.toString().contains("private://ROOT-URI"))
-        f.uploads.request(selection)
-        repeat(3) { assertIs<UploadEnqueueResult.Rejected>(f.uploads.enqueue(selection, f.target.id, f.target.name)) }
-        assertEquals(selection, f.uploads.pendingRequest.value)
-        assertEquals(1, creates)
         assertTrue(f.uploads.forgetPreparation(work.id))
         assertEquals(1, f.server.children(f.target.id).size, "移除回执不删除失去响应的实际目录")
     }
@@ -358,7 +353,7 @@ class UploadPreparationSmokeTest {
         assertEquals(setOf("one.bin", "two.bin"), work.files.map { it.path }.toSet())
         assertEquals(work.files.map { it.taskId }.toSet(), f.uploads.tasks.value.keys)
         assertEquals(1, work.directories.size)
-        assertEquals("nested", work.issues.single { it.kind == UploadPreparationIssueKind.DIRECTORY_UNCONFIRMED }.path)
+        assertEquals("nested", work.issues.single { it.kind == UploadPreparationIssueKind.DIRECTORY_REFUSED }.path)
         assertEquals("nested/blocked.bin", work.issues.single { it.kind == UploadPreparationIssueKind.NOT_ATTEMPTED }.path)
         repeat(3) { assertIs<UploadEnqueueResult.Rejected>(f.uploads.enqueue(selection, f.target.id, f.target.name)) }
         assertEquals(1, roots)
@@ -384,7 +379,6 @@ class UploadPreparationSmokeTest {
         assertEquals(UploadPreparationCompletion.PARTIAL, work.result?.completion)
         assertEquals(listOf("independent/good.bin"), work.files.map { it.path })
         assertEquals(setOf("", "independent"), work.directories.map { it.path }.toSet())
-        assertFalse(work.hasUnconfirmedDirectory)
         assertEquals(1, work.issues.count { it.kind == UploadPreparationIssueKind.DIRECTORY_REFUSED })
         assertEquals(1, work.issues.count { it.kind == UploadPreparationIssueKind.NOT_ATTEMPTED })
     }
@@ -470,22 +464,20 @@ class UploadPreparationSmokeTest {
             f.finished()
             val work = f.uploads.preparations.value.single()
             assertEquals(UploadPreparationCompletion.STOPPED, work.result?.completion)
-            assertTrue(work.hasUnconfirmedDirectory)
             assertEquals(1, f.server.children(f.target.id).size)
             assertTrue(f.uploads.tasks.value.isEmpty())
         } finally { release.trySend(Unit); uploadScope.cancel() }
     }
 
     @Test
-    fun `an empty directory id is unknown and never redirects prepared files to the account root`() = smoke { scope ->
+    fun `an empty directory id fails preparation and never redirects prepared files to the account root`() = smoke { scope ->
         val f = Rig(scope, treeSources())
         f.ready()
         f.server.emptyCreatedFolderId = true
         f.uploads.enqueue(UploadSelection(folders = listOf("root")), f.target.id, f.target.name)
         f.finished()
         val work = f.uploads.preparations.value.single()
-        assertEquals(UploadPreparationCompletion.UNCONFIRMED, work.result?.completion)
-        assertTrue(work.hasUnconfirmedDirectory)
+        assertEquals(UploadPreparationCompletion.FAILED, work.result?.completion)
         assertTrue(work.directories.isEmpty())
         assertTrue(f.uploads.tasks.value.isEmpty())
         assertEquals(1, f.server.children(f.target.id).size)

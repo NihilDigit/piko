@@ -274,8 +274,8 @@ class TransfersAccountSmokeTest {
             listOf(io.github.nihildigit.pikpak.ResolvedFile("partial.mkv", 10, "PARTIAL")))!!
         awaitUntil("保存尝试在进行中投影，草稿不重复计数") { state.inProgress.any { it.key == "instant:$attemptId" } }
         assertEquals(1, state.counts[TransferKind.CLOUD])
-        records.finishAttempt(attemptId, dev.piko.shared.data.InstantSaveReceipt(account, other.id, unconfirmed = setOf("partial.mkv")))
-        awaitUntil("不确定结果等待自动核对") { state.inProgress.any { it.key == "instant:$attemptId" } }
+        records.finishAttempt(attemptId, dev.piko.shared.data.InstantSaveReceipt(account, other.id, failed = setOf("partial.mkv")))
+        awaitUntil("失败结果进入需关注分区") { state.needsAttention.any { it.key == "instant:$attemptId" } }
         records.add("partial.mkv", 1, 10, other.name, original.id, id = attemptId, expectedAccount = account)
         awaitUntil("成功历史沿用同一身份替换运行期尝试") { state.completed.any { it.key == "instant:$attemptId" } && state.needsAttention.none { it.key == "instant:$attemptId" } }
         assertEquals(1, state.counts[TransferKind.CLOUD])
@@ -286,11 +286,11 @@ class TransfersAccountSmokeTest {
         val offline = assertNotNull(state.offlineSubmits)
         assertTrue(offline.submit("https://example.invalid/task", PikoPathBreadcrumb(other.id, other.name), "提交测试", account).isFailure)
         server.offline = false
-        awaitUntil("未知离线提交保留等待状态") { state.inProgress.any { it is TransferItem.OfflineSubmit && it.work.status == dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED } }
-        val offlineItem = state.inProgress.filterIsInstance<TransferItem.OfflineSubmit>().single()
+        awaitUntil("失败离线提交进入需关注分区") { state.needsAttention.any { it is TransferItem.OfflineSubmit && it.work.status == dev.piko.shared.state.OfflineSubmitStatus.FAILED } }
+        val offlineItem = state.needsAttention.filterIsInstance<TransferItem.OfflineSubmit>().single()
         assertEquals(1, state.counts[TransferKind.CLOUD])
         assertEquals(1, state.counts[TransferKind.ALL])
-        assertEquals(dev.piko.shared.state.OfflineSubmitStatus.UNCONFIRMED, offlineItem.work.status)
+        assertEquals(dev.piko.shared.state.OfflineSubmitStatus.FAILED, offlineItem.work.status)
         state.remove(offlineItem)
         awaitUntil("移除未知提交只移除本地记录") { state.isEmpty }
         assertNotNull(server.node(original.id))

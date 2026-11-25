@@ -156,7 +156,7 @@ class ReceivingReverseSmokeTest {
     }
 
     @Test
-    fun `an unknown upload directory retains its target protection until its result is explicitly removed`() = smoke { scope ->
+    fun `a failed upload directory preparation does not leave target locked`() = smoke { scope ->
         val f = Rig(scope, object : Sources() {
             override fun listFolder(uri: String) = UploadFolder("folder", listOf(UploadTreeEntry("file", "")))
         })
@@ -167,12 +167,9 @@ class ReceivingReverseSmokeTest {
             response
         }
         f.uploads.enqueue(dev.piko.shared.upload.UploadSelection(folders = listOf("local-folder")), f.target.id, f.target.name)
-        awaitUntil("目录准备待确认") { f.uploads.preparations.value.singleOrNull()?.result?.completion == UploadPreparationCompletion.UNCONFIRMED }
-        assertIs<FileCommandResult.Rejected>(f.commands.submit(FileWriteCommand.Delete(listOf(f.parent.id))))
-        assertEquals(ActionAvailability.Available, f.commands.availability(FileWriteCommand.Rename(f.target.id, "new-target")))
-        assertTrue(f.uploads.forgetPreparation(f.uploads.preparations.value.single().id))
+        awaitUntil("目录准备失败") { f.uploads.preparations.value.singleOrNull()?.result?.completion == UploadPreparationCompletion.FAILED }
         assertEquals(ActionAvailability.Available, f.commands.availability(FileWriteCommand.Delete(listOf(f.parent.id))))
-        assertEquals(1, f.server.children(f.target.id).size)
+        assertTrue(f.uploads.forgetPreparation(f.uploads.preparations.value.single().id))
     }
 
     @Test
@@ -311,11 +308,10 @@ class ReceivingReverseSmokeTest {
             response
         }
         val id = assertIs<FileCommandResult.Accepted>(f.commands.submit(FileWriteCommand.Move(listOf(f.parent.id), PikoPathBreadcrumb(f.other.id, f.other.name)))).workId
-        awaitUntil("目录移动待确认") { id !in f.writes.mutations.active.value }
+        awaitUntil("目录移动结束") { id !in f.writes.mutations.active.value }
         assertEquals(ActionAvailability.Available, f.commands.receivingAvailability(f.child.id))
         hideDetails = false
-        assertFalse(f.writes.recheck(id))
-        assertTrue(f.writes.awaitResult(id)!!.unconfirmed.isEmpty())
+        assertNotNull(f.writes.awaitResult(id))
         assertEquals(1, f.server.count("POST /drive/v1/files:batchMove"))
         assertNotNull(f.server.node(f.child.id))
     }

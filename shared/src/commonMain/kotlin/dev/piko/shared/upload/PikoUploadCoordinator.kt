@@ -310,12 +310,11 @@ class PikoUploadCoordinator(
                     } catch (error: Exception) {
                         blocked += path
                         if (attempted) {
-                            val refused = error is PikPakException && error.httpStatus in setOf(400, 401, 403, 404, 409, 422)
-                            issue(key, path, if (refused) UploadPreparationIssueKind.DIRECTORY_REFUSED else UploadPreparationIssueKind.DIRECTORY_UNCONFIRMED)
+                            issue(key, path, UploadPreparationIssueKind.DIRECTORY_REFUSED)
                             if (error !is CancellationException) {
                                 PikoLog.w(
                                     TAG,
-                                    "Upload preparation ${work.id}: folder creation ${if (refused) "refused" else "unconfirmed"} in parent=${logFolder(parent)}, relDepth=${if (path.isEmpty()) 0 else path.count { it == '/' } + 1}",
+                                    "Upload preparation ${work.id}: folder creation failed in parent=${logFolder(parent)}, relDepth=${if (path.isEmpty()) 0 else path.count { it == '/' } + 1}",
                                     error,
                                 )
                             }
@@ -346,17 +345,14 @@ class PikoUploadCoordinator(
                 unexpected -> UploadPreparationCompletion.FAILED
                 work.issues.isEmpty() -> UploadPreparationCompletion.SUCCEEDED
                 work.files.isNotEmpty() || work.directories.isNotEmpty() -> UploadPreparationCompletion.PARTIAL
-                work.hasUnconfirmedDirectory -> UploadPreparationCompletion.UNCONFIRMED
                 else -> UploadPreparationCompletion.FAILED
             }
             val message = buildList {
                 add(tr("已入队 ${work.files.size} 个文件", "Queued ${enCount(work.files.size, "file", "files")}", "${work.files.size} ファイルをキューに追加しました", "파일 ${work.files.size}개 대기열에 추가", "已將 ${work.files.size} 個檔案加入佇列"))
                 if (work.directories.isNotEmpty()) add(tr("已创建 ${work.directories.size} 个文件夹", "Created ${enCount(work.directories.size, "folder", "folders")}", "${work.directories.size} 個のフォルダーを作成しました", "폴더 ${work.directories.size}개 생성 완료", "已建立 ${work.directories.size} 個資料夾"))
-                val unknown = work.issues.count { it.kind == UploadPreparationIssueKind.DIRECTORY_UNCONFIRMED }
-                if (unknown > 0) add(tr("$unknown 个文件夹创建结果待确认", "$unknown folder creations unconfirmed", "$unknown 個のフォルダー作成結果が未確認です", "폴더 ${unknown}개 생성 결과 미확인", "$unknown 個資料夾建立結果待確認"))
                 val skipped = work.issues.count { it.kind == UploadPreparationIssueKind.NOT_ATTEMPTED }
                 if (skipped > 0) add(tr("$skipped 个文件未入队", "${enCount(skipped, "file", "files")} not queued", "$skipped ファイルをキューに追加していません", "파일 ${skipped}개 대기열에 추가 안 됨", "$skipped 個檔案未加入佇列"))
-                val failed = work.issues.size - unknown - skipped
+                val failed = work.issues.size - skipped
                 if (failed > 0) add(tr("$failed 项未准备成功", "${enCount(failed, "item", "items")} failed preparation", "$failed 項目の準備に失敗しました", "${failed}개 항목 준비 실패", "$failed 項未準備成功"))
                 if (stopped) add(tr("准备已停止，请核对目标文件夹", "Preparation stopped. Check the destination folder", "準備を停止しました。保存先フォルダーを確認してください", "준비를 중지했습니다. 대상 폴더를 확인해 주세요", "準備已停止，請核對目標資料夾"))
                 if (unexpected) add(tr("准备出错，请核对队列中的文件与目标文件夹", "Preparation failed. Check queued files and destination folder", "準備中にエラーが発生しました。キュー内のファイルと保存先フォルダーを確認してください", "준비 중 오류가 발생했습니다. 대기열의 파일과 대상 폴더를 확인해 주세요", "準備發生錯誤，請核對佇列中的檔案與目標資料夾"))
@@ -367,8 +363,8 @@ class PikoUploadCoordinator(
             else {
                 publish()
                 _preparations.update { all ->
-                    val retained = all.filter { !it.isRunning && !it.hasUnconfirmedDirectory }.takeLast(100).mapTo(HashSet()) { it.id }
-                    all.filter { it.isRunning || it.hasUnconfirmedDirectory || it.id in retained }
+                    val retained = all.filter { !it.isRunning }.takeLast(100).mapTo(HashSet()) { it.id }
+                    all.filter { it.isRunning || it.id in retained }
                 }
                 _preparationOutcomes.tryEmit(work)
             }

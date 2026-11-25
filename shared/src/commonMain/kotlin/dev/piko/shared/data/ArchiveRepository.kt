@@ -28,8 +28,6 @@ import kotlinx.coroutines.withContext
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
 
-class ArchiveSubmissionUnconfirmed(cause: Throwable) : RuntimeException(cause.message, cause)
-
 /** 服务端解压。压缩包的解析与写入都在 PikPak 那边完成，本机不下载任何内容。 */
 class ArchiveRepository(
     private val clientManager: PikoClientProvider,
@@ -51,15 +49,7 @@ class ArchiveRepository(
             // 先列一层再提交。解压接口对从没解析过的加密包照单全收，要等任务失败才知道缺密码
             // （2026-09-25 实测，新传的 ZipCrypto 包连提交两次都是如此）；列目录则当场报缺密码或密码错误
             current.listArchive(file.id, gcid, password = password)
-            try {
-                current.decompressArchive(file.id, gcid, toParentId = null, password = password, paths = paths)
-            } catch (failure: Throwable) {
-                when {
-                    failure is CancellationException || failure is ArchivePasswordException -> throw failure
-                    failure is PikPakException && failure.errorCode > 0 && (failure.httpStatus ?: 200) < 500 && failure.httpStatus != 408 -> throw failure
-                    else -> throw ArchiveSubmissionUnconfirmed(failure)
-                }
-            }
+            current.decompressArchive(file.id, gcid, toParentId = null, password = password, paths = paths)
         }
     }
 

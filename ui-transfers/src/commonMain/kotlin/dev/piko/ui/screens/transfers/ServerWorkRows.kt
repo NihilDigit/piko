@@ -50,7 +50,6 @@ internal fun extractTransferActions(
     item: TransferItem.Extract,
     onShowInDrive: () -> Unit,
     onSkip: () -> Unit,
-    onRecheck: () -> Unit,
     onInputPassword: (() -> Unit)? = null,
 ): List<SheetAction> = buildList {
     if (item.job.status is ArchiveJobStatus.NeedsPassword && onInputPassword != null) {
@@ -58,11 +57,7 @@ internal fun extractTransferActions(
     }
     add(SheetAction(Icons.AutoMirrored.Outlined.OpenInNew, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), onShowInDrive))
     if (item.job.status is ArchiveJobStatus.NeedsPassword) add(SheetAction(Icons.Outlined.Close, tr("放弃解压", "Abandon extraction", "解凍を中止", "압축 해제 취소", "放棄解壓縮"), onSkip, destructive = true))
-    val finished = item.job.status as? ArchiveJobStatus.Finished
-    if (finished != null) {
-        if (finished.outcome == ArchiveCompletion.UNCONFIRMED && item.job.remoteTaskId != null) {
-            add(SheetAction(Icons.Outlined.Refresh, tr("重新查询结果", "Check results again", "結果を再確認", "결과 다시 확인", "重新查詢結果"), onRecheck))
-        }
+    if (item.job.status is ArchiveJobStatus.Finished) {
         add(SheetAction(Icons.Outlined.Close, tr("移除记录", "Remove record", "記録を削除", "기록 삭제", "移除記錄"), onSkip))
     }
 }
@@ -76,9 +71,7 @@ internal fun ExtractTransferDetails(item: TransferItem.Extract, actions: List<Sh
         actions = actions,
         metaParts = listOf(tr("解压", "Extract", "解凍", "압축 해제", "解壓縮"), work.status),
         // 提交前后都可能停在这里，说清解到哪里、为什么不能取消
-        extraLines = { WorkDetails(work, if ((item.job.status as? ArchiveJobStatus.Finished)?.outcome == ArchiveCompletion.UNCONFIRMED) {
-            tr("服务端仍可能继续解压。重新查询不会再次提交；没有任务标识时，请先检查压缩包所在目录。", "The server may still be extracting. Checking again will not resubmit. If no task ID exists, inspect the archive’s folder first.", "サーバーで解凍が続いている可能性があります。再確認で再送信はしません。タスクIDがない場合は、先に圧縮ファイルの保存先を確認してください。", "서버에서 압축 해제가 계속될 수 있습니다. 다시 확인해도 재제출하지 않습니다. 작업 식별자가 없으면 압축 파일의 폴더를 먼저 확인하세요.", "伺服器仍可能繼續解壓縮。重新查詢不會再次提交；沒有任務識別碼時，請先檢查壓縮檔所在資料夾。")
-        } else tr("解压到压缩包所在的文件夹。已提交的解压由服务端完成，无法中途取消。", "Extract into the archive’s folder. Submitted extractions run on the server and cannot be cancelled midway.", "圧縮ファイルと同じフォルダーに解凍します。送信後の解凍はサーバーで行われ、途中で取り消せません。", "압축 파일이 있는 폴더에 해제합니다. 제출된 압축 해제는 서버에서 수행되며 중간에 취소할 수 없습니다.", "解壓縮至壓縮檔所在的資料夾。已提交的解壓縮由伺服器完成，無法中途取消。")) },
+        extraLines = { WorkDetails(work, tr("解压到压缩包所在的文件夹。已提交的解压由服务端完成，无法中途取消。", "Extract into the archive’s folder. Submitted extractions run on the server and cannot be cancelled midway.", "圧縮ファイルと同じフォルダーに解凍します。送信後の解凍はサーバーで行われ、途中で取り消せません。", "압축 파일이 있는 폴더에 해제합니다. 제출된 압축 해제는 서버에서 수행되며 중간에 취소할 수 없습니다.", "解壓縮至壓縮檔所在的資料夾。已提交的解壓縮由伺服器完成，無法中途取消。")) },
     )
 }
 

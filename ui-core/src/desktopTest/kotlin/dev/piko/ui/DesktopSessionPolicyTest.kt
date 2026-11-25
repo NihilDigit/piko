@@ -35,9 +35,9 @@ class DesktopSessionPolicyTest {
     }
     @Test
     fun forgettingTheLastUnknownResultReleasesTheDesktopEvenWhenExecutionRemainsIdle() = runBlocking {
-        val unknown = FileWriteWork(1, "account", FileWriteCommand.Copy(listOf("file"), dev.piko.shared.data.PikoPathBreadcrumb("target", "target")), 1,
-            result = FileWriteResult(FileWriteCompletion.UNCONFIRMED, "待确认", unconfirmed = setOf("file"), finishedAtMs = 2))
-        val results = MutableStateFlow(listOf(unknown))
+        val failed = FileWriteWork(1, "account", FileWriteCommand.Copy(listOf("file"), dev.piko.shared.data.PikoPathBreadcrumb("target", "target")), 1,
+            result = FileWriteResult(FileWriteCompletion.FAILED, "失败", failed = setOf("file"), finishedAtMs = 2))
+        val results = MutableStateFlow(listOf(failed))
         val changes = Channel<Boolean>(Channel.UNLIMITED)
         val collecting = launch(Dispatchers.Default) {
             desktopSessionRetentionChanges(flowOf(false), flowOf(false), results.map { Unit }, flowOf(Unit)) {
