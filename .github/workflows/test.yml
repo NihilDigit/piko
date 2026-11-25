@@ -389,11 +389,11 @@ jobs:
       matrix:
         include:
           - api: 26
-            suite: sqlite
-            instrument_args: '-e class dev.piko.smoke.AndroidSqliteTreeIndexSmokeTest'
+            suite: compat
+            instrument_args: '-e class dev.piko.smoke.AndroidSqliteTreeIndexSmokeTest,dev.piko.smoke.AndroidPlatformCompatSmokeTest'
           - api: 29
-            suite: sqlite
-            instrument_args: '-e class dev.piko.smoke.AndroidSqliteTreeIndexSmokeTest'
+            suite: compat
+            instrument_args: '-e class dev.piko.smoke.AndroidSqliteTreeIndexSmokeTest,dev.piko.smoke.AndroidPlatformCompatSmokeTest'
           - api: 34
             suite: full
             instrument_args: ''
@@ -474,7 +474,7 @@ jobs:
           arch: x86_64
           target: default
           force-avd-creation: false
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: bash run-instrument.sh
 

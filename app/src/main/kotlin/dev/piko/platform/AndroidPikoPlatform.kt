@@ -601,11 +601,18 @@ class AndroidPikoPlatform(
                     .onFailure { PikoLog.w(TAG, "Failed to resolve SAF document ID for containing folder (authority=$authority)", it) }
                     .getOrNull() ?: return
                 val parentId = documentId.substringBeforeLast('/', documentId)
-                DocumentsContract.buildTreeDocumentUri(authority, parentId)
+                runCatching { DocumentsContract.buildTreeDocumentUri(authority, parentId) }
+                    .onFailure { PikoLog.w(TAG, "Failed to build SAF tree URI for containing folder (authority=$authority)", it) }
+                    .getOrNull() ?: return
             } else {
                 val file = File(path)
                 if (!file.exists()) return
-                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file.parentFile ?: file)
+                val authority = "${context.packageName}.fileprovider"
+                val parent = file.parentFile ?: file
+                runCatching { FileProvider.getUriForFile(context, authority, parent) }
+                    .recoverCatching { FileProvider.getUriForFile(context, authority, file) }
+                    .onFailure { PikoLog.w(TAG, "Failed to build FileProvider URI for containing folder", it) }
+                    .getOrNull() ?: return
             }
             startActivity(
                 Intent(Intent.ACTION_VIEW)

@@ -232,6 +232,7 @@ abstract class VerifyMergedManifestPermissionsTask : DefaultTask() {
             "android.permission.FOREGROUND_SERVICE",
             "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
             "android.permission.REQUEST_INSTALL_PACKAGES",
+            "android.permission.USE_BIOMETRIC",
             dynamicReceiverPermission,
         )
         val allowDebug = allowDebuggable.get()

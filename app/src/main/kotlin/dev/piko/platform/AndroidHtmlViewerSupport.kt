@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import android.os.Build
 import android.view.ViewGroup
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -169,6 +170,16 @@ internal class AndroidHtmlViewerSupport : HtmlViewerSupport {
 
                         override fun doUpdateVisitedHistory(view: WebView?, pageUrl: String?, isReload: Boolean) {
                             latestCanGoBack(view?.canGoBack() == true)
+                        }
+
+                        override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                            latestLoading(false)
+                            if (view != null) {
+                                if (webViewRef === view) webViewRef = null
+                                (view.parent as? ViewGroup)?.removeView(view)
+                                runCatching { view.destroy() }
+                            }
+                            return true
                         }
                     }
                     webViewRef = this

@@ -201,6 +201,10 @@ object VideoSegmentExtractor {
                     }
                     // 循环因取消（暂停）退出时不能当作写完：收尾成文件再改名，暂停的片段就成了一个截短的「已完成」
                     coroutineContext.ensureActive()
+                    if (muxerStarted) {
+                        muxerStarted = false
+                        muxer.stop()
+                    }
                     onProgress(1f)
                 } finally {
                     if (muxerStarted) {
@@ -209,11 +213,8 @@ object VideoSegmentExtractor {
                     runCatching { muxer.release() }
                 }
 
-                // 写入完整后再原子替换至最终目标文件
+                // 写入完整后再原子替换至最终目标文件（不预先删旧文件，避免替换失败导致原文件丢失）
                 if (tempFile.exists() && tempFile.length() > 1024L) {
-                    if (destinationFile.exists()) {
-                        destinationFile.delete()
-                    }
                     if (!tempFile.renameTo(destinationFile)) {
                         tempFile.copyTo(destinationFile, overwrite = true)
                         tempFile.delete()

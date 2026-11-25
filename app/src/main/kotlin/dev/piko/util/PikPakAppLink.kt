@@ -59,5 +59,5 @@ object PikPakAppLink {
         }
 
     private fun decode(value: String): String =
-        runCatching { URLDecoder.decode(value, Charsets.UTF_8) }.getOrDefault(value)
+        runCatching { URLDecoder.decode(value, "UTF-8") }.getOrDefault(value)
 }
