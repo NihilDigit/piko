@@ -151,11 +151,43 @@ jobs:
             "$build_tools/apksigner" verify --verbose "$apk"
           done
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
-          name: android-dist
-          path: dist/*
-          compression-level: 0
+          name: piko-${{ needs.version.outputs.name }}-arm64-v8a.apk
+          path: dist/piko-${{ needs.version.outputs.name }}-arm64-v8a.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: piko-${{ needs.version.outputs.name }}-armeabi-v7a.apk
+          path: dist/piko-${{ needs.version.outputs.name }}-armeabi-v7a.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: piko-${{ needs.version.outputs.name }}-x86_64.apk
+          path: dist/piko-${{ needs.version.outputs.name }}-x86_64.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: piko-${{ needs.version.outputs.name }}-universal.apk
+          path: dist/piko-${{ needs.version.outputs.name }}-universal.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: piko-${{ needs.version.outputs.name }}-mapping.txt
+          path: dist/piko-${{ needs.version.outputs.name }}-mapping.txt
+          archive: false
           if-no-files-found: error
           retention-days: 7
 
@@ -373,10 +405,29 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
-          name: windows-${{ matrix.arch }}-dist
-          path: dist/*
+          name: piko-windows-${{ matrix.arch }}-${{ needs.version.outputs.name }}.msi
+          path: dist/piko-windows-${{ matrix.arch }}-${{ needs.version.outputs.name }}.msi
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: piko-windows-${{ matrix.arch }}-${{ needs.version.outputs.name }}.7z
+          path: dist/piko-windows-${{ matrix.arch }}-${{ needs.version.outputs.name }}.7z
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-${{ matrix.arch }}-update-dist
+          path: |
+            dist/*
+            !dist/*.msi
+            !dist/*.7z
           compression-level: 0
           if-no-files-found: error
           retention-days: 7
@@ -391,7 +442,7 @@ jobs:
 
       - uses: actions/download-artifact@v7
         with:
-          pattern: 'windows-{x64,arm64}-dist'
+          pattern: '{piko-windows-*,windows-*-update-dist}'
           path: in-dist
           merge-multiple: true
 
@@ -447,11 +498,11 @@ jobs:
           codesign -dv desktopApp/build/compose/binaries/main-release/app/Piko.app 2>&1 || true
           ls -l dist
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
-          name: macos-dist
-          path: dist/*
-          compression-level: 0
+          name: piko-macos-arm64-${{ needs.version.outputs.name }}.dmg
+          path: dist/piko-macos-arm64-${{ needs.version.outputs.name }}.dmg
+          archive: false
           if-no-files-found: error
           retention-days: 7
 
@@ -494,11 +545,27 @@ jobs:
             tar --transform='s,^Piko,piko,' -czf - Piko) > "dist/piko-linux-x64-$VERSION.tar.gz"
           ls -lh dist
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
-          name: linux-dist
-          path: dist/*
-          compression-level: 0
+          name: piko-linux-x64-${{ needs.version.outputs.name }}.AppImage
+          path: dist/piko-linux-x64-${{ needs.version.outputs.name }}.AppImage
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: piko-linux-x64-${{ needs.version.outputs.name }}.AppImage.zsync
+          path: dist/piko-linux-x64-${{ needs.version.outputs.name }}.AppImage.zsync
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: piko-linux-x64-${{ needs.version.outputs.name }}.tar.gz
+          path: dist/piko-linux-x64-${{ needs.version.outputs.name }}.tar.gz
+          archive: false
           if-no-files-found: error
           retention-days: 7
 
@@ -510,7 +577,7 @@ jobs:
     with:
       version: ${{ needs.version.outputs.name }}
       version-code: ${{ needs.version.outputs.code }}
-      artifact-name: ios-dist
+      artifact-name: piko-ios-arm64-${{ needs.version.outputs.name }}.ipa
     secrets: inherit
 
   release:
@@ -531,7 +598,7 @@ jobs:
       # 合并六端正式产物与提前构建好的 Windows 差分包，排除 test job 上传的 windows-smoke-dist
       - uses: actions/download-artifact@v7
         with:
-          pattern: '{android,windows-x64,windows-arm64,windows-deltas,macos,linux,ios}-dist'
+          pattern: '{piko-*,windows-*-update-dist,windows-deltas-dist}'
           path: dist
           merge-multiple: true
 

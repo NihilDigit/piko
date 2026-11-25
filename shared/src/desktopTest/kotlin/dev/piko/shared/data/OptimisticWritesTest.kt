@@ -93,4 +93,21 @@ class OptimisticWritesTest {
         val cyclic = mapOf("nested" to "cycle", "cycle" to "nested")
         assertEquals(listOf(leaf), writes.project("a", null, listOf(leaf), parentOf = cyclic::get))
     }
+
+    @Test fun largeBatchBeginAndFinishHidesAndRestoresWithoutQuadraticBlowup() {
+        val writes = OptimisticWrites()
+        val total = 20_000
+        val files = List(total) { i -> FileStat(id = "f-$i", parentId = "p-${i % 100}", name = "file-$i.mkv") }
+        val entries = files.chunked(500).map { chunk ->
+            val ids = chunk.map { it.id }
+            val parents = chunk.mapTo(HashSet()) { it.parentId }
+            DriveChange.Trashed(ids, parents) to chunk.associateBy { it.id }
+        }
+        val batch = writes.beginBatch("a", entries)
+        assertEquals(40, batch.size)
+        assertTrue(writes.project("a", null, files).isEmpty())
+        writes.finishBatch(batch)
+        assertFalse(writes.hasPending("a"))
+        assertEquals(total, writes.project("a", null, files).size)
+    }
 }

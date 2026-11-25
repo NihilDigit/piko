@@ -29,20 +29,40 @@ class FileMutations(private val repository: PikoDriveRepository, scope: Coroutin
         val access = repository.writeAccess(account) ?: return null
         accounts[id] = account
         _active.update { it + (id to command) }
-        val parts = command.ids.distinct().chunked(if (command is FileWriteCommand.Star) 100 else 500)
+        val distinctIds = command.ids.distinct()
+        val parts = distinctIds.chunked(if (command is FileWriteCommand.Star) 100 else 500)
+        val parentById = if (command is FileWriteCommand.CreateFolder || command is FileWriteCommand.Restore) {
+            emptyMap()
+        } else {
+            repository.knownParentMap(distinctIds)
+        }
         fun change(ids: List<String>): DriveChange = when (command) {
-            is FileWriteCommand.Rename -> DriveChange.Renamed(command.id, command.name, repository.knownParentOf(command.id))
-            is FileWriteCommand.Move -> DriveChange.Moved(ids, ids.mapNotNullTo(HashSet(), repository::knownParentOf), command.target.id)
-            is FileWriteCommand.Trash -> DriveChange.Trashed(ids, ids.mapNotNullTo(HashSet(), repository::knownParentOf))
+            is FileWriteCommand.Rename -> DriveChange.Renamed(command.id, command.name, parentById[command.id])
+            is FileWriteCommand.Move -> DriveChange.Moved(ids, ids.mapNotNullTo(HashSet(), parentById::get), command.target.id)
+            is FileWriteCommand.Trash -> DriveChange.Trashed(ids, ids.mapNotNullTo(HashSet(), parentById::get))
             is FileWriteCommand.Restore -> DriveChange.Restored(ids)
-            is FileWriteCommand.Delete -> DriveChange.Deleted(ids, ids.mapNotNullTo(HashSet(), repository::knownParentOf))
-            is FileWriteCommand.Star -> DriveChange.Starred(ids, command.starred, ids.mapNotNullTo(HashSet(), repository::knownParentOf))
+            is FileWriteCommand.Delete -> DriveChange.Deleted(ids, ids.mapNotNullTo(HashSet(), parentById::get))
+            is FileWriteCommand.Star -> DriveChange.Starred(ids, command.starred, ids.mapNotNullTo(HashSet(), parentById::get))
             else -> error("Creation has no existing entity")
         }
-        val writes = parts.map { repository.beginOptimisticWrite(account, change(it)) }
+        val writes = repository.beginOptimisticWrites(account, parts.map(::change))
         val settled = BooleanArray(writes.size)
         val succeededParts = BooleanArray(writes.size)
         val baselines = arrayOfNulls<Map<String, FileBefore>>(writes.size)
+        fun settleRemaining(useRecordedOutcomes: Boolean) {
+            val remainingWrites = ArrayList<dev.piko.shared.data.OptimisticWrites.Write>()
+            val remainingOutcomes = ArrayList<Boolean>()
+            for (index in writes.indices) {
+                if (!settled[index]) {
+                    settled[index] = true
+                    remainingWrites.add(writes[index])
+                    remainingOutcomes.add(if (useRecordedOutcomes) succeededParts[index] else false)
+                }
+            }
+            if (remainingWrites.isNotEmpty()) {
+                repository.finishOptimisticWrites(remainingWrites, remainingOutcomes.toBooleanArray())
+            }
+        }
         val job = executions.forAccount(account).async(start = CoroutineStart.LAZY) {
             val confirmed = mutableSetOf<String>()
             val failed = mutableSetOf<String>()
@@ -129,9 +149,8 @@ class FileMutations(private val repository: PikoDriveRepository, scope: Coroutin
                     else -> null
                 }
                 inverse?.let { access.recordChange(it); undoIds += it.id }
-                writes.forEachIndexed { index, write ->
-                    repository.finishOptimisticWrite(write, succeededParts[index])
-                    settled[index] = true
+                withContext(Dispatchers.Default + NonCancellable) {
+                    settleRemaining(useRecordedOutcomes = true)
                 }
                 val completion = when {
                     failed.isEmpty() -> FileWriteCompletion.SUCCEEDED
@@ -145,11 +164,8 @@ class FileMutations(private val repository: PikoDriveRepository, scope: Coroutin
                     _outcomes.tryEmit(FileWriteOutcome(account, id, command.title, it))
                 }
             } finally {
-                writes.forEachIndexed { index, write ->
-                    if (!settled[index]) {
-                        repository.finishOptimisticWrite(write, succeededParts[index])
-                        settled[index] = true
-                    }
+                withContext(Dispatchers.Default + NonCancellable) {
+                    settleRemaining(useRecordedOutcomes = true)
                 }
                 _active.update { it - id }
             }
@@ -157,7 +173,7 @@ class FileMutations(private val repository: PikoDriveRepository, scope: Coroutin
         results[id] = job
         job.invokeOnCompletion {
             accounts -= id
-            writes.forEachIndexed { index, write -> if (!settled[index]) repository.finishOptimisticWrite(write, false) }
+            settleRemaining(useRecordedOutcomes = false)
             _active.update { it - id }
         }
         results.entries.removeAll { it.key != id && it.value.isCompleted && results.size > 64 }
@@ -180,7 +196,7 @@ class FileMutations(private val repository: PikoDriveRepository, scope: Coroutin
         return when (command) {
             is FileWriteCommand.Trash -> access.authoritativeTrashFiles()
                 .onFailure(::logVerifyError)
-                .getOrNull()?.map { it.id }?.containsAll(ids) == true
+                .getOrNull()?.mapTo(HashSet()) { it.id }?.containsAll(ids) == true
             is FileWriteCommand.Star -> access.starredIds()
                 .onFailure(::logVerifyError)
                 .getOrNull()?.let { starred -> ids.all { (it in starred) == command.starred } } == true

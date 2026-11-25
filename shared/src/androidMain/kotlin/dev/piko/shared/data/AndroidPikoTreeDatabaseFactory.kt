@@ -30,7 +30,7 @@ class AndroidPikoTreeDatabaseFactory(private val directory: File) : PikoTreeData
             // 内置 WAL 连接池与原生 sqlite3_busy_timeout（默认 2500ms）等待；显式对齐桌面/iOS 设为 5000ms 以防外部工具短暂持锁。
             database.query("PRAGMA busy_timeout=5000").close()
             database.query("PRAGMA synchronous=NORMAL").close()
-            database.query("PRAGMA temp_store=MEMORY").close()
+            database.query("PRAGMA temp_store=DEFAULT").close()
             database.query("PRAGMA cache_size=-8192").close()
             return database
         } catch (error: Throwable) {
@@ -163,16 +163,22 @@ private class AndroidTreeDatabase(
         }
     }
 
+    private var outerTransactionActive = false
+
     override fun beginOuterTransaction() {
         connection.beginTransactionNonExclusive()
+        outerTransactionActive = true
     }
 
     override fun commitOuterTransaction() {
         connection.setTransactionSuccessful()
+        outerTransactionActive = false
         connection.endTransaction()
     }
 
     override fun rollbackOuterTransaction() {
+        if (!outerTransactionActive) return
+        outerTransactionActive = false
         connection.endTransaction()
     }
 
@@ -277,8 +283,9 @@ private class AndroidTreeDatabase(
         const val MAX_CACHED_STATEMENTS = 96
         const val MAX_CACHED_PARAMETER_ARITY = 32
 
-        fun isPointOrSmallQuery(sql: String): Boolean =
-            sql.startsWith("PRAGMA ", ignoreCase = true) ||
+        fun isPointOrSmallQuery(sql: String): Boolean {
+            if (sql.contains("payload", ignoreCase = true)) return false
+            return sql.startsWith("PRAGMA ", ignoreCase = true) ||
                 sql.endsWith("LIMIT 1", ignoreCase = true) ||
                 sql.endsWith("LIMIT 128", ignoreCase = true) ||
                 sql.endsWith("LIMIT 256", ignoreCase = true) ||
@@ -294,5 +301,6 @@ private class AndroidTreeDatabase(
                 sql.contains("AND gcid=? AND bytes=?") ||
                 sql.contains("WHERE gcid=? AND bytes=?") ||
                 sql.contains("WHERE gcid = ? AND bytes = ?")
+        }
     }
 }

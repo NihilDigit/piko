@@ -120,9 +120,15 @@ internal class DriveMutationExecutor(
     ) {
         val fileStats = ArrayList<FileStat>(ids.size)
         val driveTreeIndex = ctx.index.driveTreeIndex
+        val missingIds = ArrayList<String>()
         for (id in ids) {
             if (LocalLocation.isLocal(id) || VaultEntry.isVaulted(id)) continue
-            val known = before[id] ?: ctx.index.knownConfirmedFile(id)
+            if (id !in before) missingIds.add(id)
+        }
+        val fetchedMissing = if (missingIds.isNotEmpty()) ctx.index.knownConfirmedFiles(missingIds) else emptyMap()
+        for (id in ids) {
+            if (LocalLocation.isLocal(id) || VaultEntry.isVaulted(id)) continue
+            val known = before[id] ?: fetchedMissing[id]
             if (known != null) {
                 if (known.isFolder) {
                     val folderBytes = driveTreeIndex.folderUsage(id)?.bytes
@@ -144,61 +150,184 @@ internal class DriveMutationExecutor(
         }
     }
 
-    fun beginOptimisticWrite(account: String, change: DriveChange): OptimisticWrites.Write {
-        val before = change.fileIds().mapNotNull { id -> ctx.index.knownFile(id)?.let { id to it } }.toMap()
-        val asked = ctx.clientManager.currentClient.value?.takeIf { it.account == account }
-        val write = optimisticWrites.begin(account, change, before, asked)
-        if (ctx.currentAccount == account) {
-            if (asked != null) {
-                observeChangeTargetsForQuota(asked, change.fileIds(), before)
-                when (change) {
-                    is DriveChange.Trashed -> asked.noteFilesTrashed(change.ids)
-                    is DriveChange.Deleted -> asked.noteFilesDeleted(change.ids)
-                    is DriveChange.Restored -> asked.noteFilesUntrashed(change.ids)
-                    else -> Unit
-                }
-            }
-            withPikoLock(ctx.index.treeStateLock) { ctx.index.markChanged(change.folders) }
-            ctx.index.folderIndex.project { optimisticWrites.projectFolders(ctx.currentAccount, it) }
-            ctx.index.normalizeLocations()
-            _optimisticRevision.update { it + 1 }
+    fun beginOptimisticWrite(account: String, change: DriveChange): OptimisticWrites.Write =
+        beginOptimisticWrites(account, listOf(change)).single()
+
+    fun beginOptimisticWrites(account: String, changes: List<DriveChange>): List<OptimisticWrites.Write> {
+        if (changes.isEmpty()) return emptyList()
+        val allIds = LinkedHashSet<String>()
+        val perChangeIds = ArrayList<Set<String>>(changes.size)
+        for (i in 0 until changes.size) {
+            val ids = changes[i].fileIds()
+            perChangeIds.add(ids)
+            allIds.addAll(ids)
         }
-        return write
+        val allBefore = ctx.index.knownFiles(allIds)
+        val asked = ctx.clientManager.currentClient.value?.takeIf { it.account == account }
+        val entries = ArrayList<Pair<DriveChange, Map<String, FileStat>>>(changes.size)
+        for (i in 0 until changes.size) {
+            val ids = perChangeIds[i]
+            val before = if (changes.size == 1) {
+                allBefore
+            } else {
+                val map = HashMap<String, FileStat>(ids.size * 4 / 3 + 1)
+                for (id in ids) {
+                    allBefore[id]?.let { map[id] = it }
+                }
+                map
+            }
+            entries.add(changes[i] to before)
+        }
+        val writes = optimisticWrites.beginBatch(account, entries, asked)
+        try {
+            if (ctx.currentAccount == account) {
+                if (asked != null) {
+                    observeChangeTargetsForQuota(asked, allIds, allBefore)
+                    val trashedIds = ArrayList<String>()
+                    val deletedIds = ArrayList<String>()
+                    val restoredIds = ArrayList<String>()
+                    for (i in 0 until changes.size) {
+                        when (val change = changes[i]) {
+                            is DriveChange.Trashed -> trashedIds.addAll(change.ids)
+                            is DriveChange.Deleted -> deletedIds.addAll(change.ids)
+                            is DriveChange.Restored -> restoredIds.addAll(change.ids)
+                            else -> Unit
+                        }
+                    }
+                    if (trashedIds.isNotEmpty()) asked.noteFilesTrashed(trashedIds)
+                    if (deletedIds.isNotEmpty()) asked.noteFilesDeleted(deletedIds)
+                    if (restoredIds.isNotEmpty()) asked.noteFilesUntrashed(restoredIds)
+                }
+                val mergedFolders = mergeChangeFolders(changes)
+                withPikoLock(ctx.index.treeStateLock) { ctx.index.markChanged(mergedFolders) }
+                ctx.index.folderIndex.project { optimisticWrites.projectFolders(ctx.currentAccount, it) }
+                ctx.index.normalizeLocations()
+                _optimisticRevision.update { it + 1 }
+            }
+        } catch (error: Throwable) {
+            runCatching { optimisticWrites.finishBatch(writes) }
+            throw error
+        }
+        return writes
     }
 
     fun finishOptimisticWrite(write: OptimisticWrites.Write, succeeded: Boolean) {
-        val boundClient = write.client ?: ctx.clientManager.currentClient.value?.takeIf { it.account == write.account }
-        if (!succeeded) {
-            PikoLog.d(
-                DRIVE_REPO_TAG,
-                "Reverting failed optimistic write (kind=${write.change::class.simpleName}, items=${write.change.fileIds().size}, acct=${logAccountSlot(write.account)})",
-            )
-            if (boundClient != null) {
-                val revertSnapshots = write.change.fileIds().map { id ->
-                    write.before[id] ?: FileStat(
-                        id = id,
-                        trashed = write.change is DriveChange.Restored,
-                    )
+        finishOptimisticWrites(listOf(write), booleanArrayOf(succeeded))
+    }
+
+    fun finishOptimisticWrites(writes: List<OptimisticWrites.Write>, succeeded: BooleanArray) {
+        if (writes.isEmpty()) return
+        val account = writes[0].account
+        val boundClient = writes[0].client ?: ctx.clientManager.currentClient.value?.takeIf { it.account == account }
+        val revertSnapshots = ArrayList<FileStat>()
+        val succeededChanges = ArrayList<DriveChange>()
+        for (i in 0 until writes.size) {
+            val write = writes[i]
+            val ok = succeeded[i]
+            if (!ok) {
+                val ids = write.change.fileIds()
+                PikoLog.d(
+                    DRIVE_REPO_TAG,
+                    "Reverting failed optimistic write (kind=${write.change::class.simpleName}, items=${ids.size}, acct=${logAccountSlot(write.account)})",
+                )
+                if (boundClient != null) {
+                    for (id in ids) {
+                        revertSnapshots.add(
+                            write.before[id] ?: FileStat(
+                                id = id,
+                                trashed = write.change is DriveChange.Restored,
+                            ),
+                        )
+                    }
                 }
-                if (revertSnapshots.isNotEmpty()) {
-                    boundClient.revertFiles(revertSnapshots)
-                }
+            } else if (ctx.currentAccount == write.account) {
+                succeededChanges.add(write.change)
             }
         }
-        if (ctx.currentAccount == write.account && succeeded) applyChange(write.change)
-        optimisticWrites.finish(write)
-        if (!optimisticWrites.hasPending(write.account)) {
-            boundClient?.quotaFlow?.value?.let { confirmedQuota ->
-                _quotaUpdates.tryEmit(write.account to confirmedQuota)
+        try {
+            if (boundClient != null && revertSnapshots.isNotEmpty()) {
+                boundClient.revertFiles(revertSnapshots)
+            }
+            for (change in coalesceChanges(succeededChanges)) {
+                applyChange(change, expectedAccount = account)
+            }
+        } finally {
+            optimisticWrites.finishBatch(writes)
+            if (!optimisticWrites.hasPending(account)) {
+                boundClient?.quotaFlow?.value?.let { confirmedQuota ->
+                    _quotaUpdates.tryEmit(account to confirmedQuota)
+                }
+            }
+            if (ctx.currentAccount == account) {
+                val mergedFolders = mergeChangeFolders(writes.map { it.change })
+                withPikoLock(ctx.index.treeStateLock) { ctx.index.markChanged(mergedFolders) }
+                ctx.index.folderIndex.project { optimisticWrites.projectFolders(ctx.currentAccount, it) }
+                ctx.index.normalizeLocations()
+                _optimisticRevision.update { it + 1 }
+                ctx.folderChanges.tryEmit(DriveChange.ContentsChanged(mergedFolders))
             }
         }
-        if (ctx.currentAccount == write.account) {
-            withPikoLock(ctx.index.treeStateLock) { ctx.index.markChanged(write.change.folders) }
-            ctx.index.folderIndex.project { optimisticWrites.projectFolders(ctx.currentAccount, it) }
-            ctx.index.normalizeLocations()
-            _optimisticRevision.update { it + 1 }
-            ctx.folderChanges.tryEmit(DriveChange.ContentsChanged(write.change.folders))
+    }
+
+    private fun mergeChangeFolders(changes: List<DriveChange>): Set<String>? {
+        val acc = HashSet<String>()
+        for (i in 0 until changes.size) {
+            val folders = changes[i].folders ?: return null
+            acc.addAll(folders)
         }
+        return acc
+    }
+
+    private fun coalesceChanges(changes: List<DriveChange>): List<DriveChange> {
+        if (changes.size <= 1) return changes
+        val out = ArrayList<DriveChange>()
+        var i = 0
+        while (i < changes.size) {
+            when (val first = changes[i]) {
+                is DriveChange.Trashed -> {
+                    val ids = ArrayList(first.ids)
+                    var folders: MutableSet<String>? = first.folders?.toMutableSet()
+                    while (i + 1 < changes.size && changes[i + 1] is DriveChange.Trashed) {
+                        val next = changes[++i] as DriveChange.Trashed
+                        ids.addAll(next.ids)
+                        folders = if (folders == null || next.folders == null) null else folders.apply { addAll(next.folders) }
+                    }
+                    out.add(DriveChange.Trashed(ids, folders))
+                }
+                is DriveChange.Deleted -> {
+                    val ids = ArrayList(first.ids)
+                    val folders = first.folders.toMutableSet()
+                    while (i + 1 < changes.size && changes[i + 1] is DriveChange.Deleted) {
+                        val next = changes[++i] as DriveChange.Deleted
+                        ids.addAll(next.ids)
+                        folders.addAll(next.folders)
+                    }
+                    out.add(DriveChange.Deleted(ids, folders))
+                }
+                is DriveChange.Restored -> {
+                    val ids = ArrayList(first.ids)
+                    while (i + 1 < changes.size && changes[i + 1] is DriveChange.Restored) {
+                        ids.addAll((changes[++i] as DriveChange.Restored).ids)
+                    }
+                    out.add(DriveChange.Restored(ids))
+                }
+                is DriveChange.Starred -> {
+                    val ids = ArrayList(first.ids)
+                    var folders: MutableSet<String>? = first.folders?.toMutableSet()
+                    while (i + 1 < changes.size) {
+                        val next = changes[i + 1] as? DriveChange.Starred ?: break
+                        if (next.starred != first.starred) break
+                        i++
+                        ids.addAll(next.ids)
+                        folders = if (folders == null || next.folders == null) null else folders.apply { addAll(next.folders) }
+                    }
+                    out.add(DriveChange.Starred(ids, first.starred, folders))
+                }
+                else -> out.add(first)
+            }
+            i++
+        }
+        return out
     }
 
     fun applyWriteChange(account: String, change: DriveChange, notifyChange: Boolean = true) {
@@ -207,20 +336,22 @@ internal class DriveMutationExecutor(
         applyChange(change, notifyChange)
     }
 
-    fun applyChange(change: DriveChange, notifyChange: Boolean = true) {
+    fun applyChange(change: DriveChange, notifyChange: Boolean = true, expectedAccount: String? = null) {
+        if (expectedAccount != null && ctx.currentAccount != expectedAccount) return
         if (change is DriveChange.ContentsChanged && change.folders?.all(LocalLocation::isLocal) == true) {
             if (notifyChange) ctx.folderChanges.tryEmit(change)
             return
         }
-        if (change is DriveChange.Deleted) ctx.library.recordServerDelete(change.ids)
-        if (change is DriveChange.Trashed ||
-            change is DriveChange.Restored ||
-            change is DriveChange.Deleted ||
-            (change is DriveChange.ContentsChanged && change.folders == null)
-        ) {
-            ctx.library.invalidateTrashCache()
-        }
         val indexChanged = withPikoLock(ctx.index.treeStateLock) {
+            if (expectedAccount != null && ctx.currentAccount != expectedAccount) return@withPikoLock null
+            if (change is DriveChange.Deleted) ctx.library.recordServerDelete(change.ids)
+            if (change is DriveChange.Trashed ||
+                change is DriveChange.Restored ||
+                change is DriveChange.Deleted ||
+                (change is DriveChange.ContentsChanged && change.folders == null)
+            ) {
+                ctx.library.invalidateTrashCache()
+            }
             ctx.clientManager.currentClient.value?.let { asked ->
                 when (change) {
                     is DriveChange.Trashed -> {
@@ -240,17 +371,28 @@ internal class DriveMutationExecutor(
             }
             val driveTreeIndex = ctx.index.driveTreeIndex
             val folderIndex = ctx.index.folderIndex
+            fun batchKnownParents(ids: List<String>): Set<String> {
+                if (ids.isEmpty()) return emptySet()
+                val parents = ctx.index.knownParentMap(ids)
+                val out = HashSet<String>(parents.size * 4 / 3 + 1)
+                out.addAll(parents.values)
+                if (parents.size < ids.size) {
+                    val missing = ids.filter { it !in parents }
+                    if (missing.isNotEmpty()) {
+                        for (file in driveTreeIndex.filesByIds(missing).values) {
+                            out.add(file.parentId)
+                        }
+                    }
+                }
+                return out
+            }
             val knownParentsBeforeChange: Set<String> = when (change) {
                 is DriveChange.Renamed -> setOfNotNull(
                     change.parentId ?: ctx.index.knownParentOf(change.id) ?: driveTreeIndex.file(change.id)?.parentId,
                 )
-                is DriveChange.Moved -> change.folders.orEmpty() +
-                    change.ids.mapNotNullTo(HashSet()) { ctx.index.knownParentOf(it) ?: driveTreeIndex.file(it)?.parentId } +
-                    change.to
-                is DriveChange.Trashed -> change.folders.orEmpty() +
-                    change.ids.mapNotNullTo(HashSet()) { ctx.index.knownParentOf(it) ?: driveTreeIndex.file(it)?.parentId }
-                is DriveChange.Deleted -> change.folders.orEmpty() +
-                    change.ids.mapNotNullTo(HashSet()) { ctx.index.knownParentOf(it) ?: driveTreeIndex.file(it)?.parentId }
+                is DriveChange.Moved -> change.folders.orEmpty() + batchKnownParents(change.ids) + change.to
+                is DriveChange.Trashed -> change.folders.orEmpty() + batchKnownParents(change.ids)
+                is DriveChange.Deleted -> change.folders.orEmpty() + batchKnownParents(change.ids)
                 else -> change.folders.orEmpty()
             }
             val changed = when (change) {
@@ -279,17 +421,21 @@ internal class DriveMutationExecutor(
             )
             val fencedFolders = if (folders == null) null else folders + knownParentsBeforeChange
             ctx.listing.listingRequests.update { requests -> if (fencedFolders == null) emptyMap() else requests - fencedFolders }
+            val changedIds = when (change) {
+                is DriveChange.Trashed, is DriveChange.Deleted, is DriveChange.Moved, is DriveChange.Starred -> change.fileIds()
+                else -> emptySet()
+            }
             ctx.listing.listings.update { cache ->
                 cache.mapValues { (id, listing) ->
                     when {
                         change is DriveChange.Trashed || change is DriveChange.Deleted -> DriveListingEngine.Listing(
-                            listing.files.filterNot { it.id in change.fileIds() },
+                            listing.files.filterNot { it.id in changedIds },
                             listing.listedAt,
                             listing.stale,
                         )
                         change is DriveChange.Moved -> DriveListingEngine.Listing(
-                            listing.files.filterNot { it.id in change.ids && id != change.to }
-                                .map { if (it.id in change.ids) it.copy(parentId = change.to) else it },
+                            listing.files.filterNot { it.id in changedIds && id != change.to }
+                                .map { if (it.id in changedIds) it.copy(parentId = change.to) else it },
                             listing.listedAt,
                             listing.stale,
                         )
@@ -299,13 +445,12 @@ internal class DriveMutationExecutor(
                             listing.stale,
                         )
                         change is DriveChange.Starred && notifyChange -> {
-                            val targetIds = change.ids.toSet()
-                            if (listing.files.none { it.id in targetIds }) {
+                            if (listing.files.none { it.id in changedIds }) {
                                 listing
                             } else {
                                 DriveListingEngine.Listing(
                                     listing.files.map { file ->
-                                        if (file.id !in targetIds) {
+                                        if (file.id !in changedIds) {
                                             file
                                         } else {
                                             val withoutStar = file.tags.filterNot { it.name.equals("STAR", ignoreCase = true) }
@@ -339,6 +484,7 @@ internal class DriveMutationExecutor(
             ctx.listing.invalidateFolderEmptiness(folders)
             changed
         }
+        if (indexChanged == null) return
         if (indexChanged) ctx.index.normalizeLocations()
         if (notifyChange) ctx.folderChanges.tryEmit(change)
     }

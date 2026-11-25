@@ -116,6 +116,7 @@ internal class FolderIndexCoordinator(
     private val dataAccount = MutableStateFlow<String?>(null)
     private val accountTransitionLock = PikoLock()
     private var accountBindingReady = true
+    private var persistentOpenFailed = false
 
     private val metadataObserveQueue = Channel<() -> Unit>(capacity = 256, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
@@ -301,6 +302,7 @@ internal class FolderIndexCoordinator(
             ctx.overlay.retireVaultOnAccountSwitchLocked(account)
             dataAccount.value = null
             accountBindingReady = false
+            persistentOpenFailed = false
             ctx.library.resetOnAccountSwitchLocked()
             val old = driveTreeIndex
             driveTreeIndex = DriveTreeIndex()
@@ -336,13 +338,19 @@ internal class FolderIndexCoordinator(
                 throw failure
             }
         }.logFailure(DRIVE_REPO_TAG, "Failed to open tree index for acct=${logAccountSlot(account)}; staying on in-memory fallback")
-        opened.getOrNull()?.let { ready ->
+        val ready = opened.getOrNull()
+        if (ready != null) {
             withPikoLock(treeStateLock) {
                 driveTreeIndex = ready
                 treeBindingFlow.value = ready
                 dataAccount.value = account
                 accountBindingReady = true
+                persistentOpenFailed = false
                 if (ready.isPersistent) populateDerivedFromTreeLocked()
+            }
+        } else if (account != null && ctx.treeDatabaseFactory != null) {
+            withPikoLock(treeStateLock) {
+                persistentOpenFailed = true
             }
         }
         ctx.backgroundScope.launch { DriveAnalysisCache.clear() }
@@ -494,8 +502,79 @@ internal class FolderIndexCoordinator(
             .firstOrNull { (_, listing) -> !listing.stale && listing.files.any { it.id == fileId } }?.key
     }
 
+    internal fun knownParentMap(ids: Collection<String>): Map<String, String> {
+        if (ids.isEmpty()) return emptyMap()
+        val result = HashMap<String, String>(ids.size * 4 / 3 + 1)
+        val missingForTree = ArrayList<String>()
+        for (id in ids) {
+            if (id in result) continue
+            val folderParent = folderIndex.node(id)?.takeUnless { it.provisional }?.parentId
+            if (folderParent != null) {
+                result[id] = folderParent
+            } else {
+                missingForTree.add(id)
+            }
+        }
+        if (missingForTree.isNotEmpty()) {
+            val treeParents = driveTreeIndex.parentIdsByIds(missingForTree)
+            var missingForListings: MutableSet<String>? = null
+            for (i in 0 until missingForTree.size) {
+                val id = missingForTree[i]
+                val treeParent = treeParents[id]
+                if (treeParent != null && isParentFreshInTree(treeParent)) {
+                    result[id] = treeParent
+                } else {
+                    (missingForListings ?: HashSet<String>().also { missingForListings = it }).add(id)
+                }
+            }
+            val stillMissing = missingForListings
+            if (!stillMissing.isNullOrEmpty()) {
+                for ((parentId, listing) in ctx.listing.listings.value) {
+                    if (listing.stale) continue
+                    val files = listing.files
+                    for (i in 0 until files.size) {
+                        val fileId = files[i].id
+                        if (stillMissing.remove(fileId)) {
+                            result[fileId] = parentId
+                            if (stillMissing.isEmpty()) return result
+                        }
+                    }
+                }
+            }
+        }
+        return result
+    }
+
     fun knownFile(fileId: String): FileStat? = knownConfirmedFile(fileId)?.let {
         ctx.mutations.projectOptimisticFiles(listOf(it), trash = it.trashed).firstOrNull()
+    }
+
+    internal fun knownFiles(ids: Collection<String>): Map<String, FileStat> {
+        if (ids.isEmpty()) return emptyMap()
+        val confirmed = knownConfirmedFiles(ids)
+        if (confirmed.isEmpty()) return emptyMap()
+        if (!ctx.mutations.hasPendingOptimisticWrites) return confirmed
+        val active = ArrayList<FileStat>(confirmed.size)
+        var trashed: ArrayList<FileStat>? = null
+        for (file in confirmed.values) {
+            if (file.trashed) {
+                (trashed ?: ArrayList<FileStat>().also { trashed = it }).add(file)
+            } else {
+                active.add(file)
+            }
+        }
+        val projected = HashMap<String, FileStat>(confirmed.size * 4 / 3 + 1)
+        if (active.isNotEmpty()) {
+            for (file in ctx.mutations.projectOptimisticFiles(active, trash = false)) {
+                projected[file.id] = file
+            }
+        }
+        trashed?.let { list ->
+            for (file in ctx.mutations.projectOptimisticFiles(list, trash = true)) {
+                projected[file.id] = file
+            }
+        }
+        return projected
     }
 
     fun findFilesByByteSizes(sizes: Collection<Long>): List<CachedFileLookupRow> =
@@ -504,7 +583,37 @@ internal class FolderIndexCoordinator(
     internal fun knownConfirmedFile(fileId: String): FileStat? =
         ctx.listing.listings.value.values.asSequence().filter { !it.stale }
             .mapNotNull { it.files.firstOrNull { file -> file.id == fileId } }.firstOrNull()
-            ?: driveTreeIndex.file(fileId)?.takeIf { isParentFreshInTree(it.parentId) }
+            ?: runCatching { driveTreeIndex.file(fileId) }
+                .logFailure(DRIVE_REPO_TAG, "Failed to read cached file from tree index")
+                .getOrNull()
+                ?.takeIf { isParentFreshInTree(it.parentId) }
+
+    internal fun knownConfirmedFiles(ids: Collection<String>): Map<String, FileStat> {
+        if (ids.isEmpty()) return emptyMap()
+        val remaining = HashSet<String>(ids.size * 4 / 3 + 1)
+        remaining.addAll(ids)
+        val result = HashMap<String, FileStat>(remaining.size * 4 / 3 + 1)
+        for (listing in ctx.listing.listings.value.values) {
+            if (listing.stale) continue
+            val files = listing.files
+            for (i in 0 until files.size) {
+                val file = files[i]
+                if (remaining.remove(file.id)) {
+                    result[file.id] = file
+                    if (remaining.isEmpty()) return result
+                }
+            }
+        }
+        if (remaining.isNotEmpty()) {
+            val fromTree = driveTreeIndex.filesByIds(remaining)
+            for ((id, file) in fromTree) {
+                if (isParentFreshInTree(file.parentId)) {
+                    result[id] = file
+                }
+            }
+        }
+        return result
+    }
 
     private fun isParentFreshInTree(parentId: String): Boolean {
         val state = driveTreeIndex.flow.value
@@ -512,8 +621,15 @@ internal class FolderIndexCoordinator(
         return parentId in state.listedFolders || state.complete
     }
 
-    internal fun knownParentsOf(ids: Collection<String>): Set<String>? =
-        ids.mapTo(HashSet()) { knownParentOf(it) ?: return null }
+    internal fun knownParentsOf(ids: Collection<String>): Set<String>? {
+        val parents = knownParentMap(ids)
+        val out = HashSet<String>(parents.size * 4 / 3 + 1)
+        for (id in ids) {
+            val parent = parents[id] ?: return null
+            out.add(parent)
+        }
+        return out
+    }
 
     suspend fun resolveFolderPath(
         names: List<String>,
@@ -1069,14 +1185,7 @@ internal class FolderIndexCoordinator(
 
     private fun populateDerivedFromTreeLocked(): Boolean {
         val state = driveTreeIndex.flow.value
-        var indexUpdated = false
-        for (entry in state.entries.values) {
-            if (!entry.isFolder || VaultEntry.isVaulted(entry.id)) continue
-            if (folderIndex.learned(entry.id, entry.name, entry.parentId, entry.isFolder, entry.trashed)) {
-                indexUpdated = true
-            }
-        }
-        return indexUpdated
+        return folderIndex.learnedBatch(state.entries.values.filter { it.isFolder && !VaultEntry.isVaulted(it.id) })
     }
 
     internal fun ensureTreeSync(asked: PikPakClient, forceRebuild: Boolean = false): Deferred<Unit> {
@@ -1098,7 +1207,15 @@ internal class FolderIndexCoordinator(
                     if (!isCurrent()) return@withLock
                     if (index.isPersistent) {
                         val started = TimeSource.Monotonic.markNow()
-                        val acctSlot = logAccountSlot(asked.account)
+                        if (ctx.treeDatabaseFactory != null && persistentOpenFailed) {
+                        PikoLog.w(
+                            DRIVE_REPO_TAG,
+                            "Skipping unbounded in-memory tree build because persistent SQLite index failed to open (acct=${logAccountSlot(asked.account)})",
+                        )
+                        return@withLock
+                    }
+
+                    val acctSlot = logAccountSlot(asked.account)
                         val initialResume = if (!isShadowRebuild && !forceRebuild) index.resumableCandidate() else null
                         if (initialResume == null && forceRebuild) {
                             index.resumableCandidate()?.let { stale -> index.abortCandidate(stale.generation) }
@@ -1440,6 +1557,14 @@ internal class FolderIndexCoordinator(
                         return@withLock
                     }
 
+                    if (ctx.treeDatabaseFactory != null && persistentOpenFailed) {
+                        PikoLog.w(
+                            DRIVE_REPO_TAG,
+                            "Skipping unbounded in-memory tree build because persistent SQLite index failed to open (acct=${logAccountSlot(asked.account)})",
+                        )
+                        return@withLock
+                    }
+
                     val acctSlot = logAccountSlot(asked.account)
                     val permit = PikoMemoryGovernor.Shared.acquire(MemoryWorkKind.TreeBuild, 0)
                     withPikoLock(treeStateLock) {
@@ -1476,11 +1601,7 @@ internal class FolderIndexCoordinator(
                             withPikoLock(treeStateLock) {
                                 if (isCurrent()) {
                                     index.putFolders(folders)
-                                    for (folder in folders) {
-                                        if (folderIndex.learned(folder.id, folder.name, folder.parentId, isFolder = true, trashed = folder.trashed)) {
-                                            indexUpdated = true
-                                        }
-                                    }
+                                    indexUpdated = folderIndex.learnedBatch(folders)
                                 }
                             }
                             withPikoLock(treeStateLock) {

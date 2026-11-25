@@ -465,6 +465,16 @@ internal class DriveTreeIndex(
         }
     }
 
+    fun parentIdsByIds(ids: Collection<String>): Map<String, String> = withPikoLock(lock) {
+        disk?.parentIdsByIds(ids) ?: state.value.let { s ->
+            val out = HashMap<String, String>(ids.size * 4 / 3 + 1)
+            for (id in ids) {
+                s.entries[id]?.parentId?.let { out[id] = it }
+            }
+            out
+        }
+    }
+
     fun vaultEntries(folderId: String): List<VaultEntry>? = withPikoLock(lock) {
         if (disk != null) disk.vaultEntries(folderId) else state.value.vaultEntriesByFolder[folderId]
     }

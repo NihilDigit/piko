@@ -317,10 +317,9 @@ internal class SqliteTreeStore(
     }
     fun file(id: String, generation: Long = 0): FileStat? {
         if (closed) return null
-        return useQuery("SELECT payload,duration FROM tree_nodes WHERE generation=? AND id=?", listOf(generation, id)) { cursor ->
-            if (!cursor.next()) null
-            else decode(cursor.string(0)!!).enrichWithContentMetadata(null, cursor.long(1))
-        }
+        val payload = scalar("SELECT payload FROM tree_nodes WHERE generation=? AND id=?", listOf(generation, id)) ?: return null
+        val duration = scalar("SELECT duration FROM tree_nodes WHERE generation=? AND id=?", listOf(generation, id))?.toLongOrNull()
+        return decode(payload).enrichWithContentMetadata(null, duration)
     }
     /** Nonmatching files never allocate FileStat, params, tags or metadata. */
     fun searchCandidates(query: String, extraFolderTitle: (FileStat) -> String?, consume: (Int, FileStat) -> Unit) =
@@ -1027,7 +1026,15 @@ internal class SqliteTreeStore(
         if (cachedManifestRows?.isNotEmpty() == true) cachedManifestRows = null
         invalidateCoverage()
         val manifestParents = HashMap<String, String?>()
-        for (id in ids) file(id)?.takeIf(VaultStore::looksLikeManifest)?.parentId?.let { manifestParents[it] = winner(it)?.id }
+        for (batch in ids.chunked(400)) {
+            rows(
+                "SELECT parent FROM tree_nodes WHERE generation=0 AND id IN (${batch.joinToString { "?" }}) AND excluded=1 AND name LIKE '.piko-vault-%'",
+                batch,
+            ) { c ->
+                val parent = c.string(0)!!
+                if (parent !in manifestParents) manifestParents[parent] = winner(parent)?.id
+            }
+        }
         for (batch in ids.chunked(256)) {
             // 从待删除父节点查子节点，避免 SQLite 反向连接时为每个墓碑扫描全盘。
             val roots = batch.joinToString(",") { "(?)" }
@@ -1706,6 +1713,17 @@ internal class SqliteTreeStore(
             rows("SELECT payload FROM tree_nodes WHERE generation=0 AND id IN (${chunk.joinToString { "?" }})", chunk) {
                 val file = decode(it.string(0)!!)
                 result[file.id] = file
+            }
+        }
+        return result
+    }
+
+    fun parentIdsByIds(ids: Collection<String>): Map<String, String> {
+        if (closed || ids.isEmpty()) return emptyMap()
+        val result = HashMap<String, String>(ids.size * 4 / 3 + 1)
+        for (chunk in ids.distinct().chunked(400)) {
+            rows("SELECT id,parent FROM tree_nodes WHERE generation=0 AND id IN (${chunk.joinToString { "?" }})", chunk) {
+                result[it.string(0)!!] = it.string(1)!!
             }
         }
         return result

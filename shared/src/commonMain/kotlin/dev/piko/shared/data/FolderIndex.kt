@@ -73,6 +73,25 @@ internal class FolderIndex {
         return edit { it.copy(nodes = it.nodes + (id to Node(name, parentId)), gone = it.gone - id) }
     }
 
+    /** 一次性批量恢复多个目录/可浏览条目，避免冷启动或切号时逐条复制整张 Map（O(F²)）。 */
+    fun learnedBatch(entries: Iterable<FileStat>): Boolean {
+        val added = HashMap<String, Node>()
+        for (entry in entries) {
+            val id = entry.id
+            if (LocalLocation.isLocal(id) || entry.trashed || id.isEmpty() || VaultEntry.isVaulted(id)) continue
+            if (!(entry.isFolder || isExtractableArchive(entry.name))) continue
+            added[id] = Node(entry.name, entry.parentId)
+        }
+        if (added.isEmpty()) return false
+        return edit { current ->
+            val nextNodes = HashMap<String, Node>(current.nodes.size + added.size)
+            nextNodes.putAll(current.nodes)
+            nextNodes.putAll(added)
+            val nextGone = if (current.gone.isEmpty()) current.gone else current.gone - added.keys
+            current.copy(nodes = nextNodes, gone = nextGone)
+        }
+    }
+
     /** 改了名。[always] 为假时只改记着的：批量改几百个文件的名，不该往这里塞几百个与路径无关的条目。 */
     fun renamed(id: String, name: String, always: Boolean): Boolean = edit { current ->
         val known = current.nodes[id]

@@ -346,13 +346,16 @@ open class PikoDriveRepository(
     override fun projectOptimisticFiles(files: List<FileStat>, folderId: String?, trash: Boolean): List<FileStat> =
         mutationExecutor.projectOptimisticFiles(files, folderId, trash)
     internal fun beginOptimisticWrite(account: String, change: DriveChange): OptimisticWrites.Write = mutationExecutor.beginOptimisticWrite(account, change)
+    internal fun beginOptimisticWrites(account: String, changes: List<DriveChange>): List<OptimisticWrites.Write> = mutationExecutor.beginOptimisticWrites(account, changes)
     internal fun finishOptimisticWrite(write: OptimisticWrites.Write, succeeded: Boolean) = mutationExecutor.finishOptimisticWrite(write, succeeded)
+    internal fun finishOptimisticWrites(writes: List<OptimisticWrites.Write>, succeeded: BooleanArray) = mutationExecutor.finishOptimisticWrites(writes, succeeded)
     override fun applyChange(change: DriveChange) = mutationExecutor.applyChange(change, notifyChange = true)
 
     override suspend fun locateFolder(fileId: String): Result<List<PikoPathBreadcrumb>> = indexCoordinator.locateFolder(fileId)
     override fun knownLocalPath(folderId: String): List<PikoPathBreadcrumb>? = indexCoordinator.knownLocalPath(folderId)
     override fun seedFolders(names: Map<String, String>, parents: Map<String, String>) = indexCoordinator.seedFolders(names, parents)
     override fun knownParentOf(fileId: String): String? = indexCoordinator.knownParentOf(fileId)
+    internal fun knownParentMap(ids: Collection<String>): Map<String, String> = indexCoordinator.knownParentMap(ids)
     override fun knownFile(fileId: String): FileStat? = indexCoordinator.knownFile(fileId)
     override fun findFilesByByteSizes(sizes: Collection<Long>): List<CachedFileLookupRow> = indexCoordinator.findFilesByByteSizes(sizes)
     internal fun knownConfirmedFile(fileId: String): FileStat? = indexCoordinator.knownConfirmedFile(fileId)

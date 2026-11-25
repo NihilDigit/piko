@@ -363,10 +363,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
-          name: ${{ inputs.artifact-name || format('piko-ipa-{0}', github.run_number) }}
-          path: dist/*
-          compression-level: 0
+          name: ${{ inputs.artifact-name || format('piko-ios-arm64-{0}.ipa', inputs.version || '9.9.9') }}
+          path: dist/piko-ios-arm64-${{ inputs.version || '9.9.9' }}.ipa
+          archive: false
           if-no-files-found: error
           retention-days: 7

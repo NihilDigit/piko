@@ -88,24 +88,67 @@ internal class OptimisticWrites {
         change: DriveChange,
         before: Map<String, FileStat>,
         client: PikPakClient? = null,
-    ): Write {
-        lateinit var write: Write
+    ): Write = beginBatch(account, listOf(change to before), client).single()
+
+    fun beginBatch(
+        account: String,
+        entries: List<Pair<DriveChange, Map<String, FileStat>>>,
+        client: PikPakClient? = null,
+    ): List<Write> {
+        if (entries.isEmpty()) return emptyList()
+        var created: List<Write> = emptyList()
         pending.update { all ->
-            val ids = change.fileIds()
-            write = Write(
-                account = account,
-                change = change,
-                before = before,
-                predecessors = all.filter { it.account == account && it.ids.any(ids::contains) }.map { it.done },
-                client = client,
-            )
-            all + write
+            val existingForAccount = all.filter { it.account == account }
+            val next = ArrayList<Write>(all.size + entries.size)
+            next.addAll(all)
+            val batch = ArrayList<Write>(entries.size)
+            for (i in 0 until entries.size) {
+                val (change, before) = entries[i]
+                val ids = change.fileIds()
+                val predecessors = if (existingForAccount.isEmpty()) {
+                    emptyList()
+                } else {
+                    existingForAccount.mapNotNull { prev ->
+                        val smaller: Set<String>
+                        val larger: Set<String>
+                        if (prev.ids.size <= ids.size) {
+                            smaller = prev.ids
+                            larger = ids
+                        } else {
+                            smaller = ids
+                            larger = prev.ids
+                        }
+                        prev.done.takeIf { smaller.any(larger::contains) }
+                    }
+                }
+                val write = Write(
+                    account = account,
+                    change = change,
+                    before = before,
+                    predecessors = predecessors,
+                    client = client,
+                )
+                batch.add(write)
+                next.add(write)
+            }
+            created = batch
+            next
         }
-        return write
+        return created
     }
+
     fun finish(write: Write) {
         pending.update { it - write }
         write.done.complete(Unit)
+    }
+
+    fun finishBatch(writes: Collection<Write>) {
+        if (writes.isEmpty()) return
+        val toRemove = if (writes is Set<Write>) writes else writes.toHashSet()
+        pending.update { all -> all.filterNot { it in toRemove } }
+        for (write in writes) {
+            write.done.complete(Unit)
+        }
     }
     fun project(
         account: String?, folder: String?, files: List<FileStat>, trash: Boolean = false,
