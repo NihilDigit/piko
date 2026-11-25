@@ -377,6 +377,7 @@ jobs:
           retention-days: 1
 
   android:
+    name: android (API ${{ matrix.api }}, ${{ matrix.suite }})
     # 模拟器是 x86_64，并行覆盖三个关键 Android 分水岭：
     # - API 26 (Android 8.0): minSdk 底线 + SQLite 3.18 + 旧 CursorWindow 分支；
     # - API 29 (Android 10): SQLite 3.22 + Api28SqliteWindow 256 KiB/4 MiB 池化交叉雷区；
@@ -427,9 +428,9 @@ jobs:
           arch: x86_64
           target: default
           force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-metrics -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
-          script: echo "AVD snapshot created"
+          script: echo "AVD snapshot created"; pkill -9 crashpad_handler 2>/dev/null || true
 
       - name: Prepare instrumentation runner script
         shell: bash
@@ -437,6 +438,8 @@ jobs:
           cat <<'EOF' > run-instrument.sh
           #!/usr/bin/env bash
           set -euo pipefail
+          # Android 模拟器退出后 crashpad_handler 常残留并占住 stdout/stderr 管道，导致 runner 无限挂起
+          trap 'pkill -9 crashpad_handler 2>/dev/null || true' EXIT
           mkdir -p test-logs
           APP_APK="$(find apks -name '*debug.apk' ! -name '*androidTest*' | head -n 1)"
           TEST_APK="$(find apks -name '*androidTest*.apk' | head -n 1)"
@@ -477,7 +480,7 @@ jobs:
           arch: x86_64
           target: default
           force-avd-creation: false
-          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-metrics -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: bash run-instrument.sh
 
