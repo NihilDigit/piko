@@ -195,23 +195,12 @@ private fun PikoBannerCanvas(phase: Float) {
             val cy = h * 0.5f
             val centerX = w * 0.485f
 
-            // 0. 整幅画布圆角底板 + 中央极淡主题柔光
+            // 0. 整幅画布圆角底板
             val bgClip = Path().apply {
                 addRoundRect(RoundRect(Rect(0f, 0f, w, h), CornerRadius(24.dp.toPx())))
             }
             clipPath(bgClip) {
                 drawRect(color = surfaceBg)
-                drawRect(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            primaryContainer.copy(alpha = 0.28f),
-                            primaryContainer.copy(alpha = 0.06f),
-                            Color.Transparent,
-                        ),
-                        center = Offset(centerX, cy),
-                        radius = w * 0.42f,
-                    ),
-                )
 
                 // =============================================================
                 // 1. 左侧：虫洞 / 格列佛透视隧道（持续吸入）
@@ -323,14 +312,15 @@ private fun PikoBannerCanvas(phase: Float) {
                 }
 
                 // =============================================================
-                // 3. 中央：Piko 猫脸锚点（平稳柔呼吸 + 每轮自然眨眼一次）
+                // 3. 中央：Piko 猫脸锚点（固定尺寸 + 每轮平滑自然眨眼一次）
                 // =============================================================
                 val pikoCenter = Offset(centerX, h * 0.39f)
-                val breath = 1f + 0.022f * sin(phase * 2.0 * PI * 2.0).toFloat()
                 val pikoSize = 54.dp.toPx()
-                val pikoScale = (pikoSize / 48f) * breath
-                val blink = if (phase in 0.44f..0.49f) {
-                    sin(((phase - 0.44f) / 0.05f) * PI).toFloat()
+                val pikoScale = pikoSize / 48f
+                val blink = if (phase in 0.433f..0.500f) {
+                    val u = (phase - 0.433f) / 0.067f
+                    // 轻快闭眼（42%）+ 柔和睁眼（58%），起止加速度为 0，避免 30fps 下生硬跳变
+                    if (u < 0.42f) smoothStep(u / 0.42f) else 1f - smoothStep((u - 0.42f) / 0.58f)
                 } else 0f
 
                 // 背后极柔和中心岛柔光
@@ -356,7 +346,7 @@ private fun PikoBannerCanvas(phase: Float) {
                         color = primary,
                         style = Stroke(width = 2.6f, cap = StrokeCap.Round, join = StrokeJoin.Round),
                     )
-                    val eyeH = (6.2f * (1f - blink * 0.85f)).coerceAtLeast(1.2f)
+                    val eyeH = (6.2f * (1f - blink * 0.78f)).coerceAtLeast(1.4f)
                     val eyeCy = 25.6f
                     drawRoundRect(
                         color = primary,
