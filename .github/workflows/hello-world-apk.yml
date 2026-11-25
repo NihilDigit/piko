@@ -1,0 +1,172 @@
+name: Hello World APK (Play Protect Probe)
+
+# 临时诊断用：使用当前 Android 正式签名密钥，零外部依赖、无混淆构建一份纯原生 Hello World APK，
+# 用于验证 Google Play Protect 是否将当前签名证书或包名列入黑名单。
+# 仅支持手动触发（workflow_dispatch），验证完毕后可直接删除本文件。
+
+on:
+  workflow_dispatch:
+    inputs:
+      application_id:
+        description: APK 包名（默认与正式版一致；换其他包名可进一步区分是包名还是签名证书被拦）
+        required: true
+        default: 'dev.piko'
+      version_code:
+        description: Android versionCode（正整数）
+        required: true
+        default: '1'
+      version_name:
+        description: Android versionName
+        required: true
+        default: '1.0.0-probe'
+
+permissions:
+  contents: read
+
+jobs:
+  hello-world-apk:
+    runs-on: ubuntu-latest
+    env:
+      APP_ID: ${{ inputs.application_id }}
+      VERSION_CODE: ${{ inputs.version_code }}
+      VERSION_NAME: ${{ inputs.version_name }}
+      ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/piko-release.jks
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Decode release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          chmod 600 "$ANDROID_KEYSTORE_PATH"
+
+      - name: Build and sign unminified Hello World APK
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$APP_ID" =~ ^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$ ]]; then
+            echo "Invalid application_id: $APP_ID"
+            exit 1
+          fi
+          if [[ ! "$VERSION_CODE" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid version_code: $VERSION_CODE"
+            exit 1
+          fi
+
+          BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          PLATFORM_DIR="$(find "$ANDROID_HOME/platforms" -maxdepth 2 -name 'android.jar' -printf '%h\n' | grep -E '/android-[0-9]+$' | sort -V | tail -n 1)"
+          ANDROID_JAR="$PLATFORM_DIR/android.jar"
+          TARGET_SDK="${PLATFORM_DIR##*/android-}"
+          PKG_PATH="${APP_ID//./\/}"
+
+          echo "Using build-tools: $BUILD_TOOLS"
+          echo "Using platform:    $PLATFORM_DIR (targetSdk=$TARGET_SDK)"
+
+          WORKDIR="$RUNNER_TEMP/hello-world-build"
+          rm -rf "$WORKDIR" dist
+          mkdir -p "$WORKDIR/src/$PKG_PATH" "$WORKDIR/classes" "$WORKDIR/dex" dist
+
+          cat > "$WORKDIR/AndroidManifest.xml" <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="${APP_ID}"
+              android:versionCode="${VERSION_CODE}"
+              android:versionName="${VERSION_NAME}">
+
+              <uses-sdk
+                  android:minSdkVersion="26"
+                  android:targetSdkVersion="${TARGET_SDK}" />
+
+              <application
+                  android:label="Hello World"
+                  android:allowBackup="false">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > "$WORKDIR/src/$PKG_PATH/MainActivity.java" <<EOF
+          package ${APP_ID};
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.view.Gravity;
+          import android.widget.TextView;
+
+          public class MainActivity extends Activity {
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  TextView tv = new TextView(this);
+                  tv.setText("Hello World\n" + getPackageName());
+                  tv.setTextSize(24f);
+                  tv.setGravity(Gravity.CENTER);
+                  setContentView(tv);
+              }
+          }
+          EOF
+
+          "$BUILD_TOOLS/aapt2" link \
+            -o "$WORKDIR/unsigned-unaligned.apk" \
+            -I "$ANDROID_JAR" \
+            --manifest "$WORKDIR/AndroidManifest.xml" \
+            --min-sdk-version 26 \
+            --target-sdk-version "$TARGET_SDK"
+
+          javac --release 11 \
+            -classpath "$ANDROID_JAR" \
+            -d "$WORKDIR/classes" \
+            "$WORKDIR/src/$PKG_PATH/MainActivity.java"
+
+          "$BUILD_TOOLS/d8" \
+            --debug \
+            --min-api 26 \
+            --lib "$ANDROID_JAR" \
+            --output "$WORKDIR/dex" \
+            "$WORKDIR/classes/$PKG_PATH/MainActivity.class"
+
+          (cd "$WORKDIR/dex" && zip -q -u "$WORKDIR/unsigned-unaligned.apk" classes.dex)
+
+          "$BUILD_TOOLS/zipalign" -f -p 4 \
+            "$WORKDIR/unsigned-unaligned.apk" \
+            "$WORKDIR/unsigned-aligned.apk"
+
+          OUT_APK="dist/hello-world-${APP_ID}.apk"
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$ANDROID_KEYSTORE_PATH" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD \
+            --out "$OUT_APK" \
+            "$WORKDIR/unsigned-aligned.apk"
+
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$OUT_APK"
+          ls -lh "$OUT_APK"
+
+      - name: Cleanup keystore
+        if: always()
+        run: rm -f "$ANDROID_KEYSTORE_PATH"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hello-world-${{ inputs.application_id }}.apk
+          path: dist/hello-world-${{ inputs.application_id }}.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
