@@ -1,7 +1,7 @@
 name: Android Unminified APK (Play Protect Probe)
 
-# 临时诊断用：使用当前 Android 正式签名密钥，关闭 R8 混淆与资源压缩构建 Piko Release APK，
-# 用于二分验证 Google Play Protect 是否由 R8 混淆触发。
+# 临时诊断用：使用当前 Android 正式签名密钥，按需关闭混淆或剥离可疑 Manifest 特征构建 APK，
+# 用于二分定位 Google Play Protect 误报根因。
 # 仅支持手动触发（workflow_dispatch），验证完毕后可直接删除本文件。
 
 on:
@@ -11,6 +11,22 @@ on:
         description: APK 版本号（MAJOR.MINOR.PATCH）
         required: true
         default: '9.9.9'
+      minify:
+        description: 启用 R8 混淆与资源压缩
+        type: boolean
+        default: false
+      strip_deeplinks:
+        description: 移除官方域名与 pikpakapp:// Deep Link intent-filter
+        type: boolean
+        default: true
+      strip_disguise:
+        description: 移除应用伪装 activity-alias（改由 MainActivity 直接作为 LAUNCHER）
+        type: boolean
+        default: false
+      strip_install_packages:
+        description: 移除 REQUEST_INSTALL_PACKAGES 权限
+        type: boolean
+        default: false
       sdk-main:
         description: 使用 SDK main 源码（关闭则使用已发布版本）
         type: boolean
@@ -29,6 +45,10 @@ jobs:
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
       PIKO_VERSION_NAME: ${{ inputs.version }}
       PIKO_VERSION_CODE: '9009009'
+      MINIFY: ${{ inputs.minify }}
+      STRIP_DEEPLINKS: ${{ inputs.strip_deeplinks }}
+      STRIP_DISGUISE: ${{ inputs.strip_disguise }}
+      STRIP_INSTALL_PACKAGES: ${{ inputs.strip_install_packages }}
     steps:
       - uses: actions/checkout@v5
 
@@ -41,6 +61,68 @@ jobs:
       - name: Build against the SDK source
         if: inputs.sdk-main
         run: echo "pikpak.sdk.dir=pikpak-kotlin" >> local.properties
+
+      - name: Patch AndroidManifest for probe
+        run: |
+          python3 - <<'PY'
+          import os, xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          ANDROID_NS = "http://schemas.android.com/apk/res/android"
+          ET.register_namespace("android", ANDROID_NS)
+          manifest_path = Path("app/src/main/AndroidManifest.xml")
+          tree = ET.parse(manifest_path)
+          root = tree.getroot()
+          app = root.find("application")
+
+          if os.environ.get("STRIP_DEEPLINKS") == "true":
+              main_act = next(
+                  a for a in app.findall("activity")
+                  if a.get(f"{{{ANDROID_NS}}}name") == ".MainActivity"
+              )
+              removed = 0
+              for flt in list(main_act.findall("intent-filter")):
+                  is_pikpak_deeplink = False
+                  for data in flt.findall("data"):
+                      scheme = data.get(f"{{{ANDROID_NS}}}scheme", "")
+                      host = data.get(f"{{{ANDROID_NS}}}host", "")
+                      if scheme == "pikpakapp" or any(
+                          d in host for d in ("mypikpak.", "pikpak.me", "pikpakdrive.", "pickpackapp.")
+                      ):
+                          is_pikpak_deeplink = True
+                          break
+                  if is_pikpak_deeplink:
+                      main_act.remove(flt)
+                      removed += 1
+              print(f"Removed {removed} PikPak deep link intent-filters.")
+
+          if os.environ.get("STRIP_DISGUISE") == "true":
+              removed = 0
+              for alias in list(app.findall("activity-alias")):
+                  app.remove(alias)
+                  removed += 1
+              main_act = next(
+                  a for a in app.findall("activity")
+                  if a.get(f"{{{ANDROID_NS}}}name") == ".MainActivity"
+              )
+              launcher = ET.SubElement(main_act, "intent-filter")
+              ET.SubElement(launcher, "action", {f"{{{ANDROID_NS}}}name": "android.intent.action.MAIN"})
+              ET.SubElement(launcher, "category", {f"{{{ANDROID_NS}}}name": "android.intent.category.LAUNCHER"})
+              print(f"Removed {removed} activity-alias entries and restored LAUNCHER on MainActivity.")
+
+          if os.environ.get("STRIP_INSTALL_PACKAGES") == "true":
+              for perm in list(root.findall("uses-permission")):
+                  if perm.get(f"{{{ANDROID_NS}}}name") == "android.permission.REQUEST_INSTALL_PACKAGES":
+                      root.remove(perm)
+                      print("Removed REQUEST_INSTALL_PACKAGES from AndroidManifest.xml.")
+              gradle_path = Path("app/build.gradle.kts")
+              text = gradle_path.read_text(encoding="utf-8")
+              text = text.replace('            "android.permission.REQUEST_INSTALL_PACKAGES",\n', "")
+              gradle_path.write_text(text, encoding="utf-8")
+
+          tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
+          PY
+          git diff app/src/main/AndroidManifest.xml app/build.gradle.kts
 
       - uses: actions/setup-java@v5
         with:
@@ -58,10 +140,10 @@ jobs:
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
           chmod 600 "$ANDROID_KEYSTORE_PATH"
 
-      - name: Build signed unminified release APK
+      - name: Build signed probe APK
         run: |
           ./gradlew :app:assembleRelease \
-            -Ppiko.minifyRelease=false \
+            -Ppiko.minifyRelease="$MINIFY" \
             -Ppiko.enableAbiSplits=false \
             --no-daemon --stacktrace
 
@@ -69,9 +151,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk "dist/piko-${PIKO_VERSION_NAME}-unminified.apk"
+          tag=""
+          [[ "$MINIFY" == "false" ]] && tag+="-unminified"
+          [[ "$STRIP_DEEPLINKS" == "true" ]] && tag+="-nodeeplink"
+          [[ "$STRIP_DISGUISE" == "true" ]] && tag+="-nodisguise"
+          [[ "$STRIP_INSTALL_PACKAGES" == "true" ]] && tag+="-noinstallperm"
+          apk_name="piko-${PIKO_VERSION_NAME}${tag}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "dist/${apk_name}"
+          echo "apk_name=${apk_name}" >> "$GITHUB_ENV"
           build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
-          "$build_tools/apksigner" verify --verbose --print-certs "dist/piko-${PIKO_VERSION_NAME}-unminified.apk"
+          "$build_tools/apksigner" verify --verbose --print-certs "dist/${apk_name}"
           ls -lh dist
 
       - name: Cleanup keystore
@@ -80,8 +169,8 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: piko-${{ inputs.version }}-unminified.apk
-          path: dist/piko-${{ inputs.version }}-unminified.apk
+          name: ${{ env.apk_name }}
+          path: dist/${{ env.apk_name }}
           archive: false
           if-no-files-found: error
           retention-days: 7
