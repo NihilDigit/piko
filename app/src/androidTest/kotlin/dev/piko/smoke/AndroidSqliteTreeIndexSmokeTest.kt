@@ -150,7 +150,7 @@ class AndroidSqliteTreeIndexSmokeTest {
                 for (batch in ids.chunked(256)) {
                     val roots = batch.joinToString(",") { "(?)" }
                     db.execute(
-                        "WITH RECURSIVE removed(id) AS (SELECT column1 FROM (VALUES $roots) UNION SELECT n.id FROM removed r CROSS JOIN tree_nodes n ON n.generation=0 AND n.parent=r.id) INSERT OR REPLACE INTO tree_deleted SELECT id,? FROM removed",
+                        "WITH RECURSIVE removed(id) AS (VALUES $roots UNION SELECT n.id FROM removed r CROSS JOIN tree_nodes n ON n.generation=0 AND n.parent=r.id) INSERT OR REPLACE INTO tree_deleted SELECT id,? FROM removed",
                         batch + 1L,
                     )
                 }

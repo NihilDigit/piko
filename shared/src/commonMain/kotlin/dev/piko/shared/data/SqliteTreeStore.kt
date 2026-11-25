@@ -1038,7 +1038,7 @@ internal class SqliteTreeStore(
         for (batch in ids.chunked(256)) {
             // 从待删除父节点查子节点，避免 SQLite 反向连接时为每个墓碑扫描全盘。
             val roots = batch.joinToString(",") { "(?)" }
-            db.execute("WITH RECURSIVE removed(id) AS (SELECT column1 FROM (VALUES $roots) UNION SELECT n.id FROM removed r CROSS JOIN tree_nodes n ON n.generation=0 AND n.parent=r.id) INSERT OR REPLACE INTO tree_deleted SELECT id,? FROM removed", batch + sequence)
+            db.execute("WITH RECURSIVE removed(id) AS (VALUES $roots UNION SELECT n.id FROM removed r CROSS JOIN tree_nodes n ON n.generation=0 AND n.parent=r.id) INSERT OR REPLACE INTO tree_deleted SELECT id,? FROM removed", batch + sequence)
         }
         val currentSeq = listOf(sequence)
         rows("SELECT DISTINCT parent FROM tree_nodes WHERE generation=0 AND id IN (SELECT id FROM tree_deleted WHERE seq=?)", currentSeq) { touchedFolders += it.string(0)!! }
