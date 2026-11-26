@@ -106,10 +106,9 @@
 
 ## 许可与致谢
 
-- 源码以 [AGPL-3.0-or-later](LICENSE) 许可证开源。1.1.0 及更早的版本以 MIT 许可证发布。Android 安装包内置以 GPLv3 构建的 mpv 与 FFmpeg。
-- PikPak 接口实现参考了 [52funny/pikpakcli](https://github.com/52funny/pikpakcli)。
-- 多项功能设计参考了 PikPak 网页端增强脚本 [digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master)。
-- Windows 端 mpv 的零拷贝渲染由 [MediaMP](https://github.com/open-ani/mediamp) 实现。
+- 源码以 [AGPL-3.0-or-later](LICENSE) 许可证开源；Android 安装包内置以 GPLv3 构建的 mpv 与 FFmpeg。
+- PikPak 接口与部分设计思路参考了 [52funny/pikpakcli](https://github.com/52funny/pikpakcli)、[digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master) 与 [tonyflux/pkp](https://github.com/tonyflux/pkp) 等优秀的社区开源项目。
+- 感谢 [open-ani](https://github.com/open-ani) 社区的 [Animeko](https://github.com/open-ani/animeko) 与 [MediaMP](https://github.com/open-ani/mediamp)：Piko 的桌面端播放基于 MediaMP，KMP 媒体应用与开源工程实践也得益于在 Animeko 社区中的协作经历。
 
 ## Star History
 

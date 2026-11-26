@@ -106,10 +106,9 @@
 
 ## 라이선스 및 감사의 글
 
-- 소스 코드는 [AGPL-3.0-or-later](LICENSE) 라이선스로 공개됩니다. 1.1.0 이하 버전은 MIT 라이선스로 배포되었습니다. Android 패키지에는 GPLv3로 빌드된 mpv와 FFmpeg가 포함되어 있습니다.
-- PikPak API 구현은 [52funny/pikpakcli](https://github.com/52funny/pikpakcli)를 참고했습니다.
-- 여러 기능 설계는 PikPak 웹 확장 스크립트 [digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master)를 참고했습니다.
-- Windows용 mpv 제로카피 렌더링은 [MediaMP](https://github.com/open-ani/mediamp)로 구현되었습니다.
+- 소스 코드는 [AGPL-3.0-or-later](LICENSE) 라이선스로 공개됩니다. Android 패키지에는 GPLv3로 빌드된 mpv와 FFmpeg가 포함되어 있습니다.
+- PikPak API 세부 사항과 일부 설계 아이디어는 [52funny/pikpakcli](https://github.com/52funny/pikpakcli), [digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master), [tonyflux/pkp](https://github.com/tonyflux/pkp) 등 훌륭한 커뮤니티 오픈소스 프로젝트를 참고했습니다.
+- [open-ani](https://github.com/open-ani) 커뮤니티의 [Animeko](https://github.com/open-ani/animeko)와 [MediaMP](https://github.com/open-ani/mediamp)에 감사드립니다. Piko의 데스크톱 재생은 MediaMP를 기반으로 하며, KMP 미디어 앱과 오픈소스 엔지니어링 실무 역시 Animeko 커뮤니티에서의 협업 경험에서 큰 도움을 받았습니다.
 
 ## Star History
 

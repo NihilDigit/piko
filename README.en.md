@@ -106,10 +106,9 @@ Download from [Releases](https://github.com/NihilDigit/piko/releases/latest). Pi
 
 ## License and credits
 
-- The source code is under the [AGPL-3.0-or-later](LICENSE) license. Version 1.1.0 and earlier were released under the MIT license. The Android packages bundle GPLv3 builds of mpv and FFmpeg.
-- The PikPak API implementation draws on [52funny/pikpakcli](https://github.com/52funny/pikpakcli).
-- Several features are modelled on the PikPak web enhancement script [digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master).
-- Zero-copy mpv rendering on Windows is provided by [MediaMP](https://github.com/open-ani/mediamp).
+- The source code is licensed under [AGPL-3.0-or-later](LICENSE). Android packages bundle GPLv3 builds of mpv and FFmpeg.
+- PikPak API details and some design ideas reference great open-source community projects including [52funny/pikpakcli](https://github.com/52funny/pikpakcli), [digbug82/PikPak_Enhancement_Master](https://github.com/digbug82/PikPak_Enhancement_Master), and [tonyflux/pkp](https://github.com/tonyflux/pkp).
+- Thanks to [Animeko](https://github.com/open-ani/animeko) and [MediaMP](https://github.com/open-ani/mediamp) in the [open-ani](https://github.com/open-ani) community: desktop playback in Piko is built on MediaMP, and our KMP media app and open-source engineering practices owe much to collaborating in Animeko.
 
 ## Star History
 
