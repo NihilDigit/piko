@@ -7,6 +7,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,13 +20,14 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Storage
-import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Downloading
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -592,40 +594,82 @@ fun ListLeadingIcon(icon: ImageVector, modifier: Modifier = Modifier) {
 }
 
 /**
- * 已下载到本地的条目标记：元信息行尾部的轻量圆圈对勾图标。
- * 使用语义成功绿 [LocalStatusColors.current.success]，在浅色、深色、纯黑 OLED 及水墨屏下均保持高对比度。
+ * 已下载到本地的条目标记：元信息行尾部的语义成功色胶囊徽标。
+ * 使用 [LocalStatusColors.current.successContainer] 与 `onSuccessContainer`，在浅色、深色、纯黑 OLED 及水墨屏下均清晰醒目。
  */
 @Composable
 fun DownloadedMark(
     modifier: Modifier = Modifier,
     size: Dp = DownloadedMarkSize,
 ) {
-    Icon(
-        imageVector = Icons.Outlined.CheckCircle,
-        contentDescription = tr("已下载到本地", "Downloaded locally", "ローカルにダウンロード済み", "로컬에 다운로드됨", "已下載至本機"),
-        tint = LocalStatusColors.current.success,
-        modifier = modifier.size(size),
+    val statusColors = LocalStatusColors.current
+    DownloadStatusPill(
+        icon = Icons.Filled.CheckCircle,
+        label = tr("已下载", "Saved", "保存済み", "저장됨", "已下載"),
+        containerColor = statusColors.successContainer,
+        contentColor = statusColors.onSuccessContainer,
+        iconSize = size,
+        modifier = modifier,
     )
 }
 
 /**
- * 正在下载或排队下载的条目标记：位于元信息行尾部的轻量主色下载中图标。
+ * 正在下载或排队下载的条目标记：元信息行尾部的语义信息色胶囊徽标。
  */
 @Composable
 fun DownloadingMark(
     modifier: Modifier = Modifier,
     size: Dp = DownloadedMarkSize,
 ) {
-    val isEInk = LocalAppearance.current.isEInk
-    Icon(
-        imageVector = Icons.Outlined.Downloading,
-        contentDescription = tr("正在下载", "Downloading", "ダウンロード中", "다운로드 중", "正在下載"),
-        tint = if (isEInk) Color.Black else MaterialTheme.colorScheme.primary,
-        modifier = modifier.size(size),
+    val statusColors = LocalStatusColors.current
+    DownloadStatusPill(
+        icon = Icons.Outlined.Downloading,
+        label = tr("下载中", "Downloading", "DL中", "다운로드 중", "下載中"),
+        containerColor = statusColors.infoContainer,
+        contentColor = statusColors.onInfoContainer,
+        iconSize = size,
+        modifier = modifier,
     )
 }
 
-private val DownloadedMarkSize = 15.dp
+@Composable
+private fun DownloadStatusPill(
+    icon: ImageVector,
+    label: String,
+    containerColor: Color,
+    contentColor: Color,
+    iconSize: Dp,
+    modifier: Modifier = Modifier,
+) {
+    val isEInk = LocalAppearance.current.isEInk
+    Surface(
+        shape = CircleShape,
+        color = containerColor,
+        contentColor = contentColor,
+        border = if (isEInk) BorderStroke(1.dp, contentColor.copy(alpha = 0.35f)) else null,
+        modifier = modifier,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(iconSize),
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                maxLines = 1,
+                softWrap = false,
+            )
+        }
+    }
+}
+
+private val DownloadedMarkSize = 13.dp
 
 /**
  * 加了星标的条目标记：标题旁一颗实心星。用 tertiary：primary 已给了定位描边与选中态，

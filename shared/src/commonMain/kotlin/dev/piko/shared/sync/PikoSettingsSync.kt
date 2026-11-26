@@ -100,6 +100,9 @@ val SyncedSettings: List<SyncedSetting> = listOf(
         writeForAccount = { prefs, account, value -> prefs.savePinnedFoldersFor(account, value) },
     ),
     bool("foldersFirst", { it.foldersFirstFlow }) { setFoldersFirst(it) },
+    SyncedSetting("driveSortOrder", { it.driveSortOrderFlow }, { prefs, value -> if (value.isNotBlank()) prefs.setDriveSortOrder(value) }),
+    SyncedSetting("aiSubtitleLanguage", { it.aiSubtitleLanguageFlow }, { prefs, value -> prefs.setAiSubtitleLanguage(value) }),
+    bool("aiSubtitleOnDemand", { it.aiSubtitleOnDemandFlow }) { setAiSubtitleOnDemand(it) },
     bool("perFolderSort", { it.perFolderSortFlow }) { setPerFolderSort(it) },
     SyncedSetting(
         key = "folderSortOrders",

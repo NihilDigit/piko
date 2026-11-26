@@ -67,7 +67,7 @@ import kotlinx.coroutines.withContext
  */
 internal class DriveListingProjection(
     private val ctx: DriveScreenContext,
-    initialSortOrder: PikoFileSortOrder,
+    private val initialSortOrder: PikoFileSortOrder?,
 ) {
     private class FolderAnalysis(
         val folderId: String?,
@@ -107,13 +107,18 @@ internal class DriveListingProjection(
     var loadError by mutableStateOf<String?>(null)
         private set
 
-    var sortOrder by mutableStateOf(initialSortOrder)
+    private val initialSnapshot = ctx.preferences.currentSnapshot
+    private val resolvedInitialSortOrder = initialSortOrder
+        ?: PikoFileSortOrder.entries.firstOrNull { it.name == initialSnapshot.driveSortOrder }
+        ?: PikoFileSortOrder.TIME_DESC
+
+    var sortOrder by mutableStateOf(resolvedInitialSortOrder)
         private set
-    var perFolderSort by mutableStateOf(false)
+    var perFolderSort by mutableStateOf(initialSnapshot.perFolderSort)
         private set
-    var foldersFirst by mutableStateOf(true)
+    var foldersFirst by mutableStateOf(initialSnapshot.foldersFirst)
         private set
-    private var globalSortOrder = initialSortOrder
+    private var globalSortOrder = resolvedInitialSortOrder
     private val folderSortLock = PikoLock()
     private val folderSortOrders = LinkedHashMap<String, PikoFileSortOrder>()
 
@@ -891,6 +896,7 @@ internal class DriveListingProjection(
             ctx.scope.launch { ctx.preferences.saveFolderSortOrders(serialized) }
         } else {
             globalSortOrder = order
+            ctx.scope.launch { ctx.preferences.setDriveSortOrder(order.name) }
         }
         if (order == sortOrder && !ctx.search.isGlobalSearchActive) return
         if (ctx.search.isGlobalSearchActive) {
@@ -1045,6 +1051,28 @@ internal class DriveListingProjection(
         }
         ctx.scope.launch {
             ctx.preferences.foldersFirstFlow.collect { enabled -> applyFoldersFirst(enabled) }
+        }
+        ctx.scope.launch {
+            var firstEmission = true
+            ctx.preferences.driveSortOrderFlow.collect { stored ->
+                val parsed = PikoFileSortOrder.entries.firstOrNull { it.name == stored } ?: return@collect
+                // 若调用方显式传了 initialSortOrder（如测试），跳过首个默认流回放，仅响应后续变更
+                if (firstEmission && initialSortOrder != null) {
+                    firstEmission = false
+                    return@collect
+                }
+                firstEmission = false
+                if (globalSortOrder == parsed) return@collect
+                globalSortOrder = parsed
+                val activeFolderId = ctx.activeFolderId()
+                if (!usesPerFolderSort(activeFolderId)) {
+                    val desired = effectiveSortOrderFor(activeFolderId)
+                    if (sortOrder != desired) {
+                        sortOrder = desired
+                        if (loadedFolderId != activeFolderId) load()
+                    }
+                }
+            }
         }
         ctx.scope.launch {
             ctx.preferences.perFolderSortFlow.collect { enabled ->

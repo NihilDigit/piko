@@ -163,6 +163,12 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
                 hardwareDecoding = prefs[PreferencesKeys.HARDWARE_DECODING] ?: true,
                 playbackMaxHeight = prefs[PreferencesKeys.PLAYBACK_MAX_HEIGHT] ?: PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT,
                 driveViewMode = driveView,
+                driveSortOrder = prefs[PreferencesKeys.DRIVE_SORT_ORDER]?.takeIf { it.isNotBlank() } ?: "TIME_DESC",
+                foldersFirst = prefs[PreferencesKeys.FOLDERS_FIRST] ?: true,
+                perFolderSort = prefs[PreferencesKeys.PER_FOLDER_SORT_ENABLED] ?: false,
+                aiSubtitleLanguage = prefs[PreferencesKeys.AI_SUBTITLE_LANGUAGE].orEmpty(),
+                aiSubtitleOnDemand = prefs[PreferencesKeys.AI_SUBTITLE_ON_DEMAND] ?: true,
+                aiSubtitleSavedSeconds = (prefs[PreferencesKeys.AI_SUBTITLE_SAVED_SECONDS] ?: 0L).coerceAtLeast(0L),
                 galleryShowImages = prefs[PreferencesKeys.GALLERY_SHOW_IMAGES] ?: true,
                 sidebarCollapsed = prefs[PreferencesKeys.SIDEBAR_COLLAPSED] ?: false,
                 showExtensions = prefs[PreferencesKeys.SHOW_EXTENSIONS] ?: false,
@@ -248,6 +254,10 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
         val RECENT_MOVE_TARGETS = stringPreferencesKey("recent_move_targets")
         val PINNED_FOLDERS = stringPreferencesKey("pinned_folders")
         val FOLDERS_FIRST = booleanPreferencesKey("folders_first")
+        val DRIVE_SORT_ORDER = stringPreferencesKey("drive_sort_order")
+        val AI_SUBTITLE_LANGUAGE = stringPreferencesKey("player_ai_subtitle_language")
+        val AI_SUBTITLE_ON_DEMAND = booleanPreferencesKey("player_ai_subtitle_on_demand")
+        val AI_SUBTITLE_SAVED_SECONDS = longPreferencesKey("player_ai_subtitle_saved_seconds")
         val PER_FOLDER_SORT_ENABLED = booleanPreferencesKey("per_folder_sort_enabled")
         val FOLDER_SORT_ORDERS = stringPreferencesKey("folder_sort_orders")
         val LOCAL_MOUNTS = stringPreferencesKey("local_mounts")
@@ -852,6 +862,43 @@ class SessionManager(private val context: Context) : PikoUserPreferences {
 
     override suspend fun setFoldersFirst(enabled: Boolean) {
         context.dataStore.edit { preferences -> preferences[PreferencesKeys.FOLDERS_FIRST] = enabled }
+    }
+
+    override val driveSortOrderFlow: Flow<String> = preference {
+        it[PreferencesKeys.DRIVE_SORT_ORDER]?.takeIf { v -> v.isNotBlank() } ?: "TIME_DESC"
+    }
+
+    override suspend fun setDriveSortOrder(order: String) {
+        val value = order.ifBlank { "TIME_DESC" }
+        context.dataStore.edit { preferences -> preferences[PreferencesKeys.DRIVE_SORT_ORDER] = value }
+    }
+
+    override val aiSubtitleLanguageFlow: Flow<String> = preference {
+        it[PreferencesKeys.AI_SUBTITLE_LANGUAGE].orEmpty()
+    }
+
+    override suspend fun setAiSubtitleLanguage(language: String) {
+        context.dataStore.edit { preferences -> preferences[PreferencesKeys.AI_SUBTITLE_LANGUAGE] = language }
+    }
+
+    override val aiSubtitleOnDemandFlow: Flow<Boolean> = preference {
+        it[PreferencesKeys.AI_SUBTITLE_ON_DEMAND] ?: true
+    }
+
+    override suspend fun setAiSubtitleOnDemand(enabled: Boolean) {
+        context.dataStore.edit { preferences -> preferences[PreferencesKeys.AI_SUBTITLE_ON_DEMAND] = enabled }
+    }
+
+    override val aiSubtitleSavedSecondsFlow: Flow<Long> = preference {
+        (it[PreferencesKeys.AI_SUBTITLE_SAVED_SECONDS] ?: 0L).coerceAtLeast(0L)
+    }
+
+    override suspend fun addAiSubtitleSavedSeconds(deltaSeconds: Long) {
+        if (deltaSeconds <= 0L) return
+        context.dataStore.edit { preferences ->
+            val current = (preferences[PreferencesKeys.AI_SUBTITLE_SAVED_SECONDS] ?: 0L).coerceAtLeast(0L)
+            preferences[PreferencesKeys.AI_SUBTITLE_SAVED_SECONDS] = current + deltaSeconds
+        }
     }
 
     override val perFolderSortFlow: Flow<Boolean> = preference { it[PreferencesKeys.PER_FOLDER_SORT_ENABLED] ?: false }

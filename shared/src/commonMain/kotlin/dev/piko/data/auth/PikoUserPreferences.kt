@@ -124,6 +124,12 @@ data class PikoPreferencesSnapshot(
     val hardwareDecoding: Boolean = true,
     val playbackMaxHeight: Int = PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT,
     val driveViewMode: String = "POSTER",
+    val driveSortOrder: String = "TIME_DESC",
+    val foldersFirst: Boolean = true,
+    val perFolderSort: Boolean = false,
+    val aiSubtitleLanguage: String = "",
+    val aiSubtitleOnDemand: Boolean = true,
+    val aiSubtitleSavedSeconds: Long = 0L,
     val galleryShowImages: Boolean = true,
     val sidebarCollapsed: Boolean = false,
     val showExtensions: Boolean = false,
@@ -224,6 +230,22 @@ interface PikoUserPreferences {
      */
     val driveViewModeFlow: Flow<String>
     suspend fun setDriveViewMode(mode: String)
+
+    /** 网盘全局默认排序方式，存 `PikoFileSortOrder.name`（如 `TIME_DESC`）。跨重启持久化并随设置同步。 */
+    val driveSortOrderFlow: Flow<String> get() = kotlinx.coroutines.flow.flowOf("TIME_DESC")
+    suspend fun setDriveSortOrder(order: String) {}
+
+    /** AI 实时字幕的目标语言码，空串表示原语言转写。跨重启持久化并随设置同步。 */
+    val aiSubtitleLanguageFlow: Flow<String> get() = kotlinx.coroutines.flow.flowOf("")
+    suspend fun setAiSubtitleLanguage(language: String) {}
+
+    /** AI 字幕「按需启用」（本地 Silero VAD 跳过无对白段以节省额度），默认开启。 */
+    val aiSubtitleOnDemandFlow: Flow<Boolean> get() = kotlinx.coroutines.flow.flowOf(true)
+    suspend fun setAiSubtitleOnDemand(enabled: Boolean) {}
+
+    /** 本地 Silero VAD 累计为用户节省的 AI 字幕额度秒数。 */
+    val aiSubtitleSavedSecondsFlow: Flow<Long> get() = kotlinx.coroutines.flow.flowOf(0L)
+    suspend fun addAiSubtitleSavedSeconds(deltaSeconds: Long) {}
 
     /**
      * 海报墙与图库各自的卡片大小，[view] 是 DriveViewMode 的名字，值是 ui 里 TileSize 的名字，没存过时为空串。

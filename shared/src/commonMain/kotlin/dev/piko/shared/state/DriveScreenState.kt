@@ -89,7 +89,7 @@ class DriveScreenState(
     private val scope: CoroutineScope,
     private val sessionListing: (DriveLibrary) -> SessionListing? = { null },
     private val archives: ArchiveBrowser? = null,
-    initialSortOrder: PikoFileSortOrder = PikoFileSortOrder.TIME_DESC,
+    initialSortOrder: PikoFileSortOrder? = null,
     val navigation: DriveNavigation = LibraryNavigation(driveRepo, null, scope, listOf(PikoDriveRepository.ROOT_BREADCRUMB)),
     private val clipboard: DriveClipboardState = DriveClipboardState(),
     operationScope: CoroutineScope = scope,

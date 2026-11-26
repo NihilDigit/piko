@@ -134,6 +134,37 @@ class StoredPikoPreferences(
         resumePlaybackEnabled.value = enabled
     }
 
+    private val driveSortOrder = MutableStateFlow(settings.get("drive.sortOrder", "TIME_DESC").ifBlank { "TIME_DESC" })
+    override val driveSortOrderFlow: Flow<String> = driveSortOrder.asStateFlow()
+    override suspend fun setDriveSortOrder(order: String) {
+        val value = order.ifBlank { "TIME_DESC" }
+        settings.set("drive.sortOrder", value)
+        driveSortOrder.value = value
+    }
+
+    private val aiSubtitleLanguage = MutableStateFlow(settings.get("player.aiSubtitleLanguage"))
+    override val aiSubtitleLanguageFlow: Flow<String> = aiSubtitleLanguage.asStateFlow()
+    override suspend fun setAiSubtitleLanguage(language: String) {
+        settings.set("player.aiSubtitleLanguage", language)
+        aiSubtitleLanguage.value = language
+    }
+
+    private val aiSubtitleOnDemand = MutableStateFlow(settings.get("player.aiSubtitleOnDemand", "true").toBooleanStrictOrNull() ?: true)
+    override val aiSubtitleOnDemandFlow: Flow<Boolean> = aiSubtitleOnDemand.asStateFlow()
+    override suspend fun setAiSubtitleOnDemand(enabled: Boolean) {
+        settings.set("player.aiSubtitleOnDemand", enabled.toString())
+        aiSubtitleOnDemand.value = enabled
+    }
+
+    private val aiSubtitleSavedSeconds = MutableStateFlow(settings.get("player.aiSubtitleSavedSeconds", "0").toLongOrNull()?.coerceAtLeast(0L) ?: 0L)
+    override val aiSubtitleSavedSecondsFlow: Flow<Long> = aiSubtitleSavedSeconds.asStateFlow()
+    override suspend fun addAiSubtitleSavedSeconds(deltaSeconds: Long) {
+        if (deltaSeconds <= 0L) return
+        val next = aiSubtitleSavedSeconds.value + deltaSeconds
+        settings.set("player.aiSubtitleSavedSeconds", next.toString())
+        aiSubtitleSavedSeconds.value = next
+    }
+
     private val perFolderSort = MutableStateFlow(settings.get("drive.perFolderSort") == "true")
     override val perFolderSortFlow: Flow<Boolean> = perFolderSort.asStateFlow()
     override suspend fun setPerFolderSort(enabled: Boolean) {
@@ -445,6 +476,12 @@ class StoredPikoPreferences(
             hardwareDecoding = hardwareDecoding.value,
             playbackMaxHeight = playbackMaxHeight.value,
             driveViewMode = driveViewMode.value,
+            driveSortOrder = driveSortOrder.value,
+            foldersFirst = foldersFirst.value,
+            perFolderSort = perFolderSort.value,
+            aiSubtitleLanguage = aiSubtitleLanguage.value,
+            aiSubtitleOnDemand = aiSubtitleOnDemand.value,
+            aiSubtitleSavedSeconds = aiSubtitleSavedSeconds.value,
             galleryShowImages = galleryShowImages.value,
             sidebarCollapsed = sidebarCollapsed.value,
             showExtensions = showExtensions.value,
