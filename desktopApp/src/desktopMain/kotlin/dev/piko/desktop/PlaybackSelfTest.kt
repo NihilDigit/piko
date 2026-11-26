@@ -40,6 +40,8 @@ import org.openani.mediamp.MediampPlayer
 import dev.piko.desktop.ui.player.PikoMpvVideoSurface
 import dev.piko.desktop.ui.player.VideoSurfaceProbe
 import dev.piko.desktop.ui.player.currentMpvVo
+import dev.piko.desktop.ui.player.queryLinuxWindowDrawFbo
+import javax.swing.SwingUtilities
 import org.openani.mediamp.mpv.MpvMediampPlayer
 
 /**
@@ -107,10 +109,11 @@ internal fun playbackSelfTest(
 
             activeRound?.let { round ->
                 key(round) {
+                    val windowState = rememberWindowState(size = DpSize(640.dp, 400.dp))
                     Window(
                         onCloseRequest = ::exitApplication,
                         title = "Piko 播放自检 $round",
-                        state = rememberWindowState(size = DpSize(640.dp, 400.dp)),
+                        state = windowState,
                     ) {
                         // 不使用 rememberMediampPlayer：它会在 EDT 同步销毁 mpv。
                         val playerJob = remember { SupervisorJob() }
@@ -146,6 +149,7 @@ internal fun playbackSelfTest(
                         )
                         LaunchedEffect(backend) {
                             var failure: String? = null
+                            var postResizeWindowFbo: Int? = null
                             val errors = launch(start = CoroutineStart.UNDISPATCHED) {
                                 val error = backend.events.first { it is PlaybackBackendEvent.Error } as PlaybackBackendEvent.Error
                                 failure = error.detail ?: "playback error"
@@ -161,7 +165,7 @@ internal fun playbackSelfTest(
                                 }
                                 while (
                                     failure == null && (
-                                        backend.positionMillis < PASS_POSITION_MILLIS ||
+                                        backend.positionMillis < PASS_POSITION_MILLIS / 2 ||
                                             (
                                                 requireVideo && (
                                                     probe.distinctStates < MIN_RENDERED_STATES ||
@@ -173,6 +177,48 @@ internal fun playbackSelfTest(
                                 ) {
                                     delay(50L)
                                 }
+                                if (failure == null) {
+                                    // 在视频帧持续推进途中连续触发全屏与多步窗口缩放（覆盖 ConfigureNotify 与新视频帧同帧到达的窗口期），
+                                    // 验证 Skiko 窗口默认帧缓冲（fbId = 0）未被离屏 blitSurface 劫持。
+                                    val statesBeforeResize = probe.distinctStates
+                                    val linuxFullscreen = if (isLinux) LinuxFullscreen(window) else null
+                                    if (linuxFullscreen?.enter() == true) {
+                                        delay(120L)
+                                        linuxFullscreen.exit()
+                                    }
+                                    for (step in 1..8) {
+                                        delay(35L)
+                                        windowState.size = DpSize((660 + step * 20).dp, (410 + step * 14).dp)
+                                    }
+                                    while (
+                                        failure == null && (
+                                            backend.positionMillis < PASS_POSITION_MILLIS ||
+                                                (
+                                                    requireVideo && (
+                                                        probe.distinctStates < statesBeforeResize + MIN_POST_RESIZE_STATES ||
+                                                            !probe.latestNonBlack ||
+                                                            currentMpvVo(backend.player) != "libmpv"
+                                                        )
+                                                    )
+                                            )
+                                    ) {
+                                        delay(50L)
+                                    }
+                                    // 再留两帧时间确保缩放后的 Skiko initSurface() + drawFrame() 已在 EDT 跑过。
+                                    delay(100L)
+                                    if (requireVideo && isLinux && probe.activeMode == "OPENGL_RING") {
+                                        val fboBox = arrayOfNulls<Int>(1)
+                                        if (SwingUtilities.isEventDispatchThread()) {
+                                            fboBox[0] = queryLinuxWindowDrawFbo(window)
+                                        } else {
+                                            SwingUtilities.invokeAndWait { fboBox[0] = queryLinuxWindowDrawFbo(window) }
+                                        }
+                                        postResizeWindowFbo = fboBox[0]
+                                        if (postResizeWindowFbo != null && postResizeWindowFbo != 0) {
+                                            failure = "Linux window draw framebuffer hijacked after resize: expected 0, actual=$postResizeWindowFbo"
+                                        }
+                                    }
+                                }
                                 failure == null
                             } ?: false
                             errors.cancel()
@@ -180,7 +226,7 @@ internal fun playbackSelfTest(
                             report(
                                 "round=$round position=${backend.positionMillis} duration=${backend.durationMillis} " +
                                     "vo=$vo mode=${probe.activeMode} states=${probe.distinctStates} " +
-                                    "nonBlack=${probe.latestNonBlack} requireVideo=$requireVideo error=$failure",
+                                    "nonBlack=${probe.latestNonBlack} windowFbo=$postResizeWindowFbo requireVideo=$requireVideo error=$failure",
                             )
                             played[round - 1].complete(reached)
                         }
@@ -212,4 +258,5 @@ private class LocalFileByteSource(private val file: File) : ProxyByteSource {
 
 private const val PASS_POSITION_MILLIS = 1_200L
 private const val MIN_RENDERED_STATES = 3
+private const val MIN_POST_RESIZE_STATES = 3
 private const val TIMEOUT_MILLIS = 30_000L

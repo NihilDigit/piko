@@ -75,8 +75,31 @@ private object PixelAlignedLayout : LayoutManager {
 @Composable
 fun TitleBarThemeEffect(window: Window, dark: Boolean) {
     DisposableEffect(window, dark) {
-        if (isMacOs) MacOs.setWindowAppearance(window, dark) else WindowChrome.setDarkTitleBar(window, dark)
+        when {
+            isMacOs -> MacOs.setWindowAppearance(window, dark)
+            isLinux -> applyLinuxWindowBackground(window, dark)
+            else -> WindowChrome.setDarkTitleBar(window, dark)
+        }
         onDispose {}
+    }
+}
+
+private fun applyLinuxWindowBackground(window: Window, dark: Boolean) {
+    runCatching {
+        val bg = if (dark) java.awt.Color.BLACK else java.awt.Color.WHITE
+        window.background = bg
+        if (window is JFrame) {
+            window.rootPane.background = bg
+            window.contentPane.background = bg
+        }
+        syncAwtChildBackgrounds(window, bg)
+    }
+}
+
+private fun syncAwtChildBackgrounds(container: Container, bg: java.awt.Color) {
+    for (child in container.components) {
+        child.background = bg
+        if (child is Container) syncAwtChildBackgrounds(child, bg)
     }
 }
 

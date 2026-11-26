@@ -28,6 +28,7 @@ import org.jetbrains.skia.ColorSpace
 import org.jetbrains.skia.ColorType
 import org.jetbrains.skia.ContentChangeMode
 import org.jetbrains.skia.DirectContext
+import org.jetbrains.skia.GLBackendState
 import org.jetbrains.skia.Image
 import org.jetbrains.skia.ImageInfo
 import org.jetbrains.skia.Pixmap
@@ -71,10 +72,16 @@ import java.awt.Frame
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 import java.awt.event.WindowStateListener
+import java.awt.Window
 import java.lang.foreign.Arena
+import java.lang.foreign.FunctionDescriptor
+import java.lang.foreign.Linker
 import java.lang.foreign.MemorySegment
+import java.lang.foreign.SymbolLookup
+import java.lang.foreign.ValueLayout.ADDRESS
 import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
+import java.lang.invoke.MethodHandle
 import java.lang.ref.WeakReference
 import java.lang.reflect.Constructor
 import java.lang.reflect.Field
@@ -172,6 +179,86 @@ internal fun hasActiveLinuxVideoSurface(player: MediampPlayer): Boolean {
 internal fun currentMpvVo(player: MediampPlayer): String? {
     val mpvPlayer = player as? MpvMediampPlayer ?: return null
     return MediampAccess.getPropertyString(mpvPlayer, "current-vo")
+}
+
+/**
+ * 在 AWT EDT 上查询 Linux `LinuxOpenGLRenderer` 当前窗口上下文绑定的 `GL_DRAW_FRAMEBUFFER_BINDING`。
+ * 若 Skiko 并非运行于硬件 `LINUX_OPENGL` 后端，返回 `null`。
+ */
+internal fun queryLinuxWindowDrawFbo(window: Window): Int? {
+    if (!isLinux || !SwingUtilities.isEventDispatchThread()) return null
+    val layer = findSkiaLayer(window) ?: return null
+    val env = SkikoAccess.inspect(layer)
+    if (env.kind != SkikoBackendKind.LINUX_OPENGL || !env.isReady) return null
+    var binding: Int? = null
+    val ok = SkikoAccess.withLinuxGlCurrent(env, restoreDefaultFramebuffer = false) {
+        binding = LinuxGl.getDrawFramebufferBinding()
+    }
+    return if (ok) binding else null
+}
+
+private object LinuxGl {
+    const val GL_FRAMEBUFFER = 0x8D40
+    const val GL_DRAW_FRAMEBUFFER_BINDING = 0x8CA6
+
+    private val libGl: SymbolLookup? by lazy {
+        if (!isLinux) return@lazy null
+        runCatching { SymbolLookup.libraryLookup("libGL.so.1", Arena.global()) }
+            .onFailure { PikoLog.w(TAG, "Failed to load libGL.so.1", it) }
+            .getOrNull()
+    }
+
+    private val glxGetProcAddress: MethodHandle? by lazy {
+        val lookup = libGl ?: return@lazy null
+        val sym = lookup.find("glXGetProcAddressARB").or { lookup.find("glXGetProcAddress") }.orElse(null)
+            ?: return@lazy null
+        Linker.nativeLinker().downcallHandle(sym, FunctionDescriptor.of(ADDRESS, ADDRESS))
+    }
+
+    private fun resolveGlSymbol(name: String): MemorySegment {
+        val lookup = libGl ?: return MemorySegment.NULL
+        val viaProc = runCatching {
+            val getProc = glxGetProcAddress ?: return@runCatching MemorySegment.NULL
+            Arena.ofConfined().use { arena ->
+                getProc.invokeExact(arena.allocateFrom(name)) as MemorySegment
+            }
+        }.getOrDefault(MemorySegment.NULL)
+        if (viaProc != MemorySegment.NULL) return viaProc
+        return lookup.find(name).orElse(MemorySegment.NULL)
+    }
+
+    private val glBindFramebufferHandle: MethodHandle? by lazy {
+        val addr = resolveGlSymbol("glBindFramebuffer")
+            .takeIf { it != MemorySegment.NULL }
+            ?: resolveGlSymbol("glBindFramebufferEXT")
+        if (addr == MemorySegment.NULL) null
+        else Linker.nativeLinker().downcallHandle(addr, FunctionDescriptor.ofVoid(JAVA_INT, JAVA_INT))
+    }
+
+    private val glGetIntegervHandle: MethodHandle? by lazy {
+        val addr = resolveGlSymbol("glGetIntegerv")
+        if (addr == MemorySegment.NULL) null
+        else Linker.nativeLinker().downcallHandle(addr, FunctionDescriptor.ofVoid(JAVA_INT, ADDRESS))
+    }
+
+    fun bindDefaultFramebuffer(): Boolean {
+        val handle = glBindFramebufferHandle ?: return false
+        return runCatching {
+            handle.invokeExact(GL_FRAMEBUFFER, 0)
+            true
+        }.getOrDefault(false)
+    }
+
+    fun getDrawFramebufferBinding(): Int? {
+        val handle = glGetIntegervHandle ?: return null
+        return runCatching {
+            Arena.ofConfined().use { arena ->
+                val out = arena.allocate(JAVA_INT)
+                handle.invokeExact(GL_DRAW_FRAMEBUFFER_BINDING, out)
+                out.get(JAVA_INT, 0L)
+            }
+        }.getOrNull()
+    }
 }
 
 /**
@@ -612,8 +699,17 @@ private object SkikoAccess {
      * `renderFrame`（`makeCurrent` + 绘制）；`Canvas` 回调位于 `update` 阶段，此时线程上绑定的往往是
      * 另一个窗口（如主窗口）的 `GLXContext`。显式锁定当前窗口的 `LinuxDrawingSurface` 并 `makeCurrent`
      * 可彻底隔离多窗口 GLX 上下文串扰，亦防止关窗释放时误删其他窗口的同名 FBO。
+     *
+     * 退出前默认将 `GL_FRAMEBUFFER` 恢复为 `0` 并重置 Skia `GLBackendState.RENDER_TARGET`：
+     * `blitSurface` 离屏拷贝 flush 后会把 `GL_DRAW_FRAMEBUFFER_BINDING` 留在非零离屏 FBO 上，若不归零，
+     * 同帧紧随其后的 `AbstractOpenGLRenderer.initSurface()` 在窗口缩放或进出全屏（`isSizeChanged == true`）时
+     * 会误将离屏 FBO ID 捕获为窗口默认渲染目标，导致窗口后备缓冲停止更新并在前后缓冲间乒乓跳帧（issue #60）。
      */
-    fun withLinuxGlCurrent(env: SkikoRenderEnvironment?, block: () -> Unit): Boolean {
+    fun withLinuxGlCurrent(
+        env: SkikoRenderEnvironment?,
+        restoreDefaultFramebuffer: Boolean = true,
+        block: () -> Unit,
+    ): Boolean {
         if (env == null || env.kind != SkikoBackendKind.LINUX_OPENGL) return false
         if (!SwingUtilities.isEventDispatchThread()) return false
         val renderer = env.renderer ?: return false
@@ -644,6 +740,18 @@ private object SkikoAccess {
             block()
             true
         } finally {
+            if (restoreDefaultFramebuffer) {
+                runCatching {
+                    if (!directContext.isClosed) {
+                        directContext.flush()
+                        if (LinuxGl.bindDefaultFramebuffer()) {
+                            directContext.resetGL(GLBackendState.RENDER_TARGET)
+                        }
+                    } else {
+                        LinuxGl.bindDefaultFramebuffer()
+                    }
+                }
+            }
             if (lockedHere) {
                 runCatching { unlockMethod.invoke(renderer) }
             }
