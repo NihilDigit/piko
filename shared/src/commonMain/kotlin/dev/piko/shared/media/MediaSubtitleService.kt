@@ -87,7 +87,7 @@ internal class MediaSubtitleService(
                     val resolved = detail.resolveVariant(VariantPreference.Original)
                     val leased = LeasedFile.isLeased(fileId)
                     val expectedSize = (resolved.sizeBytes ?: detail.sizeBytes).coerceAtLeast(0L)
-                    if (isTextSubtitleName(detail.name) && expectedSize in 1L..MAX_TEXT_SUBTITLE_BYTES) {
+                    if (isTextSubtitleName(detail.name) && expectedSize in 0L..MAX_TEXT_SUBTITLE_BYTES) {
                         val transcoded = runSuspendCatching {
                             readAndNormalizeTextSubtitle(client, detail, resolved, leased, expectedSize.toInt())
                         }.getOrNull()
@@ -124,9 +124,27 @@ internal class MediaSubtitleService(
         leased: Boolean,
         expectedSize: Int,
     ): ByteArray? = withContext(Dispatchers.IO) {
-        val source = sessionPreparer.openByteSource(client, detail, resolved, leased = leased) ?: return@withContext null
-        try {
-            val raw = source.openReader().use { reader ->
+        val raw = if (expectedSize > 0) {
+            runSuspendCatching {
+                readViaByteSource(client, detail, resolved, leased, expectedSize)
+            }.getOrNull()
+        } else {
+            null
+        } ?: readDirectSubtitleBytes(client, resolved.link.url)
+            ?: return@withContext null
+        SubtitleEncoding.current.normalizeToUtf8(raw)
+    }
+
+    private suspend fun readViaByteSource(
+        client: PikPakClient,
+        detail: FileDetail,
+        resolved: ResolvedVariant,
+        leased: Boolean,
+        expectedSize: Int,
+    ): ByteArray? {
+        val source = sessionPreparer.openByteSource(client, detail, resolved, leased = leased) ?: return null
+        return try {
+            source.openReader().use { reader ->
                 val out = ByteArray(expectedSize)
                 var filled = 0
                 while (filled < expectedSize) {
@@ -136,11 +154,41 @@ internal class MediaSubtitleService(
                 }
                 if (filled == 0) return@use null
                 if (filled == expectedSize) out else out.copyOf(filled)
-            } ?: return@withContext null
-            SubtitleEncoding.current.normalizeToUtf8(raw)
+            }
         } finally {
             runCatching { source.close() }
         }
+    }
+
+    /**
+     * 当元数据声明长度与 CDN 实体字节数存在偏差（导致 RangeReader 严格校验失败）时，
+     * 直接按实际响应体拉取文本字幕，避免外挂字幕 502。
+     */
+    private suspend fun readDirectSubtitleBytes(client: PikPakClient, url: String): ByteArray? {
+        if (url.isBlank()) return null
+        return runSuspendCatching {
+            client.streamRangeFromUrl(url, start = 0L, length = null) { stream ->
+                val limit = MAX_TEXT_SUBTITLE_BYTES.toInt()
+                val chunks = ArrayList<ByteArray>()
+                val buf = ByteArray(16 * 1024)
+                var total = 0
+                while (total < limit) {
+                    val toRead = minOf(buf.size, limit - total)
+                    val n = stream.channel.readAvailable(buf, 0, toRead)
+                    if (n <= 0) break
+                    chunks += buf.copyOf(n)
+                    total += n
+                }
+                if (total == 0) return@streamRangeFromUrl null
+                val out = ByteArray(total)
+                var offset = 0
+                for (chunk in chunks) {
+                    chunk.copyInto(out, offset)
+                    offset += chunk.size
+                }
+                out
+            }
+        }.getOrNull()
     }
 
     suspend fun prepareOriginalEmbeddedSubtitles(fileId: String): PreparedOriginalSubtitles {
