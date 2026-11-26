@@ -440,8 +440,17 @@ private fun VideoPlayerContent(
                         ?.takeIf { File(it).exists() }
             },
             defaultMaxHeight = { services.preferences.playbackMaxHeightFlow.first() },
+            aiSubtitleDecoder = dev.piko.desktop.media.DesktopAiSubtitlePcmDecoder(),
+            aiSubtitleVadFactory = { dev.piko.shared.media.player.JvmSileroVadLoader.create() },
+            initialAiSubtitleLanguage = initialSnapshot.aiSubtitleLanguage,
+            onPersistAiSubtitleLanguage = { services.preferences.setAiSubtitleLanguage(it) },
+            initialAiSubtitleOnDemand = initialSnapshot.aiSubtitleOnDemand,
+            onPersistAiSubtitleOnDemand = { services.preferences.setAiSubtitleOnDemand(it) },
+            initialAiSubtitleSavedSeconds = initialSnapshot.aiSubtitleSavedSeconds,
+            onAddAiSubtitleSavedSeconds = { services.preferences.addAiSubtitleSavedSeconds(it) },
         )
     }
+    val aiSubtitleState by state.aiSubtitleState.collectAsState()
     val volume = remember(backend) { Snapshot.withoutReadObservation { backend.volume }?.let { BackendVolume(backend) } }
     val isSpoilerBlurEnabled by services.preferences.spoilerBlurFlow.collectAsState(
         initial = services.preferences.currentSnapshot.spoilerBlurEnabled,
@@ -712,6 +721,10 @@ private fun VideoPlayerContent(
                 autoResolvedQuality = state.autoResolvedQuality,
                 scrubFrameCache = scrubFrameCache,
                 originalSubtitleHints = state.originalSubtitleHints,
+                aiSubtitleState = aiSubtitleState,
+                onToggleAiSubtitles = state::setAiSubtitlesEnabled,
+                onSelectAiSubtitleLanguage = state::selectAiSubtitleLanguage,
+                onToggleAiSubtitleOnDemand = state::setAiSubtitleOnDemand,
                 errorMessage = state.errorMessage,
                 resumedFromMillis = state.resumedFromMillis,
                 onPlayPause = state::togglePlayPause,

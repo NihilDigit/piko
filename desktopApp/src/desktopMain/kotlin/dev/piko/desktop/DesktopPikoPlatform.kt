@@ -165,6 +165,16 @@ class DesktopPikoPlatform(
             return if (picked == null) FontFamily.Default else FontFamily(picked)
         }
 
+    @OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
+    override fun resolveSubtitleFontFamily(fontName: String): FontFamily? {
+        val trimmed = fontName.trim()
+        if (trimmed.isEmpty()) return null
+        val exists = runCatching {
+            FontMgr.default.matchFamily(trimmed).use { it.count() > 0 }
+        }.getOrDefault(false)
+        return if (exists) FontFamily(trimmed) else null
+    }
+
     override val shortcutModifier: ShortcutModifier = if (isMacOs) ShortcutModifier.Command else ShortcutModifier.Ctrl
 
     override val deviceSummary: String =

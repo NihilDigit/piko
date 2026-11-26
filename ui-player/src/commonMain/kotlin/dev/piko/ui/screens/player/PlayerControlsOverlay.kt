@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -26,6 +27,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -57,6 +59,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
@@ -64,6 +67,7 @@ import dev.piko.data.auth.PlayerGestureDefaults
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.media.player.DEFAULT_DOUBLE_TAP_SEEK_SECONDS
 import dev.piko.shared.media.player.MediaTrack
+import dev.piko.shared.media.player.AiSubtitleUiState
 import dev.piko.shared.media.player.OriginalSubtitleTrackInfo
 import dev.piko.shared.media.player.PlaybackStatsSection
 import dev.piko.shared.media.player.PlayerAspectRatio
@@ -77,6 +81,7 @@ import dev.piko.ui.components.isKeyboardModality
 import dev.piko.ui.platform.LocalFramelessWindow
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 private val COMPACT_WIDTH = 600.dp
 private const val SUBTITLE_LABEL_MAX_LENGTH = 16
@@ -159,6 +164,10 @@ fun MobilePlayerControls(
     autoResolvedQuality: String? = null,
     scrubFrameCache: ScrubFrameCache? = null,
     originalSubtitleHints: List<OriginalSubtitleTrackInfo> = emptyList(),
+    aiSubtitleState: AiSubtitleUiState = AiSubtitleUiState(),
+    onToggleAiSubtitles: ((Boolean) -> Unit)? = null,
+    onSelectAiSubtitleLanguage: ((String) -> Unit)? = null,
+    onToggleAiSubtitleOnDemand: ((Boolean) -> Unit)? = null,
     onPausePlayback: (() -> Unit)? = null,
     onResumePlayback: (() -> Unit)? = null,
 ) {
@@ -353,11 +362,18 @@ fun MobilePlayerControls(
             activeLayout.hasInTopBar(PlayerControlId.PlayPause)
         )
 
+    val aiSubtitleSyncing = aiSubtitleState.isHoldingPlayback
+    val effectiveLoading = isLoading || aiSubtitleSyncing
+    val effectiveLoadingText = if (!isLoading && aiSubtitleSyncing) {
+        tr("正在同步 AI 字幕", "Syncing AI subtitles", "AI 字幕を同期中", "AI 자막 동기화 중", "正在同步 AI 字幕")
+    } else {
+        loadingSpeedText
+    }
     val bottomBarVisible = (chromeVisible || seekPreviewMillis != null) && !modalOverlayOpen && !speedController.active
     val showCenterCluster = transportInCenter && chromeVisible && !ui.isBoosting && errorMessage == null
     val centerUnblocked = errorMessage == null && !modalOverlayOpen &&
         activeSeekGesture == null && activeEpisodeSwipe == null && !speedController.active
-    val centerInteractive = (showCenterCluster || (isLoading && (chromeVisible || stalledLoading))) && centerUnblocked
+    val centerInteractive = (showCenterCluster || (isLoading && (chromeVisible || stalledLoading)) || aiSubtitleSyncing) && centerUnblocked
     val centerVisible = centerInteractive || (centerIndicator != null && centerUnblocked)
 
     BackHandler(enabled = isFullscreen && !ui.isEditingCropRegion && !ui.isSpeedPopupOpen && !ui.isQualityPopupOpen && !ui.isShortcutsOverlayOpen && !speedController.active && ui.openSheet == null, onBack = onToggleFullscreen)
@@ -392,6 +408,7 @@ fun MobilePlayerControls(
     val hasPlaylist = playlist.size > 1
     val hasTracksEntry = subtitleTracks.isNotEmpty() || audioTracks.size > 1 ||
         originalSubtitleHints.isNotEmpty() ||
+        aiSubtitleState.available ||
         onPickLocalSubtitle != null || onPickDriveSubtitle != null
     val hasSettingsEntry = hasTracksEntry || fileActions.isNotEmpty() || playbackSpeed != null ||
         qualityOptions.isNotEmpty() || aspectRatio != null || onSeekStepChange != null ||
@@ -849,15 +866,15 @@ fun MobilePlayerControls(
                 config = activeLayout.center,
                 centerVisible = centerVisible,
                 interactive = centerInteractive,
-                showSideButtons = showCenterCluster && !isLoading,
+                showSideButtons = showCenterCluster && !effectiveLoading,
                 isPlaying = isPlaying,
-                isLoading = isLoading,
+                isLoading = effectiveLoading,
                 indicator = centerIndicator,
                 large = isLandscape || !compactWidth,
                 canPrevious = hasPrevious,
                 canNext = hasNext,
                 allowSeek = durationMillis > 0L,
-                loadingSpeedText = loadingSpeedText,
+                loadingSpeedText = effectiveLoadingText,
                 onPlayPause = {
                     if (chromeVisible) {
                         ui.interacted()
@@ -940,6 +957,45 @@ fun MobilePlayerControls(
                 )
             }
 
+            var previewSubtitleStyle by remember(subtitleStyle) { mutableStateOf<SubtitleStylePrefs?>(null) }
+            val effectiveSubtitleStyle = remember(previewSubtitleStyle, subtitleStyle) {
+                (previewSubtitleStyle ?: subtitleStyle).sanitize()
+            }
+            val activeAiCue = aiSubtitleState.activeCueText?.takeIf { aiSubtitleState.on && it.isNotBlank() }
+            var displayedAiCue by remember { mutableStateOf("") }
+            if (activeAiCue != null) displayedAiCue = activeAiCue
+            val density = LocalDensity.current
+            var aiCueHeightPx by remember { mutableIntStateOf(0) }
+            val aiFontSp = with(density) {
+                val hPx = viewportSize.height.takeIf { it > 0 } ?: 720
+                val fontPx = (effectiveSubtitleStyle.fontSize / 720f * hPx * 0.68f)
+                    .coerceIn(13.dp.toPx(), 52.dp.toPx())
+                fontPx.toSp()
+            }
+            val aiCueOffsetY = with(density) {
+                val hPx = viewportSize.height.takeIf { it > 0 } ?: return@with 0
+                val topMarginPx = 24.dp.roundToPx()
+                val bottomMarginPx = (if (bottomBarVisible) 88.dp else 28.dp).roundToPx()
+                val travelPx = (hPx - aiCueHeightPx - topMarginPx - bottomMarginPx).coerceAtLeast(0)
+                topMarginPx + (travelPx * (effectiveSubtitleStyle.position / 100f)).roundToInt()
+            }
+            AnimatedVisibility(
+                visible = activeAiCue != null,
+                enter = fadeIn(motion.fastEffectsSpec()),
+                exit = fadeOut(motion.fastEffectsSpec()),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .offset { IntOffset(0, aiCueOffsetY) }
+                    .padding(horizontal = 24.dp),
+            ) {
+                SubtitleStyledText(
+                    text = displayedAiCue,
+                    style = effectiveSubtitleStyle,
+                    fontSize = aiFontSp,
+                    modifier = Modifier.onSizeChanged { aiCueHeightPx = it.height },
+                )
+            }
+
             errorMessage?.let { message ->
                 PlaybackErrorCard(
                     message = message,
@@ -968,12 +1024,14 @@ fun MobilePlayerControls(
                 subtitleTracks = subtitleTracks,
                 selectedSubtitleTrackId = selectedSubtitleTrackId,
                 onDismiss = {
+                    previewSubtitleStyle = null
                     ui.isSpeedPopupOpen = false
                     ui.isQualityPopupOpen = false
                     ui.openSheet = null
                     ui.interacted()
                 },
                 onOpenSheet = {
+                    if (it != PlayerSheet.SubtitleStyle) previewSubtitleStyle = null
                     ui.isSpeedPopupOpen = false
                     ui.isQualityPopupOpen = false
                     ui.openSheet = it
@@ -990,12 +1048,24 @@ fun MobilePlayerControls(
                 onPickLocalSubtitle = onPickLocalSubtitle,
                 onPickDriveSubtitle = onPickDriveSubtitle,
                 subtitleStyle = subtitleStyle,
-                onSubtitleStylePreview = onSubtitleStylePreview,
-                onSubtitleStyleChange = onSubtitleStyleChange,
+                onSubtitleStylePreview = { preview ->
+                    previewSubtitleStyle = preview
+                    onSubtitleStylePreview?.invoke(preview)
+                },
+                onSubtitleStyleChange = onSubtitleStyleChange?.let { commit ->
+                    { updated ->
+                        previewSubtitleStyle = null
+                        commit(updated)
+                    }
+                },
                 playbackStats = playbackStats,
                 hasTracks = hasTracksEntry,
                 hasSettings = hasSettingsEntry,
                 originalSubtitleHints = originalSubtitleHints,
+                aiSubtitleState = aiSubtitleState,
+                onToggleAiSubtitles = onToggleAiSubtitles,
+                onSelectAiSubtitleLanguage = onSelectAiSubtitleLanguage,
+                onToggleAiSubtitleOnDemand = onToggleAiSubtitleOnDemand,
             )
 
             PlayerShortcutsOverlay(

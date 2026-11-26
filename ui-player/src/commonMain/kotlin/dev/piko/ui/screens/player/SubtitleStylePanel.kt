@@ -64,6 +64,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -75,6 +77,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.piko.shared.i18n.tr
@@ -128,6 +131,93 @@ import dev.piko.ui.theme.tabular
 import kotlin.math.roundToInt
 
 /**
+ * 统一的 Compose 字幕文本渲染器（供字幕样式预览与 AI 字幕浮层共用）：
+ * - 默认字体走 [LocalPikoPlatform.current.fontFamily]，避免英文系统上 `FontFamily.SansSerif` 逐字混用中日字形；
+ * - 自定义字体按平台系统字体族名解析，缺失时安全回退；
+ * - 关闭底框时用双层 `Stroke` 描边 + 轻阴影对齐 `libmpv` 的 `outline-and-shadow`，亮暗画面均清晰锐利。
+ */
+@Composable
+internal fun SubtitleStyledText(
+    text: String,
+    style: SubtitleStylePrefs,
+    fontSize: TextUnit,
+    modifier: Modifier = Modifier,
+    maxLines: Int = Int.MAX_VALUE,
+    overflow: TextOverflow = TextOverflow.Clip,
+) {
+    val clean = remember(style) { style.sanitize() }
+    val platform = LocalPikoPlatform.current
+    val density = LocalDensity.current
+    val fontFamily = remember(platform, clean.fontPreset, clean.customFontFamily) {
+        when (clean.fontPreset) {
+            SubtitleFontPreset.Default -> platform.fontFamily
+            SubtitleFontPreset.Serif -> FontFamily.Serif
+            SubtitleFontPreset.Monospace -> FontFamily.Monospace
+            SubtitleFontPreset.Custom -> clean.customFontFamily
+                ?.let(platform::resolveSubtitleFontFamily)
+                ?: platform.fontFamily
+        }
+    }
+    val boxColor = remember(clean.backgroundColorRgb, clean.backgroundOpacity) {
+        val bgAlpha = clean.backgroundOpacity.coerceIn(10, 100) / 100f
+        val bgRgb = clean.backgroundColorRgb and 0x00FFFFFF
+        Color(
+            red = ((bgRgb ushr 16) and 0xFF) / 255f,
+            green = ((bgRgb ushr 8) and 0xFF) / 255f,
+            blue = (bgRgb and 0xFF) / 255f,
+            alpha = bgAlpha,
+        )
+    }
+    val baseStyle = TextStyle(
+        fontFamily = fontFamily,
+        fontSize = fontSize,
+        lineHeight = fontSize * 1.32f,
+        fontWeight = if (clean.showBackground) FontWeight.Medium else FontWeight.SemiBold,
+    )
+
+    Box(
+        modifier = modifier.then(
+            if (clean.showBackground) {
+                Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(boxColor)
+                    .padding(horizontal = 12.dp, vertical = 5.dp)
+            } else {
+                Modifier
+            },
+        ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (!clean.showBackground) {
+            val strokeWidthPx = with(density) { (fontSize.toPx() * 0.13f).coerceIn(2f, 5.5f) }
+            Text(
+                text = text,
+                style = baseStyle.copy(
+                    drawStyle = Stroke(width = strokeWidthPx, join = StrokeJoin.Round),
+                    shadow = Shadow(
+                        color = Color.Black.copy(alpha = 0.72f),
+                        offset = Offset(0f, 1.5f),
+                        blurRadius = 4f,
+                    ),
+                ),
+                color = Color.Black,
+                textAlign = TextAlign.Center,
+                maxLines = maxLines,
+                overflow = overflow,
+            )
+        }
+        Text(
+            text = text,
+            style = baseStyle,
+            color = Color.White,
+            textAlign = TextAlign.Center,
+            maxLines = maxLines,
+            overflow = overflow,
+        )
+    }
+}
+
+/**
  * 单一字幕台词预览渲染器：按 `720p` 基准高度换算字号、字体预设、统一底框颜色/不透明度与 `0..100%` 纵向锚点，
  * 与 [SubtitleStylePrefs.toMpvProperties] 下发给 `libmpv` 的参数严格同源，确保无台词帧或暂停态下仍能直观预览样式。
  */
@@ -143,28 +233,10 @@ internal fun SubtitleCueRenderer(
     var viewportHeightPx by remember { mutableIntStateOf(0) }
     var cueHeightPx by remember { mutableIntStateOf(0) }
 
-    val fontFamily = when (clean.fontPreset) {
-        SubtitleFontPreset.Default, SubtitleFontPreset.Custom -> FontFamily.SansSerif
-        SubtitleFontPreset.Serif -> FontFamily.Serif
-        SubtitleFontPreset.Monospace -> FontFamily.Monospace
-    }
     val scaledFontSp = with(density) {
         val hPx = viewportHeightPx.takeIf { it > 0 } ?: 140.dp.roundToPx()
-        val fontPx = (clean.fontSize / 720f * hPx).coerceIn(10.dp.toPx(), 42.dp.toPx())
+        val fontPx = (clean.fontSize / 720f * hPx * 0.68f).coerceIn(10.dp.toPx(), 36.dp.toPx())
         fontPx.toSp()
-    }
-    val bgAlpha = (clean.backgroundOpacity.coerceIn(10, 100) / 100f)
-    val bgRgb = clean.backgroundColorRgb and 0x00FFFFFF
-    val boxColor = Color(
-        red = ((bgRgb ushr 16) and 0xFF) / 255f,
-        green = ((bgRgb ushr 8) and 0xFF) / 255f,
-        blue = (bgRgb and 0xFF) / 255f,
-        alpha = bgAlpha,
-    )
-    val cueShadow = if (clean.showBackground) {
-        null
-    } else {
-        Shadow(color = Color.Black, offset = Offset(0f, 1.5f), blurRadius = 5f)
     }
 
     Surface(
@@ -193,39 +265,18 @@ internal fun SubtitleCueRenderer(
             val availableTravelPx = (viewportHeightPx - cueHeightPx - verticalPaddingPx * 2).coerceAtLeast(0)
             val yPx = verticalPaddingPx + (availableTravelPx * (clean.position / 100f)).roundToInt()
 
-            Box(
+            SubtitleStyledText(
+                text = text,
+                style = clean,
+                fontSize = scaledFontSp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .offset { IntOffset(0, yPx) }
                     .padding(horizontal = 12.dp)
-                    .onSizeChanged { cueHeightPx = it.height }
-                    .then(
-                        if (clean.showBackground) {
-                            Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(boxColor)
-                                .padding(horizontal = 8.dp, vertical = 3.dp)
-                        } else {
-                            Modifier
-                        },
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = text,
-                    style = TextStyle(
-                        fontFamily = fontFamily,
-                        fontSize = scaledFontSp,
-                        lineHeight = scaledFontSp * 1.28f,
-                        fontWeight = FontWeight.Medium,
-                        shadow = cueShadow,
-                    ),
-                    color = Color.White,
-                    textAlign = TextAlign.Center,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+                    .onSizeChanged { cueHeightPx = it.height },
+            )
         }
     }
 }

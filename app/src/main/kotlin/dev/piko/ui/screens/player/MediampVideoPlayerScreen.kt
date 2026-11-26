@@ -122,8 +122,17 @@ fun MediampVideoPlayerScreen(
                     ?: siblingVideos.find { it.id == fileId }?.let { app.downloadManager.findCompletedLocalPath(it) }
             },
             defaultMaxHeight = { preferences.playbackMaxHeightFlow.first() },
+            aiSubtitleDecoder = AndroidAiSubtitlePcmDecoder(),
+            aiSubtitleVadFactory = { dev.piko.shared.media.player.JvmSileroVadLoader.create() },
+            initialAiSubtitleLanguage = preferences.currentSnapshot.aiSubtitleLanguage,
+            onPersistAiSubtitleLanguage = { preferences.setAiSubtitleLanguage(it) },
+            initialAiSubtitleOnDemand = preferences.currentSnapshot.aiSubtitleOnDemand,
+            onPersistAiSubtitleOnDemand = { preferences.setAiSubtitleOnDemand(it) },
+            initialAiSubtitleSavedSeconds = preferences.currentSnapshot.aiSubtitleSavedSeconds,
+            onAddAiSubtitleSavedSeconds = { preferences.addAiSubtitleSavedSeconds(it) },
         )
     }
+    val aiSubtitleState by state.aiSubtitleState.collectAsStateWithLifecycle()
     DisposableEffect(state, backend) {
         onDispose {
             try {
@@ -576,6 +585,10 @@ fun MediampVideoPlayerScreen(
                     autoResolvedQuality = state.autoResolvedQuality,
                     scrubFrameCache = scrubFrameCache,
                     originalSubtitleHints = state.originalSubtitleHints,
+                    aiSubtitleState = aiSubtitleState,
+                    onToggleAiSubtitles = state::setAiSubtitlesEnabled,
+                    onSelectAiSubtitleLanguage = state::selectAiSubtitleLanguage,
+                    onToggleAiSubtitleOnDemand = state::setAiSubtitleOnDemand,
                     errorMessage = state.errorMessage,
                     resumedFromMillis = state.resumedFromMillis,
                     onPlayPause = state::togglePlayPause,

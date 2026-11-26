@@ -472,30 +472,40 @@ internal fun PlayerSettingsPanel(
         modifier = modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
-            .padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp),
+            .padding(start = 16.dp, end = 16.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        // 文件操作排成一排，带圆角底色块与清晰短标签
+        // 文件信息与文件级操作收口在统一圆角容器内
         val rowActions = fileActions + actions
         if (title != null || rowActions.isNotEmpty()) {
             PlayerPanelSection(tr("文件", "Files", "ファイル", "파일", "檔案")) {
-                if (title != null) {
-                    // 可选中：文件名常要拿去搜字幕、查资料
-                    SelectionContainer {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                Surface(
+                    shape = RoundedCornerShape(SEGMENT_OUTER_CORNER),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        if (title != null) {
+                            // 可选中：文件名常要拿去搜字幕、查资料
+                            SelectionContainer {
+                                Text(
+                                    text = title,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        if (rowActions.isNotEmpty()) {
+                            ActionIconRow(
+                                rowActions,
+                                onAction = { it.onClick() },
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            )
+                        }
                     }
-                }
-                if (rowActions.isNotEmpty()) {
-                    if (title != null) Spacer(Modifier.height(10.dp))
-                    ActionIconRow(
-                        rowActions,
-                        onAction = { it.onClick() },
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    )
                 }
             }
         }
@@ -525,44 +535,6 @@ internal fun PlayerSettingsPanel(
                     optionLabel = { it.label },
                     onSelect = onAspectRatioChange,
                 )
-            }
-        }
-        if (onOpenSubtitleStyle != null) {
-            PlayerPanelSection(tr("字幕", "Subtitles", "字幕", "자막", "字幕")) {
-                Surface(
-                    onClick = onOpenSubtitleStyle,
-                    shape = RoundedCornerShape(SEGMENT_OUTER_CORNER),
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    contentColor = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).handCursor(),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Tune,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Text(
-                            text = stringResource(Res.string.subtitle_style_title),
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 8.dp).size(20.dp),
-                        )
-                    }
-                }
             }
         }
         if (onSeekStepChange != null) {

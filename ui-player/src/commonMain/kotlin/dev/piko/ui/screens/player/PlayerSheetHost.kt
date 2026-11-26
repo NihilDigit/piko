@@ -77,11 +77,12 @@ import dev.piko.ui.screens.drive.withoutSavedState
 import dev.piko.ui.theme.LocalFixedColors
 import dev.piko.ui.theme.tabular
 
-internal enum class PlayerSheet { Episodes, Settings, Tracks, DriveSubtitles, SubtitleStyle, Stats, Speed, Quality }
+internal enum class PlayerSheet { Episodes, Settings, Tracks, DriveSubtitles, AiSubtitleLanguages, SubtitleStyle, Stats, Speed, Quality }
 
 internal fun PlayerSheet.parentSheet(): PlayerSheet? = when (this) {
     PlayerSheet.DriveSubtitles -> PlayerSheet.Tracks
-    PlayerSheet.SubtitleStyle -> PlayerSheet.Settings
+    PlayerSheet.AiSubtitleLanguages -> PlayerSheet.Tracks
+    PlayerSheet.SubtitleStyle -> PlayerSheet.Tracks
     else -> null
 }
 
@@ -120,9 +121,11 @@ internal fun PlayerSheetHost(
             onDismissRequest = onDismiss,
             sheetState = withoutSavedState { rememberModalBottomSheetState(skipPartiallyExpanded = true) },
         ) {
-            // 选集与网盘字幕固定占七成高：按内容定高时几十项会顶满全屏，几项时又只露一条，
+            // 选集、网盘字幕与 AI 语言列表固定占七成高：按内容定高时几十项会顶满全屏，几项时又只露一条，
             // 字幕目录里进出一层面板还会跟着跳。其余面板内容少，按内容定高
-            val fixedHeight = sheet == PlayerSheet.Episodes || sheet == PlayerSheet.DriveSubtitles
+            val fixedHeight = sheet == PlayerSheet.Episodes ||
+                sheet == PlayerSheet.DriveSubtitles ||
+                sheet == PlayerSheet.AiSubtitleLanguages
             val height = if (fixedHeight) Modifier.fillMaxHeight(EPISODE_SHEET_HEIGHT_FRACTION) else Modifier
             Column(height.wheelStaysInSheet()) {
                 val parentSheet = sheet.parentSheet()
@@ -164,6 +167,7 @@ private fun PlayerSheet.tabLabel(): String = when (this) {
     PlayerSheet.Settings -> stringResource(Res.string.player_tab_settings)
     PlayerSheet.Stats -> stringResource(Res.string.player_tab_stats)
     PlayerSheet.DriveSubtitles -> sheetTitle()
+    PlayerSheet.AiSubtitleLanguages -> sheetTitle()
     PlayerSheet.SubtitleStyle -> stringResource(Res.string.subtitle_style_title)
     PlayerSheet.Speed -> sheetTitle()
     PlayerSheet.Quality -> stringResource(Res.string.player_quality)
@@ -206,6 +210,7 @@ private fun PlayerSheet.sheetTitle(): String = when (this) {
     PlayerSheet.Settings -> tr("播放设置", "Playback settings", "再生設定", "재생 설정", "播放設定")
     PlayerSheet.Tracks -> tr("音轨与字幕", "Audio and subtitles", "音声と字幕", "오디오 및 자막", "音軌與字幕")
     PlayerSheet.DriveSubtitles -> tr("从网盘选择字幕", "Choose subtitles from drive", "ドライブから字幕を選択", "드라이브에서 자막 선택", "從雲端硬碟選擇字幕")
+    PlayerSheet.AiSubtitleLanguages -> tr("AI 字幕语言", "AI subtitle language", "AI 字幕の言語", "AI 자막 언어", "AI 字幕語言")
     PlayerSheet.SubtitleStyle -> stringResource(Res.string.subtitle_style_title)
     PlayerSheet.Stats -> tr("详细信息", "Details", "詳細情報", "세부 정보", "詳細資訊")
     PlayerSheet.Speed -> tr("倍速", "Speed", "再生速度", "재생 속도", "倍速")

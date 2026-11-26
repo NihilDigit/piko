@@ -60,6 +60,9 @@ interface PikoPlatform {
      */
     val fontFamily: FontFamily get() = FontFamily.Default
 
+    /** 将用户在字幕样式中选定的系统字体名解析为 Compose [FontFamily]；不支持或未安装时返回 null。 */
+    fun resolveSubtitleFontFamily(fontName: String): FontFamily? = null
+
     val shortcutModifier: ShortcutModifier get() = ShortcutModifier.Ctrl
 
     /**

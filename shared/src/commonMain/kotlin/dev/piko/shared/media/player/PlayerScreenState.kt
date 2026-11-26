@@ -86,6 +86,14 @@ class PlayerScreenState(
      */
     private val defaultMaxHeight: suspend () -> Int = { PlayerGestureDefaults.PLAYBACK_AUTO_HEIGHT },
     private val recoveryDelaysMillis: LongArray = RECOVERY_DELAYS_MILLIS,
+    aiSubtitleDecoder: AiSubtitlePcmDecoder? = null,
+    aiSubtitleVadFactory: (() -> SileroVad?)? = null,
+    initialAiSubtitleLanguage: String = "",
+    onPersistAiSubtitleLanguage: (suspend (String) -> Unit)? = null,
+    initialAiSubtitleOnDemand: Boolean = true,
+    onPersistAiSubtitleOnDemand: (suspend (Boolean) -> Unit)? = null,
+    initialAiSubtitleSavedSeconds: Long = 0L,
+    onAddAiSubtitleSavedSeconds: (suspend (Long) -> Unit)? = null,
 ) {
     var fileId by mutableStateOf(initialFileId)
         private set
@@ -118,6 +126,74 @@ class PlayerScreenState(
     /** 当播放转码流且原画为大体积未缓存 MKV 时，探测到的原画内封字幕轨元数据（供字幕列表提示）。 */
     var originalSubtitleHints by mutableStateOf<List<OriginalSubtitleTrackInfo>>(emptyList())
         private set
+
+    private var aiSubtitleHoldingPlayback = false
+
+    private val aiSubtitleController = AiSubtitleController(
+        repository = repository,
+        decoder = aiSubtitleDecoder,
+        scope = scope,
+        positionMillisProvider = { backend.positionMillis },
+        isPlayingProvider = { backend.isPlaying && !isLoading },
+        playbackSpeedProvider = { backend.speed.coerceIn(0.5f, 4.0f) },
+        mediaInfoProvider = { mediaInfo },
+        currentFileIdProvider = { fileId },
+        isLocalPlaybackProvider = { isLocalPlayback },
+        audioTrackCountProvider = { backend.audioTracks.size },
+        selectedAudioStreamIndexProvider = {
+            val selectedId = backend.selectedAudioTrackId
+            backend.audioTracks.indexOfFirst { it.id == selectedId }
+        },
+        vadFactory = aiSubtitleVadFactory,
+        onRequestPlaybackHold = { hold ->
+            if (hold) {
+                if (backend.isPlaying && !aiSubtitleHoldingPlayback) {
+                    aiSubtitleHoldingPlayback = true
+                    backend.pause()
+                }
+            } else if (aiSubtitleHoldingPlayback) {
+                aiSubtitleHoldingPlayback = false
+                if (!released) backend.play()
+            }
+        },
+        initialLanguage = initialAiSubtitleLanguage,
+        onPersistLanguage = onPersistAiSubtitleLanguage,
+        initialOnDemand = initialAiSubtitleOnDemand,
+        onPersistOnDemand = onPersistAiSubtitleOnDemand,
+        initialSavedSeconds = initialAiSubtitleSavedSeconds,
+        onAddSavedSeconds = onAddAiSubtitleSavedSeconds,
+    )
+
+    val aiSubtitleState: kotlinx.coroutines.flow.StateFlow<AiSubtitleUiState>
+        get() = aiSubtitleController.uiState
+
+    fun setAiSubtitleOnDemand(enabled: Boolean) {
+        aiSubtitleController.setOnDemand(enabled)
+    }
+
+    fun setAiSubtitlesEnabled(enabled: Boolean) {
+        if (enabled) {
+            preferredSubtitle = null
+            prefersSubtitlesOff = true
+            tracksChosenThisFile = true
+            backend.selectSubtitleTrack(null)
+            aiSubtitleController.enable()
+        } else {
+            aiSubtitleController.disable()
+        }
+    }
+
+    fun selectAiSubtitleLanguage(language: String) {
+        if (!aiSubtitleController.uiState.value.on) {
+            preferredSubtitle = null
+            prefersSubtitlesOff = true
+            tracksChosenThisFile = true
+            backend.selectSubtitleTrack(null)
+            aiSubtitleController.enable(language)
+        } else {
+            aiSubtitleController.setLanguage(language)
+        }
+    }
 
     /** 本次从续播位置开始时非 null，5 秒后清掉；控件据此显示「从头播放」提示。 */
     var resumedFromMillis by mutableStateOf<Long?>(null)
@@ -498,6 +574,7 @@ class PlayerScreenState(
         preferredAudio = track
         tracksChosenThisFile = true
         backend.selectAudioTrack(track.id)
+        aiSubtitleController.onPlaybackContextChanged()
     }
 
     /** [track] 为 null 时关闭字幕。 */
@@ -505,6 +582,9 @@ class PlayerScreenState(
         preferredSubtitle = track
         prefersSubtitlesOff = track == null
         tracksChosenThisFile = true
+        if (track != null || aiSubtitleController.uiState.value.on) {
+            aiSubtitleController.disable()
+        }
         backend.selectSubtitleTrack(track?.id)
     }
 
@@ -638,12 +718,18 @@ class PlayerScreenState(
     }
 
     fun togglePlayPause() {
-        if (backend.isPlaying) pause() else play()
+        if (backend.isPlaying || aiSubtitleHoldingPlayback) pause() else play()
     }
 
-    fun play() = backend.play()
+    fun play() {
+        aiSubtitleHoldingPlayback = false
+        aiSubtitleController.onUserPauseIntentChanged(isPaused = false)
+        backend.play()
+    }
 
     fun pause() {
+        aiSubtitleHoldingPlayback = false
+        aiSubtitleController.onUserPauseIntentChanged(isPaused = true)
         val wasPlaying = backend.isPlaying
         backend.pause()
         if (wasPlaying) {
@@ -706,6 +792,7 @@ class PlayerScreenState(
         lastSeekAtMillis = seekAt
         abrController.notePlaybackReady(seekAt)
         seeking = true
+        aiSubtitleController.onSeek(clamped)
         prepared?.let { active ->
             active.cancelPrewarm()
             val freshSample = PlaybackBufferSnapshot(
@@ -844,6 +931,7 @@ class PlayerScreenState(
         lastSeekAtMillis = seekAt
         abrController.notePlaybackReady(seekAt)
         seeking = true
+        aiSubtitleController.onSeek(0L)
         prepared?.let { active ->
             active.cancelPrewarm()
             submitPlaybackIntent(
@@ -961,6 +1049,7 @@ class PlayerScreenState(
      */
     fun release(afterClosed: (() -> Unit)? = null) {
         if (released) return
+        aiSubtitleController.close()
         flushProgress(urgent = true)
         released = true
         persistJob?.cancel()

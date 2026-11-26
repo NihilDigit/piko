@@ -44,6 +44,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.media.ORIGINAL_QUALITY
+import dev.piko.shared.media.player.AiSubtitleUiState
 import dev.piko.shared.media.player.MediaTrack
 import dev.piko.shared.media.player.OriginalSubtitleTrackInfo
 import dev.piko.shared.media.player.PlaybackStatsSection
@@ -102,6 +103,10 @@ internal fun PlayerSheetsOverlay(
     hasTracks: Boolean = false,
     hasSettings: Boolean = true,
     originalSubtitleHints: List<OriginalSubtitleTrackInfo> = emptyList(),
+    aiSubtitleState: AiSubtitleUiState = AiSubtitleUiState(),
+    onToggleAiSubtitles: ((Boolean) -> Unit)? = null,
+    onSelectAiSubtitleLanguage: ((String) -> Unit)? = null,
+    onToggleAiSubtitleOnDemand: ((Boolean) -> Unit)? = null,
 ) {
     val availableTabs = remember(playlist.size > 1, hasTracks, hasSettings, playbackStats != null) {
         buildList {
@@ -159,7 +164,6 @@ internal fun PlayerSheetsOverlay(
                 onSeekStepChange = onSeekStepChange,
                 longPressSpeed = longPressSpeed,
                 onLongPressSpeedChange = onLongPressSpeedChange,
-                onOpenSubtitleStyle = onSubtitleStyleChange?.let { { onOpenSheet(PlayerSheet.SubtitleStyle) } },
             )
             PlayerSheet.Tracks -> TracksPanel(
                 audioTracks = audioTracks,
@@ -170,6 +174,7 @@ internal fun PlayerSheetsOverlay(
                 onSelectSubtitle = onSelectSubtitleTrack,
                 onPickLocalSubtitle = onPickLocalSubtitle,
                 onPickDriveSubtitle = onPickDriveSubtitle?.let { { onOpenSheet(PlayerSheet.DriveSubtitles) } },
+                onOpenSubtitleStyle = onSubtitleStyleChange?.let { { onOpenSheet(PlayerSheet.SubtitleStyle) } },
                 originalSubtitleHints = originalSubtitleHints,
                 onSwitchToOriginalQuality = if (originalSubtitleHints.isNotEmpty() && ORIGINAL_QUALITY in qualityOptions) {
                     {
@@ -179,11 +184,28 @@ internal fun PlayerSheetsOverlay(
                 } else {
                     null
                 },
+                aiSubtitleState = aiSubtitleState,
+                onToggleAiSubtitles = onToggleAiSubtitles,
+                onSelectAiSubtitleLanguage = onSelectAiSubtitleLanguage,
+                onToggleAiSubtitleOnDemand = onToggleAiSubtitleOnDemand,
+                onOpenAiSubtitleLanguages = if (onSelectAiSubtitleLanguage != null) {
+                    { onOpenSheet(PlayerSheet.AiSubtitleLanguages) }
+                } else {
+                    null
+                },
             )
             PlayerSheet.DriveSubtitles -> DriveSubtitlePanel(
                 videoFileId = currentFileId,
                 onPick = { file ->
                     onPickDriveSubtitle?.invoke(file)
+                    onOpenSheet(PlayerSheet.Tracks)
+                },
+                modifier = Modifier.weight(1f),
+            )
+            PlayerSheet.AiSubtitleLanguages -> AiSubtitleLanguagePanel(
+                state = aiSubtitleState,
+                onSelectLanguage = { code ->
+                    onSelectAiSubtitleLanguage?.invoke(code)
                     onOpenSheet(PlayerSheet.Tracks)
                 },
                 modifier = Modifier.weight(1f),

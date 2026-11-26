@@ -226,15 +226,32 @@ internal object FfmpegLayout {
     const val PAR_NB_SIDE_DATA = 40L
     const val PAR_WIDTH = 72L
     const val PAR_HEIGHT = 76L
+    const val PAR_CH_LAYOUT_NB_CHANNELS = 132L
+    const val PAR_SAMPLE_RATE = 152L
     const val PAR_SIZE = 12L
     const val PAR_VIDEO_PREFIX_SIZE = 80L
+    const val PAR_AUDIO_PREFIX_SIZE = 160L
 
     // AVFrame：只映射解码帧的公开前缀，不自行分配结构体。
+    const val FRAME_DATA = 0L
     const val FRAME_LINESIZE = 64L
+    const val FRAME_EXTENDED_DATA = 96L
     const val FRAME_WIDTH = 104L
     const val FRAME_HEIGHT = 108L
+    const val FRAME_NB_SAMPLES = 112L
     const val FRAME_FORMAT = 116L
     const val FRAME_PREFIX_SIZE = 120L
+
+    const val AV_SAMPLE_FMT_U8 = 0
+    const val AV_SAMPLE_FMT_S16 = 1
+    const val AV_SAMPLE_FMT_S32 = 2
+    const val AV_SAMPLE_FMT_FLT = 3
+    const val AV_SAMPLE_FMT_DBL = 4
+    const val AV_SAMPLE_FMT_U8P = 5
+    const val AV_SAMPLE_FMT_S16P = 6
+    const val AV_SAMPLE_FMT_S32P = 7
+    const val AV_SAMPLE_FMT_FLTP = 8
+    const val AV_SAMPLE_FMT_DBLP = 9
 
     // AVPacketSideData
     const val SIDE_DATA_BYTES = 0L
