@@ -46,10 +46,20 @@ function Invoke-AvifEncode {
         [string]$OutputAvif,
         [int]$Fps = 30,
         [int]$Crf = 34,
-        [int]$Preset = 5
+        [int]$Preset = 5,
+        [switch]$Alpha
     )
     Write-Host "Encoding $OutputAvif ..." -ForegroundColor Cyan
-    & ffmpeg -y -framerate $Fps -i $InputPattern -c:v libsvtav1 -crf $Crf -preset $Preset -pix_fmt yuv420p -f avif $OutputAvif
+    if ($Alpha) {
+        & ffmpeg -y -framerate $Fps -i $InputPattern `
+            -filter_complex "[0:v]split[c][a];[c]format=yuv420p[col];[a]alphaextract,format=gray,setparams=colorspace=bt709:range=pc[al]" `
+            -map "[col]" -map "[al]" `
+            -c:v:0 libsvtav1 -crf:v:0 42 -preset:v:0 4 `
+            -c:v:1 libaom-av1 -b:v:1 0 -crf:v:1 38 -cpu-used:v:1 6 `
+            -f avif $OutputAvif
+    } else {
+        & ffmpeg -y -framerate $Fps -i $InputPattern -c:v libsvtav1 -crf $Crf -preset $Preset -pix_fmt yuv420p -f avif $OutputAvif
+    }
     if ($LASTEXITCODE -ne 0) { throw "ffmpeg failed for $OutputAvif" }
 }
 
@@ -62,12 +72,13 @@ function Write-PreviewHtml {
 <meta charset="utf-8">
 <title>Piko README Assets Preview</title>
 <style>
-  body { font-family: system-ui, -apple-system, sans-serif; background: #f4f6fb; color: #1b2230; margin: 24px auto; max-width: 1280px; padding: 0 20px; }
-  body.dark { background: #0e1117; color: #e5e9f2; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #ffffff; color: #1b2230; margin: 24px auto; max-width: 1280px; padding: 0 20px; }
+  body.dark { background: #0d1117; color: #e5e9f2; }
   .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; }
   button { padding: 6px 14px; border-radius: 8px; border: 1px solid #8895; background: transparent; color: inherit; cursor: pointer; }
   h2 { margin-top: 28px; font-size: 18px; }
   img { max-width: 100%; border-radius: 14px; display: block; margin: 10px 0 24px; box-shadow: 0 6px 24px rgba(0,0,0,0.08); }
+  img#banner { border-radius: 0; box-shadow: none; }
 </style>
 </head>
 <body>
@@ -116,10 +127,10 @@ try {
         $bannerOutDir = if ($Install) { "docs" } else { "build/shots/readme" }
         New-Item -ItemType Directory -Force -Path $bannerOutDir | Out-Null
 
-        Invoke-AvifEncode -InputPattern "build/shots/banner-light-frames/frame_%04d.png" -OutputAvif "$bannerOutDir/banner.avif"
-        Invoke-AvifEncode -InputPattern "build/shots/banner-dark-frames/frame_%04d.png" -OutputAvif "$bannerOutDir/banner-dark.avif"
-        & ffmpeg -y -i "build/shots/banner-light-frames/frame_0000.png" -q:v 3 "$bannerOutDir/banner.jpg"
-        & ffmpeg -y -i "build/shots/banner-dark-frames/frame_0000.png" -q:v 3 "$bannerOutDir/banner-dark.jpg"
+        Invoke-AvifEncode -InputPattern "build/shots/banner-light-frames/frame_%04d.png" -OutputAvif "$bannerOutDir/banner.avif" -Alpha
+        Invoke-AvifEncode -InputPattern "build/shots/banner-dark-frames/frame_%04d.png" -OutputAvif "$bannerOutDir/banner-dark.avif" -Alpha
+        & ffmpeg -y -f lavfi -i "color=c=#ffffff:s=1200x320" -i "build/shots/banner-light-frames/frame_0000.png" -filter_complex "[0][1]overlay=shortest=1" -frames:v 1 -update 1 -q:v 3 "$bannerOutDir/banner.jpg"
+        & ffmpeg -y -f lavfi -i "color=c=#0d1117:s=1200x320" -i "build/shots/banner-dark-frames/frame_0000.png" -filter_complex "[0][1]overlay=shortest=1" -frames:v 1 -update 1 -q:v 3 "$bannerOutDir/banner-dark.jpg"
     }
 
     if ($Mode -eq 'all' -or $Mode -eq 'social') {

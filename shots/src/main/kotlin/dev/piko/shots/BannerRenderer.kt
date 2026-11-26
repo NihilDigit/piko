@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableFloatStateOf
@@ -23,8 +24,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -32,14 +35,15 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.Appearance
-import dev.piko.ui.theme.PikoTheme
 import dev.piko.ui.theme.ThemeMode
+import dev.piko.ui.theme.colorScheme
 import java.io.File
 import kotlin.math.PI
 import kotlin.math.pow
@@ -75,6 +79,8 @@ internal fun renderBannerFrames(outDir: File, fps: Int = 30, durationSec: Int = 
                 mkdirs()
             }
             val phaseState = mutableFloatStateOf(0f)
+            val appearance = Appearance(mode = mode)
+            val isDark = mode == ThemeMode.DARK
             val scene = edt {
                 ImageComposeScene(
                     width = widthPx,
@@ -83,8 +89,11 @@ internal fun renderBannerFrames(outDir: File, fps: Int = 30, durationSec: Int = 
                     coroutineContext = Dispatchers.Main,
                 ) {
                     CompositionLocalProvider(LocalPikoPlatform provides env.platform) {
-                        PikoTheme(appearance = Appearance(mode = mode)) {
-                            PikoBannerCanvas(phase = phaseState.floatValue)
+                        MaterialTheme(colorScheme = appearance.colorScheme(isDark)) {
+                            PikoBannerCanvas(
+                                phase = phaseState.floatValue,
+                                fontFamily = env.platform.fontFamily,
+                            )
                         }
                     }
                 }
@@ -113,7 +122,7 @@ internal fun renderBannerFrames(outDir: File, fps: Int = 30, durationSec: Int = 
 }
 
 @Composable
-private fun PikoBannerCanvas(phase: Float) {
+private fun PikoBannerCanvas(phase: Float, fontFamily: FontFamily) {
     val colors = MaterialTheme.colorScheme
 
     val pikoFacePath = remember {
@@ -189,83 +198,93 @@ private fun PikoBannerCanvas(phase: Float) {
     val outline = colors.outlineVariant
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen),
+        ) {
             val w = size.width
             val h = size.height
             val cy = h * 0.5f
             val centerX = w * 0.485f
 
-            // 0. 整幅画布圆角底板
-            val bgClip = Path().apply {
-                addRoundRect(RoundRect(Rect(0f, 0f, w, h), CornerRadius(24.dp.toPx())))
+            // =============================================================
+            // 1. 左侧：虫洞 / 格列佛透视隧道（持续吸入，无外框透明底）
+            // =============================================================
+            val vp = Offset(centerX - 42.dp.toPx(), cy)
+            val tunnelLeft = 4.dp.toPx()
+            val tunnelSpan = vp.x - tunnelLeft
+
+            // 1a. 7 层透视收缩同心椭圆环（垂直完整容纳于画布内，避免上下裁切）
+            val ringCount = 7
+            for (r in 0 until ringCount) {
+                val raw = (phase * 4f + r.toFloat() / ringCount) % 1f
+                // 非线性深度映射：远处缓进，临近虫洞口加速收缩
+                val depth = raw.pow(1.35f)
+                val rx = (48f - 38f * depth).dp.toPx()
+                val ry = (74f - 58f * depth).dp.toPx()
+                val ringX = tunnelLeft + tunnelSpan * (0.04f + 0.96f * depth)
+                val ringAlpha = when {
+                    raw < 0.15f -> (raw / 0.15f) * 0.22f
+                    raw > 0.80f -> ((1f - raw) / 0.20f) * 0.22f
+                    else -> 0.22f
+                }
+                drawOval(
+                    color = primary.copy(alpha = ringAlpha),
+                    topLeft = Offset(ringX - rx, cy - ry),
+                    size = Size(rx * 2f, ry * 2f),
+                    style = Stroke(width = (1.5f - 0.7f * depth).dp.toPx()),
+                )
             }
-            clipPath(bgClip) {
-                drawRect(color = surfaceBg)
 
-                // =============================================================
-                // 1. 左侧：虫洞 / 格列佛透视隧道（持续吸入）
-                // =============================================================
-                val vp = Offset(centerX - 42.dp.toPx(), cy)
-                val tunnelLeft = -24.dp.toPx()
-                val tunnelSpan = vp.x - tunnelLeft
-
-                // 1a. 7 层透视收缩同心椭圆环（格列佛隧道纵深感，每 6 秒推进 4 环无缝循环）
-                val ringCount = 7
-                for (r in 0 until ringCount) {
-                    val raw = (phase * 4f + r.toFloat() / ringCount) % 1f
-                    // 非线性深度映射：远处缓进，临近虫洞口加速收缩
-                    val depth = raw.pow(1.35f)
-                    val rx = (56f - 46f * depth).dp.toPx()
-                    val ry = (96f - 80f * depth).dp.toPx()
-                    val ringX = tunnelLeft + tunnelSpan * (0.04f + 0.96f * depth)
-                    val ringAlpha = when {
-                        raw < 0.15f -> (raw / 0.15f) * 0.22f
-                        raw > 0.80f -> ((1f - raw) / 0.20f) * 0.22f
-                        else -> 0.22f
-                    }
-                    drawOval(
-                        color = primary.copy(alpha = ringAlpha),
-                        topLeft = Offset(ringX - rx, cy - ry),
-                        size = Size(rx * 2f, ry * 2f),
-                        style = Stroke(width = (1.5f - 0.7f * depth).dp.toPx()),
-                    )
+            // 1c. 10 枚多源图标持续沿透视曲线被吸入虫洞（每 6 秒 2 圈无缝循环）
+            val fills = arrayOf(secondaryContainer, primaryContainer, tertiaryContainer)
+            for (tok in tunnelTokens) {
+                val raw = (phase * 2f + tok.phaseOffset) % 1f
+                val t = raw.pow(1.25f)
+                val startX = 2.dp.toPx()
+                val startY = cy + tok.laneY * (h * 0.40f)
+                val ctrlX = startX + (vp.x - startX) * 0.52f
+                val ctrlY = startY * 0.78f + vp.y * 0.22f
+                val inv = 1f - t
+                val x = inv * inv * startX + 2f * inv * t * ctrlX + t * t * vp.x
+                val y = inv * inv * startY + 2f * inv * t * ctrlY + t * t * vp.y
+                val scale = (1.12f - 0.88f * t).coerceAtLeast(0.18f)
+                val alpha = when {
+                    raw < 0.10f -> raw / 0.10f
+                    raw > 0.78f -> ((1f - raw) / 0.22f).coerceIn(0f, 1f)
+                    else -> 1f
                 }
+                val rot = tok.spinDir * (14f - 28f * t)
+                drawBannerIntakeToken(
+                    center = Offset(x, y),
+                    scale = scale,
+                    alpha = alpha,
+                    rotDeg = rot,
+                    kind = tok.kind,
+                    fill = fills[tok.kind % fills.size],
+                    stroke = primary,
+                    bodyPath = bodyPath,
+                    detailPath = detailPath,
+                )
+            }
 
-                // 1c. 10 枚多源图标持续沿透视曲线被吸入虫洞（每 6 秒 2 圈无缝循环）
-                val fills = arrayOf(secondaryContainer, primaryContainer, tertiaryContainer)
-                for (tok in tunnelTokens) {
-                    val raw = (phase * 2f + tok.phaseOffset) % 1f
-                    val t = raw.pow(1.25f)
-                    val startX = -14.dp.toPx()
-                    val startY = cy + tok.laneY * (h * 0.42f)
-                    val ctrlX = startX + (vp.x - startX) * 0.52f
-                    val ctrlY = startY * 0.78f + vp.y * 0.22f
-                    val inv = 1f - t
-                    val x = inv * inv * startX + 2f * inv * t * ctrlX + t * t * vp.x
-                    val y = inv * inv * startY + 2f * inv * t * ctrlY + t * t * vp.y
-                    val scale = (1.12f - 0.88f * t).coerceAtLeast(0.18f)
-                    val alpha = when {
-                        raw < 0.08f -> raw / 0.08f
-                        raw > 0.78f -> ((1f - raw) / 0.22f).coerceIn(0f, 1f)
-                        else -> 1f
-                    }
-                    val rot = tok.spinDir * (14f - 28f * t)
-                    drawBannerIntakeToken(
-                        center = Offset(x, y),
-                        scale = scale,
-                        alpha = alpha,
-                        rotDeg = rot,
-                        kind = tok.kind,
-                        fill = fills[tok.kind % fills.size],
-                        stroke = primary,
-                        bodyPath = bodyPath,
-                        detailPath = detailPath,
-                    )
-                }
+            // 左侧边缘平滑渐隐遮罩，消除任何硬切边，融入页面背景
+            val leftFadeW = 56.dp.toPx()
+            drawRect(
+                brush = Brush.horizontalGradient(
+                    colors = listOf(Color.Transparent, Color.Black),
+                    startX = 0f,
+                    endX = leftFadeW,
+                ),
+                topLeft = Offset.Zero,
+                size = Size(leftFadeW, h),
+                blendMode = BlendMode.DstIn,
+            )
 
-                // =============================================================
-                // 2. 中央 -> 右侧 轻盈输出能量流（衔接品牌与响应式视图）
-                // =============================================================
+            // =============================================================
+            // 2. 中央 -> 右侧 轻盈输出能量流（衔接品牌与响应式视图）
+            // =============================================================
                 val outStart = Offset(centerX + 40.dp.toPx(), cy)
                 val outEndX = w * 0.655f
                 val ribbonOffsets = floatArrayOf(-26f, 0f, 26f)
@@ -322,17 +341,6 @@ private fun PikoBannerCanvas(phase: Float) {
                     // 轻快闭眼（42%）+ 柔和睁眼（58%），起止加速度为 0，避免 30fps 下生硬跳变
                     if (u < 0.42f) smoothStep(u / 0.42f) else 1f - smoothStep((u - 0.42f) / 0.58f)
                 } else 0f
-
-                // 背后极柔和中心岛柔光
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(surfaceBg.copy(alpha = 0.96f), surfaceBg.copy(alpha = 0f)),
-                        center = Offset(centerX, cy),
-                        radius = 66.dp.toPx(),
-                    ),
-                    radius = 66.dp.toPx(),
-                    center = Offset(centerX, cy),
-                )
 
                 withTransform({
                     translate(left = pikoCenter.x, top = pikoCenter.y)
@@ -614,22 +622,13 @@ private fun PikoBannerCanvas(phase: Float) {
                         }
                     }
                 }
-            }
-
-            // 整幅外框极细描边
-            drawRoundRect(
-                color = outline.copy(alpha = 0.55f),
-                topLeft = Offset(0.5.dp.toPx(), 0.5.dp.toPx()),
-                size = Size(w - 1.dp.toPx(), h - 1.dp.toPx()),
-                cornerRadius = CornerRadius(24.dp.toPx()),
-                style = Stroke(width = 1.dp.toPx()),
-            )
         }
 
         // 中央 Piko 品牌字标（唯一文字，全球五语通用）
         Text(
             text = "Piko",
             style = MaterialTheme.typography.headlineMedium.copy(
+                fontFamily = fontFamily,
                 fontSize = 28.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = (-0.5).sp,
