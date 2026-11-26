@@ -1257,12 +1257,29 @@ internal class FolderIndexCoordinator(
                             var firstSyncTime = initialResume?.firstSyncTime.orEmpty()
                             var lastSyncTime = ""
                             var syncCursor: String? = null
+                            val uncachedManifestFolders = ArrayList<Pair<String, List<FileStat>>>()
+                            // 等待磁盘归档缓存就位，避免冷启动首轮扫描把已缓存清单误判为未缓存
+                            store.awaitCacheLoaded()
                             coroutineScope {
                                 val prefetchQueue = Channel<FileStat>(Channel.UNLIMITED)
                                 val queuedManifestIds = HashSet<String>()
                                 val prefetchCountLock = PikoLock()
                                 var prefetchedCount = 0
                                 fun incrementPrefetchedCount(): Int = withPikoLock(prefetchCountLock) { ++prefetchedCount }
+                                if (manifestByFolder.isNotEmpty()) {
+                                    for ((_, manifests) in manifestByFolder) {
+                                        val winner = store.winnerOf(manifests) ?: continue
+                                        if (queuedManifestIds.add(winner.id) && store.cachedCommitted(listOf(winner)) != null) {
+                                            prefetchedCount++
+                                        }
+                                    }
+                                    _treeBuildProgressFlow.update { cur ->
+                                        cur.copy(
+                                            manifestsTotal = manifestByFolder.size,
+                                            manifestsRead = prefetchedCount.coerceAtMost(manifestByFolder.size),
+                                        )
+                                    }
+                                }
                                 val prefetchWorkers = List(MANIFEST_WARMUP_CONCURRENCY) {
                                     launch {
                                         withApiPriority(ApiRequestPriority.BACKGROUND) {
@@ -1428,64 +1445,49 @@ internal class FolderIndexCoordinator(
                                         .takeIf { it.isNotBlank() }
                                 } finally {
                                     prefetchQueue.close()
+                                    // 主树分页扫描已完成：不再让未完成的清单预热阻塞主索引提交，未缓存项转入提交后后台渐进补齐
+                                    prefetchWorkers.forEach { it.cancel() }
                                 }
-                                prefetchWorkers.forEach { it.join() }
 
                                 totalManifestFolders = manifestByFolder.size
-                                var doneManifestFolders = 0
-                                if (totalManifestFolders > 0) {
-                                    _treeBuildProgressFlow.update {
-                                        it.copy(manifestsTotal = totalManifestFolders, manifestsRead = doneManifestFolders)
-                                    }
-                                }
-                                val uncachedManifestFolders = ArrayList<Pair<String, List<FileStat>>>()
-                                val readyBatch = ArrayList<Pair<String, List<VaultEntry>>>(32)
-                                val resolvedVaultLock = PikoLock()
+                                val readyBatch = ArrayList<Pair<String, List<VaultEntry>>>(64)
                                 for ((folderId, manifests) in manifestByFolder) {
                                     if (!isCurrent()) throw CancellationException("Account changed")
                                     val cachedEntries = store.cachedCommitted(manifests)
                                     if (cachedEntries != null) {
                                         readyBatch += folderId to cachedEntries
                                         resolvedVaultMeta += folderId to cachedEntries
-                                        doneManifestFolders++
-                                        if (readyBatch.size >= 32) {
+                                        if (readyBatch.size >= 64) {
                                             index.appendCandidateVaultBatch(candidate, readyBatch)
                                             readyBatch.clear()
-                                            _treeBuildProgressFlow.update { it.copy(manifestsRead = doneManifestFolders) }
                                         }
                                     } else {
                                         uncachedManifestFolders += folderId to manifests
                                     }
                                 }
+                                // 少量未缓存清单（如新增几个归档目录或小型账号）直接以低优先级内联补齐后提交，
+                                // 大批量未缓存清单则不阻塞主索引提交，交由提交后后台渐进补齐。
+                                if (uncachedManifestFolders.isNotEmpty() && uncachedManifestFolders.size <= INLINE_MANIFEST_BACKFILL_THRESHOLD) {
+                                    val inlineTargets = uncachedManifestFolders.toList()
+                                    uncachedManifestFolders.clear()
+                                    withApiPriority(ApiRequestPriority.BACKGROUND) {
+                                        for ((folderId, manifests) in inlineTargets) {
+                                            if (!isCurrent()) throw CancellationException("Account changed")
+                                            PikoWorkloadGovernor.Shared.awaitNoUrgentPlayback()
+                                            if (!isCurrent()) throw CancellationException("Account changed")
+                                            val entries = store.read(folderId, manifests).getOrNull() ?: continue
+                                            readyBatch += folderId to entries
+                                            resolvedVaultMeta += folderId to entries
+                                            if (readyBatch.size >= 64) {
+                                                index.appendCandidateVaultBatch(candidate, readyBatch)
+                                                readyBatch.clear()
+                                            }
+                                        }
+                                    }
+                                }
                                 if (readyBatch.isNotEmpty()) {
                                     index.appendCandidateVaultBatch(candidate, readyBatch)
                                     readyBatch.clear()
-                                    _treeBuildProgressFlow.update { it.copy(manifestsRead = doneManifestFolders) }
-                                }
-                                if (uncachedManifestFolders.isNotEmpty()) {
-                                    val manifestPermits = Semaphore(MANIFEST_WARMUP_CONCURRENCY)
-                                    val fetched = uncachedManifestFolders.map { (folderId, manifests) ->
-                                        async {
-                                            withApiPriority(ApiRequestPriority.BACKGROUND) {
-                                                manifestPermits.withPermit {
-                                                    if (!isCurrent()) throw CancellationException("Account changed")
-                                                    PikoWorkloadGovernor.Shared.awaitNoUrgentPlayback()
-                                                    if (!isCurrent()) throw CancellationException("Account changed")
-                                                    val entries = store.read(folderId, manifests).getOrElse { throw it }
-                                                    withPikoLock(resolvedVaultLock) {
-                                                        doneManifestFolders++
-                                                        _treeBuildProgressFlow.update { it.copy(manifestsRead = doneManifestFolders) }
-                                                    }
-                                                    folderId to entries
-                                                }
-                                            }
-                                        }
-                                    }.awaitAll()
-                                    for (chunk in fetched.chunked(32)) {
-                                        if (!isCurrent()) throw CancellationException("Account changed")
-                                        index.appendCandidateVaultBatch(candidate, chunk)
-                                        resolvedVaultMeta += chunk
-                                    }
                                 }
                             }
                             currentCoroutineContext().ensureActive()
@@ -1535,9 +1537,45 @@ internal class FolderIndexCoordinator(
                                 PikoLog.i(
                                     DRIVE_REPO_TAG,
                                     "SQLite WAL tree index ready (acct=$acctSlot, folders=$folderCount, files=$fileCount, " +
-                                        "manifestFolders=$totalManifestFolders, complete=${readyState.complete}, dirtyFolders=${readyState.dirtyFolders.size}, " +
+                                        "manifestFolders=$totalManifestFolders, uncachedManifests=${uncachedManifestFolders.size}, complete=${readyState.complete}, dirtyFolders=${readyState.dirtyFolders.size}, " +
                                         "hasCursor=${syncCursor != null}, shadowRebuild=$isShadowRebuild, resumed=$resumedFromCheckpoint, elapsedMs=${started.elapsedNow().inWholeMilliseconds})",
                                 )
+                                if (uncachedManifestFolders.isNotEmpty()) {
+                                    val pendingManifests = uncachedManifestFolders.toList()
+                                    ctx.backgroundScope.launch(Dispatchers.Default) {
+                                        val manifestPermits = Semaphore(MANIFEST_WARMUP_CONCURRENCY)
+                                        coroutineScope {
+                                            pendingManifests.forEach { (folderId, manifests) ->
+                                                launch {
+                                                    withApiPriority(ApiRequestPriority.BACKGROUND) {
+                                                        manifestPermits.withPermit {
+                                                            if (!isCurrent()) return@withPermit
+                                                            PikoWorkloadGovernor.Shared.awaitNoUrgentPlayback()
+                                                            if (!isCurrent()) return@withPermit
+                                                            val winnerId = store.winnerOf(manifests)?.id
+                                                            val entries = store.read(folderId, manifests).getOrNull() ?: return@withPermit
+                                                            if (!isCurrent()) return@withPermit
+                                                            val accepted = index.putVaultEntries(
+                                                                folderId = folderId,
+                                                                entries = entries,
+                                                                expectedManifestId = winnerId,
+                                                                requireMatch = true,
+                                                            )
+                                                            if (accepted) {
+                                                                withPikoLock(treeStateLock) {
+                                                                    if (!isCurrent()) return@withPikoLock
+                                                                    ctx.overlay.vaultStars.reconcileFolder(folderId, entries, expectedAccount = ctx.currentAccount)
+                                                                    ctx.listing.childContents.markVaulted(folderId, entries.any { it.isArchived })
+                                                                    ctx.listing.childContents.rememberCover(folderId, entries.coverGcid().orEmpty())
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         } catch (failure: Exception) {
                             if (isCurrent()) throw failure
@@ -1827,6 +1865,7 @@ internal class FolderIndexCoordinator(
     private companion object {
         const val MAX_LOCATE_DEPTH = 64
         const val MANIFEST_WARMUP_CONCURRENCY = 4
+        const val INLINE_MANIFEST_BACKFILL_THRESHOLD = 8
         val CANARY_PROBE_COOLDOWN = 60.seconds
         const val CANARY_WINDOW_SIZE = 500
         const val MAX_CANARY_PAGES = 4
