@@ -6,6 +6,11 @@ plugins {
     application
 }
 
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
 kotlin {
     // 统一使用 JDK 25 工具链避免拉起第二套 Kotlin Daemon 争抢内存，同时保持 JVM 21 字节码兼容
     jvmToolchain(25)
