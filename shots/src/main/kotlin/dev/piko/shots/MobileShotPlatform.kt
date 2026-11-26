@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import dev.piko.ui.adaptive.FormFactor
 import dev.piko.ui.platform.LandscapeLock
 import dev.piko.ui.platform.PikoPlatform
+import dev.piko.ui.platform.PlatformToggle
 
 /**
  * 借桌面端的平台实现拍移动端的界面：交互模型按平台定（见 FormFactor），只改窗口尺寸拍到的是窄的桌面。
@@ -12,6 +13,7 @@ import dev.piko.ui.platform.PikoPlatform
  */
 class MobileShotPlatform(base: PikoPlatform) : PikoPlatform by base {
     override val formFactor: FormFactor = FormFactor.Mobile
+    override val replacePlayerWindow: PlatformToggle? = null
 
     @Composable
     override fun rememberLandscapeLock(): LandscapeLock = NoLandscapeLock
