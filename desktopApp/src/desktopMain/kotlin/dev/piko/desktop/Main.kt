@@ -59,8 +59,10 @@ import dev.piko.desktop.motion.SystemReducedMotion
 import dev.piko.ui.theme.PikoMotionScale
 import androidx.compose.ui.window.Tray
 import dev.piko.desktop.ui.clips.ClipFeedWindow
+import dev.piko.desktop.ui.player.PlayerWindowSlot
 import dev.piko.desktop.ui.player.VideoPlayerWindow
 import dev.piko.desktop.ui.player.MpvLogBridge
+import dev.piko.desktop.ui.player.openPlayerRequest
 import dev.piko.desktop.ui.viewer.ImageViewerWindow
 import dev.piko.desktop.update.DesktopAppUpdater
 import dev.piko.desktop.update.WindowsInstaller
@@ -278,7 +280,7 @@ fun main(args: Array<String>) {
                 ?.use { BitmapPainter(loadImageBitmap(it)) }
         }
         val appearance by appearanceFlow.collectAsState(initialAppearance)
-        val players = remember { mutableStateListOf<VideoPlayerRequest>() }
+        val players = remember { mutableStateListOf<PlayerWindowSlot>() }
         val imageViewers = remember { mutableStateListOf<ImageViewerRequest>() }
         // 信息流从网盘页弹出，只开一个窗口；已开着时再弹一次是把它调到前台。开着的这段时间应用内的侧栏收起，
         // 收回时再出现；关窗是关掉信息流，见 ClipFeedLinks
@@ -293,7 +295,13 @@ fun main(args: Array<String>) {
         }
         val videoPlayer = remember {
             VideoPlayerHost.Detached(
-                open = { players += it },
+                open = { request ->
+                    openPlayerRequest(
+                        slots = players,
+                        request = request,
+                        replaceExisting = platform.replacePlayerWindow.enabled.value,
+                    )
+                },
                 openClipFeed = {
                     clipFeed = it
                     clipFeedRaises++
@@ -675,17 +683,19 @@ fun main(args: Array<String>) {
             )
         }
 
-        // 每个播放请求一个独立窗口，可以边播边浏览网盘
-        if (mpvReady) players.forEach { request ->
-            key(request) {
+        // 默认每个播放请求新建独立窗口；开启「打开新视频时覆盖已有播放窗口」后复用已有窗口并置前
+        if (mpvReady) players.forEach { slot ->
+            key(slot) {
                 VideoPlayerWindow(
-                    request = request,
+                    request = slot.request,
+                    requestGeneration = slot.requestGeneration,
                     services = services,
                     platform = platform,
                     settings = settings,
                     appearance = appearance,
                     icon = appIcon,
-                    onClose = { players.remove(request) },
+                    onClose = { players.remove(slot) },
+                    raise = slot.raise,
                 )
             }
         }

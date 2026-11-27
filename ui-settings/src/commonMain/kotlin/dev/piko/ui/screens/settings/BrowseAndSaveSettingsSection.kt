@@ -10,6 +10,7 @@ import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.OndemandVideo
 import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.SwipeVertical
 import androidx.compose.material.icons.outlined.TextFields
@@ -18,6 +19,7 @@ import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,10 +34,48 @@ import dev.piko.ui.platform.LinkAssociationState
 import dev.piko.ui.platform.LocalPikoPlatform
 import kotlinx.coroutines.launch
 
+internal fun replacePlayerWindowTitle(): String = tr(
+    "打开新视频时覆盖已有播放窗口",
+    "Replace existing player window when opening a video",
+    "新しい動画を既存のプレーヤーウィンドウで開く",
+    "새 동영상을 기존 플레이어 창에서 열기",
+    "開啟新影片時覆蓋現有播放視窗",
+)
+
+internal fun replacePlayerWindowSupporting(): String = tr(
+    "关闭时每次打开视频均新建独立窗口，可同时播放多个视频",
+    "When off, each video opens in a new window for simultaneous playback",
+    "オフ時は動画ごとに新しいウィンドウを開き、同時再生できます",
+    "꺼져 있으면 동영상마다 새 창을 열어 동시에 재생할 수 있습니다",
+    "關閉時每次開啟影片均新建獨立視窗，可同時播放多個影片",
+)
+
+internal fun matchesReplacePlayerWindowQuery(searchQuery: String): Boolean = matchesSettingsQuery(
+    searchQuery,
+    "打开新视频时覆盖已有播放窗口",
+    "覆盖",
+    "复用",
+    "单窗口",
+    "多窗口",
+    "播放窗口",
+    "Replace existing player window",
+    "reuse",
+    "single window",
+    "multiple windows",
+    "player window",
+    "既存のプレーヤーウィンドウ",
+    "ウィンドウ",
+    "기존 플레이어 창",
+    "플레이어 창",
+    "開啟新影片時覆蓋現有播放視窗",
+    "播放視窗",
+)
+
 @Composable
 internal fun hasBrowseSectionMatches(searchQuery: String): Boolean {
     if (searchQuery.isBlank()) return true
     val sessionManager = LocalPikoServices.current.preferences
+    val platform = LocalPikoPlatform.current
     val isNameParsingEnabled by sessionManager.nameParsingFlow.collectAsStateWithLifecycle(initialValue = true)
     fun match(vararg terms: String): Boolean = matchesSettingsQuery(searchQuery, *terms)
 
@@ -46,11 +86,12 @@ internal fun hasBrowseSectionMatches(searchQuery: String): Boolean {
     val matchPerFolderSort = match("各文件夹独立排序", "Sort each folder separately", "フォルダーごとに並べ替え", "폴더별 정렬", "各資料夾獨立排序")
     val matchPlayQuality = match("播放画质", "Playback quality", "resolution", "再生画質", "재생 화질", "播放畫質")
     val matchResumePlayback = match("续播上次进度", "从头播放", "Resume playback", "start from beginning", "前回の続きから再生", "이어서 재생", "續播上次進度")
+    val matchReplacePlayerWindow = platform.replacePlayerWindow != null && matchesReplacePlayerWindowQuery(searchQuery)
     val matchHwDec = match("硬件解码", "Hardware decoding", "mpv", "hwdec", "ハードウェアデコード", "하드웨어 디코딩", "硬體解碼")
     val matchClipAuto = match("信息流自动续播", "Auto-extend feed clips", "clips", "feed", "フィード", "피드 클립", "資訊流自動續播")
     val matchExitConfirm = match("退出瀑布流与信息流时确认", "Confirm before exiting", "gallery", "clips", "feed", "瀑布流", "信息流", "退出确认", "終了時に確認", "종료 시 확인", "結束時確認")
     return matchParse || matchHeuristic || matchBlur || matchFoldersFirst || matchPerFolderSort ||
-        matchPlayQuality || matchResumePlayback || matchHwDec || matchClipAuto || matchExitConfirm
+        matchPlayQuality || matchResumePlayback || matchReplacePlayerWindow || matchHwDec || matchClipAuto || matchExitConfirm
 }
 
 @Composable
@@ -78,6 +119,7 @@ internal fun BrowseSettingsSection(
     onSectionPositioned: (SettingsSection, Int) -> Unit,
 ) {
     val sessionManager = LocalPikoServices.current.preferences
+    val platform = LocalPikoPlatform.current
     val scope = rememberCoroutineScope()
 
     val isSpoilerBlurEnabled by sessionManager.spoilerBlurFlow.collectAsStateWithLifecycle(
@@ -120,10 +162,11 @@ internal fun BrowseSettingsSection(
 
     val matchPlayQuality = match("播放画质", "Playback quality", "resolution", "再生画質", "재생 화질", "播放畫質")
     val matchResumePlayback = match("续播上次进度", "从头播放", "Resume playback", "start from beginning", "前回の続きから再生", "이어서 재생", "續播上次進度")
+    val matchReplacePlayerWindow = platform.replacePlayerWindow != null && matchesReplacePlayerWindowQuery(searchQuery)
     val matchHwDec = match("硬件解码", "Hardware decoding", "mpv", "hwdec", "ハードウェアデコード", "하드웨어 디코딩", "硬體解碼")
     val matchClipAuto = match("信息流自动续播", "Auto-extend feed clips", "clips", "feed", "フィード", "피드 클립", "資訊流自動續播")
     val matchExitConfirm = match("退出瀑布流与信息流时确认", "Confirm before exiting", "gallery", "clips", "feed", "瀑布流", "信息流", "退出确认", "終了時に確認", "종료 시 확인", "結束時確認")
-    val matchPlayGroup = matchPlayQuality || matchResumePlayback || matchHwDec || matchClipAuto || matchExitConfirm
+    val matchPlayGroup = matchPlayQuality || matchResumePlayback || matchReplacePlayerWindow || matchHwDec || matchClipAuto || matchExitConfirm
 
     if (matchFilesGroup || matchPlayGroup) {
         SettingsSectionBlock(
@@ -238,6 +281,18 @@ internal fun BrowseSettingsSection(
                             checked = isResumePlaybackEnabled,
                             onCheckedChange = { scope.launch { sessionManager.setResumePlaybackEnabled(it) } },
                         )
+                    }
+                    if (matchReplacePlayerWindow) {
+                        platform.replacePlayerWindow?.let { toggle ->
+                            val replaceWindow by toggle.enabled.collectAsState()
+                            SettingsSwitchRow(
+                                icon = Icons.Outlined.OndemandVideo,
+                                title = replacePlayerWindowTitle(),
+                                supporting = replacePlayerWindowSupporting(),
+                                checked = replaceWindow,
+                                onCheckedChange = toggle::set,
+                            )
+                        }
                     }
                     if (matchHwDec) {
                         SettingsSwitchRow(

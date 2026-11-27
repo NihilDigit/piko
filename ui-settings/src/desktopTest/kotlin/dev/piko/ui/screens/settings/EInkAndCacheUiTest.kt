@@ -102,6 +102,8 @@ class EInkAndCacheUiTest {
                 PikoLocale.apply(lang)
                 assertZeroMiddleDots("formatCacheSpaceLine[$lang]", formatCacheSpaceLine(capped))
                 assertZeroMiddleDots("formatCacheClearableSubtitle[$lang]", formatCacheClearableSubtitle(capped.clearableBytes))
+                assertZeroMiddleDots("replacePlayerWindowTitle[$lang]", replacePlayerWindowTitle())
+                assertZeroMiddleDots("replacePlayerWindowSupporting[$lang]", replacePlayerWindowSupporting())
                 for (category in CacheCategory.entries) {
                     assertZeroMiddleDots("cacheCategoryLabel($category)[$lang]", cacheCategoryLabel(category))
                     val populated = CacheCategoryStats(category = category, bytes = 64L * 1024L * 1024L, fileCount = 12)
@@ -130,5 +132,20 @@ class EInkAndCacheUiTest {
         } finally {
             PikoLocale.apply(previous)
         }
+    }
+
+    @Test
+    fun replacePlayerWindowSearchMatchesKeywordsAcrossLocales() {
+        assertTrue(matchesReplacePlayerWindowQuery(""))
+        assertTrue(matchesReplacePlayerWindowQuery("覆盖"))
+        assertTrue(matchesReplacePlayerWindowQuery("播放窗口"))
+        assertTrue(matchesReplacePlayerWindowQuery("单窗口"))
+        assertTrue(matchesReplacePlayerWindowQuery("多窗口"))
+        assertTrue(matchesReplacePlayerWindowQuery("single window"))
+        assertTrue(matchesReplacePlayerWindowQuery("reuse"))
+        assertTrue(matchesReplacePlayerWindowQuery("プレーヤーウィンドウ"))
+        assertTrue(matchesReplacePlayerWindowQuery("플레이어 창"))
+        assertTrue(matchesReplacePlayerWindowQuery("播放視窗"))
+        assertFalse(matchesReplacePlayerWindowQuery("WebDAV"))
     }
 }

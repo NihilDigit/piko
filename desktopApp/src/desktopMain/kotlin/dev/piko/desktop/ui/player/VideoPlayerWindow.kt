@@ -26,6 +26,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -60,6 +61,7 @@ import dev.piko.desktop.PixelAlignedContentEffect
 import dev.piko.desktop.TitleBarColors
 import dev.piko.desktop.TitleBarThemeEffect
 import dev.piko.desktop.WindowFrame
+import dev.piko.desktop.bringToFront
 import dev.piko.desktop.LinuxDesktop
 import dev.piko.desktop.LinuxFullscreen
 import dev.piko.desktop.ObserveLinuxFullscreenEffect
@@ -119,6 +121,7 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.onEach
 import androidx.compose.runtime.snapshotFlow
 import java.awt.KeyboardFocusManager
 import java.awt.Point
@@ -131,6 +134,32 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import org.openani.mediamp.MediampPlayer
+
+@Stable
+internal class PlayerWindowSlot(initialRequest: VideoPlayerRequest) {
+    var request by mutableStateOf(initialRequest)
+    // 每次覆盖播放请求递增，避免窗口内切到其他集后再次打开初始同一 VideoPlayerRequest 时因结构相等跳过重载
+    var requestGeneration by mutableIntStateOf(0)
+    var raise by mutableIntStateOf(0)
+}
+
+internal fun openPlayerRequest(
+    slots: MutableList<PlayerWindowSlot>,
+    request: VideoPlayerRequest,
+    replaceExisting: Boolean,
+) {
+    if (replaceExisting && slots.isNotEmpty()) {
+        val retained = slots.last()
+        while (slots.size > 1) {
+            slots.removeAt(0)
+        }
+        retained.request = request
+        retained.requestGeneration++
+        retained.raise++
+    } else {
+        slots += PlayerWindowSlot(request)
+    }
+}
 
 /**
  * 独立的视频播放窗口。取流、续播与重连在共用的 [PlayerScreenState]，控件是与 Android 共用的
@@ -148,6 +177,8 @@ fun VideoPlayerWindow(
     appearance: Appearance,
     icon: Painter?,
     onClose: () -> Unit,
+    requestGeneration: Int = 0,
+    raise: Int = 0,
 ) {
     // 无边框全屏不改 WindowState 的 placement，窗口尺寸却铺满了屏幕，要告诉位置记忆此时别存
     var isFullscreen by remember { mutableStateOf(false) }
@@ -180,8 +211,8 @@ fun VideoPlayerWindow(
             }
         }
     }
-    // 换集后标题跟着当前这集走
-    var title by remember { mutableStateOf(request.fileName) }
+    // 换集或覆盖窗口后标题跟着当前这集走
+    var title by remember(request, requestGeneration) { mutableStateOf(request.fileName) }
     var shortcutsOpen by remember { mutableStateOf(false) }
     var fallbackKeyHandler by remember { mutableStateOf<((KeyEvent) -> Boolean)?>(null) }
     val shortcutModifier = platform.shortcutModifier
@@ -216,13 +247,19 @@ fun VideoPlayerWindow(
         // 画面四周是黑的，窗口外框不随应用主题，始终用深色
         TitleBarThemeEffect(window, dark = true)
         PixelAlignedContentEffect(window)
-        val windowId = remember(request) { "player-${request.hashCode()}" }
+        val windowId = remember(window) { "player-${System.identityHashCode(window)}" }
         val focused = LocalWindowInfo.current.isWindowFocused
         LaunchedEffect(windowId, focused) {
             services.onWindowFocusChanged(windowId, focused)
         }
         DisposableEffect(windowId) {
             onDispose { services.onWindowClosed(windowId) }
+        }
+        LaunchedEffect(raise) {
+            if (raise > 0) {
+                if (windowState.isMinimized) windowState.isMinimized = false
+                bringToFront(window)
+            }
         }
         val windowsFullscreen = remember(window) { if (WinRTSupport.isWindows) WindowsFullscreen(window) else null }
         val linuxFullscreen = remember(window) { if (isLinux) LinuxFullscreen(window) else null }
@@ -318,8 +355,14 @@ fun VideoPlayerWindow(
                         },
                         onClose = requestClose,
                     )
+                    LaunchedEffect(request, requestGeneration) {
+                        if (windowTurned && !inFullscreen && turnWindow(window, windowState)) {
+                            windowTurned = false
+                        }
+                    }
                     VideoPlayerContent(
                         request = request,
+                        requestGeneration = requestGeneration,
                         services = services,
                         settings = settings,
                         window = window,
@@ -380,6 +423,7 @@ private val PlayerTitleBarColors = TitleBarColors(container = Color.Black, conte
 @OptIn(ExperimentalMediampApi::class, FlowPreview::class)
 private fun VideoPlayerContent(
     request: VideoPlayerRequest,
+    requestGeneration: Int,
     services: PikoServices,
     settings: DesktopSettingsStore,
     window: ComposeWindow,
@@ -394,12 +438,14 @@ private fun VideoPlayerContent(
 ) {
     val scope = rememberCoroutineScope()
     // 不使用 rememberMediampPlayer：其 RememberObserver 会在 EDT 同步销毁原生播放器。
-    // 按 request 隔离生命周期，避免窗口内切换打开新视频时旧 state 的异步销毁回调误杀新请求正在使用的 backend/player。
-    val playerJob = remember(request) { SupervisorJob() }
+    // 按 (request, requestGeneration) 隔离生命周期，避免窗口内切换打开新视频时旧 state 的异步销毁回调误杀新请求正在使用的 backend/player，
+    // 同时也确保窗口内已切到其他集后再次打开初始同一 VideoPlayerRequest 时能强制重载。
+    val playerJob = remember(request, requestGeneration) { SupervisorJob() }
     val playerScope = remember(playerJob) { CoroutineScope(Dispatchers.Main.immediate + playerJob) }
     val player = remember(playerScope) { MediampPlayer(Unit, playerScope.coroutineContext) }
     // 从已预热的内存偏好快照无锁直取，不在组合首帧阻塞 EDT
-    val initialSnapshot = remember { services.preferences.currentSnapshot }
+    val initialSnapshot = remember(request, requestGeneration) { services.preferences.currentSnapshot }
+    var latestVolume by remember { mutableStateOf(settings.get(KEY_PLAYER_VOLUME).toFloatOrNull()) }
     val backend = remember(player) {
         MediampPlaybackBackend(
             player,
@@ -407,8 +453,8 @@ private fun VideoPlayerContent(
             hardwareDecoding = initialSnapshot.hardwareDecoding,
             initialSubtitleStyle = initialSnapshot.subtitleStyle,
         ).also { created ->
-            // mpv 的音量在换文件时保留，只需在开窗时设一次
-            settings.get(KEY_PLAYER_VOLUME).toFloatOrNull()?.let(created::setVolume)
+            // mpv 的音量在换文件时保留，覆盖窗口重建后端时沿用最新非静音音量
+            latestVolume?.let(created::setVolume)
         }
     }
     // 音量按本机记住，下一个窗口、下次启动照旧。不进设置同步：各台设备的音箱与系统音量不同。
@@ -417,13 +463,19 @@ private fun VideoPlayerContent(
         snapshotFlow { backend.volume }
             .filterNotNull()
             .filter { it > 0f }
+            .onEach { latestVolume = it }
             .debounce(VOLUME_SAVE_DEBOUNCE_MILLIS)
             .collect { settings.set(KEY_PLAYER_VOLUME, it.toString()) }
     }
+    DisposableEffect(Unit) {
+        onDispose {
+            latestVolume?.takeIf { it > 0f }?.let { settings.set(KEY_PLAYER_VOLUME, it.toString()) }
+        }
+    }
     val downloads = services.downloadManager
     // 主界面给的同目录视频；从传输页打开时为空，进来后再按父目录取
-    var siblingVideos by remember(request) { mutableStateOf(request.playlist) }
-    val state = remember(request) {
+    var siblingVideos by remember(request, requestGeneration) { mutableStateOf(request.playlist) }
+    val state = remember(request, requestGeneration) {
         PlayerScreenState(
             repository = services.mediaRepository,
             backend = backend,
@@ -465,7 +517,7 @@ private fun VideoPlayerContent(
     }
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(request) {
+    LaunchedEffect(request, requestGeneration) {
         // 主界面给的只有视频，字幕文件总要自己列一次目录取；传入 currentFileId 以在单文件队列时回落到当前文件夹队列
         val siblings = services.driveRepository.siblingMedia(request.fileId)
         if (siblingVideos.isEmpty()) siblingVideos = siblings.videos
@@ -479,7 +531,7 @@ private fun VideoPlayerContent(
         downloads.findCompletedLocalPath(stat)?.takeIf { File(it).exists() }?.let(state::useLocalCopy)
     }
 
-    LaunchedEffect(state.title) { onTitleChange(state.title) }
+    LaunchedEffect(state, state.title) { onTitleChange(state.title) }
 
     ObserveMessages(state.messages, snackbarHostState)
 
@@ -495,24 +547,25 @@ private fun VideoPlayerContent(
         }
     }
 
-    var listenMode by remember(request) { mutableStateOf(false) }
+    var listenMode by remember(request, requestGeneration) { mutableStateOf(false) }
     val showListen = !state.isImage && (state.isAudioFile || listenMode)
     LaunchedEffect(showListen) {
         if (showListen && isFullscreen) onToggleFullscreen()
     }
 
-    // Windows SMTC：将系统媒体卡片、键盘多媒体键与蓝牙耳机控制绑定到当前独立播放窗口
-    val smtcSession = remember(window, state) {
+    // Windows SMTC：将系统媒体卡片、键盘多媒体键与蓝牙耳机控制绑定到当前独立播放窗口（按窗口复用，避免覆盖视频时在 EDT 重绑 HWND）
+    val latestState by rememberUpdatedState(state)
+    val smtcSession = remember(window) {
         if (!WinRTSupport.isWindows) {
             null
         } else {
             WindowsSmtcSession(
                 listener = object : SmtcActionListener {
-                    override fun onPlay() = state.play()
-                    override fun onPause() = state.pause()
-                    override fun onStop() = state.pause()
-                    override fun onNext() = state.playNext()
-                    override fun onPrevious() = state.playPrevious()
+                    override fun onPlay() = latestState.play()
+                    override fun onPause() = latestState.pause()
+                    override fun onStop() = latestState.pause()
+                    override fun onNext() = latestState.playNext()
+                    override fun onPrevious() = latestState.playPrevious()
                 },
             )
         }

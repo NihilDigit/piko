@@ -134,6 +134,9 @@ class DesktopPikoPlatform(
     override val compactTitleBar: PlatformToggle? =
         if (WinRTSupport.isWindows) StoredToggle(settings, "window.compactTitleBar", default = true) else null
 
+    override val replacePlayerWindow: PlatformToggle =
+        StoredToggle(settings, "player.replaceWindow", default = false)
+
     @Composable
     override fun dynamicColorScheme(dark: Boolean): ColorScheme =
         error("Dynamic color scheme is not supported on desktop")

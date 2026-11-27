@@ -54,6 +54,9 @@ interface PikoPlatform {
     /** 仅在系统托盘可用时提供。 */
     val closeToTray: PlatformToggle? get() = null
 
+    /** 打开新视频时复用并覆盖已有独立播放窗口（桌面端）。不支持独立多播放窗口的平台为 null，设置页隐藏该项。 */
+    val replacePlayerWindow: PlatformToggle? get() = null
+
     /**
      * 界面字体。汉字不在其中时由系统按系统语言挑后备字体，英文系统上会逐字混用日文与中文字体，
      * 需要的平台在这里给出一款带简体中文的字体。
