@@ -688,6 +688,7 @@ fun main(args: Array<String>) {
             key(slot) {
                 VideoPlayerWindow(
                     request = slot.request,
+                    requestGeneration = slot.requestGeneration,
                     services = services,
                     platform = platform,
                     settings = settings,

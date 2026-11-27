@@ -62,7 +62,27 @@ class PlayerWindowSlotTest {
         assertEquals(1, slots.size)
         assertSame(initialSlot, slots.single())
         assertSame(ep3, initialSlot.request)
+        assertEquals(2, initialSlot.requestGeneration)
         assertEquals(2, initialSlot.raise)
+    }
+
+    @Test
+    fun incrementsRequestGenerationWhenReopeningIdenticalRequest() {
+        val slots = mutableListOf<PlayerWindowSlot>()
+        val ep1First = VideoPlayerRequest(fileId = "ep1", fileName = "Episode 01.mkv", localPath = null)
+        val ep1Again = VideoPlayerRequest(fileId = "ep1", fileName = "Episode 01.mkv", localPath = null)
+
+        openPlayerRequest(slots, ep1First, replaceExisting = true)
+        val slot = slots.single()
+        assertEquals(0, slot.requestGeneration)
+        assertEquals(0, slot.raise)
+
+        openPlayerRequest(slots, ep1Again, replaceExisting = true)
+        assertEquals(1, slots.size)
+        assertSame(slot, slots.single())
+        assertEquals(ep1Again, slot.request)
+        assertEquals(1, slot.requestGeneration)
+        assertEquals(1, slot.raise)
     }
 
     @Test
