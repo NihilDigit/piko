@@ -68,6 +68,7 @@ gh workflow run release.yml -f version=9.9.9      # 发版演练：完整执行�
 正式打 tag 发版前，须在 `.github/changelogs/<version>.md` 中编写五种语言的更新日志，依次包含 `# zh-Hans`、`# zh-Hant`、`# en`、`# ja`、`# ko` 五个一级标题段落：
 
 - 每种语言段落遵循统一格式：首行一句话概述，随后按需列出 `## 修复` 与 `## 变化`（对应各语言标题），每条使用规范书面语描述用户可感知的行为变化，不出现文件名、类名、函数名、提交标题或内部重构细节。`## 修复` 仅记录已发布正式版中存在的问题；本次开发周期内引入并在发版前修复的问题不列入。编写前须对照上一版更新日志保持文风一致。
+- **外部 PR 贡献者署名（Credit）**：凡本版本合入的外部贡献者 PR，须在全部五种语言段落的对应条目中以 `（#编号 @GitHub用户名）` / `(#编号 @GitHub用户名)` 形式明确署名致谢（发版前可通过 `gh pr list --state merged` 核对本周期合入的外部 PR 与作者，切勿仅写 PR 编号而漏掉作者）。正例见 `v1.5.0` Release Note（`（#47 @bluedvst）`）；反例见 `v1.6.0`（仅写了 `#53`、`#55`、`#56`、`#57` 而未署名 PR 作者）。
 - **前置硬性门控**：`release.yml` 最开头的第一个前置 job（在全部测试与多平台编译启动之前）会对 `.github/changelogs/<version>.md` 执行硬性校验。正式 tag 发版时，若该文件缺失或任一语言段落为空，流水线会在开场数秒内直接报错终止，既防止漏写更新说明，又避免浪费后续近一小时的全平台测试与构建时间。手动 `workflow_dispatch` 触发的发版演练（`dry-run`）不强制要求该文件存在。
 - **`origin/main` 优先读取与单任务重跑**：前置门控 job 与汇总发布的 `release` job 均优先从 `origin/main` 读取 `.github/changelogs/<version>.md`（不存在时回退至当前 tag 所在提交树）。草稿附件上传（`overwrite_files: true`）与 SLSA 证明附件挂载均已实现幂等覆盖：若推送 tag 时因漏写更新日志被前置门控拦截，或草稿生成后需修订文案，只需将修正后的 `.github/changelogs/<version>.md` 推送至 `main`，随后在 GitHub Actions 页面对失败的前置 job 或 `release` job 直接执行 Rerun，即可在不删除重建 tag、不重跑全平台打包的前提下完成草稿更新。
 
