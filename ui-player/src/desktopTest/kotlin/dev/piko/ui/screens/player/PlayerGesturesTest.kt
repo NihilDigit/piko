@@ -71,7 +71,7 @@ class PlayerGesturesTest {
         PikoLocale.apply(AppLanguage.ZH_CN)
     }
 
-    private class TestPikoPlatform(
+    internal class TestPikoPlatform(
         override val motionScale: PikoMotionScale = PikoMotionScale(),
     ) : PikoPlatform {
         override val appVersion: String = "test"

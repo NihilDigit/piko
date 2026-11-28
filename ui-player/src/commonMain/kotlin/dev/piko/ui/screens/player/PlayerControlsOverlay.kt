@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
@@ -79,6 +81,7 @@ import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.isKeyboardModality
 import dev.piko.ui.platform.LocalFramelessWindow
+import dev.piko.ui.platform.windowDragArea
 import io.github.nihildigit.pikpak.FileStat
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -746,6 +749,18 @@ fun MobilePlayerControls(
                 },
                 onVolumeDraggingChange = { ui.isDraggingVolume = it },
                 dragAreaEnabled = chromeVisible,
+            )
+
+            // 控件栏收起时，桌面非全屏且无模态遮挡或锁屏状态下在窗口最上沿保留一条与系统标题栏等高的隐形拖动条，
+            // 无需先晃动鼠标唤出顶栏即可直接按住顶边移动窗口。
+            val hiddenTopDragEnabled = !chromeVisible && !isFullscreen && !ui.isLocked &&
+                !modalOverlayOpen && !speedController.active
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(32.dp)
+                    .windowDragArea(enabled = hiddenTopDragEnabled),
             )
 
             AnimatedVisibility(

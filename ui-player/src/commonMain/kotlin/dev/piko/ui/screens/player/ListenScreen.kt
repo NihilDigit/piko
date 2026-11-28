@@ -365,6 +365,7 @@ fun ListenScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .windowDragArea(enabled = !listenModalOpen)
                     .padding(start = 8.dp, end = 8.dp, top = 6.dp + topChromePadding, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -377,7 +378,7 @@ fun ListenScreen(
                         modifier = Modifier.captionExclusion(),
                     )
                 }
-                Spacer(Modifier.weight(1f).height(40.dp).windowDragArea(enabled = !listenModalOpen))
+                Spacer(Modifier.weight(1f))
                 if (onSwitchToVideo != null) {
                     FilledTonalButton(
                         onClick = onSwitchToVideo,

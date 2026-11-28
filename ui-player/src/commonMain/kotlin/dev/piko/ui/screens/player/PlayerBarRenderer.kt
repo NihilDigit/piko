@@ -357,6 +357,13 @@ internal fun CustomizablePlayerTopBar(
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .then(
+                if (editScope == null && !env.isPreview) {
+                    Modifier.windowDragArea(enabled = env.dragAreaEnabled)
+                } else {
+                    Modifier
+                },
+            )
             .background(Brush.verticalGradient(TopScrim))
             .then(
                 if (editScope == null) {
@@ -525,11 +532,7 @@ private fun RowScope.RenderVideoPanelItems(
             PlayerPanelItem.Spacer -> {
                 if (editScope == null) {
                     if (index != absorbedSpacerIndex) {
-                        Spacer(
-                            Modifier
-                                .weight(1f)
-                                .then(if (inTopBar) Modifier.height(36.dp).windowDragArea(enabled = env.dragAreaEnabled) else Modifier),
-                        )
+                        Spacer(Modifier.weight(1f))
                     }
                 } else {
                     val spacerMod = if (index == absorbedSpacerIndex) {
@@ -606,9 +609,7 @@ private fun RowScope.RenderVideoPanelItems(
                             clickableContainer = true,
                             modifier = titleOuterMod,
                         ) { innerMod ->
-                            val titleBoxMod = innerMod
-                                .then(if (inTopBar && editScope == null) Modifier.windowDragArea(enabled = env.dragAreaEnabled) else Modifier)
-                                .padding(horizontal = 6.dp)
+                            val titleBoxMod = innerMod.padding(horizontal = 6.dp)
                             val titleBody: @Composable () -> Unit = {
                                 Column {
                                     Text(

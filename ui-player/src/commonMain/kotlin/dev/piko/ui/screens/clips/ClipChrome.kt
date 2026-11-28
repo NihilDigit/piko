@@ -217,6 +217,7 @@ internal fun ClipFeedTopBar(
         modifier = modifier
             .fillMaxWidth()
             .then(caption?.modifier ?: Modifier)
+            .then(if (!isPreview) Modifier.windowDragArea() else Modifier)
             .background(Brush.verticalGradient(TopScrim))
             .then(
                 if (!isPreview) {
@@ -254,7 +255,7 @@ internal fun ClipFeedTopBar(
             when (item) {
                 PlayerPanelItem.Spacer -> {
                     if (editScope == null) {
-                        Spacer(Modifier.weight(1f).height(buttonSize).windowDragArea())
+                        Spacer(Modifier.weight(1f))
                     } else {
                         val spacerMod = if (index == absorbedSpacerIndex) {
                             Modifier.defaultMinSize(minWidth = 24.dp)
@@ -299,7 +300,7 @@ internal fun ClipFeedTopBar(
                             } else {
                                 ScopeTitle(title, compact, showBackground = item.showBackground)
                                 if (!hasSpacer) {
-                                    Spacer(Modifier.weight(1f).height(buttonSize).windowDragArea())
+                                    Spacer(Modifier.weight(1f))
                                 }
                             }
                         }
