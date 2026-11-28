@@ -499,7 +499,8 @@ internal class DriveListingProjection(
                             loadedFolderId = folderId
                             ctx.selection.revealHighlightedItems(structure, ctx.selection.highlightedFileIds)
                             analysis = FolderAnalysis(folderId, merged, structure)
-                            isLoading = false
+                            // 缓存命中空列表时保持骨架屏直至远端确认确实为空，避免弱网下过早误显「此文件夹为空」
+                            isLoading = result.cached && merged.isEmpty()
                             if (!result.cached) {
                                 loadError = null
                                 isRefreshing = false

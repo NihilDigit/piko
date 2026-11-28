@@ -80,6 +80,11 @@ kotlin {
             // 纯 Kotlin Multiplatform Markdown AST 解析器（GFM 表格、删除线、任务列表、自动链接）
             implementation(libs.jetbrains.markdown)
         }
+        if (enableAndroid) {
+            getByName("androidMain").dependencies {
+                implementation(libs.androidx.sqlite.bundled)
+            }
+        }
         getByName("desktopMain").dependencies {
             implementation(libs.sqlite.jdbc)
         }

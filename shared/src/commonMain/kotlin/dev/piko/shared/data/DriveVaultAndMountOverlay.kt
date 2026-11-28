@@ -438,6 +438,7 @@ internal class DriveVaultAndMountOverlay(
         val state = driveTreeIndex.flow.value
         val children = driveTreeIndex.realChildren(folderId)
         if (children.coverage == DriveTreeIndex.FolderCoverage.COMPLETE ||
+            (children.coverage == DriveTreeIndex.FolderCoverage.DIRTY && children.files.isNotEmpty()) ||
             (state.complete && children.coverage != DriveTreeIndex.FolderCoverage.DIRTY && (folderId.isEmpty() || folderId in state.entries))
         ) {
             val indexedVault = driveTreeIndex.vaultEntries(folderId)

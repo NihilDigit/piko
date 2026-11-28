@@ -15,7 +15,7 @@ internal class SqliteTreeStore(
 ) {
     private companion object {
         const val TAG = "SqliteTreeStore"
-        const val SCHEMA_MIGRATION_LEVEL = "2"
+        const val SCHEMA_MIGRATION_LEVEL = "3"
         val EMPTY_COMPLETE_CONTENT = ContentStats(listingComplete = true)
         val EMPTY_INCOMPLETE_CONTENT = ContentStats(listingComplete = false)
     }
@@ -88,6 +88,7 @@ internal class SqliteTreeStore(
             db.execute("CREATE INDEX IF NOT EXISTS tree_parent ON tree_nodes(generation,parent)")
             db.execute("CREATE INDEX IF NOT EXISTS tree_content_key ON tree_nodes(gcid,bytes)")
             db.execute("CREATE INDEX IF NOT EXISTS tree_folders ON tree_nodes(generation,folder)")
+            db.execute("CREATE INDEX IF NOT EXISTS tree_parent_folders ON tree_nodes(generation,parent,id) WHERE folder=1")
             db.execute("CREATE INDEX IF NOT EXISTS tree_search ON tree_nodes(generation,excluded,norm_name,id,folder)")
             db.execute("CREATE INDEX IF NOT EXISTS tree_names ON tree_nodes(generation,name)")
             db.execute("CREATE INDEX IF NOT EXISTS tree_space_files ON tree_nodes(generation,parent,folder,excluded,bytes DESC)")
@@ -199,8 +200,8 @@ internal class SqliteTreeStore(
             rebuildAll = true
             db.transaction { rebuildAggregates() }
         }
-        runCatching { db.query("PRAGMA wal_checkpoint(TRUNCATE)").use { while (it.next()) Unit } }
-            .onFailure { err -> PikoLog.w(TAG, "Startup WAL checkpoint (TRUNCATE) failed (acct=$acctSlot)", err) }
+        runCatching { db.query("PRAGMA wal_checkpoint(PASSIVE)").use { while (it.next()) Unit } }
+            .onFailure { err -> PikoLog.w(TAG, "Startup WAL checkpoint (PASSIVE) failed (acct=$acctSlot)", err) }
     }
 
     private fun scalar(sql: String, args: List<Any?> = emptyList()): String? = db.scalarString(sql, args)

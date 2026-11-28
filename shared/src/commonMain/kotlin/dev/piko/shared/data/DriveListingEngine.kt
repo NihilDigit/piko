@@ -136,10 +136,28 @@ internal class DriveListingEngine(
                                 if (VirtualVaultLocation.isVirtualFolder(folderId)) return@withPikoLock emptySet()
                                 val state = index.flow.value
                                 if (state.complete && state.dirtyFolders.isEmpty()) return@withPikoLock emptySet()
+                                if (state.complete) {
+                                    if (folderId.isEmpty()) {
+                                        return@withPikoLock state.dirtyFolders.filterTo(LinkedHashSet()) {
+                                            !VirtualVaultLocation.isVirtualFolder(it)
+                                        }
+                                    }
+                                    return@withPikoLock state.dirtyFolders.filterTo(LinkedHashSet()) { dirtyId ->
+                                        if (VirtualVaultLocation.isVirtualFolder(dirtyId)) return@filterTo false
+                                        var cursor: String? = dirtyId
+                                        var hops = 0
+                                        while (cursor != null && hops++ < 128) {
+                                            if (cursor == folderId) return@filterTo true
+                                            if (cursor.isEmpty()) break
+                                            cursor = state.entries[cursor]?.parentId
+                                        }
+                                        false
+                                    }
+                                }
                                 val descendants = index.descendantFolders(folderId) + folderId
                                 descendants.filterTo(LinkedHashSet()) {
                                     !VirtualVaultLocation.isVirtualFolder(it) &&
-                                        (it in state.dirtyFolders || (!state.complete && it !in state.listedFolders))
+                                        (it in state.dirtyFolders || it !in state.listedFolders)
                                 }
                             }
                             val isBuildingFlow = ctx.index.treeBuildProgressFlow.map { it.isBuilding }.distinctUntilChanged()

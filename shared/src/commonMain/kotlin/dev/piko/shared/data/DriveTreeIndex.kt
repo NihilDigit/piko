@@ -715,8 +715,8 @@ internal class DriveTreeIndex(
         update { it.copy(complete = true) }
     }
 
-    /** 返回当前本地树中已知属于 [rootFolderId] 子树的全部文件夹 ID（含自身）。 */
-    fun descendantFolders(rootFolderId: String): Set<String> = withPikoLock(lock) { disk?.descendants(rootFolderId) ?: collectDescendantFolders(flow.value, setOf(rootFolderId)) }
+    /** 返回当前本地树中已知属于 [rootFolderId] 子树的全部文件夹 ID（含自身），直接走内存文件夹骨架避免 SQLite 全表递归扫描。 */
+    fun descendantFolders(rootFolderId: String): Set<String> = collectDescendantFolders(flow.value, setOf(rootFolderId))
 
     fun applyChange(change: DriveChange) {
         withPikoLock(lock) { if (closed) return; disk?.let { it.change(change); publishDisk(); return } }
