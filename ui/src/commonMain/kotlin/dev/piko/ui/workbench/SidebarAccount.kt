@@ -54,7 +54,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.download.DownloadStatus
 import dev.piko.shared.i18n.tr
 import dev.piko.ui.LocalPikoServices
-import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.focusIndication
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.i18n.stringResource
@@ -590,7 +590,11 @@ private fun CompactUpdateProgressRing(
             )
         }
     } else {
-        InlineLoadingIndicator(color = color)
+        CompactProgressIndicator(
+            size = size,
+            color = color,
+            strokeWidth = 2.2.dp,
+        )
     }
 }
 

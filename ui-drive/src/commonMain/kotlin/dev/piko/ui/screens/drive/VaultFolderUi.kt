@@ -53,7 +53,7 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.presentation.localizedName
 import dev.piko.shared.state.FolderVaultSession
-import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.toReadableSize
 
 internal fun offersVaultSizeChoice(survey: FolderVaultSession.Survey?): Boolean {
@@ -192,7 +192,7 @@ private fun VaultDialogHeading(name: String, survey: Result<*>?, total: Int?, fi
         Text(name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
         when {
             survey == null -> Row(verticalAlignment = Alignment.CenterVertically) {
-                InlineLoadingIndicator()
+                CompactProgressIndicator(size = 18.dp)
                 Spacer(Modifier.width(12.dp))
                 Text(stringResource(Res.string.text_calculating_alt), style = MaterialTheme.typography.titleMedium)
             }

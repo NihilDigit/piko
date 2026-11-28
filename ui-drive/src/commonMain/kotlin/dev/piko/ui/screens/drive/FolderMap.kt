@@ -107,7 +107,7 @@ import io.github.nihildigit.pikpak.FileStat
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.state.FolderMapLevel
 import dev.piko.shared.state.FolderMapNode
-import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.PikoSheet
 import androidx.compose.material3.TextButton
 import dev.piko.ui.components.fileDropTarget
@@ -693,7 +693,7 @@ private fun FolderMapTree(
                             .padding(horizontal = 4.dp)
                             .treeGuides(row, colors.outlineVariant, childrenBelow = false)
                             .padding(start = indent(row.depth) + 28.dp, top = 8.dp, bottom = 8.dp),
-                    ) { InlineLoadingIndicator() }
+                    ) { CompactProgressIndicator(size = 16.dp) }
                     row.node == null -> MapNote(row.note.orEmpty(), row, highlighted = row.key == highlighted, onClick = row.onNoteClick, icon = row.noteIcon)
                     else -> MapNodeRow(
                         row = row,

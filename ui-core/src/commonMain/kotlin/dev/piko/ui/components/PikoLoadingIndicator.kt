@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -45,13 +46,16 @@ import dev.piko.ui.theme.isEInk
 import kotlinx.coroutines.delay
 
 /*
- * 进度不可知的等待只有这几档，别处不直接调 material3 的指示器，也不用 CircularProgressIndicator：
+ * 指示器统一收口在此，别处不直接散落调用未门控的 Material 3 指示器：
  * - 列表首屏：骨架屏（Skeleton.kt），形状照内容画
- * - 形状说不准的整屏首载：FullScreenLoading
- * - 行内（按钮里、一行字旁边、对话框里）：InlineLoadingIndicator
- * - 压在画面或图片上：MediaLoadingIndicator
- * - 下拉刷新：RefreshBox
- * 报得出百分比的等待用 LinearProgressIndicator。M3 按进度可不可知分这两类，不许从前者过渡到后者。
+ * - 短时（200ms 至 5s）且进度不可知的整屏首载：FullScreenLoading（24–240dp 异形 LoadingIndicator）
+ * - 短时行内（>= 24dp 槽位）：InlineLoadingIndicator（下限 24dp，严禁压小）
+ * - 紧凑槽位（16–20dp，如标签页、顶栏、搜索栏、状态行、树节点、小按钮、高密度列表项）及需与确定态环形进度过渡的场景：
+ *   CompactProgressIndicator（扁平 CircularProgressIndicator，trackColor = Color.Transparent，内置静态兜底）
+ * - 压在画面或图片上：MediaLoadingIndicator（带容器版 ContainedLoadingIndicator）
+ * - 下拉刷新：RefreshBox（带容器版下拉刷新指示器）
+ * - 可量化百分比进度、> 5s 长耗时不确定任务及整组并发顶部聚合进度：LinearProgressIndicator / LinearWavyProgressIndicator
+ * 异形 LoadingIndicator 严禁与确定态进度指示器跨家族切换，亦严禁在列表或网格每项重复放置。
  */
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -98,6 +102,38 @@ fun InlineLoadingIndicator(
 }
 
 val InlineLoadingSize = 24.dp
+
+/**
+ * 紧凑槽位（16–20dp）与需要和确定态环形进度保持同家族过渡的扁平环形指示器。
+ *
+ * 用于标签页、顶栏、搜索栏、状态行、树节点、小按钮与高密度列表项；开启减少动画或窗口不可见时
+ * 切换为静态定态圆弧，避免后台持续帧调度。
+ */
+@Composable
+fun CompactProgressIndicator(
+    modifier: Modifier = Modifier,
+    size: Dp = 18.dp,
+    color: Color = MaterialTheme.colorScheme.primary,
+    strokeWidth: Dp = 2.dp,
+) {
+    val staticMode = LocalPikoMotion.current.reduced || !LocalWindowVisible.current
+    if (staticMode) {
+        CircularProgressIndicator(
+            progress = { 0.72f },
+            modifier = modifier.size(size),
+            color = color,
+            strokeWidth = strokeWidth,
+            trackColor = Color.Transparent,
+        )
+    } else {
+        CircularProgressIndicator(
+            modifier = modifier.size(size),
+            color = color,
+            strokeWidth = strokeWidth,
+            trackColor = Color.Transparent,
+        )
+    }
+}
 
 /**
  * 等待是否已久到该画指示器。M3 给 loading indicator 定的范围从 200ms 起：它一出现先跑一段欠阻尼的

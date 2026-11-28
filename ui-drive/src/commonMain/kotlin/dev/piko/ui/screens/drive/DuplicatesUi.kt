@@ -64,7 +64,6 @@ import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoErrorState
-import dev.piko.ui.components.PikoLoadingIndicator
 import dev.piko.ui.components.PinnedPriority
 import dev.piko.ui.components.SheetAction
 import dev.piko.ui.components.connectedToggleShapes
@@ -490,35 +489,31 @@ internal fun DuplicatesEmptyState(
                 TextButton(onClick = onLeave) { Text(stringResource(Res.string.text_back_to_drive)) }
             }
             Phase.SCANNING, Phase.ANALYZING -> {
-                if (finder.phase == Phase.ANALYZING) {
-                    PikoLoadingIndicator(size = 48.dp)
-                } else {
-                    val staticMode = LocalPikoMotion.current.reduced || !LocalWindowVisible.current
-                    val colors = MaterialTheme.colorScheme
-                    if (staticMode) {
+                val staticMode = LocalPikoMotion.current.reduced || !LocalWindowVisible.current
+                val colors = MaterialTheme.colorScheme
+                if (staticMode) {
+                    Box(
+                        modifier = Modifier
+                            .widthIn(max = 240.dp)
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(CircleShape)
+                            .background(colors.surfaceContainerHighest),
+                    ) {
                         Box(
                             modifier = Modifier
-                                .widthIn(max = 240.dp)
-                                .fillMaxWidth()
+                                .fillMaxWidth(0.45f)
                                 .height(6.dp)
                                 .clip(CircleShape)
-                                .background(colors.surfaceContainerHighest),
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth(0.45f)
-                                    .height(6.dp)
-                                    .clip(CircleShape)
-                                    .background(colors.primary.copy(alpha = 0.55f)),
-                            )
-                        }
-                    } else {
-                        LinearProgressIndicator(
-                            modifier = Modifier.widthIn(max = 240.dp).fillMaxWidth().height(6.dp),
-                            strokeCap = StrokeCap.Round,
-                            trackColor = colors.surfaceContainerHighest,
+                                .background(colors.primary.copy(alpha = 0.55f)),
                         )
                     }
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier.widthIn(max = 240.dp).fillMaxWidth().height(6.dp),
+                        strokeCap = StrokeCap.Round,
+                        trackColor = colors.surfaceContainerHighest,
+                    )
                 }
                 Spacer(Modifier.height(16.dp))
                 val rootName = finder.root.localizedName

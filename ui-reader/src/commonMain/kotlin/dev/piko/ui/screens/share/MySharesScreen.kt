@@ -90,6 +90,7 @@ import dev.piko.shared.state.MySharesState
 import dev.piko.shared.state.ShareCreateState
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.readableSidePadding
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.FileListLeadingVisual
 import dev.piko.ui.components.FileListItem
@@ -180,10 +181,18 @@ fun MySharesScreen(
         scope.launch { snackbarHostState.showSnackbar(tr("已复制提取码", "Access code copied", "アクセスコードをコピーしました", "접근 코드를 복사했습니다", "已複製提取碼"), withDismissAction = true) }
     }
 
+    var locatingShareId by remember { mutableStateOf<String?>(null) }
+
     fun locate(share: ShareSummary) {
+        if (locatingShareId != null) return
         val id = state.sourceId(share)
+        locatingShareId = share.shareId
         scope.launch {
-            if (id == null || !onLocate(id)) snackbarHostState.showSnackbar(tr("找不到源文件，可能已被移动或删除", "Source file not found; it may have moved or been deleted", "元のファイルが見つかりません。移動または削除された可能性があります", "원본 파일을 찾을 수 없습니다. 이동되거나 삭제되었을 수 있습니다", "找不到來源檔案，可能已被移動或刪除"), withDismissAction = true)
+            try {
+                if (id == null || !onLocate(id)) snackbarHostState.showSnackbar(tr("找不到源文件，可能已被移动或删除", "Source file not found; it may have moved or been deleted", "元のファイルが見つかりません。移動または削除された可能性があります", "원본 파일을 찾을 수 없습니다. 이동되거나 삭제되었을 수 있습니다", "找不到來源檔案，可能已被移動或刪除"), withDismissAction = true)
+            } finally {
+                if (locatingShareId == share.shareId) locatingShareId = null
+            }
         }
     }
 
@@ -337,6 +346,7 @@ fun MySharesScreen(
                                         onClick = if (selecting) ({ state.toggleSelected(share.shareId) }) else null,
                                         preview = preview,
                                         isSpoilerBlurred = isSpoilerBlurEnabled && preview?.thumbnailLink?.isNotEmpty() == true,
+                                        isLocating = locatingShareId == share.shareId,
                                         onLocate = { locate(share) },
                                         onCopy = { copy(share) },
                                         onCopyUrlOnly = { copyUrlOnly(share) },
@@ -440,6 +450,7 @@ private fun ShareCard(
     /** 打开分享后的第一项，有缩略图时用它；还没取到或取不到时为 null，画类型图标。 */
     preview: FileStat?,
     isSpoilerBlurred: Boolean,
+    isLocating: Boolean,
     onLocate: () -> Unit,
     onCopy: () -> Unit,
     onCopyUrlOnly: () -> Unit,
@@ -528,7 +539,13 @@ private fun ShareCard(
                     Text(if (share.isOk) tr("取消分享", "Revoke share", "共有を解除", "공유 취소", "取消分享") else tr("删除记录", "Delete record", "記録を削除", "기록 삭제", "刪除紀錄"))
                 }
                 if (share.isOk) {
-                    TooltipIconButton(Icons.Outlined.FolderOpen, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), onLocate)
+                    if (isLocating) {
+                        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                            CompactProgressIndicator(size = 18.dp)
+                        }
+                    } else {
+                        TooltipIconButton(Icons.Outlined.FolderOpen, tr("在网盘中显示", "Show in drive", "ドライブで表示", "드라이브에서 보기", "在雲端硬碟中顯示"), onLocate)
+                    }
                     Spacer(Modifier.width(4.dp))
                     val tonalColors = if (isEInk) {
                         ButtonDefaults.filledTonalButtonColors(containerColor = Color.White, contentColor = Color.Black)

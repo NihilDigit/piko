@@ -91,8 +91,8 @@ import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.DriveLibrary
 import dev.piko.shared.presentation.DriveTab
 import androidx.compose.ui.graphics.vector.ImageVector
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.ContextMenuArea
-import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.IslandTab
 import dev.piko.ui.components.IslandTabBarHeight
 import androidx.compose.foundation.layout.Spacer
@@ -599,7 +599,10 @@ private fun TabChip(
                     Spacer(Modifier.width(10.dp))
                 }
                 if (session?.busy == true) {
-                    InlineLoadingIndicator(modifier = Modifier.size(18.dp))
+                    CompactProgressIndicator(
+                        size = 16.dp,
+                        color = if (active || pinned) colors.primary else colors.onSurfaceVariant,
+                    )
                 } else {
                     // 信息流的标签换成信息流的图标，用第三色：它停着的是普通文件夹，标题与别的标签没有分别
                     Icon(

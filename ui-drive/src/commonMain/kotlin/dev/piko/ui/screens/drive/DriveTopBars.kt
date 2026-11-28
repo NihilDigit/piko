@@ -92,7 +92,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import dev.piko.shared.data.PikoPathBreadcrumb
-import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.PikoTopBar
 import dev.piko.ui.components.menuItemShape
@@ -191,7 +191,7 @@ internal fun DriveSearchTopBar(
         actions = {
             when {
                 isGlobalSearching -> {
-                    InlineLoadingIndicator()
+                    CompactProgressIndicator(size = 18.dp)
                     // 只取消遍历，已找到的结果留在列表里
                     TextButton(onClick = onCancelGlobalSearch, contentPadding = PaddingValues(horizontal = 12.dp)) {
                         Text(stringResource(Res.string.text_stop))

@@ -94,7 +94,7 @@ import dev.piko.shared.state.AddressCompletion
 import dev.piko.shared.state.InstantSheetState
 import dev.piko.ui.components.ContextMenuArea
 import dev.piko.ui.components.FolderListLeadingVisual
-import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.PaletteItem
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.SheetAction
@@ -362,7 +362,7 @@ private fun AddressField(model: AddressBarModel, initial: String, menuWidth: Dp,
                 },
         )
         // 逐层列目录要几次请求，慢的时候得看得出在找
-        if (resolving) InlineLoadingIndicator()
+        if (resolving) CompactProgressIndicator(size = 18.dp)
         // 触屏没有 Esc，点外面也不失焦（见 releasesFocusOnOutsidePress），输入态得有一个看得见的出口
         TooltipIconButton(Icons.Outlined.Close, tr("取消", "Cancel", "キャンセル", "취소", "取消"), onClose, shortcut = "Esc", tint = colors.onSurfaceVariant)
     }
@@ -530,7 +530,7 @@ private fun SiblingChevron(
         PikoDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.heightIn(max = SuggestionsMaxHeight)) {
             val loaded = folders
             when {
-                loaded == null -> Box(Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) { InlineLoadingIndicator() }
+                loaded == null -> Box(Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) { CompactProgressIndicator(size = 18.dp) }
                 loaded.isFailure -> MenuNote(loaded.exceptionOrNull()?.message ?: tr("列不出这个文件夹，请检查网络", "Unable to list this folder. Check your connection", "フォルダーの内容を表示できません。接続を確認してください", "폴더 내용을 표시할 수 없습니다. 네트워크를 확인해 주세요", "無法列出此資料夾，請檢查網路"))
                 loaded.getOrThrow().isEmpty() -> MenuNote(tr("没有子文件夹", "No subfolders", "サブフォルダーはありません", "하위 폴더가 없습니다", "沒有子資料夾"))
                 else -> {

@@ -107,7 +107,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.piko.data.repository.FileCategory
 import dev.piko.data.repository.FileSortOrder
-import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.MenuMotion
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.PendingBadge
@@ -272,7 +272,7 @@ internal fun ExplorerSearchField(
         )
         when {
             isGlobalSearching -> {
-                InlineLoadingIndicator()
+                CompactProgressIndicator(size = 18.dp)
                 Spacer(Modifier.width(4.dp))
                 Surface(
                     onClick = onCancelGlobalSearch,

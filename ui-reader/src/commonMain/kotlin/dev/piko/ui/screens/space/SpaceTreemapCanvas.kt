@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CloudQueue
@@ -24,6 +26,7 @@ import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.PieChart
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -43,6 +46,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -73,15 +77,18 @@ import dev.piko.shared.space.SpaceFolderSnapshot
 import dev.piko.shared.space.SpaceNodeItem
 import dev.piko.shared.space.SpacePreviewBlock
 import dev.piko.ui.adaptive.isDesktopLayout
-import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.LocalPointerSource
 import dev.piko.ui.components.PikoEmptyState
+import dev.piko.ui.components.PikoLoadingIndicator
 import dev.piko.ui.components.WindowAnchoredActionMenu
 import dev.piko.ui.components.focusIndication
 import dev.piko.ui.components.formatTreeIndexProgressLabel
 import dev.piko.ui.components.toReadableSize
 import dev.piko.ui.format.formatPercentage
 import dev.piko.ui.theme.LocalAppearance
+import dev.piko.ui.theme.LocalPikoMotion
+import dev.piko.ui.theme.LocalWindowVisible
 import dev.piko.ui.theme.isEInk
 import kotlin.math.roundToInt
 
@@ -110,6 +117,7 @@ internal fun SpaceTreemapContent(
     snapshot: SpaceFolderSnapshot?,
     treeBuildProgress: PikoDriveRepository.TreeBuildProgress,
     includeVaulted: Boolean,
+    isLocating: Boolean = false,
     freeQuotaBytes: Long,
     quotaLimitBytes: Long,
     onEnableIncludeVaulted: () -> Unit,
@@ -132,8 +140,9 @@ internal fun SpaceTreemapContent(
             }
         }
     }
-    val isBlockingLoad = snapshot == null || (!snapshot.isTreeComplete && (snapshot.isTreeBuilding || treeBuildProgress.isBuilding))
+    val isBlockingLoad = snapshot == null || (snapshot.items.isEmpty() && !snapshot.isTreeComplete && (snapshot.isTreeBuilding || treeBuildProgress.isBuilding))
     val isCalculating = isBlockingLoad || snapshot?.isTreeBuilding == true || treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates
+    val isIndexing = treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates || snapshot?.isTreeBuilding == true
     val phaseKey = when {
         snapshot == null -> "loading"
         displayEntries.isEmpty() -> "empty:${snapshot.folderId}:$isCalculating:$includeVaulted"
@@ -150,12 +159,41 @@ internal fun SpaceTreemapContent(
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 when {
                     isCalculating -> {
+                        val staticMode = LocalPikoMotion.current.reduced || !LocalWindowVisible.current
+                        val colors = MaterialTheme.colorScheme
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
                             modifier = Modifier.padding(32.dp),
                         ) {
-                            InlineLoadingIndicator()
+                            if (isIndexing) {
+                                if (staticMode) {
+                                    Box(
+                                        modifier = Modifier
+                                            .widthIn(max = 220.dp)
+                                            .fillMaxWidth()
+                                            .height(6.dp)
+                                            .clip(CircleShape)
+                                            .background(colors.surfaceContainerHighest),
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth(0.45f)
+                                                .height(6.dp)
+                                                .clip(CircleShape)
+                                                .background(colors.primary.copy(alpha = 0.55f)),
+                                        )
+                                    }
+                                } else {
+                                    LinearProgressIndicator(
+                                        modifier = Modifier.widthIn(max = 220.dp).fillMaxWidth().height(6.dp),
+                                        strokeCap = StrokeCap.Round,
+                                        trackColor = colors.surfaceContainerHighest,
+                                    )
+                                }
+                            } else {
+                                PikoLoadingIndicator(size = 48.dp)
+                            }
                             Text(
                                 text = if (treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates) {
                                     formatTreeIndexProgressLabel(treeBuildProgress)
@@ -169,7 +207,7 @@ internal fun SpaceTreemapContent(
                                     )
                                 },
                                 style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
-                                color = MaterialTheme.colorScheme.onSurface,
+                                color = colors.onSurface,
                             )
                             if (treeBuildProgress.isBuilding) {
                                 Text(
@@ -181,24 +219,12 @@ internal fun SpaceTreemapContent(
                                         "首次建立完成後將持久保存在本機，後續開啟與跨資料夾排序可直接秒開並增量複用",
                                     ),
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = colors.onSurfaceVariant,
                                 )
                             }
                         }
                     }
-                    snapshot == null -> {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            InlineLoadingIndicator()
-                            Text(
-                                text = tr("读取统计…", "Loading statistics…", "統計を読み込み中…", "통계 불러오는 중…", "讀取統計…"),
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
+                    snapshot == null -> Unit
                     snapshot.syncError != null -> Unit
                     !includeVaulted && (snapshot.vaultedBytes > 0L) -> {
                         val archivedSize = snapshot.vaultedBytes.toReadableSize()
@@ -461,7 +487,7 @@ internal fun SpaceTreemapContent(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            InlineLoadingIndicator()
+                            CompactProgressIndicator(size = 18.dp)
                             Text(
                                 text = if (treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates) {
                                     formatTreeIndexProgressLabel(treeBuildProgress)
@@ -478,6 +504,30 @@ internal fun SpaceTreemapContent(
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
+                    }
+                }
+            } else if (isLocating) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 16.dp),
+                    shape = MaterialTheme.shapes.large,
+                    color = if (isEInk) Color.White else MaterialTheme.colorScheme.surfaceContainerHigh,
+                    border = if (isEInk) BorderStroke(1.dp, Color.Black) else null,
+                    tonalElevation = if (isEInk) 0.dp else 4.dp,
+                    shadowElevation = if (isEInk) 0.dp else 6.dp,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        CompactProgressIndicator(size = 18.dp)
+                        Text(
+                            text = tr("正在定位…", "Locating…", "移動先を検索中…", "위치 찾는 중…", "正在定位…"),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
                     }
                 }
             }
@@ -983,15 +1033,13 @@ internal fun NestedGroupTile(
                                 )
                             }
                             slot == NestedSlot.LoadingArea -> {
-                                // 余量加载区不绘制色块背景与边框，直接在留出的底框空位正中呈现加载指示器
+                                // 余量加载区不再逐格放置循环指示器，保持极简静态占位并依赖顶部聚合进度
                                 Box(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    if (subWidthDp >= 28.dp && subHeightDp >= 28.dp) {
-                                        InlineLoadingIndicator()
-                                    }
-                                }
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(colors.surfaceVariant.copy(alpha = if (isEInk) 0.08f else 0.22f)),
+                                )
                             }
                             else -> Box(Modifier)
                         }

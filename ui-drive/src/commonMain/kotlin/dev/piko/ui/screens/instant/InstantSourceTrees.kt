@@ -58,6 +58,7 @@ import dev.piko.shared.state.ShareNodeCheckState
 import dev.piko.shared.state.ShareTreeBrowser
 import dev.piko.shared.state.ShareTreeRow
 import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.FileItemName
 import dev.piko.ui.components.FileItemSelection
 import dev.piko.ui.components.FileItemSelectionControl
@@ -68,6 +69,8 @@ import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.WorkspaceTreeRow
 import dev.piko.ui.components.filePresentation
 import dev.piko.ui.components.rememberDownloadLauncher
+import dev.piko.ui.theme.LocalPikoMotion
+import dev.piko.ui.theme.LocalWindowVisible
 import dev.piko.ui.components.typeIcon
 import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.platform.LocalPikoPlatform
@@ -114,7 +117,6 @@ internal fun ShareTreeProgressBanner(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                InlineLoadingIndicator(color = MaterialTheme.colorScheme.onSecondaryContainer)
                 val label = when {
                     vault != null -> tr(
                         "正在流式保存引用：已扫描 ${vault.foldersScanned} 个文件夹，已保存 ${vault.filesSaved} / ${vault.filesCollected} 个文件",
@@ -146,11 +148,19 @@ internal fun ShareTreeProgressBanner(
                     Text(stringResource(Res.string.common_cancel))
                 }
             }
+            val staticMode = LocalPikoMotion.current.reduced || !LocalWindowVisible.current
             if (restore != null && restore.totalBatches > 0) {
                 LinearProgressIndicator(
                     progress = { (restore.completedBatches.toFloat() / restore.totalBatches).coerceIn(0f, 1f) },
                     modifier = Modifier.fillMaxWidth(),
                 )
+            } else if (staticMode) {
+                LinearProgressIndicator(
+                    progress = { 0.35f },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
         }
     }
@@ -317,7 +327,10 @@ internal fun ShareTreeList(
                             },
                             trailing = {
                                 if (row.isLoading) {
-                                    InlineLoadingIndicator(modifier = Modifier.padding(end = 8.dp))
+                                    CompactProgressIndicator(
+                                        size = 18.dp,
+                                        modifier = Modifier.padding(end = 8.dp),
+                                    )
                                 }
                                 if (canPreview) {
                                     PreviewButton(
@@ -351,7 +364,7 @@ internal fun ShareTreeList(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             if (row.isLoading) {
-                                InlineLoadingIndicator()
+                                CompactProgressIndicator(size = 18.dp)
                                 Text(
                                     text = tr("正在加载更多…", "Loading more…", "さらに読み込み中…", "더 불러오는 중…", "正在載入更多…"),
                                     style = MaterialTheme.typography.bodySmall,

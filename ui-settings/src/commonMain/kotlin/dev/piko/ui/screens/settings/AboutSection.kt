@@ -46,7 +46,7 @@ import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.ObserveMessages
-import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.PikoBrandIcons
 import dev.piko.ui.i18n.stringResource
 import dev.piko.ui.platform.LocalPikoPlatform
@@ -272,8 +272,11 @@ private fun AboutCard(
                             },
                         ) {
                             if (updateStatus == UpdateStatus.Checking) {
-                                // 按钮在检查期间是禁用态，指示器跟着用禁用的内容色，不然一块亮色压在灰按钮上
-                                InlineLoadingIndicator(color = LocalContentColor.current)
+                                // 检查期间按钮处于禁用态，使用 onSurfaceVariant 保证对比度不低于 3:1
+                                CompactProgressIndicator(
+                                    size = 18.dp,
+                                    color = if (isEInk) Color(0xFF555555) else colors.onSurfaceVariant,
+                                )
                             } else {
                                 Icon(Icons.Outlined.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
                             }

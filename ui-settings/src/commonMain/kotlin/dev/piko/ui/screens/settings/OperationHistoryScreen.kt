@@ -23,7 +23,6 @@ import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -46,6 +45,7 @@ import dev.piko.shared.i18n.tr
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.LocalRootSnackbar
 import dev.piko.ui.adaptive.readableWidth
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.IslandHeaderSpace
 import dev.piko.ui.components.IslandPage
 import dev.piko.ui.components.IslandTitle
@@ -228,10 +228,7 @@ private fun OperationHistoryRow(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                        )
+                        CompactProgressIndicator(size = 18.dp)
                         TooltipIconButton(
                             icon = Icons.Outlined.StopCircle,
                             label = tr("停止撤销", "Stop undo", "取り消しを停止", "실행 취소 중지", "停止復原"),

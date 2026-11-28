@@ -44,7 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.shared.data.SavedAccount
 import dev.piko.ui.LocalPikoServices
-import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.toReadableSize
 import kotlinx.coroutines.launch
@@ -88,7 +88,7 @@ fun AccountSwitcher(onLoggedOut: (() -> Unit)? = null) {
                 },
                 trailing = {
                     if (switching == saved.account) {
-                        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) { InlineLoadingIndicator() }
+                        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) { CompactProgressIndicator(size = 18.dp) }
                     } else {
                         TooltipIconButton(Icons.Outlined.Close, tr("移除", "Remove", "削除", "제거", "移除"), onClick = { forgetting = saved }, enabled = switching == null)
                     }

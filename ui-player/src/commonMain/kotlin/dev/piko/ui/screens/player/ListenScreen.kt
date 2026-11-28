@@ -141,7 +141,7 @@ import dev.piko.shared.media.player.ListenLayoutConfig
 import dev.piko.shared.media.player.ListenQuickChip
 import dev.piko.shared.media.player.PlayerScreenState
 import dev.piko.shared.media.player.PlaylistEntry
-import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoSheet
 import dev.piko.ui.components.TooltipIconButton
@@ -862,7 +862,7 @@ internal fun ListenMainContent(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.padding(bottom = 8.dp),
             ) {
-                InlineLoadingIndicator()
+                CompactProgressIndicator(size = 18.dp)
                 if (!loadingSpeedText.isNullOrBlank()) {
                     Text(
                         text = loadingSpeedText,

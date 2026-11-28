@@ -31,7 +31,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoLoadingIndicator
 import io.github.nihildigit.pikpak.FileStat

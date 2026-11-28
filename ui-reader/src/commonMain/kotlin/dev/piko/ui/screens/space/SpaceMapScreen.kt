@@ -74,8 +74,8 @@ import dev.piko.ui.components.ActionGroup
 import dev.piko.ui.components.AdaptiveBar
 import dev.piko.ui.components.BarItem
 import dev.piko.ui.components.BreadcrumbBar
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.ContributePaletteItems
-import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.IslandPage
 import dev.piko.ui.components.IslandTitle
 import dev.piko.ui.components.LocalPointerSource
@@ -166,8 +166,9 @@ fun SpaceMapScreen(
     }
     val snapshot = rawSnapshot?.takeIf { it.folderId == currentFolderId } ?: snapshotCache[currentFolderId to includeVaulted]
     val treeBuildProgress by driveRepo.treeBuildProgressFlow.collectAsStateWithLifecycle()
-    val isBlockingLoad = snapshot == null || (!snapshot.isTreeComplete && (snapshot.isTreeBuilding || treeBuildProgress.isBuilding))
+    val isBlockingLoad = snapshot == null || (snapshot.items.isEmpty() && !snapshot.isTreeComplete && (snapshot.isTreeBuilding || treeBuildProgress.isBuilding))
     val isCalculating = isBlockingLoad || snapshot?.isTreeBuilding == true || treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates
+    var locatingItemId by remember { mutableStateOf<String?>(null) }
     var pendingBreadcrumbs by remember(rootFolderId) { mutableStateOf<List<PikoPathBreadcrumb>>(emptyList()) }
 
     val breadcrumbs = remember(snapshot, pendingBreadcrumbs, currentFolderId, rootFolderId, rootFolderName) {
@@ -263,20 +264,25 @@ fun SpaceMapScreen(
     }
 
     fun locateInDrive(itemId: String, nestedParentId: String? = null, nestedParentName: String? = null) {
-        if (isBlockingLoad) return
+        if (isBlockingLoad || locatingItemId != null) return
         val knownStack = parentBreadcrumbsFor(nestedParentId, nestedParentName)
+        locatingItemId = itemId
         scope.launch {
-            if (!onLocate(itemId, knownStack)) {
-                snackbarHostState.showSnackbar(
-                    tr(
-                        "在网盘中未找到该条目，可能已被移动或删除",
-                        "Item not found in drive; it may have moved or been deleted",
-                        "ドライブ内に項目が見つかりません。移動または削除された可能性があります",
-                        "드라이브에서 항목을 찾을 수 없습니다. 이동되었거나 삭제되었을 수 있습니다",
-                        "在雲端硬碟中找不到此項目，可能已被移動或刪除",
-                    ),
-                    withDismissAction = true,
-                )
+            try {
+                if (!onLocate(itemId, knownStack)) {
+                    snackbarHostState.showSnackbar(
+                        tr(
+                            "在网盘中未找到该条目，可能已被移动或删除",
+                            "Item not found in drive; it may have moved or been deleted",
+                            "ドライブ内に項目が見つかりません。移動または削除された可能性があります",
+                            "드라이브에서 항목을 찾을 수 없습니다. 이동되었거나 삭제되었을 수 있습니다",
+                            "在雲端硬碟中找不到此項目，可能已被移動或刪除",
+                        ),
+                        withDismissAction = true,
+                    )
+                }
+            } finally {
+                if (locatingItemId == itemId) locatingItemId = null
             }
         }
     }
@@ -392,9 +398,11 @@ fun SpaceMapScreen(
             (currentFolderId.isEmpty() && cloudQuota != null)
         )
 
-    val summaryText = remember(snapshot, includeVaulted, isCalculating, treeBuildProgress, displayedTotalBytes, showQuotaLegend) {
+    val isBusyStatus = isCalculating || locatingItemId != null
+    val summaryText = remember(snapshot, includeVaulted, isCalculating, locatingItemId, treeBuildProgress, displayedTotalBytes, showQuotaLegend) {
         val current = snapshot
         when {
+            locatingItemId != null -> tr("正在定位…", "Locating…", "移動先を検索中…", "위치 찾는 중…", "正在定位…")
             current == null -> if (treeBuildProgress.isBuilding || treeBuildProgress.isCheckingUpdates) {
                 formatTreeIndexProgressLabel(treeBuildProgress)
             } else {
@@ -510,8 +518,8 @@ fun SpaceMapScreen(
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
                                 IslandTitle(pageTitle)
-                                if (isCalculating || summaryText.isNotEmpty()) {
-                                    StatusSummaryBadge(isCalculating = isCalculating, text = summaryText)
+                                if (isBusyStatus || summaryText.isNotEmpty()) {
+                                    StatusSummaryBadge(isCalculating = isBusyStatus, text = summaryText)
                                 }
                             }
                         },
@@ -619,7 +627,7 @@ fun SpaceMapScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Box(Modifier.weight(1f)) {
-                            StatusSummaryBadge(isCalculating = isCalculating, text = summaryText)
+                            StatusSummaryBadge(isCalculating = isBusyStatus, text = summaryText)
                         }
                         IncludeVaultedChip(
                             checked = includeVaulted,
@@ -656,6 +664,7 @@ fun SpaceMapScreen(
                     snapshot = snapshot,
                     treeBuildProgress = treeBuildProgress,
                     includeVaulted = includeVaulted,
+                    isLocating = locatingItemId != null,
                     freeQuotaBytes = rootFreeQuotaBytes,
                     quotaLimitBytes = cloudQuota?.limitBytes ?: 0L,
                     onEnableIncludeVaulted = { includeVaulted = true },
@@ -814,7 +823,7 @@ private fun StatusSummaryBadge(isCalculating: Boolean, text: String) {
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         if (isCalculating) {
-            InlineLoadingIndicator()
+            CompactProgressIndicator(size = 18.dp)
         }
         Text(
             text = text,

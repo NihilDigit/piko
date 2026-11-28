@@ -27,7 +27,7 @@ import dev.piko.shared.naming.av.canonicalAvNameOf
 import dev.piko.shared.naming.av.parseAvForRename
 import dev.piko.shared.naming.parseMediaName
 import dev.piko.shared.scrape.MetaTubeService
-import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.CompactProgressIndicator
 import kotlinx.coroutines.launch
 
 /**
@@ -76,7 +76,7 @@ internal fun MetaTubeTitleRow(
             },
         ) { Text(stringResource(Res.string.text_get_title_from_metatube)) }
         Spacer(Modifier.width(8.dp))
-        if (querying) InlineLoadingIndicator()
+        if (querying) CompactProgressIndicator(size = 18.dp)
         Text(
             text = status.orEmpty(),
             style = MaterialTheme.typography.bodySmall,

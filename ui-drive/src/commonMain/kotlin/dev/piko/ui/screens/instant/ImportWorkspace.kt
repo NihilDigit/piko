@@ -359,7 +359,7 @@ internal fun ImportResolutionStatus(state: InstantSheetState, notice: PanelNotic
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (state.isResolving && !isError) {
-                    InlineLoadingIndicator(color = contentColor)
+                    CompactProgressIndicator(size = 18.dp, color = contentColor)
                 } else {
                     Icon(
                         imageVector = if (isError) Icons.Outlined.ErrorOutline else Icons.Outlined.Info,

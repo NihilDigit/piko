@@ -60,7 +60,7 @@ import dev.piko.shared.state.asFolderStructureBackend
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.components.FileListLeadingVisual
-import dev.piko.ui.components.InlineLoadingIndicator
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.PikoDialog
 import dev.piko.ui.components.PikoDialogConfirm
 import dev.piko.ui.components.connectedToggleShapes
@@ -402,7 +402,7 @@ private fun PreviewSummaryCard(
             when {
                 isPlanning -> {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        InlineLoadingIndicator(modifier = Modifier.size(18.dp))
+                        CompactProgressIndicator(size = 18.dp)
                         Text(
                             text = tr("正在检查目录结构…", "Inspecting folder structure…", "フォルダー構成を確認中…", "폴더 구조 확인 중…", "正在檢查資料夾結構…"),
                             style = MaterialTheme.typography.bodyMedium,
