@@ -469,25 +469,18 @@ interface PreviewBackend : PlaybackBackend {
 }
 
 @Immutable
-data class AppDisguiseOption(
-    val id: String,
-    val title: String,
-    val description: String,
-)
-
 /**
- * 移动端（Android）本地应用锁、最近任务隐私保护与图标伪装能力。
+ * 移动端（Android）本地应用锁与最近任务隐私保护能力。
  */
 interface AppSecurityController {
     val appLockEnabled: StateFlow<Boolean>
+    val lockOnScreenOffOnly: StateFlow<Boolean>
     val hideInRecents: StateFlow<Boolean>
-    val activeDisguiseId: StateFlow<String>
-    val disguiseOptions: List<AppDisguiseOption>
 
     fun canUseDeviceLock(): Boolean
     fun setAppLockEnabled(enabled: Boolean): Boolean
+    fun setLockOnScreenOffOnly(enabled: Boolean)
     fun setHideInRecents(enabled: Boolean)
-    fun selectDisguise(id: String): Boolean
 }
 
 val LocalPikoPlatform = staticCompositionLocalOf<PikoPlatform> {

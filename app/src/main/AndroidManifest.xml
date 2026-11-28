@@ -41,6 +41,10 @@
             android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
             android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
             <!-- 注册为磁力、eD2k 与迅雷链接协议处理器 -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -128,77 +132,6 @@
                 <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
-
-        <!-- 默认桌面图标入口；应用伪装时通过 PackageManager 切换以下 alias -->
-        <activity-alias
-            android:name=".MainActivityDefault"
-            android:enabled="true"
-            android:exported="true"
-            android:icon="@mipmap/ic_launcher"
-            android:roundIcon="@mipmap/ic_launcher"
-            android:label="@string/app_name"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-
-        <activity-alias
-            android:name=".MainActivityEmerald"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@mipmap/ic_launcher_emerald"
-            android:roundIcon="@mipmap/ic_launcher_emerald"
-            android:label="@string/app_name"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-
-        <activity-alias
-            android:name=".MainActivityObsidian"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@mipmap/ic_launcher_obsidian"
-            android:roundIcon="@mipmap/ic_launcher_obsidian"
-            android:label="@string/app_name"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-
-        <activity-alias
-            android:name=".MainActivityTodo"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@mipmap/ic_launcher_todo"
-            android:roundIcon="@mipmap/ic_launcher_todo"
-            android:label="@string/app_name_disguise_todo"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-
-        <activity-alias
-            android:name=".MainActivityNotes"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@mipmap/ic_launcher_notes"
-            android:roundIcon="@mipmap/ic_launcher_notes"
-            android:label="@string/app_name_disguise_notes"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
 
         <service
             android:name=".download.PikoDownloadService"

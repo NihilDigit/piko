@@ -2,7 +2,6 @@ package dev.piko.ui.screens.settings
 
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.History
@@ -59,8 +58,8 @@ internal fun hasDataSectionMatches(searchQuery: String): Boolean {
         match("加密同步口令", "Encrypted sync passphrase", "passphrase", "encrypt", "暗号化同期", "암호화 동기화")
     val matchWebDav = isFreeAccount == false && match("WebDAV", "dav", "挂载", "播放器")
     val matchPrivacy = platform.appSecurity != null && match(
-        "应用锁", "App lock", "伪装", "图标", "隐藏", "最近任务", "隐私", "安全",
-        "disguise", "icon", "privacy", "security", "biometric", "アプリロック", "앱 잠금", "應用程式鎖",
+        "应用锁", "App lock", "锁屏", "screen off", "隐藏", "最近任务", "隐私", "安全",
+        "privacy", "security", "biometric", "アプリロック", "画面オフ", "앱 잠금", "應用程式鎖",
     )
     return matchSyncSettings || matchSyncHistory || matchArchivePw || matchEncSync || matchWebDav || matchPrivacy
 }
@@ -107,7 +106,6 @@ internal fun SyncAndDataSettingsSection(
     val appSecurity = platform.appSecurity
     val sessionManager = services.preferences
     val scope = rememberCoroutineScope()
-    var showDisguiseDialog by remember { mutableStateOf(false) }
 
     val isSyncPlayHistoryEnabled by sessionManager.syncPlayHistoryFlow.collectAsStateWithLifecycle(initialValue = true)
     val isSettingsSyncEnabled by sessionManager.settingsSyncFlow.collectAsStateWithLifecycle(initialValue = true)
@@ -272,10 +270,12 @@ internal fun SyncAndDataSettingsSection(
     val matchWebDav = isFreeAccount == false && match("WebDAV", "dav", "挂载", "播放器")
     val matchCredGroup = matchArchivePw || matchEncSync || matchWebDav
 
-    val matchAppLock = appSecurity != null && match("应用锁", "App lock", "biometric", "lock", "隐私", "安全", "アプリロック", "앱 잠금", "應用程式鎖")
+    val matchAppLock = appSecurity != null && match(
+        "应用锁", "App lock", "锁屏", "screen off", "biometric", "lock", "隐私", "安全",
+        "アプリロック", "画面オフ", "앱 잠금", "應用程式鎖",
+    )
     val matchHideRecents = appSecurity != null && match("隐藏最近任务", "Hide in recents", "privacy", "screenshot", "最近任务", "防截屏", "プライバシー", "최근 앱 숨기기")
-    val matchDisguise = appSecurity != null && match("应用图标与名称", "伪装", "隐藏", "App icon", "disguise", "Todo", "Notes", "アイコン", "아이콘")
-    val matchPrivacyGroup = matchAppLock || matchHideRecents || matchDisguise
+    val matchPrivacyGroup = matchAppLock || matchHideRecents
 
     if (matchSyncGroup || matchCredGroup || matchPrivacyGroup) {
         SettingsSectionBlock(
@@ -400,11 +400,8 @@ internal fun SyncAndDataSettingsSection(
             }
             if (appSecurity != null && matchPrivacyGroup) {
                 val appLockEnabled by appSecurity.appLockEnabled.collectAsStateWithLifecycle()
+                val lockOnScreenOffOnly by appSecurity.lockOnScreenOffOnly.collectAsStateWithLifecycle()
                 val hideInRecents by appSecurity.hideInRecents.collectAsStateWithLifecycle()
-                val activeDisguiseId by appSecurity.activeDisguiseId.collectAsStateWithLifecycle()
-                val disguiseOptions = remember(appSecurity) { appSecurity.disguiseOptions }
-                val activeDisguiseLabel = disguiseOptions.firstOrNull { it.id == activeDisguiseId }?.title
-                    ?: disguiseOptions.firstOrNull()?.title.orEmpty()
 
                 SettingsGroup(tr("隐私与安全", "Privacy & security", "プライバシーとセキュリティ", "개인정보 및 보안", "隱私與安全")) {
                         if (matchAppLock) {
@@ -412,11 +409,11 @@ internal fun SyncAndDataSettingsSection(
                                 icon = Icons.Outlined.Fingerprint,
                                 title = tr("应用锁", "App lock", "アプリロック", "앱 잠금", "應用程式鎖"),
                                 supporting = tr(
-                                    "启动或从后台返回时通过指纹、面容或系统锁屏验证身份",
-                                    "Require biometric or device screen lock when opening or returning to the app",
-                                    "起動時やバックグラウンド復帰時に生体認証または端末ロックを要求します",
-                                    "앱을 열거나 백그라운드에서 돌아올 때 생체 인증 또는 기기 잠금을 요구합니다",
-                                    "啟動或從背景返回時透過指紋、臉部或系統螢幕鎖定驗證身分",
+                                    "通过指纹、面容或系统锁屏保护应用访问",
+                                    "Protect app access with biometrics or device screen lock",
+                                    "生体認証または端末ロックでアプリへのアクセスを保護します",
+                                    "생체 인증 또는 기기 화면 잠금으로 앱 접근을 보호합니다",
+                                    "透過指紋、臉部或系統螢幕鎖定保護應用程式存取",
                                 ),
                                 checked = appLockEnabled,
                                 onCheckedChange = { enabled ->
@@ -436,6 +433,21 @@ internal fun SyncAndDataSettingsSection(
                                     }
                                 },
                             )
+                            if (appLockEnabled) {
+                                SettingsSwitchRow(
+                                    icon = Icons.Outlined.Lock,
+                                    title = tr("仅锁屏后锁定", "Lock only after screen off", "画面オフ時のみロック", "화면이 꺼질 때만 잠금", "僅鎖屏後鎖定"),
+                                    supporting = tr(
+                                        "关闭时离开应用立即锁定，开启后仅在关闭屏幕或重启时锁定",
+                                        "Locks immediately when leaving the app if off; locks only after screen off or restart if on",
+                                        "オフ時はアプリを離れると即時ロック、オン時は画面オフまたは再起動時のみロックします",
+                                        "끄면 앱을 떠날 때 즉시 잠그며, 켜면 화면이 꺼지거나 재시작할 때만 잠급니다",
+                                        "關閉時離開應用程式立即鎖定，開啟後僅在關閉螢幕或重新啟動時鎖定",
+                                    ),
+                                    checked = lockOnScreenOffOnly,
+                                    onCheckedChange = { appSecurity.setLockOnScreenOffOnly(it) },
+                                )
+                            }
                         }
                         if (matchHideRecents) {
                             SettingsSwitchRow(
@@ -451,63 +463,6 @@ internal fun SyncAndDataSettingsSection(
                                 checked = hideInRecents,
                                 onCheckedChange = { appSecurity.setHideInRecents(it) },
                             )
-                        }
-                        if (matchDisguise) {
-                            SettingsNavigationRow(
-                                icon = Icons.Outlined.Apps,
-                                title = tr("应用图标与名称", "App icon & name", "アプリアイコンと名前", "앱 아이콘 및 이름", "應用程式圖示與名稱"),
-                                supporting = activeDisguiseLabel,
-                                onClick = { showDisguiseDialog = true },
-                                trailingIcon = null,
-                            )
-                        }
-                    }
-
-                    if (showDisguiseDialog) {
-                        SettingsChoiceDialog(
-                            icon = Icons.Outlined.Apps,
-                            title = tr("应用图标与名称", "App icon & name", "アプリアイコンと名前", "앱 아이콘 및 이름", "應用程式圖示與名稱"),
-                            description = tr(
-                                "更换桌面图标配色或伪装为日常工具图标，切换后桌面会在数秒内刷新。",
-                                "Change the launcher icon color or disguise it as an everyday utility. The home screen updates within a few seconds.",
-                                "アプリアイコンの配色変更や別アプリへの偽装ができます。変更は数秒以内にホーム画面へ反映されます。",
-                                "런처 아이콘 색상을 바꾸거나 일반 도구 앱으로 위장합니다. 변경 사항은 몇 초 내에 홈 화면에 반영됩니다.",
-                                "更換桌面圖示配色或偽裝為日常工具圖示，切換後桌面會在數秒內重新整理。",
-                            ),
-                            onDismiss = { showDisguiseDialog = false },
-                        ) {
-                            disguiseOptions.forEach { option ->
-                                SettingsChoiceOption(
-                                    title = option.title,
-                                    supporting = option.description,
-                                    selected = activeDisguiseId == option.id,
-                                    onClick = {
-                                        showDisguiseDialog = false
-                                        val switched = appSecurity.selectDisguise(option.id)
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar(
-                                                if (switched) {
-                                                    tr(
-                                                        "已切换应用图标，桌面将在数秒内更新",
-                                                        "App icon updated; launcher will refresh shortly",
-                                                        "アイコンを変更しました。数秒以内に反映されます",
-                                                        "앱 아이콘이 변경되었습니다. 잠시 후 런처에 반영됩니다",
-                                                        "已切換應用程式圖示，桌面將於數秒內更新",
-                                                    )
-                                                } else {
-                                                    tr(
-                                                        "切换应用图标失败",
-                                                        "Failed to change app icon",
-                                                        "アイコンの変更に失敗しました",
-                                                        "앱 아이콘 변경에 실패했습니다",
-                                                        "切換應用程式圖示失敗",
-                                                    )
-                                                },
-                                            )
-                                        }
-                                    },
-                                )
-                            }
                         }
                     }
             }

@@ -41,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -52,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import dev.piko.ui.platform.LocalPikoPlatform
 import dev.piko.ui.theme.PikoTheme
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
@@ -145,6 +147,7 @@ class MainActivity : ComponentActivity() {
 
         // 设置里的「减少动画」经这一份缩放生效，见 PikoMotionScale
         installMotionScale(app.platform.motionScale, lifecycle)
+        app.platform.appSecurity.applyWindowSecurity(this)
         setContent {
             val appearance by appearanceFlow.collectAsStateWithLifecycle(initialAppearance)
             val darkTheme = appearance.isDark()
@@ -174,11 +177,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (isLocked) {
-                PikoTheme(appearance = appearance) {
-                    AppLockOverlay(
-                        activity = this@MainActivity,
-                        appSecurity = appSecurity,
-                    )
+                CompositionLocalProvider(LocalPikoPlatform provides app.platform) {
+                    PikoTheme(appearance = appearance) {
+                        AppLockOverlay(
+                            activity = this@MainActivity,
+                            appSecurity = appSecurity,
+                        )
+                    }
                 }
             } else {
                 PikoApp(
