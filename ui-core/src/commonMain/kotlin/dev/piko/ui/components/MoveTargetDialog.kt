@@ -7,7 +7,15 @@ import dev.piko.ui.i18n.stringResource
 
 import dev.piko.shared.i18n.tr
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,13 +41,19 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.HorizontalDivider
@@ -73,23 +87,40 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.piko.data.repository.PathBreadcrumb
+import dev.piko.shared.data.FolderSearchHit
+import dev.piko.shared.data.FolderSearchSnapshot
 import dev.piko.shared.data.isPikoInternalFolder
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
 import dev.piko.ui.adaptive.isHeightCompact
 import dev.piko.ui.platform.LocalPikoPlatform
+import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.LocalPikoMotion
+import dev.piko.ui.theme.isEInk
 import io.github.nihildigit.pikpak.FileStat
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -260,14 +291,22 @@ private fun FolderPickerContent(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
+    val searchListState = rememberLazyListState()
+    val focusManager = LocalFocusManager.current
+    val searchFocusRequester = remember { FocusRequester() }
 
-    var path by remember { mutableStateOf(listOf(PathBreadcrumb("", tr("我的网盘", "My drive", "マイドライブ", "내 드라이브", "我的雲端硬碟")))) }
+    val rootName = tr("我的网盘", "My drive", "マイドライブ", "내 드라이브", "我的雲端硬碟")
+    var path by remember { mutableStateOf(listOf(PathBreadcrumb("", rootName))) }
     LaunchedEffect(dev.piko.shared.i18n.PikoLocale.effectiveLanguage) {
         path = path.map { crumb ->
-            if (crumb.id.isEmpty()) crumb.copy(name = tr("我的网盘", "My drive", "マイドライブ", "내 드라이브", "我的雲端硬碟")) else crumb
+            if (crumb.id.isEmpty()) crumb.copy(name = rootName) else crumb
         }
     }
     val current = path.last()
+
+    var searchQuery by remember { mutableStateOf("") }
+    var searchSnapshot by remember { mutableStateOf(FolderSearchSnapshot()) }
+    val isSearching = searchQuery.isNotBlank()
 
     var folders by remember { mutableStateOf<List<FileStat>>(emptyList()) }
     var pageToken by remember { mutableStateOf("") }
@@ -284,6 +323,25 @@ private fun FolderPickerContent(
     val preferences = LocalPikoServices.current.preferences
     val autoCleanNames by preferences.autoCleanNamesFlow.collectAsStateWithLifecycle(initialValue = false)
     val isSpoilerBlurEnabled by preferences.spoilerBlurFlow.collectAsStateWithLifecycle(initialValue = preferences.currentSnapshot.spoilerBlurEnabled)
+
+    LaunchedEffect(searchQuery, reloadTrigger) {
+        val trimmed = searchQuery.trim()
+        if (trimmed.isEmpty()) {
+            searchSnapshot = FolderSearchSnapshot()
+            return@LaunchedEffect
+        }
+        delay(50)
+        driveRepo.searchLocalFolders(trimmed).collect { snapshot ->
+            searchSnapshot = snapshot
+        }
+    }
+
+    fun selectSearchHit(hit: FolderSearchHit) {
+        val rootCrumb = path.firstOrNull()?.takeIf { it.id.isEmpty() } ?: PathBreadcrumb("", rootName)
+        path = listOf(rootCrumb) + hit.path
+        searchQuery = ""
+        focusManager.clearFocus()
+    }
 
     suspend fun loadPage(reset: Boolean) {
         if (!reset && (isLoadingMore || !hasMore)) return
@@ -357,9 +415,14 @@ private fun FolderPickerContent(
         }
     }
 
-    // 返回键先退回上一级，与面包屑保持同一套导航；根目录才关闭选择器。
-    BackHandler(enabled = path.size > 1) {
-        path = path.dropLast(1)
+    // 返回键分层：有搜索词时先退出搜索，再退回上一级，根目录才关闭选择器。
+    BackHandler(enabled = searchQuery.isNotEmpty() || path.size > 1) {
+        if (searchQuery.isNotEmpty()) {
+            searchQuery = ""
+            focusManager.clearFocus()
+        } else {
+            path = path.dropLast(1)
+        }
     }
 
     val blockedReason = confirmBlockedReason(current)
@@ -368,7 +431,16 @@ private fun FolderPickerContent(
     // 关闭照 M3：全屏形态（compact）左上角放关闭，浮着的对话框不画关闭，底栏「取消」在主按钮左边。
     // 新建文件夹只放顶栏：底栏再放一个就是同一动作的两个入口，还把确认键挤窄
     Scaffold(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && event.key == Key.F && (event.isCtrlPressed || event.isMetaPressed)) {
+                    runCatching { searchFocusRequester.requestFocus() }
+                    true
+                } else {
+                    false
+                }
+            },
         containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
@@ -403,7 +475,13 @@ private fun FolderPickerContent(
                 onClearRecent = onClearRecent,
                 recentTargets = recentTargets,
                 currentId = current.id,
-                onRecentSelect = { target -> path = target },
+                onRecentSelect = { target ->
+                    path = target
+                    if (searchQuery.isNotEmpty()) {
+                        searchQuery = ""
+                        focusManager.clearFocus()
+                    }
+                },
                 pathLabel = path.joinToString(" / ") { it.name },
                 confirmLabel = confirmLabel,
                 confirmEnabled = confirmEnabled,
@@ -418,63 +496,111 @@ private fun FolderPickerContent(
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            // 面包屑固定、下面的列表滚动，不画分隔线：文件夹行各有底色，滚到面包屑下沿就被裁掉，层次已经分开
-            BreadcrumbBar(
-                breadcrumbs = path,
-                onBreadcrumbClick = { index -> path = path.take(index + 1) },
+            FolderPickerSearchField(
+                query = searchQuery,
+                onQueryChange = { searchQuery = it },
+                fullscreen = fullscreen,
+                focusRequester = searchFocusRequester,
+                onSubmit = {
+                    val selectable = searchSnapshot.hits.filter { hit -> hit.path.none { it.id in blockedFolderIds } }
+                    if (selectable.size == 1) {
+                        selectSearchHit(selectable.first())
+                    } else {
+                        focusManager.clearFocus()
+                    }
+                },
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 8.dp),
             )
 
+            // 搜索态收起面包屑，为命中列表腾出纵向空间
+            AnimatedVisibility(
+                visible = !isSearching,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
+            ) {
+                BreadcrumbBar(
+                    breadcrumbs = path,
+                    onBreadcrumbClick = { index -> path = path.take(index + 1) },
+                )
+            }
+
+            val rowContainerColor = if (fullscreen) {
+                MaterialTheme.colorScheme.surfaceContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHighest
+            }
+
             Crossfade(
-                targetState = isLoading,
+                targetState = isSearching,
                 animationSpec = LocalPikoMotion.current.stateCrossfade,
-                label = "folder_picker_loading",
-            ) { loading ->
-                if (loading) {
-                    FolderPickerSkeleton()
-                } else if (folders.isEmpty()) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        PikoEmptyState(
-                            title = tr("此文件夹没有子文件夹", "No subfolders", "サブフォルダーはありません", "하위 폴더가 없습니다", "此資料夾沒有子資料夾"),
-                            description = tr("可直接选择当前文件夹，或新建子文件夹", "Choose this folder or create a subfolder", "このフォルダーを選択するか、新しいフォルダーを作成してください", "이 폴더를 선택하거나 하위 폴더를 새로 만드세요", "可直接選擇目前資料夾，或新增子資料夾"),
-                            icon = Icons.Outlined.Folder,
-                        )
-                    }
+                label = "folder_picker_mode",
+                modifier = Modifier.weight(1f),
+            ) { searching ->
+                if (searching) {
+                    FolderSearchResultsList(
+                        snapshot = searchSnapshot,
+                        rootName = rootName,
+                        listState = searchListState,
+                        blockedFolderIds = blockedFolderIds,
+                        blockedFolderHint = blockedFolderHint,
+                        containerColor = rowContainerColor,
+                        isSpoilerBlurred = isSpoilerBlurEnabled,
+                        onSelect = ::selectSearchHit,
+                    )
                 } else {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(
-                            start = 16.dp,
-                            end = 16.dp,
-                            bottom = 8.dp,
-                        ),
-                        verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
-                    ) {
-                        itemsIndexed(items = folders, key = { _, folder -> folder.id }) { index, folder ->
-                            val isBlocked = folder.id in blockedFolderIds
-                            FolderPickerRow(
-                                folder = folder,
-                                enabled = !isBlocked,
-                                hint = if (isBlocked) blockedFolderHint else null,
-                                shapes = ListItemDefaults.segmentedShapes(index = index, count = folders.size),
-                                // 全屏形态铺在 surface 上，照设置页取 surfaceContainer；浮着的对话框底是 surfaceContainerHigh，行再高一级
-                                containerColor = if (fullscreen) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
-                                isSpoilerBlurred = isSpoilerBlurEnabled,
-                                onClick = { path = path + PathBreadcrumb(folder.id, folder.name) },
-                            )
-                        }
-                        if (hasMore) {
-                            item(key = "loading_more") {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(56.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    InlineLoadingIndicator()
+                    Crossfade(
+                        targetState = isLoading,
+                        animationSpec = LocalPikoMotion.current.stateCrossfade,
+                        label = "folder_picker_loading",
+                    ) { loading ->
+                        if (loading) {
+                            FolderPickerSkeleton()
+                        } else if (folders.isEmpty()) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                PikoEmptyState(
+                                    title = tr("此文件夹没有子文件夹", "No subfolders", "サブフォルダーはありません", "하위 폴더가 없습니다", "此資料夾沒有子資料夾"),
+                                    description = tr("可直接选择当前文件夹，或新建子文件夹", "Choose this folder or create a subfolder", "このフォルダーを選択するか、新しいフォルダーを作成してください", "이 폴더를 선택하거나 하위 폴더를 새로 만드세요", "可直接選擇目前資料夾，或新增子資料夾"),
+                                    icon = Icons.Outlined.Folder,
+                                )
+                            }
+                        } else {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(
+                                    start = 16.dp,
+                                    end = 16.dp,
+                                    bottom = 8.dp,
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
+                            ) {
+                                itemsIndexed(items = folders, key = { _, folder -> folder.id }) { index, folder ->
+                                    val isBlocked = folder.id in blockedFolderIds
+                                    FolderPickerRow(
+                                        folder = folder,
+                                        enabled = !isBlocked,
+                                        hint = if (isBlocked) blockedFolderHint else null,
+                                        shapes = ListItemDefaults.segmentedShapes(index = index, count = folders.size),
+                                        // 全屏形态铺在 surface 上，照设置页取 surfaceContainer；浮着的对话框底是 surfaceContainerHigh，行再高一级
+                                        containerColor = rowContainerColor,
+                                        isSpoilerBlurred = isSpoilerBlurEnabled,
+                                        onClick = { path = path + PathBreadcrumb(folder.id, folder.name) },
+                                    )
+                                }
+                                if (hasMore) {
+                                    item(key = "loading_more") {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(56.dp),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            InlineLoadingIndicator()
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -667,6 +793,190 @@ private fun RecentTargetsRow(
     }
 }
 
+/**
+ * M3 Expressive Contained 风格常驻搜索胶囊：宽屏弹窗底色为 surfaceContainerHigh 时取 surfaceContainerHighest，
+ * 全屏底色为 surface 时取 surfaceContainerHigh，聚焦态呈现 1.5dp 主色动态外环。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun FolderPickerSearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    fullscreen: Boolean,
+    focusRequester: FocusRequester,
+    onSubmit: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.colorScheme
+    val focusManager = LocalFocusManager.current
+    val isEInk = LocalAppearance.current.isEInk
+    var focused by remember { mutableStateOf(false) }
+
+    val focusBorderColor by animateColorAsState(
+        targetValue = when {
+            focused -> colors.primary
+            isEInk -> colors.outline
+            else -> Color.Transparent
+        },
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "folder_picker_search_ring",
+    )
+    val containerColor = when {
+        isEInk -> Color.White
+        fullscreen -> colors.surfaceContainerHigh
+        else -> colors.surfaceContainerHighest
+    }
+    val textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface)
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .border(if (isEInk && !focused) 1.dp else 1.5.dp, focusBorderColor, CircleShape)
+            .clip(CircleShape)
+            .background(containerColor)
+            .padding(start = 14.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Search,
+            contentDescription = null,
+            tint = if (focused) colors.primary else colors.onSurfaceVariant,
+            modifier = Modifier.size(20.dp),
+        )
+        BasicTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            singleLine = true,
+            textStyle = textStyle,
+            cursorBrush = SolidColor(colors.primary),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 10.dp)
+                .focusRequester(focusRequester)
+                .onFocusChanged { focused = it.isFocused }
+                .onPreviewKeyEvent { event ->
+                    if (event.key != Key.Escape) return@onPreviewKeyEvent false
+                    if (event.type == KeyEventType.KeyDown) {
+                        if (query.isNotEmpty()) onQueryChange("") else focusManager.clearFocus()
+                    }
+                    true
+                },
+            decorationBox = { inner ->
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (query.isEmpty()) {
+                        Text(
+                            text = tr("搜索目标文件夹", "Search destination folders", "移動先フォルダーを検索", "대상 폴더 검색", "搜尋目標資料夾"),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = colors.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    inner()
+                }
+            },
+        )
+        if (query.isNotEmpty()) {
+            IconButton(
+                onClick = { onQueryChange("") },
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Close,
+                    contentDescription = tr("清除搜索", "Clear search", "検索をクリア", "검색 지우기", "清除搜尋"),
+                    tint = colors.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FolderSearchResultsList(
+    snapshot: FolderSearchSnapshot,
+    rootName: String,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    blockedFolderIds: Set<String>,
+    blockedFolderHint: String?,
+    containerColor: Color,
+    isSpoilerBlurred: Boolean,
+    onSelect: (FolderSearchHit) -> Unit,
+) {
+    if (snapshot.hits.isEmpty() && !snapshot.isSyncing) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center,
+        ) {
+            PikoEmptyState(
+                title = tr("未找到匹配的文件夹", "No matching folders", "一致するフォルダーが見つかりません", "일치하는 폴더가 없습니다", "找不到符合的資料夾"),
+                description = tr("可尝试其他关键词，或清空搜索手动浏览目录", "Try another keyword or clear search to browse manually", "別のキーワードを試すか、検索をクリアして手動で参照してください", "다른 키워드로 검색하거나 검색어를 지우고 직접 탐색하세요", "可嘗試其他關鍵字，或清除搜尋手動瀏覽目錄"),
+                icon = Icons.Outlined.Search,
+            )
+        }
+        return
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            end = 16.dp,
+            bottom = 8.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
+    ) {
+        itemsIndexed(items = snapshot.hits, key = { _, hit -> hit.folder.id }) { index, hit ->
+            val isBlocked = hit.path.any { it.id in blockedFolderIds }
+            val parentPath = if (hit.path.size > 1) {
+                buildString {
+                    append(rootName)
+                    for (crumb in hit.path.dropLast(1)) {
+                        append(" / ")
+                        append(crumb.name)
+                    }
+                }
+            } else {
+                rootName
+            }
+            FolderPickerRow(
+                folder = hit.folder,
+                enabled = !isBlocked,
+                hint = if (isBlocked) blockedFolderHint else null,
+                subtitle = parentPath,
+                shapes = ListItemDefaults.segmentedShapes(index = index, count = snapshot.hits.size),
+                containerColor = containerColor,
+                isSpoilerBlurred = isSpoilerBlurred,
+                onClick = { onSelect(hit) },
+            )
+        }
+        if (snapshot.isSyncing) {
+            item(key = "folder_search_syncing") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp, horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    InlineLoadingIndicator()
+                    Text(
+                        text = tr("正在同步本地目录索引，结果将自动补充", "Syncing local folder index, results will update automatically", "ローカルフォルダー索引を同期中、結果は自動的に追加されます", "로컬 폴더 색인을 동기화하는 중이며 결과가 자동으로 추가됩니다", "正在同步本機目錄索引，結果將自動補充"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
 /** 一个子文件夹，设置页那样的分段行，点了进去。 */
 @Composable
 fun FolderPickerRow(
@@ -676,6 +986,7 @@ fun FolderPickerRow(
     shapes: ListItemShapes,
     containerColor: Color,
     isSpoilerBlurred: Boolean = false,
+    subtitle: String? = null,
     onClick: () -> Unit,
 ) {
     val contentAlpha = if (enabled) 1f else 0.38f
@@ -704,14 +1015,24 @@ fun FolderPickerRow(
                 isSpoilerBlurred = isSpoilerBlurred,
                 modifier = if (enabled) Modifier else Modifier.alpha(contentAlpha),
             )
-            Text(
-                text = folder.name,
-                style = MaterialTheme.typography.bodyLarge,
-                color = onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = folder.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = onSurface,
+                    maxLines = if (subtitle != null) 1 else 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
             CompositionLocalProvider(LocalContentColor provides onSurfaceVariant) {
                 if (hint != null) {
                     Text(hint, style = MaterialTheme.typography.labelMedium)

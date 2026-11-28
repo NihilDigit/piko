@@ -86,4 +86,73 @@ class FolderIndexTest {
             LastFolderStack.decode("::网盘;piko:starred::星标"),
         )
     }
+
+    @Test
+    fun searchLocalFoldersMatchesNamePathAndFiltersInvalidDestinations() {
+        val entries = listOf(
+            FileStat(id = "movies", parentId = "", name = "影视", kind = FileKind.FOLDER),
+            FileStat(id = "movies_2026", parentId = "movies", name = "2026", kind = FileKind.FOLDER),
+            FileStat(id = "scifi", parentId = "movies_2026", name = "科幻合集", kind = FileKind.FOLDER),
+            FileStat(id = "direct_2026", parentId = "", name = "2026归档", kind = FileKind.FOLDER),
+            FileStat(id = "trashed_dir", parentId = "", name = "2026回收站", kind = FileKind.FOLDER, trashed = true),
+            FileStat(id = "piko_internal", parentId = "", name = ".piko", kind = FileKind.FOLDER),
+            FileStat(id = "piko_sub", parentId = "piko_internal", name = "2026配置", kind = FileKind.FOLDER),
+            FileStat(id = "normal_file", parentId = "movies", name = "2026.mp4", kind = FileKind.FILE),
+        ).associateBy { it.id }
+
+        val folderIndex = FolderIndex().apply {
+            learned("extra_folder", "2026待整理", "movies", isFolder = true, trashed = false)
+            learned("archive_item", "2026照片.zip", "movies", isFolder = false, trashed = false)
+            seed(mapOf("provisional_dir" to "2026临时"), mapOf("provisional_dir" to ""))
+        }
+
+        val hits = DriveTreeIndex.searchLocalFolders(
+            query = "2026",
+            entries = entries,
+            indexNodes = folderIndex.flow.value.nodes,
+            gone = folderIndex.flow.value.gone,
+        )
+        val hitIds = hits.map { it.folder.id }
+        assertTrue("movies_2026" in hitIds)
+        assertTrue("direct_2026" in hitIds)
+        assertTrue("extra_folder" in hitIds)
+        // 子目录通过父路径命中，且排在直接命中目录名的条目之后
+        assertTrue("scifi" in hitIds)
+        assertTrue(hitIds.indexOf("movies_2026") < hitIds.indexOf("scifi"))
+        // 排除文件、压缩包、回收站、.piko 内部目录及 provisional 节点
+        assertFalse("normal_file" in hitIds)
+        assertFalse("archive_item" in hitIds)
+        assertFalse("trashed_dir" in hitIds)
+        assertFalse("piko_internal" in hitIds)
+        assertFalse("piko_sub" in hitIds)
+        assertFalse("provisional_dir" in hitIds)
+
+        val scifiHit = hits.first { it.folder.id == "scifi" }
+        assertEquals(
+            listOf(
+                PikoPathBreadcrumb("movies", "影视"),
+                PikoPathBreadcrumb("movies_2026", "2026"),
+                PikoPathBreadcrumb("scifi", "科幻合集"),
+            ),
+            scifiHit.path,
+        )
+    }
+
+    @Test
+    fun searchLocalFoldersSupportsPathQueryAndGoneFiltering() {
+        val entries = listOf(
+            FileStat(id = "work", parentId = "", name = "工作", kind = FileKind.FOLDER),
+            FileStat(id = "docs", parentId = "work", name = "文档", kind = FileKind.FOLDER),
+            FileStat(id = "deleted_parent", parentId = "", name = "旧目录", kind = FileKind.FOLDER),
+            FileStat(id = "deleted_child", parentId = "deleted_parent", name = "文档", kind = FileKind.FOLDER),
+        ).associateBy { it.id }
+
+        val hits = DriveTreeIndex.searchLocalFolders(
+            query = "工作/文档",
+            entries = entries,
+            indexNodes = emptyMap(),
+            gone = setOf("deleted_parent"),
+        )
+        assertEquals(listOf("docs"), hits.map { it.folder.id })
+    }
 }

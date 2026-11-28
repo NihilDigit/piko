@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 
@@ -172,6 +173,7 @@ interface DriveService {
     fun requestTreeRebuild()
     fun onRootPullRefresh()
     fun searchRecursive(query: String, parentId: String = ""): Flow<SearchHit>
+    fun searchLocalFolders(query: String, limit: Int = 80): Flow<FolderSearchSnapshot> = flowOf(FolderSearchSnapshot())
 
     suspend fun trashFiles(fresh: Boolean = true): Result<List<FileStat>>
     fun reconcileTrashListing(files: List<FileStat>): Boolean
@@ -444,6 +446,7 @@ open class PikoDriveRepository(
     suspend fun probeRemoteChanges(asked: PikPakClient = client, force: Boolean = false): Result<CanaryProbeResult> =
         indexCoordinator.probeRemoteChanges(asked, force)
     override fun searchRecursive(query: String, parentId: String): Flow<SearchHit> = librarySource.searchRecursive(query, parentId)
+    override fun searchLocalFolders(query: String, limit: Int): Flow<FolderSearchSnapshot> = librarySource.searchLocalFolders(query, limit)
 
     override suspend fun trashFiles(fresh: Boolean): Result<List<FileStat>> = librarySource.trashFiles(fresh)
     internal suspend fun trashFilesForClient(asked: PikPakClient, fresh: Boolean = true): Result<List<FileStat>> = librarySource.trashFilesForClient(asked, fresh)

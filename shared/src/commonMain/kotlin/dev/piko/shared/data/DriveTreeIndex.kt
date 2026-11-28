@@ -26,6 +26,18 @@ import kotlinx.serialization.Serializable
 
 private const val TREE_INDEX_TAG = "DriveTreeIndex"
 
+/** 本地目录树搜索命中项：[path] 为不含根节点的完整路径段（从顶级子目录到该目录自身）。 */
+data class FolderSearchHit(
+    val folder: FileStat,
+    val path: List<PikoPathBreadcrumb>,
+)
+
+/** 本地目录搜索快照：[isSyncing] 为 true 表示本地全盘目录树尚在补建，命中项会随同步自动更新。 */
+data class FolderSearchSnapshot(
+    val hits: List<FolderSearchHit> = emptyList(),
+    val isSyncing: Boolean = false,
+)
+
 /**
  * 当前账号的本地全盘树索引（文件夹骨架、真实文件与已解析的归档虚拟条目）。
  *
@@ -1457,6 +1469,110 @@ internal class DriveTreeIndex(
             if (parentId.isEmpty() && names.lastOrNull()?.let(::isPikoInternalFolderName) == true) return null
             names.reverse()
             return names
+        }
+
+        /**
+         * 将目标文件夹还原为不含根节点的完整 [PikoPathBreadcrumb] 路径栈。
+         * 路径中任一环节缺失、成环、已标记删除或穿过 `.piko` 内部目录时返回 null。
+         */
+        internal fun resolveFolderPath(
+            folder: FileStat,
+            entries: Map<String, FileStat>,
+            indexNodes: Map<String, FolderIndex.Node>,
+            gone: Set<String> = emptySet(),
+        ): List<PikoPathBreadcrumb>? {
+            if (folder.id.isEmpty() || folder.id in gone || !folder.isFolder || folder.trashed) return null
+            if (VaultEntry.isVaulted(folder.id) || LocalLocation.isLocal(folder.id)) return null
+            if (isPikoInternalFolder(folder, folder.parentId)) return null
+            val chain = ArrayList<PikoPathBreadcrumb>(4)
+            val seen = HashSet<String>(8)
+            seen.add(folder.id)
+            chain.add(PikoPathBreadcrumb(folder.id, folder.name))
+            var ancestor = folder.parentId
+            while (ancestor.isNotEmpty()) {
+                if (ancestor in gone || !seen.add(ancestor)) return null
+                val folderStat = entries[ancestor]?.takeIf { it.isFolder && !it.trashed }
+                val indexNode = indexNodes[ancestor]?.takeUnless { it.provisional }
+                val folderName = folderStat?.name ?: indexNode?.name ?: return null
+                val folderParent = folderStat?.parentId ?: indexNode?.parentId ?: return null
+                if (folderParent.isEmpty() && isPikoInternalFolderName(folderName)) return null
+                chain.add(PikoPathBreadcrumb(ancestor, folderName))
+                ancestor = folderParent
+            }
+            chain.reverse()
+            return chain
+        }
+
+        /**
+         * 仅在内存中的文件夹骨架与 [FolderIndex] 节点中执行 CJK 模糊检索，不扫描 SQLite 普通文件表。
+         * 优先匹配目录名与解析后的作品标题，其次支持以完整路径（如 `影视/2026`）兜底匹配。
+         */
+        internal fun searchLocalFolders(
+            query: String,
+            entries: Map<String, FileStat>,
+            indexNodes: Map<String, FolderIndex.Node>,
+            gone: Set<String> = emptySet(),
+            limit: Int = 80,
+            extraFolderTitle: (FileStat) -> String? = { null },
+            transformFile: (FileStat) -> FileStat = { it },
+        ): List<FolderSearchHit> {
+            val cleanQuery = query.trim()
+            if (cleanQuery.isEmpty() || limit <= 0) return emptyList()
+            val preparedQuery = prepareCjkQuery(cleanQuery)
+            val candidates = LinkedHashMap<String, FileStat>()
+            for (entry in entries.values) {
+                if (!entry.isFolder || entry.trashed || entry.id.isEmpty() || entry.id in gone) continue
+                if (VaultEntry.isVaulted(entry.id) || LocalLocation.isLocal(entry.id)) continue
+                if (isPikoInternalFolder(entry, entry.parentId)) continue
+                candidates[entry.id] = entry
+            }
+            for ((id, node) in indexNodes) {
+                if (id.isEmpty() || id in gone || id in candidates || node.provisional) continue
+                val parentId = node.parentId ?: continue
+                if (LocalLocation.isLocal(id) || VaultEntry.isVaulted(id)) continue
+                if (isExtractableArchive(node.name)) continue
+                if (parentId.isEmpty() && isPikoInternalFolderName(node.name)) continue
+                candidates[id] = FileStat(kind = FileKind.FOLDER, id = id, parentId = parentId, name = node.name)
+            }
+            if (candidates.isEmpty()) return emptyList()
+
+            // 分层权重：直接命中目录名 > 命中解析作品标题 > 命中完整路径，确保精准名称排在前面
+            data class ScoredFolder(val tier: Int, val score: Int, val hit: FolderSearchHit)
+            val scored = ArrayList<ScoredFolder>()
+            for (folder in candidates.values) {
+                val path = resolveFolderPath(folder, candidates, indexNodes, gone) ?: continue
+                val nameScore = preparedQuery.score(folder.name)
+                if (nameScore != null) {
+                    scored.add(ScoredFolder(tier = 3, score = nameScore, hit = FolderSearchHit(folder, path)))
+                    continue
+                }
+                val titleScore = extraFolderTitle(folder)?.let(preparedQuery::score)
+                if (titleScore != null) {
+                    scored.add(ScoredFolder(tier = 2, score = titleScore, hit = FolderSearchHit(folder, path)))
+                    continue
+                }
+                if (path.size > 1) {
+                    val fullPath = path.joinToString("/") { it.name }
+                    val pathScore = preparedQuery.score(fullPath)
+                    if (pathScore != null) {
+                        scored.add(ScoredFolder(tier = 1, score = pathScore, hit = FolderSearchHit(folder, path)))
+                    }
+                }
+            }
+            scored.sortWith { a, b ->
+                val byTier = b.tier.compareTo(a.tier)
+                if (byTier != 0) return@sortWith byTier
+                val byScore = b.score.compareTo(a.score)
+                if (byScore != 0) return@sortWith byScore
+                val byDepth = a.hit.path.size.compareTo(b.hit.path.size)
+                if (byDepth != 0) return@sortWith byDepth
+                NaturalOrder.compare(a.hit.folder.name, b.hit.folder.name)
+            }
+            val resultCount = minOf(scored.size, limit)
+            return List(resultCount) { index ->
+                val hit = scored[index].hit
+                hit.copy(folder = transformFile(hit.folder))
+            }
         }
     }
 }

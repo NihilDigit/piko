@@ -99,6 +99,89 @@ internal class DriveLibraryAndSearchSource(
         runSuspendCatching { ctx.overlay.sourceLedger.enrich(ctx.requireClient().searchFiles(query)) }
     }
 
+    private fun extraFolderTitleOf(folder: FileStat): String? {
+        val children = ctx.listing.childContents.get(folder.id) ?: return null
+        val key = FolderTitleKey(folder.id, folder.name, PikoLocale.effectiveLanguage.name, children.hashCode())
+        withPikoLock(folderTitleLock) {
+            if (folderTitleCache.containsKey(key)) {
+                val cached = folderTitleCache.remove(key)
+                folderTitleCache[key] = cached
+                return cached
+            }
+        }
+        val computed = describeFolder(folder.name, children.map { MediaFileInput(it.name, 0, it.category?.toFileKind()) }).title
+        withPikoLock(folderTitleLock) {
+            folderTitleCache[key] = computed
+            var weight = folderTitleCache.entries.sumOf { (k, v) -> 96L + 2L * (k.id.length + k.name.length + (v?.length ?: 0)) }
+            while (folderTitleCache.size > 4096 || weight > 1024L * 1024) {
+                val oldest = folderTitleCache.entries.first()
+                weight -= 96L + 2L * (oldest.key.id.length + oldest.key.name.length + (oldest.value?.length ?: 0))
+                folderTitleCache.remove(oldest.key)
+            }
+        }
+        return computed
+    }
+
+    fun searchLocalFolders(query: String, limit: Int = 80): Flow<FolderSearchSnapshot> = flow {
+        val cleanQuery = query.trim()
+        if (cleanQuery.isEmpty()) {
+            emit(FolderSearchSnapshot())
+            return@flow
+        }
+
+        fun computeHits(): List<FolderSearchHit> {
+            val treeState = ctx.index.driveTreeIndex.flow.value
+            val folderState = ctx.index.folderIndex.flow.value
+            val hasPending = ctx.mutations.hasPendingOptimisticWrites
+            val entries = if (!hasPending) {
+                treeState.entries
+            } else {
+                val optimisticFolders = ctx.mutations.optimisticCandidates().filter { it.isFolder }
+                val baseFolders = treeState.entries.values.filter { it.isFolder }
+                ctx.mutations.projectOptimisticFiles((baseFolders + optimisticFolders).distinctBy { it.id })
+                    .associateBy { it.id }
+            }
+            return DriveTreeIndex.searchLocalFolders(
+                query = cleanQuery,
+                entries = entries,
+                indexNodes = folderState.nodes,
+                gone = folderState.gone,
+                limit = limit,
+                extraFolderTitle = ::extraFolderTitleOf,
+                transformFile = { ctx.overlay.withVaultCovers(listOf(it)).first() },
+            )
+        }
+
+        val initialTree = ctx.index.driveTreeIndex
+        if (initialTree.isComplete) {
+            emit(FolderSearchSnapshot(hits = computeHits(), isSyncing = false))
+            return@flow
+        }
+
+        val asked = ctx.clientManager.currentClient.value
+        if (asked == null) {
+            emit(FolderSearchSnapshot(hits = computeHits(), isSyncing = false))
+            return@flow
+        }
+
+        emit(FolderSearchSnapshot(hits = computeHits(), isSyncing = true))
+        val sync = ctx.index.ensureTreeSync(asked)
+        var lastTreeRev = ctx.index.driveTreeIndex.flow.value.revision
+        var lastFolderNodes = ctx.index.folderIndex.flow.value.nodes
+        while (sync.isActive) {
+            delay(250)
+            val currentTreeRev = ctx.index.driveTreeIndex.flow.value.revision
+            val currentFolderNodes = ctx.index.folderIndex.flow.value.nodes
+            if (currentTreeRev != lastTreeRev || currentFolderNodes !== lastFolderNodes) {
+                lastTreeRev = currentTreeRev
+                lastFolderNodes = currentFolderNodes
+                emit(FolderSearchSnapshot(hits = computeHits(), isSyncing = true))
+            }
+        }
+        sync.await()
+        emit(FolderSearchSnapshot(hits = computeHits(), isSyncing = false))
+    }.flowOn(Dispatchers.Default)
+
     fun searchRecursive(query: String, parentId: String = ""): Flow<SearchHit> = flow {
         val cleanQuery = query.trim()
         if (cleanQuery.isEmpty()) return@flow
@@ -107,28 +190,7 @@ internal class DriveLibraryAndSearchSource(
         val emittedIds = HashSet<String>()
         val checkedMissIds = HashSet<String>()
 
-        fun extraFolderTitle(folder: FileStat): String? {
-            val children = ctx.listing.childContents.get(folder.id) ?: return null
-            val key = FolderTitleKey(folder.id, folder.name, PikoLocale.effectiveLanguage.name, children.hashCode())
-            withPikoLock(folderTitleLock) {
-                if (folderTitleCache.containsKey(key)) {
-                    val cached = folderTitleCache.remove(key)
-                    folderTitleCache[key] = cached
-                    return cached
-                }
-            }
-            val computed = describeFolder(folder.name, children.map { MediaFileInput(it.name, 0, it.category?.toFileKind()) }).title
-            withPikoLock(folderTitleLock) {
-                folderTitleCache[key] = computed
-                var weight = folderTitleCache.entries.sumOf { (k, v) -> 96L + 2L * (k.id.length + k.name.length + (v?.length ?: 0)) }
-                while (folderTitleCache.size > 4096 || weight > 1024L * 1024) {
-                    val oldest = folderTitleCache.entries.first()
-                    weight -= 96L + 2L * (oldest.key.id.length + oldest.key.name.length + (oldest.value?.length ?: 0))
-                    folderTitleCache.remove(oldest.key)
-                }
-            }
-            return computed
-        }
+        fun extraFolderTitle(folder: FileStat): String? = extraFolderTitleOf(folder)
 
         fun enrichFile(file: FileStat): FileStat =
             if (file.isFolder) ctx.overlay.withVaultCovers(listOf(file)).first() else ctx.overlay.sourceLedger.enrich(file)
