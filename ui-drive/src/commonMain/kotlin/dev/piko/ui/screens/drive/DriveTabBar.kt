@@ -36,7 +36,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.EditNote
+import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.filled.PushPin
@@ -297,14 +297,14 @@ fun DriveTabBar(
                                         text = {
                                             Column {
                                                 Text(
-                                                    text = tabSession?.title ?: tab.title,
+                                                    text = tabSession?.title ?: tab.displayTitle,
                                                     color = if (isActive) MaterialTheme.colorScheme.primary else Color.Unspecified,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis,
                                                 )
-                                                if (tabSession == null && tab.note.isNotBlank()) {
+                                                if (tabSession == null && tab.note.isNotBlank() && tab.title != tab.displayTitle) {
                                                     Text(
-                                                        text = tab.note,
+                                                        text = tab.title,
                                                         style = MaterialTheme.typography.labelSmall,
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                         maxLines = 1,
@@ -507,14 +507,14 @@ private fun TabChip(
     val target = tab.stack.lastOrNull()?.takeIf { tab.session == null && session == null }
     val library = tab.stack.firstOrNull()?.let { DriveLibrary.of(it.id) }
     val icon = session?.icon ?: library?.icon ?: if (fromFeed) Icons.Outlined.SwipeVertical else Icons.Outlined.Folder
-    val title = session?.title ?: tab.title
-    val note = tab.note.takeIf { session == null && it.isNotBlank() }
+    val title = session?.title ?: tab.displayTitle
+    val hasCustomTitle = session == null && tab.note.isNotBlank()
     val baseTooltip = when {
         fromFeed -> tr("从信息流打开：", "Opened from feed:", "フィードから開く：", "피드에서 열기:", "從資訊流開啟：") + tab.stack.joinToString(" › ") { it.localizedName }
         session != null -> session.tooltip
         else -> tab.stack.joinToString(" › ") { it.localizedName }
     }
-    val tooltip = if (note != null) "$note\n$baseTooltip" else baseTooltip
+    val tooltip = if (hasCustomTitle) "$title\n$baseTooltip" else baseTooltip
     val hasContextActions = onTogglePin != null || onEditNote != null || onClose != null || onCloseOthers != null
     ContextMenuArea(
         enabled = hasContextActions,
@@ -523,8 +523,8 @@ private fun TabChip(
                 if (onEditNote != null) {
                     add(
                         SheetAction(
-                            icon = Icons.Outlined.EditNote,
-                            label = tr("编辑备注", "Edit note", "メモを編集", "메모 편집", "編輯備註"),
+                            icon = Icons.Outlined.DriveFileRenameOutline,
+                            label = tr("重命名标签页", "Rename tab", "タブの名前を変更", "탭 이름 바꾸기", "重新命名分頁"),
                             onClick = onEditNote,
                         ),
                     )
@@ -613,33 +613,14 @@ private fun TabChip(
                         modifier = Modifier.size(16.dp),
                     )
                 }
-                if (note != null) {
-                    Column(modifier = Modifier.padding(start = 8.dp).weight(1f)) {
-                        Text(
-                            title,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = contentColor,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            note,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                } else {
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = contentColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(start = 8.dp).weight(1f),
-                    )
-                }
+                Text(
+                    title,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = contentColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 8.dp).weight(1f),
+                )
                 Box(Modifier.padding(start = 4.dp).size(24.dp), contentAlignment = Alignment.Center) {
                     if (pinned) {
                         Icon(

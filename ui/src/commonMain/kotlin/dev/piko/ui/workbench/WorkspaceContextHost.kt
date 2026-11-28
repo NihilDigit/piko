@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -263,15 +264,30 @@ internal fun WorkspaceContextDialogs(model: WorkspaceViewModel) {
         var draft by rememberSaveable(tabId) { mutableStateOf(tab.note) }
         PikoDialog(
             onDismissRequest = model::dismissEditContextNote,
-            title = { Text(tr("标签页备注", "Tab note", "タブのメモ", "탭 메모", "分頁備註")) },
+            title = { Text(tr("重命名标签页", "Rename tab", "タブの名前を変更", "탭 이름 바꾸기", "重新命名分頁")) },
             text = {
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text(tr("备注", "Note", "メモ", "메모", "備註")) },
-                    placeholder = { Text(tr("留空以清除备注", "Leave empty to clear", "空欄でメモを削除", "비워 두면 메모 삭제", "留空以清除備註")) },
+                    label = { Text(tr("标签页名称", "Tab name", "タブ名", "탭 이름", "分頁名稱")) },
+                    placeholder = { Text(tab.title) },
+                    supportingText = {
+                        Text(tr("留空以恢复默认目录名", "Leave empty to use the folder name", "空欄で既定のフォルダ名に戻す", "비워 두면 기본 폴더 이름 사용", "留空以恢復預設資料夾名稱"))
+                    },
+                    trailingIcon = if (draft.isNotEmpty()) {
+                        {
+                            IconButton(onClick = { draft = "" }) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Close,
+                                    contentDescription = tr("恢复默认名称", "Reset to default", "既定に戻す", "기본값으로 재설정", "恢復預設名稱"),
+                                )
+                            }
+                        }
+                    } else {
+                        null
+                    },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { model.confirmEditContextNote(draft) }),
                 )

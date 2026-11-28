@@ -229,7 +229,9 @@ class PinnedTabsWorkspaceTest {
         assertTrue(first.setTabNote(pinnedTab, "  Work assets  "))
         assertTrue(first.setTabNote(plainTab, "Quick check"))
         assertEquals("Work assets", first.tabsFlow.value.first { it.id == pinnedTab }.note)
+        assertEquals("Work assets", first.tabsFlow.value.first { it.id == pinnedTab }.displayTitle)
         assertEquals("Quick check", first.tabsFlow.value.first { it.id == plainTab }.note)
+        assertEquals("Quick check", first.tabsFlow.value.first { it.id == plainTab }.displayTitle)
         assertEquals("Work assets", first.pinnedTabs.activeRecords().single().note)
 
         first.flushPersistence()
@@ -248,6 +250,7 @@ class PinnedTabsWorkspaceTest {
         // Clearing note propagates and persists cleanly
         assertTrue(first.setTabNote(plainTab, "   "))
         assertEquals("", first.tabsFlow.value.first { it.id == plainTab }.note)
+        assertEquals(first.tabsFlow.value.first { it.id == plainTab }.title, first.tabsFlow.value.first { it.id == plainTab }.displayTitle)
         first.flushPersistence()
         first.close()
 

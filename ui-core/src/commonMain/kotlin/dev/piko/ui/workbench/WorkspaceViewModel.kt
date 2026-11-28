@@ -279,6 +279,13 @@ class WorkspaceViewModel(private val services: PikoServices, private val account
         activateContext(id, rememberOrigin = true)
     }
 
+    fun willCloseContextImmediately(id: Long): Boolean {
+        if (!available || !canCloseContext(id)) return false
+        val blockedBySave = services.addLink.ownerTabId == id &&
+            services.addLink.replacementAvailability is dev.piko.shared.presentation.ActionAvailability.Blocked
+        return !blockedBySave && !closeNeedsConfirmation(id)
+    }
+
     fun requestCloseContext(id: Long) {
         if (!available || !canCloseContext(id)) return
         if (blockCloseIfSaving(listOf(id))) return

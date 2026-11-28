@@ -30,6 +30,7 @@ data class DriveTab(
 ) {
     val isPinned: Boolean get() = pinId != null
     val title: String get() = stack.lastOrNull()?.localizedName.orEmpty()
+    val displayTitle: String get() = note.ifBlank { title }
     val session: DriveLibrary? get() = stack.library?.takeIf { it.isSession }
 }
 
