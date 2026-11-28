@@ -858,6 +858,74 @@ class PlayerGesturesTest {
     }
 
     @Test
+    fun lockedHoldSpeedPersistsAcrossEpisodeChangeAndSubOneXLockResumesFromLockedSpeed() {
+        val executor = Executors.newSingleThreadExecutor()
+        val dispatcher = executor.asCoroutineDispatcher()
+        try {
+            runBlocking(dispatcher) {
+                var mediaKey by mutableStateOf("ep-1")
+                var speed by mutableFloatStateOf(1.0f)
+                lateinit var controller: PlaybackSpeedController
+                val scene = ImageComposeScene(width = 640, height = 360, coroutineContext = dispatcher) {
+                    controller = rememberPlaybackSpeedController(
+                        mediaKey = mediaKey,
+                        playbackSpeed = speed,
+                        defaultHoldSpeed = 3.0f,
+                        onSpeedChange = { speed = it },
+                    )
+                }
+                try {
+                    scene.render(0L)
+
+                    // 1. 默认长按 3.0x，滑到 2.0x 锁定并松手
+                    controller.open(temporary = true)
+                    assertEquals(3.0f, speed)
+                    controller.adjustTo(2.0f)
+                    controller.lock()
+                    controller.finish()
+                    assertTrue(controller.lockedByHold)
+                    assertEquals(2.0f, speed)
+                    scene.render(16_000_000L)
+
+                    // 2. 切集后再次长按：必须从已锁定的 2.0x 起手，而非跳回默认 3.0x
+                    mediaKey = "ep-2"
+                    scene.render(32_000_000L)
+                    controller.open(temporary = true)
+                    assertEquals(200, controller.selection?.value)
+                    assertEquals(2.0f, speed)
+
+                    // 3. 未重锁直接松手：解除锁定回到基准 1.0x
+                    controller.finish()
+                    assertFalse(controller.lockedByHold)
+                    assertEquals(1.0f, speed)
+                    scene.render(48_000_000L)
+
+                    // 4. 锁到 0.5x 后再次长按：同样应从 0.5x 起手而非跳回 3.0x
+                    controller.open(temporary = true)
+                    assertEquals(3.0f, speed)
+                    controller.adjustTo(0.5f)
+                    controller.lock()
+                    controller.finish()
+                    assertTrue(controller.lockedByHold)
+                    assertEquals(0.5f, speed)
+                    scene.render(64_000_000L)
+
+                    controller.open(temporary = true)
+                    assertEquals(50, controller.selection?.value)
+                    assertEquals(0.5f, speed)
+                    controller.finish()
+                    assertFalse(controller.lockedByHold)
+                    assertEquals(1.0f, speed)
+                } finally {
+                    scene.close()
+                }
+            }
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun gestureIndicatorsRenderCleanlyWithAndWithoutBackground() {
         val executor = Executors.newSingleThreadExecutor()
         val dispatcher = executor.asCoroutineDispatcher()

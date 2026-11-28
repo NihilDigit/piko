@@ -316,7 +316,7 @@ internal class PlaybackSpeedController(
         if (!lockedByHold) baseSpeed = currentActual
         val initial = when {
             !temporary -> currentActual
-            lockedByHold && currentActual > 1.0f + 0.005f -> currentActual
+            lockedByHold -> currentActual
             else -> effectiveHoldSpeed
         }
         lockedHint = null
@@ -583,7 +583,9 @@ internal fun rememberPlaybackSpeedController(
     val latestReadIsPlaying by rememberUpdatedState(readIsPlaying)
     val latestOnPauseForRapidScrub by rememberUpdatedState(onPauseForRapidScrub)
     val latestOnResumeAfterRapidScrub by rememberUpdatedState(onResumeAfterRapidScrub)
-    val controller = remember(mediaKey) {
+    // 不按 mediaKey 重建控制器，使切集时已锁定的长按倍速（lockedByHold）与基准原速得以延续；
+    // 切集瞬间仅取消可能未松手的临时拨盘交互。
+    val controller = remember {
         PlaybackSpeedController(
             readSpeed = { latestSpeed },
             writeSpeed = { latestOnSpeedChange(it) },
@@ -598,6 +600,9 @@ internal fun rememberPlaybackSpeedController(
         )
     }
     controller.defaultHoldSpeed = defaultHoldSpeed
+    LaunchedEffect(controller, mediaKey) {
+        if (controller.active) controller.cancel()
+    }
     LaunchedEffect(playbackSpeed) {
         playbackSpeed?.let(controller::sync)
     }

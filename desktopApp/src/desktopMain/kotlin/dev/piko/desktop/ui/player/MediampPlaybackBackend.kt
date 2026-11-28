@@ -107,6 +107,8 @@ internal class MediampPlaybackBackend(
 
     // 不能写成 private set 的属性：生成的 setter 与接口的 setSpeed/setAspectRatio 签名相撞
     private var currentSpeed by mutableFloatStateOf(speedFeature?.value ?: 1f)
+    @Volatile private var targetSpeed: Float = speedFeature?.value ?: 1f
+    @Volatile private var speedSettleDeadlineNanos: Long = 0L
     override val speed: Float get() = currentSpeed
     override val supportsSpeed: Boolean = speedFeature != null
     private var currentAspectRatio by mutableStateOf(
@@ -258,7 +260,16 @@ internal class MediampPlaybackBackend(
         }
         // mediamp-mpv 的 bufferedPercentage 对应 cache-buffering-state（仅在卡顿重缓冲期间为 0..100，
         // 正常播放恒为 0），不能按总时长折算为时间轴上的 bufferedPositionMillis，否则会把缓冲余量误报为 0ms。
-        speedFeature?.let { feature -> scope.launch { feature.valueFlow.collect { currentSpeed = it } } }
+        speedFeature?.let { feature ->
+            scope.launch {
+                feature.valueFlow.collect { observed ->
+                    val inSettleWindow = System.nanoTime() < speedSettleDeadlineNanos
+                    if (!inSettleWindow || kotlin.math.abs(observed - targetSpeed) <= 0.005f) {
+                        currentSpeed = observed
+                    }
+                }
+            }
+        }
         aspectRatioFeature?.let { feature ->
             scope.launch {
                 feature.mode.collect {
@@ -585,6 +596,8 @@ internal class MediampPlaybackBackend(
     override fun setSpeed(speed: Float) {
         if (closing) return
         val clamped = speed.coerceAtLeast(0.1f)
+        targetSpeed = clamped
+        speedSettleDeadlineNanos = System.nanoTime() + SPEED_SETTLE_NANOS
         speedFeature?.set(clamped)
         // MediaMP 0.5.3 的 AbstractMediampPlayer.machinePlaybackSpeed 在暂停或缓冲态（!state.isPlaying）下
         // 会跳过 setRateImpl，且恢复播放时若 desiredRate == 1f 也不会补发 setRateImpl(1f)，导致暂停进入速览
@@ -782,6 +795,7 @@ private const val MPEGTS_TRANSCODE_PROBE_BYTES = 2 * MIB
 private const val MPEGTS_TRANSCODE_ANALYZE_SECONDS = 3
 private const val STOP_IDLE_TIMEOUT_MILLIS = 2_000L
 private const val POSITION_THROTTLE_NANOS = 33_000_000L // ~30fps
+private const val SPEED_SETTLE_NANOS = 600_000_000L
 private const val POSITION_JUMP_IMMEDIATE_MILLIS = 500L
 private const val BUFFER_POLL_ACTIVE_MILLIS = 250L
 private const val BUFFER_POLL_PAUSED_MILLIS = 1_000L

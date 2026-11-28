@@ -39,10 +39,17 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
+import dev.piko.data.auth.PlayerGestureDefaults
+import dev.piko.ui.LocalPikoServices
+import dev.piko.ui.screens.player.formatSpeedPreset
+import kotlin.math.abs
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -599,6 +606,13 @@ internal fun GestureCustomizationEditor(
     }
 
     // 2. 倍速手势
+    val preferences = LocalPikoServices.current.preferences
+    val boostScope = rememberCoroutineScope()
+    val longPressSpeed by preferences.playerBoostSpeedFlow.collectAsState(initial = PlayerGestureDefaults.BOOST_SPEED)
+    val selectedHoldSpeed = PlayerGestureDefaults.BoostSpeedChoices
+        .minByOrNull { abs(it - longPressSpeed) }
+        ?.takeIf { abs(it - longPressSpeed) < 0.01f }
+        ?: PlayerGestureDefaults.BOOST_SPEED
     SettingsGroup(
         tr("倍速手势", "Speed gestures", "速度ジェスチャー", "속도 제스처", "倍速手勢"),
     ) {
@@ -610,13 +624,29 @@ internal fun GestureCustomizationEditor(
             onCheckedChange = { enabled -> onUpdate { p -> p.updateGestures { it.copy(longPressSpeedEnabled = enabled) } } },
         )
         DependentRow(visible = g.longPressSpeedEnabled) {
-            SettingsSwitchRow(
-                icon = Icons.Filled.Speed,
-                title = stringResource(Res.string.player_custom_gesture_speed_dial),
-                supporting = null,
-                checked = g.longPressSpeedDialEnabled,
-                onCheckedChange = { enabled -> onUpdate { p -> p.updateGestures { it.copy(longPressSpeedDialEnabled = enabled) } } },
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                SettingsSwitchRow(
+                    icon = Icons.Filled.Speed,
+                    title = stringResource(Res.string.player_custom_gesture_speed_dial),
+                    supporting = null,
+                    checked = g.longPressSpeedDialEnabled,
+                    onCheckedChange = { enabled -> onUpdate { p -> p.updateGestures { it.copy(longPressSpeedDialEnabled = enabled) } } },
+                )
+                SettingsRow(
+                    icon = Icons.Filled.FastForward,
+                    title = tr("默认长按倍速", "Default hold speed", "長押し時のデフォルト速度", "길게 누르기 기본 배속", "預設長按倍速"),
+                    supporting = null,
+                    below = {
+                        SettingsSegmentedChoice(
+                            options = PlayerGestureDefaults.BoostSpeedChoices,
+                            selected = selectedHoldSpeed,
+                            label = { "${formatSpeedPreset(it)}x" },
+                            onSelect = { speed -> boostScope.launch { preferences.setPlayerBoostSpeed(speed) } },
+                            fill = true,
+                        )
+                    },
+                )
+            }
         }
     }
 

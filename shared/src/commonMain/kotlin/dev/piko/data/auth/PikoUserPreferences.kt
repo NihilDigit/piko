@@ -38,7 +38,7 @@ object PlayerGestureDefaults {
     const val SEEK_STEP_SECONDS = 10
     val SeekStepChoices = listOf(1, 2, 5, 10, 15, 30)
     const val BOOST_SPEED = 2f
-    val BoostSpeedChoices = listOf(1.5f, 2f, 2.5f, 3f)
+    val BoostSpeedChoices = listOf(1.5f, 2f, 2.5f, 3f, 3.5f)
 
     /** 播放画质自动档：按网络速度与当前倍速自动升降画质（默认），仅用于在线播放。 */
     const val PLAYBACK_AUTO_HEIGHT = -1
