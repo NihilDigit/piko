@@ -580,66 +580,77 @@ class VaultStoreTest {
 
     /** 一个目录，列出时按插入顺序。 */
     private class MemoryFolder : VaultFolderIo {
-        val files = LinkedHashMap<String, Pair<String, ByteArray>>()
+        private val lock = Any()
+        private val storedFiles = LinkedHashMap<String, Pair<String, ByteArray>>()
+        val files: Map<String, Pair<String, ByteArray>>
+            get() = synchronized(lock) { LinkedHashMap(storedFiles) }
         private val phases = HashMap<String, String>()
         private var nextId = 0
         private var lists = 0
-        var listingLag = 0
-        var pendingListingsAfterUpload = 0
-        var uploads = 0
-        var defaultUploadPhase = TaskPhase.COMPLETE
-        var forbidPendingReads = false
+        @Volatile var listingLag = 0
+        @Volatile var pendingListingsAfterUpload = 0
+        @Volatile var uploads = 0
+        @Volatile var defaultUploadPhase = TaskPhase.COMPLETE
+        @Volatile var forbidPendingReads = false
         private val visibleAt = HashMap<String, Int>()
         private val completeAt = HashMap<String, Int>()
         private val hooks = HashMap<Int, suspend () -> Unit>()
 
         /** 第 [nth] 次列目录之前先做 [action]，模拟另一台设备恰好在这时写入。 */
         fun beforeList(nth: Int, action: suspend () -> Unit) {
-            hooks[nth] = action
+            synchronized(lock) { hooks[nth] = action }
         }
 
-        fun hideCurrentFiles(lag: Int) { files.keys.forEach { visibleAt[it] = lists + lag } }
+        fun hideCurrentFiles(lag: Int) {
+            synchronized(lock) { storedFiles.keys.forEach { visibleAt[it] = lists + lag } }
+        }
 
         fun markAllComplete() {
-            phases.keys.forEach { phases[it] = TaskPhase.COMPLETE }
-            completeAt.clear()
+            synchronized(lock) {
+                phases.keys.forEach { phases[it] = TaskPhase.COMPLETE }
+                completeAt.clear()
+            }
         }
 
         override suspend fun list(folderId: String): List<FileStat> {
-            hooks.remove(++lists)?.invoke()
-            return files.filterKeys { lists >= (visibleAt[it] ?: 0) }.map { (id, file) ->
-                val phase = when {
-                    phases[id] != TaskPhase.COMPLETE -> phases[id] ?: TaskPhase.PENDING
-                    lists < (completeAt[id] ?: 0) -> TaskPhase.PENDING
-                    else -> TaskPhase.COMPLETE
+            val hook = synchronized(lock) { hooks.remove(++lists) }
+            hook?.invoke()
+            return synchronized(lock) {
+                val currentLists = lists
+                storedFiles.filterKeys { currentLists >= (visibleAt[it] ?: 0) }.map { (id, file) ->
+                    val phase = when {
+                        phases[id] != TaskPhase.COMPLETE -> phases[id] ?: TaskPhase.PENDING
+                        currentLists < (completeAt[id] ?: 0) -> TaskPhase.PENDING
+                        else -> TaskPhase.COMPLETE
+                    }
+                    FileStat(kind = FileKind.FILE, id = id, name = file.first, phase = phase)
                 }
-                FileStat(kind = FileKind.FILE, id = id, name = file.first, phase = phase)
             }
         }
 
-        override suspend fun read(fileId: String): ByteArray {
+        override suspend fun read(fileId: String): ByteArray = synchronized(lock) {
             if (forbidPendingReads && phases[fileId] != TaskPhase.COMPLETE) {
                 error("Download link unavailable")
             }
-            return files.getValue(fileId).second
+            storedFiles.getValue(fileId).second
         }
 
         override suspend fun upload(folderId: String, name: String, bytes: ByteArray): String = upload(folderId, name, bytes, defaultUploadPhase)
 
-        fun upload(folderId: String, name: String, bytes: ByteArray, phase: String): String {
+        fun upload(folderId: String, name: String, bytes: ByteArray, phase: String): String = synchronized(lock) {
             val id = "id${nextId++}"
-            files[id] = name to bytes
+            storedFiles[id] = name to bytes
             phases[id] = phase
             visibleAt[id] = lists + listingLag
             if (pendingListingsAfterUpload > 0) {
                 completeAt[id] = lists + pendingListingsAfterUpload + 1
             }
             uploads++
-            return id
+            id
         }
 
         override suspend fun delete(ids: List<String>) {
-            ids.forEach(files::remove)
+            synchronized(lock) { ids.forEach(storedFiles::remove) }
         }
     }
 }

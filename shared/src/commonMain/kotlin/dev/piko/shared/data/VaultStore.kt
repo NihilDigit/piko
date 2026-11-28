@@ -723,12 +723,12 @@ class VaultStore(
         var maxComplete = 0
         var maxPending = 0
         for (file in listing) {
-            if (!looksLikeManifest(file)) continue
-            val cand = candidateOf(file) ?: continue
+            if (!looksLikeManifest(file) || file.trashed) continue
+            val (version, _) = versionOf(file) ?: continue
             if (file.phase == TaskPhase.COMPLETE) {
-                if (cand.version > maxComplete) maxComplete = cand.version
-            } else {
-                if (cand.version > maxPending) maxPending = cand.version
+                if (version > maxComplete) maxComplete = version
+            } else if (file.phase == TaskPhase.PENDING) {
+                if (version > maxPending) maxPending = version
             }
         }
         return maxPending > maxComplete
