@@ -4,6 +4,7 @@ package dev.piko.ui.ios
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.window.ComposeUIViewController
@@ -19,7 +20,9 @@ import dev.piko.ui.PikoApp
 import dev.piko.ui.PikoServices
 import dev.piko.ui.image.installIosImageLoader
 import dev.piko.ui.platform.IosPikoPlatform
+import dev.piko.ui.theme.ThemeMode
 import dev.piko.ui.theme.appearanceFlow
+import dev.piko.ui.theme.isEInk
 import kotlin.native.Platform
 import kotlin.native.ReportUnhandledExceptionHook
 import kotlin.native.setUnhandledExceptionHook
@@ -141,6 +144,14 @@ private fun IosRoot(
     val initialAppearance = remember { runBlocking { services.preferences.appearanceFlow(dynamicColorAvailable = false).first() } }
     val appearance by services.preferences.appearanceFlow(dynamicColorAvailable = false)
         .collectAsStateWithLifecycle(initialValue = initialAppearance)
+    val interfaceStyle = when {
+        appearance.isEInk || appearance.mode == ThemeMode.LIGHT -> 1
+        appearance.mode == ThemeMode.DARK -> 2
+        else -> 0
+    }
+    LaunchedEffect(interfaceStyle) {
+        IosHostBridge.setUserInterfaceStyle(interfaceStyle)
+    }
     PikoApp(
         services = services,
         platform = platform,

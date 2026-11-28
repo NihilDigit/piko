@@ -43,6 +43,7 @@ fun PikoApp(
     appearance: Appearance,
     videoPlayer: VideoPlayerHost,
     modifier: Modifier = Modifier,
+    provideTheme: Boolean = true,
     onLanguageChanged: (AppLanguage) -> Unit = {},
 ) {
     val appLanguage by services.preferences.appLanguageFlow.collectAsStateWithLifecycle(initialValue = PikoLocale.preference)
@@ -66,7 +67,7 @@ fun PikoApp(
             LocalPointerSource provides pointerSource,
             LocalDriveAppearancePrefs provides driveAppearancePrefs,
         ) {
-            PikoTheme(appearance = appearance) {
+            val appContent: @Composable () -> Unit = {
                 val clientManager = services.clientManager
                 val currentClient by clientManager.currentClient.collectAsStateWithLifecycle()
                 val isInitializing by clientManager.isInitializing.collectAsStateWithLifecycle()
@@ -105,6 +106,11 @@ fun PikoApp(
                 platform.updater?.let { updater ->
                     StartupUpdatePrompt(updater = updater, preferences = services.preferences)
                 }
+            }
+            if (provideTheme) {
+                PikoTheme(appearance = appearance, content = appContent)
+            } else {
+                appContent()
             }
         }
     }

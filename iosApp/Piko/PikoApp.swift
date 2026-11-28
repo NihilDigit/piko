@@ -49,6 +49,10 @@ private final class WeakSystemUiDelegate: NSObject, IosSystemUiDelegate {
     func setLandscapeLocked(locked: Bool) {
         owner?.setLandscapeLocked(locked: locked)
     }
+
+    func updateUserInterfaceStyle(style: Int32) {
+        owner?.updateUserInterfaceStyle(style: style)
+    }
 }
 
 private final class PikoContainerViewController: UIViewController {
@@ -81,6 +85,11 @@ private final class PikoContainerViewController: UIViewController {
         IosHostBridge.shared.attachDelegate(delegate: delegate)
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        view.window?.overrideUserInterfaceStyle = overrideUserInterfaceStyle
+    }
+
     deinit {
         if let delegate = bridgeDelegate {
             IosHostBridge.shared.detachDelegate(delegate: delegate)
@@ -94,7 +103,17 @@ private final class PikoContainerViewController: UIViewController {
     override var prefersStatusBarHidden: Bool { statusBarHiddenState }
 
     override var preferredStatusBarStyle: UIStatusBarStyle {
-        lightStatusBarState ? .lightContent : .default
+        if lightStatusBarState {
+            return .lightContent
+        }
+        switch overrideUserInterfaceStyle {
+        case .dark:
+            return .lightContent
+        case .light:
+            return .darkContent
+        default:
+            return .default
+        }
     }
 
     override var prefersHomeIndicatorAutoHidden: Bool { statusBarHiddenState }
@@ -104,6 +123,20 @@ private final class PikoContainerViewController: UIViewController {
             return .landscape
         }
         return UIDevice.current.userInterfaceIdiom == .pad ? .all : .allButUpsideDown
+    }
+
+    func updateUserInterfaceStyle(style: Int32) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let resolved: UIUserInterfaceStyle = switch style {
+            case 1: .light
+            case 2: .dark
+            default: .unspecified
+            }
+            self.overrideUserInterfaceStyle = resolved
+            self.view.window?.overrideUserInterfaceStyle = resolved
+            self.setNeedsStatusBarAppearanceUpdate()
+        }
     }
 
     func updateSystemUi(statusBarHidden: Bool, lightStatusBarContent: Bool) {

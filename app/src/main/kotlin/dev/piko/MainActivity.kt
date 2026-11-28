@@ -123,12 +123,13 @@ class MainActivity : ComponentActivity() {
         val appearanceFlow = app.sessionManager.appearanceFlow(app.platform.supportsDynamicColor)
         // 从预加载的无锁偏好快照同步构造初始外观，既避免主线程 runBlocking 又避免首帧闪回默认主题
         val initialSnapshot = app.sessionManager.currentSnapshot
+        val legacyEink = initialSnapshot.themeSeed.equals(SeedTheme.EINK.name, ignoreCase = true)
         val initialAppearance = Appearance(
             mode = ThemeMode.entries.find { it.name.equals(initialSnapshot.themeMode, ignoreCase = true) } ?: ThemeMode.SYSTEM,
             seed = SeedTheme.colorEntries.find { it.name == initialSnapshot.themeSeed },
             dynamicColorAvailable = app.platform.supportsDynamicColor,
             pureBlack = initialSnapshot.pureBlack,
-            einkMode = initialSnapshot.einkMode,
+            einkMode = initialSnapshot.einkMode || legacyEink,
             motionPreference = initialSnapshot.motionPreference,
         )
         // 播放器仍在 app 模块，以应用内覆盖层的方式交给共享主界面
@@ -152,11 +153,12 @@ class MainActivity : ComponentActivity() {
             val appLockEnabled by appSecurity.appLockEnabled.collectAsStateWithLifecycle()
             val isLocked by appSecurity.locked.collectAsStateWithLifecycle()
             // 系统栏图标的深浅默认看系统的夜间模式。应用强制浅色而系统是深色时，状态栏会是
-            // 浅色图标压在浅色背景上，所以改为按应用实际的深浅判断。导航栏遮罩沿用库的默认值
-            DisposableEffect(darkTheme) {
+            // 浅色图标压在浅色背景上，所以改为按应用实际的深浅判断。纯黑 OLED 模式下导航栏遮罩同步使用纯黑底
+            val darkNavScrim = if (appearance.pureBlack) NavBarPureBlackScrim else NavBarDarkScrim
+            DisposableEffect(darkTheme, darkNavScrim) {
                 enableEdgeToEdge(
                     statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { darkTheme },
-                    navigationBarStyle = SystemBarStyle.auto(NavBarLightScrim, NavBarDarkScrim) { darkTheme },
+                    navigationBarStyle = SystemBarStyle.auto(NavBarLightScrim, darkNavScrim) { darkTheme },
                 )
                 onDispose {}
             }
@@ -526,3 +528,4 @@ internal const val EXTRA_OPEN_TRANSFERS = "dev.piko.extra.OPEN_TRANSFERS"
 // 与 androidx.activity 的 DefaultLightScrim、DefaultDarkScrim 相同，那两个是 internal
 private val NavBarLightScrim = Color.argb(0xe6, 0xFF, 0xFF, 0xFF)
 private val NavBarDarkScrim = Color.argb(0x80, 0x1b, 0x1b, 0x1b)
+private val NavBarPureBlackScrim = Color.argb(0x80, 0x00, 0x00, 0x00)

@@ -458,7 +458,8 @@ private fun StackedSheets(
     val frontTopColor = Color.White.copy(alpha = if (dark) 0.08f else 0.34f).compositeOver(colors.secondaryContainer)
     val frontBottomColor = colors.secondary.copy(alpha = if (dark) 0.14f else 0.12f).compositeOver(colors.secondaryContainer)
     val cardBorder = Color.Black.copy(alpha = if (dark) 0.24f else 0.08f)
-    val sheetColor = colors.surfaceContainerLowest
+    // ColorSpec2025 深色模式下 surfaceContainerLowest 为纯黑 #000000，深色内页纸改用 surfaceContainerHigh 保持层次
+    val sheetColor = if (dark) colors.surfaceContainerHigh else colors.surfaceContainerLowest
     val topHighlight = Color.White.copy(alpha = if (dark) 0.22f else 0.55f)
     val topSeam = Color.Black.copy(alpha = if (dark) 0.28f else 0.08f)
     val bottomRimColor = backPlate.copy(alpha = if (dark) 0.65f else 0.5f)

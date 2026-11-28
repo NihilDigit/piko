@@ -25,6 +25,8 @@ import platform.UIKit.UIWindowScene
 interface IosSystemUiDelegate {
     fun updateSystemUi(statusBarHidden: Boolean, lightStatusBarContent: Boolean)
     fun setLandscapeLocked(locked: Boolean)
+    /** 0 = unspecified (system), 1 = light, 2 = dark */
+    fun updateUserInterfaceStyle(style: Int)
 }
 
 /**
@@ -38,6 +40,7 @@ object IosHostBridge {
     private val hiddenTokens = LinkedHashSet<Any>()
     private val lightBarTokens = LinkedHashSet<Any>()
     private var landscapeLocked = false
+    private var userInterfaceStyle = 0
 
     val supportsLandscapeLock: Boolean
         get() = delegate != null
@@ -45,6 +48,7 @@ object IosHostBridge {
     fun attachDelegate(delegate: IosSystemUiDelegate) {
         this.delegate = delegate
         dispatchSystemUi()
+        delegate.updateUserInterfaceStyle(userInterfaceStyle)
         if (landscapeLocked) {
             delegate.setLandscapeLocked(true)
         }
@@ -81,6 +85,12 @@ object IosHostBridge {
         if (landscapeLocked == locked) return
         landscapeLocked = locked
         delegate?.setLandscapeLocked(locked)
+    }
+
+    internal fun setUserInterfaceStyle(style: Int) {
+        if (userInterfaceStyle == style) return
+        userInterfaceStyle = style
+        delegate?.updateUserInterfaceStyle(style)
     }
 
     private fun dispatchSystemUi() {

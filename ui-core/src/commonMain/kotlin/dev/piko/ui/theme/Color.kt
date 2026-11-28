@@ -61,25 +61,23 @@ val PikoEInkStatusColors = PikoStatusColors(
 )
 
 /**
- * Oklab 纯黑 OLED 深色表面阶梯（见 `m3-expressive-foundations.md §3.3`）。
- * 将主画布锚定到 `#000000`，同时用 Oklab 插值重排四档容器表面，保留种子色相并维持清晰的层次对比，
- * 避免直接顺移槽位导致 `surfaceContainerLow` 塌缩为纯黑或高阶容器挤作一团。
+ * Oklab 纯黑 OLED 深色表面阶梯。
+ * 将主画布锚定到 `#000000`，同时以纯黑为起点对五档容器与高亮表面做 Oklab 线性缩放，
+ * 保留种子色相并兼容标准深色（ColorSpec2021）与 Android 16+ 动态深色（ColorSpec2025），
+ * 避免 `surfaceContainerLow` 在 8-bit sRGB 量化下塌缩为 `#000000` 或 `surfaceBright` 产生高阶断层。
  */
 fun ColorScheme.toPureBlack(): ColorScheme {
     val black = Color.Black
-    val low = lerp(black, surfaceContainerLow, 0.20f)
-    val container = lerp(low, surfaceContainer, 0.35f)
-    val high = lerp(container, surfaceContainerHigh, 0.65f)
-    val highest = lerp(high, surfaceContainerHighest, 0.75f)
     return copy(
         background = black,
         surface = black,
         surfaceDim = black,
         surfaceContainerLowest = black,
-        surfaceContainerLow = low,
-        surfaceContainer = container,
-        surfaceContainerHigh = high,
-        surfaceContainerHighest = highest,
+        surfaceContainerLow = lerp(black, surfaceContainerLow, 0.68f),
+        surfaceContainer = lerp(black, surfaceContainer, 0.75f),
+        surfaceContainerHigh = lerp(black, surfaceContainerHigh, 0.80f),
+        surfaceContainerHighest = lerp(black, surfaceContainerHighest, 0.85f),
+        surfaceBright = lerp(black, surfaceBright, 0.88f),
     )
 }
 

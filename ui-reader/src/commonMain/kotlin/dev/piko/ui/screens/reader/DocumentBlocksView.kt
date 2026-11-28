@@ -876,7 +876,7 @@ private fun TableSliceView(
 ) {
     val borderColor = if (style.isEInk) colors.outline else colors.outlineVariant
     val headerBg = if (style.isEInk) colors.surfaceContainer else colors.surfaceContainerHigh
-    val stripeBg = if (style.isEInk) colors.surface else colors.surfaceContainerLowest
+    val stripeBg = colors.surface
     val altBg = if (style.isEInk) colors.surface else colors.surfaceContainerLow.copy(alpha = 0.45f)
     val cellWidth = 156.dp
     val shape = sliceCornerShape(isFirst = isFirst, isLast = isLast, radius = 12.dp)

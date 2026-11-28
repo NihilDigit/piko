@@ -2,6 +2,8 @@ package dev.piko.ui.theme
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.material3.darkColorScheme
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.test.Test
@@ -85,20 +87,78 @@ class DarkColorSchemeCalibrationTest {
             assertTrue(oled.surfaceContainer.luminance() < standard.surfaceContainer.luminance())
             assertTrue(oled.surfaceContainerHigh.luminance() < standard.surfaceContainerHigh.luminance())
             assertTrue(oled.surfaceContainerHighest.luminance() < standard.surfaceContainerHighest.luminance())
+            assertTrue(oled.surfaceBright.luminance() < standard.surfaceBright.luminance())
 
-            assertTrue(oled.surface.luminance() <= oled.surfaceContainerLow.luminance())
+            // Ensure 8-bit sRGB quantization does not collapse surfaceContainerLow into #000000
+            assertNotEquals(
+                Color.Black.toArgb(),
+                oled.surfaceContainerLow.toArgb(),
+                "${theme.name} OLED surfaceContainerLow must stay distinguishable from #000000 in 8-bit sRGB",
+            )
+            assertTrue(oled.islandSurface.luminance() < oled.islandHeader.luminance())
+            assertTrue(oled.islandHeader.luminance() < oled.frame.luminance())
+
             val oledContainers = listOf(
+                oled.surface,
                 oled.surfaceContainerLow,
                 oled.surfaceContainer,
                 oled.surfaceContainerHigh,
                 oled.surfaceContainerHighest,
+                oled.surfaceBright,
             )
             for (i in 0 until oledContainers.lastIndex) {
+                assertNotEquals(
+                    oledContainers[i].toArgb(),
+                    oledContainers[i + 1].toArgb(),
+                    "${theme.name} OLED step $i must remain distinct in 8-bit sRGB",
+                )
                 assertTrue(
                     oledContainers[i].luminance() < oledContainers[i + 1].luminance(),
                     "${theme.name} OLED container step $i must be strictly ascending",
                 )
             }
+        }
+    }
+
+    @Test
+    fun colorSpec2025DynamicDarkAvoidsPureBlackCanvasAndPreservesOledLadder() {
+        // Android 16+ ColorSpec2025 TonalSpot dark surface ladder (surfaceContainerLowest = #000000, surface = Tone 4)
+        val dynamic2025 = darkColorScheme(
+            background = Color(0xFF0C0E12),
+            surface = Color(0xFF0C0E12),
+            surfaceDim = Color(0xFF0C0E12),
+            surfaceContainerLowest = Color(0xFF000000),
+            surfaceContainerLow = Color(0xFF111318),
+            surfaceContainer = Color(0xFF171A1F),
+            surfaceContainerHigh = Color(0xFF1C2026),
+            surfaceContainerHighest = Color(0xFF22262D),
+            surfaceBright = Color(0xFF282C34),
+            outlineVariant = Color(0xFF43474E),
+        )
+
+        // Standard dynamic dark keeps non-black page canvas and does not trigger OLED hairline border
+        assertNotEquals(Color.Black.toArgb(), dynamic2025.islandSurface.toArgb())
+        assertNull(
+            dynamic2025.islandBorderColor,
+            "ColorSpec2025 standard dark surface (Tone 4) should not falsely trigger OLED hairline border",
+        )
+
+        val oled = dynamic2025.toPureBlack()
+        assertEquals(Color.Black, oled.surface)
+        assertNotNull(oled.islandBorderColor)
+        assertNotEquals(Color.Black.toArgb(), oled.surfaceContainerLow.toArgb())
+
+        val steps = listOf(
+            oled.surface,
+            oled.surfaceContainerLow,
+            oled.surfaceContainer,
+            oled.surfaceContainerHigh,
+            oled.surfaceContainerHighest,
+            oled.surfaceBright,
+        )
+        for (i in 0 until steps.lastIndex) {
+            assertNotEquals(steps[i].toArgb(), steps[i + 1].toArgb(), "Spec 2025 OLED step $i must remain distinct in 8-bit sRGB")
+            assertTrue(steps[i].luminance() < steps[i + 1].luminance(), "Spec 2025 OLED step $i must strictly ascend")
         }
     }
 

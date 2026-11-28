@@ -489,7 +489,7 @@ fun main(args: Array<String>) {
                     bringToFront(window)
                 }
             }
-            // 标题栏在 PikoApp 之外，主题要自己再套一层；PikoTheme 读平台字体，平台也要先提供
+            // 标题栏与 PikoApp 共用外层单份 PikoTheme（避免重复 animateColorScheme 与双层 Surface）；PikoTheme 读平台字体，平台须先提供
             CompositionLocalProvider(
                 LocalPikoPlatform provides platform,
                 LocalWindowVisible provides mainWindowVisible,
@@ -524,6 +524,7 @@ fun main(args: Array<String>) {
                                 platform = platform,
                                 appearance = appearance,
                                 videoPlayer = videoPlayer,
+                                provideTheme = false,
                             )
                         }
                         if (askCloseBehavior) {

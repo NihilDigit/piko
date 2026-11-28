@@ -63,6 +63,7 @@ import dev.piko.ui.theme.Appearance
 import dev.piko.ui.theme.LocalAppearance
 import dev.piko.ui.theme.MotionLevel
 import dev.piko.ui.theme.SeedTheme
+import dev.piko.ui.theme.toPureBlack
 import dev.piko.ui.theme.ThemeMode
 import dev.piko.ui.theme.effectiveSeed
 import dev.piko.ui.theme.isDark
@@ -82,8 +83,9 @@ internal fun hasAppearanceSectionMatches(searchQuery: String): Boolean {
     val matchLang = match("语言", "Language", "言語", "언어", "語言", systemLanguageLabel, appLanguage.nativeLabel)
     val matchEink = match("水墨屏模式", "水墨屏", "水墨螢幕", "E-Ink mode", "e-ink", "eink", "电子墨水", "墨水屏", "monochrome", "黑白", "E-Inkモード", "E-Ink 모드")
     val matchThemeMode = match("深色模式", "Theme mode", "dark", "light", "system", "テーマモード", "테마 모드")
-    val matchPureBlack = !appearance.isEInk && appearance.mode != ThemeMode.LIGHT &&
-        match("纯黑深色模式", "Pure black", "OLED", "amoled", "true black", "ピュアブラック", "순수 블랙", "純黑")
+    val pureBlackVisible = !appearance.isEInk && appearance.mode != ThemeMode.LIGHT
+    val matchPureBlackQuery = match("纯黑深色模式", "Pure black", "OLED", "amoled", "true black", "ピュアブラック", "순수 블랙", "純黑")
+    val matchPureBlack = pureBlackVisible && matchPureBlackQuery
     val matchThemeColor = match("主题色", "Theme color", "dynamic", "accent", "color", "テーマカラー", "테마 색상", "主題色", appearance.effectiveSeed?.label.orEmpty())
     val matchStartup = platform.launchAtStartup != null &&
         match("开机自动启动", "Launch at startup", "autostart", "Windows", "ログイン時に起動", "시작 시 실행", "開機自動啟動")
@@ -160,8 +162,9 @@ internal fun AppearanceSettingsSection(
     val matchLang = match("语言", "Language", "言語", "언어", "語言", systemLanguageLabel, appLanguage.nativeLabel)
     val matchEink = match("水墨屏模式", "水墨屏", "水墨螢幕", "E-Ink mode", "e-ink", "eink", "电子墨水", "墨水屏", "monochrome", "黑白", "E-Inkモード", "E-Ink 모드")
     val matchThemeMode = match("深色模式", "Theme mode", "dark", "light", "system", "テーマモード", "테마 모드")
-    val matchPureBlack = !appearance.isEInk && appearance.mode != ThemeMode.LIGHT &&
-        match("纯黑深色模式", "Pure black", "OLED", "amoled", "true black", "ピュアブラック", "순수 블랙", "純黑")
+    val pureBlackVisible = !appearance.isEInk && appearance.mode != ThemeMode.LIGHT
+    val matchPureBlackQuery = match("纯黑深色模式", "Pure black", "OLED", "amoled", "true black", "ピュアブラック", "순수 블랙", "純黑")
+    val matchPureBlack = pureBlackVisible && matchPureBlackQuery
     val matchThemeColor = match("主题色", "Theme color", "dynamic", "accent", "color", "テーマカラー", "테마 색상", "主題色", appearance.effectiveSeed?.label.orEmpty())
     val matchStartup = platform.launchAtStartup != null &&
         match("开机自动启动", "Launch at startup", "autostart", "Windows", "ログイン時に起動", "시작 시 실행", "開機自動啟動")
@@ -223,8 +226,8 @@ internal fun AppearanceSettingsSection(
                         onModeChange = { scope.launch { sessionManager.setThemeMode(it.name) } },
                     )
                 }
-                if (matchPureBlack) {
-                    DependentRow(visible = !appearance.isEInk && appearance.mode != ThemeMode.LIGHT) {
+                if (matchPureBlackQuery) {
+                    DependentRow(visible = pureBlackVisible) {
                         SettingsSwitchRow(
                             icon = Icons.Outlined.Contrast,
                             title = tr("纯黑深色模式", "Pure black (OLED)", "ピュアブラック（OLED）", "순수 블랙 (OLED)", "純黑深色模式"),
@@ -505,7 +508,8 @@ private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> 
                     .horizontalScroll(swatchScroll),
             ) {
                 if (platform.supportsDynamicColor) {
-                    val scheme = platform.dynamicColorScheme(dark)
+                    val rawScheme = platform.dynamicColorScheme(dark)
+                    val scheme = if (dark && appearance.pureBlack) rawScheme.toPureBlack() else rawScheme
                     ColorSwatch(
                         scheme = scheme,
                         label = tr("系统取色", "System color", "システムの色", "시스템 색상", "系統取色"),
@@ -516,7 +520,8 @@ private fun ThemeColorRow(appearance: Appearance, onSeedChange: (SeedTheme?) -> 
                     )
                 }
                 SeedTheme.colorEntries.forEach { theme ->
-                    val scheme = if (dark) theme.dark else theme.light
+                    val rawScheme = if (dark) theme.dark else theme.light
+                    val scheme = if (dark && appearance.pureBlack) rawScheme.toPureBlack() else rawScheme
                     ColorSwatch(
                         scheme = scheme,
                         label = theme.label,
