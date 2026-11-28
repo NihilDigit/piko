@@ -1,6 +1,13 @@
 package dev.piko.ui.workbench
 
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.staticCompositionLocalOf
+
+/**
+ * 内容区向当前页面快照层上报其在窗口中的顶部 Y 坐标（px），
+ * 使移动端标签总览缩略图精确裁掉外层已由卡片标题栏呈现的顶栏与操作栏。
+ */
+val LocalWorkspaceSnapshotContentTop = staticCompositionLocalOf<((Float?) -> Unit)?> { null }
 
 /** Runtime-only, bounded snapshots of pages that were actually drawn. */
 class WorkspaceSnapshots<T>(private val pixelBudget: Long = 2L * 1024 * 1024) {

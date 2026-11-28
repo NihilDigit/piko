@@ -34,6 +34,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,7 +43,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -63,6 +66,7 @@ import dev.piko.shared.state.DuplicateKind
 import dev.piko.shared.state.GallerySession
 import dev.piko.ui.components.BreadcrumbBar
 import dev.piko.ui.components.DetailHost
+import dev.piko.ui.workbench.LocalWorkspaceSnapshotContentTop
 import dev.piko.ui.components.DetailPanelState
 import dev.piko.ui.components.PikoEmptyState
 import dev.piko.ui.components.PikoErrorState
@@ -168,11 +172,15 @@ internal fun DriveWorkspaceArea(
     content: @Composable (listAreaWidth: Dp?) -> Unit,
 ) {
     val density = LocalDensity.current
+    val reportSnapshotContentTop = LocalWorkspaceSnapshotContentTop.current
     var listAreaWidth by remember { mutableStateOf<Dp?>(null) }
     var propertiesOnTop by remember { mutableStateOf(true) }
     val properties = propertyDetails.target
     LaunchedEffect(properties) { if (properties != null) propertiesOnTop = true }
     LaunchedEffect(folderMap.expanded) { if (folderMap.expanded) propertiesOnTop = false }
+    DisposableEffect(reportSnapshotContentTop) {
+        onDispose { reportSnapshotContentTop?.invoke(null) }
+    }
 
     Box(
         Modifier
@@ -189,6 +197,7 @@ internal fun DriveWorkspaceArea(
             Box(
                 Modifier
                     .fillMaxSize()
+                    .onGloballyPositioned { reportSnapshotContentTop?.invoke(it.positionInWindow().y) }
                     .itemPanelAnchorArea(propertyDetails.anchors)
                     .then(if (pathInTopBar) Modifier.folderMapPointer(folderMap) else Modifier),
             ) {
@@ -356,7 +365,7 @@ internal fun DriveContentBody(
 
         val phase = when {
             galleryActive -> DrivePhase.Content
-            state.isLoading -> DrivePhase.Loading
+            state.isLoading || (!state.isVirtualPlace && state.loadedFolderId != activeFolderId && state.loadError == null) -> DrivePhase.Loading
             state.files.isEmpty() && state.loadError != null -> DrivePhase.Failed(state.loadError.orEmpty())
             else -> DrivePhase.Content
         }
@@ -455,9 +464,13 @@ internal fun DriveContentBody(
                             modifier = Modifier.weight(1f),
                         )
                     } else if (state.displayItems.isEmpty() && state.typeFilter == null && !state.thumbnailsOnly) {
-                        breadcrumbs()
-                        quickAccessStrip()
-                        DriveEmptyState(state = state, modifier = Modifier.weight(1f))
+                        // Crossfade 从 Content 淡出到 Loading 期间会继续用最新 state 重组旧分支，
+                        // 若此时已切到新目录或处于加载中，不得在淡出瞬间渲染「此文件夹为空」。
+                        if (!state.isLoading && (state.isVirtualPlace || state.loadedFolderId == activeFolderId)) {
+                            breadcrumbs()
+                            quickAccessStrip()
+                            DriveEmptyState(state = state, modifier = Modifier.weight(1f))
+                        }
                     } else {
                         DriveFileGrid(
                             cutIds = clipboard?.takeIf { it.cut }?.sources?.keys.orEmpty(),

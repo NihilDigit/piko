@@ -54,6 +54,7 @@ import dev.piko.ui.adaptive.isDesktopLayout
 import dev.piko.ui.components.PikoDropdownMenu
 import dev.piko.ui.components.TooltipIconButton
 import dev.piko.ui.components.menuItemShape
+import dev.piko.ui.components.onSecondaryPress
 import dev.piko.ui.platform.ModalCaptionBlocker
 import dev.piko.ui.platform.rememberCaptionSlot
 import dev.piko.ui.screens.instant.summary
@@ -100,22 +101,34 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                     Modifier
                         .fillMaxWidth()
                         .then(caption.modifier)
-                        .padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
+                        .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    TooltipIconButton(
+                        icon = Icons.Outlined.Close,
+                        label = tr("关闭标签总览", "Close tab overview", "タブ一覧を閉じる", "탭 개요 닫기", "關閉分頁總覽"),
+                        onClick = onDismiss,
+                    )
                     Text(
                         text = tr("${contexts.size} 个标签页", "${contexts.size} tabs", "${contexts.size} タブ", "탭 ${contexts.size}개", "${contexts.size} 個分頁"),
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).padding(start = 4.dp),
                         style = MaterialTheme.typography.titleLargeEmphasized.tabular,
                         maxLines = 1,
                     )
+                    if (hasClosableOthers) {
+                        TooltipIconButton(
+                            icon = Icons.Outlined.ClearAll,
+                            label = closeOthersLabel,
+                            onClick = { model.requestCloseOtherContexts(active) },
+                        )
+                    }
                     caption.buttons?.invoke()
                 }
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = 156.dp),
                     state = gridState,
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 104.dp),
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 88.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
@@ -169,36 +182,18 @@ internal fun OngoingWorkSheet(model: WorkspaceViewModel, onDismiss: () -> Unit) 
                 }
             }
 
-            HorizontalFloatingToolbar(
-                expanded = true,
-                floatingActionButton = {
-                    FloatingToolbarDefaults.VibrantFloatingActionButton(
-                        onClick = {
-                            model.newFileContext()
-                            onDismiss()
-                        },
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Add,
-                            contentDescription = stringResource(Res.string.text_new_tab_alt),
-                        )
-                    }
+            FloatingActionButton(
+                onClick = {
+                    model.newFileContext()
+                    onDismiss()
                 },
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 16.dp),
-                colors = FloatingToolbarDefaults.vibrantFloatingToolbarColors(),
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 16.dp),
             ) {
-                TooltipIconButton(
-                    icon = Icons.Outlined.Close,
-                    label = tr("关闭标签总览", "Close tab overview", "タブ一覧を閉じる", "탭 개요 닫기", "關閉分頁總覽"),
-                    onClick = onDismiss,
-                )
-                TooltipIconButton(
-                    icon = Icons.Outlined.ClearAll,
-                    label = closeOthersLabel,
-                    onClick = { model.requestCloseOtherContexts(active) },
-                    enabled = hasClosableOthers,
+                Icon(
+                    imageVector = Icons.Outlined.Add,
+                    contentDescription = stringResource(Res.string.text_new_tab_alt),
                 )
             }
         }
@@ -405,6 +400,7 @@ private fun TabOverviewCard(
     Surface(
         modifier = Modifier
             .clip(shape)
+            .onSecondaryPress(enabled = hasMenuActions) { menuExpanded = true }
             .combinedClickable(
                 onClick = onSelect,
                 onLongClick = if (hasMenuActions) {
