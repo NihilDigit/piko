@@ -823,7 +823,9 @@ internal class FolderIndexCoordinator(
                         return@withLock PikoDriveRepository.CanaryProbeResult.UNCHANGED
                     }
                     index.commitDelta(checkpoint.syncTime).also { parents ->
-                        folderIndex.removed(oldFolders.keys.filter { index.file(it) == null }, emptySet())
+                        val currentFolders = index.flow.value.entries.keys
+                        val removedFolders = oldFolders.keys.filter { it !in currentFolders }
+                        if (removedFolders.isNotEmpty()) folderIndex.removed(removedFolders, emptySet())
                         populateDerivedFromTreeLocked()
                         normalizeLocations()
                         markCanaryPatched(parents)
@@ -1411,18 +1413,14 @@ internal class FolderIndexCoordinator(
                                                 }
                                                 index.appendCandidate(candidate, enriched, checkpoint)
                                                 if (checkpoint != null) hasSavedCheckpoint = true
-                                                var learnedFolders = false
                                                 val touchedManifestFolders = ArrayList<String>()
+                                                val learnedPageFolders = if (isShadowRebuild) emptyList() else enriched.filter { it.isFolder }
                                                 withPikoLock(treeStateLock) {
                                                     if (!isCurrent()) throw CancellationException("Account changed")
                                                     folderCount = nextFolderCount
                                                     fileCount = nextFileCount
+                                                    val learnedFolders = learnedPageFolders.isNotEmpty() && folderIndex.learnedBatch(learnedPageFolders)
                                                     for (entry in enriched) {
-                                                        if (entry.isFolder && !isShadowRebuild &&
-                                                            folderIndex.learned(entry.id, entry.name, entry.parentId, isFolder = true, trashed = entry.trashed)
-                                                        ) {
-                                                            learnedFolders = true
-                                                        }
                                                         if (VaultStore.looksLikeManifest(entry)) {
                                                             manifestByFolder.getOrPut(entry.parentId) { mutableListOf() }.add(entry)
                                                             touchedManifestFolders += entry.parentId

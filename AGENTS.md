@@ -43,7 +43,7 @@ pwsh -File scripts/run-desktop.ps1 -NoBuild       # 跳过 Gradle 构建，直�
 ./gradlew :app:testDebugUnitTest                  # Android 单元测试
 ./gradlew :desktopApp:createReleaseDistributable  # 构建桌面 Release 镜像（ProGuard + AOT 训练），暴露 keep 规则遗漏
 gh workflow run test.yml -f desktop=true          # 手动触发全量 CI 测试（含 Windows、macOS、Linux 安装与更新冒烟）
-gh workflow run release.yml -f version=9.9.9      # 发版演练：完整执行测试、构建与产物汇总，不创建 Release
+gh workflow run release.yml -f version=1.6.90     # 发版演练：版本号须介于当前正式版与下一正式版之间（禁用 9.9.9 与前导零），确保外发测试包后续可无损升级回正式版
 ```
 
 - **桌面开发调试与 JBR 25 热重载**：高频调 UI 时优先在终端运行 `./gradlew :desktopApp:hotRunDesktop`（通过 `gradle.properties` 的 `compose.reload.jbr.version=25` 绑定 JBR 25，与 Release 打包的 Azul Zulu 25 解耦，且热重载任务不会向 `~/.piko-dev` 发送退出信号），改完代码后执行 `./gradlew :desktopApp:reload` 增量热更新窗口。注意 Windows ReFS Dev Drive（`D:`）不支持 `ReadDirectoryChangesW` 目录监视（`error = 1`），`hotRunDesktop --auto` 连续构建会直接退出，故统一使用显式 `:desktopApp:reload` 推送，且**切勿**全局设置 `org.gradle.vfs.watch=false`。不需要热重载时，使用 `pwsh -File scripts/run-desktop.ps1`（经 `:desktopApp:prepareDevLaunch` 导出 `@argfile`、`dev-launch/jars/` JAR 快照及 `bundledAppResources` 独立拉起 JVM，不占用 Gradle Daemon；仅需重启窗口时附加 `-NoBuild`）。普通 `:desktopApp:compileKotlinDesktop` 前仍会通过 `~/.piko-dev` 单实例通道尝试优雅退出开发版（传入 `-Ppiko.keepDevInstance=true` 可跳过）；关闭用户系统中已安装的正式版 Piko 前仍须先征得用户确认。
@@ -74,7 +74,7 @@ gh workflow run release.yml -f version=9.9.9      # 发版演练：完整执行�
 
 ### 测试、构建来源证明与草稿公开
 
-1. `release.yml` 通过前置校验后，同时并行启动 `test.yml` 全量测试（在真实系统环境运行全套单元测试与安装包冒烟测试，含 Windows、macOS、Linux 全新安装与应用内更新及 iOS 模拟器原生测试，固定使用已发布的 SDK）与各平台正式包构建。修改发版脚本或工作流后，须先通过 `gh workflow run release.yml -f version=9.9.9` 执行一次演练（完整运行测试、打包与汇总并保留 workflow 产物，跳过创建 Release 与构建来源证明）。
+1. `release.yml` 通过前置校验后，同时并行启动 `test.yml` 全量测试（在真实系统环境运行全套单元测试与安装包冒烟测试，含 Windows、macOS、Linux 全新安装与应用内更新及 iOS 模拟器原生测试，固定使用已发布的 SDK）与各平台正式包构建。修改发版脚本或工作流后，须先通过 `gh workflow run release.yml -f version=<演练版本号>` 执行一次演练（完整运行测试、打包与汇总并保留 workflow 产物，跳过创建 Release 与构建来源证明）。**演练版本号约定**：切勿使用 `9.9.9` 等超高版本号（否则外发给用户实测后，Android `versionCode` 无法降级覆盖回正式版，且应用内更新会失效），也不要使用带前导零的版本号（如 `1.6.09`，既不符合 SemVer，数值上也等同于 `1.6.9`）；演练包须取严格介于当前已发布正式版与下一计划正式版之间的合法三段式 SemVer，例如当前为 `1.6.0` 且下一正式版为 `1.7.0` 时依次使用 `1.6.90`、`1.6.91`（对应 `versionCode` 为 `1006090`、`1006091`，可从 `1.6.0` 保留数据覆盖安装，待 `1.7.0` 发布后亦能直接保留数据升级回正式版）；若下一正式版为小补丁 `1.6.x`，测试包顺延占一个补丁号（如 `1.6.1`），正式发布时跳过已外发测试号（发 `1.6.2`）。
 2. Android、Windows（x64、arm64）、macOS（arm64）、Linux（x64）与 iOS（arm64，调用可复用工作流 `ios-ipa.yml`）并行构建正式包并执行 JVM 字节码校验（`VerifyClasses.java`），`windows` 完成后紧接在 `windows-deltas` job 生成 Windows zstd 差分包；待 `test` 与全部平台构建均通过后汇总至 `release` job 计算 `SHA256SUMS.txt`、生成 `release.json`，并出具两份构建来源证明：GitHub 原生 `attest-build-provenance` 与隔离上下文 `slsa-github-generator` 生成的 SLSA Build L3 证明（`multiple.intoto.jsonl`）。
 3. `release` job 将 `# zh-Hans` 段落拼接在 `.github/release-notes.md`（自 `## 下载` 起的设备附件表与校验说明）之前作为 GitHub Release 页面正文，同时将 `zh-Hans` 写入 `release.json` 的 `body` 字段，并将全部五种语言写入 `release.json` 的 `localized_notes` 字段，最终创建**草稿（Draft）** Release。草稿对 `releases/latest` 不可见，应用内更新在草稿公开前不会触发提示。应用内更新弹窗读取 GitHub Release 正文时在 `## 下载` 处截断（`GithubReleases.kt` 的 `updateNotesOf`，由 `ReleaseNotesTest` 守护），修改该标题须同步更新代码与模板；客户端同时按 `PikoLocale.effectiveLanguage` 优先展示匹配语言的更新说明（详见 `shared/src/commonMain/kotlin/dev/piko/shared/update/AGENTS.md`）。
 4. 核对草稿附件与正文无误后，执行 `gh release edit <tag> --draft=false` 正式公开。按 tag 查询的 GitHub REST 接口不返回草稿；若 `gh` 按 tag 无法定位草稿，可通过 `gh api repos/NihilDigit/piko/releases` 列表接口按 `tag_name` 取得 Release ID。若需手动执行 `gh release edit --notes-file` 修改正文，必须先读回原正文再写入，因为 `--notes-file` 会整段替换正文，直接覆盖会导致附件表丢失。

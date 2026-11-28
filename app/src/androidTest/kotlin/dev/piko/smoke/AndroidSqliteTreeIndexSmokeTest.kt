@@ -13,6 +13,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 在真实 Android 系统 SQLite（API 26 = 3.18、API 29 = 3.22、API 34 = 3.39）与真实
@@ -44,9 +48,13 @@ class AndroidSqliteTreeIndexSmokeTest {
         try {
             val version = db.scalarString("SELECT sqlite_version()")
             val journalMode = db.scalarString("PRAGMA journal_mode")
-            Log.i(TAG, "API=${Build.VERSION.SDK_INT}, ABI=${Build.SUPPORTED_ABIS.firstOrNull()}, sqlite=$version, journal=$journalMode")
+            val busyTimeout = db.scalarString("PRAGMA busy_timeout")
+            val synchronous = db.scalarString("PRAGMA synchronous")
+            Log.i(TAG, "API=${Build.VERSION.SDK_INT}, ABI=${Build.SUPPORTED_ABIS.firstOrNull()}, sqlite=$version, journal=$journalMode, busyTimeout=$busyTimeout, synchronous=$synchronous")
             assertNotNull("sqlite_version() returned null", version)
             assertEquals("wal", journalMode?.lowercase())
+            assertEquals("5000", busyTimeout)
+            assertEquals("1", synchronous)
         } finally {
             db.close()
         }
@@ -185,6 +193,76 @@ class AndroidSqliteTreeIndexSmokeTest {
                 }
             }
             assertEquals(count, seen)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun concurrentMultiWindowReadAndPersistentTreeDeltaWriteNeverHitsReadOnlyConnection() = withTempDir { dir ->
+        val factory = AndroidPikoTreeDatabaseFactory(dir)
+        val db = factory.open("concurrent-delta@piko.dev")
+        try {
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS tree_nodes (generation INTEGER NOT NULL, id TEXT NOT NULL, parent TEXT NOT NULL, folder INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(generation,id))",
+            )
+            db.execute("CREATE TABLE IF NOT EXISTS tree_delta (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_deleted (id TEXT PRIMARY KEY, seq INTEGER NOT NULL)")
+            val pad = "x".repeat(3_072) // ~6 MiB total across 2,000 rows, exceeding 4 MiB SCAN_WINDOW_BYTES
+            db.transaction {
+                for (i in 0 until 2_000) {
+                    db.execute(
+                        "INSERT OR REPLACE INTO tree_nodes VALUES (0,?,'root',0,?)",
+                        listOf("f-$i", "{\"id\":\"f-$i\",\"pad\":\"$pad\"}"),
+                    )
+                }
+            }
+
+            // 后台线程持续持有跨多窗口的读游标，迫使 Android WAL 连接池分配并活跃持有次级只读连接；
+            // 同时验证持久表 tree_delta 的非事务 DELETE、事务 INSERT 与事务内 WITH RECURSIVE 删除均不误入只读连接。
+            val stopReader = AtomicBoolean(false)
+            val readerReady = CountDownLatch(1)
+            val readerError = AtomicReference<Throwable?>(null)
+            val reader = Thread {
+                try {
+                    while (!stopReader.get()) {
+                        db.query("SELECT id,payload FROM tree_nodes WHERE generation=0 AND parent=?", listOf("root")).use { c ->
+                            var rowsRead = 0
+                            while (c.next()) {
+                                rowsRead++
+                                if (rowsRead == 1) readerReady.countDown()
+                                if (stopReader.get()) break
+                            }
+                        }
+                    }
+                } catch (t: Throwable) {
+                    readerError.set(t)
+                    readerReady.countDown()
+                }
+            }.apply { start() }
+
+            try {
+                assertTrue("Background WAL reader did not start in time", readerReady.await(5, TimeUnit.SECONDS))
+                for (round in 0 until 20) {
+                    db.execute("DELETE FROM tree_delta")
+                    db.transaction {
+                        db.execute("INSERT OR REPLACE INTO tree_delta VALUES (?,?)", listOf("d-$round", "{\"id\":\"d-$round\"}"))
+                    }
+                    db.execute("DELETE FROM tree_delta")
+                    db.transaction {
+                        db.execute(
+                            "WITH RECURSIVE removed(id) AS (VALUES (?) UNION SELECT n.id FROM removed r CROSS JOIN tree_nodes n ON n.generation=0 AND n.parent=r.id) INSERT OR REPLACE INTO tree_deleted SELECT id,? FROM removed",
+                            listOf("f-$round", round.toLong() + 1L),
+                        )
+                    }
+                }
+            } finally {
+                stopReader.set(true)
+                reader.join(5_000)
+            }
+            readerError.get()?.let { throw AssertionError("Background WAL reader failed", it) }
+            assertEquals("20", db.scalarString("SELECT COUNT(*) FROM tree_deleted"))
+            assertEquals("0", db.scalarString("SELECT COUNT(*) FROM tree_delta"))
         } finally {
             db.close()
         }

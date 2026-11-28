@@ -15,6 +15,7 @@ internal class SqliteTreeStore(
 ) {
     private companion object {
         const val TAG = "SqliteTreeStore"
+        const val SCHEMA_MIGRATION_LEVEL = "2"
         val EMPTY_COMPLETE_CONTENT = ContentStats(listingComplete = true)
         val EMPTY_INCOMPLETE_CONTENT = ContentStats(listingComplete = false)
     }
@@ -82,7 +83,36 @@ internal class SqliteTreeStore(
         db.execute("CREATE TABLE IF NOT EXISTS tree_meta (key TEXT PRIMARY KEY, value TEXT)")
         val owner = scalar("SELECT value FROM tree_meta WHERE key='owner_account'")
         val schemaVersion = meta("schema_version")
-        if (owner != ownerAccount || schemaVersion != "1") {
+        fun ensureSchemaObjects() {
+            db.execute("CREATE TABLE IF NOT EXISTS tree_nodes (generation INTEGER NOT NULL, id TEXT NOT NULL, parent TEXT NOT NULL, folder INTEGER NOT NULL, virtual INTEGER NOT NULL, name TEXT NOT NULL, norm_name TEXT NOT NULL, excluded INTEGER NOT NULL, bytes INTEGER NOT NULL, gcid TEXT, duration INTEGER, video INTEGER NOT NULL, payload TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(generation,id))")
+            db.execute("CREATE INDEX IF NOT EXISTS tree_parent ON tree_nodes(generation,parent)")
+            db.execute("CREATE INDEX IF NOT EXISTS tree_content_key ON tree_nodes(gcid,bytes)")
+            db.execute("CREATE INDEX IF NOT EXISTS tree_folders ON tree_nodes(generation,folder)")
+            db.execute("CREATE INDEX IF NOT EXISTS tree_search ON tree_nodes(generation,excluded,norm_name,id,folder)")
+            db.execute("CREATE INDEX IF NOT EXISTS tree_names ON tree_nodes(generation,name)")
+            db.execute("CREATE INDEX IF NOT EXISTS tree_space_files ON tree_nodes(generation,parent,folder,excluded,bytes DESC)")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_content (gcid TEXT NOT NULL, bytes INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(gcid,bytes))")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_instances (id TEXT PRIMARY KEY, original_created INTEGER NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_restores (id TEXT PRIMARY KEY, gcid TEXT NOT NULL, bytes INTEGER NOT NULL, original_created INTEGER NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_coverage (id TEXT PRIMARY KEY, dirty INTEGER NOT NULL, seq INTEGER NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_vault (generation INTEGER NOT NULL, folder TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(generation,folder,id))")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_vault_revision (folder TEXT PRIMARY KEY, seq INTEGER NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_vault_state (generation INTEGER NOT NULL, folder TEXT NOT NULL, manifest_id TEXT, PRIMARY KEY(generation,folder))")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_deleted (id TEXT PRIMARY KEY, seq INTEGER NOT NULL)")
+            db.execute("CREATE INDEX IF NOT EXISTS tree_deleted_seq ON tree_deleted(seq)")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_delta (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_overrides (id TEXT PRIMARY KEY, name TEXT, name_seq INTEGER NOT NULL DEFAULT 0, parent TEXT, parent_seq INTEGER NOT NULL DEFAULT 0)")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_aggregate (folder TEXT NOT NULL, virtual INTEGER NOT NULL, bytes INTEGER NOT NULL, count INTEGER NOT NULL, duration INTEGER NOT NULL, known INTEGER NOT NULL, unknown INTEGER NOT NULL, PRIMARY KEY(folder,virtual))")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_sources (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_subtree (folder TEXT PRIMARY KEY, payload TEXT NOT NULL, usage_bytes INTEGER NOT NULL, usage_count INTEGER NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_direct_usage (folder TEXT PRIMARY KEY, bytes INTEGER NOT NULL, count INTEGER NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_legacy_sources(generation INTEGER NOT NULL,id INTEGER NOT NULL,value TEXT NOT NULL,PRIMARY KEY(generation,id))")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_legacy_refs(generation INTEGER NOT NULL,id TEXT NOT NULL,ref INTEGER NOT NULL,PRIMARY KEY(generation,id))")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_legacy_instances(generation INTEGER NOT NULL,id TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(generation,id))")
+            db.execute("CREATE TABLE IF NOT EXISTS tree_legacy_content(generation INTEGER NOT NULL,gcid TEXT NOT NULL,bytes INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(generation,gcid,bytes))")
+        }
+        val needsInit = owner != ownerAccount || schemaVersion != "1"
+        if (needsInit) {
             if (owner != null || schemaVersion != null) {
                 PikoLog.w(
                     TAG,
@@ -91,39 +121,24 @@ internal class SqliteTreeStore(
             } else {
                 PikoLog.i(TAG, "Initializing fresh SQLite tree store (acct=$acctSlot)")
             }
-            for (table in listOf("tree_nodes", "tree_content", "tree_instances", "tree_coverage", "tree_vault", "tree_deleted", "tree_aggregate", "tree_sources", "tree_subtree", "tree_restores", "tree_overrides", "tree_vault_revision", "tree_vault_state", "tree_direct_usage", "tree_legacy_sources", "tree_legacy_refs", "tree_legacy_instances", "tree_legacy_content")) db.execute("DROP TABLE IF EXISTS $table")
-            db.execute("DELETE FROM tree_meta")
+            db.transaction {
+                for (table in listOf("tree_nodes", "tree_content", "tree_instances", "tree_coverage", "tree_vault", "tree_deleted", "tree_delta", "tree_aggregate", "tree_sources", "tree_subtree", "tree_restores", "tree_overrides", "tree_vault_revision", "tree_vault_state", "tree_direct_usage", "tree_legacy_sources", "tree_legacy_refs", "tree_legacy_instances", "tree_legacy_content")) db.execute("DROP TABLE IF EXISTS $table")
+                db.execute("DELETE FROM tree_meta")
+                db.execute("INSERT OR REPLACE INTO tree_meta VALUES ('owner_account', ?)", listOf(ownerAccount))
+                meta("schema_version", "1")
+                ensureSchemaObjects()
+                meta("schema_migration", SCHEMA_MIGRATION_LEVEL)
+            }
+        } else if (meta("schema_migration") != SCHEMA_MIGRATION_LEVEL) {
+            // 一次性幂等补齐 v1.5.0/v1.6.0 旧库新增的表与索引（如 tree_deleted_seq、tree_delta），完成后标记跳过后续冷启动 DDL。
+            db.transaction {
+                ensureSchemaObjects()
+                meta("schema_migration", SCHEMA_MIGRATION_LEVEL)
+            }
         }
-        db.execute("INSERT OR REPLACE INTO tree_meta VALUES ('owner_account', ?)", listOf(ownerAccount))
-        meta("schema_version", "1")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_nodes (generation INTEGER NOT NULL, id TEXT NOT NULL, parent TEXT NOT NULL, folder INTEGER NOT NULL, virtual INTEGER NOT NULL, name TEXT NOT NULL, norm_name TEXT NOT NULL, excluded INTEGER NOT NULL, bytes INTEGER NOT NULL, gcid TEXT, duration INTEGER, video INTEGER NOT NULL, payload TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(generation,id))")
-        db.execute("CREATE INDEX IF NOT EXISTS tree_parent ON tree_nodes(generation,parent)")
-        db.execute("CREATE INDEX IF NOT EXISTS tree_content_key ON tree_nodes(gcid,bytes)")
-        db.execute("CREATE INDEX IF NOT EXISTS tree_folders ON tree_nodes(generation,folder)")
-        db.execute("CREATE INDEX IF NOT EXISTS tree_search ON tree_nodes(generation,excluded,norm_name,id,folder)")
-        db.execute("CREATE INDEX IF NOT EXISTS tree_names ON tree_nodes(generation,name)")
-        db.execute("CREATE INDEX IF NOT EXISTS tree_space_files ON tree_nodes(generation,parent,folder,excluded,bytes DESC)")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_content (gcid TEXT NOT NULL, bytes INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(gcid,bytes))")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_instances (id TEXT PRIMARY KEY, original_created INTEGER NOT NULL)")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_restores (id TEXT PRIMARY KEY, gcid TEXT NOT NULL, bytes INTEGER NOT NULL, original_created INTEGER NOT NULL)")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_coverage (id TEXT PRIMARY KEY, dirty INTEGER NOT NULL, seq INTEGER NOT NULL)")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_vault (generation INTEGER NOT NULL, folder TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(generation,folder,id))")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_vault_revision (folder TEXT PRIMARY KEY, seq INTEGER NOT NULL)")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_vault_state (generation INTEGER NOT NULL, folder TEXT NOT NULL, manifest_id TEXT, PRIMARY KEY(generation,folder))")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_deleted (id TEXT PRIMARY KEY, seq INTEGER NOT NULL)")
-        db.execute("CREATE INDEX IF NOT EXISTS tree_deleted_seq ON tree_deleted(seq)")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_overrides (id TEXT PRIMARY KEY, name TEXT, name_seq INTEGER NOT NULL DEFAULT 0, parent TEXT, parent_seq INTEGER NOT NULL DEFAULT 0)")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_aggregate (folder TEXT NOT NULL, virtual INTEGER NOT NULL, bytes INTEGER NOT NULL, count INTEGER NOT NULL, duration INTEGER NOT NULL, known INTEGER NOT NULL, unknown INTEGER NOT NULL, PRIMARY KEY(folder,virtual))")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_sources (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_subtree (folder TEXT PRIMARY KEY, payload TEXT NOT NULL, usage_bytes INTEGER NOT NULL, usage_count INTEGER NOT NULL)")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_direct_usage (folder TEXT PRIMARY KEY, bytes INTEGER NOT NULL, count INTEGER NOT NULL)")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_legacy_sources(generation INTEGER NOT NULL,id INTEGER NOT NULL,value TEXT NOT NULL,PRIMARY KEY(generation,id))")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_legacy_refs(generation INTEGER NOT NULL,id TEXT NOT NULL,ref INTEGER NOT NULL,PRIMARY KEY(generation,id))")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_legacy_instances(generation INTEGER NOT NULL,id TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(generation,id))")
-        db.execute("CREATE TABLE IF NOT EXISTS tree_legacy_content(generation INTEGER NOT NULL,gcid TEXT NOT NULL,bytes INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(generation,gcid,bytes))")
-        for (table in listOf("tree_legacy_sources", "tree_legacy_refs", "tree_legacy_instances", "tree_legacy_content")) {
-            if (scalar("SELECT 1 FROM $table LIMIT 1") != null) db.execute("DELETE FROM $table")
-        }
+        val legacyCleanup = listOf("tree_legacy_sources", "tree_legacy_refs", "tree_legacy_instances", "tree_legacy_content")
+            .filter { scalar("SELECT 1 FROM $it LIMIT 1") != null }
+        val hasStaleDelta = scalar("SELECT 1 FROM tree_delta LIMIT 1") != null
         sequence = meta("sequence")?.toLongOrNull() ?: 0L
         val resumeGen = meta("candidate_resume_gen")?.toLongOrNull()?.takeIf { it > 0L }
         val resumeToken = meta("candidate_resume_token")?.takeIf { it.isNotBlank() }
@@ -133,29 +148,38 @@ internal class SqliteTreeStore(
             nextGeneration = maxOf(nextGeneration, savedGen)
             val baseline = meta("candidate_resume_baseline")?.toLongOrNull() ?: sequence
             candidates[savedGen] = baseline
-            if (scalar("SELECT 1 FROM tree_nodes WHERE generation>0 AND generation<>? LIMIT 1", listOf(savedGen)) != null) {
-                db.execute("DELETE FROM tree_nodes WHERE generation>0 AND generation<>?", listOf(savedGen))
-            }
-            if (scalar("SELECT 1 FROM tree_vault WHERE generation>0 AND generation<>? LIMIT 1", listOf(savedGen)) != null) {
-                db.execute("DELETE FROM tree_vault WHERE generation>0 AND generation<>?", listOf(savedGen))
-            }
-            if (scalar("SELECT 1 FROM tree_vault_state WHERE generation>0 AND generation<>? LIMIT 1", listOf(savedGen)) != null) {
-                db.execute("DELETE FROM tree_vault_state WHERE generation>0 AND generation<>?", listOf(savedGen))
+            val staleNodes = scalar("SELECT 1 FROM tree_nodes WHERE generation>0 AND generation<>? LIMIT 1", listOf(savedGen)) != null
+            val staleVault = scalar("SELECT 1 FROM tree_vault WHERE generation>0 AND generation<>? LIMIT 1", listOf(savedGen)) != null
+            val staleVaultState = scalar("SELECT 1 FROM tree_vault_state WHERE generation>0 AND generation<>? LIMIT 1", listOf(savedGen)) != null
+            if (legacyCleanup.isNotEmpty() || hasStaleDelta || staleNodes || staleVault || staleVaultState) {
+                db.transaction {
+                    for (table in legacyCleanup) db.execute("DELETE FROM $table")
+                    if (hasStaleDelta) db.execute("DELETE FROM tree_delta")
+                    if (staleNodes) db.execute("DELETE FROM tree_nodes WHERE generation>0 AND generation<>?", listOf(savedGen))
+                    if (staleVault) db.execute("DELETE FROM tree_vault WHERE generation>0 AND generation<>?", listOf(savedGen))
+                    if (staleVaultState) db.execute("DELETE FROM tree_vault_state WHERE generation>0 AND generation<>?", listOf(savedGen))
+                }
             }
         } else {
             // Candidate generations have no visibility after a process crash.
-            if (scalar("SELECT 1 FROM tree_nodes WHERE generation>0 LIMIT 1") != null) {
-                db.execute("DELETE FROM tree_nodes WHERE generation>0")
+            val staleNodes = scalar("SELECT 1 FROM tree_nodes WHERE generation>0 LIMIT 1") != null
+            val staleVault = scalar("SELECT 1 FROM tree_vault WHERE generation>0 LIMIT 1") != null
+            val staleVaultState = scalar("SELECT 1 FROM tree_vault_state WHERE generation>0 LIMIT 1") != null
+            val staleMeta = resumeGen != null || resumeToken != null
+            val staleDeleted = scalar("SELECT 1 FROM tree_deleted LIMIT 1") != null
+            val staleOverrides = scalar("SELECT 1 FROM tree_overrides LIMIT 1") != null
+            if (legacyCleanup.isNotEmpty() || hasStaleDelta || staleNodes || staleVault || staleVaultState || staleMeta || staleDeleted || staleOverrides) {
+                db.transaction {
+                    for (table in legacyCleanup) db.execute("DELETE FROM $table")
+                    if (hasStaleDelta) db.execute("DELETE FROM tree_delta")
+                    if (staleNodes) db.execute("DELETE FROM tree_nodes WHERE generation>0")
+                    if (staleVault) db.execute("DELETE FROM tree_vault WHERE generation>0")
+                    if (staleVaultState) db.execute("DELETE FROM tree_vault_state WHERE generation>0")
+                    if (staleMeta) clearCandidateCheckpointMeta()
+                    if (staleDeleted) db.execute("DELETE FROM tree_deleted")
+                    if (staleOverrides) db.execute("DELETE FROM tree_overrides")
+                }
             }
-            if (scalar("SELECT 1 FROM tree_vault WHERE generation>0 LIMIT 1") != null) {
-                db.execute("DELETE FROM tree_vault WHERE generation>0")
-            }
-            if (scalar("SELECT 1 FROM tree_vault_state WHERE generation>0 LIMIT 1") != null) {
-                db.execute("DELETE FROM tree_vault_state WHERE generation>0")
-            }
-            if (resumeGen != null || resumeToken != null) clearCandidateCheckpointMeta()
-            if (scalar("SELECT 1 FROM tree_deleted LIMIT 1") != null) db.execute("DELETE FROM tree_deleted")
-            if (scalar("SELECT 1 FROM tree_overrides LIMIT 1") != null) db.execute("DELETE FROM tree_overrides")
         }
         val interruptedVaults = ArrayList<String>()
         rows("SELECT key FROM tree_meta WHERE key LIKE 'optimistic_vault:%' AND value='true'") {
@@ -209,7 +233,8 @@ internal class SqliteTreeStore(
 
     fun beginDelta() {
         check(!closed)
-        db.execute("CREATE TEMP TABLE IF NOT EXISTS tree_delta(id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+        // 使用主库持久化表 tree_delta 而非 TEMP 表：Android WAL 连接池含多个连接且 sqlite3_stmt_readonly 对 TEMP 表
+        // 返回只读，非事务写 TEMP 表在 API 29 上可能路由到只读连接并抛 SQLiteException。
         db.execute("DELETE FROM tree_delta")
     }
 
