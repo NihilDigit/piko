@@ -25,6 +25,8 @@ import platform.UIKit.UIWindowScene
 interface IosSystemUiDelegate {
     fun updateSystemUi(statusBarHidden: Boolean, lightStatusBarContent: Boolean)
     fun setLandscapeLocked(locked: Boolean)
+    /** 0 = unspecified (free rotation), 1 = landscape, 2 = portrait */
+    fun setOrientationMode(mode: Int)
     /** 0 = unspecified (system), 1 = light, 2 = dark */
     fun updateUserInterfaceStyle(style: Int)
 }
@@ -32,14 +34,18 @@ interface IosSystemUiDelegate {
 /**
  * Kotlin/Compose 与 Swift `UIViewController` 容器间的进程级薄桥：
  * - 统一以引用计数维护状态栏隐藏与沉浸浅色图标（避免 `HideSystemBars` 与 `FullscreenDialog` 互相覆盖）；
- * - 将横屏锁定转发给宿主（Swift 侧在 iOS 16+ 使用 `@available` 安全调用 `UIWindowScene.requestGeometryUpdate`，避免 iOS 15 弱链接崩溃）；
+ * - 将横竖屏方向锁定转发给宿主（Swift 侧通过 `AppDelegate` + iOS 16+ `UIWindowScene.requestGeometryUpdate` 协同控制）；
  * - 提供多场景安全的最顶层控制器查找与 `AVAudioSessionCategoryPlayback` 激活。
  */
 object IosHostBridge {
+    const val ORIENTATION_UNSPECIFIED = 0
+    const val ORIENTATION_LANDSCAPE = 1
+    const val ORIENTATION_PORTRAIT = 2
+
     private var delegate: IosSystemUiDelegate? = null
     private val hiddenTokens = LinkedHashSet<Any>()
     private val lightBarTokens = LinkedHashSet<Any>()
-    private var landscapeLocked = false
+    private var orientationMode = ORIENTATION_UNSPECIFIED
     private var userInterfaceStyle = 0
 
     val supportsLandscapeLock: Boolean
@@ -49,8 +55,8 @@ object IosHostBridge {
         this.delegate = delegate
         dispatchSystemUi()
         delegate.updateUserInterfaceStyle(userInterfaceStyle)
-        if (landscapeLocked) {
-            delegate.setLandscapeLocked(true)
+        if (orientationMode != ORIENTATION_UNSPECIFIED) {
+            delegate.setOrientationMode(orientationMode)
         }
     }
 
@@ -82,9 +88,13 @@ object IosHostBridge {
     }
 
     internal fun setLandscapeLocked(locked: Boolean) {
-        if (landscapeLocked == locked) return
-        landscapeLocked = locked
-        delegate?.setLandscapeLocked(locked)
+        setOrientationMode(if (locked) ORIENTATION_LANDSCAPE else ORIENTATION_UNSPECIFIED)
+    }
+
+    internal fun setOrientationMode(mode: Int) {
+        if (orientationMode == mode) return
+        orientationMode = mode
+        delegate?.setOrientationMode(mode)
     }
 
     internal fun setUserInterfaceStyle(style: Int) {

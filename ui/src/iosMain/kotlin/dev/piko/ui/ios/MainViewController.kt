@@ -18,6 +18,7 @@ import dev.piko.shared.storage.SandboxPaths
 import dev.piko.shared.storage.createIosAppDirectories
 import dev.piko.ui.PikoApp
 import dev.piko.ui.PikoServices
+import dev.piko.ui.VideoPlayerHost
 import dev.piko.ui.image.installIosImageLoader
 import dev.piko.ui.platform.IosPikoPlatform
 import dev.piko.ui.theme.ThemeMode
@@ -87,6 +88,8 @@ private object IosProcess {
             httpClient = imageHttpClient,
             imageCacheDir = SandboxPaths.resolveDirectory(directories.caches, "image_cache"),
         )
+        // 提前激活播放音频会话，避免首次进入画中画或后台音频受懒加载时序影响
+        IosHostBridge.configurePlaybackAudioSession("App")
         val appVersion = (NSBundle.mainBundle.objectForInfoDictionaryKey("CFBundleShortVersionString") as? String)
             ?.takeIf { it.isNotBlank() } ?: "dev"
         val device = UIDevice.currentDevice
@@ -95,8 +98,15 @@ private object IosProcess {
 
     val services = createIosServices(directories, appScope, keychainService)
     val platform = IosPikoPlatform(directories)
-    private val playerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    val videoPlayer = iosVideoPlayerHost(services, playerScope, platform = platform)
+    val videoPlayer: VideoPlayerHost = VideoPlayerHost.InApp { screen, onBack ->
+        IosVideoPlayerScreen(
+            initialFileId = screen.fileId,
+            initialFileName = screen.fileName,
+            initialLocalPath = screen.localPath,
+            initialStartMillis = screen.startMillis,
+            onBackClick = onBack,
+        )
+    }
 }
 
 @Composable

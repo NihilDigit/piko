@@ -344,6 +344,7 @@ jobs:
           test -s "$OUT"
           unzip -l "$OUT" "Payload/Piko.app/Piko" > /dev/null
           unzip -l "$OUT" "Payload/Piko.app/compose-resources/*" > /dev/null
+          unzip -l "$OUT" "Payload/Piko.app/silero_vad_v5_16k.fp16" > /dev/null
           unzip -p "$OUT" "Payload/Piko.app/Info.plist" > "$RUNNER_TEMP/ipa-Info.plist"
           test "$(plutil -extract MinimumOSVersion raw "$RUNNER_TEMP/ipa-Info.plist")" = "15.0"
           test "$(plutil -extract CFBundleShortVersionString raw "$RUNNER_TEMP/ipa-Info.plist")" = "$VERSION"

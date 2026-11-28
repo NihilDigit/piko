@@ -25,6 +25,8 @@ targets:
     deploymentTarget: "15.0"
     sources:
       - path: Piko
+      - path: ../shared/src/jvmSharedMain/resources/dev/piko/shared/media/player/silero_vad_v5_16k.fp16
+        buildPhase: resources
     settings:
       base:
         PRODUCT_NAME: Piko
