@@ -980,6 +980,7 @@ class PlayerScreenState(
         lastPeriodicCloudPosSec = -1L
         manualSubtitles = emptyList()
         pendingManualTitle = null
+        aiSubtitleController.disable()
         resetRecovery()
         reload()
     }
@@ -1002,6 +1003,7 @@ class PlayerScreenState(
         if (isLocalPlayback) return
         localPathHint = path
         pendingStartMillis = currentPosition()
+        aiSubtitleController.disable()
         resetRecovery()
         reload()
     }
