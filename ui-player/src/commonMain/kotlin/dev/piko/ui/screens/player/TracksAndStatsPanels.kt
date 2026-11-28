@@ -267,7 +267,7 @@ private fun AiSubtitleSection(
     onOpenAllLanguages: (() -> Unit)?,
 ) {
     val quickLanguages = remember(state.supportedLanguages) {
-        selectFiveSupportedAiLanguages(state.supportedLanguages)
+        selectQuickAiLanguages(state.supportedLanguages)
     }
     val quota = state.quota
     val savedMinutes = state.savedSeconds / 60L
@@ -492,7 +492,7 @@ private fun AiSubtitleSection(
                 }
             }
 
-            // 4. 目标语言 2×3 紧凑连体网格：原语言 + 应用支持的五种语言（使用各语言原生名称，短小直观零截断）
+            // 4. 目标语言紧凑连体网格：原语言 + 服务端支持的常用语言（各语言使用原生自称，短小直观零截断）
             if (showLanguageControls && onSelectLanguage != null) {
                 val langShape = ListItemDefaults.segmentedShapes(index = segIndex++, count = totalSegments).shape
                 val quickOptions = remember(quickLanguages) {
@@ -532,7 +532,7 @@ private fun AiSubtitleSection(
                                         val selected = if (code.isEmpty()) {
                                             state.language.isBlank()
                                         } else {
-                                            state.language.equals(code, ignoreCase = true)
+                                            aiLanguageCodesEqual(state.language, code)
                                         }
                                         ToggleButton(
                                             checked = selected,
@@ -560,11 +560,11 @@ private fun AiSubtitleSection(
             // 5. 更多语言钻取行
             if (showMoreLanguages && onOpenAllLanguages != null) {
                 val selectedOutsideQuick = state.language.takeIf { code ->
-                    code.isNotBlank() && quickLanguages.none { it.code.equals(code, ignoreCase = true) }
+                    code.isNotBlank() && quickLanguages.none { aiLanguageCodesEqual(it.code, code) }
                 }?.let { code ->
-                    state.supportedLanguages.firstOrNull { it.code.equals(code, ignoreCase = true) }
-                        ?.let(::aiLanguageDisplayName)
-                        ?: code
+                    state.supportedLanguages.firstOrNull { aiLanguageCodesEqual(it.code, code) }
+                        ?.let(::aiLanguageNativeEndonym)
+                        ?: aiLanguageNativeEndonym(AiSubtitleLanguage(code = code, name = code))
                 }
                 val moreLabel = if (selectedOutsideQuick != null) {
                     tr(
@@ -632,17 +632,13 @@ internal fun AiSubtitleLanguagePanel(
         } else {
             all.filter { lang -> matchesLanguageQuery(lang, trimmedQuery) }
         }
-        val commonCodes = COMMON_AI_LANGUAGE_PRIORITY
         val common = ArrayList<AiSubtitleLanguage>()
         val others = ArrayList<AiSubtitleLanguage>()
         for (lang in filtered) {
-            if (isCommonAiLanguage(lang.code)) common += lang else others += lang
+            if (commonAiLanguageRank(lang) != Int.MAX_VALUE) common += lang else others += lang
         }
-        common.sortBy { code ->
-            val idx = commonCodes.indexOfFirst { it.equals(code.code, ignoreCase = true) || code.code.lowercase().startsWith("$it-") }
-            if (idx >= 0) idx else Int.MAX_VALUE
-        }
-        others.sortBy { aiLanguageDisplayName(it).lowercase() }
+        common.sortBy(::commonAiLanguageRank)
+        others.sortBy { aiLanguageNativeEndonym(it).lowercase() }
         val showOriginal = trimmedQuery.isEmpty() ||
             "原语言".contains(trimmedQuery, ignoreCase = true) ||
             "原語言".contains(trimmedQuery, ignoreCase = true) ||
@@ -713,8 +709,8 @@ internal fun AiSubtitleLanguagePanel(
                 }
                 itemsIndexed(commonLanguages, key = { _, lang -> "common_${lang.code}" }) { idx, lang ->
                     TrackRow(
-                        label = aiLanguageDetailedLabel(lang),
-                        selected = state.language.equals(lang.code, ignoreCase = true),
+                        label = aiLanguageNativeEndonym(lang),
+                        selected = aiLanguageCodesEqual(state.language, lang.code),
                         index = idx,
                         count = commonLanguages.size,
                         onClick = { onSelectLanguage(lang.code) },
@@ -733,8 +729,8 @@ internal fun AiSubtitleLanguagePanel(
                 }
                 itemsIndexed(otherLanguages, key = { _, lang -> "all_${lang.code}" }) { idx, lang ->
                     TrackRow(
-                        label = aiLanguageDetailedLabel(lang),
-                        selected = state.language.equals(lang.code, ignoreCase = true),
+                        label = aiLanguageNativeEndonym(lang),
+                        selected = aiLanguageCodesEqual(state.language, lang.code),
                         index = idx,
                         count = otherLanguages.size,
                         onClick = { onSelectLanguage(lang.code) },
@@ -758,93 +754,221 @@ internal fun AiSubtitleLanguagePanel(
 
 private val COMMON_AI_LANGUAGE_PRIORITY = listOf(
     "zh-cn", "zh-hans", "zh",
-    "zh-tw", "zh-hant",
+    "zh-tw", "zh-hant", "zh-hk", "zh-mo",
+    "yue",
     "en", "ja", "ko",
     "fr", "de", "es", "ru", "pt", "it", "vi", "th", "id", "ar",
 )
 
-private fun isCommonAiLanguage(code: String): Boolean {
-    val lower = code.lowercase()
-    return COMMON_AI_LANGUAGE_PRIORITY.any { lower == it || lower.startsWith("$it-") }
+internal fun normalizeAiLanguageCode(code: String): String =
+    code.trim().lowercase().replace('_', '-')
+
+internal fun aiLanguageCodesEqual(a: String, b: String): Boolean =
+    normalizeAiLanguageCode(a) == normalizeAiLanguageCode(b)
+
+private fun isTraditionalChineseLanguage(lang: AiSubtitleLanguage): Boolean {
+    val norm = normalizeAiLanguageCode(lang.code)
+    if (norm in TRADITIONAL_CHINESE_CODES ||
+        norm.startsWith("zh-hant-") ||
+        norm.startsWith("zh-tw-") ||
+        norm.startsWith("zh-hk-") ||
+        norm.startsWith("zh-mo-")
+    ) {
+        return true
+    }
+    if (norm == "zh" || norm.startsWith("zh-")) {
+        val nameLower = lang.name.lowercase()
+        return "traditional" in nameLower || "繁" in lang.name || "taiwan" in nameLower || "hong kong" in nameLower
+    }
+    return false
+}
+
+private fun isSimplifiedChineseLanguage(lang: AiSubtitleLanguage): Boolean {
+    if (isTraditionalChineseLanguage(lang)) return false
+    val norm = normalizeAiLanguageCode(lang.code)
+    return norm in SIMPLIFIED_CHINESE_CODES || norm.startsWith("zh-hans-") || norm.startsWith("zh-cn-") || norm.startsWith("zh-sg-")
+}
+
+private val SIMPLIFIED_CHINESE_CODES = setOf("zh-cn", "zh-hans", "zh-sg", "zh-chs", "chs", "zh")
+private val TRADITIONAL_CHINESE_CODES = setOf("zh-tw", "zh-hant", "zh-hk", "zh-mo", "zh-cht", "cht")
+
+private fun commonAiLanguageRank(lang: AiSubtitleLanguage): Int {
+    if (isTraditionalChineseLanguage(lang)) return COMMON_AI_LANGUAGE_PRIORITY.indexOf("zh-tw")
+    if (isSimplifiedChineseLanguage(lang)) return COMMON_AI_LANGUAGE_PRIORITY.indexOf("zh-cn")
+    val norm = normalizeAiLanguageCode(lang.code)
+    val idx = COMMON_AI_LANGUAGE_PRIORITY.indexOfFirst { tag ->
+        norm == tag || (tag != "zh" && norm.startsWith("$tag-"))
+    }
+    return if (idx >= 0) idx else Int.MAX_VALUE
 }
 
 /**
- * 按固定顺序匹配 Piko 支持的五种语言（简中、繁中、英语、日语、韩语），供 2×3 连体快捷网格使用。
+ * 从服务端真实支持的语言列表中按固定顺序匹配常用快捷语言（简中、繁中、英语、日语、韩语）；
+ * 服务端未单独提供繁中（如仅返回 `zh`）时自然保留 4 个目标语言（含「原语言」共 5 格），不伪造服务端不支持的代码。
  */
-private fun selectFiveSupportedAiLanguages(
+internal fun selectQuickAiLanguages(
     supported: List<AiSubtitleLanguage>,
 ): List<AiSubtitleLanguage> {
     if (supported.isEmpty()) return emptyList()
-    val groups = listOf(
-        listOf("zh-cn", "zh-hans", "zh"),
-        listOf("zh-tw", "zh-hant", "zh-hk"),
-        listOf("en"),
-        listOf("ja"),
-        listOf("ko"),
-    )
     val picked = ArrayList<AiSubtitleLanguage>(5)
     val seen = HashSet<String>()
-    for (candidates in groups) {
-        val match = candidates.firstNotNullOfOrNull { tag ->
-            supported.firstOrNull { it.code.equals(tag, ignoreCase = true) }
-                ?: supported.firstOrNull { it.code.lowercase().startsWith("$tag-") }
-        }
-        if (match != null && seen.add(match.code.lowercase())) {
+
+    fun addIfNew(match: AiSubtitleLanguage?) {
+        if (match != null && seen.add(normalizeAiLanguageCode(match.code))) {
             picked += match
         }
+    }
+
+    val simplified = listOf("zh-cn", "zh-hans", "zh-sg", "zh-chs", "zh").firstNotNullOfOrNull { tag ->
+        supported.firstOrNull { !isTraditionalChineseLanguage(it) && normalizeAiLanguageCode(it.code) == tag }
+    } ?: supported.firstOrNull(::isSimplifiedChineseLanguage)
+    addIfNew(simplified)
+
+    val traditional = listOf("zh-tw", "zh-hant", "zh-hk", "zh-mo", "zh-cht").firstNotNullOfOrNull { tag ->
+        supported.firstOrNull {
+            val norm = normalizeAiLanguageCode(it.code)
+            norm == tag || norm.startsWith("$tag-")
+        }
+    } ?: supported.firstOrNull(::isTraditionalChineseLanguage)
+    addIfNew(traditional)
+
+    for (tag in listOf("en", "ja", "ko")) {
+        val match = supported.firstOrNull { normalizeAiLanguageCode(it.code) == tag }
+            ?: supported.firstOrNull { normalizeAiLanguageCode(it.code).startsWith("$tag-") }
+        addIfNew(match)
     }
     return picked
 }
 
-/** 使用各语言原生自称（Endonym），在任意界面语言下均短小直观、零截断。 */
-private fun aiLanguageNativeEndonym(lang: AiSubtitleLanguage): String {
-    val lower = lang.code.lowercase()
-    return when {
-        lower == "zh-cn" || lower == "zh-hans" || lower == "zh" -> "简体中文"
-        lower == "zh-tw" || lower == "zh-hant" || lower == "zh-hk" -> "繁體中文"
-        lower == "en" || lower.startsWith("en-") -> "English"
-        lower == "ja" || lower.startsWith("ja-") -> "日本語"
-        lower == "ko" || lower.startsWith("ko-") -> "한국어"
-        else -> aiLanguageDisplayName(lang)
+/** 使用各语言原生自称（Endonym），遵循 i18n 原则让每种语言以自身文字显示自己。 */
+internal fun aiLanguageNativeEndonym(lang: AiSubtitleLanguage): String {
+    if (isTraditionalChineseLanguage(lang)) return "繁體中文"
+    if (isSimplifiedChineseLanguage(lang)) return "简体中文"
+    val norm = normalizeAiLanguageCode(lang.code)
+    val primary = norm.substringBefore('-')
+    return AI_LANGUAGE_ENDONYMS[norm]
+        ?: AI_LANGUAGE_ENDONYMS[primary]
+        ?: lang.name.ifBlank { lang.code }
+}
+
+private val AI_LANGUAGE_ENDONYMS = mapOf(
+    "yue" to "粵語",
+    "en" to "English",
+    "ja" to "日本語",
+    "ko" to "한국어",
+    "fr" to "Français",
+    "de" to "Deutsch",
+    "es" to "Español",
+    "ru" to "Русский",
+    "pt" to "Português",
+    "it" to "Italiano",
+    "vi" to "Tiếng Việt",
+    "th" to "ไทย",
+    "id" to "Bahasa Indonesia",
+    "ms" to "Bahasa Melayu",
+    "ar" to "العربية",
+    "ast" to "Asturianu",
+    "ceb" to "Cebuano",
+    "jv" to "Basa Jawa",
+    "ky" to "Кыргызча",
+    "tg" to "Тоҷикӣ",
+    "nl" to "Nederlands",
+    "pl" to "Polski",
+    "tr" to "Türkçe",
+    "uk" to "Українська",
+    "hi" to "हिन्दी",
+    "sv" to "Svenska",
+    "da" to "Dansk",
+    "fi" to "Suomi",
+    "no" to "Norsk",
+    "nb" to "Norsk",
+    "nn" to "Nynorsk",
+    "cs" to "Čeština",
+    "ro" to "Română",
+    "hu" to "Magyar",
+    "el" to "Ελληνικά",
+    "he" to "עברית",
+    "iw" to "עברית",
+    "fa" to "فارسی",
+    "tl" to "Filipino",
+    "fil" to "Filipino",
+    "ca" to "Català",
+    "bg" to "Български",
+    "hr" to "Hrvatski",
+    "sk" to "Slovenčina",
+    "sl" to "Slovenščina",
+    "sr" to "Српски",
+    "et" to "Eesti",
+    "lv" to "Latviešu",
+    "lt" to "Lietuvių",
+    "bn" to "বাংলা",
+    "ta" to "தமிழ்",
+    "te" to "తెలుగు",
+    "ur" to "اردو",
+    "sw" to "Kiswahili",
+    "af" to "Afrikaans",
+    "gu" to "ગુજરાતી",
+    "kn" to "ಕನ್ನಡ",
+    "ml" to "മലയാളം",
+    "mr" to "मराठी",
+    "pa" to "ਪੰਜਾਬੀ",
+    "ne" to "नेपाली",
+    "si" to "සිංහල",
+    "my" to "မြန်မာ",
+    "km" to "ខ្មែរ",
+    "lo" to "ລາວ",
+    "ka" to "ქართული",
+    "hy" to "Հայերեն",
+    "az" to "Azərbaycan",
+    "kk" to "Қазақша",
+    "uz" to "Oʻzbekcha",
+    "mn" to "Монгол",
+    "ga" to "Gaeilge",
+    "cy" to "Cymraeg",
+    "eu" to "Euskara",
+    "gl" to "Galego",
+    "is" to "Íslenska",
+    "sq" to "Shqip",
+    "mk" to "Македонски",
+    "bs" to "Bosanski",
+    "be" to "Беларуская",
+)
+
+private fun aiLanguageLocalizedSearchAlias(lang: AiSubtitleLanguage): String {
+    if (isTraditionalChineseLanguage(lang)) return "繁体中文 繁體中文 Traditional Chinese"
+    if (isSimplifiedChineseLanguage(lang)) return "简体中文 簡體中文 Simplified Chinese"
+    val primary = normalizeAiLanguageCode(lang.code).substringBefore('-')
+    return when (primary) {
+        "yue" -> "粤语 粵語 广东话 廣東話 Cantonese"
+        "en" -> "英语 英語 英文"
+        "ja" -> "日语 日語 日文"
+        "ko" -> "韩语 韓語 朝鲜语"
+        "fr" -> "法语 法語"
+        "de" -> "德语 德語"
+        "es" -> "西班牙语 西班牙語"
+        "ru" -> "俄语 俄語"
+        "pt" -> "葡萄牙语 葡萄牙語"
+        "it" -> "意大利语 義大利語"
+        "vi" -> "越南语 越南語"
+        "th" -> "泰语 泰語"
+        "id" -> "印尼语 印尼語 印度尼西亚语"
+        "ms" -> "马来语 馬來語"
+        "ar" -> "阿拉伯语 阿拉伯語"
+        "nl" -> "荷兰语 荷蘭語"
+        "pl" -> "波兰语 波蘭語"
+        "tr" -> "土耳其语 土耳其語"
+        "uk" -> "乌克兰语 烏克蘭語"
+        "hi" -> "印地语 印地語"
+        else -> ""
     }
 }
 
-private fun aiLanguageDisplayName(lang: AiSubtitleLanguage): String {
-    val lower = lang.code.lowercase()
-    return when {
-        lower == "zh-cn" || lower == "zh-hans" || lower == "zh" -> tr("简体中文", "Chinese (Simplified)", "中国語（簡体字）", "중국어(간체)", "簡體中文")
-        lower == "zh-tw" || lower == "zh-hant" || lower == "zh-hk" -> tr("繁体中文", "Chinese (Traditional)", "中国語（繁体字）", "중국어(번체)", "繁體中文")
-        lower == "en" || lower.startsWith("en-") -> tr("英语", "English", "英語", "영어", "英語")
-        lower == "ja" || lower.startsWith("ja-") -> tr("日语", "Japanese", "日本語", "일본어", "日語")
-        lower == "ko" || lower.startsWith("ko-") -> tr("韩语", "Korean", "韓国語", "한국어", "韓語")
-        lower == "fr" || lower.startsWith("fr-") -> tr("法语", "French", "フランス語", "프랑스어", "法語")
-        lower == "de" || lower.startsWith("de-") -> tr("德语", "German", "ドイツ語", "독일어", "德語")
-        lower == "es" || lower.startsWith("es-") -> tr("西班牙语", "Spanish", "スペイン語", "스페인어", "西班牙語")
-        lower == "ru" || lower.startsWith("ru-") -> tr("俄语", "Russian", "ロシア語", "러시아어", "俄語")
-        lower == "pt" || lower.startsWith("pt-") -> tr("葡萄牙语", "Portuguese", "ポルトガル語", "포르투갈어", "葡萄牙語")
-        lower == "it" || lower.startsWith("it-") -> tr("意大利语", "Italian", "イタリア語", "이탈리아어", "義大利語")
-        lower == "vi" -> tr("越南语", "Vietnamese", "ベトナム語", "베트남어", "越南語")
-        lower == "th" -> tr("泰语", "Thai", "タイ語", "태국어", "泰語")
-        lower == "id" -> tr("印尼语", "Indonesian", "インドネシア語", "인도네시아어", "印尼語")
-        lower == "ar" -> tr("阿拉伯语", "Arabic", "アラビア語", "아랍어", "阿拉伯語")
-        else -> lang.name.ifBlank { lang.code }
-    }
-}
-
-private fun aiLanguageDetailedLabel(lang: AiSubtitleLanguage): String {
-    val localized = aiLanguageDisplayName(lang)
-    val raw = lang.name.trim()
-    return if (raw.isNotEmpty() && !raw.equals(localized, ignoreCase = true)) {
-        "$localized ($raw)"
-    } else {
-        localized
-    }
-}
-
-private fun matchesLanguageQuery(lang: AiSubtitleLanguage, query: String): Boolean {
+internal fun matchesLanguageQuery(lang: AiSubtitleLanguage, query: String): Boolean {
     if (lang.code.contains(query, ignoreCase = true)) return true
+    if (normalizeAiLanguageCode(lang.code).contains(query.trim().replace('_', '-'), ignoreCase = true)) return true
     if (lang.name.contains(query, ignoreCase = true)) return true
-    if (aiLanguageDisplayName(lang).contains(query, ignoreCase = true)) return true
+    if (aiLanguageNativeEndonym(lang).contains(query, ignoreCase = true)) return true
+    if (aiLanguageLocalizedSearchAlias(lang).contains(query, ignoreCase = true)) return true
     return false
 }
 

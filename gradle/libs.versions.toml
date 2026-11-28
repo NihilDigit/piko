@@ -24,7 +24,7 @@ kotlinxDatetime = "0.7.1"
 # 与 pikpak-kotlin 0.9.0 所依赖的版本一致。SDK 的 downloadTo 以 kotlinx.io.files.Path 为参数，
 # 却只把 kotlinx-io 声明为 runtime 依赖，调用方编译时要自己引入
 kotlinxIo = "0.9.0"
-pikpakSdk = "3.0.0"
+pikpakSdk = "3.1.0"
 windowsTouch = "0.1.0"
 # 桌面端与 Android 统一在 CMP 1.13.0-rc01（Skiko 0.156.1）与 material3 1.5.0-rc01：
 # 桌面视频表面由 Piko 自己的 PikoMpvVideoSurface 经 Skiko 0.156.1 的 FrameDriver / Direct3DRenderer /
