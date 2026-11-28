@@ -24,8 +24,10 @@ import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.PikoFileSortOrder
 import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.data.VaultEntry
+import dev.piko.shared.data.VirtualVaultLocation
 import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.isImportPreview
+import dev.piko.shared.data.isVaultContainerFolderId
 import dev.piko.shared.data.isVaulted
 import dev.piko.shared.data.library
 import dev.piko.shared.i18n.enCount
@@ -381,7 +383,7 @@ class DriveScreenState(
             _messages.tryEmit(tr("文件名含有无效字符或为空", "File name is empty or contains invalid characters", "ファイル名が空か、使用できない文字が含まれています", "파일 이름이 비어 있거나 잘못된 문자가 포함되어 있습니다", "檔案名稱含有無效字元或為空"))
             return
         }
-        if (VaultEntry.isVaulted(fileId)) {
+        if (VaultEntry.isVaulted(fileId) || VirtualVaultLocation.isVirtualFolder(fileId)) {
             renameInVault(fileId, trimmed)
             return
         }
@@ -399,11 +401,16 @@ class DriveScreenState(
             _messages.tryEmit(tr("请先将链接项目保存至网盘", "Save link items to the drive first", "リンク項目を先にドライブへ保存してください", "링크 항목을 먼저 드라이브에 저장해 주세요", "請先將連結項目儲存至雲端硬碟"))
             if (nonPreview.isEmpty()) return
         }
-        val (vaulted, real) = nonPreview.partition { it.isVaulted }
+        val withoutVirtualFolders = nonPreview.filterNot { VirtualVaultLocation.isVirtualFolder(it.id) }
+        if (withoutVirtualFolders.isEmpty()) {
+            _messages.tryEmit(tr("引用虚拟目录不支持添加星标", "Virtual reference folders cannot be starred", "参照仮想フォルダーにはスターを付けられません", "참조 가상 폴더에는 별표를 추가할 수 없습니다", "引用虛擬目錄不支援新增星號"))
+            return
+        }
+        val (vaulted, real) = withoutVirtualFolders.partition { it.isVaulted }
         if (vaulted.isNotEmpty()) {
             val withResolvedParent = vaulted.map { item ->
                 if (item.parentId.isNotEmpty()) item else {
-                    val knownParent = knownFile(item.id)?.parentId?.takeIf(String::isNotEmpty) ?: activeFolderId.takeIf { isDriveFolderId(it) }.orEmpty()
+                    val knownParent = knownFile(item.id)?.parentId?.takeIf(String::isNotEmpty) ?: activeFolderId.takeIf { isVaultContainerFolderId(it) }.orEmpty()
                     if (knownParent.isNotEmpty()) item.copy(parentId = knownParent) else item
                 }
             }
@@ -443,7 +450,7 @@ class DriveScreenState(
         if (!canAcceptAction || refusedInArchive(ids)) return
         val distinct = ids.distinct().filter(selectionController::canSelect)
         val (importPreviewIds, nonPreviewIds) = distinct.partition { ImportPreviewEntryId.isEntry(it) || ImportPreviewLocation.of(it) != null }
-        val (vaulted, real) = nonPreviewIds.partition(VaultEntry::isVaulted)
+        val (vaulted, real) = nonPreviewIds.partition { VaultEntry.isVaulted(it) || VirtualVaultLocation.isVirtualFolder(it) }
         val availability = fileActions.filesAvailability(real)
         if (availability is ActionAvailability.Blocked) { _messages.tryEmit(availability.reason); return }
         val removal = vaultRemoval(vaulted)
@@ -462,12 +469,17 @@ class DriveScreenState(
         val eligible = editableCloudIds(ids)
         if (eligible.isEmpty()) return false
         fun sourceOf(id: String) = knownFile(id)?.parentId ?: sources[id]
-        val (vaultedAll, realAll) = eligible.partition(VaultEntry::isVaulted)
+        val (vaultedAll, realAll) = eligible.partition { VaultEntry.isVaulted(it) || VirtualVaultLocation.isVirtualFolder(it) }
         val realMoving = realAll.filter { it != targetId && sourceOf(it) != targetId }
         val vaultedBySource = vaultedAll.groupBy { sourceOf(it) ?: activeFolderId }
             .filterKeys { it != targetId }.mapValues { entryIds(it.value) }.filterValues { it.isNotEmpty() }
         if (realMoving.isEmpty() && vaultedBySource.isEmpty()) return false
+        // 先完成全部选中项与目标目录的前置校验，避免混合粘贴到虚拟目录时归档条目先行移走而真实文件随后被拒
         if (realMoving.isNotEmpty()) {
+            if (!isDriveFolderId(targetId)) {
+                _messages.tryEmit(tr("无法将普通文件移动到引用虚拟目录", "Cannot move regular files into a virtual reference folder", "通常のファイルを参照仮想フォルダーへ移動できません", "일반 파일을 참조 가상 폴더로 이동할 수 없습니다", "無法將一般檔案移動至引用虛擬目錄"))
+                return false
+            }
             val availability = fileActions.filesAvailability(realMoving)
             if (availability is ActionAvailability.Blocked) { _messages.tryEmit(availability.reason); return false }
         }
@@ -475,6 +487,8 @@ class DriveScreenState(
         if (vaultMove != null) {
             val vaultAvailability = vaultActions.availability(vaultMove)
             if (vaultAvailability is ActionAvailability.Blocked) { _messages.tryEmit(vaultAvailability.reason); return false }
+        }
+        if (vaultMove != null) {
             if (!submitVaultEdit(vaultMove, clearSelection = realMoving.isEmpty())) return false
         }
         if (realMoving.isEmpty()) { onSuccess?.invoke(); return true }
@@ -495,7 +509,7 @@ class DriveScreenState(
         if (!canAcceptAction) return
         val ids = if (cut) editableCloudIds(requested) else withoutVaulted(requested)
         if (ids.isEmpty()) return
-        val origin = activeFolderStack.takeIf { isDriveFolderId(activeFolderId) }.orEmpty()
+        val origin = activeFolderStack.takeIf { isVaultContainerFolderId(activeFolderId) }.orEmpty()
         clipboard.put(DriveClipboard(ids.associateWith { knownFile(it)?.parentId ?: activeFolderId }, cut, origin.toList()))
         exitSelection()
         val verb = if (cut) tr("剪切", "Cut", "切り取り", "잘라내기", "剪下") else tr("复制", "Copy", "コピー", "복사", "複製")
@@ -508,7 +522,7 @@ class DriveScreenState(
     fun paste() {
         if (!canAcceptAction) return
         val clip = clipboard.contents.value ?: return
-        val target = navigation.folderStackFlow.value.lastOrNull()?.takeIf { isDriveFolderId(it.id) } ?: return
+        val target = navigation.folderStackFlow.value.lastOrNull()?.takeIf { isVaultContainerFolderId(it.id) } ?: return
         val ids = clip.sources.keys.toList()
         val movingCount = if (clip.cut) editableCloudIds(ids).count { it != target.id && (knownFile(it)?.parentId ?: clip.sources[it]) != target.id } else ids.size
         val onSuccess = {
@@ -547,15 +561,18 @@ class DriveScreenState(
 
     private fun withoutVaulted(ids: List<String>): List<String> {
         val nonPreview = editableCloudIds(ids)
-        val real = nonPreview.filterNot(VaultEntry::isVaulted)
+        val real = nonPreview.filterNot { VaultEntry.isVaulted(it) || VirtualVaultLocation.isVirtualFolder(it) }
         if (real.size < nonPreview.size) _messages.tryEmit(VAULTED_NEEDS_RESTORE)
         return real
     }
 
     private fun vaultedByFolder(ids: Collection<String>): Map<String, Set<String>> =
-        ids.filter(VaultEntry::isVaulted).groupBy { knownFile(it)?.parentId ?: activeFolderId }.mapValues { it.value.toSet() }
+        ids.filter { VaultEntry.isVaulted(it) || VirtualVaultLocation.isVirtualFolder(it) }
+            .groupBy { knownFile(it)?.parentId ?: activeFolderId }
+            .mapValues { it.value.toSet() }
 
-    private fun entryIds(virtualIds: Collection<String>): Set<String> = virtualIds.mapNotNullTo(HashSet(), VaultEntry::entryIdOf)
+    private fun entryIds(virtualIds: Collection<String>): Set<String> =
+        virtualIds.mapNotNullTo(HashSet()) { VaultEntry.entryIdOf(it) ?: VirtualVaultLocation.nodeIdOf(it) }
 
     private fun vaultRemoval(ids: Collection<String>) = VaultEntryEditCommand.Remove(vaultedByFolder(ids).mapValues { entryIds(it.value) })
 
@@ -566,7 +583,7 @@ class DriveScreenState(
 
     private fun renameInVault(fileId: String, newName: String) {
         val folderId = knownFile(fileId)?.parentId ?: activeFolderId
-        val entryId = VaultEntry.entryIdOf(fileId) ?: return
+        val entryId = VaultEntry.entryIdOf(fileId) ?: VirtualVaultLocation.nodeIdOf(fileId) ?: return
         submitVaultEdit(VaultEntryEditCommand.Rename(folderId, entryId, newName), clearSelection = false)
     }
 }

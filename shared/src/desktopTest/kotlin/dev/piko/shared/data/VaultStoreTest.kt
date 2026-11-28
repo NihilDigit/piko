@@ -242,13 +242,64 @@ class VaultStoreTest {
             val (fileName, bytes) = scratch.files.values.last()
             drive.upload("f", fileName, bytes)
         }
-        write(2, "00", "old")
+        // 历史非因果 v2 清单由更高版本 v3 清单取代；待转正的陌生 v9 清单跳过
+        drive.upload(
+            "f",
+            ".piko-vault-v2-00.json",
+            """{"entries":[{"id":"old","name":"old-0","size":100,"gcid":"G-old","addedAt":0}]}""".encodeToByteArray(),
+        )
         write(3, "bb", "branchB")
         write(3, "aa", "branchA")
         drive.upload("f", ".piko-vault-v9-ff.json", ByteArray(0), phase = TaskPhase.PENDING)
 
         val entries = store.read("f", drive.list("f")).getOrThrow().map { it.name }.toSet()
         assertEquals(setOf("branchA-0", "branchA-1", "branchA-2", "branchB-0", "branchB-1", "branchB-2"), entries)
+    }
+
+    @Test
+    fun `offline multi-step v2 and v3 branches sharing folder origin merge and cleanup waits until replacement is complete`() = runBlocking {
+        val drive = MemoryFolder()
+        val scratchA = MemoryFolder()
+        val scratchB = MemoryFolder()
+        val writerA = VaultStore(scratchA, Duration.ZERO, newToken = { "aa" })
+        val writerB = VaultStore(scratchB, Duration.ZERO, newToken = { "bb" })
+        repeat(3) { writerA.update("f", VaultEdits.add(listOf(entry("A-$it")))).getOrThrow() }
+        repeat(2) { writerB.update("f", VaultEdits.add(listOf(entry("B-$it")))).getOrThrow() }
+
+        val (nameA, bytesA) = scratchA.files.values.last()
+        val (nameB, bytesB) = scratchB.files.values.last()
+        val idA = drive.upload("f", nameA, bytesA, phase = TaskPhase.COMPLETE)
+        val idB = drive.upload("f", nameB, bytesB, phase = TaskPhase.COMPLETE)
+
+        // Merged replacement v4 stays PENDING initially: neither COMPLETE head may be deleted yet!
+        drive.defaultUploadPhase = TaskPhase.PENDING
+        val merger = VaultStore(drive, Duration.ZERO, newToken = { "cc" })
+        val extra = entry("C-merged")
+        merger.update("f", VaultEdits.add(listOf(extra))).getOrThrow()
+        kotlinx.coroutines.delay(50)
+
+        assertTrue(idA in drive.files, "COMPLETE head A must not be deleted while merged v4 is still PENDING")
+        assertTrue(idB in drive.files, "COMPLETE head B must not be deleted while merged v4 is still PENDING")
+
+        // Another cold device reading while v4 is PENDING still recovers all 5 offline entries from idA + idB
+        val coldDuringPending = VaultStore(drive, Duration.ZERO)
+        assertEquals(
+            setOf("A-0", "A-1", "A-2", "B-0", "B-1"),
+            coldDuringPending.committed("f").getOrThrow().map { it.name }.toSet(),
+        )
+
+        // Once v4 transitions to COMPLETE and barrier confirms it, superseded heads retire and all 6 entries remain readable
+        drive.defaultUploadPhase = TaskPhase.COMPLETE
+        drive.markAllComplete()
+        merger.awaitRemoteComplete("f", setOf(extra.id)).getOrThrow()
+        withTimeout(5_000) {
+            while (drive.files.size > 1) kotlinx.coroutines.delay(10)
+        }
+        val coldAfterComplete = VaultStore(drive, Duration.ZERO)
+        assertEquals(
+            setOf("A-0", "A-1", "A-2", "B-0", "B-1", "C-merged"),
+            coldAfterComplete.committed("f").getOrThrow().map { it.name }.toSet(),
+        )
     }
 
     @Test
@@ -408,6 +459,104 @@ class VaultStoreTest {
         } finally {
             owner.cancelAndJoin()
         }
+    }
+
+    @Test
+    fun `late lower-version causal branch survives higher-version fast writer and subsequent gc`() = runBlocking {
+        val drive = MemoryFolder()
+        val seed = VaultStore(drive, Duration.ZERO)
+        val base = entry("base")
+        seed.update("f", VaultEdits.add(listOf(base))).getOrThrow()
+
+        val staged = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val slowIo = object : VaultFolderIo by drive {
+            override suspend fun upload(folderId: String, name: String, bytes: ByteArray): String {
+                staged.complete(Unit)
+                release.await()
+                return drive.upload(folderId, name, bytes)
+            }
+        }
+        val slowStore = VaultStore(slowIo, Duration.ZERO, newToken = { "99" })
+        val fastStore = VaultStore(drive, Duration.ZERO, newToken = { "11" })
+
+        val lateEntry = entry("late-v2")
+        val fastFirst = entry("fast-v2")
+        val fastSecond = entry("fast-v3")
+        val fastThird = entry("fast-v4")
+
+        val slowJob = async { slowStore.update("f", VaultEdits.add(listOf(lateEntry))).getOrThrow() }
+        withTimeout(5_000) { staged.await() }
+        fastStore.update("f", VaultEdits.add(listOf(fastFirst))).getOrThrow()
+        fastStore.update("f", VaultEdits.add(listOf(fastSecond))).getOrThrow()
+        release.complete(Unit)
+        slowJob.await()
+
+        val coldAfterLate = VaultStore(drive, Duration.ZERO)
+        val mergedBeforeNextWrite = coldAfterLate.committed("f").getOrThrow().map { it.name }.toSet()
+        assertEquals(setOf("base", "late-v2", "fast-v2", "fast-v3"), mergedBeforeNextWrite)
+
+        fastStore.update("f", VaultEdits.add(listOf(fastThird))).getOrThrow()
+        val coldFinal = VaultStore(drive, Duration.ZERO)
+        assertEquals(
+            setOf("base", "late-v2", "fast-v2", "fast-v3", "fast-v4"),
+            coldFinal.committed("f").getOrThrow().map { it.name }.toSet(),
+        )
+    }
+
+    @Test
+    fun `concurrent delete and add do not resurrect deleted entry and concurrent rename preserves latest timestamp`() = runBlocking {
+        val drive = MemoryFolder()
+        val initStore = VaultStore(drive, Duration.ZERO)
+        val a = VaultEntry("id-a", "old-a.mkv", 100, "GA", addedAt = 100)
+        val b = VaultEntry("id-b", "keep-b.mkv", 100, "GB", addedAt = 100)
+        initStore.update("f", VaultEdits.add(listOf(a, b))).getOrThrow()
+        val baseListing = drive.list("f")
+
+        fun isolatedBranchIo(): VaultFolderIo = object : VaultFolderIo {
+            override suspend fun list(folderId: String): List<FileStat> = baseListing
+            override suspend fun read(fileId: String): ByteArray = drive.read(fileId)
+            override suspend fun upload(folderId: String, name: String, bytes: ByteArray): String = drive.upload(folderId, name, bytes)
+            override suspend fun delete(ids: List<String>) = Unit
+        }
+
+        VaultStore(isolatedBranchIo(), Duration.ZERO, newToken = { "ff" })
+            .update("f", VaultEdits.remove(setOf(a.id)))
+            .getOrThrow()
+
+        VaultStore(isolatedBranchIo(), Duration.ZERO, newToken = { "ee" }).let { writer ->
+            val d = VaultEntry("id-d", "added-d.mkv", 100, "GD", addedAt = 200)
+            writer.update("f", { cur -> VaultEdits.rename(b.id, "renamed-b.mkv")(VaultEdits.add(listOf(d))(cur)) }).getOrThrow()
+        }
+
+        // Also simulate a third sibling with smaller random token "00" that did NOT rename b
+        VaultStore(isolatedBranchIo(), Duration.ZERO, newToken = { "00" })
+            .update("f", VaultEdits.add(listOf(VaultEntry("id-e", "added-e.mkv", 100, "GE", addedAt = 200))))
+            .getOrThrow()
+
+        val cold = VaultStore(drive, Duration.ZERO)
+        val merged = cold.committed("f").getOrThrow()
+        assertEquals(setOf("renamed-b.mkv", "added-d.mkv", "added-e.mkv"), merged.map { it.name }.toSet())
+    }
+
+    @Test
+    fun `laggy listing showing only sibling of same version preserves own local committed entries`() = runBlocking {
+        val drive = MemoryFolder()
+        val ownStore = VaultStore(drive, Duration.ZERO, newToken = { "bb" })
+        val ownEntry = entry("own-v1")
+        ownStore.update("f", VaultEdits.add(listOf(ownEntry))).getOrThrow()
+
+        val siblingScratch = MemoryFolder()
+        VaultStore(siblingScratch, Duration.ZERO, newToken = { "aa" })
+            .update("f", VaultEdits.add(listOf(entry("sibling-v1"))))
+            .getOrThrow()
+        val (sibName, sibBytes) = siblingScratch.files.values.single()
+        val sibId = drive.upload("f", sibName, sibBytes)
+        val sibOnlyListing = drive.list("f").filter { it.id == sibId }
+
+        assertNull(ownStore.cached("f", sibOnlyListing), "远端存在尚未解析的同版本兄弟清单时，缓存不得只返回本机子集")
+        assertEquals(setOf("own-v1", "sibling-v1"), ownStore.read("f", sibOnlyListing).getOrThrow().map { it.name }.toSet())
+        assertEquals(setOf("own-v1", "sibling-v1"), ownStore.cached("f", sibOnlyListing)?.map { it.name }?.toSet())
     }
 
     private open class EmptyIo : VaultFolderIo {

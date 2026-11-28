@@ -16,7 +16,58 @@ internal fun spaceFolderSnapshot(
     includeVaulted: Boolean,
     isBuilding: Boolean,
     projectOptimistic: ((List<FileStat>, String?) -> List<FileStat>)? = null,
+    vaultLedger: AccountVaultLedger? = null,
 ): SpaceFolderSnapshot = index.withReadState { state ->
+    if (VirtualVaultLocation.isVirtualFolder(folderId)) {
+        val ledger = vaultLedger ?: return@withReadState SpaceFolderSnapshot(
+            folderId = folderId,
+            breadcrumbs = listOf(PikoDriveRepository.ROOT_BREADCRUMB),
+            physicalBytes = 0L,
+            vaultedBytes = 0L,
+            fileCount = 0L,
+            isTreeComplete = true,
+            isTreeBuilding = false,
+            items = emptyList(),
+        )
+        val (anchorId, vChain) = ledger.breadcrumbChainForVirtualFolder(folderId)
+            ?: ("" to emptyList())
+        val anchorBreadcrumbs = ArrayDeque<PikoPathBreadcrumb>()
+        var anc = anchorId
+        val seenAnc = HashSet<String>()
+        while (anc.isNotEmpty() && seenAnc.add(anc)) {
+            val f = state.entries[anc]?.takeIf { it.isFolder } ?: break
+            anchorBreadcrumbs.addFirst(PikoPathBreadcrumb(f.id, f.name))
+            anc = f.parentId
+        }
+        anchorBreadcrumbs.addFirst(PikoDriveRepository.ROOT_BREADCRUMB)
+        val breadcrumbs = anchorBreadcrumbs.toList() + vChain
+        if (!includeVaulted) {
+            return@withReadState SpaceFolderSnapshot(
+                folderId = folderId,
+                breadcrumbs = breadcrumbs,
+                physicalBytes = 0L,
+                vaultedBytes = ledger.subtreeUsageOf(folderId)?.second ?: 0L,
+                fileCount = 0L,
+                isTreeComplete = true,
+                isTreeBuilding = false,
+                items = emptyList(),
+            )
+        }
+        val itemOrder = compareByDescending<SpaceNodeItem> { it.bytes(true) }
+            .thenBy { it.name }.thenBy { it.id }
+        val vChildren = buildLedgerSpaceItems(ledger, folderId, true).sortedWith(itemOrder)
+        val (totalCount, totalBytes) = ledger.subtreeUsageOf(folderId) ?: (0 to 0L)
+        return@withReadState SpaceFolderSnapshot(
+            folderId = folderId,
+            breadcrumbs = breadcrumbs,
+            physicalBytes = 0L,
+            vaultedBytes = totalBytes,
+            fileCount = totalCount.toLong(),
+            isTreeComplete = true,
+            isTreeBuilding = false,
+            items = vChildren,
+        )
+    }
     val entries = if (projectOptimistic == null) {
         state.entries
     } else {
@@ -49,11 +100,18 @@ internal fun spaceFolderSnapshot(
     val previewOrder = compareByDescending<SpacePreviewBlock> { it.bytes }
         .thenBy { it.name }.thenBy { it.id }
 
+    val ancestorLedgerByRealFolder: Map<String, Pair<Long, Long>> = if (!excluded && vaultLedger != null) {
+        computeLedgerUsageByPhysicalAncestor(vaultLedger, state)
+    } else {
+        emptyMap()
+    }
+
     fun folderNodeOf(folder: FileStat): SpaceNodeItem? {
         if (folder.trashed || isPikoInternalFolder(folder)) return null
         val stats = subtreeStats[folder.id]
         val physical = stats?.physical ?: ContentStats(listingComplete = false)
         val archived = stats?.vaulted ?: ContentStats(listingComplete = false)
+        val extraLedger = ancestorLedgerByRealFolder[folder.id] ?: (0L to 0L)
         val selected = if (includeVaulted) physical + archived else physical
         return SpaceNodeItem(
             id = folder.id,
@@ -62,8 +120,8 @@ internal fun spaceFolderSnapshot(
             isFolder = true,
             isVaulted = false,
             physicalBytes = physical.bytes,
-            vaultedBytes = archived.bytes,
-            fileCount = selected.fileCount,
+            vaultedBytes = archived.bytes + extraLedger.second,
+            fileCount = selected.fileCount + (if (includeVaulted) extraLedger.first else 0L),
             durationMillis = selected.durationMillis,
             isComplete = stats?.structuralValid == true && selected.listingComplete,
         )
@@ -208,17 +266,162 @@ internal fun spaceFolderSnapshot(
         }
     }
 
+    val ledgerDirectItems = if (!excluded && includeVaulted && vaultLedger != null) {
+        buildLedgerSpaceItems(vaultLedger, folderId, true)
+    } else {
+        emptyList()
+    }
+    val extraLedgerUsage = ancestorLedgerByRealFolder[folderId] ?: (0L to 0L)
+    val mergedItems = if (ledgerDirectItems.isEmpty()) withPreviews else (withPreviews + ledgerDirectItems).sortedWith(itemOrder)
+
     val selected = aggregate?.let { if (includeVaulted) it.physical + it.vaulted else it.physical }
     SpaceFolderSnapshot(
         folderId = folderId,
         breadcrumbs = chain.toList(),
         physicalBytes = aggregate?.physical?.bytes ?: 0L,
-        vaultedBytes = aggregate?.vaulted?.bytes ?: 0L,
-        fileCount = selected?.fileCount ?: 0L,
+        vaultedBytes = (aggregate?.vaulted?.bytes ?: 0L) + extraLedgerUsage.second,
+        fileCount = (selected?.fileCount ?: 0L) + (if (includeVaulted) extraLedgerUsage.first else 0L),
         isTreeComplete = aggregate?.structuralValid == true && selected?.listingComplete == true,
         isTreeBuilding = isBuilding,
-        items = withPreviews,
+        items = mergedItems,
     )
+}
+
+private fun computeLedgerUsageByPhysicalAncestor(
+    ledger: AccountVaultLedger,
+    state: DriveTreeIndex.State,
+): Map<String, Pair<Long, Long>> {
+    val proj = ledger.projection.value
+    if (proj.realFoldersWithVault.isEmpty()) return emptyMap()
+    val totals = HashMap<String, Pair<Long, Long>>()
+    for (anchor in proj.realFoldersWithVault) {
+        val direct = ledger.subtreeUsageOf(anchor) ?: continue
+        if (direct.first <= 0 && direct.second <= 0L) continue
+        if (anchor.isEmpty()) {
+            val prev = totals[""] ?: (0L to 0L)
+            totals[""] = (prev.first + direct.first.toLong()) to (prev.second + direct.second)
+            continue
+        }
+        // Validate that the physical anchor chain is visible and non-trashed
+        val chain = ArrayList<String>(8)
+        var cur = anchor
+        var visible = true
+        val seen = HashSet<String>()
+        while (cur.isNotEmpty() && seen.add(cur)) {
+            val folder = state.entries[cur]
+            if (folder == null) {
+                if (state.complete) visible = false
+                break
+            }
+            if (!folder.isFolder || folder.trashed || isPikoInternalFolder(folder)) {
+                visible = false
+                break
+            }
+            chain += cur
+            cur = folder.parentId
+        }
+        if (!visible) continue
+        if (chain.isEmpty() && !state.complete) chain += anchor
+        for (folderId in chain) {
+            val prev = totals[folderId] ?: (0L to 0L)
+            totals[folderId] = (prev.first + direct.first.toLong()) to (prev.second + direct.second)
+        }
+        val prevRoot = totals[""] ?: (0L to 0L)
+        totals[""] = (prevRoot.first + direct.first.toLong()) to (prevRoot.second + direct.second)
+    }
+    return totals
+}
+
+private fun buildLedgerSpaceItems(
+    ledger: AccountVaultLedger,
+    parentFolderId: String,
+    includePreviews: Boolean,
+): List<SpaceNodeItem> {
+    val proj = ledger.projection.value
+    val children = proj.childrenByParent[parentFolderId].orEmpty()
+    if (children.isEmpty()) return emptyList()
+    val previewOrder = compareByDescending<SpacePreviewBlock> { it.bytes }.thenBy { it.name }.thenBy { it.id }
+    val out = ArrayList<SpaceNodeItem>(children.size)
+    for (node in children) {
+        if (node.isFolder) {
+            val (fCount, vBytes) = proj.subtreeBytesByFolderId[node.virtualFolderId] ?: (0 to 0L)
+            val previews = if (includePreviews) {
+                buildLedgerPreviewBlocks(ledger, node.virtualFolderId, 24, previewOrder)
+            } else {
+                emptyList()
+            }
+            out += SpaceNodeItem(
+                id = node.virtualFolderId,
+                parentId = parentFolderId,
+                name = node.name,
+                isFolder = true,
+                isVaulted = true,
+                physicalBytes = 0L,
+                vaultedBytes = vBytes,
+                fileCount = fCount.toLong(),
+                durationMillis = 0L,
+                isComplete = true,
+                previewChildren = previews,
+            )
+        } else if (node.restoredFileId == null) {
+            val entry = node.toVaultEntry()
+            val durationMs = ((node.meta?.duration?.toDoubleOrNull() ?: 0.0) * 1000.0).toLong().coerceAtLeast(0L)
+            out += SpaceNodeItem(
+                id = entry.virtualId,
+                parentId = parentFolderId,
+                name = node.name,
+                isFolder = false,
+                isVaulted = true,
+                physicalBytes = 0L,
+                vaultedBytes = node.size,
+                fileCount = 1L,
+                durationMillis = durationMs,
+                isComplete = true,
+            )
+        }
+    }
+    return out
+}
+
+private fun buildLedgerPreviewBlocks(
+    ledger: AccountVaultLedger,
+    folderId: String,
+    limit: Int,
+    order: Comparator<SpacePreviewBlock>,
+): List<SpacePreviewBlock> {
+    val proj = ledger.projection.value
+    val kids = proj.childrenByParent[folderId].orEmpty()
+    if (kids.isEmpty() || limit <= 0) return emptyList()
+    val blocks = ArrayList<SpacePreviewBlock>(kids.size)
+    for (child in kids) {
+        if (child.isFolder) {
+            val (cnt, b) = proj.subtreeBytesByFolderId[child.virtualFolderId] ?: (0 to 0L)
+            if (b > 0L) {
+                blocks += SpacePreviewBlock(
+                    id = child.virtualFolderId,
+                    name = child.name,
+                    isFolder = true,
+                    isVaulted = true,
+                    bytes = b,
+                    physicalBytes = 0L,
+                    vaultedBytes = b,
+                    fileCount = cnt.toLong(),
+                )
+            }
+        } else if (child.restoredFileId == null && child.size > 0L) {
+            blocks += SpacePreviewBlock(
+                id = child.toVaultEntry().virtualId,
+                name = child.name,
+                isFolder = false,
+                isVaulted = true,
+                bytes = child.size,
+                physicalBytes = 0L,
+                vaultedBytes = child.size,
+                fileCount = 1L,
+            )
+        }
+    }
+    return blocks.sortedWith(order).take(limit)
 }
 
 internal fun spaceFolderPreviewChildren(
@@ -226,11 +429,16 @@ internal fun spaceFolderPreviewChildren(
     folderId: String,
     includeVaulted: Boolean,
     limit: Int = 128,
+    vaultLedger: AccountVaultLedger? = null,
 ): List<SpacePreviewBlock> = index.withReadState { state ->
     if (limit <= 0) return@withReadState emptyList()
-    val subtreeStats = (state.sortProjection ?: index.sortContext()).subtreeStats
     val previewOrder = compareByDescending<SpacePreviewBlock> { it.bytes }
         .thenBy { it.name }.thenBy { it.id }
+    if (VirtualVaultLocation.isVirtualFolder(folderId)) {
+        if (!includeVaulted || vaultLedger == null) return@withReadState emptyList()
+        return@withReadState buildLedgerPreviewBlocks(vaultLedger, folderId, limit, previewOrder)
+    }
+    val subtreeStats = (state.sortProjection ?: index.sortContext()).subtreeStats
 
     fun folderPreviewOf(folder: FileStat): SpacePreviewBlock? {
         if (folder.trashed || isPikoInternalFolder(folder)) return null

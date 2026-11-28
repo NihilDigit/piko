@@ -2,12 +2,15 @@ package dev.piko.shared.state
 
 import dev.piko.shared.i18n.tr
 
+import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.VaultEdit
 import dev.piko.shared.data.VaultEdits
 import dev.piko.shared.data.VaultEntry
+import dev.piko.shared.data.VaultOp
 import dev.piko.shared.data.VaultStore
+import dev.piko.shared.data.VirtualVaultLocation
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFolder
@@ -81,7 +84,7 @@ class VaultEntryMutations(private val repository: PikoDriveRepository, private v
                 is VaultEntryEditCommand.Move -> "move"
             }
             suspend fun check() { currentCoroutineContext().ensureActive(); check(repository.currentAccount == account) }
-            fun record(folder: String, ids: Set<String>, before: List<VaultEntry>) {
+            fun record(folder: String, ids: Set<String>, before: List<VaultEntry>, restarEntries: List<VaultEntry> = emptyList()) {
                 val touched = before.filter { it.id in ids }
                 val revert: VaultEdit? = when (val command = command) {
                     is VaultEntryEditCommand.Remove -> touched.takeIf { it.isNotEmpty() }?.let(VaultEdits::add)
@@ -96,7 +99,12 @@ class VaultEntryMutations(private val repository: PikoDriveRepository, private v
                     is VaultEntryEditCommand.Move -> null
                 }
                 if (revert != null && repository.currentAccount == account) {
-                    val change = DriveChangeJournal.Change.Vault(mapOf(folder to revert), tr("已处理归档条目", "Archive items processed", "アーカイブ項目を処理しました", "보관 항목을 처리했습니다", "已處理歸檔項目"))
+                    val restarMap = if (restarEntries.isEmpty()) emptyMap() else mapOf(folder to restarEntries)
+                    val change = DriveChangeJournal.Change.Vault(
+                        reverts = mapOf(folder to revert),
+                        summary = tr("已处理归档条目", "Archive items processed", "アーカイブ項目を処理しました", "보관 항목을 처리했습니다", "已處理歸檔項目"),
+                        restarVaultByFolder = restarMap,
+                    )
                     repository.changes.record(change)
                     inverses += change.id
                 }
@@ -116,6 +124,11 @@ class VaultEntryMutations(private val repository: PikoDriveRepository, private v
                 } - already
                 if (fresh.isNotEmpty()) {
                     confirmed[folder] = already + fresh
+                    val restarEntries = if (command is VaultEntryEditCommand.Remove) {
+                        before[folder].orEmpty().filter { it.id in fresh && repository.vaultStars.isStarred(it.id) }
+                    } else {
+                        emptyList()
+                    }
                     when (val command = command) {
                         is VaultEntryEditCommand.Remove -> repository.vaultStars.unstarByEntryIds(fresh)
                         is VaultEntryEditCommand.Rename -> if (command.entryId in fresh) {
@@ -128,89 +141,299 @@ class VaultEntryMutations(private val repository: PikoDriveRepository, private v
                         }
                         is VaultEntryEditCommand.Move -> Unit
                     }
-                    record(folder, fresh, before[folder].orEmpty())
+                    record(folder, fresh, before[folder].orEmpty(), restarEntries = restarEntries)
                 }
                 val pending = ids - confirmed[folder].orEmpty()
                 if (pending.isEmpty()) {
                     remaining.remove(folder)
                 } else remaining[folder] = pending
             }
-            if (command is VaultEntryEditCommand.Move) {
-                for ((sourceFolder, ids) in command.entries) {
-                    if (sourceFolder == command.targetFolderId) {
-                        confirmed[sourceFolder] = ids
-                        remaining.remove(sourceFolder)
-                        continue
+            val ledger = repository.vaultLedger
+            if (ledger != null) {
+                val nowStamp = now()
+                val ledgerOps = ArrayList<VaultOp>()
+                val ledgerUndoOps = ArrayList<VaultOp>()
+                val ledgerConfirmedByFolder = HashMap<String, MutableMap<String, String>>() // folder -> (rawId -> nodeKey)
+                val pendingStarRenames = LinkedHashMap<String, String>()
+                val pendingStarRemovals = LinkedHashSet<String>()
+                val pendingStarMoves = LinkedHashMap<String, String>() // nodeKey -> targetFolderId
+                val restarByFolder = LinkedHashMap<String, MutableList<VaultEntry>>()
+
+                for ((folder, ids) in command.entries.toMap()) {
+                    val ledgerIdsInFolder = ids.filterTo(LinkedHashSet()) { rawId ->
+                        val nodeKey = VirtualVaultLocation.nodeIdOf(rawId) ?: rawId
+                        ledger.nodeOf(nodeKey) != null
                     }
-                    val committedSource = store.committed(sourceFolder)
-                        .logFailure(TAG, "Vault move failed to read source ${logFolder(sourceFolder)} (work=$id)")
-                        .getOrNull() ?: break
-                    check()
-                    val moving = committedSource.filter { it.id in ids && it.isArchived }
-                    if (moving.isEmpty()) {
-                        confirmed[sourceFolder] = ids
-                        remaining.remove(sourceFolder)
-                        continue
-                    }
-                    val movingIds = moving.mapTo(HashSet()) { it.id }
-                    // 先写入目标目录，再从源目录移除，避免中途网络失败导致归档引用丢失。
-                    val addWrite = store.update(command.targetFolderId, VaultEdits.add(moving))
-                    check()
-                    if (addWrite.isFailure) {
-                        addWrite.logFailure(TAG, "Vault move failed adding to ${logFolder(command.targetFolderId)} (work=$id)")
-                        break
-                    }
-                    val appliedAdd = addWrite.getOrThrow()
-                    val targetBefore = appliedAdd.before
-                    val targetAfter = appliedAdd.after
-                    val landedIds = movingIds.filterTo(HashSet()) { entryId -> targetAfter.any { it.id == entryId && it.isArchived } }
-                    if (landedIds.isEmpty()) break
-                    repository.vaultStars.moveEntries(landedIds, command.targetFolderId, expectedAccount = account)
-                    val removeWrite = store.update(sourceFolder, VaultEdits.remove(landedIds))
-                    check()
-                    if (removeWrite.isFailure) {
-                        removeWrite.logFailure(TAG, "Vault move failed removing from ${logFolder(sourceFolder)} (work=$id)")
-                        break
-                    }
-                    val sourceAfter = removeWrite.getOrThrow().after
-                    val removedIds = landedIds.filterTo(HashSet()) { entryId -> sourceAfter.none { it.id == entryId } }
-                    if (removedIds.isNotEmpty()) {
-                        confirmed[sourceFolder] = confirmed[sourceFolder].orEmpty() + removedIds
-                        val movedEntries = moving.filter { it.id in removedIds }
-                        val movedKeys = movedEntries.mapTo(HashSet()) { it.gcid to it.name }
-                        val overwrittenInTarget = targetBefore.filter { entry ->
-                            entry.id !in removedIds && (entry.gcid to entry.name) in movedKeys
+                    if (ledgerIdsInFolder.isEmpty()) continue
+                    for (rawId in ledgerIdsInFolder) {
+                        val nodeKey = VirtualVaultLocation.nodeIdOf(rawId) ?: rawId
+                        val currentNode = ledger.nodeOf(nodeKey) ?: continue
+                        when (command) {
+                            is VaultEntryEditCommand.Rename -> {
+                                if (currentNode.name != command.name) {
+                                    ledgerOps += VaultOp.RenameNode(nodeKey, command.name, nowStamp)
+                                    ledgerUndoOps += VaultOp.RenameNode(nodeKey, currentNode.name, nowStamp + 1)
+                                }
+                                ledgerConfirmedByFolder.getOrPut(folder) { LinkedHashMap() }[rawId] = nodeKey
+                                if (!currentNode.isFolder) {
+                                    pendingStarRenames[nodeKey] = command.name
+                                }
+                            }
+                            is VaultEntryEditCommand.RenameMany -> {
+                                val folderMap = command.renamesByFolder[folder].orEmpty()
+                                val targetName = folderMap[rawId] ?: folderMap[nodeKey] ?: continue
+                                if (currentNode.name != targetName) {
+                                    ledgerOps += VaultOp.RenameNode(nodeKey, targetName, nowStamp)
+                                    ledgerUndoOps += VaultOp.RenameNode(nodeKey, currentNode.name, nowStamp + 1)
+                                }
+                                ledgerConfirmedByFolder.getOrPut(folder) { LinkedHashMap() }[rawId] = nodeKey
+                                if (!currentNode.isFolder) {
+                                    pendingStarRenames[nodeKey] = targetName
+                                }
+                            }
+                            is VaultEntryEditCommand.Remove -> {
+                                val subtree = ledger.descendantSubtreeSnapshot(nodeKey)
+                                ledgerOps += VaultOp.DeleteNode(nodeKey, nowStamp)
+                                if (subtree.isNotEmpty()) {
+                                    ledgerUndoOps += VaultOp.RestoreSnapshot(subtree, nowStamp + 1)
+                                }
+                                ledgerConfirmedByFolder.getOrPut(folder) { LinkedHashMap() }[rawId] = nodeKey
+                                for (snap in subtree) {
+                                    if (!snap.isFolder) {
+                                        pendingStarRemovals += snap.nodeId
+                                        if (repository.vaultStars.isStarred(snap.nodeId)) {
+                                            ledger.nodeOf(snap.nodeId)?.toVaultEntry()?.let { ve ->
+                                                restarByFolder.getOrPut(snap.parentFolderId) { ArrayList() } += ve
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            is VaultEntryEditCommand.Move -> {
+                                // If retrying an interrupted legacy-to-virtual move where destination ledger node already landed
+                                // while sourceFolder is a physical folder, leave it for the legacy-to-virtual step to clean up source VaultStore!
+                                if (!VirtualVaultLocation.isVirtualFolder(folder) &&
+                                    VirtualVaultLocation.isVirtualFolder(command.targetFolderId) &&
+                                    currentNode.parentFolderId == command.targetFolderId &&
+                                    folder != currentNode.parentFolderId
+                                ) {
+                                    continue
+                                }
+                                if (currentNode.parentFolderId != command.targetFolderId) {
+                                    ledgerOps += VaultOp.MoveNode(nodeKey, command.targetFolderId, nowStamp)
+                                    ledgerUndoOps += VaultOp.MoveNode(nodeKey, currentNode.parentFolderId, nowStamp + 1)
+                                }
+                                ledgerConfirmedByFolder.getOrPut(folder) { LinkedHashMap() }[rawId] = nodeKey
+                                if (!currentNode.isFolder) {
+                                    pendingStarMoves[nodeKey] = command.targetFolderId
+                                }
+                            }
                         }
-                        val targetRevert: VaultEdit = if (overwrittenInTarget.isEmpty()) {
-                            VaultEdits.remove(removedIds)
-                        } else {
-                            { current -> VaultEdits.add(overwrittenInTarget)(VaultEdits.remove(removedIds)(current)) }
+                    }
+                }
+
+                if (ledgerOps.isNotEmpty()) {
+                    val applied = ledger.applyLocalOpsWithReport(account, ledgerOps, nowStamp)
+                    if (applied.isSuccess) {
+                        val report = applied.getOrThrow()
+                        val skippedNodes = report.skippedMoveIds
+                        for ((f, rawToNode) in ledgerConfirmedByFolder) {
+                            val acceptedRawIds = rawToNode.filterValues { it !in skippedNodes }.keys
+                            if (acceptedRawIds.isNotEmpty()) {
+                                confirmed[f] = confirmed[f].orEmpty() + acceptedRawIds
+                                val left = remaining[f].orEmpty() - acceptedRawIds
+                                if (left.isEmpty()) remaining.remove(f) else remaining[f] = left
+                            }
                         }
-                        if (repository.currentAccount == account) {
+                        if (pendingStarRenames.isNotEmpty()) {
+                            repository.vaultStars.renameEntries(pendingStarRenames, expectedAccount = account)
+                        }
+                        if (pendingStarRemovals.isNotEmpty()) {
+                            repository.vaultStars.unstarByEntryIds(pendingStarRemovals)
+                        }
+                        for ((movedKey, targetFolder) in pendingStarMoves) {
+                            if (movedKey !in skippedNodes) {
+                                repository.vaultStars.moveEntries(setOf(movedKey), targetFolder, expectedAccount = account)
+                            }
+                        }
+                        val effectiveUndoOps = ledgerUndoOps.filterNot { undoOp ->
+                            undoOp is VaultOp.MoveNode && undoOp.nodeId in skippedNodes
+                        }
+                        if (effectiveUndoOps.isNotEmpty() && repository.currentAccount == account) {
                             val change = DriveChangeJournal.Change.Vault(
                                 reverts = emptyMap(),
                                 summary = command.title,
-                                orderedReverts = listOf(
-                                    sourceFolder to VaultEdits.add(movedEntries),
-                                    command.targetFolderId to targetRevert,
-                                ),
+                                ledgerRevertOps = effectiveUndoOps,
+                                restarVaultByFolder = restarByFolder,
                             )
                             repository.changes.record(change)
                             inverses += change.id
                         }
-                    }
-                    val missingInSource = ids - movingIds
-                    val doneInSource = confirmed[sourceFolder].orEmpty() + missingInSource
-                    val pendingInSource = ids - doneInSource
-                    if (pendingInSource.isEmpty()) {
-                        remaining.remove(sourceFolder)
+                        if (report.touchedFolders.isNotEmpty()) {
+                            repository.applyChange(DriveChange.ContentsChanged(report.touchedFolders))
+                        }
                     } else {
-                        remaining[sourceFolder] = pendingInSource
-                        break
+                        applied.logFailure(TAG, "Ledger mutation $opName failed (work=$id)")
+                    }
+                } else if (ledgerConfirmedByFolder.isNotEmpty()) {
+                    for ((f, rawToNode) in ledgerConfirmedByFolder) {
+                        val doneSet = rawToNode.keys
+                        confirmed[f] = confirmed[f].orEmpty() + doneSet
+                        val left = remaining[f].orEmpty() - doneSet
+                        if (left.isEmpty()) remaining.remove(f) else remaining[f] = left
                     }
                 }
-            } else {
-                for ((folder, ids) in command.entries) {
+            }
+
+            val remainingPhysicalFolders = remaining.filterKeys { !VirtualVaultLocation.isVirtualFolder(it) }
+            if (remainingPhysicalFolders.isNotEmpty() && command is VaultEntryEditCommand.Move) {
+                if (VirtualVaultLocation.isVirtualFolder(command.targetFolderId)) {
+                    if (ledger != null && ledger.hasVirtualFolder(command.targetFolderId)) {
+                        // Move legacy VaultStore entries into a virtual folder: insert into ledger first, then remove from source VaultStore
+                        for ((sourceFolder, ids) in remainingPhysicalFolders) {
+                            val committedSource = store.committed(sourceFolder)
+                                .logFailure(TAG, "Vault move failed to read source ${logFolder(sourceFolder)} (work=$id)")
+                                .getOrNull() ?: break
+                            check()
+                            val alreadyInTarget = ids.filterTo(HashSet()) { eid ->
+                                ledger.nodeOf(eid)?.let { !it.isFolder && it.parentFolderId == command.targetFolderId } == true
+                            }
+                            val moving = committedSource.filter { it.id in ids && it.isArchived }
+                            if (moving.isEmpty() && alreadyInTarget.isEmpty()) {
+                                confirmed[sourceFolder] = confirmed[sourceFolder].orEmpty() + ids
+                                remaining.remove(sourceFolder)
+                                continue
+                            }
+                            val toInsert = moving.filterNot { it.id in alreadyInTarget }
+                            if (toInsert.isNotEmpty()) {
+                                val upsertOps = toInsert.map { entry ->
+                                    VaultOp.UpsertFile(
+                                        nodeId = entry.id,
+                                        parentFolderId = command.targetFolderId,
+                                        name = entry.name,
+                                        size = entry.size,
+                                        gcid = entry.gcid,
+                                        source = entry.source,
+                                        meta = dev.piko.shared.data.VaultMediaMeta.fromVaultEntry(entry).takeUnless { it.isEmpty },
+                                        createdAt = entry.addedAt,
+                                    )
+                                }
+                                if (ledger.applyLocalOps(account, upsertOps).isFailure) break
+                            }
+                            val landedIds = moving.mapTo(HashSet()) { it.id } + alreadyInTarget
+                            val removeWrite = store.update(sourceFolder, VaultEdits.remove(landedIds))
+                            check()
+                            if (removeWrite.isFailure) {
+                                removeWrite.logFailure(TAG, "Vault legacy-to-virtual move failed removing from ${logFolder(sourceFolder)} (work=$id)")
+                                break
+                            }
+                            val sourceAfter = removeWrite.getOrThrow().after
+                            val removedIds = landedIds.filterTo(HashSet()) { eid -> sourceAfter.none { it.id == eid } }
+                            if (removedIds.isNotEmpty()) {
+                                repository.vaultStars.moveEntries(removedIds, command.targetFolderId, expectedAccount = account)
+                                confirmed[sourceFolder] = confirmed[sourceFolder].orEmpty() + removedIds
+                                val movedEntries = moving.filter { it.id in removedIds }
+                                if (movedEntries.isNotEmpty() && repository.currentAccount == account) {
+                                    val undoStamp = now() + 1
+                                    val change = DriveChangeJournal.Change.Vault(
+                                        reverts = emptyMap(),
+                                        summary = command.title,
+                                        orderedReverts = listOf(sourceFolder to VaultEdits.add(movedEntries)),
+                                        ledgerRevertOps = movedEntries.map { VaultOp.DeleteNode(it.id, undoStamp) },
+                                    )
+                                    repository.changes.record(change)
+                                    inverses += change.id
+                                }
+                            }
+                            val missingInSource = ids - landedIds
+                            val doneInSource = confirmed[sourceFolder].orEmpty() + missingInSource
+                            val pendingInSource = ids - doneInSource
+                            if (pendingInSource.isEmpty()) {
+                                remaining.remove(sourceFolder)
+                            } else {
+                                remaining[sourceFolder] = pendingInSource
+                                break
+                            }
+                            repository.applyChange(DriveChange.ContentsChanged(setOf(sourceFolder, command.targetFolderId)))
+                        }
+                    }
+                } else {
+                    for ((sourceFolder, ids) in remainingPhysicalFolders) {
+                        if (sourceFolder == command.targetFolderId) {
+                            confirmed[sourceFolder] = ids
+                            remaining.remove(sourceFolder)
+                            continue
+                        }
+                        val committedSource = store.committed(sourceFolder)
+                            .logFailure(TAG, "Vault move failed to read source ${logFolder(sourceFolder)} (work=$id)")
+                            .getOrNull() ?: break
+                        check()
+                        val moving = committedSource.filter { it.id in ids && it.isArchived }
+                        if (moving.isEmpty()) {
+                            confirmed[sourceFolder] = ids
+                            remaining.remove(sourceFolder)
+                            continue
+                        }
+                        val movingIds = moving.mapTo(HashSet()) { it.id }
+                        // 先写入目标目录，再从源目录移除，避免中途网络失败导致归档引用丢失。
+                        val addWrite = store.update(command.targetFolderId, VaultEdits.add(moving))
+                        check()
+                        if (addWrite.isFailure) {
+                            addWrite.logFailure(TAG, "Vault move failed adding to ${logFolder(command.targetFolderId)} (work=$id)")
+                            break
+                        }
+                        val appliedAdd = addWrite.getOrThrow()
+                        val targetBefore = appliedAdd.before
+                        val targetAfter = appliedAdd.after
+                        val landedIds = movingIds.filterTo(HashSet()) { entryId -> targetAfter.any { it.id == entryId && it.isArchived } }
+                        if (landedIds.isEmpty()) break
+                        val removeWrite = store.update(sourceFolder, VaultEdits.remove(landedIds))
+                        check()
+                        if (removeWrite.isFailure) {
+                            removeWrite.logFailure(TAG, "Vault move failed removing from ${logFolder(sourceFolder)} (work=$id)")
+                            break
+                        }
+                        val sourceAfter = removeWrite.getOrThrow().after
+                        val removedIds = landedIds.filterTo(HashSet()) { entryId -> sourceAfter.none { it.id == entryId } }
+                        if (removedIds.isNotEmpty()) {
+                            repository.vaultStars.moveEntries(removedIds, command.targetFolderId, expectedAccount = account)
+                            confirmed[sourceFolder] = confirmed[sourceFolder].orEmpty() + removedIds
+                            val movedEntries = moving.filter { it.id in removedIds }
+                            val movedKeys = movedEntries.mapTo(HashSet()) { it.gcid to it.name }
+                            val overwrittenInTarget = targetBefore.filter { entry ->
+                                entry.id !in removedIds && (entry.gcid to entry.name) in movedKeys
+                            }
+                            val targetRevert: VaultEdit = if (overwrittenInTarget.isEmpty()) {
+                                VaultEdits.remove(removedIds)
+                            } else {
+                                { current -> VaultEdits.add(overwrittenInTarget)(VaultEdits.remove(removedIds)(current)) }
+                            }
+                            if (repository.currentAccount == account) {
+                                val change = DriveChangeJournal.Change.Vault(
+                                    reverts = emptyMap(),
+                                    summary = command.title,
+                                    orderedReverts = listOf(
+                                        sourceFolder to VaultEdits.add(movedEntries),
+                                        command.targetFolderId to targetRevert,
+                                    ),
+                                )
+                                repository.changes.record(change)
+                                inverses += change.id
+                            }
+                        }
+                        val missingInSource = ids - movingIds
+                        val doneInSource = confirmed[sourceFolder].orEmpty() + missingInSource
+                        val pendingInSource = ids - doneInSource
+                        if (pendingInSource.isEmpty()) {
+                            remaining.remove(sourceFolder)
+                        } else {
+                            remaining[sourceFolder] = pendingInSource
+                            break
+                        }
+                    }
+                }
+            } else if (remainingPhysicalFolders.isNotEmpty()) {
+                for ((folder, ids) in remainingPhysicalFolders) {
                     val edit = when (val command = command) {
                         is VaultEntryEditCommand.Remove -> VaultEdits.remove(ids)
                         is VaultEntryEditCommand.Rename -> VaultEdits.rename(command.entryId, command.name)

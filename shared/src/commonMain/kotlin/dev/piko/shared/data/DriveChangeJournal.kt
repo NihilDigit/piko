@@ -76,14 +76,16 @@ class DriveChangeJournal internal constructor(
             override val summary: String,
             override val id: Long,
             val vaultReverts: Map<String, VaultEdit> = emptyMap(),
+            val ledgerRevertOps: List<VaultOp> = emptyList(),
         ) : Change {
             constructor(
                 renames: List<Renamed>,
                 summary: String,
                 vaultReverts: Map<String, VaultEdit> = emptyMap(),
-            ) : this(renames, summary, nextChangeId(), vaultReverts)
+                ledgerRevertOps: List<VaultOp> = emptyList(),
+            ) : this(renames, summary, nextChangeId(), vaultReverts, ledgerRevertOps)
 
-            internal fun appended(more: List<Renamed>) = Rename(renames + more, summary, id, vaultReverts)
+            internal fun appended(more: List<Renamed>) = Rename(renames + more, summary, id, vaultReverts, ledgerRevertOps)
         }
 
         /**
@@ -108,6 +110,10 @@ class DriveChangeJournal internal constructor(
             val trashByFolder: Map<String, List<String>> = emptyMap(),
             /** 必须严格按顺序执行的清单回退（例如跨目录移动归档条目撤销时，先写回源目录再从目标目录移除）。 */
             val orderedReverts: List<Pair<String, VaultEdit>> = emptyList(),
+            /** 引用账本（AccountVaultLedger）上的反向操作步骤。 */
+            val ledgerRevertOps: List<VaultOp> = emptyList(),
+            /** 撤销删除或恢复归档时需同步还原星标的归档条目。 */
+            val restarVaultByFolder: Map<String, List<VaultEntry>> = emptyMap(),
         ) : Change {
             override val id: Long = nextChangeId()
         }
@@ -336,6 +342,19 @@ class DriveChangeJournal internal constructor(
                         }.awaitAll()
                     }
                 }
+                if (change.ledgerRevertOps.isNotEmpty()) {
+                    val ledger = driveRepo.vaultLedger
+                        ?: error("Account vault ledger unavailable for rename undo")
+                    val touched = ledger.applyLocalOps(access.account, change.ledgerRevertOps).getOrThrow()
+                    for (op in change.ledgerRevertOps) {
+                        if (op is VaultOp.RenameNode) {
+                            driveRepo.vaultStars.renameEntry(op.nodeId, op.newName, expectedAccount = access.account)
+                        }
+                    }
+                    if (touched.isNotEmpty()) {
+                        access.publish(DriveChange.ContentsChanged(touched))
+                    }
+                }
             }
             is Change.Vault -> runSuspendCatching {
                 val allUntrashIds = buildList {
@@ -462,12 +481,27 @@ class DriveChangeJournal internal constructor(
                 }
                 recreateFailure?.let { throw it }
                 check(missing == 0) { tr("$missing 个文件在云端不可用，已保留在归档中", "${enCount(missing, "file", "files")} unavailable in the cloud; kept in archive", "$missing ファイルはクラウドで利用できないため、アーカイブに保持しました", "파일 ${missing}개를 클라우드에서 사용할 수 없어 보관 상태로 유지했습니다", "$missing 個檔案在雲端無法使用，已保留於歸檔中") }
+                if (change.ledgerRevertOps.isNotEmpty()) {
+                    val ledger = driveRepo.vaultLedger
+                        ?: error("Account vault ledger unavailable for undo")
+                    val touched = ledger.applyLocalOps(access.account, change.ledgerRevertOps).getOrThrow()
+                    for (op in change.ledgerRevertOps) {
+                        when (op) {
+                            is VaultOp.RenameNode -> driveRepo.vaultStars.renameEntry(op.nodeId, op.newName, expectedAccount = access.account)
+                            is VaultOp.MoveNode -> driveRepo.vaultStars.moveEntries(setOf(op.nodeId), op.newParentFolderId, expectedAccount = access.account)
+                            else -> Unit
+                        }
+                    }
+                    if (touched.isNotEmpty()) {
+                        access.publish(DriveChange.ContentsChanged(touched))
+                    }
+                }
                 if (change.orderedReverts.isNotEmpty()) {
                     for ((folderId, revert) in change.orderedReverts) {
                         access.vault.update(folderId, revert).getOrThrow()
                     }
                 }
-                val standaloneReverts = change.reverts.filterKeys { it !in change.untrashByFolder }
+                val standaloneReverts = change.reverts.filterKeys { it !in change.untrashByFolder && !VirtualVaultLocation.isVirtualFolder(it) }
                 if (standaloneReverts.isNotEmpty()) {
                     coroutineScope {
                         val folderSlots = Semaphore(12)
@@ -486,11 +520,19 @@ class DriveChangeJournal internal constructor(
                         }.awaitAll()
                     }
                 }
+                if (change.restarVaultByFolder.isNotEmpty()) {
+                    for ((folderId, entries) in change.restarVaultByFolder) {
+                        if (entries.isNotEmpty()) {
+                            access.starVaultEntries(folderId, entries)
+                        }
+                    }
+                }
                 val handledTrashIds = change.trashByFolder.filterKeys { it in standaloneReverts }.values.flatten().toSet()
                 val legacyTrash = change.trashOnRevert.filterNot { it in handledTrashIds }
-                if (legacyTrash.isNotEmpty() && standaloneReverts.isNotEmpty()) {
+                if (legacyTrash.isNotEmpty() && (standaloneReverts.isNotEmpty() || change.ledgerRevertOps.isNotEmpty())) {
+                    val parentHint = standaloneReverts.keys.ifEmpty { null }
                     access.trash(legacyTrash)
-                        .onSuccess { access.publish(DriveChange.Trashed(legacyTrash, standaloneReverts.keys)) }
+                        .onSuccess { access.publish(DriveChange.Trashed(legacyTrash, parentHint)) }
                         .getOrThrow()
                 }
             }

@@ -63,6 +63,7 @@ data class UploadTask(
     val batchParentId: String = "",
     val batchParentName: String = "",
     val batchIsFolder: Boolean = false,
+    val prepEntryKey: String? = null,
 ) {
     val progress: Float
         get() = if (size > 0) (processedBytes.toFloat() / size).coerceIn(0f, 1f) else 0f

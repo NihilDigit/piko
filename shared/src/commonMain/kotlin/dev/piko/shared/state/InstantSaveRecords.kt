@@ -60,6 +60,24 @@ class InstantSaveRecords(
     val attempts: StateFlow<List<InstantSaveAttempt>> = _attempts.asStateFlow()
     private val _outcomes = MutableSharedFlow<InstantSaveAttemptOutcome>(extraBufferCapacity = 16)
     val outcomes = _outcomes.asSharedFlow()
+    private val activeRunnerLock = dev.piko.shared.util.PikoLock()
+    private val activeRunners = HashSet<String>()
+
+    fun tryClaimExecution(account: String, id: String): Boolean =
+        dev.piko.shared.util.withPikoLock(activeRunnerLock) {
+            activeRunners.add("$account|$id")
+        }
+
+    fun releaseExecution(account: String, id: String) {
+        dev.piko.shared.util.withPikoLock(activeRunnerLock) {
+            activeRunners.remove("$account|$id")
+        }
+    }
+
+    fun isExecutionActive(account: String, id: String): Boolean =
+        dev.piko.shared.util.withPikoLock(activeRunnerLock) {
+            "$account|$id" in activeRunners
+        }
 
     fun beginAttempt(account: String, title: String, target: dev.piko.shared.data.PikoPathBreadcrumb,
         files: List<io.github.nihildigit.pikpak.ResolvedFile>, id: String? = null, containerName: String? = null,
@@ -155,7 +173,12 @@ class InstantSaveRecords(
         }
     }
 
-    fun clearAttempts(account: String) { _attempts.update { all -> all.filterNot { it.account == account } } }
+    fun clearAttempts(account: String) {
+        dev.piko.shared.util.withPikoLock(activeRunnerLock) {
+            activeRunners.removeAll { it.startsWith("$account|") }
+        }
+        _attempts.update { all -> all.filterNot { it.account == account } }
+    }
 
     fun observeContainer(id: String, account: String, folderId: String) {
         if (clientProvider.currentClient.value?.account != account || folderId.isBlank()) return

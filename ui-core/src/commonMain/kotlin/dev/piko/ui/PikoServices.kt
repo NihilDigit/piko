@@ -59,8 +59,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.concurrent.Volatile
 import kotlin.time.Clock
 
@@ -83,6 +85,7 @@ class PikoServices(
     val metaTube: MetaTubeService? = null,
     localFileAccess: (((String) -> Unit) -> dev.piko.shared.data.LocalFileAccess)? = null,
     treeDatabaseFactory: PikoTreeDatabaseFactory? = null,
+    durableDatabaseFactory: PikoTreeDatabaseFactory? = null,
     val storyboardCache: dev.piko.shared.media.storyboard.StoryboardCache = dev.piko.shared.media.storyboard.InMemoryStoryboardCache(),
     cacheManager: dev.piko.shared.media.cache.PikoCacheManager? = null,
 ) {
@@ -113,7 +116,13 @@ class PikoServices(
     val preferences: PikoUserPreferences =
         cacheStore?.let { AccountScopedPreferences(platformPreferences, clientManager, it) } ?: platformPreferences
 
-    val driveRepository: DriveRepository = DriveRepository(clientManager, preferences, cacheStore, treeDatabaseFactory = treeDatabaseFactory).also {
+    val driveRepository: DriveRepository = DriveRepository(
+        clientManager,
+        preferences,
+        cacheStore,
+        treeDatabaseFactory = treeDatabaseFactory,
+        durableDatabaseFactory = durableDatabaseFactory,
+    ).also {
         val repository = it
         it.localMounts.access = localFileAccess?.invoke { folder ->
             repository.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(setOf(folder)))
@@ -201,6 +210,8 @@ class PikoServices(
         .also { it.start() }
     private val sourceLedgerSync = SourceLedgerSync(clientManager, driveRepository, backgroundScope, preferences.settingsSyncFlow)
         .also { it.start() }
+    val vaultOpsSync = dev.piko.shared.sync.VaultOpsSync(clientManager, driveRepository, backgroundScope, preferences.settingsSyncFlow)
+        .also { it.start() }
     val pinnedTabSync = PinnedTabSync(clientManager, driveRepository, driveWorkspace.pinnedTabs, backgroundScope, preferences.settingsSyncFlow)
         .also { it.start() }
 
@@ -208,13 +219,14 @@ class PikoServices(
     @Volatile
     private var lastForegroundSyncMs = Clock.System.now().toEpochMilliseconds()
 
-    /** 设置页「立即同步」：一并拉取与推送偏好设置、固定标签、归档树、归档星标与来源账本。 */
+    /** 设置页「立即同步」：一并拉取与推送偏好设置、固定标签、归档树、归档星标、引用账本与来源账本。 */
     suspend fun syncAllNow() {
         kotlinx.coroutines.coroutineScope {
             launch { settingsSync.syncNow() }
             launch { pinnedTabSync.syncNow() }
             launch { vaultTreeSync.syncNow() }
             launch { vaultStarSync.syncNow() }
+            launch { vaultOpsSync.syncNow() }
             launch { sourceLedgerSync.syncNow() }
             launch { archivePasswordSync?.syncNow() }
             launch { metaTubeSync?.syncNow() }
@@ -239,9 +251,10 @@ class PikoServices(
         backgroundScope.launch {
             workloadGovernor.awaitBackgroundSyncAllowed()
             workloadGovernor.awaitNoUrgentPlayback()
-            if (clientManager.currentClient.value != null) {
+            if (clientManager.currentClient.value != null && preferences.settingsSyncFlow.first()) {
                 io.github.nihildigit.pikpak.withApiPriority(io.github.nihildigit.pikpak.ApiRequestPriority.BACKGROUND) {
                     pinnedTabSync.syncNow()
+                    vaultOpsSync.syncIfEnabled()
                     settingsSync.syncNow()
                     metaTubeSync?.syncNow()
                 }
@@ -489,7 +502,7 @@ class PikoServices(
             instantSession.clear()
             duplicateSessions.toList().forEach { it.end() }
             duplicateSessions.clear()
-            archiveExtractSession.clear()
+            archiveExtractSession.clear(left)
             archiveBrowser.clear()
             segmentSession.end()
             clipFeedSession.endAccount(left)
@@ -501,13 +514,34 @@ class PikoServices(
             val cleanedAccounts = mutableSetOf<String>()
             clientManager.currentClient.collectLatest { client ->
                 if (client == null) return@collectLatest
-                // 上次进程被杀时面板来不及清 Piko-Temp，登录后补上。每个账号只清一次：断线重连
-                // 也会换一个新的 client，那时面板可能正开着，预览的文件还要用
-                if (cleanedAccounts.add(client.account)) {
-                    previewTempFolder.clear(client).logFailure(TAG, "Failed to clean up Piko-Temp after sign-in")
+                coroutineScope {
+                    // 等目标账号的持久化库与各账号钩子初始化完毕后再触发恢复，避免换号瞬间读到上一账号或空状态
+                    driveRepository.durableStore?.readyState?.first { it?.account == client.account }
+                    // 触发惰性会话实例化，使未进入任务页/网盘页时服务端解压恢复亦能随账号就绪启动
+                    withContext(Dispatchers.Main.immediate) { archiveExtractSession }
+                    val pendingInstantJobs = driveRepository.workJournal
+                        ?.loadInProgressInstantSaveJobs(client.account)
+                        .orEmpty()
+                    val hasReusablePreviews = pendingInstantJobs.any { (_, payload) -> payload.reusableIds.isNotEmpty() }
+                    if (!hasReusablePreviews && cleanedAccounts.add(client.account)) {
+                        previewTempFolder.clear(client).logFailure(TAG, "Failed to clean up Piko-Temp after sign-in")
+                    }
+                    launch {
+                        runCatching {
+                            dev.piko.shared.state.InstantSaveRecovery.resumeInProgress(
+                                client = client,
+                                driveRepo = driveRepository,
+                                instantRepo = instantMagnetRepository,
+                                saveRecords = instantSaveRecords,
+                            )
+                            if (hasReusablePreviews && cleanedAccounts.add(client.account)) {
+                                previewTempFolder.clear(client).logFailure(TAG, "Failed to clean up Piko-Temp after instant-save recovery")
+                            }
+                        }.logFailure(TAG, "Failed to resume durable instant-save jobs")
+                    }
+                    // 换号或退出登录时 collectLatest 取消它，换成新账号的记录重来
+                    offlinePacks.run(client.account)
                 }
-                // 换号或退出登录时 collectLatest 取消它，换成新账号的记录重来
-                offlinePacks.run(client.account)
             }
         }
     }

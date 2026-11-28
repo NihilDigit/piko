@@ -6,12 +6,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import dev.piko.shared.data.OfflinePackTracker
 import dev.piko.shared.data.OfflinePackStage
-import dev.piko.shared.state.ArchiveCompletion
 import dev.piko.shared.state.ArchiveExtractSession
-import dev.piko.shared.state.ArchiveJobStatus
 import dev.piko.shared.state.InstantSaveRecords
 import dev.piko.shared.state.OfflineSubmitSession
-import dev.piko.shared.state.OfflineSubmitStatus
 import dev.piko.shared.upload.PikoUploadCoordinator
 import dev.piko.shared.upload.UploadStatus
 import kotlinx.coroutines.flow.Flow
@@ -36,7 +33,7 @@ class ReceivingActivity(private val instant: InstantSaveRecords, private val upl
         instant.attempts.map { Unit }, uploads.preparations.map { Unit }, uploads.tasks.map { Unit },
         offline?.works?.map { Unit } ?: emptyFlow(), packs?.jobs?.map { Unit } ?: emptyFlow(),
         offline?.receivingTargets?.map { Unit } ?: emptyFlow(),
-        snapshotFlow { extracts?.let { it.jobs + it.completedJobs } }.map { Unit },
+        snapshotFlow { extracts?.jobs.orEmpty() }.map { Unit },
     )
     init { scope?.launch { changes.collect { revision++ } } }
 

@@ -11,6 +11,8 @@ import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.VaultEdit
 import dev.piko.shared.data.VaultEdits
 import dev.piko.shared.data.VaultEntry
+import dev.piko.shared.data.VaultOp
+import dev.piko.shared.data.VirtualVaultLocation
 import io.github.nihildigit.pikpak.PikPakException
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logEntry
@@ -58,17 +60,23 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
     /** 已确认写入的归档清单批量改名反向编辑，按目录归并。 */
     val vaultReverts = linkedMapOf<String, VaultEdit>()
 
+    /** 已确认写入的引用账本（AccountVaultLedger）批量改名反向操作。 */
+    val ledgerRevertOps = mutableListOf<VaultOp>()
+
     private enum class StepPhase(val label: String) {
         SWAP("swap"),
         FINAL("final"),
         ROLLBACK("rollback"),
     }
 
+    private fun isLedgerOrVaultId(id: String): Boolean =
+        VaultEntry.isVaulted(id) || VirtualVaultLocation.isVirtualFolder(id)
+
     suspend fun execute(plan: RenamePlan) {
         val targets = plan.rows.associateBy { it.source.id }
-        val vaultedRows = plan.rows.filter { it.isChanged && it.problem == null && VaultEntry.isVaulted(it.source.id) }
+        val vaultedRows = plan.rows.filter { it.isChanged && it.problem == null && isLedgerOrVaultId(it.source.id) }
         val realWaves = plan.waves.mapNotNull { wave ->
-            wave.steps.filterNot { VaultEntry.isVaulted(it.source.id) }.takeIf { it.isNotEmpty() }?.let(::RenameWave)
+            wave.steps.filterNot { isLedgerOrVaultId(it.source.id) }.takeIf { it.isNotEmpty() }?.let(::RenameWave)
         }
         total = plan.changeCount
         processed = 0
@@ -77,6 +85,7 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
         failures.clear()
         renamed.clear()
         vaultReverts.clear()
+        ledgerRevertOps.clear()
         val failedIds = mutableSetOf<String>()
         val completedIds = mutableSetOf<String>()
         val occupied = mutableSetOf<Pair<String, String>>()
@@ -175,8 +184,77 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
             if (vaultedRows.isNotEmpty()) {
                 val store = access?.vault ?: driveRepo.vault
                 val ownerAccount = access?.account ?: driveRepo.currentAccount
-                val vaultedByFolder = vaultedRows.groupBy { it.source.parentId }
+                val ledger = access?.vaultLedger ?: driveRepo.vaultLedger
+                val (ledgerRows, legacyStoreRows) = if (ledger != null && ownerAccount != null) {
+                    vaultedRows.partition { row ->
+                        val nodeKey = VirtualVaultLocation.nodeIdOf(row.source.id)
+                            ?: VaultEntry.entryIdOf(row.source.id)
+                            ?: row.source.id
+                        ledger.nodeOf(nodeKey) != null || VirtualVaultLocation.isVirtualFolder(row.source.id)
+                    }
+                } else {
+                    emptyList<RenameRow>() to vaultedRows
+                }
+
+                if (ledger != null && ownerAccount != null && ledgerRows.isNotEmpty()) {
+                    val nowStamp = kotlin.time.Clock.System.now().toEpochMilliseconds()
+                    val ops = ArrayList<VaultOp>(ledgerRows.size)
+                    val undoOps = ArrayList<VaultOp>(ledgerRows.size)
+                    val validRows = ArrayList<Pair<String, RenameRow>>(ledgerRows.size)
+                    val confirmedStars = LinkedHashMap<String, String>()
+                    for (row in ledgerRows) {
+                        val nodeKey = VirtualVaultLocation.nodeIdOf(row.source.id)
+                            ?: VaultEntry.entryIdOf(row.source.id)
+                        val node = nodeKey?.let(ledger::nodeOf)
+                        if (nodeKey == null || node == null) {
+                            failures += row
+                            processed++
+                            continue
+                        }
+                        if (node.name != row.newName) {
+                            ops += VaultOp.RenameNode(nodeKey, row.newName, nowStamp)
+                            undoOps += VaultOp.RenameNode(nodeKey, node.name, nowStamp + 1)
+                        }
+                        if (!node.isFolder) {
+                            confirmedStars[nodeKey] = row.newName
+                        }
+                        validRows += nodeKey to row
+                    }
+                    if (ops.isNotEmpty()) {
+                        val applied = ledger.applyLocalOps(ownerAccount, ops, nowStamp)
+                        if (applied.isSuccess) {
+                            validRows.forEach { (_, row) ->
+                                completedIds += row.source.id
+                                processed++
+                            }
+                            if (confirmedStars.isNotEmpty()) {
+                                driveRepo.vaultStars.renameEntries(confirmedStars, expectedAccount = ownerAccount)
+                            }
+                            ledgerRevertOps += undoOps
+                            val touched = applied.getOrThrow()
+                            if (touched.isNotEmpty()) {
+                                driveRepo.applyChange(DriveChange.ContentsChanged(touched))
+                            }
+                        } else {
+                            applied.logFailure(tag, "Ledger batch rename failed (items=${validRows.size})")
+                            failures += validRows.map { it.second }
+                            processed += validRows.size
+                        }
+                    } else {
+                        validRows.forEach { (_, row) ->
+                            completedIds += row.source.id
+                            processed++
+                        }
+                    }
+                }
+
+                val vaultedByFolder = legacyStoreRows.groupBy { it.source.parentId }
                 for ((folderId, folderRows) in vaultedByFolder) {
+                    if (VirtualVaultLocation.isVirtualFolder(folderId)) {
+                        failures += folderRows
+                        processed += folderRows.size
+                        continue
+                    }
                     val rowsByEntryId = LinkedHashMap<String, RenameRow>(folderRows.size)
                     val targetNames = LinkedHashMap<String, String>(folderRows.size)
                     val invalidRows = ArrayList<RenameRow>()
@@ -229,13 +307,13 @@ class RenameRun(private val driveRepo: PikoDriveRepository, private val tag: Str
         } finally {
             val strandedSwaps = currentNames.count { (id, loc) ->
                 val row = targets[id]
-                row != null && !VaultEntry.isVaulted(id) && loc.second != row.source.name && loc.second != row.newName
+                row != null && !isLedgerOrVaultId(id) && loc.second != row.source.name && loc.second != row.newName
             }
             if (strandedSwaps > 0) {
                 PikoLog.w(tag, "Rename run ended with $strandedSwaps item(s) still holding temporary swap names")
             }
             if (access == null && renamed.isNotEmpty()) {
-                val touched = plan.rows.filterNot { VaultEntry.isVaulted(it.source.id) }.mapTo(HashSet()) { it.source.parentId }
+                val touched = plan.rows.filterNot { isLedgerOrVaultId(it.source.id) }.mapTo(HashSet()) { it.source.parentId }
                 if (touched.isNotEmpty()) {
                     if (failures.isEmpty()) {
                         driveRepo.notifyFoldersRefreshed(touched)

@@ -3,6 +3,7 @@ package dev.piko.shared.data
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
 import dev.piko.shared.log.logFolder
+import kotlin.time.Clock
 import kotlinx.serialization.SerializationException
 import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
@@ -78,8 +79,11 @@ data class VaultEntry(
     val mimeType: String? = null,
     /** 原文件实例的最初存入时间；旧清单回退到 addedAt。 */
     val createdAt: Long? = null,
+    /** 最近一次修改（改名、取回关联变更）时刻；旧清单为空时回退到 [addedAt]。 */
+    val updatedAt: Long? = null,
 ) {
     val isArchived: Boolean get() = restoredFileId == null
+    val effectiveUpdatedAt: Long get() = updatedAt ?: addedAt
 
     fun matches(file: FileStat): Boolean = !file.isFolder &&
         file.hash.equals(gcid, ignoreCase = true) && file.sizeBytes == size &&
@@ -205,24 +209,55 @@ object VaultEdits {
     }
 
     fun rename(id: String, name: String): VaultEdit = { current ->
-        current.map { if (it.id == id) it.copy(name = name) else it }
+        val nowMs = Clock.System.now().toEpochMilliseconds()
+        current.map {
+            if (it.id == id && it.name != name) {
+                it.copy(name = name, updatedAt = maxOf(it.effectiveUpdatedAt + 1L, nowMs))
+            } else {
+                it
+            }
+        }
     }
 
     fun renameAll(renames: Map<String, String>): VaultEdit = { current ->
         if (renames.isEmpty()) current
-        else current.map { entry -> renames[entry.id]?.let { entry.copy(name = it) } ?: entry }
+        else {
+            val nowMs = Clock.System.now().toEpochMilliseconds()
+            current.map { entry ->
+                val targetName = renames[entry.id]
+                if (targetName != null && targetName != entry.name) {
+                    entry.copy(name = targetName, updatedAt = maxOf(entry.effectiveUpdatedAt + 1L, nowMs))
+                } else {
+                    entry
+                }
+            }
+        }
     }
 
     fun remove(ids: Set<String>): VaultEdit = { current -> current.filterNot { it.id in ids } }
 
     /** 取回后保留来源及 CID，同时跟随真实文件的新名称。 */
     fun restore(files: Map<String, FileStat>): VaultEdit = { current ->
-        current.map { entry -> files[entry.id]?.let { entry.copy(name = it.name, restoredFileId = it.id) } ?: entry }
+        val nowMs = Clock.System.now().toEpochMilliseconds()
+        current.map { entry ->
+            files[entry.id]?.let {
+                entry.copy(
+                    name = it.name,
+                    restoredFileId = it.id,
+                    updatedAt = maxOf(entry.effectiveUpdatedAt + 1L, nowMs),
+                )
+            } ?: entry
+        }
     }
 }
 
 /** 一次改写前后的条目，撤销要用改之前的。 */
-class VaultWrite(val before: List<VaultEntry>, val after: List<VaultEntry>)
+class VaultWrite(
+    val before: List<VaultEntry>,
+    val after: List<VaultEntry>,
+    val ledgerRevertOps: List<VaultOp> = emptyList(),
+    val restarEntries: List<VaultEntry> = emptyList(),
+)
 
 /** [VaultStore] 对网盘的全部要求。测试里换成内存里的，好模拟两台设备同时写。 */
 interface VaultFolderIo {
@@ -294,6 +329,7 @@ class VaultStore(
 
     // 清单文件 ID 到其中的条目。一份清单写成后不再改动，改动总是另写一份，所以按 ID 缓存不会过时
     private val parsed = MutableStateFlow(initialParsed)
+    private val causalMeta = MutableStateFlow<Map<String, ManifestCausalMeta>>(emptyMap())
     private val trustedPendingIds = MutableStateFlow(initialParsed.keys.toSet())
     val parsedFlow: StateFlow<Map<String, List<VaultEntry>>> = parsed.asStateFlow()
     // 本实例各目录最后一次已确认写成的清单（id 与版本号），防止服务端列表可见性滞后时回退到空/旧基线
@@ -312,7 +348,10 @@ class VaultStore(
             scope = storeScope,
             accountGeneration = 0,
             source = SnapshotSource {
-                VersionedSnapshot(PersistVersion(0, cacheRevision.value), CacheSnapshot(parsed.value, lastCommittedByFolder.value))
+                VersionedSnapshot(
+                    PersistVersion(0, cacheRevision.value),
+                    CacheSnapshot(parsed.value, lastCommittedByFolder.value, causalMeta.value),
+                )
             },
             debounceMillis = saveDelayMillis,
         ) { snapshot ->
@@ -378,6 +417,8 @@ class VaultStore(
                         )
                     }?.getOrNull()?.also { if (it.isNotEmpty()) migratedLegacyFormat = true }
                     if (!storedCommitted.isNullOrEmpty()) lastCommittedByFolder.update { storedCommitted + it }
+                    val storedMeta = stored?.meta
+                    if (!storedMeta.isNullOrEmpty()) causalMeta.update { storedMeta + it }
                     // 旧版 v1 缓存首次回退读取成功后排期升级为 v2 单文件格式，避免后续每次冷启动先试读失败再二次解析
                     if (migratedLegacyFormat) scheduleSave()
                 } finally {
@@ -439,8 +480,16 @@ class VaultStore(
         return PersistVersion(0, revision).also { cacheWriter?.markDirty(it) }
     }
 
-    private suspend fun rememberParsed(id: String, entries: List<VaultEntry>, awaitPersist: Boolean = false) {
+    private suspend fun rememberParsed(
+        id: String,
+        entries: List<VaultEntry>,
+        meta: ManifestCausalMeta? = null,
+        awaitPersist: Boolean = false,
+    ) {
         parsed.update { current -> current + (id to entries) }
+        if (meta != null && !meta.isEmpty) {
+            causalMeta.update { current -> current + (id to meta) }
+        }
         val version = scheduleSave()
         if (awaitPersist) cacheWriter?.flushThrough(version)
         trustedPendingIds.update { it + id }
@@ -486,18 +535,211 @@ class VaultStore(
     /** 挑出目录列表中对本实例生效的归档清单文件（含本机已完整上传并缓存条目的在途转正清单）。 */
     fun winnerOf(listing: Collection<FileStat>): FileStat? = activeWinner(listing)?.file
 
-    private suspend fun readEffectiveEntries(folderId: String, listing: Collection<FileStat>): List<VaultEntry> {
-        val winners = activeWinners(listing)
-        val remoteVersion = winners.firstOrNull()?.version ?: 0
-        val committed = lastCommittedByFolder.value[folderId]
-        if (committed != null && committed.second > remoteVersion) {
-            parsed.value[committed.first]?.let { return it }
+    private class LoadedBranch(
+        val id: String,
+        val entries: List<VaultEntry>,
+        val meta: ManifestCausalMeta,
+    )
+
+    private class EffectiveVaultState(
+        val entries: List<VaultEntry>,
+        val deleted: Map<String, Long>,
+        val coveredIds: Set<String>,
+        val maxRemoteVersion: Int,
+        val branchCount: Int,
+        val needsReconcile: Boolean,
+    )
+
+    private suspend fun resolveEffectiveState(
+        folderId: String?,
+        listing: Collection<FileStat>,
+        includeLocalBaseline: Boolean,
+        trustLocalPending: Boolean = true,
+    ): EffectiveVaultState {
+        val trustedIds = if (trustLocalPending) trustedPendingIds.value else emptySet()
+        val all = allCandidates(listing, trustedIds)
+        val maxRemoteVersion = all.firstOrNull()?.version ?: 0
+        val topWinners = if (maxRemoteVersion == 0) emptyList() else all.filter { it.version == maxRemoteVersion }
+        val committed = if (includeLocalBaseline && folderId != null) lastCommittedByFolder.value[folderId] else null
+
+        if (committed != null && committed.second > maxRemoteVersion) {
+            val localEntries = parsed.value[committed.first]
+            if (localEntries != null) {
+                val localMeta = causalMeta.value[committed.first] ?: ManifestCausalMeta()
+                val strictlySupersedes = all.isEmpty() || (
+                    localMeta.isCausal && all.all {
+                        it.file.id == committed.first || isCoveredManifest(it.file, localMeta.parents.toSet())
+                    }
+                )
+                if (strictlySupersedes) {
+                    return EffectiveVaultState(
+                        entries = localEntries,
+                        deleted = localMeta.deleted,
+                        coveredIds = (localMeta.parents + committed.first).toSet(),
+                        maxRemoteVersion = maxRemoteVersion,
+                        branchCount = 1,
+                        needsReconcile = false,
+                    )
+                }
+            }
         }
-        if (winners.isEmpty()) return emptyList()
-        if (winners.size == 1) return entriesOf(winners[0].file)
-        val merged = mergeEntries(winners.map { entriesOf(it.file) })
-        scheduleReconcile(folderId)
-        return merged
+
+        val branches = ArrayList<LoadedBranch>()
+        val coveredIds = LinkedHashSet<String>()
+
+        if (committed != null && committed.second > maxRemoteVersion) {
+            parsed.value[committed.first]?.let { localEntries ->
+                val localMeta = causalMeta.value[committed.first] ?: ManifestCausalMeta()
+                branches += LoadedBranch(committed.first, localEntries, localMeta)
+                coveredIds += committed.first
+                coveredIds += localMeta.parents
+            }
+        }
+
+        for (winner in topWinners) {
+            val (entries, meta) = manifestOf(winner.file)
+            branches += LoadedBranch(winner.file.id, entries, meta)
+            coveredIds += manifestKey(winner.file.id, winner.file.name)
+            coveredIds += winner.file.id
+            coveredIds += meta.parents
+        }
+
+        val hasCausalLineage = branches.any { it.meta.isCausal }
+        if (hasCausalLineage) {
+            for (cand in all) {
+                val candKey = manifestKey(cand.file.id, cand.file.name)
+                if (cand.version == maxRemoteVersion || isCoveredManifest(cand.file, coveredIds)) continue
+                val (entries, meta) = manifestOf(cand.file)
+                if (!sharesCausalOrigin(meta, coveredIds)) continue
+                branches += LoadedBranch(cand.file.id, entries, meta)
+                coveredIds += candKey
+                coveredIds += cand.file.id
+                coveredIds += meta.parents
+            }
+        }
+
+        if (committed != null && committed.first !in coveredIds) {
+            parsed.value[committed.first]?.let { localEntries ->
+                val localMeta = causalMeta.value[committed.first] ?: ManifestCausalMeta()
+                branches.add(0, LoadedBranch(committed.first, localEntries, localMeta))
+                coveredIds += committed.first
+                coveredIds += localMeta.parents
+            }
+        }
+
+        if (branches.isEmpty()) {
+            return EffectiveVaultState(emptyList(), emptyMap(), coveredIds, maxRemoteVersion, 0, false)
+        }
+        if (branches.size == 1) {
+            val single = branches[0]
+            return EffectiveVaultState(single.entries, single.meta.deleted, coveredIds, maxRemoteVersion, 1, false)
+        }
+        val mergedDeleted = mergeDeletedMaps(branches.map { it.meta.deleted })
+        val mergedEntries = mergeBranches(branches.map { it.entries }, mergedDeleted)
+        return EffectiveVaultState(
+            entries = mergedEntries,
+            deleted = mergedDeleted,
+            coveredIds = coveredIds,
+            maxRemoteVersion = maxRemoteVersion,
+            branchCount = branches.size,
+            needsReconcile = true,
+        )
+    }
+
+    private fun resolveCachedState(
+        folderId: String?,
+        listing: Collection<FileStat>,
+        includeLocalBaseline: Boolean,
+    ): List<VaultEntry>? {
+        val all = allCandidates(listing, trustedPendingIds.value)
+        val maxRemoteVersion = all.firstOrNull()?.version ?: 0
+        val topWinners = if (maxRemoteVersion == 0) emptyList() else all.filter { it.version == maxRemoteVersion }
+        val committed = if (includeLocalBaseline && folderId != null) lastCommittedByFolder.value[folderId] else null
+
+        if (committed != null && committed.second > maxRemoteVersion) {
+            val localEntries = parsed.value[committed.first]
+            if (localEntries != null) {
+                val localMeta = causalMeta.value[committed.first] ?: ManifestCausalMeta()
+                val strictlySupersedes = all.isEmpty() || (
+                    localMeta.isCausal && all.all {
+                        it.file.id == committed.first || isCoveredManifest(it.file, localMeta.parents.toSet())
+                    }
+                )
+                if (strictlySupersedes) return localEntries
+            }
+        }
+
+        val branches = ArrayList<LoadedBranch>()
+        val coveredIds = LinkedHashSet<String>()
+
+        if (committed != null && committed.second > maxRemoteVersion) {
+            val localEntries = parsed.value[committed.first] ?: return null
+            val localMeta = causalMeta.value[committed.first] ?: ManifestCausalMeta()
+            branches += LoadedBranch(committed.first, localEntries, localMeta)
+            coveredIds += committed.first
+            coveredIds += localMeta.parents
+        }
+
+        for (winner in topWinners) {
+            val entries = lookupParsed(winner.file) ?: return null
+            val meta = causalMeta.value[winner.file.id] ?: ManifestCausalMeta()
+            branches += LoadedBranch(winner.file.id, entries, meta)
+            coveredIds += manifestKey(winner.file.id, winner.file.name)
+            coveredIds += winner.file.id
+            coveredIds += meta.parents
+        }
+
+        if (branches.any { it.meta.isCausal }) {
+            for (cand in all) {
+                val candKey = manifestKey(cand.file.id, cand.file.name)
+                if (cand.version == maxRemoteVersion || isCoveredManifest(cand.file, coveredIds)) continue
+                val entries = lookupParsed(cand.file) ?: return null
+                val meta = causalMeta.value[cand.file.id] ?: ManifestCausalMeta()
+                if (!sharesCausalOrigin(meta, coveredIds)) continue
+                branches += LoadedBranch(cand.file.id, entries, meta)
+                coveredIds += candKey
+                coveredIds += cand.file.id
+                coveredIds += meta.parents
+            }
+        }
+
+        if (committed != null && committed.first !in coveredIds) {
+            val localEntries = parsed.value[committed.first]
+            if (localEntries != null) {
+                val localMeta = causalMeta.value[committed.first] ?: ManifestCausalMeta()
+                branches.add(0, LoadedBranch(committed.first, localEntries, localMeta))
+                coveredIds += committed.first
+                coveredIds += localMeta.parents
+            }
+        }
+
+        if (branches.isEmpty()) return emptyList()
+        if (branches.size == 1) return branches[0].entries
+        val mergedDeleted = mergeDeletedMaps(branches.map { it.meta.deleted })
+        return mergeBranches(branches.map { it.entries }, mergedDeleted)
+    }
+
+    private fun hasHigherPendingManifest(listing: Collection<FileStat>): Boolean {
+        var maxComplete = 0
+        var maxPending = 0
+        for (file in listing) {
+            if (!looksLikeManifest(file)) continue
+            val cand = candidateOf(file) ?: continue
+            if (file.phase == TaskPhase.COMPLETE) {
+                if (cand.version > maxComplete) maxComplete = cand.version
+            } else {
+                if (cand.version > maxPending) maxPending = cand.version
+            }
+        }
+        return maxPending > maxComplete
+    }
+
+    private suspend fun readEffectiveEntries(folderId: String, listing: Collection<FileStat>): List<VaultEntry> {
+        val state = resolveEffectiveState(folderId, listing, includeLocalBaseline = true)
+        if (state.needsReconcile && !hasHigherPendingManifest(listing)) {
+            scheduleReconcile(folderId)
+        }
+        return state.entries
     }
 
     /**
@@ -520,6 +762,15 @@ class VaultStore(
         }
     }
 
+    /** 索引回填专用读取：仅读取并合并已提交清单，绝不把正在编辑中的乐观 [pending] 投影写进持久化树索引。 */
+    suspend fun readCommitted(listing: Collection<FileStat>): Result<List<VaultEntry>> = operation {
+        runSuspendCatching {
+            if (listing.none(::looksLikeManifest)) return@runSuspendCatching emptyList()
+            cacheLoaded.await()
+            resolveEffectiveState(folderId = null, listing = listing, includeLocalBaseline = false).entries
+        }
+    }
+
     /** 核对业务结果时只读当前胜出的清单，不把其他待写操作的乐观投影当作已提交结果。 */
     suspend fun committed(folderId: String): Result<List<VaultEntry>> = operation {
         runSuspendCatching {
@@ -528,37 +779,58 @@ class VaultStore(
         }
     }
 
+    /**
+     * 永久删除原文件归档前的远端可见屏障：不借助本机 [trustedPendingIds]，
+     * 确认远端目录列表中的 `COMPLETE` 清单已完整承载 [requiredEntryIds] 后才放行物理销毁原文件。
+     */
+    suspend fun awaitRemoteComplete(
+        folderId: String,
+        requiredEntryIds: Set<String>,
+        maxAttempts: Int = 20,
+        retryDelayMillis: Long = 350L,
+    ): Result<Unit> = operation {
+        runSuspendCatching {
+            if (requiredEntryIds.isEmpty()) return@runSuspendCatching
+            cacheLoaded.await()
+            repeat(maxAttempts) { attempt ->
+                val remoteListing = io.list(folderId)
+                val state = resolveEffectiveState(
+                    folderId = null,
+                    listing = remoteListing,
+                    includeLocalBaseline = false,
+                    trustLocalPending = false,
+                )
+                val remoteIds = state.entries.mapTo(HashSet()) { it.id }
+                if (remoteIds.containsAll(requiredEntryIds)) {
+                    scheduleConfirmedCleanup(folderId, remoteListing)
+                    return@runSuspendCatching
+                }
+                if (attempt < maxAttempts - 1) {
+                    kotlinx.coroutines.delay(retryDelayMillis)
+                }
+            }
+            error("归档清单尚未在服务端完成落盘确认，已中止永久删除原文件")
+        }
+    }
+
     /** 只用缓存的 [read]：算数的那份没读过时返回 null。 */
     fun cached(folderId: String, listing: List<FileStat>): List<VaultEntry>? {
         pendingEntries(folderId)?.let { return it }
-        val committed = lastCommittedByFolder.value[folderId]
-        val winners = activeWinners(listing)
-        val remoteVersion = winners.firstOrNull()?.version ?: 0
-        if (committed != null && committed.second > remoteVersion) {
-            parsed.value[committed.first]?.let { return it }
-        }
-        return cachedCommitted(listing)
+        return resolveCachedState(folderId = folderId, listing = listing, includeLocalBaseline = true)
     }
 
     /** 等待本地持久化的归档清单缓存反序列化完成，避免启动初期误判全量未缓存。 */
-    suspend fun awaitCacheLoaded() {
-        cacheLoaded.await()
-    }
+    suspend fun awaitCacheLoaded() = awaitLoaded()
 
     /** 只查已提交清单的缓存（不读 [pending]）：目录中无清单时返回空列表，清单未缓存时返回 null。 */
-    fun cachedCommitted(listing: Collection<FileStat>): List<VaultEntry>? {
-        val winners = activeWinners(listing)
-        if (winners.isEmpty()) return emptyList()
-        if (winners.size == 1) return lookupParsed(winners[0].file)
-        val all = winners.map { lookupParsed(it.file) ?: return null }
-        return mergeEntries(all)
-    }
+    fun cachedCommitted(listing: Collection<FileStat>): List<VaultEntry>? =
+        resolveCachedState(folderId = null, listing = listing, includeLocalBaseline = false)
 
     /** 建索引流水线预热单份清单文件：已缓存则立即返回，未缓存则拉取解析并写入缓存。 */
     suspend fun prefetchManifest(file: FileStat): Result<List<VaultEntry>> = operation {
         runSuspendCatching {
             cacheLoaded.await()
-            lookupParsed(file) ?: entriesOf(file)
+            lookupParsed(file) ?: manifestOf(file).first
         }
     }
 
@@ -691,24 +963,44 @@ class VaultStore(
         }
     }
 
-    private fun scheduleStaleCleanup(folderId: String, newManifestId: String, newVersion: Int, listing: List<FileStat>) {
-        // 保留最近 1 份历史 COMPLETE 清单供其他设备在新清单异步转正（PENDING）窗口内兜底读取，更老的异步清理
-        val olderComplete = listing.filter { file ->
-            looksLikeManifest(file) && file.phase == TaskPhase.COMPLETE &&
-                file.id != newManifestId && file.id !in reading.value &&
-                (versionOf(file)?.let { it.first < newVersion } ?: false)
-        }.sortedByDescending { versionOf(it)?.first ?: 0 }
-        val stale = olderComplete.drop(1)
-        if (stale.isEmpty()) return
-        val staleIds = stale.mapTo(HashSet()) { it.id }
-        if (lifetime.value.closing) return
+    private fun scheduleConfirmedCleanup(
+        folderId: String,
+        listing: List<FileStat>,
+    ) {
+        // 仅当远端目录列表已实际观测到更高版本的 COMPLETE 替代清单、且其因果祖先集合完整覆盖待清理清单时才执行删除，
+        // 绝不在新合并清单仍处于 PENDING 转正期间提前删除任何历史 COMPLETE 分支。
+        val completeCandidates = listing.mapNotNull { file ->
+            if (!looksLikeManifest(file) || file.phase != TaskPhase.COMPLETE) return@mapNotNull null
+            candidateOf(file)
+        }.sortedWith(ORDER)
+        if (completeCandidates.size <= 1) return
+        val metaSnapshot = causalMeta.value
+        val completeWithMeta = completeCandidates.map { cand ->
+            cand to (metaSnapshot[cand.file.id] ?: ManifestCausalMeta())
+        }
+        val staleIds = completeWithMeta.mapNotNullTo(HashSet()) { (cand, _) ->
+            if (cand.file.id in reading.value) return@mapNotNullTo null
+            val candKey = manifestKey(cand.file.id, cand.file.name)
+            val supersededByComplete = completeWithMeta.any { (newer, newerMeta) ->
+                if (newer.file.id == cand.file.id || newer.version <= cand.version || !newerMeta.isCausal) {
+                    false
+                } else {
+                    candKey in newerMeta.parents ||
+                        (cand.file.id in newerMeta.parents && newerMeta.parents.none { it.startsWith("${cand.file.id}|") })
+                }
+            }
+            cand.file.id.takeIf { supersededByComplete }
+        }
+        if (staleIds.isEmpty() || lifetime.value.closing) return
         storeScope.launch {
+            val safeToDelete = staleIds.filterNot { it in reading.value }
+            if (safeToDelete.isEmpty()) return@launch
             runSuspendCatching {
-                io.delete(staleIds.toList())
+                io.delete(safeToDelete)
             }.onSuccess {
-                retired.update { it + staleIds }
+                retired.update { it + safeToDelete }
                 evictRetired()
-            }.logFailure(TAG, "Deferred stale vault manifest cleanup failed in ${logFolder(folderId)} (v$newVersion, count=${staleIds.size})")
+            }.logFailure(TAG, "Deferred stale vault manifest cleanup failed in ${logFolder(folderId)} (count=${safeToDelete.size})")
         }
     }
 
@@ -733,36 +1025,68 @@ class VaultStore(
                     baseSerial = serial
                     fetched
                 }
-                val winners = if (freshlyCreatedFolder) emptyList() else activeWinners(listing)
-                val remoteVersion = winners.firstOrNull()?.version ?: 0
-                val localCommitted = if (freshlyCreatedFolder) null else lastCommittedByFolder.value[folderId]
-                val useLocalCommitted = localCommitted != null && localCommitted.second > remoteVersion
-                val baseVersion = if (useLocalCommitted) localCommitted.second else remoteVersion
-                val before = when {
-                    freshlyCreatedFolder -> emptyList()
-                    useLocalCommitted -> parsed.value[localCommitted.first] ?: run {
-                        if (winners.isEmpty()) emptyList()
-                        else if (winners.size == 1) entriesOf(winners[0].file)
-                        else mergeEntries(winners.map { entriesOf(it.file) })
-                    }
-                    winners.isEmpty() -> emptyList()
-                    winners.size == 1 -> entriesOf(winners[0].file)
-                    else -> mergeEntries(winners.map { entriesOf(it.file) })
+                val state = if (freshlyCreatedFolder) {
+                    EffectiveVaultState(emptyList(), emptyMap(), emptySet(), 0, 0, false)
+                } else {
+                    resolveEffectiveState(folderId, listing, includeLocalBaseline = true)
                 }
+                val localCommitted = if (freshlyCreatedFolder) null else lastCommittedByFolder.value[folderId]
+                val baseVersion = maxOf(state.maxRemoteVersion, localCommitted?.second ?: 0)
+                val before = state.entries
                 val after = edit(before)
-                val needsMergeWrite = winners.size > 1
+                val needsMergeWrite = state.needsReconcile
                 if (after == before && !needsMergeWrite) {
                     if (!freshlyCreatedFolder) onListingConfirmed(VaultCommitSnapshot.FullListing(listing, baseSerial))
                     return@runSuspendCatching VaultWrite(before, after)
                 }
 
+                val nowMs = Clock.System.now().toEpochMilliseconds()
+                val afterIds = after.mapTo(HashSet()) { it.id }
+                val nextDeleted = pruneTombstones(state.deleted, nowMs).toMutableMap()
+                for (prev in before) {
+                    if (prev.id !in afterIds) {
+                        val tombTs = maxOf(prev.effectiveUpdatedAt + 1L, nowMs)
+                        val existingTs = nextDeleted[prev.id] ?: 0L
+                        if (tombTs > existingTs) nextDeleted[prev.id] = tombTs
+                    }
+                }
+                for (alive in after) {
+                    nextDeleted.remove(alive.id)
+                }
+
+                val incorporatedLiveRefs = if (freshlyCreatedFolder) {
+                    emptyList()
+                } else {
+                    allCandidates(listing, trustedPendingIds.value).flatMap { cand ->
+                        val candKey = manifestKey(cand.file.id, cand.file.name)
+                        if (cand.file.id in state.coveredIds || candKey in state.coveredIds) {
+                            listOf(candKey, cand.file.id)
+                        } else {
+                            emptyList()
+                        }
+                    }
+                }
+                val nextParents = buildList {
+                    add(CAUSAL_SENTINEL)
+                    add("$ORIGIN_PREFIX$folderId")
+                    localCommitted?.first?.takeIf { it in state.coveredIds }?.let(::add)
+                    addAll(incorporatedLiveRefs)
+                    for (covered in state.coveredIds) {
+                        if (covered != CAUSAL_SENTINEL) add(covered)
+                    }
+                }.distinct().take(MAX_CAUSAL_PARENTS)
+                val nextMeta = ManifestCausalMeta(parents = nextParents, deleted = nextDeleted)
+
                 val version = baseVersion + 1
                 val token = newToken()
-                val text = JSON.encodeToString(Manifest.serializer(), Manifest(after))
+                val text = JSON.encodeToString(
+                    Manifest.serializer(),
+                    Manifest(entries = after, parents = nextParents, deleted = nextDeleted),
+                )
                 val manifestBytes = text.encodeToByteArray()
                 val manifestName = nameOf(version, token)
                 val id = io.upload(folderId, manifestName, manifestBytes)
-                rememberParsed(id, after, awaitPersist = true)
+                rememberParsed(id, after, meta = nextMeta, awaitPersist = true)
                 recordCommittedBaseline(folderId, id, version, grantPendingTrustOnCommit = true)
 
                 val syntheticManifest = FileStat(
@@ -779,24 +1103,27 @@ class VaultStore(
                 } else {
                     val updatedListing = listing.filterNot { it.id == id } + syntheticManifest
                     onListingConfirmed(VaultCommitSnapshot.FullListing(updatedListing, baseSerial))
-                    scheduleStaleCleanup(folderId, id, version, listing)
+                    scheduleConfirmedCleanup(folderId, listing)
                     PikoLog.i(
                         TAG,
                         "Vault manifest written in ${logFolder(folderId)} (v$version, entries=${before.size}->${after.size}" +
-                            if (needsMergeWrite) ", mergedBranches=${winners.size})" else ")",
+                            if (needsMergeWrite) ", mergedBranches=${state.branchCount})" else ")",
                     )
                 }
                 VaultWrite(before, after)
             }.logFailure(TAG, "Failed to write vault manifest in ${logFolder(folderId)}")
         }
 
-    private suspend fun entriesOf(file: FileStat): List<VaultEntry> {
+    private suspend fun manifestOf(file: FileStat): Pair<List<VaultEntry>, ManifestCausalMeta> {
         reading.update { it + (file.id to ((it[file.id] ?: 0) + 1)) }
         try {
-            lookupParsed(file)?.let { return it }
-            val entries = JSON.decodeFromString(Manifest.serializer(), io.read(file.id).decodeToString()).entries
-            rememberParsed(file.id, entries)
-            return entries
+            lookupParsed(file)?.let { cachedEntries ->
+                return cachedEntries to (causalMeta.value[file.id] ?: ManifestCausalMeta())
+            }
+            val decoded = JSON.decodeFromString(Manifest.serializer(), io.read(file.id).decodeToString())
+            val meta = ManifestCausalMeta(parents = decoded.parents, deleted = decoded.deleted)
+            rememberParsed(file.id, decoded.entries, meta = meta)
+            return decoded.entries to meta
         } finally {
             reading.update { current ->
                 val remaining = (current[file.id] ?: 1) - 1
@@ -812,6 +1139,7 @@ class VaultStore(
         val removable = retired.value - protected
         if (removable.isEmpty()) return
         parsed.update { it - removable }
+        causalMeta.update { it - removable }
         trustedPendingIds.update { it - removable }
         retired.update { it - removable }
         scheduleSave()
@@ -820,7 +1148,20 @@ class VaultStore(
     private fun lockOf(folderId: String): Mutex = locks[folderId.hashCode() and 63]
 
     @Serializable
-    private class Manifest(val entries: List<VaultEntry>)
+    private class Manifest(
+        val entries: List<VaultEntry>,
+        val parents: List<String> = emptyList(),
+        val deleted: Map<String, Long> = emptyMap(),
+    )
+
+    @Serializable
+    private data class ManifestCausalMeta(
+        val parents: List<String> = emptyList(),
+        val deleted: Map<String, Long> = emptyMap(),
+    ) {
+        val isEmpty: Boolean get() = parents.isEmpty() && deleted.isEmpty()
+        val isCausal: Boolean get() = CAUSAL_SENTINEL in parents
+    }
 
     @Serializable
     private data class StoredCommitted(val id: String, val version: Int)
@@ -828,6 +1169,7 @@ class VaultStore(
     private class CacheSnapshot(
         val parsed: Map<String, List<VaultEntry>>,
         val committed: Map<String, Pair<String, Int>> = emptyMap(),
+        val meta: Map<String, ManifestCausalMeta> = emptyMap(),
     )
 
     /** Only the unique source table is auxiliary; maps/lists decoded here are the final cache. */
@@ -838,6 +1180,7 @@ class VaultStore(
             element("sources", strings.descriptor)
             element("manifests", PARSED_SERIALIZER.descriptor)
             element("committed", COMMITTED_SERIALIZER.descriptor, isOptional = true)
+            element("meta", META_SERIALIZER.descriptor, isOptional = true)
         }
 
         override fun serialize(encoder: Encoder, value: CacheSnapshot) {
@@ -851,6 +1194,9 @@ class VaultStore(
                 encodeSerializableElement(descriptor, 2,
                     MapSerializer(String.serializer(), ListSerializer(RowSerializer(refs = refs))), value.parsed)
                 encodeSerializableElement(descriptor, 3, COMMITTED_PAIRS, value.committed)
+                if (value.meta.isNotEmpty()) {
+                    encodeSerializableElement(descriptor, 4, META_SERIALIZER, value.meta)
+                }
             }
         }
 
@@ -888,6 +1234,7 @@ class VaultStore(
             }
             var manifests: Map<String, MutableList<VaultEntry>>? = null
             var committed: Map<String, Pair<String, Int>> = emptyMap()
+            var meta: Map<String, ManifestCausalMeta> = emptyMap()
             decoder.decodeStructure(descriptor) {
                 while (true) when (val index = decodeElementIndex(descriptor)) {
                     CompositeDecoder.DECODE_DONE -> break
@@ -895,6 +1242,7 @@ class VaultStore(
                     1 -> sources = decodeSerializableElement(descriptor, index, strings)
                     2 -> manifests = decodeSerializableElement(descriptor, index, MapSerializer(String.serializer(), entries))
                     3 -> committed = decodeSerializableElement(descriptor, index, COMMITTED_PAIRS)
+                    4 -> meta = decodeSerializableElement(descriptor, index, META_SERIALIZER)
                     else -> error("Unknown vault cache field")
                 }
             }
@@ -909,7 +1257,7 @@ class VaultStore(
                 require(ref in table.indices) { "Invalid vault source reference" }
                 list[index] = entry.copy(source = table[ref])
             }
-            return CacheSnapshot(parsed, committed)
+            return CacheSnapshot(parsed, committed, meta)
         }
     }
 
@@ -975,11 +1323,33 @@ class VaultStore(
         private const val TAG = "Vault"
         private const val PREFIX = ".piko-vault-"
         private const val SUFFIX = ".json"
+        private const val CAUSAL_SENTINEL = "causal-v1"
+        private const val ORIGIN_PREFIX = "origin:"
+        private const val MAX_CAUSAL_PARENTS = 96
+        private const val TOMBSTONE_RETENTION_MS = 90L * 24 * 60 * 60 * 1000
+
+        private fun manifestKey(id: String, name: String): String = "$id|$name"
+
+        private fun isCoveredManifest(file: FileStat, coveredIds: Set<String>): Boolean {
+            val key = manifestKey(file.id, file.name)
+            if (key in coveredIds) return true
+            return file.id in coveredIds && coveredIds.none { it.startsWith("${file.id}|") }
+        }
+
+        private fun sharesCausalOrigin(meta: ManifestCausalMeta, coveredIds: Set<String>): Boolean {
+            if (!meta.isCausal) return false
+            for (parent in meta.parents) {
+                if (parent == CAUSAL_SENTINEL) continue
+                if (parent in coveredIds) return true
+            }
+            return false
+        }
         private val JSON = Json { ignoreUnknownKeys = true }
         private val NAME = Regex("""\.piko-vault-v([0-9]+)-([0-9a-f]+)\.json""")
         private val UNSAFE_KEY_CHARS = Regex("""[^A-Za-z0-9._@-]""")
         private val PARSED_SERIALIZER = MapSerializer(String.serializer(), ListSerializer(VaultEntry.serializer()))
         private val COMMITTED_SERIALIZER = MapSerializer(String.serializer(), StoredCommitted.serializer())
+        private val META_SERIALIZER = MapSerializer(String.serializer(), ManifestCausalMeta.serializer())
         private val COMMITTED_PAIRS = MapSerializer(String.serializer(), object : KSerializer<Pair<String, Int>> {
             override val descriptor = StoredCommitted.serializer().descriptor
             override fun serialize(encoder: Encoder, value: Pair<String, Int>) =
@@ -998,9 +1368,6 @@ class VaultStore(
                 val v = match.groupValues[1].toIntOrNull() ?: return@let null
                 v to match.groupValues[2]
             }
-
-        private fun hasFullRandomToken(name: String): Boolean =
-            NAME.matchEntire(name)?.groupValues?.get(2)?.length == 16
 
         fun cacheKeyOf(account: String): String =
             "vault-manifests-" + account.replace(UNSAFE_KEY_CHARS, "_") + ".json"
@@ -1023,13 +1390,35 @@ class VaultStore(
             return Candidate(file, version, token)
         }
 
+        private fun allCandidates(listing: Collection<FileStat>, locallyCachedIds: Set<String> = emptySet()): List<Candidate> =
+            listing.mapNotNull { candidateOf(it, locallyCachedIds) }.sortedWith(ORDER)
+
         private fun topVersionCandidates(listing: Collection<FileStat>, locallyCachedIds: Set<String> = emptySet()): List<Candidate> {
-            val candidates = listing.mapNotNull { candidateOf(it, locallyCachedIds) }
-            val maxVersion = candidates.maxOfOrNull { it.version } ?: return emptyList()
-            return candidates.filter { it.version == maxVersion }.sortedWith(ORDER)
+            val candidates = allCandidates(listing, locallyCachedIds)
+            val maxVersion = candidates.firstOrNull()?.version ?: return emptyList()
+            return candidates.filter { it.version == maxVersion }
         }
 
-        private fun mergeEntries(branches: List<List<VaultEntry>>): List<VaultEntry> {
+        private fun pruneTombstones(deleted: Map<String, Long>, nowMs: Long): Map<String, Long> {
+            val cutoff = nowMs - TOMBSTONE_RETENTION_MS
+            return deleted.filterValues { it >= cutoff }
+        }
+
+        private fun mergeDeletedMaps(maps: List<Map<String, Long>>): Map<String, Long> {
+            val merged = LinkedHashMap<String, Long>()
+            for (map in maps) {
+                for ((id, ts) in map) {
+                    val prev = merged[id]
+                    if (prev == null || ts > prev) merged[id] = ts
+                }
+            }
+            return merged
+        }
+
+        private fun mergeBranches(
+            branches: List<List<VaultEntry>>,
+            deleted: Map<String, Long> = emptyMap(),
+        ): List<VaultEntry> {
             val byId = LinkedHashMap<String, VaultEntry>()
             for (list in branches) {
                 for (entry in list) {
@@ -1039,6 +1428,8 @@ class VaultStore(
             }
             val byContent = LinkedHashMap<Pair<String, String>, VaultEntry>()
             for (entry in byId.values) {
+                val delTs = deleted[entry.id]
+                if (delTs != null && delTs >= entry.effectiveUpdatedAt) continue
                 val key = entry.gcid to entry.name
                 val prev = byContent[key]
                 byContent[key] = if (prev == null) entry else mergePair(prev, entry)
@@ -1047,7 +1438,11 @@ class VaultStore(
         }
 
         private fun mergePair(a: VaultEntry, b: VaultEntry): VaultEntry {
+            val aUpdated = a.effectiveUpdatedAt
+            val bUpdated = b.effectiveUpdatedAt
             val primary = when {
+                bUpdated > aUpdated -> b
+                aUpdated > bUpdated -> a
                 a.restoredFileId != null && b.restoredFileId == null -> a
                 b.restoredFileId != null && a.restoredFileId == null -> b
                 b.addedAt > a.addedAt -> b

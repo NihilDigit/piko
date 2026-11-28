@@ -9,7 +9,11 @@ import dev.piko.data.auth.PikoUserPreferences
 import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.createOrClaimFolder
 import dev.piko.shared.data.runSuspendCatching
+import dev.piko.shared.work.DurableUploadPrepEntry
+import dev.piko.shared.work.DurableUploadPrepJobPayload
+import dev.piko.shared.work.WorkJobStatus
 import dev.piko.shared.media.cache.fileCacheName
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
@@ -176,6 +180,16 @@ class PikoUploadCoordinator(
                 restoreCompleted.complete(Unit)
             }
             launch { persistOnStructuralChange() }
+            val readyState = driveRepository.durableStore?.readyState
+            if (driveRepository.workJournal != null && readyState != null) {
+                launch {
+                    combine(clientProvider.currentClient, readyState) { client, ready ->
+                        client?.takeIf { ready?.account == it.account }
+                    }.collect { client ->
+                        if (client != null) restoreDurablePreparations(client)
+                    }
+                }
+            }
             runQueue()
         }
     }
@@ -217,6 +231,12 @@ class PikoUploadCoordinator(
             preparationBlockReason(frozen, parentId, previous)?.let { return UploadEnqueueResult.Rejected(it) }
             if (_preparations.compareAndSet(previous, previous + preparation)) break
         }
+        if (!persistUploadPrep(preparation, frozen, WorkJobStatus.IN_PROGRESS)) {
+            _preparations.update { all -> all.filterNot { it.id == preparation.id } }
+            val msg = tr("无法记录上传准备状态，请检查本机存储空间", "Could not persist upload preparation; check device storage", "アップロード準備を記録できませんでした。端末の空き容量を確認してください", "업로드 준비 상태를 기록할 수 없습니다. 기기 저장 공간을 확인하세요", "無法記錄上傳準備狀態，請檢查本機儲存空間")
+            _messages.tryEmit(msg)
+            return UploadEnqueueResult.Rejected(msg)
+        }
         runBlocking { sourceLock.withLock {
             val keys = (frozen.files + frozen.folders).mapTo(HashSet(), sources::permissionKey)
             retainSources(keys)
@@ -241,27 +261,35 @@ class PikoUploadCoordinator(
         return UploadEnqueueResult.Accepted(preparation.id)
     }
 
-    private suspend fun prepare(client: PikPakClient, selection: UploadSelection, initial: UploadPreparation) {
+    private suspend fun prepare(
+        client: PikPakClient,
+        selection: UploadSelection,
+        initial: UploadPreparation,
+        alreadyQueuedEntryKeys: Set<String> = emptySet(),
+    ) {
         var work = initial
         val grouped = selection.folders.isNotEmpty() || selection.files.size > 1
         var batchName: String? = null
+        var hadTransientOutage = false
         fun publish() { _preparations.update { all -> all.map { if (it.id == work.id) work else it } } }
         fun title(key: String, name: String) { work = work.copy(sources = work.sources.map { if (it.key == key) it.copy(title = name) else it }); publish() }
         fun issue(key: String, path: String, kind: UploadPreparationIssueKind) {
             work = work.copy(issues = work.issues + UploadPreparationIssue(key, path, kind)); publish()
         }
-        suspend fun queue(key: String, path: String, task: UploadTask) = preparationLock.withLock {
+        suspend fun queue(key: String, path: String, task: UploadTask, entryKey: String) = preparationLock.withLock {
             currentCoroutineContext().ensureActive()
             if (work.id !in preparationJobs) throw CancellationException(tr("上传准备已移除", "Upload preparation removed", "アップロードの準備を削除しました", "업로드 준비를 삭제했습니다", "上傳準備已移除"))
             if (batchName == null) {
                 val firstName = work.sources.firstOrNull()?.title ?: task.fileName
                 batchName = if (selection.files.isEmpty() && selection.folders.size == 1) firstName else tr("$firstName 等 ${selection.count} 项", "$firstName and ${enCount(selection.count, "item", "items")}", "$firstName ほか ${selection.count} 項目", "$firstName 등 ${selection.count}개 항목", "$firstName 等 ${selection.count} 項")
             }
-            val queued = if (grouped) task.copy(batchId = work.id, batchName = batchName,
-                batchParentId = work.parentId, batchParentName = work.parentName, batchIsFolder = selection.folders.isNotEmpty()) else task
+            val withEntryKey = task.copy(prepEntryKey = entryKey)
+            val queued = if (grouped) withEntryKey.copy(batchId = work.id, batchName = batchName,
+                batchParentId = work.parentId, batchParentName = work.parentName, batchIsFolder = selection.folders.isNotEmpty()) else withEntryKey
             val accepted = if (work.id in pausedBatches) queued.copy(status = UploadStatus.PAUSED) else queued
             _tasks.update { it + (accepted.taskId to accepted) }
             bumpStructuralRevision()
+            driveRepository.workJournal?.recordReceipt(work.account, work.id, "queued:$entryKey", accepted.taskId)
             work = work.copy(files = work.files + UploadPreparedFile(key, path, task.taskId)); publish()
         }
         suspend fun readFile(key: String, path: String, uri: String, parent: String, name: String): UploadTask? {
@@ -277,9 +305,11 @@ class PikoUploadCoordinator(
         try {
             for (uri in selection.files) {
                 val key = sourceKey(uri, false)
+                val entryKey = "file|${work.id}|${work.parentId}|$uri"
+                if (entryKey in alreadyQueuedEntryKeys) continue
                 val task = readFile(key, "", uri, work.parentId, work.parentName) ?: continue
                 title(key, task.fileName)
-                queue(key, task.fileName, task)
+                queue(key, task.fileName, task, entryKey)
             }
             for (uri in selection.folders) {
                 val key = sourceKey(uri, true)
@@ -290,7 +320,10 @@ class PikoUploadCoordinator(
                 if (folder == null) { issue(key, "", UploadPreparationIssueKind.SOURCE_UNREADABLE); continue }
                 title(key, folder.name)
                 if (folder.files.isEmpty()) { issue(key, "", UploadPreparationIssueKind.EMPTY_FOLDER); continue }
-                val directories = mutableMapOf<String, String>()
+                val directories = work.directories
+                    .filter { it.sourceKey == key }
+                    .associate { it.path to it.id }
+                    .toMutableMap()
                 val blocked = mutableSetOf<String>()
                 suspend fun directory(path: String): String? {
                     directories[path]?.let { return it }
@@ -301,15 +334,21 @@ class PikoUploadCoordinator(
                     try {
                         currentCoroutineContext().ensureActive()
                         attempted = true
-                        val id = client.createFolder(parent, name)
+                        val (id, isFresh) = createOrClaimWithRetry(client, parent, name)
                         check(id.isNotBlank()) { tr("新建文件夹响应缺少 ID", "Folder creation response missing ID", "フォルダー作成の応答にIDが含まれていません", "폴더 생성 응답에 ID가 없습니다", "新增資料夾回應缺少 ID") }
                         directories[path] = id
                         work = work.copy(directories = work.directories + UploadPreparedDirectory(key, path, id, parent)); publish()
-                        driveRepository.applyWriteChange(client.account, DriveChange.Created(parent, id, name, isFolder = true))
+                        persistUploadPrep(work, selection, WorkJobStatus.IN_PROGRESS)
+                        if (isFresh) {
+                            driveRepository.applyWriteChange(client.account, DriveChange.Created(parent, id, name, isFolder = true))
+                        } else {
+                            driveRepository.applyWriteChange(client.account, DriveChange.ContentsChanged(setOf(parent, id)))
+                        }
                         return id
                     } catch (error: Exception) {
                         blocked += path
                         if (attempted) {
+                            if (isTransientPrepError(error)) hadTransientOutage = true
                             issue(key, path, UploadPreparationIssueKind.DIRECTORY_REFUSED)
                             if (error !is CancellationException) {
                                 PikoLog.w(
@@ -325,16 +364,19 @@ class PikoUploadCoordinator(
                     }
                 }
                 for ((index, entry) in folder.files.withIndex()) {
+                    val entryKey = "dir|${work.id}|${work.parentId}|$key|${entry.relativeDir}|${entry.uri}"
+                    if (entryKey in alreadyQueuedEntryKeys) continue
                     val sourcePath = listOf(entry.relativeDir, tr("所选文件 ${index + 1}", "Selected file ${index + 1}", "選択したファイル ${index + 1}", "선택한 파일 ${index + 1}", "所選檔案 ${index + 1}")).filter { it.isNotEmpty() }.joinToString("/")
                     val task = readFile(key, sourcePath, entry.uri, "", "") ?: continue
                     val path = listOf(entry.relativeDir, task.fileName).filter { it.isNotEmpty() }.joinToString("/")
                     val parent = directory(entry.relativeDir)
                     if (parent == null) { issue(key, path, UploadPreparationIssueKind.NOT_ATTEMPTED); continue }
-                    queue(key, path, task.copy(parentId = parent, parentName = entry.relativeDir.substringAfterLast('/').ifEmpty { folder.name }))
+                    queue(key, path, task.copy(parentId = parent, parentName = entry.relativeDir.substringAfterLast('/').ifEmpty { folder.name }), entryKey)
                 }
             }
         } catch (error: CancellationException) { stopped = true; throw error }
         catch (error: Exception) {
+            if (isTransientPrepError(error)) hadTransientOutage = true
             unexpected = true
             PikoLog.w(TAG, "Upload preparation ${work.id} failed unexpectedly", error)
         }
@@ -358,6 +400,19 @@ class PikoUploadCoordinator(
                 if (unexpected) add(tr("准备出错，请核对队列中的文件与目标文件夹", "Preparation failed. Check queued files and destination folder", "準備中にエラーが発生しました。キュー内のファイルと保存先フォルダーを確認してください", "준비 중 오류가 발생했습니다. 대기열의 파일과 대상 폴더를 확인해 주세요", "準備發生錯誤，請核對佇列中的檔案與目標資料夾"))
             }.joinToString("，")
             work = work.copy(result = UploadPreparationResult(completion, message, nowMs()))
+            if (!stopped) {
+                withContext(NonCancellable) {
+                    if (work.files.isNotEmpty() || completion == UploadPreparationCompletion.SUCCEEDED) {
+                        flushPersistence()
+                    }
+                    val nextJournalStatus = when {
+                        completion == UploadPreparationCompletion.SUCCEEDED -> WorkJobStatus.COMPLETED
+                        hadTransientOutage -> WorkJobStatus.IN_PROGRESS
+                        else -> WorkJobStatus.FAILED
+                    }
+                    persistUploadPrep(work, selection, nextJournalStatus)
+                }
+            }
             PikoLog.i(TAG, "Upload preparation ${work.id} finished: status=$completion, queuedFiles=${work.files.size}, createdDirs=${work.directories.size}, issues=${work.issues.size}")
             if (completion == UploadPreparationCompletion.SUCCEEDED) _preparations.update { all -> all.filterNot { it.id == work.id } }
             else {
@@ -369,6 +424,125 @@ class PikoUploadCoordinator(
                 _preparationOutcomes.tryEmit(work)
             }
             if (work.files.isNotEmpty()) _enqueued.tryEmit(UploadEnqueued(work.account, work.files.size, work.id))
+        }
+    }
+
+    private fun isTransientPrepError(error: Throwable): Boolean {
+        val code = (error as? PikPakException)?.httpStatus ?: 0
+        return error.isNetworkFailure() ||
+            (error is PikPakException && (code == 408 || code == 429 || code >= 500 || code == 0))
+    }
+
+    private suspend fun createOrClaimWithRetry(
+        client: PikPakClient,
+        parent: String,
+        name: String,
+    ): Pair<String, Boolean> {
+        val durable = driveRepository.workJournal != null
+        var attempt = 0
+        while (true) {
+            try {
+                return client.createOrClaimFolder(parent, name)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (!durable || !isTransientPrepError(error) || attempt >= 3) throw error
+                delay(1_000L shl attempt)
+                attempt++
+            }
+        }
+    }
+
+    private fun persistUploadPrep(
+        work: UploadPreparation,
+        selection: UploadSelection,
+        status: WorkJobStatus,
+    ): Boolean {
+        val journal = driveRepository.workJournal ?: return true
+        if (!journal.isPersistentFor(work.account)) return false
+        val dirMap = HashMap<String, String>(work.directories.size + 1)
+        dirMap[PREP_PARENT_NAME_KEY] = work.parentName
+        for (dir in work.directories) {
+            dirMap["${dir.sourceKey}|${dir.path}"] = dir.id
+        }
+        val entries = ArrayList<DurableUploadPrepEntry>(selection.files.size + selection.folders.size)
+        selection.files.forEach { uri -> entries += DurableUploadPrepEntry(PREP_KIND_FILE, "", uri) }
+        selection.folders.forEach { uri -> entries += DurableUploadPrepEntry(PREP_KIND_FOLDER, "", uri) }
+        val payload = DurableUploadPrepJobPayload(
+            prepId = work.id,
+            account = work.account,
+            rootParentId = work.parentId,
+            directories = dirMap,
+            pendingEntries = entries,
+        )
+        return journal.saveUploadPrepJob(payload, status = status)
+    }
+
+    private suspend fun restoreDurablePreparations(client: PikPakClient) {
+        restoreCompleted.await()
+        val journal = driveRepository.workJournal ?: return
+        val stored = journal.loadInProgressUploadPrepJobs(client.account)
+        if (stored.isEmpty()) return
+        val persistedTaskEntryKeys = _tasks.value.values
+            .asSequence()
+            .filter { it.account == client.account }
+            .mapNotNullTo(HashSet()) { it.prepEntryKey }
+        for (payload in stored) {
+            if (_preparations.value.any { it.id == payload.prepId }) continue
+            val files = payload.pendingEntries.filter { it.relativeDirectory == PREP_KIND_FILE }.map { it.sourceUri }
+            val folders = payload.pendingEntries.filter { it.relativeDirectory == PREP_KIND_FOLDER }.map { it.sourceUri }
+            if (files.isEmpty() && folders.isEmpty()) {
+                journal.deleteJob(client.account, payload.prepId)
+                continue
+            }
+            val alreadyQueuedForPrep = HashSet<String>().apply {
+                persistedTaskEntryKeys.filterTo(this) { it.contains("|${payload.prepId}|") }
+                journal.loadReceipts(client.account, payload.prepId).keys.forEach { receiptKey ->
+                    if (receiptKey.startsWith("queued:")) {
+                        val entryKey = receiptKey.removePrefix("queued:")
+                        if (entryKey in persistedTaskEntryKeys) add(entryKey)
+                    }
+                }
+            }
+            if (folders.isEmpty() && files.all { uri -> "file|${payload.prepId}|${payload.rootParentId}|$uri" in alreadyQueuedForPrep }) {
+                journal.saveUploadPrepJob(payload, status = WorkJobStatus.COMPLETED)
+                continue
+            }
+            val parentName = payload.directories[PREP_PARENT_NAME_KEY].orEmpty()
+            val selection = UploadSelection(files = files, folders = folders)
+            val origins = files.mapIndexed { index, uri -> UploadPreparationSource(sourceKey(uri, false), tr("所选文件 ${index + 1}", "Selected file ${index + 1}", "選択したファイル ${index + 1}", "선택한 파일 ${index + 1}", "所選檔案 ${index + 1}"), false) } +
+                folders.mapIndexed { index, uri -> UploadPreparationSource(sourceKey(uri, true), tr("所选文件夹 ${index + 1}", "Selected folder ${index + 1}", "選択したフォルダー ${index + 1}", "선택한 폴더 ${index + 1}", "所選資料夾 ${index + 1}"), true) }
+            val restoredDirs = payload.directories.mapNotNull { (compositeKey, folderId) ->
+                if (compositeKey == PREP_PARENT_NAME_KEY) return@mapNotNull null
+                val sep = compositeKey.indexOf('|')
+                if (sep <= 0) return@mapNotNull null
+                val srcKey = compositeKey.substring(0, sep)
+                val relPath = compositeKey.substring(sep + 1)
+                UploadPreparedDirectory(srcKey, relPath, folderId, payload.rootParentId)
+            }
+            val preparation = UploadPreparation(
+                id = payload.prepId,
+                account = client.account,
+                parentId = payload.rootParentId,
+                parentName = parentName,
+                selectedCount = selection.count,
+                createdAtMs = nowMs(),
+                sources = origins,
+                directories = restoredDirs,
+            )
+            _preparations.update { it + preparation }
+            val preparing = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+                prepare(client, selection, preparation, alreadyQueuedEntryKeys = alreadyQueuedForPrep)
+            }
+            preparationLock.withLock { preparationJobs[preparation.id] = preparing }
+            preparing.invokeOnCompletion {
+                runBlocking {
+                    preparationLock.withLock {
+                        if (preparationJobs[preparation.id] === preparing) preparationJobs.remove(preparation.id)
+                    }
+                }
+            }
+            preparing.start()
         }
     }
 
@@ -1119,6 +1293,9 @@ class PikoUploadCoordinator(
         const val TAG = "Upload"
         const val PROGRESS_INTERVAL_MS = 500L
         const val SPEED_WINDOW_MS = 3_000L
+        const val PREP_PARENT_NAME_KEY = "__parent_name__"
+        const val PREP_KIND_FILE = "FILE"
+        const val PREP_KIND_FOLDER = "FOLDER"
 
         /** 一个分片传到一半凭据到期也会被拒，留出余量。 */
         val EXPIRY_MARGIN = 10.minutes

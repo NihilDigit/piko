@@ -17,7 +17,10 @@ import dev.piko.shared.data.PikoClientProvider
 import dev.piko.shared.data.PikoDriveRepository
 import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isExtractableArchive
+import dev.piko.shared.work.DurableExtractJobPayload
+import dev.piko.shared.work.WorkJobStatus
 import io.github.nihildigit.pikpak.ArchivePasswordException
+import io.github.nihildigit.pikpak.FileKind
 import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.TaskPhase
@@ -29,8 +32,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.io.IOException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Clock
@@ -61,6 +66,8 @@ data class ArchiveJob(
     val id: String = file.id,
     val createdAtMs: Long = Clock.System.now().toEpochMilliseconds(),
     val remoteTaskId: String? = null,
+    val account: String = "",
+    internal val wasSubmittingBeforeRestart: Boolean = false,
 )
 
 /** 一个压缩包的结局：解压完成，或以某种原因失败。[message] 与 Snackbar 上的提示相同。 */
@@ -95,8 +102,8 @@ class ArchiveExtractSession(
         private set
     private var sequence = 0L
 
-    private fun newJob(file: FileStat, paths: List<String> = emptyList(), password: String = "") =
-        ArchiveJob(file, password = password, paths = paths, id = "archive-${++sequence}")
+    private fun newJob(account: String, file: FileStat, paths: List<String> = emptyList(), password: String = "") =
+        ArchiveJob(file, password = password, paths = paths, id = "archive-${++sequence}", account = account)
 
     val savedPasswords: StateFlow<List<String>> =
         vault.passwords.stateIn(scope, SharingStarted.Eagerly, emptyList())
@@ -132,8 +139,20 @@ class ArchiveExtractSession(
 
     private var worker: Job? = null
 
+    init {
+        val readyState = driveRepository.durableStore?.readyState
+        if (driveRepository.workJournal != null && readyState != null) {
+            scope.launch {
+                readyState.collect { ready ->
+                    if (ready != null) restoreDurableJobs(ready.account)
+                }
+            }
+        }
+    }
+
     /** 把 [files] 里的压缩包加进队列，其余文件与已在队列里的忽略。 */
     fun extract(files: List<FileStat>) {
+        val account = driveRepository.currentAccount.orEmpty()
         val queued = jobs.map { it.file.id }.toSet()
         val archives = files.filter { it.isExtractableArchive && it.id !in queued }.distinctBy { it.id }
         val volumes = files.count { it.isArchiveVolume }
@@ -147,7 +166,17 @@ class ArchiveExtractSession(
             if (volumes == 0 && files.none { it.isExtractableArchive }) _messages.tryEmit(tr("所选项目中无可解压的压缩包", "No extractable archives selected", "解凍可能な圧縮ファイルが選択されていません", "선택한 항목 중 압축 해제 가능한 파일이 없습니다", "所選項目中無可解壓縮的壓縮檔"))
             return
         }
-        jobs = jobs + archives.map { newJob(it) }
+        val created = archives.mapNotNull { stat ->
+            val candidate = newJob(account, stat)
+            if (persistExtractJob(candidate, WorkJobStatus.IN_PROGRESS)) {
+                candidate
+            } else {
+                _messages.tryEmit(tr("无法记录解压任务，请检查本机存储空间", "Could not persist extraction task; check device storage", "解凍タスクを保存できませんでした。端末の空き容量を確認してください", "압축 해제 작업을 기록할 수 없습니다. 기기 저장 공간을 확인하세요", "無法記錄解壓縮任務，請檢查本機儲存空間"))
+                null
+            }
+        }
+        if (created.isEmpty()) return
+        jobs = jobs + created
         ensureWorker()
     }
 
@@ -156,12 +185,17 @@ class ArchiveExtractSession(
      * 同一个包已在队列里时不再加：任务按压缩包排队，同一个包的两批会互相顶掉。
      */
     fun extractEntries(archive: FileStat, paths: List<String>, password: String) {
+        val account = driveRepository.currentAccount.orEmpty()
         if (jobs.any { it.file.id == archive.id }) {
             PikoLog.d(TAG, "Skipped partial extraction for ${logFile(archive.id, archive.name)}: already queued")
             _messages.tryEmit(tr("此压缩包正在解压", "This archive is already being extracted", "この圧縮ファイルは解凍中です", "이미 압축 해제 중인 파일입니다", "此壓縮檔正在解壓縮"))
             return
         }
-        val added = newJob(archive, password = password, paths = paths)
+        val added = newJob(account, archive, password = password, paths = paths)
+        if (!persistExtractJob(added, WorkJobStatus.IN_PROGRESS)) {
+            _messages.tryEmit(tr("无法记录解压任务，请检查本机存储空间", "Could not persist extraction task; check device storage", "解凍タスクを保存できませんでした。端末の空き容量を確認してください", "압축 해제 작업을 기록할 수 없습니다. 기기 저장 공간을 확인하세요", "無法記錄解壓縮任務，請檢查本機儲存空間"))
+            return
+        }
         PikoLog.i(
             TAG,
             "Enqueued partial archive extraction ${added.id} for ${logFile(archive.id, archive.name)} (paths=${paths.size}, hasPassword=${password.isNotEmpty()})",
@@ -175,7 +209,9 @@ class ArchiveExtractSession(
         if (requestedPasswordJobId == jobId) requestedPasswordJobId = null
         PikoLog.d(TAG, "Submitted password for archive job $jobId (${logFile(job.file.id, job.file.name)})")
         // 排到队首：用户正等着看这个密码对不对
-        jobs = listOf(job.copy(status = ArchiveJobStatus.Waiting, password = password, remoteTaskId = null)) + jobs.filterNot { it.id == jobId }
+        val updated = job.copy(status = ArchiveJobStatus.Waiting, password = password, remoteTaskId = null, wasSubmittingBeforeRestart = false)
+        jobs = listOf(updated) + jobs.filterNot { it.id == jobId }
+        persistExtractJob(updated, WorkJobStatus.IN_PROGRESS)
         ensureWorker()
     }
 
@@ -185,6 +221,10 @@ class ArchiveExtractSession(
         if (requestedPasswordJobId == jobId) requestedPasswordJobId = null
         jobs = jobs.filterNot { it.id == jobId && it.status is ArchiveJobStatus.NeedsPassword }
         completedJobs = completedJobs.filterNot { it.id == jobId }
+        val jobAccount = target?.account?.ifBlank { driveRepository.currentAccount.orEmpty() } ?: driveRepository.currentAccount.orEmpty()
+        if (jobAccount.isNotEmpty()) {
+            driveRepository.workJournal?.deleteJob(jobAccount, jobId)
+        }
         if (target != null) {
             PikoLog.i(TAG, "Skipped archive extraction awaiting password: job=$jobId, file=${logFile(target.file.id, target.file.name)}")
         }
@@ -194,15 +234,22 @@ class ArchiveExtractSession(
      * 退出登录或换号时调用。已提交的解压在服务端照常完成，只是不再跟踪。
      * 不取消 [scope]：它由调用方持有，之后还要复用。
      */
-    fun clear() {
-        val cancelledActive = jobs.size
-        worker?.cancel()
-        worker = null
-        requestedPasswordJobId = null
-        jobs = emptyList()
-        completedJobs = emptyList()
-        if (cancelledActive > 0) {
-            PikoLog.d(TAG, "Cleared archive extraction session ($cancelledActive active/queued jobs dropped)")
+    fun clear(account: String? = null) {
+        val dropped = if (account == null) jobs else jobs.filter { it.account == account || it.account.isEmpty() }
+        if (account == null || dropped.isNotEmpty()) {
+            worker?.cancel()
+            worker = null
+        }
+        if (requestedPasswordJobId != null && dropped.any { it.id == requestedPasswordJobId }) {
+            requestedPasswordJobId = null
+        }
+        jobs = if (account == null) emptyList() else jobs.filterNot { it.account == account || it.account.isEmpty() }
+        completedJobs = if (account == null) emptyList() else completedJobs.filterNot { it.account == account || it.account.isEmpty() }
+        if (dropped.isNotEmpty()) {
+            PikoLog.d(TAG, "Cleared archive extraction session (${dropped.size} active/queued jobs dropped)")
+        }
+        if (jobs.any { it.status == ArchiveJobStatus.Waiting }) {
+            ensureWorker()
         }
     }
 
@@ -218,12 +265,44 @@ class ArchiveExtractSession(
     }
 
     private suspend fun process(job: ArchiveJob) {
+        if (job.account.isNotEmpty() && driveRepository.currentAccount != job.account) return
         job.remoteTaskId?.let { taskId ->
             update(job.id) { it.copy(status = ArchiveJobStatus.Checking) }
             follow(job, taskId)
             return
         }
-        update(job.id) { it.copy(status = ArchiveJobStatus.Submitting) }
+        if (job.wasSubmittingBeforeRestart && job.paths.isEmpty() && job.file.parentId.isNotEmpty()) {
+            val expectedFolderName = job.file.name.substringBeforeLast('.', job.file.name).trim()
+            if (expectedFolderName.isNotEmpty()) {
+                val siblings = driveRepository.listBrowsable(job.file.parentId, dev.piko.shared.data.PikoFileSortOrder.TIME_DESC).getOrNull().orEmpty()
+                val alreadyExtracted = siblings.firstOrNull { cand ->
+                    cand.isFolder && !cand.trashed && cand.name == expectedFolderName
+                }
+                if (alreadyExtracted != null) {
+                    val inner = driveRepository.listBrowsable(alreadyExtracted.id, dev.piko.shared.data.PikoFileSortOrder.TIME_DESC).getOrNull()
+                    if (inner != null && inner.isNotEmpty()) {
+                        finish(
+                            job = job,
+                            message = tr("已解压 ${job.file.name}", "Extracted ${job.file.name}", "${job.file.name} を解凍しました", "${job.file.name} 압축 해제 완료", "已解壓縮 ${job.file.name}"),
+                            logMessage = "Reconciled completed archive extraction after restart for ${logFile(job.file.id, job.file.name)} (job=${job.id}, folder=${alreadyExtracted.id})",
+                            succeeded = true,
+                        )
+                        driveRepository.applyChange(DriveChange.ContentsChanged(setOf(job.file.parentId, alreadyExtracted.id)))
+                        return
+                    }
+                }
+            }
+        }
+        update(job.id) { it.copy(status = ArchiveJobStatus.Submitting, wasSubmittingBeforeRestart = false) }
+        val submittingJob = jobs.firstOrNull { it.id == job.id }
+        if (submittingJob != null && !persistExtractJob(submittingJob, WorkJobStatus.IN_PROGRESS, stateOverride = "SUBMITTING")) {
+            finish(
+                job = job,
+                message = tr("${job.file.name} 解压失败：无法写入本机任务记录", "Failed to extract ${job.file.name}: could not persist local task receipt", "${job.file.name} の解凍に失敗しました：ローカル記録を保存できません", "${job.file.name} 압축 해제 실패: 로컬 작업 기록을 저장할 수 없습니다", "${job.file.name} 解壓縮失敗：無法寫入本機任務記錄"),
+                logMessage = "Aborted archive extraction submission because journal write failed for ${logFile(job.file.id, job.file.name)} (job=${job.id})",
+            )
+            return
+        }
         val task = repository.start(job.file, job.password, job.paths).getOrElse { err ->
             if (err is ArchivePasswordException) {
                 PikoLog.i(
@@ -232,6 +311,7 @@ class ArchiveExtractSession(
                 )
                 // 没带密码时服务端报的是「缺少」；带了还被拒才算输错
                 update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
+                jobs.firstOrNull { it.id == job.id }?.let { persistExtractJob(it, WorkJobStatus.IN_PROGRESS) }
             } else {
                 finish(
                     job = job,
@@ -248,23 +328,26 @@ class ArchiveExtractSession(
             "Submitted archive extraction for ${logFile(job.file.id, job.file.name)} (job=${job.id}, task=${task.taskId}, bytes=${job.file.sizeBytes}, " +
                 "scope=${if (job.paths.isEmpty()) "full" else "paths:${job.paths.size}"}, hasPassword=${job.password.isNotEmpty()}, waitingInQueue=$waitingOthers)",
         )
-        // 服务端收下即说明密码正确，此时就存，不等解压完：下一个待输密码的包马上能选到它
-        if (job.password.isNotEmpty()) vault.remember(job.password)
+        // 先立即持久化远端 taskId，再异步记忆密码，防止进程在密码存储期间被杀后丢失 taskId 而重复提交解压请求
         update(job.id) { it.copy(status = ArchiveJobStatus.Extracting(0), remoteTaskId = task.taskId) }
+        jobs.firstOrNull { it.id == job.id }?.let { persistExtractJob(it, WorkJobStatus.IN_PROGRESS) }
+        if (job.password.isNotEmpty()) vault.remember(job.password)
         follow(job, task.taskId)
     }
 
     private suspend fun follow(job: ArchiveJob, taskId: String) {
+        val durable = driveRepository.workJournal != null
         var failures = 0
         while (true) {
             val progress = repository.progress(taskId).getOrElse { err ->
                 PikoLog.w(
                     TAG,
-                    "Failed to poll archive extraction progress for ${logFile(job.file.id, job.file.name)} (job=${job.id}, task=$taskId, attempt=${failures + 1}/$MAX_POLL_FAILURES)",
+                    "Failed to poll archive extraction progress for ${logFile(job.file.id, job.file.name)} (job=${job.id}, task=$taskId, attempt=${failures + 1})",
                     err,
                 )
                 failures++
-                if (failures >= MAX_POLL_FAILURES) {
+                val transient = isTransientExtractPollError(err)
+                if (failures >= MAX_POLL_FAILURES && (!durable || !transient)) {
                     finish(
                         job = job,
                         message = tr("${job.file.name} 解压失败：${failureReason(err)}", "Failed to extract ${job.file.name}: ${failureReason(err)}", "${job.file.name} の解凍に失敗しました：${failureReason(err)}", "${job.file.name} 압축 해제 실패: ${failureReason(err)}", "${job.file.name} 解壓縮失敗：${failureReason(err)}"),
@@ -274,7 +357,13 @@ class ArchiveExtractSession(
                     )
                     return
                 }
-                delay(queryRetryDelay)
+                val shift = (failures - 1).coerceIn(0, 4)
+                val nextDelay = if (durable) {
+                    (queryRetryDelay * (1 shl shift)).coerceAtMost(MAX_DURABLE_POLL_BACKOFF)
+                } else {
+                    queryRetryDelay
+                }
+                delay(nextDelay)
                 continue
             }
             failures = 0
@@ -314,7 +403,8 @@ class ArchiveExtractSession(
                             TAG,
                             "Archive extraction task $taskId failed due to password for ${logFile(job.file.id, job.file.name)} (job=${job.id}); awaiting user input",
                         )
-                        update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty())) }
+                        update(job.id) { it.copy(status = ArchiveJobStatus.NeedsPassword(incorrect = job.password.isNotEmpty()), remoteTaskId = null) }
+                        jobs.firstOrNull { it.id == job.id }?.let { persistExtractJob(it, WorkJobStatus.IN_PROGRESS) }
                     } else if (cause == ArchiveRepository.INVALID_FORMAT) {
                         finish(
                             job = job,
@@ -353,9 +443,104 @@ class ArchiveExtractSession(
             jobs = jobs.filterNot { it.id == job.id }
             completedJobs = (completedJobs.filterNot { it.id == job.id } + record).takeLast(100)
         }
+        persistExtractJob(
+            record,
+            if (outcome == ArchiveCompletion.SUCCEEDED) WorkJobStatus.COMPLETED else WorkJobStatus.FAILED,
+        )
         PikoLog.log(if (succeeded) LogLevel.INFO else LogLevel.WARN, TAG, logMessage, cause)
         _messages.tryEmit(message)
         _outcomes.tryEmit(ArchiveOutcome(job.file.name, outcome, message))
+    }
+
+    private fun restoreDurableJobs(account: String) {
+        val journal = driveRepository.workJournal ?: return
+        val existingIds = jobs.mapTo(HashSet()) { it.id }
+        val restored = ArrayList<ArchiveJob>()
+        for ((row, payload) in journal.loadInProgressExtractJobs(account)) {
+            if (payload.id in existingIds) continue
+            payload.id.removePrefix("archive-").toLongOrNull()?.let { num ->
+                if (num > sequence) sequence = num
+            }
+            val stat = FileStat(
+                id = payload.fileId,
+                kind = FileKind.FILE,
+                name = payload.fileName,
+                parentId = payload.fileParentId,
+                size = payload.fileSize.toString(),
+                mimeType = payload.fileMimeType,
+                hash = payload.fileGcid,
+                phase = TaskPhase.COMPLETE,
+            )
+            val status = when {
+                payload.remoteTaskId != null -> ArchiveJobStatus.Waiting
+                payload.state == "NEEDS_PASSWORD" || payload.hasPassword -> ArchiveJobStatus.NeedsPassword(incorrect = false)
+                else -> ArchiveJobStatus.Waiting
+            }
+            restored += ArchiveJob(
+                file = stat,
+                status = status,
+                password = "",
+                paths = payload.selectedInnerPaths.orEmpty(),
+                id = payload.id,
+                createdAtMs = row.createdAt,
+                remoteTaskId = payload.remoteTaskId,
+                account = payload.account.ifBlank { account },
+                wasSubmittingBeforeRestart = payload.remoteTaskId == null && payload.state == "SUBMITTING",
+            )
+        }
+        if (restored.isNotEmpty()) {
+            jobs = jobs + restored
+            if (restored.any { it.status == ArchiveJobStatus.Waiting }) {
+                ensureWorker()
+            }
+        }
+    }
+
+    private fun persistExtractJob(
+        job: ArchiveJob,
+        status: WorkJobStatus,
+        stateOverride: String? = null,
+    ): Boolean {
+        val journal = driveRepository.workJournal ?: return true
+        val account = job.account.ifBlank { driveRepository.currentAccount.orEmpty() }
+        if (account.isEmpty() || !journal.isPersistentFor(account)) return false
+        val stateName = stateOverride ?: when (job.status) {
+            is ArchiveJobStatus.NeedsPassword -> "NEEDS_PASSWORD"
+            ArchiveJobStatus.Submitting -> "SUBMITTING"
+            is ArchiveJobStatus.Extracting, ArchiveJobStatus.Checking -> "EXTRACTING"
+            is ArchiveJobStatus.Finished -> "FINISHED"
+            ArchiveJobStatus.Waiting -> "WAITING"
+        }
+        val progress = (job.status as? ArchiveJobStatus.Extracting)?.progress ?: 0
+        val payload = DurableExtractJobPayload(
+            id = job.id,
+            account = account,
+            fileId = job.file.id,
+            fileName = job.file.name,
+            fileParentId = job.file.parentId,
+            fileSize = job.file.sizeBytes,
+            fileMimeType = job.file.mimeType,
+            fileGcid = job.file.hash,
+            targetFolderId = job.file.parentId,
+            targetFolderName = "",
+            createSubfolder = false,
+            deleteArchiveAfter = false,
+            selectedInnerPaths = job.paths.takeIf { it.isNotEmpty() },
+            hasPassword = job.password.isNotEmpty() || job.status is ArchiveJobStatus.NeedsPassword,
+            state = stateName,
+            remoteTaskId = job.remoteTaskId,
+            progress = progress,
+        )
+        return journal.saveExtractJob(payload, status = status)
+    }
+
+    private fun isTransientExtractPollError(error: Throwable): Boolean = when (error) {
+        is IOException -> true
+        is PikPakException -> {
+            val code = error.httpStatus ?: 0
+            code == 408 || code == 429 || code >= 500 || code == 0
+        }
+        else -> false
     }
 
     private fun update(jobId: String, transform: (ArchiveJob) -> ArchiveJob) {
@@ -365,6 +550,7 @@ class ArchiveExtractSession(
     private companion object {
         const val TAG = "Archive"
         const val MAX_POLL_FAILURES = 5
+        val MAX_DURABLE_POLL_BACKOFF: Duration = 30.seconds
         val VOLUME_UNSUPPORTED: String get() = tr("PikPak 不支持解压分卷压缩包", "PikPak does not support extracting multi-volume archives", "PikPakは分割圧縮ファイルの解凍に対応していません", "PikPak은 분할 압축 파일 해제를 지원하지 않습니다", "PikPak 不支援解壓縮分割壓縮檔")
     }
 }

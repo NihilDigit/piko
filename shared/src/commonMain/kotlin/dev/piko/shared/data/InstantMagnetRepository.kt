@@ -3,20 +3,25 @@ package dev.piko.shared.data
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFailure
+import dev.piko.shared.log.logFile
 import dev.piko.shared.log.logFolder
 import io.ktor.client.request.prepareRequest
 import io.ktor.http.decodeURLPart
 import io.ktor.http.encodedPath
 import io.github.nihildigit.pikpak.CreateUrlResult
+import io.github.nihildigit.pikpak.FileStat
 import io.github.nihildigit.pikpak.MagnetResource
 import io.github.nihildigit.pikpak.DriveTask
 import io.github.nihildigit.pikpak.PruneResult
 import io.github.nihildigit.pikpak.ResolvedFile
+import io.github.nihildigit.pikpak.TaskPhase
+import io.github.nihildigit.pikpak.batchDelete
 import io.github.nihildigit.pikpak.batchMove
 import io.github.nihildigit.pikpak.createFolder
 import io.github.nihildigit.pikpak.deleteOfflineTasks
 import io.github.nihildigit.pikpak.getTask
 import io.github.nihildigit.pikpak.instantCreate
+import io.github.nihildigit.pikpak.listFiles
 import io.github.nihildigit.pikpak.pruneOfflineOutput
 import io.github.nihildigit.pikpak.rename
 import io.github.nihildigit.pikpak.PikPakClient
@@ -177,11 +182,17 @@ class InstantMagnetRepository(
         keepStructure: Boolean = false,
         names: Map<String, String> = emptyMap(),
         existingFolders: Map<String, String> = emptyMap(),
+        checkExistingInTarget: Boolean = false,
+        reservedFileIds: Set<String> = emptySet(),
+        alreadyMovedPreviews: Map<String, String> = emptyMap(),
+        clientOverride: PikPakClient? = null,
         onFolderCreated: (parentId: String, id: String, name: String) -> Unit = { _, _, _ -> },
         onFoldersResolved: (Map<String, String>) -> Unit = {},
+        onPreviewMoved: (path: String, fileId: String) -> Unit = { _, _ -> },
+        onFileSaved: (path: String, fileId: String) -> Unit = { _, _ -> },
         onProgress: (done: Int, total: Int, status: String?, detail: String?) -> Unit = { _, _, _, _ -> },
     ): Result<List<String>> {
-        val owner = clientManager.currentClient.value ?: return Result.failure(IllegalStateException("Not logged in"))
+        val owner = clientOverride ?: clientManager.currentClient.value ?: return Result.failure(IllegalStateException("Not logged in"))
         val accepted = items.toList()
         val previews = reuse.toMap()
         val acceptedNames = names.toMap()
@@ -189,7 +200,14 @@ class InstantMagnetRepository(
         return withContext(Dispatchers.Default) {
             saveFiles(
                 owner, accepted, targetParentId, previews, keepStructure, acceptedNames, folders,
-                onFolderCreated = onFolderCreated, onFoldersResolved = onFoldersResolved, onProgress = onProgress,
+                checkExistingInTarget = checkExistingInTarget,
+                reservedFileIds = reservedFileIds,
+                alreadyMovedPreviews = alreadyMovedPreviews,
+                onFolderCreated = onFolderCreated,
+                onFoldersResolved = onFoldersResolved,
+                onPreviewMoved = onPreviewMoved,
+                onFileSaved = onFileSaved,
+                onProgress = onProgress,
             )
         }
     }
@@ -233,6 +251,9 @@ class InstantMagnetRepository(
         }
     }
 
+    internal fun clientForAccount(expectedAccount: String): PikPakClient? =
+        clientManager.currentClient.value?.takeIf { it.account == expectedAccount }
+
     private suspend fun saveFiles(
         owner: PikPakClient,
         items: List<InstantFileItem>,
@@ -244,11 +265,16 @@ class InstantMagnetRepository(
         referenceVault: VaultStore? = null,
         source: String? = null,
         targetIsFreshFolder: Boolean = false,
+        checkExistingInTarget: Boolean = false,
+        reservedFileIds: Set<String> = emptySet(),
+        alreadyMovedPreviews: Map<String, String> = emptyMap(),
         knownMetaLookup: (gcid: String, size: Long) -> VaultMediaMeta? = { _, _ -> null },
         onReferencesSaved: (Map<String, Set<String>>) -> Unit = {},
         onFreshVaultFolders: (Set<String>) -> Unit = {},
         onFolderCreated: (parentId: String, id: String, name: String) -> Unit = { _, _, _ -> },
         onFoldersResolved: (Map<String, String>) -> Unit = {},
+        onPreviewMoved: (path: String, fileId: String) -> Unit = { _, _ -> },
+        onFileSaved: (path: String, fileId: String) -> Unit = { _, _ -> },
         onProgress: (done: Int, total: Int, status: String?, detail: String?) -> Unit = { _, _, _, _ -> },
     ): Result<List<String>> {
         val started = TimeSource.Monotonic.markNow()
@@ -288,7 +314,7 @@ class InstantMagnetRepository(
                             val folderName = dir.substringAfterLast('/')
                             Triple(dir, parentId to folderName, runSuspendCatching {
                                 savePermits.withPermit {
-                                    owner.createFolder(parentId, folderName)
+                                    owner.createOrClaimFolder(parentId, folderName)
                                 }.also {
                                     val doneNow = dev.piko.shared.util.withPikoLock(dirLock) { ++createdDirCount }
                                     onProgress(
@@ -304,10 +330,12 @@ class InstantMagnetRepository(
                 }
                 // 每层完成后单线程合并，失败也保留同层已经确认创建的目录。
                 results.forEach { (dir, meta, result) ->
-                    result.getOrNull()?.let { createdId ->
+                    result.getOrNull()?.let { (createdId, isFresh) ->
                         folderIds[dir] = createdId
-                        freshlyCreatedFolderIds += createdId
-                        onFolderCreated(meta.first, createdId, meta.second)
+                        if (isFresh) {
+                            freshlyCreatedFolderIds += createdId
+                            onFolderCreated(meta.first, createdId, meta.second)
+                        }
                     }
                 }
                 val failure = results.firstOrNull { it.third.isFailure }
@@ -423,9 +451,42 @@ class InstantMagnetRepository(
                 Result.failure(InstantSaveIncomplete(receipt, cause))
             }
         }
-        val consumedPreviews = HashSet<String>()
+        val consumedPreviews = HashSet<String>(reservedFileIds)
         val previews = files.associate { file ->
-            file.path to reuse[file.gcid]?.takeIf { consumedPreviews.add(it) }
+            val moved = alreadyMovedPreviews[file.path]?.takeIf { consumedPreviews.add(it) }
+            file.path to (moved ?: reuse[file.gcid]?.takeIf { consumedPreviews.add(it) })
+        }
+        val claimLock = dev.piko.shared.util.PikoLock()
+        val claimPools: Map<String, MutableList<FileStat>> = if (checkExistingInTarget && files.isNotEmpty()) {
+            val targetParents = files
+                .filter { previews[it.path] == null }
+                .mapTo(LinkedHashSet()) { file ->
+                    val relDir = if (keepStructure) file.path.substringBeforeLast('/', "") else ""
+                    folderIds[relDir] ?: targetParentId
+                }
+            val fetchedPools = runSuspendCatching {
+                coroutineScope {
+                    targetParents.map { pid ->
+                        async {
+                            val existing = savePermits.withPermit { owner.listFiles(pid) }
+                                .filter { !it.isFolder && !it.trashed && it.phase == TaskPhase.COMPLETE && it.id !in reservedFileIds }
+                                .toMutableList()
+                            pid to existing
+                        }
+                    }.awaitAll().toMap()
+                }
+            }
+            fetchedPools.getOrElse { listingError ->
+                val receipt = InstantSaveReceipt(
+                    owner.account,
+                    targetParentId,
+                    notAttempted = files.mapTo(HashSet()) { it.path },
+                    folders = folderIds.toMap(),
+                )
+                return Result.failure(InstantSaveIncomplete(receipt, listingError))
+            }
+        } else {
+            emptyMap()
         }
         var savedFilesProgress = 0
         val fileProgressLock = dev.piko.shared.util.PikoLock()
@@ -438,24 +499,73 @@ class InstantMagnetRepository(
                 files.map { file ->
                     async {
                         savePermits.withPermit {
-                            val parentId = folderIds[file.path.substringBeforeLast('/', "")] ?: targetParentId
+                            val relDir = if (keepStructure) file.path.substringBeforeLast('/', "") else ""
+                            val parentId = folderIds[relDir] ?: targetParentId
                             val existing = previews[file.path]
                             val name = names[file.path] ?: file.name
                             val out = if (existing == null) {
-                                val created = runSuspendCatching { owner.instantCreate(file = file, parentId = parentId, name = name) }
-                                InstantFileOutcome(file.path, created.getOrNull(), created.exceptionOrNull())
-                            } else {
-                                val moved = runSuspendCatching { owner.batchMove(listOf(existing), parentId) }
-                                val delivery = if (moved.isSuccess) true else runSuspendCatching { owner.getFile(existing) }
-                                    .getOrNull()?.let { !it.trashed && it.parentId == parentId } == true
-                                if (!delivery) InstantFileOutcome(file.path, null, moved.exceptionOrNull()) else {
-                                    if (name != file.name) {
-                                        runSuspendCatching { owner.rename(existing, name) }
-                                            .logFailure(TAG, "Failed to rename reused preview file $existing to $name")
+                                val claimed = claimPools[parentId]?.let { pool ->
+                                    dev.piko.shared.util.withPikoLock(claimLock) {
+                                        findClaimableTargetFile(pool, name, file.size, file.gcid)
                                     }
-                                    InstantFileOutcome(file.path, existing, null)
+                                }
+                                if (claimed != null) {
+                                    InstantFileOutcome(file.path, claimed.id, null)
+                                } else {
+                                    val created = runSuspendCatching { owner.instantCreate(file = file, parentId = parentId, name = name) }
+                                    InstantFileOutcome(file.path, created.getOrNull(), created.exceptionOrNull())
+                                }
+                            } else {
+                                val alreadyMoved = alreadyMovedPreviews[file.path] == existing
+                                val delivery = if (alreadyMoved) {
+                                    true
+                                } else {
+                                    val moved = runSuspendCatching { owner.batchMove(listOf(existing), parentId) }
+                                    val ok = if (moved.isSuccess) true else runSuspendCatching { owner.getFile(existing) }
+                                        .getOrNull()?.let { !it.trashed && it.parentId == parentId } == true
+                                    if (!ok) {
+                                        return@withPermit InstantFileOutcome(file.path, null, moved.exceptionOrNull())
+                                    }
+                                    onPreviewMoved(file.path, existing)
+                                    true
+                                }
+                                if (!delivery) InstantFileOutcome(file.path, null, null) else {
+                                    var finalId = existing
+                                    if (name != file.name) {
+                                        val renamedResult = runSuspendCatching { owner.rename(existing, name) }
+                                        val renameErr = renamedResult.exceptionOrNull()
+                                        if (renameErr != null) {
+                                            if (renameErr.isPikPakDuplicateNameError()) {
+                                                val siblings = runSuspendCatching { owner.listFiles(parentId) }
+                                                    .getOrDefault(emptyList())
+                                                val identical = siblings.firstOrNull { stat ->
+                                                    stat.id != existing &&
+                                                        !stat.isFolder &&
+                                                        !stat.trashed &&
+                                                        stat.phase == TaskPhase.COMPLETE &&
+                                                        stat.name == name &&
+                                                        stat.sizeBytes == file.size &&
+                                                        !file.gcid.isNullOrBlank() &&
+                                                        stat.hash.equals(file.gcid, ignoreCase = true)
+                                                }
+                                                if (identical != null) {
+                                                    runSuspendCatching { owner.batchDelete(listOf(existing)) }
+                                                    finalId = identical.id
+                                                } else {
+                                                    val existingNames = siblings.filter { !it.trashed }.mapTo(HashSet()) { it.name }
+                                                    val freeName = pickCollisionFreeFileName(name, existingNames)
+                                                    runSuspendCatching { owner.rename(existing, freeName) }
+                                                        .logFailure(TAG, "Failed to apply collision-free rename on reused preview file $existing")
+                                                }
+                                            } else {
+                                                renamedResult.logFailure(TAG, "Failed to rename reused preview file ${logFile(existing, name)}")
+                                            }
+                                        }
+                                    }
+                                    InstantFileOutcome(file.path, finalId, null)
                                 }
                             }
+                            out.id?.let { savedId -> onFileSaved(file.path, savedId) }
                             val doneNow = dev.piko.shared.util.withPikoLock(fileProgressLock) { ++savedFilesProgress }
                             onProgress(doneNow, files.size, tr("正在保存", "Saving", "保存中", "저장 중", "正在儲存"), name)
                             out

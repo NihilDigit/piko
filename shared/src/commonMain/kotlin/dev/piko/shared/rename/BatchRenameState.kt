@@ -531,7 +531,13 @@ class BatchRenameState(
         val selectedVaultEntryIds = sources.mapNotNullTo(HashSet()) { VaultEntry.entryIdOf(it.id) }
         scope.launch {
             val names = tree?.siblingNames.orEmpty().toMutableMap()
+            val ledger = driveRepo.vaultLedger
             for (parentId in sources.map { it.parentId }.distinct().filter { it !in names }) {
+                if (dev.piko.shared.data.VirtualVaultLocation.isVirtualFolder(parentId)) {
+                    val vChildren = driveRepo.cachedBrowsable(parentId, dev.piko.shared.data.PikoFileSortOrder.TIME_DESC).orEmpty()
+                    names[parentId] = vChildren.filter { it.id !in selectedIds }.mapTo(HashSet()) { it.name }
+                    continue
+                }
                 val listing = driveRepo.localRealChildrenIfClean(parentId)
                     ?: driveRepo.listAllFiles(parentId)
                         .logFailure(TAG, "Failed to list sibling names in ${logFolder(parentId)}")
@@ -545,7 +551,16 @@ class BatchRenameState(
                         ?: driveRepo.vault.read(parentId, listing).getOrDefault(emptyList())
                     entries.filter { it.isArchived && it.id !in selectedVaultEntryIds }.map { it.name }
                 } else emptyList()
-                names[parentId] = visibleReal.filter { it.id !in selectedIds }.mapTo(HashSet()) { it.name } + vaultedSiblings
+                val ledgerSiblings = if (ledger != null) {
+                    val vFolders = ledger.virtualFoldersIn(parentId) { "" }
+                        .filter { it.id !in selectedIds }
+                        .map { it.name }
+                    val vFiles = ledger.archivedEntriesIn(parentId)
+                        .filter { it.id !in selectedVaultEntryIds && it.virtualId !in selectedIds }
+                        .map { it.name }
+                    vFolders + vFiles
+                } else emptyList()
+                names[parentId] = visibleReal.filter { it.id !in selectedIds }.mapTo(HashSet()) { it.name } + vaultedSiblings + ledgerSiblings
             }
             siblingNames = names
             // 片名还在查时等查完再做，规范名还会变
@@ -585,7 +600,9 @@ class BatchRenameState(
             try {
                 run.execute(plan)
             } finally {
-                val touched = plan.steps.filterNot { VaultEntry.isVaulted(it.source.id) }.mapTo(HashSet()) { it.source.parentId }
+                val touched = plan.steps
+                    .filterNot { VaultEntry.isVaulted(it.source.id) || dev.piko.shared.data.VirtualVaultLocation.isVirtualFolder(it.source.id) }
+                    .mapTo(HashSet()) { it.source.parentId }
                 if (touched.isNotEmpty()) {
                     if (wasStopped || run.failures.isNotEmpty()) {
                         driveRepo.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(touched))
@@ -597,7 +614,7 @@ class BatchRenameState(
                 PikoLog.i(
                     TAG,
                     "Batch rename finished: succeeded=$succeededCount/${plan.changeCount}, failed=${failures.size}, " +
-                        "steps=${run.renamed.size}, vaultFolders=${run.vaultReverts.size}, " +
+                        "steps=${run.renamed.size}, vaultFolders=${run.vaultReverts.size}, ledgerOps=${run.ledgerRevertOps.size}, " +
                         "swaps=${run.swapsExecuted}, rolledBack=${run.rolledBack}, stopped=$wasStopped, elapsedMs=${started.elapsedNow().inWholeMilliseconds}",
                 )
                 phase = Phase.DONE
@@ -605,12 +622,23 @@ class BatchRenameState(
                 when {
                     run.renamed.isNotEmpty() -> {
                         driveRepo.changes.record(
-                            DriveChangeJournal.Change.Rename(run.renamed.toList(), summary(), vaultReverts = run.vaultReverts.toMap()),
+                            DriveChangeJournal.Change.Rename(
+                                run.renamed.toList(),
+                                summary(),
+                                vaultReverts = run.vaultReverts.toMap(),
+                                ledgerRevertOps = run.ledgerRevertOps.toList(),
+                            ),
                         )
                         _messages.tryEmit("")
                     }
-                    run.vaultReverts.isNotEmpty() -> {
-                        driveRepo.changes.record(DriveChangeJournal.Change.Vault(run.vaultReverts.toMap(), summary()))
+                    run.vaultReverts.isNotEmpty() || run.ledgerRevertOps.isNotEmpty() -> {
+                        driveRepo.changes.record(
+                            DriveChangeJournal.Change.Vault(
+                                run.vaultReverts.toMap(),
+                                summary(),
+                                ledgerRevertOps = run.ledgerRevertOps.toList(),
+                            ),
+                        )
                         _messages.tryEmit("")
                     }
                     else -> _messages.tryEmit(summary())

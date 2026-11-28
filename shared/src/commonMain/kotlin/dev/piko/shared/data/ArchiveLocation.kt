@@ -35,10 +35,29 @@ fun List<PikoPathBreadcrumb>.outsideArchives(): List<PikoPathBreadcrumb> {
     return if (first < 0) this else subList(0, first)
 }
 
-/** 能放进东西、能列出网盘内容的真实文件夹，库、压缩包与待保存虚拟目录都不是。 */
+/** 能放进东西、能列出网盘内容的真实文件夹，库、压缩包、待保存虚拟目录与引用虚拟目录都不是。 */
 fun isDriveFolderId(id: String): Boolean =
     !LocalLocation.isLocal(id) && DriveLibrary.of(id) == null && ArchiveLocation.of(id) == null &&
-        ImportPreviewLocation.of(id) == null && !id.startsWith("import-dir:")
+        ImportPreviewLocation.of(id) == null && !id.startsWith("import-dir:") &&
+        !VirtualVaultLocation.isVirtualFolder(id)
+
+/** 可容纳归档引用条目的容器目录：真实网盘目录或引用保存虚拟目录（`vdir:*`）。 */
+fun isVaultContainerFolderId(id: String): Boolean =
+    isDriveFolderId(id) || VirtualVaultLocation.isVirtualFolder(id)
+
+/**
+ * 引用保存虚拟目录位置（由 [AccountVaultLedger] 维护，本地 SQLite 持久化并经 `.piko/vault-ops/` 跨端同步）。
+ */
+object VirtualVaultLocation {
+    const val PREFIX = "vdir:"
+
+    fun of(nodeId: String): String = "$PREFIX${nodeId.removePrefix(PREFIX)}"
+
+    fun isVirtualFolder(id: String): Boolean = id.startsWith(PREFIX) && id.length > PREFIX.length
+
+    fun nodeIdOf(id: String): String? =
+        if (isVirtualFolder(id)) id.removePrefix(PREFIX) else null
+}
 
 /**
  * 添加链接时混入网盘浏览页的虚拟文件夹位置。

@@ -354,7 +354,7 @@ class FolderVaultSession internal constructor(
                         knownMetaLookup = ops::knownMeta,
                         beforeFolderWrite = { _, _, _ -> ensureCurrent(work) },
                         writeFolder = { folderId, entries, _ ->
-                            runSuspendCatching { ops.write(folderId, entries) }
+                            runSuspendCatching { ops.write(folderId, entries, requireRemoteComplete = delete) }
                         },
                         onFolderCommitted = { folderId, drafts, entries ->
                             val files = drafts.map { requireNotNull(it.originFile) }
@@ -674,7 +674,10 @@ class FolderVaultSession internal constructor(
         var manifestsUpdated = 0
         var restoredTotal = 0
         val trashByFolder = LinkedHashMap<String, List<String>>()
+        val ledgerTrashIds = ArrayList<String>()
         val reverts = LinkedHashMap<String, VaultEdit>()
+        val ledgerRevertOps = ArrayList<dev.piko.shared.data.VaultOp>()
+        val restarVaultByFolder = LinkedHashMap<String, List<VaultEntry>>()
         coroutineScope {
             val folders = Semaphore(8)
             val recreates = Semaphore(16)
@@ -733,13 +736,23 @@ class FolderVaultSession internal constructor(
                     ensureCurrent(work)
                     // 清单确认或未决时均同步绑定该目录的反向恢复条目与待回收副本，确保撤销必先写回归档条目再移走实体文件
                     runSuspendCatching { ops.markRestored(folderId, restored) }
-                        .onSuccess { write ->
+                        .onSuccess { markResult ->
                             lock.withLock {
                                 manifestsAttempted++
                                 manifestsUpdated++
-                                reverts[folderId] = VaultEdits.add(write.before.filter { it.id in restored })
-                                if (folderUndoTrashIds.isNotEmpty()) {
-                                    trashByFolder[folderId] = folderUndoTrashIds.toList()
+                                if (!dev.piko.shared.data.VirtualVaultLocation.isVirtualFolder(folderId) && markResult.before.isNotEmpty()) {
+                                    reverts[folderId] = VaultEdits.add(markResult.before.filter { it.id in restored })
+                                    if (folderUndoTrashIds.isNotEmpty()) {
+                                        trashByFolder[folderId] = folderUndoTrashIds.toList()
+                                    }
+                                } else if (folderUndoTrashIds.isNotEmpty()) {
+                                    ledgerTrashIds += folderUndoTrashIds
+                                }
+                                if (markResult.ledgerRevertOps.isNotEmpty()) {
+                                    ledgerRevertOps += markResult.ledgerRevertOps
+                                }
+                                if (markResult.restarEntries.isNotEmpty()) {
+                                    restarVaultByFolder[folderId] = markResult.restarEntries
                                 }
                             }
                         }
@@ -747,7 +760,7 @@ class FolderVaultSession internal constructor(
                             lock.withLock {
                                 manifestsAttempted++
                                 manifestFailures++
-                                if (folderUndoTrashIds.isNotEmpty()) {
+                                if (!dev.piko.shared.data.VirtualVaultLocation.isVirtualFolder(folderId) && folderUndoTrashIds.isNotEmpty()) {
                                     reverts[folderId] = VaultEdits.add(entries.filter { it.id in restored })
                                     trashByFolder[folderId] = folderUndoTrashIds.toList()
                                 }
@@ -775,14 +788,16 @@ class FolderVaultSession internal constructor(
         }
         val manifestNote = if (manifestFailures > 0 && (failed > 0 || stopping)) tr("，$manifestFailures 个文件夹的归档清单未更新，列表可能重复显示", "; $manifestFailures folder manifests were not updated and may show duplicates", "。$manifestFailures フォルダーの一覧を更新できず、重複表示する可能性があります", ". ${manifestFailures}개 폴더의 보관 목록이 갱신되지 않아 중복 표시될 수 있습니다", "，$manifestFailures 個資料夾的歸檔清單未更新，列表可能重複顯示") else ""
         val named = scopedSummary(work.name, "$summary$manifestNote")
-        val undoTrashFlat = trashByFolder.values.flatten()
-        val undoable = reverts.isNotEmpty()
+        val undoTrashFlat = trashByFolder.values.flatten() + ledgerTrashIds
+        val undoable = reverts.isNotEmpty() || ledgerRevertOps.isNotEmpty()
         val change = if (undoable) {
             DriveChangeJournal.Change.Vault(
                 reverts = reverts,
                 summary = named,
                 trashOnRevert = undoTrashFlat,
                 trashByFolder = trashByFolder,
+                ledgerRevertOps = ledgerRevertOps.toList(),
+                restarVaultByFolder = restarVaultByFolder.toMap(),
             )
         } else null
         if (undoable) {
@@ -1006,12 +1021,71 @@ private class DriveFolderVaultOperations(private val drive: PikoDriveRepository)
 private class BoundDriveFolderVaultOperations(
     private val access: dev.piko.shared.data.DriveWriteAccess,
 ) : FolderVaultOperations {
+    private val materializedVirtualFolders = HashMap<String, String>()
+    private val claimedRealFileIds = HashSet<String>()
+    private val materializeLock = Mutex()
+
+    private suspend fun resolveExistingRealFolderFor(folderId: String): String? {
+        if (!dev.piko.shared.data.VirtualVaultLocation.isVirtualFolder(folderId)) return folderId
+        materializeLock.withLock {
+            materializedVirtualFolders[folderId]?.let { return it }
+            val ledger = access.vaultLedger ?: return null
+            val (anchorId, chain) = ledger.breadcrumbChainForVirtualFolder(folderId) ?: return null
+            var currentParent = anchorId
+            for (step in chain) {
+                val cached = materializedVirtualFolders[step.id]
+                if (cached != null) {
+                    currentParent = cached
+                } else {
+                    val children = access.listFolder(currentParent).getOrNull() ?: return null
+                    val match = children.firstOrNull { it.isFolder && !it.trashed && it.name == step.name }
+                        ?: return null
+                    materializedVirtualFolders[step.id] = match.id
+                    currentParent = match.id
+                }
+            }
+            return currentParent
+        }
+    }
+
+    private suspend fun ensureRealFolderFor(folderId: String): Pair<String, Boolean> {
+        if (!dev.piko.shared.data.VirtualVaultLocation.isVirtualFolder(folderId)) return folderId to false
+        materializeLock.withLock {
+            materializedVirtualFolders[folderId]?.let { return it to false }
+            val ledger = access.vaultLedger ?: error("Account vault ledger unavailable")
+            val (anchorId, chain) = ledger.breadcrumbChainForVirtualFolder(folderId)
+                ?: error("Virtual reference folder not found")
+            var currentParent = anchorId
+            var leafWasFresh = false
+            for (step in chain) {
+                val cached = materializedVirtualFolders[step.id]
+                if (cached != null) {
+                    currentParent = cached
+                    leafWasFresh = false
+                } else {
+                    val (createdId, isFresh) = access.createOrClaimFolder(currentParent, step.name).getOrThrow()
+                    materializedVirtualFolders[step.id] = createdId
+                    currentParent = createdId
+                    leafWasFresh = isFresh
+                }
+            }
+            return currentParent to leafWasFresh
+        }
+    }
+
     override suspend fun list(folderId: String): List<FileStat> = access.browsableList(folderId).getOrThrow()
     override fun knownCid(gcid: String, size: Long): String? = access.vault.knownCidOf(gcid, size)
     override fun knownMeta(gcid: String, size: Long): VaultMediaMeta? = access.knownVaultMetaOf(gcid, size)
     override suspend fun sampleCid(file: FileStat): String? = access.sampleCid(file.id).getOrNull()
-    override suspend fun write(folderId: String, entries: List<VaultEntry>) {
+    override suspend fun write(folderId: String, entries: List<VaultEntry>, requireRemoteComplete: Boolean) {
         access.vault.update(folderId, VaultEdits.add(entries)).getOrThrow()
+        if (requireRemoteComplete && entries.isNotEmpty()) {
+            access.vault.awaitRemoteComplete(folderId, entries.mapTo(HashSet()) { it.id }).getOrThrow()
+        }
+    }
+
+    override suspend fun write(folderId: String, entries: List<VaultEntry>) {
+        write(folderId, entries, requireRemoteComplete = false)
     }
     override suspend fun remove(ids: List<String>, permanently: Boolean) {
         if (permanently) {
@@ -1029,22 +1103,36 @@ private class BoundDriveFolderVaultOperations(
     override fun rememberFullyVaulted(folderIds: Set<String>) = access.rememberFullyVaulted(folderIds)
 
     override suspend fun archived(folderId: String): ArchivedLevel {
+        val ledger = access.vaultLedger
+        if (dev.piko.shared.data.VirtualVaultLocation.isVirtualFolder(folderId)) {
+            if (ledger == null) return ArchivedLevel(emptyList(), emptyList())
+            val subfolders = ledger.virtualFoldersIn(folderId) { "" }
+            val entries = ledger.archivedEntriesIn(folderId)
+            return ArchivedLevel(subfolders, entries)
+        }
+        val ledgerFolders = ledger?.virtualFoldersIn(folderId) { "" }.orEmpty()
+        val ledgerEntries = ledger?.archivedEntriesIn(folderId).orEmpty()
         val cleanChildren = access.localCleanChildren(folderId)
         if (cleanChildren != null) {
             val cachedEntries = access.vault.cached(folderId, cleanChildren)
             if (cachedEntries != null) {
-                val subfolders = cleanChildren.filter { it.isFolder && !it.trashed && it.name !in SKIPPED_FOLDERS }
-                return ArchivedLevel(subfolders, cachedEntries.filter { it.isArchived })
+                val subfolders = cleanChildren.filter { it.isFolder && !it.trashed && it.name !in SKIPPED_FOLDERS } + ledgerFolders
+                return ArchivedLevel(subfolders, cachedEntries.filter { it.isArchived } + ledgerEntries)
             }
         }
         val listing = access.listFolder(folderId).getOrThrow()
-        val entries = access.vault.read(folderId, listing).getOrThrow().filter { it.isArchived }
-        val subfolders = listing.filter { it.isFolder && !it.trashed && it.name !in SKIPPED_FOLDERS }
+        val entries = access.vault.read(folderId, listing).getOrThrow().filter { it.isArchived } + ledgerEntries
+        val subfolders = listing.filter { it.isFolder && !it.trashed && it.name !in SKIPPED_FOLDERS } + ledgerFolders
         return ArchivedLevel(subfolders, entries)
     }
 
-    override suspend fun presentRealFiles(folderId: String): List<FileStat> =
-        access.presentRealChildren(folderId).getOrThrow()
+    override suspend fun presentRealFiles(folderId: String): List<FileStat> {
+        if (dev.piko.shared.data.VirtualVaultLocation.isVirtualFolder(folderId)) {
+            val existingRealId = resolveExistingRealFolderFor(folderId) ?: return emptyList()
+            return access.presentRealChildren(existingRealId).getOrThrow()
+        }
+        return access.presentRealChildren(folderId).getOrThrow()
+    }
 
     override suspend fun trash(): List<FileStat> = access.trashFiles(fresh = false).getOrThrow()
 
@@ -1059,25 +1147,109 @@ private class BoundDriveFolderVaultOperations(
         access.rename(id, name).onSuccess { access.publish(DriveChange.Renamed(id, name, null)) }.getOrThrow()
     }
 
-    override suspend fun recreate(entry: VaultEntry, folderId: String): String =
-        access.instantCreate(
+    override suspend fun recreate(entry: VaultEntry, folderId: String): String {
+        val (realParentId, isFresh) = ensureRealFolderFor(folderId)
+        if (!isFresh) {
+            val present = access.presentRealChildren(realParentId).getOrNull().orEmpty()
+            val claimedId = materializeLock.withLock {
+                val matched = present.firstOrNull { stat ->
+                    stat.id !in claimedRealFileIds && entry.matches(stat)
+                }
+                matched?.id?.also(claimedRealFileIds::add)
+            }
+            if (claimedId != null) return claimedId
+        }
+        return access.instantCreate(
             file = ResolvedFile(path = entry.name, size = entry.size, gcid = entry.gcid),
-            parentId = folderId,
+            parentId = realParentId,
             source = entry.source,
             notifyChange = false,
-        ).getOrThrow()
+        ).getOrThrow().also { createdId ->
+            materializeLock.withLock { claimedRealFileIds += createdId }
+        }
+    }
 
     override suspend fun markRestored(folderId: String, files: Map<String, FileStat>): VaultWrite {
-        val starredEntries = files.filterKeys(access::isVaultEntryStarred)
-        return access.vault.update(folderId, VaultEdits.restore(files)).getOrThrow().also {
-            if (starredEntries.isNotEmpty()) {
-                access.star(starredEntries.values.map { it.id }, value = true)
-                    .logFailure(VaultTag, "Failed to reapply star tags after restoring ${starredEntries.size} vault items in ${logFolder(folderId)}")
-                    .onSuccess {
-                        access.unstarVaultEntries(starredEntries.keys)
-                    }
+        val starredEntryIds = files.keys.filterTo(HashSet(), access::isVaultEntryStarred)
+        val ledger = access.vaultLedger
+        val (ledgerFiles, storeFiles) = if (ledger != null) {
+            val lMap = LinkedHashMap<String, FileStat>()
+            val sMap = LinkedHashMap<String, FileStat>()
+            for ((entryId, stat) in files) {
+                if (ledger.hasEntry(entryId) || dev.piko.shared.data.VirtualVaultLocation.isVirtualFolder(folderId)) {
+                    lMap[entryId] = stat
+                } else {
+                    sMap[entryId] = stat
+                }
             }
+            lMap to sMap
+        } else {
+            emptyMap<String, FileStat>() to files
         }
+
+        var ledgerBefore = emptyList<VaultEntry>()
+        var ledgerAfter = emptyList<VaultEntry>()
+        val revertOps = ArrayList<dev.piko.shared.data.VaultOp>()
+        if (ledger != null && ledgerFiles.isNotEmpty()) {
+            val nowMs = Clock.System.now().toEpochMilliseconds()
+            ledgerBefore = ledger.archivedEntriesIn(folderId) + ledger.restoredEntriesIn(folderId)
+            val deletedSnapshots = ArrayList<dev.piko.shared.data.VaultNodeSnapshot>()
+            val ops = if (dev.piko.shared.data.VirtualVaultLocation.isVirtualFolder(folderId)) {
+                ledgerFiles.keys.map { entryId ->
+                    ledger.nodeOf(entryId)?.toSnapshot()?.let(deletedSnapshots::add)
+                    dev.piko.shared.data.VaultOp.DeleteNode(entryId, nowMs)
+                }
+            } else {
+                ledgerFiles.map { (entryId, stat) ->
+                    revertOps += dev.piko.shared.data.VaultOp.MarkRestored(entryId, null, nowMs + 2)
+                    dev.piko.shared.data.VaultOp.MarkRestored(entryId, stat.id, nowMs)
+                }
+            }
+            val touched = ledger.applyLocalOps(access.account, ops, nowMs).getOrThrow().toMutableSet()
+            if (dev.piko.shared.data.VirtualVaultLocation.isVirtualFolder(folderId)) {
+                val stillHasKids = ledger.projection.value.childrenByParent[folderId].orEmpty().isNotEmpty()
+                if (!stillHasKids) {
+                    dev.piko.shared.data.VirtualVaultLocation.nodeIdOf(folderId)?.let { vNodeId ->
+                        val vNodeSnap = ledger.nodeOf(vNodeId)?.toSnapshot()
+                        touched += ledger.applyLocalOps(access.account, listOf(dev.piko.shared.data.VaultOp.DeleteNode(vNodeId, nowMs + 1)), nowMs + 1).getOrDefault(emptySet())
+                        if (vNodeSnap != null) deletedSnapshots.add(0, vNodeSnap)
+                    }
+                }
+                if (deletedSnapshots.isNotEmpty()) {
+                    revertOps += dev.piko.shared.data.VaultOp.RestoreSnapshot(deletedSnapshots, nowMs + 2)
+                }
+            }
+            ledgerAfter = ledger.archivedEntriesIn(folderId) + ledger.restoredEntriesIn(folderId)
+            val materializedReal = materializeLock.withLock { materializedVirtualFolders[folderId] }
+            if (materializedReal != null) touched += materializedReal
+            if (touched.isNotEmpty()) access.publish(DriveChange.ContentsChanged(touched))
+        }
+
+        val storeWrite = if (storeFiles.isNotEmpty()) {
+            access.vault.update(folderId, VaultEdits.restore(storeFiles)).getOrThrow()
+        } else {
+            VaultWrite(before = emptyList(), after = emptyList())
+        }
+        val combinedBefore = storeWrite.before + ledgerBefore
+        val restarEntries = if (starredEntryIds.isEmpty()) {
+            emptyList()
+        } else {
+            combinedBefore.filter { it.id in starredEntryIds }
+        }
+        if (starredEntryIds.isNotEmpty()) {
+            val starredStats = files.filterKeys { it in starredEntryIds }
+            access.star(starredStats.values.map { it.id }, value = true)
+                .logFailure(VaultTag, "Failed to reapply star tags after restoring ${starredStats.size} vault items in ${logFolder(folderId)}")
+                .onSuccess {
+                    access.unstarVaultEntries(starredStats.keys)
+                }
+        }
+        return VaultWrite(
+            before = combinedBefore,
+            after = storeWrite.after + ledgerAfter,
+            ledgerRevertOps = revertOps,
+            restarEntries = restarEntries,
+        )
     }
 }
 

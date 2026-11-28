@@ -28,11 +28,12 @@ class DriveCommandsTest {
 
     @Test
     fun `place commands only in a real folder and naming follows the parser switch`() {
-        val folders = setOf(CommandPlace.ROOT, CommandPlace.FOLDER)
+        val realFolders = setOf(CommandPlace.ROOT, CommandPlace.FOLDER)
+        val browsableFolders = setOf(CommandPlace.ROOT, CommandPlace.FOLDER, CommandPlace.VIRTUAL_FOLDER)
         for (place in CommandPlace.entries) {
             val on = driveCommands(inputs(place, selecting = false))
-            assertEquals(place in folders, on.findDuplicates, "$place")
-            assertEquals(place in folders, on.canonicalNaming, "$place")
+            assertEquals(place in realFolders, on.findDuplicates, "$place")
+            assertEquals(place in browsableFolders, on.canonicalNaming, "$place")
             assertEquals(false, driveCommands(inputs(place, selecting = false, nameParsing = false)).canonicalNaming, "$place")
         }
     }
@@ -76,7 +77,7 @@ class DriveCommandsTest {
                     feedSupported = false,
                     nameParsing = true,
                 ))
-                assertEquals(clipboardFull && place in setOf(CommandPlace.ROOT, CommandPlace.FOLDER), commands.paste, "$place")
+                assertEquals(clipboardFull && place in setOf(CommandPlace.ROOT, CommandPlace.FOLDER, CommandPlace.VIRTUAL_FOLDER), commands.paste, "$place")
                 assertEquals(false, commands.findDuplicates, "$place")
                 assertEquals(false, commands.canonicalNaming, "$place")
                 assertEquals(false, commands.emptyPlace, "$place")
@@ -148,12 +149,13 @@ class DriveCommandsTest {
         val partial = FileStat(kind = FileKind.FOLDER, id = "partial", name = "partial")
         val file = FileStat(kind = FileKind.FILE, id = "file", name = "file")
         val fullIds = setOf(full.id)
-        val allowed = setOf(CommandPlace.ROOT, CommandPlace.FOLDER, CommandPlace.SEARCH)
+        val vaultAllowed = setOf(CommandPlace.ROOT, CommandPlace.FOLDER, CommandPlace.SEARCH)
+        val unvaultAllowed = setOf(CommandPlace.ROOT, CommandPlace.FOLDER, CommandPlace.VIRTUAL_FOLDER, CommandPlace.SEARCH)
         for (place in CommandPlace.entries) {
             assertFalse(itemCommands(place, listOf(full), fullIds).vault, "$place")
-            assertEquals(place in allowed, itemCommands(place, listOf(full), fullIds).unvault, "$place")
-            assertEquals(place in allowed, itemCommands(place, listOf(full, partial), fullIds).vault, "$place")
-            assertEquals(place in allowed, itemCommands(place, listOf(full, file), fullIds).vault, "$place")
+            assertEquals(place in unvaultAllowed, itemCommands(place, listOf(full), fullIds).unvault, "$place")
+            assertEquals(place in vaultAllowed, itemCommands(place, listOf(full, partial), fullIds).vault, "$place")
+            assertEquals(place in vaultAllowed, itemCommands(place, listOf(full, file), fullIds).vault, "$place")
         }
     }
 
@@ -202,5 +204,24 @@ class DriveCommandsTest {
         assertFalse(itemCommands(CommandPlace.TRASH, listOf(folder1, folder2)).unwrapOrFlatten)
         assertFalse(itemCommands(CommandPlace.ARCHIVE, listOf(folder1, folder2)).unwrapOrFlatten)
         assertFalse(itemCommands(CommandPlace.FOLDER, listOf(localFolder)).unwrapOrFlatten)
+    }
+
+    @Test
+    fun `virtual reference folders suppress physical-only actions while retaining rename move cut and unvault`() {
+        val vFolder = FileStat(kind = FileKind.FOLDER, id = dev.piko.shared.data.VirtualVaultLocation.of("v1"), name = "Season 1")
+        val cmds = itemCommands(CommandPlace.FOLDER, listOf(vFolder))
+        assertTrue(cmds.rename)
+        assertTrue(cmds.moveTo)
+        assertTrue(cmds.cut)
+        assertTrue(cmds.moveToTrash)
+        assertTrue(cmds.unvault)
+        assertTrue(cmds.download)
+        assertFalse(cmds.share)
+        assertFalse(cmds.cutCopy)
+        assertFalse(cmds.moveCopyTo)
+        assertFalse(cmds.vault)
+        assertFalse(cmds.viewSpaceMap)
+        assertFalse(cmds.unwrapOrFlatten)
+        assertFalse(cmds.mergeFolders)
     }
 }

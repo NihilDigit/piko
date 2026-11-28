@@ -1,6 +1,7 @@
 package dev.piko.ui.screens.drive
 
 import dev.piko.shared.data.ArchiveEntryId
+import dev.piko.shared.data.VirtualVaultLocation
 import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isDriveFolderId
 import dev.piko.shared.data.isExtractableArchive
@@ -48,6 +49,7 @@ internal enum class CommandPlace {
     ARCHIVE,
     IMPORT_PREVIEW,
     LOCAL,
+    VIRTUAL_FOLDER,
 }
 
 internal class CommandInputs(
@@ -133,9 +135,11 @@ internal fun itemCommands(place: CommandPlace, targets: List<FileStat>, fullyVau
     // 上传中、压缩包内、导入预览和本地只读条目不能写入；归档条目与普通文件同等支持重命名、移动、剪切、星标与移除
     val local = place == CommandPlace.LOCAL || targets.any { dev.piko.shared.data.LocalLocation.isLocal(it.id) }
     val editable = hasTargets && !local && !inArchive && targets.none { it.isUploading || it.isImportPreview }
-    val settled = editable && targets.none { it.isVaulted }
-    val vaultContext = settled && (place == CommandPlace.ROOT || place == CommandPlace.FOLDER || place == CommandPlace.SEARCH)
+    val settled = editable && targets.none { it.isVaulted || VirtualVaultLocation.isVirtualFolder(it.id) }
     val inRealFolder = place == CommandPlace.ROOT || place == CommandPlace.FOLDER
+    val inContainerFolder = inRealFolder || place == CommandPlace.VIRTUAL_FOLDER
+    val vaultContext = settled && (inRealFolder || place == CommandPlace.SEARCH)
+    val unvaultContext = editable && (inContainerFolder || place == CommandPlace.SEARCH)
     val allEligibleFolders = inRealFolder && settled && targets.all(FolderStructureOps::isEligibleCloudFolder)
     return ItemCommands(
         cutCopy = settled && !inTrash,
@@ -149,15 +153,15 @@ internal fun itemCommands(place: CommandPlace, targets: List<FileStat>, fullyVau
         // 文件夹整个下载，见 PikoDownloadCoordinator.enqueueFolders；压缩包里的文件夹不在网盘里，列不出内容，只下文件
         download = hasTargets && !local && !inTrash && targets.any { !it.isUploading && !(inArchive && it.isFolder) && (!it.isImportPreview || it.isFolder || it.hash.isNotBlank()) },
         downloadAtQuality = hasTargets && !local && !inTrash && !inArchive && targets.any {
-            !it.isUploading && !it.isVaulted && !it.isImportPreview && (it.isFolder || it.isPlayableVideo())
+            !it.isUploading && !it.isVaulted && !VirtualVaultLocation.isVirtualFolder(it.id) && !it.isImportPreview && (it.isFolder || it.isPlayableVideo())
         },
         // 压缩包里解压的是选中的几项本身，不是选中项里的压缩包
-        extract = hasTargets && !local && !inTrash && (inArchive || targets.any { !it.isVaulted && !it.isImportPreview && (it.isExtractableArchive || it.isArchiveVolume) }),
+        extract = hasTargets && !local && !inTrash && (inArchive || targets.any { !it.isVaulted && !VirtualVaultLocation.isVirtualFolder(it.id) && !it.isImportPreview && (it.isExtractableArchive || it.isArchiveVolume) }),
         removeRecord = hasTargets && !local && eventLog,
         // 回收站与压缩包里的不在网盘里。库（星标、最近添加、播放历史、查重的结果）里要做的是回到原处、下载、移走或删除，
         // 不给：移动端面板在最近添加里已满 8 行，见 MobilePanelSizeTest。搜索结果的条目仍在各自的文件夹里，清单按所在文件夹写，照常给
         vault = vaultContext && targets.any { !it.isFolder || it.id !in fullyVaultedFolders },
-        unvault = vaultContext,
+        unvault = unvaultContext,
         viewSpaceMap = targets.size == 1 && !local && !inTrash && !inArchive &&
             place != CommandPlace.IMPORT_PREVIEW &&
             targets.single().let {
@@ -171,35 +175,35 @@ internal fun itemCommands(place: CommandPlace, targets: List<FileStat>, fullyVau
 
 internal fun driveCommands(input: CommandInputs): DriveCommands = with(input) {
     val importPreview = place == CommandPlace.IMPORT_PREVIEW
-    val folder = place == CommandPlace.ROOT || place == CommandPlace.FOLDER
+    val realFolder = place == CommandPlace.ROOT || place == CommandPlace.FOLDER
+    val virtualFolder = place == CommandPlace.VIRTUAL_FOLDER
+    val browsableFolder = realFolder || virtualFolder
     val local = place == CommandPlace.LOCAL
     val inTrash = place == CommandPlace.TRASH
     DriveCommands(
         home = importPreview || !atRoot,
-        // 多选时左端换成「已选 N 项」；搜索结果不是目录
-        create = folder && !selecting,
-        paste = clipboardFull && folder,
+        // 多选时左端换成「已选 N 项」；搜索结果与虚拟目录不支持直接新建实体目录或上传本地文件
+        create = realFolder && !selecting,
+        paste = clipboardFull && browsableFolder,
         // 清空只在有东西可清时。与 libraryPageActions 对应：只有回收站与播放历史有清空
         emptyPlace = (inTrash || place == CommandPlace.HISTORY) && itemCount > 0,
         // 只在多选里：没进多选时它是一个随时摆着、用不上的按钮；平时全选靠主修饰键+A 与空白处右键
         selectAll = selecting && itemCount > 0 && !allSelected,
-        // 查重的范围是眼前这个目录，搜索结果与库都不是目录
-        findDuplicates = folder && itemCount > 0,
-        // 范围同查重；关了文件名解析就认不出番号，扫出来必然是空的
-        canonicalNaming = folder && itemCount > 0 && nameParsing,
+        // 查重的范围是眼前这个真实云端目录，搜索结果、库与引用虚拟目录不走实体查重
+        findDuplicates = realFolder && itemCount > 0,
+        // 范围含真实目录与引用虚拟目录；关了文件名解析就认不出番号，扫出来必然是空的
+        canonicalNaming = browsableFolder && itemCount > 0 && nameParsing,
         // 库里按各自的先后（添加、播放的时间）排；一项以下没得排
-        sort = (importPreview || local || folder || place == CommandPlace.SEARCH) && itemCount >= 2,
+        sort = (importPreview || local || browsableFolder || place == CommandPlace.SEARCH) && itemCount >= 2,
         // 只有一类时筛了等于没筛；筛着的时候要留着，才撤得掉
         filter = typeCount >= 2 || filtering,
         gallery = !importPreview && if (selecting) {
             selectedGalleryCount > 0 && place != CommandPlace.TRASH && place != CommandPlace.ARCHIVE
-        } else folder || local,
+        } else browsableFolder || local,
         feed = !importPreview && feedSupported && if (selecting) {
             selectedVideoCount > 0 && place != CommandPlace.TRASH && place != CommandPlace.ARCHIVE
-        } else folder || local,
-        // 默认存进眼前的目录（InstantSheetState.followDriveFolder）。库、查重、压缩包的栈顶是 piko: 一类的虚拟 ID，
-        // 存不进去，会退到 My Packs 并提示「当前目录已不存在」。搜索时栈顶仍是搜索所在的目录，地址栏也还写着它，
-        // 照常给；否则一输入搜索词命令栏右端就跳
-        addLink = folder || place == CommandPlace.SEARCH,
+        } else browsableFolder || local,
+        // 默认存进眼前的真实目录（InstantSheetState.followDriveFolder）
+        addLink = realFolder || place == CommandPlace.SEARCH,
     )
 }

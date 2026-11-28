@@ -166,9 +166,56 @@ internal class DriveLibraryAndSearchSource(
                 if (dirtyNow.isNotEmpty() && (hit.file.parentId in dirtyNow || hit.file.id in dirtyNow)) continue
                 if (emittedIds.add(hit.file.id)) emit(hit)
             }
+            val ledger = ctx.vaultLedger
+            if (ledger != null) {
+                val treeFolders = driveTreeIndex.flow.value.entries
+                val indexNodes = ctx.index.folderIndex.flow.value.nodes
+                fun realBreadcrumbs(realFolderId: String): List<String> {
+                    if (realFolderId.isEmpty() || realFolderId == parentId) return emptyList()
+                    val chain = ArrayDeque<String>()
+                    var cur = realFolderId
+                    val seen = HashSet<String>()
+                    while (cur.isNotEmpty() && cur != parentId && seen.add(cur)) {
+                        val name = indexNodes[cur]?.takeUnless { it.provisional }?.name
+                            ?: treeFolders[cur]?.takeIf { it.isFolder }?.name ?: break
+                        val upper = indexNodes[cur]?.takeUnless { it.provisional }?.parentId
+                            ?: treeFolders[cur]?.parentId ?: ""
+                        chain.addFirst(name)
+                        cur = upper
+                    }
+                    return chain.toList()
+                }
+                fun isRealDescendant(realFolderId: String): Boolean {
+                    if (parentId.isEmpty()) return true
+                    if (VirtualVaultLocation.isVirtualFolder(parentId)) return false
+                    var cur = realFolderId
+                    val seen = HashSet<String>()
+                    while (cur.isNotEmpty() && seen.add(cur)) {
+                        if (cur == parentId) return true
+                        cur = indexNodes[cur]?.takeUnless { it.provisional }?.parentId
+                            ?: treeFolders[cur]?.parentId ?: return false
+                    }
+                    return false
+                }
+                val ledgerHits = ledger.searchLocal(
+                    query = cleanQuery,
+                    parentId = parentId,
+                    vaultStars = ctx.overlay.vaultStars,
+                    coverUrlTransform = ctx.overlay::coverUrlOf,
+                    realFolderBreadcrumbs = ::realBreadcrumbs,
+                    isRealDescendantOfScope = ::isRealDescendant,
+                )
+                for (hit in ledgerHits) {
+                    val enriched = hit.copy(file = enrichFile(hit.file))
+                    if (emittedIds.add(enriched.file.id)) emit(enriched)
+                }
+            }
         }
 
         emitNewMatches(checkedMissIds, excludeDirty = true)
+        if (VirtualVaultLocation.isVirtualFolder(parentId)) {
+            return@flow
+        }
 
         val initialTree = ctx.index.driveTreeIndex
         if (initialTree.isComplete) {

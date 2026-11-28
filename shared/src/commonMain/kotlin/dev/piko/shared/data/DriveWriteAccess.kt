@@ -32,6 +32,18 @@ class DriveWriteAccess internal constructor(
     private val repository: PikoDriveRepository,
     val vault: VaultStore = repository.vaultForClient(client),
 ) {
+    internal val vaultLedger: AccountVaultLedger?
+        get() = if (isCurrentClient) repository.vaultLedger else null
+    suspend fun createOrClaimFolder(parent: String, name: String) =
+        request(listOf(parent)) { client.createOrClaimFolder(parent, name) }.onSuccess { (id, isFresh) ->
+            if (isCurrentClient) {
+                if (isFresh) {
+                    repository.applyWriteChange(account, DriveChange.Created(parent, id, name, isFolder = true))
+                } else {
+                    repository.applyWriteChange(account, DriveChange.ContentsChanged(setOf(parent, id)))
+                }
+            }
+        }
     private val isCurrentClient: Boolean get() = repository.isCurrentClient(client)
     private suspend fun <T> request(ids: List<String> = emptyList(), block: suspend () -> T): Result<T> = withContext(Dispatchers.Default) {
         runSuspendCatching {

@@ -39,6 +39,7 @@ import dev.piko.data.repository.isPreviewableImage
 import dev.piko.data.repository.isReadableTextDocument
 import dev.piko.shared.data.DriveLibrary
 import dev.piko.shared.data.LocalLocation
+import dev.piko.shared.data.VirtualVaultLocation
 import dev.piko.shared.data.formatLocalPathForDisplay
 import dev.piko.shared.data.isArchiveVolume
 import dev.piko.shared.data.isExtractableArchive
@@ -74,6 +75,7 @@ internal fun commandPlaceOf(state: DriveScreenState, stackDepth: Int): CommandPl
     state.libraryView == DriveLibrary.RECENT -> CommandPlace.RECENT
     state.libraryView != null -> CommandPlace.LIBRARY
     state.searchQuery.isNotBlank() || state.isGlobalSearchActive -> CommandPlace.SEARCH
+    VirtualVaultLocation.isVirtualFolder(state.activeFolder.id) -> CommandPlace.VIRTUAL_FOLDER
     stackDepth == 1 -> CommandPlace.ROOT
     else -> CommandPlace.FOLDER
 }
@@ -218,6 +220,54 @@ internal fun buildVaultEntryActions(
     add(DriveActions.removeFromVault { state.removeFromVault(listOf(file.id)) })
 }
 
+internal fun buildVirtualFolderActions(
+    state: DriveScreenState,
+    file: FileStat,
+    revealAction: SheetAction?,
+    intents: DriveItemActionIntents,
+): List<SheetAction> = buildList {
+    if (revealAction != null) add(revealAction)
+    add(SheetAction(Icons.Outlined.FolderOpen, tr("打开", "Open", "開く", "열기", "開啟"), { state.openFolder(file.id, file.name) }, group = ActionGroup.Open))
+    intents.onOpenInNewTab?.let { open -> add(DriveActions.openInNewTab { open(file) }) }
+    add(
+        SheetAction(
+            Icons.Outlined.PhotoLibrary,
+            tr("以瀑布流浏览", "Browse in gallery", "ギャラリーで表示", "갤러리에서 보기", "以瀑布流瀏覽"),
+            { intents.onOpenFolderInGallery(file) },
+            group = ActionGroup.Open,
+        ),
+    )
+    val openFolderFeed = intents.onOpenFolderInFeed
+    if (openFolderFeed != null && intents.feedSupported) {
+        add(
+            SheetAction(
+                Icons.Outlined.SwipeVertical,
+                tr("以信息流浏览", "Browse in feed", "フィードで表示", "피드에서 보기", "以資訊流瀏覽"),
+                { openFolderFeed(file) },
+                group = ActionGroup.Open,
+            ),
+        )
+    }
+    addAll(
+        DriveActions.quickRow(
+            cut = DriveActions.cut { state.putOnClipboard(listOf(file.id), true) },
+            copy = null,
+            download = DriveActions.download { intents.onDownload(listOf(file), false) },
+            share = null,
+            rename = DriveActions.rename { intents.onRename(file) },
+            star = null,
+        ),
+    )
+    add(DriveActions.restoreFromVault { intents.onRestoreVaultFolder(file) })
+    if (state.libraryView != DriveLibrary.TRASH && state.archiveView == null) {
+        add(DriveActions.moveTo { intents.onMove(setOf(file.id)) })
+    }
+    if (intents.isSpoilerBlurEnabled && file.thumbnailLink.isNotEmpty()) {
+        add(DriveActions.previewVisibility(hidden = file.id !in state.revealedFileIds, onClick = { state.toggleSpoiler(file.id) }))
+    }
+    add(DriveActions.removeFromVault { state.removeFromVault(listOf(file.id)) })
+}
+
 internal fun buildSelectionActions(
     state: DriveScreenState,
     files: List<FileStat>,
@@ -227,7 +277,8 @@ internal fun buildSelectionActions(
     val inTrash = state.libraryView == DriveLibrary.TRASH
     val ids = files.map { it.id }
     val editable = files.filterNot { it.isUploading || it.isImportPreview || it.isLocal }
-    val settled = editable.filterNot { it.isVaulted }
+    val settled = editable.filterNot { it.isVaulted || VirtualVaultLocation.isVirtualFolder(it.id) }
+    val starrable = editable.filterNot { VirtualVaultLocation.isVirtualFolder(it.id) }
     val putOnClipboard: ((Boolean) -> Unit)? = if (commands.cutCopy) {
         { cut -> state.putOnClipboard(ids, cut) }
     } else null
@@ -239,13 +290,13 @@ internal fun buildSelectionActions(
             share = DriveActions.share { intents.onShare(settled) }.takeIf { commands.share },
             rename = DriveActions.batchRename { intents.onBatchRename(editable, false) }.takeIf { commands.rename },
             star = DriveActions.star(
-                starred = editable.all { it.isStarred },
+                starred = starrable.all { it.isStarred },
                 onClick = {
-                    val nextStarred = !editable.all { it.isStarred }
-                    state.setStarred(editable, nextStarred)
+                    val nextStarred = !starrable.all { it.isStarred }
+                    state.setStarred(starrable, nextStarred)
                     state.exitSelection()
                 },
-            ).takeIf { !inTrash && state.archiveView == null && editable.isNotEmpty() },
+            ).takeIf { !inTrash && state.archiveView == null && starrable.isNotEmpty() },
         ),
     )
     val galleryCandidates = files.filter {
@@ -478,6 +529,7 @@ internal fun buildDriveOperations(
         intents.onRevealFromGalleryOrLibrary(file)
     }
     if (file.isVaulted) return buildVaultEntryActions(state, file, revealAction, intents)
+    if (VirtualVaultLocation.isVirtualFolder(file.id)) return buildVirtualFolderActions(state, file, revealAction, intents)
     val reveal = listOfNotNull(revealAction)
     val removeRecord = listOfNotNull(
         DriveActions.removeRecord { state.removeFromLibrary(setOf(file.id)) }.takeIf { commands.removeRecord },
@@ -602,11 +654,13 @@ internal fun buildDriveBackgroundActions(
     add(SheetAction(Icons.Outlined.Refresh, tr("刷新", "Refresh", "更新", "새로고침", "重新整理"), onRefresh, group = ActionGroup.Refresh))
     if (!state.isVirtualPlace) {
         if (hasClipboard) add(SheetAction(Icons.Outlined.ContentPaste, tr("粘贴", "Paste", "貼り付け", "붙여넣기", "貼上"), state::paste, group = ActionGroup.Refresh))
-        add(SheetAction(Icons.Outlined.CreateNewFolder, tr("新建文件夹", "New folder", "新規フォルダー", "새 폴더", "新增資料夾"), onNewFolder, group = ActionGroup.Create))
-        mountAction?.let(::add)
-        add(SheetAction(Icons.Outlined.UploadFile, tr("上传文件", "Upload files", "ファイルをアップロード", "파일 업로드", "上傳檔案"), onPickFiles, group = ActionGroup.Create))
-        add(SheetAction(Icons.Outlined.DriveFolderUpload, tr("上传文件夹", "Upload folder", "フォルダーをアップロード", "폴더 업로드", "上傳資料夾"), onPickFolder, group = ActionGroup.Create))
-        add(SheetAction(Icons.Outlined.Bolt, tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結"), onOpenAddLink, group = ActionGroup.Create))
+        if (place != CommandPlace.VIRTUAL_FOLDER) {
+            add(SheetAction(Icons.Outlined.CreateNewFolder, tr("新建文件夹", "New folder", "新規フォルダー", "새 폴더", "新增資料夾"), onNewFolder, group = ActionGroup.Create))
+            mountAction?.let(::add)
+            add(SheetAction(Icons.Outlined.UploadFile, tr("上传文件", "Upload files", "ファイルをアップロード", "파일 업로드", "上傳檔案"), onPickFiles, group = ActionGroup.Create))
+            add(SheetAction(Icons.Outlined.DriveFolderUpload, tr("上传文件夹", "Upload folder", "フォルダーをアップロード", "폴더 업로드", "上傳資料夾"), onPickFolder, group = ActionGroup.Create))
+            add(SheetAction(Icons.Outlined.Bolt, tr("添加链接", "Add link", "リンクを追加", "링크 추가", "新增連結"), onOpenAddLink, group = ActionGroup.Create))
+        }
     }
     add(SheetAction(Icons.Outlined.SelectAll, tr("全选", "Select all", "すべて選択", "모두 선택", "全選"), onSelectAll, group = ActionGroup.Select))
     addAll(libraryPageActions(state.libraryView, state.files.isEmpty(), onLibraryConfirm) { state.files.map { it.id } })

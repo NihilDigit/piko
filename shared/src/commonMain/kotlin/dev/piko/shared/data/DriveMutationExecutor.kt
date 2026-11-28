@@ -640,7 +640,7 @@ internal class DriveMutationExecutor(
             ?.let { return Result.success(it.id) }
         val existing = ctx.listing.listAllFiles(parentId).getOrElse { return Result.failure(it) }
             .firstOrNull { it.isFolder && it.name == name && !it.trashed }
-        return existing?.let { Result.success(it.id) } ?: createFolder(parentId, name)
+        return existing?.let { Result.success(it.id) } ?: createOrClaimFolder(parentId, name).map { it.first }
     }
 
     suspend fun sampleCid(fileId: String): Result<String> = withContext(Dispatchers.Default) {
@@ -680,6 +680,22 @@ internal class DriveMutationExecutor(
         runSuspendCatching { requireCloudFileIds(listOf(parentId)); asked.createFolder(parentId, name) }.onSuccess { id ->
             if (ctx.clientManager.currentClient.value === asked) {
                 applyChange(DriveChange.Created(parentId, id, name, isFolder = true))
+            }
+        }
+    }
+
+    suspend fun createOrClaimFolder(parentId: String, name: String): Result<Pair<String, Boolean>> = withContext(Dispatchers.Default) {
+        val asked = ctx.requireClient()
+        runSuspendCatching {
+            requireCloudFileIds(listOf(parentId))
+            asked.createOrClaimFolder(parentId, name)
+        }.onSuccess { (id, isFresh) ->
+            if (ctx.clientManager.currentClient.value === asked) {
+                if (isFresh) {
+                    applyChange(DriveChange.Created(parentId, id, name, isFolder = true))
+                } else {
+                    applyChange(DriveChange.ContentsChanged(setOf(parentId, id)))
+                }
             }
         }
     }

@@ -44,6 +44,8 @@ internal class DriveRepoContext(
     val preferences: PikoUserPreferences?,
     val cacheStore: PikoCacheStore?,
     val treeDatabaseFactory: PikoTreeDatabaseFactory?,
+    val durableStore: dev.piko.shared.work.PikoDurableStore?,
+    val vaultLedger: AccountVaultLedger?,
     val backgroundScope: CoroutineScope,
     val folderChanges: MutableSharedFlow<DriveChange>,
     val clientRevision: MutableStateFlow<Long>,
@@ -124,9 +126,20 @@ internal class DriveVaultAndMountOverlay(
     val vaultStars = VaultStars(ctx.cacheStore, ctx.backgroundScope)
     val sourceLedger = SourceLedger(ctx.cacheStore, ctx.backgroundScope)
 
+    private val ledgerProjectionFlow: Flow<AccountVaultLedger.Projection> =
+        ctx.vaultLedger?.projection ?: MutableStateFlow(AccountVaultLedger.Projection())
+
     val fullyVaultedFolders: StateFlow<Set<String>> by lazy {
-        combine(ctx.listing.childContents.fullyVaultedFolders, vaultedFolders) { full, marked -> full intersect marked }
-            .stateIn(ctx.backgroundScope, SharingStarted.Eagerly, emptySet())
+        combine(
+            ctx.listing.childContents.fullyVaultedFolders,
+            vaultedFolders,
+            ledgerProjectionFlow,
+        ) { full, marked, ledgerProj ->
+            val virtualIds = ledgerProj.activeById.values.asSequence()
+                .filter { it.isFolder }
+                .mapTo(HashSet()) { it.virtualFolderId }
+            (full intersect marked) + virtualIds
+        }.stateIn(ctx.backgroundScope, SharingStarted.Eagerly, emptySet())
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -136,16 +149,28 @@ internal class DriveVaultAndMountOverlay(
             ctx.listing.childContents.listedFolders,
             vaultTrees.flow,
             ctx.index.treeBindingFlow.flatMapLatest { it.flow },
-        ) { direct, listed, trees, treeState ->
-            val base = VaultTrees.marked(direct, listed, trees).toMutableSet()
+            ledgerProjectionFlow,
+        ) { direct, listed, trees, treeState, ledgerProj ->
+            val base = VaultTrees.marked(direct + ledgerProj.realFoldersWithVault, listed, trees).toMutableSet()
             val stats = treeState.sortProjection?.subtreeStats ?: SortContext.of(treeState).subtreeStats
             for ((folderId, subtree) in stats) {
                 if (folderId.isEmpty() || !subtree.structuralValid) continue
                 if (subtree.vaulted.fileCount > 0L) {
                     base += folderId
-                } else if (subtree.vaulted.listingComplete) {
+                } else if (subtree.vaulted.listingComplete && folderId !in ledgerProj.realFoldersWithVault) {
                     base -= folderId
                 }
+            }
+            for (realAnchor in ledgerProj.realFoldersWithVault) {
+                var cur = realAnchor
+                val seen = HashSet<String>()
+                while (cur.isNotEmpty() && seen.add(cur)) {
+                    base += cur
+                    cur = treeState.entries[cur]?.parentId ?: break
+                }
+            }
+            for (node in ledgerProj.activeById.values) {
+                if (node.isFolder) base += node.virtualFolderId
             }
             base
         }.stateIn(ctx.backgroundScope, SharingStarted.Eagerly, emptySet())
@@ -260,6 +285,9 @@ internal class DriveVaultAndMountOverlay(
         return store.takeIf { ctx.clientManager.currentClient.value === asked && (binding == null || binding.client === asked) }
     }
 
+    internal fun coverUrlOf(cover: String): String =
+        if (cover.startsWith("img:")) imageThumbnailUrlOf(cover.removePrefix("img:")) else thumbnailUrlOf(cover)
+
     suspend fun listBrowsable(
         parentId: String,
         sortOrder: PikoFileSortOrder,
@@ -267,6 +295,12 @@ internal class DriveVaultAndMountOverlay(
     ): Result<List<FileStat>> {
         if (LocalLocation.isLocal(parentId)) {
             return runSuspendCatching { ctx.listing.sortFiles(localMounts.list(parentId), sortOrder, parentId) }
+        }
+        if (VirtualVaultLocation.isVirtualFolder(parentId)) {
+            return runSuspendCatching {
+                val items = ctx.vaultLedger?.browsableChildrenInVirtualFolder(parentId, vaultStars, ::coverUrlOf).orEmpty()
+                ctx.listing.sortFiles(items, sortOrder, parentId)
+            }
         }
         localMounts.all()
         val asked = ctx.clientManager.currentClient.value ?: return Result.failure(
@@ -291,6 +325,12 @@ internal class DriveVaultAndMountOverlay(
             throw kotlinx.coroutines.CancellationException("Account changed")
         }
         if (LocalLocation.isLocal(folderId)) return@reader runSuspendCatching { localMounts.list(folderId) }
+        if (VirtualVaultLocation.isVirtualFolder(folderId)) {
+            return@reader runSuspendCatching {
+                val items = ctx.vaultLedger?.browsableChildrenInVirtualFolder(folderId, vaultStars, ::coverUrlOf).orEmpty()
+                ctx.listing.sortFiles(items, PikoFileSortOrder.TIME_DESC, folderId)
+            }
+        }
         if (ctx.clientManager.currentClient.value === asked) {
             val driveTreeIndex = ctx.index.driveTreeIndex
             val state = driveTreeIndex.flow.value
@@ -374,9 +414,25 @@ internal class DriveVaultAndMountOverlay(
     }
 
     fun cachedBrowsable(folderId: String, sortOrder: PikoFileSortOrder): List<FileStat>? {
+        if (VirtualVaultLocation.isVirtualFolder(folderId)) {
+            val ledger = ctx.vaultLedger ?: return emptyList()
+            return ctx.listing.sortFiles(
+                ledger.browsableChildrenInVirtualFolder(folderId, vaultStars, ::coverUrlOf),
+                sortOrder,
+                folderId,
+            )
+        }
         val store = ctx.vaultAccessor()
+        val pending = store.hasPending(folderId)
         ctx.listing.cachedListing(folderId)?.let { listing ->
-            return withVaulted(folderId, listing, store.cached(folderId, listing).orEmpty(), sortOrder)
+            val cachedEntries = store.cached(folderId, listing)
+            if (cachedEntries != null) {
+                return withVaulted(folderId, listing, cachedEntries, sortOrder)
+            }
+            if (store.winnerOf(listing) == null && !pending) {
+                return withVaulted(folderId, listing, emptyList(), sortOrder)
+            }
+            return null
         }
         val driveTreeIndex = ctx.index.driveTreeIndex
         val state = driveTreeIndex.flow.value
@@ -384,7 +440,13 @@ internal class DriveVaultAndMountOverlay(
         if (children.coverage == DriveTreeIndex.FolderCoverage.COMPLETE ||
             (state.complete && children.coverage != DriveTreeIndex.FolderCoverage.DIRTY && (folderId.isEmpty() || folderId in state.entries))
         ) {
-            val entries = driveTreeIndex.vaultEntries(folderId) ?: store.cached(folderId, children.files).orEmpty()
+            val indexedVault = driveTreeIndex.vaultEntries(folderId)
+            val cachedVault = if (indexedVault == null) store.cached(folderId, children.files) else null
+            val winnerManifest = store.winnerOf(children.files) ?: state.manifestsByFolder[folderId]
+            if (winnerManifest != null && !pending && indexedVault == null && cachedVault == null) {
+                return null
+            }
+            val entries = indexedVault ?: cachedVault.orEmpty()
             return withVaulted(folderId, children.files, entries, sortOrder)
         }
         return null
@@ -396,15 +458,25 @@ internal class DriveVaultAndMountOverlay(
         entries: List<VaultEntry>,
         sortOrder: PikoFileSortOrder,
     ): List<FileStat> {
+        val ledger = ctx.vaultLedger
+        val virtualFolders = ledger?.virtualFoldersIn(folderId, ::coverUrlOf).orEmpty()
+        val ledgerArchived = ledger?.archivedEntriesIn(folderId).orEmpty()
+        val ledgerRestored = ledger?.restoredEntriesIn(folderId).orEmpty()
+        val combinedEntries = if (ledgerArchived.isEmpty() && ledgerRestored.isEmpty()) {
+            entries
+        } else {
+            val existingIds = entries.mapTo(HashSet()) { it.id }
+            entries + (ledgerArchived + ledgerRestored).filterNot { it.id in existingIds }
+        }
         val visible = withVaultCovers(
             ctx.mutations.projectOptimisticFiles(listing, folderId)
                 .filterNot { isPikoInternalFolder(it, folderId) || VaultStore.isRecoveryFile(it) },
-        ) + localMounts.cachedRoots(folderId)
-        if (entries.isEmpty() && visible.none(VaultStore::looksLikeManifest)) {
+        ) + localMounts.cachedRoots(folderId) + virtualFolders
+        if (combinedEntries.isEmpty() && visible.none(VaultStore::looksLikeManifest)) {
             return ctx.listing.sortFiles(visible, sortOrder, folderId)
         }
         val real = visible.filterNot(VaultStore::looksLikeManifest)
-        val restoredMetadata = entries.filterNot { it.isArchived }
+        val restoredMetadata = combinedEntries.filterNot { it.isArchived }
         val enriched = if (restoredMetadata.isEmpty()) {
             real
         } else {
@@ -434,7 +506,7 @@ internal class DriveVaultAndMountOverlay(
             }
         }
         return ctx.listing.sortFiles(
-            enriched + entries.filter { it.isArchived }.map { it.toFileStat(folderId, starred = vaultStars.isStarred(it.id)) },
+            enriched + combinedEntries.filter { it.isArchived }.map { it.toFileStat(folderId, starred = vaultStars.isStarred(it.id)) },
             sortOrder,
             folderId,
         )
@@ -447,13 +519,13 @@ internal class DriveVaultAndMountOverlay(
         return files.map { file ->
             if (!file.isFolder || (file.thumbnailLink.isNotEmpty() && file.id !in vaultedFolders.value)) return@map file
             vaultCoverOf(file.id)?.let { cover ->
-                val url = if (cover.startsWith("img:")) imageThumbnailUrlOf(cover.removePrefix("img:")) else thumbnailUrlOf(cover)
-                file.copy(thumbnailLink = url)
+                file.copy(thumbnailLink = coverUrlOf(cover))
             } ?: file
         }
     }
 
     private fun vaultCoverOf(folderId: String): String? {
+        ctx.vaultLedger?.coverOf(folderId)?.ifEmpty { null }?.let { return it }
         val covers = ctx.listing.childContents.vaultCovers.value
         val driveTreeIndex = ctx.index.driveTreeIndex
         val treeState = driveTreeIndex.flow.value
@@ -586,6 +658,23 @@ internal class DriveVaultAndMountOverlay(
         ctx.listing.childContents.markFullyVaulted(folderIds, knownVaultParents())
     }
 
+    fun reconcileVaultStarsInFolder(folderId: String, manifestEntries: List<VaultEntry>) {
+        val ledger = ctx.vaultLedger
+        val combined = if (ledger == null) {
+            manifestEntries
+        } else {
+            val ledgerArchived = ledger.archivedEntriesIn(folderId)
+            val ledgerRestored = ledger.restoredEntriesIn(folderId)
+            if (ledgerArchived.isEmpty() && ledgerRestored.isEmpty()) {
+                manifestEntries
+            } else {
+                val existingIds = manifestEntries.mapTo(HashSet()) { it.id }
+                manifestEntries + (ledgerArchived + ledgerRestored).filterNot { it.id in existingIds }
+            }
+        }
+        vaultStars.reconcileFolder(folderId, combined, expectedAccount = ctx.currentAccount)
+    }
+
     fun vaultEntriesKnown(
         folderId: String,
         entries: List<VaultEntry>,
@@ -602,7 +691,7 @@ internal class DriveVaultAndMountOverlay(
             return
         }
         if (reconcileStars) {
-            vaultStars.reconcileFolder(folderId, entries, expectedAccount = ctx.currentAccount)
+            reconcileVaultStarsInFolder(folderId, entries)
         }
         val hasArchived = entries.any { it.isArchived }
         ctx.listing.childContents.markVaulted(folderId, hasArchived)

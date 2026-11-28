@@ -71,10 +71,16 @@ class DuplicateScanner(
 
     constructor(clients: PikoClientProvider, driveRepo: PikoDriveRepository) : this(
         listFolder = { folderId ->
-            val client = clients.currentClient.value ?: error("Not logged in")
-            driveRepo.scanRealChildren(folderId, client)
+            if (VirtualVaultLocation.isVirtualFolder(folderId) || LocalLocation.isLocal(folderId)) {
+                emptyList()
+            } else {
+                val client = clients.currentClient.value ?: error("Not logged in")
+                driveRepo.scanRealChildren(folderId, client)
+            }
         },
-        isSubtreeClean = driveRepo::isSubtreeClean,
+        isSubtreeClean = { rootId ->
+            !VirtualVaultLocation.isVirtualFolder(rootId) && !LocalLocation.isLocal(rootId) && driveRepo.isSubtreeClean(rootId)
+        },
     )
 
     // 停止不取消协程：取消会连同已经列出的结果一起丢掉，而用户按停止多半是想看已有的部分

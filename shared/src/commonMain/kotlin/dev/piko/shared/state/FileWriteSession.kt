@@ -4,10 +4,14 @@ import dev.piko.shared.data.DriveChange
 import dev.piko.shared.data.DriveChangeJournal
 import dev.piko.shared.data.DriveWriteAccess
 import dev.piko.shared.data.PikoDriveRepository
+import dev.piko.shared.data.PikoPathBreadcrumb
 import dev.piko.shared.i18n.tr
 import dev.piko.shared.log.PikoLog
 import dev.piko.shared.log.logFolder
 import dev.piko.shared.notice.PikoErrorMapper
+import dev.piko.shared.work.DurableCopyJobPayload
+import dev.piko.shared.work.DurableCopyTask
+import dev.piko.shared.work.WorkJobStatus
 import io.github.nihildigit.pikpak.PikPakException
 import io.github.nihildigit.pikpak.TaskPhase
 import kotlinx.coroutines.CancellationException
@@ -21,12 +25,14 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.io.IOException
 import kotlin.time.Clock
 
 private val fileWriteIds = MutableStateFlow(0L)
@@ -50,20 +56,60 @@ class FileWriteSession(
     }
     private val jobs = MutableStateFlow<Map<Long, Job>>(emptyMap())
 
+    init {
+        val readyState = repository.durableStore?.readyState
+        if (repository.workJournal != null && readyState != null) {
+            scope.launch {
+                readyState.collect { ready ->
+                    if (ready != null) restoreDurableWorks(ready.account)
+                }
+            }
+        }
+    }
+
     internal fun submit(command: FileWriteCommand): Long? {
         val account = repository.currentAccount ?: return null
         val access = repository.writeAccess(account) ?: return null
         if (command !is FileWriteCommand.Copy) return mutations.submit(fileWriteIds.getAndUpdate { it + 1 } + 1, command.frozen())
-        val work = FileWriteWork(fileWriteIds.getAndUpdate { it + 1 } + 1, account, command.copy(ids = command.ids.distinct()), now())
+        val dedupedCommand = command.copy(ids = command.ids.distinct())
+        val work = FileWriteWork(fileWriteIds.getAndUpdate { it + 1 } + 1, account, dedupedCommand, now())
         _works.update { it + work }
-        execute(work, access)
+        val persisted = persistCopyWork(
+            work = work,
+            submittedChunks = 0,
+            submittingChunkIndex = null,
+            confirmed = emptySet(),
+            targetName = dedupedCommand.target.name,
+            status = WorkJobStatus.IN_PROGRESS,
+        )
+        if (!persisted) {
+            finishWork(
+                current = work,
+                command = dedupedCommand,
+                confirmed = emptySet(),
+                failureError = IOException("Durable work journal unavailable"),
+                submittedChunks = 0,
+            )
+            return work.id
+        }
+        execute(work, access, initialSubmittedChunks = 0, interruptedSubmittingChunk = null, initialConfirmed = emptySet())
         return work.id
     }
 
     fun requestStop(id: Long): Boolean {
         val work = _works.value.firstOrNull { it.id == id } ?: return false
         if (!work.isRunning || work.account != repository.currentAccount) return false
-        _works.update { all -> all.map { if (it.id == id) it.copy(stopping = true) else it } }
+        val updated = work.copy(stopping = true)
+        _works.update { all -> all.map { if (it.id == id) updated else it } }
+        val chunks = updated.command.ids.chunked(COPY_CHUNK_SIZE).size
+        persistCopyWork(
+            work = updated,
+            submittedChunks = updated.copies.size.coerceAtMost(chunks),
+            submittingChunkIndex = null,
+            confirmed = updated.copies.filter { it.phase == TaskPhase.COMPLETE }.flatMapTo(HashSet()) { it.sources },
+            targetName = updated.command.target.name,
+            status = WorkJobStatus.IN_PROGRESS,
+        )
         return true
     }
 
@@ -84,35 +130,197 @@ class FileWriteSession(
         _works.update { all -> if (account == null) emptyList() else all.filterNot { it.account == account } }
     }
 
-    private fun execute(initial: FileWriteWork, access: DriveWriteAccess) {
+    private fun restoreDurableWorks(account: String) {
+        val journal = repository.workJournal ?: return
+        val access = repository.writeAccess(account) ?: return
+        val activeIds = _works.value.filter { it.account == account }.mapTo(HashSet()) { it.id }
+        val stored = journal.loadInProgressCopyJobs(account)
+        for (payload in stored) {
+            val numericId = payload.id.removePrefix("copy-").toLongOrNull() ?: (fileWriteIds.getAndUpdate { it + 1 } + 1)
+            fileWriteIds.update { current -> maxOf(current, numericId) }
+            if (numericId in activeIds) continue
+            val targetName = payload.sourceParentById[TARGET_NAME_KEY].orEmpty()
+            val command = FileWriteCommand.Copy(
+                ids = payload.sourceIds.distinct(),
+                target = PikoPathBreadcrumb(payload.destinationParentId, targetName),
+            )
+            val chunks = command.ids.chunked(COPY_CHUNK_SIZE)
+            val restoredCopies = payload.copies.mapIndexed { idx, task ->
+                val sources = chunks.getOrNull(idx) ?: command.ids
+                FileCopyTask(
+                    id = task.id,
+                    sources = sources,
+                    phase = if (task.finished) TaskPhase.COMPLETE else "",
+                    progress = if (task.finished) 100 else 0,
+                )
+            }
+            val work = FileWriteWork(
+                id = numericId,
+                account = account,
+                command = command,
+                createdAtMs = now(),
+                phase = FileWritePhase.COPYING,
+                stopping = payload.stopping,
+                copies = restoredCopies,
+            )
+            val initialConfirmed = buildSet {
+                addAll(payload.confirmedSourceIds)
+                restoredCopies.filter { it.phase == TaskPhase.COMPLETE }.forEach { addAll(it.sources) }
+            }
+            _works.update { it + work }
+            execute(
+                initial = work,
+                access = access,
+                initialSubmittedChunks = payload.submittedChunks.coerceAtLeast(restoredCopies.size),
+                interruptedSubmittingChunk = payload.submittingChunkIndex,
+                initialConfirmed = initialConfirmed,
+            )
+        }
+    }
+
+    private fun persistCopyWork(
+        work: FileWriteWork,
+        submittedChunks: Int,
+        submittingChunkIndex: Int?,
+        confirmed: Set<String>,
+        targetName: String,
+        status: WorkJobStatus,
+    ): Boolean {
+        val journal = repository.workJournal ?: return true
+        if (!journal.isPersistentFor(work.account)) return false
+        val meta = if (targetName.isNotEmpty()) mapOf(TARGET_NAME_KEY to targetName) else emptyMap()
+        val payload = DurableCopyJobPayload(
+            id = "copy-${work.id}",
+            account = work.account,
+            sourceIds = work.command.ids,
+            sourceParentById = meta,
+            destinationParentId = work.command.target.id,
+            totalCount = work.command.ids.size,
+            phase = work.phase.name,
+            stopping = work.stopping,
+            submittedChunks = submittedChunks,
+            submittingChunkIndex = submittingChunkIndex,
+            copies = work.copies.map { copy ->
+                DurableCopyTask(
+                    id = copy.id,
+                    finished = copy.phase == TaskPhase.COMPLETE,
+                )
+            },
+            confirmedSourceIds = confirmed.toList(),
+        )
+        return journal.saveCopyJob(payload, status = status)
+    }
+
+    private suspend fun reconcileInterruptedChunk(
+        access: DriveWriteAccess,
+        chunk: List<String>,
+        targetParentId: String,
+    ): Pair<List<String>, Set<String>> {
+        val alreadyCopied = HashSet<String>()
+        var targetListing = access.listFolder(targetParentId).getOrNull() ?: return chunk to emptySet()
+        if (targetListing.any { !it.trashed && (it.phase == TaskPhase.PENDING || it.phase == TaskPhase.RUNNING) }) {
+            delay(pollMillis)
+            targetListing = access.listFolder(targetParentId).getOrDefault(targetListing)
+        }
+        val activeTargets = targetListing.filterNot { it.trashed }
+        for (srcId in chunk) {
+            val src = access.detail(srcId).getOrNull() ?: continue
+            val srcIsFolder = src.kind == io.github.nihildigit.pikpak.FileKind.FOLDER
+            val srcSize = src.size.toLongOrNull() ?: 0L
+            val matched = activeTargets.any { cand ->
+                cand.name == src.name &&
+                    cand.isFolder == srcIsFolder &&
+                    (srcIsFolder || (cand.phase == TaskPhase.COMPLETE && cand.sizeBytes == srcSize &&
+                        (src.hash.isBlank() || cand.hash.equals(src.hash, ignoreCase = true))))
+            }
+            if (matched) alreadyCopied += srcId
+        }
+        return chunk.filterNot { it in alreadyCopied } to alreadyCopied
+    }
+
+    private fun isTransientPollError(error: Throwable): Boolean = when (error) {
+        is IOException -> true
+        is PikPakException -> {
+            val code = error.httpStatus ?: 0
+            code == 408 || code == 429 || code >= 500 || code == 0
+        }
+        else -> false
+    }
+
+    private fun execute(
+        initial: FileWriteWork,
+        access: DriveWriteAccess,
+        initialSubmittedChunks: Int = 0,
+        interruptedSubmittingChunk: Int? = null,
+        initialConfirmed: Set<String> = emptySet(),
+    ) {
         val command = initial.command
         val owner = executions.forAccount(initial.account)
+        val durable = repository.workJournal != null
         val job = owner.launch(start = CoroutineStart.LAZY) {
             var work = initial.copy(result = null, phase = FileWritePhase.COPYING)
-            val confirmed = initial.result?.confirmed.orEmpty().toMutableSet()
+            val confirmed = (initial.result?.confirmed.orEmpty() + initialConfirmed).toMutableSet()
+            var submittedChunks = initialSubmittedChunks
+            var pendingReconcileChunk = interruptedSubmittingChunk
             var failureError: Throwable? = null
             fun publish() { _works.update { all -> all.map { if (it.id == work.id) work else it } } }
             try {
                 publish()
-                access.copy(command.ids, command.target.id).onSuccess { taskIds ->
-                    work = work.copy(copies = taskIds.map { FileCopyTask(it, command.ids) })
+                val chunks = command.ids.chunked(COPY_CHUNK_SIZE)
+                while (submittedChunks < chunks.size) {
+                    if (_works.value.firstOrNull { it.id == work.id }?.stopping == true) break
+                    val rawChunk = chunks[submittedChunks]
+                    val chunk = if (pendingReconcileChunk == submittedChunks) {
+                        pendingReconcileChunk = null
+                        val (remainingToSubmit, reconciledDone) = reconcileInterruptedChunk(access, rawChunk, command.target.id)
+                        if (reconciledDone.isNotEmpty()) {
+                            confirmed += reconciledDone
+                            access.publish(DriveChange.Copied(reconciledDone.toList(), command.target.id))
+                        }
+                        if (remainingToSubmit.isEmpty()) {
+                            submittedChunks += 1
+                            persistCopyWork(work, submittedChunks, null, confirmed, command.target.name, WorkJobStatus.IN_PROGRESS)
+                            continue
+                        }
+                        remainingToSubmit
+                    } else {
+                        rawChunk
+                    }
+                    if (!persistCopyWork(work, submittedChunks, submittedChunks, confirmed, command.target.name, WorkJobStatus.IN_PROGRESS)) {
+                        failureError = IOException("Failed to record copy submission intent")
+                        break
+                    }
+                    val chunkTasks = access.copy(chunk, command.target.id).getOrElse { error ->
+                        if (error is CancellationException) throw error
+                        failureError = error
+                        val pikpak = error as? PikPakException
+                        PikoLog.w(
+                            TAG,
+                            "Copy request failed (work=${work.id}, chunk=${submittedChunks + 1}/${chunks.size}, items=${chunk.size}, target=${logFolder(command.target.id)}, status=${pikpak?.httpStatus}, code=${pikpak?.errorMessage})",
+                            error,
+                        )
+                        null
+                    }
+                    if (chunkTasks == null) {
+                        persistCopyWork(work, submittedChunks, null, confirmed, command.target.name, WorkJobStatus.IN_PROGRESS)
+                        break
+                    }
+                    submittedChunks += 1
+                    work = work.copy(copies = work.copies + chunkTasks.map { FileCopyTask(it, chunk) })
                     publish()
-                }.getOrElse { error ->
-                    if (error is CancellationException) throw error
-                    failureError = error
-                    val pikpak = error as? PikPakException
-                    PikoLog.w(
-                        TAG,
-                        "Copy request failed (work=${work.id}, items=${command.ids.size}, target=${logFolder(command.target.id)}, status=${pikpak?.httpStatus}, code=${pikpak?.errorMessage})",
-                        error,
-                    )
-                    null
-                } ?: return@launch finishWork(work, command, confirmed, failureError)
+                    persistCopyWork(work, submittedChunks, null, confirmed, command.target.name, WorkJobStatus.IN_PROGRESS)
+                }
                 var queryFailures = 0
                 var lastPollError: Throwable? = null
-                while (currentCoroutineContext().isActive) {
-                    if (_works.value.firstOrNull { it.id == work.id }?.stopping == true) break
+                while (currentCoroutineContext().isActive && work.copies.isNotEmpty()) {
+                    if (_works.value.firstOrNull { it.id == work.id }?.stopping == true) {
+                        work = work.copy(stopping = true)
+                        break
+                    }
                     var unreadable = false
+                    var terminalPollError = false
+                    var phaseChanged = false
+                    val newlyCompletedSources = ArrayList<String>()
                     work = work.copy(copies = work.copies.map { copy ->
                         if (copy.phase == TaskPhase.COMPLETE || copy.phase == TaskPhase.ERROR) copy
                         else {
@@ -120,6 +328,7 @@ class FileWriteSession(
                                 if (pollErr is CancellationException) throw pollErr
                                 unreadable = true
                                 lastPollError = pollErr
+                                if (!isTransientPollError(pollErr)) terminalPollError = true
                                 null
                             }
                             if (taskInfo != null) {
@@ -129,22 +338,30 @@ class FileWriteSession(
                                         "Remote copy task failed (work=${work.id}, task=${copy.id}, target=${logFolder(command.target.id)}, message=${taskInfo.message.ifBlank { "none" }})",
                                     )
                                 }
+                                if (taskInfo.phase != copy.phase) phaseChanged = true
+                                if (taskInfo.phase == TaskPhase.COMPLETE) {
+                                    newlyCompletedSources += copy.sources
+                                }
                                 copy.copy(phase = taskInfo.phase, progress = taskInfo.progress)
                             } else {
                                 copy
                             }
                         }
                     })
+                    if (newlyCompletedSources.isNotEmpty()) {
+                        confirmed += newlyCompletedSources
+                        access.publish(DriveChange.Copied(newlyCompletedSources.distinct(), command.target.id))
+                    }
                     publish()
+                    if (phaseChanged) {
+                        persistCopyWork(work, submittedChunks, null, confirmed, command.target.name, WorkJobStatus.IN_PROGRESS)
+                    }
                     queryFailures = if (unreadable) queryFailures + 1 else 0
-                    if (work.copies.isNotEmpty() && work.copies.all { it.phase == TaskPhase.COMPLETE }) {
-                        confirmed += command.ids
-                        access.publish(DriveChange.Copied(command.ids, command.target.id))
+                    if (work.copies.all { it.phase == TaskPhase.COMPLETE || it.phase == TaskPhase.ERROR }) {
                         break
                     }
-                    if (work.copies.any { it.phase == TaskPhase.ERROR }) break
-                    if (queryFailures >= MAX_POLL_FAILURES) {
-                        failureError = lastPollError
+                    if (queryFailures >= MAX_POLL_FAILURES && (!durable || terminalPollError)) {
+                        if (failureError == null) failureError = lastPollError
                         PikoLog.w(
                             TAG,
                             "Copy status polling aborted after $queryFailures consecutive failures (work=${work.id}, tasks=${work.copies.size}, target=${logFolder(command.target.id)})",
@@ -152,13 +369,19 @@ class FileWriteSession(
                         )
                         break
                     }
-                    delay(pollMillis)
+                    val nextDelay = if (durable && queryFailures > 0) {
+                        val shift = (queryFailures - 1).coerceIn(0, 4)
+                        (pollMillis shl shift).coerceAtMost(MAX_DURABLE_POLL_BACKOFF_MS)
+                    } else {
+                        pollMillis
+                    }
+                    delay(nextDelay)
                 }
                 currentCoroutineContext().ensureActive()
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                failureError = error
+                if (failureError == null) failureError = error
                 PikoLog.w(
                     TAG,
                     "Copy execution failed (work=${work.id}, items=${command.ids.size}, target=${logFolder(command.target.id)})",
@@ -167,7 +390,7 @@ class FileWriteSession(
             } finally {
                 jobs.update { it - initial.id }
             }
-            finishWork(work, command, confirmed, failureError)
+            finishWork(work, command, confirmed, failureError, submittedChunks)
         }
         jobs.update { it + (initial.id to job) }
         job.start()
@@ -178,6 +401,7 @@ class FileWriteSession(
         command: FileWriteCommand.Copy,
         confirmed: Set<String>,
         failureError: Throwable?,
+        submittedChunks: Int,
     ) {
         val complete = confirmed.containsAll(command.ids)
         val remaining = command.ids.toSet() - confirmed
@@ -196,6 +420,14 @@ class FileWriteSession(
         )
         val finished = current.copy(phase = FileWritePhase.FINISHED, result = result)
         _works.update { all -> all.map { if (it.id == finished.id) finished else it } }
+        persistCopyWork(
+            work = finished,
+            submittedChunks = submittedChunks,
+            submittingChunkIndex = null,
+            confirmed = confirmed,
+            targetName = command.target.name,
+            status = if (complete) WorkJobStatus.COMPLETED else WorkJobStatus.FAILED,
+        )
         _outcomes.tryEmit(FileWriteOutcome(finished.account, finished.id, command.title, result))
     }
 
@@ -204,6 +436,9 @@ class FileWriteSession(
     private companion object {
         const val TAG = "FileCopy"
         const val MAX_POLL_FAILURES = 5
+        const val COPY_CHUNK_SIZE = 100
+        const val MAX_DURABLE_POLL_BACKOFF_MS = 30_000L
+        const val TARGET_NAME_KEY = "__target_name__"
     }
 }
 

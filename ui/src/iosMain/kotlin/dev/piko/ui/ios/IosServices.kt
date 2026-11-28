@@ -103,6 +103,7 @@ fun createIosServices(
         uploadSources = createIosUploadSources(directories),
         cacheStore = cacheStore,
         treeDatabaseFactory = IosPikoTreeDatabaseFactory(SandboxPaths.resolveDirectory(directories.caches, "drive-tree")),
+        durableDatabaseFactory = IosPikoTreeDatabaseFactory(SandboxPaths.resolveDirectory(directories.support, "work")),
         storyboardCache = storyboardCache,
         cacheManager = cacheManager,
         syncCipher = PortableSyncCipher(),

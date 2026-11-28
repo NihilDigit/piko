@@ -107,7 +107,7 @@ Windows 触摸与手写笔接入 Compose Desktop 的桥接库独立发布于 `de
   - Compose 页面投影暴露只读 `State`，业务层与跨层订阅暴露只读 `StateFlow`，严禁将可变状态直接交给视图修改。
   - 高频读取的派生状态必须使用 `derivedStateOf`，避免写成每帧重复计算的普通属性 getter。
   - 即时反馈可通过 `messages: SharedFlow<String>` 驱动 Snackbar，但重要执行结局、待输入状态与恢复入口必须保留为可查询状态，不能仅依赖瞬态流订阅。
-  - `ReceivingActivity` 仅投影在途接收工作的路径依赖供动作入口校验；整包离线裁剪的产出目录树在完成前需锁定路径，普通接收目录不锁定无关同级文件。网络异常结果未知时须先核对远端实际状态，不得将传输超时直接视为服务端未执行。
+  - `ReceivingActivity` 仅投影在途接收工作的路径依赖供动作入口校验；整包离线裁剪的产出目录树在完成前需锁定路径，普通接收目录不锁定无关同级文件。多步异步工作（复制、服务端解压、物理秒传与目录上传准备）统一在各端非清理存储目录的账号级持久化库（`PikoDurableStore` 与 `PikoWorkJournal`，在 `readyState` 就绪后恢复，并通过 `work_receipts` 单行幂等记录逐项回执）中保持明确的三态模型（进行中、已完成、失败需处理）：瞬态网络波动下保持进行中退避续跑，进程重启后直接从已持久化的远端任务 ID 或已完成步骤回执续接并对未决分块先行对账，新建目录遇 `400 file_duplicated_name` 自动认领同名活动目录，秒传重试前核对同名同哈希已存在文件以避免重复建出副本。
   - 常驻错误状态（如 `loadError`）仅用于表达当前屏幕上展示的数据可能已过期。
   - 其余主要状态持有者包括 `InstantSheetState`（磁力与链接解析，多链接由 `InstantBatchState` 管理）、`OfflineTasksState`（云端离线任务轮询）、`LoginState`、`DuplicateFinderState`、`ArchiveExtractSession`（进程级服务端解压）与 `ArchiveBrowser`（进程级压缩包内浏览）。
 
@@ -146,8 +146,8 @@ MetaTube 地址与访问令牌经 `MetaTubeSync` 使用账号密码派生的密�
 
 代码命名统一使用 `vault` 以区分压缩包（`ArchiveRepository` / 服务端解压），中文界面文案称为「归档」。并发吞吐与延迟确认的实测数据见 `docs/development/archive.md`。
 
-- **单清单存储与可信合并**：归档条目是在网盘中不占配额空间、仅保留内容引用的虚拟文件。每个目录仅维护唯一一份清单文件 `.piko-vault-v<版本>-<随机串>.json`（`VaultStore`），记录文件名、大小、GCID、可选 CID、媒体宽高时长与完整来源链接；不再在同目录写入 `归档来源-<标识>.magnet` 或 `.txt` 旁路文件（历史遗留的同名旁路文件仍由 `VaultStore.isRecoveryFile` 在浏览列表中隐藏且不参与归档，云端原文件保持不动）。`listBrowsable` 将未取回的归档条目合并入目录列表，虚拟文件 ID 以 `piko-vault:` 开头。多端并发写同一目录清单采用无锁可信合并：版本号大者胜出，同版本号随机串字典序小者胜出，败方将自身纯函数变更重新应用至胜出清单后重写，仅存最终状态不存历史日志。取回网盘后条目通过 `restoredFileId` 保留来源与 CID 供再次归档复用，不再重复渲染虚拟文件。
-- **统一引用写入内核（`VaultIngest`）**：网盘文件/文件夹归档（`FolderVaultSession`，作用域为 `VaultScope`）与磁力解析「以引用保存」（`InstantMagnetRepository.saveReferences`）共用 `VaultIngest` 内核，统一执行元数据补齐、新建空目录单次直写快速通道（`freshFolderIds`）、目录级并发清单写入与来源账本提取；二者唯一区别在于归档会在目录清单确认落盘后额外执行原文件移入回收站或永久删除，并登记 `DriveChangeJournal` 撤销记录。首次使用归档或以引用保存前会弹出一次性风险确认框（`VaultRiskWarningDialog`）。外层归档目录标记记录于 `VaultTrees`，跨设备同步至 `.piko/vault-trees-<时间戳>.json`（`VaultTreeSync`，合并取并集）。
+- **单清单存储、因果血缘合并与虚拟引用账本**：归档条目是在网盘中不占配额空间、仅保留内容引用的虚拟文件，虚拟文件 ID 以 `piko-vault:` 开头。网盘已有真实文件归档时在对应目录维护 `.piko-vault-v<版本>-<随机串>.json` 清单文件（`VaultStore`），携带 `parents` 因果父清单血缘与 90 天删除墓碑 `deleted`，多端并发写入时自动合并未被高版本吸收的低版本同源分支并按 `updatedAt` 裁决重命名，仅清理已被 `COMPLETE` 清单吸收的历史旧清单；彻底删除原文件前强制等待新清单在远端达到 `COMPLETE` 屏障，索引后台回填仅读取已确认远端快照（`readCommitted`）。磁力与分享链接的「以引用保存」采用账号级持久化虚拟引用账本（`AccountVaultLedger`，虚拟目录前缀 `vdir:`）：前台在单个本地 SQLite 事务内零网络请求立即提交完整虚拟目录树与文件引用（即使云端空间已满或进程重启亦不丢失），后台由 `VaultOpsSync` 将增量操作批次异步同步至 `.piko/vault-ops/vault-op-*.json` 实现多端因果收敛；恢复至网盘时按需创建实体目录并秒传还原。
+- **统一引用写入内核（`VaultIngest`）**：网盘文件或文件夹归档（`FolderVaultSession`，作用域为 `VaultScope`）与无持久化库环境下的引用写入回退路径共用 `VaultIngest` 内核，统一执行元数据补齐、目录级并发清单写入与来源账本提取；归档会在目录清单确认落盘后执行原文件移入回收站或永久删除，并登记 `DriveChangeJournal` 撤销记录。首次使用归档或以引用保存前会弹出一次性风险确认框（`VaultRiskWarningDialog`）。外层归档目录标记记录于 `VaultTrees`，跨设备同步至 `.piko/vault-trees-<时间戳>.json`（`VaultTreeSync`，合并取并集）。
 - **归档星标账本（`VaultStars`）**：PikPak 服务端不支持对虚拟归档条目打星标，且真实文件归档删除后原服务端星标会丢失。`VaultStars` 按账号自管归档条目星标（带取消星标的 LWW 墓碑），本机缓存于 `vault-stars-<账号>.json`，跨设备经 `VaultStarSync` 同步至 `.piko/vault-stars-<时间戳>.json`；带星标的真实文件归档时自动迁入星标账本，取回为真实文件并在服务端打星确认成功后自动迁出，「星标」资料库直接合并展示。
 - **按需租约借出（`LeaseBudget`）**：播放、下载或信息流打开归档条目（及压缩包内文件）时，通过 SDK 的 `leaseDetail` 与 `fileHandle(leased = true)` 按 GCID 秒传临时对象至 `Piko-Temp`，取得直链后立即删除云端临时对象；所有账号均由 `LeaseBudget` 按当前剩余配额空间限制同时借出的总字节数。
 - **来源账本（`SourceLedger`）**：服务端仅对离线下载与分享转存自动填充 `params.url`，客户端秒传创建的文件 `params.url` 为空且无法通过 API 写入。`SourceLedger` 以 `大写 GCID + 文件字节数` 为键（不按文件 ID，确保复制文件后仍能命中），记录完整原始磁力链接、种子内相对路径与时间戳；在磁力秒传保存（`InstantSheetState.rawInstantSave`）、以引用保存及归档取回/撤销秒传（`PikoDriveRepository.instantCreate`）时写入，在仓库列目录（`fetchListing`）、全盘搜索、星标与事件资料库出口统一将缺失的 `sourceUrl` 注入 `params["url"]`。本机按账号存缓存目录，跨设备同步至 `.piko/sources-<时间戳>.json`（`SourceLedgerSync`，来源单独建表、条目按下标引用；合并取并集，同键取时间戳较晚者，时间戳相同时按来源与路径字典序取大者；明文存储，不记录分享提取码）。
@@ -170,6 +170,7 @@ MetaTube 地址与访问令牌经 `MetaTubeSync` 使用账号密码派生的密�
 - **服务端解压不支持分卷压缩包**（2026-09-25 实测 7z、zip、RAR5 分卷）：服务端仅读取提交的单个文件，不会在同目录寻找其余分卷；绝大多数分卷直接返回 `INVALID_FILE_FORMAT`，zip 分卷的末尾卷虽能列出目录，但提交解压任务后会以 `E_INVALID_FORMAT` 失败。
 - **文件名长度上限为 UTF-8 编码 1024 字节**（2026-09-29 实测，文件与文件夹一致）：对应 1024 个 ASCII 字符、341 个常用汉字或 256 个 Unicode 补充平面字符，超出 1 字节即返回 HTTP 400、`error_code=3`（`file_name_too_long`）。批量重命名预览据此实时标红拦截。
 - **客户端无法写入或修改文件的 `params`**（2026-10-08 实测，SDK `SourceParamsProbeTest`）：秒传建文件时请求体携带的 `params` 被服务端静默丢弃；事后 `PATCH /drive/v1/files/{id}` 只要 `params` 非空（无论是 `url`、自定义键还是原样回传）一律返回 HTTP 400 `invalid_argument`，传 `{}` 则返回 `file_nothing_updated`。因此秒传文件的来源只能由客户端 `SourceLedger` 按 GCID 记录；服务端复制产生的新文件会重建 `params`（增加 `original_file_id`），任何需要跨复制保留的元数据均须按 GCID 而非文件 ID 关联。
+- **同名新建、重命名与秒传幂等行为**（2026-11-27 实测 `/Dramas`）：`createFolder` 遇到同目录已存在未进回收站的同名文件夹时返回 HTTP 400 `error_code=3`（`file_duplicated_name`），`rename` 遇到同名冲突同样返回 HTTP 400 `file_duplicated_name`；而 `instantCreate`（`startUpload`）与 `batchCopy` 在同目录已存在同名文件时**不会报错**，而是静默生成 `文件名(1).ext` 副本并再次扣减秒传配额。因此重试目录创建须捕获 `file_duplicated_name` 并列目录认领已有目录，重试秒传前须先列目录比对同名同大小同 GCID 的已完成文件直接认领。
 - **上传中文件状态与会话有效期**：本机上传开始时目标目录内即出现 `phase == PENDING` 的文件条目，此时将其提交给服务端解压会返回 `file not complete`。分片上传会话凭据有效期为 12 小时；文件上传完成瞬间即进入服务端 CID 索引，再次上传同内容文件立即命中秒传。
 
 ## 播放器与自适应流式传输

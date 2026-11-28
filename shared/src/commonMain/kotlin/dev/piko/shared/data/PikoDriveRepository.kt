@@ -90,6 +90,9 @@ interface DriveService {
     val vaultTrees: VaultTrees
     val vaultStars: VaultStars
     val sourceLedger: SourceLedger
+    val durableStore: dev.piko.shared.work.PikoDurableStore? get() = null
+    val workJournal: dev.piko.shared.work.PikoWorkJournal? get() = null
+    val vaultLedger: AccountVaultLedger? get() = null
     val folderEmptiness: StateFlow<Map<String, Boolean>>
     val fullyVaultedFolders: StateFlow<Set<String>>
     val vaultedFolders: StateFlow<Set<String>>
@@ -155,6 +158,8 @@ interface DriveService {
     suspend fun sampleCid(fileId: String): Result<String>
     suspend fun instantCreate(file: ResolvedFile, parentId: String, source: String? = null, notifyChange: Boolean = true): Result<String>
     suspend fun createFolder(parentId: String, name: String): Result<String>
+    suspend fun createOrClaimFolder(parentId: String, name: String): Result<Pair<String, Boolean>> =
+        createFolder(parentId, name).map { it to true }
     suspend fun rename(fileId: String, name: String, parentId: String? = null, notifyChange: Boolean = true): Result<Unit>
     suspend fun trash(ids: List<String>): Result<Unit>
     suspend fun restore(ids: List<String>): Result<Unit>
@@ -201,9 +206,17 @@ open class PikoDriveRepository(
     private val preferences: PikoUserPreferences? = null,
     private val cacheStore: PikoCacheStore? = null,
     private val treeDatabaseFactory: PikoTreeDatabaseFactory? = null,
+    private val durableDatabaseFactory: PikoTreeDatabaseFactory? = null,
 ) : DriveService {
     private val client: PikPakClient get() = clientManager.currentClient.value ?: error("Not logged in")
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    final override val durableStore: dev.piko.shared.work.PikoDurableStore? =
+        durableDatabaseFactory?.let { dev.piko.shared.work.PikoDurableStore(it) }
+    final override val workJournal: dev.piko.shared.work.PikoWorkJournal? =
+        durableStore?.let { dev.piko.shared.work.PikoWorkJournal(it) }
+    final override val vaultLedger: AccountVaultLedger? =
+        durableStore?.let { AccountVaultLedger(it) }
 
     private val _folderChanges = MutableSharedFlow<DriveChange>(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     final override val folderChanges: SharedFlow<DriveChange> = _folderChanges.asSharedFlow()
@@ -216,6 +229,8 @@ open class PikoDriveRepository(
         preferences = preferences,
         cacheStore = cacheStore,
         treeDatabaseFactory = treeDatabaseFactory,
+        durableStore = durableStore,
+        vaultLedger = vaultLedger,
         backgroundScope = backgroundScope,
         folderChanges = _folderChanges,
         clientRevision = _clientRevision,
@@ -412,6 +427,8 @@ open class PikoDriveRepository(
     override suspend fun instantCreate(file: ResolvedFile, parentId: String, source: String?, notifyChange: Boolean): Result<String> =
         mutationExecutor.instantCreate(file, parentId, source, notifyChange)
     override suspend fun createFolder(parentId: String, name: String): Result<String> = mutationExecutor.createFolder(parentId, name)
+    override suspend fun createOrClaimFolder(parentId: String, name: String): Result<Pair<String, Boolean>> =
+        mutationExecutor.createOrClaimFolder(parentId, name)
     override suspend fun rename(fileId: String, name: String, parentId: String?, notifyChange: Boolean): Result<Unit> =
         mutationExecutor.rename(fileId, name, parentId, notifyChange)
     override suspend fun trash(ids: List<String>): Result<Unit> = mutationExecutor.trash(ids)

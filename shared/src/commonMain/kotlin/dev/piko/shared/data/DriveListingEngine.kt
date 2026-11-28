@@ -117,7 +117,7 @@ internal class DriveListingEngine(
         limit: Int = 128,
     ): List<SpacePreviewBlock> = withContext(Dispatchers.Default) {
         val index = withPikoLock(ctx.index.treeStateLock) { ctx.index.driveTreeIndex }
-        spaceFolderPreviewChildren(index, folderId, includeVaulted, limit)
+        spaceFolderPreviewChildren(index, folderId, includeVaulted, limit, ctx.vaultLedger)
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -131,17 +131,21 @@ internal class DriveListingEngine(
                     spaceRefreshes.map { it[folderId] ?: 0L }.distinctUntilChanged().flatMapLatest {
                         channelFlow {
                             val status = MutableStateFlow(SpaceSyncState())
+                            val ledgerFlow = ctx.vaultLedger?.projection ?: MutableStateFlow(AccountVaultLedger.Projection())
                             fun pendingFolders(): Set<String> = withPikoLock(ctx.index.treeStateLock) {
+                                if (VirtualVaultLocation.isVirtualFolder(folderId)) return@withPikoLock emptySet()
                                 val state = index.flow.value
                                 if (state.complete && state.dirtyFolders.isEmpty()) return@withPikoLock emptySet()
                                 val descendants = index.descendantFolders(folderId) + folderId
                                 descendants.filterTo(LinkedHashSet()) {
-                                    it in state.dirtyFolders || (!state.complete && it !in state.listedFolders)
+                                    !VirtualVaultLocation.isVirtualFolder(it) &&
+                                        (it in state.dirtyFolders || (!state.complete && it !in state.listedFolders))
                                 }
                             }
                             val isBuildingFlow = ctx.index.treeBuildProgressFlow.map { it.isBuilding }.distinctUntilChanged()
-                            combine(index.flow, isBuildingFlow, status, ctx.mutations.optimisticRevision) { _, building, sync, _ ->
-                                val needsSync = asked != null && ctx.clientManager.currentClient.value === asked &&
+                            combine(index.flow, isBuildingFlow, status, ctx.mutations.optimisticRevision, ledgerFlow) { _, building, sync, _, _ ->
+                                val isVirtualTarget = VirtualVaultLocation.isVirtualFolder(folderId)
+                                val needsSync = !isVirtualTarget && asked != null && ctx.clientManager.currentClient.value === asked &&
                                     ctx.index.driveTreeIndex === index && sync.error == null &&
                                     (!index.isComplete || pendingFolders().isNotEmpty())
                                 val project: ((List<FileStat>, String?) -> List<FileStat>)? =
@@ -154,12 +158,14 @@ internal class DriveListingEngine(
                                     index = index,
                                     folderId = folderId,
                                     includeVaulted = includeVaulted,
-                                    isBuilding = sync.error == null && (building || sync.running || needsSync),
+                                    isBuilding = !isVirtualTarget && sync.error == null && (building || sync.running || needsSync),
                                     projectOptimistic = project,
+                                    vaultLedger = ctx.vaultLedger,
                                 ).copy(syncError = sync.error)
                             }.conflate().collect { snapshot ->
                                 send(snapshot)
-                                if (asked != null && ctx.clientManager.currentClient.value === asked &&
+                                if (!VirtualVaultLocation.isVirtualFolder(folderId) &&
+                                    asked != null && ctx.clientManager.currentClient.value === asked &&
                                     ctx.index.driveTreeIndex === index && !status.value.running && status.value.error == null &&
                                     (!index.isComplete || pendingFolders().isNotEmpty())
                                 ) {
@@ -311,7 +317,7 @@ internal class DriveListingEngine(
     suspend fun subfolders(folderId: String, fresh: Boolean = false): Result<List<PikoPathBreadcrumb>> =
         withContext(Dispatchers.Default) {
             runSuspendCatching {
-                if (!isDriveFolderId(folderId) && !LocalLocation.isLocal(folderId)) return@runSuspendCatching emptyList()
+                if (!isVaultContainerFolderId(folderId) && !LocalLocation.isLocal(folderId)) return@runSuspendCatching emptyList()
                 val files = if (!fresh) {
                     ctx.overlay.cachedBrowsable(folderId, PikoFileSortOrder.NAME_ASC)
                         ?: ctx.overlay.listBrowsable(folderId, PikoFileSortOrder.NAME_ASC).getOrThrow()

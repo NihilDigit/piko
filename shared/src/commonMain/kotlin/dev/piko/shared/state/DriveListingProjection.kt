@@ -119,6 +119,7 @@ internal class DriveListingProjection(
     var foldersFirst by mutableStateOf(initialSnapshot.foldersFirst)
         private set
     private var globalSortOrder = resolvedInitialSortOrder
+    private var skipInitialSortReplay = initialSortOrder != null
     private val folderSortLock = PikoLock()
     private val folderSortOrders = LinkedHashMap<String, PikoFileSortOrder>()
 
@@ -895,6 +896,7 @@ internal class DriveListingProjection(
             }
             ctx.scope.launch { ctx.preferences.saveFolderSortOrders(serialized) }
         } else {
+            skipInitialSortReplay = true
             globalSortOrder = order
             ctx.scope.launch { ctx.preferences.setDriveSortOrder(order.name) }
         }
@@ -1056,8 +1058,8 @@ internal class DriveListingProjection(
             var firstEmission = true
             ctx.preferences.driveSortOrderFlow.collect { stored ->
                 val parsed = PikoFileSortOrder.entries.firstOrNull { it.name == stored } ?: return@collect
-                // 若调用方显式传了 initialSortOrder（如测试），跳过首个默认流回放，仅响应后续变更
-                if (firstEmission && initialSortOrder != null) {
+                // 若调用方显式传了 initialSortOrder 或在首帧流回放前调了 changeSortOrder，跳过旧默认流回放，仅响应后续变更
+                if (firstEmission && skipInitialSortReplay) {
                     firstEmission = false
                     return@collect
                 }

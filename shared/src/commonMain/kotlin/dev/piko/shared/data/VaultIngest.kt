@@ -9,11 +9,13 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlin.time.Clock
 import kotlin.time.Instant
+import kotlinx.serialization.Serializable
 
 /**
  * 归档条目的可选媒体与校验元数据。
  * 以引用保存（分享链接解析、本机已知同内容文件）与网盘真实文件归档统一经此结构传递与合并。
  */
+@Serializable
 data class VaultMediaMeta(
     val cid: String? = null,
     val duration: String? = null,
@@ -141,7 +143,6 @@ internal object VaultIngest {
         knownMetaLookup: (gcid: String, size: Long) -> VaultMediaMeta? = { _, _ -> null },
         beforeFolderWrite: suspend (folderId: String, drafts: List<VaultEntryDraft>, entries: List<VaultEntry>) -> Unit = { _, _, _ -> },
         writeFolder: suspend (folderId: String, entries: List<VaultEntry>, isFreshFolder: Boolean) -> Result<Unit>,
-        verifyCommittedOnFailure: (suspend (folderId: String) -> List<VaultEntry>?)? = null,
         onFolderCommitted: suspend (folderId: String, drafts: List<VaultEntryDraft>, entries: List<VaultEntry>) -> Unit = { _, _, _ -> },
     ): List<VaultFolderIngestOutcome> = ingestFolders(
         folderIds = batches.keys.toList(),
@@ -152,7 +153,6 @@ internal object VaultIngest {
         knownMetaLookup = knownMetaLookup,
         beforeFolderWrite = beforeFolderWrite,
         writeFolder = writeFolder,
-        verifyCommittedOnFailure = verifyCommittedOnFailure,
         onFolderCommitted = onFolderCommitted,
     )
 
@@ -165,7 +165,6 @@ internal object VaultIngest {
         knownMetaLookup: (gcid: String, size: Long) -> VaultMediaMeta? = { _, _ -> null },
         beforeFolderWrite: suspend (folderId: String, drafts: List<VaultEntryDraft>, entries: List<VaultEntry>) -> Unit = { _, _, _ -> },
         writeFolder: suspend (folderId: String, entries: List<VaultEntry>, isFreshFolder: Boolean) -> Result<Unit>,
-        verifyCommittedOnFailure: (suspend (folderId: String) -> List<VaultEntry>?)? = null,
         onFolderCommitted: suspend (folderId: String, drafts: List<VaultEntryDraft>, entries: List<VaultEntry>) -> Unit = { _, _, _ -> },
     ): List<VaultFolderIngestOutcome> = coroutineScope {
         folderIds.map { folderId ->
@@ -207,13 +206,11 @@ internal object VaultIngest {
                             confirmedEntries = entries,
                         )
                     } else {
-                        val verified = verifyCommittedOnFailure?.invoke(folderId)
                         VaultFolderIngestOutcome(
                             folderId = folderId,
                             drafts = drafts,
                             entries = entries,
                             writeResult = writeResult,
-                            confirmedEntries = verified,
                         )
                     }
                 }

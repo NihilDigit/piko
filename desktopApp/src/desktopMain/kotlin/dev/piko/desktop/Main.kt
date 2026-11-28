@@ -962,6 +962,7 @@ private fun createServices(settings: DesktopSettingsStore, preferences: DesktopP
         localFileAccess = { changed -> DesktopLocalFileAccess(appScope, changed) },
         cacheStore = cacheStore,
         treeDatabaseFactory = dev.piko.shared.data.DesktopPikoTreeDatabaseFactory(),
+        durableDatabaseFactory = dev.piko.shared.data.DesktopPikoTreeDatabaseFactory(PikoHome.root.resolve("work").toFile()),
         storyboardCache = storyboardCache,
         cacheManager = cacheManager,
         syncCipher = JvmSyncCipher(),

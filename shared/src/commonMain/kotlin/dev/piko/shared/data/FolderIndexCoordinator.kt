@@ -292,6 +292,7 @@ internal class FolderIndexCoordinator(
     }
 
     fun enterAccount(account: String?) = withPikoLock(accountTransitionLock) {
+        ctx.durableStore?.enterAccount(account)
         val retired = withPikoLock(treeStateLock) {
             val previous = dataAccount.value
             if (previous == account && accountBindingReady) return@withPikoLock null
@@ -392,8 +393,49 @@ internal class FolderIndexCoordinator(
                 return@runSuspendCatching host + ctx.overlay.localMounts.pathTo(localParent.id).orEmpty()
             }
             require(!LocalLocation.isLocal(fileId)) { "本地位置无效" }
+            if (VirtualVaultLocation.isVirtualFolder(fileId)) {
+                val (anchorId, virtualChain) = ctx.vaultLedger?.breadcrumbChainForVirtualFolder(fileId)
+                    ?: error(
+                        tr(
+                            "未找到引用虚拟目录",
+                            "Virtual reference folder not found",
+                            "参照仮想フォルダーが見つかりません",
+                            "참조 가상 폴더를 찾을 수 없습니다",
+                            "找不到引用虛擬資料夾",
+                        ),
+                    )
+                val anchorPath = if (anchorId.isEmpty()) {
+                    listOf(PikoDriveRepository.ROOT_BREADCRUMB)
+                } else {
+                    val anchorName = folderIndex.node(anchorId)?.takeUnless { it.provisional }?.name
+                        ?: driveTreeIndex.flow.value.entries[anchorId]?.takeIf { it.isFolder }?.name
+                        ?: fetchDetail(anchorId, asked).name
+                    locateFolder(anchorId).getOrThrow() + PikoPathBreadcrumb(anchorId, anchorName)
+                }
+                return@runSuspendCatching anchorPath + virtualChain.dropLast(1)
+            }
             val vaultEntryId = VaultEntry.entryIdOf(fileId)
             if (vaultEntryId != null) {
+                ctx.vaultLedger?.folderOfEntry(vaultEntryId)?.let { ledgerParent ->
+                    if (VirtualVaultLocation.isVirtualFolder(ledgerParent)) {
+                        val (anchorId, virtualChain) = ctx.vaultLedger.breadcrumbChainForVirtualFolder(ledgerParent)
+                            ?: error("Virtual reference folder not found")
+                        val anchorPath = if (anchorId.isEmpty()) {
+                            listOf(PikoDriveRepository.ROOT_BREADCRUMB)
+                        } else {
+                            val anchorName = folderIndex.node(anchorId)?.takeUnless { it.provisional }?.name
+                                ?: driveTreeIndex.flow.value.entries[anchorId]?.takeIf { it.isFolder }?.name
+                                ?: fetchDetail(anchorId, asked).name
+                            locateFolder(anchorId).getOrThrow() + PikoPathBreadcrumb(anchorId, anchorName)
+                        }
+                        return@runSuspendCatching anchorPath + virtualChain
+                    }
+                    if (ledgerParent.isEmpty()) return@runSuspendCatching listOf(PikoDriveRepository.ROOT_BREADCRUMB)
+                    val anchorName = folderIndex.node(ledgerParent)?.takeUnless { it.provisional }?.name
+                        ?: driveTreeIndex.flow.value.entries[ledgerParent]?.takeIf { it.isFolder }?.name
+                        ?: fetchDetail(ledgerParent, asked).name
+                    return@runSuspendCatching locateFolder(ledgerParent).getOrThrow() + PikoPathBreadcrumb(ledgerParent, anchorName)
+                }
                 val store = ctx.vaultAccessor()
                 var parentId = driveTreeIndex.file(fileId)?.parentId
                     ?: store.folderOfEntry(vaultEntryId)
@@ -483,6 +525,15 @@ internal class FolderIndexCoordinator(
     }
 
     fun knownLocalPath(folderId: String): List<PikoPathBreadcrumb>? {
+        if (VirtualVaultLocation.isVirtualFolder(folderId)) {
+            val (anchorId, virtualChain) = ctx.vaultLedger?.breadcrumbChainForVirtualFolder(folderId) ?: return null
+            val host = if (anchorId.isEmpty()) {
+                listOf(PikoDriveRepository.ROOT_BREADCRUMB)
+            } else {
+                folderIndex.pathTo(anchorId, provisional = true) ?: return null
+            }
+            return host + virtualChain
+        }
         val local = LocalLocation.of(folderId) ?: return null
         val mount = ctx.overlay.localMounts.findCached(folderId) ?: return null
         val host = folderIndex.pathTo(mount.parentFolderId, provisional = true) ?: return null
@@ -496,6 +547,7 @@ internal class FolderIndexCoordinator(
     }
 
     fun knownParentOf(fileId: String): String? {
+        ctx.vaultLedger?.nodeOf(fileId)?.parentFolderId?.let { return it }
         folderIndex.node(fileId)?.takeUnless { it.provisional }?.parentId?.let { return it }
         driveTreeIndex.file(fileId)?.takeIf { isParentFreshInTree(it.parentId) }?.parentId?.let { return it }
         return ctx.listing.listings.value.entries
@@ -1475,7 +1527,13 @@ internal class FolderIndexCoordinator(
                                             if (!isCurrent()) throw CancellationException("Account changed")
                                             PikoWorkloadGovernor.Shared.awaitNoUrgentPlayback()
                                             if (!isCurrent()) throw CancellationException("Account changed")
-                                            val entries = store.read(folderId, manifests).getOrNull() ?: continue
+                                            val entries = store.readCommitted(manifests)
+                                                .logFailure(DRIVE_REPO_TAG, "Inline manifest backfill failed in ${logFolder(folderId)} (acct=$acctSlot)")
+                                                .getOrNull()
+                                            if (entries == null) {
+                                                uncachedManifestFolders += folderId to manifests
+                                                continue
+                                            }
                                             readyBatch += folderId to entries
                                             resolvedVaultMeta += folderId to entries
                                             if (readyBatch.size >= 64) {
@@ -1518,7 +1576,7 @@ internal class FolderIndexCoordinator(
                                 }
                                 committedSuccessfully = true
                                 for ((folderId, entries) in resolvedVaultMeta) {
-                                    ctx.overlay.vaultStars.reconcileFolder(folderId, entries, expectedAccount = ctx.currentAccount)
+                                    ctx.overlay.reconcileVaultStarsInFolder(folderId, entries)
                                     ctx.listing.childContents.markVaulted(folderId, entries.any { it.isArchived })
                                     ctx.listing.childContents.rememberCover(folderId, entries.coverGcid().orEmpty())
                                 }
@@ -1553,21 +1611,33 @@ internal class FolderIndexCoordinator(
                                                             PikoWorkloadGovernor.Shared.awaitNoUrgentPlayback()
                                                             if (!isCurrent()) return@withPermit
                                                             val winnerId = store.winnerOf(manifests)?.id
-                                                            val entries = store.read(folderId, manifests).getOrNull() ?: return@withPermit
+                                                            val entries = store.readCommitted(manifests)
+                                                                .logFailure(DRIVE_REPO_TAG, "Background manifest backfill failed in ${logFolder(folderId)} (acct=$acctSlot)")
+                                                                .getOrNull() ?: return@withPermit
                                                             if (!isCurrent()) return@withPermit
-                                                            val accepted = index.putVaultEntries(
-                                                                folderId = folderId,
-                                                                entries = entries,
-                                                                expectedManifestId = winnerId,
-                                                                requireMatch = true,
-                                                            )
-                                                            if (accepted) {
-                                                                withPikoLock(treeStateLock) {
-                                                                    if (!isCurrent()) return@withPikoLock
-                                                                    ctx.overlay.vaultStars.reconcileFolder(folderId, entries, expectedAccount = ctx.currentAccount)
+                                                            var accepted = false
+                                                            withPikoLock(treeStateLock) {
+                                                                if (!isCurrent()) return@withPikoLock
+                                                                val starredIds = ctx.overlay.vaultStars.flow.value.values
+                                                                    .asSequence()
+                                                                    .filter { it.starred }
+                                                                    .mapTo(HashSet()) { it.entryId }
+                                                                accepted = index.putVaultEntries(
+                                                                    folderId,
+                                                                    entries,
+                                                                    winnerId,
+                                                                    true,
+                                                                    starredIds,
+                                                                    optimistic = false,
+                                                                )
+                                                                if (accepted) {
+                                                                    ctx.overlay.reconcileVaultStarsInFolder(folderId, entries)
                                                                     ctx.listing.childContents.markVaulted(folderId, entries.any { it.isArchived })
                                                                     ctx.listing.childContents.rememberCover(folderId, entries.coverGcid().orEmpty())
                                                                 }
+                                                            }
+                                                            if (accepted) {
+                                                                ctx.folderChanges.tryEmit(DriveChange.ContentsChanged(setOf(folderId)))
                                                             }
                                                         }
                                                     }
@@ -1708,7 +1778,7 @@ internal class FolderIndexCoordinator(
                                                 if (!isCurrent()) throw CancellationException("Account changed")
                                                 PikoWorkloadGovernor.Shared.awaitNoUrgentPlayback()
                                                 if (!isCurrent()) throw CancellationException("Account changed")
-                                                val entries = store.read(folderId, manifests)
+                                                val entries = store.readCommitted(manifests)
                                                     .logFailure(DRIVE_REPO_TAG, "In-memory tree build failed to read vault manifest in ${logFolder(folderId)} (acct=$acctSlot)")
                                                     .getOrDefault(emptyList())
                                                 withPikoLock(treeStateLock) {

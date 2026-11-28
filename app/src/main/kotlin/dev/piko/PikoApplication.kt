@@ -205,6 +205,7 @@ class PikoApplication : Application(), SingletonImageLoader.Factory {
             localFileAccess = { changed -> dev.piko.platform.AndroidLocalFileAccess(this, appScope, changed) },
             cacheStore = cacheStore,
             treeDatabaseFactory = dev.piko.shared.data.AndroidPikoTreeDatabaseFactory(File(cacheDir, "piko/trees")),
+            durableDatabaseFactory = dev.piko.shared.data.AndroidPikoTreeDatabaseFactory(File(noBackupFilesDir, "piko/work")),
             storyboardCache = storyboardCache,
             cacheManager = cacheManager,
             syncCipher = JvmSyncCipher(),

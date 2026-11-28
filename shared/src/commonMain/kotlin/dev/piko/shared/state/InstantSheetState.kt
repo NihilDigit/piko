@@ -976,36 +976,64 @@ class InstantSheetState private constructor(
                 },
             ) { batch ->
                 val batchTotal = maxOf(createdIds.size + batch.size, browser.vaultProgress?.filesCollected ?: 0)
-                val ids = instantRepo.saveReferences(
-                    items = batch,
-                    targetParentId = target.id,
-                    keepStructure = true,
-                    names = emptyMap(),
-                    existingFolders = resolvedFolders,
-                    vault = vault,
-                    source = source,
-                    targetIsFreshFolder = false,
-                    knownMetaLookup = driveRepo.knownVaultMetaLookupFor(batch),
-                    onFolderCreated = recordNewFolder,
-                    onFoldersResolved = { resolvedFolders = it },
-                    onFreshVaultFolders = { freshIds ->
-                        if (driveRepo.currentAccount == account) driveRepo.rememberFullyVaulted(freshIds)
-                    },
-                    onProgress = { batchDone, _, status, detail ->
-                        if (attemptId != null) {
-                            saveRecords.updateAttemptProgress(
-                                id = attemptId,
-                                account = account,
-                                done = createdIds.size + batchDone.coerceAtMost(batch.size),
-                                total = batchTotal,
-                                status = status,
-                                detail = detail,
-                            )
-                        }
-                    },
-                ) { members ->
-                    if (driveRepo.currentAccount == account) driveRepo.vaultTrees.merge(members)
-                }.getOrThrow()
+                val ledger = driveRepo.vaultLedger
+                val ids = if (ledger != null) {
+                    val outcome = ledger.importTree(
+                        account = account,
+                        anchorFolderId = target.id,
+                        containerName = null,
+                        items = batch,
+                        names = emptyMap(),
+                        keepStructure = true,
+                        source = source,
+                        knownMetaLookup = driveRepo.knownVaultMetaLookupFor(batch),
+                    ).getOrThrow()
+                    if (attemptId != null) {
+                        saveRecords.updateAttemptProgress(
+                            id = attemptId,
+                            account = account,
+                            done = createdIds.size + outcome.confirmedByPath.size,
+                            total = batchTotal,
+                            status = tr("正在以引用保存", "Saving as references", "参照として保存中", "참조로 저장 중", "正在以引用儲存"),
+                            detail = null,
+                        )
+                    }
+                    if (driveRepo.currentAccount == account && outcome.touchedFolders.isNotEmpty()) {
+                        driveRepo.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(outcome.touchedFolders))
+                    }
+                    batch.mapNotNull { outcome.confirmedByPath[it.file.path] }
+                } else {
+                    instantRepo.saveReferences(
+                        items = batch,
+                        targetParentId = target.id,
+                        keepStructure = true,
+                        names = emptyMap(),
+                        existingFolders = resolvedFolders,
+                        vault = vault,
+                        source = source,
+                        targetIsFreshFolder = false,
+                        knownMetaLookup = driveRepo.knownVaultMetaLookupFor(batch),
+                        onFolderCreated = recordNewFolder,
+                        onFoldersResolved = { resolvedFolders = it },
+                        onFreshVaultFolders = { freshIds ->
+                            if (driveRepo.currentAccount == account) driveRepo.rememberFullyVaulted(freshIds)
+                        },
+                        onProgress = { batchDone, _, status, detail ->
+                            if (attemptId != null) {
+                                saveRecords.updateAttemptProgress(
+                                    id = attemptId,
+                                    account = account,
+                                    done = createdIds.size + batchDone.coerceAtMost(batch.size),
+                                    total = batchTotal,
+                                    status = status,
+                                    detail = detail,
+                                )
+                            }
+                        },
+                    ) { members ->
+                        if (driveRepo.currentAccount == account) driveRepo.vaultTrees.merge(members)
+                    }.getOrThrow()
+                }
                 createdIds += ids
                 totalBytes += batch.sumOf { it.file.size }
                 Result.success(ids.size)
@@ -1095,10 +1123,79 @@ class InstantSheetState private constructor(
         val name = driveFolderName(naming.folderNameToSave)
         if (!startInstantAttempt(target, toSave, name, containerName = name, names = naming.fileNames, keepStructure = true)) return Result.failure(IllegalStateException(errorMessage))
         saveParent = target
-        val folderId = driveRepo.createFolder(target.id, name).getOrElse { err ->
+        val ref = effectiveSaveAsReference
+        val ledger = driveRepo.vaultLedger
+        if (ref && ledger != null) {
+            val account = requireNotNull(saveAccount)
+            val attemptId = instantAttemptId
+            val outcome = ledger.importTree(
+                account = account,
+                anchorFolderId = target.id,
+                containerName = name,
+                items = toSave,
+                names = naming.fileNames,
+                keepStructure = true,
+                source = referenceSource(),
+                knownMetaLookup = driveRepo.knownVaultMetaLookupFor(toSave),
+            ).getOrElse { err ->
+                val receipt = InstantSaveReceipt(account, target.id, failed = toSave.mapTo(HashSet()) { it.file.path })
+                errorMessage = dev.piko.shared.notice.PikoErrorMapper.failure(tr("以引用保存", "Save as references", "参照として保存", "참조로 저장", "以引用儲存"), err)
+                saveIssue = receipt
+                attemptId?.let { saveRecords.finishAttempt(it, receipt) }
+                return Result.failure(InstantSaveIncomplete(receipt, err))
+            }
+            val virtualContainerId = outcome.containerFolderId ?: target.id
+            val folder = PikoPathBreadcrumb(virtualContainerId, name)
+            val ids = toSave.filter { it.file.gcid != null }.mapNotNull { outcome.confirmedByPath[it.file.path] }
+            val receipt = InstantSaveReceipt(
+                account = account,
+                targetId = target.id,
+                confirmed = outcome.confirmedByPath,
+                folders = mapOf("" to virtualContainerId),
+            )
+            attemptId?.let { saveRecords.observeContainer(it, account, virtualContainerId) }
+            attemptId?.let { saveRecords.finishAttempt(it, receipt) }
+            saveRecords.add(name, ids.size, toSave.sumOf { it.file.size }, target.name, locateId = virtualContainerId,
+                id = attemptId, expectedAccount = saveAccount)
+            val ledgerSource = normalizedMagnet ?: findShareLink(input)
+            if (ledgerSource != null) {
+                driveRepo.sourceLedger.record(ledgerSource, toSave.filter { it.file.path in outcome.confirmedByPath }.map { it.file })
+            }
+            driveRepo.applyChange(dev.piko.shared.data.DriveChange.ContentsChanged(outcome.touchedFolders + target.id))
+            saveIssue = null
+            instantRetry = null
+            instantAttemptId = null
+            savedContainer = null
+            saveParent = null
+            return Result.success(InstantSaveOutcome.InstantSaved(ids, folder, isReference = true))
+        }
+        val account = requireNotNull(saveAccount)
+        val attemptId = instantAttemptId
+        if (!ref && attemptId != null) {
+            val persisted = InstantSaveExecutor.persistPendingContainerPlan(
+                driveRepo = driveRepo,
+                account = account,
+                attemptId = attemptId,
+                parentTarget = target,
+                containerName = name,
+                items = toSave,
+                names = naming.fileNames,
+                reusableIds = previewedIds,
+                ledgerSource = normalizedMagnet ?: findShareLink(input),
+            )
+            if (!persisted) {
+                val persistErr = kotlinx.io.IOException("Failed to persist durable instant-save container plan")
+                val receipt = InstantSaveReceipt(account, target.id, notAttempted = toSave.mapTo(HashSet()) { it.file.path })
+                errorMessage = dev.piko.shared.notice.PikoErrorMapper.failure(tr("保存", "Save", "保存", "저장", "儲存"), persistErr)
+                saveIssue = receipt
+                saveRecords.finishAttempt(attemptId, receipt)
+                return Result.failure(InstantSaveIncomplete(receipt, persistErr))
+            }
+        }
+        val (folderId, isFresh) = driveRepo.createOrClaimFolder(target.id, name).getOrElse { err ->
             PikoLog.w(TAG, "Failed to create destination folder in ${logFolder(target.id)} for instant save (items=${toSave.size})", err)
             val failureMessage = dev.piko.shared.notice.PikoErrorMapper.failure(tr("新建文件夹", "Create folder", "フォルダーを作成", "폴더 만들기", "新增資料夾"), err)
-            val receipt = InstantSaveReceipt(requireNotNull(saveAccount), target.id, notAttempted = toSave.mapTo(HashSet()) { it.file.path })
+            val receipt = InstantSaveReceipt(account, target.id, notAttempted = toSave.mapTo(HashSet()) { it.file.path })
             errorMessage = failureMessage
             saveIssue = receipt
             instantAttemptId?.let { saveRecords.finishAttempt(it, receipt) }
@@ -1107,9 +1204,8 @@ class InstantSheetState private constructor(
         }
         val folder = PikoPathBreadcrumb(folderId, name)
         savedContainer = folder
-        instantAttemptId?.let { saveRecords.observeContainer(it, requireNotNull(saveAccount), folderId) }
-        val ref = effectiveSaveAsReference
-        return instantSave(folder, toSave, naming, keepStructure = true, targetIsFreshFolder = true).map { ids ->
+        instantAttemptId?.let { saveRecords.observeContainer(it, account, folderId) }
+        return instantSave(folder, toSave, naming, keepStructure = true, targetIsFreshFolder = isFresh).map { ids ->
             saveRecords.add(name, ids.size, toSave.sumOf { it.file.size }, target.name, locateId = folderId,
                 id = instantAttemptId, expectedAccount = saveAccount)
             instantAttemptId = null
@@ -1371,10 +1467,16 @@ class InstantSheetState private constructor(
     ): Result<List<String>> {
         val account = requireNotNull(saveAccount)
         val attemptId = instantAttemptId
+        if (attemptId != null) {
+            saveRecords.tryClaimExecution(account, attemptId)
+        }
         val execution = try {
             InstantSaveExecutor(instantRepo, driveRepo, account).execute(
                 plan, submitted, targetIsFreshFolder, effectiveSaveAsReference, previewedIds.toMap(),
                 referenceSource(), normalizedMagnet ?: findShareLink(input), saveParent?.id,
+                attemptId = attemptId,
+                title = savedContainer?.name ?: plan.target.name,
+                containerName = savedContainer?.name,
                 onProgress = { done, total, status, detail ->
                     if (attemptId != null) {
                         saveRecords.updateAttemptProgress(
@@ -1392,6 +1494,10 @@ class InstantSheetState private constructor(
             instantAttemptId?.let { saveRecords.dismissRunningAttempt(it, account) }
             instantAttemptId = null
             throw cancelled
+        } finally {
+            if (attemptId != null) {
+                saveRecords.releaseExecution(account, attemptId)
+            }
         }
         val result = execution.response
         val receipt = execution.receipt
