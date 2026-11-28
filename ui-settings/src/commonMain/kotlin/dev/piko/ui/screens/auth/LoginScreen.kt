@@ -2,6 +2,9 @@ package dev.piko.ui.screens.auth
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -13,6 +16,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -120,6 +124,7 @@ import dev.piko.shared.state.PhoneRegions
 import dev.piko.ui.LocalPikoServices
 import dev.piko.ui.adaptive.WidthClass
 import dev.piko.ui.adaptive.currentWidthClass
+import dev.piko.ui.components.CompactProgressIndicator
 import dev.piko.ui.components.InlineLoadingIndicator
 import dev.piko.ui.components.IslandTabBarHeight
 import dev.piko.ui.components.PikoBrandIcons
@@ -172,6 +177,7 @@ fun LoginScreen(
     val appLanguage by preferences.appLanguageFlow.collectAsState(initialSnapshot.appLanguage)
     var showProxyDialog by remember { mutableStateOf(false) }
     val allowWelcome = onCancel == null && state.reauthContext == null
+    val splitWide = allowWelcome && currentWidthClass() != WidthClass.Compact
     var showWelcome by remember(allowWelcome) {
         mutableStateOf(allowWelcome && state.browserAuth is BrowserAuthState.Idle)
     }
@@ -180,7 +186,7 @@ fun LoginScreen(
     }
     val handleBack: (() -> Unit)? = when {
         state.browserAuth is BrowserAuthState.AwaitingConfirmation -> state::cancelGoogleLogin
-        !showWelcome && allowWelcome -> {
+        !splitWide && !showWelcome && allowWelcome -> {
             { showWelcome = true }
         }
         onCancel != null -> {
@@ -223,7 +229,7 @@ fun LoginScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 when {
-                    !showWelcome && allowWelcome && state.browserAuth !is BrowserAuthState.AwaitingConfirmation -> {
+                    !splitWide && !showWelcome && allowWelcome && state.browserAuth !is BrowserAuthState.AwaitingConfirmation -> {
                         TooltipIconButton(
                             icon = Icons.AutoMirrored.Outlined.ArrowBack,
                             label = tr("返回", "Back", "戻る", "뒤로", "返回"),
@@ -270,29 +276,36 @@ fun LoginScreen(
                 }
             }
 
-            AnimatedContent(
-                targetState = showWelcome,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                transitionSpec = {
-                    val forward = !targetState
-                    val slideIn = slideInHorizontally(expressive.defaultSpatialSpec()) { w -> if (forward) w / 6 else -w / 6 }
-                    val slideOut = slideOutHorizontally(expressive.defaultSpatialSpec()) { w -> if (forward) -w / 6 else w / 6 }
-                    (slideIn + fadeIn(expressive.fastEffectsSpec())) togetherWith
-                        (slideOut + fadeOut(expressive.fastEffectsSpec()))
-                },
-                label = "login-onboarding-step",
-            ) { welcoming ->
-                if (welcoming) {
-                    LoginWelcomeStep(
-                        onGetStarted = { showWelcome = false },
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                } else {
-                    LoginForm(
-                        state = state,
-                        adding = onCancel != null,
-                        modifier = Modifier.fillMaxSize(),
-                    )
+            if (splitWide) {
+                LoginWideSplitContent(
+                    state = state,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+            } else {
+                AnimatedContent(
+                    targetState = showWelcome,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    transitionSpec = {
+                        val forward = !targetState
+                        val slideIn = slideInHorizontally(expressive.defaultSpatialSpec()) { w -> if (forward) w / 6 else -w / 6 }
+                        val slideOut = slideOutHorizontally(expressive.defaultSpatialSpec()) { w -> if (forward) -w / 6 else w / 6 }
+                        (slideIn + fadeIn(expressive.fastEffectsSpec())) togetherWith
+                            (slideOut + fadeOut(expressive.fastEffectsSpec()))
+                    },
+                    label = "login-onboarding-step",
+                ) { welcoming ->
+                    if (welcoming) {
+                        LoginWelcomeStep(
+                            onGetStarted = { showWelcome = false },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        LoginForm(
+                            state = state,
+                            adding = onCancel != null,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
                 }
             }
         }
@@ -307,6 +320,147 @@ fun LoginScreen(
             },
             onDismiss = { showProxyDialog = false },
         )
+    }
+}
+
+/**
+ * 宽屏一屏合一开场：
+ * 0..1.6s 品牌动画在纯画布中央聚焦演完吸能与 Bang!，随后标题落定停顿半拍；
+ * 停顿后舞台沿 Material Emphasized 无回弹曲线平稳左移，右侧登录表单预组合就绪并同步滑入淡现。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun LoginWideSplitContent(
+    state: LoginState,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.colorScheme
+    val reduced = LocalPikoMotion.current.reduced
+    val expressive = remember { MotionScheme.expressive() }
+    val emphasizedEasing = remember { CubicBezierEasing(0.2f, 0f, 0f, 1f) }
+
+    var bangTriggered by remember(reduced) {
+        mutableStateOf(reduced || state.browserAuth !is BrowserAuthState.Idle)
+    }
+    LaunchedEffect(state.browserAuth) {
+        if (state.browserAuth !is BrowserAuthState.Idle) bangTriggered = true
+    }
+
+    val copyAlpha = remember(reduced) { Animatable(if (bangTriggered) 1f else 0f) }
+    val copySlide = remember(reduced) { Animatable(if (bangTriggered) 0f else 1f) }
+    val splitProgress = remember(reduced) { Animatable(if (bangTriggered) 1f else 0f) }
+    val formSlide = remember(reduced) { Animatable(if (bangTriggered) 1f else 0f) }
+    val formAlpha = remember(reduced) { Animatable(if (bangTriggered) 1f else 0f) }
+
+    LaunchedEffect(bangTriggered, reduced) {
+        if (!bangTriggered) return@LaunchedEffect
+        if (reduced) {
+            copyAlpha.snapTo(1f)
+            copySlide.snapTo(0f)
+            splitProgress.snapTo(1f)
+            formSlide.snapTo(1f)
+            formAlpha.snapTo(1f)
+            return@LaunchedEffect
+        }
+        // 第一拍：在中央完整承接 Bang! 与品牌标题落定
+        delay(120)
+        launch { copyAlpha.animateTo(1f, expressive.defaultEffectsSpec()) }
+        launch { copySlide.animateTo(0f, tween(380, easing = emphasizedEasing)) }
+        // 留出视觉停顿让用户看清居中主视觉，再统一分栏
+        delay(440)
+        launch { splitProgress.animateTo(1f, tween(560, easing = emphasizedEasing)) }
+        delay(60)
+        launch { formSlide.animateTo(1f, tween(540, easing = emphasizedEasing)) }
+        launch { formAlpha.animateTo(1f, tween(380, easing = LinearOutSlowInEasing)) }
+    }
+
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.Center,
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .widthIn(max = 1020.dp)
+                .fillMaxSize()
+                .padding(horizontal = 36.dp, vertical = 16.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            val gap = 48.dp
+            val totalW = maxWidth
+            val stageW = ((totalW - gap) * 0.50f).coerceAtLeast(280.dp)
+            val formW = (totalW - stageW - gap).coerceAtLeast(280.dp)
+            val centerShiftDp = (totalW - stageW) / 2f
+
+            // 左侧品牌舞台：直接悬浮于主画布之上，无底色卡片
+            Column(
+                modifier = Modifier
+                    .width(stageW)
+                    .fillMaxHeight()
+                    .graphicsLayer {
+                        translationX = (1f - splitProgress.value) * centerShiftDp.toPx()
+                    }
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                PikoOnboardingCanvas(
+                    modifier = Modifier
+                        .widthIn(max = 420.dp)
+                        .fillMaxWidth(),
+                    onBang = { bangTriggered = true },
+                )
+                Spacer(Modifier.height(16.dp))
+                Column(
+                    modifier = Modifier
+                        .widthIn(max = 380.dp)
+                        .fillMaxWidth()
+                        .graphicsLayer {
+                            alpha = copyAlpha.value
+                            translationY = copySlide.value * 14.dp.toPx()
+                        },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = "Piko",
+                        style = MaterialTheme.typography.displaySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.onSurface,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = tr(
+                            "优雅、易用、高性能的 PikPak 客户端",
+                            "An elegant, easy-to-use, high-performance PikPak client",
+                            "洗練された、使いやすく高速な PikPak クライアント",
+                            "세련되고 사용하기 쉬우며 고성능인 PikPak 클라이언트",
+                            "優雅、易用、高效能的 PikPak 用戶端",
+                        ),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = colors.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+
+            // 右侧无卡片登录表单：预组合避免分栏瞬间掉帧，随舞台左移同步滑入淡现
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .width(formW)
+                    .fillMaxHeight()
+                    .graphicsLayer {
+                        alpha = formAlpha.value
+                        translationX = (1f - formSlide.value) * 32.dp.toPx()
+                    },
+            ) {
+                LoginForm(
+                    state = state,
+                    adding = false,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
     }
 }
 
@@ -330,10 +484,10 @@ private fun LoginWelcomeStep(
 
     LaunchedEffect(bangTriggered, reduced) {
         if (!bangTriggered || reduced) return@LaunchedEffect
-        delay(220)
+        delay(170)
         launch { copyAlpha.animateTo(1f, expressive.defaultEffectsSpec()) }
         launch { copySlide.animateTo(0f, expressive.defaultSpatialSpec()) }
-        delay(180)
+        delay(140)
         launch { ctaAlpha.animateTo(1f, expressive.defaultEffectsSpec()) }
         launch { ctaSlide.animateTo(0f, expressive.defaultSpatialSpec()) }
     }
@@ -347,20 +501,21 @@ private fun LoginWelcomeStep(
     ) {
         Column(
             modifier = Modifier
-                .widthIn(max = 420.dp)
+                .widthIn(max = if (compact) 420.dp else 660.dp)
                 .fillMaxWidth()
                 .padding(bottom = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             PikoOnboardingCanvas(
                 modifier = Modifier
-                    .widthIn(max = 380.dp)
+                    .widthIn(max = if (compact) 380.dp else 620.dp)
                     .fillMaxWidth(),
                 onBang = { bangTriggered = true },
             )
             Spacer(Modifier.height(20.dp))
             Column(
                 modifier = Modifier
+                    .widthIn(max = 420.dp)
                     .fillMaxWidth()
                     .graphicsLayer {
                         alpha = copyAlpha.value
@@ -824,11 +979,11 @@ private fun LoginForm(
                 ) {
                     Text(
                         tr(
-                            "前往 PikPak 官网注册",
-                            "Create an account on PikPak",
-                            "PikPak 公式サイトで登録",
-                            "PikPak 공식 사이트에서 가입",
-                            "前往 PikPak 官網註冊",
+                            "注册账号",
+                            "Create an account",
+                            "アカウントを作成",
+                            "계정 만들기",
+                            "註冊帳號",
                         ),
                     )
                     Spacer(Modifier.width(6.dp))
@@ -862,11 +1017,11 @@ private fun LoginForm(
                     )
                     Text(
                         text = tr(
-                            "Piko 是开源的 PikPak 第三方客户端，与 PikPak 官方无关",
+                            "Piko 是开源第三方客户端，与 PikPak 官方无关",
                             "Piko is an open-source third-party client, not affiliated with PikPak",
-                            "Piko はオープンソースの非公式 PikPak クライアントであり、公式とは関係ありません",
-                            "Piko는 오픈소스 비공식 PikPak 클라이언트로, 공식 서비스와 무관합니다",
-                            "Piko 是開源的 PikPak 第三方用戶端，與 PikPak 官方無關",
+                            "Piko はオープンソースの非公式クライアントであり、PikPak 公式とは関係ありません",
+                            "Piko는 오픈소스 비공식 클라이언트로, PikPak 공식 서비스와 무관합니다",
+                            "Piko 是開源第三方用戶端，與 PikPak 官方無關",
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1187,7 +1342,7 @@ private fun GoogleConfirmationCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                InlineLoadingIndicator()
+                CompactProgressIndicator(size = 18.dp)
                 Text(
                     text = tr(
                         "等待确认中，有效剩余 $mins:$secs",
